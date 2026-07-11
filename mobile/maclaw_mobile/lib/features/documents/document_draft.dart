@@ -25,11 +25,14 @@ class DocumentDraft {
   });
 
   factory DocumentDraft.fromJson(Map<String, dynamic> json) {
+    final body = (json['markdown'] as String? ?? '').trim();
+    final preview = (json['preview'] as String? ?? '').trim();
     return DocumentDraft(
       id: json['id'] as String? ?? '',
       title: json['title'] as String? ?? '',
       template: documentTemplateFromWire(json['template'] as String?),
-      markdown: json['markdown'] as String? ?? '',
+      // List API may only return preview; full body comes from GET by id.
+      markdown: body.isNotEmpty ? body : preview,
       updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
     );

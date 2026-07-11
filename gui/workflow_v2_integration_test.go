@@ -299,6 +299,27 @@ func TestRunWorkflowV2PhaseBlocksMissingFullDependency(t *testing.T) {
 	}
 }
 
+func TestWorkflowV2ArtifactPhaseUserRequestForbidsRediscovery(t *testing.T) {
+	request := workflowV2PhaseUserRequest(&v2.Phase{
+		Name:          "PPT 生成",
+		Kind:          v2.PhaseKindArtifactGeneration,
+		MutationScope: v2.MutationScopeArtifact,
+	})
+	for _, want := range []string{"不要询问主题、受众、页数或要点", "不要搜索项目目录、PDF、记忆或历史对话", "pptx-generator", ".pptx"} {
+		if !strings.Contains(request, want) {
+			t.Fatalf("artifact request missing %q: %s", want, request)
+		}
+	}
+}
+
+func TestWorkflowV2ArtifactPhaseModificationRemainsArtifactRequest(t *testing.T) {
+	phase := &v2.Phase{Name: "PPT 生成", Kind: v2.PhaseKindArtifactGeneration, MutationScope: v2.MutationScopeArtifact}
+	request := workflowV2PhaseUserRequest(phase) + "\n\n用户修改意见：改为深蓝色主题。直接重新生成并发送最终文件。"
+	if strings.Contains(request, "完整文档") || !strings.Contains(request, "最终文件") {
+		t.Fatalf("artifact modification request regressed to document generation: %s", request)
+	}
+}
+
 func TestEnsureWorkflowV2PhaseWorkDirNormalizesProjectPath(t *testing.T) {
 	projectPath := filepath.Join(t.TempDir(), "presentation_design")
 	state := &v2.WorkflowState{

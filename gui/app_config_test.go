@@ -85,6 +85,9 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if cfg.ShowAppEntry {
 		t.Fatal("ShowAppEntry = true, want false for first-run default config")
 	}
+	if cfg.MaclawRoleDescription != corelib.DefaultMaclawRoleDescription {
+		t.Fatalf("MaclawRoleDescription = %q, want %q", cfg.MaclawRoleDescription, corelib.DefaultMaclawRoleDescription)
+	}
 
 	matches, err := filepath.Glob(configPath + ".tmp*")
 	if err != nil {
@@ -92,6 +95,65 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temp files remain: %v", matches)
+	}
+}
+
+func TestLoadConfigMigratesOnlyLegacyDefaultRoleDescription(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll config directory: %v", err)
+	}
+
+	legacyConfig := corelib.AppConfigDefaults()
+	legacyConfig.MaclawRoleDescription = "一个尽心尽责无所不能的软件开发管家"
+	data, err := json.Marshal(legacyConfig)
+	if err != nil {
+		t.Fatalf("Marshal legacy config: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("Write legacy config: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	config, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if config.MaclawRoleDescription != corelib.DefaultMaclawRoleDescription {
+		t.Fatalf("MaclawRoleDescription = %q, want migrated default %q", config.MaclawRoleDescription, corelib.DefaultMaclawRoleDescription)
+	}
+}
+
+func TestLoadConfigPreservesCustomRoleDescription(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	configPath := filepath.Join(tmpHome, ".maclaw", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll config directory: %v", err)
+	}
+
+	const customDescription = "专注于安全评审的团队助手"
+	customConfig := corelib.AppConfigDefaults()
+	customConfig.MaclawRoleDescription = customDescription
+	data, err := json.Marshal(customConfig)
+	if err != nil {
+		t.Fatalf("Marshal custom config: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("Write custom config: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	config, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if config.MaclawRoleDescription != customDescription {
+		t.Fatalf("MaclawRoleDescription = %q, want preserved custom description %q", config.MaclawRoleDescription, customDescription)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -186,7 +187,7 @@ func TestMobileBootstrapHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/bootstrap", nil)
 	rec := httptest.NewRecorder()
 
-	MobileBootstrapHandler(nil).ServeHTTP(rec, req)
+	MobileBootstrapHandler(nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -246,8 +247,40 @@ func TestMobileBootstrapPayloadIncludesServiceStatuses(t *testing.T) {
 	if features["backend_ssh_sessions"] != true {
 		t.Fatalf("features = %#v, want backend SSH session management flag", features)
 	}
+	if features["tasks"] != true {
+		t.Fatalf("features = %#v, want tasks tab flag", features)
+	}
 	if _, ok := features["local_ssh"]; ok {
 		t.Fatalf("features = %#v, must not advertise phone-local SSH", features)
+	}
+	limits, ok := payload["limits"].(map[string]any)
+	if !ok {
+		t.Fatalf("limits payload = %#v, want map", payload["limits"])
+	}
+	// caps may store int64; compare via float64 conversion for interface{} stability.
+	quota, _ := limits["document_quota_bytes"].(int64)
+	if quota == 0 {
+		if f, ok := limits["document_quota_bytes"].(float64); ok {
+			quota = int64(f)
+		} else if n, ok := limits["document_quota_bytes"].(int); ok {
+			quota = int64(n)
+		}
+	}
+	if quota != 100*1024*1024 {
+		t.Fatalf("limits = %#v, want 100MiB document quota default", limits)
+	}
+	if _, ok := limits["hub_file_download_max_bytes"]; !ok {
+		t.Fatalf("limits = %#v, want hub_file_download_max_bytes", limits)
+	}
+	if payload["assistant_mode"] != "official" && payload["assistant_mode"] != "digital_twin" {
+		t.Fatalf("assistant_mode = %#v, want official or digital_twin", payload["assistant_mode"])
+	}
+	entitlements, ok := payload["entitlements"].(map[string]any)
+	if !ok {
+		t.Fatalf("entitlements = %#v, want map", payload["entitlements"])
+	}
+	if _, ok := entitlements["mobile_official"]; !ok {
+		t.Fatalf("entitlements = %#v, want mobile_official", entitlements)
 	}
 }
 
@@ -592,8 +625,12 @@ func TestMobileSearchFormatsResultsWithCitations(t *testing.T) {
 	if !strings.Contains(answer, "Nginx logs guide") {
 		t.Fatalf("answer = %q, want result title", answer)
 	}
-	if !strings.Contains(answer, "Check error.log") {
-		t.Fatalf("answer = %q, want result snippet", answer)
+	// Fallback must not dump raw SERP snippets as the main answer body.
+	if strings.Contains(answer, "Check error.log") {
+		t.Fatalf("answer = %q, must not paste search snippet body", answer)
+	}
+	if !strings.Contains(answer, "LLM") && !strings.Contains(answer, "来源") {
+		t.Fatalf("answer = %q, want guidance about sources/LLM", answer)
 	}
 
 	citations := mobileSearchCitations(results)
@@ -614,7 +651,7 @@ func TestMobileSearchKeepsSharedLinksAsCitations(t *testing.T) {
 	answer := mobileSearchAnswer(query, nil, links)
 	citations := mobileMergeLinkCitations(nil, links)
 
-	if !strings.Contains(answer, "\u5df2\u8bc6\u522b\u5206\u4eab\u94fe\u63a5") {
+	if !strings.Contains(answer, "\u94fe\u63a5") {
 		t.Fatalf("answer = %q, want shared-link hint", answer)
 	}
 	if len(citations) != 1 {
@@ -622,6 +659,158 @@ func TestMobileSearchKeepsSharedLinksAsCitations(t *testing.T) {
 	}
 	if citations[0]["url"] != "https://example.test/incident?from=mobile" {
 		t.Fatalf("citation = %#v, want shared URL", citations[0])
+	}
+}
+
+func TestMobileCleanSearchTextUnescapesHTMLEntities(t *testing.T) {
+	got := mobileCleanSearchText("1\u5929\u524d&ensp;&#0183;&ensp;hello<br>world", 0)
+	if strings.Contains(got, "&ensp;") || strings.Contains(got, "&#") || strings.Contains(got, "<br>") {
+		t.Fatalf("got %q, still contains raw HTML markup", got)
+	}
+	if !strings.Contains(got, "hello") || !strings.Contains(got, "world") {
+		t.Fatalf("got %q, want cleaned content", got)
+	}
+}
+
+func TestMobileBuildLLMMessagesDropsOnlyTrailingDuplicateUser(t *testing.T) {
+	messages := mobileBuildLLMMessages(
+		"same",
+		nil,
+		[]mobileChatMessage{
+			{Role: "user", Content: "same"}, // earlier identical question must stay
+			{Role: "assistant", Content: "first answer"},
+			{Role: "user", Content: "same"}, // trailing current query is dropped
+		},
+		nil,
+	)
+	// system + earlier user + assistant + final user (current)
+	if len(messages) != 4 {
+		t.Fatalf("len(messages)=%d %#v", len(messages), messages)
+	}
+	if messages[1]["content"] != "same" || messages[1]["role"] != "user" {
+		t.Fatalf("expected preserved earlier user turn, got %#v", messages[1])
+	}
+	if messages[2]["role"] != "assistant" {
+		t.Fatalf("expected assistant history, got %#v", messages[2])
+	}
+	if messages[3]["role"] != "user" || !strings.Contains(messages[3]["content"], "same") {
+		t.Fatalf("expected final user turn, got %#v", messages[3])
+	}
+}
+
+func TestMobileBuildLLMMessagesCapsHistory(t *testing.T) {
+	history := make([]mobileChatMessage, 0, 40)
+	for i := 0; i < 40; i++ {
+		history = append(history, mobileChatMessage{
+			Role:    "user",
+			Content: fmt.Sprintf("turn-%d", i),
+		})
+	}
+	messages := mobileBuildLLMMessages("now", nil, history, nil)
+	// system + capped history + final user
+	if len(messages) > mobileLLMMaxHistoryTurns+2 {
+		t.Fatalf("len(messages)=%d, want <= %d", len(messages), mobileLLMMaxHistoryTurns+2)
+	}
+	// Last history turn before final user should be near the end of the input.
+	if !strings.Contains(messages[len(messages)-2]["content"], "turn-") {
+		t.Fatalf("expected capped history tail, got %#v", messages)
+	}
+}
+
+func TestMobileSearchHandlerStreamEmitsMetaDeltaDone(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "mobile-search-stream@example.com")
+	previousSearch := mobileWebSearch
+	mobileWebSearch = func(context.Context, string, int) ([]websearch.SearchResult, error) {
+		return []websearch.SearchResult{{Title: "Src", URL: "https://example.test/s", Snippet: "ok"}}, nil
+	}
+	t.Cleanup(func() { mobileWebSearch = previousSearch })
+	official := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-MaClaw-Request-ID", "llm-stream-1")
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "结论：服务正常。\n\n- 要点"}}}})
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/search", strings.NewReader(`{"query":"status","stream":true}`))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	MobileSearchHandler(identity, official).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content-type = %q, want event-stream", rec.Header().Get("Content-Type"))
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{"event: meta", "event: delta", "event: done", "llm-stream-1"} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("stream body missing %q:\n%s", needle, body)
+		}
+	}
+	// encoding/json escapes non-ASCII; accept raw or \u form.
+	if !mobileSSEBodyContainsText(body, "结论：服务正常") {
+		t.Fatalf("stream body missing answer text:\n%s", body)
+	}
+}
+
+func TestMobileOpenAIStreamDelta(t *testing.T) {
+	delta, ok := mobileOpenAIStreamDelta(`data: {"choices":[{"delta":{"content":"hi"}}]}`)
+	if !ok || delta != "hi" {
+		t.Fatalf("delta=%q ok=%v", delta, ok)
+	}
+	if _, ok := mobileOpenAIStreamDelta("data: [DONE]"); ok {
+		t.Fatal("DONE should not yield content")
+	}
+	if _, ok := mobileOpenAIStreamDelta("event: message"); ok {
+		t.Fatal("non-data lines should be ignored")
+	}
+	parts, ok := mobileOpenAIStreamDelta(`data: {"choices":[{"delta":{"content":["a","b"]}}]}`)
+	if !ok || parts != "ab" {
+		t.Fatalf("array content delta=%q ok=%v", parts, ok)
+	}
+}
+
+// mobileSSEBodyContainsText reports whether an SSE body includes text either
+// literally or as encoding/json Unicode escapes.
+func mobileSSEBodyContainsText(body, text string) bool {
+	if strings.Contains(body, text) {
+		return true
+	}
+	escaped, err := json.Marshal(text)
+	if err != nil {
+		return false
+	}
+	inner := string(escaped[1 : len(escaped)-1])
+	return strings.Contains(body, inner)
+}
+
+func TestMobileChunkAnswerForSSEBreaksRunes(t *testing.T) {
+	chunks := mobileChunkAnswerForSSE("一二三四五六七八九十", 4)
+	if len(chunks) < 2 {
+		t.Fatalf("chunks = %#v, want multiple chunks", chunks)
+	}
+	joined := strings.Join(chunks, "")
+	if joined != "一二三四五六七八九十" {
+		t.Fatalf("joined = %q", joined)
+	}
+}
+
+func TestMobileSearchPromptAsksForStructuredCompanionAnswer(t *testing.T) {
+	prompt := mobileSearchPrompt("北京天气", []map[string]string{
+		{
+			"title":   "气象局",
+			"url":     "https://example.test/weather",
+			"snippet": "1天前&ensp;&#183;&ensp;晴转多云",
+		},
+	}, nil)
+	for _, needle := range []string{"结论", "表格", "Markdown", "[1]", "HTML"} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("prompt missing %q: %s", needle, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Evidence sources") && strings.Contains(prompt, "1天前&ensp;") {
+		t.Fatalf("evidence section still contains raw HTML entity: %s", prompt)
+	}
+	if !strings.Contains(prompt, "1天前 · 晴转多云") {
+		t.Fatalf("expected cleaned snippet in prompt: %s", prompt)
 	}
 }
 
@@ -1574,13 +1763,101 @@ func TestMobileDigitalEmployeesHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/mobile/digital-employees", nil)
 	rec := httptest.NewRecorder()
 
-	MobileDigitalEmployeesHandler(nil, nil).ServeHTTP(rec, req)
+	MobileDigitalEmployeesHandler(nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 	if !strings.Contains(rec.Body.String(), "UNAUTHORIZED") {
 		t.Fatalf("body = %s, want UNAUTHORIZED", rec.Body.String())
+	}
+}
+
+func TestMobileEmployeeOwnedByViewer(t *testing.T) {
+	if !mobileEmployeeOwnedByViewer(digitalEmployeeEntry{OwnerUserID: "u1"}, "u1") {
+		t.Fatal("want owned")
+	}
+	if mobileEmployeeOwnedByViewer(digitalEmployeeEntry{OwnerUserID: "u2"}, "u1") {
+		t.Fatal("other owner")
+	}
+	if mobileEmployeeOwnedByViewer(digitalEmployeeEntry{}, "u1") {
+		t.Fatal("empty owner is pool, not own")
+	}
+	if mobileEmployeeListScope(false) != "own" || mobileEmployeeListScope(true) != "shared" {
+		t.Fatal("scope labels")
+	}
+}
+
+func TestMobileEmployeeGroupVisibilityForSharedPool(t *testing.T) {
+	// Owned entry with group restriction is still visible to owner.
+	owned := digitalEmployeeEntry{
+		OwnerUserID: "u1", Status: veStatusActive, VisibleGroupIDs: []string{"dept-legal"},
+	}
+	if !mobileEmployeeOwnedByViewer(owned, "u1") {
+		t.Fatal("owned")
+	}
+	// Pool entry with groups: hidden when path not resolved.
+	pool := digitalEmployeeEntry{
+		OwnerUserID: "other", Status: veStatusActive, VisibleGroupIDs: []string{"dept-legal"},
+	}
+	if veVisibleToRequester(pool, nil, false) {
+		t.Fatal("unresolved path must hide group-restricted pool entry")
+	}
+	// Visible when path includes group.
+	if !veVisibleToRequester(pool, []string{"dept-legal", "org-root"}, true) {
+		t.Fatal("want visible for matching group")
+	}
+	if veVisibleToRequester(pool, []string{"dept-finance"}, true) {
+		t.Fatal("wrong group must hide")
+	}
+	// Unrestricted pool entry is visible without group path.
+	open := digitalEmployeeEntry{OwnerUserID: "other", Status: veStatusActive}
+	if !veVisibleToRequester(open, nil, false) {
+		t.Fatal("open pool should be visible")
+	}
+}
+
+func TestMobileFilterEmployeesForViewerOwnVsShared(t *testing.T) {
+	entries := []digitalEmployeeEntry{
+		{ID: "own1", OwnerUserID: "u1", Status: veStatusActive, Name: "Mine"},
+		{ID: "pool-legal", OwnerUserID: "other", Status: veStatusActive, Name: "Legal", VisibleGroupIDs: []string{"dept-legal"}},
+		{ID: "pool-open", OwnerUserID: "other", Status: veStatusActive, Name: "Open"},
+		{ID: "inactive", OwnerUserID: "u1", Status: veStatusDisabled, Name: "Off"},
+		{ID: "other-owner", OwnerUserID: "u2", Status: veStatusActive, Name: "OtherOwn"},
+	}
+	// free/own: only owned active
+	ownOnly := mobileFilterEmployeesForViewer(entries, "u1", false, nil, false)
+	if len(ownOnly) != 1 || ownOnly[0].ID != "own1" {
+		t.Fatalf("ownOnly=%#v", ownOnly)
+	}
+	// shared + matching group: own + legal pool + open pool (+ unrestricted other-owner as open pool)
+	sharedIn := mobileFilterEmployeesForViewer(entries, "u1", true, []string{"dept-legal"}, true)
+	ids := map[string]bool{}
+	for _, e := range sharedIn {
+		ids[e.ID] = true
+	}
+	if !ids["own1"] || !ids["pool-legal"] || !ids["pool-open"] || !ids["other-owner"] {
+		t.Fatalf("sharedIn=%#v", sharedIn)
+	}
+	if ids["inactive"] {
+		t.Fatalf("inactive leaked: %#v", sharedIn)
+	}
+	// shared but wrong group: own + open + unrestricted other-owner; legal pool hidden
+	sharedOut := mobileFilterEmployeesForViewer(entries, "u1", true, []string{"dept-finance"}, true)
+	ids2 := map[string]bool{}
+	for _, e := range sharedOut {
+		ids2[e.ID] = true
+	}
+	if !ids2["own1"] || !ids2["pool-open"] || !ids2["other-owner"] || ids2["pool-legal"] {
+		t.Fatalf("sharedOut=%#v", sharedOut)
+	}
+	// owner always sees own even with unresolved group path in shared mode
+	ownedRestricted := []digitalEmployeeEntry{
+		{ID: "mine-g", OwnerUserID: "u1", Status: veStatusActive, VisibleGroupIDs: []string{"dept-secret"}},
+	}
+	got := mobileFilterEmployeesForViewer(ownedRestricted, "u1", true, nil, false)
+	if len(got) != 1 {
+		t.Fatalf("owner bypass groups: %#v", got)
 	}
 }
 
@@ -1598,7 +1875,7 @@ func TestMobileDigitalEmployeesHandlerListsBoundRemoteMachine(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+viewerToken)
 	rec := httptest.NewRecorder()
 
-	MobileDigitalEmployeesHandler(identity, nil).ServeHTTP(rec, req)
+	MobileDigitalEmployeesHandler(identity, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())

@@ -1126,16 +1126,16 @@ tri8_amx_loop:
 	XORQ DX, DX
 	VMOVSS 4(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r0a
+	JLS  amx_r0ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r0a:
+amx_r0ca:
 	VMOVSS 8(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r0b
+	JLS  amx_r0cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r0b:
+amx_r0cb:
 	UCOMISS X0, X8
 	JLS  amx_r0c
 	VMOVAPS X8, X0
@@ -1147,16 +1147,16 @@ amx_r0c:
 	XORQ DX, DX
 	VMOVSS 16(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r1a
+	JLS  amx_r1ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r1a:
+amx_r1ca:
 	VMOVSS 20(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r1b
+	JLS  amx_r1cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r1b:
+amx_r1cb:
 	UCOMISS X1, X8
 	JLS  amx_r1c
 	VMOVAPS X8, X1
@@ -1168,16 +1168,16 @@ amx_r1c:
 	XORQ DX, DX
 	VMOVSS 28(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r2a
+	JLS  amx_r2ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r2a:
+amx_r2ca:
 	VMOVSS 32(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r2b
+	JLS  amx_r2cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r2b:
+amx_r2cb:
 	UCOMISS X2, X8
 	JLS  amx_r2c
 	VMOVAPS X8, X2
@@ -1189,16 +1189,16 @@ amx_r2c:
 	XORQ DX, DX
 	VMOVSS 40(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r3a
+	JLS  amx_r3ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r3a:
+amx_r3ca:
 	VMOVSS 44(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r3b
+	JLS  amx_r3cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r3b:
+amx_r3cb:
 	UCOMISS X3, X8
 	JLS  amx_r3c
 	VMOVAPS X8, X3
@@ -1210,16 +1210,16 @@ amx_r3c:
 	XORQ DX, DX
 	VMOVSS 52(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r4a
+	JLS  amx_r4ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r4a:
+amx_r4ca:
 	VMOVSS 56(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r4b
+	JLS  amx_r4cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r4b:
+amx_r4cb:
 	UCOMISS X4, X8
 	JLS  amx_r4c
 	VMOVAPS X8, X4
@@ -1231,16 +1231,16 @@ amx_r4c:
 	XORQ DX, DX
 	VMOVSS 64(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r5a
+	JLS  amx_r5ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r5a:
+amx_r5ca:
 	VMOVSS 68(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r5b
+	JLS  amx_r5cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r5b:
+amx_r5cb:
 	UCOMISS X5, X8
 	JLS  amx_r5c
 	VMOVAPS X8, X5
@@ -1252,16 +1252,16 @@ amx_r5c:
 	XORQ DX, DX
 	VMOVSS 76(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r6a
+	JLS  amx_r6ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r6a:
+amx_r6ca:
 	VMOVSS 80(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r6b
+	JLS  amx_r6cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r6b:
+amx_r6cb:
 	UCOMISS X6, X8
 	JLS  amx_r6c
 	VMOVAPS X8, X6
@@ -1273,16 +1273,16 @@ amx_r6c:
 	XORQ DX, DX
 	VMOVSS 88(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r7a
+	JLS  amx_r7ca
 	VMOVAPS X9, X8
 	MOVQ $1, DX
-amx_r7a:
+amx_r7ca:
 	VMOVSS 92(SP), X9
 	UCOMISS X8, X9
-	JLS  amx_r7b
+	JLS  amx_r7cb
 	VMOVAPS X9, X8
 	MOVQ $2, DX
-amx_r7b:
+amx_r7cb:
 	UCOMISS X7, X8
 	JLS  amx_r7c
 	VMOVAPS X8, X7
@@ -1685,7 +1685,8 @@ TEXT ·multiDot8TriplePlainAVX512K512N1536(SB), NOSPLIT, $8-72
 	MOVQ m+40(FP), AX
 	MOVQ n+48(FP), BX
 	// base = (m*1536 + n) * 4
-	IMULQ $1536, AX // m*1536
+	LEAQ (AX)(AX*2), AX // m*3
+	SHLQ $9, AX // m*1536
 	ADDQ BX, AX
 	SHLQ $2, AX
 	ADDQ AX, R11
@@ -6920,6 +6921,7 @@ dqs512_done:
 // func dequantRowScaledTripleAVX512(dst0, dst1, dst2 []float32, data []byte, scales0, scales1, scales2 *float32, rowOff0, rowOff1, rowOff2, nBlocks int)
 // Three Q8 rows → float panels (triple multiDot feed). Frame 152 bytes.
 // 4-block main (K=512 → 4 iters). 8-block body measured L1I thrash (share ↑).
+// load-all-halves-then-cvt measured slower than half0-store||half1-expand.
 TEXT ·dequantRowScaledTripleAVX512(SB), NOSPLIT, $0-152
 	MOVQ dst0+0(FP), SI
 	MOVQ dst1+24(FP), R10
@@ -6947,6 +6949,10 @@ dqt512_loop4:
 	PREFETCHT0 272(DI)
 	PREFETCHT0 272(R15)
 	PREFETCHT0 272(R13)
+	// dst panel write stream (multiDot reads soon; T0 keeps L1 warm for stores)
+	PREFETCHT0 512(SI)
+	PREFETCHT0 512(R10)
+	PREFETCHT0 512(R12)
 	VBROADCASTSS (R8), Z1
 	VBROADCASTSS (R9), Z4
 	VBROADCASTSS (R11), Z7

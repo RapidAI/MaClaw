@@ -179,6 +179,12 @@ func (s *Service) userSkillsRoot(tenantID, userID string) string {
 	return filepath.Join(s.userRoot(tenantID, userID), "skills")
 }
 
+// UserSkillsRoot returns the on-disk skills directory for a principal.
+// Hosts (e.g. Hub mobile) use this to seed or inspect installed skills.
+func (s *Service) UserSkillsRoot(tenantID, userID string) string {
+	return s.userSkillsRoot(tenantID, userID)
+}
+
 func (s *Service) ListSkills(ctx context.Context, p Principal) ([]corelib.NLSkillEntry, error) {
 	_ = ctx
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {

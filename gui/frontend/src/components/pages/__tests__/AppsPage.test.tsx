@@ -1943,7 +1943,7 @@ describe('AppsPage', () => {
         fireEvent.change(skillPicker.querySelector('input') as HTMLInputElement, { target: { value: 'alpha' } });
         fireEvent.click(within(skillPicker).getByRole('button', { name: /^Search$/ }));
 
-        const marketHeader = await within(skillPicker).findByText('SkillMarket / Hub');
+        const marketHeader = await within(skillPicker).findByText('Hub / HubCenter');
         const marketResult = within(skillPicker).getByText('Alpha Market Skill');
         const installedHeader = within(skillPicker).getByText('Installed skills');
         expect(marketHeader.compareDocumentPosition(installedHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

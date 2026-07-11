@@ -52,17 +52,43 @@ function renderLeft(overrides: Partial<Parameters<typeof AssistantInputActionsLe
 }
 
 describe("AssistantInputActionsLeft plus menu", () => {
-    it("shows the permission mode selector and reports changes", () => {
+    it("shows iconed permission modes and reports changes", () => {
         const onPermissionModeChange = vi.fn();
         renderLeft({ permissionMode: "request", onPermissionModeChange });
 
-        const selector = screen.getByTestId("ai-permission-mode") as HTMLSelectElement;
-        expect(selector.value).toBe("request");
-        expect(screen.getByRole("option", { name: "请求授权" })).toBeTruthy();
-        expect(screen.getByRole("option", { name: "完全控制" })).toBeTruthy();
+        const selector = screen.getByTestId("ai-permission-mode");
+        expect(selector.className).toContain("ai-permission-mode-trigger");
+        expect(selector.textContent).toContain("请求授权");
+        fireEvent.click(selector);
+        expect(screen.getByRole("menuitemradio", { name: "请求授权" })).toBeTruthy();
+        const fullControl = screen.getByRole("menuitemradio", { name: "完全控制" });
+        expect(fullControl.className).toContain("ai-permission-mode-item");
+        expect((fullControl as HTMLElement).style.color).toBe("rgb(185, 28, 28)");
 
-        fireEvent.change(selector, { target: { value: "full" } });
+        fireEvent.click(fullControl);
         expect(onPermissionModeChange).toHaveBeenCalledWith("full");
+        expect(document.activeElement).toBe(selector);
+    });
+
+    it("supports keyboard navigation and restores focus when permission menu closes", () => {
+        renderLeft({ permissionMode: "request" });
+        const selector = screen.getByTestId("ai-permission-mode");
+        selector.focus();
+        fireEvent.keyDown(selector, { key: "ArrowDown" });
+        const request = screen.getByTestId("ai-permission-mode-request");
+        const full = screen.getByTestId("ai-permission-mode-full");
+        expect(document.activeElement).toBe(request);
+        fireEvent.keyDown(request, { key: "ArrowDown" });
+        expect(document.activeElement).toBe(full);
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(screen.queryByTestId("ai-permission-mode-menu")).toBeNull();
+        expect(document.activeElement).toBe(selector);
+    });
+
+    it("keeps the normal field border when full control is selected", () => {
+        renderLeft({ permissionMode: "full" });
+
+        expect((screen.getByTestId("ai-permission-mode") as HTMLElement).style.border).toBe("1px solid rgb(221, 221, 221)");
     });
 
     it("places + before the attachment button and lists iconed commands", () => {

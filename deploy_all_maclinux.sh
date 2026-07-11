@@ -167,7 +167,7 @@ fi
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
 HUB_MODEL_BASE_URL="${HUB_MODEL_BASE_URL:-https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"
-HUB_MODEL_FILES="${HUB_MODEL_FILES:-embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip}"
+HUB_MODEL_FILES="${HUB_MODEL_FILES:-embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip}"
 
 brand_build_tag=""
 hub_binary_name="maclaw-hub"
@@ -498,7 +498,7 @@ set -eu
 : "${DEPLOY_HUB:=0}"
 : "${ENSURE_HUB_MODELS:=0}"
 : "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"
-: "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip}"
+: "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip}"
 : "${HUB_CONFIG_BASENAME:=}"
 : "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"
 : "${HUB_BINARY_NAME:=maclaw-hub}"

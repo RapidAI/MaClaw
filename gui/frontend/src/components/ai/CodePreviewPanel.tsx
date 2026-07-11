@@ -84,6 +84,7 @@ export interface CodePreviewPanelProps {
     onClose: () => void;
     onResizeStart?: () => void;
     theme: CodePreviewTheme;
+    lang?: string;
 }
 
 // ── Syntax color mapping ──
@@ -635,6 +636,7 @@ export function CodePreviewPanel({
     onClose,
     onResizeStart,
     theme,
+    lang = 'en',
 }: CodePreviewPanelProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const savedScrollTop = useRef<number>(0);
@@ -644,7 +646,9 @@ export function CodePreviewPanel({
 
     // Compute diff lines when active file has original content
     const diffLines = useMemo<DiffLine[] | null>(() => {
-        if (activeFile?.original === undefined) return null;
+        // A truncated remote preview only contains a leading chunk. Computing a
+        // diff against it would imply changes across the unseen remainder.
+        if (activeFile?.original === undefined || activeFile.previewTruncated) return null;
         return computeDiff(activeFile.original, activeFile.content);
     }, [activeFile?.original, activeFile?.content]);
 
@@ -817,6 +821,15 @@ export function CodePreviewPanel({
             </div>
 
             {/* Code content area */}
+            {activeFile?.previewTruncated && (
+                <div role="status" aria-live="polite" style={{ padding: '6px 12px', borderBottom: `1px solid ${theme.border}`, background: theme.lineNumBg, color: theme.textMuted, fontSize: 12, flexShrink: 0 }}>
+                    {lang === 'zh-Hant'
+                        ? '遠端原始碼預覽已截斷；目前僅顯示檔案開頭部分。'
+                        : lang.startsWith('zh')
+                            ? '远程源码预览已截断；当前仅显示文件开头部分。'
+                            : 'Remote preview is truncated; only the beginning of this file is shown.'}
+                </div>
+            )}
             <div
                 ref={scrollRef}
                 className="ai-chat-scrollbar"

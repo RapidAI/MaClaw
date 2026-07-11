@@ -24,7 +24,8 @@
       marketplaceTestMCP: 'Test Connection', marketplaceTestMCPTesting: 'Testing...', marketplaceTestMCPSuccess: 'Connected. {count} tool(s) available.', marketplaceTestMCPFailed: 'Connection failed: {error}',
       marketplaceShowingFirst: '{total} items total, showing first {count}',
       marketplaceDelete: 'Delete', marketplaceDeleteConfirm: 'Are you sure you want to delete this capability? Already installed clients will not be affected.', marketplaceDeleteDone: 'Capability deleted.', marketplaceDeleteFailed: 'Delete failed: {error}',
-      marketplaceUploadToMarket: 'Upload to Market', marketplaceUploadConfirm: 'Upload this skill to HubCenter global market? It will need HubCenter admin approval before publishing.', marketplaceUploadDone: 'Skill submitted to HubCenter (ID: {submission_id}). Awaiting approval.', marketplaceUploadFailed: 'Upload to HubCenter failed: {error}'
+      marketplaceBackfillNames: 'Backfill Skill Names', marketplaceBackfillNamesConfirm: 'Rewrite skill card titles from stored packages / humanized slugs? Only technical IDs are updated.', marketplaceBackfillNamesDone: 'Backfill done: updated {updated}, skipped {skipped}, failed {failed}.', marketplaceBackfillNamesFailed: 'Backfill failed: {error}',
+      marketplaceUploadToMarket: 'Upload to Market', marketplaceUploadConfirm: 'Upload this skill to HubCenter global market? Processing runs on HubCenter; trial skills appear in the market after validation.', marketplaceUploadDone: 'Skill submitted to HubCenter (ID: {submission_id}). Awaiting processing/approval.', marketplaceUploadPublished: 'Skill is live on HubCenter (submission: {submission_id}, skill: {skill_id}).', marketplaceUploadAlreadySubmitted: 'This Skill already has an in-flight upload to HubCenter.', marketplaceUploadFailed: 'Upload to HubCenter failed: {error}'
     });
     I18N.zh = Object.assign({}, I18N.zh, {
       navMarketplace: '\u80fd\u529b\u5e02\u573a', navMarketplaceDesc: 'Skill\u3001MCP\u3001\u8d2d\u4e70\u548c\u4e0b\u53d1', marketplaceTabTitle: '\u80fd\u529b\u5e02\u573a', marketplaceTabSubtitle: '\u7ba1\u7406\u4f01\u4e1a Skill/MCP \u7b56\u7565\u3001\u4ed8\u8d39\u5ba1\u6279\u3001\u5bfc\u5165\u548c MCP \u5b9a\u4e49\u3002',
@@ -39,7 +40,8 @@
       marketplaceTestMCP: '\u6d4b\u8bd5\u8fde\u63a5', marketplaceTestMCPTesting: '\u6d4b\u8bd5\u4e2d...', marketplaceTestMCPSuccess: '\u8fde\u63a5\u6210\u529f\u3002{count} \u4e2a\u5de5\u5177\u53ef\u7528\u3002', marketplaceTestMCPFailed: '\u8fde\u63a5\u5931\u8d25\uff1a{error}',
       marketplaceShowingFirst: '\u5171 {total} \u9879\uff0c\u663e\u793a\u524d {count} \u9879',
       marketplaceDelete: '\u5220\u9664', marketplaceDeleteConfirm: '\u786e\u5b9a\u5220\u9664\u6b64\u80fd\u529b\uff1f\u5df2\u5b89\u88c5\u7684\u5ba2\u6237\u7aef\u4e0d\u53d7\u5f71\u54cd\u3002', marketplaceDeleteDone: '\u80fd\u529b\u5df2\u5220\u9664\u3002', marketplaceDeleteFailed: '\u5220\u9664\u5931\u8d25\uff1a{error}',
-      marketplaceUploadToMarket: '\u4e0a\u4f20\u5230\u5e02\u573a', marketplaceUploadConfirm: '\u5c06\u6b64 Skill \u4e0a\u4f20\u5230 HubCenter \u5168\u5c40\u80fd\u529b\u5e02\u573a\uff1f\u9700\u8981 HubCenter \u7ba1\u7406\u5458\u5ba1\u6279\u540e\u624d\u80fd\u4e0a\u67b6\u3002', marketplaceUploadDone: 'Skill \u5df2\u63d0\u4ea4\u5230 HubCenter\uff08ID: {submission_id}\uff09\u3002\u7b49\u5f85\u5ba1\u6279\u3002', marketplaceUploadFailed: '\u4e0a\u4f20\u5230 HubCenter \u5931\u8d25\uff1a{error}'
+      marketplaceBackfillNames: '\u56de\u586b Skill \u540d\u79f0', marketplaceBackfillNamesConfirm: '\u4ece\u5df2\u5b58\u5305/\u4eba\u6027\u5316 slug \u91cd\u5199 skill \u5361\u7247\u6807\u9898\uff1f\u4ec5\u4f1a\u66f4\u65b0\u6280\u672f ID \u6837\u5f0f\u7684\u540d\u79f0\u3002', marketplaceBackfillNamesDone: '\u56de\u586b\u5b8c\u6210\uff1a\u66f4\u65b0 {updated}\uff0c\u8df3\u8fc7 {skipped}\uff0c\u5931\u8d25 {failed}\u3002', marketplaceBackfillNamesFailed: '\u56de\u586b\u5931\u8d25\uff1a{error}',
+      marketplaceUploadToMarket: '\u4e0a\u4f20\u5230\u5e02\u573a', marketplaceUploadConfirm: '\u5c06\u6b64 Skill \u4e0a\u4f20\u5230 HubCenter \u5168\u5c40\u80fd\u529b\u5e02\u573a\uff1fHubCenter \u6821\u9a8c\u901a\u8fc7\u540e\u4f1a\u8fdb\u5165 trial/\u5e02\u573a\u5217\u8868\u3002', marketplaceUploadDone: 'Skill \u5df2\u63d0\u4ea4\u5230 HubCenter\uff08ID: {submission_id}\uff09\u3002\u7b49\u5f85\u5904\u7406/\u5ba1\u6279\u3002', marketplaceUploadPublished: 'Skill \u5df2\u5728 HubCenter \u4e0a\u67b6\uff08\u63d0\u4ea4: {submission_id}\uff0cskill: {skill_id}\uff09\u3002', marketplaceUploadAlreadySubmitted: '\u8be5 Skill \u5728 HubCenter \u4ecd\u6709\u8fdb\u884c\u4e2d\u7684\u63d0\u4ea4\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002', marketplaceUploadFailed: '\u4e0a\u4f20\u5230 HubCenter \u5931\u8d25\uff1a{error}'
     });
   }
   const state = { policy: null, capabilities: [], requests: [], externalResults: [], billing: null, workflowReviews: [], workflowReviewDetail: null, rejectingWorkflowReviewId: '', workflowReviewBusy: {} };
@@ -105,8 +107,114 @@
     return '<div class="item-meta maclaw-app-evidence" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:5px;margin-top:4px;font-size:10px">' + rows.map(function(row) { return '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>' + esc(row[0]) + ':</strong> ' + esc(row[1]) + '</span>'; }).join('') + '</div>';
   }
   function firstID(item) { return item.id || item.capability_id || item.skill_id || item.name || item.key || ''; }
-  function firstName(item) { return item.display_name || item.name || item.title || extractReadableName(item.capability_id || item.id) || item.capability_id || item.skill_id || '-'; }
-  function extractReadableName(id) { if (!id) return ''; var parts = String(id).split('/'); if (parts.length >= 3) return parts[2]; if (parts.length === 2) return parts[1]; return ''; }
+  function textValue(value) { return typeof value === 'string' ? value.trim() : ''; }
+  function looksLikeCapabilityReference(value) {
+    value = textValue(value).toLowerCase();
+    return value.indexOf(':skill:') >= 0 || value.indexOf(':mcp:') >= 0 || value.indexOf(':approval_workflow:') >= 0 || value.indexOf(':maclaw_app:') >= 0 || value.indexOf(':maclaw-app:') >= 0;
+  }
+  function looksLikeTechnicalSkillSlug(value) {
+    value = textValue(value);
+    if (!value || looksLikeCapabilityReference(value)) return true;
+    if (/\s/.test(value)) return false;
+    if (/[^\x00-\x7F]/.test(value)) return false; // CJK / non-ASCII titles are human names
+    if (!/^[A-Za-z0-9._-]+$/.test(value)) return false;
+    return /[-_.]/.test(value) || value === value.toLowerCase();
+  }
+  function firstHumanName(values) {
+    for (var i = 0; i < values.length; i += 1) {
+      var value = textValue(values[i]);
+      if (value && !looksLikeCapabilityReference(value) && !looksLikeTechnicalSkillSlug(value)) return value;
+    }
+    return '';
+  }
+  function humanizeIdentifier(value) {
+    var acronyms = { api: 'API', csv: 'CSV', mcp: 'MCP', ocr: 'OCR', pdf: 'PDF', ppt: 'PPT', url: 'URL' };
+    return textValue(value).split(/[-_\s]+/).filter(Boolean).map(function(part) {
+      var lower = part.toLowerCase();
+      return acronyms[lower] || lower.charAt(0).toUpperCase() + lower.slice(1);
+    }).join(' ');
+  }
+  // enterprise_hub:skill:ppt-master@a1b2 -> ppt-master
+  function bareSkillId(value) {
+    value = textValue(value);
+    if (!value) return '';
+    if (value.indexOf('/') >= 0) {
+      var pathParts = value.split('/');
+      value = pathParts[pathParts.length - 1] || value;
+    }
+    if (value.indexOf(':') >= 0) {
+      var colonParts = value.split(':');
+      value = colonParts[colonParts.length - 1] || value;
+    }
+    value = value.replace(/@[^@]+$/, '');
+    return textValue(value);
+  }
+  function extractReadableName(id) {
+    return humanizeIdentifier(bareSkillId(id));
+  }
+  // Collapse "ppt-master" vs "PPT Master" so the card does not show both as labels.
+  function normalizeSkillLabel(value) {
+    return textValue(value).toLowerCase().replace(/[\s_\-./]+/g, '');
+  }
+  function isInternalCapabilityRecordId(value) {
+    value = textValue(value);
+    // Hub row ids look like "cap_a1b2c3…"; not useful as a user-facing skill id.
+    return /^cap_[0-9a-f]{6,}$/i.test(value);
+  }
+  function isRedundantSkillId(id, name) {
+    id = bareSkillId(id);
+    name = textValue(name);
+    if (!id || isInternalCapabilityRecordId(id)) return true;
+    if (!name || name === '-') return false;
+    if (normalizeSkillLabel(id) === normalizeSkillLabel(name)) return true;
+    var readable = extractReadableName(id);
+    return !!(readable && normalizeSkillLabel(readable) === normalizeSkillLabel(name));
+  }
+  function skillIdForCard(item) {
+    item = item || {};
+    // Prefer stable skill/capability ids; never surface opaque row ids or full version keys.
+    var ref = textValue(item.capability_id || item.skill_id || '');
+    if (!ref || isInternalCapabilityRecordId(ref)) return '';
+    var bare = bareSkillId(ref);
+    if (!bare || isInternalCapabilityRecordId(bare)) return '';
+    return bare;
+  }
+  function firstName(item) {
+    item = item || {};
+    var metadata = metadataOf(item);
+    var manifest = metadata.manifest && typeof metadata.manifest === 'object' ? metadata.manifest : {};
+    var skill = metadata.skill && typeof metadata.skill === 'object' ? metadata.skill : {};
+    return firstHumanName([
+      item.display_name, item.name, item.title,
+      metadata.display_name, metadata.skill_name, metadata.name, metadata.title,
+      skill.display_name, skill.name, manifest.display_name, manifest.name
+    ]) || extractReadableName(item.display_name || item.capability_id || item.skill_id || item.id) || '-';
+  }
+  // Prefer short user-facing label from keys like "enterprise_hub:skill:ppt-master@1.2.3".
+  // Hides bare package digests (e.g. 12-char hex) which are not meaningful as "v…".
+  function shortVersionLabel(versionKey) {
+    var value = textValue(versionKey);
+    if (!value) return '';
+    var at = value.lastIndexOf('@');
+    if (at >= 0 && at < value.length - 1) value = value.slice(at + 1);
+    value = value.replace(/^[vV]/, '');
+    if (!value) return '';
+    if (/^[0-9a-f]{8,64}$/i.test(value)) return '';
+    // Full market keys without @ should not become version badges.
+    if (value.indexOf(':') >= 0) return '';
+    if (value.length > 20) value = value.slice(0, 18) + '\u2026';
+    return value;
+  }
+  function workflowName(item, version) {
+    item = item || {}; version = version || {};
+    var metadata = metadataOf(item);
+    var workflow = metadata.workflow && typeof metadata.workflow === 'object' ? metadata.workflow : {};
+    return firstHumanName([
+      item.workflow_name, version.workflow_name, item.display_name, metadata.workflow_name,
+      metadata.display_name, metadata.name, workflow.display_name, workflow.name
+    ]) || extractReadableName(version.workflow_id || item.workflow_id || item.capability_id || version.id || item.id) || '-';
+  }
+  function workflowReference(item, version) { item = item || {}; version = version || {}; return version.workflow_id || item.workflow_id || item.capability_id || version.id || item.id || ''; }
   function pricing(item) { const p = item.pricing || item.price_type || item.billing || item.charge_type || ''; return typeof p === 'string' ? (p || 'free') : (p && (p.type || p.mode || p.pricing)) || 'free'; }
   function priceObject(item) { return item.price && typeof item.price === 'object' ? item.price : (item.pricing && typeof item.pricing === 'object' ? item.pricing : null); }
   function licenseObject(item) { return item.license && typeof item.license === 'object' ? item.license : null; }
@@ -146,11 +254,12 @@
       var statusBadgeClass = item.status === 'approved' ? 'ok' : item.status === 'pending_review' ? 'warn' : 'info';
       // Build 2x2 button grid
       var btns = [];
+      var mcpAction = item.capability_type === 'mcp';
       btns.push('<button class="mp-card-btn mp-card-btn-secondary" type="button" onclick="createMarketplaceDeployment(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRequired')) + '</button>');
       btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" onclick="createMarketplaceRecommendation(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRecommended')) + '</button>');
       if (item.capability_type === 'skill' || isApp) {
         btns.push('<button class="mp-card-btn mp-card-btn-link" type="button" onclick="uploadCapabilityToMarket(\'' + itemId + '\')">' + esc(mp('marketplaceUploadToMarket')) + '</button>');
-      } else if (item.capability_type === 'mcp') {
+      } else if (mcpAction) {
         btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" onclick="useCapabilityForMCP(\'' + itemId + '\')">' + esc(mp('marketplaceUseSelected')) + '</button>');
       } else if (workflowId) {
         btns.push('<a class="mp-card-btn mp-card-btn-ghost" href="/approval_workflow/?workflow_id=' + encodeURIComponent(workflowId) + '">' + esc(mp('workflowReviewOpenDesigner')) + '</a>');
@@ -165,13 +274,46 @@
         reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="approveMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppApprove')) + '</button><button class="btn-danger" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="rejectMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppReject')) + '</button></div>';
       }
       var cardName = firstName(item);
-      return '<div class="item mp-cap-card"><div class="mp-cap-card-header"><div class="mp-cap-card-title-row"><span class="mp-cap-card-dot"></span><div class="mp-cap-card-name" title="' + esc(cardName) + '">' + esc(cardName) + '</div>' + (item.current_version_key ? '<span class="mp-card-version">v' + esc(item.current_version_key) + '</span>' : '') + '</div><span class="badge ' + typeBadgeClass + '" style="font-size:9px;padding:3px 7px;font-weight:700">' + esc(typeLabel) + '</span></div>' + (item.description ? '<div class="mp-cap-card-desc">' + esc(item.description) + '</div>' : '') + '<div class="mp-cap-card-meta">' + esc(item.source || '-') + ' | <span class="badge-inline ' + statusBadgeClass + '">' + esc(item.status || '-') + '</span></div>' + maclawEvidence + reviewActions + btnGrid + '</div>';
+      var capabilityRef = skillIdForCard(item);
+      // ID on top only when it is not just a slug form of the display name.
+      var idLine = !isRedundantSkillId(capabilityRef, cardName)
+        ? '<div class="mp-cap-card-id" title="ID: ' + esc(capabilityRef) + '">' + esc(capabilityRef) + '</div>'
+        : '';
+      var nameLine = '<div class="mp-cap-card-name-row">' +
+        '<span class="mp-cap-card-dot" aria-hidden="true"></span>' +
+        '<div class="mp-cap-card-name" title="' + esc(cardName) + '">' + esc(cardName) + '</div>' +
+      '</div>';
+      var verLabel = shortVersionLabel(item.current_version_key);
+      var verBadge = verLabel
+        ? '<span class="mp-card-version" title="' + esc(item.current_version_key || verLabel) + '">v' + esc(verLabel) + '</span>'
+        : '';
+      return '<div class="item mp-cap-card">' +
+        '<div class="mp-cap-card-header">' +
+          '<div class="mp-cap-card-title-row">' +
+            '<div class="mp-cap-card-title-stack">' + idLine + nameLine + '</div>' +
+            verBadge +
+          '</div>' +
+          '<span class="badge mp-cap-type-badge ' + typeBadgeClass + '">' + esc(typeLabel) + '</span>' +
+        '</div>' +
+        (item.description ? '<div class="mp-cap-card-desc">' + esc(item.description) + '</div>' : '') +
+        '<div class="mp-cap-card-meta">' + esc(item.source || '-') + ' | <span class="badge-inline ' + statusBadgeClass + '">' + esc(item.status || '-') + '</span></div>' +
+        maclawEvidence + reviewActions + btnGrid +
+      '</div>';
     }).join('') + (hasMore ? '<div class="hint" style="grid-column:1/-1;text-align:center;font-size:12px">' + esc(mp('marketplaceShowingFirst', {total: activeCapabilities.length, count: maxShow})) + '</div>' : '');
   }
   function renderExternalResults() {
     const root = el('marketplaceSearchResults'); if (!root) return;
     if (!state.externalResults.length) { root.innerHTML = '<div class="hint" style="grid-column:1/-1">' + esc(mp('marketplaceNoResults')) + '</div>'; return; }
-    root.innerHTML = state.externalResults.map(function(item, idx) { const type = item.capability_type || el('marketplaceSearchType').value || 'skill'; const p = pricing(item); return '<div class="item" style="padding:12px 14px;border-radius:14px;gap:6px;min-height:140px;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease"><div class="item-head" style="margin-bottom:0"><div style="min-width:0"><div class="item-title" style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(firstName(item)) + '">' + esc(firstName(item)) + '</div></div><span class="badge ' + (p === 'free' ? 'ok' : 'warn') + '" style="font-size:9px;padding:3px 7px">' + esc(p) + '</span></div><div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(firstID(item)) + '</div><div class="item-meta" style="font-size:10px">' + esc(type) + ' | ' + esc(item.source || el('marketplaceSearchSource').value || 'hubcenter') + '</div><div class="desc" style="font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:32px">' + esc(item.description || item.summary || '') + '</div><div class="actions" style="margin-top:auto;padding-top:4px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="importMarketplaceResult(' + idx + ')">' + esc(mp('marketplaceImport')) + '</button></div></div>'; }).join('');
+    root.innerHTML = state.externalResults.map(function(item, idx) {
+      const type = item.capability_type || el('marketplaceSearchType').value || 'skill';
+      const p = pricing(item);
+      const name = firstName(item);
+      const ref = skillIdForCard(item) || bareSkillId(item.capability_id || item.skill_id || item.id || '');
+      const refLine = ref && !isRedundantSkillId(ref, name)
+        ? '<div class="item-meta mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(ref) + '">' + esc(ref) + '</div>'
+        : '';
+      return '<div class="item" style="padding:12px 14px;border-radius:14px;gap:6px;min-height:140px;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease"><div class="item-head" style="margin-bottom:0"><div style="min-width:0"><div class="item-title" style="font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(name) + '">' + esc(name) + '</div></div><span class="badge ' + (p === 'free' ? 'ok' : 'warn') + '" style="font-size:9px;padding:3px 7px">' + esc(p) + '</span></div>' + refLine + '<div class="item-meta" style="font-size:10px">' + esc(type) + ' | ' + esc(item.source || el('marketplaceSearchSource').value || 'hubcenter') + '</div><div class="desc" style="font-size:11px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:32px">' + esc(item.description || item.summary || '') + '</div><div class="actions" style="margin-top:auto;padding-top:4px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px" type="button" onclick="importMarketplaceResult(' + idx + ')">' + esc(mp('marketplaceImport')) + '</button></div></div>';
+    }).join('');
   }
   function renderBilling() {
     const root = el('marketplaceBillingBody'); if (!root) return;
@@ -179,7 +321,13 @@
     const a = state.billing.account || {}, list = state.billing.licenses || [];
     const links = [['login', a.login_url], ['billing', a.billing_portal_url], ['renew', a.renewal_url]].filter(function(pair) { return pair[1]; }).map(function(pair) { return '<a class="btn-ghost" href="' + esc(pair[1]) + '" target="_blank" rel="noreferrer">' + esc(pair[0]) + '</a>'; }).join('');
     const accountMeta = [a.status || '-', a.admin_email || a.email || '-', a.customer_id || '-', a.hubcenter || ''].filter(Boolean).join(' | ');
-    root.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + esc(a.hub_id || a.customer_id || '-') + '</div><div class="item-meta">' + esc(accountMeta) + '</div></div><span class="badge ' + (a.status === 'configured' ? 'ok' : 'warn') + '">' + esc(a.status || '-') + '</span></div>' + (links ? '<div class="actions" style="margin-top:8px">' + links + '</div>' : '') + '</div>' + (list.length ? list.map(function(item) { const price = item.pricing && typeof item.pricing === 'object' ? (item.pricing.mode || item.pricing.type || '') : ''; return '<div class="item"><div class="item-title">' + esc(item.capability_id || item.skill_id || item.id || '-') + '</div><div class="item-meta">' + esc(item.capability_type || item.type || '-') + ' | ' + esc(item.status || '-') + ' | ' + esc(price) + ' | ' + esc(item.expires_at || item.created_at || '') + '</div></div>'; }).join('') : '<div class="hint">' + esc(mp('marketplaceNoLicenses')) + '</div>');
+    root.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + esc(a.hub_id || a.customer_id || '-') + '</div><div class="item-meta">' + esc(accountMeta) + '</div></div><span class="badge ' + (a.status === 'configured' ? 'ok' : 'warn') + '">' + esc(a.status || '-') + '</span></div>' + (links ? '<div class="actions" style="margin-top:8px">' + links + '</div>' : '') + '</div>' + (list.length ? list.map(function(item) {
+      const price = item.pricing && typeof item.pricing === 'object' ? (item.pricing.mode || item.pricing.type || '') : '';
+      const name = firstName(item);
+      const ref = skillIdForCard(item) || bareSkillId(item.capability_id || item.skill_id || item.id || '');
+      const refText = ref && !isRedundantSkillId(ref, name) ? ' | ' + ref : '';
+      return '<div class="item"><div class="item-title">' + esc(name) + '</div><div class="item-meta">' + esc(item.capability_type || item.type || '-') + esc(refText) + ' | ' + esc(item.status || '-') + ' | ' + esc(price) + ' | ' + esc(item.expires_at || item.created_at || '') + '</div></div>';
+    }).join('') : '<div class="hint">' + esc(mp('marketplaceNoLicenses')) + '</div>');
   }
   function renderWorkflowReviews() {
     const root = el('marketplaceWorkflowReviewsList'); if (!root) return;
@@ -191,7 +339,8 @@
       var disabled = busy ? ' disabled aria-disabled="true"' : '';
       var previewLink = ver.id ? '<a class="btn-ghost" style="height:28px;padding:0 9px;font-size:12px;border-radius:8px;display:inline-flex;align-items:center;text-decoration:none" href="/approval_workflow/?review_version_id=' + encodeURIComponent(ver.id) + '" target="_blank" rel="noopener">' + esc(mp('workflowReviewOpenDesigner')) + '</a>' : '';
       var versionId = jsArg(ver.id);
-      return '<div class="item"><div class="item-head"><div><div class="item-title">' + esc(item.workflow_name || ver.workflow_id || ver.id) + '</div><div class="item-meta">' + esc(ver.version_number || '-') + ' | ' + esc(item.author_id || '-') + ' | ' + esc(mp('workflowReviewGraphSummary', { nodes: nodes, edges: edges })) + '</div></div><span class="badge warn">' + esc(ver.status || 'pending_review') + '</span></div><div class="actions" style="margin-top:8px"><button class="btn-secondary" type="button" onclick="openWorkflowReviewDetail(\'' + versionId + '\')"' + disabled + '>' + esc(mp('workflowReviewOpen')) + '</button>' + previewLink + '<button class="btn-primary" type="button" onclick="approveWorkflowReview(\'' + versionId + '\')"' + disabled + '>' + esc(mp('workflowReviewApprove')) + '</button><button class="btn-danger" type="button" onclick="rejectWorkflowReview(\'' + versionId + '\')"' + disabled + '>' + esc(mp('workflowReviewReject')) + '</button></div></div>';
+      var workflowTitle = workflowName(item, ver); var workflowRef = workflowReference(item, ver); var workflowRefText = workflowRef && workflowRef !== workflowTitle ? workflowRef + ' | ' : '';
+      return '<div class="item"><div class="item-head"><div><div class="item-title">' + esc(workflowTitle) + '</div><div class="item-meta">' + esc(workflowRefText) + esc(ver.version_number || '-') + ' | ' + esc(item.author_id || '-') + ' | ' + esc(mp('workflowReviewGraphSummary', { nodes: nodes, edges: edges })) + '</div></div><span class="badge warn">' + esc(ver.status || 'pending_review') + '</span></div><div class="actions" style="margin-top:8px"><button class="btn-secondary" type="button" onclick="openWorkflowReviewDetail(\'' + versionId + '\')"' + disabled + '>' + esc(mp('workflowReviewOpen')) + '</button>' + previewLink + '<button class="btn-primary" type="button" onclick="approveWorkflowReview(\'' + versionId + '\')"' + disabled + '>' + esc(mp('workflowReviewApprove')) + '</button><button class="btn-danger" type="button" onclick="rejectWorkflowReview(\'' + versionId + '\')"' + disabled + '>' + esc(mp('workflowReviewReject')) + '</button></div></div>';
     }).join('');
   }
   function renderWorkflowReviewDetail() {
@@ -201,7 +350,8 @@
     const graph = detail.graph || {}, nodes = Array.isArray(graph.nodes) ? graph.nodes.length : 0, edges = Array.isArray(graph.edges) ? graph.edges.length : 0;
     const configs = Array.isArray(detail.node_configs) ? detail.node_configs : [];
     var previewLink = detail.version && detail.version.id ? '<a class="btn-ghost" style="height:28px;padding:0 9px;font-size:12px;border-radius:8px;display:inline-flex;align-items:center;text-decoration:none" href="/approval_workflow/?review_version_id=' + encodeURIComponent(detail.version.id) + '" target="_blank" rel="noopener">' + esc(mp('workflowReviewOpenDesigner')) + '</a>' : '';
-    root.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + esc(mp('workflowReviewDetailTitle')) + ': ' + esc(detail.workflow_name || detail.version && detail.version.workflow_id || '-') + '</div><div class="item-meta">' + esc(detail.author_id || '-') + ' | ' + esc(mp('workflowReviewGraphSummary', { nodes: nodes, edges: edges })) + '</div></div><span class="badge info">' + esc(detail.version && detail.version.version_number || '-') + '</span></div><div class="actions" style="margin-top:8px">' + previewLink + '</div><div class="desc" style="margin-top:6px">' + esc(detail.workflow_description || '') + '</div><div class="item-title" style="margin-top:10px">' + esc(mp('workflowReviewNodesTitle')) + '</div><div style="display:grid;gap:6px;margin-top:6px">' + configs.map(function(cfg) { return '<details class="hint" style="background:#fff"><summary><strong>' + esc(cfg.label || cfg.node_id) + '</strong> <span class="item-meta">' + esc(cfg.node_type || '') + '</span></summary><pre style="white-space:pre-wrap;overflow:auto;margin:8px 0 0;font-size:11px">' + esc(JSON.stringify(cfg.config || {}, null, 2)) + '</pre></details>'; }).join('') + '</div></div>';
+    var workflowTitle = workflowName(detail, detail.version); var workflowRef = workflowReference(detail, detail.version); var workflowRefText = workflowRef && workflowRef !== workflowTitle ? workflowRef + ' | ' : '';
+    root.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + esc(mp('workflowReviewDetailTitle')) + ': ' + esc(workflowTitle) + '</div><div class="item-meta">' + esc(workflowRefText) + esc(detail.author_id || '-') + ' | ' + esc(mp('workflowReviewGraphSummary', { nodes: nodes, edges: edges })) + '</div></div><span class="badge info">' + esc(detail.version && detail.version.version_number || '-') + '</span></div><div class="actions" style="margin-top:8px">' + previewLink + '</div><div class="desc" style="margin-top:6px">' + esc(detail.workflow_description || '') + '</div><div class="item-title" style="margin-top:10px">' + esc(mp('workflowReviewNodesTitle')) + '</div><div style="display:grid;gap:6px;margin-top:6px">' + configs.map(function(cfg) { return '<details class="hint" style="background:#fff"><summary><strong>' + esc(cfg.label || cfg.node_id) + '</strong> <span class="item-meta">' + esc(cfg.node_type || '') + '</span></summary><pre style="white-space:pre-wrap;overflow:auto;margin:8px 0 0;font-size:11px">' + esc(JSON.stringify(cfg.config || {}, null, 2)) + '</pre></details>'; }).join('') + '</div></div>';
   }
   function setWorkflowRejectError(message) { var box = el('workflowRejectReasonError'); var input = el('workflowRejectReason'); if (!box || !input) return; box.textContent = message || ''; box.style.display = message ? '' : 'none'; input.setAttribute('aria-invalid', message ? 'true' : 'false'); }
   function workflowRejectReason() { var input = el('workflowRejectReason'); return input ? String(input.value || '').trim() : ''; }
@@ -212,7 +362,7 @@
   global.switchMarketplaceType = function(type) {
     var sel = el('marketplaceCapabilityType'); if (sel) sel.value = type;
     var tabs = [{id:'mpTypeAll',val:''},{id:'mpTypeSkill',val:'skill'},{id:'mpTypeMcp',val:'mcp'},{id:'mpTypeWorkflow',val:'approval_workflow'},{id:'mpTypeApp',val:'maclaw_app'}];
-    tabs.forEach(function(t){ var btn = el(t.id); if(btn){ btn.className = t.val === type ? 'btn-secondary' : 'btn-ghost'; btn.setAttribute('aria-pressed', t.val === type ? 'true' : 'false'); } });
+    tabs.forEach(function(t){ var btn = el(t.id); if(btn){ var active = t.val === type; btn.classList.toggle('mp-category-tab-active', active); btn.setAttribute('aria-pressed', active ? 'true' : 'false'); } });
     loadCapabilities();
   };
   async function loadRequests() { const status = el('marketplaceRequestStatus') ? el('marketplaceRequestStatus').value : 'pending_review'; const data = await api('/api/admin/capability-market/acquisition-requests' + (status ? '?status=' + encodeURIComponent(status) : '')); state.requests = Array.isArray(data.items) ? data.items : []; renderRequests(); }
@@ -234,7 +384,61 @@
   global.createMarketplaceDeployment = async function(id, versionKey) { try { await api('/api/admin/capability-market/managed-deployments', { method: 'POST', body: JSON.stringify({ capability_ref: id, capability_version_key: versionKey || '', deployment_policy: 'required', reinstall_if_removed: true, retry_interval_minutes: 60, enabled: true }) }); showToast(mp('marketplaceActionDone'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.createMarketplaceRecommendation = async function(id, versionKey) { try { await api('/api/admin/capability-market/recommendations', { method: 'POST', body: JSON.stringify({ capability_ref: id, capability_version_key: versionKey || '', recommendation_reason: 'admin_recommended', allow_user_dismiss: true, enabled: true }) }); showToast(mp('marketplaceActionDone'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.deleteCapability = async function(id) { if (!confirm(mp('marketplaceDeleteConfirm'))) return; try { await api('/api/admin/capabilities/' + encodeURIComponent(id), { method: 'DELETE' }); await loadCapabilities(); showToast(mp('marketplaceDeleteDone'), 'success'); } catch (err) { const msg = mp('marketplaceDeleteFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
-  global.uploadCapabilityToMarket = async function(id) { if (!confirm(mp('marketplaceUploadConfirm'))) return; try { const data = await api('/api/admin/capabilities/' + encodeURIComponent(id) + '/upload-to-market', { method: 'POST' }); showToast(mp('marketplaceUploadDone', { submission_id: data.submission_id || '' }), 'success'); } catch (err) { const msg = mp('marketplaceUploadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
+  global.backfillCapabilityDisplayNames = async function() {
+    if (!confirm(mp('marketplaceBackfillNamesConfirm'))) return;
+    try {
+      const data = await api('/api/admin/capabilities/backfill-display-names', { method: 'POST' });
+      await loadCapabilities();
+      const updated = data.updated != null ? data.updated : 0;
+      const skipped = data.skipped != null ? data.skipped : 0;
+      const failed = data.failed != null ? data.failed : 0;
+      const msg = mp('marketplaceBackfillNamesDone', { updated: updated, skipped: skipped, failed: failed });
+      setOutput(pretty(data));
+      showToast(msg, failed ? 'warn' : 'success');
+    } catch (err) {
+      const msg = mp('marketplaceBackfillNamesFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+  var uploadToMarketInflight = Object.create(null);
+  global.uploadCapabilityToMarket = async function(id) {
+    id = String(id || '');
+    if (!id) return;
+    if (uploadToMarketInflight[id]) {
+      showToast(mp('marketplaceUploadAlreadySubmitted'), 'info');
+      return;
+    }
+    // Claim before confirm so double-clicks cannot open two dialogs / two uploads.
+    uploadToMarketInflight[id] = true;
+    if (!confirm(mp('marketplaceUploadConfirm'))) {
+      delete uploadToMarketInflight[id];
+      return;
+    }
+    try {
+      const data = await api('/api/admin/capabilities/' + encodeURIComponent(id) + '/upload-to-market', { method: 'POST' });
+      const status = String(data.status || 'pending').toLowerCase();
+      if (status === 'published' || status === 'success') {
+        showToast(mp('marketplaceUploadPublished', {
+          submission_id: data.submission_id || '',
+          skill_id: data.skill_id || '-'
+        }), 'success');
+      } else {
+        showToast(mp('marketplaceUploadDone', { submission_id: data.submission_id || '' }), 'success');
+      }
+    } catch (err) {
+      var em = String(err && err.message || '');
+      if (/in-flight submission|pending or (processing|approved) submission|ALREADY_SUBMITTED/i.test(em)) {
+        showToast(mp('marketplaceUploadAlreadySubmitted'), 'info');
+        return;
+      }
+      const msg = mp('marketplaceUploadFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    } finally {
+      delete uploadToMarketInflight[id];
+    }
+  };
   global.searchMarketplaceExternal = async function() { try { const params = new URLSearchParams({ type: el('marketplaceSearchType').value || 'skill' }); var src = el('marketplaceSearchSource').value || ''; if (src) params.set('source', src); if (el('marketplaceSearchQuery').value.trim()) params.set('q', el('marketplaceSearchQuery').value.trim()); const data = await api('/api/admin/capabilities/external-search?' + params.toString()); state.externalResults = Array.isArray(data.items) ? data.items : []; renderExternalResults(); } catch (err) { const msg = mp('marketplaceSearchFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.importMarketplaceResult = async function(index) { const item = state.externalResults[index]; if (!item) return; try { const payload = { capability_id: firstID(item), capability_type: item.capability_type || el('marketplaceSearchType').value || 'skill', display_name: firstName(item), description: item.description || item.summary || '', version: item.version_key || item.version || '', source: item.source || el('marketplaceSearchSource').value || 'hubcenter', pricing: pricing(item), price: priceObject(item), license: licenseObject(item), metadata: item, user_reason: 'admin_marketplace_import' }; const data = await api('/api/admin/capabilities/import-intent', { method: 'POST', body: JSON.stringify(payload) }); await Promise.all([loadRequests(), loadCapabilities()]); setOutput(pretty(data)); showToast(mp('marketplaceActionDone'), 'success'); } catch (err) { const msg = mp('marketplaceImportFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   // Collect MCP definition from the editor form (single source of truth)
@@ -276,7 +480,7 @@
     }
   }
   global.saveMarketplaceMCP = async function() { try { var mcp = collectMCPFromForm(); var secrets = jsonText(el('marketplaceMCPSecrets').value, []); var pricingVal = jsonText(el('marketplaceMCPPricing') ? el('marketplaceMCPPricing').value : '', null), license = jsonText(el('marketplaceMCPLicense') ? el('marketplaceMCPLicense').value : '', null); var capId = (el('marketplaceMCPId').value || '').trim() || mcp.id || mcp.name || ''; if (!capId) { showToast('Capability ID is required', 'error'); return; } var payload = { publisher: el('marketplaceMCPPublisher').value || 'enterprise', capability_id: capId, display_name: el('marketplaceMCPName').value || mcp.name || mcp.id || '', version: el('marketplaceMCPVersion').value || '1.0.0', mcp: mcp, secret_requirements: Array.isArray(secrets) ? secrets : [], pricing: pricingVal, license: license }; var data = await api('/api/admin/capability-market/mcp', { method: 'POST', body: JSON.stringify(payload) }); await loadCapabilities(); setOutput(pretty(data)); showToast(mp('marketplaceMcpSaved'), 'success'); global.closeMCPEditorDialog(); } catch (err) { var msg = mp(err instanceof SyntaxError ? 'marketplaceInvalidJson' : 'marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
-  global.useCapabilityForMCP = function(id) { var item = state.capabilities.find(function(cap) { return cap.id === id; }); if (!item) return; var metadata = metadataOf(item); el('marketplaceMCPId').value = item.capability_id || item.id || ''; el('marketplaceMCPName').value = item.display_name || item.capability_id || ''; el('marketplaceMCPVersion').value = item.current_version_key || '1.0.0'; var mcp = item.mcp || metadata.mcp || null; if (mcp && mcp.transport === 'stdio') { el('marketplaceMCPTypeSelect').value = 'local'; global.switchMCPEditorType('local'); el('marketplaceMCPCommand').value = mcp.command || ''; el('marketplaceMCPArgs').value = Array.isArray(mcp.args) ? JSON.stringify(mcp.args) : '[]'; el('marketplaceMCPEnv').value = mcp.env && typeof mcp.env === 'object' ? JSON.stringify(mcp.env, null, 2) : '{}'; } else { el('marketplaceMCPTypeSelect').value = 'remote'; global.switchMCPEditorType('remote'); if (mcp) el('marketplaceMCPJson').value = JSON.stringify(mcp, null, 2); } global.openMCPEditorDialog(); };
+  global.useCapabilityForMCP = function(id) { var item = state.capabilities.find(function(cap) { return cap.id === id; }); if (!item) return; var metadata = metadataOf(item); el('marketplaceMCPId').value = skillIdForCard(item) || item.capability_id || item.id || ''; el('marketplaceMCPName').value = firstName(item); el('marketplaceMCPVersion').value = shortVersionLabel(item.current_version_key) || '1.0.0'; var mcp = item.mcp || metadata.mcp || null; if (mcp && mcp.transport === 'stdio') { el('marketplaceMCPTypeSelect').value = 'local'; global.switchMCPEditorType('local'); el('marketplaceMCPCommand').value = mcp.command || ''; el('marketplaceMCPArgs').value = Array.isArray(mcp.args) ? JSON.stringify(mcp.args) : '[]'; el('marketplaceMCPEnv').value = mcp.env && typeof mcp.env === 'object' ? JSON.stringify(mcp.env, null, 2) : '{}'; } else { el('marketplaceMCPTypeSelect').value = 'remote'; global.switchMCPEditorType('remote'); if (mcp) el('marketplaceMCPJson').value = JSON.stringify(mcp, null, 2); } global.openMCPEditorDialog(); };
   global.loadMarketplaceBilling = async function() { try { const account = await api('/api/admin/billing/customer-account'); const licensesData = await api('/api/admin/billing/licenses'); state.billing = { account: account, licenses: Array.isArray(licensesData.items) ? licensesData.items : (Array.isArray(licensesData.licenses) ? licensesData.licenses : []) }; renderBilling(); } catch (err) { const msg = mp('marketplaceLoadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
 
   if (global.AdminTabRegistry && typeof global.AdminTabRegistry.registerTab === 'function') global.AdminTabRegistry.registerTab({ id: 'marketplace', title: function() { return mp('marketplaceTabTitle'); }, subtitle: function() { return mp('marketplaceTabSubtitle'); }, onOpen: function() { global.loadMarketplace(); } });

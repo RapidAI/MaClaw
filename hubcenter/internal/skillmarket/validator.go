@@ -96,30 +96,236 @@ func ValidatePackage(sandboxDir string) (*ValidationResult, error) {
 }
 
 func parsePackageMetadata(pkgRoot string) (*SkillMetadata, string, error) {
-	yamlPath := filepath.Join(pkgRoot, "skill.yaml")
-	if _, err := os.Stat(yamlPath); err != nil {
-		if _, legacyErr := os.Stat(filepath.Join(pkgRoot, "SKILL.md")); legacyErr == nil {
+	// One directory listing: exact basenames matter on Windows (skill.md ≠ SKILL.md).
+	files := listExactBasenames(pkgRoot)
+	yamlPath, yamlSource := findSkillYAMLPathFrom(files, pkgRoot)
+	if yamlPath == "" {
+		// Lowercase skill.md alone is accepted as primary metadata.
+		// Uppercase SKILL.md without skill.yaml remains a rejected legacy layout.
+		if files["skill.md"] {
+			if mdMeta, mdErr := parseNamedSkillMarkdownMetadata(pkgRoot, "skill.md"); mdErr == nil && mdMeta != nil {
+				enrichMetadataFromPackageManifest(pkgRoot, mdMeta)
+				return mdMeta, "skill.md", nil
+			}
+		}
+		if files["SKILL.md"] {
 			return nil, "SKILL.md", fmt.Errorf("legacy skill package is no longer supported; please migrate to skill.yaml or skill.md")
 		}
-		if _, legacyErr := os.Stat(filepath.Join(pkgRoot, "_meta.json")); legacyErr == nil {
+		if files["_meta.json"] {
 			return nil, "_meta.json", fmt.Errorf("legacy skill package is no longer supported; please migrate to skill.yaml or skill.md")
 		}
 		return nil, "skill.yaml", fmt.Errorf("skill.yaml not found in package root")
 	}
 	yamlErrs := ValidateYAML(yamlPath)
 	if len(yamlErrs) > 0 {
-		return nil, "skill.yaml", fmt.Errorf("%s", yamlErrs[0].Message)
+		return nil, yamlSource, fmt.Errorf("%s", yamlErrs[0].Message)
 	}
 	data, err := os.ReadFile(yamlPath)
 	if err != nil {
-		return nil, "skill.yaml", fmt.Errorf("read skill.yaml: %w", err)
+		return nil, yamlSource, fmt.Errorf("read %s: %w", yamlSource, err)
 	}
 	meta, err := ParseSkillYAML(data)
 	if err != nil {
-		return nil, "skill.yaml", err
+		return nil, yamlSource, err
 	}
+	// Enterprise Hub packages often put the human-readable title/description in
+	// skill.md while skill.yaml only has a technical slug. Fill gaps so validation
+	// and market listing succeed after Hub → HubCenter upload.
+	enrichMetadataFromSkillMarkdown(pkgRoot, meta)
 	enrichMetadataFromPackageManifest(pkgRoot, meta)
-	return meta, "skill.yaml", nil
+	return meta, yamlSource, nil
+}
+
+// findSkillYAMLPath returns the first skill definition YAML path (skill.yaml or skill.yml).
+func findSkillYAMLPath(pkgRoot string) (path, source string) {
+	return findSkillYAMLPathFrom(listExactBasenames(pkgRoot), pkgRoot)
+}
+
+func findSkillYAMLPathFrom(files map[string]bool, pkgRoot string) (path, source string) {
+	for _, name := range []string{"skill.yaml", "skill.yml"} {
+		if !files[name] {
+			continue
+		}
+		return filepath.Join(pkgRoot, name), name
+	}
+	return "", ""
+}
+
+// listExactBasenames returns a set of exact file basenames under dir (one ReadDir).
+func listExactBasenames(dir string) map[string]bool {
+	out := make(map[string]bool)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		out[entry.Name()] = true
+	}
+	return out
+}
+
+// hasExactFile reports whether dir contains a file with the exact basename
+// (case-sensitive match against ReadDir entry names). This matters on Windows
+// where os.Stat("skill.md") may open "SKILL.md".
+func hasExactFile(dir, name string) bool {
+	return listExactBasenames(dir)[name]
+}
+
+// enrichMetadataFromSkillMarkdown fills missing name/description from skill.md / SKILL.md.
+// Enterprise packages often keep a technical slug in skill.yaml and the human title
+// in skill.md — prefer the human title for market listing when yaml name is slug-like.
+func enrichMetadataFromSkillMarkdown(pkgRoot string, meta *SkillMetadata) {
+	if meta == nil {
+		return
+	}
+	mdMeta, _, err := parseSkillMarkdownMetadata(pkgRoot)
+	if err != nil || mdMeta == nil {
+		return
+	}
+	yamlName := strings.TrimSpace(meta.Name)
+	mdName := strings.TrimSpace(mdMeta.Name)
+	if mdName != "" {
+		if yamlName == "" || (isLikelySkillSlug(yamlName) && !isLikelySkillSlug(mdName)) {
+			meta.Name = mdName
+		}
+	}
+	if strings.TrimSpace(meta.Description) == "" {
+		meta.Description = strings.TrimSpace(mdMeta.Description)
+	}
+	if len(meta.Tags) == 0 && len(mdMeta.Tags) > 0 {
+		meta.Tags = append([]string(nil), mdMeta.Tags...)
+	}
+	if strings.TrimSpace(meta.Author) == "" {
+		meta.Author = strings.TrimSpace(mdMeta.Author)
+	}
+}
+
+// isLikelySkillSlug reports technical package identifiers (e.g. "ppt-master")
+// vs human display titles (e.g. "PPT 演示文稿大师").
+// Slugs are pure lowercase alphanumerics with - _ .
+func isLikelySkillSlug(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, " \t") {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 0x4e00 && r <= 0x9fff:
+			return false // CJK → human title
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			// technical slug charset
+		default:
+			// Uppercase / punctuation / other scripts → treat as human title.
+			return false
+		}
+	}
+	return true
+}
+
+// parseSkillMarkdownMetadata reads name/description from skill.md or SKILL.md.
+// Prefer lowercase skill.md (enterprise layout); SKILL.md is only used as enrichment fallback.
+func parseSkillMarkdownMetadata(pkgRoot string) (*SkillMetadata, string, error) {
+	files := listExactBasenames(pkgRoot)
+	for _, name := range []string{"skill.md", "SKILL.md"} {
+		if !files[name] {
+			continue
+		}
+		meta, err := parseNamedSkillMarkdownMetadata(pkgRoot, name)
+		if err != nil || meta == nil {
+			continue
+		}
+		return meta, name, nil
+	}
+	return nil, "", fmt.Errorf("skill.md not found")
+}
+
+func parseNamedSkillMarkdownMetadata(pkgRoot, name string) (*SkillMetadata, error) {
+	path := filepath.Join(pkgRoot, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	meta, parseErr := parseMarkdownFrontmatterMetadata(data)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if meta == nil || (strings.TrimSpace(meta.Name) == "" && strings.TrimSpace(meta.Description) == "") {
+		return nil, fmt.Errorf("%s has no usable metadata", name)
+	}
+	return meta, nil
+}
+
+func parseMarkdownFrontmatterMetadata(data []byte) (*SkillMetadata, error) {
+	text := string(data)
+	// Strip optional UTF-8 BOM.
+	text = strings.TrimPrefix(text, "\ufeff")
+	// Normalize newlines so CRLF packages parse the same as LF.
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	trimmed := strings.TrimSpace(normalized)
+	if !strings.HasPrefix(trimmed, "---") {
+		// No frontmatter: use first markdown heading as name, first paragraph as description.
+		return markdownBodyMetadata(normalized), nil
+	}
+	// Locate closing --- after the opening marker.
+	rest := trimmed[3:]
+	rest = strings.TrimPrefix(rest, "\n")
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return markdownBodyMetadata(normalized), nil
+	}
+	front := rest[:end]
+	body := rest[end+4:]
+	var meta SkillMetadata
+	if err := yaml.Unmarshal([]byte(front), &meta); err != nil {
+		// Fall back to body-derived metadata rather than failing the whole package.
+		return markdownBodyMetadata(normalized), nil
+	}
+	if strings.TrimSpace(meta.Name) == "" || strings.TrimSpace(meta.Description) == "" {
+		bodyMeta := markdownBodyMetadata(body)
+		if bodyMeta != nil {
+			if strings.TrimSpace(meta.Name) == "" {
+				meta.Name = bodyMeta.Name
+			}
+			if strings.TrimSpace(meta.Description) == "" {
+				meta.Description = bodyMeta.Description
+			}
+		}
+	}
+	return &meta, nil
+}
+
+func markdownBodyMetadata(body string) *SkillMetadata {
+	meta := &SkillMetadata{}
+	lines := strings.Split(body, "\n")
+	var para []string
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			if meta.Description == "" && len(para) > 0 {
+				meta.Description = strings.Join(para, " ")
+				para = nil
+			}
+			continue
+		}
+		if meta.Name == "" && strings.HasPrefix(trim, "#") {
+			meta.Name = strings.TrimSpace(strings.TrimLeft(trim, "#"))
+			continue
+		}
+		if meta.Description == "" && !strings.HasPrefix(trim, "#") && !strings.HasPrefix(trim, "```") {
+			para = append(para, trim)
+		}
+	}
+	if meta.Description == "" && len(para) > 0 {
+		meta.Description = strings.Join(para, " ")
+	}
+	if meta.Name == "" && meta.Description == "" {
+		return nil
+	}
+	return meta
 }
 
 func enrichMetadataFromPackageManifest(pkgRoot string, meta *SkillMetadata) {
@@ -341,7 +547,8 @@ func hasPackageDefinition(dir string) bool {
 		if entry.IsDir() {
 			continue
 		}
-		if entry.Name() == "skill.yaml" || entry.Name() == "skill.md" {
+		switch entry.Name() {
+		case "skill.yaml", "skill.yml", "skill.md", "SKILL.md":
 			return true
 		}
 	}

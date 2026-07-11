@@ -44,19 +44,19 @@ func q8MultiDot4NEON(out *[4]float32, a *float32, K int, data *byte, rowOff, nBl
 func q8MultiDot8NEON(out *[8]float32, a *float32, K int, data *byte, rowOff, nBlocks int)
 
 func q8MultiDot4Scalar(out *[4]float32, a []float32, data []byte, row, nBlocks, K int) {
-	buf := getQ8DequantBuf(K)
+	buf, bufPool := getQ8DequantBuf(K)
 	dequantRowInto(data, row, nBlocks, buf)
 	multiDot4(out, a, buf, K)
-	putQ8DequantBuf(buf)
+	putQ8DequantBuf(buf, bufPool)
 }
 
 // q8DualMultiDot4: dequant two B rows then dual F32 multiDot (NEON fused dual later).
 func q8DualMultiDot4(out *[8]float32, a []float32, data []byte, row0, row1, nBlocks, K int) {
-	buf := getQ8DequantBuf(2 * K)
+	buf, bufPool := getQ8DequantBuf(2 * K)
 	dequantRowInto(data, row0, nBlocks, buf[:K])
 	dequantRowInto(data, row1, nBlocks, buf[K:2*K])
 	multiDot4DualB(out, a, buf[:K], buf[K:2*K], K)
-	putQ8DequantBuf(buf)
+	putQ8DequantBuf(buf, bufPool)
 }
 
 func q8DualMultiDot4T(out *[8]float32, a []float32, t *Q8Tensor, row0, row1, nBlocks, K int) {

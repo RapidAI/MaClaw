@@ -545,6 +545,7 @@ export namespace main {
 	    tts_enabled?: boolean;
 	    tts_voice_id?: string;
 	    asr_enabled?: boolean;
+	    asr_voice_correction_enabled?: boolean;
 	    noise_floor_calibrated?: number;
 	    speech_level_calibrated?: number;
 	    audio_input_device_id?: string;
@@ -719,6 +720,7 @@ export namespace main {
 	        this.tts_enabled = source["tts_enabled"];
 	        this.tts_voice_id = source["tts_voice_id"];
 	        this.asr_enabled = source["asr_enabled"];
+	        this.asr_voice_correction_enabled = source["asr_voice_correction_enabled"];
 	        this.noise_floor_calibrated = source["noise_floor_calibrated"];
 	        this.speech_level_calibrated = source["speech_level_calibrated"];
 	        this.audio_input_device_id = source["audio_input_device_id"];

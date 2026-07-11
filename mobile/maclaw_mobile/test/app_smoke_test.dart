@@ -339,7 +339,10 @@ void main() {
 
     expect(find.text(_emergencyDocuments), findsOneWidget);
     expect(find.textContaining(_openedTaskNotification), findsOneWidget);
-    expect(find.textContaining('document-export:job-before-login'), findsOneWidget);
+    expect(
+      find.textContaining('document-export:job-before-login'),
+      findsOneWidget,
+    );
     expect(notifications.consumeLastOpenedPayload(), isNull);
   });
 
@@ -652,8 +655,8 @@ void main() {
     await tester.pump();
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('配置 MaClaw LLM 服务'), findsOneWidget);
-    expect(find.text(_assistantTab), findsOneWidget);
+    expect(find.textContaining('配置 MaClaw LLM'), findsOneWidget);
+    expect(find.text(_assistantTab), findsNothing);
     expect(find.text(_mainConversation), findsNothing);
   });
 
@@ -697,7 +700,7 @@ void main() {
     await tester.pump();
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('配置 MaClaw LLM 服务'), findsOneWidget);
+    expect(find.textContaining('配置 MaClaw LLM'), findsOneWidget);
     expect(find.text(_mainConversation), findsNothing);
   });
 

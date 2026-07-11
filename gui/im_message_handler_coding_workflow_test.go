@@ -35,7 +35,7 @@ func (randomAppConfig) Generate(rand *rand.Rand, size int) reflect.Value {
 	}
 	descs := []string{
 		"", // default
-		"一个尽心尽责无所不能的软件开发管家",
+		"你的全能数智伴侣MaClaw",
 		"A helpful coding assistant",
 		"专注于代码质量的AI助手",
 		randomString(rand, rand.Intn(50)+1),

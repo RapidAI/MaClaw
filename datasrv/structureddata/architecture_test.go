@@ -472,12 +472,11 @@ func TestWebConsoleBrowserVisualRegressionUsesRealServerAndScripts(t *testing.T)
 	for _, want := range []string{
 		`httptest.NewServer(NewHTTPServer(NewService(store, "sqlite"), "", "visual-test").Handler())`,
 		`client.call("Runtime.enable", nil)`,
-		`typeof document.querySelector('[data-testid="app-language-switch"]').oninput === 'function'`,
+		`data-testid="auth-screen"`,
+		`data-testid="admin-setup-panel"`,
+		`data-testid="admin-password-policy"`,
+		`data-testid="language-switch"`,
 		`document.documentElement.lang === 'zh-CN'`,
-		`!summaryLabel.includes('Engine')`,
-		`!['Registered', 'Configured', 'Not configured'].includes(hubState)`,
-		`document.querySelector('[data-testid="admin-password-policy"]').textContent.trim().length > 10`,
-		`document.querySelector('#serviceStatus').classList.contains('ok')`,
 		`Page.captureScreenshot`,
 	} {
 		if !strings.Contains(text, want) {

@@ -84,6 +84,8 @@ type coreAgentCallbacks struct {
 	skillProvider              SkillToolProvider
 	loopID                     string
 	onToken                    func(string)
+	onToolCall                 func(string)
+	onToolResult               func(name, result string)
 	promptStats                agent.PromptBundleTokenStats
 	promptStableCacheKey       string
 }
@@ -122,6 +124,8 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		skillProvider:        e.skillProvider,
 		loopID:               fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
 		onToken:              req.OnToken,
+		onToolCall:           req.OnToolCall,
+		onToolResult:         req.OnToolResult,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:       sshResources.mgr,
 			BGTaskMgr:     sshResources.bg,
@@ -1095,9 +1099,18 @@ func (c *coreAgentCallbacks) OnToken(delta string) {
 func (c *coreAgentCallbacks) OnProgress(string) {}
 func (c *coreAgentCallbacks) OnToolCall(name string) {
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+	if c.onToolCall != nil {
+		c.onToolCall(name)
+	}
 }
 func (c *coreAgentCallbacks) OnToolResult(name string) {
 	log.Printf("[tool-call] done name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+	if c.onToolResult != nil {
+		// Full tool payload is not available on this callback surface; hosts that
+		// need the body should use post-run artifacts. Name-only is enough for
+		// progress SSE ("tool finished").
+		c.onToolResult(name, "")
+	}
 }
 func (c *coreAgentCallbacks) ShouldStop() bool { return c.ctx != nil && c.ctx.Err() != nil }
 

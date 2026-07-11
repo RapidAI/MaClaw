@@ -561,6 +561,62 @@ func TestAdminMarketplaceWorkflowReviewContracts(t *testing.T) {
 	}
 }
 
+func TestAdminMarketplaceSkillCardNameContracts(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "marketplace-tab.js"))
+	if err != nil {
+		t.Fatalf("read marketplace tab: %v", err)
+	}
+	marketplace := string(body)
+	for _, want := range []string{
+		`function looksLikeCapabilityReference(value)`,
+		`function looksLikeTechnicalSkillSlug(value)`,
+		`function humanizeIdentifier(value)`,
+		`function shortVersionLabel(versionKey)`,
+		`function isRedundantSkillId(id, name)`,
+		`function skillIdForCard(item)`,
+		`function isInternalCapabilityRecordId(value)`,
+		`function bareSkillId(value)`,
+		`metadata.skill_name`,
+		`manifest.name`,
+		`mp-cap-card-title-stack`,
+		`class="mp-cap-card-id"`,
+		`class="mp-cap-card-name"`,
+		`backfillCapabilityDisplayNames`,
+		`/api/admin/capabilities/backfill-display-names`,
+	} {
+		if !strings.Contains(marketplace, want) {
+			t.Fatalf("admin marketplace skill name contract missing %q", want)
+		}
+	}
+	// Title stack must render ID above name (user-facing layout contract).
+	idIdx := strings.Index(marketplace, `class="mp-cap-card-id"`)
+	nameIdx := strings.Index(marketplace, `class="mp-cap-card-name"`)
+	if idIdx < 0 || nameIdx < 0 || idIdx > nameIdx {
+		t.Fatalf("skill card must place mp-cap-card-id before mp-cap-card-name in markup (idIdx=%d nameIdx=%d)", idIdx, nameIdx)
+	}
+	if !strings.Contains(marketplace, `/^[0-9a-f]{8,64}$/i.test(value)`) {
+		t.Fatal("shortVersionLabel should hide bare hex package digests")
+	}
+	cssBody, err := os.ReadFile(filepath.Join("..", "..", "web", "admin", "professional.css"))
+	if err != nil {
+		t.Fatalf("read professional.css: %v", err)
+	}
+	css := string(cssBody)
+	if !strings.Contains(css, `.mp-cap-card-name{font-size:18px`) {
+		t.Fatal("skill card name font-size contract missing (expected 18px)")
+	}
+	if !strings.Contains(css, `.mp-cap-type-badge`) {
+		t.Fatal("skill card type badge class contract missing")
+	}
+	body, err = os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router: %v", err)
+	}
+	if !strings.Contains(string(body), `POST /api/admin/capabilities/backfill-display-names`) {
+		t.Fatal("router missing backfill-display-names route")
+	}
+}
+
 func TestMarketplaceMaclawAppSubmitRouteContract(t *testing.T) {
 	body, err := os.ReadFile("router.go")
 	if err != nil {

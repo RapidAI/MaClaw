@@ -377,6 +377,43 @@ func (s *Service) SetCapabilityStatus(ctx context.Context, id, status string) er
 	return nil
 }
 
+// UpdateDisplayNameAndMetadata updates only display fields without rewriting
+// origin/provenance/version rows. Used by admin name backfill.
+// description is optional: when non-empty, sets description only if currently blank.
+func (s *Service) UpdateDisplayNameAndMetadata(ctx context.Context, id, displayName, description, metadataJSON string) error {
+	if s == nil || s.db == nil {
+		return errors.New("capability service is not configured")
+	}
+	id = strings.TrimSpace(id)
+	displayName = strings.TrimSpace(displayName)
+	description = strings.TrimSpace(description)
+	if id == "" {
+		return fmt.Errorf("capability id is required")
+	}
+	if displayName == "" {
+		return fmt.Errorf("display name is required")
+	}
+	if strings.TrimSpace(metadataJSON) == "" {
+		metadataJSON = "{}"
+	}
+	tenantID := tenantIDFromContext(ctx)
+	now := time.Now().UTC().Format(time.RFC3339)
+	var res sql.Result
+	var err error
+	if description != "" {
+		res, err = s.db.ExecContext(ctx, `UPDATE capabilities SET display_name = ?, description = CASE WHEN TRIM(COALESCE(description, '')) = '' THEN ? ELSE description END, metadata_json = ?, updated_at = ? WHERE tenant_id = ? AND (id = ? OR global_key = ? OR capability_id = ?)`, displayName, description, metadataJSON, now, tenantID, id, id, id)
+	} else {
+		res, err = s.db.ExecContext(ctx, `UPDATE capabilities SET display_name = ?, metadata_json = ?, updated_at = ? WHERE tenant_id = ? AND (id = ? OR global_key = ? OR capability_id = ?)`, displayName, metadataJSON, now, tenantID, id, id, id)
+	}
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Service) ReviewCapabilityVersion(ctx context.Context, id, status, metadataJSON string) (*CapabilitySummary, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("capability service is not configured")
@@ -1044,9 +1081,28 @@ func normalizeUpsertInput(in UpsertCapabilityInput) UpsertCapabilityInput {
 	if strings.TrimSpace(in.CapabilityID) == "" {
 		in.CapabilityID = in.ID
 	}
-	if strings.TrimSpace(in.DisplayName) == "" {
-		in.DisplayName = in.CapabilityID
+	// Prefer a human-readable skill name over raw IDs like
+	// "enterprise_hub:skill:ppt-master@73136". Only rewrite empty/reference
+	// names; leave intentional display labels (including plain slugs) alone so
+	// admin upserts remain predictable.
+	displayName := strings.TrimSpace(in.DisplayName)
+	if looksLikeCapabilityReference(displayName) {
+		if human := humanizeCapabilityReference(displayName); human != "" {
+			displayName = human
+		}
 	}
+	if displayName == "" {
+		capID := strings.TrimSpace(in.CapabilityID)
+		if looksLikeCapabilityReference(capID) || looksLikeTechnicalSkillSlug(capID) {
+			displayName = humanizeCapabilityReference(capID)
+		} else {
+			displayName = capID
+		}
+	}
+	if displayName == "" {
+		displayName = firstNonEmpty(in.CapabilityID, in.ID)
+	}
+	in.DisplayName = displayName
 	if strings.TrimSpace(in.Source) == "" {
 		in.Source = "enterprise_hub"
 	}
@@ -1100,6 +1156,92 @@ func normalizeUpsertInput(in UpsertCapabilityInput) UpsertCapabilityInput {
 func currentVersionKey(in UpsertCapabilityInput) string {
 	if in.SetCurrentVersion && strings.TrimSpace(in.VersionKey) != "" {
 		return in.VersionKey
+	}
+	return ""
+}
+
+// LooksLikeCapabilityReference reports market/version key style IDs.
+func LooksLikeCapabilityReference(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.Contains(value, ":skill:") ||
+		strings.Contains(value, ":mcp:") ||
+		strings.Contains(value, ":approval_workflow:") ||
+		strings.Contains(value, ":maclaw_app:") ||
+		strings.Contains(value, ":maclaw-app:")
+}
+
+func looksLikeCapabilityReference(value string) bool {
+	return LooksLikeCapabilityReference(value)
+}
+
+// LooksLikeTechnicalSkillSlug reports bare ids like "ppt-master".
+func LooksLikeTechnicalSkillSlug(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || LooksLikeCapabilityReference(value) {
+		return true
+	}
+	if strings.ContainsAny(value, " \t") {
+		return false
+	}
+	for _, r := range value {
+		if r > 127 {
+			return false
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return strings.ContainsAny(value, "-_.") || value == strings.ToLower(value)
+}
+
+func looksLikeTechnicalSkillSlug(value string) bool {
+	return LooksLikeTechnicalSkillSlug(value)
+}
+
+// HumanizeCapabilityReference turns reference-style IDs into display labels.
+// Example: "enterprise_hub:skill:ppt-master@73136" -> "PPT Master"
+func HumanizeCapabilityReference(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(value, "/"); idx >= 0 {
+		value = value[idx+1:]
+	}
+	if idx := strings.LastIndex(value, ":"); idx >= 0 {
+		value = value[idx+1:]
+	}
+	if idx := strings.Index(value, "@"); idx >= 0 {
+		value = value[:idx]
+	}
+	acronyms := map[string]string{"api": "API", "csv": "CSV", "mcp": "MCP", "ocr": "OCR", "pdf": "PDF", "ppt": "PPT", "url": "URL"}
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '-' || r == '_' || r == ' ' })
+	for i, part := range parts {
+		lower := strings.ToLower(part)
+		if acronym, ok := acronyms[lower]; ok {
+			parts[i] = acronym
+			continue
+		}
+		runes := []rune(lower)
+		if len(runes) == 0 {
+			continue
+		}
+		runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
+		parts[i] = string(runes)
+	}
+	return strings.Join(parts, " ")
+}
+
+func humanizeCapabilityReference(value string) string {
+	return HumanizeCapabilityReference(value)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
 	}
 	return ""
 }

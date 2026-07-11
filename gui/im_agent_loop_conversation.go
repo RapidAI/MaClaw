@@ -17,7 +17,7 @@ type agentLoopConversationStart struct {
 	Elapsed      time.Duration
 }
 
-func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userText, systemPrompt, platform string, attachments []MessageAttachment, cfg corelib.MaclawLLMConfig, history []agent.ConversationEntry, priorReplanCount int, recorder *TrajectoryRecorder, tools []map[string]interface{}) agentLoopConversationStart {
+func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userText, systemPrompt, platform string, attachments []MessageAttachment, cfg corelib.MaclawLLMConfig, history []agent.ConversationEntry, priorReplanCount int, recorder *TrajectoryRecorder, tools []map[string]interface{}, onProgress func(string)) agentLoopConversationStart {
 	startedAt := time.Now()
 	conversation := []interface{}{
 		map[string]string{"role": "system", "content": systemPrompt},
@@ -26,7 +26,7 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 		conversation = append(conversation, stripHistoryAttachments(entry.ToMessage()))
 	}
 
-	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision)
+	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, onProgress)
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	history = append(history, agent.ConversationEntry{Role: "user", Content: userContent})
 

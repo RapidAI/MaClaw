@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -16,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +28,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/gorilla/websocket"
 )
@@ -100,12 +104,31 @@ var mobileOfficialHubCenterCandidates = []string{
 
 const mobileStatePathEnv = "MACLAW_MOBILE_STATE_PATH"
 
+// mobileStatePathOverride is set by InitMobileStatePersistence when env is empty
+// (Hub runtime data dir / mobile/state.json).
+var mobileStatePathOverride string
+
 type mobilePersistentState struct {
 	Drafts               map[string]mobileDocumentDraftRecord       `json:"drafts"`
 	Exports              map[string]mobileDocumentExportRecord      `json:"exports"`
 	Uploads              map[string]mobileDocumentUploadRecord      `json:"uploads"`
 	DigitalEmployeeTasks map[string]mobileDigitalEmployeeTaskRecord `json:"digital_employee_tasks"`
-	SavedAt              time.Time                                  `json:"saved_at"`
+	// PushDevices / PushPending survive Hub restarts (Phase E).
+	PushDevices map[string][]mobilePushDevice      `json:"push_devices,omitempty"`
+	PushPending map[string][]mobilePushPendingItem `json:"push_pending,omitempty"`
+	SavedAt     time.Time                          `json:"saved_at"`
+}
+
+// InitMobileStatePersistence sets default state file under runtime data when
+// MACLAW_MOBILE_STATE_PATH is unset, then loads documents/employees/push state.
+func InitMobileStatePersistence(runtimeDataDir string) {
+	if strings.TrimSpace(os.Getenv(mobileStatePathEnv)) == "" {
+		dir := strings.TrimSpace(runtimeDataDir)
+		if dir != "" {
+			mobileStatePathOverride = filepath.Join(dir, "mobile", "state.json")
+		}
+	}
+	mobileEnsureStateLoaded()
 }
 
 type mobileDocumentDraftRecord struct {
@@ -165,6 +188,8 @@ type mobileBackendSSHSessionRecord struct {
 	OwnerID          string
 	ServerProfileID  string
 	BackendSessionID string
+	// ExecMode: desktop_exec (GUI/agent claim) or hub_exec (Hub vault + direct SSH).
+	ExecMode         string
 	Status           string
 	State            string
 	Message          string
@@ -277,7 +302,10 @@ const (
 )
 
 func mobileStatePath() string {
-	return strings.TrimSpace(os.Getenv(mobileStatePathEnv))
+	if p := strings.TrimSpace(os.Getenv(mobileStatePathEnv)); p != "" {
+		return p
+	}
+	return strings.TrimSpace(mobileStatePathOverride)
 }
 
 func mobileEnsureStateLoaded() {
@@ -316,6 +344,7 @@ func mobileEnsureStateLoaded() {
 		mobileDigitalEmployeeTasks.tasks = state.DigitalEmployeeTasks
 	}
 	mobileDigitalEmployeeTasks.Unlock()
+	mobilePushLoadFromState(state.PushDevices, state.PushPending)
 }
 
 func mobilePersistState() {
@@ -328,6 +357,8 @@ func mobilePersistState() {
 		Exports:              make(map[string]mobileDocumentExportRecord),
 		Uploads:              make(map[string]mobileDocumentUploadRecord),
 		DigitalEmployeeTasks: make(map[string]mobileDigitalEmployeeTaskRecord),
+		PushDevices:          make(map[string][]mobilePushDevice),
+		PushPending:          make(map[string][]mobilePushPendingItem),
 		SavedAt:              time.Now().UTC(),
 	}
 	mobileDocuments.Lock()
@@ -346,6 +377,7 @@ func mobilePersistState() {
 		state.DigitalEmployeeTasks[id] = record
 	}
 	mobileDigitalEmployeeTasks.Unlock()
+	mobilePushSnapshotInto(&state)
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return
@@ -365,7 +397,9 @@ func mobilePersistState() {
 func mobileResetStatePersistenceForTest() {
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = false
+	mobileStatePathOverride = ""
 	mobileStatePersistence.Unlock()
+	mobilePushResetForTest()
 }
 
 var mobileRealtimeUpgrader = websocket.Upgrader{
@@ -376,10 +410,17 @@ type mobileRealtimeJSONWriter interface {
 	WriteJSON(v any) error
 }
 
+// Optional binary writer (satisfied by *websocket.Conn).
+type mobileRealtimeBinaryWriter interface {
+	WriteMessage(messageType int, data []byte) error
+}
+
 type mobileRealtimeClient struct {
-	key  string
-	conn mobileRealtimeJSONWriter
-	mu   sync.Mutex
+	key       string
+	conn      mobileRealtimeJSONWriter
+	binary    mobileRealtimeBinaryWriter // optional
+	binaryPty bool                       // client advertised caps=["pty_binary"]
+	mu        sync.Mutex
 }
 
 var mobileRealtimeClients = struct {
@@ -397,6 +438,9 @@ func mobileRealtimeRegister(tenantID, userID string, conn mobileRealtimeJSONWrit
 	client := &mobileRealtimeClient{
 		key:  mobileRealtimeKey(tenantID, userID),
 		conn: conn,
+	}
+	if bw, ok := conn.(mobileRealtimeBinaryWriter); ok {
+		client.binary = bw
 	}
 	mobileRealtimeClients.Lock()
 	if mobileRealtimeClients.clients[client.key] == nil {
@@ -431,9 +475,6 @@ func mobileRealtimeBroadcast(tenantID, userID string, event map[string]any) {
 		clients = append(clients, client)
 	}
 	mobileRealtimeClients.Unlock()
-	if len(clients) == 0 {
-		return
-	}
 	payload := make(map[string]any, len(event)+1)
 	for k, v := range event {
 		payload[k] = v
@@ -444,11 +485,57 @@ func mobileRealtimeBroadcast(tenantID, userID string, event map[string]any) {
 	for _, client := range clients {
 		client.mu.Lock()
 		err := client.conn.WriteJSON(payload)
+		// Dual-write PTY output as MCP1 binary when client opted in.
+		if err == nil && client.binaryPty && client.binary != nil {
+			if bin, binOK := mobileRealtimeMaybeBinaryPtyOut(payload); binOK {
+				if werr := client.binary.WriteMessage(websocket.BinaryMessage, bin); werr != nil {
+					err = werr
+				}
+			}
+		}
 		client.mu.Unlock()
 		if err != nil {
 			mobileRealtimeUnregister(client)
 		}
 	}
+	// Offline completion: pending queue + optional remote (webhook/FCM) when
+	// no live realtime clients (or MACLAW_MOBILE_PUSH_ALWAYS).
+	mobilePushOnRealtimeEvent(tenantID, userID, payload, len(clients))
+}
+
+// mobileRealtimeMaybeBinaryPtyOut builds MCP1 pty_out for ssh_session output_chunk events.
+func mobileRealtimeMaybeBinaryPtyOut(event map[string]any) ([]byte, bool) {
+	if event == nil {
+		return nil, false
+	}
+	typ, _ := event["type"].(string)
+	if strings.ToLower(strings.TrimSpace(typ)) != "ssh_session" {
+		return nil, false
+	}
+	chunk, _ := event["output_chunk"].(string)
+	if chunk == "" {
+		if sess, ok := event["session"].(map[string]any); ok {
+			chunk, _ = sess["output_chunk"].(string)
+		}
+	}
+	if chunk == "" {
+		return nil, false
+	}
+	sessionID, _ := event["session_id"].(string)
+	if sessionID == "" {
+		if sess, ok := event["session"].(map[string]any); ok {
+			sessionID, _ = sess["session_id"].(string)
+		}
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, false
+	}
+	// Use raw bytes of the UTF-8 string (terminal stream is often not pure text).
+	frame, err := mobilePtyBinaryEncodeOutput(sessionID, []byte(chunk))
+	if err != nil {
+		return nil, false
+	}
+	return frame, true
 }
 
 func mobileRealtimeDocumentTaskEvent(kind string, payload map[string]any) map[string]any {
@@ -507,17 +594,28 @@ func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
 			"user_id":     principal.UserID,
 			"tenant_id":   principal.TenantID,
 			"server_time": time.Now().UTC().Format(time.RFC3339),
+			"caps":        []string{"pty_binary", "pty_data_b64", "json"},
 		})
 		client.mu.Unlock()
 		if err != nil {
 			return
 		}
 		for {
-			var msg map[string]any
-			if err := conn.ReadJSON(&msg); err != nil {
+			msgType, data, readErr := conn.ReadMessage()
+			if readErr != nil {
 				return
 			}
-			if msgType, _ := msg["type"].(string); msgType == "ping" {
+			if msgType == websocket.BinaryMessage {
+				go mobileHandleRealtimeBinaryMessage(client, principal, data)
+				continue
+			}
+			// Text frames: JSON control / legacy pty_input.
+			var msg map[string]any
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(fmt.Sprint(msg["type"]))) {
+			case "ping":
 				client.mu.Lock()
 				err := client.conn.WriteJSON(map[string]any{
 					"type":        "pong",
@@ -527,15 +625,274 @@ func MobileRealtimeHandler(identity *auth.IdentityService) http.HandlerFunc {
 				if err != nil {
 					return
 				}
+			case "hello":
+				// Client capability advertisement (pty_binary enables MCP1 dual-write).
+				client.mu.Lock()
+				client.binaryPty = mobileRealtimeCapsIncludePtyBinary(msg["caps"])
+				client.mu.Unlock()
+				mobileRealtimeWriteClient(client, map[string]any{
+					"type":        "hello_ack",
+					"ok":          true,
+					"binary_pty":  client.binaryPty,
+					"server_time": time.Now().UTC().Format(time.RFC3339),
+				})
+			case "pty_input":
+				// hub_exec interactive path: accept input over WS so the mobile
+				// terminal can send keys without a new HTTP round-trip.
+				// Run async so the socket keeps reading (and streaming) other events.
+				sessionID, _ := msg["session_id"].(string)
+				input, _ := msg["input"].(string)
+				dataB64, _ := msg["data_b64"].(string)
+				raw, _ := msg["raw"].(bool)
+				go mobileHandleRealtimePtyInput(client, principal, sessionID, input, dataB64, raw)
 			}
 		}
 	}
 }
 
+func mobileRealtimeCapsIncludePtyBinary(raw any) bool {
+	switch v := raw.(type) {
+	case []any:
+		for _, item := range v {
+			if strings.EqualFold(strings.TrimSpace(fmt.Sprint(item)), "pty_binary") {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range v {
+			if strings.EqualFold(strings.TrimSpace(item), "pty_binary") {
+				return true
+			}
+		}
+	case string:
+		return strings.Contains(strings.ToLower(v), "pty_binary")
+	}
+	return false
+}
+
+// mobileHandleRealtimeBinaryMessage decodes MCP1 frames (pty_in).
+func mobileHandleRealtimeBinaryMessage(client *mobileRealtimeClient, principal *auth.ViewerPrincipal, data []byte) {
+	if client == nil || principal == nil {
+		return
+	}
+	if !mobilePtyBinaryIsMagic(data) {
+		return
+	}
+	frame, err := mobilePtyBinaryDecode(data)
+	if err != nil {
+		mobileRealtimeWritePtyAckJSONAndMaybeBinary(client, "", false, err.Error(), "INVALID_INPUT")
+		return
+	}
+	if frame.Type != mobilePtyBinaryTypeIn {
+		mobileRealtimeWritePtyAckJSONAndMaybeBinary(client, frame.SessionID, false, "unsupported binary frame type", "INVALID_INPUT")
+		return
+	}
+	// Mark client as binary-capable on first binary frame (even without hello).
+	client.mu.Lock()
+	client.binaryPty = true
+	client.mu.Unlock()
+	input := string(frame.Payload)
+	go mobileHandleRealtimePtyInput(client, principal, frame.SessionID, input, "", frame.Raw())
+}
+
+// mobileRealtimeWriteBinaryAck writes MCP1 pty_ack only (no JSON).
+// Callers that need JSON should WriteJSON separately.
+func mobileRealtimeWriteBinaryAck(client *mobileRealtimeClient, sessionID string, ok bool, errMsg string) {
+	if client == nil {
+		return
+	}
+	client.mu.Lock()
+	binWriter := client.binary
+	client.mu.Unlock()
+	if binWriter == nil {
+		return
+	}
+	frame, err := mobilePtyBinaryEncodeAck(sessionID, ok, errMsg)
+	if err != nil {
+		return
+	}
+	client.mu.Lock()
+	_ = binWriter.WriteMessage(websocket.BinaryMessage, frame)
+	client.mu.Unlock()
+}
+
+// mobileRealtimeWritePtyAckJSONAndMaybeBinary emits JSON pty_ack and optional MCP1 ack.
+func mobileRealtimeWritePtyAckJSONAndMaybeBinary(client *mobileRealtimeClient, sessionID string, ok bool, errMsg, code string) {
+	ack := map[string]any{
+		"type":        "pty_ack",
+		"ok":          ok,
+		"session_id":  sessionID,
+		"binary":      true,
+		"server_time": time.Now().UTC().Format(time.RFC3339),
+	}
+	if !ok {
+		if errMsg != "" {
+			ack["error"] = errMsg
+		}
+		if code != "" {
+			ack["code"] = code
+		}
+	}
+	mobileRealtimeWriteClient(client, ack)
+	client.mu.Lock()
+	useBinary := client.binaryPty
+	client.mu.Unlock()
+	if useBinary {
+		mobileRealtimeWriteBinaryAck(client, sessionID, ok, errMsg)
+	}
+}
+
+// mobileResolvePtyInputBytes resolves plain input and/or base64 binary frames.
+// data_b64 (std or raw encoding) wins when non-empty and forces raw mode.
+// Max payload 16KiB to keep interactive frames bounded.
+func mobileResolvePtyInputBytes(input, dataB64 string, raw bool) (resolved string, forceRaw bool, err error) {
+	dataB64 = strings.TrimSpace(dataB64)
+	if dataB64 != "" {
+		decoded, decErr := base64.StdEncoding.DecodeString(dataB64)
+		if decErr != nil {
+			decoded, decErr = base64.RawStdEncoding.DecodeString(dataB64)
+		}
+		if decErr != nil {
+			return "", false, fmt.Errorf("invalid data_b64: %w", decErr)
+		}
+		if len(decoded) == 0 {
+			return "", false, fmt.Errorf("data_b64 is empty")
+		}
+		if len(decoded) > 16<<10 {
+			return "", false, fmt.Errorf("data_b64 too large (max 16KiB)")
+		}
+		return string(decoded), true, nil
+	}
+	if !raw {
+		input = strings.TrimSpace(input)
+	}
+	return input, raw, nil
+}
+
+// mobileHandleRealtimePtyInput applies hub_exec input for a viewer over the realtime socket.
+func mobileHandleRealtimePtyInput(client *mobileRealtimeClient, principal *auth.ViewerPrincipal, sessionID, input, dataB64 string, raw bool) {
+	if client == nil || principal == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		mobileRealtimeWriteClient(client, map[string]any{
+			"type":    "pty_ack",
+			"ok":      false,
+			"error":   "session_id is required",
+			"code":    "INVALID_INPUT",
+			"server_time": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	resolved, forceRaw, resolveErr := mobileResolvePtyInputBytes(input, dataB64, raw)
+	if resolveErr != nil {
+		mobileRealtimeWriteClient(client, map[string]any{
+			"type":        "pty_ack",
+			"ok":          false,
+			"session_id":  sessionID,
+			"error":       resolveErr.Error(),
+			"code":        "INVALID_INPUT",
+			"server_time": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	input = resolved
+	raw = forceRaw
+	if input == "" {
+		mobileRealtimeWriteClient(client, map[string]any{
+			"type":        "pty_ack",
+			"ok":          false,
+			"session_id":  sessionID,
+			"error":       "input is required",
+			"code":        "INVALID_INPUT",
+			"server_time": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	mobileBackendSSHSessions.Lock()
+	record, ok := mobileBackendSSHSessions.sessions[sessionID]
+	if ok && (record.OwnerID != principal.UserID || record.TenantID != principal.TenantID) {
+		ok = false
+	}
+	mobileBackendSSHSessions.Unlock()
+	if !ok {
+		mobileRealtimeWriteClient(client, map[string]any{
+			"type":        "pty_ack",
+			"ok":          false,
+			"session_id":  sessionID,
+			"error":       "backend SSH session not found",
+			"code":        "SESSION_NOT_FOUND",
+			"server_time": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	if record.ExecMode != mobileSSHExecHub {
+		mobileRealtimeWriteClient(client, map[string]any{
+			"type":        "pty_ack",
+			"ok":          false,
+			"session_id":  sessionID,
+			"error":       "pty_input requires exec_mode=hub_exec",
+			"code":        "HUB_EXEC_REQUIRED",
+			"server_time": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	out, runErr := mobileHubSSHRunInput(&record, input, raw)
+	mobileBackendSSHSessions.Lock()
+	mobileBackendSSHSessions.sessions[sessionID] = record
+	mobileBackendSSHSessions.Unlock()
+	payload := mobileBackendSSHSessionPayload(record)
+	// Fan-out session state (includes progressive output already streamed mid-run).
+	mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+
+	client.mu.Lock()
+	useBinary := client.binaryPty
+	client.mu.Unlock()
+	ack := map[string]any{
+		"type":        "pty_ack",
+		"ok":          runErr == nil,
+		"session_id":  sessionID,
+		"raw":         raw,
+		"binary":      strings.TrimSpace(dataB64) != "" || useBinary,
+		"output":      out,
+		"status":      record.Status,
+		"message":     record.Message,
+		"session":     payload,
+		"server_time": time.Now().UTC().Format(time.RFC3339),
+	}
+	if runErr != nil {
+		ack["error"] = runErr.Error()
+		ack["code"] = "HUB_SSH_INPUT_FAILED"
+	}
+	mobileRealtimeWriteClient(client, ack)
+	if useBinary {
+		errMsg := ""
+		if runErr != nil {
+			errMsg = runErr.Error()
+		}
+		mobileRealtimeWriteBinaryAck(client, sessionID, runErr == nil, errMsg)
+	}
+}
+
+func mobileRealtimeWriteClient(client *mobileRealtimeClient, event map[string]any) {
+	if client == nil {
+		return
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.conn == nil {
+		return
+	}
+	_ = client.conn.WriteJSON(event)
+}
+
 // MobileBootstrapHandler returns the small, cheap payload the mobile app needs
 // immediately after restoring a viewer token. Expensive service details stay on
-// their existing dedicated endpoints.
-func MobileBootstrapHandler(identity *auth.IdentityService) http.HandlerFunc {
+// their existing dedicated endpoints; grant snapshot is best-effort and cached.
+func MobileBootstrapHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
@@ -543,15 +900,15 @@ func MobileBootstrapHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, mobileBootstrapPayloadForRequest(principal, r))
+		writeJSON(w, http.StatusOK, mobileBootstrapPayloadForRequest(principal, r, system, securitySvc))
 	}
 }
 
 func mobileBootstrapPayload(principal *auth.ViewerPrincipal) map[string]any {
-	return mobileBootstrapPayloadForRequest(principal, nil)
+	return mobileBootstrapPayloadForRequest(principal, nil, nil, nil)
 }
 
-func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.Request) map[string]any {
+func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.Request, system store.SystemSettingsRepository, securitySvc *security.SecurityService) map[string]any {
 	userID := ""
 	email := ""
 	tenantID := ""
@@ -568,6 +925,10 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 	llmAccess := mobileLlmAccessPayload(ctx, principal)
 	phoneNumber := mobilePrincipalPhoneNumber(email)
 	creditsAccount := mobilePrincipalCreditsAccount(email, userID)
+	grant := mobileResolveServiceGrantSnapshot(ctx, principal, system, securitySvc, hubURL)
+	plan := mobilePlanForAccessWithGrant(llmAccess, grant)
+	entitled := mobileOfficialEntitled(llmAccess) || grant.Active
+	caps := mobilePlanCapsFor(plan, grant, mobileOfficialEntitled(llmAccess))
 	return map[string]any{
 		"user": map[string]any{
 			"user_id":         userID,
@@ -584,13 +945,19 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 			"hub_id":                 "",
 			"tenant_id":              tenantID,
 		},
-		"llm_access": llmAccess,
+		"llm_access":     llmAccess,
+		"assistant_mode": mobileAssistantModeForAccess(llmAccess),
+		"entitlements":   caps.toEntitlementMap(grant, entitled),
 		"features": map[string]any{
 			"search":               true,
 			"documents":            true,
+			"tasks":                true,
 			"backend_ssh_sessions": true,
+			"hub_ssh_exec":         caps.HubSSHExec,
 			"digital_employees":    true,
-			"push_notifications":   false,
+			// Remote FCM/webhook only when transport env is set; pending sync always on.
+			"push_notifications":   mobilePushRemoteConfigured(),
+			"push_pending_sync":    true,
 		},
 		"services": map[string]any{
 			"hub_status":               "online",
@@ -602,15 +969,151 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 			"models_path":              "/api/llm/v1/models",
 			"search_path":              "/api/mobile/search",
 			"documents_path":           "/api/mobile/documents",
+			"documents_quota_path":     "/api/mobile/documents/quota",
+			"entitlements_caps_path":   "/api/mobile/entitlements/caps",
 			"digital_employees_path":   "/api/mobile/digital-employees",
 			"realtime_path":            "/api/mobile/realtime",
+			"push_devices_path":        "/api/mobile/push/devices",
+			"push_pending_path":        "/api/mobile/push/pending",
+			"push_pending_ack_path":    "/api/mobile/push/pending/ack",
+			"llm_account_path":         "/api/llm/service/account",
+			"llm_card_redeem_path":     "/api/llm/service/redeem",
+			"card_store_products_path": "/api/card-store/products",
 		},
+		"push": mobilePushTransportSummary(),
 		"limits": map[string]any{
-			"max_upload_bytes": 25 * 1024 * 1024,
-			"max_export_jobs":  3,
+			"max_upload_bytes":          caps.MaxUploadBytes,
+			"document_quota_bytes":      caps.DocumentQuotaBytes,
+			"document_quota_used_bytes": mobileDocumentQuotaUsedBytes(userID),
+			"max_export_jobs":           caps.MaxExportJobs,
+			"hub_file_download_max_bytes": caps.HubFileDownloadMaxBytes,
 		},
 		"server_time": time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+type mobileServiceGrantSnapshot struct {
+	Active            bool
+	CreditsAvailable  float64
+	CreditsRemaining  float64
+	ServiceGroupCount int
+	HasCardGrant      bool
+}
+
+// mobileResolveServiceGrantSnapshot is best-effort: failures yield zero values
+// so bootstrap stays cheap and never hard-fails on registry load issues.
+func mobileResolveServiceGrantSnapshot(ctx context.Context, principal *auth.ViewerPrincipal, system store.SystemSettingsRepository, securitySvc *security.SecurityService, hubBaseURL string) mobileServiceGrantSnapshot {
+	out := mobileServiceGrantSnapshot{}
+	if principal == nil || system == nil {
+		return out
+	}
+	tenantID := strings.TrimSpace(principal.TenantID)
+	if tenantID != "" {
+		system = scopedSystemSettingsForTenant(tenantID, system)
+		ctx = security.WithTenant(ctx, tenantID)
+	}
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	if err != nil || reg == nil {
+		return out
+	}
+	status, _, err := llmservice.ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, principal.UserID, principal.Email, hubBaseURL)
+	if err != nil || status == nil {
+		return out
+	}
+	out.Active = status.Active
+	out.CreditsAvailable = status.CreditsAvailable
+	out.CreditsRemaining = status.CreditsRemaining
+	// Count active grants that look like card redemptions.
+	now := time.Now().UTC()
+	groups := map[string]struct{}{}
+	for _, g := range reg.Grants {
+		email := strings.ToLower(strings.TrimSpace(g.Email))
+		userEmail := strings.ToLower(strings.TrimSpace(principal.Email))
+		if email == "" || email != userEmail {
+			continue
+		}
+		if !g.ExpiresAt.IsZero() && !g.ExpiresAt.After(now) {
+			continue
+		}
+		if !g.StartsAt.IsZero() && g.StartsAt.After(now) {
+			continue
+		}
+		if sid := strings.TrimSpace(g.ServiceGroupID); sid != "" {
+			groups[sid] = struct{}{}
+		}
+		src := strings.ToLower(strings.TrimSpace(g.Source))
+		if src == "card" || src == "service_card" || src == "redeem" || src == "store" {
+			out.HasCardGrant = true
+		}
+	}
+	out.ServiceGroupCount = len(groups)
+	return out
+}
+
+func mobileOfficialEntitled(llmAccess map[string]any) bool {
+	if llmAccess == nil {
+		return false
+	}
+	mode, _ := llmAccess["mode"].(string)
+	status, _ := llmAccess["status"].(string)
+	status = strings.ToLower(strings.TrimSpace(status))
+	ready := status == "available" || status == "authorized" || status == "active" || status == "ready" || status == "configured"
+	if !ready {
+		return false
+	}
+	switch strings.TrimSpace(mode) {
+	case "maclaw_official", "desktop_qr_third_party":
+		return true
+	default:
+		return false
+	}
+}
+
+func mobileAssistantModeForAccess(llmAccess map[string]any) string {
+	if mobileOfficialEntitled(llmAccess) {
+		return "official"
+	}
+	return "digital_twin"
+}
+
+// mobilePlanForAccess maps LLM access into a coarse commercial plan label for Mobile.
+// free = no official path; official = MaClaw official credits; desktop_delegate = GUI QR keys.
+func mobilePlanForAccess(llmAccess map[string]any) string {
+	return mobilePlanForAccessWithGrant(llmAccess, mobileServiceGrantSnapshot{})
+}
+
+// mobilePlanForAccessWithGrant prefers service-card / active grant state when present.
+func mobilePlanForAccessWithGrant(llmAccess map[string]any, grant mobileServiceGrantSnapshot) string {
+	if llmAccess != nil {
+		mode, _ := llmAccess["mode"].(string)
+		if mobileOfficialEntitled(llmAccess) && strings.TrimSpace(mode) == "desktop_qr_third_party" {
+			return "desktop_delegate"
+		}
+	}
+	if grant.Active && (grant.HasCardGrant || grant.CreditsAvailable > 0) {
+		return "service_card"
+	}
+	if mobileOfficialEntitled(llmAccess) {
+		return "official"
+	}
+	if grant.Active {
+		return "service_card"
+	}
+	return "free"
+}
+
+// mobileSharedEmployeesFromGrant enables tenant/public employee pools for paid paths.
+// free / desktop_delegate stay own-only (design §3.2).
+func mobileSharedEmployeesFromGrant(grant mobileServiceGrantSnapshot, plan string) bool {
+	p := strings.ToLower(strings.TrimSpace(plan))
+	if p == "service_card" || p == "paid" {
+		return true
+	}
+	// Active card or spendable credits also unlock shared pools.
+	if grant.Active && (grant.HasCardGrant || grant.CreditsAvailable > 0) {
+		return true
+	}
+	return false
 }
 
 func mobileRequestBaseURL(r *http.Request) string {
@@ -830,7 +1333,7 @@ func MobileLLMDesktopQRAuthorizationHandler(identity *auth.IdentityService) http
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":    "authorized",
-			"bootstrap": mobileBootstrapPayloadForRequest(principal, r),
+			"bootstrap": mobileBootstrapPayloadForRequest(principal, r, nil, nil),
 		})
 	}
 }
@@ -855,7 +1358,7 @@ func MobileLLMDesktopQRAuthorizationRevokeHandler(identity *auth.IdentityService
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":    "revoked",
-			"bootstrap": mobileBootstrapPayloadForRequest(principal, r),
+			"bootstrap": mobileBootstrapPayloadForRequest(principal, r, nil, nil),
 		})
 	}
 }
@@ -1054,12 +1557,35 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 		record.Message = "OCR/视觉识别已完成，已更新移动端文档草稿。"
 	}
 	record.UpdatedAt = now
+	// Best-effort knowledge index for OCR-ready drafts (owner known on record).
+	go mobileIngestDocumentDraft(&auth.ViewerPrincipal{
+		UserID:   draft.OwnerID,
+		TenantID: "", // filled by store owner path; knowledge uses user_id primarily
+	}, draft)
 	return record, true
 }
 
 type mobileSearchRequest struct {
 	Query   string   `json:"query"`
 	Context []string `json:"context,omitempty"`
+	// Messages is the preferred multi-turn payload (role/content). When present
+	// it is sent to the LLM as chat messages; Context remains a legacy fallback.
+	Messages []mobileChatMessage `json:"messages,omitempty"`
+	// DocumentID binds a mobile draft as the assistant's working object (sync path).
+	// Hub injects the owned draft Markdown into the agent system context.
+	DocumentID string `json:"document_id,omitempty"`
+	// Async enqueues a long-running assistant job and returns 202 immediately
+	// (design: short SSE / long → 后台 job). Stream is ignored when Async is true.
+	Async bool `json:"async,omitempty"`
+	// Stream enables progressive SSE delivery (meta → delta* → done).
+	// When possible the Hub forwards upstream token deltas; otherwise the
+	// completed answer is chunked for typewriter UX.
+	Stream bool `json:"stream,omitempty"`
+}
+
+type mobileChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // MobileSearchHandler keeps mobile citations while routing the actual official
@@ -1081,7 +1607,7 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 			return
 		}
 		var req mobileSearchRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
 			return
 		}
@@ -1090,6 +1616,36 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "query is required")
 			return
 		}
+
+		// Long path: enqueue background assistant job (appears in /api/mobile/jobs).
+		if req.Async {
+			job, err := mobileEnqueueAgentJobFromSearch(r, principal, officialLLM, req)
+			if err != nil {
+				msg := err.Error()
+				switch {
+				case strings.Contains(msg, "document"):
+					writeError(w, http.StatusNotFound, "DOCUMENT_NOT_FOUND", "bound document not found or not owned by viewer")
+				case strings.Contains(msg, "limit"):
+					writeError(w, http.StatusTooManyRequests, "JOB_LIMIT", "too many active assistant jobs")
+				default:
+					writeError(w, http.StatusBadRequest, "INVALID_INPUT", msg)
+				}
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":     "accepted",
+				"async":      true,
+				"job_id":     job.JobID,
+				"job":        mobileAgentJobPayload(job),
+				"query":      query,
+				"message":    "assistant job queued; track via GET /api/mobile/agent/jobs/{job_id} or /api/mobile/jobs",
+				"deep_link":  "/tasks",
+				"tenant_id":  principal.TenantID,
+				"user_id":    principal.UserID,
+			})
+			return
+		}
+
 		results, err := mobileWebSearch(r.Context(), query, 5)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "SEARCH_FAILED", "mobile search failed")
@@ -1097,17 +1653,46 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 		}
 		links := mobileExtractQueryLinks(query)
 		citations := mobileMergeLinkCitations(mobileSearchCitations(results), links)
+		chatMessages := mobileBuildLLMMessages(query, citations, req.Messages, req.Context)
+		boundDocID := ""
+		boundDocTitle := ""
+		if docID := strings.TrimSpace(req.DocumentID); docID != "" {
+			draft, ok := mobileLookupOwnedDraft(principal, docID)
+			if !ok {
+				writeError(w, http.StatusNotFound, "DOCUMENT_NOT_FOUND", "bound document not found or not owned by viewer")
+				return
+			}
+			chatMessages = mobileInjectBoundDocument(chatMessages, draft)
+			boundDocID = draft.ID
+			boundDocTitle = draft.Title
+		}
 		answer := mobileSearchAnswer(query, results, links)
 		requestID := ""
 		mode := "maclaw_official"
-		prompt := mobileSearchPrompt(query, citations, req.Context)
-		if delegated, ok := mobileThirdPartyLLMAuthorization(r.Context(), principal.TenantID, principal.UserID); ok {
+
+		// Resolve LLM backend once (stream and non-stream share the same choice).
+		delegated, useDelegated := mobileThirdPartyLLMAuthorization(r.Context(), principal.TenantID, principal.UserID)
+		hasLLM := useDelegated || officialLLM != nil
+		if useDelegated {
 			mode = "desktop_qr_third_party"
-			answer, requestID, err = mobileThirdPartySearchAnswer(r.Context(), delegated, prompt)
-		} else if officialLLM != nil {
-			answer, requestID, err = mobileOfficialSearchAnswer(r, officialLLM, prompt)
+		}
+
+		if req.Stream && hasLLM {
+			// Tool-capable agent loop with progressive SSE (tool_call / tool_result / delta / done).
+			if err := mobileStreamAgentSearchAnswer(r, w, principal, query, citations, officialLLM, delegated, useDelegated, chatMessages); err != nil {
+				mobileWriteSearchSSEError(w, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+			}
+			return
+		}
+
+		if hasLLM {
+			answer, requestID, err = mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, chatMessages, nil)
 		}
 		if err != nil {
+			if req.Stream {
+				mobileWriteSearchSSEError(w, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+				return
+			}
 			writeError(w, http.StatusBadGateway, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
 			return
 		}
@@ -1117,34 +1702,927 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 			// this request ID; expose only the read-only trace reference.
 			usageRecordID = requestID
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		payload := map[string]any{
 			"answer": answer, "citations": citations, "query": query,
 			"tenant_id": principal.TenantID, "user_id": principal.UserID,
 			"llm_mode": mode, "llm_request_id": requestID,
 			"llm_usage_record_id": usageRecordID, "status": "ready",
-		})
+			"agent": hasLLM,
+		}
+		if boundDocID != "" {
+			payload["document_id"] = boundDocID
+			if boundDocTitle != "" {
+				payload["document_title"] = boundDocTitle
+			}
+		}
+		if req.Stream {
+			mobileWriteSearchSSE(w, payload)
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
 	}
+}
+
+const (
+	mobileLLMMaxHistoryTurns   = 16
+	mobileLLMMaxTurnRunes      = 4000
+	mobileLLMStreamPendingMax  = 1 << 20 // 1 MiB incomplete SSE line budget
+	mobileLLMStreamJSONBodyMax = 2 << 20 // 2 MiB non-stream / error body cap
+)
+
+func mobileClipRunes(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if max <= 0 || text == "" {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max]) + "…"
+}
+
+func mobileBuildLLMMessages(query string, citations []map[string]string, history []mobileChatMessage, legacyContext []string) []map[string]string {
+	messages := make([]map[string]string, 0, mobileLLMMaxHistoryTurns+3)
+	messages = append(messages, map[string]string{
+		"role":    "system",
+		"content": mobileSearchSystemPrompt(),
+	})
+
+	// Prefer structured multi-turn messages from the client.
+	turns := make([]map[string]string, 0, len(history))
+	if len(history) > 0 {
+		for _, item := range history {
+			role := strings.ToLower(strings.TrimSpace(item.Role))
+			content := mobileClipRunes(item.Content, mobileLLMMaxTurnRunes)
+			if content == "" {
+				continue
+			}
+			switch role {
+			case "user", "assistant", "system":
+			default:
+				role = "user"
+			}
+			turns = append(turns, map[string]string{"role": role, "content": content})
+		}
+		// Drop only a *trailing* user turn that duplicates the current query
+		// (client often includes it; older identical questions stay).
+		query = strings.TrimSpace(query)
+		if n := len(turns); n > 0 && turns[n-1]["role"] == "user" && turns[n-1]["content"] == query {
+			turns = turns[:n-1]
+		}
+	} else {
+		// Legacy context lines ("user: ..." / "assistant: ...") when messages is empty.
+		for _, item := range legacyContext {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			role := "user"
+			content := item
+			if strings.HasPrefix(item, "user:") {
+				content = strings.TrimSpace(strings.TrimPrefix(item, "user:"))
+				role = "user"
+			} else if strings.HasPrefix(item, "assistant:") {
+				content = strings.TrimSpace(strings.TrimPrefix(item, "assistant:"))
+				role = "assistant"
+			} else if strings.HasPrefix(item, "system:") {
+				content = strings.TrimSpace(strings.TrimPrefix(item, "system:"))
+				role = "system"
+			}
+			content = mobileClipRunes(content, mobileLLMMaxTurnRunes)
+			if content == "" {
+				continue
+			}
+			turns = append(turns, map[string]string{"role": role, "content": content})
+		}
+	}
+	if len(turns) > mobileLLMMaxHistoryTurns {
+		turns = turns[len(turns)-mobileLLMMaxHistoryTurns:]
+	}
+	messages = append(messages, turns...)
+
+	// Final user turn: current question + evidence sources.
+	var user strings.Builder
+	user.WriteString(strings.TrimSpace(query))
+	if len(citations) > 0 {
+		user.WriteString("\n\nEvidence sources (use for synthesis only):\n")
+		for index, citation := range citations {
+			title := mobileCleanSearchText(citation["title"], 120)
+			url := strings.TrimSpace(citation["url"])
+			snippet := mobileCleanSearchText(citation["snippet"], 220)
+			user.WriteString(fmt.Sprintf("\n[%d] %s\n%s\n%s", index+1, title, url, snippet))
+		}
+	}
+	messages = append(messages, map[string]string{
+		"role":    "user",
+		"content": user.String(),
+	})
+	return messages
+}
+
+func mobileSearchSystemPrompt() string {
+	return `You are MaClaw Mobile, a professional work companion (similar to MaClaw desktop AI assistant).
+Synthesize an answer for a busy human — do NOT dump raw search snippets.
+
+Output in Chinese when the user writes Chinese. Use clean Markdown:
+1) 结论 — 2 to 4 sentences that directly answer the question
+2) 要点 or a Markdown 表格/table when comparing facts (weather, status, options)
+3) 注意/风险 — only if relevant
+4) Cite sources only as [1][2] footnote numbers; never paste long webpage text
+Never invent citations. Never emit HTML tags or HTML entities.`
+}
+
+const mobileBoundDocumentMaxRunes = 12000
+
+// mobileLookupOwnedDraft returns a draft only when it belongs to the viewer.
+func mobileLookupOwnedDraft(principal *auth.ViewerPrincipal, documentID string) (mobileDocumentDraftRecord, bool) {
+	id := strings.TrimSpace(documentID)
+	if id == "" || principal == nil {
+		return mobileDocumentDraftRecord{}, false
+	}
+	ownerID := mobilePrincipalOwnerID(principal)
+	if ownerID == "" {
+		return mobileDocumentDraftRecord{}, false
+	}
+	mobileDocuments.Lock()
+	defer mobileDocuments.Unlock()
+	draft, ok := mobileDocuments.drafts[id]
+	if !ok || draft.OwnerID != ownerID {
+		return mobileDocumentDraftRecord{}, false
+	}
+	return draft, true
+}
+
+// mobileInjectBoundDocument inserts a system message with the bound draft body
+// so the full agent can treat the document as its working object (sync path).
+func mobileInjectBoundDocument(messages []map[string]string, draft mobileDocumentDraftRecord) []map[string]string {
+	body := mobileClipRunes(draft.Markdown, mobileBoundDocumentMaxRunes)
+	title := strings.TrimSpace(draft.Title)
+	if title == "" {
+		title = draft.ID
+	}
+	sys := fmt.Sprintf(
+		`Bound mobile document object:
+- document_id: %s
+- title: %s
+- updated_at: %s
+
+You are editing/advising on this document. Prefer concise, actionable Markdown.
+When proposing a full replacement of the draft body, wrap the new Markdown in a fenced code block labeled maclaw-document-edit (language tag maclaw-document-edit).
+Do not claim the document was already saved — the Mobile client applies edits via Hub PATCH using document_id.
+
+--- Document Markdown start ---
+%s
+--- Document Markdown end ---`,
+		draft.ID,
+		title,
+		draft.UpdatedAt.UTC().Format(time.RFC3339),
+		body,
+	)
+	if len(messages) == 0 {
+		return []map[string]string{{"role": "system", "content": sys}}
+	}
+	// Keep the primary system prompt first; insert bound-doc context next.
+	out := make([]map[string]string, 0, len(messages)+1)
+	out = append(out, messages[0])
+	out = append(out, map[string]string{"role": "system", "content": sys})
+	if len(messages) > 1 {
+		out = append(out, messages[1:]...)
+	}
+	return out
+}
+
+// mobileExtractDocumentEditFence pulls a proposed draft rewrite from assistant text.
+// Used by clients/tests; Hub does not auto-apply edits without an explicit API call.
+func mobileExtractDocumentEditFence(answer string) (string, bool) {
+	const open = "```maclaw-document-edit"
+	idx := strings.Index(answer, open)
+	if idx < 0 {
+		// also accept language tag with newline after
+		open2 := "```maclaw-document-edit\n"
+		idx = strings.Index(answer, open2)
+		if idx < 0 {
+			return "", false
+		}
+	}
+	rest := answer[idx+len(open):]
+	rest = strings.TrimPrefix(rest, "\n")
+	rest = strings.TrimPrefix(rest, "\r\n")
+	end := strings.Index(rest, "```")
+	if end < 0 {
+		return "", false
+	}
+	body := strings.TrimSpace(rest[:end])
+	if body == "" {
+		return "", false
+	}
+	return body, true
+}
+
+func mobileWriteSearchSSEError(w http.ResponseWriter, code, message string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusBadGateway, code, message)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	_ = mobileWriteSSEEvent(w, "error", map[string]any{
+		"code":    code,
+		"message": message,
+	})
+	flusher.Flush()
+}
+
+func mobileWriteSearchSSE(w http.ResponseWriter, payload map[string]any) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	answer, _ := payload["answer"].(string)
+	meta := map[string]any{}
+	for k, v := range payload {
+		if k == "answer" {
+			continue
+		}
+		meta[k] = v
+	}
+	meta["status"] = "streaming"
+	_ = mobileWriteSSEEvent(w, "meta", meta)
+	flusher.Flush()
+
+	mobileWriteAnswerDeltas(w, flusher, answer)
+	payload["status"] = "ready"
+	_ = mobileWriteSSEEvent(w, "done", payload)
+	flusher.Flush()
+}
+
+func mobileWriteSSEEvent(w http.ResponseWriter, event string, data any) error {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mobileChunkAnswerForSSE(answer string, maxRunes int) []string {
+	text := strings.TrimSpace(answer)
+	if text == "" {
+		return nil
+	}
+	if maxRunes <= 0 {
+		maxRunes = 48
+	}
+	runes := []rune(text)
+	chunks := make([]string, 0, (len(runes)/maxRunes)+1)
+	for len(runes) > 0 {
+		n := maxRunes
+		if n > len(runes) {
+			n = len(runes)
+		}
+		// Prefer breaking near punctuation/space for smoother UI.
+		if n < len(runes) {
+			window := runes[:n]
+			for i := len(window) - 1; i > n/2; i-- {
+				switch window[i] {
+				case ' ', '\n', '。', '！', '？', '；', '，', '.', '!', '?', ';', ',':
+					n = i + 1
+					i = 0
+				}
+			}
+		}
+		chunks = append(chunks, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return chunks
 }
 
 func mobileSearchPrompt(query string, citations []map[string]string, context []string) string {
 	var b strings.Builder
-	b.WriteString("You are MaClaw Mobile, an emergency AI assistant. Answer concisely, use sources as evidence, and do not invent citations.\n\nQuestion:\n")
+	b.WriteString(`You are MaClaw Mobile, a professional work companion (similar to MaClaw desktop AI assistant).
+Synthesize an answer for a busy human — do NOT dump raw search snippets.
+
+Output in Chinese when the user writes Chinese. Use clean Markdown:
+1) 结论 — 2 to 4 sentences that directly answer the question
+2) 要点 or a Markdown 表格/table when comparing facts (weather, status, options)
+3) 注意/风险 — only if relevant
+4) Cite sources only as [1][2] footnote numbers; never paste long webpage text
+Never invent citations. Never emit HTML tags or HTML entities.
+
+Question:
+`)
 	b.WriteString(strings.TrimSpace(query))
 	for _, item := range context {
 		if item = strings.TrimSpace(item); item != "" {
-			b.WriteString("\n\nAdditional context:\n")
+			b.WriteString("\n\nAdditional conversation context:\n")
 			b.WriteString(item)
 		}
 	}
+	if len(citations) > 0 {
+		b.WriteString("\n\nEvidence sources (use for synthesis only):\n")
+	}
 	for index, citation := range citations {
-		b.WriteString(fmt.Sprintf("\n\n[%d] %s\n%s\n%s", index+1, citation["title"], citation["url"], citation["snippet"]))
+		title := mobileCleanSearchText(citation["title"], 120)
+		url := strings.TrimSpace(citation["url"])
+		snippet := mobileCleanSearchText(citation["snippet"], 220)
+		b.WriteString(fmt.Sprintf("\n[%d] %s\n%s\n%s", index+1, title, url, snippet))
 	}
 	return b.String()
 }
 
-func mobileOfficialSearchAnswer(r *http.Request, handler http.Handler, prompt string) (string, string, error) {
+// mobileCleanSearchText unescapes common HTML entities, strips simple tags,
+// collapses whitespace, and optionally truncates for prompts/UI-safe snippets.
+func mobileCleanSearchText(input string, maxLen int) string {
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"&nbsp;", " ",
+		"&ensp;", " ",
+		"&emsp;", " ",
+		"&thinsp;", " ",
+		"&amp;", "&",
+		"&lt;", "<",
+		"&gt;", ">",
+		"&quot;", "\"",
+		"&apos;", "'",
+		"&middot;", "·",
+		"&bull;", "•",
+		"&hellip;", "…",
+		"&mdash;", "—",
+		"&ndash;", "–",
+	)
+	text = replacer.Replace(text)
+	// Numeric entities &#183; &#0183; &#xB7;
+	text = mobileNumericEntityPattern.ReplaceAllStringFunc(text, func(match string) string {
+		inner := match
+		if strings.HasPrefix(inner, "&#x") || strings.HasPrefix(inner, "&#X") {
+			hex := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(inner, "&#x"), "&#X"), ";")
+			if n, err := strconv.ParseInt(hex, 16, 32); err == nil && n >= 0 && n <= 0x10FFFF {
+				return string(rune(n))
+			}
+			return " "
+		}
+		num := strings.TrimSuffix(strings.TrimPrefix(inner, "&#"), ";")
+		num = strings.TrimLeft(num, "0")
+		if num == "" {
+			num = "0"
+		}
+		if n, err := strconv.Atoi(num); err == nil && n >= 0 && n <= 0x10FFFF {
+			return string(rune(n))
+		}
+		return " "
+	})
+	text = mobileHTMLTagPattern.ReplaceAllString(text, " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if maxLen > 0 && len([]rune(text)) > maxLen {
+		runes := []rune(text)
+		text = string(runes[:maxLen]) + "…"
+	}
+	return text
+}
+
+var (
+	mobileNumericEntityPattern = regexp.MustCompile(`&#x[0-9a-fA-F]{1,6};|&#0*\d{1,7};`)
+	mobileHTMLTagPattern       = regexp.MustCompile(`<[^>]*>`)
+)
+
+func mobileSearchBasePayload(principal *auth.ViewerPrincipal, query string, citations []map[string]string, mode, requestID string) map[string]any {
+	usageRecordID := ""
+	if mode == "maclaw_official" && strings.TrimSpace(requestID) != "" {
+		usageRecordID = requestID
+	}
+	return map[string]any{
+		"citations":           citations,
+		"query":               query,
+		"tenant_id":           principal.TenantID,
+		"user_id":             principal.UserID,
+		"llm_mode":            mode,
+		"llm_request_id":      requestID,
+		"llm_usage_record_id": usageRecordID,
+		"status":              "streaming",
+	}
+}
+
+func mobileBeginSearchSSE(w http.ResponseWriter, meta map[string]any) (http.Flusher, error) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, fmt.Errorf("response writer does not support streaming")
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if err := mobileWriteSSEEvent(w, "meta", meta); err != nil {
+		return nil, err
+	}
+	flusher.Flush()
+	return flusher, nil
+}
+
+func mobileFinishSearchSSE(w http.ResponseWriter, flusher http.Flusher, payload map[string]any) {
+	payload["status"] = "ready"
+	_ = mobileWriteSSEEvent(w, "done", payload)
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+// mobileEmitSSEClientError writes an error event after SSE headers are already open.
+func mobileEmitSSEClientError(w http.ResponseWriter, flusher http.Flusher, code, message string) {
+	_ = mobileWriteSSEEvent(w, "error", map[string]any{
+		"code":    code,
+		"message": message,
+	})
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+// mobileStreamAgentSearchAnswer runs the Hub-side tool agent and streams SSE:
+// meta → (tool_call|tool_result)* → delta* → done.
+func mobileStreamAgentSearchAnswer(
+	r *http.Request,
+	w http.ResponseWriter,
+	principal *auth.ViewerPrincipal,
+	query string,
+	citations []map[string]string,
+	officialLLM http.Handler,
+	delegated mobileLlmAuthorizationRecord,
+	useDelegated bool,
+	messages []map[string]string,
+) error {
+	mode := "maclaw_official"
+	if useDelegated {
+		mode = "desktop_qr_third_party"
+	}
+	meta := mobileSearchBasePayload(principal, query, citations, mode, "")
+	meta["agent"] = true
+	// Full corelib agentservice surface when available; legacy is web_* only.
+	meta["agent_runtime"] = "corelib_agentservice"
+	meta["tools"] = []string{"web_search", "web_fetch", "skills", "mcp", "memory", "files"}
+	flusher, err := mobileBeginSearchSSE(w, meta)
+	if err != nil {
+		// No flusher: non-stream agent then chunk.
+		answer, requestID, callErr := mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, messages, nil)
+		if callErr != nil {
+			return callErr
+		}
+		payload := mobileSearchBasePayload(principal, query, citations, mode, requestID)
+		payload["answer"] = answer
+		payload["agent"] = true
+		payload["status"] = "ready"
+		mobileWriteSearchSSE(w, payload)
+		return nil
+	}
+
+	toolEvents := make([]map[string]any, 0, 8)
+	streamedTokens := false
+	var emit mobileAgentEventWriter = func(event string, data map[string]any) {
+		switch event {
+		case "delta":
+			streamedTokens = true
+		case "tool_call":
+			toolEvents = append(toolEvents, map[string]any{
+				"kind": "call", "id": data["id"], "name": data["name"], "detail": data["arguments"],
+			})
+		case "tool_result":
+			toolEvents = append(toolEvents, map[string]any{
+				"kind": "result", "id": data["id"], "name": data["name"], "detail": data["result"],
+			})
+		}
+		_ = mobileWriteSSEEvent(w, event, data)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	answer, requestID, err := mobileRunAgentLoop(r.Context(), r, principal, officialLLM, delegated, useDelegated, messages, emit)
+	if err != nil {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	if strings.TrimSpace(answer) == "" {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	// Core agent already streams via OnToken; avoid replaying the full answer.
+	if !streamedTokens {
+		mobileWriteAnswerDeltas(w, flusher, answer)
+	}
+	payload := mobileSearchBasePayload(principal, query, citations, mode, requestID)
+	payload["answer"] = answer
+	payload["agent"] = true
+	if len(toolEvents) > 0 {
+		payload["tool_events"] = toolEvents
+	}
+	mobileFinishSearchSSE(w, flusher, payload)
+	return nil
+}
+
+// mobileStreamOfficialSearchAnswer streams mobile SSE while calling the official
+// Hub LLM. When the upstream handler emits OpenAI chat-completion SSE, token
+// deltas are forwarded live; non-stream JSON responses are chunked for UX.
+// Deprecated for the main search path in favor of mobileStreamAgentSearchAnswer;
+// retained for targeted tests/callers.
+func mobileStreamOfficialSearchAnswer(r *http.Request, w http.ResponseWriter, principal *auth.ViewerPrincipal, query string, citations []map[string]string, handler http.Handler, messages []map[string]string) error {
+	meta := mobileSearchBasePayload(principal, query, citations, "maclaw_official", "")
+	flusher, err := mobileBeginSearchSSE(w, meta)
+	if err != nil {
+		// No flusher: fall back to non-stream completion then chunked SSE helper.
+		answer, requestID, callErr := mobileOfficialSearchAnswer(r, handler, messages)
+		if callErr != nil {
+			return callErr
+		}
+		payload := mobileSearchBasePayload(principal, query, citations, "maclaw_official", requestID)
+		payload["answer"] = answer
+		payload["status"] = "ready"
+		mobileWriteSearchSSE(w, payload)
+		return nil
+	}
+
 	body, err := json.Marshal(map[string]any{
-		"model": "auto", "messages": []map[string]string{{"role": "user", "content": prompt}}, "stream": false,
+		"model":    "auto",
+		"messages": messages,
+		"stream":   true,
+	})
+	if err != nil {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	request := r.Clone(r.Context())
+	request.Method = http.MethodPost
+	urlCopy := *request.URL
+	request.URL = &urlCopy
+	request.URL.Path = "/api/llm/v1/chat/completions"
+	request.RequestURI = request.URL.RequestURI()
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+	request.Header = r.Header.Clone()
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+
+	bridge := newMobileLLMStreamBridge(w, flusher)
+	handler.ServeHTTP(bridge, request)
+	requestID := bridge.requestID
+	if requestID == "" {
+		requestID = bridge.Header().Get("X-MaClaw-Request-ID")
+	}
+
+	if bridge.status != 0 && (bridge.status < http.StatusOK || bridge.status >= http.StatusMultipleChoices) {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+
+	answer := strings.TrimSpace(bridge.answer.String())
+	if answer == "" && bridge.jsonBuf.Len() > 0 {
+		// Upstream ignored stream=true and returned a full JSON completion.
+		parsed, rid, parseErr := mobileLLMResponseAnswer(bridge.jsonBuf.Bytes(), requestID)
+		if parseErr != nil {
+			mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+			return nil
+		}
+		if rid != "" {
+			requestID = rid
+		}
+		answer = parsed
+		mobileWriteAnswerDeltas(w, flusher, answer)
+	}
+	if strings.TrimSpace(answer) == "" {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+
+	payload := mobileSearchBasePayload(principal, query, citations, "maclaw_official", requestID)
+	payload["answer"] = answer
+	mobileFinishSearchSSE(w, flusher, payload)
+	return nil
+}
+
+func mobileWriteAnswerDeltas(w http.ResponseWriter, flusher http.Flusher, answer string) {
+	for _, chunk := range mobileChunkAnswerForSSE(answer, 48) {
+		_ = mobileWriteSSEEvent(w, "delta", map[string]any{"text": chunk})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
+// mobileStreamThirdPartySearchAnswer streams mobile SSE from a desktop-delegated
+// OpenAI-compatible provider with stream=true when possible.
+func mobileStreamThirdPartySearchAnswer(ctx context.Context, w http.ResponseWriter, principal *auth.ViewerPrincipal, query string, citations []map[string]string, record mobileLlmAuthorizationRecord, messages []map[string]string) error {
+	meta := mobileSearchBasePayload(principal, query, citations, "desktop_qr_third_party", "")
+	flusher, err := mobileBeginSearchSSE(w, meta)
+	if err != nil {
+		answer, requestID, callErr := mobileThirdPartySearchAnswer(ctx, record, messages)
+		if callErr != nil {
+			return callErr
+		}
+		payload := mobileSearchBasePayload(principal, query, citations, "desktop_qr_third_party", requestID)
+		payload["answer"] = answer
+		payload["status"] = "ready"
+		mobileWriteSearchSSE(w, payload)
+		return nil
+	}
+
+	if protocol := strings.TrimSpace(strings.ToLower(record.Protocol)); protocol != "" && protocol != "openai" {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	endpoint, err := mobileOpenAIChatCompletionURL(record.ProviderURL)
+	if err != nil {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	model := strings.TrimSpace(record.Model)
+	if model == "" {
+		model = "auto"
+	}
+	body, err := json.Marshal(map[string]any{"model": model, "messages": messages, "stream": true})
+	if err != nil {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(record.APIKey))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	response, err := mobileLLMHTTPClient.Do(req)
+	if err != nil {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+	defer response.Body.Close()
+	requestID := response.Header.Get("X-Request-ID")
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+
+	contentType := response.Header.Get("Content-Type")
+	var answer string
+	// Some providers omit Content-Type; sniff SSE vs JSON from the first bytes.
+	buffered := bufio.NewReaderSize(response.Body, 64*1024)
+	looksLikeSSE := strings.Contains(contentType, "text/event-stream")
+	if !looksLikeSSE {
+		if prefix, peekErr := buffered.Peek(8); peekErr == nil {
+			trimmed := bytes.TrimLeft(prefix, " \t\r\n")
+			looksLikeSSE = bytes.HasPrefix(trimmed, []byte("data:")) ||
+				bytes.HasPrefix(trimmed, []byte("event:")) ||
+				bytes.HasPrefix(trimmed, []byte(":"))
+		}
+	}
+	if looksLikeSSE {
+		answer, _ = mobileForwardOpenAIStream(buffered, w, flusher)
+	} else {
+		payload, readErr := io.ReadAll(io.LimitReader(buffered, 2<<20))
+		if readErr != nil {
+			mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+			return nil
+		}
+		parsed, rid, parseErr := mobileLLMResponseAnswer(payload, requestID)
+		if parseErr != nil {
+			mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+			return nil
+		}
+		if rid != "" {
+			requestID = rid
+		}
+		answer = parsed
+		mobileWriteAnswerDeltas(w, flusher, answer)
+	}
+	if strings.TrimSpace(answer) == "" {
+		mobileEmitSSEClientError(w, flusher, "MOBILE_LLM_FAILED", "mobile AI assistant request failed")
+		return nil
+	}
+
+	done := mobileSearchBasePayload(principal, query, citations, "desktop_qr_third_party", requestID)
+	done["answer"] = strings.TrimSpace(answer)
+	mobileFinishSearchSSE(w, flusher, done)
+	return nil
+}
+
+// mobileLLMStreamBridge captures an in-process official LLM ServeHTTP response
+// and, for OpenAI SSE bodies, immediately re-emits content deltas as mobile SSE.
+type mobileLLMStreamBridge struct {
+	client    http.ResponseWriter
+	flusher   http.Flusher
+	header    http.Header
+	status    int
+	wrote     bool
+	isSSE     bool
+	pending   bytes.Buffer // incomplete SSE lines (byte-oriented for fewer copies)
+	answer    strings.Builder
+	jsonBuf   bytes.Buffer
+	requestID string
+}
+
+func newMobileLLMStreamBridge(w http.ResponseWriter, flusher http.Flusher) *mobileLLMStreamBridge {
+	return &mobileLLMStreamBridge{
+		client:  w,
+		flusher: flusher,
+		header:  make(http.Header),
+	}
+}
+
+func (b *mobileLLMStreamBridge) Header() http.Header {
+	if b.header == nil {
+		b.header = make(http.Header)
+	}
+	return b.header
+}
+
+func (b *mobileLLMStreamBridge) WriteHeader(status int) {
+	if b.wrote {
+		return
+	}
+	b.status = status
+	b.requestID = b.header.Get("X-MaClaw-Request-ID")
+	b.isSSE = strings.Contains(b.header.Get("Content-Type"), "text/event-stream")
+	b.wrote = true
+}
+
+func (b *mobileLLMStreamBridge) Write(p []byte) (int, error) {
+	if !b.wrote {
+		b.WriteHeader(http.StatusOK)
+	}
+	if b.status != 0 && (b.status < http.StatusOK || b.status >= http.StatusMultipleChoices) {
+		// Keep a bounded error body for diagnostics; do not forward upstream payload.
+		b.appendJSONBuf(p)
+		return len(p), nil
+	}
+	if b.isSSE {
+		b.consumeOpenAIStreamBytes(p)
+		return len(p), nil
+	}
+	b.appendJSONBuf(p)
+	return len(p), nil
+}
+
+func (b *mobileLLMStreamBridge) appendJSONBuf(p []byte) {
+	remain := mobileLLMStreamJSONBodyMax - b.jsonBuf.Len()
+	if remain <= 0 {
+		return
+	}
+	if len(p) > remain {
+		p = p[:remain]
+	}
+	_, _ = b.jsonBuf.Write(p)
+}
+
+func (b *mobileLLMStreamBridge) Flush() {
+	if b.flusher != nil {
+		b.flusher.Flush()
+	}
+}
+
+func (b *mobileLLMStreamBridge) consumeOpenAIStreamBytes(p []byte) {
+	_, _ = b.pending.Write(p)
+	for {
+		data := b.pending.Bytes()
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			// Guard against a pathological upstream that never sends a newline.
+			if b.pending.Len() > mobileLLMStreamPendingMax {
+				keepFrom := b.pending.Len() - mobileLLMStreamPendingMax/2
+				if keepFrom < 0 {
+					keepFrom = 0
+				}
+				keep := append([]byte(nil), data[keepFrom:]...)
+				b.pending.Reset()
+				_, _ = b.pending.Write(keep)
+			}
+			return
+		}
+		lineBytes := bytes.TrimRight(data[:idx], "\r")
+		rest := append([]byte(nil), data[idx+1:]...)
+		b.pending.Reset()
+		if len(rest) > 0 {
+			_, _ = b.pending.Write(rest)
+		}
+		line := string(lineBytes)
+		if delta, ok := mobileOpenAIStreamDelta(line); ok && delta != "" {
+			b.answer.WriteString(delta)
+			_ = mobileWriteSSEEvent(b.client, "delta", map[string]any{"text": delta})
+			if b.flusher != nil {
+				b.flusher.Flush()
+			}
+		}
+	}
+}
+
+// mobileForwardOpenAIStream reads an upstream OpenAI SSE body and re-emits
+// content deltas as mobile `delta` events. Returns the full assembled answer.
+func mobileForwardOpenAIStream(body io.Reader, w http.ResponseWriter, flusher http.Flusher) (string, error) {
+	var answer strings.Builder
+	scanner := bufio.NewScanner(body)
+	// Allow larger SSE lines (default 64K is usually enough; raise for safety).
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		delta, ok := mobileOpenAIStreamDelta(line)
+		if !ok || delta == "" {
+			continue
+		}
+		answer.WriteString(delta)
+		if err := mobileWriteSSEEvent(w, "delta", map[string]any{"text": delta}); err != nil {
+			return answer.String(), err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	return answer.String(), scanner.Err()
+}
+
+// mobileOpenAIStreamDelta extracts choices[0].delta.content from one SSE line.
+// Returns ok=false for non-data lines / [DONE] / unparseable payloads.
+// Content may be a string or (rarely) an array of text parts.
+func mobileOpenAIStreamDelta(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return "", false
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return "", false
+	}
+	if len(chunk.Choices) == 0 || len(chunk.Choices[0].Delta.Content) == 0 {
+		return "", false
+	}
+	raw := bytes.TrimSpace(chunk.Choices[0].Delta.Content)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+	// Common case: "text"
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, true
+	}
+	// Rare: ["part1","part2"] or [{"type":"text","text":"..."}]
+	var asArray []json.RawMessage
+	if err := json.Unmarshal(raw, &asArray); err != nil || len(asArray) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	for _, part := range asArray {
+		var s string
+		if json.Unmarshal(part, &s) == nil {
+			b.WriteString(s)
+			continue
+		}
+		var obj struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(part, &obj) == nil && obj.Text != "" {
+			b.WriteString(obj.Text)
+		}
+	}
+	if b.Len() == 0 {
+		return "", false
+	}
+	return b.String(), true
+}
+
+func mobileOfficialSearchAnswer(r *http.Request, handler http.Handler, messages []map[string]string) (string, string, error) {
+	if len(messages) == 0 {
+		return "", "", fmt.Errorf("official LLM messages are required")
+	}
+	body, err := json.Marshal(map[string]any{
+		"model": "auto", "messages": messages, "stream": false,
 	})
 	if err != nil {
 		return "", "", err
@@ -1165,21 +2643,9 @@ func mobileOfficialSearchAnswer(r *http.Request, handler http.Handler, prompt st
 	if recorder.Code < http.StatusOK || recorder.Code >= http.StatusMultipleChoices {
 		return "", requestID, fmt.Errorf("official LLM returned HTTP %d", recorder.Code)
 	}
-	var response struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		return "", requestID, err
-	}
-	if len(response.Choices) == 0 || strings.TrimSpace(response.Choices[0].Message.Content) == "" {
-		return "", requestID, fmt.Errorf("official LLM response did not contain an answer")
-	}
-	return strings.TrimSpace(response.Choices[0].Message.Content), requestID, nil
+	return mobileLLMResponseAnswer(recorder.Body.Bytes(), requestID)
 }
+
 func mobileThirdPartyLLMAuthorization(ctx context.Context, tenantID, userID string) (mobileLlmAuthorizationRecord, bool) {
 	mobileLlmAuthorizations.Lock()
 	record, ok := mobileLlmAuthorizations.authorizations[mobileLlmAuthorizationKey(tenantID, userID)]
@@ -1195,9 +2661,12 @@ func mobileThirdPartyLLMAuthorization(ctx context.Context, tenantID, userID stri
 	return record, ok && strings.TrimSpace(record.ProviderURL) != "" && strings.TrimSpace(record.APIKey) != ""
 }
 
-func mobileThirdPartySearchAnswer(ctx context.Context, record mobileLlmAuthorizationRecord, prompt string) (string, string, error) {
+func mobileThirdPartySearchAnswer(ctx context.Context, record mobileLlmAuthorizationRecord, messages []map[string]string) (string, string, error) {
 	if protocol := strings.TrimSpace(strings.ToLower(record.Protocol)); protocol != "" && protocol != "openai" {
 		return "", "", fmt.Errorf("unsupported desktop LLM protocol %q", protocol)
+	}
+	if len(messages) == 0 {
+		return "", "", fmt.Errorf("desktop delegated LLM messages are required")
 	}
 	endpoint, err := mobileOpenAIChatCompletionURL(record.ProviderURL)
 	if err != nil {
@@ -1207,7 +2676,7 @@ func mobileThirdPartySearchAnswer(ctx context.Context, record mobileLlmAuthoriza
 	if model == "" {
 		model = "auto"
 	}
-	body, err := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "stream": false})
+	body, err := json.Marshal(map[string]any{"model": model, "messages": messages, "stream": false})
 	if err != nil {
 		return "", "", err
 	}
@@ -1268,33 +2737,34 @@ func mobileSearchAnswer(query string, results []websearch.SearchResult, links []
 	query = strings.TrimSpace(query)
 	if len(results) == 0 {
 		if len(links) > 0 {
-			return "已识别分享链接。当前没有额外搜索结果，已保留链接作为来源，可继续整理为文档草稿或补充问题。"
+			return "已识别你分享的链接，并会把它作为来源。我还没有检索到更多公开网页结果；你可以补充想了解的重点，或直接让我根据链接帮你整理要点。"
 		}
-		return "未找到可引用的搜索结果。请换一个更具体的问题再试。"
+		return "暂时没有找到可引用的公开来源。请换一个更具体的问题，或补充地点、时间、系统名称等关键信息后再试。"
 	}
+	// Fallback when no LLM is wired: never dump SERP snippets as the main answer.
 	var b strings.Builder
-	b.WriteString("已为你检索：")
-	b.WriteString(query)
-	b.WriteString("\n\n")
-	b.WriteString("可先参考这些来源：")
+	b.WriteString("已找到 ")
+	b.WriteString(strconv.Itoa(len(results)))
+	b.WriteString(" 条相关来源")
+	if query != "" {
+		b.WriteString("（关于「")
+		b.WriteString(query)
+		b.WriteString("」）")
+	}
+	b.WriteString("。完整结构化总结需要可用的 LLM 服务；当前先给出可点开核对的来源标题，展开「来源」可查看链接。")
 	for i, result := range results {
 		if i >= 3 {
 			break
 		}
-		title := strings.TrimSpace(result.Title)
+		title := mobileCleanSearchText(result.Title, 80)
 		if title == "" {
 			title = strings.TrimSpace(result.URL)
 		}
 		if title == "" {
 			continue
 		}
-		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("%d. %s", i+1, title))
-		snippet := strings.TrimSpace(result.Snippet)
-		if snippet != "" {
-			b.WriteString("：")
-			b.WriteString(snippet)
-		}
+		b.WriteString("\n- ")
+		b.WriteString(title)
 	}
 	return b.String()
 }
@@ -1345,14 +2815,14 @@ func mobileSearchCitations(results []websearch.SearchResult) []map[string]string
 		if url == "" {
 			continue
 		}
-		title := strings.TrimSpace(result.Title)
+		title := mobileCleanSearchText(result.Title, 160)
 		if title == "" {
 			title = url
 		}
 		citations = append(citations, map[string]string{
 			"title":   title,
 			"url":     url,
-			"snippet": strings.TrimSpace(result.Snippet),
+			"snippet": mobileCleanSearchText(result.Snippet, 280),
 		})
 	}
 	return citations
@@ -1371,6 +2841,8 @@ type mobileDocumentDraftUpdateRequest struct {
 
 type mobileDocumentProcessRequest struct {
 	Action string `json:"action"`
+	// Async forces background processing; large drafts auto-upgrade even when false.
+	Async bool `json:"async,omitempty"`
 }
 
 type mobileDocumentExportRequest struct {
@@ -1392,10 +2864,18 @@ type mobileSSHAnalyzeRequest struct {
 
 type mobileBackendSSHSessionRequest struct {
 	ServerProfileID string `json:"server_profile_id"`
+	// ExecMode: desktop_exec (default) | hub_exec (requires vault secret).
+	ExecMode string `json:"exec_mode,omitempty"`
 }
 
 type mobileBackendSSHInputRequest struct {
 	Input string `json:"input"`
+	// DataB64: optional base64 (std or raw) binary frame for hub_exec PTY.
+	// When set, takes precedence over Input and forces raw=true (Phase E binary path).
+	DataB64 string `json:"data_b64,omitempty"`
+	// Raw: hub_exec only — write to interactive PTY without forcing a trailing newline
+	// (for Ctrl-C, partial lines, or true interactive control sequences).
+	Raw bool `json:"raw,omitempty"`
 }
 
 type mobileBackendSSHTaskRequest struct {
@@ -1493,10 +2973,15 @@ func mobileDigitalEmployeeTaskPayload(record mobileDigitalEmployeeTaskRecord) ma
 }
 
 func mobileBackendSSHSessionPayload(record mobileBackendSSHSessionRecord) map[string]any {
+	execMode := record.ExecMode
+	if execMode == "" {
+		execMode = mobileSSHExecDesktop
+	}
 	return map[string]any{
 		"session_id":          record.SessionID,
 		"server_profile_id":   record.ServerProfileID,
 		"backend_session_id":  record.BackendSessionID,
+		"exec_mode":           execMode,
 		"status":              record.Status,
 		"state":               record.State,
 		"message":             record.Message,
@@ -1758,6 +3243,12 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 		if content == "" {
 			content = "请在这里补充正文。"
 		}
+		markdown := "# " + title + "\n\n" + content + "\n"
+		// Free baseline limit; paid bootstrap may show higher but enforcement uses free unless we re-resolve grants (kept simple).
+		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(len(markdown))); err != nil {
+			writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
+			return
+		}
 		now := time.Now().UTC()
 		draftID := fmt.Sprintf("mobdoc_%d", now.UnixNano())
 		record := mobileDocumentDraftRecord{
@@ -1765,13 +3256,14 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 			OwnerID:   principal.UserID,
 			Title:     title,
 			Template:  template,
-			Markdown:  "# " + title + "\n\n" + content + "\n",
+			Markdown:  markdown,
 			UpdatedAt: now,
 		}
 		mobileDocuments.Lock()
 		mobileDocuments.drafts[draftID] = record
 		mobileDocuments.Unlock()
 		mobilePersistState()
+		go mobileIngestDocumentDraft(principal, record)
 
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
@@ -1814,6 +3306,21 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "markdown is required")
 			return
 		}
+		// Pre-check ownership + delta quota outside mutation.
+		mobileDocuments.Lock()
+		prev, okPrev := mobileDocuments.drafts[draftID]
+		mobileDocuments.Unlock()
+		if !okPrev || prev.OwnerID != principal.UserID {
+			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
+			return
+		}
+		delta := int64(len(markdown)) - int64(len(prev.Markdown))
+		if delta > 0 {
+			if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, delta); err != nil {
+				writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
+				return
+			}
+		}
 		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
@@ -1829,6 +3336,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			return
 		}
 		mobilePersistState()
+		go mobileIngestDocumentDraft(principal, record)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
 			"status": "draft_updated",
@@ -1837,8 +3345,7 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 }
 
 // MobileDocumentProcessHandler applies lightweight emergency document actions.
-// It is deterministic today and keeps the same API shape for a richer LLM-backed
-// processor later.
+// Large drafts (or async=true) upgrade to a background job listed in /api/mobile/jobs.
 func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1867,9 +3374,38 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			return
 		}
 
-		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
+		ownerOK := ok && record.OwnerID == principal.UserID
+		markdownSnapshot := ""
+		if ownerOK {
+			markdownSnapshot = record.Markdown
+		}
+		mobileDocuments.Unlock()
+		if !ownerOK {
+			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
+			return
+		}
+
+		// Long path: enqueue background document process job.
+		if mobileDocumentProcessShouldAsync(req.Async, markdownSnapshot) {
+			job := mobileEnqueueDocumentProcessJob(principal, draftID, action)
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":    "accepted",
+				"async":     true,
+				"action":    action,
+				"job_id":    job.JobID,
+				"job":       mobileDocumentProcessJobPayload(job),
+				"draft_id":  draftID,
+				"deep_link": "/documents",
+				"message":   "document process queued; track via GET /api/mobile/documents/process-jobs/{job_id} or /api/mobile/jobs",
+			})
+			return
+		}
+
+		now := time.Now().UTC()
+		mobileDocuments.Lock()
+		record, ok = mobileDocuments.drafts[draftID]
 		if ok && record.OwnerID == principal.UserID {
 			record.Markdown = mobileProcessDocumentMarkdown(action, record.Markdown)
 			record.UpdatedAt = now
@@ -1881,6 +3417,7 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			return
 		}
 		mobilePersistState()
+		go mobileIngestDocumentDraft(principal, record)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"draft":  mobileDocumentDraftPayload(record),
 			"status": "processed",
@@ -2977,6 +4514,10 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "file exceeds mobile upload limit")
 			return
 		}
+		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(len(body))); err != nil {
+			writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
+			return
+		}
 		now := time.Now().UTC()
 		record := mobileDocumentUploadRecord{
 			TaskID:      fmt.Sprintf("mobparse_%d", now.UnixNano()),
@@ -3497,12 +5038,14 @@ func MobileBackendSSHSessionsHandler(identity *auth.IdentityService) http.Handle
 				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "server_profile_id is required")
 				return
 			}
+			execMode := mobileNormalizeSSHExecMode(req.ExecMode)
 			now := time.Now().UTC()
 			record := mobileBackendSSHSessionRecord{
 				SessionID:       fmt.Sprintf("mobssh_%d", now.UnixNano()),
 				TenantID:        principal.TenantID,
 				OwnerID:         principal.UserID,
 				ServerProfileID: serverProfileID,
+				ExecMode:        execMode,
 				Status:          "queued",
 				State:           "pending_agent",
 				Message:         "Backend SSH session request queued for an authorized MaClaw agent.",
@@ -3510,12 +5053,22 @@ func MobileBackendSSHSessionsHandler(identity *auth.IdentityService) http.Handle
 				CreatedAt:       now,
 				UpdatedAt:       now,
 			}
+			if execMode == mobileSSHExecHub {
+				if err := mobileStartHubSSHSession(&record, principal.TenantID, principal.UserID); err != nil {
+					writeError(w, http.StatusBadRequest, "HUB_SSH_UNAVAILABLE", err.Error())
+					return
+				}
+			}
 			mobileBackendSSHSessions.Lock()
 			mobileBackendSSHSessions.sessions[record.SessionID] = record
 			mobileBackendSSHSessions.Unlock()
 			payload := mobileBackendSSHSessionPayload(record)
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
-			writeJSON(w, http.StatusAccepted, map[string]any{"session": payload})
+			status := http.StatusAccepted
+			if execMode == mobileSSHExecHub {
+				status = http.StatusOK
+			}
+			writeJSON(w, status, map[string]any{"session": payload})
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET or POST")
 		}
@@ -3523,15 +5076,172 @@ func MobileBackendSSHSessionsHandler(identity *auth.IdentityService) http.Handle
 }
 
 func MobileBackendSSHSessionAttachHandler(identity *auth.IdentityService) http.HandlerFunc {
-	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "attach_requested", "attaching", "Attach request queued for the backend SSH session.")
+	return mobileBackendSSHSessionHubOrDesktopTransition(
+		identity,
+		http.MethodPost,
+		"attach_requested",
+		"attaching",
+		"Attach request queued for the backend SSH session.",
+		mobileHubSSHHandleAttach,
+	)
 }
 
 func MobileBackendSSHSessionReconnectHandler(identity *auth.IdentityService) http.HandlerFunc {
-	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "reconnect_requested", "reconnecting", "Reconnect request queued for the backend SSH session.")
+	return mobileBackendSSHSessionHubOrDesktopTransition(
+		identity,
+		http.MethodPost,
+		"reconnect_requested",
+		"reconnecting",
+		"Reconnect request queued for the backend SSH session.",
+		mobileHubSSHHandleReconnect,
+	)
 }
 
 func MobileBackendSSHSessionInterruptHandler(identity *auth.IdentityService) http.HandlerFunc {
-	return mobileBackendSSHSessionTransitionHandler(identity, http.MethodPost, "interrupt_requested", "interrupting", "Interrupt request queued for the backend SSH session.")
+	return mobileBackendSSHSessionHubOrDesktopTransition(
+		identity,
+		http.MethodPost,
+		"interrupt_requested",
+		"interrupting",
+		"Interrupt request queued for the backend SSH session.",
+		mobileHubSSHHandleInterrupt,
+	)
+}
+
+// mobileHubSSHSessionAction applies a hub_exec control action; returns updated record.
+type mobileHubSSHSessionAction func(record *mobileBackendSSHSessionRecord, principal *auth.ViewerPrincipal) error
+
+func mobileHubSSHHandleAttach(record *mobileBackendSSHSessionRecord, principal *auth.ViewerPrincipal) error {
+	// Re-open interactive shell on existing dial (or dial if needed).
+	profile, ok := mobileFindServerProfile(principal.TenantID, principal.UserID, record.ServerProfileID)
+	if !ok {
+		return fmt.Errorf("server profile not found")
+	}
+	vault, ok := mobileSSHVaultLookup(principal.TenantID, principal.UserID, record.ServerProfileID)
+	if !ok {
+		return fmt.Errorf("vault secret missing")
+	}
+	if _, err := mobileHubLiveEnsureShell(record.SessionID, profile, vault); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	record.Status = "ready"
+	record.State = "hub_connected"
+	record.Message = "Hub shell re-attached (hub_exec)."
+	record.UpdatedAt = now
+	return nil
+}
+
+func mobileHubSSHHandleReconnect(record *mobileBackendSSHSessionRecord, principal *auth.ViewerPrincipal) error {
+	if err := mobileHubSSHReconnectSession(record, principal.TenantID, principal.UserID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mobileHubSSHHandleInterrupt(record *mobileBackendSSHSessionRecord, principal *auth.ViewerPrincipal) error {
+	out, err := mobileHubSSHInterruptSession(record.SessionID)
+	now := time.Now().UTC()
+	note := "\n[hub_exec interrupt]\n" + out + "\n"
+	record.RecentOutput = mobileClipRunes(record.RecentOutput+note, 8000)
+	record.OutputChunk = note
+	record.OutputSeq++
+	record.UpdatedAt = now
+	if err != nil {
+		record.Status = "ready"
+		record.State = "hub_connected"
+		record.Message = "hub_exec interrupt failed: " + err.Error()
+		return err
+	}
+	record.Status = "ready"
+	record.State = "hub_connected"
+	record.Message = "hub_exec interrupt sent (Ctrl-C to interactive shell)."
+	return nil
+}
+
+func mobileBackendSSHSessionHubOrDesktopTransition(
+	identity *auth.IdentityService,
+	method, status, state, message string,
+	hubAction mobileHubSSHSessionAction,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use "+method)
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id is required")
+			return
+		}
+		now := time.Now().UTC()
+		mobileBackendSSHSessions.Lock()
+		record, ok := mobileBackendSSHSessions.sessions[sessionID]
+		if ok && (record.OwnerID != principal.UserID || record.TenantID != principal.TenantID) {
+			ok = false
+		}
+		if !ok {
+			mobileBackendSSHSessions.Unlock()
+			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
+			return
+		}
+		if record.ExecMode == mobileSSHExecHub && hubAction != nil {
+			// Apply hub_exec action outside the map lock (may dial / read shell).
+			mobileBackendSSHSessions.Unlock()
+			if runErr := hubAction(&record, principal); runErr != nil {
+				// Persist best-effort status then return error.
+				mobileBackendSSHSessions.Lock()
+				if existing, exists := mobileBackendSSHSessions.sessions[sessionID]; exists {
+					// Keep any fields hubAction already mutated on record.
+					existing.Status = record.Status
+					if existing.Status == "" || existing.Status == "interrupt_requested" || existing.Status == "reconnect_requested" || existing.Status == "attach_requested" {
+						existing.Status = "failed"
+					}
+					existing.State = record.State
+					if existing.State == "" {
+						existing.State = "hub_error"
+					}
+					existing.Message = record.Message
+					if existing.Message == "" {
+						existing.Message = runErr.Error()
+					}
+					existing.RecentOutput = record.RecentOutput
+					existing.OutputChunk = record.OutputChunk
+					existing.OutputSeq = record.OutputSeq
+					existing.UpdatedAt = time.Now().UTC()
+					mobileBackendSSHSessions.sessions[sessionID] = existing
+					record = existing
+				}
+				mobileBackendSSHSessions.Unlock()
+				payload := mobileBackendSSHSessionPayload(record)
+				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+				writeError(w, http.StatusBadGateway, "HUB_SSH_CONTROL_FAILED", runErr.Error())
+				return
+			}
+			mobileBackendSSHSessions.Lock()
+			mobileBackendSSHSessions.sessions[sessionID] = record
+			mobileBackendSSHSessions.Unlock()
+			payload := mobileBackendSSHSessionPayload(record)
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+			writeJSON(w, http.StatusOK, map[string]any{"session": payload})
+			return
+		}
+		// desktop_exec: queue for worker claim.
+		record.Status = status
+		record.State = state
+		record.Message = message
+		record.UpdatedAt = now
+		mobileBackendSSHSessions.sessions[sessionID] = record
+		mobileBackendSSHSessions.Unlock()
+		payload := mobileBackendSSHSessionPayload(record)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+		writeJSON(w, http.StatusOK, map[string]any{"session": payload})
+	}
 }
 
 func mobileBackendSSHSessionTransitionHandler(identity *auth.IdentityService, method, status, state, message string) http.HandlerFunc {
@@ -3597,9 +5307,13 @@ func MobileBackendSSHSessionInputHandler(identity *auth.IdentityService) http.Ha
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
 			return
 		}
-		input := strings.TrimSpace(req.Input)
+		input, raw, resolveErr := mobileResolvePtyInputBytes(req.Input, req.DataB64, req.Raw)
+		if resolveErr != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", resolveErr.Error())
+			return
+		}
 		if input == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "input is required")
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "input or data_b64 is required")
 			return
 		}
 		now := time.Now().UTC()
@@ -3608,23 +5322,50 @@ func MobileBackendSSHSessionInputHandler(identity *auth.IdentityService) http.Ha
 		if ok && (record.OwnerID != principal.UserID || record.TenantID != principal.TenantID) {
 			ok = false
 		}
-		if ok {
-			record.PendingInput = append(record.PendingInput, input)
-			if len(record.PendingInput) > 50 {
-				record.PendingInput = record.PendingInput[len(record.PendingInput)-50:]
-			}
-			record.Status = "input_queued"
-			record.State = "pending_agent"
-			record.Message = "Input queued for authorized backend SSH session handling."
-			record.RecentOutput = "Input queued. The mobile app did not execute this command locally."
-			record.UpdatedAt = now
-			mobileBackendSSHSessions.sessions[sessionID] = record
-		}
-		mobileBackendSSHSessions.Unlock()
 		if !ok {
+			mobileBackendSSHSessions.Unlock()
 			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
 			return
 		}
+		// hub_exec: run input as a short one-shot command on Hub (no desktop agent).
+		if record.ExecMode == mobileSSHExecHub {
+			out, runErr := mobileHubSSHRunInput(&record, input, raw)
+			mobileBackendSSHSessions.sessions[sessionID] = record
+			mobileBackendSSHSessions.Unlock()
+			payload := mobileBackendSSHSessionPayload(record)
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
+			status := http.StatusOK
+			if runErr != nil {
+				status = http.StatusBadGateway
+			}
+			writeJSON(w, status, map[string]any{
+				"session_id": sessionID,
+				"status":     record.Status,
+				"message":    record.Message,
+				"output":     out,
+				"raw":        raw,
+				"binary":     strings.TrimSpace(req.DataB64) != "",
+				"session":    payload,
+			})
+			return
+		}
+		if raw {
+			// desktop_exec has no raw PTY path on Hub.
+			mobileBackendSSHSessions.Unlock()
+			writeError(w, http.StatusBadRequest, "RAW_INPUT_UNSUPPORTED", "raw input requires exec_mode=hub_exec")
+			return
+		}
+		record.PendingInput = append(record.PendingInput, input)
+		if len(record.PendingInput) > 50 {
+			record.PendingInput = record.PendingInput[len(record.PendingInput)-50:]
+		}
+		record.Status = "input_queued"
+		record.State = "pending_agent"
+		record.Message = "Input queued for authorized backend SSH session handling."
+		record.RecentOutput = "Input queued. The mobile app did not execute this command locally."
+		record.UpdatedAt = now
+		mobileBackendSSHSessions.sessions[sessionID] = record
+		mobileBackendSSHSessions.Unlock()
 		payload := mobileBackendSSHSessionPayload(record)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(payload))
 		writeJSON(w, http.StatusAccepted, map[string]any{
@@ -3710,6 +5451,38 @@ func MobileBackendSSHSessionTasksHandler(identity *auth.IdentityService) http.Ha
 				CreatedAt:        now,
 				UpdatedAt:        now,
 			}
+			if session.ExecMode == mobileSSHExecHub {
+				async := mobileHubSSHTaskShouldAsync(command, false) ||
+					strings.EqualFold(action, "exec_background")
+				// Always queue first so list/jobs can show it.
+				mobileBackendSSHTasks.Lock()
+				mobileBackendSSHTasks.tasks[task.TaskID] = task
+				mobileBackendSSHTasks.Unlock()
+				if async {
+					// Long path: run in background; client polls task / jobs / realtime.
+					taskCopy := task
+					sessionCopy := session
+					go mobileRunHubSSHTask(&taskCopy, sessionCopy)
+					payload := mobileBackendSSHTaskPayload(task)
+					mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+					writeJSON(w, http.StatusAccepted, map[string]any{
+						"task":    payload,
+						"async":   true,
+						"message": "hub_exec task accepted; poll task status or /api/mobile/jobs",
+					})
+					return
+				}
+				// Short path: run inline for snappy emergency commands.
+				mobileRunHubSSHTask(&task, session)
+				payload := mobileBackendSSHTaskPayload(task)
+				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+				code := http.StatusOK
+				if task.Status == "failed" {
+					code = http.StatusBadGateway
+				}
+				writeJSON(w, code, map[string]any{"task": payload, "async": false})
+				return
+			}
 			mobileBackendSSHTasks.Lock()
 			mobileBackendSSHTasks.tasks[task.TaskID] = task
 			mobileBackendSSHTasks.Unlock()
@@ -3763,7 +5536,76 @@ func MobileBackendSSHSessionTaskWaitHandler(identity *auth.IdentityService) http
 }
 
 func MobileBackendSSHSessionTaskKillHandler(identity *auth.IdentityService) http.HandlerFunc {
-	return mobileBackendSSHSessionTaskTransitionHandler(identity, "kill_requested", "Kill request queued for MaClaw GUI/agent.")
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		sessionID := strings.TrimSpace(r.PathValue("sessionId"))
+		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		if sessionID == "" || taskID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "session id and task id are required")
+			return
+		}
+		now := time.Now().UTC()
+		var task mobileBackendSSHTaskRecord
+		var hubExec bool
+		mobileBackendSSHSessions.Lock()
+		if sess, sessOK := mobileBackendSSHSessions.sessions[sessionID]; sessOK &&
+			sess.OwnerID == principal.UserID && sess.TenantID == principal.TenantID {
+			hubExec = sess.ExecMode == mobileSSHExecHub
+		}
+		mobileBackendSSHSessions.Unlock()
+
+		mobileBackendSSHTasks.Lock()
+		existing, ok := mobileBackendSSHTasks.tasks[taskID]
+		if ok && (existing.SessionID != sessionID || existing.OwnerID != principal.UserID || existing.TenantID != principal.TenantID) {
+			ok = false
+		}
+		if ok {
+			if hubExec {
+				status := strings.ToLower(strings.TrimSpace(existing.Status))
+				switch status {
+				case "ready", "failed", "cancelled":
+					// Terminal — acknowledge without changing.
+				case "queued", "":
+					existing.Status = "cancelled"
+					existing.Message = "cancelled on Hub before start"
+				default:
+					// running / kill_requested / agent_claimed …
+					_ = mobileHubTaskCancel(taskID)
+					existing.Status = "kill_requested"
+					existing.Message = "kill requested on Hub; stopping remote command"
+				}
+				existing.UpdatedAt = now
+				mobileBackendSSHTasks.tasks[taskID] = existing
+				task = existing
+			} else {
+				existing.Status = "kill_requested"
+				existing.Message = "Kill request queued for MaClaw GUI/agent."
+				existing.UpdatedAt = now
+				mobileBackendSSHTasks.tasks[taskID] = existing
+				task = existing
+			}
+		}
+		mobileBackendSSHTasks.Unlock()
+		if !ok {
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "backend SSH task not found")
+			return
+		}
+		payload := mobileBackendSSHTaskPayload(task)
+		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHTaskEvent(payload))
+		code := http.StatusAccepted
+		if hubExec && (task.Status == "cancelled" || task.Status == "ready" || task.Status == "failed") {
+			code = http.StatusOK
+		}
+		writeJSON(w, code, map[string]any{"task": payload})
+	}
 }
 
 func mobileBackendSSHSessionTaskTransitionHandler(identity *auth.IdentityService, status, message string) http.HandlerFunc {
@@ -3795,6 +5637,26 @@ func mobileBackendSSHSessionTaskTransitionHandler(identity *auth.IdentityService
 			ok = false
 		}
 		if ok {
+			// hub_exec wait: no desktop agent — just return current status (poll).
+			if sess, sessOK := mobileBackendSSHOwnedSession(sessionID, principal); sessOK && sess.ExecMode == mobileSSHExecHub {
+				// Keep status; optionally refresh timeout fields for client.
+				if req.TimeoutSeconds > 0 {
+					existing.TimeoutSeconds = req.TimeoutSeconds
+				}
+				if req.TailLines > 0 {
+					existing.TailLines = req.TailLines
+				}
+				existing.UpdatedAt = now
+				if existing.Message == "" {
+					existing.Message = "hub_exec task; poll status (no desktop wait)"
+				}
+				mobileBackendSSHTasks.tasks[taskID] = existing
+				task = existing
+				mobileBackendSSHTasks.Unlock()
+				payload := mobileBackendSSHTaskPayload(task)
+				writeJSON(w, http.StatusOK, map[string]any{"task": payload, "hub_exec": true})
+				return
+			}
 			existing.Status = status
 			existing.Message = message
 			existing.TimeoutSeconds = req.TimeoutSeconds
@@ -3844,22 +5706,35 @@ func MobileBackendSSHSessionFilesHandler(identity *auth.IdentityService) http.Ha
 		}
 		action := strings.ToLower(strings.TrimSpace(req.Action))
 		switch action {
-		case "stat", "list", "download", "upload":
+		case "stat", "list", "read", "preview", "cat", "download", "upload":
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "unsupported backend SSH file operation")
 			return
 		}
+		if action == "preview" || action == "cat" {
+			action = "read"
+		}
 		localPath := strings.TrimSpace(req.LocalPath)
 		remotePath := strings.TrimSpace(req.RemotePath)
 		switch action {
-		case "upload", "download":
+		case "upload":
 			if localPath == "" || remotePath == "" {
-				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "upload and download require both local_path and remote_path")
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "upload requires both local_path and remote_path")
 				return
 			}
-		case "stat", "list":
+		case "download":
+			// hub_exec: remote only (Hub stores blob). desktop_exec: still wants local path.
 			if remotePath == "" {
-				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "stat and list require remote_path")
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "download requires remote_path")
+				return
+			}
+			if session.ExecMode != mobileSSHExecHub && localPath == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "desktop_exec download requires local_path and remote_path")
+				return
+			}
+		case "stat", "list", "read":
+			if remotePath == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", "stat/list/read require remote_path")
 				return
 			}
 		}
@@ -3878,6 +5753,43 @@ func MobileBackendSSHSessionFilesHandler(identity *auth.IdentityService) http.Ha
 			ClaimedBy:        session.ClaimedBy,
 			CreatedAt:        now,
 			UpdatedAt:        now,
+		}
+		if session.ExecMode == mobileSSHExecHub {
+			switch action {
+			case "stat", "list", "read", "download":
+				// Hub-side remote inspection / download (no desktop required).
+				// download: Hub pulls remote file (chunked base64 up to absolute cap) into a short-lived token URL.
+				opCopy := operation
+				mobileBackendSSHFileOperations.Lock()
+				mobileBackendSSHFileOperations.operations[operation.OperationID] = operation
+				mobileBackendSSHFileOperations.Unlock()
+				mobileHubSSHRunFileOp(session, &opCopy)
+				// Reload result written by runner.
+				mobileBackendSSHFileOperations.Lock()
+				if latest, ok := mobileBackendSSHFileOperations.operations[operation.OperationID]; ok {
+					operation = latest
+				} else {
+					operation = opCopy
+				}
+				mobileBackendSSHFileOperations.Unlock()
+				payload := mobileBackendSSHFileOperationPayload(operation)
+				code := http.StatusOK
+				if operation.Status == "failed" {
+					code = http.StatusBadGateway
+				}
+				writeJSON(w, code, map[string]any{"operation": payload, "hub_exec": true})
+				return
+			case "upload":
+				operation.Status = "failed"
+				operation.Message = "hub_exec does not support upload (phone local paths); use desktop_exec"
+				operation.UpdatedAt = now
+				mobileBackendSSHFileOperations.Lock()
+				mobileBackendSSHFileOperations.operations[operation.OperationID] = operation
+				mobileBackendSSHFileOperations.Unlock()
+				payload := mobileBackendSSHFileOperationPayload(operation)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"operation": payload, "hub_exec": true})
+				return
+			}
 		}
 		mobileBackendSSHFileOperations.Lock()
 		mobileBackendSSHFileOperations.operations[operation.OperationID] = operation
@@ -4167,9 +6079,16 @@ func MobileBackendSSHSessionCloseHandler(identity *auth.IdentityService) http.Ha
 			ok = false
 		}
 		if ok {
-			existing.Status = "close_requested"
-			existing.State = "closing"
-			existing.Message = "Close request queued for the backend SSH session."
+			if existing.ExecMode == mobileSSHExecHub {
+				// hub_exec: drop live TCP/shell immediately; no desktop worker claim.
+				existing.Status = "closed"
+				existing.State = "hub_closed"
+				existing.Message = "Hub SSH live connection and interactive shell closed."
+			} else {
+				existing.Status = "close_requested"
+				existing.State = "closing"
+				existing.Message = "Close request queued for the backend SSH session."
+			}
 			existing.UpdatedAt = now
 			record = existing
 			mobileBackendSSHSessions.sessions[sessionID] = existing
@@ -4179,6 +6098,8 @@ func MobileBackendSSHSessionCloseHandler(identity *auth.IdentityService) http.Ha
 			writeError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "backend SSH session not found")
 			return
 		}
+		// Always tear down any hub_exec live resources keyed by this session id.
+		mobileHubLiveCloseSession(sessionID)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeBackendSSHSessionEvent(mobileBackendSSHSessionPayload(record)))
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -4574,7 +6495,11 @@ func MobileDigitalEmployeeTaskStatusHandler(identity *auth.IdentityService) http
 // MobileDigitalEmployeesHandler lists digital employees a mobile viewer may use
 // as remote capability entry points. It intentionally uses viewer auth instead
 // of the desktop machine token required by /api/ve/discoverable.
-func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.SystemSettingsRepository) http.HandlerFunc {
+//
+// Design §3.2: free / default Mobile shows only the viewer's own twins
+// (OwnerUserID match + bound machines). Tenant shared pools require
+// entitlements.shared_employees; group-restricted VEs use VisibleGroupIDs.
+func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
@@ -4582,13 +6507,34 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 			return
 		}
 
+		allowShared := mobileViewerAllowsSharedEmployees(r.Context(), principal, system)
+
+		// Resolve org group path for VisibleGroupIDs filtering (shared pool only).
+		var (
+			requesterGroupPath         []string
+			requesterGroupPathResolved bool
+		)
+		if allowShared && securitySvc != nil && identity != nil {
+			resolver := veSecurityVisibilityResolver{
+				securitySvc: securitySvc,
+				users:       identity.UsersRepo(),
+			}
+			if path, gerr := resolver.RequesterGroupPath(r.Context(), principal.TenantID, principal.UserID); gerr == nil {
+				requesterGroupPath = path
+				requesterGroupPathResolved = true
+			}
+		}
+
 		tenantSystem := scopedSystemSettingsForTenant(principal.TenantID, system)
 		authz := loadVEDigitalEmployeeAuthorization(r.Context(), tenantSystem)
 		machineEmployees := mobileMachineDigitalEmployeeEntries(r.Context(), identity, principal)
 		if !veAuthorizationActive(authz) {
 			writeJSON(w, http.StatusOK, map[string]any{
-				"employees":     machineEmployees,
-				"authorization": authz,
+				"employees":        machineEmployees,
+				"authorization":    authz,
+				"scope":            mobileEmployeeListScope(allowShared),
+				"shared_employees": allowShared,
+				"group_path_resolved": requesterGroupPathResolved,
 			})
 			return
 		}
@@ -4600,19 +6546,15 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, principal.TenantID)
 		}
 
-		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
-		for _, entry := range registry.Employees {
-			if entry.Status != veStatusActive {
-				continue
-			}
-			if !veVisibleToRequester(entry, nil, false) {
-				continue
-			}
-			if !veAccessAllowed(entry, principal.UserID) {
-				continue
-			}
-			entry = applyVEDiscoverablePresence(r.Context(), entry, nil, runtimePresence)
-			employees = append(employees, entry)
+		employees := mobileFilterEmployeesForViewer(
+			registry.Employees,
+			principal.UserID,
+			allowShared,
+			requesterGroupPath,
+			requesterGroupPathResolved,
+		)
+		for i := range employees {
+			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], nil, runtimePresence)
 		}
 		employees = appendMobileMachineDigitalEmployees(employees, machineEmployees)
 		sort.SliceStable(employees, func(i, j int) bool {
@@ -4623,9 +6565,80 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 		})
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"employees": employees,
+			"employees":           employees,
+			"scope":               mobileEmployeeListScope(allowShared),
+			"shared_employees":    allowShared,
+			"group_path_resolved": requesterGroupPathResolved,
 		})
 	}
+}
+
+func mobileEmployeeListScope(allowShared bool) string {
+	if allowShared {
+		return "shared"
+	}
+	return "own"
+}
+
+// mobileFilterEmployeesForViewer applies free/own vs shared pool + group visibility.
+// Only active entries are considered. Owners always see their own VEs.
+func mobileFilterEmployeesForViewer(
+	entries []digitalEmployeeEntry,
+	userID string,
+	allowShared bool,
+	requesterGroupPath []string,
+	requesterGroupPathResolved bool,
+) []digitalEmployeeEntry {
+	out := make([]digitalEmployeeEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Status != veStatusActive {
+			continue
+		}
+		owned := mobileEmployeeOwnedByViewer(entry, userID)
+		// Free / own-only: only owned VEs (+ bound machines appended by caller).
+		if !allowShared && !owned {
+			continue
+		}
+		// Owners always see their own VE regardless of VisibleGroupIDs.
+		// Shared pool entries must pass group visibility when restricted.
+		if !owned {
+			if !veVisibleToRequester(entry, requesterGroupPath, requesterGroupPathResolved) {
+				continue
+			}
+		}
+		if !veAccessAllowed(entry, userID) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// mobileEmployeeOwnedByViewer is true when the VE is explicitly owned by the viewer.
+// Entries without OwnerUserID are treated as pool/shared (hidden on free tier).
+func mobileEmployeeOwnedByViewer(entry digitalEmployeeEntry, userID string) bool {
+	owner := strings.TrimSpace(entry.OwnerUserID)
+	userID = strings.TrimSpace(userID)
+	if owner == "" || userID == "" {
+		return false
+	}
+	return owner == userID
+}
+
+// mobileViewerAllowsSharedEmployees gates tenant/public employee pools.
+// Aligns with bootstrap entitlements.shared_employees (service_card / paid).
+func mobileViewerAllowsSharedEmployees(ctx context.Context, principal *auth.ViewerPrincipal, system store.SystemSettingsRepository) bool {
+	if principal == nil {
+		return false
+	}
+	sys := system
+	if sys == nil {
+		sys = mobileQuotaSystem
+	}
+	grant := mobileResolveServiceGrantSnapshot(ctx, principal, sys, mobileQuotaSecurity, "")
+	llmAccess := mobileLlmAccessPayload(ctx, principal)
+	plan := mobilePlanForAccessWithGrant(llmAccess, grant)
+	return mobileSharedEmployeesFromGrant(grant, plan)
 }
 
 func mobileMachineDigitalEmployeeEntries(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal) []digitalEmployeeEntry {

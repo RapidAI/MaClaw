@@ -163,7 +163,7 @@ manual release gates rather than local implementation stubs.
 The startup route audit also passed: loading session state renders the MaClaw
 logo Splash, signed-out state renders phone registration without HubCenter
 candidate URLs, signed-in official-LLM state opens the AI assistant, and an
-unconfigured LLM routes to the account setup surface. Shared links/documents
+unconfigured LLM routes to the dedicated LLM setup surface. Shared links/documents
 remain pending until authentication and are then consumed by their intended
 assistant/document flow.
 
@@ -1992,11 +1992,12 @@ tabs.
     `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`.
 - `flutter test test/mobile_feature_flags_test.dart test/app_smoke_test.dart test/mobile_shared_intent_test.dart --concurrency=1 --reporter compact`
   - Passed: 38 app shell, startup, feature flag, and shared-intent tests.
-  - Covers readable bottom navigation labels for `AI助手`, `文档`, `远程`,
-    `员工`, and `我的`; configured sessions opening the assistant; feature
+  - Covers readable bottom navigation labels for `AI助手`, `员工`, `文档`,
+    and `我的`; remote maintenance remains an assistant entry and recovery
+    route rather than a bottom-navigation tab; configured sessions opening the assistant; feature
     flags keeping the primary `AI助手` workspace when optional search is
     disabled and even when Hub sends `assistant:false`, because the GUI-like assistant is the non-removable mobile home surface; missing LLM
-    access opening the mobile workspace while third-party LLM authorization
+    access opening the dedicated LLM setup surface while third-party LLM authorization
     remains optional in account/settings; official LLM sessions accepting
     normalized `phone:<digits>` credits from bootstrap JSON, keeping the
     workspace open without a phone credits account, including malformed `phone:`
@@ -2277,12 +2278,13 @@ tabs.
   `push_notifications:false`, the account page shows `本地通知` as enabled and
   does not present a misleading enabled/disabled remote Push chip; the account
   Widget regression passes.
-- Rebuilt the latest signed Android APK after the realtime recovery changes.
+- Rebuilt the latest signed Android APK after the mobile UI and employee-result actions.
   The current artifact SHA256 is
-  `9DAC173F4075C39CB204310E204D694F2DF2381DAA8C2B2618255292DB335586`,
-  size `78483910` bytes; install and cold-start assertions passed on the API 35
-  emulator. This remains emulator evidence and does not close physical-device
-  QA. The fresh hierarchy capture is
+  `32E2D660B5C729B006F88D80A287DA4AB6C8F7C210E0F5086A0C99FDA65C73F7`,
+  size `78516958` bytes; the Flutter full-suite passed for this build. The
+  API 35 hierarchy/install capture below remains emulator evidence from the
+  prior installed QA build and does not close physical-device QA. The fresh
+  hierarchy capture is
   `startup-notification-boundary-20260711.xml`/`startup-notification-boundary-20260711.png` under
   `docs/qa-builds/android-api35-0.1.0+1/signed-release-chat-latest/`; it shows
   the MaClaw image and phone registration surface with no Flutter branding or
@@ -2307,8 +2309,8 @@ tabs.
   claimed by this capture.
 - Rebuilt the matching signed Android App Bundle for version/build `0.1.0+1`.
   The current AAB SHA256 is
-  `666E94341680697ED38395ED789AE10E83E00A0D48A385DA992913EF6816D16D`,
-  size `57510646` bytes, and `jarsigner -verify` returned success. APK and AAB
+  `2CFC03B27E53A3B0FD730352DD88B8BF1744F9046C11F17F01B6169D1DDF1875`,
+  size `57553887` bytes, and `jarsigner -verify` returned success. APK and AAB
   use the same internal QA signing identity and remain internal-testing
   artifacts.
 - Account-screen notification permission results now expose a generated
@@ -2382,7 +2384,7 @@ tabs.
   is `startup-chat-latest.xml`/`startup-chat-latest.png` and still exposes the
   GUI-like chat, `主对话`, secondary-tab, and voice-input entry points.
 
-- The same signed API 35 session opened the `远程` tab after the real phone
+- The same signed API 35 session opened the remote maintenance route after the real phone
   login. Its UI hierarchy confirms that server profiles are synchronized from
   the official Hub's MaClaw GUI/agent authorization, that the phone does not
   collect or connect with SSH credentials, and that the empty state offers

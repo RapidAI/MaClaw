@@ -1,3 +1,35 @@
+/// Catalog wrapper for GET /api/mobile/digital-employees (includes scope).
+class MobileDigitalEmployeesCatalog {
+  final List<DigitalEmployee> employees;
+  /// `own` | `shared`
+  final String scope;
+  final bool sharedEmployees;
+
+  const MobileDigitalEmployeesCatalog({
+    this.employees = const [],
+    this.scope = 'own',
+    this.sharedEmployees = false,
+  });
+
+  factory MobileDigitalEmployeesCatalog.fromJson(Map<String, dynamic> json) {
+    final raw = json['employees'];
+    final list = <DigitalEmployee>[];
+    if (raw is List) {
+      for (final item in raw) {
+        if (item is Map) {
+          list.add(DigitalEmployee.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+    final scope = (json['scope'] as String? ?? 'own').trim().toLowerCase();
+    return MobileDigitalEmployeesCatalog(
+      employees: list,
+      scope: scope.isEmpty ? 'own' : scope,
+      sharedEmployees: json['shared_employees'] as bool? ?? scope == 'shared',
+    );
+  }
+}
+
 class DigitalEmployee {
   final String id;
   final String machineId;

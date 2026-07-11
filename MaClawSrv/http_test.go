@@ -4698,7 +4698,7 @@ func TestWeixinRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model marker: %v", err)
 	}
 	fakeASR := &fakeSrvASRTranscriber{text: "微信语音转写"}
@@ -4776,7 +4776,7 @@ func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model marker: %v", err)
 	}
 	seedReadyTTSModel(t, dataRoot)
@@ -5676,7 +5676,7 @@ func TestConfiguredIMRuntimeTranscribesVoiceBeforeAgent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model marker: %v", err)
 	}
 	fakeASR := &fakeSrvASRTranscriber{text: "转写后的语音内容"}
@@ -5767,7 +5767,7 @@ func TestConfiguredIMRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model marker: %v", err)
 	}
 	seedReadyTTSModel(t, dataRoot)

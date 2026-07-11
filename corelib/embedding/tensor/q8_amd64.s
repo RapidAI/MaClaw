@@ -780,3 +780,71 @@ dqsd_loop:
 dqsd_done:
 	VZEROUPPER
 	RET
+
+// func prepareScalesF16x8AVX2(dst *float32, data *byte, n int)
+// Convert n float16 scales at Q8 block stride (34B) into contiguous f32.
+// n must be a multiple of 8 and > 0. Uses F16C VCVTPH2PS (Haswell+/Zen+).
+// Dual 8-pack ILP: two independent PINSRW/VCVTPH2PS chains per iter when n>=16.
+// Frame: dst+0 data+8 n+16 -> 24
+TEXT ·prepareScalesF16x8AVX2(SB), NOSPLIT, $0-24
+	MOVQ dst+0(FP), SI
+	MOVQ data+8(FP), DI
+	MOVQ n+16(FP), CX
+	MOVQ CX, BX
+	SHRQ $4, BX // n/16 dual groups
+	TESTQ BX, BX
+	JZ   psf16_rem8
+
+psf16_loop16:
+	// Group 0: DI+0..238 → Y1
+	PXOR X0, X0
+	PINSRW $0, (DI), X0
+	PINSRW $1, 34(DI), X0
+	PINSRW $2, 68(DI), X0
+	PINSRW $3, 102(DI), X0
+	PINSRW $4, 136(DI), X0
+	PINSRW $5, 170(DI), X0
+	PINSRW $6, 204(DI), X0
+	PINSRW $7, 238(DI), X0
+	// Group 1: DI+272..510 → Y3 (overlap convert of group0)
+	PXOR X2, X2
+	PINSRW $0, 272(DI), X2
+	PINSRW $1, 306(DI), X2
+	PINSRW $2, 340(DI), X2
+	PINSRW $3, 374(DI), X2
+	VCVTPH2PS X0, Y1
+	PINSRW $4, 408(DI), X2
+	PINSRW $5, 442(DI), X2
+	PINSRW $6, 476(DI), X2
+	PINSRW $7, 510(DI), X2
+	VMOVUPS Y1, (SI)
+	VCVTPH2PS X2, Y3
+	VMOVUPS Y3, 32(SI)
+	ADDQ $544, DI // 16*34
+	ADDQ $64, SI  // 16*4
+	DECQ BX
+	JNZ  psf16_loop16
+
+psf16_rem8:
+	MOVQ n+16(FP), CX
+	ANDQ $15, CX
+	SHRQ $3, CX // remaining 8-group (0 or 1)
+	TESTQ CX, CX
+	JZ   psf16_done
+
+	PXOR X0, X0
+	PINSRW $0, (DI), X0
+	PINSRW $1, 34(DI), X0
+	PINSRW $2, 68(DI), X0
+	PINSRW $3, 102(DI), X0
+	PINSRW $4, 136(DI), X0
+	PINSRW $5, 170(DI), X0
+	PINSRW $6, 204(DI), X0
+	PINSRW $7, 238(DI), X0
+	VCVTPH2PS X0, Y1
+	VMOVUPS Y1, (SI)
+
+psf16_done:
+	VZEROUPPER
+	RET
+

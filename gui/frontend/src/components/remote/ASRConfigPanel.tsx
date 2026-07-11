@@ -40,6 +40,7 @@ export function ASRConfigPanel({ lang }: Props) {
     const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
     const [enabled, setEnabled] = useState(false);
+    const [voiceCorrectionEnabled, setVoiceCorrectionEnabled] = useState(true);
     const [modelExists, setModelExists] = useState(false);
     const [modelSize, setModelSize] = useState(0);
     const [downloading, setDownloading] = useState(false);
@@ -65,8 +66,10 @@ export function ASRConfigPanel({ lang }: Props) {
                 setModelSize(info.size || 0);
                 const on = await GetASREnabled();
                 setEnabled(on);
-                // Load existing calibration values
+                // Load existing calibration values + voice-correction toggle
                 const cfg = await LoadConfig();
+                // Default true when absent (matches AppConfigDefaults).
+                setVoiceCorrectionEnabled(cfg.asr_voice_correction_enabled !== false);
                 if (cfg.noise_floor_calibrated && cfg.noise_floor_calibrated > 0) {
                     setCalibratedValue(cfg.noise_floor_calibrated);
                 }
@@ -112,6 +115,17 @@ export function ASRConfigPanel({ lang }: Props) {
             setDownloading(false);
             setError(e?.message || String(e));
             return;
+        }
+    };
+
+    const handleVoiceCorrectionToggle = async (on: boolean) => {
+        setVoiceCorrectionEnabled(on);
+        setError('');
+        try {
+            await PatchConfigFields({ asr_voice_correction_enabled: on });
+        } catch (e: any) {
+            setVoiceCorrectionEnabled(!on);
+            setError(e?.message || String(e));
         }
     };
 
@@ -275,11 +289,33 @@ export function ASRConfigPanel({ lang }: Props) {
             </div>
             <p className="model-config-copy">
                 {t(
-                    'Speech recognition uses Moonshine Base Chinese model to transcribe IM voice messages. The model (~200MB) will be downloaded from GitHub or Hub.',
-                    '语音识别使用 Moonshine Base 中文模型，将 IM 语音消息自动转为文字。模型文件约 200MB，将从 GitHub 或 Hub 下载到本地。',
-                    '語音識別使用 Moonshine Base 中文模型，將 IM 語音消息自動轉為文字。模型文件約 200MB，將從 GitHub 或 Hub 下載到本地。'
+                    'Speech recognition uses the SenseVoice Small model to transcribe IM voice messages. The model will be downloaded from GitHub or Hub.',
+                    '语音识别使用 SenseVoice Small 模型，将 IM 语音消息自动转为文字。模型将从 GitHub 或 Hub 下载到本地。',
+                    '語音識別使用 SenseVoice Small 模型，將 IM 語音消息自動轉為文字。模型將從 GitHub 或 Hub 下載到本地。'
                 )}
             </p>
+            {enabled && (
+                <>
+                    <div className="model-config-toggle-row">
+                        <label className="model-config-check">
+                            <input
+                                type="checkbox"
+                                checked={voiceCorrectionEnabled}
+                                onChange={e => handleVoiceCorrectionToggle(e.target.checked)}
+                                data-testid="asr-voice-correction-toggle"
+                            />
+                            {t('Voice Correction', '语音纠错', '語音糾錯')}
+                        </label>
+                    </div>
+                    <p className="model-config-copy">
+                        {t(
+                            'After recognition, use a light LLM pass to fix obvious ASR mistakes (e.g. homophones). Applies to desktop voice (continuous + hold) and IM voice messages. Continuous mode also filters background chatter. IM voice shows progress and is time-capped. Requires MaClaw LLM. Turn off to use raw ASR text.',
+                            '识别后用轻量 LLM 纠正明显 ASR 错误（如同音字）。适用于桌面语音（连续/按住）和 IM 语音消息；连续模式还会过滤背景闲聊。IM 会显示识别进度并限制耗时。需已配置 MaClaw LLM。关闭后使用原始识别结果。',
+                            '識別後用輕量 LLM 糾正明顯 ASR 錯誤（如同音字）。適用於桌面語音（連續/按住）和 IM 語音消息；連續模式還會過濾背景閒聊。IM 會顯示識別進度並限制耗時。需已配置 MaClaw LLM。關閉後使用原始識別結果。',
+                        )}
+                    </p>
+                </>
+            )}
             {enabled && (
                 <ModelStatusBox
                     exists={modelExists} downloading={downloading} size={modelSize}

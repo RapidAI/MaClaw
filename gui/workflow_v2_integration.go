@@ -842,7 +842,11 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	h.emitWorkflowV2Progress(userID, state)
 	phasePrompt := v2.BuildPhasePrompt(state)
 	if modifyHint != "" {
-		phasePrompt += "\n\n## 用户修改意见\n\n" + modifyHint + "\n\n请根据以上修改意见重新生成本阶段文档。"
+		if workflowV2IsArtifactPhase(phase) {
+			phasePrompt += "\n\n## 用户修改意见\n\n" + modifyHint + "\n\n请根据以上修改意见重新生成最终产物文件，不要改为输出文档或需求澄清。"
+		} else {
+			phasePrompt += "\n\n## 用户修改意见\n\n" + modifyHint + "\n\n请根据以上修改意见重新生成本阶段文档。"
+		}
 	}
 	log.Printf("[workflow-v2] stashedPhasePrompt.Store: key=%q len=%d", userID, len(phasePrompt))
 	h.stashedPhasePrompt.Store(userID, phasePrompt)
@@ -850,15 +854,33 @@ func (h *IMMessageHandler) runWorkflowV2Phase(userID string, state *v2.WorkflowS
 	if h.memory != nil {
 		h.memory.Clear(userID)
 	}
-	phaseUserText := fmt.Sprintf("请现在生成「%s」阶段的完整文档内容。不要引用或指向之前的对话，直接在本次回复中输出完整文档。", phase.Name)
+	phaseUserText := workflowV2PhaseUserRequest(phase)
 	if modifyHint != "" {
-		phaseUserText = fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
-	} else if phase.FormData != nil && len(phase.FormData) > 0 {
+		if workflowV2IsArtifactPhase(phase) {
+			phaseUserText += "\n\n用户修改意见：" + modifyHint + "。直接重新生成并发送最终文件。"
+		} else {
+			phaseUserText = fmt.Sprintf("请根据修改意见重新生成「%s」的完整文档。直接输出完整内容。", phase.Name)
+		}
+	} else if !workflowV2IsArtifactPhase(phase) && phase.FormData != nil && len(phase.FormData) > 0 {
 		phaseUserText = buildFormDataInlinedUserText(phase)
 	}
 	h.workflowOriginalRequest.Store(userID, phaseUserText)
 	log.Printf("[workflow-v2] running phase: user=%s type=%s phase=%s project=%s", userID, state.Type, phase.ID, state.ProjectPath)
 	return workflowIMRouteResult{WorkflowAgentLoop: true, WorkflowDocPhase: phase.NeedsConfirm, WorkflowPhaseID: phase.ID, PhasePrompt: phasePrompt}
+}
+
+func workflowV2IsArtifactPhase(phase *v2.Phase) bool {
+	return phase != nil && (phase.Kind == v2.PhaseKindArtifactGeneration || phase.MutationScope == v2.MutationScopeArtifact)
+}
+
+func workflowV2PhaseUserRequest(phase *v2.Phase) string {
+	if phase == nil {
+		return "请执行当前工作流阶段。"
+	}
+	if workflowV2IsArtifactPhase(phase) {
+		return fmt.Sprintf("立即执行「%s」产物生成：系统提示中已提供所有前序阶段的权威内容，直接据此生成并发送最终文件。不要询问主题、受众、页数或要点；不要搜索项目目录、PDF、记忆或历史对话来补充上下文；不要输出计划或 Markdown 文档。必须调用适当的生成工具（PPT 阶段优先运行 pptx-generator），成功后发送最终 .pptx 文件。", phase.Name)
+	}
+	return fmt.Sprintf("请现在生成「%s」阶段的完整文档内容。不要引用或指向之前的对话，直接在本次回复中输出完整文档。", phase.Name)
 }
 func ensureWorkflowV2PhaseWorkDir(state *v2.WorkflowState) error {
 	if state == nil {
@@ -2123,6 +2145,7 @@ var remoteCodingTemplateRunner remoteCodingTemplateRunnerFunc
 
 func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
 	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
+	subAgent.SetSourcePreviewEnabled(true)
 	subAgent.SetCallbacks(onToken, onProgress)
 	if h != nil && h.app != nil {
 		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))

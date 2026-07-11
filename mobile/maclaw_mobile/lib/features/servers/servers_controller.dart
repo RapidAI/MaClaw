@@ -6,6 +6,7 @@ import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
+import '../tasks/mobile_jobs_provider.dart';
 import 'server_command.dart';
 import 'server_profile.dart';
 
@@ -133,6 +134,7 @@ class BackendSshSessionsController
 
   Future<MobileBackendSSHSession> createSession({
     required String serverProfileId,
+    String execMode = '',
   }) async {
     final profileId = serverProfileId.trim();
     if (profileId.isEmpty) {
@@ -140,6 +142,7 @@ class BackendSshSessionsController
     }
     final session = await _requireApiClient().createBackendSSHSession(
       serverProfileId: profileId,
+      execMode: execMode,
     );
     await put(session);
     return session;
@@ -184,14 +187,22 @@ class BackendSshSessionsController
   Future<MobileBackendSSHSessionInputResult> sendInput({
     required String sessionId,
     required String input,
+    bool raw = false,
   }) async {
     final normalized = sessionId.trim();
-    if (normalized.isEmpty || input.trim().isEmpty) {
+    if (normalized.isEmpty) {
+      throw ArgumentError('sessionId is required');
+    }
+    if (!raw && input.trim().isEmpty) {
       throw ArgumentError('sessionId and input are required');
+    }
+    if (raw && input.isEmpty) {
+      throw ArgumentError('raw input is required');
     }
     return _requireApiClient().sendBackendSSHSessionInput(
       sessionId: normalized,
       input: input,
+      raw: raw,
     );
   }
 
@@ -204,13 +215,16 @@ class BackendSshSessionsController
     final current = state.valueOrNull ?? await future;
     final existing = current[normalized];
     if (existing == null) return;
+    final hub = existing.isHubExec;
     state = AsyncData({
       ...current,
       normalized: _sessionWithControlState(
         existing,
-        status: 'close_requested',
-        state: 'closing',
-        message: 'Close request queued for GUI/agent backend SSH handling.',
+        status: hub ? 'closed' : 'close_requested',
+        state: hub ? 'hub_closed' : 'closing',
+        message: hub
+            ? 'Hub SSH live connection and interactive shell closed.'
+            : 'Close request queued for GUI/agent backend SSH handling.',
       ),
     });
   }
@@ -290,6 +304,7 @@ MobileBackendSSHSession _sessionWithControlState(
     sessionId: session.sessionId,
     serverProfileId: session.serverProfileId,
     backendSessionId: session.backendSessionId,
+    execMode: session.execMode,
     status: status,
     state: state,
     message: message,
@@ -342,6 +357,9 @@ MobileBackendSSHSession _mergeBackendSSHRealtimeSession({
     backendSessionId: payload.containsKey('backend_session_id')
         ? incoming.backendSessionId
         : existing.backendSessionId,
+    execMode: payload.containsKey('exec_mode')
+        ? incoming.execMode
+        : existing.execMode,
     status: payload.containsKey('status') ? incoming.status : existing.status,
     state: payload.containsKey('state') ? incoming.state : existing.state,
     message: hasAny(['message', 'error']) ? incoming.message : existing.message,
@@ -439,6 +457,8 @@ class ServerCommandsController extends AsyncNotifier<List<ServerCommandEntry>> {
 
 class BackendSshTasksController
     extends AsyncNotifier<Map<String, List<MobileBackendSSHTask>>> {
+  final _notifiedTerminalTaskIds = <String>{};
+
   @override
   Future<Map<String, List<MobileBackendSSHTask>>> build() async => const {};
 
@@ -555,6 +575,38 @@ class BackendSshTasksController
     await _upsert(sessionId, task);
   }
 
+  Future<void> _notifyTerminalTask(MobileBackendSSHTask task) async {
+    final taskId = task.taskId.trim();
+    if (taskId.isEmpty) return;
+    final status = task.status.trim().toLowerCase();
+    final terminal = status.contains('ready') ||
+        status.contains('complete') ||
+        status.contains('success') ||
+        status.contains('fail') ||
+        status.contains('error') ||
+        status.contains('cancel');
+    if (!terminal) return;
+    if (!_notifiedTerminalTaskIds.add(taskId)) return;
+    final failed =
+        status.contains('fail') || status.contains('error');
+    final cancelled = status.contains('cancel');
+    final cmd = task.command.trim();
+    final clip = cmd.length > 48 ? '${cmd.substring(0, 48)}…' : cmd;
+    await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+          title: failed
+              ? 'SSH 任务失败'
+              : cancelled
+                  ? 'SSH 任务已取消'
+                  : 'SSH 任务完成',
+          body: [
+            if (clip.isNotEmpty) clip,
+            if (task.message.trim().isNotEmpty) task.message.trim(),
+            if (task.exitCode != null) 'exit ${task.exitCode}',
+          ].join(' · '),
+          payload: mobileSshTaskNotificationPayload(taskId),
+        );
+  }
+
   ApiClient _requireApiClient() {
     final client = ref.read(apiClientProvider);
     if (client == null) {
@@ -591,11 +643,16 @@ class BackendSshTasksController
         if (item.taskId != taskId) item,
     ];
     state = AsyncData({...current, sessionId: next});
+    ref.invalidate(mobileJobsProvider);
+    await _notifyTerminalTask(nextTask);
   }
 }
 
 class BackendSshFileOperationsController
     extends AsyncNotifier<Map<String, List<MobileBackendSSHFileOperation>>> {
+  final _notifiedTerminalOps = <String>{};
+  final _lastProgressNotifyAt = <String, DateTime>{};
+
   @override
   Future<Map<String, List<MobileBackendSSHFileOperation>>> build() async =>
       const {};
@@ -612,12 +669,107 @@ class BackendSshFileOperationsController
         if (item.operationId.trim() != operationId) item,
     ].take(20).toList();
     state = AsyncData({...current, sessionId: next});
+    ref.invalidate(mobileJobsProvider);
+    await _notifyFileOpProgress(operation);
+    await _notifyTerminalFileOp(operation);
   }
 
   Future<void> applyRealtimeEvent(MobileRealtimeEvent event) async {
     if (!event.sshFileOperation || event.payload.isEmpty) return;
     await put(MobileBackendSSHFileOperation.fromJson(event.payload));
   }
+
+  /// Throttled tray progress for running hub_exec downloads (parses "a/b bytes").
+  Future<void> _notifyFileOpProgress(MobileBackendSSHFileOperation op) async {
+    final id = op.operationId.trim();
+    if (id.isEmpty) return;
+    final status = op.status.trim().toLowerCase();
+    final running = status.contains('run') ||
+        status.contains('progress') ||
+        status.contains('pending') ||
+        status.contains('stream');
+    if (!running) return;
+    final action = op.action.trim().toLowerCase();
+    if (action.isNotEmpty &&
+        !action.contains('download') &&
+        !action.contains('read') &&
+        !action.contains('pull')) {
+      // Prefer download-like ops for tray progress noise control.
+      if (!op.message.toLowerCase().contains('download') &&
+          !op.message.contains('bytes')) {
+        return;
+      }
+    }
+    final now = DateTime.now();
+    final last = _lastProgressNotifyAt[id];
+    if (last != null && now.difference(last) < const Duration(milliseconds: 900)) {
+      return;
+    }
+    _lastProgressNotifyAt[id] = now;
+    final parsed = _parseBytesProgress(op.message);
+    final path = op.remotePath.trim().isNotEmpty
+        ? op.remotePath.trim()
+        : op.localPath.trim();
+    final body = [
+      if (path.isNotEmpty) path,
+      if (op.message.trim().isNotEmpty) op.message.trim(),
+      if (op.bytesTransferred > 0) '${op.bytesTransferred} 字节',
+    ].where((s) => s.isNotEmpty).join(' · ');
+    await ref.read(mobileNotificationServiceProvider).showTaskProgress(
+          notificationId: mobileSshFileNotificationId(id),
+          title: 'SSH 文件传输中',
+          body: body.isEmpty ? action : body,
+          progress: parsed?.$1 ?? op.bytesTransferred,
+          max: parsed?.$2 ?? 0,
+          indeterminate: parsed == null && op.bytesTransferred <= 0,
+          payload: mobileSshFileNotificationPayload(id),
+        );
+  }
+
+  Future<void> _notifyTerminalFileOp(MobileBackendSSHFileOperation op) async {
+    final id = op.operationId.trim();
+    if (id.isEmpty) return;
+    final status = op.status.trim().toLowerCase();
+    final terminal = status.contains('ready') ||
+        status.contains('complete') ||
+        status.contains('success') ||
+        status.contains('fail') ||
+        status.contains('error');
+    if (!terminal) return;
+    if (!_notifiedTerminalOps.add(id)) return;
+    final notify = ref.read(mobileNotificationServiceProvider);
+    final trayId = mobileSshFileNotificationId(id);
+    await notify.cancelNotification(trayId);
+    _lastProgressNotifyAt.remove(id);
+    final failed = status.contains('fail') || status.contains('error');
+    final action = op.action.trim().isEmpty ? 'file' : op.action.trim();
+    final path = op.remotePath.trim().isNotEmpty
+        ? op.remotePath.trim()
+        : op.localPath.trim();
+    await notify.showTaskCompleted(
+      title: failed ? 'SSH 文件操作失败' : 'SSH 文件操作完成',
+      body: [
+        action,
+        if (path.isNotEmpty) path,
+        if (op.bytesTransferred > 0) '${op.bytesTransferred} 字节',
+        if (op.downloadUrl.trim().isNotEmpty) '可下载',
+        if (op.message.trim().isNotEmpty && failed) op.message.trim(),
+      ].join(' · '),
+      payload: mobileSshFileNotificationPayload(id),
+      notificationId: trayId,
+    );
+  }
+}
+
+/// Parse Hub progress messages like "12345/67890 bytes" or "a/b bytes".
+(int, int)? _parseBytesProgress(String message) {
+  final m = RegExp(r'(\d+)\s*/\s*(\d+)\s*bytes?', caseSensitive: false)
+      .firstMatch(message);
+  if (m == null) return null;
+  final a = int.tryParse(m.group(1) ?? '');
+  final b = int.tryParse(m.group(2) ?? '');
+  if (a == null || b == null || b <= 0) return null;
+  return (a.clamp(0, b), b);
 }
 
 MobileBackendSSHTask _mergeBackendSSHTask({

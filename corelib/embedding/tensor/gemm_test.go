@@ -270,6 +270,30 @@ func TestMultiDot8TripleArgmax(t *testing.T) {
 }
 
 // TestMultiDot8DualK560 matches dual-4×2 scalar for entry feats_dim=560.
+// TestMultiDot8TripleArgmaxTie keeps greedy CTC's first-token tie rule when
+// the AVX-512 branchless candidate reduction sees equal logits.
+func TestMultiDot8TripleArgmaxTie(t *testing.T) {
+	const K = 512
+	a := make([]float32, 8*K)
+	b := make([]float32, K)
+	bestV := make([]float32, 8)
+	bestI := make([]int, 8)
+	for i := range bestV {
+		bestV[i] = -float32(math.MaxFloat32)
+		bestI[i] = -1
+	}
+
+	const n = 37
+	if !multiDot8TripleArgmax(bestV, bestI, a, b, b, b, n, K, 0, 0, 0) {
+		t.Skip("fused argmax not available")
+	}
+	for r := range bestI {
+		if bestI[r] != n || bestV[r] != 0 {
+			t.Fatalf("row %d: got id=%d value=%v, want id=%d value=0", r, bestI[r], bestV[r], n)
+		}
+	}
+}
+
 func TestMultiDot8DualK560(t *testing.T) {
 	K := 560
 	a := make([]float32, 8*K)

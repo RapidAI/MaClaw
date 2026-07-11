@@ -33,6 +33,29 @@ func TestShouldDropASRTextKeepsShortGreeting(t *testing.T) {
 	}
 }
 
+func TestShouldDropASRTextPunctuationOnly(t *testing.T) {
+	cases := []string{"。", ".", "…", "。。", "...", "！？", " !?.,;: ", "——"}
+	for _, text := range cases {
+		drop, reason := shouldDropASRText(text, 16000)
+		if !drop {
+			t.Fatalf("expected punctuation-only %q to be dropped, reason=%q", text, reason)
+		}
+		if reason != "punctuation-only" {
+			t.Fatalf("expected reason punctuation-only for %q, got %q", text, reason)
+		}
+	}
+}
+
+func TestShouldDropASRTextKeepsContentWithPunctuation(t *testing.T) {
+	cases := []string{"查询北京天气。", "hello.", "嗯。", "OK", "123"}
+	for _, text := range cases {
+		drop, reason := shouldDropASRText(text, 16000)
+		if drop {
+			t.Fatalf("expected content %q to be kept, reason=%q", text, reason)
+		}
+	}
+}
+
 func TestShouldDropASRTextDropsReplacementGarbage(t *testing.T) {
 	drop, reason := shouldDropASRText("银行银行银行银行"+strings.Repeat(string(rune(0xFFFD)), 16), 16000)
 	if !drop {

@@ -13,15 +13,18 @@ import (
 
 	"github.com/google/uuid"
 
+	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
 
 const (
-	maxZipRatio    = 20        // 解压比率上限
-	maxTotalSize   = 500 << 20 // 500MB
-	maxSingleFile  = 50 << 20  // 50MB
-	maxFileCount   = 1000
+	maxZipRatio = 20 // 解压比率上限
+	// Primary gate: total/single size. Entry count is only a DoS backstop so
+	// necessary multi-thousand asset packs are allowed when volume is fine.
+	maxTotalSize   = coreskill.MaxSkillMarketZipTotalBytes
+	maxSingleFile  = coreskill.MaxSkillMarketZipSingleFileBytes
+	maxFileCount   = coreskill.MaxSkillMarketZipEntries
 	processorQueue = 64
 )
 
@@ -58,16 +61,51 @@ func NewProcessor(pendingDir, sandboxBase string, store *Store, skillStore *skil
 }
 
 // Enqueue 将 submission_id 加入处理队列。
+// 队列满时不丢弃：在后台 goroutine 中阻塞投递，避免“上传成功但永不处理”。
 func (p *Processor) Enqueue(submissionID string) {
+	if p == nil || strings.TrimSpace(submissionID) == "" {
+		return
+	}
 	select {
 	case p.queue <- submissionID:
 	default:
-		log.Printf("[skillmarket] processor queue full, dropping submission %s", submissionID)
+		log.Printf("[skillmarket] processor queue full, deferring submission %s", submissionID)
+		go func(id string) {
+			// Prefer non-blocking first in case capacity frees immediately; otherwise
+			// block so the id is never dropped. Channel is never closed by design.
+			select {
+			case p.queue <- id:
+			default:
+				p.queue <- id
+			}
+		}(submissionID)
+	}
+}
+
+// RecoverPending re-enqueues unfinished submissions after process restart.
+// The in-memory queue is not durable; without this, Hub uploads that were
+// accepted (status=pending) but not yet processed stay invisible forever.
+func (p *Processor) RecoverPending(ctx context.Context) {
+	if p == nil || p.store == nil {
+		return
+	}
+	ids, err := p.store.ListUnfinishedSubmissionIDs(ctx)
+	if err != nil {
+		log.Printf("[skillmarket] recover pending submissions: %v", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	log.Printf("[skillmarket] recovering %d unfinished submission(s)", len(ids))
+	for _, id := range ids {
+		p.Enqueue(id)
 	}
 }
 
 // Run 启动后台处理 goroutine，阻塞直到 ctx 取消。
 func (p *Processor) Run(ctx context.Context) {
+	p.RecoverPending(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -84,6 +122,12 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 	sub, err := p.store.GetSubmissionByID(ctx, subID)
 	if err != nil {
 		return fmt.Errorf("get submission: %w", err)
+	}
+
+	// Skip terminal submissions (e.g. recovered queue race after success/fail).
+	switch strings.ToLower(strings.TrimSpace(sub.Status)) {
+	case "success", "failed":
+		return nil
 	}
 
 	// 标记为 processing
@@ -256,6 +300,13 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		}
 	}
 
+	// Status drives HubCenter market FTS visibility (trial/published).
+	// trialManager present → trial (review/auto-publish path); else published immediately.
+	publishStatus := "published"
+	if p.trialManager != nil {
+		publishStatus = "trial"
+	}
+
 	full := skill.HubSkillFull{
 		HubSkillMeta: skill.HubSkillMeta{
 			ID:                           skillID,
@@ -267,6 +318,7 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 			SemVer:                       meta.Version, // semver from skill.yaml
 			Author:                       meta.Author,
 			TrustLevel:                   "trusted",
+			Status:                       publishStatus,
 			CreatedAt:                    fmtTime(sub.CreatedAt),
 			UpdatedAt:                    fmtTime(sub.CreatedAt),
 			Visible:                      true,
@@ -338,13 +390,9 @@ func (p *Processor) processOne(ctx context.Context, subID string) error {
 		}
 	}
 
-	// 增量更新 FTS 搜索索引（新上传的 skill 初始状态为 trial）
+	// 增量更新 FTS 搜索索引（与 Publish 的 Status 保持一致；trial/published 均可被市场检索）
 	if p.searchSvc != nil {
-		indexStatus := "trial"
-		if p.trialManager == nil {
-			indexStatus = "published"
-		}
-		if err := p.searchSvc.IndexSkillWithProduct(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, indexStatus, fmtTime(sub.CreatedAt), meta.Version, meta.Author, skillSearchIndexProductOptions{ProductKind: meta.ProductKind, IsMaclawApp: meta.IsMaclawApp}); err != nil {
+		if err := p.searchSvc.IndexSkillWithProduct(ctx, skillID, meta.Name, meta.Description, meta.Tags, 0, 0, 0, publishStatus, fmtTime(sub.CreatedAt), meta.Version, meta.Author, skillSearchIndexProductOptions{ProductKind: meta.ProductKind, IsMaclawApp: meta.IsMaclawApp}); err != nil {
 			log.Printf("[skillmarket] index skill %s error: %v", skillID, err)
 		}
 	}
@@ -539,8 +587,9 @@ func isValidPublisherSkillID(id string) bool {
 	return true
 }
 
-// SafeUnzip 安全解压 zip 文件到目标目录。
-// 检查解压比率（≤20x）、总大小（≤500MB）、单文件（≤50MB）、文件数量（≤1000）。
+// SafeUnzip 安全解压 zip 到目标目录。
+// 主闸门：解压总大小（≤500MB）、单文件（≤50MB）、解压比（≤20x）。
+// 文件数上限（MaxSkillMarketZipEntries）仅防海量空文件 DoS，不阻止「体积正常、文件多」的资源包。
 func SafeUnzip(zipPath, destDir string) error {
 	fi, err := os.Stat(zipPath)
 	if err != nil {
@@ -554,8 +603,9 @@ func SafeUnzip(zipPath, destDir string) error {
 	}
 	defer r.Close()
 
+	// DoS backstop only — legitimate template/font/SVG packs may have thousands of files.
 	if len(r.File) > maxFileCount {
-		return fmt.Errorf("too many files: %d (max %d)", len(r.File), maxFileCount)
+		return fmt.Errorf("too many files: %d (max %d DoS limit); remove node_modules/.git/venv/cache if present, or split oversized asset packs", len(r.File), maxFileCount)
 	}
 
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
@@ -578,7 +628,7 @@ func SafeUnzip(zipPath, destDir string) error {
 			continue
 		}
 
-		// 单文件大小检查
+		// 单文件大小检查（主闸门之一）
 		if f.UncompressedSize64 > uint64(maxSingleFile) {
 			return fmt.Errorf("file too large: %s (%d bytes, max %d)", f.Name, f.UncompressedSize64, maxSingleFile)
 		}

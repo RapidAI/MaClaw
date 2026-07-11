@@ -20,7 +20,7 @@ import (
 
 var (
 	asrInstance asr.ASRModel
-	asrMu      sync.Mutex
+	asrMu       sync.Mutex
 )
 
 const asrRawFallbackMinRMS = 0.0025
@@ -179,15 +179,25 @@ func shouldDropASRText(text string, sampleCount int) (bool, string) {
 
 	badRunes := 0
 	letterRunes := 0
-	counts := make(map[rune]int)
+	// Lazy-allocate: punctuation-only noise (common continuous-ASR false positives)
+	// never needs the frequency map.
+	var counts map[rune]int
 	for _, r := range runes {
 		if r == utf8.RuneError || r == '\ufffd' || unicode.IsControl(r) {
 			badRunes++
 		}
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			letterRunes++
+			if counts == nil {
+				counts = make(map[rune]int, 8)
+			}
 			counts[r]++
 		}
+	}
+	// Breath/noise often becomes lone "。" / "." / "…" with no real content.
+	// Drop before any agent / buffer-queue handoff.
+	if letterRunes == 0 {
+		return true, "punctuation-only"
 	}
 	if len(runes) >= 12 && badRunes*4 >= len(runes) {
 		return true, "too many replacement/control chars"
@@ -246,7 +256,7 @@ func shouldDropASRText(text string, sampleCount int) (bool, string) {
 
 // getASRModel returns the singleton ASR model, loading on first call.
 // Thread-safe. Automatically retries if the model wasn't available before.
-// Supports both Moonshine and SenseVoice models via auto-detection.
+// Uses the configured SenseVoice model.
 func (a *App) getASRModel() (asr.ASRModel, error) {
 	asrMu.Lock()
 	defer asrMu.Unlock()
@@ -264,49 +274,58 @@ func (a *App) getASRModel() (asr.ASRModel, error) {
 		return nil, fmt.Errorf("models dir: %w", err)
 	}
 
-	// Try SenseVoice model first, then fall back to Moonshine
 	modelPath := filepath.Join(dir, asrModelFilename)
-	svPath := filepath.Join(dir, svModelFilename)
-	if _, err := os.Stat(svPath); err == nil {
-		modelPath = svPath
-	}
-
 	log.Printf("[asr] loading model from %s", modelPath)
-	m, loadErr := asr.NewSenseVoice(modelPath)
-	if loadErr != nil {
-		// Fall back to Moonshine if SenseVoice load fails
-		log.Printf("[asr] SenseVoice load failed (%v), trying Moonshine", loadErr)
-		moonModel, moonErr := asr.NewMoonshine(modelPath)
-		if moonErr != nil {
-			return nil, fmt.Errorf("load ASR model: sensevoice=%v, moonshine=%v", loadErr, moonErr)
-		}
-		asrInstance = moonModel
-	} else {
-		asrInstance = m
+	m, err := asr.NewSenseVoice(modelPath)
+	if err != nil {
+		return nil, fmt.Errorf("load SenseVoice ASR model: %w", err)
 	}
+	asrInstance = m
 	log.Printf("[asr] model loaded successfully")
 	return asrInstance, nil
 }
 
 // TranscribeAudioBase64 accepts base64-encoded WAV audio data and returns
-// the transcribed text using the local Moonshine ASR model.
-//
-// The frontend already records short, trimmed 16kHz mono speech segments. For
-// those segments, fidelity matters more than aggressive cleanup: cutting only
-// VAD-positive windows can remove weak Chinese syllable edges and corrupt ASR.
-// Silero VAD is therefore used as a diagnostic and only as a conservative aid
-// for long recordings when its output looks plausible.
+// the transcribed text using the local SenseVoice ASR model.
 func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 	if wavBase64 == "" {
 		return "", fmt.Errorf("empty audio data")
 	}
-	if !a.GetASREnabled() {
-		return "", fmt.Errorf("ASR is not enabled")
-	}
-
 	wavData, err := base64.StdEncoding.DecodeString(wavBase64)
 	if err != nil {
 		return "", fmt.Errorf("decode base64: %w", err)
+	}
+	return a.TranscribeWAVBytes(wavData)
+}
+
+// asrTranscribeOpts controls optional behavior for TranscribeWAVBytes.
+type asrTranscribeOpts struct {
+	// MaxDurationSec caps audio length before inference (0 = no cap).
+	// Used by IM to bound latency on long voice notes.
+	MaxDurationSec float64
+	// SkipVAD skips Silero VAD preprocessing (faster; IM uses this).
+	SkipVAD bool
+}
+
+// TranscribeWAVBytes accepts raw WAV bytes and returns transcribed text using
+// the local SenseVoice ASR model. Shared by desktop voice input and IM voice.
+func (a *App) TranscribeWAVBytes(wavData []byte) (string, error) {
+	return a.transcribeWAVBytes(wavData, asrTranscribeOpts{})
+}
+
+// transcribeWAVBytes is the shared ASR entry with optional IM-oriented tuning.
+//
+// The desktop frontend already records short, trimmed 16kHz mono speech segments.
+// For those segments, fidelity matters more than aggressive cleanup: cutting only
+// VAD-positive windows can remove weak Chinese syllable edges and corrupt ASR.
+// Silero VAD is therefore used as a diagnostic and only as a conservative aid
+// for long recordings when its output looks plausible.
+func (a *App) transcribeWAVBytes(wavData []byte, opts asrTranscribeOpts) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("ASR app is nil")
+	}
+	if !a.GetASREnabled() {
+		return "", fmt.Errorf("ASR is not enabled")
 	}
 	if len(wavData) < 44 {
 		return "", fmt.Errorf("audio data too short")
@@ -317,7 +336,11 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 		dumpASRWav(wavData)
 	}
 	header := inspectWAVHeader(wavData)
+	sampleRate := 16000
 	if header.OK {
+		if header.SampleRate > 0 {
+			sampleRate = header.SampleRate
+		}
 		log.Printf("[asr] WAV header: format=%d channels=%d sample_rate=%d bits=%d data_bytes=%d", header.Format, header.Channels, header.SampleRate, header.BitsPerSample, header.DataBytes)
 	} else {
 		log.Printf("[asr] WAV header: unavailable/invalid bytes=%d", len(wavData))
@@ -330,7 +353,15 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 	if len(pcm) == 0 {
 		return "", nil
 	}
-	originalDurationSec := float64(len(pcm)) / 16000.0
+	originalDurationSec := float64(len(pcm)) / float64(sampleRate)
+	if opts.MaxDurationSec > 0 {
+		maxSamples := int(opts.MaxDurationSec * float64(sampleRate))
+		if maxSamples > 0 && len(pcm) > maxSamples {
+			log.Printf("[asr] truncating audio for latency cap: %.2fs -> %.2fs", originalDurationSec, opts.MaxDurationSec)
+			pcm = pcm[:maxSamples]
+			originalDurationSec = opts.MaxDurationSec
+		}
+	}
 	originalRMS := pcmRMS(pcm)
 	log.Printf("[asr] decoded WAV: bytes=%d samples=%d duration=%.2fs rms=%.5f", len(wavData), len(pcm), originalDurationSec, originalRMS)
 	if originalRMS < asrRawFallbackMinRMS {
@@ -341,24 +372,26 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 	// VAD filtering uses the embedded model, but for normal voice-input segments
 	// raw PCM is safer. VAD is allowed to replace raw PCM only for longer audio
 	// when it keeps a plausible amount of speech with comparable energy.
-	if vadModel, err := vad.Load(); err == nil {
-		originalPCM := pcm
-		filteredPCM := vadModel.FilterSpeech(pcm)
-		if len(filteredPCM) == 0 {
-			log.Printf("[asr] VAD filtered all %d samples as silence; keeping raw PCM (duration=%.2fs rms=%.5f)", len(originalPCM), originalDurationSec, originalRMS)
-		} else {
-			filteredDurationSec := float64(len(filteredPCM)) / 16000.0
-			filteredRMS := pcmRMS(filteredPCM)
-			speechRatio := float64(len(filteredPCM)) / float64(len(originalPCM))
-			useFiltered := originalDurationSec > asrPreferRawMaxSec &&
-				filteredDurationSec >= asrVadMinFilteredSec &&
-				speechRatio >= asrVadMinSpeechRatio &&
-				speechRatio <= asrVadMaxSpeechRatio &&
-				filteredRMS >= originalRMS*asrVadMinRMSRatio
-			log.Printf("[asr] VAD: %d -> %d samples (%.0f%% speech, raw_rms=%.5f vad_rms=%.5f use_filtered=%t)",
-				len(originalPCM), len(filteredPCM), speechRatio*100, originalRMS, filteredRMS, useFiltered)
-			if useFiltered {
-				pcm = filteredPCM
+	if !opts.SkipVAD {
+		if vadModel, err := vad.Load(); err == nil {
+			originalPCM := pcm
+			filteredPCM := vadModel.FilterSpeech(pcm)
+			if len(filteredPCM) == 0 {
+				log.Printf("[asr] VAD filtered all %d samples as silence; keeping raw PCM (duration=%.2fs rms=%.5f)", len(originalPCM), originalDurationSec, originalRMS)
+			} else {
+				filteredDurationSec := float64(len(filteredPCM)) / float64(sampleRate)
+				filteredRMS := pcmRMS(filteredPCM)
+				speechRatio := float64(len(filteredPCM)) / float64(len(originalPCM))
+				useFiltered := originalDurationSec > asrPreferRawMaxSec &&
+					filteredDurationSec >= asrVadMinFilteredSec &&
+					speechRatio >= asrVadMinSpeechRatio &&
+					speechRatio <= asrVadMaxSpeechRatio &&
+					filteredRMS >= originalRMS*asrVadMinRMSRatio
+				log.Printf("[asr] VAD: %d -> %d samples (%.0f%% speech, raw_rms=%.5f vad_rms=%.5f use_filtered=%t)",
+					len(originalPCM), len(filteredPCM), speechRatio*100, originalRMS, filteredRMS, useFiltered)
+				if useFiltered {
+					pcm = filteredPCM
+				}
 			}
 		}
 	}
@@ -387,11 +420,12 @@ func (a *App) TranscribeAudioBase64(wavBase64 string) (string, error) {
 
 // IsASRReady returns true if ASR is enabled and the model file exists.
 func (a *App) IsASRReady() bool {
-	if !a.GetASREnabled() {
+	if a == nil || !a.GetASREnabled() {
 		return false
 	}
 	info := a.CheckASRModel()
-	return info["exists"].(bool)
+	exists, _ := info["exists"].(bool)
+	return exists
 }
 
 // asrDumpEnabled returns true if ASR audio dump is enabled for debugging.

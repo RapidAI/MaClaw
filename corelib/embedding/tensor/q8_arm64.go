@@ -32,3 +32,5 @@ func dequantRowScaledTriple(dst0, dst1, dst2 []float32, data []byte, scales0, sc
 	dequantRowScaledDual(dst0, dst1, data, scales0, scales1, rowOff0, rowOff1, nBlocks)
 	dequantRowScaledASM(dst2, data, scales2, rowOff2, nBlocks)
 }
+
+func prepareScalesBulk(dst []float32, data []byte) bool { return false }

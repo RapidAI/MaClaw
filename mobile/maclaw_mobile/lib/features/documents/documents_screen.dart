@@ -65,6 +65,36 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
         );
   }
 
+  void _syncEditorsFromDraft(DocumentDraft draft) {
+    setState(() {
+      _titleController.text = draft.title;
+      _contentController.text = draft.markdown;
+      _template = draft.template;
+      _lastTemplateSkeleton = emergencyDocumentTemplateSkeleton(draft.template);
+    });
+  }
+
+  Future<void> _shareDraft(DocumentDraft draft) async {
+    final text = ref
+        .read(documentsControllerProvider.notifier)
+        .shareTextForDraft(draft);
+    try {
+      await ref.read(documentsDraftTextShareProvider).call(
+            text,
+            subject: draft.title.trim().isEmpty ? 'MaClaw 文档' : draft.title,
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已打开系统分享，可发送到微信等应用')),
+      );
+    } on Object catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('分享失败：$e')),
+      );
+    }
+  }
+
   void _changeTemplate(DocumentTemplate value) {
     final current = _contentController.text.trim();
     final canReplace = current.isEmpty || current == _lastTemplateSkeleton;
@@ -101,16 +131,49 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
     final state = ref.watch(documentsControllerProvider);
     _consumeSharedIntent(state);
     return ScreenScaffold(
-      title: '应急文档',
-      subtitle: '快速生成、导入、轻编辑、导出和分享。',
-      trailing: IconButton.filledTonal(
-        tooltip: '导入文档',
-        onPressed: () => ref
-            .read(documentsControllerProvider.notifier)
-            .pickAndUploadDocument(),
-        icon: const Icon(Icons.upload_file_outlined),
+      title: '文档',
+      subtitle: '与电脑端 MaClaw GUI 共享同一 Hub 文稿库；可打开编辑、继续处理、导出或分享到微信等。',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton.filledTonal(
+            tooltip: '刷新文稿库',
+            onPressed: () =>
+                ref.read(documentDraftHistoryProvider.notifier).refresh(),
+            icon: const Icon(Icons.refresh),
+          ),
+          IconButton.filledTonal(
+            tooltip: '导入文档',
+            onPressed: () => ref
+                .read(documentsControllerProvider.notifier)
+                .pickAndUploadDocument(),
+            icon: const Icon(Icons.upload_file_outlined),
+          ),
+        ],
       ),
       children: [
+        StatusBanner(
+          tone: StatusTone.info,
+          icon: Icons.devices_outlined,
+          message: '本列表来自当前账号的 Hub 文稿（GUI 与 Mobile 同源）。'
+              '点开可编辑；可用系统分享发到微信等；长任务进度在「后台」。',
+        ),
+        const SizedBox(height: 12),
+        _HubDocumentLibraryCard(
+          currentDraftId: state.valueOrNull?.draft?.id,
+          onOpen: (draft) async {
+            await ref
+                .read(documentsControllerProvider.notifier)
+                .selectDraft(draft);
+            final selected =
+                ref.read(documentsControllerProvider).valueOrNull?.draft;
+            if (selected != null && mounted) {
+              _syncEditorsFromDraft(selected);
+            }
+          },
+          onShare: (draft) => _shareDraft(draft),
+        ),
+        const SizedBox(height: 12),
         _DraftComposer(
           titleController: _titleController,
           contentController: _contentController,
@@ -138,8 +201,13 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
               if (value.uploadTask != null && value.draft != null)
                 const SizedBox(height: 12),
               _DraftPreview(state: value),
-              const SizedBox(height: 12),
-              _DocumentDraftHistoryCard(currentDraftId: value.draft?.id),
+              if (value.draft != null) ...[
+                const SizedBox(height: 12),
+                _ActiveDocumentActions(
+                  draft: value.draft!,
+                  onShare: () => _shareDraft(value.draft!),
+                ),
+              ],
             ],
           ),
           error: (error, _) => Card(
@@ -148,12 +216,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
               child: Text('文档处理失败：$error'),
             ),
           ),
-          loading: () => const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: LinearProgressIndicator(),
-            ),
-          ),
+          loading: () => const LoadingCard(label: '正在处理文档…'),
         ),
         const SizedBox(height: 12),
         const _DocumentAIProcessPanel(),
@@ -230,61 +293,172 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
   }
 }
 
-class _DocumentDraftHistoryCard extends ConsumerWidget {
+class _HubDocumentLibraryCard extends ConsumerWidget {
   final String? currentDraftId;
+  final Future<void> Function(DocumentDraft draft) onOpen;
+  final Future<void> Function(DocumentDraft draft) onShare;
 
-  const _DocumentDraftHistoryCard({required this.currentDraftId});
+  const _HubDocumentLibraryCard({
+    required this.currentDraftId,
+    required this.onOpen,
+    required this.onShare,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final history = ref.watch(documentDraftHistoryProvider);
     return history.when(
       data: (drafts) {
-        if (drafts.isEmpty) return const SizedBox.shrink();
-        final shown = drafts.take(8).toList();
+        final shown = drafts.take(30).toList();
         return Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '最近文档草稿',
-                  style: Theme.of(context).textTheme.titleMedium,
+                Row(
+                  children: [
+                    Icon(
+                      Icons.cloud_done_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Hub 文稿库（与 GUI 共享）',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                    Text(
+                      '${shown.length} 篇',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
-                for (final draft in shown)
-                  ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(
-                      draft.id == currentDraftId
-                          ? Icons.radio_button_checked
-                          : Icons.description_outlined,
+                if (shown.isEmpty)
+                  Text(
+                    '暂无文稿。可在下方新建，或从电脑端 MaClaw 创建后刷新；'
+                    '也可导入/接收系统分享的文件。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  )
+                else
+                  for (final draft in shown)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        draft.id == currentDraftId
+                            ? Icons.radio_button_checked
+                            : Icons.description_outlined,
+                      ),
+                      title: Text(
+                        draft.title.trim().isEmpty ? '未命名文档' : draft.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${documentTemplateLabel(draft.template)} · ${_draftPreviewText(draft.markdown)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: IconButton(
+                        tooltip: '分享',
+                        icon: const Icon(Icons.ios_share_outlined, size: 20),
+                        onPressed: () => onShare(draft),
+                      ),
+                      onTap: () => onOpen(draft),
                     ),
-                    title: Text(
-                      draft.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Text(
-                      '${documentTemplateLabel(draft.template)} · ${_draftPreviewText(draft.markdown)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onTap: draft.id == currentDraftId
-                        ? null
-                        : () => ref
-                            .read(documentsControllerProvider.notifier)
-                            .selectDraft(draft),
-                  ),
               ],
             ),
           ),
         );
       },
-      error: (_, __) => const SizedBox.shrink(),
-      loading: () => const SizedBox.shrink(),
+      error: (e, _) => Card(
+        child: ListTile(
+          leading: const Icon(Icons.cloud_off_outlined),
+          title: const Text('文稿库暂不可用'),
+          subtitle: Text('$e'),
+          trailing: TextButton(
+            onPressed: () =>
+                ref.read(documentDraftHistoryProvider.notifier).refresh(),
+            child: const Text('重试'),
+          ),
+        ),
+      ),
+      loading: () => const LoadingCard(label: '加载 Hub 文稿库…'),
+    );
+  }
+}
+
+class _ActiveDocumentActions extends ConsumerWidget {
+  final DocumentDraft draft;
+  final VoidCallback onShare;
+
+  const _ActiveDocumentActions({
+    required this.draft,
+    required this.onShare,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final loading = ref.watch(documentsControllerProvider).isLoading;
+    final controller = ref.read(documentsControllerProvider.notifier);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '继续处理：${draft.title.trim().isEmpty ? draft.id : draft.title}',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: loading
+                      ? null
+                      : () => controller.processDraft('summarize'),
+                  icon: const Icon(Icons.auto_awesome, size: 18),
+                  label: const Text('摘要整理'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: loading
+                      ? null
+                      : () => controller.processDraft('polish'),
+                  icon: const Icon(Icons.spellcheck, size: 18),
+                  label: const Text('润色'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: loading
+                      ? null
+                      : () => controller.exportDraft(
+                            DocumentExportFormat.markdown,
+                          ),
+                  icon: const Icon(Icons.file_download_outlined, size: 18),
+                  label: const Text('导出'),
+                ),
+                FilledButton.icon(
+                  onPressed: loading ? null : onShare,
+                  icon: const Icon(Icons.ios_share, size: 18),
+                  label: const Text('分享到微信等'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -192,7 +192,7 @@ func buildBtwSystemPrompt(h *IMMessageHandler, userText string) string {
 
 	// --- Identity (same source as main agent) ---
 	roleName := "MaClaw"
-	roleDesc := "一个尽心尽责无所不能的软件开发管家"
+	roleDesc := corelib.DefaultMaclawRoleDescription
 	if cfg, err := h.loadConfig(); err == nil {
 		if cfg.MaclawRoleName != "" {
 			roleName = cfg.MaclawRoleName

@@ -889,6 +889,8 @@ export function TranscribeAudioBase64(arg1:string):Promise<string>;
 
 export function NormalizeVoiceCommand(arg1:string):Promise<main.VoiceCommandNormalizationResult>;
 
+export function CorrectASRText(arg1:string):Promise<string>;
+
 export function IsASRReady():Promise<boolean>;
 
 // Screen parsing (OminiParser-V2) bindings

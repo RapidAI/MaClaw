@@ -30,24 +30,26 @@ func (t *Q8Tensor) PrepareScales() {
 	need := t.Rows * nBlocks
 	scales := make([]float32, need)
 	// Data is row-major Q8 blocks (34B each); scales sit at byte 0 of every block.
-	// 8-way unroll + manual LE u16 (no binary.Uint16) for load-time bulk convert.
+	// Prefer F16C bulk convert (AVX2); scalar 8-way unroll as fallback.
 	data := t.Data
-	off := 0
-	i := 0
-	for ; i+7 < need; i += 8 {
-		scales[i] = float16to32Fast(uint16(data[off]) | uint16(data[off+1])<<8)
-		scales[i+1] = float16to32Fast(uint16(data[off+q8BlockBytes]) | uint16(data[off+q8BlockBytes+1])<<8)
-		scales[i+2] = float16to32Fast(uint16(data[off+2*q8BlockBytes]) | uint16(data[off+2*q8BlockBytes+1])<<8)
-		scales[i+3] = float16to32Fast(uint16(data[off+3*q8BlockBytes]) | uint16(data[off+3*q8BlockBytes+1])<<8)
-		scales[i+4] = float16to32Fast(uint16(data[off+4*q8BlockBytes]) | uint16(data[off+4*q8BlockBytes+1])<<8)
-		scales[i+5] = float16to32Fast(uint16(data[off+5*q8BlockBytes]) | uint16(data[off+5*q8BlockBytes+1])<<8)
-		scales[i+6] = float16to32Fast(uint16(data[off+6*q8BlockBytes]) | uint16(data[off+6*q8BlockBytes+1])<<8)
-		scales[i+7] = float16to32Fast(uint16(data[off+7*q8BlockBytes]) | uint16(data[off+7*q8BlockBytes+1])<<8)
-		off += 8 * q8BlockBytes
-	}
-	for ; i < need; i++ {
-		scales[i] = float16to32Fast(uint16(data[off]) | uint16(data[off+1])<<8)
-		off += q8BlockBytes
+	if !prepareScalesBulk(scales, data) {
+		off := 0
+		i := 0
+		for ; i+7 < need; i += 8 {
+			scales[i] = float16to32Fast(uint16(data[off]) | uint16(data[off+1])<<8)
+			scales[i+1] = float16to32Fast(uint16(data[off+q8BlockBytes]) | uint16(data[off+q8BlockBytes+1])<<8)
+			scales[i+2] = float16to32Fast(uint16(data[off+2*q8BlockBytes]) | uint16(data[off+2*q8BlockBytes+1])<<8)
+			scales[i+3] = float16to32Fast(uint16(data[off+3*q8BlockBytes]) | uint16(data[off+3*q8BlockBytes+1])<<8)
+			scales[i+4] = float16to32Fast(uint16(data[off+4*q8BlockBytes]) | uint16(data[off+4*q8BlockBytes+1])<<8)
+			scales[i+5] = float16to32Fast(uint16(data[off+5*q8BlockBytes]) | uint16(data[off+5*q8BlockBytes+1])<<8)
+			scales[i+6] = float16to32Fast(uint16(data[off+6*q8BlockBytes]) | uint16(data[off+6*q8BlockBytes+1])<<8)
+			scales[i+7] = float16to32Fast(uint16(data[off+7*q8BlockBytes]) | uint16(data[off+7*q8BlockBytes+1])<<8)
+			off += 8 * q8BlockBytes
+		}
+		for ; i < need; i++ {
+			scales[i] = float16to32Fast(uint16(data[off]) | uint16(data[off+1])<<8)
+			off += q8BlockBytes
+		}
 	}
 	t.Scales = scales
 }
@@ -198,7 +200,7 @@ func matMulQ8ArgmaxNRange(bestV []float32, bestI []int, a []float32, b *Q8Tensor
 		// N-tile outer: dequant each B panel ONCE, then multiDot all M (was M-outer
 		// re-dequanting every A tile — costly for CTC N≈25k × M≈100).
 		nTile := q8BPanelRows(K, ne-ns)
-		panel := getQ8DequantBuf(nTile * K)
+		panel, panelPool := getQ8DequantBuf(nTile * K)
 		var dDual0, dDual1 [8]float32
 		var d8 [8]float32
 		mt := mTileForK(K)
@@ -238,7 +240,7 @@ func matMulQ8ArgmaxNRange(bestV []float32, bestI []int, a []float32, b *Q8Tensor
 				bestV[m], bestI[m] = bv, bi
 			}
 		}
-		putQ8DequantBuf(panel)
+		putQ8DequantBuf(panel, panelPool)
 		return
 	}
 
@@ -1439,7 +1441,7 @@ func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, n
 // matMulQ8RangeDeqReLU: FFN up-proj — dequant panel + triple/dual multiDot + max(0,·).
 func matMulQ8RangeDeqReLU(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int) {
 	nTile := q8BPanelRows(K, ne-ns)
-	panel := getQ8DequantBuf(nTile * K)
+	panel, panelPool := getQ8DequantBuf(nTile * K)
 	var dDual0, dDual1 [8]float32
 	var d8 [8]float32
 	var dTri0, dTri1 [12]float32
@@ -1484,13 +1486,13 @@ func matMulQ8RangeDeqReLU(out, a []float32, b *Q8Tensor, bias []float32, M, N, K
 			}
 		}
 	}
-	putQ8DequantBuf(panel)
+	putQ8DequantBuf(panel, panelPool)
 }
 
 // matMulQ8RangeDeqPlain: encoder GEMM — dequant + multiDot, pure store (no ReLU/accum).
 func matMulQ8RangeDeqPlain(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int) {
 	nTile := q8BPanelRows(K, ne-ns)
-	panel := getQ8DequantBuf(nTile * K)
+	panel, panelPool := getQ8DequantBuf(nTile * K)
 	var dDual0, dDual1 [8]float32
 	var d8 [8]float32
 	var dTri0, dTri1 [12]float32
@@ -1532,17 +1534,16 @@ func matMulQ8RangeDeqPlain(out, a []float32, b *Q8Tensor, bias []float32, M, N, 
 			}
 		}
 	}
-	putQ8DequantBuf(panel)
+	putQ8DequantBuf(panel, panelPool)
 }
 
 // matMulPanelDualPlain: encoder — triple/dual multiDot, pure store + bias (no flags).
 // hasBias is specialized (SenseVoice linears always bias) to drop per-column branches.
 
 // matMulPanelBOuterPlain8: B-tile outer x all 8-row A tiles (encoder plain).
-// Triple-triple (9 B cols) then dual-triple (6): share each A panel across
-// 3/2 multiDots so A is reloaded far less vs single-triple outer.
-// Note: dual-m 16 (two A panels per B triple) measured ~8ms e2e regression
-// (L1 thrash: 2×16KB A + B exceeds Zen4 32KB L1d).
+// Triple-triple (9 B cols) then dual-triple (6): m-outer s-inner shares each A
+// panel across 3/2 multiDots. dual-m 16 thrash; B-triple-outer/s-outer reloads
+// A 3× and measured worse e2e for typical M.
 func matMulPanelBOuterPlain8(out, a, panel, bias []float32, M, n0, N, K, nt int, dDual0, dDual1, d8 *[8]float32, dTri0, dTri1 *[12]float32) {
 	t := 0
 	for ; t+8 < nt; t += 9 {
@@ -1660,8 +1661,8 @@ func matMulPanelBOuterPlain8(out, a, panel, bias []float32, M, n0, N, K, nt int,
 }
 
 // matMulPanelBOuterReLU8: B-tile outer for FFN up (N=2048 ReLU store).
-// Triple-triple (9) then dual-triple (6) B cols share each A panel.
-// dual-m 16 measured regression (float A panels thrash L1d); keep single-m.
+// Triple-triple (9) then dual-triple (6): m-outer s-inner (A reuse).
+// dual-m 16 and B-triple-outer/s-outer both measured e2e regressions.
 func matMulPanelBOuterReLU8(out, a, panel, bias []float32, M, n0, N, K, nt int, dDual0, dDual1, d8 *[8]float32, dTri0, dTri1 *[12]float32) {
 	t := 0
 	for ; t+8 < nt; t += 9 {
@@ -1894,7 +1895,7 @@ func matMulPanelDualPlainNoBias(out, aPanel, panel []float32, m, n0, N, K, nt in
 
 func matMulQ8RangeDeqGeneric(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int, relu, accum bool, d8 *[8]float32) {
 	nTile := q8BPanelRows(K, ne-ns)
-	panel := getQ8DequantBuf(nTile * K)
+	panel, panelPool := getQ8DequantBuf(nTile * K)
 	var dDual0, dDual1 [8]float32
 	hasBias := bias != nil
 	mt := mTileForK(K)
@@ -1936,7 +1937,7 @@ func matMulQ8RangeDeqGeneric(out, a []float32, b *Q8Tensor, bias []float32, M, N
 			}
 		}
 	}
-	putQ8DequantBuf(panel)
+	putQ8DequantBuf(panel, panelPool)
 }
 
 // matMulPanelDualReLU: FFN up — triple then dual, always store max(0, d+bias).
@@ -2602,19 +2603,24 @@ func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M
 }
 
 var q8DequantPool = sync.Pool{
-	New: func() interface{} { return make([]float32, 0, 1024) },
+	// Keep a pointer in the pool rather than a slice value. Passing a slice to
+	// sync.Pool boxes its three-word header on every Put, which made the Q8
+	// panel cache allocate in the SenseVoice inference hot path.
+	New: func() interface{} { return new([]float32) },
 }
 
-func getQ8DequantBuf(n int) []float32 {
-	buf := q8DequantPool.Get().([]float32)
+func getQ8DequantBuf(n int) ([]float32, *[]float32) {
+	pooled := q8DequantPool.Get().(*[]float32)
+	buf := *pooled
 	if cap(buf) < n {
 		buf = make([]float32, n)
 	}
-	return buf[:n]
+	return buf[:n], pooled
 }
 
-func putQ8DequantBuf(buf []float32) {
-	q8DequantPool.Put(buf[:0])
+func putQ8DequantBuf(buf []float32, pooled *[]float32) {
+	*pooled = buf[:0]
+	q8DequantPool.Put(pooled)
 }
 
 // dequantRowInto dequantizes a Q8_0 row into dst (len >= nBlocks*32).

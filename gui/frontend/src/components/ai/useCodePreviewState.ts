@@ -15,6 +15,8 @@ export interface CodeFile {
     language: string;
     updatedAt: number;
     forceOpen?: boolean;
+    autoOpenPreview?: boolean;
+    previewTruncated?: boolean;
 }
 
 /** UI state for the code preview panel. */
@@ -64,7 +66,8 @@ export function initialState(): CodePreviewUIState {
 
 /**
  * Apply a code:file_update event to the state.
- * Updates the files map, auto-opens the panel if not userClosed,
+ * Updates the files map. Only workflow-authorized events auto-open the panel;
+ * ordinary code generation remains available without taking over the UI.
  * and auto-selects the latest file.
  *
  * Workflow and source preview coexist behind tabs, so workflow state does not
@@ -93,7 +96,7 @@ export function applyFileUpdate(
                 activeFilePath: file.filePath,
                 sessionID: file.sessionID,
                 sessionActive: state.sessionActive || file.forceOpen === true,
-                active: !state.userClosed || file.forceOpen ? true : state.active,
+                active: file.forceOpen || (file.autoOpenPreview && !state.userClosed) ? true : state.active,
                 userClosed: file.forceOpen ? false : state.userClosed,
             };
         }
@@ -104,7 +107,7 @@ export function applyFileUpdate(
     const nextFiles = new Map(state.files);
     nextFiles.set(file.filePath, file);
 
-    const shouldAutoOpen = file.forceOpen || !state.userClosed;
+    const shouldAutoOpen = file.forceOpen || (file.autoOpenPreview && !state.userClosed);
     // Auto-select: always for create/modify, but for read only when panel
     // is first opening (no active file yet). This prevents rapid tab-switching
     // during the SubAgent's initial file exploration phase.
@@ -256,7 +259,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
             }
 
             const opType: CodeFile['opType'] = data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create";
-            const original = opType === "modify" && typeof data.original === "string" ? data.original : undefined;
+            const original = opType === "modify" && data.original_missing !== true && typeof data.original === "string" ? data.original : undefined;
             const file: CodeFile = {
                 sessionID: data.session_id || "",
                 filePath: data.file_path,
@@ -268,6 +271,8 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
                 language: data.language || "plaintext",
                 updatedAt: Date.now(),
                 forceOpen,
+                autoOpenPreview: data.auto_open_preview === true,
+                previewTruncated: data.preview_truncated === true,
             };
 
             setState(prev => applyFileUpdate(prev, file));

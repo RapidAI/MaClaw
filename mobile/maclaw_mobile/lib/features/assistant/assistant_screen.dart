@@ -4,20 +4,27 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/mobile_credits.dart';
 import '../../core/platform/mobile_permission_evidence.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/settings/app_preferences.dart';
 import '../../core/shared_intents/mobile_shared_intent.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
+import '../../core/text/html_text.dart';
 import '../../shared/surface.dart';
 import '../auth/session_controller.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
 import 'assistant_controller.dart';
+import 'assistant_digital_twin_gate.dart';
+import 'assistant_employee_handoff.dart';
+import 'assistant_inline_card.dart';
+import 'assistant_markdown.dart';
 import 'assistant_voice_input.dart';
 import 'search_history.dart';
 
@@ -103,6 +110,7 @@ class AssistantScreen extends ConsumerStatefulWidget {
 
 class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final _queryController = TextEditingController();
+  final _scrollController = ScrollController();
   late final AssistantVoiceInput _voiceInput;
   bool _listening = false;
   String? _voiceStatus;
@@ -121,7 +129,21 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   void dispose() {
     unawaited(_voiceInput.stop());
     _queryController.dispose();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _scrollConversationToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final max = _scrollController.position.maxScrollExtent;
+      if (max <= 0) return;
+      _scrollController.animateTo(
+        max,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   void _setQuery(String value) {
@@ -135,6 +157,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     ref.read(assistantTabsProvider.notifier).setActiveSharedCitation(null);
     unawaited(ref.read(assistantSearchProvider.notifier).search(query));
     _setQuery('');
+    _scrollConversationToEnd();
   }
 
   Future<void> _toggleVoiceInput() async {
@@ -348,12 +371,20 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bootstrap =
+        ref.watch(sessionControllerProvider).valueOrNull?.bootstrap;
+    if (usesDigitalTwinAssistant(bootstrap)) {
+      return const AssistantDigitalTwinGate();
+    }
     _consumeSharedIntent();
     final tabs = ref.watch(assistantTabsProvider);
     final activeTab = tabs.activeTab;
     final query = ref.watch(assistantQueryProvider);
-    final fallbackResult = ref.watch(assistantSearchProvider);
-    final result = activeTab.resultTouched ? activeTab.result : fallbackResult;
+    // Never leak another tab's in-flight stream into an untouched tab.
+    // Search always writes per-tab via setResultForTab (resultTouched=true).
+    final result = activeTab.resultTouched
+        ? activeTab.result
+        : const AsyncData<SearchAnswer?>(null);
     final sharedCitation =
         activeTab.sharedCitation ?? ref.watch(assistantSharedCitationProvider);
     final history = ref.watch(searchHistoryProvider);
@@ -367,161 +398,303 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     if (_queryController.text != query) {
       _queryController.text = query;
     }
-    return ScreenScaffold(
+    final scheme = Theme.of(context).colorScheme;
+    final hasConversation = activeTab.messages.isNotEmpty;
+    final hasAnswer = result.maybeWhen(
+      data: (answer) => answer != null,
+      orElse: () => false,
+    );
+    final compactComposer = hasConversation || hasAnswer || result.isLoading;
+    ref.listen(assistantTabsProvider, (previous, next) {
+      final prevLen = previous?.activeTab.messages.length ?? 0;
+      final nextLen = next.activeTab.messages.length;
+      if (nextLen > prevLen || next.activeTabId != previous?.activeTabId) {
+        _scrollConversationToEnd();
+      }
+    });
+
+    return ChatWorkspaceScaffold(
       title: 'AI助手',
-      subtitle: '类似 MaClaw GUI 的多对话 AI 助手，可文字或语音输入，也可接入截图、文件、服务器日志和数字员工能力。',
-      trailing: IconButton.filledTonal(
-        tooltip: _listening ? '停止语音输入' : '开始语音输入',
-        onPressed: _toggleVoiceInput,
-        icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+      subtitle: '像桌面端一样，随时聊聊、一起处理事情',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton.filledTonal(
+            tooltip: '对话历史',
+            onPressed: () => _openHistorySheet(history),
+            icon: const Icon(Icons.history),
+          ),
+          if (ref
+                  .watch(sessionControllerProvider)
+                  .valueOrNull
+                  ?.bootstrap
+                  ?.features
+                  .backendSshSessions ??
+              true) ...[
+            const SizedBox(width: 6),
+            IconButton.filledTonal(
+              tooltip: '远程维护',
+              onPressed: () => context.push('/servers'),
+              icon: const Icon(Icons.lan_outlined),
+            ),
+          ],
+          const SizedBox(width: 6),
+          IconButton.filledTonal(
+            tooltip: _listening ? '停止语音输入' : '开始语音输入',
+            onPressed: _toggleVoiceInput,
+            icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+          ),
+        ],
       ),
-      children: [
-        _AssistantTabStrip(
-          tabs: tabs,
-          onActivate: (tab) {
-            ref.read(assistantTabsProvider.notifier).activate(tab.id);
-            final active = ref.read(assistantTabsProvider).activeTab;
-            ref.read(assistantSharedCitationProvider.notifier).state =
-                active.sharedCitation;
-            ref.read(assistantQueryProvider.notifier).state = tab.query;
-          },
-          onAdd: () {
-            final tab = ref.read(assistantTabsProvider.notifier).addTab();
-            ref.read(assistantSharedCitationProvider.notifier).state =
-                tab.sharedCitation;
-            ref.read(assistantQueryProvider.notifier).state = tab.query;
-          },
-          onClose: (tab) {
-            ref.read(assistantTabsProvider.notifier).close(tab.id);
-            final active = ref.read(assistantTabsProvider).activeTab;
-            ref.read(assistantSharedCitationProvider.notifier).state =
-                active.sharedCitation;
-            ref.read(assistantQueryProvider.notifier).state = active.query;
-          },
-        ),
-        const SizedBox(height: 12),
-        if (activeTab.messages.isEmpty)
-          result.when(
-            data: (answer) => answer == null
-                ? const _AssistantWorkspaceIntro()
-                : _AssistantAnswerCard(
-                    query: query,
-                    answer: answer.answer,
-                    citations: answer.citations,
-                    llmMode: answer.llmMode,
-                    llmRequestId: answer.llmRequestId,
-                    llmUsageRecordId: answer.llmUsageRecordId,
-                    fallbackCitation: sharedCitation,
-                  ),
-            error: (error, _) => _AssistantErrorCard(
-              error: error,
-              query: query,
-            ),
-            loading: () => const Card(
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: LinearProgressIndicator(),
+      topBar: _AssistantTabStrip(
+        tabs: tabs,
+        onActivate: (tab) {
+          ref.read(assistantTabsProvider.notifier).activate(tab.id);
+          final active = ref.read(assistantTabsProvider).activeTab;
+          ref.read(assistantSharedCitationProvider.notifier).state =
+              active.sharedCitation;
+          ref.read(assistantQueryProvider.notifier).state = tab.query;
+        },
+        onAdd: () {
+          final tab = ref.read(assistantTabsProvider.notifier).addTab();
+          ref.read(assistantSharedCitationProvider.notifier).state =
+              tab.sharedCitation;
+          ref.read(assistantQueryProvider.notifier).state = tab.query;
+        },
+        onClose: (tab) {
+          ref.read(assistantTabsProvider.notifier).close(tab.id);
+          final active = ref.read(assistantTabsProvider).activeTab;
+          ref.read(assistantSharedCitationProvider.notifier).state =
+              active.sharedCitation;
+          ref.read(assistantQueryProvider.notifier).state = active.query;
+        },
+      ),
+      body: ListView(
+        controller: _scrollController,
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+        children: [
+          if (!hasConversation)
+            result.when(
+              data: (answer) => answer == null
+                  ? const _AssistantCompanionIntro()
+                  : _AssistantReplyBubble(
+                      query: query,
+                      answer: answer.answer,
+                      citations: answer.citations,
+                      llmMode: answer.llmMode,
+                      llmRequestId: answer.llmRequestId,
+                      llmUsageRecordId: answer.llmUsageRecordId,
+                      fallbackCitation: sharedCitation,
+                    ),
+              error: (error, _) => _AssistantErrorBubble(
+                error: error,
+                query: query,
               ),
+              loading: () => const _AssistantTypingIndicator(),
+            )
+          else
+            _AssistantConversationView(
+              messages: activeTab.messages,
+              result: result,
+              fallbackCitation: sharedCitation,
             ),
-          )
-        else
-          _AssistantConversationView(
-            messages: activeTab.messages,
-            result: result,
-            fallbackCitation: sharedCitation,
-          ),
-        const SizedBox(height: 18),
-        TextField(
-          controller: _queryController,
-          minLines: 3,
-          maxLines: 6,
-          onChanged: (value) => _setQuery(value),
-          decoration: InputDecoration(
-            labelText: '问 MaClaw AI 助手',
-            hintText: '直接输入，或点麦克风用语音告诉 AI 助手要处理什么',
-            helperText: '支持普通对话、助手联网、文档处理、日志排障和应急操作草案。',
-            prefixIcon: const Icon(Icons.auto_awesome_outlined),
-            suffixIcon: IconButton(
-              tooltip: _listening ? '停止语音输入' : '语音输入',
-              onPressed: _toggleVoiceInput,
-              icon: Icon(_listening ? Icons.mic : Icons.mic_none),
+        ],
+      ),
+      composer: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (!assistantEnabled) ...[
+            const _AssistantSearchUnavailableBanner(),
+            const SizedBox(height: 8),
+          ],
+
+          if (!compactComposer) ...[
+            _AssistantQuickPrompts(onSelect: _setQuery),
+            const SizedBox(height: 8),
+          ],
+          if (_voiceStatus != null) ...[
+            Row(
+              children: [
+                Icon(
+                  _listening ? Icons.mic : Icons.info_outline,
+                  size: 16,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _voiceStatus!,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
+              ],
             ),
-          ),
-        ),
-        if (_voiceStatus != null) ...[
-          const SizedBox(height: 8),
+            const SizedBox(height: 6),
+          ],
+          if (_voicePermissionEvidence != null) ...[
+            Text(
+              _voicePermissionEvidence!,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 4),
+          ],
           Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Icon(
-                _listening ? Icons.mic : Icons.info_outline,
-                size: 18,
-                color: Theme.of(context).colorScheme.primary,
+              IconButton(
+                tooltip: '拍照提问',
+                onPressed: _pickImage,
+                icon: const Icon(Icons.photo_camera_outlined),
+              ),
+              IconButton(
+                tooltip: '从相册选择截图',
+                onPressed: _pickGalleryImage,
+                icon: const Icon(Icons.photo_library_outlined),
+              ),
+              IconButton(
+                tooltip: '导入截图或文件',
+                onPressed: _pickFile,
+                icon: const Icon(Icons.attach_file),
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _queryController,
+                  minLines: 1,
+                  maxLines: 5,
+                  textInputAction: TextInputAction.newline,
+                  onChanged: (value) => _setQuery(value),
+                  onSubmitted: (value) {
+                    if (value.trim().isEmpty || !assistantEnabled) return;
+                    _searchManually(value);
+                  },
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '说点什么…',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(22),
+                      borderSide: BorderSide(color: scheme.outlineVariant),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(22),
+                      borderSide:
+                          BorderSide(color: scheme.primary, width: 1.4),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    suffixIcon: IconButton(
+                      tooltip: _listening ? '停止语音输入' : '语音输入',
+                      onPressed: _toggleVoiceInput,
+                      icon: Icon(
+                        _listening ? Icons.mic : Icons.mic_none,
+                        color: _listening ? scheme.primary : null,
+                      ),
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  _voiceStatus!,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                ),
+              IconButton.filledTonal(
+                tooltip: '后台执行（长任务）',
+                onPressed: query.trim().isEmpty || !assistantEnabled
+                    ? null
+                    : () => _enqueueBackground(query),
+                icon: const Icon(Icons.schedule_send_outlined),
+              ),
+              const SizedBox(width: 4),
+              IconButton.filled(
+                tooltip: '发送给 AI 助手',
+                onPressed: query.trim().isEmpty || !assistantEnabled
+                    ? null
+                    : () => _searchManually(query),
+                icon: const Icon(Icons.arrow_upward),
               ),
             ],
           ),
         ],
-        if (_voicePermissionEvidence != null) ...[
-          const SizedBox(height: 4),
-          Text(
-            _voicePermissionEvidence!,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+      ),
+    );
+  }
+
+  Future<void> _enqueueBackground(String rawQuery) async {
+    final query = rawQuery.trim();
+    if (query.isEmpty) return;
+    try {
+      final job =
+          await ref.read(assistantSearchProvider.notifier).enqueueBackground(query);
+      if (!mounted) return;
+      _setQuery('');
+      if (job == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('后台任务未创建')),
+        );
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已提交后台任务 ${job.jobId}'),
+          action: SnackBarAction(
+            label: '后台',
+            onPressed: () {
+              try {
+                context.go('/tasks');
+              } on Object {
+                // Tests without GoRouter.
+              }
+            },
           ),
-        ],
-        const SizedBox(height: 10),
-        _AssistantQuickPrompts(onSelect: _setQuery),
-        if (!assistantEnabled) ...[
-          const SizedBox(height: 10),
-          const _AssistantSearchUnavailableBanner(),
-        ],
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: query.trim().isEmpty || !assistantEnabled
-                    ? null
-                    : () => _searchManually(query),
-                icon: const Icon(Icons.send_outlined),
-                label: const Text('发送给 AI 助手'),
+        ),
+      );
+    } on Object catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('后台提交失败：$e')),
+      );
+    }
+  }
+
+  Future<void> _openHistorySheet(
+    AsyncValue<List<SearchHistoryEntry>> history,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
+              top: 4,
+            ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+              ),
+              child: SingleChildScrollView(
+                child: _AssistantHistoryCard(
+                  history: history,
+                  onSelect: (value) {
+                    Navigator.of(context).pop();
+                    _setQuery(value);
+                  },
+                ),
               ),
             ),
-            const SizedBox(width: 10),
-            IconButton.outlined(
-              tooltip: '拍照提问',
-              onPressed: _pickImage,
-              icon: const Icon(Icons.photo_camera_outlined),
-            ),
-            const SizedBox(width: 8),
-            IconButton.outlined(
-              tooltip: '从相册选择截图',
-              onPressed: _pickGalleryImage,
-              icon: const Icon(Icons.photo_library_outlined),
-            ),
-            const SizedBox(width: 8),
-            IconButton.outlined(
-              tooltip: '导入截图或文件',
-              onPressed: _pickFile,
-              icon: const Icon(Icons.attach_file),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        _AssistantHistoryCard(
-          history: history,
-          onSelect: _setQuery,
-        ),
-      ],
+          ),
+        );
+      },
     );
   }
 }
@@ -543,36 +716,38 @@ class _AssistantConversationView extends StatelessWidget {
         .where((message) => message.role == 'user')
         .map((message) => message.text)
         .lastOrNull;
+    final streamingAnswer = result.valueOrNull;
+    final hasToolActivity =
+        streamingAnswer != null && streamingAnswer.toolEvents.isNotEmpty;
+    final showStreamingBubble = streamingAnswer != null &&
+        streamingAnswer.streaming &&
+        (streamingAnswer.answer.trim().isNotEmpty || hasToolActivity);
+    final showTyping = result.isLoading ||
+        (streamingAnswer != null &&
+            streamingAnswer.streaming &&
+            streamingAnswer.answer.trim().isEmpty &&
+            !hasToolActivity);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Icon(
-              Icons.forum_outlined,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-            const SizedBox(width: 8),
-            Text('对话窗口', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(width: 8),
-            Text(
-              '${messages.where((message) => message.role == 'user').length} 轮',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
         for (var index = 0; index < messages.length; index++)
           _buildMessage(context, messages[index], index == messages.length - 1),
-        if (result.isLoading)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 12),
-            child: LinearProgressIndicator(),
+        if (showTyping) const _AssistantTypingIndicator(),
+        if (showStreamingBubble)
+          _AssistantReplyBubble(
+            query: lastUserQuery ?? '',
+            answer: streamingAnswer.answer,
+            citations: streamingAnswer.citations,
+            llmMode: streamingAnswer.llmMode,
+            llmRequestId: streamingAnswer.llmRequestId,
+            llmUsageRecordId: streamingAnswer.llmUsageRecordId,
+            fallbackCitation: fallbackCitation,
+            streaming: true,
+            toolEvents: streamingAnswer.toolEvents,
           ),
         if (result.hasError)
-          _AssistantErrorCard(
+          _AssistantErrorBubble(
             error: result.error!,
             query: lastUserQuery ?? '',
           ),
@@ -586,106 +761,92 @@ class _AssistantConversationView extends StatelessWidget {
     bool isLatest,
   ) {
     if (message.role == 'user') {
-      final scheme = Theme.of(context).colorScheme;
-      return Align(
-        alignment: AlignmentDirectional.centerEnd,
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 620),
-          margin: const EdgeInsets.only(bottom: 10, left: 32),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          decoration: BoxDecoration(
-            color: scheme.primaryContainer,
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(16),
-              topRight: Radius.circular(16),
-              bottomLeft: Radius.circular(16),
-              bottomRight: Radius.circular(4),
-            ),
-          ),
-          child: Text(message.text),
-        ),
-      );
+      return ChatBubble(text: message.text, fromUser: true);
     }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: _AssistantAnswerCard(
-        query: message.query,
-        answer: message.text,
-        citations: message.citations,
-        llmMode: message.llmMode,
-        llmRequestId: message.llmRequestId,
-        llmUsageRecordId: message.llmUsageRecordId,
-        fallbackCitation: isLatest ? fallbackCitation : null,
-      ),
+    return _AssistantReplyBubble(
+      query: message.query,
+      answer: message.text,
+      citations: message.citations,
+      llmMode: message.llmMode,
+      llmRequestId: message.llmRequestId,
+      llmUsageRecordId: message.llmUsageRecordId,
+      fallbackCitation: isLatest ? fallbackCitation : null,
     );
   }
 }
 
-class _AssistantWorkspaceIntro extends StatelessWidget {
-  const _AssistantWorkspaceIntro();
+class _AssistantCompanionIntro extends StatelessWidget {
+  const _AssistantCompanionIntro();
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.chat_bubble_outline, color: scheme.primary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('MaClaw AI 助手', style: textTheme.titleMedium),
-                      const SizedBox(height: 4),
-                      Text(
-                        '像电脑端一样用自然语言发起多轮对话；手机端重点支持语音、截图、文件、服务器日志和应急排障。',
-                        style: textTheme.bodyMedium?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 24),
+        Center(
+          child: CircleAvatar(
+            radius: 28,
+            backgroundColor: scheme.primaryContainer.withValues(alpha: 0.7),
+            child: Icon(
+              Icons.auto_awesome,
+              color: scheme.primary,
+              size: 28,
             ),
-            const SizedBox(height: 14),
-            const Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _AssistantCapabilityChip(
-                  icon: Icons.mic_none,
-                  label: '语音输入',
-                ),
-                _AssistantCapabilityChip(
-                  icon: Icons.travel_explore_outlined,
-                  label: '助手联网',
-                ),
-                _AssistantCapabilityChip(
-                  icon: Icons.image_search_outlined,
-                  label: '截图提问',
-                ),
-                _AssistantCapabilityChip(
-                  icon: Icons.article_outlined,
-                  label: '文档草稿',
-                ),
-                _AssistantCapabilityChip(
-                  icon: Icons.manage_search_outlined,
-                  label: '远程排障',
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
-      ),
+        const SizedBox(height: 16),
+        Center(
+          child: Text(
+            'MaClaw AI 助手',
+            style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: Text(
+              '你好。像桌面端一样，直接和我聊就行——查资料、写草稿、看日志、派员工，想到什么说什么。',
+              textAlign: TextAlign.center,
+              style: textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+                height: 1.45,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        // Capability labels kept for discoverability / tests.
+        const Center(
+          child: Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _AssistantCapabilityChip(icon: Icons.mic_none, label: '语音输入'),
+              _AssistantCapabilityChip(
+                icon: Icons.travel_explore_outlined,
+                label: '助手联网',
+              ),
+              _AssistantCapabilityChip(
+                icon: Icons.image_search_outlined,
+                label: '截图提问',
+              ),
+              _AssistantCapabilityChip(
+                icon: Icons.article_outlined,
+                label: '文档草稿',
+              ),
+              _AssistantCapabilityChip(
+                icon: Icons.manage_search_outlined,
+                label: '远程排障',
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -703,10 +864,57 @@ class _AssistantCapabilityChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Chip(
-      avatar: Icon(icon, size: 18, color: scheme.primary),
+      avatar: Icon(icon, size: 16, color: scheme.primary),
       label: Text(label),
+      visualDensity: VisualDensity.compact,
       side: BorderSide(color: scheme.outlineVariant),
-      backgroundColor: scheme.surface,
+      backgroundColor: scheme.surface.withValues(alpha: 0.9),
+    );
+  }
+}
+
+class _AssistantTypingIndicator extends StatelessWidget {
+  const _AssistantTypingIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Align(
+      alignment: AlignmentDirectional.centerStart,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10, right: 48),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(14),
+            topRight: Radius.circular(14),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(14),
+          ),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              '正在想…',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -716,31 +924,11 @@ class _AssistantSearchUnavailableBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.secondaryContainer,
-        border: Border.all(color: scheme.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.info_outline, color: scheme.onSecondaryContainer),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                '当前 Hub 未启用 AI 助手服务能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSecondaryContainer,
-                    ),
-              ),
-            ),
-          ],
-        ),
-      ),
+    return const StatusBanner(
+      tone: StatusTone.info,
+      icon: Icons.info_outline,
+      message:
+          '当前 Hub 未启用 AI 助手服务能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
     );
   }
 }
@@ -754,12 +942,12 @@ class _AssistantQuickPrompts extends StatelessWidget {
     (
       label: '自由对话',
       icon: Icons.chat_bubble_outline,
-      text: '我想和 MaClaw AI 助手讨论一个问题，请先帮我理清思路并追问必要信息。',
+      text: '我想和你随便聊聊一个问题，先帮我理清思路，有需要再追问我。',
     ),
     (
       label: '助手联网',
       icon: Icons.travel_explore_outlined,
-      text: '请用 MaClaw AI 助手联网核对这件事，列出关键结论和来源引用。',
+      text: '帮我联网核对这件事，用普通人能懂的话说清楚，并带上来源。',
     ),
     (
       label: '文档草稿',
@@ -775,18 +963,22 @@ class _AssistantQuickPrompts extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final prompt in _prompts)
-          ActionChip(
-            avatar: Icon(prompt.icon, size: 18),
-            label: Text(prompt.label),
-            tooltip: prompt.text,
-            onPressed: () => onSelect(prompt.text),
-          ),
-      ],
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final prompt in _prompts) ...[
+            ActionChip(
+              avatar: Icon(prompt.icon, size: 16),
+              label: Text(prompt.label),
+              tooltip: prompt.text,
+              visualDensity: VisualDensity.compact,
+              onPressed: () => onSelect(prompt.text),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -853,34 +1045,28 @@ class _AssistantTabStrip extends StatelessWidget {
   }
 }
 
-class _AssistantErrorCard extends ConsumerWidget {
+class _AssistantErrorBubble extends ConsumerWidget {
   final Object error;
   final String query;
 
-  const _AssistantErrorCard({
+  const _AssistantErrorBubble({
     required this.error,
     required this.query,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('助手请求失败：$error'),
-            const SizedBox(height: 10),
-            OutlinedButton.icon(
-              onPressed: canRetryAssistantQuery(query)
-                  ? () =>
-                      ref.read(assistantSearchProvider.notifier).search(query)
-                  : null,
-              icon: const Icon(Icons.refresh),
-              label: const Text('重新发送'),
-            ),
-          ],
+    return ChatBubble(
+      text: '刚才没接上：$error',
+      failed: true,
+      footer: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: canRetryAssistantQuery(query)
+              ? () => ref.read(assistantSearchProvider.notifier).search(query)
+              : null,
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('重新发送'),
         ),
       ),
     );
@@ -890,22 +1076,26 @@ class _AssistantErrorCard extends ConsumerWidget {
 class _AssistantHistoryCard extends ConsumerWidget {
   final AsyncValue<List<SearchHistoryEntry>> history;
   final ValueChanged<String> onSelect;
+  final bool bare;
 
   const _AssistantHistoryCard({
     required this.history,
     required this.onSelect,
+    this.bare = false,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final content = history.when(
+      data: (items) => _buildHistory(context, ref, items),
+      error: (error, _) => Text('助手历史加载失败：$error'),
+      loading: () => const LinearProgressIndicator(),
+    );
+    if (bare) return content;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: history.when(
-          data: (items) => _buildHistory(context, ref, items),
-          error: (error, _) => Text('助手历史加载失败：$error'),
-          loading: () => const LinearProgressIndicator(),
-        ),
+        child: content,
       ),
     );
   }
@@ -920,22 +1110,16 @@ class _AssistantHistoryCard extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Icon(
-              Icons.history,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-            const SizedBox(width: 8),
-            Text('助手历史', style: Theme.of(context).textTheme.titleMedium),
-            const Spacer(),
-            if (items.any((item) => !item.favorite))
-              TextButton.icon(
-                onPressed: () => _confirmClearNonFavorites(context, ref),
-                icon: const Icon(Icons.cleaning_services_outlined),
-                label: const Text('清理'),
-              ),
-          ],
+        SectionHeader(
+          icon: Icons.history,
+          title: '助手历史',
+          action: items.any((item) => !item.favorite)
+              ? TextButton.icon(
+                  onPressed: () => _confirmClearNonFavorites(context, ref),
+                  icon: const Icon(Icons.cleaning_services_outlined),
+                  label: const Text('清理'),
+                )
+              : null,
         ),
         if (items.isEmpty) ...[
           const SizedBox(height: 8),
@@ -1067,7 +1251,7 @@ class _HistoryItem extends ConsumerWidget {
   }
 }
 
-class _AssistantAnswerCard extends ConsumerWidget {
+class _AssistantReplyBubble extends ConsumerWidget {
   final String query;
   final String answer;
   final List<SearchCitation> citations;
@@ -1075,8 +1259,10 @@ class _AssistantAnswerCard extends ConsumerWidget {
   final String llmRequestId;
   final String llmUsageRecordId;
   final SearchCitation? fallbackCitation;
+  final bool streaming;
+  final List<AssistantToolEvent> toolEvents;
 
-  const _AssistantAnswerCard({
+  const _AssistantReplyBubble({
     required this.query,
     required this.answer,
     required this.citations,
@@ -1084,83 +1270,188 @@ class _AssistantAnswerCard extends ConsumerWidget {
     required this.llmRequestId,
     required this.llmUsageRecordId,
     this.fallbackCitation,
+    this.streaming = false,
+    this.toolEvents = const [],
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final mergedCitations = _mergedCitations();
+    final cleanedAnswer =
+        cleanSearchSnippet(answer, maxLength: 0, preserveNewlines: true);
     final markdown = _answerMarkdown(mergedCitations);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.fact_check_outlined, color: scheme.primary),
-                const SizedBox(width: 8),
-                Text('助手回答', style: Theme.of(context).textTheme.titleMedium),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(answer),
-            if (assistantLlmTraceText(
-              llmMode: llmMode,
-              llmRequestId: llmRequestId,
-              llmUsageRecordId: llmUsageRecordId,
-            ).isNotEmpty) ...[
-              const SizedBox(height: 12),
-              _AssistantLlmTrace(
-                text: assistantLlmTraceText(
-                  llmMode: llmMode,
-                  llmRequestId: llmRequestId,
-                  llmUsageRecordId: llmUsageRecordId,
+    final trace = assistantLlmTraceText(
+      llmMode: llmMode,
+      llmRequestId: llmRequestId,
+      llmUsageRecordId: llmUsageRecordId,
+    );
+    final display = cleanedAnswer.isEmpty ? answer : cleanedAnswer;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Soft speaker label — keeps chat conversational, not form-like.
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 4),
+          child: Text(
+            streaming ? '助手正在回答…' : '助手回答',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
                 ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () =>
-                      ref.read(assistantShareProvider).call(markdown),
-                  icon: const Icon(Icons.ios_share_outlined),
-                  label: const Text('分享结果'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => _copyMarkdown(context, ref, markdown),
-                  icon: const Icon(Icons.content_copy_outlined),
-                  label: const Text('复制结果'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => _createDocumentDraft(context, ref, markdown),
-                  icon: const Icon(Icons.article_outlined),
-                  label: const Text('整理为草稿'),
-                ),
-              ],
-            ),
-            if (mergedCitations.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Text(
-                '来源',
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-              ),
-              const SizedBox(height: 6),
-              for (final citation in mergedCitations)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _CitationTile(citation: citation),
-                ),
-            ],
-          ],
+          ),
         ),
-      ),
+        ChatBubble(
+          text: display.isEmpty && toolEvents.isNotEmpty ? ' ' : display,
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (toolEvents.isNotEmpty) ...[
+                _AssistantToolEventsStrip(events: toolEvents),
+                if (display.trim().isNotEmpty) const SizedBox(height: 8),
+              ],
+              if (display.trim().isNotEmpty)
+                AssistantMarkdownBody(
+                  data: display,
+                  textColor: scheme.onSurface,
+                )
+              else if (streaming && toolEvents.isNotEmpty)
+                Text(
+                  '工具执行中，正在整理回答…',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+            ],
+          ),
+          footer: streaming
+              ? Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          toolEvents.isNotEmpty ? '工具调用 / 生成中' : '生成中',
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          try {
+                            final job = await ref
+                                .read(assistantSearchProvider.notifier)
+                                .upgradeActiveToBackground();
+                            if (!context.mounted) return;
+                            if (job == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('当前没有可转后台的生成任务')),
+                              );
+                              return;
+                            }
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('已转后台 ${job.jobId}'),
+                                action: SnackBarAction(
+                                  label: '后台',
+                                  onPressed: () {
+                                    try {
+                                      context.go('/tasks');
+                                    } on Object {
+                                      // Tests without GoRouter.
+                                    }
+                                  },
+                                ),
+                              ),
+                            );
+                          } on Object catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('转后台失败：$e')),
+                            );
+                          }
+                        },
+                        child: const Text('转后台'),
+                      ),
+                    ],
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Lightweight share/copy stay as text actions (low chrome).
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 0,
+                      children: [
+                        TextButton(
+                          onPressed: () =>
+                              ref.read(assistantShareProvider).call(markdown),
+                          child: const Text('分享结果'),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              _copyMarkdown(context, ref, markdown),
+                          child: const Text('复制结果'),
+                        ),
+                      ],
+                    ),
+                    if (trace.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      _AssistantLlmTrace(text: trace),
+                    ],
+                    // Sources before task card so citation actions stay reachable.
+                    if (mergedCitations.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      _AssistantSourcesPanel(citations: mergedCitations),
+                    ],
+                    // Follow-up actions only after a real answer body — not on
+                    // empty/async placeholder bubbles (user input alone is not enough).
+                    if (_hasUsableAssistantResult(
+                      answer: display,
+                      streaming: streaming,
+                    ))
+                      _AssistantNextStepsCard(
+                        query: query,
+                        answerMarkdown: markdown,
+                        summaryLines: [
+                          if (query.trim().isNotEmpty)
+                            '问：${_clipRunes(redactMobileSensitiveText(query.trim()), 48)}',
+                          if (mergedCitations.isNotEmpty)
+                            '来源 ${mergedCitations.length} 条可展开核对',
+                        ],
+                        includeEmployee: ref
+                                .watch(sessionControllerProvider)
+                                .valueOrNull
+                                ?.bootstrap
+                                ?.features
+                                .digitalEmployees !=
+                            false,
+                        includeDocuments: ref
+                                .watch(sessionControllerProvider)
+                                .valueOrNull
+                                ?.bootstrap
+                                ?.features
+                                .documents !=
+                            false,
+                        onDraft: () =>
+                            _createDocumentDraft(context, ref, markdown),
+                      ),
+                  ],
+                ),
+        ),
+      ],
     );
   }
 
@@ -1204,8 +1495,194 @@ class _AssistantAnswerCard extends ConsumerWidget {
           content: markdown,
         );
     if (!context.mounted) return;
+    final err = ref.read(documentsControllerProvider).error;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('创建草稿失败：${_friendlyError(err)}')),
+      );
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已整理为${documentTemplateLabel(template)}草稿')),
+      SnackBar(
+        content: Text('已整理为${documentTemplateLabel(template)}草稿'),
+        action: SnackBarAction(
+          label: '查看',
+          onPressed: () {
+            if (!context.mounted) return;
+            try {
+              context.go('/documents');
+            } on Object {
+              // Widget tests host AssistantScreen without GoRouter.
+            }
+          },
+        ),
+      ),
+    );
+  }
+}
+
+String _friendlyError(Object err) {
+  final text = err.toString();
+  const prefixes = ['Bad state: ', 'StateError: ', 'Exception: '];
+  for (final p in prefixes) {
+    if (text.startsWith(p)) {
+      return text.substring(p.length);
+    }
+  }
+  return text;
+}
+
+/// Post-answer task card (GUI InlineChatCard-inspired, Dart-only).
+class _AssistantNextStepsCard extends ConsumerStatefulWidget {
+  final String query;
+  final String answerMarkdown;
+  final List<String> summaryLines;
+  final bool includeEmployee;
+  final bool includeDocuments;
+  final Future<void> Function() onDraft;
+
+  const _AssistantNextStepsCard({
+    required this.query,
+    required this.answerMarkdown,
+    required this.summaryLines,
+    required this.includeEmployee,
+    required this.includeDocuments,
+    required this.onDraft,
+  });
+
+  @override
+  ConsumerState<_AssistantNextStepsCard> createState() =>
+      _AssistantNextStepsCardState();
+}
+
+class _AssistantNextStepsCardState
+    extends ConsumerState<_AssistantNextStepsCard> {
+  String? _resolvedKey;
+  String? _resolvedLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return AssistantInlineCard(
+      title: '可以继续',
+      description: '把回答落到草稿、文档，或交给数字员工跟进。',
+      summaryLines: widget.summaryLines,
+      testId: 'assistant-next-steps-card',
+      resolved: _resolvedKey != null,
+      resolvedLabel: _resolvedLabel,
+      actions: assistantDefaultNextStepActions(
+        includeEmployee: widget.includeEmployee,
+        includeDocuments: widget.includeDocuments,
+      ),
+      onAction: _handleAction,
+    );
+  }
+
+  Future<void> _handleAction(String key) async {
+    switch (key) {
+      case 'draft':
+        await widget.onDraft();
+        // Keep card open so multi-template draft flows still work.
+      case 'employee':
+        if (!mounted) return;
+        offerAssistantEmployeeHandoff(
+          ref,
+          query: widget.query,
+          answer: widget.answerMarkdown,
+        );
+        // Tests host AssistantScreen without GoRouter; navigation is best-effort.
+        try {
+          context.go('/employees');
+        } on Object {
+          // Ignore missing router in pure widget tests.
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已带入助手结论，正在打开数字员工任务草稿…'),
+          ),
+        );
+        setState(() {
+          _resolvedKey = key;
+          _resolvedLabel = '已交接给数字员工';
+        });
+      case 'documents':
+        if (!mounted) return;
+        try {
+          context.go('/documents');
+        } on Object {
+          // Ignore missing router in pure widget tests.
+        }
+        if (!mounted) return;
+        setState(() {
+          _resolvedKey = key;
+          _resolvedLabel = '已打开文档';
+        });
+    }
+  }
+}
+
+String _clipRunes(String text, int maxRunes) {
+  final runes = text.runes.toList();
+  if (runes.length <= maxRunes) return text;
+  return '${String.fromCharCodes(runes.take(maxRunes))}…';
+}
+
+/// Whether the assistant bubble has a finished answer worth follow-up actions.
+/// Empty / streaming / pure placeholder text must not show「可以继续」.
+bool _hasUsableAssistantResult({
+  required String answer,
+  required bool streaming,
+}) {
+  if (streaming) return false;
+  final body = answer.trim();
+  if (body.isEmpty) return false;
+  // Ignore very short system placeholders.
+  if (body == '…' || body == '...' || body == '生成中') return false;
+  return true;
+}
+
+class _AssistantToolEventsStrip extends StatelessWidget {
+  final List<AssistantToolEvent> events;
+
+  const _AssistantToolEventsStrip({required this.events});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '工具调用',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final event in events)
+              Chip(
+                visualDensity: VisualDensity.compact,
+                avatar: Icon(
+                  event.isCall ? Icons.build_circle_outlined : Icons.check_circle_outline,
+                  size: 16,
+                  color: event.isCall ? scheme.primary : scheme.tertiary,
+                ),
+                label: Text(
+                  event.isCall
+                      ? '调用 ${event.name}'
+                      : '完成 ${event.name}',
+                ),
+                side: BorderSide(color: scheme.outlineVariant),
+                backgroundColor: scheme.surfaceContainerHighest,
+              ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -1362,6 +1839,46 @@ String assistantSearchResultMarkdown({
       citations: citations,
     );
 
+class _AssistantSourcesPanel extends StatelessWidget {
+  final List<SearchCitation> citations;
+
+  const _AssistantSourcesPanel({required this.citations});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final count = citations.length;
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 4),
+        initiallyExpanded: false,
+        title: Text(
+          '来源 · $count 条',
+          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        subtitle: Text(
+          '展开查看参考链接',
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+        ),
+        children: [
+          for (final citation in citations)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _CitationTile(citation: citation),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _CitationTile extends ConsumerWidget {
   final SearchCitation citation;
 
@@ -1371,46 +1888,64 @@ class _CitationTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final citationText = assistantCitationMarkdown(citation);
+    final title = cleanSearchSnippet(
+      citation.title.isEmpty ? citation.url : citation.title,
+      maxLength: 80,
+    );
+    final host = citationHostLabel(citation.url);
+    final snippet = cleanSearchSnippet(citation.snippet, maxLength: 100);
     return DecoratedBox(
       decoration: BoxDecoration(
         border: Border.all(color: scheme.outlineVariant),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              citation.title.isEmpty ? citation.url : citation.title,
+              title.isEmpty ? '来源' : title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
             ),
             if (citation.url.isNotEmpty) ...[
-              const SizedBox(height: 4),
+              const SizedBox(height: 2),
               SelectableText(
                 citation.url,
+                maxLines: 1,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.primary,
+                    ),
+              ),
+            ] else if (host.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                host,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: scheme.primary,
                     ),
               ),
             ],
-            if (citation.snippet.isNotEmpty) ...[
-              const SizedBox(height: 6),
+            if (snippet.isNotEmpty) ...[
+              const SizedBox(height: 4),
               Text(
-                citation.snippet,
+                snippet,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),
               ),
             ],
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             Wrap(
-              spacing: 8,
-              runSpacing: 8,
+              spacing: 4,
               children: [
-                OutlinedButton.icon(
+                TextButton(
                   onPressed: citation.url.isEmpty
                       ? null
                       : () => _copyText(
@@ -1419,20 +1954,17 @@ class _CitationTile extends ConsumerWidget {
                             redactMobileSensitiveText(citation.url),
                             '来源链接已复制',
                           ),
-                  icon: const Icon(Icons.link),
-                  label: const Text('复制链接'),
+                  child: const Text('复制链接'),
                 ),
-                OutlinedButton.icon(
+                TextButton(
                   onPressed: () =>
                       _copyText(context, ref, citationText, '来源引用已复制'),
-                  icon: const Icon(Icons.format_quote_outlined),
-                  label: const Text('复制引用'),
+                  child: const Text('复制引用'),
                 ),
-                OutlinedButton.icon(
+                TextButton(
                   onPressed: () =>
                       ref.read(assistantShareProvider).call(citationText),
-                  icon: const Icon(Icons.ios_share_outlined),
-                  label: const Text('分享来源'),
+                  child: const Text('分享来源'),
                 ),
               ],
             ),
@@ -1457,9 +1989,13 @@ class _CitationTile extends ConsumerWidget {
 }
 
 String assistantCitationMarkdown(SearchCitation citation) {
-  final title = redactMobileSensitiveText(citation.title.trim());
+  final title = redactMobileSensitiveText(
+    cleanSearchSnippet(citation.title.trim(), maxLength: 0),
+  );
   final url = redactMobileSensitiveText(citation.url.trim());
-  final snippet = redactMobileSensitiveText(citation.snippet.trim());
+  final snippet = redactMobileSensitiveText(
+    cleanSearchSnippet(citation.snippet.trim(), maxLength: 0),
+  );
   final buffer = StringBuffer();
   if (title.isNotEmpty && url.isNotEmpty) {
     buffer.write('- $title $url');

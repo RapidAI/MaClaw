@@ -51,7 +51,7 @@ PageModules.inbox = {
 
     // Items list
     container.appendChild(h("div", { id: "inboxList", class: "mt-sm" },
-      h("div", { class: "empty-state" }, "加载中...")
+      h("div", { class: "loading-state" }, "加载中…")
     ));
 
     this.refresh();
@@ -70,7 +70,8 @@ PageModules.inbox = {
       const el = document.getElementById("inboxList");
       if (!el) return;
       if (!data.items || !data.items.length) {
-        el.innerHTML = '<div class="empty-state">🎉 暂无待处理事项</div>';
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("收件箱为空", "当前没有待审批、失败任务或质量问题，系统运行正常。"));
         return;
       }
       const h = App.html;
@@ -92,6 +93,12 @@ PageModules.inbox = {
       const wrap = h("div", { class: "table-wrap" });
       wrap.appendChild(tbl);
       el.appendChild(wrap);
-    } catch(e) { document.getElementById("inboxList").innerHTML = '<div class="empty-state">加载失败</div>'; }
+    } catch (e) {
+      const el = document.getElementById("inboxList");
+      if (el) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("加载失败", e.message || "请检查网络或权限后重试。"));
+      }
+    }
   }
 };

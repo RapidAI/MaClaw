@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -46,10 +47,21 @@ func (s *Store) GetSubmissionByID(ctx context.Context, id string) (*SkillSubmiss
 	return &sub, nil
 }
 
+// UpdateSubmissionStatus updates status and error_msg. skillID is applied only
+// when non-empty so marking "processing" does not wipe a previously linked skill.
 func (s *Store) UpdateSubmissionStatus(ctx context.Context, id, status, errorMsg, skillID string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE sm_submissions SET status = ?, error_msg = ?, skill_id = ?, updated_at = ?
-		WHERE id = ?`, status, errorMsg, skillID, time.Now().Format(timeFmt), id)
+	now := time.Now().Format(timeFmt)
+	skillID = strings.TrimSpace(skillID)
+	var err error
+	if skillID == "" {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE sm_submissions SET status = ?, error_msg = ?, updated_at = ?
+			WHERE id = ?`, status, errorMsg, now, id)
+	} else {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE sm_submissions SET status = ?, error_msg = ?, skill_id = ?, updated_at = ?
+			WHERE id = ?`, status, errorMsg, skillID, now, id)
+	}
 	if err == nil {
 		s.emitSync(ctx)
 	}
@@ -121,7 +133,7 @@ func (s *Store) CountSuccessSubmissionsByFingerprint(ctx context.Context, finger
 	return count, err
 }
 
-// UpdateSubmissionFingerprint 鏇存柊 submission 鐨?fingerprint銆?
+// UpdateSubmissionFingerprint updates a submission fingerprint.
 func (s *Store) UpdateSubmissionFingerprint(ctx context.Context, id, fingerprint string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sm_submissions SET fingerprint = ?, updated_at = ? WHERE id = ?`,
 		fingerprint, time.Now().Format(timeFmt), id)
@@ -129,4 +141,28 @@ func (s *Store) UpdateSubmissionFingerprint(ctx context.Context, id, fingerprint
 		s.emitSync(ctx)
 	}
 	return err
+}
+
+// ListUnfinishedSubmissionIDs returns pending/processing submission IDs so the
+// processor can recover work after a restart (in-memory queue is not durable).
+func (s *Store) ListUnfinishedSubmissionIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.readDB.QueryContext(ctx, `
+		SELECT id FROM sm_submissions
+		WHERE status IN ('pending', 'processing')
+		ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(id) != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
 }

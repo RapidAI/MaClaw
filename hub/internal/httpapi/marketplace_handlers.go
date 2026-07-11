@@ -54,6 +54,7 @@ func CapabilityListHandler(svc *capability.Service, identityOpt ...viewerAuthent
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_LIST_FAILED", err.Error())
 			return
 		}
+		normalizeCapabilityDisplayNames(items)
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
@@ -66,8 +67,293 @@ func AdminCapabilityListHandler(svc *capability.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_LIST_FAILED", err.Error())
 			return
 		}
+		normalizeCapabilityDisplayNames(items)
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
+}
+
+// AdminCapabilityBackfillDisplayNamesHandler rewrites stored skill display_name
+// values from package skill.md/skill.yaml (or humanized slug fallback).
+// Query:
+//
+//	dry_run=1  preview only
+//	force=1    rewrite even when current display_name already looks human
+func AdminCapabilityBackfillDisplayNamesHandler(svc *capability.Service, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
+		tenantID := capabilityTenantIDFromRequest(r)
+		dryRun := queryBoolFlag(r, "dry_run")
+		force := queryBoolFlag(r, "force")
+		items, err := svc.List(ctx, corelib.CapabilityTypeSkill)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_LIST_FAILED", err.Error())
+			return
+		}
+		const maxResultItems = 200
+		results := make([]map[string]any, 0, minInt(len(items), maxResultItems))
+		updated, wouldUpdate, skipped, failed := 0, 0, 0, 0
+		appendResult := func(entry map[string]any) {
+			if len(results) < maxResultItems {
+				results = append(results, entry)
+			}
+		}
+		for _, item := range items {
+			if isMaclawAppCapabilitySummary(item) {
+				skipped++
+				appendResult(map[string]any{
+					"id":            item.ID,
+					"capability_id": item.CapabilityID,
+					"status":        "skipped",
+					"reason":        "maclaw_app",
+				})
+				continue
+			}
+			from := strings.TrimSpace(item.DisplayName)
+			// Always resolve first so a real package title can upgrade a merely
+			// humanized slug (e.g. "PPT Master" -> "PPT 演示文稿大师").
+			to, source, packageDesc := resolveCapabilityDisplayNameFromPackage(item, dataDir, tenantID)
+			if strings.TrimSpace(to) == "" {
+				failed++
+				appendResult(map[string]any{
+					"id":            item.ID,
+					"capability_id": item.CapabilityID,
+					"status":        "failed",
+					"reason":        "empty_resolved_name",
+					"from":          from,
+				})
+				continue
+			}
+			if to == from {
+				skipped++
+				appendResult(map[string]any{
+					"id":            item.ID,
+					"capability_id": item.CapabilityID,
+					"status":        "skipped",
+					"reason":        "unchanged",
+					"display_name":  from,
+					"source":        source,
+				})
+				continue
+			}
+			packageUpgrade := source == "package" && isPreferableSkillDisplayName(to)
+			if !force && !packageUpgrade && !capabilityDisplayNameNeedsBackfill(from) {
+				skipped++
+				appendResult(map[string]any{
+					"id":            item.ID,
+					"capability_id": item.CapabilityID,
+					"status":        "skipped",
+					"reason":        "already_human_name",
+					"display_name":  from,
+					"source":        source,
+				})
+				continue
+			}
+			entry := map[string]any{
+				"id":            item.ID,
+				"capability_id": item.CapabilityID,
+				"from":          from,
+				"to":            to,
+				"source":        source,
+			}
+			if dryRun {
+				entry["status"] = "would_update"
+				appendResult(entry)
+				wouldUpdate++
+				continue
+			}
+			metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+			metadata["skill_name"] = to
+			metadata["display_name"] = to
+			metadata["name"] = to
+			descForUpdate := ""
+			if packageDesc != "" && strings.TrimSpace(item.Description) == "" {
+				descForUpdate = packageDesc
+			}
+			if err := svc.UpdateDisplayNameAndMetadata(ctx, item.ID, to, descForUpdate, jsonObjectString(metadata)); err != nil {
+				failed++
+				entry["status"] = "failed"
+				entry["error"] = err.Error()
+				appendResult(entry)
+				continue
+			}
+			updated++
+			entry["status"] = "updated"
+			appendResult(entry)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"dry_run":         dryRun,
+			"force":           force,
+			"total":           len(items),
+			"updated":         updated,
+			"would_update":    wouldUpdate,
+			"skipped":         skipped,
+			"failed":          failed,
+			"items":           results,
+			"items_truncated": len(items) > maxResultItems,
+		})
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func queryBoolFlag(r *http.Request, key string) bool {
+	if r == nil {
+		return false
+	}
+	v := strings.TrimSpace(r.URL.Query().Get(key))
+	return strings.EqualFold(v, "1") || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+}
+
+func isMaclawAppCapabilitySummary(item capability.CapabilitySummary) bool {
+	if strings.EqualFold(item.CapabilityType, "maclaw_app") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(item.ManagedBy), "maclaw_app_upload") {
+		return true
+	}
+	metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+	if boolFromAny(metadata["is_maclaw_app"]) || stringFromAny(metadata["product_kind"]) == "maclaw_app_skill" {
+		return true
+	}
+	if stringFromAny(metadata["maclaw_app_id"]) != "" || stringFromAny(metadata["maclaw_app_name"]) != "" {
+		return true
+	}
+	// Match the hub package key shape "…:maclaw-app:…" / "…:maclaw_app:…".
+	// Avoid loose substring matches on capability_id (e.g. "my-maclaw-app-helper").
+	gk := strings.ToLower(item.GlobalKey)
+	return strings.Contains(gk, ":maclaw-app:") || strings.Contains(gk, ":maclaw_app:")
+}
+
+func capabilityDisplayNameNeedsBackfill(displayName string) bool {
+	displayName = strings.TrimSpace(displayName)
+	return displayName == "" || capabilityReferenceName(displayName) || looksLikeTechnicalSkillSlug(displayName)
+}
+
+func isPreferableSkillDisplayName(displayName string) bool {
+	displayName = strings.TrimSpace(displayName)
+	return displayName != "" && !capabilityReferenceName(displayName) && !looksLikeTechnicalSkillSlug(displayName)
+}
+
+func resolveCapabilityDisplayNameFromPackage(item capability.CapabilitySummary, dataDir, tenantID string) (name, source, description string) {
+	// 1) Prefer package skill.md / skill.yaml human title when zip is available.
+	// Use lightweight zip scan (no staging/preflight) for backfill performance.
+	if path, err := resolveSkillPackagePath(&item, dataDir, tenantID); err == nil && path != "" {
+		if n, d, err := readEnterpriseSkillPackageDisplayFields(path); err == nil {
+			n = strings.TrimSpace(n)
+			d = strings.TrimSpace(d)
+			if n != "" && !capabilityReferenceName(n) {
+				if looksLikeTechnicalSkillSlug(n) {
+					if human := humanizeCapabilityReference(n); human != "" {
+						return human, "package_humanized", d
+					}
+				}
+				return n, "package", d
+			}
+		}
+	}
+	// 2) Prefer existing metadata human names.
+	metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+	for _, candidate := range []string{
+		stringFromAny(metadata["display_name"]),
+		stringFromAny(metadata["skill_name"]),
+		stringFromAny(metadata["name"]),
+		item.DisplayName,
+		item.CapabilityID,
+	} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || capabilityReferenceName(candidate) || looksLikeTechnicalSkillSlug(candidate) {
+			continue
+		}
+		return candidate, "metadata", ""
+	}
+	// 3) Humanize slug / reference id.
+	sourceID := firstNonEmpty(
+		stringFromAny(metadata["skill_id"]),
+		item.CapabilityID,
+		item.DisplayName,
+		item.GlobalKey,
+		item.ID,
+	)
+	if human := humanizeCapabilityReference(sourceID); human != "" {
+		return human, "humanize", ""
+	}
+	return firstNonEmpty(item.DisplayName, item.CapabilityID), "fallback", ""
+}
+
+func boolFromAny(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "true") || t == "1"
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	default:
+		return false
+	}
+}
+
+func normalizeCapabilityDisplayNames(items []capability.CapabilitySummary) {
+	for i := range items {
+		normalizeCapabilityDisplayName(&items[i])
+	}
+}
+
+func normalizeCapabilityDisplayName(item *capability.CapabilitySummary) {
+	if item == nil {
+		return
+	}
+	// Keep good human names as-is.
+	if strings.TrimSpace(item.DisplayName) != "" && !capabilityReferenceName(item.DisplayName) && !looksLikeTechnicalSkillSlug(item.DisplayName) {
+		return
+	}
+	metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+	manifest, _ := metadata["manifest"].(map[string]any)
+	skill, _ := metadata["skill"].(map[string]any)
+	for _, name := range []string{
+		stringFromAny(metadata["display_name"]),
+		stringFromAny(metadata["skill_name"]),
+		stringFromAny(metadata["name"]),
+		stringFromAny(skill["display_name"]),
+		stringFromAny(skill["name"]),
+		stringFromAny(manifest["display_name"]),
+		stringFromAny(manifest["name"]),
+	} {
+		name = strings.TrimSpace(name)
+		if name == "" || capabilityReferenceName(name) {
+			continue
+		}
+		if looksLikeTechnicalSkillSlug(name) {
+			continue
+		}
+		item.DisplayName = name
+		return
+	}
+	// Fall back to humanized slug/id for reference-style or bare technical names.
+	source := firstNonEmpty(item.DisplayName, item.CapabilityID, item.GlobalKey, item.ID)
+	if human := humanizeCapabilityReference(source); human != "" {
+		item.DisplayName = human
+	}
+}
+
+// Thin wrappers keep call sites short while name policy lives in capability.
+func capabilityReferenceName(value string) bool {
+	return capability.LooksLikeCapabilityReference(value)
+}
+
+func looksLikeTechnicalSkillSlug(value string) bool {
+	return capability.LooksLikeTechnicalSkillSlug(value)
+}
+
+func humanizeCapabilityReference(value string) string {
+	return capability.HumanizeCapabilityReference(value)
 }
 
 func CapabilityDetailHandler(svc *capability.Service, identityOpt ...viewerAuthenticator) http.HandlerFunc {
@@ -87,6 +373,7 @@ func CapabilityDetailHandler(svc *capability.Service, identityOpt ...viewerAuthe
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_GET_FAILED", err.Error())
 			return
 		}
+		normalizeCapabilityDisplayName(item)
 		writeJSON(w, http.StatusOK, item)
 	}
 }
@@ -277,29 +564,64 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "skill package is too large")
 			return
 		}
-		checksum := hex.EncodeToString(h.Sum(nil))
-		meta, err := readEnterpriseSkillPackageMeta(tmp.Name())
-		if err != nil {
+		// Drop runtime artifacts and enforce HubCenter zip-entry limit so packages
+		// stay market-uploadable (node_modules/.git/venv commonly push entry counts
+		// past SafeUnzip's max of MaxSkillMarketZipEntries).
+		storePath, cleanupFiltered, filterErr := prepareSkillZipForHubCenterMarket(tmp.Name())
+		if filterErr != nil {
 			_ = os.Remove(tmp.Name())
+			writeError(w, http.StatusBadRequest, "PACKAGE_TOO_LARGE", filterErr.Error())
+			return
+		}
+		if storePath != tmp.Name() {
+			_ = os.Remove(tmp.Name())
+		}
+		defer cleanupFiltered()
+
+		storeFile, openErr := os.Open(storePath)
+		if openErr != nil {
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", openErr.Error())
+			return
+		}
+		h = sha256.New()
+		if _, copyErr := io.Copy(h, storeFile); copyErr != nil {
+			_ = storeFile.Close()
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", copyErr.Error())
+			return
+		}
+		_ = storeFile.Close()
+		checksum := hex.EncodeToString(h.Sum(nil))
+		meta, err := readEnterpriseSkillPackageMeta(storePath)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_SKILL_PACKAGE", err.Error())
 			return
 		}
 		finalName := safeEnterpriseSkillPackageName(meta.SkillID, checksum) + ".zip"
 		finalPath := filepath.Join(root, finalName)
-		if err := moveEnterpriseSkillPackageIntoPlace(tmp.Name(), finalPath, checksum); err != nil {
-			_ = os.Remove(tmp.Name())
+		if err := moveEnterpriseSkillPackageIntoPlace(storePath, finalPath, checksum); err != nil {
 			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
 			return
 		}
 		ctx := capability.WithTenant(r.Context(), principal.TenantID)
 		versionKey := corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":" + meta.SkillID + "@" + checksum[:12]
-		metadata := map[string]any{"skill_id": meta.SkillID, "hub_skill_id": meta.SkillID, "hub_url": enterpriseHubPublicBaseURL(r), "publisher_email": principal.Email, "uploaded_by": principal.UserID, "package_file": finalName}
+		displayName := firstNonEmpty(meta.Name, humanizeCapabilityReference(meta.SkillID), meta.SkillID)
+		metadata := map[string]any{
+			"skill_id":        meta.SkillID,
+			"hub_skill_id":    meta.SkillID,
+			"skill_name":      displayName,
+			"display_name":    displayName,
+			"name":            displayName,
+			"hub_url":         enterpriseHubPublicBaseURL(r),
+			"publisher_email": principal.Email,
+			"uploaded_by":     principal.UserID,
+			"package_file":    finalName,
+		}
 		item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
 			CapabilityType:    corelib.CapabilityTypeSkill,
 			Publisher:         firstNonEmpty(principal.Email, principal.UserID, "enterprise"),
 			CapabilityID:      meta.SkillID,
 			GlobalKey:         corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":" + meta.SkillID,
-			DisplayName:       meta.Name,
+			DisplayName:       displayName,
 			Description:       meta.Description,
 			Source:            corelib.CapabilitySourceEnterpriseHub,
 			ManagedBy:         "user_upload",
@@ -309,8 +631,8 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 			VersionKey:        versionKey,
 			PackageURL:        "/api/v1/skills/" + url.PathEscape(meta.SkillID) + "/download",
 			PackageChecksum:   checksum,
-			ManifestJSON:      firstNonEmpty(meta.Manifest, jsonObjectString(map[string]any{"name": meta.Name, "description": meta.Description, "type": corelib.CapabilityTypeSkill})),
-			TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw-skill-market", "skill_id": meta.SkillID}),
+			ManifestJSON:      firstNonEmpty(meta.Manifest, jsonObjectString(map[string]any{"name": displayName, "description": meta.Description, "type": corelib.CapabilityTypeSkill})),
+			TypeConfigJSON:    jsonObjectString(map[string]any{"package_format": "maclaw-skill-market", "skill_id": meta.SkillID, "skill_name": displayName}),
 			SetCurrentVersion: true,
 		})
 		if err != nil {
@@ -3776,9 +4098,16 @@ func importHubCenterSkillMarketplaceEntry(ctx context.Context, svc *capability.S
 		item.Version = "1.0.0"
 	}
 	publisher := firstNonEmpty(item.Author, item.UploaderID, "hubcenter")
+	displayName := resolveEnterpriseSkillDisplayName(item.Name, item.ID)
+	if displayName == "" {
+		displayName = firstNonEmpty(humanizeCapabilityReference(item.ID), item.ID)
+	}
 	metadata := map[string]any{
 		"skill_id":      item.ID,
 		"hub_skill_id":  item.ID,
+		"skill_name":    displayName,
+		"display_name":  displayName,
+		"name":          displayName,
 		"hub_url":       baseURL,
 		"skill_hub_url": baseURL,
 		"origin_source": corelib.CapabilitySourceHubCenter,
@@ -3788,7 +4117,7 @@ func importHubCenterSkillMarketplaceEntry(ctx context.Context, svc *capability.S
 		metadata["pricing"] = corelib.CapabilityPricingPaid
 	}
 	manifest := map[string]any{
-		"name":        item.Name,
+		"name":        displayName,
 		"description": item.Description,
 		"type":        corelib.CapabilityTypeSkill,
 		"tags":        item.Tags,
@@ -3806,7 +4135,7 @@ func importHubCenterSkillMarketplaceEntry(ctx context.Context, svc *capability.S
 		CapabilityType:    corelib.CapabilityTypeSkill,
 		Publisher:         publisher,
 		CapabilityID:      item.ID,
-		DisplayName:       item.Name,
+		DisplayName:       displayName,
 		Description:       item.Description,
 		Source:            corelib.CapabilitySourceEnterpriseHub,
 		ManagedBy:         "admin",
@@ -4025,7 +4354,20 @@ func importFreeExternalSkillCapability(ctx context.Context, svc *capability.Serv
 	if capabilityID == "" {
 		return nil, errors.New("external skill capability_id is required")
 	}
-	displayName := firstNonEmpty(req.DisplayName, stringFromAny(metadata["display_name"]), stringFromAny(metadata["name"]), capabilityID)
+	displayName := resolveEnterpriseSkillDisplayName(
+		req.DisplayName,
+		stringFromAny(metadata["display_name"]),
+		stringFromAny(metadata["skill_name"]),
+		stringFromAny(metadata["name"]),
+		capabilityID,
+	)
+	if displayName == "" {
+		displayName = firstNonEmpty(humanizeCapabilityReference(capabilityID), capabilityID)
+	}
+	metadata["skill_id"] = firstNonEmpty(stringFromAny(metadata["skill_id"]), capabilityID)
+	metadata["skill_name"] = displayName
+	metadata["display_name"] = displayName
+	metadata["name"] = firstNonEmpty(stringFromAny(metadata["name"]), displayName)
 	description := firstNonEmpty(req.Description, stringFromAny(metadata["description"]), stringFromAny(metadata["summary"]))
 	version := firstNonEmpty(req.Version, stringFromAny(metadata["version"]), "1.0.0")
 	versionKey := req.Source + ":" + corelib.CapabilityTypeSkill + ":" + capabilityID + "@" + version
@@ -4244,6 +4586,81 @@ func shortEnterpriseSkillDigest(value string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// readEnterpriseSkillPackageDisplayFields extracts only display name/description
+// from a skill package zip without staging files or running portability preflight.
+// Used by admin backfill where full validation would be too expensive / brittle.
+func readEnterpriseSkillPackageDisplayFields(zipPath string) (name, description string, err error) {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer zr.Close()
+	yamlID, yamlName, mdName := "", "", ""
+	yamlDesc, mdDesc := "", ""
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if !enterpriseSkillZipPathAllowed(f.Name) {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(f.Name))
+		switch base {
+		case "skill.yaml", "skill.yml", "skill.md":
+		default:
+			continue
+		}
+		// Prefer skill.md human titles; stop early once both sources are present.
+		if mdName != "" && (yamlName != "" || yamlID != "") && base != "skill.md" {
+			continue
+		}
+		maxBytes := maxSingleEnterpriseSkillFileBytes(base)
+		if f.UncompressedSize64 > uint64(maxBytes) {
+			continue
+		}
+		data, readErr := readEnterpriseSkillZipFile(f, maxBytes)
+		if readErr != nil {
+			continue
+		}
+		switch base {
+		case "skill.yaml", "skill.yml":
+			if yamlName != "" || yamlID != "" {
+				continue
+			}
+			sf, parseErr := coreskill.ParseSkillDefinitionFile(data, "yaml")
+			if parseErr != nil || sf == nil {
+				continue
+			}
+			yamlID = firstNonEmpty(strings.TrimSpace(sf.ID), strings.TrimSpace(sf.Name))
+			yamlName = firstNonEmpty(strings.TrimSpace(sf.Name), strings.TrimSpace(sf.ID))
+			yamlDesc = strings.TrimSpace(sf.Description)
+		case "skill.md":
+			if mdName != "" {
+				continue
+			}
+			entry, parseErr := coreskill.ParseMarkdownSkill(string(data), coreskill.MarkdownSkillOptions{
+				NameFallback:        firstNonEmpty(yamlName, yamlID),
+				DescriptionFallback: yamlDesc,
+				Source:              "enterprise_hub",
+			})
+			if parseErr != nil || entry == nil {
+				continue
+			}
+			mdName = strings.TrimSpace(entry.Name)
+			mdDesc = strings.TrimSpace(entry.Description)
+		}
+		if mdName != "" && (yamlName != "" || yamlID != "") {
+			break
+		}
+	}
+	name = resolveEnterpriseSkillDisplayName(mdName, yamlName, yamlID)
+	if name == "" {
+		return "", "", errors.New("skill package has no display name fields")
+	}
+	description = firstNonEmpty(mdDesc, yamlDesc)
+	return name, description, nil
+}
+
 func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta, error) {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -4257,7 +4674,12 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 	defer os.RemoveAll(stagingDir)
 	meta := &enterpriseSkillPackageMeta{Files: map[string]string{}, Version: "1.0.0"}
 	exportedBytes := 0
-	foundDefinition := false
+	foundYAML := false
+	foundMarkdown := false
+	yamlID := ""
+	yamlName := ""
+	mdName := ""
+	mdDescription := ""
 	for _, f := range zr.File {
 		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("skill package contains symlink %s", f.Name)
@@ -4271,7 +4693,9 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 		name := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(f.Name)), "./")
 		base := strings.ToLower(filepath.Base(name))
 		isManifest := base == "skill_package_manifest.json"
-		isDefinition := base == "skill.yaml" || base == "skill.yml"
+		isYAMLDefinition := base == "skill.yaml" || base == "skill.yml"
+		isMarkdownDefinition := base == "skill.md"
+		isDefinition := isYAMLDefinition || isMarkdownDefinition
 		isExportable := enterpriseSkillFileExportable(name, int(f.UncompressedSize64))
 		maxBytes := maxSingleEnterpriseSkillFileBytes(name)
 		if f.UncompressedSize64 > uint64(maxBytes) {
@@ -4298,12 +4722,12 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 			if sf == nil {
 				return nil, fmt.Errorf("invalid %s", name)
 			}
-			if strings.TrimSpace(sf.Name) == "" {
-				return nil, fmt.Errorf("%s must declare name", name)
+			if strings.TrimSpace(sf.Name) == "" && strings.TrimSpace(sf.ID) == "" {
+				return nil, fmt.Errorf("%s must declare name or id", name)
 			}
-			foundDefinition = true
-			meta.Name = strings.TrimSpace(sf.Name)
-			meta.SkillID = strings.TrimSpace(sf.Name)
+			foundYAML = true
+			yamlID = firstNonEmpty(strings.TrimSpace(sf.ID), strings.TrimSpace(sf.Name))
+			yamlName = firstNonEmpty(strings.TrimSpace(sf.Name), strings.TrimSpace(sf.ID))
 			meta.Description = firstNonEmpty(meta.Description, sf.Description)
 			if v := strings.TrimSpace(sf.Version); v != "" {
 				meta.Version = v
@@ -4316,6 +4740,27 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 				}
 				meta.Steps = append(meta.Steps, corelib.NLSkillStep{Action: step.Action, Params: step.Params, OnError: onError, Name: step.Name, Condition: step.Condition})
 			}
+		case "skill.md":
+			// Prefer human-readable title from SKILL.md frontmatter / first heading.
+			entry, err := coreskill.ParseMarkdownSkill(string(data), coreskill.MarkdownSkillOptions{
+				NameFallback:        firstNonEmpty(yamlName, yamlID),
+				DescriptionFallback: meta.Description,
+				Source:              "enterprise_hub",
+			})
+			if err != nil {
+				// Non-fatal when YAML already provides a definition.
+				if !foundYAML {
+					return nil, fmt.Errorf("invalid %s: %w", name, err)
+				}
+				break
+			}
+			foundMarkdown = true
+			mdName = strings.TrimSpace(entry.Name)
+			mdDescription = strings.TrimSpace(entry.Description)
+			meta.Description = firstNonEmpty(meta.Description, mdDescription)
+			if len(meta.Triggers) == 0 && len(entry.Triggers) > 0 {
+				meta.Triggers = append([]string(nil), entry.Triggers...)
+			}
 		}
 		if !isManifest && enterpriseSkillFileExportable(name, len(data)) {
 			exportedBytes += len(data)
@@ -4325,11 +4770,18 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 			meta.Files[name] = base64.StdEncoding.EncodeToString(data)
 		}
 	}
-	if !foundDefinition {
+	if !foundYAML {
 		return nil, errors.New("skill package must contain a valid skill.yaml or skill.yml")
 	}
+	// Stable machine id prefers yaml id/name; display name prefers human SKILL.md title.
+	_ = foundMarkdown
+	meta.SkillID = sanitizeEnterpriseSkillID(firstNonEmpty(yamlID, yamlName, mdName))
+	meta.Name = resolveEnterpriseSkillDisplayName(mdName, yamlName, meta.SkillID)
+	if strings.TrimSpace(meta.Description) == "" {
+		meta.Description = firstNonEmpty(mdDescription)
+	}
 	if strings.TrimSpace(meta.Name) == "" {
-		meta.Name = meta.SkillID
+		meta.Name = firstNonEmpty(humanizeCapabilityReference(meta.SkillID), meta.SkillID)
 	}
 	if len(meta.Files) == 0 {
 		return nil, errors.New("skill package has no exportable skill files")
@@ -4338,6 +4790,46 @@ func readEnterpriseSkillPackageMeta(zipPath string) (*enterpriseSkillPackageMeta
 		return nil, err
 	}
 	return meta, nil
+}
+
+func resolveEnterpriseSkillDisplayName(candidates ...string) string {
+	var fallback string
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = candidate
+		}
+		if capabilityReferenceName(candidate) || looksLikeTechnicalSkillSlug(candidate) {
+			continue
+		}
+		return candidate
+	}
+	if fallback == "" {
+		return ""
+	}
+	if human := humanizeCapabilityReference(fallback); human != "" {
+		return human
+	}
+	return fallback
+}
+
+func sanitizeEnterpriseSkillID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "skill"
+	}
+	if capabilityReferenceName(value) {
+		if idx := strings.LastIndex(value, ":"); idx >= 0 {
+			value = value[idx+1:]
+		}
+		if idx := strings.Index(value, "@"); idx >= 0 {
+			value = value[:idx]
+		}
+	}
+	return safeEnterpriseSkillFileName(value)
 }
 
 func writeEnterpriseSkillStagingFile(root, name string, data []byte) error {
@@ -4525,19 +5017,7 @@ func enterpriseSkillFileExportable(name string, size int) bool {
 }
 
 func enterpriseSkillPathHasRuntimeArtifact(name string) bool {
-	parts := strings.Split(filepath.ToSlash(strings.TrimSpace(name)), "/")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		if i == len(parts)-1 {
-			return coreskill.IsSkillRuntimePackageFile(part)
-		}
-		if coreskill.IsSkillRuntimePackageDir(part) {
-			return true
-		}
-	}
-	return false
+	return coreskill.SkillPackagePathHasRuntimeArtifact(name)
 }
 
 func enterpriseHubPublicBaseURL(r *http.Request) string {

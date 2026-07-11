@@ -8,7 +8,7 @@ type Props = {
 };
 
 const DEFAULT_NAME = "MaClaw";
-const DEFAULT_DESC = "一个尽心尽责、无所不能的软件开发管家";
+const DEFAULT_DESC = "你的全能数智伴侣MaClaw";
 
 export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) {
     const [name, setName] = useState("");

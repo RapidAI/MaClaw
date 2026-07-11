@@ -88,3 +88,27 @@ func TestImportConfigAllowsSecurityKeysWhenNotHubManaged(t *testing.T) {
 		t.Fatalf("security keys should import when Hub management is off: %#v", saved)
 	}
 }
+
+func TestMaclawRoleUsesSharedDefaultDescription(t *testing.T) {
+	mgr := NewManager(&memoryConfigStore{})
+
+	formatted, err := mgr.GetConfig("maclaw_role")
+	if err != nil {
+		t.Fatalf("GetConfig(maclaw_role) error = %v", err)
+	}
+	if !strings.Contains(formatted, "maclaw_role_description: "+corelib.DefaultMaclawRoleDescription) {
+		t.Fatalf("formatted role config = %q, want shared default description", formatted)
+	}
+
+	for _, section := range mgr.GetSchema() {
+		if section.Name != "maclaw_role" {
+			continue
+		}
+		for _, key := range section.Keys {
+			if key.Key == "maclaw_role_description" && key.Default == corelib.DefaultMaclawRoleDescription {
+				return
+			}
+		}
+	}
+	t.Fatalf("maclaw_role_description schema default = missing, want %q", corelib.DefaultMaclawRoleDescription)
+}

@@ -89,6 +89,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     IsASRReady: vi.fn().mockResolvedValue(false),
     TranscribeAudioBase64: vi.fn().mockResolvedValue(""),
     NormalizeVoiceCommand: vi.fn(async (text: string) => ({ is_command: true, corrected_text: text, confidence: 1 })),
+    CorrectASRText: vi.fn(async (text: string) => text),
 }));
 
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {

@@ -101,6 +101,11 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		}
 		docText, source := resolveWorkflowPhaseDocText(loopCtx, resp)
 		if docText != "" {
+			if !workflowV2ArtifactDelivered(wf.machine.GetActive(ownerID), loopCtx) {
+				resp.Text += "\n\nPPT 生成尚未完成：未检测到已生成并发送的 .pptx 文件。本阶段保持进行中，请继续执行生成并发送最终 PPTX。"
+				log.Printf("[workflow-v2] post-loop artifact capture rejected: user=%s phase=%s reason=missing_pptx", ownerID, completedPhaseID)
+				return
+			}
 			if !h.workflowPhaseDocCaptureAllowed(ownerID, completedPhaseID, docText) {
 				return
 			}
@@ -199,6 +204,25 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 		}
 		log.Printf("[workflow] post-loop doc capture: user=%s phase=%s len=%d source=%s", ownerID, phaseID, len([]rune(docText)), source)
 	}
+}
+
+// workflowV2ArtifactDelivered verifies the concrete success criterion for the
+// PPT artifact phase. Conversational text, a PDF preview, or a skill search is
+// not a deliverable and must never advance the workflow to completed.
+func workflowV2ArtifactDelivered(state *v2.WorkflowState, loopCtx *LoopContext) bool {
+	if state == nil || loopCtx == nil {
+		return true
+	}
+	phase := state.ActivePhase()
+	if phase == nil || state.Type != string(v2.WorkflowPresentationDesign) || phase.ID != "ppt_generation" {
+		return true
+	}
+	for _, path := range loopCtx.WorkflowWrittenFiles {
+		if strings.EqualFold(filepath.Ext(strings.TrimSpace(path)), ".pptx") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *IMMessageHandler) workflowPhaseDocCaptureAllowed(ownerID, phaseID, docText string) bool {

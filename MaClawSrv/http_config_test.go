@@ -675,7 +675,7 @@ func TestAdminAIModelTestEndpointsUseSharedModels(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(modelsDir, embedding.DefaultModelFilename), []byte("embedding-model"), 0o644); err != nil {
 		t.Fatalf("write embedding model: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, srvASRModelFilename), []byte("asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model: %v", err)
 	}
 	seedReadyTTSModel(t, dataRoot)
@@ -730,7 +730,7 @@ func TestAdminAIModelTestEndpointsReturnClientErrorsForInvalidInput(t *testing.T
 	if err := os.MkdirAll(modelsDir, 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, srvASRModelFilename), []byte("asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model: %v", err)
 	}
 	server := NewHTTPServer(svc, "root-admin-secret", nil)

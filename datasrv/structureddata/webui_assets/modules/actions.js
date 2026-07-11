@@ -27,7 +27,7 @@ PageModules.actions = {
     ));
 
     // === Section 2: Execute Action (Shown after selecting) ===
-    container.appendChild(this.buildCollapsible("execAction", "▶️ " + t("Execute Action"), true, () => {
+    container.appendChild(this.buildCollapsible("execAction", t("Execute Action"), true, () => {
       const body = h("div", {});
 
       // Read-only info

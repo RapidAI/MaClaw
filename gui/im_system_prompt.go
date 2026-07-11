@@ -135,7 +135,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMemoryGuide bool, eventContext lifecycle.EventContext, loopCtx *LoopContext, userMessage ...string) string {
 	// Load config once for all decisions.
 	roleName := "MaClaw"
-	roleDesc := "一个尽心尽责无所不能的软件开发管家"
+	roleDesc := corelib.DefaultMaclawRoleDescription
 	isProMode := false
 	currentNickname := ""
 	trialReflectEnabled := false

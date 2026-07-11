@@ -24,6 +24,8 @@ type agentLoopStartOptions struct {
 	AdaptiveRetry    *AdaptiveRetry
 	MilestoneTracker *progress.AgentProgressTracker
 	Telemetry        *agentLoopTelemetry
+	// SendProgress surfaces early work (e.g. IM voice ASR) before the main loop.
+	SendProgress func(string)
 }
 
 type agentLoopStartState struct {
@@ -82,7 +84,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		systemPrompt += extra
 	}
 
-	conversationStart := h.buildAgentLoopConversationStart(ctx.ID, opts.UserID, opts.UserText, systemPrompt, opts.Platform, opts.Attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools)
+	conversationStart := h.buildAgentLoopConversationStart(ctx.ID, opts.UserID, opts.UserText, systemPrompt, opts.Platform, opts.Attachments, cfg, opts.History, opts.PriorReplanCount, recorderBundle.Recorder, tools, opts.SendProgress)
 	if telemetry != nil {
 		telemetry.PreLLMConversationElapsed = conversationStart.Elapsed
 	}

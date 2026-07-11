@@ -5,10 +5,10 @@ package tensor
 import "unsafe"
 
 func q8MultiDot4(out *[4]float32, a []float32, data []byte, row, nBlocks, K int) {
-	buf := getQ8DequantBuf(K)
+	buf, bufPool := getQ8DequantBuf(K)
 	dequantRowInto(data, row, nBlocks, buf)
 	multiDot4(out, a, buf, K)
-	putQ8DequantBuf(buf)
+	putQ8DequantBuf(buf, bufPool)
 }
 
 func q8MultiDot4T(out *[4]float32, a []float32, t *Q8Tensor, row, nBlocks, K int) {
@@ -28,11 +28,11 @@ func q8MultiDot8T(out *[8]float32, a []float32, t *Q8Tensor, row, nBlocks, K int
 }
 
 func q8DualMultiDot4(out *[8]float32, a []float32, data []byte, row0, row1, nBlocks, K int) {
-	buf := getQ8DequantBuf(2 * K)
+	buf, bufPool := getQ8DequantBuf(2 * K)
 	dequantRowInto(data, row0, nBlocks, buf[:K])
 	dequantRowInto(data, row1, nBlocks, buf[K:2*K])
 	multiDot4DualB(out, a, buf[:K], buf[K:2*K], K)
-	putQ8DequantBuf(buf)
+	putQ8DequantBuf(buf, bufPool)
 }
 
 func q8DualMultiDot4T(out *[8]float32, a []float32, t *Q8Tensor, row0, row1, nBlocks, K int) {

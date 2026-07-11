@@ -8,21 +8,24 @@ export interface SkillSourceBadgeSource {
     source_label: string;
 }
 
+const HUB_CENTER_SOURCE_ALIASES = new Set(["enterprise_hub", "hub", "hubcenter", "skillmarket", "skillhub"]);
+
+export function getSkillSourceLabel(skill: SkillSourceBadgeSource): string {
+    const source = (skill.source || "").trim().toLowerCase();
+    if (HUB_CENTER_SOURCE_ALIASES.has(source)) return "Hub / HubCenter";
+    return (skill.source_label || skill.source || "").trim();
+}
+
 export function getSkillSourceTooltip(skill: SkillSourceBadgeSource, localizeText: LocalizeText): string {
-    switch ((skill.source || "").trim().toLowerCase()) {
-        case "enterprise_hub":
-            return localizeText(
-                "Private market: capability market from your current Hub or organization.",
-                "私有市场：来自你当前所属 Hub 或组织的能力市场。",
-                "私有市場：來自你目前所屬 Hub 或組織的能力市場。"
-            );
-        case "skillmarket":
-        case "skillhub":
-            return localizeText(
-                "Public market: public SkillMarket from HubCenter.",
-                "公共市场：来自 HubCenter 的公共 SkillMarket 能力市场。",
-                "公共市場：來自 HubCenter 的公共 SkillMarket 能力市場。"
-            );
+    const source = (skill.source || "").trim().toLowerCase();
+    if (HUB_CENTER_SOURCE_ALIASES.has(source)) {
+        return localizeText(
+            "Hub / HubCenter capability market.",
+            "Hub / HubCenter 能力市场。",
+            "Hub / HubCenter 能力市場。"
+        );
+    }
+    switch (source) {
         case "clawhub":
             return localizeText(
                 "ClawHub marketplace mirror. Security checks run before install.",
@@ -41,7 +44,7 @@ export function getSkillSourceTooltip(skill: SkillSourceBadgeSource, localizeTex
 }
 
 export function SkillSourceBadge({ skill, localizeText }: { skill: SkillSourceBadgeSource; localizeText: LocalizeText }) {
-    const label = (skill.source_label || skill.source || "").trim();
+    const label = getSkillSourceLabel(skill);
     if (!label) return null;
     return (
         <span style={skillSourceBadgeStyle} title={getSkillSourceTooltip(skill, localizeText)}>

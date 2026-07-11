@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -61,7 +62,14 @@ type RemoteCodingSubAgent struct {
 	// Nil preserves the default hard-reject behavior.
 	highRiskApproval         *remoteHighRiskApprovalState
 	highRiskApprovalExplicit bool
+
+	// sourcePreviewEnabled is opt-in because this agent is also used by remote
+	// execution paths that are not the user-facing remote coding workflow.
+	sourcePreviewEnabled   bool
+	sourcePreviewSessionID string
 }
+
+var remoteSourcePreviewSessionSeq atomic.Uint64
 
 // RemoteCodingSubAgentResult is the outcome of a remote task execution.
 type RemoteCodingSubAgentResult struct {
@@ -100,6 +108,19 @@ func (r *RemoteCodingSubAgent) SetCallbacks(onToken func(string), onProgress fun
 	r.onProgress = onProgress
 	if !r.highRiskApprovalExplicit && r.handler != nil && r.handler.app != nil {
 		r.setHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(r.handler, r.loopCtx, onProgress), false, false, true)
+	}
+}
+
+// SetSourcePreviewEnabled enables source events for the remote coding workflow.
+func (r *RemoteCodingSubAgent) SetSourcePreviewEnabled(enabled bool) {
+	if r != nil {
+		r.sourcePreviewEnabled = enabled
+		if enabled && r.sourcePreviewSessionID == "" {
+			r.sourcePreviewSessionID = fmt.Sprintf("remote:%s:%d:%d", r.sessionID, time.Now().UnixNano(), remoteSourcePreviewSessionSeq.Add(1))
+		}
+		if !enabled {
+			r.sourcePreviewSessionID = ""
+		}
 	}
 }
 
@@ -163,6 +184,17 @@ func (r *RemoteCodingSubAgent) SaveExperience(exp knowledge.CodingExperience) er
 
 // ExecuteTask runs a single task on the remote server in a clean context.
 func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) *RemoteCodingSubAgentResult {
+	if r == nil {
+		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding subagent is nil"}
+	}
+	// A remote coding run owns one source-preview session.  Do not attach the
+	// remote project path: it is not a local tab path and must not be used for
+	// frontend routing.
+	if r != nil && r.sourcePreviewEnabled && r.handler != nil && r.handler.app != nil && r.handler.app.codeEventEmitter != nil {
+		previewSessionID := r.sourcePreviewSessionID
+		r.handler.app.codeEventEmitter.EmitSessionStart(previewSessionID)
+		defer r.handler.app.codeEventEmitter.EmitSessionEnd(previewSessionID)
+	}
 	cb := &remoteCodingCallbacks{
 		agent:       r,
 		task:        taskDescription,
@@ -1498,9 +1530,16 @@ func (c *remoteCodingCallbacks) sshReadFile(args map[string]interface{}) string 
 	result := c.execSSH(remoteReadFileRangePythonCommand(path, offset, limit), 10)
 	if remoteCodingToolOutcome(result) == "success" && remoteReadFileResultHasUsefulEvidence(result) {
 		c.trackRemoteFileRead(path)
+		// A range beginning after line one is useful to the agent but is not a
+		// faithful source preview of the file; keep the user's current preview.
+		if remoteReadCanUpdatePreview(offset) && !remotePreviewOutputIsTransportTruncated(result) {
+			c.emitRemoteCodePreview(path, extractRemoteReadPreviewContent(result), "", "read", remotePreviewOutputIsTruncated(result), false)
+		}
 	}
 	return result
 }
+
+func remoteReadCanUpdatePreview(offset int) bool { return offset <= 1 }
 
 func remoteReadFileResultHasUsefulEvidence(result string) bool {
 	if strings.TrimSpace(result) == "" || strings.Contains(result, "[remote read_file binary/non-UTF8:") {
@@ -1578,11 +1617,22 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 		return msg
 	}
 
+	// Capture the existing remote content before mutation so the preview can show a diff.
+	original, originalAvailable, originalTruncated := c.readRemotePreviewContent(path)
+
 	// For large content (>32KB), write in chunks to avoid PTY buffer overflow.
 	if len(content) > 32*1024 {
 		result := c.sshWriteFileLarge(path, content)
 		if remoteCodingToolOutcome(result) == "success" {
-			c.trackRemoteFileChanged(path, remoteWriteFileResultCreated(result))
+			created := remoteWriteFileResultCreated(result)
+			c.trackRemoteFileChanged(path, created)
+			if updated, ok, truncated := c.readRemotePreviewContent(path); ok {
+				opType := "modify"
+				if created {
+					opType = "create"
+				}
+				c.emitRemoteCodePreview(path, updated, original, opType, originalTruncated || truncated, !created && !originalAvailable)
+			}
 		}
 		return result
 	}
@@ -1594,7 +1644,15 @@ func (c *remoteCodingCallbacks) sshWriteFile(args map[string]interface{}) string
 	result := c.execSSH(pyScript, 15)
 	formatted := remoteWriteFileResult(path, len(content), result, false)
 	if remoteCodingToolOutcome(formatted) == "success" {
-		c.trackRemoteFileChanged(path, remoteWriteFileResultCreated(result))
+		created := remoteWriteFileResultCreated(result)
+		c.trackRemoteFileChanged(path, created)
+		if updated, ok, truncated := c.readRemotePreviewContent(path); ok {
+			opType := "modify"
+			if created {
+				opType = "create"
+			}
+			c.emitRemoteCodePreview(path, updated, original, opType, originalTruncated || truncated, !created && !originalAvailable)
+		}
 	}
 	return formatted
 }
@@ -1710,6 +1768,9 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 		return msg
 	}
 
+	// Capture the existing remote content before mutation so the preview can show a diff.
+	original, originalAvailable, originalTruncated := c.readRemotePreviewContent(path)
+
 	// Use base64 to safely transfer old/new strings without heredoc terminator conflicts.
 	pyScript := remoteEditFilePythonCommand(path, oldStr, newStr)
 
@@ -1717,8 +1778,77 @@ func (c *remoteCodingCallbacks) sshEditFile(args map[string]interface{}) string 
 	formatted := remoteEditFileResult(path, result)
 	if remoteCodingToolOutcome(formatted) == "success" {
 		c.trackRemoteFileChanged(path, false)
+		if updated, ok, truncated := c.readRemotePreviewContent(path); ok {
+			c.emitRemoteCodePreview(path, updated, original, "modify", originalTruncated || truncated, !originalAvailable)
+		}
 	}
 	return formatted
+}
+
+// readRemotePreviewContent retrieves a whole remote text file for the local preview.
+// It deliberately uses the existing SSH read command rather than the desktop filesystem.
+func (c *remoteCodingCallbacks) readRemotePreviewContent(path string) (string, bool, bool) {
+	// Keep preview reads under the SSH transport's output cap. A preview that
+	// cannot be transferred intact is omitted rather than showing a misleading
+	// middle-truncated source file.
+	content := c.execSSH(remoteReadFileRangePythonCommand(path, 0, 100), 10)
+	if remoteCodingToolOutcome(content) != "success" || !remoteReadFileResultHasUsefulEvidence(content) {
+		return "", false, false
+	}
+	if remotePreviewOutputIsTransportTruncated(content) {
+		return "", false, false
+	}
+	if len(content) > maxCodeFileSize || !isCodePreviewTextContent([]byte(content)) {
+		return "", false, false
+	}
+	return extractRemoteReadPreviewContent(content), true, remotePreviewOutputIsTruncated(content)
+}
+
+func remotePreviewOutputIsTruncated(result string) bool {
+	return remotePreviewOutputIsTransportTruncated(result) || strings.Contains(result, "[remote read_file truncated:")
+}
+
+func remotePreviewOutputIsTransportTruncated(result string) bool {
+	return strings.Contains(result, "... (truncated) ...")
+}
+
+// extractRemoteReadPreviewContent removes the SSH command envelope and the
+// line-number prefixes deliberately returned to the agent by ssh_read_file.
+func extractRemoteReadPreviewContent(result string) string {
+	lines := strings.Split(result, "\n")
+	content := make([]string, 0, len(lines))
+	for _, line := range lines {
+		tab := strings.IndexByte(line, '\t')
+		if tab <= 0 {
+			continue
+		}
+		if _, err := strconv.Atoi(line[:tab]); err != nil {
+			continue
+		}
+		content = append(content, line[tab+1:])
+	}
+	return strings.Join(content, "\n")
+}
+
+// emitRemoteCodePreview bridges SSH tool output to the existing source preview.
+// Remote paths are intentionally not used for tab routing: they do not exist locally.
+func (c *remoteCodingCallbacks) emitRemoteCodePreview(path, content, original, opType string, previewTruncated, originalMissing bool) {
+	if c == nil || c.agent == nil || !c.agent.sourcePreviewEnabled || c.agent.handler == nil || c.agent.handler.app == nil || c.agent.handler.app.codeEventEmitter == nil {
+		return
+	}
+	c.agent.handler.app.codeEventEmitter.EmitCodeFileEvent(CodeFileEvent{
+		SessionID:        c.agent.sourcePreviewSessionID,
+		FilePath:         path,
+		FileName:         pathpkg.Base(path),
+		AbsPath:          path,
+		Content:          content,
+		Original:         original,
+		OpType:           opType,
+		Language:         detectLanguageFromExt(path),
+		AutoOpenPreview:  true,
+		PreviewTruncated: previewTruncated,
+		OriginalMissing:  originalMissing,
+	})
 }
 
 func remoteEditFileResult(path string, commandResult string) string {

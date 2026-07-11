@@ -57,4 +57,33 @@ describe('CodePreviewPanel diff rendering', () => {
         expect(screen.getByText('# Old title')).toBeTruthy();
         expect(screen.getByText('# New title')).toBeTruthy();
     });
+
+    it('keeps a truncated remote file out of diff mode', () => {
+        const file: CodeFile = {
+            sessionID: 'remote:ssh-1',
+            filePath: '/srv/app/large.ts',
+            fileName: 'large.ts',
+            content: 'export const visible = true;',
+            original: 'export const visible = false;',
+            opType: 'modify',
+            language: 'typescript',
+            updatedAt: 1,
+            previewTruncated: true,
+        };
+
+        render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={darkCodePreviewTheme}
+                lang="zh-Hans"
+            />,
+        );
+
+        expect(screen.getByRole('status').textContent).toContain('远程源码预览已截断');
+        expect(screen.queryByText('-')).toBeNull();
+        expect(screen.getByText((_, element) => element?.tagName === 'TD' && element.textContent === 'export const visible = true;')).toBeTruthy();
+    });
 });

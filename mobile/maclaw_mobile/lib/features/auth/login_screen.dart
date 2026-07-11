@@ -1,8 +1,11 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../shared/surface.dart';
+import '../../shared/theme.dart';
 import 'auth_service.dart';
 import 'session_controller.dart';
 
@@ -20,6 +23,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String? _message;
   bool _sendingCode = false;
   bool _verifying = false;
+  bool _messageIsError = false;
   Timer? _resendTimer;
   int _resendSecondsRemaining = 0;
 
@@ -55,14 +59,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!_looksLikePhoneNumber(phone)) {
       setState(() {
         _message = '请输入有效手机号，只支持数字和常见手机号分隔符。';
-        _pendingLogin = null;
+        _messageIsError = true;
       });
       return;
     }
     setState(() {
       _sendingCode = true;
-      _message = '正在连接 MaClaw 官方服务...';
-      _pendingLogin = null;
+      _message = '正在连接 MaClaw 官方服务并发送验证码…';
+      _messageIsError = false;
+      // Keep previous pending (hub) if re-sending so code entry stays available.
     });
     try {
       final result = await ref
@@ -72,21 +77,80 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       setState(() {
         _sendingCode = false;
         _pendingLogin = result;
-        final ttl =
-            result.expiresMinutes > 0 ? '${result.expiresMinutes} 分钟内' : '';
-        _message =
-            result.message.isEmpty ? '验证码已发送，请在$ttl输入短信验证码。' : result.message;
+        if (result.deliveryUnconfirmed) {
+          _message = result.message.isEmpty
+              ? '短信可能已发出，若已收到请直接输入验证码；未收到请稍后重发。'
+              : result.message;
+          _messageIsError = false;
+        } else {
+          final ttl =
+              result.expiresMinutes > 0 ? '${result.expiresMinutes} 分钟内' : '';
+          _message = result.message.isEmpty
+              ? '验证码已发送，请在$ttl输入短信验证码。'
+              : result.message;
+          _messageIsError = false;
+        }
       });
       _startResendCooldown(
-        result.resendCooldownSeconds > 0 ? result.resendCooldownSeconds : 60,
+        result.resendCooldownSeconds > 0
+            ? result.resendCooldownSeconds
+            : PhoneLoginRequestResult.defaultResendCooldownSeconds,
       );
     } catch (error) {
       if (!mounted) return;
+      final detail = _formatSendError(error);
       setState(() {
         _sendingCode = false;
-        _message = '验证码发送失败，请检查网络或稍后重试。';
+        // If we already have a hub-bound pending session, keep code entry open.
+        if (_pendingLogin != null && _pendingLogin!.hubUrl.isNotEmpty) {
+          _message =
+              '发送未确认（$detail）。若手机已收到验证码，请直接输入；否则请稍后重试。';
+          _messageIsError = true;
+          _startResendCooldown(PhoneLoginRequestResult.defaultResendCooldownSeconds);
+        } else {
+          _message = '验证码发送失败：$detail';
+          _messageIsError = true;
+        }
       });
     }
+  }
+
+  String _formatSendError(Object error) {
+    if (error is DioException) {
+      final status = error.response?.statusCode;
+      final data = error.response?.data;
+      String serverMsg = '';
+      if (data is Map) {
+        serverMsg = (data['message'] as String?)?.trim() ?? '';
+        if (serverMsg.isEmpty && data['error'] is Map) {
+          serverMsg =
+              (Map<String, dynamic>.from(data['error'] as Map)['message']
+                          as String?)
+                      ?.trim() ??
+                  '';
+        }
+      }
+      if (serverMsg.isNotEmpty) {
+        return status != null ? 'HTTP $status · $serverMsg' : serverMsg;
+      }
+      switch (error.type) {
+        case DioExceptionType.connectionTimeout:
+        case DioExceptionType.sendTimeout:
+        case DioExceptionType.receiveTimeout:
+          return '网络超时（短信可能已发出）';
+        case DioExceptionType.connectionError:
+          return '无法连接官方服务';
+        case DioExceptionType.badResponse:
+          return status != null ? 'HTTP $status' : '服务响应异常';
+        default:
+          break;
+      }
+      final m = error.message?.trim() ?? '';
+      if (m.isNotEmpty) return m;
+    }
+    final text = error.toString().trim();
+    if (text.length > 160) return '${text.substring(0, 160)}…';
+    return text.isEmpty ? '未知错误' : text;
   }
 
   bool _looksLikePhoneNumber(String value) {
@@ -114,9 +178,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final pending = _pendingLogin;
     final code = _codeController.text.trim();
     if (pending == null || code.isEmpty || _verifying) return;
+    if (pending.hubUrl.trim().isEmpty) {
+      setState(() {
+        _message = '缺少 Hub 地址，请重新发送验证码后再试。';
+        _messageIsError = true;
+      });
+      return;
+    }
     setState(() {
       _verifying = true;
       _message = '正在验证手机号并进入 MaClaw Mobile...';
+      _messageIsError = false;
     });
     try {
       final ok = await ref
@@ -132,12 +204,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       setState(() {
         _verifying = false;
         _message = ok ? '登录成功，已接入手机号账户的官方服务 credits。' : '验证码尚未确认，请重试。';
+        _messageIsError = !ok;
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _verifying = false;
-        _message = '验证码验证失败，请稍后重试。';
+        _message = '验证码验证失败：${_formatSendError(error)}';
+        _messageIsError = true;
       });
     }
   }
@@ -145,96 +219,176 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final showCodeEntry = _pendingLogin != null;
     return Scaffold(
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            const SizedBox(height: 36),
-            Center(
-              child: Image.asset(
-                'assets/images/maclaw_logo.png',
-                width: 88,
-                height: 88,
-                semanticLabel: 'MaClaw',
-                fit: BoxFit.contain,
-              ),
-            ),
-            const SizedBox(height: 18),
-            Text(
-              '手机号注册/登录',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
+              children: [
+                const SizedBox(height: 12),
+                Center(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: scheme.primaryContainer.withValues(alpha: 0.45),
+                      borderRadius:
+                          BorderRadius.circular(MaClawColors.radiusLg),
+                      border: Border.all(
+                        color: scheme.primary.withValues(alpha: 0.12),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Image.asset(
+                        'assets/images/maclaw_logo.png',
+                        width: 72,
+                        height: 72,
+                        semanticLabel: 'MaClaw',
+                        fit: BoxFit.contain,
+                      ),
+                    ),
                   ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'MaClaw Mobile 仅支持手机号账户接入。验证通过后，将使用该手机号账户绑定的 MaClaw 官方服务 credits 调用 LLM。',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                ),
+                const SizedBox(height: 22),
+                Text(
+                  '手机号注册/登录',
+                  textAlign: TextAlign.center,
+                  style: text.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.01,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(MaClawColors.spaceLg),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          '账户验证',
+                          style: text.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '先验证手机号，再输入短信验证码进入工作台。'
+                          '若已收到短信但发送按钮报错，仍可在下方输入验证码。',
+                          style: text.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _phoneController,
+                          keyboardType: TextInputType.phone,
+                          textInputAction: TextInputAction.done,
+                          autofillHints: const [AutofillHints.telephoneNumber],
+                          onSubmitted: (_) {
+                            if (!_sendingCode && _resendSecondsRemaining == 0) {
+                              unawaited(_sendCode());
+                            }
+                          },
+                          decoration: const InputDecoration(
+                            labelText: '手机号',
+                            prefixIcon: Icon(Icons.phone_outlined),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          onPressed: _sendingCode || _resendSecondsRemaining > 0
+                              ? null
+                              : _sendCode,
+                          icon: _sendingCode
+                              ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.sms_outlined),
+                          label: Text(
+                            !showCodeEntry
+                                ? '发送验证码'
+                                : _resendSecondsRemaining > 0
+                                    ? '重新发送验证码（$_resendSecondsRemaining秒）'
+                                    : '重新发送验证码',
+                          ),
+                        ),
+                        if (showCodeEntry) ...[
+                          const SizedBox(height: 18),
+                          Divider(color: scheme.outlineVariant),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: _codeController,
+                            keyboardType: TextInputType.number,
+                            textInputAction: TextInputAction.done,
+                            autofillHints: const [
+                              AutofillHints.oneTimeCode,
+                            ],
+                            onSubmitted: (_) {
+                              if (!_verifying) unawaited(_verifyCode());
+                            },
+                            decoration: InputDecoration(
+                              labelText: (_pendingLogin?.codeLength ?? 0) > 0
+                                  ? '${_pendingLogin!.codeLength} 位验证码'
+                                  : '验证码',
+                              prefixIcon: const Icon(Icons.pin_outlined),
+                              helperText: _pendingLogin?.deliveryUnconfirmed ==
+                                      true
+                                  ? '发送回执未确认：收到短信即可在此输入'
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _verifying ? null : _verifyCode,
+                            icon: _verifying
+                                ? const SizedBox.square(
+                                    dimension: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.login),
+                            label: const Text('验证并登录'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                if (_message != null) ...[
+                  const SizedBox(height: 14),
+                  StatusBanner(
+                    tone: _messageIsError
+                        ? StatusTone.danger
+                        : (_sendingCode || _verifying
+                            ? StatusTone.info
+                            : StatusTone.success),
+                    icon: _messageIsError
+                        ? Icons.error_outline
+                        : (_sendingCode || _verifying
+                            ? Icons.hourglass_top_outlined
+                            : Icons.check_circle_outline),
+                    message: _message!,
+                  ),
+                ],
+                const SizedBox(height: 18),
+                Text(
+                  '登录后默认进入 AI 助手，可随时切换员工、文档与账户设置。',
+                  textAlign: TextAlign.center,
+                  style: text.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: _phoneController,
-              keyboardType: TextInputType.phone,
-              autofillHints: const [AutofillHints.telephoneNumber],
-              decoration: const InputDecoration(
-                labelText: '手机号',
-                prefixIcon: Icon(Icons.phone_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _sendingCode || _resendSecondsRemaining > 0
-                  ? null
-                  : _sendCode,
-              icon: _sendingCode
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.sms_outlined),
-              label: Text(
-                _pendingLogin == null
-                    ? '发送验证码'
-                    : _resendSecondsRemaining > 0
-                        ? '重新发送验证码（$_resendSecondsRemaining秒）'
-                        : '重新发送验证码',
-              ),
-            ),
-            if (_pendingLogin != null) ...[
-              const SizedBox(height: 18),
-              TextField(
-                controller: _codeController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: _pendingLogin!.codeLength > 0
-                      ? '${_pendingLogin!.codeLength} 位验证码'
-                      : '验证码',
-                  prefixIcon: const Icon(Icons.pin_outlined),
                 ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _verifying ? null : _verifyCode,
-                icon: _verifying
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.login),
-                label: const Text('验证并登录'),
-              ),
-            ],
-            if (_message != null) ...[
-              const SizedBox(height: 14),
-              Text(
-                _message!,
-                style: TextStyle(color: scheme.onSurfaceVariant),
-              ),
-            ],
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );

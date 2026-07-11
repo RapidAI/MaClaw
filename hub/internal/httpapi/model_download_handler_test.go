@@ -22,13 +22,13 @@ func TestModelDownloadHandlerServesFromModelsDirKeepingPublicURL(t *testing.T) {
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
 		t.Fatalf("mkdir models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(modelsDir, "moonshine-base-zh.gguf"), []byte("model-binary"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(modelsDir, "sensevoice-small-q8.gguf"), []byte("model-binary"), 0644); err != nil {
 		t.Fatalf("write model: %v", err)
 	}
 
 	h := ModelDownloadHandler(filepath.Join(configDir, "config.yaml"))
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/models/moonshine-base-zh.gguf", nil)
-	req.SetPathValue("filename", "moonshine-base-zh.gguf")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/models/sensevoice-small-q8.gguf", nil)
+	req.SetPathValue("filename", "sensevoice-small-q8.gguf")
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -83,8 +83,8 @@ func TestModelDownloadHandlerRejectsInvalidPathAndUnsupportedExtension(t *testin
 		filename string
 		wantCode int
 	}{
-		{name: "path traversal", filename: "../moonshine-base-zh.gguf", wantCode: http.StatusBadRequest},
-		{name: "nested path", filename: "nested/moonshine-base-zh.gguf", wantCode: http.StatusBadRequest},
+		{name: "path traversal", filename: "../sensevoice-small-q8.gguf", wantCode: http.StatusBadRequest},
+		{name: "nested path", filename: "nested/sensevoice-small-q8.gguf", wantCode: http.StatusBadRequest},
 		{name: "unsupported extension", filename: "notes.txt", wantCode: http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,6 +397,29 @@ func TestCollectHubModelRuntimeStatusReadyWhenFilesExistWithoutSentinel(t *testi
 	}
 	if status.Initialized {
 		t.Fatalf("initialized=true without sentinel")
+	}
+}
+
+func TestCollectHubModelRuntimeStatusTreatsEmptyModelAsMissing(t *testing.T) {
+	oldFiles := os.Getenv("HUB_MODEL_FILES")
+	defer func() { _ = os.Setenv("HUB_MODEL_FILES", oldFiles) }()
+	_ = os.Setenv("HUB_MODEL_FILES", "a.gguf")
+
+	root := t.TempDir()
+	modelsDir := filepath.Join(root, "data", "models")
+	if err := os.MkdirAll(modelsDir, 0755); err != nil {
+		t.Fatalf("mkdir models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelsDir, "a.gguf"), nil, 0644); err != nil {
+		t.Fatalf("write empty model: %v", err)
+	}
+
+	status := collectHubModelRuntimeStatus(nil, filepath.Join(root, "data"), modelsDir, filepath.Join(root, "data", "logs", "model-download.log"), filepath.Join(root, "data", "download-models.sh"))
+	if status.Ready || status.Status != "missing" || len(status.MissingFiles) != 1 || status.MissingFiles[0] != "a.gguf" {
+		t.Fatalf("status=%q ready=%v missing=%v", status.Status, status.Ready, status.MissingFiles)
+	}
+	if len(status.Files) != 1 || status.Files[0].Available {
+		t.Fatalf("files=%#v", status.Files)
 	}
 }
 

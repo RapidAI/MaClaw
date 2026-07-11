@@ -11,10 +11,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/asr"
 )
 
 const defaultHubModelBaseURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release"
-const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
+const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf " + asr.DefaultModelFilename + " omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
 const defaultHubModelLockTTL = 24 * time.Hour
 const modelDownloadScriptVersion = "maclaw-model-download-v2"
 
@@ -267,7 +269,7 @@ func collectHubModelRuntimeStatus(r *http.Request, legacyDataDir string, modelsD
 	for _, name := range expected {
 		path := resolveModelPublicPath(modelsDir, legacyDataDir, name)
 		item := hubModelFileView{Name: name}
-		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		if fi, err := os.Stat(path); err == nil && !fi.IsDir() && fi.Size() > 0 {
 			item.Available = true
 			item.SizeBytes = fi.Size()
 			item.ModifiedAt = fi.ModTime().UTC().Format(time.RFC3339)
@@ -395,7 +397,7 @@ download_one() {
   url="$BASE_URL/$name"
   target="$TARGET_DIR/$name"
   tmp="$target.part"
-  if [ -f "$target" ]; then
+	  if [ -s "$target" ]; then
     cp -f "$target" "$HOME_DIR/$name"
     return 0
   fi

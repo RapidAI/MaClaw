@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
+import { normalizeASRText, shouldDispatchASRText } from "./asrTextUtils";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
 import { cloneCodePreviewState, useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
@@ -2090,8 +2091,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [clearComposerDraft]);
     const sendInFlightRef = useRef(false);
     const submitRecognizedVoiceText = useCallback(async (text: string, _source?: VoiceInputSource) => {
-        const trimmed = text.trim();
-        if (!trimmed || !ready) return;
+        // Defense-in-depth: never send/queue empty or punctuation-only ASR noise.
+        if (!ready || !shouldDispatchASRText(text)) return;
+        const trimmed = normalizeASRText(text);
         // Honor active compose mode (goal / btw) so voice matches typed send semantics.
         const composed = applyComposeActionToText(trimmed, composeAction);
         if (isBtwCommandText(composed) && sendBtwMessage) {

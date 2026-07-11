@@ -4843,6 +4843,11 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if err != nil {
 		return config, err
 	}
+	// Upgrade only the exact historic default. Any other value is a user-defined
+	// role description and must remain untouched.
+	if config.MaclawRoleDescription == "一个尽心尽责无所不能的软件开发管家" {
+		config.MaclawRoleDescription = corelib.DefaultMaclawRoleDescription
+	}
 
 	// All bool/struct defaults are handled by AppConfig.UnmarshalJSON via
 	// appConfigDefaults(). Only non-bool post-unmarshal fixups remain here.
@@ -6634,6 +6639,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ASREnabled = v
+		case "asr_voice_correction_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ASRVoiceCorrectionEnabled = v
 		case "tts_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

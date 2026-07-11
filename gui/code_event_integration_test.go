@@ -495,3 +495,71 @@ func TestApp_CodeEventEmitter_InitializedInStartup(t *testing.T) {
 		t.Error("codeEventEmitter.app should reference the App instance")
 	}
 }
+
+func TestExtractRemoteReadPreviewContent_StripsSSHEnvelopeAndLineNumbers(t *testing.T) {
+	raw := "[ssh-1] 状态: done\n$ python3 -c '...'\n1\tpackage main\n2\t\n3\tfunc main() {}\n"
+	if got, want := extractRemoteReadPreviewContent(raw), "package main\n\nfunc main() {}"; got != want {
+		t.Fatalf("preview content = %q, want %q", got, want)
+	}
+}
+
+func TestExtractRemoteReadPreviewContent_EmptyRemoteFile(t *testing.T) {
+	raw := "[ssh-1] 状态: done\n$ python3 -c '...'\n[remote read_file EOF: offset 1 is beyond scanned file length 0]"
+	if got := extractRemoteReadPreviewContent(raw); got != "" {
+		t.Fatalf("preview content = %q, want empty", got)
+	}
+}
+
+func TestRemotePreviewOutputIsTruncated(t *testing.T) {
+	if !remotePreviewOutputIsTruncated("prefix\n... (truncated) ...\nsuffix") {
+		t.Fatal("expected SSH middle truncation marker to be detected")
+	}
+	if remotePreviewOutputIsTruncated("complete source") {
+		t.Fatal("complete source must not be treated as truncated")
+	}
+	if !remotePreviewOutputIsTransportTruncated("prefix\r\n... (truncated) ...\r\nsuffix") {
+		t.Fatal("expected CRLF SSH truncation marker to be detected")
+	}
+}
+
+func TestRemoteSourcePreviewRequiresFirstFileRange(t *testing.T) {
+	for _, offset := range []int{0, 1} {
+		if !remoteReadCanUpdatePreview(offset) {
+			t.Fatalf("offset %d should be eligible for first-file preview", offset)
+		}
+	}
+	for _, offset := range []int{2, 100} {
+		if remoteReadCanUpdatePreview(offset) {
+			t.Fatalf("offset %d must not replace the complete-file preview", offset)
+		}
+	}
+}
+
+func TestRemoteSourcePreviewSessionID_IsolatedPerAgentRun(t *testing.T) {
+	first := &RemoteCodingSubAgent{sessionID: "ssh-shared"}
+	second := &RemoteCodingSubAgent{sessionID: "ssh-shared"}
+	first.SetSourcePreviewEnabled(true)
+	second.SetSourcePreviewEnabled(true)
+
+	if !strings.HasPrefix(first.sourcePreviewSessionID, "remote:ssh-shared:") {
+		t.Fatalf("unexpected preview session ID: %q", first.sourcePreviewSessionID)
+	}
+	if first.sourcePreviewSessionID == second.sourcePreviewSessionID {
+		t.Fatal("concurrent remote coding runs must have distinct preview session IDs")
+	}
+}
+
+func TestRemoteSourcePreview_IsExplicitlyOptIn(t *testing.T) {
+	agent := &RemoteCodingSubAgent{sessionID: "ssh-1"}
+	if agent.sourcePreviewEnabled || agent.sourcePreviewSessionID != "" {
+		t.Fatal("remote source preview must be disabled by default")
+	}
+	agent.SetSourcePreviewEnabled(true)
+	if !agent.sourcePreviewEnabled || agent.sourcePreviewSessionID == "" {
+		t.Fatal("explicit enable should create a preview session")
+	}
+	agent.SetSourcePreviewEnabled(false)
+	if agent.sourcePreviewEnabled || agent.sourcePreviewSessionID != "" {
+		t.Fatal("disable should clear the preview session")
+	}
+}

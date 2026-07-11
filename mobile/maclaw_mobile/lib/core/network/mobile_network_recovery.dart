@@ -7,6 +7,7 @@ import '../../features/auth/session_controller.dart';
 import '../../features/digital_employees/digital_employees_controller.dart';
 import '../../features/servers/servers_controller.dart';
 import '../api/mobile_realtime_bridge.dart';
+import '../notifications/mobile_push_sync.dart';
 import 'mobile_network_status.dart';
 
 final mobileNetworkRecoveryProvider = Provider<void>((ref) {
@@ -51,6 +52,9 @@ Future<void> _recoverMobileHubState(Ref ref) async {
     ref.invalidate(backendSshFileOperationsProvider);
     ref.invalidate(digitalEmployeeTaskHistoryProvider);
     ref.invalidate(mobileRealtimeBridgeProvider);
+    // Catch completions that finished while the app/process was offline.
+    unawaited(registerMobilePushDeviceFromRef(ref));
+    unawaited(syncMobilePushPendingFromRef(ref));
   } catch (_) {
     // The normal screen-level retry paths remain available if the Hub comes
     // back between the lifecycle event and the refresh request.

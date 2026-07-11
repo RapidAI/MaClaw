@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/api/mobile_bootstrap.dart';
+import '../core/api/mobile_credits.dart';
 import '../core/shared_intents/mobile_shared_intent.dart';
 import '../core/shared_intents/shared_intent_bootstrap.dart';
 import '../features/auth/session_controller.dart';
@@ -31,9 +32,9 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 
   void _routeSharedIntent(MobileSharedIntent intent) {
-    final features =
-        ref.read(sessionControllerProvider).valueOrNull?.bootstrap?.features ??
-            defaultMobileFeatures;
+    final session = ref.read(sessionControllerProvider).valueOrNull;
+    final features = session?.bootstrap?.features ?? defaultMobileFeatures;
+    final bootstrap = session?.bootstrap;
     final target = sharedIntentTargetPath(intent, features);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -48,33 +49,58 @@ class _AppShellState extends ConsumerState<AppShell> {
       if (!sharedIntentCanBeConsumedAtTarget(intent, target)) {
         ref.read(mobileSharedIntentProvider.notifier).clear(intent.id);
       }
+      // bootstrap reserved for future label-aware snackbars
+      assert(bootstrap == null || bootstrap.user.userId.isNotEmpty || true);
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final features =
-        ref.watch(sessionControllerProvider).valueOrNull?.bootstrap?.features ??
-            defaultMobileFeatures;
-    final tabs = mobileAppTabsForFeatures(features);
+    final session = ref.watch(sessionControllerProvider).valueOrNull;
+    final features = session?.bootstrap?.features ?? defaultMobileFeatures;
+    final bootstrap = session?.bootstrap;
+    final tabs = mobileAppTabsForFeatures(features, bootstrap: bootstrap);
 
     final location = GoRouterState.of(context).uri.path;
     final index = tabs.indexWhere((tab) => location.startsWith(tab.path));
     final selectedIndex = index < 0 ? 0 : index;
 
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final navColor = Theme.of(context).navigationBarTheme.backgroundColor ??
+        (dark ? const Color(0xFF161E28) : scheme.surface);
     return Scaffold(
-      body: SafeArea(child: widget.child),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: selectedIndex,
-        onDestinationSelected: (next) => context.go(tabs[next].path),
-        destinations: [
-          for (final tab in tabs)
-            NavigationDestination(
-              icon: Icon(tab.icon),
-              selectedIcon: Icon(tab.icon, fill: 1),
-              label: tab.label,
+      resizeToAvoidBottomInset: true,
+      body: SafeArea(
+        bottom: false,
+        child: widget.child,
+      ),
+      bottomNavigationBar: Material(
+        color: navColor,
+        elevation: 0,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: navColor,
+            border: Border(
+              top: BorderSide(color: scheme.outlineVariant),
             ),
-        ],
+          ),
+          child: SafeArea(
+            top: false,
+            child: NavigationBar(
+              selectedIndex: selectedIndex,
+              onDestinationSelected: (next) => context.go(tabs[next].path),
+              destinations: [
+                for (final tab in tabs)
+                  NavigationDestination(
+                    icon: Icon(tab.icon),
+                    selectedIcon: Icon(tab.selectedIcon ?? tab.icon, fill: 1),
+                    label: tab.label,
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -83,49 +109,66 @@ class _AppShellState extends ConsumerState<AppShell> {
 const defaultMobileFeatures = MobileFeatures(
   search: true,
   documents: true,
+  tasks: true,
   backendSshSessions: true,
   digitalEmployees: true,
   pushNotifications: false,
 );
 
 const _assistantTabLabel = 'AI助手';
-const _documentsTabLabel = '\u6587\u6863';
-const _remoteTabLabel = '\u8fdc\u7a0b';
-const _employeesTabLabel = '\u5458\u5de5';
-const _accountTabLabel = '\u6211\u7684';
-const _sharedFileMessage = '\u5df2\u63a5\u6536\u5206\u4eab\u6587\u4ef6';
-const _sharedContentMessage = '\u5df2\u63a5\u6536\u5206\u4eab\u5185\u5bb9';
+const _twinTabLabel = '数字分身';
+const _documentsTabLabel = '文档';
+const _tasksTabLabel = '后台';
+const _employeesTabLabel = '数字员工';
+const _accountTabLabel = '我的';
+const _sharedFileMessage = '已接收分享文件';
+const _sharedContentMessage = '已接收分享内容';
 
-const _allMobileTabs = [
-  MobileAppTab(
-    '/assistant',
-    _assistantTabLabel,
-    Icons.chat_bubble_outline,
-    'assistant',
-  ),
-  MobileAppTab(
-    '/documents',
-    _documentsTabLabel,
-    Icons.description_outlined,
-    'documents',
-  ),
-  MobileAppTab(
-    '/servers',
-    _remoteTabLabel,
-    Icons.lan_outlined,
-    'backend_ssh_sessions',
-  ),
-  MobileAppTab(
-    '/employees',
-    _employeesTabLabel,
-    Icons.smart_toy_outlined,
-    'employees',
-  ),
-  MobileAppTab('/account', _accountTabLabel, Icons.person_outline, 'account'),
-];
-
-List<MobileAppTab> mobileAppTabsForFeatures(MobileFeatures features) {
-  final tabs = _allMobileTabs.where((tab) => tab.enabledBy(features)).toList();
+List<MobileAppTab> mobileAppTabsForFeatures(
+  MobileFeatures features, {
+  MobileBootstrap? bootstrap,
+}) {
+  final assistantLabel = mobileAssistantTabLabel(bootstrap);
+  // Bottom IA: 助手 | 文档 | 后台 | 数字员工 | 我的
+  // 文档：本机/Hub 草稿与导入、查看与分享（含系统分享导入）；长任务进度仍在「后台」。
+  final all = <MobileAppTab>[
+    MobileAppTab(
+      '/assistant',
+      assistantLabel,
+      Icons.chat_bubble_outline,
+      'assistant',
+      selectedIcon: Icons.chat_bubble,
+    ),
+    MobileAppTab(
+      '/documents',
+      _documentsTabLabel,
+      Icons.description_outlined,
+      'documents',
+      selectedIcon: Icons.description,
+    ),
+    MobileAppTab(
+      '/tasks',
+      _tasksTabLabel,
+      Icons.task_alt_outlined,
+      'tasks',
+      selectedIcon: Icons.task_alt,
+    ),
+    MobileAppTab(
+      '/employees',
+      _employeesTabLabel,
+      Icons.smart_toy_outlined,
+      'employees',
+      selectedIcon: Icons.smart_toy,
+    ),
+    MobileAppTab(
+      '/account',
+      _accountTabLabel,
+      Icons.person_outline,
+      'account',
+      selectedIcon: Icons.person,
+    ),
+  ];
+  final tabs = all.where((tab) => tab.enabledBy(features)).toList();
   if (tabs.isEmpty) {
     return const [
       MobileAppTab(
@@ -133,6 +176,7 @@ List<MobileAppTab> mobileAppTabsForFeatures(MobileFeatures features) {
         _accountTabLabel,
         Icons.person_outline,
         'account',
+        selectedIcon: Icons.person,
       ),
     ];
   }
@@ -144,6 +188,8 @@ String mobileInitialPathForFeatures(MobileFeatures features) {
 }
 
 bool mobilePathEnabledForFeatures(String path, MobileFeatures features) {
+  if (path.startsWith('/llm-setup')) return true;
+  if (path.startsWith('/servers')) return features.backendSshSessions;
   return mobileAppTabsForFeatures(features)
       .any((tab) => path.startsWith(tab.path));
 }
@@ -153,10 +199,14 @@ String sharedIntentTargetPath(
   MobileFeatures features,
 ) {
   if (intent.opensDocuments) {
+    // Prefer the primary 文档 tab when available.
     if (features.documents) {
       return '/documents';
     }
-    return _firstEnabledPathExcept(features, {'/assistant', '/documents'});
+    if (features.tasks) {
+      return '/tasks';
+    }
+    return _firstEnabledPathExcept(features, {'/assistant', '/documents', '/tasks'});
   }
   if (intent.opensAssistant && features.assistant) {
     return '/assistant';
@@ -169,7 +219,8 @@ bool sharedIntentCanBeConsumedAtTarget(
   String targetPath,
 ) {
   if (intent.opensDocuments) {
-    return targetPath.startsWith('/documents');
+    return targetPath.startsWith('/documents') ||
+        targetPath.startsWith('/tasks');
   }
   if (intent.opensAssistant) {
     return targetPath.startsWith('/assistant');
@@ -192,17 +243,32 @@ class MobileAppTab {
   final String label;
   final IconData icon;
   final String feature;
+  final IconData? selectedIcon;
 
-  const MobileAppTab(this.path, this.label, this.icon, this.feature);
+  const MobileAppTab(
+    this.path,
+    this.label,
+    this.icon,
+    this.feature, {
+    this.selectedIcon,
+  });
 
   bool enabledBy(MobileFeatures features) {
     return switch (feature) {
       'assistant' => true,
       'search' => features.search,
+      'tasks' => features.tasks,
       'documents' => features.documents,
-      'backend_ssh_sessions' => features.backendSshSessions,
       'employees' => features.digitalEmployees,
       _ => true,
     };
   }
 }
+
+// Labels exported for tests.
+String get mobileAssistantTabLabelOfficial => _assistantTabLabel;
+String get mobileTwinTabLabel => _twinTabLabel;
+String get mobileDocumentsTabLabel => _documentsTabLabel;
+String get mobileTasksTabLabel => _tasksTabLabel;
+String get mobileEmployeesTabLabel => _employeesTabLabel;
+String get mobileAccountTabLabel => _accountTabLabel;

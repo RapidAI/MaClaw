@@ -18,7 +18,7 @@ PageModules.domains = {
       h("div", { class: "card-header" }, h("h3", {}, "域就绪度")),
       h("p", { class: "card-desc" }, "每个业务域的模板覆盖、数据集和能力状态"),
       h("div", { id: "domainGrid", class: "status-banner" },
-        h("div", { class: "empty-state" }, "加载中...")
+        h("div", { class: "loading-state" }, "加载中…")
       )
     ));
 
@@ -26,7 +26,7 @@ PageModules.domains = {
     container.appendChild(h("div", { class: "card" },
       h("div", { class: "card-header" }, h("h3", {}, "域列表")),
       h("div", { id: "domainList", class: "mt-sm" },
-        h("div", { class: "empty-state" }, "加载中...")
+        h("div", { class: "loading-state" }, "加载中…")
       )
     ));
 
@@ -39,7 +39,12 @@ PageModules.domains = {
       const el = document.getElementById("domainList");
       if (!el) return;
       if (!data.domains || !data.domains.length) {
-        el.innerHTML = '<div class="empty-state">暂无业务域。请先通过"数据集"模块创建数据集，系统将自动归类。</div>';
+        el.innerHTML = "";
+        el.appendChild(App.emptyState(
+          "暂无业务域",
+          "请先在「数据集」模块创建数据集，系统将按域 ID 自动归类。",
+          [{ label: "前往数据集", primary: true, onclick: () => App.navigate("datasets") }]
+        ));
         return;
       }
       const h = App.html;
@@ -54,12 +59,20 @@ PageModules.domains = {
           h("td", {}, d.name || d.id || "-"),
           h("td", {}, String(d.dataset_count || 0)),
           h("td", {}, String(d.capability_count || 0)),
-          h("td", { style: { color: "var(--ok)" } }, "就绪")
+          h("td", {}, App.badge("就绪", "ok"))
         ));
       });
       tbl.appendChild(tbody);
       el.innerHTML = "";
-      el.appendChild(tbl);
-    } catch(e) { document.getElementById("domainList").innerHTML = '<div class="empty-state">加载失败</div>'; }
+      const wrap = h("div", { class: "table-wrap" });
+      wrap.appendChild(tbl);
+      el.appendChild(wrap);
+    } catch (e) {
+      const el = document.getElementById("domainList");
+      if (el) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("加载失败", e.message || "请检查网络或权限后重试。"));
+      }
+    }
   }
 };

@@ -58,6 +58,7 @@ function arbCodeFileForPath(filePath: string): fc.Arbitrary<CodeFile> {
 
 /** Generate a CodeFile with a random path. */
 const arbCodeFile: fc.Arbitrary<CodeFile> = arbFilePath.chain(fp => arbCodeFileForPath(fp));
+const arbAutoOpenCodeFile: fc.Arbitrary<CodeFile> = arbCodeFile.map(file => ({ ...file, autoOpenPreview: true }));
 
 /** Generate a list of CodeFiles with unique paths. */
 const arbUniqueCodeFiles: fc.Arbitrary<CodeFile[]> = fc
@@ -70,19 +71,35 @@ const arbUniqueCodeFiles: fc.Arbitrary<CodeFile[]> = fc
 
 describe('useCodePreviewState — Property Tests', () => {
 
+    it('ordinary code events never auto-open the preview', () => {
+        fc.assert(
+            fc.property(
+                fc.array(arbCodeFile, { minLength: 1, maxLength: 20 }),
+                (files) => {
+                    let state = initialState();
+                    for (const file of files) {
+                        state = applyFileUpdate(state, file);
+                        expect(state.active).toBe(false);
+                    }
+                },
+            ),
+            { numRuns: 100 },
+        );
+    });
+
     /**
      * **Validates: Requirements 1.5**
      *
-     * Property 1: Panel idempotent open on repeated events
+     * Property 1: Authorized workflow preview remains open on repeated events
      *
      * For any sequence of code file events emitted while the panel is already
      * open, the panel SHALL remain in the active/open state and SHALL NOT
      * re-trigger the open transition.
      */
-    it('Property 1: Panel idempotent open on repeated events', () => {
+    it('Property 1: authorized workflow preview remains open on repeated events', () => {
         fc.assert(
             fc.property(
-                fc.array(arbCodeFile, { minLength: 2, maxLength: 20 }),
+                fc.array(arbAutoOpenCodeFile, { minLength: 2, maxLength: 20 }),
                 (files) => {
                     let state = initialState();
 
@@ -107,15 +124,15 @@ describe('useCodePreviewState — Property Tests', () => {
      *
      * Property 2: User close suppresses auto-reopen
      *
-     * For any sequence of code file events emitted after the user manually
+     * For any sequence of workflow-authorized code file events emitted after the user manually
      * closes the panel, the panel SHALL remain closed until reopenPanel()
      * is explicitly called.
      */
     it('Property 2: User close suppresses auto-reopen', () => {
         fc.assert(
             fc.property(
-                arbCodeFile,
-                fc.array(arbCodeFile, { minLength: 1, maxLength: 20 }),
+                arbAutoOpenCodeFile,
+                fc.array(arbAutoOpenCodeFile, { minLength: 1, maxLength: 20 }),
                 (firstFile, subsequentFiles) => {
                     // Open the panel with the first file
                     let state = applyFileUpdate(initialState(), firstFile);

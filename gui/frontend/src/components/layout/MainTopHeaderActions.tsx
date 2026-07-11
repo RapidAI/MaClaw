@@ -1,14 +1,17 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useState, type Dispatch, type SetStateAction } from 'react';
 import { ReadTutorial } from '../../../wailsjs/go/main/App';
 import { isSkillTool, isToolTab } from '../../config/toolCatalog';
+import { MobileDocumentsPanel } from './MobileDocumentsPanel';
 
 const zhHans = {
     back: '\u8fd4\u56de',
     providerConfig: '\u670d\u52a1\u5546\u914d\u7f6e',
+    mobileDocs: 'Mobile \u6587\u7a3f',
 };
 
 const zhHant = {
     providerConfig: '\u670d\u52d9\u5546\u914d\u7f6e',
+    mobileDocs: 'Mobile \u6587\u7a3f',
 };
 
 type MainTopHeaderActionsProps = {
@@ -39,8 +42,23 @@ export const MainTopHeaderActions = ({
     setShowModelSettings,
     setSelectedSkillsToInstall,
     setShowInstallSkillModal,
-}: MainTopHeaderActionsProps) => (
+}: MainTopHeaderActionsProps) => {
+    const [mobileDocsOpen, setMobileDocsOpen] = useState(false);
+    const mobileDocsLabel =
+        lang === 'zh-Hans' ? zhHans.mobileDocs : lang === 'zh-Hant' ? zhHant.mobileDocs : 'Mobile docs';
+    return (
     <>
+        {/* Always available: shared Hub draft library with Mobile. */}
+        <button
+            className="btn-link"
+            type="button"
+            onClick={() => setMobileDocsOpen(true)}
+            style={{ marginLeft: '10px', padding: '2px 8px', fontSize: '0.8rem', borderColor: 'var(--theme-primary)', color: 'var(--theme-primary)', '--wails-draggable': 'no-drag' } as any}
+            title={mobileDocsLabel}
+        >
+            {mobileDocsLabel}
+        </button>
+        <MobileDocumentsPanel lang={lang} open={mobileDocsOpen} onClose={() => setMobileDocsOpen(false)} />
         {navTab === 'projects' && (
             <>
                 <button onClick={() => switchTool(activeTool)} className="btn-link" style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }} title="Back">
@@ -89,4 +107,5 @@ export const MainTopHeaderActions = ({
             </>
         )}
     </>
-);
+    );
+};

@@ -30,8 +30,8 @@ const (
 	srvAIModelASR       = "asr"
 	srvAIModelTTS       = "tts"
 
-	srvASRModelFilename           = "moonshine-base-zh.gguf"
-	srvASRModelDefaultURL         = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/moonshine-base-zh.gguf"
+	srvASRModelFilename           = asr.DefaultModelFilename
+	srvASRModelDefaultURL         = asr.DefaultModelDownloadURL
 	srvTTSMaxRunes                = 300
 	srvASRAudioBodyMaxBytes int64 = 32 << 20
 )
@@ -188,7 +188,7 @@ func (s *HTTPServer) handleAdminAIModelEmbeddingEmbed(w http.ResponseWriter, r *
 
 func (s *HTTPServer) handleAdminAIModelASRTranscribe(w http.ResponseWriter, r *http.Request) {
 	cfg := s.defaultConfigForAIModels(r.Context())
-	if exists, _ := modelFileReady(s.aiModels.modelPath(srvASRModelFilename)); !exists {
+	if _, exists := asr.ModelFileStatus(s.aiModels.modelPath(srvASRModelFilename)); !exists {
 		s.writeAIModelRuntimeError(w, srvAIModelASR, cfg, fmt.Errorf("%w: asr model is missing", errSrvAIModelNotReady))
 		return
 	}
@@ -231,7 +231,7 @@ func (s *HTTPServer) handleAdminAIModelTTSSynthesize(w http.ResponseWriter, r *h
 
 func (s *HTTPServer) handleAIModelASRTranscribe(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	cfg := s.effectiveConfigForAIModels(r.Context(), p)
-	if exists, _ := modelFileReady(s.aiModels.modelPath(srvASRModelFilename)); !exists {
+	if _, exists := asr.ModelFileStatus(s.aiModels.modelPath(srvASRModelFilename)); !exists {
 		s.writeAIModelRuntimeError(w, srvAIModelASR, cfg, fmt.Errorf("%w: asr model is missing", errSrvAIModelNotReady))
 		return
 	}
@@ -398,7 +398,7 @@ func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAI
 		status.Decoder = audioconv.CompressedAudioDecoderName
 		decoderReady := audioconv.HasCompressedAudioDecoder()
 		status.DecoderReady = &decoderReady
-		status.Exists, status.SizeBytes = modelFileReady(m.modelPath(srvASRModelFilename))
+		status.SizeBytes, status.Exists = asr.ModelFileStatus(m.modelPath(srvASRModelFilename))
 	case srvAIModelTTS:
 		status.Enabled = true
 		status.Filename = tts.TTSModelFilename
@@ -709,7 +709,7 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 
 func (m *srvAIModelManager) transcribeWAV(ctx context.Context, cfg corelib.AppConfig, wav []byte) (string, error) {
 	_ = ctx
-	if exists, _ := modelFileReady(m.modelPath(srvASRModelFilename)); !exists {
+	if _, exists := asr.ModelFileStatus(m.modelPath(srvASRModelFilename)); !exists {
 		return "", fmt.Errorf("%w: asr model is missing", errSrvAIModelNotReady)
 	}
 	m.mu.Lock()

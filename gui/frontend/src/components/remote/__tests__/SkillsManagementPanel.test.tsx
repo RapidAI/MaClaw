@@ -59,7 +59,8 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     EventsOff: vi.fn(),
 }));
 
-import { SkillsManagementPanel, getLearnedSkillDescriptionPreview } from '../SkillsManagementPanel';
+import { SkillsManagementPanel, getLearnedSkillDescriptionPreview, hubSourceFilterMatches } from '../SkillsManagementPanel';
+import { getSkillSourceLabel, getSkillSourceTooltip } from '../SkillSourceBadge';
 import { DialogProvider } from '../../CustomDialog';
 import { ToastProvider } from '../../Toast';
 
@@ -118,6 +119,64 @@ const sampleSkills = [
         maclaw_app_entry: 'maclaw.app.json',
     },
 ];
+
+describe('hubSourceFilterMatches', () => {
+    it('treats every HubCenter API alias as one Hub / HubCenter source', () => {
+        for (const source of ['enterprise_hub', 'hub', 'hubcenter', 'skillmarket', 'skillhub']) {
+            expect(hubSourceFilterMatches(source, 'hubcenter')).toBe(true);
+        }
+    });
+
+    it('does not mix external sources into Hub / HubCenter', () => {
+        expect(hubSourceFilterMatches('clawhub', 'hubcenter')).toBe(false);
+        expect(hubSourceFilterMatches('github', 'hubcenter')).toBe(false);
+    });
+});
+
+describe('Hub / HubCenter source presentation', () => {
+    it('normalizes every legacy HubCenter alias in the result badge', () => {
+        for (const source of ['enterprise_hub', 'hub', 'hubcenter', 'skillmarket', 'skillhub']) {
+            const skill = { source, source_label: 'legacy label' };
+            expect(getSkillSourceLabel(skill)).toBe('Hub / HubCenter');
+            expect(getSkillSourceTooltip(skill, localizeText)).toBe('Hub / HubCenter 能力市场。');
+        }
+    });
+});
+
+describe('SkillsManagementPanel marketplace source filter', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        ListNLSkillsMock.mockResolvedValue(sampleSkills);
+        CheckHubSkillUpdatesMock.mockResolvedValue([]);
+        ListExternalSkillDirsDetailedMock.mockResolvedValue([]);
+        GetHubRecommendationsMock.mockResolvedValue([]);
+        SearchMixedSkillsMock.mockResolvedValue([
+            ...['enterprise_hub', 'hub', 'hubcenter', 'skillmarket', 'skillhub'].map((source) => ({
+                id: `${source}-pdf`, name: `${source} PDF`, description: '', tags: [], source, source_label: 'legacy label',
+                avg_rating: 0, rating_count: 0, downloads: 0, score: 0, price: 0, installed: false, can_update: false, has_update: false,
+            })),
+            { id: 'clawhub-pdf', name: 'ClawHub PDF', description: '', tags: [], source: 'clawhub', source_label: 'ClawHub', avg_rating: 0, rating_count: 0, downloads: 0, score: 0, price: 0, installed: false, can_update: false, has_update: false },
+            { id: 'github-pdf', name: 'GitHub PDF', description: '', tags: [], source: 'github', source_label: 'GitHub', avg_rating: 0, rating_count: 0, downloads: 0, score: 0, price: 0, installed: false, can_update: false, has_update: false },
+        ]);
+    });
+
+    it('shows all HubCenter aliases and excludes other sources when the Hub / HubCenter filter is selected', async () => {
+        renderPanel();
+        await screen.findByText('paper_digest');
+        fireEvent.click(screen.getByText('能力市场'));
+        fireEvent.change(document.querySelector('input.form-input') as HTMLInputElement, { target: { value: 'pdf' } });
+        fireEvent.click(document.querySelector('button.btn-primary') as HTMLButtonElement);
+        await screen.findByText('skillhub PDF');
+
+        fireEvent.change(screen.getByLabelText('Market source'), { target: { value: 'hubcenter' } });
+
+        for (const source of ['enterprise_hub', 'hub', 'hubcenter', 'skillmarket', 'skillhub']) {
+            expect(screen.getByText(`${source} PDF`)).toBeTruthy();
+        }
+        expect(screen.queryByText('ClawHub PDF')).toBeNull();
+        expect(screen.queryByText('GitHub PDF')).toBeNull();
+    });
+});
 
 describe('SkillsManagementPanel execution class', () => {
     beforeEach(() => {
@@ -252,7 +311,7 @@ describe('SkillsManagementPanel execution class', () => {
                 description: 'Private market result',
                 tags: [],
                 source: 'enterprise_hub',
-                source_label: '私有市场',
+                source_label: 'Hub / HubCenter',
                 avg_rating: 0,
                 rating_count: 0,
                 downloads: 0,
@@ -268,7 +327,7 @@ describe('SkillsManagementPanel execution class', () => {
                 description: 'Public market result',
                 tags: [],
                 source: 'skillmarket',
-                source_label: '公共市场',
+                source_label: 'Hub / HubCenter',
                 avg_rating: 0,
                 rating_count: 0,
                 downloads: 0,
@@ -302,8 +361,7 @@ describe('SkillsManagementPanel execution class', () => {
 
         expect(screen.getByText('Private Paper Skill')).toBeTruthy();
         expect(screen.getByText('Public Paper Skill')).toBeTruthy();
-        expect(screen.getByTitle('私有市场：来自你当前所属 Hub 或组织的能力市场。')).toBeTruthy();
-        expect(screen.getByTitle('公共市场：来自 HubCenter 的公共 SkillMarket 能力市场。')).toBeTruthy();
+        expect(screen.getAllByTitle('Hub / HubCenter 能力市场。')).toHaveLength(2);
     });
     it('marks MaClaw App Skill search results', async () => {
         SearchMixedSkillsMock.mockResolvedValue([
@@ -313,7 +371,7 @@ describe('SkillsManagementPanel execution class', () => {
                 description: 'Invoice review app skill',
                 tags: [],
                 source: 'skillmarket',
-                source_label: '公共市场',
+                source_label: 'Hub / HubCenter',
                 avg_rating: 0,
                 rating_count: 0,
                 downloads: 0,
@@ -360,7 +418,7 @@ describe('SkillsManagementPanel execution class', () => {
                 description: 'Invoice review app skill',
                 tags: [],
                 source: 'skillhub',
-                source_label: '公共市场',
+                source_label: 'Hub / HubCenter',
                 avg_rating: 0,
                 rating_count: 0,
                 downloads: 0,
@@ -393,6 +451,63 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText(/Invoice Review/)).toBeTruthy();
         expect(screen.getByText('pdf')).toBeTruthy();
         expect(screen.getByTitle('MaClaw App Skill')).toBeTruthy();
+    });
+});
+
+describe('SkillsManagementPanel needs-setup recovery', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        ListNLSkillsMock.mockResolvedValue([{
+            ...sampleSkills[1],
+            name: 'needs_setup_skill',
+            status: 'needs_setup',
+        }]);
+        CheckHubSkillUpdatesMock.mockResolvedValue([]);
+        SearchMixedSkillsMock.mockResolvedValue([]);
+        ListExternalSkillDirsDetailedMock.mockResolvedValue([]);
+        GetHubRecommendationsMock.mockResolvedValue([]);
+        UpdateNLSkillMock.mockResolvedValue(undefined);
+    });
+
+    it('provides a configuration action that saves the skill as active', async () => {
+        renderPanel();
+
+        const configureButton = await screen.findByRole('button', { name: '配置并启用' });
+        fireEvent.click(configureButton);
+
+        await waitFor(() => {
+            expect(screen.getByText('配置 Skill')).toBeTruthy();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: '保存并启用' }));
+
+        await waitFor(() => {
+            expect(UpdateNLSkillMock).toHaveBeenCalledWith(expect.objectContaining({
+                name: 'needs_setup_skill',
+                status: 'active',
+            }));
+        });
+    });
+
+    it('does not override a status changed to needs review while opening configuration', async () => {
+        const needsSetupSkill = { ...sampleSkills[1], name: 'needs_setup_skill', status: 'needs_setup' };
+        const needsReviewSkill = { ...needsSetupSkill, status: 'needs_review' };
+        ListNLSkillsMock.mockReset()
+            .mockResolvedValueOnce([needsSetupSkill])
+            .mockResolvedValue([needsReviewSkill]);
+
+        renderPanel();
+        fireEvent.click(await screen.findByRole('button', { name: '配置并启用' }));
+
+        await waitFor(() => {
+            expect(screen.getByText('编辑 Skill')).toBeTruthy();
+        });
+        expect(screen.queryByText('配置 Skill')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: '保存' }));
+        await waitFor(() => {
+            expect(UpdateNLSkillMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'needs_review' }));
+        });
     });
 });
 

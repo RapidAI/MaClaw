@@ -189,3 +189,9 @@
 .mp-card-btn-link:hover{border-color:#2563eb;background:rgba(37,99,235,.06)}
 .mp-card-btn-danger{border-color:rgba(220,38,38,.15);color:#dc2626}
 .mp-card-btn-danger:hover{border-color:rgba(220,38,38,.4);background:rgba(220,38,38,.04)}
+.trust-dialog-backdrop{position:fixed;inset:0;z-index:110;display:grid;place-items:center;padding:20px;background:rgba(31,34,48,.34)}
+.trust-dialog{width:min(440px,100%);padding:22px;border-radius:16px;background:#fff;box-shadow:0 8px 16px rgba(31,34,48,.18)}
+.trust-dialog h3{margin:0;color:#262b36;font-size:18px;letter-spacing:-.015em}.trust-dialog p{margin:7px 0 16px;color:#596170;font-size:13px;line-height:1.55}
+.trust-dialog-options{display:grid;gap:8px}.trust-dialog-option{display:flex;align-items:center;gap:10px;min-height:42px;padding:0 12px;border:1px solid #dfe3eb;border-radius:10px;color:#3b414d;cursor:pointer}.trust-dialog-option:has(input:checked){border-color:#8aa0c9;background:#f4f7fc;color:#273d63;font-weight:700}.trust-dialog-option input{width:16px;height:16px;accent-color:#4c6fa9}
+.trust-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.trust-dialog-actions button{min-width:76px}.trust-dialog-actions button:focus-visible,.trust-dialog-option:focus-within{outline:3px solid rgba(76,111,169,.22);outline-offset:2px}
+@media(max-width:640px){.trust-dialog-backdrop{padding:14px;place-items:end center}.trust-dialog{padding:18px}.trust-dialog-actions button{flex:1}}

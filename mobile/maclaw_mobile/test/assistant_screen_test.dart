@@ -69,20 +69,30 @@ class _FakeAssistantVoiceInput implements AssistantVoiceInput {
   }
 }
 
+const _cannedSearchAnswer = SearchAnswer(
+  answer: '结论：官方服务运行正常。',
+  llmMode: 'official',
+  llmRequestId: 'llm-mobile-1',
+  citations: [
+    SearchCitation(
+      title: 'MaClaw 状态页',
+      url: 'https://hubs.mypapers.top/status',
+      snippet: '所有移动服务均可用。',
+    ),
+  ],
+);
+
 class _ResultAssistantSearchController extends AssistantSearchController {
   @override
-  Future<SearchAnswer?> build() async => const SearchAnswer(
-        answer: '结论：官方服务运行正常。',
-        llmMode: 'official',
-        llmRequestId: 'llm-mobile-1',
-        citations: [
-          SearchCitation(
-            title: 'MaClaw 状态页',
-            url: 'https://hubs.mypapers.top/status',
-            snippet: '所有移动服务均可用。',
-          ),
-        ],
-      );
+  Future<SearchAnswer?> build() async => _cannedSearchAnswer;
+}
+
+/// Seeds the main tab so UI (tab-isolated results) can render canned answers.
+void _seedMainTabResult(WidgetTester tester) {
+  final element = tester.element(find.byType(AssistantScreen));
+  ProviderScope.containerOf(element)
+      .read(assistantTabsProvider.notifier)
+      .setResultForTab('main', const AsyncData(_cannedSearchAnswer));
 }
 
 class _RecordingAssistantSearchController extends AssistantSearchController {
@@ -106,6 +116,7 @@ class _RecordingAssistantSearchController extends AssistantSearchController {
 class _FakeSearchApiClient extends ApiClient {
   static final queries = <String>[];
   static final contexts = <List<String>>[];
+  static final messageBatches = <List<Map<String, String>>>[];
 
   _FakeSearchApiClient() : super();
 
@@ -113,6 +124,7 @@ class _FakeSearchApiClient extends ApiClient {
   Future<SearchAnswer> search(String query) async {
     queries.add(query);
     contexts.add(const []);
+    messageBatches.add(const []);
     return SearchAnswer(
       answer: '移动助手回答：$query',
       citations: const [
@@ -129,9 +141,11 @@ class _FakeSearchApiClient extends ApiClient {
   Future<SearchAnswer> searchWithContext(
     String query, {
     List<String> context = const [],
+    List<Map<String, String>> messages = const [],
   }) async {
     queries.add(query);
     contexts.add(context);
+    messageBatches.add(messages);
     return SearchAnswer(
       answer: '移动助手回答：$query',
       citations: const [
@@ -141,6 +155,19 @@ class _FakeSearchApiClient extends ApiClient {
           snippet: '来自 MaClaw 官方服务的助手联网结果。',
         ),
       ],
+    );
+  }
+
+  @override
+  Stream<SearchAnswer> searchWithContextStream(
+    String query, {
+    List<String> context = const [],
+    List<Map<String, String>> messages = const [],
+  }) async* {
+    yield await searchWithContext(
+      query,
+      context: context,
+      messages: messages,
     );
   }
 }
@@ -644,21 +671,17 @@ void main() {
     expect(find.text('AI助手'), findsOneWidget);
     expect(
       find.text(
-        '类似 MaClaw GUI 的多对话 AI 助手，可文字或语音输入，也可接入截图、文件、服务器日志和数字员工能力。',
+        '像桌面端一样，随时聊聊、一起处理事情',
       ),
       findsOneWidget,
     );
     expect(find.byTooltip('开始语音输入'), findsOneWidget);
     expect(find.byTooltip('语音输入'), findsOneWidget);
     expect(find.text('查信息'), findsNothing);
-    expect(find.text('问 MaClaw AI 助手'), findsOneWidget);
-    expect(
-      find.text('支持普通对话、助手联网、文档处理、日志排障和应急操作草案。'),
-      findsOneWidget,
-    );
+    expect(find.text('说点什么…'), findsOneWidget);
     expect(find.text('MaClaw AI 助手'), findsOneWidget);
     expect(
-      find.text('像电脑端一样用自然语言发起多轮对话；手机端重点支持语音、截图、文件、服务器日志和应急排障。'),
+      find.text('你好。像桌面端一样，直接和我聊就行——查资料、写草稿、看日志、派员工，想到什么说什么。'),
       findsOneWidget,
     );
     expect(find.text('语音输入'), findsOneWidget);
@@ -668,7 +691,7 @@ void main() {
     expect(find.text('远程排障'), findsOneWidget);
     expect(find.text('文档草稿'), findsWidgets);
     expect(find.text('日志排障'), findsOneWidget);
-    expect(find.text('发送给 AI 助手'), findsOneWidget);
+    expect(find.byTooltip('发送给 AI 助手'), findsOneWidget);
     expect(find.byTooltip('拍照提问'), findsOneWidget);
     expect(find.byTooltip('导入截图或文件'), findsOneWidget);
   });
@@ -704,7 +727,7 @@ void main() {
     await tester.pump();
 
     final queryField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
     );
     expect(queryField.controller?.text, contains('服务器日志'));
     expect(queryField.controller?.text, contains('人工确认'));
@@ -744,7 +767,7 @@ void main() {
     );
     await tester.pump();
     await tester.enterText(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
       '帮我查服务状态',
     );
     await tester.pump();
@@ -752,8 +775,11 @@ void main() {
     expect(find.textContaining('当前 Hub 未启用 AI 助手服务能力'), findsOneWidget);
     await tester.drag(find.byType(ListView).first, const Offset(0, -500));
     await tester.pump();
-    final sendButton = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '发送给 AI 助手').first,
+    final sendButton = tester.widget<IconButton>(
+      find.ancestor(
+        of: find.byTooltip('发送给 AI 助手'),
+        matching: find.byType(IconButton),
+      ),
     );
     expect(sendButton.onPressed, isNull);
     expect(_FakeSearchApiClient.queries, isEmpty);
@@ -832,7 +858,7 @@ void main() {
     expect(find.text('副对话 1'), findsOneWidget);
 
     await tester.enterText(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
       '副对话里的应急问题',
     );
     await tester.pump();
@@ -842,14 +868,14 @@ void main() {
     await tester.tap(find.text('主对话'));
     await tester.pump();
     var queryField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
     );
     expect(queryField.controller?.text, isEmpty);
 
     await tester.tap(find.textContaining('副对话里的应'));
     await tester.pump();
     queryField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
     );
     expect(queryField.controller?.text, '副对话里的应急问题');
   });
@@ -887,12 +913,12 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
       'main incident',
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('发送给 AI 助手'));
-    await tester.tap(find.text('发送给 AI 助手'));
+    await tester.ensureVisible(find.byTooltip('发送给 AI 助手'));
+    await tester.tap(find.byTooltip('发送给 AI 助手'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.textContaining('main incident'), findsWidgets);
@@ -900,27 +926,32 @@ void main() {
     await tester.tap(find.byIcon(Icons.add));
     await tester.pump();
     await tester.enterText(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
       'secondary incident',
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('发送给 AI 助手'));
-    await tester.tap(find.text('发送给 AI 助手'));
+    await tester.ensureVisible(find.byTooltip('发送给 AI 助手'));
+    await tester.tap(find.byTooltip('发送给 AI 助手'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.textContaining('secondary incident'), findsWidgets);
-    expect(find.text('移动助手回答：secondary incident'), findsNWidgets(2));
+    // Companion chat shows each assistant reply once in the active thread.
+    expect(find.text('移动助手回答：secondary incident'), findsOneWidget);
 
     await tester.ensureVisible(find.text('主对话'));
     await tester.tap(find.text('主对话'));
     await tester.pumpAndSettle();
     expect(find.textContaining('main incident'), findsWidgets);
-    expect(find.text('移动助手回答：secondary incident'), findsWidgets);
+    expect(find.text('移动助手回答：secondary incident'), findsNothing);
 
-    await tester.tap(find.textContaining('secondary in').first);
+    // Secondary tab title is truncated from the query ("secondary in...").
+    final secondaryTab = find.textContaining('secondary in');
+    expect(secondaryTab, findsWidgets);
+    await tester.tap(secondaryTab.first);
     await tester.pumpAndSettle();
     expect(find.textContaining('secondary incident'), findsWidgets);
-    expect(find.text('移动助手回答：main incident'), findsWidgets);
+    expect(find.text('移动助手回答：secondary incident'), findsOneWidget);
+    expect(find.text('移动助手回答：main incident'), findsNothing);
     expect(
       _FakeSearchApiClient.queries,
       ['main incident', 'secondary incident'],
@@ -956,11 +987,11 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
       '查一下 MaClaw 官方移动服务状态',
     );
     await tester.pump();
-    final searchButton = find.text('发送给 AI 助手');
+    final searchButton = find.byTooltip('发送给 AI 助手');
     await tester.ensureVisible(searchButton);
     await tester.tap(searchButton);
     await tester.pump();
@@ -969,6 +1000,10 @@ void main() {
     expect(_FakeSearchApiClient.queries, ['查一下 MaClaw 官方移动服务状态']);
     expect(find.text('移动助手回答：查一下 MaClaw 官方移动服务状态'), findsOneWidget);
     expect(find.text('助手回答'), findsOneWidget);
+    expect(find.textContaining('来源 ·'), findsOneWidget);
+    await tester.ensureVisible(find.textContaining('来源 ·'));
+    await tester.tap(find.textContaining('来源 ·'));
+    await tester.pumpAndSettle();
     expect(find.text('官方服务来源'), findsOneWidget);
     expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
     expect(store.entries, hasLength(1));
@@ -981,6 +1016,7 @@ void main() {
     final store = _FakeHistoryStore([]);
     _FakeSearchApiClient.queries.clear();
     _FakeSearchApiClient.contexts.clear();
+    _FakeSearchApiClient.messageBatches.clear();
 
     await tester.pumpWidget(
       ProviderScope(
@@ -1005,18 +1041,18 @@ void main() {
     );
     await tester.pump();
 
-    final input = find.widgetWithText(TextField, '问 MaClaw AI 助手');
+    final input = find.widgetWithText(TextField, '说点什么…');
     await tester.enterText(input, 'first message');
     await tester.pump();
     await tester.drag(find.byType(ListView).first, const Offset(0, -500));
     await tester.pump();
-    await tester.tap(find.text('发送给 AI 助手'));
+    await tester.tap(find.byTooltip('发送给 AI 助手'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.enterText(input, 'follow up');
     await tester.pump();
     await tester.drag(find.byType(ListView).first, const Offset(0, -500));
     await tester.pump();
-    await tester.tap(find.text('发送给 AI 助手'));
+    await tester.tap(find.byTooltip('发送给 AI 助手'));
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(_FakeSearchApiClient.queries, ['first message', 'follow up']);
@@ -1028,6 +1064,19 @@ void main() {
     expect(
       _FakeSearchApiClient.contexts[1],
       contains('assistant: 移动助手回答：first message'),
+    );
+    // Multi-turn messages[] protocol (preferred over legacy context strings).
+    expect(_FakeSearchApiClient.messageBatches, hasLength(2));
+    expect(_FakeSearchApiClient.messageBatches[0], isEmpty);
+    expect(
+      _FakeSearchApiClient.messageBatches[1],
+      containsAll([
+        {'role': 'user', 'content': 'first message'},
+        {
+          'role': 'assistant',
+          'content': '移动助手回答：first message',
+        },
+      ]),
     );
   });
 
@@ -1098,7 +1147,7 @@ void main() {
     await tester.pump();
 
     await tester.enterText(
-      find.widgetWithText(TextField, '问 MaClaw AI 助手'),
+      find.widgetWithText(TextField, '说点什么…'),
       '按服务器应急排障格式回答',
     );
     await tester.tap(find.byTooltip('开始语音输入'));
@@ -1299,7 +1348,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('语音输入不可用，请检查麦克风权限'), findsWidgets);
-    expect(find.widgetWithText(TextField, '问 MaClaw AI 助手'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '说点什么…'), findsOneWidget);
   });
 
   testWidgets('assistant file import enters document parsing flow',
@@ -1454,6 +1503,10 @@ void main() {
     final store = MobileLocalStore(executor: NativeDatabase.memory());
     final copiedTexts = <String>[];
     final sharedTexts = <String>[];
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(store.close);
 
     await tester.pumpWidget(
@@ -1486,12 +1539,9 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.text('来源'), findsOneWidget);
-    expect(find.text('MaClaw 状态页'), findsOneWidget);
-    expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
-    expect(find.text('复制链接'), findsOneWidget);
-    expect(find.text('复制引用'), findsOneWidget);
-    expect(find.text('分享来源'), findsOneWidget);
+    _seedMainTabResult(tester);
+    await tester.pump();
+    expect(find.textContaining('来源'), findsWidgets);
     expect(find.text('请求追踪\nMaClaw 官方服务\n请求 ID: llm-mobile-1'), findsOneWidget);
 
     await tester.tap(find.byTooltip('复制请求追踪'));
@@ -1508,24 +1558,44 @@ void main() {
 
     await tester.tap(find.text('复制结果'));
     await tester.pump(const Duration(milliseconds: 300));
+    // Dismiss snackbars so they do not steal later taps on citation actions.
+    ScaffoldMessenger.of(tester.element(find.byType(AssistantScreen)))
+        .clearSnackBars();
+    await tester.pumpAndSettle();
     expect(copiedTexts, hasLength(2));
     expect(copiedTexts.last, contains('结论：官方服务运行正常。'));
     expect(copiedTexts.last, contains('MaClaw 状态页'));
 
+    // Sources stay collapsed by default so the answer stays primary.
+    await tester.ensureVisible(find.textContaining('来源 ·'));
+    await tester.tap(find.textContaining('来源 ·'));
+    await tester.pumpAndSettle();
+    expect(find.text('MaClaw 状态页'), findsOneWidget);
+    expect(find.text('https://hubs.mypapers.top/status'), findsOneWidget);
+    expect(find.text('复制链接'), findsOneWidget);
+    expect(find.text('复制引用'), findsOneWidget);
+    expect(find.text('分享来源'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('复制链接'));
     await tester.tap(find.text('复制链接'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(copiedTexts.last, 'https://hubs.mypapers.top/status');
 
+    await tester.ensureVisible(find.text('复制引用'));
     await tester.tap(find.text('复制引用'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(copiedTexts.last, contains('MaClaw 状态页'));
     expect(copiedTexts.last, contains('https://hubs.mypapers.top/status'));
 
+    await tester.ensureVisible(find.text('分享来源'));
     await tester.tap(find.text('分享来源'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(sharedTexts, hasLength(2));
     expect(sharedTexts.last, contains('MaClaw 状态页'));
     expect(sharedTexts.last, contains('https://hubs.mypapers.top/status'));
+
+    expect(find.text('可以继续'), findsOneWidget);
+    expect(find.text('派给员工'), findsOneWidget);
   });
 
   testWidgets(
@@ -1568,6 +1638,8 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: AssistantScreen())),
       ),
     );
+    await tester.pump();
+    _seedMainTabResult(tester);
     await tester.pump();
 
     for (final template in DocumentTemplate.values) {
@@ -1678,6 +1750,9 @@ void main() {
       ),
     );
     await tester.pump();
+
+    await tester.tap(find.byTooltip('对话历史'));
+    await tester.pumpAndSettle();
 
     expect(find.text('常用问题'), findsOneWidget);
     expect(find.text('最近对话'), findsOneWidget);

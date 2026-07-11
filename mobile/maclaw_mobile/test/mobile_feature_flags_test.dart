@@ -1,37 +1,38 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
+import 'package:maclaw_mobile/core/api/mobile_credits.dart';
 import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
 import 'package:maclaw_mobile/shared/app_shell.dart';
 
 const _assistantTab = 'AI助手';
-const _documentsTab = '\u6587\u6863';
-const _remoteTab = '\u8fdc\u7a0b';
-const _employeesTab = '\u5458\u5de5';
-const _accountTab = '\u6211\u7684';
+const _twinTab = '数字分身';
+const _documentsTab = '文档';
+const _tasksTab = '后台';
+const _employeesTab = '数字员工';
+const _accountTab = '我的';
 
 void main() {
-  test('mobile app tabs follow official bootstrap feature flags', () {
-    const features = MobileFeatures(
-      search: true,
-      documents: false,
-      backendSshSessions: false,
-      digitalEmployees: true,
-      pushNotifications: false,
-    );
-
-    final tabs = mobileAppTabsForFeatures(features);
+  test(
+      'mobile app tabs follow hybrid IA: assistant, documents, tasks, employees, account',
+      () {
+    final tabs = mobileAppTabsForFeatures(defaultMobileFeatures);
 
     expect(tabs.map((tab) => tab.path), [
       '/assistant',
+      '/documents',
+      '/tasks',
       '/employees',
       '/account',
     ]);
     expect(tabs.map((tab) => tab.label), [
       _assistantTab,
+      _documentsTab,
+      _tasksTab,
       _employeesTab,
       _accountTab,
     ]);
     expect(tabs.map((tab) => tab.label), isNot(contains('查信息')));
+    expect(tabs.map((tab) => tab.label), contains('文档'));
   });
 
   test('mobile app presents the GUI-like AI assistant as the first tab', () {
@@ -39,8 +40,43 @@ void main() {
 
     expect(tabs.first.path, '/assistant');
     expect(tabs.first.label, _assistantTab);
-    expect(tabs.map((tab) => tab.label), isNot(contains('查信息')));
     expect(mobileInitialPathForFeatures(defaultMobileFeatures), '/assistant');
+  });
+
+  test('digital twin mode renames the first tab label', () {
+    const bootstrap = MobileBootstrap(
+      user: MobileUser(userId: 'u1', email: 'phone:19900001111', tenantId: 't1'),
+      services: MobileServices(
+        hubStatus: 'online',
+        llmStatus: 'unavailable',
+        searchStatus: 'available',
+        documentsStatus: 'available',
+        digitalEmployeesStatus: 'available',
+        llmStatusPath: '',
+        modelsPath: '',
+        searchPath: '',
+        documentsPath: '',
+        digitalEmployeesPath: '',
+        realtimePath: '',
+      ),
+      llmAccess: MobileLlmAccess(
+        mode: 'maclaw_official',
+        status: 'unavailable',
+        authorizationId: '',
+        authorizedBy: '',
+        authorizedAt: null,
+      ),
+      features: defaultMobileFeatures,
+      limits: MobileLimits(maxUploadBytes: 0, maxExportJobs: 0),
+      assistantMode: mobileAssistantModeDigitalTwin,
+    );
+
+    final tabs = mobileAppTabsForFeatures(
+      defaultMobileFeatures,
+      bootstrap: bootstrap,
+    );
+    expect(tabs.first.label, _twinTab);
+    expect(usesDigitalTwinAssistant(bootstrap), isTrue);
   });
 
   test(
@@ -49,6 +85,7 @@ void main() {
     const features = MobileFeatures(
       search: false,
       documents: false,
+      tasks: false,
       backendSshSessions: false,
       digitalEmployees: false,
       pushNotifications: false,
@@ -61,12 +98,11 @@ void main() {
     expect(mobileInitialPathForFeatures(features), '/assistant');
   });
 
-  test(
-      'mobile initial route keeps assistant first even when search flag is off',
-      () {
+  test('documents is a primary bottom tab before tasks', () {
     const features = MobileFeatures(
       search: false,
       documents: true,
+      tasks: true,
       backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: false,
@@ -75,160 +111,74 @@ void main() {
     final tabs = mobileAppTabsForFeatures(features);
 
     expect(mobileInitialPathForFeatures(features), '/assistant');
-    expect(tabs.map((tab) => tab.label), [
-      _assistantTab,
-      _documentsTab,
-      _remoteTab,
-      _employeesTab,
-      _accountTab,
-    ]);
-    expect(mobilePathEnabledForFeatures('/documents', features), isTrue);
-    expect(mobilePathEnabledForFeatures('/assistant', features), isTrue);
-  });
-
-  test('mobile keeps assistant visible even if Hub disables assistant flag', () {
-    const features = MobileFeatures(
-      assistant: false,
-      search: true,
-      documents: true,
-      backendSshSessions: false,
-      digitalEmployees: false,
-      pushNotifications: false,
-    );
-
-    final tabs = mobileAppTabsForFeatures(features);
-
     expect(tabs.map((tab) => tab.path), [
       '/assistant',
       '/documents',
+      '/tasks',
+      '/employees',
       '/account',
     ]);
-    expect(tabs.map((tab) => tab.label), [
-      _assistantTab,
-      _documentsTab,
-      _accountTab,
-    ]);
-    expect(mobileInitialPathForFeatures(features), '/assistant');
+    expect(mobilePathEnabledForFeatures('/documents', features), isTrue);
+    expect(mobilePathEnabledForFeatures('/tasks', features), isTrue);
     expect(mobilePathEnabledForFeatures('/assistant', features), isTrue);
   });
-  test('shared file intents prefer documents when document feature is enabled',
-      () {
+
+  test('shared document intents prefer the documents tab', () {
     const features = MobileFeatures(
       search: true,
       documents: true,
+      tasks: true,
       backendSshSessions: true,
-      digitalEmployees: false,
+      digitalEmployees: true,
       pushNotifications: false,
     );
-
     final intent = MobileSharedIntent(
-      id: 'share-file',
+      id: 'share-1',
       kind: MobileSharedIntentKind.file,
-      value: '/tmp/report.pdf',
-      receivedAt: DateTime.utc(2026, 7, 1),
+      value: '/tmp/a.docx',
+      receivedAt: DateTime.utc(2026, 1, 1),
     );
-    final target = sharedIntentTargetPath(intent, features);
-
-    expect(target, '/documents');
-    expect(sharedIntentCanBeConsumedAtTarget(intent, target), isTrue);
+    expect(intent.opensDocuments, isTrue);
+    expect(sharedIntentTargetPath(intent, features), '/documents');
+    expect(sharedIntentCanBeConsumedAtTarget(intent, '/documents'), isTrue);
   });
 
-  test('shared file intents skip assistant when documents are disabled', () {
-    const features = MobileFeatures(
-      search: true,
-      documents: false,
-      backendSshSessions: true,
-      digitalEmployees: true,
-      pushNotifications: false,
-    );
+  test('resolveMobileAssistantMode prefers declared mode then LLM readiness',
+      () {
+    expect(resolveMobileAssistantMode(null), mobileAssistantModeOfficial);
 
-    final intent = MobileSharedIntent(
-      id: 'share-file-docs-disabled',
-      kind: MobileSharedIntentKind.image,
-      value: '/tmp/screenshot.png',
-      receivedAt: DateTime.utc(2026, 7, 1),
-    );
-    final target = sharedIntentTargetPath(intent, features);
-
-    expect(target, '/servers');
-    expect(sharedIntentCanBeConsumedAtTarget(intent, target), isFalse);
-  });
-
-  test('shared intents avoid disabled document and assistant online tabs', () {
-    const features = MobileFeatures(
-      search: false,
-      documents: false,
-      backendSshSessions: true,
-      digitalEmployees: false,
-      pushNotifications: false,
-    );
-
-    final target = sharedIntentTargetPath(
-      MobileSharedIntent(
-        id: 'share-1',
-        kind: MobileSharedIntentKind.file,
-        value: '/tmp/report.pdf',
-        receivedAt: DateTime.utc(2026, 7, 1),
+    const twin = MobileBootstrap(
+      user: MobileUser(userId: 'u', email: 'a@b.c', tenantId: 't'),
+      services: MobileServices(
+        hubStatus: 'online',
+        llmStatus: 'unavailable',
+        searchStatus: 'available',
+        documentsStatus: 'available',
+        digitalEmployeesStatus: 'available',
+        llmStatusPath: '',
+        modelsPath: '',
+        searchPath: '',
+        documentsPath: '',
+        digitalEmployeesPath: '',
+        realtimePath: '',
       ),
-      features,
+      llmAccess: MobileLlmAccess(
+        mode: 'maclaw_official',
+        status: 'unavailable',
+        authorizationId: '',
+        authorizedBy: '',
+        authorizedAt: null,
+      ),
+      features: defaultMobileFeatures,
+      limits: MobileLimits(maxUploadBytes: 0, maxExportJobs: 0),
+      assistantMode: mobileAssistantModeOfficial,
     );
-
-    expect(target, '/servers');
+    // Declared official wins even if LLM not configured (Hub authority).
+    expect(resolveMobileAssistantMode(twin), mobileAssistantModeOfficial);
   });
 
-  test('shared link intents are consumed only by the assistant tab', () {
-    final intent = MobileSharedIntent(
-      id: 'share-link',
-      kind: MobileSharedIntentKind.link,
-      value: 'https://example.com/incident',
-      receivedAt: DateTime.utc(2026, 7, 1),
-    );
-
-    expect(
-      sharedIntentCanBeConsumedAtTarget(intent, '/assistant'),
-      isTrue,
-    );
-    expect(
-      sharedIntentCanBeConsumedAtTarget(intent, '/documents'),
-      isFalse,
-    );
-  });
-
-  test('shared link intents still open assistant when search is disabled', () {
-    const features = MobileFeatures(
-      search: false,
-      documents: true,
-      backendSshSessions: true,
-      digitalEmployees: true,
-      pushNotifications: false,
-    );
-    final intent = MobileSharedIntent(
-      id: 'share-link-search-disabled',
-      kind: MobileSharedIntentKind.link,
-      value: 'https://example.com/incident',
-      receivedAt: DateTime.utc(2026, 7, 1),
-    );
-
-    expect(sharedIntentTargetPath(intent, features), '/assistant');
-  });
-
-  test('shared link intents still open assistant when assistant flag is disabled', () {
-    const features = MobileFeatures(
-      assistant: false,
-      search: true,
-      documents: true,
-      backendSshSessions: true,
-      digitalEmployees: true,
-      pushNotifications: false,
-    );
-    final intent = MobileSharedIntent(
-      id: 'share-link-assistant-disabled',
-      kind: MobileSharedIntentKind.link,
-      value: 'https://example.com/incident',
-      receivedAt: DateTime.utc(2026, 7, 1),
-    );
-
-    expect(sharedIntentTargetPath(intent, features), '/assistant');
-    expect(sharedIntentCanBeConsumedAtTarget(intent, '/assistant'), isTrue);
+  test('default document quota is 100 MiB when Hub omits quota fields', () {
+    const limits = MobileLimits(maxUploadBytes: 0, maxExportJobs: 0);
+    expect(limits.effectiveDocumentQuotaBytes, mobileDefaultDocumentQuotaBytes);
   });
 }

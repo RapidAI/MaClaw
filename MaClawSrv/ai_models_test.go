@@ -18,6 +18,10 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
+func testGGUFModelBytes() []byte {
+	return []byte{'G', 'G', 'U', 'F'}
+}
+
 func init() {
 	_ = os.Setenv("MACLAW_DISABLE_MODEL_DOWNLOADS", "true")
 }
@@ -176,7 +180,7 @@ func TestSrvAIModelManagerSerializesSharedASRRuntime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model marker: %v", err)
 	}
 	blocking := &blockingSrvASRTranscriber{started: make(chan struct{}, 2), release: make(chan struct{})}
@@ -448,7 +452,7 @@ func TestSrvAIModelManagerIgnoresManualDisableFlags(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
 		t.Fatalf("create models dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), []byte("fake-asr-model"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", srvASRModelFilename), testGGUFModelBytes(), 0o644); err != nil {
 		t.Fatalf("write asr model marker: %v", err)
 	}
 	seedReadyTTSModel(t, dataRoot)

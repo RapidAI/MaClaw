@@ -198,6 +198,25 @@ func formatPreflightWarning(issue PortabilityIssue) string {
 	return fmt.Sprintf("[%s] %s", issue.Category, issue.Message)
 }
 
+// Skill-market package limits (HubCenter SafeUnzip + Hub preflight).
+//
+// Product policy: many small necessary assets (templates, fonts, SVGs, …) are
+// allowed when overall volume is reasonable. Entry count is only a DoS
+// backstop against millions of empty files — not a product cap of “1000 files”.
+// Keep hubcenter/internal/skillmarket.SafeUnzip in sync via these constants.
+const (
+	// MaxSkillMarketZipEntries is a hard DoS ceiling on zip central-directory
+	// entries (files + directories). Legitimate multi-thousand asset packs must
+	// stay under this and under MaxSkillMarketZipTotalBytes.
+	MaxSkillMarketZipEntries = 20000
+
+	// MaxSkillMarketZipTotalBytes is the primary size gate (uncompressed).
+	MaxSkillMarketZipTotalBytes int64 = 500 << 20 // 500 MiB
+
+	// MaxSkillMarketZipSingleFileBytes is the per-entry uncompressed limit.
+	MaxSkillMarketZipSingleFileBytes int64 = 50 << 20 // 50 MiB
+)
+
 func IsSkillRuntimePackageFile(name string) bool {
 	base := strings.ToLower(filepath.Base(name))
 	return strings.HasSuffix(base, ".bak") ||
@@ -212,12 +231,40 @@ func IsSkillRuntimePackageFile(name string) bool {
 func IsSkillRuntimePackageDir(name string) bool {
 	base := strings.ToLower(filepath.Base(name))
 	switch base {
-	case ".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "node_modules":
+	case ".git", ".hg", ".svn",
+		"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache",
+		"node_modules",
+		".venv", "venv", ".tox", ".eggs",
+		// Local install / build debris should never ship in a market package.
+		".npm", ".yarn", ".pnpm-store":
 		return true
 	default:
 		// Also exclude .prev backup directories created during CommitStaging updates.
 		return strings.HasSuffix(base, ".prev")
 	}
+}
+
+// SkillPackagePathHasRuntimeArtifact reports whether a zip-relative path
+// crosses a runtime/cache directory or is a runtime-only file that should
+// not be uploaded to SkillMarket / HubCenter.
+func SkillPackagePathHasRuntimeArtifact(name string) bool {
+	parts := strings.Split(filepath.ToSlash(strings.TrimSpace(name)), "/")
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if i == len(parts)-1 {
+			// Last segment may be a file or a bare directory name.
+			if IsSkillRuntimePackageFile(part) || IsSkillRuntimePackageDir(part) {
+				return true
+			}
+			continue
+		}
+		if IsSkillRuntimePackageDir(part) {
+			return true
+		}
+	}
+	return false
 }
 
 // FormatUploadPreflight renders an UploadPreflightResult as an agent-readable

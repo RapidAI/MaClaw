@@ -25,37 +25,64 @@ func TestHTTPServerRequiresBearerTokenAndHandlesRecords(t *testing.T) {
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	webBody := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(webBody, "MaClawDataSrv MIS") || !strings.Contains(webBody, `data-testid="language-switch"`) || !strings.Contains(webBody, `data-testid="tab-overview"`) || !strings.Contains(webBody, `data-testid="tab-quickstart"`) || !strings.Contains(webBody, `data-testid="quickstart-entry"`) || !strings.Contains(webBody, `data-testid="open-quickstart-manual"`) || !strings.Contains(webBody, `data-testid="quickstart-panel"`) || !strings.Contains(webBody, `data-testid="setup-checklist"`) || !strings.Contains(webBody, `data-testid="overview-health"`) || !strings.Contains(webBody, `data-testid="overview-coverage"`) || !strings.Contains(webBody, `data-testid="overview-domain-readiness"`) || !strings.Contains(webBody, `data-testid="overview-capabilities"`) || !strings.Contains(webBody, `data-testid="overview-intent-results"`) || !strings.Contains(webBody, `data-testid="overview-work-queue"`) || !strings.Contains(webBody, `data-testid="overview-integration-health"`) || !strings.Contains(webBody, `data-testid="overview-access-risk"`) || !strings.Contains(webBody, `data-testid="overview-readiness"`) || !strings.Contains(webBody, `data-testid="overview-recommendations"`) || !strings.Contains(webBody, `data-testid="overview-activity"`) || !strings.Contains(webBody, `data-testid="access-workspace-summary"`) || !strings.Contains(webBody, `data-testid="access-guide-grant-analytics"`) || !strings.Contains(webBody, `data-testid="access-agent-handoff"`) || !strings.Contains(webBody, `data-testid="generate-agent-handoff"`) || !strings.Contains(webBody, `data-testid="run-agent-readiness"`) || !strings.Contains(webBody, `data-testid="agent-readiness-result"`) || !strings.Contains(webBody, `data-testid="compare-access-policy"`) || !strings.Contains(webBody, `data-testid="access-policy-diff"`) || !strings.Contains(webBody, `data-testid="access-policy-risk"`) || !strings.Contains(webBody, `data-testid="admin-accounts"`) || !strings.Contains(webBody, `data-testid="admin-sessions"`) || !strings.Contains(webBody, `data-testid="refresh-admin-sessions"`) || !strings.Contains(webBody, `data-testid="create-admin-account"`) || !strings.Contains(webBody, `data-testid="update-admin-account"`) || !strings.Contains(webBody, `data-testid="governance-evidence-summary"`) || !strings.Contains(webBody, `data-testid="governance-evidence-summary-text"`) || !strings.Contains(webBody, `data-testid="copy-evidence-summary"`) || !strings.Contains(webBody, `data-testid="access-agent-purpose"`) || !strings.Contains(webBody, `data-testid="recommend-access-policy"`) || !strings.Contains(webBody, `data-testid="access-recommendation"`) || !strings.Contains(webBody, `data-testid="generate-agent-onboarding"`) || !strings.Contains(webBody, `data-testid="agent-onboarding-checklist"`) || !strings.Contains(webBody, `data-testid="generate-agent-packet"`) || !strings.Contains(webBody, `data-testid="agent-onboarding-packet"`) || !strings.Contains(webBody, `data-testid="download-agent-packet"`) || !strings.Contains(webBody, `data-testid="export-access-review"`) || !strings.Contains(webBody, `data-testid="refresh-evidence-summary"`) || !strings.Contains(webBody, `data-testid="download-evidence-summary"`) || !strings.Contains(webBody, `data-testid="export-evidence-pack"`) || !strings.Contains(webBody, "overview-grid") || !strings.Contains(webBody, "nav-group") {
+	if w.Code != http.StatusOK {
 		t.Fatalf("web console status=%d body=%s", w.Code, w.Body.String())
 	}
+	// Modular V2 console (webui_assets) is served at /. Assert shell + auth contracts in index.html.
 	for _, want := range []string{
-		`data-testid="refresh-login-tenants"`,
+		"MaClawDataSrv MIS",
+		`data-testid="auth-screen"`,
+		`data-testid="admin-setup-panel"`,
+		`data-testid="admin-password-policy"`,
+		`data-testid="setup-status-text"`,
+		`data-testid="admin-init-box"`,
+		`data-testid="admin-login-box"`,
+		`data-testid="login-admin"`,
+		`data-testid="initialize-admin"`,
+		`data-testid="language-switch"`,
+		`data-testid="app-language-switch"`,
+		`data-testid="app-shell"`,
+		`data-testid="app-service-status"`,
+		`data-testid="sign-out"`,
+		`data-testid="tab-overview"`,
+		`data-testid="tab-quickstart"`,
+		`data-testid="tab-datasets"`,
+		`data-testid="tab-apikeys"`,
 		`id="tenantOptions"`,
-		`withButtonBusy`,
-		`Refreshing tenants`,
-		`Registering Hub`,
-		`Pulling tenants`,
-		`Creating admin`,
-		`Updating admin`,
-		`Revoking`,
-		`data-testid="hub-registration-state"`,
-		`data-testid="hub-registration-panel"`,
-		`currentAdminScope`,
-		`updateAdminControlScope`,
-		`authSignature`,
-		`classList.remove("global-admin-mode", "tenant-admin-mode")`,
-		`state.currentAdminScope !== item.admin_scope`,
-		`data-testid="hub-base-url"`,
-		`data-testid="save-hub-registration"`,
-		`data-testid="register-hub"`,
-		`data-testid="sync-tenants-from-hub"`,
-		`Virtual mail`,
+		`data-testid="tenant"`,
+		`id="loginTenant"`,
+		`nav-group`,
+		`modules/overview.js`,
+		`modules/quickstart.js`,
+		`modules/apikeys.js`,
+		`modules/security.js`,
+		`class="sidebar"`,
+		`id="cmdOverlay"`,
 	} {
 		if !strings.Contains(webBody, want) {
-			t.Fatalf("web console missing Hub registration/login tenant control %q", want)
+			t.Fatalf("web console missing %q", want)
 		}
 	}
-
+	// Core app.js carries setup/login API wiring and command palette.
+	req = httptest.NewRequest(http.MethodGet, "/console/app.js", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("console app.js status=%d body=%s", w.Code, w.Body.String())
+	}
+	appJS := w.Body.String()
+	for _, want := range []string{
+		`/api/v1/setup/status`,
+		`/api/v1/setup/admin`,
+		`/api/v1/login`,
+		`openCommandPalette`,
+		`refreshSetupStatus`,
+		`bindMobileNav`,
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("console app.js missing %q", want)
+		}
+	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -8792,74 +8819,82 @@ func containsDashboard(items []DashboardDefinition, id string) bool {
 }
 
 func TestWebConsoleIncludesCursorLoadMoreTargets(t *testing.T) {
+	// V2 modular console: page modules and core shell must load from embedded assets.
+	// Cursor pagination load-more remains on legacy /legacy console; V2 asserts module surface + API paths.
 	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	defer store.Close()
 	server := NewHTTPServer(NewService(store, "sqlite"), "test-token-0123456789012345", "test")
+
+	// Index must declare modular page scripts.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("web console status=%d body=%s", w.Code, w.Body.String())
 	}
-	body := w.Body.String()
+	index := w.Body.String()
 	for _, want := range []string{
-		`data-testid="connector-sync-runs"`,
-		`function preparePageParams(stateKey, params, loadMore)`,
-		`state.connectorSyncRunNextBefore`,
-		`listConnectorSyncRuns(loadMore = false)`,
-		`appendLoadMoreButton(root, state.connectorSyncRunHasMore`,
-		`state.accessKeyNextBefore`,
-		`loadManagedAccessKeys(showStatus = true, loadMore = false)`,
-		`appendLoadMoreButton(root, state.accessKeyHasMore`,
-		`state.businessViewNextBefore`,
-		`queryBusinessView(loadMore = false)`,
-		`state.businessViewRecords = loadMore ?`,
-		`appendLoadMoreButton(root, state.businessViewHasMore`,
-		`state.recordNextBefore`,
-		`queryRecords(loadMore = false)`,
-		`state.records = loadMore ?`,
-		`appendLoadMoreButton(root, state.recordHasMore`,
-		`loadBusinessActions(loadMore = false)`,
-		`appendLoadMoreButton(root, state.businessActionHasMore`,
-		`data-testid="event-contract-table"`,
-		`loadEventContracts(loadMore = false)`,
-		`state.eventContracts = loadMore ?`,
-		`appendLoadMoreButton(root, state.eventContractHasMore`,
-		`loadBusinessRules(loadMore = false)`,
-		`appendLoadMoreButton(root, state.businessRuleHasMore`,
-		`loadBusinessViews(loadMore = false)`,
-		`appendLoadMoreButton(root, state.businessListHasMore`,
-		`loadDashboards(loadMore = false)`,
-		`appendLoadMoreButton(root, state.dashboardHasMore`,
-		`loadReports(loadMore = false)`,
-		`appendLoadMoreButton(root, state.reportHasMore`,
-		`loadQualityChecks(loadMore = false)`,
-		`appendLoadMoreButton(root, state.qualityCheckHasMore`,
-		`loadDomains(loadMore = false)`,
-		`appendLoadMoreButton(root, state.domainHasMore`,
-		`loadRelationships(loadMore = false)`,
-		`appendLoadMoreButton(root, state.relationshipHasMore`,
-		`loadDatasets(loadMore = false)`,
-		`appendLoadMoreButton(root, state.datasetHasMore`,
-		`loadConnectors(loadMore = false)`,
-		`appendLoadMoreButton(root, state.connectorHasMore`,
-		`loadAllConnectorHealth()`,
-		`/api/v1/data/connectors/health?`,
-		`last.has_more && beforeID && page < 20`,
-		`data-testid="load-more-templates"`,
-		`loadTemplates(loadMore = false)`,
-		`state.templates = loadMore ?`,
-		`state.templateNextBeforeID`,
-		`data-testid="load-more-access-presets"`,
-		`loadAccessCatalog(loadMorePresets = false)`,
-		`state.accessPresets = loadMorePresets ?`,
-		`state.accessPresetNextBeforeID`,
+		`modules/overview.js`,
+		`modules/datasets.js`,
+		`modules/records.js`,
+		`modules/connectors.js`,
+		`modules/apikeys.js`,
+		`modules/views.js`,
+		`modules/security.js`,
+		`data-testid="tab-connectors"`,
+		`data-testid="tab-records"`,
+		`data-testid="tab-quality"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("web console missing %q", want)
+		if !strings.Contains(index, want) {
+			t.Fatalf("web console index missing %q", want)
+		}
+	}
+
+	// Module assets must be embed-served and reference primary data APIs.
+	moduleChecks := map[string][]string{
+		"/console/modules/datasets.js":   {"/api/v1/data/datasets", "PageModules.datasets"},
+		"/console/modules/records.js":    {"PageModules.records", "Data Records"},
+		"/console/modules/connectors.js": {"/api/v1/data/connectors", "PageModules.connectors"},
+		"/console/modules/apikeys.js":    {"PageModules.apikeys", "API Key Management"},
+		"/console/modules/domains.js":    {"/api/v1/data/domains", "PageModules.domains"},
+		"/console/modules/views.js":      {"PageModules.views", "PageModules.dashboards", "PageModules.reports"},
+		"/console/modules/security.js":   {"PageModules.quality", "PageModules.backups", "PageModules.audit", "PageModules.ops"},
+		"/console/modules/relationships.js": {"/api/v1/data/relationships", "PageModules.relationships"},
+	}
+	for path, wants := range moduleChecks {
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		w = httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, w.Code)
+		}
+		body := w.Body.String()
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s missing %q", path, want)
+			}
+		}
+	}
+
+	// Legacy console remains available for full cursor load-more workbench.
+	req = httptest.NewRequest(http.MethodGet, "/legacy", nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("legacy console status=%d", w.Code)
+	}
+	legacy := w.Body.String()
+	for _, want := range []string{
+		`appendLoadMoreButton`,
+		`queryRecords(loadMore = false)`,
+		`loadManagedAccessKeys`,
+		`loadConnectors(loadMore = false)`,
+	} {
+		if !strings.Contains(legacy, want) {
+			t.Fatalf("legacy console missing load-more contract %q", want)
 		}
 	}
 }

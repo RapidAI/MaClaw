@@ -25,7 +25,7 @@ PageModules.apikeys = {
     );
 
     // === Section 1: Create Key (Step-by-Step Guide) ===
-    const createSection = this.buildCollapsible("createKey", "🔑 " + t("Create New Key"), true, () => {
+    const createSection = this.buildCollapsible("createKey", t("Create New Key"), true, () => {
       const body = h("div", {});
 
       // Step guide
@@ -93,7 +93,7 @@ PageModules.apikeys = {
     });
 
     // === Section 2: Key List ===
-    const listSection = this.buildCollapsible("keyList", "📋 " + t("Key List"), true, () => {
+    const listSection = this.buildCollapsible("keyList", t("Key List"), true, () => {
       const body = h("div", {});
 
       // Filters
@@ -129,7 +129,7 @@ PageModules.apikeys = {
     });
 
     // === Section 3: Agent Onboarding (Collapsed) ===
-    const agentSection = this.buildCollapsible("agentOnboard", "🤖 " + t("Agent Onboarding"), false, () => {
+    const agentSection = this.buildCollapsible("agentOnboard", t("Agent Onboarding"), false, () => {
       const body = h("div", {});
       body.appendChild(h("p", { class: "card-desc" }, "创建密钥后，生成交接文档和接入包分享给 Agent。"));
 
@@ -151,7 +151,7 @@ PageModules.apikeys = {
     });
 
     // === Section 4: Compliance & Review (Collapsed) ===
-    const complianceSection = this.buildCollapsible("compliance", "📋 " + t("Compliance & Review"), false, () => {
+    const complianceSection = this.buildCollapsible("compliance", t("Compliance & Review"), false, () => {
       const body = h("div", {});
       body.appendChild(h("p", { class: "card-desc" }, "定期复核 API 密钥权限，确保符合最小权限原则。"));
 
@@ -255,7 +255,11 @@ PageModules.apikeys = {
     const table = document.getElementById("keyTable");
     if (!table) return;
     if (!keys.length) {
-      table.innerHTML = '<div class="empty-state">暂无 API 密钥</div>';
+      table.innerHTML = "";
+      table.appendChild(App.emptyState(
+        "暂无 API 密钥",
+        "使用上方表单为 Agent 或服务创建首个作用域密钥。"
+      ));
       return;
     }
     // Build table via DOM to avoid XSS from key IDs
@@ -268,9 +272,9 @@ PageModules.apikeys = {
     tbl.appendChild(thead);
     const tbody = document.createElement("tbody");
     keys.forEach(k => {
-      const statusEl = h("span", { style: { color: k.disabled ? "var(--muted)" : "var(--ok)" } }, k.disabled ? "已停用" : "有效");
+      const statusEl = k.disabled ? App.badge("已停用") : App.badge("有效", "ok");
       const expiryText = k.expires_at ? new Date(k.expires_at).toLocaleDateString() : "永不过期";
-      const selectBtn = h("button", { class: "sm ghost", onclick: () => this.selectKey(k.id) }, "选择");
+      const selectBtn = h("button", { class: "sm ghost", type: "button", onclick: () => this.selectKey(k.id) }, "选择");
       const row = h("tr", {},
         h("td", { class: "mono" }, k.id || "-"),
         h("td", {}, k.user || "-"),

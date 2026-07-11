@@ -98,6 +98,18 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	return &Service{store: store, records: records, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
 }
 
+// Close releases process-held resources (e.g. SQLite record store). Safe to call
+// multiple times; hosts should call this when tearing down a Service instance.
+func (s *Service) Close() error {
+	if s == nil {
+		return nil
+	}
+	if c, ok := s.records.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 func (s *Service) DataRoot() string { return s.dataRoot }
 
 func (s *Service) registerRunCancel(runID string, cancel context.CancelFunc) {
@@ -308,6 +320,64 @@ func (s *Service) GetTenantDeleteCheck(ctx context.Context, tenantID string) (*T
 		}
 	}
 	return check, nil
+}
+
+// EnsurePrincipal creates tenant/user rows (and empty user config) when missing.
+// IDs are taken from p (stable Hub/viewer identity), not auto-generated.
+// Idempotent and safe for concurrent first-touch mobile/agent sessions.
+func (s *Service) EnsurePrincipal(ctx context.Context, p Principal, email, displayName string) error {
+	_ = ctx
+	tenantID := strings.TrimSpace(p.TenantID)
+	userID := strings.TrimSpace(p.UserID)
+	if tenantID == "" || userID == "" {
+		return fmt.Errorf("tenant_id and user_id are required")
+	}
+	now := s.now()
+	if _, err := s.store.GetTenant(tenantID); err != nil {
+		t := Tenant{
+			ID:        tenantID,
+			Name:      firstNonEmptyString(displayName, tenantID),
+			Status:    TenantStatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := s.store.SaveTenant(t); err != nil {
+			return err
+		}
+		_ = secureMkdirAll(filepath.Join(s.dataRoot, "tenants", slugID(t.ID)))
+	}
+	if _, err := s.store.GetUser(tenantID, userID); err != nil {
+		name := strings.TrimSpace(displayName)
+		if name == "" {
+			name = firstNonEmptyString(strings.TrimSpace(email), userID)
+		}
+		u := User{
+			ID:        userID,
+			TenantID:  tenantID,
+			Name:      name,
+			Email:     strings.TrimSpace(email),
+			Status:    UserStatusActive,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := s.store.SaveUser(u); err != nil {
+			return err
+		}
+		if err := secureMkdirAll(s.userDataRoot(tenantID, userID)); err != nil {
+			return err
+		}
+		if err := secureMkdirAll(filepath.Join(s.userRoot(tenantID, userID), "instances")); err != nil {
+			return err
+		}
+		defaultCfg := UserConfig{TenantID: tenantID, UserID: userID, AppConfig: corelib.AppConfig{}, UpdatedAt: now}
+		if err := s.store.SaveUserConfig(defaultCfg); err != nil {
+			return err
+		}
+		if err := saveUserConfigToFile(s.userConfigPath(tenantID, userID), defaultCfg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, error) {

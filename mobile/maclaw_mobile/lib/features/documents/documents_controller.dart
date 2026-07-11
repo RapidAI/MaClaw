@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -13,7 +14,35 @@ import '../../core/platform/mobile_permission_evidence.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
+import '../tasks/mobile_jobs_provider.dart';
 import 'document_draft.dart';
+
+/// Map Hub DOCUMENT_QUOTA_EXCEEDED (HTTP 507) to a user-facing message.
+Object mapDocumentStorageError(Object error) {
+  if (error is! DioException) return error;
+  final code = error.response?.statusCode ?? 0;
+  final data = error.response?.data;
+  var apiCode = '';
+  var message = '';
+  if (data is Map) {
+    apiCode = '${data['code'] ?? data['error'] ?? ''}'.trim();
+    message = '${data['message'] ?? ''}'.trim();
+  }
+  final blob = '$apiCode $message ${error.message ?? ''}'.toLowerCase();
+  if (code == 507 ||
+      apiCode == 'DOCUMENT_QUOTA_EXCEEDED' ||
+      blob.contains('document storage quota') ||
+      blob.contains('quota exceeded')) {
+    return StateError(
+      '文档空间不足（已达配额上限）。请删除部分草稿或导入文件，'
+      '或在「我的」兑换/购买服务卡扩容后重试。',
+    );
+  }
+  if (message.isNotEmpty) {
+    return StateError(message);
+  }
+  return error;
+}
 
 final documentsControllerProvider =
     AsyncNotifierProvider<DocumentsController, DocumentsState>(
@@ -48,14 +77,24 @@ const mobileDocumentImportExtensions = [
 class DocumentDraftHistoryController
     extends AsyncNotifier<List<DocumentDraft>> {
   @override
-  Future<List<DocumentDraft>> build() {
-    return ref.watch(mobileLocalStoreProvider).loadRecentDocumentDrafts();
-  }
+  Future<List<DocumentDraft>> build() => _load();
 
   Future<void> refresh() async {
-    state = await AsyncValue.guard(
-      () => ref.read(mobileLocalStoreProvider).loadRecentDocumentDrafts(),
-    );
+    state = await AsyncValue.guard(_load);
+  }
+
+  /// Prefer Hub library (same as MaClaw GUI); fall back to phone cache offline.
+  Future<List<DocumentDraft>> _load() async {
+    final client = ref.read(apiClientProvider);
+    if (client != null) {
+      try {
+        final remote = await client.listDocumentDrafts(limit: 80);
+        if (remote.isNotEmpty) return remote;
+      } on Object {
+        // Fall through to local cache.
+      }
+    }
+    return ref.read(mobileLocalStoreProvider).loadRecentDocumentDrafts();
   }
 }
 
@@ -108,19 +147,24 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final current = state.valueOrNull ?? const DocumentsState();
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final safeTitle = redactMobileSensitiveText(title.trim());
-      final safeContent = redactMobileSensitiveText(content.trim());
-      final draft = await client.createDocumentDraft(
-        title: safeTitle,
-        template: template,
-        content: safeContent,
-      );
-      await _cacheDraft(draft);
-      return DocumentsState(
-        draft: draft,
-        uploadTask: current.uploadTask,
-        lastUploadPath: current.lastUploadPath,
-      );
+      try {
+        final safeTitle = redactMobileSensitiveText(title.trim());
+        final safeContent = redactMobileSensitiveText(content.trim());
+        final draft = await client.createDocumentDraft(
+          title: safeTitle,
+          template: template,
+          content: safeContent,
+        );
+        await _cacheDraft(draft);
+        ref.invalidate(documentQuotaProvider);
+        return DocumentsState(
+          draft: draft,
+          uploadTask: current.uploadTask,
+          lastUploadPath: current.lastUploadPath,
+        );
+      } on Object catch (error) {
+        throw mapDocumentStorageError(error);
+      }
     });
   }
 
@@ -193,20 +237,25 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final safeTitle = redactMobileSensitiveText(normalizedTitle);
-      final safeMarkdown = redactMobileSensitiveText(normalizedMarkdown);
-      final updated = await client.updateDocumentDraft(
-        draftId: draft.id,
-        title: safeTitle,
-        markdown: safeMarkdown,
-      );
-      await _cacheDraft(updated);
-      return DocumentsState(
-        draft: updated,
-        uploadTask: current.uploadTask,
-        exportJob: current.exportJob,
-        lastUploadPath: current.lastUploadPath,
-      );
+      try {
+        final safeTitle = redactMobileSensitiveText(normalizedTitle);
+        final safeMarkdown = redactMobileSensitiveText(normalizedMarkdown);
+        final updated = await client.updateDocumentDraft(
+          draftId: draft.id,
+          title: safeTitle,
+          markdown: safeMarkdown,
+        );
+        await _cacheDraft(updated);
+        ref.invalidate(documentQuotaProvider);
+        return DocumentsState(
+          draft: updated,
+          uploadTask: current.uploadTask,
+          exportJob: current.exportJob,
+          lastUploadPath: current.lastUploadPath,
+        );
+      } on Object catch (error) {
+        throw mapDocumentStorageError(error);
+      }
     });
   }
 
@@ -228,6 +277,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         action: action,
       );
       await _cacheDraft(updated);
+      ref.invalidate(mobileJobsProvider);
       await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
             title: '文档处理完成',
             body: _documentNotificationBody('${draft.title} 已完成 $action。'),
@@ -460,21 +510,26 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     final current = state.valueOrNull ?? const DocumentsState();
     state = const AsyncLoading();
     final next = await AsyncValue.guard(() async {
-      final upload = await client.uploadDocument(path);
-      await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
-            upload,
-            sourcePath: path,
-          );
-      await _notifyUploadReady(upload);
-      if (upload.draft != null) {
-        await _cacheDraft(upload.draft!);
+      try {
+        final upload = await client.uploadDocument(path);
+        await ref.read(mobileLocalStoreProvider).saveLastDocumentUploadTask(
+              upload,
+              sourcePath: path,
+            );
+        await _notifyUploadReady(upload);
+        if (upload.draft != null) {
+          await _cacheDraft(upload.draft!);
+        }
+        ref.invalidate(documentQuotaProvider);
+        return DocumentsState(
+          draft: upload.draft ?? current.draft,
+          exportJob: upload.draft == null ? current.exportJob : null,
+          uploadTask: upload,
+          lastUploadPath: path,
+        );
+      } on Object catch (error) {
+        throw mapDocumentStorageError(error);
       }
-      return DocumentsState(
-        draft: upload.draft ?? current.draft,
-        exportJob: upload.draft == null ? current.exportJob : null,
-        uploadTask: upload,
-        lastUploadPath: path,
-      );
     });
     state = next;
     final upload = next.valueOrNull?.uploadTask;
@@ -544,15 +599,32 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   Future<void> selectDraft(DocumentDraft draft) async {
-    await _cacheDraft(draft);
+    var full = draft;
+    final client = ref.read(apiClientProvider);
+    // List items often only have preview; fetch full body for edit/share.
+    if (client != null && draft.id.trim().isNotEmpty) {
+      try {
+        full = await client.getDocumentDraft(draft.id);
+      } on Object {
+        // Keep list payload if detail fetch fails.
+      }
+    }
+    await _cacheDraft(full);
     final current = state.valueOrNull ?? const DocumentsState();
     state = AsyncData(
       DocumentsState(
-        draft: draft,
+        draft: full,
         uploadTask: current.uploadTask,
         lastUploadPath: current.lastUploadPath,
+        exportJob: current.exportJob,
       ),
     );
+  }
+
+  String shareTextForDraft(DocumentDraft draft) {
+    final title =
+        draft.title.trim().isEmpty ? 'MaClaw 文档' : draft.title.trim();
+    return redactMobileSensitiveText('# $title\n\n${draft.markdown}');
   }
 
   void _ensureExportPolling(DocumentExportJob job) {

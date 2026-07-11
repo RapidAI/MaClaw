@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +10,7 @@ import '../../core/api/mobile_bootstrap.dart';
 import '../../core/api/mobile_credits.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../shared/surface.dart';
+import '../assistant/assistant_employee_handoff.dart';
 import '../auth/session_controller.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
@@ -91,8 +94,18 @@ class DigitalEmployeeMobileTaskDraft {
   }
 }
 
-class DigitalEmployeesScreen extends ConsumerWidget {
+class DigitalEmployeesScreen extends ConsumerStatefulWidget {
   const DigitalEmployeesScreen({super.key});
+
+  @override
+  ConsumerState<DigitalEmployeesScreen> createState() =>
+      _DigitalEmployeesScreenState();
+}
+
+class _DigitalEmployeesScreenState
+    extends ConsumerState<DigitalEmployeesScreen> {
+  bool _consumingAssistantHandoff = false;
+  bool _notifiedNoEmployeeForHandoff = false;
 
   void _showAccessPolicy(BuildContext context) {
     showDialog<void>(
@@ -112,9 +125,70 @@ class DigitalEmployeesScreen extends ConsumerWidget {
     );
   }
 
+  Future<void> _consumeAssistantHandoffIfNeeded() async {
+    if (_consumingAssistantHandoff) return;
+    final handoff = ref.read(assistantEmployeeHandoffProvider);
+    if (handoff == null) return;
+    final employeesAsync = ref.read(digitalEmployeesProvider);
+    if (!employeesAsync.hasValue) return;
+    final employees = employeesAsync.requireValue;
+
+    _consumingAssistantHandoff = true;
+    try {
+      if (!mounted) return;
+      final target = employees.where((item) => item.canSubmitTask).firstOrNull;
+      if (target == null) {
+        // Keep handoff so a later refresh can still open the draft.
+        if (!_notifiedNoEmployeeForHandoff && mounted) {
+          _notifiedNoEmployeeForHandoff = true;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('已收到 AI 助手交接，但当前没有可派单的在线数字员工。可下拉刷新后再试。'),
+            ),
+          );
+        }
+        return;
+      }
+      _notifiedNoEmployeeForHandoff = false;
+      // Clear only once we have a destination employee (avoids losing draft).
+      ref.read(assistantEmployeeHandoffProvider.notifier).state = null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已从 AI 助手带入任务草稿 → ${target.name}')),
+      );
+      await _TaskButton.showTaskSheet(
+        context,
+        target,
+        initialPrompt: handoff.taskPrompt,
+      );
+    } finally {
+      _consumingAssistantHandoff = false;
+    }
+  }
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
+    // Fire once when handoff arrives or employees finish loading — not on
+    // every rebuild (avoids stacking post-frame callbacks).
+    ref.listen<AssistantEmployeeHandoff?>(
+      assistantEmployeeHandoffProvider,
+      (previous, next) {
+        if (next == null) return;
+        unawaited(_consumeAssistantHandoffIfNeeded());
+      },
+    );
+    ref.listen<AsyncValue<List<DigitalEmployee>>>(
+      digitalEmployeesProvider,
+      (previous, next) {
+        if (!next.hasValue) return;
+        if (ref.read(assistantEmployeeHandoffProvider) == null) return;
+        unawaited(_consumeAssistantHandoffIfNeeded());
+      },
+    );
+
     final employees = ref.watch(digitalEmployeesProvider);
+    final scope = ref.watch(digitalEmployeesScopeProvider);
+    final shared = ref.watch(digitalEmployeesSharedFlagProvider);
+    final handoff = ref.watch(assistantEmployeeHandoffProvider);
     return ScreenScaffold(
       title: '数字员工',
       subtitle: '接入远程服务器/电脑上的能力，让手机发起任务、查看结果和请求授权。',
@@ -124,9 +198,24 @@ class DigitalEmployeesScreen extends ConsumerWidget {
         icon: const Icon(Icons.refresh),
       ),
       children: [
+        StatusBanner(
+          tone: shared ? StatusTone.success : StatusTone.info,
+          icon: shared ? Icons.groups_outlined : Icons.person_outline,
+          message: shared || scope == 'shared'
+              ? '当前套餐允许租户/共享员工池（scope=$scope）。仍受远程访问策略约束。'
+              : '免费档仅显示你自己的数字分身与本机绑定机器（scope=own）。升级服务卡可查看共享池。',
+        ),
+        const SizedBox(height: 12),
+        if (handoff != null)
+          const StatusBanner(
+            tone: StatusTone.info,
+            icon: Icons.handshake_outlined,
+            message: '正在处理来自 AI 助手的任务交接…',
+          ),
+        if (handoff != null) const SizedBox(height: 12),
         employees.when(
           data: (items) => items.isEmpty
-              ? const _EmptyEmployees()
+              ? _EmptyEmployees(sharedAllowed: shared)
               : Column(
                   children: [
                     for (final employee in items) ...[
@@ -406,12 +495,7 @@ class _EmployeeLoading extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Card(
-      child: Padding(
-        padding: EdgeInsets.all(16),
-        child: LinearProgressIndicator(),
-      ),
-    );
+    return const LoadingCard(label: '正在加载数字员工…');
   }
 }
 
@@ -422,50 +506,27 @@ class _EmployeeError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Text('数字员工加载失败：$error'),
-      ),
+    return EmptyStatePanel(
+      icon: Icons.error_outline,
+      title: '数字员工加载失败',
+      message: '$error',
     );
   }
 }
 
 class _EmptyEmployees extends StatelessWidget {
-  const _EmptyEmployees();
+  final bool sharedAllowed;
+
+  const _EmptyEmployees({this.sharedAllowed = false});
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.desktop_access_disabled_outlined, color: scheme.primary),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '暂无可用数字员工',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '在远程服务器或办公电脑上启用数字员工后，手机端会在这里显示可调用能力。',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    return EmptyStatePanel(
+      icon: Icons.desktop_access_disabled_outlined,
+      title: '暂无可用数字员工',
+      message: sharedAllowed
+          ? '当前套餐允许共享池，但列表为空。请确认租户已注册员工，或在电脑上启用你的分身后刷新。'
+          : '免费档仅自己的分身：请在电脑上登录同一账号并启用数字员工后刷新；升级服务卡可查看租户共享池。',
     );
   }
 }
@@ -478,6 +539,7 @@ class _DigitalEmployeeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
     return Card(
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
@@ -494,6 +556,7 @@ class _DigitalEmployeeCard extends StatelessWidget {
               Row(
                 children: [
                   CircleAvatar(
+                    radius: 22,
                     backgroundColor: employee.online
                         ? scheme.secondaryContainer
                         : scheme.surfaceContainerHighest,
@@ -513,23 +576,33 @@ class _DigitalEmployeeCard extends StatelessWidget {
                       children: [
                         Text(
                           employee.name,
-                          style: Theme.of(context).textTheme.titleMedium,
+                          style: text.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
+                        const SizedBox(height: 2),
                         Text(
                           employee.machineId,
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: scheme.onSurfaceVariant,
-                                  ),
+                          style: text.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                       ],
                     ),
                   ),
                   _StatusChip(online: employee.online),
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.chevron_right,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
-              Text(employee.skillDescription),
+              Text(
+                employee.skillDescription,
+                style: text.bodyMedium?.copyWith(height: 1.4),
+              ),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 8,

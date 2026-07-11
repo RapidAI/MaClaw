@@ -212,6 +212,18 @@ func (s *SkillStore) rebuildIndexFromSkills() {
 	for _, sk := range s.skills {
 		index = append(index, sk.HubSkillMeta)
 	}
+	// Keep the paginated admin catalog deterministic and useful. Map iteration
+	// order is intentionally random, which could hide a newly uploaded skill on
+	// an arbitrary later page of the capability catalog.
+	sort.Slice(index, func(i, j int) bool {
+		if index[i].UpdatedAt != index[j].UpdatedAt {
+			return index[i].UpdatedAt > index[j].UpdatedAt
+		}
+		if index[i].CreatedAt != index[j].CreatedAt {
+			return index[i].CreatedAt > index[j].CreatedAt
+		}
+		return index[i].ID < index[j].ID
+	})
 	s.index = index
 }
 

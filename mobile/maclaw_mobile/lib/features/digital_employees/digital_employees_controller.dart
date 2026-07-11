@@ -16,6 +16,11 @@ final digitalEmployeesProvider =
   DigitalEmployeesController.new,
 );
 
+/// Last list scope from Hub: `own` (free) or `shared` (paid pool allowed).
+final digitalEmployeesScopeProvider = StateProvider<String>((ref) => 'own');
+
+final digitalEmployeesSharedFlagProvider = StateProvider<bool>((ref) => false);
+
 class DigitalEmployeesController extends AsyncNotifier<List<DigitalEmployee>> {
   @override
   Future<List<DigitalEmployee>> build() async {
@@ -29,8 +34,16 @@ class DigitalEmployeesController extends AsyncNotifier<List<DigitalEmployee>> {
 
   Future<List<DigitalEmployee>> _load() async {
     final client = ref.read(apiClientProvider);
-    if (client == null) return const [];
-    return client.listDigitalEmployees();
+    if (client == null) {
+      ref.read(digitalEmployeesScopeProvider.notifier).state = 'own';
+      ref.read(digitalEmployeesSharedFlagProvider.notifier).state = false;
+      return const [];
+    }
+    final catalog = await client.listDigitalEmployeesCatalog();
+    ref.read(digitalEmployeesScopeProvider.notifier).state = catalog.scope;
+    ref.read(digitalEmployeesSharedFlagProvider.notifier).state =
+        catalog.sharedEmployees;
+    return catalog.employees;
   }
 }
 

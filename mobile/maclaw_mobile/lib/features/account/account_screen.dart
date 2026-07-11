@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/api/api_client.dart';
 import '../../core/api/mobile_bootstrap.dart';
 import '../../core/api/mobile_credits.dart';
 import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
+import '../../core/notifications/mobile_push_sync.dart';
 import '../../core/settings/app_preferences.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../../shared/surface.dart';
@@ -13,6 +17,9 @@ import '../auth/session_controller.dart';
 import '../digital_employees/digital_employees_controller.dart';
 import '../documents/documents_controller.dart';
 import '../servers/servers_controller.dart';
+import '../tasks/mobile_jobs_provider.dart';
+import 'account_agent_status_card.dart';
+import 'card_store_sheet.dart';
 import 'llm_qr_authorization_screen.dart';
 
 final mobileLlmServiceStatusProvider =
@@ -36,7 +43,7 @@ class AccountScreen extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('凭据与隐私'),
         content: const Text(
-          '登录 Token 保存在系统安全存储中。服务器 SSH 凭据由授权的 MaClaw GUI/agent 管理，手机只缓存服务器档案 metadata。后台会话输出或日志发送给 AI 分析前，需要用户手动确认。',
+          '登录 Token 保存在系统安全存储中。服务器档案 metadata 缓存在手机；可选的 SSH 密钥加密存于 Hub 凭据库（hub_exec），密钥不下发手机。后台会话输出或日志发送给 AI 分析前，需要用户手动确认。',
         ),
         actions: [
           FilledButton(
@@ -138,6 +145,20 @@ class AccountScreen extends ConsumerWidget {
       final result = await ref
           .read(mobileNotificationServiceProvider)
           .requestPermissions();
+      // Bind this install to Hub for pending/remote fan-out after opt-in.
+      final client = ref.read(apiClientProvider);
+      final bootstrap =
+          ref.read(sessionControllerProvider).valueOrNull?.bootstrap;
+      await registerMobilePushDevice(
+        client: client,
+        services: bootstrap?.services,
+      );
+      await syncMobilePushPending(
+        client: client,
+        notify: ref.read(mobileNotificationServiceProvider),
+        features: bootstrap?.features,
+        services: bootstrap?.services,
+      );
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result.message)),
@@ -156,6 +177,8 @@ class AccountScreen extends ConsumerWidget {
   ) async {
     try {
       await ref.read(sessionControllerProvider.notifier).refreshBootstrap();
+      ref.invalidate(documentQuotaProvider);
+      ref.invalidate(entitlementsCapsProvider);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('官方服务状态已刷新')),
@@ -265,20 +288,23 @@ class AccountScreen extends ConsumerWidget {
         icon: const Icon(Icons.logout),
       ),
       children: [
-        if (realtimeCheck != null)
-          Card(
-            child: ListTile(
-              leading: Icon(
-                realtimeCheck == 'success'
-                    ? Icons.check_circle_outline
-                    : realtimeCheck == 'failed'
-                        ? Icons.error_outline
-                        : Icons.sync,
-              ),
-              title: Text(_realtimeCheckTitle(realtimeCheck)),
-              subtitle: Text(_realtimeCheckSubtitle(realtimeCheck)),
-            ),
+        if (realtimeCheck != null) ...[
+          StatusBanner(
+            tone: realtimeCheck == 'success'
+                ? StatusTone.success
+                : realtimeCheck == 'failed'
+                    ? StatusTone.danger
+                    : StatusTone.info,
+            icon: realtimeCheck == 'success'
+                ? Icons.check_circle_outline
+                : realtimeCheck == 'failed'
+                    ? Icons.error_outline
+                    : Icons.sync,
+            title: _realtimeCheckTitle(realtimeCheck),
+            message: _realtimeCheckSubtitle(realtimeCheck),
           ),
+          const SizedBox(height: 12),
+        ],
         if (bootstrap == null)
           ActionTile(
             icon: Icons.login_outlined,
@@ -348,9 +374,21 @@ class AccountScreen extends ConsumerWidget {
             onPressed: () => _testRealtimeChannel(context, ref, bootstrap),
           ),
           const SizedBox(height: 12),
+          const _RealtimeLiveStatusCard(),
+          const SizedBox(height: 12),
+          const AccountAgentStatusCard(),
+          const SizedBox(height: 12),
           _FeatureStatusCard(features: bootstrap.features),
           const SizedBox(height: 12),
-          _LimitStatusCard(limits: bootstrap.limits),
+          _LimitStatusCard(
+            limits: mergeDocumentQuotaLimits(
+              bootstrap.limits,
+              ref.watch(documentQuotaProvider).valueOrNull,
+            ),
+            liveQuota: ref.watch(documentQuotaProvider).valueOrNull,
+          ),
+          const SizedBox(height: 12),
+          const _LivePlanCapsCard(),
         ],
         const SizedBox(height: 12),
         _PreferenceCard(preferences: preferences),
@@ -410,10 +448,13 @@ class AccountScreen extends ConsumerWidget {
   }
 
   String _notificationSubtitle(MobileFeatures? features) {
-    final serviceState = features?.pushNotifications == true
-        ? '官方服务已开启通知能力'
-        : '官方服务未声明 Push 能力，本机仍可用于前台本地提醒';
-    return '$serviceState；用于文档导出、AI 长任务、数字员工任务和 SSH 连接异常提醒。';
+    final remote = features?.pushNotifications == true
+        ? '远程 Push 已配置（Webhook/FCM）'
+        : '远程 Push 未配置';
+    final pending = features?.pushPendingSync != false
+        ? '冷启动可同步离线完成队列'
+        : '离线队列未开启';
+    return '$remote；$pending；本机本地通知用于文档/助手/员工/SSH 终态与进度。';
   }
 }
 
@@ -431,15 +472,9 @@ class _PreferenceCard extends ConsumerWidget {
           data: (value) => Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.settings_outlined,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text('主题与语言', style: Theme.of(context).textTheme.titleMedium),
-                ],
+              const SectionHeader(
+                icon: Icons.settings_outlined,
+                title: '主题与语言',
               ),
               const SizedBox(height: 12),
               SegmentedButton<ThemeMode>(
@@ -515,15 +550,9 @@ class _AccountSummaryCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.verified_user_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text('账号绑定', style: Theme.of(context).textTheme.titleMedium),
-              ],
+            const SectionHeader(
+              icon: Icons.verified_user_outlined,
+              title: '账号绑定',
             ),
             const SizedBox(height: 12),
             _InfoRow(label: identity.label, value: identity.value),
@@ -615,23 +644,18 @@ class _ServiceStatusCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.hub_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text('服务状态', style: Theme.of(context).textTheme.titleMedium),
-              ],
+            const SectionHeader(
+              icon: Icons.hub_outlined,
+              title: '服务状态',
             ),
             const SizedBox(height: 12),
             Text(
               criticalReady ? '应急能力可用' : '部分能力需要检查',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: criticalReady
-                        ? Theme.of(context).colorScheme.primary
+                        ? Theme.of(context).colorScheme.secondary
                         : Theme.of(context).colorScheme.error,
+                    fontWeight: FontWeight.w600,
                   ),
             ),
             const SizedBox(height: 8),
@@ -661,7 +685,7 @@ class _ServiceStatusCard extends StatelessWidget {
   }
 }
 
-class _HubConnectionCard extends StatelessWidget {
+class _HubConnectionCard extends ConsumerWidget {
   final MobileBootstrap bootstrap;
   final String sessionHubUrl;
   final AsyncValue<LlmServiceStatus?> llmServiceStatus;
@@ -673,7 +697,7 @@ class _HubConnectionCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final connection = bootstrap.connection;
     final llmAccess = bootstrap.llmAccess;
     final hubUrl =
@@ -687,15 +711,9 @@ class _HubConnectionCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.hub_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text('Hub 接入', style: Theme.of(context).textTheme.titleMedium),
-              ],
+            const SectionHeader(
+              icon: Icons.hub_outlined,
+              title: 'Hub 接入',
             ),
             const SizedBox(height: 12),
             _InfoRow(
@@ -716,6 +734,60 @@ class _HubConnectionCard extends StatelessWidget {
               label: 'LLM 状态',
               value: _serviceStatusLabel(llmAccess.status),
             ),
+            _InfoRow(
+              label: '套餐',
+              value: _planLabel(bootstrap.entitlements.plan),
+            ),
+            if (bootstrap.entitlements.serviceActive ||
+                bootstrap.entitlements.hasServiceCardGrant)
+              _InfoRow(
+                label: '服务授权',
+                value: [
+                  if (bootstrap.entitlements.hasServiceCardGrant) '授权卡',
+                  if (bootstrap.entitlements.serviceGroupCount > 0)
+                    '组 ${bootstrap.entitlements.serviceGroupCount}',
+                  if (bootstrap.entitlements.creditsAvailable > 0)
+                    '可用 ${_formatCredits(bootstrap.entitlements.creditsAvailable)}',
+                ].where((s) => s.isNotEmpty).join(' · '),
+              ),
+            _InfoRow(
+              label: 'Hub SSH',
+              value: bootstrap.entitlements.hubSshExec ||
+                      bootstrap.features.backendSshSessions
+                  ? (bootstrap.entitlements.hubSshExec
+                      ? '支持 hub_exec + 桌面 claim'
+                      : '桌面 claim')
+                  : '未启用',
+            ),
+            _InfoRow(
+              label: '共享数字员工',
+              value: bootstrap.entitlements.sharedEmployees
+                  ? '已开通（租户/共享池可见）'
+                  : '仅自己的分身（免费档）',
+            ),
+            _InfoRow(
+              label: '云端 Agent',
+              value: bootstrap.entitlements.mobileAgent ? '可用' : '不可用',
+            ),
+            if (bootstrap.entitlements.documentQuotaBytes > 0)
+              _InfoRow(
+                label: '文档配额(套餐)',
+                value: formatMobileFileSize(
+                  bootstrap.entitlements.documentQuotaBytes,
+                ),
+              ),
+            if (bootstrap.entitlements.maxExportJobs > 0)
+              _InfoRow(
+                label: '并发导出(套餐)',
+                value: '${bootstrap.entitlements.maxExportJobs}',
+              ),
+            if (bootstrap.entitlements.hubFileDownloadMaxBytes > 0)
+              _InfoRow(
+                label: 'hub_exec 下载上限',
+                value: formatMobileFileSize(
+                  bootstrap.entitlements.hubFileDownloadMaxBytes,
+                ),
+              ),
             if (llmAccess.desktopQrDelegated)
               _InfoRow(label: '授权', value: _llmAuthorizationLabel(llmAccess)),
             const Divider(height: 24),
@@ -724,6 +796,42 @@ class _HubConnectionCard extends StatelessWidget {
             _LlmCreditsStatusRows(
               status: llmServiceStatus,
               fallbackAccount: trustedBootstrapCreditsAccount(bootstrap),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                TextButton.icon(
+                  onPressed: () => _showRedeemServiceCardDialog(context),
+                  icon: const Icon(Icons.card_giftcard_outlined, size: 18),
+                  label: const Text('兑换服务卡'),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    final client = ref.read(apiClientProvider);
+                    if (client == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('请先登录官方服务')),
+                      );
+                      return;
+                    }
+                    unawaited(
+                      showMobileCardStoreSheet(
+                        context,
+                        client: client,
+                        account: bootstrap.user.email.isNotEmpty
+                            ? bootstrap.user.email
+                            : bootstrap.user.creditsAccount,
+                        tenantId: bootstrap.user.tenantId.isNotEmpty
+                            ? bootstrap.user.tenantId
+                            : bootstrap.connection.tenantId,
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.storefront_outlined, size: 18),
+                  label: const Text('购买服务卡'),
+                ),
+              ],
             ),
           ],
         ),
@@ -845,15 +953,9 @@ class _FeatureStatusCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.tune_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text('功能开关', style: Theme.of(context).textTheme.titleMedium),
-              ],
+            const SectionHeader(
+              icon: Icons.tune_outlined,
+              title: '功能开关',
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -882,30 +984,503 @@ class _FeatureStatusCard extends StatelessWidget {
   }
 }
 
-class _LimitStatusCard extends StatelessWidget {
-  final MobileLimits limits;
-
-  const _LimitStatusCard({required this.limits});
+/// Shows whether the long-lived realtime socket (pty_input / task push) is up.
+class _RealtimeLiveStatusCard extends ConsumerWidget {
+  const _RealtimeLiveStatusCard();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sender = ref.watch(mobileRealtimeSenderProvider);
+    final bootstrap =
+        ref.watch(sessionControllerProvider).valueOrNull?.bootstrap;
+    final configured = bootstrap?.services.realtimeConfigured ?? false;
+    final live = sender != null;
+    final scheme = Theme.of(context).colorScheme;
+    final tone = !configured
+        ? scheme.outline
+        : live
+            ? scheme.primary
+            : scheme.error;
+    final title = !configured
+        ? '实时通道未配置'
+        : live
+            ? '实时通道已连接'
+            : '实时通道未连接（将自动重连）';
+    final binaryPty = ref.watch(mobileRealtimeBinaryPtyProvider);
+    final body = !configured
+        ? 'bootstrap 未下发 realtime_path。'
+        : live
+            ? (binaryPty
+                ? 'WebSocket 在线：MCP1 二进制 PTY + 任务推送可用。'
+                : 'WebSocket 在线：任务推送与 hub_exec pty_input 可用。')
+            : '暂无可用 sender；后台会自动重连，也可点「实时通道自检」。';
+    return Card(
+      child: ListTile(
+        leading: Icon(Icons.sensors, color: tone),
+        title: Text(title),
+        subtitle: Text(body),
+        trailing: Chip(
+          visualDensity: VisualDensity.compact,
+          avatar: Icon(Icons.circle, size: 10, color: tone),
+          label: Text(live ? '在线' : (configured ? '离线' : '未配置')),
+        ),
+      ),
+    );
+  }
+}
+
+/// In-memory ops token for caps PUT (never persisted).
+final capsAdminTokenMemoryProvider = StateProvider<String>((ref) => '');
+
+/// Live Hub plan matrix (GET /api/mobile/entitlements/caps).
+class _LivePlanCapsCard extends ConsumerWidget {
+  const _LivePlanCapsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final capsAsync = ref.watch(entitlementsCapsProvider);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.speed_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text('额度与限制', style: Theme.of(context).textTheme.titleMedium),
-              ],
+            SectionHeader(
+              icon: Icons.workspace_premium_outlined,
+              title: '套餐权益（实时）',
+              action: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: '运维覆盖 caps',
+                    onPressed: () => unawaited(
+                      showMobileCapsAdminSheet(context, ref),
+                    ),
+                    icon: const Icon(Icons.admin_panel_settings_outlined, size: 20),
+                  ),
+                  IconButton(
+                    tooltip: '刷新权益',
+                    onPressed: () => ref.invalidate(entitlementsCapsProvider),
+                    icon: const Icon(Icons.refresh, size: 20),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            capsAsync.when(
+              data: (caps) {
+                if (caps == null) {
+                  return Text(
+                    '未登录或 Hub 暂不可用',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  );
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _InfoRow(label: '套餐', value: _planLabel(caps.plan)),
+                    _InfoRow(
+                      label: '云端 Agent',
+                      value: caps.mobileAgent ? '可用' : '不可用',
+                    ),
+                    _InfoRow(
+                      label: '文档 AI',
+                      value: caps.documentAi ? '可用' : '不可用',
+                    ),
+                    _InfoRow(
+                      label: '共享员工',
+                      value: caps.sharedEmployees ? '已开通' : '仅自己的分身',
+                    ),
+                    _InfoRow(
+                      label: 'Hub SSH',
+                      value: caps.hubSshExec ? 'hub_exec 可用' : '未启用',
+                    ),
+                    if (caps.documentQuotaBytes > 0)
+                      _InfoRow(
+                        label: '文档配额',
+                        value: formatMobileFileSize(caps.documentQuotaBytes),
+                      ),
+                    if (caps.maxUploadBytes > 0)
+                      _InfoRow(
+                        label: '上传上限',
+                        value: formatMobileFileSize(caps.maxUploadBytes),
+                      ),
+                    if (caps.maxExportJobs > 0)
+                      _InfoRow(
+                        label: '并发导出',
+                        value: '${caps.maxExportJobs}',
+                      ),
+                    if (caps.hubFileDownloadMaxBytes > 0)
+                      _InfoRow(
+                        label: 'hub_exec 下载上限',
+                        value: formatMobileFileSize(
+                          caps.hubFileDownloadMaxBytes,
+                        ),
+                      ),
+                    if (caps.hubFileDownloadChunked)
+                      _InfoRow(
+                        label: '分块下载',
+                        value: caps.hubFileChunkRawBytes > 0
+                            ? '已启用 · 块 ${formatMobileFileSize(caps.hubFileChunkRawBytes)}'
+                                '${caps.hubFileSingleShotBytes > 0 ? ' · 单次≤${formatMobileFileSize(caps.hubFileSingleShotBytes)}' : ''}'
+                            : '已启用',
+                      ),
+                    if (caps.hasRuntimeOverrides) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        '运行时覆盖（进程内）',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      for (final e in caps.runtimeOverrides.entries)
+                        if (e.value > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: Text(
+                              '${e.key}=${e.value}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(fontFamily: 'monospace'),
+                            ),
+                          ),
+                    ],
+                    if (caps.envOverrides.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        '运维 env / admin token 键名',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      for (final e in caps.envOverrides.entries)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: Text(
+                            '${e.key}: ${e.value}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(fontFamily: 'monospace'),
+                          ),
+                        ),
+                    ],
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () => unawaited(
+                          showMobileCapsAdminSheet(context, ref),
+                        ),
+                        icon: const Icon(Icons.tune, size: 18),
+                        label: const Text('运维覆盖（进程内）'),
+                      ),
+                    ),
+                    if (caps.serverTime.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'server_time ${caps.serverTime}',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+              loading: () => const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: LinearProgressIndicator(),
+              ),
+              error: (e, _) => Text(
+                '权益加载失败：$e',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> showMobileCapsAdminSheet(
+  BuildContext context,
+  WidgetRef ref,
+) async {
+  final client = ref.read(apiClientProvider);
+  if (client == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('请先登录官方服务')),
+    );
+    return;
+  }
+  final caps = ref.read(entitlementsCapsProvider).valueOrNull;
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (ctx) {
+      return Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(ctx).bottom,
+        ),
+        child: _CapsAdminSheetBody(
+          client: client,
+          initialRuntime: caps?.runtimeOverrides ?? const {},
+          rememberedToken: ref.read(capsAdminTokenMemoryProvider),
+          onTokenRemembered: (token) {
+            ref.read(capsAdminTokenMemoryProvider.notifier).state = token;
+          },
+          onApplied: () {
+            ref.invalidate(entitlementsCapsProvider);
+            ref.invalidate(documentQuotaProvider);
+            unawaited(
+              ref.read(sessionControllerProvider.notifier).refreshBootstrap(),
+            );
+          },
+        ),
+      );
+    },
+  );
+}
+
+class _CapsAdminSheetBody extends StatefulWidget {
+  final ApiClient client;
+  final Map<String, int> initialRuntime;
+  final String rememberedToken;
+  final ValueChanged<String> onTokenRemembered;
+  final VoidCallback onApplied;
+
+  const _CapsAdminSheetBody({
+    required this.client,
+    required this.initialRuntime,
+    required this.rememberedToken,
+    required this.onTokenRemembered,
+    required this.onApplied,
+  });
+
+  @override
+  State<_CapsAdminSheetBody> createState() => _CapsAdminSheetBodyState();
+}
+
+class _CapsAdminSheetBodyState extends State<_CapsAdminSheetBody> {
+  late final TextEditingController _tokenCtrl;
+  late final TextEditingController _docFreeCtrl;
+  late final TextEditingController _docPaidCtrl;
+  late final TextEditingController _exportFreeCtrl;
+  late final TextEditingController _exportPaidCtrl;
+  late final TextEditingController _hubDlCtrl;
+  bool _busy = false;
+  String? _status;
+
+  @override
+  void initState() {
+    super.initState();
+    final rt = widget.initialRuntime;
+    _tokenCtrl = TextEditingController(text: widget.rememberedToken);
+    _docFreeCtrl = TextEditingController(
+      text: _positiveOrEmpty(rt['doc_free_mib']),
+    );
+    _docPaidCtrl = TextEditingController(
+      text: _positiveOrEmpty(rt['doc_paid_mib']),
+    );
+    _exportFreeCtrl = TextEditingController(
+      text: _positiveOrEmpty(rt['export_free']),
+    );
+    _exportPaidCtrl = TextEditingController(
+      text: _positiveOrEmpty(rt['export_paid']),
+    );
+    _hubDlCtrl = TextEditingController(
+      text: _positiveOrEmpty(rt['hub_file_download_mib']),
+    );
+  }
+
+  String _positiveOrEmpty(int? v) =>
+      (v != null && v > 0) ? '$v' : '';
+
+  int? _parsePositive(TextEditingController c) {
+    final n = int.tryParse(c.text.trim());
+    if (n == null || n <= 0) return null;
+    return n;
+  }
+
+  @override
+  void dispose() {
+    _tokenCtrl.dispose();
+    _docFreeCtrl.dispose();
+    _docPaidCtrl.dispose();
+    _exportFreeCtrl.dispose();
+    _exportPaidCtrl.dispose();
+    _hubDlCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit({required bool clear}) async {
+    final token = _tokenCtrl.text.trim();
+    if (token.isEmpty) {
+      setState(() => _status = '请填写 X-Maclaw-Caps-Admin-Token');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _status = null;
+    });
+    try {
+      final result = await widget.client.putEntitlementsCaps(
+        adminToken: token,
+        clear: clear,
+        docFreeMib: clear ? null : _parsePositive(_docFreeCtrl),
+        docPaidMib: clear ? null : _parsePositive(_docPaidCtrl),
+        exportFree: clear ? null : _parsePositive(_exportFreeCtrl),
+        exportPaid: clear ? null : _parsePositive(_exportPaidCtrl),
+        hubFileDownloadMib: clear ? null : _parsePositive(_hubDlCtrl),
+      );
+      widget.onTokenRemembered(token);
+      widget.onApplied();
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = clear
+            ? '已清空 runtime 覆盖'
+            : '已应用 · effective doc_free=${result.effective['doc_free_bytes'] ?? 0}'
+                ' hub_dl=${result.effective['hub_file_download_bytes'] ?? 0}';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = '失败：$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('运维 caps 覆盖', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Text(
+              '需 Hub 环境变量 MACLAW_MOBILE_CAPS_ADMIN_TOKEN。覆盖仅进程内有效，'
+              '优先于 env；清空后回退 env/默认。Token 仅存本次 App 内存。',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 12),
+            TextField(
+              controller: _tokenCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Admin Token',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _capsField(_docFreeCtrl, 'doc_free_mib（免费文档配额 MiB）'),
+            _capsField(_docPaidCtrl, 'doc_paid_mib（付费文档配额 MiB）'),
+            _capsField(_exportFreeCtrl, 'export_free（免费并发导出）'),
+            _capsField(_exportPaidCtrl, 'export_paid（付费并发导出）'),
+            _capsField(_hubDlCtrl, 'hub_file_download_mib（hub_exec 下载上限）'),
+            if (_status != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _status!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: _status!.startsWith('失败')
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.primary,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : () => unawaited(_submit(clear: true)),
+                    child: const Text('清空覆盖'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed:
+                        _busy ? null : () => unawaited(_submit(clear: false)),
+                    child: _busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('应用'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _capsField(TextEditingController c, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: TextField(
+        controller: c,
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          isDense: true,
+          helperText: '留空则不改该字段',
+        ),
+      ),
+    );
+  }
+}
+
+class _LimitStatusCard extends StatelessWidget {
+  final MobileLimits limits;
+  final MobileDocumentQuota? liveQuota;
+
+  const _LimitStatusCard({
+    required this.limits,
+    this.liveQuota,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final quota = limits.effectiveDocumentQuotaBytes;
+    final used = limits.documentQuotaUsedBytes.clamp(0, quota);
+    final remaining = liveQuota != null
+        ? liveQuota!.documentQuotaRemaining.clamp(0, quota)
+        : (quota - used).clamp(0, quota);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionHeader(
+              icon: Icons.speed_outlined,
+              title: '额度与限制',
+            ),
+            const SizedBox(height: 12),
+            _InfoRow(
+              label: '文档空间',
+              value:
+                  '${formatMobileFileSize(used)} / ${formatMobileFileSize(quota)}'
+                  '（剩余 ${formatMobileFileSize(remaining)}）',
+            ),
             _InfoRow(
               label: '上传上限',
               value: _limitBytesLabel(limits.maxUploadBytes),
@@ -1006,6 +1581,84 @@ String _serviceStatusLabel(String value) {
     '' => '未配置',
     _ => value,
   };
+}
+
+String _planLabel(String plan) {
+  return switch (plan.toLowerCase().trim()) {
+    'official' => '官方服务',
+    'desktop_delegate' => '桌面委托 LLM',
+    'service_card' => '服务卡/授权卡',
+    'paid' => '付费',
+    'free' || '' => '免费',
+    _ => plan,
+  };
+}
+
+Future<void> _showRedeemServiceCardDialog(BuildContext context) async {
+  final codeCtrl = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) {
+      return AlertDialog(
+        title: const Text('兑换服务卡'),
+        content: TextField(
+          controller: codeCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '卡密',
+            hintText: '粘贴授权卡 / 服务卡代码',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('兑换'),
+          ),
+        ],
+      );
+    },
+  );
+  final code = codeCtrl.text.trim();
+  codeCtrl.dispose();
+  if (ok != true || !context.mounted) return;
+  if (code.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('请输入卡密')),
+    );
+    return;
+  }
+  // Redeem via ProviderContainer is awkward from free function — use element.
+  final container = ProviderScope.containerOf(context);
+  final client = container.read(apiClientProvider);
+  if (client == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('请先登录官方服务')),
+    );
+    return;
+  }
+  try {
+    final result = await client.redeemLLMServiceCard(code);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.message.isNotEmpty ? result.message : '兑换成功',
+        ),
+      ),
+    );
+    container.invalidate(mobileLlmServiceStatusProvider);
+    container.invalidate(sessionControllerProvider);
+  } on Object catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('兑换失败：$e')),
+    );
+  }
 }
 
 class _FeatureChip extends StatelessWidget {

@@ -13,11 +13,11 @@ PageModules.admins = {
     // Account list
     container.appendChild(h("div", { class: "card" },
       h("div", { class: "card-header" }, h("h3", {}, "管理员账号")),
-      h("div", { id: "adminList" }, h("div", { class: "empty-state" }, "加载中..."))
+      h("div", { id: "adminList" }, h("div", { class: "loading-state" }, "加载中…"))
     ));
 
     // Create account (collapsed)
-    container.appendChild(this.collapsible("createAdmin", "➕ 创建管理员", false, () => {
+    container.appendChild(this.collapsible("createAdmin", "创建管理员", false, () => {
       const body = h("div", {});
       const row = h("div", { class: "form-row" },
         this.field("newAdminUser", "用户名", "text", "new_admin"),
@@ -32,7 +32,7 @@ PageModules.admins = {
     }));
 
     // Sessions (collapsed)
-    container.appendChild(this.collapsible("sessions", "🔐 活跃会话", false, () => {
+    container.appendChild(this.collapsible("sessions", "活跃会话", false, () => {
       const body = h("div", {});
       body.appendChild(h("div", { id: "sessionList" }, h("div", { class: "empty-state" }, "点击刷新加载")));
       body.appendChild(h("div", { class: "btn-group mt-sm" }, h("button", { class: "sm", onclick: () => this.loadSessions() }, "加载会话")));
@@ -54,28 +54,29 @@ PageModules.admins = {
       const data = await App.api("/api/v1/data/admin/accounts");
       const el = document.getElementById("adminList");
       if (!el) return;
-      if (!data.accounts || !data.accounts.length) { el.innerHTML = '<div class="empty-state">暂无管理员账号</div>'; return; }
-      const h = App.html;
-      const tbl = document.createElement("table");
-      tbl.appendChild(h("thead", {}, h("tr", {},
-        h("th", {}, "用户名"), h("th", {}, "显示名"), h("th", {}, "角色"), h("th", {}, "状态"), h("th", {}, "上次登录")
-      )));
-      const tbody = document.createElement("tbody");
-      data.accounts.forEach(a => {
-        tbody.appendChild(h("tr", {},
-          h("td", {}, a.username || "-"),
-          h("td", {}, a.display_name || "-"),
-          h("td", {}, a.scope || "global"),
-          h("td", {}, a.enabled !== false ? "启用" : "停用"),
-          h("td", {}, a.last_login ? new Date(a.last_login).toLocaleString() : "从未")
-        ));
-      });
-      tbl.appendChild(tbody);
+      if (!data.accounts || !data.accounts.length) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("暂无管理员账号", "使用下方表单创建首个管理员，或完成首次初始化。"));
+        return;
+      }
+      const rows = data.accounts.map(a => ({
+        _cells: [
+          a.username || "-",
+          a.display_name || "-",
+          a.scope || "global",
+          a.enabled !== false ? App.badge("启用", "ok") : App.badge("停用"),
+          a.last_login ? new Date(a.last_login).toLocaleString() : "从未"
+        ]
+      }));
       el.innerHTML = "";
-      const wrap = h("div", { class: "table-wrap" });
-      wrap.appendChild(tbl);
-      el.appendChild(wrap);
-    } catch(e) { document.getElementById("adminList").innerHTML = '<div class="empty-state">加载失败（需要 allow_admin 权限）</div>'; }
+      el.appendChild(App.table(["用户名", "显示名", "角色", "状态", "上次登录"], rows));
+    } catch (e) {
+      const el = document.getElementById("adminList");
+      if (el) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("加载失败", e.message || "需要 allow_admin 权限。"));
+      }
+    }
   },
   createAdmin() { App.toast("创建管理员..."); },
   loadSessions() { App.toast("加载会话..."); },
@@ -91,7 +92,7 @@ PageModules.quality = {
     ));
     container.appendChild(h("div", { class: "card" },
       h("div", { class: "card-header" }, h("h3", {}, "质量检查"), h("button", { class: "primary sm", onclick: () => this.runCheck() }, "运行检查")),
-      h("div", { id: "qualityTable" }, h("div", { class: "empty-state" }, "加载中..."))
+      h("div", { id: "qualityTable" }, h("div", { class: "loading-state" }, "加载中…"))
     ));
     this.refresh();
   },
@@ -100,27 +101,25 @@ PageModules.quality = {
       const data = await App.api("/api/v1/data/quality/checks");
       const el = document.getElementById("qualityTable");
       if (!el) return;
-      if (!data.checks || !data.checks.length) { el.innerHTML = '<div class="empty-state">暂无质量检查记录。点击"运行检查"开始。</div>'; return; }
-      const h = App.html;
-      const tbl = document.createElement("table");
-      tbl.appendChild(h("thead", {}, h("tr", {},
-        h("th", {}, "数据集"), h("th", {}, "已扫描"), h("th", {}, "问题数"), h("th", {}, "时间")
-      )));
-      const tbody = document.createElement("tbody");
-      data.checks.forEach(c => {
-        tbody.appendChild(h("tr", {},
-          h("td", {}, c.dataset || "-"),
-          h("td", {}, String(c.scanned || 0)),
-          h("td", {}, String(c.issues || 0)),
-          h("td", {}, c.finished_at ? new Date(c.finished_at).toLocaleString() : "-")
-        ));
-      });
-      tbl.appendChild(tbody);
+      if (!data.checks || !data.checks.length) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("暂无质量检查记录", "点击「运行检查」开始扫描数据集。"));
+        return;
+      }
+      const rows = data.checks.map(c => ({
+        _cells: [
+          c.dataset || "-",
+          String(c.scanned || 0),
+          String(c.issues || 0),
+          c.finished_at ? new Date(c.finished_at).toLocaleString() : "-"
+        ]
+      }));
       el.innerHTML = "";
-      const wrap = h("div", { class: "table-wrap" });
-      wrap.appendChild(tbl);
-      el.appendChild(wrap);
-    } catch(e) { document.getElementById("qualityTable").innerHTML = '<div class="empty-state">加载失败</div>'; }
+      el.appendChild(App.table(["数据集", "已扫描", "问题数", "时间"], rows));
+    } catch (e) {
+      const el = document.getElementById("qualityTable");
+      if (el) { el.innerHTML = ""; el.appendChild(App.emptyState("加载失败", e.message)); }
+    }
   },
   runCheck() { App.toast("运行质量检查..."); },
 };
@@ -138,7 +137,7 @@ PageModules.backups = {
     ));
     container.appendChild(h("div", { class: "card" },
       h("div", { class: "card-header" }, h("h3", {}, "备份列表")),
-      h("div", { id: "backupList" }, h("div", { class: "empty-state" }, "加载中..."))
+      h("div", { id: "backupList" }, h("div", { class: "loading-state" }, "加载中…"))
     ));
     this.refresh();
   },
@@ -147,34 +146,35 @@ PageModules.backups = {
       const data = await App.api("/api/v1/data/backups");
       const el = document.getElementById("backupList");
       if (!el) return;
-      if (!data.backups || !data.backups.length) { el.innerHTML = '<div class="empty-state">暂无备份。建议在重要操作前创建备份。</div>'; return; }
+      if (!data.backups || !data.backups.length) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("暂无备份", "建议在重要操作前创建备份快照。"));
+        return;
+      }
       const h = App.html;
-      const tbl = document.createElement("table");
-      tbl.appendChild(h("thead", {}, h("tr", {},
-        h("th", {}, "文件名"), h("th", {}, "大小"), h("th", {}, "创建时间"), h("th", {}, "操作")
-      )));
-      const tbody = document.createElement("tbody");
-      data.backups.forEach(b => {
+      const rows = data.backups.map(b => {
         const name = b.name || b.filename || "-";
         const size = b.size_bytes ? (b.size_bytes / 1024).toFixed(0) + " KB" : "-";
         const time = b.created_at ? new Date(b.created_at).toLocaleString() : "-";
-        const actions = h("td", {},
-          h("button", { class: "sm ghost", onclick: () => this.download(name) }, "下载"),
-          h("button", { class: "sm danger", style: { marginLeft: "4px" }, onclick: () => this.restore(name) }, "恢复")
+        const actions = h("div", { class: "btn-group" },
+          h("button", { class: "sm ghost", type: "button", onclick: () => this.download(name) }, "下载"),
+          h("button", { class: "sm danger", type: "button", onclick: () => this.restore(name) }, "恢复")
         );
-        tbody.appendChild(h("tr", {},
-          h("td", { class: "mono" }, name),
-          h("td", {}, size),
-          h("td", {}, time),
-          actions
-        ));
+        return {
+          _cells: [
+            { text: name, attrs: { class: "mono" } },
+            size,
+            time,
+            actions
+          ]
+        };
       });
-      tbl.appendChild(tbody);
       el.innerHTML = "";
-      const wrap = h("div", { class: "table-wrap" });
-      wrap.appendChild(tbl);
-      el.appendChild(wrap);
-    } catch(e) { document.getElementById("backupList").innerHTML = '<div class="empty-state">加载失败</div>'; }
+      el.appendChild(App.table(["文件名", "大小", "创建时间", "操作"], rows));
+    } catch (e) {
+      const el = document.getElementById("backupList");
+      if (el) { el.innerHTML = ""; el.appendChild(App.emptyState("加载失败", e.message)); }
+    }
   },
   create() { App.toast("创建备份..."); },
   download(name) { App.toast("下载: " + name); },
@@ -202,7 +202,7 @@ PageModules.audit = {
       )
     ));
 
-    container.appendChild(h("div", { id: "auditTable" }, h("div", { class: "empty-state" }, "加载中...")));
+    container.appendChild(h("div", { id: "auditTable", class: "mt-sm" }, h("div", { class: "loading-state" }, "加载中…")));
     this.refresh();
   },
   async refresh() {
@@ -212,27 +212,25 @@ PageModules.audit = {
       const data = await App.api(`/api/v1/data/audit?keyword=${encodeURIComponent(kw)}&limit=${limit}`);
       const el = document.getElementById("auditTable");
       if (!el) return;
-      if (!data.entries || !data.entries.length) { el.innerHTML = '<div class="empty-state">暂无审计记录</div>'; return; }
-      const h = App.html;
-      const tbl = document.createElement("table");
-      tbl.appendChild(h("thead", {}, h("tr", {},
-        h("th", {}, "时间"), h("th", {}, "用户"), h("th", {}, "操作"), h("th", {}, "资源")
-      )));
-      const tbody = document.createElement("tbody");
-      data.entries.forEach(e => {
-        tbody.appendChild(h("tr", {},
-          h("td", {}, e.timestamp ? new Date(e.timestamp).toLocaleString() : "-"),
-          h("td", {}, e.user || "-"),
-          h("td", {}, e.action || "-"),
-          h("td", { class: "mono" }, e.resource || "-")
-        ));
-      });
-      tbl.appendChild(tbody);
+      if (!data.entries || !data.entries.length) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("暂无审计记录", "调整关键词后重新搜索，或确认系统已产生操作日志。"));
+        return;
+      }
+      const rows = data.entries.map(e => ({
+        _cells: [
+          e.timestamp ? new Date(e.timestamp).toLocaleString() : "-",
+          e.user || "-",
+          e.action || "-",
+          { text: e.resource || "-", attrs: { class: "mono" } }
+        ]
+      }));
       el.innerHTML = "";
-      const wrap = h("div", { class: "table-wrap" });
-      wrap.appendChild(tbl);
-      el.appendChild(wrap);
-    } catch(e) { document.getElementById("auditTable").innerHTML = '<div class="empty-state">加载失败</div>'; }
+      el.appendChild(App.table(["时间", "用户", "操作", "资源"], rows));
+    } catch (e) {
+      const el = document.getElementById("auditTable");
+      if (el) { el.innerHTML = ""; el.appendChild(App.emptyState("加载失败", e.message)); }
+    }
   },
   exportCSV() { App.toast("导出审计 CSV..."); },
 };

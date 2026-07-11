@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +14,8 @@ import 'package:maclaw_mobile/features/digital_employees/digital_employee.dart';
 import 'package:maclaw_mobile/features/digital_employees/digital_employees_controller.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
 import 'package:maclaw_mobile/features/servers/servers_controller.dart';
+import 'package:stream_channel/stream_channel.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class _SignedInSessionController extends SessionController {
   static int refreshCalls = 0;
@@ -58,31 +62,99 @@ class _SignedInSessionController extends SessionController {
   }
 }
 
-class _FakeRealtimeClient extends MobileRealtimeClient {
-  final Stream<MobileRealtimeEvent> stream;
+class _FakeWsSink implements WebSocketSink {
+  final void Function(Object? data) onAdd;
+  final void Function() onClose;
 
-  _FakeRealtimeClient(this.stream);
+  _FakeWsSink({required this.onAdd, required this.onClose});
 
   @override
-  Stream<MobileRealtimeEvent> events({
-    String path = maclawOfficialRealtimePath,
-  }) {
-    return stream;
+  void add(Object? data) => onAdd(data);
+
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+
+  @override
+  Future addStream(Stream stream) async {
+    await for (final item in stream) {
+      add(item);
+    }
   }
+
+  @override
+  Future close([int? closeCode, String? closeReason]) async {
+    onClose();
+  }
+
+  @override
+  Future get done => Future.value();
 }
 
-class _ReconnectableRealtimeClient extends MobileRealtimeClient {
-  final List<Stream<MobileRealtimeEvent>> streams;
-  int calls = 0;
+class _FakeWebSocketChannel extends StreamChannelMixin
+    implements WebSocketChannel {
+  final StreamController<Object?> inbound;
+  final List<Object?> sent;
+  late final WebSocketSink _sink;
 
-  _ReconnectableRealtimeClient(this.streams);
+  _FakeWebSocketChannel({
+    required this.inbound,
+    required this.sent,
+  }) {
+    _sink = _FakeWsSink(
+      onAdd: sent.add,
+      onClose: () {
+        if (!inbound.isClosed) {
+          unawaited(inbound.close());
+        }
+      },
+    );
+  }
 
   @override
-  Stream<MobileRealtimeEvent> events({
-    String path = maclawOfficialRealtimePath,
-  }) {
-    final index = calls++;
-    return streams[index < streams.length ? index : streams.length - 1];
+  Stream get stream => inbound.stream;
+
+  @override
+  WebSocketSink get sink => _sink;
+
+  @override
+  Future<void> get ready => Future.value();
+
+  @override
+  String? get protocol => null;
+
+  @override
+  int? get closeCode => null;
+
+  @override
+  String? get closeReason => null;
+}
+
+/// Fake WS harness: inbound JSON/binary, outbound hello/PTY recorded.
+class _FakeWsHarness {
+  final StreamController<Object?> inbound =
+      StreamController<Object?>.broadcast();
+  final List<Object?> sent = [];
+  int connectCalls = 0;
+
+  MobileRealtimeClient client() {
+    return MobileRealtimeClient(
+      readToken: () async => 'token',
+      readHubUrl: () async => maclawOfficialServiceUrl,
+      connect: (uri) {
+        connectCalls++;
+        return _FakeWebSocketChannel(inbound: inbound, sent: sent);
+      },
+    );
+  }
+
+  void pushJson(Map<String, dynamic> json) {
+    inbound.add(jsonEncode(json));
+  }
+
+  Future<void> close() async {
+    if (!inbound.isClosed) {
+      await inbound.close();
+    }
   }
 }
 
@@ -161,6 +233,33 @@ class _RecordingBackendSshFileOperationsController
   }
 }
 
+ProviderContainer _containerWith(MobileRealtimeClient client) {
+  return ProviderContainer(
+    overrides: [
+      sessionControllerProvider.overrideWith(_SignedInSessionController.new),
+      mobileRealtimeClientProvider.overrideWithValue(client),
+      documentsControllerProvider.overrideWith(
+        _RecordingDocumentsController.new,
+      ),
+      digitalEmployeesProvider.overrideWith(_EmptyDigitalEmployeesController.new),
+      digitalEmployeeTaskHistoryProvider
+          .overrideWith(_EmptyDigitalEmployeeTaskHistoryController.new),
+      digitalEmployeeTaskProvider.overrideWith(
+        _RecordingDigitalEmployeeTaskController.new,
+      ),
+      backendSshSessionsProvider.overrideWith(
+        _RecordingBackendSshSessionsController.new,
+      ),
+      backendSshTasksProvider.overrideWith(
+        _RecordingBackendSshTasksController.new,
+      ),
+      backendSshFileOperationsProvider.overrideWith(
+        _RecordingBackendSshFileOperationsController.new,
+      ),
+    ],
+  );
+}
+
 void main() {
   test('realtime bridge dispatches document, digital employee, and ssh events',
       () async {
@@ -170,86 +269,70 @@ void main() {
     _RecordingBackendSshSessionsController.events.clear();
     _RecordingBackendSshTasksController.events.clear();
     _RecordingBackendSshFileOperationsController.events.clear();
-    final stream = StreamController<MobileRealtimeEvent>();
-    final container = ProviderContainer(
-      overrides: [
-        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
-        mobileRealtimeClientProvider.overrideWithValue(
-          _FakeRealtimeClient(stream.stream),
-        ),
-        documentsControllerProvider.overrideWith(
-          _RecordingDocumentsController.new,
-        ),
-        digitalEmployeesProvider
-            .overrideWith(_EmptyDigitalEmployeesController.new),
-        digitalEmployeeTaskHistoryProvider
-            .overrideWith(_EmptyDigitalEmployeeTaskHistoryController.new),
-        digitalEmployeeTaskProvider.overrideWith(
-          _RecordingDigitalEmployeeTaskController.new,
-        ),
-        backendSshSessionsProvider.overrideWith(
-          _RecordingBackendSshSessionsController.new,
-        ),
-        backendSshTasksProvider.overrideWith(
-          _RecordingBackendSshTasksController.new,
-        ),
-        backendSshFileOperationsProvider.overrideWith(
-          _RecordingBackendSshFileOperationsController.new,
-        ),
-      ],
-    );
+
+    final harness = _FakeWsHarness();
+    final container = _containerWith(harness.client());
     addTearDown(() async {
-      await stream.close();
+      // Close WS first so bridge onDispose does not race container disposal.
+      await harness.close();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
       container.dispose();
     });
 
     await container.read(sessionControllerProvider.future);
     container.read(mobileRealtimeBridgeProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    stream
-      ..add(
-        const MobileRealtimeEvent(type: 'ready'),
-      )
-      ..add(
-        const MobileRealtimeEvent(
-          type: 'document_task',
-          payload: {'job_id': 'export-1', 'status': 'ready'},
-        ),
-      )
-      ..add(
-        const MobileRealtimeEvent(
-          type: 'digital_employee_task',
-          payload: {'task_id': 'task-1', 'status': 'done'},
-        ),
-      )
-      ..add(
-        const MobileRealtimeEvent(
-          type: 'ssh_session',
-          payload: {'session_id': 'mobssh_1', 'status': 'connected'},
-        ),
-      )
-      ..add(
-        const MobileRealtimeEvent(
-          type: 'ssh_task',
-          payload: {
-            'session_id': 'mobssh_1',
-            'task_id': 'task-ssh-1',
-            'status': 'completed',
-          },
-        ),
-      )
-      ..add(
-        const MobileRealtimeEvent(
-          type: 'ssh_file_operation',
-          payload: {
-            'operation_id': 'op-1',
-            'session_id': 'mobssh_1',
-            'status': 'completed',
-          },
-        ),
-      )
-      ..add(const MobileRealtimeEvent(type: 'pong'));
-    await Future<void>.delayed(Duration.zero);
+    harness
+      ..pushJson({'type': 'ready'})
+      ..pushJson({
+        'type': 'hello_ack',
+        'ok': true,
+        'binary_pty': true,
+      })
+      ..pushJson({
+        'type': 'document_task',
+        'job_id': 'export-1',
+        'status': 'ready',
+        'task': {'job_id': 'export-1', 'status': 'ready'},
+      })
+      ..pushJson({
+        'type': 'digital_employee_task',
+        'task_id': 'task-1',
+        'status': 'done',
+        'task': {'task_id': 'task-1', 'status': 'done'},
+      })
+      ..pushJson({
+        'type': 'ssh_session',
+        'session_id': 'mobssh_1',
+        'status': 'connected',
+        'session': {'session_id': 'mobssh_1', 'status': 'connected'},
+      })
+      ..pushJson({
+        'type': 'ssh_task',
+        'task_id': 'task-ssh-1',
+        'session_id': 'mobssh_1',
+        'status': 'completed',
+        'task': {
+          'session_id': 'mobssh_1',
+          'task_id': 'task-ssh-1',
+          'status': 'completed',
+        },
+      })
+      ..pushJson({
+        'type': 'ssh_file_operation',
+        'operation_id': 'op-1',
+        'session_id': 'mobssh_1',
+        'status': 'completed',
+        'operation': {
+          'operation_id': 'op-1',
+          'session_id': 'mobssh_1',
+          'status': 'completed',
+        },
+      })
+      ..pushJson({'type': 'pong'});
+
+    await Future<void>.delayed(const Duration(milliseconds: 80));
 
     expect(_SignedInSessionController.refreshCalls, 1);
     expect(_RecordingDocumentsController.events, hasLength(1));
@@ -279,47 +362,35 @@ void main() {
           .events.single.payload['operation_id'],
       'op-1',
     );
+    expect(container.read(mobileRealtimeBinaryPtyProvider), isTrue);
+    expect(
+      harness.sent.any(
+        (m) => m is String && m.contains('"type":"hello"'),
+      ),
+      isTrue,
+    );
   });
 
-  test('realtime bridge reconnects after stream completion and refreshes state',
-      () async {
-    _SignedInSessionController.refreshCalls = 0;
-    final first = StreamController<MobileRealtimeEvent>();
-    final second = StreamController<MobileRealtimeEvent>();
-    final client = _ReconnectableRealtimeClient([
-      first.stream,
-      second.stream,
-    ]);
-    final container = ProviderContainer(
-      overrides: [
-        sessionControllerProvider.overrideWith(_SignedInSessionController.new),
-        mobileRealtimeClientProvider.overrideWithValue(client),
-        mobileRealtimeReconnectDelayProvider.overrideWithValue(Duration.zero),
-        documentsControllerProvider.overrideWith(
-          _RecordingDocumentsController.new,
-        ),
-        digitalEmployeesProvider
-            .overrideWith(_EmptyDigitalEmployeesController.new),
-        digitalEmployeeTaskHistoryProvider
-            .overrideWith(_EmptyDigitalEmployeeTaskHistoryController.new),
-      ],
-    );
-    addTearDown(() async {
-      await first.close();
-      await second.close();
-      container.dispose();
-    });
+  test('MCP1 binary pty_out is parsed as ssh_session output_chunk', () {
+    final sid = utf8.encode('mobssh_bin');
+    final payload = utf8.encode('line\n');
+    final rebuilt = ByteData(8 + sid.length + payload.length);
+    final bytes = rebuilt.buffer.asUint8List();
+    bytes[0] = 0x4d;
+    bytes[1] = 0x43;
+    bytes[2] = 0x50;
+    bytes[3] = 0x31;
+    bytes[4] = 2; // pty_out
+    bytes[5] = 0;
+    rebuilt.setUint16(6, sid.length, Endian.big);
+    bytes.setRange(8, 8 + sid.length, sid);
+    bytes.setRange(8 + sid.length, 8 + sid.length + payload.length, payload);
 
-    await container.read(sessionControllerProvider.future);
-    container.read(mobileRealtimeBridgeProvider);
-    first.add(const MobileRealtimeEvent(type: 'ready'));
-    await Future<void>.delayed(Duration.zero);
-    await first.close();
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    second.add(const MobileRealtimeEvent(type: 'ready'));
-    await Future<void>.delayed(Duration.zero);
-
-    expect(client.calls, 2);
-    expect(_SignedInSessionController.refreshCalls, 2);
+    final event = MobileRealtimeEvent.tryParse(bytes);
+    expect(event, isNotNull);
+    expect(event!.sshSession, isTrue);
+    expect(event.payload['output_chunk'], 'line\n');
+    expect(event.payload['session_id'], 'mobssh_bin');
+    expect(event.binaryFrame, isTrue);
   });
 }

@@ -17,13 +17,19 @@ import (
 // For messages with image attachments, returns a multimodal content array
 // compatible with OpenAI/Anthropic vision APIs.
 // Non-image files are saved locally and their paths are appended to the text.
-func buildUserContent(userText string, attachments []MessageAttachment, protocol string, supportsVision bool) interface{} {
+//
+// app may be nil (tests); when non-nil and ASR is enabled, IM voice attachments
+// are transcribed locally and optionally corrected (asr_voice_correction_enabled).
+// onProgress is optional (agent-loop progress / typing indicator).
+func buildUserContent(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string)) interface{} {
 	if len(attachments) == 0 {
 		return userText
 	}
 
 	var imageAttachments []MessageAttachment
 	var fileDescriptions []string
+	// One shared deadline for all voice clips in this message.
+	voiceDeadline := time.Now().Add(imASRTotalBudget)
 
 	for i := range attachments {
 		att := &attachments[i]
@@ -46,7 +52,7 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 				}
 			}
 		} else if attKind.IsVoice() {
-			// Voice attachment: decode, convert to WAV for ASR, then save.
+			// Voice attachment: decode, convert to WAV, ASR (+ optional correction), then save.
 			decoded, decErr := base64.StdEncoding.DecodeString(att.Data)
 			if decErr != nil {
 				log.Printf("[IM] decode voice attachment %q failed: %v", att.FileName, decErr)
@@ -66,7 +72,11 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 				log.Printf("[IM] save voice %q failed: %v", att.FileName, err)
 				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s (保存失败: %v)]", att.FileName, err))
 			} else if wavMime == "audio/wav" {
-				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s → 已转换为WAV并保存到 %s，请使用ASR工具进行语音识别]", att.FileName, path))
+				transcript := ""
+				if app != nil {
+					transcript = app.transcribeIMVoiceAttachment(wavData, onProgress, voiceDeadline)
+				}
+				fileDescriptions = append(fileDescriptions, formatIMVoiceAttachmentDescription(att.FileName, path, transcript))
 			} else {
 				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[语音: %s → 转换失败，原始文件已保存到 %s]", att.FileName, path))
 			}
@@ -101,6 +111,29 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 		return buildAnthropicVisionContent(fullText, imageAttachments)
 	}
 	return buildOpenAIVisionContent(fullText, imageAttachments)
+}
+
+// formatIMVoiceAttachmentDescription builds the agent-facing voice note.
+// When transcript is non-empty (ASR succeeded), put the text first so the agent
+// treats it as the user request, with file metadata after. Keep the "[语音:"
+// prefix so history stripping rewrites it to "[之前的语音:".
+func formatIMVoiceAttachmentDescription(fileName, path, transcript string) string {
+	transcript = strings.TrimSpace(transcript)
+	if fileName == "" {
+		fileName = "voice"
+	}
+	if transcript != "" {
+		// Transcript first: cleaner for the agent; path kept for audit / re-processing.
+		return fmt.Sprintf("%s\n[语音: %s → 已转写并保存到 %s]", transcript, fileName, path)
+	}
+	return fmt.Sprintf("[语音: %s → 已转换为WAV并保存到 %s，%s]", fileName, path, imVoiceASRFallbackHint())
+}
+
+// imVoiceASRFallbackHint is the agent-facing note when local ASR did not produce text.
+// Kept concise and Chinese-first (agent system prompts are typically zh); path remains
+// available so the model can still reason about the file if tools allow.
+func imVoiceASRFallbackHint() string {
+	return "ASR 未能转写（超时、未启用、模型未就绪或音频无效）"
 }
 
 // buildOpenAIVisionContent creates content blocks for OpenAI vision API.
@@ -319,7 +352,8 @@ func annotateHistoryAttachmentText(text string) string {
 		text = strings.ReplaceAll(text, "[用户发送了图片", "[之前发送的图片")
 	}
 
-	// 4. IM-channel voice: [语音: xxx → 已转换为WAV并保存到 yyy]
+	// 4. IM-channel voice: [语音: xxx → 已转写/已转换为WAV …]
+	// (prefix-only rewrite; trailing transcript lines stay for conversation context)
 	if strings.Contains(text, "[语音:") {
 		text = strings.ReplaceAll(text, "[语音:", "[之前的语音:")
 	}

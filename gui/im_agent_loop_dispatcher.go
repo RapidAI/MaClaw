@@ -66,6 +66,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		AdaptiveRetry:    loopAdaptiveRetry,
 		MilestoneTracker: milestoneTracker,
 		Telemetry:        telemetry,
+		SendProgress:     sendProgress,
 	})
 	defer startState.Cleanup()
 	cfg := startState.Config

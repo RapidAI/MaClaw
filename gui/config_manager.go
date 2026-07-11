@@ -205,7 +205,7 @@ func (m *ConfigManager) formatMaclawRoleConfig(cfg corelib.AppConfig) string {
 	}
 	desc := cfg.MaclawRoleDescription
 	if desc == "" {
-		desc = "一个尽心尽责无所不能的软件开发管家"
+		desc = corelib.DefaultMaclawRoleDescription
 	}
 	b.WriteString(fmt.Sprintf("maclaw_role_name: %s\n", name))
 	b.WriteString(fmt.Sprintf("maclaw_role_description: %s\n", desc))
@@ -875,7 +875,7 @@ func (m *ConfigManager) initSchema() {
 			Description: "MaClaw 角色配置",
 			Keys: []config.ConfigKeySchema{
 				{Key: "maclaw_role_name", Description: "Agent 角色名称", Type: "string", Default: "MaClaw"},
-				{Key: "maclaw_role_description", Description: "Agent 角色描述", Type: "string", Default: "一个尽心尽责无所不能的软件开发管家"},
+				{Key: "maclaw_role_description", Description: "Agent 角色描述", Type: "string", Default: corelib.DefaultMaclawRoleDescription},
 			},
 		},
 

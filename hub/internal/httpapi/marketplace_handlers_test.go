@@ -2360,6 +2360,394 @@ func TestAdminCapabilityListUsesAuthenticatedAdminTenant(t *testing.T) {
 	}
 }
 
+func TestCapabilityListNormalizesInternalSkillReferenceName(t *testing.T) {
+	items := []capability.CapabilitySummary{{
+		CapabilityID: "enterprise_hub:skill:ppt-master@7acf5",
+		DisplayName:  "enterprise_hub:skill:ppt-master@7acf5",
+		MetadataJSON: `{"skill_name":""}`,
+	}}
+	normalizeCapabilityDisplayNames(items)
+	if got, want := items[0].DisplayName, "PPT Master"; got != want {
+		t.Fatalf("display name = %q, want %q", got, want)
+	}
+}
+
+func TestAdminCapabilityBackfillDisplayNamesFromPackage(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	tenantCtx := capability.WithTenant(context.Background(), "tenant_a")
+
+	// Upload a real package with human SKILL.md name.
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "name: ppt-master\ndescription: package slug description\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+		"skill.md":   "---\nname: PPT 演示文稿大师\ndescription: AI multi-format presentation skill\n---\n\n# PPT Master\n\nCreates decks from documents.\n",
+		"README.md":  "docs",
+	})
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	submitReq.Header.Set("Authorization", "Bearer viewer-token")
+	submitReq.Header.Set("Content-Type", contentType)
+	submitRec := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a", email: "dev@example.com"}, dataDir)(submitRec, submitReq)
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("submit status=%d body=%s", submitRec.Code, submitRec.Body.String())
+	}
+
+	items, err := svc.List(tenantCtx, corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	// Corrupt stored display name to the historical ID style.
+	badName := "enterprise_hub:skill:ppt-master@73136"
+	if err := svc.UpdateDisplayNameAndMetadata(tenantCtx, items[0].ID, badName, "", items[0].MetadataJSON); err != nil {
+		t.Fatalf("corrupt display name: %v", err)
+	}
+
+	// Dry-run should report would_update without writing.
+	dryReq := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/backfill-display-names?dry_run=1", nil)
+	dryReq = dryReq.WithContext(context.WithValue(dryReq.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	dryRec := httptest.NewRecorder()
+	AdminCapabilityBackfillDisplayNamesHandler(svc, dataDir)(dryRec, dryReq)
+	if dryRec.Code != http.StatusOK {
+		t.Fatalf("dry-run status=%d body=%s", dryRec.Code, dryRec.Body.String())
+	}
+	var dryResp struct {
+		Updated     int `json:"updated"`
+		WouldUpdate int `json:"would_update"`
+		Items       []struct {
+			Status string `json:"status"`
+			To     string `json:"to"`
+			Source string `json:"source"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(dryRec.Body.Bytes(), &dryResp); err != nil {
+		t.Fatalf("decode dry-run: %v", err)
+	}
+	if dryResp.Updated != 0 || dryResp.WouldUpdate != 1 || len(dryResp.Items) == 0 || dryResp.Items[0].Status != "would_update" || dryResp.Items[0].To != "PPT 演示文稿大师" {
+		t.Fatalf("unexpected dry-run response: %+v body=%s", dryResp, dryRec.Body.String())
+	}
+	afterDry, err := svc.Get(tenantCtx, items[0].ID)
+	if err != nil || afterDry.DisplayName != badName {
+		t.Fatalf("dry-run must not mutate display_name, got %+v err=%v", afterDry, err)
+	}
+
+	// Real backfill should persist package skill name.
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/backfill-display-names", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+	AdminCapabilityBackfillDisplayNamesHandler(svc, dataDir)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("backfill status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+		Failed  int `json:"failed"`
+		Items   []struct {
+			Status string `json:"status"`
+			To     string `json:"to"`
+			Source string `json:"source"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode backfill: %v", err)
+	}
+	if resp.Updated != 1 || resp.Failed != 0 {
+		t.Fatalf("backfill counts updated=%d failed=%d body=%s", resp.Updated, resp.Failed, rec.Body.String())
+	}
+	got, err := svc.Get(tenantCtx, items[0].ID)
+	if err != nil {
+		t.Fatalf("get after backfill: %v", err)
+	}
+	if got.DisplayName != "PPT 演示文稿大师" {
+		t.Fatalf("display_name=%q, want package skill.md name", got.DisplayName)
+	}
+	meta := mapFromRawJSON(json.RawMessage(got.MetadataJSON))
+	if stringFromMap(meta, "skill_name") != "PPT 演示文稿大师" {
+		t.Fatalf("metadata skill_name=%q", stringFromMap(meta, "skill_name"))
+	}
+}
+
+func TestIsMaclawAppCapabilitySummaryDoesNotMatchSubstringSkillIDs(t *testing.T) {
+	// A normal skill whose id happens to contain "maclaw-app" must still be backfillable.
+	normal := capability.CapabilitySummary{
+		CapabilityType: "skill",
+		CapabilityID:   "my-maclaw-app-helper",
+		GlobalKey:      "enterprise_hub:skill:my-maclaw-app-helper",
+		ManagedBy:      "user_upload",
+		MetadataJSON:   `{}`,
+	}
+	if isMaclawAppCapabilitySummary(normal) {
+		t.Fatal("normal skill with maclaw-app substring should not be treated as MaClaw App")
+	}
+	app := capability.CapabilitySummary{
+		CapabilityType: "skill",
+		CapabilityID:   "expense-approval",
+		GlobalKey:      "enterprise_hub:skill:maclaw-app:expense-approval",
+		ManagedBy:      "maclaw_app_upload",
+		MetadataJSON:   `{"is_maclaw_app":true}`,
+	}
+	if !isMaclawAppCapabilitySummary(app) {
+		t.Fatal("maclaw app capability should be detected")
+	}
+}
+
+func TestReadEnterpriseSkillPackageDisplayFieldsPrefersSkillMD(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	if err := writeTestSkillZip(t, zipPath, map[string]string{
+		"skill.yaml": "name: ppt-master\ndescription: slug desc\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+		"skill.md":   "---\nname: PPT 演示文稿大师\ndescription: real desc\n---\n\n# body\n",
+		"README.md":  "docs",
+	}); err != nil {
+		t.Fatalf("write zip: %v", err)
+	}
+	name, desc, err := readEnterpriseSkillPackageDisplayFields(zipPath)
+	if err != nil {
+		t.Fatalf("read display fields: %v", err)
+	}
+	if name != "PPT 演示文稿大师" {
+		t.Fatalf("name=%q", name)
+	}
+	if desc != "real desc" {
+		t.Fatalf("desc=%q", desc)
+	}
+}
+
+func TestResolveSkillPackagePathRejectsTraversalPackageFile(t *testing.T) {
+	dataDir := t.TempDir()
+	tenantID := "tenant_a"
+	// Outside the package root.
+	outside := filepath.Join(dataDir, "secret.zip")
+	if err := os.WriteFile(outside, []byte("pk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := &capability.CapabilitySummary{
+		ID:             "cap-1",
+		CapabilityID:   "safe-skill",
+		MetadataJSON:   `{"package_file":"../secret.zip"}`,
+	}
+	if path, err := resolveSkillPackagePath(item, dataDir, tenantID); err == nil {
+		t.Fatalf("expected traversal package_file to be rejected, got path=%s", path)
+	}
+}
+
+func writeTestSkillZip(t *testing.T, zipPath string, files map[string]string) error {
+	t.Helper()
+	f, err := os.Create(zipPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			_ = zw.Close()
+			return err
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			_ = zw.Close()
+			return err
+		}
+	}
+	return zw.Close()
+}
+
+func TestAdminCapabilityBackfillUpgradesHumanizedSlugFromPackage(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	tenantCtx := capability.WithTenant(context.Background(), "tenant_a")
+
+	body, contentType := makeEnterpriseSkillUploadBody(t, map[string]string{
+		"skill.yaml": "name: ppt-master\ndescription: package slug description\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+		"skill.md":   "---\nname: PPT 演示文稿大师\ndescription: AI multi-format presentation skill\n---\n\n# PPT Master\n",
+		"README.md":  "docs",
+	})
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	submitReq.Header.Set("Authorization", "Bearer viewer-token")
+	submitReq.Header.Set("Content-Type", contentType)
+	submitRec := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a", email: "dev@example.com"}, dataDir)(submitRec, submitReq)
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("submit status=%d body=%s", submitRec.Code, submitRec.Body.String())
+	}
+	items, err := svc.List(tenantCtx, corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	// Simulate list-normalize-only state: humanized slug already looks "human".
+	if err := svc.UpdateDisplayNameAndMetadata(tenantCtx, items[0].ID, "PPT Master", "", items[0].MetadataJSON); err != nil {
+		t.Fatalf("set humanized slug: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/backfill-display-names", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+	AdminCapabilityBackfillDisplayNamesHandler(svc, dataDir)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("backfill status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+		Items   []struct {
+			From   string `json:"from"`
+			To     string `json:"to"`
+			Source string `json:"source"`
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Updated != 1 {
+		t.Fatalf("updated=%d want 1 body=%s", resp.Updated, rec.Body.String())
+	}
+	got, err := svc.Get(tenantCtx, items[0].ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.DisplayName != "PPT 演示文稿大师" {
+		t.Fatalf("display_name=%q, want package skill.md upgrade", got.DisplayName)
+	}
+}
+
+func TestAdminCapabilityBackfillDisplayNamesHumanizesWithoutPackage(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	tenantCtx := capability.WithTenant(context.Background(), "tenant_a")
+	item, err := svc.UpsertCapability(tenantCtx, capability.UpsertCapabilityInput{
+		CapabilityType: corelib.CapabilityTypeSkill,
+		Publisher:      "enterprise",
+		CapabilityID:   "multi-search-engine",
+		DisplayName:    "Multi Search Engine",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		Status:         "approved",
+		MetadataJSON:   `{"skill_id":"multi-search-engine"}`,
+	})
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	// Simulate historical dirty data written before humanization existed.
+	if err := svc.UpdateDisplayNameAndMetadata(tenantCtx, item.ID, "enterprise_hub:skill:multi-search-engine@ed9d", "", `{"skill_id":"multi-search-engine"}`); err != nil {
+		t.Fatalf("corrupt display name: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/backfill-display-names", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-a", Scope: "tenant", TenantID: "tenant_a"}))
+	rec := httptest.NewRecorder()
+	AdminCapabilityBackfillDisplayNamesHandler(svc, t.TempDir())(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Updated int `json:"updated"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Updated != 1 {
+		t.Fatalf("updated=%d, want 1 body=%s", resp.Updated, rec.Body.String())
+	}
+	got, err := svc.Get(tenantCtx, item.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.DisplayName != "Multi Search Engine" {
+		t.Fatalf("display_name=%q, want humanized slug", got.DisplayName)
+	}
+}
+
+func TestCapabilityListPrefersMetadataSkillNameOverSlug(t *testing.T) {
+	items := []capability.CapabilitySummary{{
+		CapabilityID: "ppt-master",
+		DisplayName:  "ppt-master",
+		MetadataJSON: `{"skill_name":"PPT 演示文稿大师","display_name":"PPT 演示文稿大师"}`,
+	}}
+	normalizeCapabilityDisplayNames(items)
+	if got, want := items[0].DisplayName, "PPT 演示文稿大师"; got != want {
+		t.Fatalf("display name = %q, want %q", got, want)
+	}
+}
+
+func TestCapabilityListHumanizesTechnicalSlugDisplayName(t *testing.T) {
+	items := []capability.CapabilitySummary{{
+		CapabilityID: "paper_pdf_translator",
+		DisplayName:  "paper_pdf_translator",
+		MetadataJSON: `{}`,
+	}}
+	normalizeCapabilityDisplayNames(items)
+	if got, want := items[0].DisplayName, "Paper PDF Translator"; got != want {
+		t.Fatalf("display name = %q, want %q", got, want)
+	}
+}
+
+func TestCapabilitySkillSubmitStoresHumanDisplayNameFromSkillMD(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	files := map[string]string{
+		"skill.yaml": "name: ppt-master\ndescription: package slug description\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+		"skill.md":   "---\nname: PPT 演示文稿大师\ndescription: AI multi-format presentation skill\n---\n\n# PPT Master\n\nCreates decks from documents.\n",
+		"README.md":  "docs",
+	}
+	body, contentType := makeEnterpriseSkillUploadBody(t, files)
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a", userID: "user-a", email: "dev@example.com"}, dataDir)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	if items[0].CapabilityID != "ppt-master" {
+		t.Fatalf("capability_id=%q, want ppt-master", items[0].CapabilityID)
+	}
+	if items[0].DisplayName != "PPT 演示文稿大师" {
+		t.Fatalf("display_name=%q, want real SKILL.md name", items[0].DisplayName)
+	}
+	metadata := mapFromRawJSON(json.RawMessage(items[0].MetadataJSON))
+	if stringFromMap(metadata, "skill_name") != "PPT 演示文稿大师" || stringFromMap(metadata, "display_name") != "PPT 演示文稿大师" {
+		t.Fatalf("metadata missing real skill name: %+v", metadata)
+	}
+	// List API should keep the human name after normalize.
+	normalizeCapabilityDisplayName(&items[0])
+	if items[0].DisplayName != "PPT 演示文稿大师" {
+		t.Fatalf("normalized display_name=%q", items[0].DisplayName)
+	}
+}
+
+func TestCapabilitySkillSubmitHumanizesSlugWhenSkillMDMissing(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	dataDir := t.TempDir()
+	files := map[string]string{
+		"skill.yaml": "name: multi-search-engine\ndescription: search across engines\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo ok\n",
+		"README.md":  "docs",
+	}
+	body, contentType := makeEnterpriseSkillUploadBody(t, files)
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/skills/submit", body)
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	CapabilitySkillSubmitHandler(svc, fakeMarketplaceViewerAuth{tenantID: "tenant_a"}, dataDir)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("capabilities=%+v err=%v", items, err)
+	}
+	if items[0].CapabilityID != "multi-search-engine" {
+		t.Fatalf("capability_id=%q", items[0].CapabilityID)
+	}
+	if items[0].DisplayName != "Multi Search Engine" {
+		t.Fatalf("display_name=%q, want humanized slug", items[0].DisplayName)
+	}
+}
+
 func TestViewerCapabilityRecommendationsUseEffectiveRecommendations(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)

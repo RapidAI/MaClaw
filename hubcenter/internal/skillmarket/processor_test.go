@@ -43,9 +43,8 @@ func TestSafeUnzip_InvalidZip(t *testing.T) {
 }
 
 func TestSafeUnzip_TooManyFiles(t *testing.T) {
-	files := make(map[string]string)
-	for i := 0; i < maxFileCount+1; i++ {
-		files[filepath.Join("dir", strings.Repeat("f", 5)+string(rune('a'+i%26))+strings.Repeat("x", 3))] = "x"
+	if testing.Short() {
+		t.Skip("creating MaxSkillMarketZipEntries+1 zip entries is slow")
 	}
 	zipPath := createLargeFileCountZip(t, maxFileCount+1)
 	destDir := t.TempDir()
@@ -55,6 +54,16 @@ func TestSafeUnzip_TooManyFiles(t *testing.T) {
 	}
 	if err != nil && !strings.Contains(err.Error(), "too many files") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSafeUnzip_AllowsManySmallNecessaryFiles(t *testing.T) {
+	// Volume-first policy: multi-thousand tiny assets must pass (old cap was 1000).
+	const n = 3500
+	zipPath := createLargeFileCountZip(t, n)
+	destDir := t.TempDir()
+	if err := SafeUnzip(zipPath, destDir); err != nil {
+		t.Fatalf("SafeUnzip many small files: %v", err)
 	}
 }
 
@@ -331,6 +340,111 @@ func TestValidatePackage_RejectsLegacyPackage(t *testing.T) {
 	}
 	if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "no longer supported") {
 		t.Fatalf("unexpected errors: %#v", result.Errors)
+	}
+}
+
+func TestValidatePackage_EnrichesDescriptionFromSkillMD(t *testing.T) {
+	// Enterprise Hub packages often put human title/description only in skill.md.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: ppt-master\ntriggers:\n  - ppt\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "skill.md"), []byte("---\nname: PPT 演示文稿大师\ndescription: AI multi-format presentation skill\n---\n\n# PPT Master\n"), 0o644)
+
+	result, err := ValidatePackage(dir)
+	if err != nil {
+		t.Fatalf("ValidatePackage error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid package, got errors: %v", result.Errors)
+	}
+	if result.Metadata == nil || result.Metadata.Description != "AI multi-format presentation skill" {
+		t.Fatalf("expected description enriched from skill.md, got %#v", result.Metadata)
+	}
+	// Prefer human markdown title over technical yaml slug for market display.
+	if result.Metadata.Name != "PPT 演示文稿大师" {
+		t.Fatalf("expected human name from skill.md, got %q", result.Metadata.Name)
+	}
+}
+
+func TestIsLikelySkillSlug(t *testing.T) {
+	if !isLikelySkillSlug("ppt-master") {
+		t.Fatal("expected slug")
+	}
+	if isLikelySkillSlug("PPT 演示文稿大师") {
+		t.Fatal("CJK title should not be slug")
+	}
+	if isLikelySkillSlug("Hello World") {
+		t.Fatal("spaced title should not be slug")
+	}
+}
+
+func TestValidatePackage_SkillMDFrontmatterCRLF(t *testing.T) {
+	dir := t.TempDir()
+	// Windows-style CRLF frontmatter must still enrich description.
+	os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: crlf-skill\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "skill.md"), []byte("---\r\nname: CRLF Title\r\ndescription: from crlf frontmatter\r\n---\r\n\r\n# body\r\n"), 0o644)
+
+	result, err := ValidatePackage(dir)
+	if err != nil {
+		t.Fatalf("ValidatePackage: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, errors=%v", result.Errors)
+	}
+	if result.Metadata.Description != "from crlf frontmatter" {
+		t.Fatalf("description=%q", result.Metadata.Description)
+	}
+	if result.Metadata.Name != "CRLF Title" {
+		t.Fatalf("name=%q", result.Metadata.Name)
+	}
+}
+
+func TestValidatePackage_AcceptsSkillYML(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "skill.yml"), []byte("name: yml-skill\ndescription: uses yml extension\n"), 0o644)
+
+	result, err := ValidatePackage(dir)
+	if err != nil {
+		t.Fatalf("ValidatePackage error: %v", err)
+	}
+	if !result.Valid {
+		t.Fatalf("expected valid, got errors: %v", result.Errors)
+	}
+	if result.Metadata.Name != "yml-skill" {
+		t.Fatalf("name = %q", result.Metadata.Name)
+	}
+}
+
+func TestProcessorRecoverPendingEnqueuesUnfinished(t *testing.T) {
+	store := newTestStore(t)
+	skillStore := hubskill.NewSkillStore(t.TempDir())
+	processor := NewProcessor("", t.TempDir(), store, skillStore, nil, nil, nil)
+	ctx := context.Background()
+
+	zipPath := createTestZip(t, map[string]string{
+		"skill.yaml": "name: recover-me\ndescription: should be requeued\n",
+	})
+	sub := &SkillSubmission{
+		ID:        "sub-recover-1",
+		Email:     "seller@test.com",
+		UserID:    "seller-1",
+		Status:    "pending",
+		ZipPath:   zipPath,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := store.CreateSubmission(ctx, sub); err != nil {
+		t.Fatalf("CreateSubmission: %v", err)
+	}
+
+	// Recover into the queue, then drain one item via processOne path used by Run.
+	processor.RecoverPending(ctx)
+	select {
+	case id := <-processor.queue:
+		if id != sub.ID {
+			t.Fatalf("recovered id = %q, want %q", id, sub.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected unfinished submission to be enqueued")
 	}
 }
 

@@ -377,6 +377,21 @@ function isLearnedSource(source: string): boolean {
     return LEARNED_SOURCES.has(source);
 }
 
+type HubSourceFilter = "all" | "hubcenter" | "clawhub" | "github";
+
+// `SkillHub` and `SkillMarket` are legacy API names for HubCenter-backed
+// search. They are implementation details, not separate user-facing markets.
+export function hubSourceFilterMatches(source: string, filter: HubSourceFilter): boolean {
+    if (filter === "all") return true;
+    const normalized = source.trim().toLowerCase();
+    switch (filter) {
+        case "hubcenter":
+            return ["enterprise_hub", "hub", "hubcenter", "skillmarket", "skillhub"].includes(normalized);
+        default:
+            return normalized === filter;
+    }
+}
+
 function getStatusBadgeVariant(status: string): CSSProperties {
     switch (status) {
         case "active":
@@ -458,6 +473,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
+    const [isConfiguringSkill, setIsConfiguringSkill] = useState(false);
 
     // Hub market state
     const [hubSearchQuery, setHubSearchQuery] = useState("");
@@ -468,7 +484,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [hubRecommendations, setHubRecommendations] = useState<MixedSkillSearchResult[]>([]);
     const [hubRecsLoading, setHubRecsLoading] = useState(false);
     // Hub filter/sort state
-    const [hubFilterSource, setHubFilterSource] = useState<string>("all");
+    const [hubFilterSource, setHubFilterSource] = useState<HubSourceFilter>("all");
     const [hubFilterTrust, setHubFilterTrust] = useState<string>("all");
     const [hubSortBy, setHubSortBy] = useState<string>("relevance");
 
@@ -479,7 +495,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const filteredHubResults = useMemo(() => {
         let results = hubResults;
         if (hubFilterSource !== "all") {
-            results = results.filter((s) => s.source === hubFilterSource);
+            results = results.filter((s) => hubSourceFilterMatches(s.source || "", hubFilterSource));
         }
         if (hubFilterTrust !== "all") {
             results = results.filter((s) => (s.trust_level || "") === hubFilterTrust);
@@ -938,6 +954,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
 
     const openCreateForm = () => {
         setEditingSkill(null);
+        setIsConfiguringSkill(false);
         setFormData({ ...emptySkill });
         setTriggerInput("");
         setStepsYaml("");
@@ -945,23 +962,27 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         setShowForm(true);
     };
 
-    const openEditForm = async (skill: NLSkillDefinition) => {
+    const openEditForm = async (skill: NLSkillDefinition, configure = false) => {
         // Re-fetch skills from backend to pick up any on-disk changes
         setBusy(true);
         try {
             const list = await loadData();
             const fresh = list.find((s) => s.name === skill.name);
             const target = fresh || skill;
+            const enableAfterSave = configure && target.status === "needs_setup";
             setEditingSkill(target);
-            setFormData({ ...target });
+            setFormData({ ...target, status: enableAfterSave ? "active" : target.status });
             setTriggerInput("");
             setStepsYaml(stepsToYaml(target.steps));
+            setIsConfiguringSkill(enableAfterSave);
         } catch {
             // Fallback to stale state if refresh fails
+            const enableAfterSave = configure && skill.status === "needs_setup";
             setEditingSkill(skill);
-            setFormData({ ...skill });
+            setFormData({ ...skill, status: enableAfterSave ? "active" : skill.status });
             setTriggerInput("");
             setStepsYaml(stepsToYaml(skill.steps));
+            setIsConfiguringSkill(enableAfterSave);
         } finally {
             setBusy(false);
         }
@@ -972,6 +993,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const closeForm = () => {
         setShowForm(false);
         setEditingSkill(null);
+        setIsConfiguringSkill(false);
         setFormError("");
     };
 
@@ -1403,6 +1425,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 </div>
                                             </div>
                                             <div style={{ display: "flex", gap: "4px", flexShrink: 0, alignItems: "center" }}>
+                                                {s.status === "needs_setup" && (
+                                                    <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
+                                                        {localizeText("Configure", "配置", "設定")}
+                                                    </button>
+                                                )}
                                                 {s.status === "needs_review" && (
                                                     <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{"\u2713"}</button>
                                                 )}
@@ -1459,6 +1486,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                 </td>
                                                 <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 4 }}>
                                                     <div style={localSkillsRowActionsStyle}>
+                                                        {s.status === "needs_setup" && (
+                                                            <button className="btn-primary" style={{ ...iconBtnStyle, width: "auto", padding: "0 8px" }} onClick={() => openEditForm(s, true)} disabled={busy} title={localizeText("Configure and enable", "配置并启用", "設定並啟用")} aria-label={localizeText("Configure and enable", "配置并启用", "設定並啟用")}>
+                                                                {localizeText("Configure", "配置", "設定")}
+                                                            </button>
+                                                        )}
                                                         {s.status === "needs_review" && (
                                                             <button className="btn-secondary" style={iconBtnStyle} onClick={() => handleApproveSkillReview(s)} disabled={busy} title={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")} aria-label={localizeText("Review and enable", "\u5ba1\u6838\u5e76\u542f\u7528", "\u5be9\u6838\u4e26\u555f\u7528")}>{"\u2713"}</button>
                                                         )}
@@ -1537,9 +1569,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {/* Filter & Sort (shown when results exist) */}
                     {hubSearched && hubResults.length > 0 && (
                         <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", fontSize: "0.72rem" }}>
-                            <select className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "80px" }} value={hubFilterSource} onChange={(e) => setHubFilterSource(e.target.value)}>
+                            <select aria-label="Market source" className="form-input" style={{ fontSize: "0.72rem", padding: "2px 6px", width: "auto", minWidth: "112px" }} value={hubFilterSource} onChange={(e) => setHubFilterSource(e.target.value as HubSourceFilter)}>
                                 <option value="all">{localizeText("All Sources", "全部来源", "全部來源")}</option>
-                                <option value="skillhub">SkillHub</option>
+                                <option value="hubcenter">Hub / HubCenter</option>
                                 <option value="clawhub">ClawHub</option>
                                 <option value="github">GitHub</option>
                             </select>
@@ -2103,6 +2135,11 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             </div>
                         )}
                         <div className="modal-footer">
+                            {detailSkill.status === "needs_setup" && (
+                                <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => { openEditForm(detailSkill, true); setDetailSkill(null); }}>
+                                    {localizeText("Configure and enable", "配置并启用", "設定並啟用")}
+                                </button>
+                            )}
                             {detailSkill.status === "needs_review" && (
                                 <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={() => handleApproveSkillReview(detailSkill)}>
                                     {localizeText("Approve and Enable", "\u5ba1\u6838\u901a\u8fc7\u5e76\u542f\u7528", "\u5be9\u6838\u901a\u904e\u4e26\u555f\u7528")}
@@ -2132,7 +2169,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                 }}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "min(420px, 95vw)", textAlign: "left" }}>
                         <div className="modal-header">
-                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingSkill ? localizeText("Edit Skill", "编辑 Skill", "編輯 Skill") : localizeText("New Skill", "新建 Skill", "新建 Skill")}</h3>
+                            <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{isConfiguringSkill ? localizeText("Configure Skill", "配置 Skill", "設定 Skill") : editingSkill ? localizeText("Edit Skill", "编辑 Skill", "編輯 Skill") : localizeText("New Skill", "新建 Skill", "新建 Skill")}</h3>
                             <button className="btn-close" onClick={closeForm}>X</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -2201,7 +2238,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         <div className="modal-footer">
                             <button className="btn-secondary" onClick={closeForm} disabled={busy}>{localizeText("Cancel", "取消", "取消")}</button>
                             <button className="btn-primary" style={{ fontSize: "0.78rem", padding: "4px 14px" }} onClick={handleSubmit} disabled={busy}>
-                                {busy ? localizeText("Submitting...", "提交中...", "提交中...") : editingSkill ? localizeText("Save", "保存", "儲存") : localizeText("Create", "创建", "建立")}
+                                {busy ? localizeText("Submitting...", "提交中...", "提交中...") : isConfiguringSkill ? localizeText("Save and enable", "保存并启用", "儲存並啟用") : editingSkill ? localizeText("Save", "保存", "儲存") : localizeText("Create", "创建", "建立")}
                             </button>
                         </div>
                     </div>

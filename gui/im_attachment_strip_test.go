@@ -169,7 +169,7 @@ func TestStripHistoryAttachments_IMImageFallback(t *testing.T) {
 func TestStripHistoryAttachments_IMVoice(t *testing.T) {
 	msg := map[string]interface{}{
 		"role":    "user",
-		"content": "听听\n\n[语音: voice.ogg → 已转换为WAV并保存到 /tmp/voice.wav，请使用ASR工具进行语音识别]",
+		"content": "听听\n\n[语音: voice.ogg → 已转换为WAV并保存到 /tmp/voice.wav，ASR 未能转写（请确认已启用语音识别且模型已就绪）]",
 	}
 	result := stripHistoryAttachments(msg)
 	text := result.(map[string]interface{})["content"].(string)

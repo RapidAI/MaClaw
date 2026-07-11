@@ -1718,6 +1718,10 @@ export function NormalizeVoiceCommand(arg1) {
   return window['go']['main']['App']['NormalizeVoiceCommand'](arg1);
 }
 
+export function CorrectASRText(arg1) {
+  return window['go']['main']['App']['CorrectASRText'](arg1);
+}
+
 export function IsASRReady() {
   return window['go']['main']['App']['IsASRReady']();
 }

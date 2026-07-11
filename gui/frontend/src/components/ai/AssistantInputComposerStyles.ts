@@ -86,7 +86,7 @@ export function getAssistantInputComposerStyles({ cancelPending, hasInputOverlay
         toolbarLeftStyle: {
             display: "flex",
             alignItems: "center",
-            gap: "2px",
+            gap: "6px",
         },
         toolbarRightStyle: {
             display: "flex",

@@ -409,7 +409,7 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 		t.Fatalf("expected enterprise + market results, got %#v", results)
 	}
 	got := results[0]
-	if got.Source != corelib.CapabilitySourceEnterpriseHub || got.ID != "cap-skill-1" || got.InstallRef != "cap-skill-1" || got.SourceLabel != "私有市场" {
+	if got.Source != corelib.CapabilitySourceEnterpriseHub || got.ID != "cap-skill-1" || got.InstallRef != "cap-skill-1" || got.SourceLabel != "Hub / HubCenter" {
 		t.Fatalf("unexpected enterprise result: %+v", got)
 	}
 	if got.Name != "Paper Approval" || got.Description != "Enterprise paper approval app" || got.TrustLevel != "enterprise" {
@@ -425,7 +425,7 @@ func TestSearchMixedSkillsIncludesEnterpriseHubCapabilitiesFirst(t *testing.T) {
 		t.Fatalf("unexpected MaClaw App test evidence: %+v", got.MaclawAppTestEvidence)
 	}
 	market := results[1]
-	if market.SourceLabel != "公共市场" || market.Source != "skillmarket" {
+	if market.SourceLabel != "Hub / HubCenter" || market.Source != "skillmarket" {
 		t.Fatalf("unexpected market source label: %+v", market)
 	}
 }

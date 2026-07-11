@@ -15,6 +15,7 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import { AssistantInputIcon, getInputActionButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { VoiceLevelVisualizer } from "./aiAssistantControls";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
+import { AssistantPermissionModeMenu } from "./AssistantPermissionModeMenu";
 
 interface AssistantInputActionsProps {
     attachButtonTestId?: string;
@@ -149,6 +150,7 @@ export function AssistantInputActionsLeft({
     const plusMenuEnabled = !!(onComposeActionChange || onFireSlashCommand || onInsertTemplate || onPlusMenuAction);
     const plusDisabled = !ready || !plusMenuEnabled;
     const composeActive = !!composeAction;
+
 
     const actionItems = useMemo(
         () => (onPlusMenuAction ? PLUS_MENU_ACTION_ITEMS : []),
@@ -439,17 +441,7 @@ export function AssistantInputActionsLeft({
                 )}
             </button>}
             {showVoiceInput && voiceInput.error && <span style={{ color: t.errorText, fontSize: "11px", alignSelf: "center", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={voiceInput.error}>{voiceInput.error}</span>}
-            <select
-                aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")}
-                data-testid="ai-permission-mode"
-                value={permissionMode}
-                onChange={(event) => onPermissionModeChange?.(event.target.value as AssistantPermissionMode)}
-                title={localizeText(lang, "Permission mode", "权限模式", "權限模式")}
-                style={{ height: "24px", maxWidth: "92px", padding: "0 2px", border: `1px solid ${t.fieldBorder}`, borderRadius: 4, background: t.fieldBg, color: t.textMuted, fontSize: "11px", outline: "none", cursor: "pointer" }}
-            >
-                <option value="request">{localizeText(lang, "Ask", "请求授权", "請求授權")}</option>
-                <option value="full">{localizeText(lang, "Full control", "完全控制", "完全控制")}</option>
-            </select>
+            <AssistantPermissionModeMenu lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} />
         </>
     );
 }

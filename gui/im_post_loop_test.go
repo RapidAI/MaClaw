@@ -5,7 +5,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+func TestWorkflowV2ArtifactDeliveredRequiresPPTX(t *testing.T) {
+	state := &v2.WorkflowState{
+		Type:         string(v2.WorkflowPresentationDesign),
+		CurrentPhase: 0,
+		Phases:       []v2.Phase{{ID: "ppt_generation"}},
+	}
+	if workflowV2ArtifactDelivered(state, &LoopContext{WorkflowWrittenFiles: []string{`C:\tmp\deck.pdf`}}) {
+		t.Fatal("PDF preview must not complete PPT generation")
+	}
+	if !workflowV2ArtifactDelivered(state, &LoopContext{WorkflowWrittenFiles: []string{`C:\tmp\deck.pptx`}}) {
+		t.Fatal("PPTX delivery should complete PPT generation")
+	}
+}
 
 func TestResolveWorkflowPhaseDocTextPrefersWrittenDocumentOverLongBuffer(t *testing.T) {
 	dir := t.TempDir()

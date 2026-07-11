@@ -54,9 +54,15 @@ class AuthService {
         _selectedHubCenterUrl = hubCenterUrl,
         _dio = officialHubCenterDio(dio, hubCenterUrl: hubCenterUrl);
 
+  /// SMS send can be slow (Aliyun + upstream); keep longer than generic Hub timeouts.
+  static const smsSendReceiveTimeout = Duration(seconds: 45);
+  static const smsSendConnectTimeout = Duration(seconds: 12);
+
   Future<PhoneLoginRequestResult> requestPhoneLogin(String phoneNumber) async {
     final normalizedPhone = _requireNormalizedPhoneNumber(phoneNumber);
-    final resolution = await tryOfficialHubCenters<PhoneLoginRequestResult>(
+    // Resolve Hub first so even a timed-out send-code still yields a verifiable
+    // pending session (SMS may already have left the server).
+    final routed = await tryOfficialHubCenters<({PhoneLoginHub hub, String hubCenterUrl})>(
       dio: _dio,
       preferredHubCenterUrl: _selectedHubCenterUrl,
       operation: (client, hubCenterUrl) async {
@@ -78,30 +84,48 @@ class AuthService {
                 : route.message,
           );
         }
-        final normalizedHubUrl = normalizeDiscoveredHubUrl(hub.baseUrl);
-        final hubClient = _discoveredHubClient(normalizedHubUrl);
-        final response = await hubClient.post<Map<String, dynamic>>(
-          '/api/enroll/sms/send-code',
-          data: {
-            'phone_number': normalizedPhone,
-            if (hub.tenantId.isNotEmpty) 'tenant_id': hub.tenantId,
-          },
-          options: _hubCenterHeaderOptions(hubCenterUrl),
-        );
-        return PhoneLoginRequestResult.fromJson(
-          response.data ?? const {},
-        ).copyWith(
+        return (hub: hub, hubCenterUrl: hubCenterUrl);
+      },
+    );
+    _selectedHubCenterUrl = routed.selectedHubCenterUrl;
+    final hub = routed.value.hub;
+    final hubCenterUrl = routed.value.hubCenterUrl;
+    final normalizedHubUrl = normalizeDiscoveredHubUrl(hub.baseUrl);
+
+    try {
+      return await requestPhoneLoginOnHub(
+        hubUrl: normalizedHubUrl,
+        phoneNumber: normalizedPhone,
+        tenantId: hub.tenantId,
+        hubCenterUrl: hubCenterUrl,
+      ).then(
+        (result) => result.copyWith(
+          hubId: hub.hubId.isNotEmpty ? hub.hubId : result.hubId,
+          tenantName:
+              hub.tenantName.isNotEmpty ? hub.tenantName : result.tenantName,
+        ),
+      );
+    } on DioException catch (error) {
+      // SMS often already dispatched when the client times out waiting for ACK.
+      if (_isLikelyPostSendTransportError(error)) {
+        return PhoneLoginRequestResult(
+          status: 'sent_unconfirmed',
+          message:
+              '短信可能已发出，但网络回执超时。若已收到验证码请直接输入；未收到请 ${PhoneLoginRequestResult.defaultResendCooldownSeconds} 秒后重试。',
           phoneNumber: normalizedPhone,
           hubUrl: normalizedHubUrl,
           hubId: hub.hubId,
           tenantId: hub.tenantId,
           tenantName: hub.tenantName,
           hubCenterUrl: hubCenterUrl,
+          expiresMinutes: 5,
+          codeLength: 6,
+          resendCooldownSeconds: PhoneLoginRequestResult.defaultResendCooldownSeconds,
+          deliveryUnconfirmed: true,
         );
-      },
-    );
-    _selectedHubCenterUrl = resolution.selectedHubCenterUrl;
-    return resolution.value;
+      }
+      rethrow;
+    }
   }
 
   Future<PhoneLoginRequestResult> requestPhoneLoginOnHub({
@@ -119,16 +143,64 @@ class AuthService {
         'phone_number': normalizedPhone,
         if (tenantId.trim().isNotEmpty) 'tenant_id': tenantId.trim(),
       },
-      options: _hubCenterHeaderOptions(hubCenterUrl),
+      options: Options(
+        headers: {
+          if (hubCenterUrl.trim().isNotEmpty)
+            'X-MaClaw-HubCenter-URL': hubCenterUrl.trim(),
+        },
+        // Longer than default Hub timeouts — SMS gateway can be slow.
+        sendTimeout: smsSendConnectTimeout,
+        receiveTimeout: smsSendReceiveTimeout,
+        // Accept 2xx only; non-2xx still throws so caller can classify.
+        validateStatus: (code) => code != null && code >= 200 && code < 300,
+      ),
     );
-    return PhoneLoginRequestResult.fromJson(
-      response.data ?? const {},
-    ).copyWith(
+    final body = response.data ?? const <String, dynamic>{};
+    final parsed = PhoneLoginRequestResult.fromJson(body).copyWith(
       phoneNumber: normalizedPhone,
       hubUrl: normalizedHubUrl,
       tenantId: tenantId,
       hubCenterUrl: hubCenterUrl,
     );
+    // Server returned 2xx with ok:false (rare) — still surface message.
+    final okFlag = body['ok'];
+    if (okFlag is bool && !okFlag) {
+      final msg = (body['message'] as String?)?.trim() ??
+          (body['error'] is Map
+              ? (body['error']['message'] as String? ?? '')
+              : '');
+      throw DioException(
+        requestOptions: response.requestOptions,
+        response: response,
+        type: DioExceptionType.badResponse,
+        message: msg.isEmpty ? 'SMS send rejected by Hub' : msg,
+      );
+    }
+    return parsed;
+  }
+
+  bool _isLikelyPostSendTransportError(DioException error) {
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.unknown:
+        // Connection reset / socket errors after request left the device.
+        final msg = '${error.message ?? ''} ${error.error ?? ''}'.toLowerCase();
+        return msg.contains('timeout') ||
+            msg.contains('socket') ||
+            msg.contains('connection') ||
+            msg.contains('reset') ||
+            msg.contains('closed');
+      case DioExceptionType.badResponse:
+        // 502/504 after SMS gateway may still have dispatched.
+        final code = error.response?.statusCode ?? 0;
+        return code == 502 || code == 503 || code == 504;
+      default:
+        return false;
+    }
   }
 
   Future<PhoneLoginVerifyResult> verifyPhoneLoginOnHub({
@@ -304,6 +376,8 @@ int _hubCompletenessScore(PhoneLoginHub hub) {
 }
 
 class PhoneLoginRequestResult {
+  static const defaultResendCooldownSeconds = 60;
+
   final String status;
   final String message;
   final String phoneNumber;
@@ -315,6 +389,8 @@ class PhoneLoginRequestResult {
   final int expiresMinutes;
   final int codeLength;
   final int resendCooldownSeconds;
+  /// True when Hub resolve succeeded but send-code ACK was lost/timed out.
+  final bool deliveryUnconfirmed;
 
   const PhoneLoginRequestResult({
     required this.status,
@@ -327,7 +403,8 @@ class PhoneLoginRequestResult {
     required this.hubCenterUrl,
     required this.expiresMinutes,
     required this.codeLength,
-    this.resendCooldownSeconds = 60,
+    this.resendCooldownSeconds = defaultResendCooldownSeconds,
+    this.deliveryUnconfirmed = false,
   });
 
   factory PhoneLoginRequestResult.fromJson(Map<String, dynamic> json) {
@@ -346,7 +423,8 @@ class PhoneLoginRequestResult {
       expiresMinutes: (json['expires_min'] as num?)?.toInt() ?? 0,
       codeLength: (json['code_length'] as num?)?.toInt() ?? 0,
       resendCooldownSeconds:
-          (json['resend_cooldown_seconds'] as num?)?.toInt() ?? 60,
+          (json['resend_cooldown_seconds'] as num?)?.toInt() ??
+              defaultResendCooldownSeconds,
     );
   }
 
@@ -362,6 +440,7 @@ class PhoneLoginRequestResult {
     int? expiresMinutes,
     int? codeLength,
     int? resendCooldownSeconds,
+    bool? deliveryUnconfirmed,
   }) {
     return PhoneLoginRequestResult(
       status: status ?? this.status,
@@ -376,6 +455,8 @@ class PhoneLoginRequestResult {
       codeLength: codeLength ?? this.codeLength,
       resendCooldownSeconds:
           resendCooldownSeconds ?? this.resendCooldownSeconds,
+      deliveryUnconfirmed:
+          deliveryUnconfirmed ?? this.deliveryUnconfirmed,
     );
   }
 }

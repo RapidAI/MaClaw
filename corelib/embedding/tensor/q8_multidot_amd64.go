@@ -216,9 +216,10 @@ func q8DualMultiDot4ScaledAVX512N64(out *[8]float32, a *float32, data *byte, sca
 //go:noescape
 func q8DualMultiDot8ScaledAVX512N64(out0, out1 *[8]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int)
 
-//go:noescape
 // q8DualMultiDot8AccumAVX512N64: 8A×2B one-pass + residual/bias store for N=512 FFN down.
 // out is &out[0]; writes rows m..m+7, cols n,n+1.
+//
+//go:noescape
 func q8DualMultiDot8AccumAVX512N64(out *float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int, m, n int, bn0, bn1 float32)
 
 // q8TryDual8AccumN512 fuses 8A×2B Q8 multiDot + residual/bias into out for N=512 FFN down.
@@ -237,8 +238,9 @@ func q8TryDual8AccumN512(out, a []float32, t *Q8Tensor, m, n, nBlocks, K int, bn
 
 // q8APanel8 holds 8 rows of K=2048 prequantized as u8 Q8 (FFN-down ReLU A≥0).
 // Both q and s are block-major for VNNI L1 locality:
-//   q[b*256 + r*32 + i]  — 8 rows of one block = 256 contiguous bytes
-//   s[b*8 + r]           — 8 scales of one block = 32 contiguous bytes
+//
+//	q[b*256 + r*32 + i]  — 8 rows of one block = 256 contiguous bytes
+//	s[b*8 + r]           — 8 scales of one block = 32 contiguous bytes
 type q8APanel8 struct {
 	q [8 * 2048]int8
 	s [8 * 64]float32
@@ -404,18 +406,18 @@ func q8MultiDot4ScaledAVX512N64(out *[4]float32, a *float32, data *byte, scales 
 
 func q8MultiDot4Scalar(out *[4]float32, a []float32, data []byte, row, nBlocks, K int) {
 	// Fallback: dequant once then multiDot4
-	buf := getQ8DequantBuf(K)
+	buf, bufPool := getQ8DequantBuf(K)
 	dequantRowInto(data, row, nBlocks, buf)
 	multiDot4(out, a, buf, K)
-	putQ8DequantBuf(buf)
+	putQ8DequantBuf(buf, bufPool)
 }
 
 func q8DualMultiDot4Scalar(out *[8]float32, a []float32, data []byte, row0, row1, nBlocks, K int) {
-	buf := getQ8DequantBuf(2 * K)
+	buf, bufPool := getQ8DequantBuf(2 * K)
 	dequantRowInto(data, row0, nBlocks, buf[:K])
 	dequantRowInto(data, row1, nBlocks, buf[K:2*K])
 	multiDot4DualB(out, a, buf[:K], buf[K:2*K], K)
-	putQ8DequantBuf(buf)
+	putQ8DequantBuf(buf, bufPool)
 }
 
 // dotQ8RowDual: one A × two B rows (fused dequant).

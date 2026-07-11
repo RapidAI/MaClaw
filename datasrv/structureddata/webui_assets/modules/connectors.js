@@ -27,7 +27,7 @@ PageModules.connectors = {
     ));
 
     // === Section 2: Configuration (Default Open) ===
-    container.appendChild(this.buildCollapsible("connConfig", "🔧 " + t("Connector Configuration"), true, () => {
+    container.appendChild(this.buildCollapsible("connConfig", t("Connector Configuration"), true, () => {
       const body = h("div", {});
 
       // Basic info
@@ -75,7 +75,7 @@ PageModules.connectors = {
     }));
 
     // === Section 3: Health & Diagnostics (Collapsed) ===
-    container.appendChild(this.buildCollapsible("connHealth", "🏥 " + t("Health & Diagnostics"), false, () => {
+    container.appendChild(this.buildCollapsible("connHealth", t("Health & Diagnostics"), false, () => {
       const body = h("div", {});
       body.appendChild(h("p", { class: "card-desc" }, "检查连接器与外部系统的连通性和配置正确性。"));
 
@@ -91,7 +91,7 @@ PageModules.connectors = {
     }));
 
     // === Section 4: Sync Management (Collapsed) ===
-    container.appendChild(this.buildCollapsible("connSync", "🔄 " + t("Sync Management"), false, () => {
+    container.appendChild(this.buildCollapsible("connSync", t("Sync Management"), false, () => {
       const body = h("div", {});
       body.appendChild(h("p", { class: "card-desc" }, "查看同步状态和历史，运行手动同步批次。"));
 
@@ -125,32 +125,33 @@ PageModules.connectors = {
       const el = document.getElementById("connectorTable");
       if (!el) return;
       if (!data.connectors || !data.connectors.length) {
-        el.innerHTML = '<div class="empty-state">暂无连接器。点击上方表单创建第一个连接器。</div>';
+        el.innerHTML = "";
+        el.appendChild(App.emptyState(
+          "暂无连接器",
+          "使用下方「连接器配置」创建第一个外部系统集成。"
+        ));
         return;
       }
-      const h = App.html;
-      const tbl = document.createElement("table");
-      tbl.appendChild(h("thead", {}, h("tr", {},
-        h("th", {}, "ID"), h("th", {}, "名称"), h("th", {}, "类型"), h("th", {}, "域"), h("th", {}, "状态")
-      )));
-      const tbody = document.createElement("tbody");
-      data.connectors.forEach(c => {
-        const statusEl = h("span", { style: { color: c.enabled !== false ? "var(--ok)" : "var(--muted)" } }, c.enabled !== false ? "启用" : "停用");
-        const row = h("tr", { style: { cursor: "pointer" }, onclick: () => this.select(c.id) },
-          h("td", { class: "mono" }, c.id || "-"),
-          h("td", {}, c.name || "-"),
-          h("td", {}, c.kind || "-"),
-          h("td", {}, c.domain || "-"),
-          h("td", {}, statusEl)
-        );
-        tbody.appendChild(row);
-      });
-      tbl.appendChild(tbody);
+      const rows = data.connectors.map(c => ({
+        _id: c.id,
+        _cells: [
+          { text: c.id || "-", attrs: { class: "mono" } },
+          c.name || "-",
+          c.kind || "-",
+          c.domain || "-",
+          c.enabled !== false ? App.badge("启用", "ok") : App.badge("停用")
+        ]
+      }));
       el.innerHTML = "";
-      el.appendChild(tbl);
+      el.appendChild(App.table(["ID", "名称", "类型", "域", "状态"], rows, {
+        onRowClick: (id) => this.select(id)
+      }));
     } catch (e) {
       const el = document.getElementById("connectorTable");
-      if (el) el.innerHTML = '<div class="empty-state">加载失败</div>';
+      if (el) {
+        el.innerHTML = "";
+        el.appendChild(App.emptyState("加载失败", e.message));
+      }
     }
   },
 

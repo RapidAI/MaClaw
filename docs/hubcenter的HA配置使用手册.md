@@ -323,7 +323,7 @@ center:
 当前默认下载模型：
 
 - `embeddinggemma-300M-Q8_0.gguf`
-- `moonshine-base-zh.gguf`
+- `sensevoice-small-q8.gguf`
 - `omniparser-v2.yolow`
 
 ### 下载时机

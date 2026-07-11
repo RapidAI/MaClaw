@@ -6,18 +6,21 @@ import { main } from '../../../../wailsjs/go/models';
 import { MaclawRolePanel } from '../MaclawRolePanel';
 
 function renderPanel(lang: string) {
+	const saveRemoteConfigField = vi.fn();
     const config = new main.AppConfig({
         maclaw_role_name: 'MaClaw',
-        maclaw_role_description: '一个尽心尽责无所不能的软件开发管家',
+        maclaw_role_description: '你的全能数智伴侣MaClaw',
     });
 
     render(
         <MaclawRolePanel
             config={config}
-            saveRemoteConfigField={vi.fn()}
+			saveRemoteConfigField={saveRemoteConfigField}
             lang={lang}
         />,
     );
+
+	return saveRemoteConfigField;
 }
 
 describe('MaclawRolePanel localization', () => {
@@ -44,4 +47,15 @@ describe('MaclawRolePanel localization', () => {
         expect(screen.getByRole('button', { name: 'Reset Default' })).toBeTruthy();
         expect(screen.queryByText('Auto-post Chat Gossip')).toBeNull();
     });
+
+	it('restores the configured default identity', () => {
+		const saveRemoteConfigField = renderPanel('en');
+
+		screen.getByRole('button', { name: 'Reset Default' }).click();
+
+		expect(saveRemoteConfigField).toHaveBeenCalledWith(expect.objectContaining({
+			maclaw_role_name: 'MaClaw',
+			maclaw_role_description: '你的全能数智伴侣MaClaw',
+		}));
+	});
 });

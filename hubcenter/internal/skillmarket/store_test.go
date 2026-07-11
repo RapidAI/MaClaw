@@ -259,6 +259,13 @@ func TestSubmissionRepository_StatusFlow(t *testing.T) {
 	if got4.Status != "failed" || got4.ErrorMsg != "invalid yaml" {
 		t.Errorf("status=%s err=%s, want failed/invalid yaml", got4.Status, got4.ErrorMsg)
 	}
+
+	// Empty skillID must not wipe a previously linked skill (e.g. re-mark processing).
+	_ = store.UpdateSubmissionStatus(ctx, "sub-1", "processing", "", "")
+	got5, _ := store.GetSubmissionByID(ctx, "sub-1")
+	if got5.SkillID != "skill-123" {
+		t.Errorf("skill_id wiped on processing update: got %q, want skill-123", got5.SkillID)
+	}
 }
 
 // ── Task 13.5: 评分数据模型单元测试 ─────────────────────────────────────

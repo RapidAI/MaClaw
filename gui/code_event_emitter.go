@@ -10,16 +10,19 @@ import (
 
 // CodeFileEvent is the payload for code:file_update events.
 type CodeFileEvent struct {
-	SessionID   string `json:"session_id"`
-	FilePath    string `json:"file_path"`
-	FileName    string `json:"file_name"`
-	AbsPath     string `json:"abs_path,omitempty"` // absolute path for tooltip/context menu
-	Content     string `json:"content"`
-	Original    string `json:"original"`               // empty for new files or empty original content
-	OpType      string `json:"op_type"`                // "create", "modify", or "read"
-	Language    string `json:"language"`               // detected from extension
-	ForceOpen   bool   `json:"force_open,omitempty"`   // true when backend should override a manually closed preview
-	ProjectPath string `json:"project_path,omitempty"` // project/working directory for frontend tab routing
+	SessionID        string `json:"session_id"`
+	FilePath         string `json:"file_path"`
+	FileName         string `json:"file_name"`
+	AbsPath          string `json:"abs_path,omitempty"` // absolute path for tooltip/context menu
+	Content          string `json:"content"`
+	Original         string `json:"original"`                    // empty for new files or empty original content
+	OpType           string `json:"op_type"`                     // "create", "modify", or "read"
+	Language         string `json:"language"`                    // detected from extension
+	ForceOpen        bool   `json:"force_open,omitempty"`        // true when backend should override a manually closed preview
+	AutoOpenPreview  bool   `json:"auto_open_preview,omitempty"` // workflow-authorized auto-open; still respects a user's close action
+	PreviewTruncated bool   `json:"preview_truncated,omitempty"` // preview is a complete leading chunk, not the full remote file
+	OriginalMissing  bool   `json:"original_missing,omitempty"`  // modified file's prior content could not be fetched
+	ProjectPath      string `json:"project_path,omitempty"`      // project/working directory for frontend tab routing
 }
 
 // CodeEventEmitter emits code file events to the frontend via Wails runtime.

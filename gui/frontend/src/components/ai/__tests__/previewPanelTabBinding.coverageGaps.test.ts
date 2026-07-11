@@ -190,6 +190,25 @@ describe('Path A: restoreState preserves workflowID and docUpdatePhaseIDs', () =
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('Path B: Stale sessionID takeover when session inactive', () => {
+	it('keeps ordinary code generation collapsed but opens an authorized workflow preview', () => {
+		let state = codeInitialState();
+		const ordinaryFile: CodeFile = {
+			filePath: '/project/ordinary.ts', fileName: 'ordinary.ts', content: 'export {};',
+			opType: 'create', language: 'typescript', updatedAt: 1,
+		};
+		state = applyFileUpdate(state, ordinaryFile);
+		expect(state.active).toBe(false);
+
+		state = applyFileUpdate(state, {
+			...ordinaryFile,
+			sessionID: 'remote:ssh-1',
+			filePath: '/srv/app/remote.ts',
+			fileName: 'remote.ts',
+			autoOpenPreview: true,
+		});
+		expect(state.active).toBe(true);
+	});
+
     it('new session takes over inactive old session, clears old files', () => {
         // Start with a session that has files
         let state = codeInitialState();
@@ -494,7 +513,7 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         });
 
         expect(result.current.state.files.has('/src/app.ts')).toBe(true);
-        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.active).toBe(false);
     });
 
     it('create file update ignores backend original so new files show full source', () => {
@@ -553,7 +572,7 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         });
 
         expect(result.current.state.files.has('src/app.ts')).toBe(true);
-        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.active).toBe(false);
     });
 
     it('code:file_update without project_path is applied (backward compatible)', () => {
@@ -572,7 +591,7 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         });
 
         expect(result.current.state.files.has('/src/utils.ts')).toBe(true);
-        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.active).toBe(false);
     });
 
     it('no activeTabProjectPath skips passive project-scoped events for local preview isolation', () => {
@@ -761,7 +780,7 @@ describe('Path E: Tab switch save/restore round-trip', () => {
         });
 
         expect(result.current.state.files.size).toBe(2);
-        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.active).toBe(false);
         expect(result.current.state.sessionID).toBe('session-A');
         expect(result.current.state.activeFilePath).toBe('/src/utils.ts');
 
@@ -774,7 +793,7 @@ describe('Path E: Tab switch save/restore round-trip', () => {
         // Restore Tab A
         act(() => { result.current.restoreState(tabACodeSnapshot); });
         expect(result.current.state.files.size).toBe(2);
-        expect(result.current.state.active).toBe(true);
+        expect(result.current.state.active).toBe(false);
         expect(result.current.state.sessionID).toBe('session-A');
         expect(result.current.state.activeFilePath).toBe('/src/utils.ts');
     });

@@ -39,3 +39,31 @@ bool isMobileLlmConfigured(MobileBootstrap? bootstrap) {
   }
   return false;
 }
+
+/// Resolves first-tab mode: official Hub assistant vs own digital twin.
+///
+/// When [bootstrap] is null (pre-session), default to official labeling so the
+/// shell does not flash "数字分身" before Hub entitlements load.
+String resolveMobileAssistantMode(MobileBootstrap? bootstrap) {
+  if (bootstrap == null) return mobileAssistantModeOfficial;
+  final declared = bootstrap.assistantMode.trim().toLowerCase();
+  if (declared == mobileAssistantModeOfficial ||
+      declared == mobileAssistantModeDigitalTwin) {
+    return declared;
+  }
+  if (bootstrap.entitlements.mobileOfficial && isMobileLlmConfigured(bootstrap)) {
+    return mobileAssistantModeOfficial;
+  }
+  if (isMobileLlmConfigured(bootstrap)) {
+    return mobileAssistantModeOfficial;
+  }
+  return mobileAssistantModeDigitalTwin;
+}
+
+bool usesDigitalTwinAssistant(MobileBootstrap? bootstrap) {
+  return resolveMobileAssistantMode(bootstrap) == mobileAssistantModeDigitalTwin;
+}
+
+String mobileAssistantTabLabel(MobileBootstrap? bootstrap) {
+  return usesDigitalTwinAssistant(bootstrap) ? '数字分身' : 'AI助手';
+}

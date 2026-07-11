@@ -158,12 +158,14 @@ def _triple8_chunk(off: int) -> str:
 
 
 def _triple8_loop_body() -> str:
-    """Two 16-float chunks (off=0,64) with dual-buffer B pipeline.
+    """Two 16-float chunks (off=0,64) with dual-buffer B pipeline (v1).
 
     Load B@0 → Z24-26; FMA rows 0-3; load B@64 → Z29-31; finish rows 4-7 on B@0;
     then FMA all 8 on B@64. Hides B@64 load behind A FMA.
+    A-pair half0/half1 interleave (v2/v3) measured neutral/worse under thermal —
+    keep v1 until a clear cool win is shown.
+    Prefetch: 3 B + 3 A T0 (rows 0,2,4) — was 4 A and stole BW on Zen4.
     """
-    # Prefetch: 3 B + 3 A (rows 0,2,4) — was 4 A and stole BW on Zen4.
     lines = [
         "\tPREFETCHT0 512(DI)",
         "\tPREFETCHT0 512(R15)",
@@ -330,29 +332,29 @@ def gen_multidot8_triple_argmax_k512() -> str:
     for r in range(8):
         phase2.append(f"\tVMOVSS {r * 4}(R11), X{r}")
     for r in range(8):
+        lab3 = f"amx_r{r}c"
         # X8 = running cand max, DX = running cand col offset 0..2
         s0, s1, s2 = r * 12, r * 12 + 4, r * 12 + 8
-        lab1, lab2, lab3 = f"amx_r{r}a", f"amx_r{r}b", f"amx_r{r}c"
         phase2.append(f"\t// row {r}: max of 3 cands")
         phase2.append(f"\tVMOVSS {s0}(SP), X8")
         phase2.append("\tXORQ DX, DX")  # col 0
         phase2.append(f"\tVMOVSS {s1}(SP), X9")
         phase2.append("\tUCOMISS X8, X9")
-        phase2.append(f"\tJLS  {lab1}")
-        phase2.append("\tVMOVAPS X9, X8")  # reg-reg: not VMOVSS
+        phase2.append(f"\tJLS  {lab3}a")
+        phase2.append("\tVMOVAPS X9, X8")
         phase2.append("\tMOVQ $1, DX")
-        phase2.append(f"{lab1}:")
+        phase2.append(f"{lab3}a:")
         phase2.append(f"\tVMOVSS {s2}(SP), X9")
         phase2.append("\tUCOMISS X8, X9")
-        phase2.append(f"\tJLS  {lab2}")
+        phase2.append(f"\tJLS  {lab3}b")
         phase2.append("\tVMOVAPS X9, X8")
         phase2.append("\tMOVQ $2, DX")
-        phase2.append(f"{lab2}:")
+        phase2.append(f"{lab3}b:")
         # X8=candMax, DX=col; compare to best in X{r}
         phase2.append(f"\tUCOMISS X{r}, X8")
         phase2.append(f"\tJLS  {lab3}")
         phase2.append(f"\tVMOVAPS X8, X{r}")
-        phase2.append(f"\tLEAQ (SI)(DX*1), R9")  # n+col
+        phase2.append("\tLEAQ (SI)(DX*1), R9")  # n+col
         phase2.append(f"\tMOVQ R9, {r * 8}(BX)")
         phase2.append(f"{lab3}:")
     phase2.append("\t// Write back bestV")
@@ -395,7 +397,9 @@ def gen_multidot8_triple_plain_k512(n_cols: int) -> str:
         label = "N512"
         loop = "tri8_pl512_loop"
     elif n_cols == 1536:
-        base_calc = "\tIMULQ $1536, AX // m*1536\n"
+        # 1536 = 3 * 512. On Zen4 this LEA+shift sequence has lower latency
+        # than the immediate IMUL on this per-call address-generation path.
+        base_calc = "\tLEAQ (AX)(AX*2), AX // m*3\n\tSHLQ $9, AX // m*1536\n"
         label = "N1536"
         loop = "tri8_pl1536_loop"
     else:
@@ -1199,7 +1203,9 @@ def gen_dequant_triple() -> str:
     # dst0+0(24) dst1+24(24) dst2+48(24) data+72(24) s0+96 s1+104 s2+112
     # off0+120 off1+128 off2+136 nBlocks+144 → 152
     def block_one(boff: int, dst_base: int, soff: int) -> str:
-        """Pipelined: load half1 while storing half0 (separate Z regs)."""
+        """Pipelined: load half1 while storing half0 (separate Z regs).
+        Note: load-all-then-cvt measured slower (dequant share ↑) — keep overlap.
+        """
         sc = []
         for i in range(3):
             sm = f"({['R8','R9','R11'][i]})" if soff == 0 else f"{soff}({['R8','R9','R11'][i]})"
@@ -1237,6 +1243,7 @@ def gen_dequant_triple() -> str:
     text = """// func dequantRowScaledTripleAVX512(dst0, dst1, dst2 []float32, data []byte, scales0, scales1, scales2 *float32, rowOff0, rowOff1, rowOff2, nBlocks int)
 // Three Q8 rows → float panels (triple multiDot feed). Frame 152 bytes.
 // 4-block main (K=512 → 4 iters). 8-block body measured L1I thrash (share ↑).
+// load-all-halves-then-cvt measured slower than half0-store||half1-expand.
 TEXT ·dequantRowScaledTripleAVX512(SB), NOSPLIT, $0-152
 	MOVQ dst0+0(FP), SI
 	MOVQ dst1+24(FP), R10
@@ -1264,6 +1271,10 @@ dqt512_loop4:
 	PREFETCHT0 272(DI)
 	PREFETCHT0 272(R15)
 	PREFETCHT0 272(R13)
+	// dst panel write stream (multiDot reads soon; T0 keeps L1 warm for stores)
+	PREFETCHT0 512(SI)
+	PREFETCHT0 512(R10)
+	PREFETCHT0 512(R12)
 """
     text += block_one(0, 0, 0) + "\n"
     text += block_one(34, 128, 4) + "\n"
@@ -1525,6 +1536,7 @@ def _dual8_k512_chunk(off: int) -> str:
 
 
 def _dual8_k512_loop_body() -> str:
+    # v1: half0 all rows then half1 (matches triple v1). A-pair interleave was neutral.
     return "\n".join([
         "\tPREFETCHT0 512(DI)",
         "\tPREFETCHT0 512(R15)",
@@ -2235,7 +2247,8 @@ def _vnni_dual4(row0: int) -> str:
     A layout: q[b*256 + r*32]; SI points at block base (row0 at 0(SI)).
     Scales: s[b*8 + r]; R8=&s[b*8+0], sa at r*4(R8) — 8 scales in one cache line.
     row0: 0 or 4. Accums Y0-Y7 (B0), Y8-Y15 (B1). B in Y16/Y17.
-    X28/X29 hold sb0/sb1; product via VMULSS (vector-precompute+extract was slower).
+    X28/X29 hold sb0/sb1; product via VMULSS (v10 hoist sb+VMULPS measured slower;
+    full vector sa*sb precompute+extract also slower).
     """
     lines = []
     for i in range(4):

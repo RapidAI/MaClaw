@@ -108,7 +108,7 @@ void main() {
 
     expect(find.text('手机号注册/登录'), findsOneWidget);
     expect(find.bySemanticsLabel('MaClaw'), findsOneWidget);
-    expect(find.textContaining('仅支持手机号账户接入'), findsOneWidget);
+    expect(find.textContaining('仅支持手机号账户接入'), findsNothing);
     expect(find.text('发送验证码'), findsOneWidget);
     expect(find.text('桌面二维码接入'), findsNothing);
     expect(find.text('扫码接入'), findsNothing);

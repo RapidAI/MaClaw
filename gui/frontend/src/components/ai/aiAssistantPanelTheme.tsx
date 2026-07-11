@@ -256,7 +256,9 @@ export type AssistantInputIconName =
     | "brain"
     | "compress"
     | "helpCircle"
-    | "messagePlus";
+    | "messagePlus"
+    | "shieldCheck"
+    | "alertTriangle";
 
 export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
     const common = {
@@ -371,6 +373,19 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="M9 10h6" />
                 </>
             )}
+            {name === "shieldCheck" && (
+                <>
+                    <path {...common} d="M12 3 20 6v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3Z" />
+                    <path {...common} d="m8.5 12 2.2 2.2 4.8-4.8" />
+                </>
+            )}
+            {name === "alertTriangle" && (
+                <>
+                    <path {...common} d="m12 3 9 17H3L12 3Z" />
+                    <path {...common} d="M12 9v4" />
+                    <path {...common} d="M12 17h.01" />
+                </>
+            )}
         </svg>
     );
 }
@@ -472,6 +487,11 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     }
     .ai-plus-menu-item:disabled {
         cursor: not-allowed !important;
+    }
+    .ai-permission-mode-trigger:focus-visible,
+    .ai-permission-mode-item:focus-visible {
+        outline: 2px solid rgba(47, 95, 152, 0.48);
+        outline-offset: 1px;
     }
     @media (prefers-reduced-motion: reduce) {
         .ai-update-notice-button { animation: none; }

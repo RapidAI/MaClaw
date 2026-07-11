@@ -360,6 +360,7 @@ export function AssistantPreviewPane({
                         onClose={closeCodePreview}
                         onResizeStart={startPreviewResize}
                         theme={codeTheme}
+                        lang={lang}
                     />
                 )}
             </div>

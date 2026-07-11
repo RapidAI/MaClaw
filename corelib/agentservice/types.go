@@ -1015,6 +1015,12 @@ type ExecuteRequest struct {
 	// loop. Used by maclawsrv to send progressive stream_chunk messages via SSE.
 	// This is per-request (not shared across concurrent requests).
 	OnToken func(delta string)
+
+	// OnToolCall is invoked before a tool runs (optional UI/SSE progress).
+	OnToolCall func(name string)
+	// OnToolResult is invoked after a tool finishes (optional UI/SSE progress).
+	// result may be truncated by the caller for display.
+	OnToolResult func(name, result string)
 }
 
 type ExecuteResult struct {

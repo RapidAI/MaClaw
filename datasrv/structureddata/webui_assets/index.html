@@ -3,40 +3,115 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>MaClawDataSrv MIS 管理控制台</title>
   <base href="/console/">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <!-- Toast notifications -->
-  <div class="toast-stack" id="toastStack"></div>
+  <div class="toast-stack" id="toastStack" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- Login Screen -->
-  <div class="login-screen" id="loginScreen">
-    <div class="card login-card">
-      <h1>MaClawDataSrv</h1>
-      <p class="text-muted" style="text-align:center;margin-bottom:20px">企业结构化数据管理控制台</p>
-      <div class="form-field">
-        <label for="loginUsername">用户名</label>
-        <input id="loginUsername" placeholder="admin" autocomplete="username">
+  <!-- Auth / Login Screen -->
+  <div class="login-screen" id="loginScreen" data-testid="auth-screen">
+    <div class="auth-layout">
+      <aside class="auth-brand-panel" aria-hidden="true">
+        <div class="auth-brand-inner">
+          <div class="brand-mark">MIS</div>
+          <h2 class="auth-brand-title">MaClawDataSrv</h2>
+          <p class="auth-brand-desc">企业结构化数据运营工作台。受控写入、最小权限、可审计。</p>
+          <ul class="auth-brand-points">
+            <li>业务域与数据集建模</li>
+            <li>Agent 密钥与访问治理</li>
+            <li>质量、审计与备份运维</li>
+          </ul>
+        </div>
+      </aside>
+
+      <div class="auth-main">
+        <div class="card login-card" data-testid="admin-setup-panel">
+          <div class="login-brand mobile-only">
+            <div class="brand-mark" aria-hidden="true">MIS</div>
+          </div>
+          <h1 id="authTitle">管理员登录</h1>
+          <p class="login-sub" id="authSubtitle">企业结构化数据管理控制台</p>
+
+          <div class="setup-status-row">
+            <span class="chip" id="setupStatusText" data-testid="setup-status-text">检查初始化状态…</span>
+            <span class="text-sm text-muted" id="adminPasswordPolicy" data-testid="admin-password-policy">密码策略加载中</span>
+          </div>
+
+          <!-- First-time initialization -->
+          <div id="adminInitBox" class="hidden" data-testid="admin-init-box">
+            <p class="card-desc">首次部署：创建全局管理员账号。请使用符合策略的强密码。</p>
+            <div class="form-field">
+              <label for="initUsername">管理员用户名</label>
+              <input id="initUsername" data-testid="init-username" placeholder="admin" autocomplete="username" spellcheck="false">
+            </div>
+            <div class="form-field">
+              <label for="initDisplayName">显示名称</label>
+              <input id="initDisplayName" data-testid="init-display-name" placeholder="数据管理员" autocomplete="nickname">
+            </div>
+            <div class="form-field">
+              <label for="initPassword">管理员密码</label>
+              <input id="initPassword" data-testid="init-password" type="password" autocomplete="new-password" placeholder="至少 8 位">
+            </div>
+            <div class="btn-group mt-md">
+              <button class="primary" id="initializeAdmin" data-testid="initialize-admin" type="button">初始化管理员</button>
+            </div>
+          </div>
+
+          <!-- Normal login -->
+          <div id="adminLoginBox" data-testid="admin-login-box">
+            <div class="form-field">
+              <label for="loginUsername">用户名</label>
+              <input id="loginUsername" data-testid="login-username" placeholder="admin" autocomplete="username" spellcheck="false">
+            </div>
+            <div class="form-field">
+              <label for="loginPassword">密码</label>
+              <input id="loginPassword" data-testid="login-password" type="password" autocomplete="current-password">
+            </div>
+            <div class="form-field">
+              <label for="loginTenant">租户</label>
+              <input id="loginTenant" data-testid="tenant" list="tenantOptions" value="default" spellcheck="false">
+              <datalist id="tenantOptions"></datalist>
+            </div>
+            <div class="btn-group mt-md">
+              <button class="primary" id="loginBtn" data-testid="login-admin" type="button">登录</button>
+            </div>
+          </div>
+
+          <div class="auth-lang-row mt-md">
+            <span class="text-sm text-muted">语言</span>
+            <div class="lang-switch" role="group" aria-label="语言" data-testid="language-switch">
+              <button type="button" class="sm active" data-lang="zh">中文</button>
+              <button type="button" class="sm" data-lang="en">EN</button>
+            </div>
+          </div>
+
+          <div id="loginStatus" class="text-muted text-sm" role="status"></div>
+        </div>
       </div>
-      <div class="form-field mt-sm">
-        <label for="loginPassword">密码</label>
-        <input id="loginPassword" type="password" autocomplete="current-password">
-      </div>
-      <div class="btn-group mt-md">
-        <button class="primary" id="loginBtn" style="width:100%">登录</button>
-      </div>
-      <div id="loginStatus" class="text-muted text-sm mt-sm" style="text-align:center"></div>
+    </div>
+  </div>
+
+  <!-- Mobile sidebar backdrop -->
+  <button type="button" class="sidebar-overlay" id="sidebarOverlay" aria-label="关闭导航" tabindex="-1"></button>
+
+  <!-- Command palette -->
+  <div class="cmd-overlay hidden" id="cmdOverlay" role="dialog" aria-modal="true" aria-label="快速跳转">
+    <div class="cmd-panel">
+      <input type="search" id="cmdInput" class="cmd-input" placeholder="跳转到模块…  (↑↓ 选择，Enter 打开，Esc 关闭)" autocomplete="off" spellcheck="false">
+      <ul class="cmd-list" id="cmdList" role="listbox"></ul>
+      <div class="cmd-hint text-sm text-muted">快捷键 <kbd>Ctrl</kbd>+<kbd>K</kbd> 或 <kbd>/</kbd></div>
     </div>
   </div>
 
   <!-- Main App Shell -->
-  <div class="app-shell hidden" id="appShell">
-    <!-- Sidebar Navigation -->
-    <nav class="sidebar" id="sidebar">
+  <div class="app-shell hidden" id="appShell" data-testid="app-shell">
+    <nav class="sidebar" id="sidebar" aria-label="主导航">
       <div class="brand">
-        <div class="brand-mark">MIS</div>
+        <div class="brand-mark" aria-hidden="true">MIS</div>
         <div>
           <div class="brand-title">MaClawDataSrv</div>
           <div class="brand-subtitle">数据运营管理</div>
@@ -44,61 +119,69 @@
       </div>
 
       <div class="nav-group">总览</div>
-      <button class="nav-item active" data-page="overview">总览</button>
-      <button class="nav-item" data-page="quickstart">快速操作</button>
+      <button type="button" class="nav-item active" data-page="overview" data-testid="tab-overview">总览</button>
+      <button type="button" class="nav-item" data-page="quickstart" data-testid="tab-quickstart">快速操作</button>
 
       <div class="nav-group">数据建模</div>
-      <button class="nav-item" data-page="domains">业务域</button>
-      <button class="nav-item" data-page="datasets">数据集</button>
-      <button class="nav-item" data-page="fields">字段</button>
-      <button class="nav-item" data-page="relationships">关联</button>
+      <button type="button" class="nav-item" data-page="domains" data-testid="tab-domains">业务域</button>
+      <button type="button" class="nav-item" data-page="datasets" data-testid="tab-datasets">数据集</button>
+      <button type="button" class="nav-item" data-page="fields" data-testid="tab-fields">字段</button>
+      <button type="button" class="nav-item" data-page="relationships" data-testid="tab-relationships">关联</button>
 
       <div class="nav-group">数据操作</div>
-      <button class="nav-item" data-page="records">记录</button>
-      <button class="nav-item" data-page="actions">业务动作</button>
-      <button class="nav-item" data-page="inbox">收件箱</button>
+      <button type="button" class="nav-item" data-page="records" data-testid="tab-records">记录</button>
+      <button type="button" class="nav-item" data-page="actions" data-testid="tab-actions">业务动作</button>
+      <button type="button" class="nav-item" data-page="inbox" data-testid="tab-inbox">收件箱</button>
 
       <div class="nav-group">集成</div>
-      <button class="nav-item" data-page="connectors">连接器</button>
-      <button class="nav-item" data-page="views">视图</button>
-      <button class="nav-item" data-page="dashboards">仪表盘</button>
-      <button class="nav-item" data-page="reports">报表</button>
+      <button type="button" class="nav-item" data-page="connectors" data-testid="tab-connectors">连接器</button>
+      <button type="button" class="nav-item" data-page="views" data-testid="tab-views">视图</button>
+      <button type="button" class="nav-item" data-page="dashboards" data-testid="tab-dashboards">仪表盘</button>
+      <button type="button" class="nav-item" data-page="reports" data-testid="tab-reports">报表</button>
 
       <div class="nav-group">安全与治理</div>
-      <button class="nav-item" data-page="apikeys">🔑 API 密钥</button>
-      <button class="nav-item" data-page="admins">管理员</button>
-      <button class="nav-item" data-page="quality">质量检查</button>
-      <button class="nav-item" data-page="backups">备份</button>
-      <button class="nav-item" data-page="audit">审计</button>
-      <button class="nav-item" data-page="ops">运维</button>
+      <button type="button" class="nav-item" data-page="apikeys" data-testid="tab-apikeys">API 密钥</button>
+      <button type="button" class="nav-item" data-page="admins" data-testid="tab-admins">管理员</button>
+      <button type="button" class="nav-item" data-page="quality" data-testid="tab-quality">质量检查</button>
+      <button type="button" class="nav-item" data-page="backups" data-testid="tab-backups">备份</button>
+      <button type="button" class="nav-item" data-page="audit" data-testid="tab-audit">审计</button>
+      <button type="button" class="nav-item" data-page="ops" data-testid="tab-ops">运维</button>
+
+      <div class="sidebar-foot">
+        <div class="hint">受控写入 · 最小权限 · 可审计</div>
+        <button type="button" class="nav-item" id="cmdOpenBtn" style="margin-top:4px">快速跳转 ⌘K</button>
+      </div>
     </nav>
 
-    <!-- Main Content Area -->
     <div class="main-wrap">
-      <!-- Topbar -->
-      <div class="topbar">
-        <div class="meta">
-          <span id="serviceStatus">● 未连接</span>
-          <span id="tenantChip">租户：default</span>
-        </div>
-        <div class="meta">
-          <div class="lang-switch">
-            <button class="sm active" data-lang="zh">中文</button>
-            <button class="sm" data-lang="en">EN</button>
+      <header class="topbar">
+        <div class="topbar-left">
+          <button type="button" class="menu-toggle" id="menuToggle" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+          <div class="meta">
+            <span class="status-dot" id="serviceStatus" data-testid="app-service-status">未连接</span>
+            <span class="chip brand" id="tenantChip" data-testid="tenant-chip">租户 default</span>
+            <span class="page-context" id="pageContext" data-testid="page-context">总览</span>
           </div>
-          <span id="adminName"></span>
-          <button class="ghost sm" id="logoutBtn">退出</button>
         </div>
-      </div>
+        <div class="meta">
+          <button type="button" class="ghost sm" id="cmdTopBtn" title="快速跳转 (Ctrl+K)">跳转</button>
+          <div class="lang-switch" role="group" aria-label="语言" data-testid="app-language-switch">
+            <button type="button" class="sm active" data-lang="zh">中文</button>
+            <button type="button" class="sm" data-lang="en">EN</button>
+          </div>
+          <span id="adminName" class="text-sm" data-testid="admin-name"></span>
+          <button type="button" class="ghost sm" id="logoutBtn" data-testid="sign-out">退出</button>
+        </div>
+      </header>
 
-      <!-- Page Content Container -->
-      <div class="main-content" id="pageContainer">
-        <!-- Pages are loaded here dynamically -->
-      </div>
+      <main class="main-content" id="pageContainer" data-testid="page-container" tabindex="-1">
+        <!-- Pages loaded dynamically -->
+      </main>
     </div>
   </div>
 
-  <!-- Scripts -->
   <script src="i18n.js"></script>
   <script src="app.js"></script>
   <script src="modules/overview.js"></script>

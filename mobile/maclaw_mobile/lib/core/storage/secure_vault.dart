@@ -38,4 +38,17 @@ class SecureVault {
       _storage.delete(key: '$_sshPrivateKeyPassphrasePrefix$serverId'),
     ]);
   }
+
+  /// Generic secure read (push device identity, non-auth secrets).
+  Future<String?> readKey(String key) {
+    final k = key.trim();
+    if (k.isEmpty) return Future.value(null);
+    return _storage.read(key: k);
+  }
+
+  Future<void> writeKey(String key, String value) {
+    final k = key.trim();
+    if (k.isEmpty) return Future.value();
+    return _storage.write(key: k, value: value);
+  }
 }

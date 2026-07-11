@@ -1902,11 +1902,15 @@
     cap = cap || {};
     var meta = capabilityMetadata(cap);
     var manifest = meta && typeof meta.manifest === 'object' ? meta.manifest : {};
-    return firstText(
+    var skill = meta && typeof meta.skill === 'object' ? meta.skill : {};
+    return firstCapabilityText(
       cap.display_name,
       cap.name,
       meta.display_name,
+      meta.skill_name,
       meta.name,
+      skill.display_name,
+      skill.name,
       manifest.display_name,
       manifest.name,
       cap.capability_id,
@@ -1914,6 +1918,17 @@
       cap.id,
       '-'
     );
+  }
+
+  function firstCapabilityText() {
+    var fallback = '';
+    for (var i = 0; i < arguments.length; i += 1) {
+      var value = String(arguments[i] === undefined || arguments[i] === null ? '' : arguments[i]).trim();
+      if (!value) continue;
+      if (!fallback) fallback = value;
+      if (!/^(?:[^:/]+:)?(?:skill|mcp|approval_workflow|maclaw_app):/i.test(value)) return value;
+    }
+    return fallback;
   }
 
   function capabilityMetadata(cap) {

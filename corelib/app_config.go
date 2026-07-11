@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// DefaultMaclawRoleDescription is the identity used when no custom role
+// description has been configured.
+const DefaultMaclawRoleDescription = "你的全能数智伴侣MaClaw"
+
 type AppConfig struct {
 	Claude               ToolConfig      `json:"claude"`
 	Codex                ToolConfig      `json:"codex"`
@@ -224,6 +228,10 @@ type AppConfig struct {
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
+	// ASR voice correction: after local ASR, run a light LLM pass to fix
+	// obvious homophone/typo errors and (in continuous mode) drop non-commands.
+	// Default true via AppConfigDefaults; set false to send raw ASR text.
+	ASRVoiceCorrectionEnabled bool `json:"asr_voice_correction_enabled"`
 	// Calibrated noise floor for voice input VAD.
 	// 0 = not calibrated (use auto-calibration). Positive value = calibrated RMS baseline.
 	// Set by the "Calibrate Microphone" button in settings.
@@ -808,6 +816,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 // defaults — no other code path needs to repeat these values.
 func AppConfigDefaults() AppConfig {
 	return AppConfig{
+		MaclawRoleDescription:  DefaultMaclawRoleDescription,
 		ShowAssistantEntry:     true,
 		ShowCodex:              true,
 		ShowOpenCode:           true,
@@ -823,9 +832,10 @@ func AppConfigDefaults() AppConfig {
 		ImageOutboundEnabled:   true,
 		CheckUpdateOnStartup:   true,
 		UseWindowsTerminal:     true,
-		VectorSearchEnabled:    true,
-		ASREnabled:             true,
-		TTSEnabled:             true,
+		VectorSearchEnabled:        true,
+		ASREnabled:                 true,
+		ASRVoiceCorrectionEnabled:  true,
+		TTSEnabled:                 true,
 		ScreenParsingEnabled:   boolPtrValue(true),
 		IMProgressNudgeEnabled: boolPtrValue(true),
 		WorkflowEnabled:        boolPtrValue(false),

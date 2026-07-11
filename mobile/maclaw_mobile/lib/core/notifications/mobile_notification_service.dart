@@ -12,6 +12,8 @@ const mobileDocumentExportNotificationPrefix = 'document-export:';
 const mobileDigitalEmployeeTaskNotificationPrefix = 'digital-employee-task:';
 const mobileServerProfileNotificationPrefix = 'server-profile:';
 const mobileAssistantTaskNotificationPrefix = 'assistant-task:';
+const mobileSshTaskNotificationPrefix = 'ssh-task:';
+const mobileSshFileNotificationPrefix = 'ssh-file:';
 
 String mobileDocumentDraftNotificationPayload(String draftId) =>
     '$mobileDocumentDraftNotificationPrefix${draftId.trim()}';
@@ -31,12 +33,19 @@ String mobileServerProfileNotificationPayload(String profileId) =>
 String mobileAssistantTaskNotificationPayload(String taskId) =>
     '$mobileAssistantTaskNotificationPrefix${taskId.trim()}';
 
+String mobileSshTaskNotificationPayload(String taskId) =>
+    '$mobileSshTaskNotificationPrefix${taskId.trim()}';
+
+String mobileSshFileNotificationPayload(String operationId) =>
+    '$mobileSshFileNotificationPrefix${operationId.trim()}';
+
 String? mobileNotificationPayloadBasePath(String payload) {
   final value = payload.trim();
   if (_hasTypedNotificationId(value, mobileDocumentDraftNotificationPrefix) ||
       _hasTypedNotificationId(value, mobileDocumentUploadNotificationPrefix) ||
       _hasTypedNotificationId(value, mobileDocumentExportNotificationPrefix)) {
-    return '/documents';
+    // Long-running document work lands in the unified 后台 tab.
+    return '/tasks';
   }
   if (_hasTypedNotificationId(
     value,
@@ -44,7 +53,9 @@ String? mobileNotificationPayloadBasePath(String payload) {
   )) {
     return '/employees';
   }
-  if (_hasTypedNotificationId(value, mobileServerProfileNotificationPrefix)) {
+  if (_hasTypedNotificationId(value, mobileServerProfileNotificationPrefix) ||
+      _hasTypedNotificationId(value, mobileSshTaskNotificationPrefix) ||
+      _hasTypedNotificationId(value, mobileSshFileNotificationPrefix)) {
     return '/servers';
   }
   if (_hasTypedNotificationId(value, mobileAssistantTaskNotificationPrefix)) {
@@ -199,6 +210,7 @@ class MobileNotificationService {
     required String title,
     required String body,
     String? payload,
+    int? notificationId,
   }) async {
     await initialize();
     if (!_initialized) return;
@@ -215,7 +227,8 @@ class MobileNotificationService {
     );
     try {
       await _plugin.show(
-        id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        id: notificationId ??
+            DateTime.now().millisecondsSinceEpoch.remainder(100000),
         title: mobileNotificationDisplayText(title),
         body: mobileNotificationDisplayText(body),
         notificationDetails: details,
@@ -226,4 +239,68 @@ class MobileNotificationService {
       // stores when the platform provider is unavailable.
     }
   }
+
+  /// Ongoing/progress style notification (Android progress bar when [max] > 0).
+  /// Uses a stable [notificationId] so subsequent updates replace the same tray item.
+  Future<void> showTaskProgress({
+    required int notificationId,
+    required String title,
+    required String body,
+    int progress = 0,
+    int max = 0,
+    String? payload,
+    bool indeterminate = false,
+  }) async {
+    await initialize();
+    if (!_initialized) return;
+    final showBar = max > 0 || indeterminate;
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'maclaw_mobile_progress',
+        'MaClaw Mobile progress',
+        channelDescription: 'SSH download and long-running job progress',
+        importance: Importance.low,
+        priority: Priority.low,
+        onlyAlertOnce: true,
+        ongoing: true,
+        showProgress: showBar,
+        maxProgress: max > 0 ? max : 100,
+        progress: progress.clamp(0, max > 0 ? max : 100),
+        indeterminate: indeterminate || max <= 0,
+      ),
+      iOS: const DarwinNotificationDetails(
+        presentAlert: false,
+        presentBadge: false,
+        presentSound: false,
+      ),
+    );
+    try {
+      await _plugin.show(
+        id: notificationId,
+        title: mobileNotificationDisplayText(title),
+        body: mobileNotificationDisplayText(body),
+        notificationDetails: details,
+        payload: payload,
+      );
+    } on Object {
+      // Progress is best-effort; UI lists still show state.
+    }
+  }
+
+  Future<void> cancelNotification(int notificationId) async {
+    await initialize();
+    if (!_initialized) return;
+    try {
+      await _plugin.cancel(id: notificationId);
+    } on Object {
+      // ignore
+    }
+  }
+}
+
+/// Stable tray id for SSH file ops so progress updates replace the same item.
+int mobileSshFileNotificationId(String operationId) {
+  final id = operationId.trim();
+  if (id.isEmpty) return 42001;
+  return 42000 + (id.hashCode.abs() % 50000);
 }

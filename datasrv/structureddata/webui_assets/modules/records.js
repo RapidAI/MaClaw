@@ -15,7 +15,7 @@ PageModules.records = {
     ));
 
     // === Section 1: Search & Browse (Default Open) ===
-    container.appendChild(this.buildCollapsible("searchBrowse", "🔍 " + t("Search & Browse"), true, () => {
+    container.appendChild(this.buildCollapsible("searchBrowse", t("Search & Browse"), true, () => {
       const body = h("div", {});
 
       // Search form
@@ -42,15 +42,15 @@ PageModules.records = {
       body.appendChild(actions);
 
       // Results
-      body.appendChild(h("div", { id: "recordTable", class: "table-wrap mt-md" },
-        h("div", { class: "empty-state" }, "输入条件后点击"查询"")
+      body.appendChild(h("div", { id: "recordTable", class: "mt-md" },
+        App.emptyState("等待查询", "输入关键词或筛选条件后点击「查询」。")
       ));
 
       return body;
     }));
 
     // === Section 2: Record Editor (Default Open) ===
-    container.appendChild(this.buildCollapsible("recordEdit", "✏️ " + t("Record Editor"), true, () => {
+    container.appendChild(this.buildCollapsible("recordEdit", t("Record Editor"), true, () => {
       const body = h("div", {});
 
       const row1 = h("div", { class: "form-row" },
@@ -78,7 +78,7 @@ PageModules.records = {
     }));
 
     // === Section 3: Batch Operations (Collapsed) ===
-    container.appendChild(this.buildCollapsible("batchOps", "📦 " + t("Batch Operations"), false, () => {
+    container.appendChild(this.buildCollapsible("batchOps", t("Batch Operations"), false, () => {
       const body = h("div", {});
       body.appendChild(h("p", { class: "card-desc" }, "批量导入、更新或删除记录。适用于初始数据加载和定期同步。"));
 
@@ -112,7 +112,15 @@ PageModules.records = {
   query() { App.toast("正在查询..."); },
   exportCSV() { App.toast("导出 CSV..."); },
   exportJSONL() { App.toast("导出 JSONL..."); },
-  clearQuery() { document.getElementById("queryText").value = ""; document.getElementById("recordTable").innerHTML = '<div class="empty-state">输入条件后点击"查询"</div>'; },
+  clearQuery() {
+    const q = document.getElementById("queryText");
+    if (q) q.value = "";
+    const table = document.getElementById("recordTable");
+    if (table) {
+      table.innerHTML = "";
+      table.appendChild(App.emptyState("等待查询", "输入关键词或筛选条件后点击「查询」。"));
+    }
+  },
   validate() { App.toast("校验中..."); },
   save() { App.toast("保存中..."); },
   newRecord() { ["recordId", "recordTitle", "recordTags", "recordData"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; }); },

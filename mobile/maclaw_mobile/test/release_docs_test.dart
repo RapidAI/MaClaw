@@ -350,7 +350,7 @@ void main() {
       '`助手联网`, `文档草稿`, or `日志排障`',
       '`$documentsTab` tab',
       'Template selection fills a phone-friendly emergency skeleton',
-      '`$remoteTab` tab',
+      '`远程维护` button',
       '`$employeesTab` tab',
       '`$accountTab` tab',
       'programming tools, heavy workflows, admin consoles',
@@ -2235,10 +2235,11 @@ void main() {
     ]) {
       expect(evidence, contains(expected));
     }
-    final gateLogMatches = RegExp(r'release-gates-notification-pending-final-20260710\.log')
-        .allMatches(evidence)
-        .map((match) => match.group(0)!)
-        .toSet();
+    final gateLogMatches =
+        RegExp(r'release-gates-notification-pending-final-20260710\.log')
+            .allMatches(evidence)
+            .map((match) => match.group(0)!)
+            .toSet();
     expect(gateLogMatches, hasLength(1));
     final gateLogName = gateLogMatches.single;
     expect(handoff, contains('Current Local Evidence Snapshot'));

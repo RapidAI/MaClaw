@@ -261,41 +261,38 @@ func (c *chromeDevTools) capturePage(pageURL string, width, height int) (image.I
 	if _, err := client.call("Page.navigate", map[string]any{"url": pageURL}); err != nil {
 		return nil, err
 	}
+	// V2 modular console: auth shell renders first; setup policy text is filled by /api/v1/setup/status.
 	if err := client.waitFor(`document.readyState === "complete" &&
+		!!document.querySelector('[data-testid="auth-screen"]') &&
 		!!document.querySelector('[data-testid="admin-setup-panel"]') &&
 		!!document.querySelector('[data-testid="admin-password-policy"]') &&
-		!!document.querySelector('[data-testid="app-language-switch"]') &&
-		typeof document.querySelector('[data-testid="app-language-switch"]').oninput === 'function' &&
-		document.querySelector('[data-testid="admin-password-policy"]').textContent.trim().length > 10 &&
-		document.querySelector('#serviceStatus').classList.contains('ok')`, 15*time.Second); err != nil {
+		!!document.querySelector('[data-testid="language-switch"]') &&
+		!!document.querySelector('.auth-brand-panel') &&
+		document.querySelector('[data-testid="admin-password-policy"]').textContent.trim().length > 6 &&
+		document.querySelector('[data-testid="setup-status-text"]').textContent.trim().length > 2`, 15*time.Second); err != nil {
 		return nil, err
 	}
+	// Language switch uses button[data-lang] (not a select oninput).
 	if err := client.waitFor(`(() => {
-		const appLanguage = document.querySelector('[data-testid="app-language-switch"]');
-		if (!appLanguage) return false;
-		appLanguage.value = 'zh';
-		appLanguage.oninput({ target: appLanguage });
-		const moduleContext = document.querySelector('#moduleContext')?.textContent || '';
-		const summaryLabel = document.querySelector('.summary-label')?.textContent || '';
-		const serviceStatus = document.querySelector('#serviceStatus')?.textContent || '';
-		const hubState = document.querySelector('#hubRegistrationState')?.textContent || '';
+		const zhBtn = document.querySelector('[data-testid="language-switch"] [data-lang="zh"]');
+		const enBtn = document.querySelector('[data-testid="language-switch"] [data-lang="en"]');
+		if (!zhBtn || !enBtn) return false;
+		enBtn.click();
+		zhBtn.click();
+		const policy = document.querySelector('[data-testid="admin-password-policy"]')?.textContent || '';
+		const status = document.querySelector('[data-testid="setup-status-text"]')?.textContent || '';
+		const title = document.querySelector('#authTitle')?.textContent || '';
 		const passed = document.documentElement.lang === 'zh-CN' &&
-			document.querySelector('#language')?.value === 'zh' &&
-			!moduleContext.includes('Dataset') &&
-			!summaryLabel.includes('Engine') &&
-			!serviceStatus.includes('Service online') &&
-			!['Registered', 'Configured', 'Not configured'].includes(hubState) &&
-			typeof appLanguage.onchange === 'function';
+			zhBtn.classList.contains('active') &&
+			policy.length > 6 &&
+			status.length > 2 &&
+			!title.includes('Administrator Login');
 		return passed || JSON.stringify({
-			appLanguage: appLanguage.value,
-			loginLanguage: document.querySelector('#language')?.value,
 			documentLang: document.documentElement.lang,
-			moduleContext,
-			summaryLabel,
-			serviceStatus,
-			hubState,
-			onchange: typeof appLanguage.onchange,
-			oninput: typeof appLanguage.oninput
+			policy,
+			status,
+			title,
+			zhActive: zhBtn.classList.contains('active')
 		});
 	})()`, 5*time.Second); err != nil {
 		return nil, err

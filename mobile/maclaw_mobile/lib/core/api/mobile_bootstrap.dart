@@ -1,3 +1,10 @@
+/// Hub-declared first-tab mode. Prefer server value; client may derive when empty.
+const mobileAssistantModeOfficial = 'official';
+const mobileAssistantModeDigitalTwin = 'digital_twin';
+
+/// Default free-tier document storage quota (100 MiB).
+const mobileDefaultDocumentQuotaBytes = 100 * 1024 * 1024;
+
 class MobileBootstrap {
   final MobileUser user;
   final MobileServices services;
@@ -5,6 +12,9 @@ class MobileBootstrap {
   final MobileLlmAccess llmAccess;
   final MobileFeatures features;
   final MobileLimits limits;
+  final MobileEntitlements entitlements;
+  /// `official` | `digital_twin` | empty (derive on client).
+  final String assistantMode;
 
   const MobileBootstrap({
     required this.user,
@@ -25,6 +35,8 @@ class MobileBootstrap {
     ),
     required this.features,
     required this.limits,
+    this.entitlements = const MobileEntitlements(),
+    this.assistantMode = '',
   });
 
   factory MobileBootstrap.fromJson(Map<String, dynamic> json) {
@@ -49,6 +61,10 @@ class MobileBootstrap {
       limits: MobileLimits.fromJson(
         Map<String, dynamic>.from(json['limits'] as Map? ?? const {}),
       ),
+      entitlements: MobileEntitlements.fromJson(
+        Map<String, dynamic>.from(json['entitlements'] as Map? ?? const {}),
+      ),
+      assistantMode: (json['assistant_mode'] as String? ?? '').trim(),
     );
   }
 
@@ -67,6 +83,8 @@ class MobileBootstrap {
       llmAccess: llmAccess.withCreditsAccount(creditsAccount),
       features: features,
       limits: limits,
+      entitlements: entitlements,
+      assistantMode: assistantMode,
     );
   }
 }
@@ -290,8 +308,13 @@ class MobileServices {
   final String modelsPath;
   final String searchPath;
   final String documentsPath;
+  final String documentsQuotaPath;
+  final String entitlementsCapsPath;
   final String digitalEmployeesPath;
   final String realtimePath;
+  final String pushDevicesPath;
+  final String pushPendingPath;
+  final String pushPendingAckPath;
 
   const MobileServices({
     required this.hubStatus,
@@ -303,8 +326,13 @@ class MobileServices {
     required this.modelsPath,
     required this.searchPath,
     required this.documentsPath,
+    this.documentsQuotaPath = '/api/mobile/documents/quota',
+    this.entitlementsCapsPath = '/api/mobile/entitlements/caps',
     required this.digitalEmployeesPath,
     required this.realtimePath,
+    this.pushDevicesPath = '/api/mobile/push/devices',
+    this.pushPendingPath = '/api/mobile/push/pending',
+    this.pushPendingAckPath = '/api/mobile/push/pending/ack',
   });
 
   bool get realtimeConfigured => realtimePath.trim().isNotEmpty;
@@ -321,8 +349,18 @@ class MobileServices {
       modelsPath: json['models_path'] as String? ?? '',
       searchPath: json['search_path'] as String? ?? '',
       documentsPath: json['documents_path'] as String? ?? '',
+      documentsQuotaPath: json['documents_quota_path'] as String? ??
+          '/api/mobile/documents/quota',
+      entitlementsCapsPath: json['entitlements_caps_path'] as String? ??
+          '/api/mobile/entitlements/caps',
       digitalEmployeesPath: json['digital_employees_path'] as String? ?? '',
       realtimePath: json['realtime_path'] as String? ?? '/api/mobile/realtime',
+      pushDevicesPath:
+          json['push_devices_path'] as String? ?? '/api/mobile/push/devices',
+      pushPendingPath:
+          json['push_pending_path'] as String? ?? '/api/mobile/push/pending',
+      pushPendingAckPath: json['push_pending_ack_path'] as String? ??
+          '/api/mobile/push/pending/ack',
     );
   }
 }
@@ -331,20 +369,28 @@ class MobileFeatures {
   final bool assistant;
   final bool search;
   final bool documents;
+  /// Long-running task center (bottom tab "后台").
+  final bool tasks;
   final bool backendSshSessions;
   final bool digitalEmployees;
   final bool pushNotifications;
+  /// Offline completion queue (GET pending on resume); always preferred on.
+  final bool pushPendingSync;
 
   const MobileFeatures({
     bool? assistant,
     required this.search,
     required this.documents,
+    bool? tasks,
     bool? backendSshSessions,
     bool? localSsh,
     required this.digitalEmployees,
     required this.pushNotifications,
+    bool? pushPendingSync,
   })  : assistant = assistant ?? true,
-        backendSshSessions = backendSshSessions ?? localSsh ?? true;
+        tasks = tasks ?? true,
+        backendSshSessions = backendSshSessions ?? localSsh ?? true,
+        pushPendingSync = pushPendingSync ?? true;
 
   /// Backward-compatible alias for older Hub bootstrap payloads that used
   /// `local_ssh`. The mobile feature is GUI/agent-managed backend SSH sessions.
@@ -355,6 +401,7 @@ class MobileFeatures {
       assistant: json['assistant'] as bool? ?? true,
       search: json['search'] as bool? ?? true,
       documents: json['documents'] as bool? ?? true,
+      tasks: json['tasks'] as bool? ?? true,
       // Prefer the GUI/agent-managed backend session flag. Accept `local_ssh`
       // only so older Hubs do not hide the remote-management tab.
       backendSshSessions: json['backend_ssh_sessions'] as bool? ??
@@ -363,6 +410,66 @@ class MobileFeatures {
           true,
       digitalEmployees: json['digital_employees'] as bool? ?? true,
       pushNotifications: json['push_notifications'] as bool? ?? false,
+      pushPendingSync: json['push_pending_sync'] as bool? ?? true,
+    );
+  }
+}
+
+/// Plan and feature gates for Mobile (storage / agent / shared employees).
+/// Caps mirror Hub `mobilePlanCapsFor` (document quota, export concurrency, etc.).
+class MobileEntitlements {
+  final bool mobileOfficial;
+  final bool mobileAgent;
+  final bool documentAi;
+  final bool sharedEmployees;
+  final bool hubSshExec;
+  final String plan;
+  final bool serviceActive;
+  final double creditsAvailable;
+  final double creditsRemaining;
+  final int serviceGroupCount;
+  final bool hasServiceCardGrant;
+  final int documentQuotaBytes;
+  final int maxUploadBytes;
+  final int maxExportJobs;
+  final int hubFileDownloadMaxBytes;
+
+  const MobileEntitlements({
+    this.mobileOfficial = false,
+    this.mobileAgent = false,
+    this.documentAi = false,
+    this.sharedEmployees = false,
+    this.hubSshExec = false,
+    this.plan = 'free',
+    this.serviceActive = false,
+    this.creditsAvailable = 0,
+    this.creditsRemaining = 0,
+    this.serviceGroupCount = 0,
+    this.hasServiceCardGrant = false,
+    this.documentQuotaBytes = 0,
+    this.maxUploadBytes = 0,
+    this.maxExportJobs = 0,
+    this.hubFileDownloadMaxBytes = 0,
+  });
+
+  factory MobileEntitlements.fromJson(Map<String, dynamic> json) {
+    final planRaw = (json['plan'] as String? ?? 'free').trim();
+    return MobileEntitlements(
+      mobileOfficial: json['mobile_official'] as bool? ?? false,
+      mobileAgent: json['mobile_agent'] as bool? ?? false,
+      documentAi: json['document_ai'] as bool? ?? false,
+      sharedEmployees: json['shared_employees'] as bool? ?? false,
+      hubSshExec: json['hub_ssh_exec'] as bool? ?? false,
+      plan: planRaw.isEmpty ? 'free' : planRaw,
+      serviceActive: json['service_active'] as bool? ?? false,
+      creditsAvailable: _doubleValue(json['credits_available']),
+      creditsRemaining: _doubleValue(json['credits_remaining']),
+      serviceGroupCount: _intValue(json['service_group_count']),
+      hasServiceCardGrant: json['has_service_card_grant'] as bool? ?? false,
+      documentQuotaBytes: _intValue(json['document_quota_bytes']),
+      maxUploadBytes: _intValue(json['max_upload_bytes']),
+      maxExportJobs: _intValue(json['max_export_jobs']),
+      hubFileDownloadMaxBytes: _intValue(json['hub_file_download_max_bytes']),
     );
   }
 }
@@ -370,16 +477,26 @@ class MobileFeatures {
 class MobileLimits {
   final int maxUploadBytes;
   final int maxExportJobs;
+  final int documentQuotaBytes;
+  final int documentQuotaUsedBytes;
 
   const MobileLimits({
     required this.maxUploadBytes,
     required this.maxExportJobs,
+    this.documentQuotaBytes = 0,
+    this.documentQuotaUsedBytes = 0,
   });
+
+  int get effectiveDocumentQuotaBytes => documentQuotaBytes > 0
+      ? documentQuotaBytes
+      : mobileDefaultDocumentQuotaBytes;
 
   factory MobileLimits.fromJson(Map<String, dynamic> json) {
     return MobileLimits(
       maxUploadBytes: json['max_upload_bytes'] as int? ?? 0,
       maxExportJobs: json['max_export_jobs'] as int? ?? 0,
+      documentQuotaBytes: json['document_quota_bytes'] as int? ?? 0,
+      documentQuotaUsedBytes: json['document_quota_used_bytes'] as int? ?? 0,
     );
   }
 }
@@ -445,4 +562,10 @@ List<String> _stringList(Object? value) {
 double _doubleValue(Object? value) {
   if (value is num) return value.toDouble();
   return double.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+int _intValue(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? 0;
 }

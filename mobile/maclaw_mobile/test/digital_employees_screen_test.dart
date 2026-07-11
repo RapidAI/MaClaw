@@ -455,6 +455,7 @@ void main() {
     expect(find.byType(DigitalEmployeeChatScreen), findsOneWidget);
     expect(find.byType(TextField), findsOneWidget);
     expect(find.textContaining('Hub'), findsWidgets);
+    expect(find.byTooltip('添加附件'), findsOneWidget);
     Navigator.of(tester.element(find.byType(DigitalEmployeeChatScreen))).pop();
     await tester.pumpAndSettle();
 

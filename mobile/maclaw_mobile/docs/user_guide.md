@@ -31,8 +31,11 @@ handoff.
    discovered Hub.
 3. After SMS verification succeeds, a new phone number is registered and signed
    in automatically; an existing phone number signs in to that account.
-4. The app then opens the multi-tab assistant and uses the verified
-   `phone:<digits>` account's MaClaw official credits for LLM calls.
+4. If the verified account has usable MaClaw official LLM access, the app opens
+   the multi-tab assistant and uses the verified `phone:<digits>` account's official
+   credits for LLM calls. If LLM access is not yet available, the app first
+   opens the focused LLM setup screen; after configuration it enters the
+   assistant.
 
 The app does not request notification permission during startup or phone
 registration/login. After signing in, request task and SSH notifications from
@@ -127,9 +130,10 @@ Complex desktop-grade Office layout editing is intentionally out of scope.
 
 ## Maintain Servers
 
-Use the `远程` tab for GUI-like backend SSH session management. Mobile should
-control sessions created and managed by an agent/backend session manager, not
-act as a standalone phone-local SSH terminal client.
+Open `AI助手` and tap the `远程维护` button for GUI-like backend SSH session
+management. Notification taps can also return directly to a known remote task.
+Mobile should control sessions created and managed by an agent/backend session
+manager, not act as a standalone phone-local SSH terminal client.
 
 The mobile foreground assistant acts as a foreground agent for emergency
 maintenance: it can help choose a server profile, explain a problem, and create
@@ -183,6 +187,9 @@ Use the `员工` tab to access remote server or desktop capabilities.
 
 - Refresh the employee list.
 - Open an online digital employee and submit a task.
+- Use the employee chat composer for text, voice, photos, and documents. Photos
+  and documents are uploaded through the Hub document-parse flow; the phone
+  does not send an unreadable local path to the remote employee.
 - Choose a mobile task type so the remote employee receives a structured
   emergency task brief with phone-friendly output requirements.
 - The submitted task context includes the mobile emergency source, remote

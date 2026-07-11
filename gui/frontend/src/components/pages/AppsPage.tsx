@@ -12915,7 +12915,7 @@ const StudioSkillPicker = ({
                 </div>
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
-                {(visibleMarket.length > 0 || marketEmpty || currentQueryIsSearching || (marketSearchIsCurrent && searchState === 'error')) && <div className="apps-skill-picker__group apps-skill-picker__group--market">{zh ? 'SkillMarket / Hub' : 'SkillMarket / Hub'}</div>}
+                {(visibleMarket.length > 0 || marketEmpty || currentQueryIsSearching || (marketSearchIsCurrent && searchState === 'error')) && <div className="apps-skill-picker__group apps-skill-picker__group--market">Hub / HubCenter</div>}
                 {currentQueryIsSearching && <div className="apps-skill-picker__empty">{zh ? '\u641c\u7d22\u4e2d...' : 'Searching...'}</div>}
                 {visibleMarket.map((choice) => (
                     <button

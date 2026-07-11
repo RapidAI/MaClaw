@@ -1,17 +1,25 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/api/mobile_realtime_client.dart';
 import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../shared/surface.dart';
+import '../auth/session_controller.dart';
 import '../digital_employees/digital_employee.dart';
 import '../digital_employees/digital_employees_controller.dart';
 import 'server_command.dart';
 import 'server_profile.dart';
 import 'servers_controller.dart';
 import 'ssh_risk.dart';
+import 'ssh_vault_dialog.dart';
 
 class ServersScreen extends ConsumerStatefulWidget {
   const ServersScreen({super.key});
@@ -123,7 +131,7 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
     final profiles = ref.watch(serverProfilesProvider);
     return ScreenScaffold(
       title: '应急服务器',
-      subtitle: '通过 Hub 让 MaClaw GUI/agent 接管后台 SSH 会话，AI 只解释日志和生成命令草案。',
+      subtitle: 'Hub 凭据可走 hub_exec；否则由桌面 agent claim。AI 只解释日志与命令草案。',
       trailing: IconButton.filledTonal(
         tooltip: '同步服务器档案',
         onPressed: _refreshServerProfiles,
@@ -134,6 +142,17 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
           profiles: profiles,
           onRefresh: _refreshServerProfiles,
           onClearCache: _clearCachedServer,
+          onManageVault: (profile) async {
+            final messenger = ScaffoldMessenger.of(context);
+            final ok = await showHubSSHVaultDialog(context, ref, profile);
+            if (!mounted) return;
+            if (ok) {
+              messenger.showSnackBar(
+                const SnackBar(content: Text('Hub 凭据已更新')),
+              );
+              setState(() {});
+            }
+          },
         ),
         const SizedBox(height: 12),
         _BackendSSHSessionCard(
@@ -181,21 +200,55 @@ class _ServersScreenState extends ConsumerState<ServersScreen> {
   }
 }
 
-class _ServerProfileCard extends StatelessWidget {
+class _ServerProfileCard extends ConsumerStatefulWidget {
   final AsyncValue<List<ServerProfile>> profiles;
   final VoidCallback onRefresh;
   final Future<void> Function(ServerProfile profile) onClearCache;
+  final Future<void> Function(ServerProfile profile) onManageVault;
 
   const _ServerProfileCard({
     required this.profiles,
     required this.onRefresh,
     required this.onClearCache,
+    required this.onManageVault,
   });
 
+  @override
+  ConsumerState<_ServerProfileCard> createState() => _ServerProfileCardState();
+}
+
+class _ServerProfileCardState extends ConsumerState<_ServerProfileCard> {
+  Map<String, bool> _vaultFlags = {};
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshVaultFlags());
+  }
+
+  Future<void> _refreshVaultFlags() async {
+    final client = ref.read(apiClientProvider);
+    if (client == null) return;
+    try {
+      final items = await client.listSSHVault();
+      if (!mounted) return;
+      setState(() {
+        _vaultFlags = {
+          for (final item in items)
+            if (item.profileId.isNotEmpty) item.profileId: item.hasSecret,
+        };
+      });
+    } on Object {
+      // Best-effort; list may be unavailable on older Hubs.
+    }
+  }
+
   String _serverSubtitle(ServerProfile server) {
+    final hasVault = _vaultFlags[server.id] == true;
     final parts = [
       '${server.username}@${server.host}:${server.port}',
       serverAuthModeLabel(server.authMode),
+      if (hasVault) 'Hub密钥✓',
       if ((server.tag ?? '').trim().isNotEmpty) server.tag!.trim(),
       if ((server.note ?? '').trim().isNotEmpty) server.note!.trim(),
     ];
@@ -211,33 +264,39 @@ class _ServerProfileCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.dns_outlined, color: scheme.primary),
-                const SizedBox(width: 8),
-                Text(
-                  '后台服务器档案',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ],
+            const SectionHeader(
+              icon: Icons.dns_outlined,
+              title: '后台服务器档案',
             ),
             const SizedBox(height: 12),
-            const Text(
-              '服务器档案来自官方 Hub 同步的 MaClaw GUI/agent 授权配置。'
-              '手机只发起后台会话、发送确认后的输入并查看输出，不录入或直连 SSH 凭据。',
+            Text(
+              '服务器档案来自 Hub 同步的 MaClaw GUI/agent 配置。'
+              '默认由桌面 agent 执行（desktop_exec）；若在 Hub 凭据库存有密钥，'
+              '连接时自动走 hub_exec（不依赖 PC 在线）。密钥仅加密存于 Hub，不下发手机。',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    height: 1.4,
+                  ),
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: onRefresh,
+              onPressed: () {
+                widget.onRefresh();
+                unawaited(_refreshVaultFlags());
+              },
               icon: const Icon(Icons.sync),
               label: const Text('同步服务器档案'),
             ),
-            profiles.when(
+            widget.profiles.when(
               data: (items) => items.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.only(top: 12),
-                      child: Text(
-                        '暂无可用服务器档案。请在 MaClaw GUI 配置 SSH 主机并保持桌面/agent 在线。',
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: StatusBanner(
+                        tone: StatusTone.info,
+                        icon: Icons.dns_outlined,
+                        title: '暂无可用服务器档案',
+                        message:
+                            '请在 MaClaw GUI 配置 SSH 主机并保持桌面/agent 在线。',
                       ),
                     )
                   : Column(
@@ -247,22 +306,61 @@ class _ServerProfileCard extends StatelessWidget {
                           ListTile(
                             dense: true,
                             contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.storage_outlined),
+                            leading: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: (_vaultFlags[server.id] == true
+                                        ? scheme.tertiaryContainer
+                                        : scheme.primaryContainer)
+                                    .withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Icon(
+                                  _vaultFlags[server.id] == true
+                                      ? Icons.key_outlined
+                                      : Icons.storage_outlined,
+                                  size: 20,
+                                ),
+                              ),
+                            ),
                             title: Text(server.name),
                             subtitle: Text(_serverSubtitle(server)),
-                            trailing: IconButton(
-                              tooltip: '清除本机缓存',
-                              onPressed: () => onClearCache(server),
-                              icon:
-                                  const Icon(Icons.cleaning_services_outlined),
+                            trailing: Wrap(
+                              spacing: 0,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Hub 凭据（hub_exec）',
+                                  onPressed: () async {
+                                    await widget.onManageVault(server);
+                                    await _refreshVaultFlags();
+                                  },
+                                  icon: const Icon(Icons.vpn_key_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: '清除本机缓存',
+                                  onPressed: () => widget.onClearCache(server),
+                                  icon: const Icon(
+                                    Icons.cleaning_services_outlined,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                       ],
                     ),
-              error: (error, _) => Text('服务器配置加载失败：$error'),
+              error: (error, _) => Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: StatusBanner(
+                  tone: StatusTone.danger,
+                  icon: Icons.error_outline,
+                  title: '服务器配置加载失败',
+                  message: '$error',
+                ),
+              ),
               loading: () => const Padding(
                 padding: EdgeInsets.only(top: 12),
-                child: LinearProgressIndicator(),
+                child: LoadingCard(label: '正在同步服务器档案…'),
               ),
             ),
           ],
@@ -439,6 +537,7 @@ class _BackendSSHSessionCardState
   String? _lastBackendSessionId;
   String? _activeManagedBackendSessionId;
   String? _activeClaimedBy;
+  String _activeExecMode = '';
   int _lastRealtimeOutputSeq = 0;
   ServerProfile? _activeProfile;
   _MobileSSHConnectionState _connectionState =
@@ -449,6 +548,10 @@ class _BackendSSHSessionCardState
       _connectionState == _MobileSSHConnectionState.connecting;
   bool get _connected =>
       _connectionState == _MobileSSHConnectionState.connected;
+  bool get _isHubExec =>
+      _activeExecMode == 'hub_exec' ||
+      _activeExecMode == 'hub' ||
+      _activeExecMode == 'server';
 
   ServerProfile? get activeProfile => _activeProfile;
 
@@ -458,7 +561,7 @@ class _BackendSSHSessionCardState
   void initState() {
     super.initState();
     _writeBackendSessionOutput(
-      '选择服务器后，通过 Hub 请求 MaClaw GUI/agent 创建或附着后台 SSH 会话。\r\n',
+      '选择服务器后创建后台 SSH 会话：有 Hub 凭据时走 hub_exec（不依赖 PC），否则由 GUI/agent claim。\r\n',
       capture: false,
     );
     final initialOutput = ref.read(mobileBackendSshInitialOutputProvider);
@@ -500,16 +603,35 @@ class _BackendSSHSessionCardState
     });
     try {
       final controller = ref.read(backendSshSessionsProvider.notifier);
+      // Prefer Hub vault execution when a secret is stored (no desktop required).
+      var execMode = '';
+      try {
+        final client = ref.read(apiClientProvider);
+        if (client != null) {
+          final vault = await client.getSSHVaultStatus(selectedProfile.id);
+          if (vault.hasSecret) {
+            execMode = 'hub_exec';
+          }
+        }
+      } on Object {
+        // Fall back to desktop_exec claim path.
+      }
       final session = preferredProfileId == null ||
               _lastBackendSessionId == null
-          ? await controller.createSession(serverProfileId: selectedProfile.id)
+          ? await controller.createSession(
+              serverProfileId: selectedProfile.id,
+              execMode: execMode,
+            )
           : await controller.reconnectSession(_lastBackendSessionId!);
       _lastBackendSessionId = session.sessionId;
       _activeManagedBackendSessionId = mobileBackendSessionHandoffId(session);
       _activeClaimedBy = mobileBackendSessionClaimedBy(session);
+      _activeExecMode =
+          session.execMode.trim().isNotEmpty ? session.execMode : execMode;
       _lastRealtimeOutputSeq = session.outputSeq;
+      final modeLabel = session.isHubExec ? 'hub_exec 直连' : 'desktop_exec 委托';
       _writeBackendSessionOutput(
-        '已创建/附着后台 SSH 会话 ${session.sessionId} · ${selectedProfile.name}\r\n',
+        '已创建/附着后台 SSH 会话 ${session.sessionId} · ${selectedProfile.name} · $modeLabel\r\n',
       );
       if (session.recentOutput.trim().isNotEmpty) {
         _writeBackendSessionOutput(session.recentOutput);
@@ -567,10 +689,16 @@ class _BackendSSHSessionCardState
         session,
         fallback: mobileBackendSessionClaimedBy(existing),
       );
+      _activeExecMode = session.execMode.trim().isNotEmpty
+          ? session.execMode
+          : existing.execMode;
       _lastRealtimeOutputSeq = session.outputSeq;
+      final modeLabel = session.isHubExec || existing.isHubExec
+          ? 'hub_exec 直连'
+          : 'desktop_exec 委托';
       _writeBackendSessionOutput(
         '已附着后台 SSH 会话 ${session.sessionId}'
-        '${selected == null ? '' : ' · ${selected.name}'}\r\n',
+        '${selected == null ? '' : ' · ${selected.name}'} · $modeLabel\r\n',
       );
       final output = session.recentOutput.trim().isNotEmpty
           ? session.recentOutput
@@ -619,6 +747,7 @@ class _BackendSSHSessionCardState
         _lastRealtimeOutputSeq = 0;
         _activeManagedBackendSessionId = null;
         _activeClaimedBy = null;
+        _activeExecMode = '';
       });
     }
   }
@@ -639,7 +768,23 @@ class _BackendSSHSessionCardState
         session,
         fallback: _activeClaimedBy,
       );
-      _writeBackendSessionOutput('已请求中断后台 SSH 会话 $sessionId。\r\n');
+      if (session.execMode.trim().isNotEmpty) {
+        _activeExecMode = session.execMode;
+      }
+      if (session.recentOutput.trim().isNotEmpty &&
+          session.outputSeq > _lastRealtimeOutputSeq) {
+        _writeBackendSessionOutput(
+          session.outputChunk.isNotEmpty
+              ? session.outputChunk
+              : session.recentOutput,
+        );
+        _lastRealtimeOutputSeq = session.outputSeq;
+      }
+      _writeBackendSessionOutput(
+        _isHubExec || session.isHubExec
+            ? '已向 hub_exec 交互 shell 发送中断 (Ctrl-C)。\r\n'
+            : '已请求中断后台 SSH 会话 $sessionId。\r\n',
+      );
     } catch (error) {
       _writeBackendSessionOutput('后台 SSH 会话中断请求失败：$error\r\n');
       if (mounted) {
@@ -650,10 +795,17 @@ class _BackendSSHSessionCardState
 
   String _statusLabel() {
     return switch (_connectionState) {
-      _MobileSSHConnectionState.connecting => '后台处理中',
-      _MobileSSHConnectionState.connected => 'GUI/agent 已接管',
-      _MobileSSHConnectionState.disconnected => '未接管',
+      _MobileSSHConnectionState.connecting =>
+        _isHubExec ? 'Hub 连接中' : '后台处理中',
+      _MobileSSHConnectionState.connected =>
+        _isHubExec ? 'Hub 直连就绪' : 'GUI/agent 已接管',
+      _MobileSSHConnectionState.disconnected =>
+        _isHubExec ? '已断开' : '未接管',
     };
+  }
+
+  String _sessionCardTitle() {
+    return _isHubExec ? 'Hub 直连 SSH 会话' : 'GUI/agent 后台 SSH 会话';
   }
 
   String? _reconnectProfileId(List<ServerProfile> profiles) {
@@ -674,7 +826,6 @@ class _BackendSSHSessionCardState
 
   void _writeBackendSessionOutput(String data, {bool capture = true}) {
     if (!capture || data.isEmpty) return;
-    final wasEmpty = _capturedOutput.isEmpty;
     _capturedOutput.write(data);
     final text = _capturedOutput.toString();
     if (text.length > _maxCapturedOutputChars) {
@@ -682,7 +833,8 @@ class _BackendSSHSessionCardState
         ..clear()
         ..write(text.substring(text.length - _maxCapturedOutputChars));
     }
-    if (wasEmpty && mounted) {
+    // Always rebuild so progressive hub_exec / realtime chunks paint.
+    if (mounted) {
       setState(() {});
     }
   }
@@ -701,10 +853,17 @@ class _BackendSSHSessionCardState
     final sessionId = _lastBackendSessionId?.trim() ?? '';
     final backendSessionId = _activeManagedBackendSessionId?.trim() ?? '';
     final claimedBy = _activeClaimedBy?.trim() ?? '';
-    if (sessionId.isEmpty ||
-        backendSessionId.isEmpty ||
-        claimedBy.isEmpty ||
-        _lastRealtimeOutputSeq <= 0) {
+    if (sessionId.isEmpty || _lastRealtimeOutputSeq <= 0) {
+      return null;
+    }
+    if (_isHubExec) {
+      return 'Hub hub_exec 会话证据：Hub session $sessionId · '
+          'exec_mode hub_exec · '
+          'backend_session_id ${backendSessionId.isEmpty ? 'hub-exec' : backendSessionId} · '
+          'claimed_by ${claimedBy.isEmpty ? 'hub' : claimedBy} · '
+          'output_seq $_lastRealtimeOutputSeq';
+    }
+    if (backendSessionId.isEmpty || claimedBy.isEmpty) {
       return null;
     }
     return 'GUI/agent 后台会话证据：Hub session $sessionId · '
@@ -712,23 +871,65 @@ class _BackendSSHSessionCardState
         'claimed_by $claimedBy · output_seq $_lastRealtimeOutputSeq';
   }
 
+  /// Avoid duplicating text already painted via realtime progressive chunks.
+  void _appendSessionOutputIfNew(String data) {
+    final chunk = data;
+    if (chunk.isEmpty) return;
+    final existing = _capturedOutput.toString();
+    final trimmed = chunk.trim();
+    if (trimmed.isEmpty) return;
+    if (existing.contains(trimmed)) return;
+    final probeLen = trimmed.length > 48 ? 48 : trimmed.length;
+    final probe = trimmed.substring(0, probeLen);
+    if (probe.isNotEmpty && existing.contains(probe)) return;
+    _writeBackendSessionOutput(
+      chunk.endsWith('\n') || chunk.endsWith('\r') ? chunk : '$chunk\r\n',
+    );
+  }
+
+  /// Prefer realtime WS for hub_exec (lower latency); fall back to HTTP.
+  bool _trySendPtyOverRealtime({
+    required String sessionId,
+    required String input,
+    bool raw = false,
+  }) {
+    if (!_isHubExec) return false;
+    final sender = ref.read(mobileRealtimeSenderProvider);
+    if (sender == null) return false;
+    final client = ref.read(mobileRealtimeClientProvider);
+    sender(
+      client.encodePtyInput(
+        sessionId: sessionId,
+        input: input,
+        raw: raw,
+      ),
+    );
+    return true;
+  }
+
   Future<bool> sendCommand(String command) async {
     final payload = backendSshCommandPayload(command);
     final sessionId = _lastBackendSessionId;
     if (!_connected || payload == null || sessionId == null) return false;
     try {
+      if (_trySendPtyOverRealtime(sessionId: sessionId, input: payload)) {
+        // Output arrives via ssh_session realtime chunks + pty_ack.
+        return true;
+      }
       final result =
           await ref.read(backendSshSessionsProvider.notifier).sendInput(
                 sessionId: sessionId,
                 input: payload,
               );
       if (result.output.trim().isNotEmpty) {
-        _writeBackendSessionOutput(result.output);
-      } else {
+        // hub_exec may already have streamed output via realtime.
+        _appendSessionOutputIfNew(result.output);
+      } else if (!_isHubExec) {
         _writeBackendSessionOutput(
           '命令已投递到后台 SSH 会话 $sessionId，等待 GUI/agent 处理。\r\n',
         );
       }
+      // hub_exec with empty body: progressive stream may still have written output.
       return true;
     } catch (error) {
       _writeBackendSessionOutput('后台 SSH 命令投递失败：$error\r\n');
@@ -738,6 +939,57 @@ class _BackendSSHSessionCardState
       return false;
     }
   }
+
+  /// hub_exec interactive PTY: raw control / key without forced trailing newline.
+  Future<void> _sendRawKey(String key, String label) async {
+    final sessionId = _lastBackendSessionId;
+    if (!_connected || !_isHubExec || sessionId == null) return;
+    try {
+      if (_trySendPtyOverRealtime(
+        sessionId: sessionId,
+        input: key,
+        raw: true,
+      )) {
+        return;
+      }
+      final result =
+          await ref.read(backendSshSessionsProvider.notifier).sendInput(
+                sessionId: sessionId,
+                input: key,
+                raw: true,
+              );
+      // Local echo of key label only if stream didn't already show the header.
+      _appendSessionOutputIfNew('$label (raw PTY)\r\n');
+      if (result.output.trim().isNotEmpty) {
+        _appendSessionOutputIfNew(result.output);
+      }
+    } catch (error) {
+      _writeBackendSessionOutput('raw $label 失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+    }
+  }
+
+  Future<void> _sendRawCtrlC() =>
+      _sendRawKey(String.fromCharCode(0x03), '^C');
+
+  Future<void> _sendRawCtrlD() =>
+      _sendRawKey(String.fromCharCode(0x04), '^D');
+
+  Future<void> _sendRawTab() => _sendRawKey('\t', 'Tab');
+
+  Future<void> _sendRawEnter() => _sendRawKey('\n', 'Enter');
+
+  Future<void> _sendRawEsc() => _sendRawKey('\x1b', 'Esc');
+
+  Future<void> _sendRawArrowUp() => _sendRawKey('\x1b[A', '↑');
+
+  Future<void> _sendRawArrowDown() => _sendRawKey('\x1b[B', '↓');
+
+  Future<void> _sendRawArrowRight() => _sendRawKey('\x1b[C', '→');
+
+  Future<void> _sendRawArrowLeft() => _sendRawKey('\x1b[D', '←');
 
   Future<bool> startBackgroundTask(String command) async {
     final text = command.trim();
@@ -750,12 +1002,14 @@ class _BackendSSHSessionCardState
                 command: text,
                 tailLines: 80,
               );
+      final who = _isHubExec ? 'Hub' : 'GUI/agent';
       _writeBackendSessionOutput(
-        '已请求 GUI/agent 后台任务 ${task.taskId}'
+        '已请求 $who 后台任务 ${task.taskId}'
         '${task.status.trim().isEmpty ? '' : ' · ${task.status.trim()}'}\r\n',
       );
       if (task.logTail.trim().isNotEmpty) {
-        _writeBackendSessionOutput(task.logTail);
+        // hub_exec may stream the same body into the session transcript.
+        _appendSessionOutputIfNew(task.logTail);
       }
       return true;
     } catch (error) {
@@ -774,8 +1028,9 @@ class _BackendSSHSessionCardState
       final tasks = await ref
           .read(backendSshTasksProvider.notifier)
           .refreshForSession(sessionId);
+      final who = _isHubExec ? 'Hub' : 'GUI/agent';
       _writeBackendSessionOutput(
-        '已刷新 GUI/agent 后台任务 ${tasks.length} 个。\r\n',
+        '已刷新 $who 后台任务 ${tasks.length} 个。\r\n',
       );
     } catch (error) {
       _writeBackendSessionOutput('后台任务刷新失败：$error\r\n');
@@ -796,8 +1051,9 @@ class _BackendSSHSessionCardState
             timeoutSeconds: 30,
             tailLines: 120,
           );
+      final who = _isHubExec ? 'Hub' : 'GUI/agent';
       _writeBackendSessionOutput(
-        '后台任务 ${updated.taskId} 等待结果：${updated.status}\r\n',
+        '$who 任务 ${updated.taskId} 状态：${updated.status}\r\n',
       );
       if (updated.logTail.trim().isNotEmpty) {
         _writeBackendSessionOutput(updated.logTail);
@@ -811,6 +1067,7 @@ class _BackendSSHSessionCardState
   }
 
   Future<void> _killBackgroundTask(MobileBackendSSHTask task) async {
+    // hub_exec: Hub cancels in-flight Run; desktop_exec still queues for GUI/agent.
     final sessionId = _lastBackendSessionId;
     final taskId = task.taskId.trim();
     if (!_connected || sessionId == null || taskId.isEmpty) return;
@@ -819,8 +1076,9 @@ class _BackendSSHSessionCardState
             sessionId: sessionId,
             taskId: taskId,
           );
+      final who = _isHubExec ? 'Hub' : 'GUI/agent';
       _writeBackendSessionOutput(
-        '已请求终止后台任务 ${updated.taskId}：${updated.status}\r\n',
+        '已请求 $who 终止任务 ${updated.taskId}：${updated.status}\r\n',
       );
     } catch (error) {
       _writeBackendSessionOutput('后台任务终止失败：$error\r\n');
@@ -836,11 +1094,24 @@ class _BackendSSHSessionCardState
     final remotePath = _fileRemotePathController.text.trim();
     final localPath = _fileLocalPathController.text.trim();
     if (!_connected || sessionId == null || action.isEmpty) return;
-    final needsDesktopPath = action == 'upload' || action == 'download';
-    if (remotePath.isEmpty || (needsDesktopPath && localPath.isEmpty)) {
-      final message = needsDesktopPath
-          ? '上传和下载都需要远端路径及 GUI/agent 侧本地路径。'
-          : '查看文件状态和列目录需要远端路径。';
+    final needsDesktopLocal = action == 'upload' ||
+        (action == 'download' && !_isHubExec);
+    if (_isHubExec && action == 'upload') {
+      setState(() {
+        _lastError =
+            'hub_exec 不支持上传（手机本地路径不在 Hub）；请用 desktop_exec。下载可用 hub_exec（≤2MB）。';
+      });
+      _writeBackendSessionOutput(
+        'hub_exec 支持 stat/list/read/download(≤2MB)；upload 需 desktop_exec。\r\n',
+      );
+      return;
+    }
+    if (remotePath.isEmpty || (needsDesktopLocal && localPath.isEmpty)) {
+      final message = needsDesktopLocal
+          ? (action == 'upload'
+              ? '上传需要远端路径及 GUI/agent 侧本地路径。'
+              : 'desktop_exec 下载需要远端路径及 GUI/agent 侧本地路径。')
+          : '需要填写远端路径。';
       setState(() => _lastError = message);
       return;
     }
@@ -860,8 +1131,9 @@ class _BackendSSHSessionCardState
         if (operation.claimedBy.trim().isNotEmpty)
           '接管者 ${operation.claimedBy.trim()}',
       ];
+      final who = _isHubExec ? 'Hub' : 'GUI/agent';
       _writeBackendSessionOutput(
-        '已请求 GUI/agent 文件操作 ${parts.join(' · ')}\r\n',
+        '已请求 $who 文件操作 ${parts.join(' · ')}\r\n',
       );
       final detail = [
         if (operation.remotePath.trim().isNotEmpty)
@@ -876,11 +1148,64 @@ class _BackendSSHSessionCardState
       if (detail.isNotEmpty) {
         _writeBackendSessionOutput('${detail.join(' · ')}\r\n');
       }
+      if (operation.downloadUrl.trim().isNotEmpty &&
+          (operation.status == 'ready' || operation.status == 'completed')) {
+        await _saveAndShareHubDownload(operation);
+      }
       if (mounted) {
         setState(() => _lastError = null);
       }
     } catch (error) {
       _writeBackendSessionOutput('后台文件操作请求失败：$error\r\n');
+      if (mounted) {
+        setState(() => _lastError = error.toString());
+      }
+    }
+  }
+
+  /// Pull hub_exec short-lived blob to app temp dir and offer system share sheet.
+  Future<void> _saveAndShareHubDownload(
+    MobileBackendSSHFileOperation operation,
+  ) async {
+    final client = ref.read(apiClientProvider);
+    final url = operation.downloadUrl.trim();
+    if (client == null || url.isEmpty) return;
+    try {
+      final bytes = await client.downloadHubSSHFile(url);
+      final remote = operation.remotePath.trim();
+      var name = remote.isEmpty ? 'download.bin' : remote.split('/').last;
+      name = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      if (name.isEmpty || name == '.' || name == '..') {
+        name = 'download.bin';
+      }
+      final dir = await getTemporaryDirectory();
+      final file = File(
+        '${dir.path}${Platform.pathSeparator}maclaw_hub_$name',
+      );
+      await file.writeAsBytes(bytes, flush: true);
+      _writeBackendSessionOutput(
+        '已保存到本机临时文件：${file.path}（${bytes.length} 字节）\r\n',
+      );
+      await Share.shareXFiles(
+        [XFile(file.path, name: name)],
+        subject: name,
+        text: 'MaClaw hub_exec 下载：$name',
+      );
+      await ref.read(mobileNotificationServiceProvider).showTaskCompleted(
+            title: 'SSH 文件已下载',
+            body: '$name · ${bytes.length} 字节 · 已保存并可分享',
+            payload: mobileSshFileNotificationPayload(
+              operation.operationId.trim().isEmpty
+                  ? name
+                  : operation.operationId,
+            ),
+          );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已下载 $name（${bytes.length} 字节），可用系统分享保存')),
+      );
+    } on Object catch (error) {
+      _writeBackendSessionOutput('本机保存/分享失败：$error\r\n');
       if (mounted) {
         setState(() => _lastError = error.toString());
       }
@@ -897,6 +1222,9 @@ class _BackendSSHSessionCardState
       session,
       fallback: _activeClaimedBy,
     );
+    if (session.execMode.trim().isNotEmpty) {
+      _activeExecMode = session.execMode;
+    }
     var changed = false;
     final chunk = session.outputChunk;
     if (chunk.isNotEmpty && session.outputSeq > _lastRealtimeOutputSeq) {
@@ -904,13 +1232,15 @@ class _BackendSSHSessionCardState
       _lastRealtimeOutputSeq = session.outputSeq;
       changed = true;
     }
+    final closed = session.status == 'closed' ||
+        session.state == 'closed' ||
+        session.state == 'hub_closed' ||
+        session.status == 'close_requested';
     final nextState = session.connected
         ? _MobileSSHConnectionState.connected
-        : session.status == 'closed' || session.state == 'closed'
+        : closed || session.status == 'failed'
             ? _MobileSSHConnectionState.disconnected
-            : session.status == 'failed'
-                ? _MobileSSHConnectionState.disconnected
-                : _connectionState;
+            : _connectionState;
     final nextError = session.status == 'failed' ? session.message : null;
     if (nextState != _connectionState || nextError != _lastError) {
       setState(() {
@@ -941,12 +1271,18 @@ class _BackendSSHSessionCardState
 
   bool _recentOutputHasEvidenceLine(String output) {
     final normalized = output.toLowerCase();
+    final hasSeq = normalized.contains('output_seq');
+    final hasHubSession = normalized.contains('hub session');
+    if (normalized.contains('hub_exec 会话证据') ||
+        normalized.contains('hub hub_exec')) {
+      return hasHubSession && hasSeq;
+    }
     return (normalized.contains('gui/agent 后台会话证据') ||
             normalized.contains('gui/agent evidence line')) &&
-        normalized.contains('hub session') &&
+        hasHubSession &&
         normalized.contains('backend_session_id') &&
         normalized.contains('claimed_by') &&
-        normalized.contains('output_seq');
+        hasSeq;
   }
 
   Future<void> _copyRecentOutput() async {
@@ -955,8 +1291,12 @@ class _BackendSSHSessionCardState
     if (!_recentOutputHasEvidenceLine(output)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('等待 GUI/agent 证据行后再复制后台会话输出'),
+        SnackBar(
+          content: Text(
+            _isHubExec
+                ? '等待 hub_exec 会话证据行后再复制输出'
+                : '等待 GUI/agent 证据行后再复制后台会话输出',
+          ),
         ),
       );
       return;
@@ -1007,21 +1347,14 @@ class _BackendSSHSessionCardState
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Icon(Icons.hub_outlined, color: scheme.primary),
-                    const SizedBox(width: 8),
-                    Text(
-                      'GUI/agent 后台 SSH 会话',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const Spacer(),
-                    Chip(
-                      visualDensity: VisualDensity.compact,
-                      avatar: Icon(Icons.circle, size: 12, color: statusColor),
-                      label: Text(_statusLabel()),
-                    ),
-                  ],
+                SectionHeader(
+                  icon: Icons.hub_outlined,
+                  title: _sessionCardTitle(),
+                  action: Chip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: Icon(Icons.circle, size: 12, color: statusColor),
+                    label: Text(_statusLabel()),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -1136,16 +1469,31 @@ class _BackendSSHSessionCardState
                     () => _fileOperationAction = value ?? _fileOperationAction,
                   ),
                   onSubmit: _requestFileOperation,
+                  onSaveDownload: _saveAndShareHubDownload,
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  '手机前台 agent 只创建 Hub 后台会话管理记录并发出经确认的操作请求；'
-                  '它不是手机本地 SSH 客户端，也不保存服务器密钥；'
-                  'MaClaw GUI/agent 负责接管、执行、保持会话、后台任务和文件操作。',
+                  'hub_exec：命令与 stat/list/read/download 由 Hub 直跑（下载支持分块，默认上限见套餐 caps，可保存/分享到本机）；'
+                  'desktop_exec：由 MaClaw GUI/agent claim 接管。手机不保存服务器密钥。',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
                 ),
+                if (_isHubExec) ...[
+                  const SizedBox(height: 12),
+                  _HubExecRawKeyBar(
+                    enabled: _connected,
+                    onTab: _sendRawTab,
+                    onEnter: _sendRawEnter,
+                    onEsc: _sendRawEsc,
+                    onCtrlC: _sendRawCtrlC,
+                    onCtrlD: _sendRawCtrlD,
+                    onUp: _sendRawArrowUp,
+                    onDown: _sendRawArrowDown,
+                    onLeft: _sendRawArrowLeft,
+                    onRight: _sendRawArrowRight,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 _BackendSessionEvidencePanel(
                   hubSessionId: _lastBackendSessionId,
@@ -1168,39 +1516,212 @@ class _BackendSSHSessionCardState
   }
 }
 
-class _BackendSessionOutputPanel extends StatelessWidget {
+/// Compact ANSI/control key row for hub_exec interactive PTY.
+class _HubExecRawKeyBar extends ConsumerWidget {
+  final bool enabled;
+  final VoidCallback onTab;
+  final VoidCallback onEnter;
+  final VoidCallback onEsc;
+  final VoidCallback onCtrlC;
+  final VoidCallback onCtrlD;
+  final VoidCallback onUp;
+  final VoidCallback onDown;
+  final VoidCallback onLeft;
+  final VoidCallback onRight;
+
+  const _HubExecRawKeyBar({
+    required this.enabled,
+    required this.onTab,
+    required this.onEnter,
+    required this.onEsc,
+    required this.onCtrlC,
+    required this.onCtrlD,
+    required this.onUp,
+    required this.onDown,
+    required this.onLeft,
+    required this.onRight,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = Theme.of(context).colorScheme;
+    final wsLive = ref.watch(mobileRealtimeSenderProvider) != null;
+    final binaryPty = ref.watch(mobileRealtimeBinaryPtyProvider);
+    Widget key(String label, VoidCallback onPressed, {IconData? icon}) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 6, bottom: 6),
+        child: OutlinedButton(
+          style: OutlinedButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            minimumSize: const Size(40, 36),
+          ),
+          onPressed: enabled ? onPressed : null,
+          child: icon == null
+              ? Text(label, style: const TextStyle(fontFamily: 'monospace'))
+              : Icon(icon, size: 18),
+        ),
+      );
+    }
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 10, 4, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'PTY 快捷键（raw）',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                Chip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: Icon(
+                    Icons.circle,
+                    size: 10,
+                    color: wsLive ? scheme.primary : scheme.outline,
+                  ),
+                  label: Text(
+                    !wsLive
+                        ? 'HTTP 回退'
+                        : binaryPty
+                            ? 'WS·MCP1'
+                            : 'WS 在线',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              !wsLive
+                  ? '实时通道未就绪时走 HTTP input；发送 ANSI/控制字符，不自动补换行'
+                  : binaryPty
+                      ? '优先 MCP1 二进制 pty 帧；输出 JSON+二进制双写分片'
+                      : '优先经 realtime pty_input（JSON/data_b64）；输出分片推送',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              children: [
+                key('Tab', onTab),
+                key('Enter', onEnter),
+                key('Esc', onEsc),
+                key('^C', onCtrlC),
+                key('^D', onCtrlD),
+                key('↑', onUp),
+                key('↓', onDown),
+                key('←', onLeft),
+                key('→', onRight),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendSessionOutputPanel extends StatefulWidget {
   final String output;
 
   const _BackendSessionOutputPanel({required this.output});
 
   @override
+  State<_BackendSessionOutputPanel> createState() =>
+      _BackendSessionOutputPanelState();
+}
+
+class _BackendSessionOutputPanelState extends State<_BackendSessionOutputPanel> {
+  final _scroll = ScrollController();
+
+  @override
+  void didUpdateWidget(covariant _BackendSessionOutputPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.output != widget.output) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scroll.hasClients) return;
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final text = output.trim().isEmpty
-        ? '等待 MaClaw GUI/agent 回传后台会话输出。'
-        : output.trimRight();
-    return Container(
-      constraints: const BoxConstraints(minHeight: 180, maxHeight: 280),
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
-      child: Scrollbar(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(12),
-          child: SelectableText(
-            text,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+    final empty = widget.output.trim().isEmpty;
+    final text = empty
+        ? '等待会话输出…\nhub_exec 长任务会分片推送；desktop_exec 由 GUI/agent 回传。'
+        : widget.output.trimRight();
+    final lines = empty
+        ? 0
+        : RegExp(r'\r\n|\r|\n').allMatches(widget.output).length + 1;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.terminal, size: 18, color: Colors.greenAccent.shade400),
+            const SizedBox(width: 6),
+            Text(
+              '终端输出',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const Spacer(),
+            if (!empty)
+              Text(
+                '$lines 行',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          constraints: const BoxConstraints(minHeight: 200, maxHeight: 320),
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: const Color(0xFF0D1117),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF30363D)),
+          ),
+          child: Scrollbar(
+            controller: _scroll,
+            child: SingleChildScrollView(
+              controller: _scroll,
+              padding: const EdgeInsets.all(12),
+              child: SelectableText(
+                text,
+                style: TextStyle(
                   fontFamily: 'monospace',
-                  color: output.trim().isEmpty
-                      ? scheme.onSurfaceVariant
-                      : scheme.onSurface,
+                  fontSize: 12.5,
+                  height: 1.35,
+                  color: empty
+                      ? const Color(0xFF8B949E)
+                      : const Color(0xFF3FB950),
                 ),
+              ),
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -1332,8 +1853,10 @@ class _BackendSessionList extends StatelessWidget {
     final createdAt = _formatLastActivity(session.createdAt);
     final updatedAt = _formatLastActivity(session.updatedAt);
     final lastActivity = _formatLastActivity(session.lastActivityAt);
+    final mode = session.isHubExec ? 'hub_exec' : 'desktop_exec';
     final parts = [
       _profileName(session.serverProfileId),
+      mode,
       if (session.status.trim().isNotEmpty) '状态 ${session.status.trim()}',
       if (session.state.trim().isNotEmpty) session.state.trim(),
       if (session.claimedBy.trim().isNotEmpty)
@@ -1492,22 +2015,14 @@ class _BackendTaskList extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.pending_actions_outlined, color: scheme.primary),
-                const SizedBox(width: 8),
-                Text(
-                  'GUI/agent 后台任务',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const Spacer(),
-                IconButton(
-                  tooltip: '刷新后台任务',
-                  onPressed:
-                      connected && sessionId.isNotEmpty ? onRefresh : null,
-                  icon: const Icon(Icons.refresh),
-                ),
-              ],
+            SectionHeader(
+              icon: Icons.pending_actions_outlined,
+              title: 'GUI/agent 后台任务',
+              action: IconButton(
+                tooltip: '刷新后台任务',
+                onPressed: connected && sessionId.isNotEmpty ? onRefresh : null,
+                icon: const Icon(Icons.refresh),
+              ),
             ),
             if (sessionId.isEmpty)
               const Padding(
@@ -1591,6 +2106,7 @@ class _BackendFileOperationCard extends StatelessWidget {
   final List<MobileBackendSSHFileOperation> operations;
   final ValueChanged<String?> onActionChanged;
   final VoidCallback onSubmit;
+  final ValueChanged<MobileBackendSSHFileOperation>? onSaveDownload;
 
   const _BackendFileOperationCard({
     required this.action,
@@ -1600,15 +2116,35 @@ class _BackendFileOperationCard extends StatelessWidget {
     required this.operations,
     required this.onActionChanged,
     required this.onSubmit,
+    this.onSaveDownload,
   });
 
   String _actionLabel(String value) {
     return switch (value) {
-      'download' => '下载到 GUI/agent',
+      'download' => '下载（hub 分块 / 或 GUI）',
       'upload' => '从 GUI/agent 上传',
       'list' => '列目录',
+      'read' => '预览远端文本（≤64KB）',
       _ => '查看文件状态',
     };
+  }
+
+  bool _isRunning(MobileBackendSSHFileOperation op) {
+    final s = op.status.trim().toLowerCase();
+    return s == 'running' ||
+        s.contains('download') ||
+        op.message.toLowerCase().contains('downloading');
+  }
+
+  /// Parse "… a/b bytes" from hub progress messages for determinate bar.
+  double? _progressValue(MobileBackendSSHFileOperation op) {
+    final m = RegExp(r'(\d+)\s*/\s*(\d+)\s*bytes', caseSensitive: false)
+        .firstMatch(op.message);
+    if (m == null) return null;
+    final done = int.tryParse(m.group(1) ?? '');
+    final total = int.tryParse(m.group(2) ?? '');
+    if (done == null || total == null || total <= 0) return null;
+    return (done / total).clamp(0.0, 1.0);
   }
 
   @override
@@ -1624,21 +2160,16 @@ class _BackendFileOperationCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.folder_copy_outlined, color: scheme.primary),
-                const SizedBox(width: 8),
-                Text(
-                  'GUI/agent 文件操作',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-              ],
+            const SectionHeader(
+              icon: Icons.folder_copy_outlined,
+              title: '远端文件操作',
             ),
             const SizedBox(height: 8),
             Text(
-              '手机只创建 Hub 文件操作控制记录；实际读写由 MaClaw GUI/agent 在后台会话侧处理。',
+              'hub_exec：stat/list/read/download（分块进度实时推送，上限见套餐 caps）；upload 仍需 desktop_exec。',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
+                    height: 1.4,
                   ),
             ),
             const SizedBox(height: 12),
@@ -1648,6 +2179,7 @@ class _BackendFileOperationCard extends StatelessWidget {
                 for (final value in const [
                   'stat',
                   'list',
+                  'read',
                   'download',
                   'upload',
                 ])
@@ -1687,18 +2219,54 @@ class _BackendFileOperationCard extends StatelessWidget {
               const SizedBox(height: 12),
               const Text('最近文件操作状态'),
               const SizedBox(height: 6),
-              for (final operation in operations.take(3))
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text(
+              for (final operation in operations.take(3)) ...[
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    _isRunning(operation)
+                        ? Icons.downloading_outlined
+                        : operation.downloadUrl.trim().isNotEmpty
+                            ? Icons.download_done_outlined
+                            : Icons.insert_drive_file_outlined,
+                    color: _isRunning(operation)
+                        ? scheme.primary
+                        : scheme.onSurfaceVariant,
+                  ),
+                  title: Text(
                     '${operation.action.isEmpty ? '文件操作' : operation.action} · '
-                    '${operation.status} · '
-                    '${operation.message.isEmpty ? operation.operationId : operation.message}',
+                    '${operation.status}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    [
+                      if (operation.message.isNotEmpty) operation.message,
+                      if (operation.bytesTransferred > 0)
+                        '${operation.bytesTransferred} 字节',
+                      if (operation.message.isEmpty) operation.operationId,
+                    ].where((s) => s.trim().isNotEmpty).join(' · '),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
                   ),
+                  trailing: operation.downloadUrl.trim().isNotEmpty &&
+                          onSaveDownload != null &&
+                          !_isRunning(operation)
+                      ? TextButton(
+                          onPressed: () => onSaveDownload!(operation),
+                          child: const Text('保存'),
+                        )
+                      : null,
                 ),
+                if (_isRunning(operation))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: LinearProgressIndicator(
+                      value: _progressValue(operation),
+                      minHeight: 3,
+                    ),
+                  ),
+              ],
             ],
           ],
         ),
@@ -1745,12 +2313,16 @@ class _CommandRiskCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(Icons.rule_outlined, color: color),
-                const SizedBox(width: 8),
-                Text('命令风险预检', style: Theme.of(context).textTheme.titleMedium),
-              ],
+            SectionHeader(
+              icon: Icons.rule_outlined,
+              title: '命令风险预检',
+              action: Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
             ),
             const SizedBox(height: 12),
             TextField(
@@ -2171,18 +2743,9 @@ class _SSHAnalysisCard extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.psychology_alt_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  'AI 分析后台会话输出',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ],
+            const SectionHeader(
+              icon: Icons.psychology_alt_outlined,
+              title: 'AI 分析后台会话输出',
             ),
             const SizedBox(height: 12),
             TextField(
