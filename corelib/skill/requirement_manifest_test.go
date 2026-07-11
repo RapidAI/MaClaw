@@ -403,13 +403,13 @@ func TestExtractRequirements_IntegrationWithManifest(t *testing.T) {
 			pipNames = append(pipNames, r.Name)
 		}
 	}
-	if !contains(pipNames, "requests") {
+	if !sliceContains(pipNames, "requests") {
 		t.Error("missing explicit pip requirement 'requests'")
 	}
-	if !contains(pipNames, "flask") {
+	if !sliceContains(pipNames, "flask") {
 		t.Error("missing manifest pip requirement 'flask'")
 	}
-	if !contains(pipNames, "uvicorn") {
+	if !sliceContains(pipNames, "uvicorn") {
 		t.Error("missing manifest pip requirement 'uvicorn'")
 	}
 	// Ensure no duplicates
@@ -458,7 +458,7 @@ func TestExtractRequirements_DeduplicatesManifestVsScriptInference(t *testing.T)
 	}
 }
 
-func contains(ss []string, s string) bool {
+func sliceContains(ss []string, s string) bool {
 	for _, item := range ss {
 		if item == s {
 			return true

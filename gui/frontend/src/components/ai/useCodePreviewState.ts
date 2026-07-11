@@ -137,13 +137,13 @@ export function applyWorkflowDocUpdate(state: CodePreviewUIState): CodePreviewUI
  * Resets files map, closes the panel until the first file update,
  * sets sessionActive=true, resets userClosed.
  */
-export function applySessionStart(state: CodePreviewUIState, sessionID = ""): CodePreviewUIState {
+export function applySessionStart(state: CodePreviewUIState, sessionID = "", autoOpenPreview = false): CodePreviewUIState {
     if (state.sessionID && !sessionID && state.sessionActive) {
         return state;
     }
     return {
         ...state,
-        active: false,
+        active: autoOpenPreview,
         files: new Map(),
         activeFilePath: "",
         sessionID,
@@ -290,7 +290,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
             if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath)) {
                 return;
             }
-            setState(prev => applySessionStart(prev, data?.session_id || ""));
+            setState(prev => applySessionStart(prev, data?.session_id || "", data?.auto_open_preview === true));
         });
         return () => {
             if (typeof unsub === "function") unsub();

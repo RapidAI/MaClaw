@@ -1,4 +1,4 @@
-type TitleBarToolIconName = "cart" | "search" | "volumeOn" | "volumeOff" | "sun" | "moon" | "book" | "guide" | "refresh" | "trash" | "eraser";
+type TitleBarToolIconName = "cart" | "search" | "volumeOn" | "volumeOff" | "sun" | "moon" | "book" | "guide" | "refresh" | "trash" | "eraser" | "mobileDocs";
 
 export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
     const common = {
@@ -49,6 +49,15 @@ export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
                     <path {...common} d="M5 4h6a3 3 0 0 1 3 3v13a3 3 0 0 0-3-2H5V4Z" />
                     <path {...common} d="M19 4h-5a3 3 0 0 0-3 3" />
                     <path {...common} d="M19 4v14h-5" />
+                </>
+            )}
+            {/* Phone + document: shared Hub library with MaClaw Mobile. */}
+            {name === "mobileDocs" && (
+                <>
+                    <rect {...common} x="7" y="2.5" width="10" height="19" rx="2" />
+                    <path {...common} d="M10 5.5h4" />
+                    <path {...common} d="M10 9h4M10 12h4M10 15h2.5" />
+                    <path {...common} d="M9.5 18.5h5" />
                 </>
             )}
             {name === "guide" && (

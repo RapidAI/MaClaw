@@ -18,6 +18,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/device"
 )
 
 type mobileLLMTestSystemSettings struct {
@@ -1914,6 +1915,63 @@ func TestMobileDigitalEmployeesHandlerListsBoundRemoteMachine(t *testing.T) {
 	}
 }
 
+// Online status must follow Hub live presence (same as GET /api/ve/list), not
+// stale machines.status alone.
+func TestMobileDigitalEmployeesHandlerUsesLivePresenceLikeHubList(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-presence-ve@example.com")
+	// DB claims online, but live presence says offline — mobile must show offline.
+	if err := identity.MachinesRepo().UpdateStatus(context.Background(), enroll.MachineID, "online"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if err := identity.MachinesRepo().UpdateAlias(context.Background(), enroll.MachineID, "Stale Online Desktop"); err != nil {
+		t.Fatalf("UpdateAlias: %v", err)
+	}
+	presence := fakeVEMachinePresence{infos: map[string]*device.MachineRuntimeInfo{
+		enroll.MachineID: {MachineID: enroll.MachineID, Online: false},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/digital-employees", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	MobileDigitalEmployeesHandler(identity, nil, nil, presence).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Employees []struct {
+			MachineID    string `json:"machine_id"`
+			OnlineStatus string `json:"online_status"`
+		} `json:"employees"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Employees) != 1 {
+		t.Fatalf("employees=%+v", body.Employees)
+	}
+	if body.Employees[0].OnlineStatus != veOnlineStatusOffline {
+		t.Fatalf("online_status=%q, want offline from live presence (Hub VE list rule)", body.Employees[0].OnlineStatus)
+	}
+
+	// Flip presence to online; mobile must show online even if DB is offline.
+	if err := identity.MachinesRepo().UpdateStatus(context.Background(), enroll.MachineID, "offline"); err != nil {
+		t.Fatalf("UpdateStatus offline: %v", err)
+	}
+	presence.infos[enroll.MachineID] = &device.MachineRuntimeInfo{MachineID: enroll.MachineID, Online: true}
+	rec2 := httptest.NewRecorder()
+	MobileDigitalEmployeesHandler(identity, nil, nil, presence).ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec2.Code, rec2.Body.String())
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode2: %v", err)
+	}
+	if len(body.Employees) != 1 || body.Employees[0].OnlineStatus != veOnlineStatusOnline {
+		t.Fatalf("employees=%+v, want online from live presence", body.Employees)
+	}
+}
+
 func TestMobileDigitalEmployeeTaskHandlerRequiresViewerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ops/tasks", strings.NewReader(`{"prompt":"check disk"}`))
 	rec := httptest.NewRecorder()
@@ -1992,6 +2050,50 @@ func TestMobileDigitalEmployeeTaskPayloadIncludesRemoteWorkFields(t *testing.T) 
 	}
 	if payload["message"] != "remote task completed" {
 		t.Fatalf("message = %v, want remote task completed", payload["message"])
+	}
+}
+
+func TestMobileDigitalEmployeeTaskBulkClaimSameUserAnyEmployee(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-ve-bulk@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+
+	// Task targeted at a named/platform employee id (not ve_<machine>).
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_annie_shared/tasks", strings.NewReader(`{"prompt":"北京天气","task_type":"general"}`))
+	createReq.SetPathValue("employeeId", "ve_annie_shared")
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	// Bulk claim by same user's machine — should pick it up even though employee id ≠ machine id.
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/tasks/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskClaimAnyHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", claimRec.Code, claimRec.Body.String())
+	}
+	var claimed struct {
+		Status string `json:"status"`
+		Task   struct {
+			TaskID     string `json:"task_id"`
+			EmployeeID string `json:"employee_id"`
+			Status     string `json:"status"`
+			ClaimedBy  string `json:"claimed_by"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimRec.Body.Bytes(), &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Status != "claimed" || claimed.Task.EmployeeID != "ve_annie_shared" || claimed.Task.Status != "in_progress" {
+		t.Fatalf("claimed=%+v body=%s", claimed, claimRec.Body.String())
+	}
+	if claimed.Task.ClaimedBy != enroll.MachineID {
+		t.Fatalf("claimed_by=%q want machine", claimed.Task.ClaimedBy)
 	}
 }
 

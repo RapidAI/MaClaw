@@ -490,10 +490,11 @@ class _EmployeeTaskStatus extends StatelessWidget {
       'authorization_required',
       'waiting_authorization',
     }.contains(task.status);
+    final queuedStuck = task.status == 'queued' && _taskQueuedLongerThan(task, const Duration(seconds: 25));
     final label = waitingForApproval
         ? '等待远程授权'
         : switch (task.status) {
-            'queued' => '等待远程领取',
+            'queued' => queuedStuck ? '远程仍未领取' : '等待远程领取',
             'claimed' || 'running' || 'in_progress' => '远程处理中',
             'authorization_denied' ||
             'approval_denied' ||
@@ -501,18 +502,38 @@ class _EmployeeTaskStatus extends StatelessWidget {
               '远程授权被拒绝',
             _ => '任务处理中',
           };
+    final defaultMessage = switch (task.status) {
+      'queued' when queuedStuck =>
+        '请确认：① 桌面 MaClaw GUI 已登录同一 Hub 账号并在线；② 数字员工已在桌面启用。任务由桌面领取后才会有结果（与 GUI 内聊天通道不同）。',
+      'queued' => '任务已提交，等待桌面端数字员工领取。',
+      _ => '任务仍在远程处理中',
+    };
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       child: StatusBanner(
-        tone: waitingForApproval ? StatusTone.warning : StatusTone.info,
-        icon: waitingForApproval ? Icons.gpp_maybe_outlined : Icons.sync,
+        tone: waitingForApproval || queuedStuck
+            ? StatusTone.warning
+            : StatusTone.info,
+        icon: waitingForApproval || queuedStuck
+            ? Icons.gpp_maybe_outlined
+            : Icons.sync,
         title: label,
         message: task.message.trim().isEmpty
-            ? '任务仍在远程处理中'
-            : task.message.trim(),
+            ? defaultMessage
+            : (queuedStuck && task.message.contains('等待远程')
+                ? defaultMessage
+                : task.message.trim()),
       ),
     );
   }
+}
+
+bool _taskQueuedLongerThan(MobileDigitalEmployeeTask task, Duration threshold) {
+  final raw = task.createdAt.trim();
+  if (raw.isEmpty) return false;
+  final created = DateTime.tryParse(raw);
+  if (created == null) return false;
+  return DateTime.now().toUtc().difference(created.toUtc()) >= threshold;
 }
 
 class _EmployeeChatBubble extends StatelessWidget {

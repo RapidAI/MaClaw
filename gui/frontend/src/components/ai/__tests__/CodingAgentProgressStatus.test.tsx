@@ -72,6 +72,63 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentProgressStatusText(progress!, 'zh-Hans')).toContain('文件或路径不存在');
     });
 
+    it('treats remote exploratory path probes as neutral lookup results', () => {
+        const missingFile = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            phase: 'running',
+            event: 'tool_finished',
+            detail: 'ssh_read_file',
+            outcome: 'failed',
+            summary: 'No such file or directory: /srv/app/missing.go',
+        })}`);
+        expect(missingFile).toBeTruthy();
+        expect(codingAgentProgressTone(missingFile!).accent).toBe('#64748b');
+        expect(codingAgentProgressStatusText(missingFile!, 'zh-Hans')).toContain('文件或路径不存在');
+
+        const missingDir = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            phase: 'running',
+            event: 'tool_finished',
+            detail: 'ssh_list_dir',
+            outcome: 'failed',
+            summary: "ls: cannot access '/srv/app/nope': No such file or directory",
+        })}`);
+        expect(missingDir).toBeTruthy();
+        expect(codingAgentProgressTone(missingDir!).accent).toBe('#64748b');
+        expect(codingAgentProgressStatusText(missingDir!, 'zh-Hans')).toContain('文件或路径不存在');
+
+        // Real remote errors stay red.
+        const hardFail = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            phase: 'running',
+            event: 'tool_finished',
+            detail: 'ssh_bash',
+            outcome: 'failed',
+            summary: 'fatal error LNK1120: unresolved externals',
+        })}`);
+        expect(hardFail).toBeTruthy();
+        expect(codingAgentProgressTone(hardFail!).accent).toBe('#c43d34');
+    });
+
+    it('treats remote workspace setup probes as neutral checks', () => {
+        const progress = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
+            version: 1,
+            agent: 'coding',
+            phase: 'running',
+            event: 'tool_finished',
+            detail: 'ssh_bash',
+            outcome: 'failed',
+            command: 'mkdir -p /home/test-prj3',
+            summary: 'remote workspace was already unavailable',
+        })}`);
+        expect(progress).toBeTruthy();
+        expect(codingAgentProgressTone(progress!).accent).toBe('#64748b');
+        expect(codingAgentProgressStatusText(progress!, 'zh-Hans')).toContain('\u5de5\u5177\u68c0\u67e5');
+    });
+
     it('treats an existing test-binary probe as a neutral exploratory result', () => {
         const progress = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
             version: 1,

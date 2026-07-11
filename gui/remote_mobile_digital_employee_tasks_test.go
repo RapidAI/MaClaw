@@ -19,6 +19,19 @@ func TestMobileDigitalEmployeeCandidateIDsIncludesVEAlias(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate IDs = %#v, want %#v", got, want)
 	}
+	gotExtra := mobileDigitalEmployeeCandidateIDs("machine-1", "", "ve_annie", "platform-emp-1")
+	for _, wantID := range []string{"machine-1", "ve_machine-1", "ve_annie", "platform-emp-1", "ve_platform-emp-1"} {
+		found := false
+		for _, id := range gotExtra {
+			if id == wantID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("extra candidates missing %q: %#v", wantID, gotExtra)
+		}
+	}
 }
 
 func TestRemoteHubClientClaimMobileDocumentUploadTaskUsesMachineAuth(t *testing.T) {
@@ -29,8 +42,8 @@ func TestRemoteHubClientClaimMobileDocumentUploadTaskUsesMachineAuth(t *testing.
 		if r.URL.Path != "/api/mobile/documents/upload/claim" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("kind") != "document" {
-			t.Fatalf("kind = %s, want document", r.URL.Query().Get("kind"))
+		if r.URL.Query().Get("kind") != "all" {
+			t.Fatalf("kind = %s, want all", r.URL.Query().Get("kind"))
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
 			t.Fatalf("Authorization = %q", got)
@@ -150,6 +163,34 @@ func TestMobileDocumentSourceMarkdownParsesTextLikeSource(t *testing.T) {
 
 	if _, ok := mobileDocumentSourceMarkdown("photo.png", "image/png", []byte("not text")); ok {
 		t.Fatal("image source should not be parsed by document worker")
+	}
+}
+
+func TestMobileDocumentUploadIsImage(t *testing.T) {
+	if !mobileDocumentUploadIsImage("shot.png", "application/octet-stream") {
+		t.Fatal("png by extension should be image")
+	}
+	if !mobileDocumentUploadIsImage("blob", "image/jpeg") {
+		t.Fatal("jpeg by content-type should be image")
+	}
+	if mobileDocumentUploadIsImage("notes.txt", "text/plain") {
+		t.Fatal("text file should not be image")
+	}
+}
+
+func TestMobileDocumentLooksLikeImage(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	if !mobileDocumentLooksLikeImage(png) {
+		t.Fatal("png magic should match")
+	}
+	if mobileDocumentLooksLikeImage([]byte("hello")) {
+		t.Fatal("plain text should not look like image")
+	}
+}
+
+func TestMobileDocumentOCRMarkdownEmptySource(t *testing.T) {
+	if _, err := mobileDocumentOCRMarkdown("a.png", nil); err == nil {
+		t.Fatal("empty image should fail OCR")
 	}
 }
 

@@ -38,6 +38,13 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 			if strArg(args, "key_path") == "" && entry.KeyPath != "" {
 				args["key_path"] = entry.KeyPath
 			}
+			// Secrets stay server-side on the configured entry (never required in tool args).
+			if strArg(args, "password") == "" && entry.Password != "" {
+				args["password"] = entry.Password
+			}
+			if strArg(args, "passphrase") == "" && entry.Passphrase != "" {
+				args["passphrase"] = entry.Passphrase
+			}
 			label = entry.Label
 		}
 	}
@@ -57,8 +64,9 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 			if existing.Handle != nil && existing.Handle.IsAlive() {
 				if mgr.CheckShellResponsive(existing.ID) {
 					summary := existing.GetSummary()
-					result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
-						existing.ID, summary.HostID, summary.Status)
+					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（无需重连）\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
+						"请直接 exec，session_id=%s。不要 force_new / 再次 connect。",
+						existing.ID, summary.HostID, summary.Status, existing.ID)
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
 					}
@@ -96,6 +104,7 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 		AuthMethod: strArg(args, "auth_method"),
 		KeyPath:    strArg(args, "key_path"),
 		Password:   strArg(args, "password"),
+		Passphrase: strArg(args, "passphrase"),
 		Label:      label,
 	}
 
@@ -128,10 +137,15 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 
 	preview := strings.Join(session.PreviewTail(20), "\n")
 
-	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: %s",
-		session.ID, cfg.SSHHostID(), runningSessionStatusLabel())
+	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
+		"📌 会话管理（与桌面 GUI 相同内核）:\n"+
+		"- 后续命令请用 exec，session_id=%s（不要再次 connect）\n"+
+		"- 下方「初始输出」仅为 shell 横幅/预览（最多约 20 行），不是命令完整结果；不完整也禁止重连\n"+
+		"- 查状态示例: ssh(action=exec, session_id=%s, command=\"uptime; free -h; df -h /\" , wait_seconds=15)\n"+
+		"- 需要多个检查时复用同一 session_id；结束后 close",
+		session.ID, cfg.SSHHostID(), runningSessionStatusLabel(), session.ID, session.ID)
 	if preview != "" {
-		result += "\n\n--- 初始输出 ---\n" + preview
+		result += "\n\n--- 初始输出（预览，可忽略不全）---\n" + preview
 	}
 	return result
 }

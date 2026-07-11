@@ -1372,6 +1372,61 @@ func TestRemoteCodingSubAgentNoChangeRequiresInspectionEvidence(t *testing.T) {
 	}
 }
 
+func TestRemoteCodingSubAgentKeepsVerifiedExistingArtifactSuccessful(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/hello.cpp")
+	cb.trackRemoteCommand("g++ -o hello hello.cpp", "/repo", "compiled successfully", true)
+	cb.trackRemoteCommand("./hello", "/repo", "Hello, World!\nexit code = 0", true)
+
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "max iterations reached after the final check",
+		Summary:   "hello.cpp is already correct and ran successfully",
+		ToolCalls: 2,
+	})
+	if result.Status != "success" || result.Error != "" {
+		t.Fatalf("verified existing artifact should recover from a late loop failure, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileRead("/repo/hello.cpp")
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "connection lost",
+		Summary:   "inspection only",
+		ToolCalls: 1,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("inspection alone must not recover a failed remote task, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/hello.cpp", true)
+	cb.trackRemoteCommand("g++ -o hello hello.cpp", "/repo", "compiled successfully", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "max iterations reached after the final check",
+		Summary:   "created artifact",
+		ToolCalls: 2,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("a task with file writes must not recover from a failed remote task, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteCommand("g++ -o hello hello.cpp", "/repo", "compiled successfully", true)
+	cb.trackRemoteCommand("cat missing.txt", "/repo", "cat: missing.txt: No such file or directory", false)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "max iterations reached after the final check",
+		Summary:   "verification plus unresolved failure",
+		ToolCalls: 2,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("unresolved command failures must not recover a failed remote task, got %#v", result)
+	}
+}
+
 func TestRemoteCodingSubAgentQualityGateFailsUnresolvedPostEditCommands(t *testing.T) {
 	cb := &remoteCodingCallbacks{}
 	cb.trackRemoteFileRead("/repo/main.py")
@@ -2611,8 +2666,17 @@ func TestRemoteCodingToolFailureDiagnosticSeverityClassifier(t *testing.T) {
 	if remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"g++ --version 2>&1"}`, "permission denied while opening /srv/app/config.yml", "failed") {
 		t.Fatal("remote hard failure result should override diagnostic probe command")
 	}
-	if remoteCodingToolFailureIsDiagnostic("ssh_read_file", `{"path":"main.go"}`, "read failed", "failed") {
-		t.Fatal("non-bash remote failure should not be marked diagnostic")
+	if !remoteCodingToolFailureIsDiagnostic("ssh_read_file", `{"path":"missing.go"}`, "No such file or directory", "failed") {
+		t.Fatal("remote exploratory file probe miss should be marked diagnostic")
+	}
+	if !remoteCodingToolFailureIsDiagnostic("ssh_list_dir", `{"path":"does-not-exist"}`, "ls: cannot access 'does-not-exist': No such file or directory", "failed") {
+		t.Fatal("remote exploratory directory probe miss should be marked diagnostic")
+	}
+	if remoteCodingToolFailureIsDiagnostic("ssh_read_file", `{"path":"main.go"}`, "permission denied while opening /srv/app/main.go", "failed") {
+		t.Fatal("remote permission failure on read should not be marked diagnostic")
+	}
+	if remoteCodingToolFailureIsDiagnostic("ssh_write_file", `{"path":"main.go"}`, "写入失败: disk full", "failed") {
+		t.Fatal("remote write failure should not be marked diagnostic")
 	}
 }
 

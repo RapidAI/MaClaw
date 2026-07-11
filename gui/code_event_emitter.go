@@ -69,6 +69,17 @@ func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...str
 	runtime.EventsEmit(e.app.ctx, "code:session_start", payload)
 }
 
+// EmitPreviewSessionStart starts a workflow-authorized source preview session.
+func (e *CodeEventEmitter) EmitPreviewSessionStart(sessionID string) {
+	if e == nil || e.app == nil || e.app.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(e.app.ctx, "code:session_start", map[string]interface{}{
+		"session_id":        sessionID,
+		"auto_open_preview": true,
+	})
+}
+
 // EmitSessionEnd emits a code:session_end event when a coding session completes.
 // If app.ctx is nil, the call is silently skipped.
 func (e *CodeEventEmitter) EmitSessionEnd(sessionID string, projectPath ...string) {

@@ -58,10 +58,35 @@ func TestMobileInjectBoundDocument(t *testing.T) {
 		t.Fatalf("role=%s", msgs[1]["role"])
 	}
 	content := msgs[1]["content"]
-	for _, part := range []string{"document_id: d1", "第二段需要润色", "maclaw-document-edit"} {
+	for _, part := range []string{"document_id: d1", "第二段需要润色", "maclaw-document-edit", "has_original: false"} {
 		if !strings.Contains(content, part) {
 			t.Fatalf("bound context missing %q: %s", part, content)
 		}
+	}
+}
+
+func TestMobileInjectBoundDocumentWithOriginal(t *testing.T) {
+	base := mobileBuildLLMMessages("根据原件写摘要", nil, nil, nil)
+	draft := mobileDocumentDraftRecord{
+		ID: "d2", Title: "推荐表", Markdown: "# 推荐表\n\n正文",
+		SourceFilename: "推荐表.docx", SourceContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		SourceBytes: []byte("PK fake"), UpdatedAt: time.Now().UTC(),
+	}
+	msgs := mobileInjectBoundDocument(base, draft)
+	content := msgs[1]["content"]
+	for _, part := range []string{"has_original: true", "source_filename: 推荐表.docx", "ORIGINAL uploaded file", "正文"} {
+		if !strings.Contains(content, part) {
+			t.Fatalf("bound context missing %q: %s", part, content)
+		}
+	}
+}
+
+func TestMobileDraftMarkdownLooksLikeRawBinary(t *testing.T) {
+	if !mobileDraftMarkdownLooksLikeRawBinary("PK\x03\x04[Content_Types].xml") {
+		t.Fatal("expected docx garbage to look binary")
+	}
+	if mobileDraftMarkdownLooksLikeRawBinary("# 正常标题\n\n正文") {
+		t.Fatal("normal markdown should not look binary")
 	}
 }
 

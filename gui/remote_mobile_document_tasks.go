@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -10,7 +11,10 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 )
 
 type mobileDocumentUploadTask struct {
@@ -29,6 +33,20 @@ type mobileDocumentUploadClaimResponse struct {
 	Task   *mobileDocumentUploadTask `json:"task"`
 }
 
+var (
+	mobileDocOCROnce sync.Once
+	mobileDocOCR     *browser.RapidOCRSidecar
+)
+
+func mobileDocumentOCRSidecar() *browser.RapidOCRSidecar {
+	mobileDocOCROnce.Do(func() {
+		mobileDocOCR = browser.NewRapidOCRSidecar(func(msg string) {
+			log.Printf("[mobile-doc-ocr] %s", msg)
+		})
+	})
+	return mobileDocOCR
+}
+
 func (c *RemoteHubClient) pollMobileDocumentUploadTasksOnce() {
 	claim, err := c.claimMobileDocumentUploadTask()
 	if err != nil {
@@ -43,7 +61,8 @@ func (c *RemoteHubClient) pollMobileDocumentUploadTasksOnce() {
 
 func (c *RemoteHubClient) claimMobileDocumentUploadTask() (*mobileDocumentUploadClaimResponse, error) {
 	var out mobileDocumentUploadClaimResponse
-	path := "/api/mobile/documents/upload/claim?kind=document"
+	// kind=all: text parse (queued) + image OCR (needs_ocr).
+	path := "/api/mobile/documents/upload/claim?kind=all"
 	if err := c.doMobileDigitalEmployeeTaskRequest(context.Background(), http.MethodPost, path, nil, &out); err != nil {
 		return nil, err
 	}
@@ -110,8 +129,30 @@ func (c *RemoteHubClient) processMobileDocumentUploadTask(task mobileDocumentUpl
 		_, _ = c.updateMobileDocumentUploadTask(taskID, "failed", "", "", err.Error())
 		return
 	}
+
+	// Image / OCR path: RapidOCR on the desktop worker, then write markdown back.
+	// Note: after claim the Hub status is always "in_progress", so detect by name/MIME.
+	if mobileDocumentUploadIsImage(task.Filename, task.ContentType) {
+		markdown, ocrErr := mobileDocumentOCRMarkdown(task.Filename, source)
+		if ocrErr != nil {
+			log.Printf("[hub-client] mobile document OCR failed task=%s: %v", taskID, ocrErr)
+			_, _ = c.updateMobileDocumentUploadTask(taskID, "failed", "", "", ocrErr.Error())
+			return
+		}
+		_, _ = c.updateMobileDocumentUploadTask(taskID, "ready", markdown, "远程端已完成图片 OCR，并更新移动端文档草稿。", "")
+		return
+	}
+
 	markdown, ok := mobileDocumentSourceMarkdown(task.Filename, task.ContentType, source)
 	if !ok {
+		// Last-chance OCR for unknown binary that looks like an image by magic bytes.
+		if mobileDocumentLooksLikeImage(source) {
+			markdown, ocrErr := mobileDocumentOCRMarkdown(task.Filename, source)
+			if ocrErr == nil {
+				_, _ = c.updateMobileDocumentUploadTask(taskID, "ready", markdown, "远程端已完成图片 OCR，并更新移动端文档草稿。", "")
+				return
+			}
+		}
 		_, _ = c.updateMobileDocumentUploadTask(taskID, "failed", "", "", "远程端暂不支持解析该文件格式。")
 		return
 	}
@@ -144,4 +185,106 @@ func mobileDocumentSourceMarkdown(filename, contentType string, raw []byte) (str
 		title = "移动文档"
 	}
 	return "# " + title + "\n\n" + text + "\n", true
+}
+
+func mobileDocumentUploadIsImage(filename, contentType string) bool {
+	normalizedType := strings.ToLower(strings.TrimSpace(contentType))
+	if strings.HasPrefix(normalizedType, "image/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff":
+		return true
+	default:
+		return false
+	}
+}
+
+func mobileDocumentLooksLikeImage(raw []byte) bool {
+	if len(raw) < 4 {
+		return false
+	}
+	// PNG
+	if len(raw) >= 8 && bytes.Equal(raw[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		return true
+	}
+	// JPEG
+	if raw[0] == 0xFF && raw[1] == 0xD8 {
+		return true
+	}
+	// GIF
+	if bytes.HasPrefix(raw, []byte("GIF8")) {
+		return true
+	}
+	// BMP
+	if raw[0] == 'B' && raw[1] == 'M' {
+		return true
+	}
+	// WEBP (RIFF....WEBP)
+	if len(raw) >= 12 && bytes.Equal(raw[:4], []byte("RIFF")) && bytes.Equal(raw[8:12], []byte("WEBP")) {
+		return true
+	}
+	return false
+}
+
+func mobileDocumentOCRMarkdown(filename string, raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", fmt.Errorf("图片内容为空，无法 OCR")
+	}
+	if len(raw) > 25*1024*1024 {
+		return "", fmt.Errorf("图片过大，无法 OCR")
+	}
+	sidecar := mobileDocumentOCRSidecar()
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	results, err := sidecar.Recognize(b64)
+	if err != nil {
+		return "", fmt.Errorf("桌面 OCR 失败（请确认本机已安装 Python 与 RapidOCR）：%w", err)
+	}
+
+	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
+	if title == "" {
+		title = "图片识别"
+	}
+	format := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
+	if format == "jpg" {
+		format = "jpeg"
+	}
+	if format == "" {
+		format = "image"
+	}
+
+	var lines []string
+	for _, r := range results {
+		text := strings.TrimSpace(r.Text)
+		if text != "" {
+			lines = append(lines, text)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("# ")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+	b.WriteString("图片已由远程桌面 OCR 识别。\n\n")
+	b.WriteString("- 文件名：")
+	b.WriteString(filepath.Base(filename))
+	b.WriteString("\n")
+	b.WriteString("- 格式：")
+	b.WriteString(format)
+	b.WriteString("\n")
+	b.WriteString("- 大小：")
+	b.WriteString(fmt.Sprintf("%d bytes", len(raw)))
+	b.WriteString("\n")
+	b.WriteString("- 识别区域数：")
+	b.WriteString(fmt.Sprintf("%d", len(lines)))
+	b.WriteString("\n\n")
+	b.WriteString("## 识别文本\n\n")
+	if len(lines) == 0 {
+		b.WriteString("_未识别到可读文字（可能是纯图、模糊或非文字截图）。_\n")
+	} else {
+		// Prefer plain paragraphs so the mobile assistant can quote the content.
+		b.WriteString(strings.Join(lines, "\n"))
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }

@@ -319,6 +319,22 @@ class ApiClient {
     return MobileCardStoreOrder.fromJson(response.data ?? const {});
   }
 
+  /// Timeouts for long-running official assistant (agent tools / SSH).
+  Options _assistantRequestOptions({
+    ResponseType? responseType,
+    Map<String, dynamic>? headers,
+    bool Function(int?)? validateStatus,
+  }) {
+    return Options(
+      responseType: responseType,
+      headers: headers,
+      validateStatus: validateStatus,
+      connectTimeout: mobileAssistantConnectTimeout,
+      sendTimeout: mobileAssistantSendTimeout,
+      receiveTimeout: mobileAssistantReceiveTimeout,
+    );
+  }
+
   /// Enqueue a long-running official assistant job (后台执行).
   Future<MobileAgentJob> createAgentJob({
     required String query,
@@ -335,6 +351,7 @@ class ApiClient {
         documentId: documentId,
         stream: false,
       )..remove('stream'),
+      options: _assistantRequestOptions(),
     );
     return MobileAgentJob.fromJson(response.data ?? const {});
   }
@@ -346,6 +363,7 @@ class ApiClient {
     }
     final response = await _dio.get<Map<String, dynamic>>(
       '/api/mobile/agent/jobs/$id',
+      options: _assistantRequestOptions(),
     );
     return MobileAgentJob.fromJson(response.data ?? const {});
   }
@@ -371,6 +389,7 @@ class ApiClient {
         stream: false,
         async: async,
       ),
+      options: _assistantRequestOptions(),
     );
     return SearchAnswer.fromJson(response.data ?? const {});
   }
@@ -395,7 +414,7 @@ class ApiClient {
           documentId: documentId,
           stream: true,
         ),
-        options: Options(
+        options: _assistantRequestOptions(
           responseType: ResponseType.stream,
           headers: const {'Accept': 'text/event-stream'},
           // Inspect status ourselves so SSE error bodies can still be read.
@@ -410,6 +429,13 @@ class ApiClient {
         throw StateError(
           'mobile AI assistant request failed (HTTP $code)',
         );
+      }
+      // Do not fall back to non-stream on receive timeout — the non-stream
+      // path is even longer and would surface the same timeout again.
+      if (error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.connectionTimeout ||
+          error.type == DioExceptionType.sendTimeout) {
+        rethrow;
       }
       yield await searchWithContext(
         query,
@@ -469,6 +495,14 @@ class ApiClient {
     );
     final buffer = StringBuffer();
     final toolEvents = <AssistantToolEvent>[];
+    void trimToolEvents() {
+      if (toolEvents.length <= mobileAssistantMaxRetainedToolEvents) return;
+      final kept = retainRecentAssistantToolEvents(toolEvents);
+      toolEvents
+        ..clear()
+        ..addAll(kept);
+    }
+
     await for (final event in _parseSseEvents(body.stream)) {
       switch (event.event) {
         case 'meta':
@@ -495,6 +529,7 @@ class ApiClient {
               detail: (data['arguments'] as String? ?? '').toString(),
             ),
           );
+          trimToolEvents();
           partial = partial.copyWith(
             toolEvents: List<AssistantToolEvent>.from(toolEvents),
             agent: true,
@@ -511,6 +546,7 @@ class ApiClient {
               detail: (data['result'] as String? ?? '').toString(),
             ),
           );
+          trimToolEvents();
           partial = partial.copyWith(
             toolEvents: List<AssistantToolEvent>.from(toolEvents),
             agent: true,
@@ -750,6 +786,17 @@ class ApiClient {
     );
   }
 
+  /// Delete a Hub shared draft (same library as desktop GUI Mobile 文稿库).
+  Future<void> deleteDocumentDraft(String draftId) async {
+    final id = draftId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError('draftId is required');
+    }
+    await _dio.delete<Map<String, dynamic>>(
+      '/api/mobile/documents/drafts/${Uri.encodeComponent(id)}',
+    );
+  }
+
   /// Process a draft. Large docs or [async] return a background job; this method
   /// polls until ready (or returns immediately for sync processed).
   Future<DocumentDraft> processDocumentDraft({
@@ -847,6 +894,23 @@ class ApiClient {
     return Uint8List.fromList(response.data ?? const []);
   }
 
+  /// Download the original file attached to a Hub draft (for WeChat share etc.).
+  Future<Uint8List> downloadDocumentOriginal(DocumentDraft draft) async {
+    final path = draft.sourceDownloadUrl.trim().isNotEmpty
+        ? draft.sourceDownloadUrl.trim()
+        : '/api/mobile/documents/drafts/${Uri.encodeComponent(draft.id)}/source';
+    final downloadUrl = maclawHubAbsoluteUrl(hubUrl: _hubUrl, pathOrUrl: path);
+    final response = await _dio.get<List<int>>(
+      downloadUrl,
+      options: Options(responseType: ResponseType.bytes),
+    );
+    final data = response.data;
+    if (data == null || data.isEmpty) {
+      throw StateError('empty original file');
+    }
+    return Uint8List.fromList(data);
+  }
+
   /// Download a short-lived hub_exec file blob (`/api/mobile/ssh/files/download/{token}`).
   Future<Uint8List> downloadHubSSHFile(String pathOrUrl) async {
     final path = pathOrUrl.trim();
@@ -927,6 +991,35 @@ class ApiClient {
         .toList();
   }
 
+  /// Upsert server profiles to Hub so hub_exec / AI assistant ssh tools can see them.
+  /// Secrets are NOT sent here — use [putSSHVaultSecret].
+  Future<int> upsertServerProfiles(List<ServerProfile> profiles) async {
+    final payload = <Map<String, dynamic>>[
+      for (final p in profiles)
+        if (p.isValid && p.id.trim().isNotEmpty)
+          {
+            'id': p.id.trim(),
+            'name': p.name.trim().isEmpty ? p.id.trim() : p.name.trim(),
+            'host': p.host.trim(),
+            'port': p.port <= 0 ? 22 : p.port,
+            'username': p.username.trim(),
+            if (p.authMode.trim().isNotEmpty) 'auth_mode': p.authMode.trim(),
+            if ((p.tag ?? '').trim().isNotEmpty) 'tag': p.tag!.trim(),
+            if ((p.note ?? '').trim().isNotEmpty) 'note': p.note!.trim(),
+          },
+    ];
+    if (payload.isEmpty) return 0;
+    final response = await _dio.put<Map<String, dynamic>>(
+      '/api/mobile/server-profiles',
+      data: {'profiles': payload},
+    );
+    final data = response.data ?? const {};
+    final count = data['count'];
+    if (count is int) return count;
+    if (count is num) return count.toInt();
+    return payload.length;
+  }
+
   Future<MobileBackendSSHSession> createBackendSSHSession({
     required String serverProfileId,
     String execMode = '',
@@ -942,6 +1035,28 @@ class ApiClient {
     return MobileBackendSSHSession.fromJson(
       _sessionPayload(response.data ?? const {}),
     );
+  }
+
+  /// One-shot setup: host + username + password → Hub profile + vault for AI ssh.
+  /// User does not manage profiles separately.
+  Future<MobileSSHQuickConnectResult> quickConnectSSH({
+    required String host,
+    required String username,
+    required String password,
+    int port = 22,
+    String label = '',
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/ssh/quick-connect',
+      data: {
+        'host': host.trim(),
+        'username': username.trim(),
+        'password': password,
+        'port': port <= 0 ? 22 : port,
+        if (label.trim().isNotEmpty) 'label': label.trim(),
+      },
+    );
+    return MobileSSHQuickConnectResult.fromJson(response.data ?? const {});
   }
 
   /// Store encrypted SSH secret on Hub for hub_exec (never returned in GET).
@@ -1249,6 +1364,66 @@ class AssistantToolEvent {
       detail: detail ?? this.detail,
     );
   }
+}
+
+/// Aggregated per-tool counters for compact UI (avoids 20× "调用 ssh" chips).
+class AssistantToolEventSummary {
+  final String name;
+  final int callCount;
+  final int resultCount;
+
+  const AssistantToolEventSummary({
+    required this.name,
+    required this.callCount,
+    required this.resultCount,
+  });
+
+  int get totalEvents => callCount + resultCount;
+  bool get inProgress => callCount > resultCount;
+}
+
+/// Collapse raw SSE tool events into one row per tool name.
+List<AssistantToolEventSummary> summarizeAssistantToolEvents(
+  Iterable<AssistantToolEvent> events,
+) {
+  final order = <String>[];
+  final calls = <String, int>{};
+  final results = <String, int>{};
+  for (final event in events) {
+    final name = event.name.trim().isEmpty ? 'tool' : event.name.trim();
+    if (!calls.containsKey(name) && !results.containsKey(name)) {
+      order.add(name);
+    }
+    if (event.isCall) {
+      calls[name] = (calls[name] ?? 0) + 1;
+    } else if (event.isResult) {
+      results[name] = (results[name] ?? 0) + 1;
+    } else {
+      // Unknown kind: count as call so it still surfaces.
+      calls[name] = (calls[name] ?? 0) + 1;
+    }
+  }
+  return [
+    for (final name in order)
+      AssistantToolEventSummary(
+        name: name,
+        callCount: calls[name] ?? 0,
+        resultCount: results[name] ?? 0,
+      ),
+  ];
+}
+
+/// Cap retained raw tool events to avoid unbounded SSE buffers on long agent runs.
+const mobileAssistantMaxRetainedToolEvents = 40;
+
+List<AssistantToolEvent> retainRecentAssistantToolEvents(
+  List<AssistantToolEvent> events, {
+  int maxEvents = mobileAssistantMaxRetainedToolEvents,
+}) {
+  if (maxEvents <= 0 || events.length <= maxEvents) {
+    return events;
+  }
+  return events.sublist(events.length - maxEvents);
 }
 
 class SearchAnswer {
@@ -1576,6 +1751,45 @@ class MobileSSHVaultStatus {
   }
 }
 
+class MobileSSHQuickConnectResult {
+  final String profileId;
+  final String label;
+  final String host;
+  final int port;
+  final String username;
+  final bool hasSecret;
+  final String message;
+  final String assistantHint;
+
+  const MobileSSHQuickConnectResult({
+    this.profileId = '',
+    this.label = '',
+    this.host = '',
+    this.port = 22,
+    this.username = '',
+    this.hasSecret = false,
+    this.message = '',
+    this.assistantHint = '',
+  });
+
+  factory MobileSSHQuickConnectResult.fromJson(Map<String, dynamic> json) {
+    final portRaw = json['port'];
+    final port = portRaw is int
+        ? portRaw
+        : (portRaw is num ? portRaw.toInt() : 22);
+    return MobileSSHQuickConnectResult(
+      profileId: json['profile_id'] as String? ?? '',
+      label: json['label'] as String? ?? '',
+      host: json['host'] as String? ?? '',
+      port: port <= 0 ? 22 : port,
+      username: json['username'] as String? ?? '',
+      hasSecret: json['has_secret'] as bool? ?? false,
+      message: json['message'] as String? ?? '',
+      assistantHint: json['assistant_hint'] as String? ?? '',
+    );
+  }
+}
+
 class MobileBackendSSHSessionInputResult {
   final String sessionId;
   final String output;
@@ -1720,6 +1934,8 @@ class MobileDigitalEmployeeTask {
   final String result;
   final String message;
   final String claimedBy;
+  final String createdAt;
+  final String updatedAt;
 
   const MobileDigitalEmployeeTask({
     required this.taskId,
@@ -1731,6 +1947,8 @@ class MobileDigitalEmployeeTask {
     required this.result,
     this.message = '',
     required this.claimedBy,
+    this.createdAt = '',
+    this.updatedAt = '',
   });
 
   factory MobileDigitalEmployeeTask.fromJson(Map<String, dynamic> json) {
@@ -1749,6 +1967,8 @@ class MobileDigitalEmployeeTask {
       result: json['result'] as String? ?? '',
       message: json['message'] as String? ?? json['error'] as String? ?? '',
       claimedBy: json['claimed_by'] as String? ?? '',
+      createdAt: json['created_at'] as String? ?? '',
+      updatedAt: json['updated_at'] as String? ?? '',
     );
   }
 }

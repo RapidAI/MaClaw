@@ -10,7 +10,7 @@ func TestReadLimitedRemoteImportBodyReturnsExplicitLimitError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected limit error")
 	}
-	if !strings.Contains(err.Error(), "remote import response exceeds 32 bytes") {
+	if !strings.Contains(err.Error(), "client download limit") {
 		t.Fatalf("error = %v, want explicit limit error", err)
 	}
 }

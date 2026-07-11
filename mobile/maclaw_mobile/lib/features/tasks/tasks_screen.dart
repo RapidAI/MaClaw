@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/api/mobile_bootstrap.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../account/account_agent_status_card.dart';
 import '../auth/session_controller.dart';
@@ -11,7 +12,7 @@ import '../digital_employees/digital_employees_controller.dart';
 import '../documents/documents_controller.dart';
 import 'mobile_jobs_provider.dart';
 
-/// Unified long-running task center (bottom tab "后台").
+/// Unified long-running task center (bottom tab "Tasks" / "后台").
 class TasksScreen extends ConsumerWidget {
   const TasksScreen({super.key});
 
@@ -29,12 +30,13 @@ class TasksScreen extends ConsumerWidget {
       liveQuota.valueOrNull,
     );
     final showQuota = bootstrap?.limits != null || liveQuota.valueOrNull != null;
+    final s = ref.watch(appStringsProvider);
 
     return ScreenScaffold(
-      title: '后台',
-      subtitle: '长任务统一查看：文档解析/导出、员工任务等。短操作请回 AI 助手或数字员工页。',
+      title: s.tasksTitle,
+      subtitle: s.tasksSubtitle,
       trailing: IconButton.filledTonal(
-        tooltip: '刷新',
+        tooltip: s.refresh,
         onPressed: () {
           ref.invalidate(mobileJobsProvider);
           ref.invalidate(documentQuotaProvider);

@@ -137,7 +137,10 @@ class _MalformedCreditsSessionController extends SessionController {
 
 class _TestAppPreferencesController extends AppPreferencesController {
   @override
-  Future<AppPreferences> build() async => const AppPreferences();
+  Future<AppPreferences> build() async {
+    final store = ref.read(mobileLocalStoreProvider);
+    return store.loadAppPreferences();
+  }
 }
 
 final _qrAuthorizationPayloads = <String>[];
@@ -184,7 +187,7 @@ class _FakeMobileLocalStore extends MobileLocalStore {
     required this.serverProfiles,
     required this.searchHistory,
     required this.lastDraft,
-  }) : appPreferences = const AppPreferences();
+  }) : appPreferences = const AppPreferences(language: appLanguageChinese);
 
   @override
   Future<List<ServerProfile>> loadServerProfiles() async => serverProfiles;
@@ -207,7 +210,7 @@ class _FakeMobileLocalStore extends MobileLocalStore {
   Future<void> clearLocalWorkCache() async {
     searchHistory = [];
     lastDraft = null;
-    appPreferences = const AppPreferences();
+    appPreferences = const AppPreferences(language: appLanguageChinese);
   }
 
   @override
@@ -453,16 +456,16 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     await tester.ensureVisible(find.byIcon(Icons.dark_mode_outlined));
-    await tester.pumpAndSettle();
+    await tester.pump();
     await tester.tap(find.byIcon(Icons.dark_mode_outlined));
     await tester.pump();
 
     expect(store.appPreferences.themeMode, ThemeMode.dark);
 
     await tester.tap(find.byType(DropdownButtonFormField<String>));
-    await tester.pumpAndSettle();
+    await tester.pump();
     await tester.tap(find.text('English').last);
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(store.appPreferences.language, appLanguageEnglish);
   });

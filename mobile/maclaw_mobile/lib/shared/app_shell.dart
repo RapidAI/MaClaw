@@ -4,9 +4,11 @@ import 'package:go_router/go_router.dart';
 
 import '../core/api/mobile_bootstrap.dart';
 import '../core/api/mobile_credits.dart';
+import '../core/settings/app_preferences_model.dart';
 import '../core/shared_intents/mobile_shared_intent.dart';
 import '../core/shared_intents/shared_intent_bootstrap.dart';
 import '../features/auth/session_controller.dart';
+import '../l10n/app_strings.dart';
 
 class AppShell extends ConsumerStatefulWidget {
   final Widget child;
@@ -34,7 +36,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   void _routeSharedIntent(MobileSharedIntent intent) {
     final session = ref.read(sessionControllerProvider).valueOrNull;
     final features = session?.bootstrap?.features ?? defaultMobileFeatures;
-    final bootstrap = session?.bootstrap;
+    final strings = ref.read(appStringsProvider);
     final target = sharedIntentTargetPath(intent, features);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -42,15 +44,15 @@ class _AppShellState extends ConsumerState<AppShell> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            intent.opensDocuments ? _sharedFileMessage : _sharedContentMessage,
+            intent.opensDocuments
+                ? strings.sharedFileReceived
+                : strings.sharedContentReceived,
           ),
         ),
       );
       if (!sharedIntentCanBeConsumedAtTarget(intent, target)) {
         ref.read(mobileSharedIntentProvider.notifier).clear(intent.id);
       }
-      // bootstrap reserved for future label-aware snackbars
-      assert(bootstrap == null || bootstrap.user.userId.isNotEmpty || true);
     });
   }
 
@@ -59,7 +61,12 @@ class _AppShellState extends ConsumerState<AppShell> {
     final session = ref.watch(sessionControllerProvider).valueOrNull;
     final features = session?.bootstrap?.features ?? defaultMobileFeatures;
     final bootstrap = session?.bootstrap;
-    final tabs = mobileAppTabsForFeatures(features, bootstrap: bootstrap);
+    final strings = ref.watch(appStringsProvider);
+    final tabs = mobileAppTabsForFeatures(
+      features,
+      bootstrap: bootstrap,
+      strings: strings,
+    );
 
     final location = GoRouterState.of(context).uri.path;
     final index = tabs.indexWhere((tab) => location.startsWith(tab.path));
@@ -115,22 +122,16 @@ const defaultMobileFeatures = MobileFeatures(
   pushNotifications: false,
 );
 
-const _assistantTabLabel = 'AI助手';
-const _twinTabLabel = '数字分身';
-const _documentsTabLabel = '文档';
-const _tasksTabLabel = '后台';
-const _employeesTabLabel = '数字员工';
-const _accountTabLabel = '我的';
-const _sharedFileMessage = '已接收分享文件';
-const _sharedContentMessage = '已接收分享内容';
-
 List<MobileAppTab> mobileAppTabsForFeatures(
   MobileFeatures features, {
   MobileBootstrap? bootstrap,
+  AppStrings? strings,
 }) {
-  final assistantLabel = mobileAssistantTabLabel(bootstrap);
-  // Bottom IA: 助手 | 文档 | 后台 | 数字员工 | 我的
-  // 文档：本机/Hub 草稿与导入、查看与分享（含系统分享导入）；长任务进度仍在「后台」。
+  // Unit tests omit strings; default Chinese keeps existing expectations stable.
+  final s = strings ?? AppStrings.forLanguage(appLanguageChinese);
+  final twin = usesDigitalTwinAssistant(bootstrap);
+  final assistantLabel = twin ? s.tabTwin : s.tabAssistant;
+  // Bottom IA: assistant | documents | tasks | employees | account
   final all = <MobileAppTab>[
     MobileAppTab(
       '/assistant',
@@ -141,28 +142,28 @@ List<MobileAppTab> mobileAppTabsForFeatures(
     ),
     MobileAppTab(
       '/documents',
-      _documentsTabLabel,
+      s.tabDocuments,
       Icons.description_outlined,
       'documents',
       selectedIcon: Icons.description,
     ),
     MobileAppTab(
       '/tasks',
-      _tasksTabLabel,
+      s.tabTasks,
       Icons.task_alt_outlined,
       'tasks',
       selectedIcon: Icons.task_alt,
     ),
     MobileAppTab(
       '/employees',
-      _employeesTabLabel,
+      s.tabEmployees,
       Icons.smart_toy_outlined,
       'employees',
       selectedIcon: Icons.smart_toy,
     ),
     MobileAppTab(
       '/account',
-      _accountTabLabel,
+      s.tabAccount,
       Icons.person_outline,
       'account',
       selectedIcon: Icons.person,
@@ -170,10 +171,10 @@ List<MobileAppTab> mobileAppTabsForFeatures(
   ];
   final tabs = all.where((tab) => tab.enabledBy(features)).toList();
   if (tabs.isEmpty) {
-    return const [
+    return [
       MobileAppTab(
         '/account',
-        _accountTabLabel,
+        s.tabAccount,
         Icons.person_outline,
         'account',
         selectedIcon: Icons.person,
@@ -199,7 +200,7 @@ String sharedIntentTargetPath(
   MobileFeatures features,
 ) {
   if (intent.opensDocuments) {
-    // Prefer the primary 文档 tab when available.
+    // Prefer the primary documents tab when available.
     if (features.documents) {
       return '/documents';
     }
@@ -265,10 +266,16 @@ class MobileAppTab {
   }
 }
 
-// Labels exported for tests.
-String get mobileAssistantTabLabelOfficial => _assistantTabLabel;
-String get mobileTwinTabLabel => _twinTabLabel;
-String get mobileDocumentsTabLabel => _documentsTabLabel;
-String get mobileTasksTabLabel => _tasksTabLabel;
-String get mobileEmployeesTabLabel => _employeesTabLabel;
-String get mobileAccountTabLabel => _accountTabLabel;
+// Labels exported for tests (Chinese canonical; effective UI uses AppStrings).
+String get mobileAssistantTabLabelOfficial =>
+    AppStrings.forLanguage(appLanguageChinese).tabAssistant;
+String get mobileTwinTabLabel =>
+    AppStrings.forLanguage(appLanguageChinese).tabTwin;
+String get mobileDocumentsTabLabel =>
+    AppStrings.forLanguage(appLanguageChinese).tabDocuments;
+String get mobileTasksTabLabel =>
+    AppStrings.forLanguage(appLanguageChinese).tabTasks;
+String get mobileEmployeesTabLabel =>
+    AppStrings.forLanguage(appLanguageChinese).tabEmployees;
+String get mobileAccountTabLabel =>
+    AppStrings.forLanguage(appLanguageChinese).tabAccount;

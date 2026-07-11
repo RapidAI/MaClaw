@@ -161,6 +161,13 @@ Future<bool> showHubSSHVaultDialog(
                         }
                         setLocal(() => saving = true);
                         try {
+                          // Publish profile metadata to Hub so AI assistant
+                          // can enable label-based ssh (vault alone is not enough).
+                          try {
+                            await client.upsertServerProfiles([profile]);
+                          } on Object {
+                            // Best-effort; vault store may still succeed.
+                          }
                           await client.putSSHVaultSecret(
                             profileId: profile.id,
                             secret: secret,

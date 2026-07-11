@@ -116,7 +116,10 @@ type mobilePersistentState struct {
 	// PushDevices / PushPending survive Hub restarts (Phase E).
 	PushDevices map[string][]mobilePushDevice      `json:"push_devices,omitempty"`
 	PushPending map[string][]mobilePushPendingItem `json:"push_pending,omitempty"`
-	SavedAt     time.Time                          `json:"saved_at"`
+	// ServerProfiles / SSHVaultSecrets power hub_exec + mobile AI ssh tools.
+	ServerProfiles  map[string]mobileServerProfileRecord `json:"server_profiles,omitempty"`
+	SSHVaultSecrets map[string]mobileSSHVaultRecord      `json:"ssh_vault_secrets,omitempty"`
+	SavedAt         time.Time                            `json:"saved_at"`
 }
 
 // InitMobileStatePersistence sets default state file under runtime data when
@@ -138,6 +141,11 @@ type mobileDocumentDraftRecord struct {
 	Template  string
 	Markdown  string
 	UpdatedAt time.Time
+	// Original uploaded file (source of truth for preview/share/AI). Optional for
+	// pure-text drafts created without a file.
+	SourceFilename    string
+	SourceContentType string
+	SourceBytes       []byte
 }
 
 type mobileDocumentExportRecord struct {
@@ -345,6 +353,16 @@ func mobileEnsureStateLoaded() {
 	}
 	mobileDigitalEmployeeTasks.Unlock()
 	mobilePushLoadFromState(state.PushDevices, state.PushPending)
+	if state.ServerProfiles != nil {
+		mobileServerProfiles.Lock()
+		mobileServerProfiles.profiles = state.ServerProfiles
+		mobileServerProfiles.Unlock()
+	}
+	if state.SSHVaultSecrets != nil {
+		mobileSSHVault.Lock()
+		mobileSSHVault.secrets = state.SSHVaultSecrets
+		mobileSSHVault.Unlock()
+	}
 }
 
 func mobilePersistState() {
@@ -359,6 +377,8 @@ func mobilePersistState() {
 		DigitalEmployeeTasks: make(map[string]mobileDigitalEmployeeTaskRecord),
 		PushDevices:          make(map[string][]mobilePushDevice),
 		PushPending:          make(map[string][]mobilePushPendingItem),
+		ServerProfiles:       make(map[string]mobileServerProfileRecord),
+		SSHVaultSecrets:      make(map[string]mobileSSHVaultRecord),
 		SavedAt:              time.Now().UTC(),
 	}
 	mobileDocuments.Lock()
@@ -378,6 +398,16 @@ func mobilePersistState() {
 	}
 	mobileDigitalEmployeeTasks.Unlock()
 	mobilePushSnapshotInto(&state)
+	mobileServerProfiles.Lock()
+	for id, record := range mobileServerProfiles.profiles {
+		state.ServerProfiles[id] = record
+	}
+	mobileServerProfiles.Unlock()
+	mobileSSHVault.Lock()
+	for id, record := range mobileSSHVault.secrets {
+		state.SSHVaultSecrets[id] = record
+	}
+	mobileSSHVault.Unlock()
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return
@@ -1480,7 +1510,7 @@ func newMobileLlmQRSessionID() (string, error) {
 }
 
 func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"id":         record.ID,
 		"title":      record.Title,
 		"template":   record.Template,
@@ -1488,6 +1518,86 @@ func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any
 		"updated_at": record.UpdatedAt.Format(time.RFC3339),
 		"owner_id":   record.OwnerID,
 	}
+	if n := len(record.SourceBytes); n > 0 {
+		payload["has_original"] = true
+		payload["source_filename"] = strings.TrimSpace(record.SourceFilename)
+		payload["source_content_type"] = strings.TrimSpace(record.SourceContentType)
+		payload["source_size"] = n
+		payload["source_download_url"] = "/api/mobile/documents/drafts/" + record.ID + "/source"
+	} else {
+		payload["has_original"] = false
+	}
+	return payload
+}
+
+// mobileAttachDraftOriginal stores the original file bytes on a draft (source of truth).
+func mobileAttachDraftOriginal(draft *mobileDocumentDraftRecord, filename, contentType string, raw []byte) {
+	if draft == nil || len(raw) == 0 {
+		return
+	}
+	name := strings.TrimSpace(filepath.Base(filename))
+	if name == "" {
+		name = "upload"
+	}
+	draft.SourceFilename = name
+	draft.SourceContentType = strings.TrimSpace(contentType)
+	if draft.SourceContentType == "" {
+		draft.SourceContentType = "application/octet-stream"
+	}
+	draft.SourceBytes = append([]byte(nil), raw...)
+}
+
+// mobileDraftWorkingText returns text for AI/preview: prefer extracted/OCR markdown;
+// for text-like originals fall back to raw UTF-8; otherwise a short original-file notice.
+func mobileDraftWorkingText(draft mobileDocumentDraftRecord) string {
+	md := strings.TrimSpace(draft.Markdown)
+	if md != "" && !mobileDraftMarkdownLooksLikeRawBinary(md) {
+		return md
+	}
+	if len(draft.SourceBytes) == 0 {
+		return md
+	}
+	// Extract from original on demand (docx/xlsx/pdf/text).
+	if extracted, ok := mobileDraftMarkdownFromUpload(draft.SourceFilename, draft.SourceBytes); ok && strings.TrimSpace(extracted) != "" {
+		return extracted
+	}
+	if utf8.Valid(draft.SourceBytes) {
+		text := strings.TrimSpace(string(draft.SourceBytes))
+		if text != "" && !mobileDraftMarkdownLooksLikeRawBinary(text) {
+			return text
+		}
+	}
+	title := strings.TrimSpace(draft.Title)
+	if title == "" {
+		title = draft.SourceFilename
+	}
+	return fmt.Sprintf(
+		"# %s\n\n_原始文件已保存（%s，%d bytes）。请以原件为准进行处理；正文提取尚未完成或无法直接显示。_\n",
+		title,
+		draft.SourceFilename,
+		len(draft.SourceBytes),
+	)
+}
+
+func mobileDraftMarkdownLooksLikeRawBinary(text string) bool {
+	if text == "" {
+		return false
+	}
+	// ZIP/OOXML (docx/xlsx) or obvious binary garbage mistaken for text.
+	if strings.HasPrefix(text, "PK") && (strings.Contains(text, "Content_Types") || strings.Contains(text, "[Content_Types]")) {
+		return true
+	}
+	nul := 0
+	limit := len(text)
+	if limit > 2048 {
+		limit = 2048
+	}
+	for i := 0; i < limit; i++ {
+		if text[i] == 0 {
+			nul++
+		}
+	}
+	return nul > 0
 }
 
 func mobileDocumentExportPayload(record mobileDocumentExportRecord) map[string]any {
@@ -1550,11 +1660,15 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 	}
 	draft.Markdown = ocrMarkdown
 	draft.UpdatedAt = now
+	// Ensure original survives OCR promotion.
+	if len(draft.SourceBytes) == 0 && len(record.SourceBytes) > 0 {
+		mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, record.SourceBytes)
+	}
 	mobileDocuments.drafts[draft.ID] = draft
 	record.Status = "ready"
 	record.Message = strings.TrimSpace(record.OCRMessage)
 	if record.Message == "" {
-		record.Message = "OCR/视觉识别已完成，已更新移动端文档草稿。"
+		record.Message = "OCR/视觉识别已完成，已更新移动端文档草稿（原件仍可分享）。"
 	}
 	record.UpdatedAt = now
 	// Best-effort knowledge index for OCR-ready drafts (owner known on record).
@@ -1856,28 +1970,45 @@ func mobileLookupOwnedDraft(principal *auth.ViewerPrincipal, documentID string) 
 
 // mobileInjectBoundDocument inserts a system message with the bound draft body
 // so the full agent can treat the document as its working object (sync path).
+// When an original file is attached, that file is the source of truth; extracted
+// text is provided only as a convenience for models that cannot read binaries.
 func mobileInjectBoundDocument(messages []map[string]string, draft mobileDocumentDraftRecord) []map[string]string {
-	body := mobileClipRunes(draft.Markdown, mobileBoundDocumentMaxRunes)
+	body := mobileClipRunes(mobileDraftWorkingText(draft), mobileBoundDocumentMaxRunes)
 	title := strings.TrimSpace(draft.Title)
 	if title == "" {
 		title = draft.ID
 	}
+	hasOriginal := len(draft.SourceBytes) > 0
+	sourceName := strings.TrimSpace(draft.SourceFilename)
+	sourceType := strings.TrimSpace(draft.SourceContentType)
+	sourceSize := len(draft.SourceBytes)
 	sys := fmt.Sprintf(
 		`Bound mobile document object:
 - document_id: %s
 - title: %s
 - updated_at: %s
+- has_original: %v
+- source_filename: %s
+- source_content_type: %s
+- source_size_bytes: %d
 
-You are editing/advising on this document. Prefer concise, actionable Markdown.
+The user's working object is the ORIGINAL uploaded file when has_original is true.
+Treat the original file as the source of truth for content, layout intent, and sharing.
+Text below is extracted/OCR convenience for analysis — do not claim the environment lacks OCR/vision if extracted text is present.
+Prefer concise, actionable Markdown in replies.
 When proposing a full replacement of the draft body, wrap the new Markdown in a fenced code block labeled maclaw-document-edit (language tag maclaw-document-edit).
 Do not claim the document was already saved — the Mobile client applies edits via Hub PATCH using document_id.
 
---- Document Markdown start ---
+--- Document content (from original / extract) start ---
 %s
---- Document Markdown end ---`,
+--- Document content end ---`,
 		draft.ID,
 		title,
 		draft.UpdatedAt.UTC().Format(time.RFC3339),
+		hasOriginal,
+		sourceName,
+		sourceType,
+		sourceSize,
 		body,
 	)
 	if len(messages) == 0 {
@@ -2832,6 +2963,8 @@ type mobileDocumentDraftRequest struct {
 	Title    string `json:"title"`
 	Template string `json:"template"`
 	Content  string `json:"content,omitempty"`
+	// Markdown, when set, is stored as the draft body as-is (desktop file share / import).
+	Markdown string `json:"markdown,omitempty"`
 }
 
 type mobileDocumentDraftUpdateRequest struct {
@@ -3239,11 +3372,14 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 		if template == "" {
 			template = "report"
 		}
-		content := strings.TrimSpace(req.Content)
-		if content == "" {
-			content = "请在这里补充正文。"
+		markdown := strings.TrimSpace(req.Markdown)
+		if markdown == "" {
+			content := strings.TrimSpace(req.Content)
+			if content == "" {
+				content = "请在这里补充正文。"
+			}
+			markdown = "# " + title + "\n\n" + content + "\n"
 		}
-		markdown := "# " + title + "\n\n" + content + "\n"
 		// Free baseline limit; paid bootstrap may show higher but enforcement uses free unless we re-resolve grants (kept simple).
 		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(len(markdown))); err != nil {
 			writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
@@ -3273,11 +3409,18 @@ func MobileDocumentDraftHandler(identity *auth.IdentityService) http.HandlerFunc
 }
 
 // MobileDocumentDraftUpdateHandler persists lightweight title/body edits made
-// on the mobile device before export or sharing.
+// on the mobile device before export or sharing. DELETE removes the draft from
+// the shared library (desktop GUI / phone both use this path).
 func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch {
-			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH")
+		switch r.Method {
+		case http.MethodPatch:
+			// fall through to update
+		case http.MethodDelete:
+			mobileDocumentDraftDelete(w, r, identity)
+			return
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use PATCH or DELETE")
 			return
 		}
 		principal, err := authenticateViewerRequest(r, identity)
@@ -3306,11 +3449,16 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "markdown is required")
 			return
 		}
+		ownerID := mobilePrincipalOwnerID(principal)
+		if ownerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer identity missing")
+			return
+		}
 		// Pre-check ownership + delta quota outside mutation.
 		mobileDocuments.Lock()
 		prev, okPrev := mobileDocuments.drafts[draftID]
 		mobileDocuments.Unlock()
-		if !okPrev || prev.OwnerID != principal.UserID {
+		if !okPrev || prev.OwnerID != ownerID {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -3324,14 +3472,14 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
-		if ok && record.OwnerID == principal.UserID {
+		if ok && record.OwnerID == ownerID {
 			record.Title = title
 			record.Markdown = markdown
 			record.UpdatedAt = now
 			mobileDocuments.drafts[draftID] = record
 		}
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != principal.UserID {
+		if !ok || record.OwnerID != ownerID {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -3342,6 +3490,50 @@ func MobileDocumentDraftUpdateHandler(identity *auth.IdentityService) http.Handl
 			"status": "draft_updated",
 		})
 	}
+}
+
+func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity *auth.IdentityService) {
+	principal, err := authenticateViewerRequest(r, identity)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+		return
+	}
+	mobileEnsureStateLoaded()
+	draftID := strings.TrimSpace(r.PathValue("draftId"))
+	if draftID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "draft id is required")
+		return
+	}
+	ownerID := mobilePrincipalOwnerID(principal)
+	if ownerID == "" {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer identity missing")
+		return
+	}
+	mobileDocuments.Lock()
+	record, ok := mobileDocuments.drafts[draftID]
+	if !ok || record.OwnerID != ownerID {
+		// Idempotent: missing draft is treated as already deleted so clients can
+		// clear local cache without a hard failure after Hub restart.
+		mobileDocuments.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":   "draft_already_gone",
+			"draft_id": draftID,
+		})
+		return
+	}
+	delete(mobileDocuments.drafts, draftID)
+	// Drop related upload tasks that pointed at this draft (free quota/source).
+	for taskID, upload := range mobileDocuments.uploads {
+		if upload.OwnerID == ownerID && upload.DraftID == draftID {
+			delete(mobileDocuments.uploads, taskID)
+		}
+	}
+	mobileDocuments.Unlock()
+	mobilePersistState()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "draft_deleted",
+		"draft_id": draftID,
+	})
 }
 
 // MobileDocumentProcessHandler applies lightweight emergency document actions.
@@ -3374,9 +3566,14 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 			return
 		}
 
+		ownerID := mobilePrincipalOwnerID(principal)
+		if ownerID == "" {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer identity missing")
+			return
+		}
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
-		ownerOK := ok && record.OwnerID == principal.UserID
+		ownerOK := ok && record.OwnerID == ownerID
 		markdownSnapshot := ""
 		if ownerOK {
 			markdownSnapshot = record.Markdown
@@ -3406,13 +3603,13 @@ func MobileDocumentProcessHandler(identity *auth.IdentityService) http.HandlerFu
 		now := time.Now().UTC()
 		mobileDocuments.Lock()
 		record, ok = mobileDocuments.drafts[draftID]
-		if ok && record.OwnerID == principal.UserID {
+		if ok && record.OwnerID == ownerID {
 			record.Markdown = mobileProcessDocumentMarkdown(action, record.Markdown)
 			record.UpdatedAt = now
 			mobileDocuments.drafts[draftID] = record
 		}
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != principal.UserID {
+		if !ok || record.OwnerID != ownerID {
 			writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 			return
 		}
@@ -3906,7 +4103,7 @@ func mobileUploadedFileIsImmediateDraft(filename string) bool {
 
 func mobileUploadedFileIsImage(filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".png", ".jpg", ".jpeg":
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff":
 		return true
 	default:
 		return false
@@ -4094,7 +4291,7 @@ func mobileDraftMarkdownFromImage(filename string, raw []byte) string {
 	b.WriteString("# ")
 	b.WriteString(title)
 	b.WriteString("\n\n")
-	b.WriteString("图片已导入，等待 OCR/视觉模型识别。\n\n")
+	b.WriteString("图片原件已保存。可直接分享原图；OCR/视觉识别完成后会补充可读正文。\n\n")
 	b.WriteString("- 文件名：")
 	b.WriteString(filepath.Base(filename))
 	b.WriteString("\n")
@@ -4112,6 +4309,21 @@ func mobileDraftMarkdownFromImage(filename string, raw []byte) string {
 	b.WriteString("\n## 待识别内容\n\n")
 	b.WriteString("_OCR 完成后会把识别文本更新到这里。_\n")
 	return b.String()
+}
+
+func mobileDraftOriginalOnlyMarkdown(filename string, raw []byte) string {
+	title := mobileUploadTitle(filename)
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
+	if ext == "" {
+		ext = "bin"
+	}
+	return fmt.Sprintf(
+		"# %s\n\n原始文件已保存到文稿库，可预览元数据或分享原件。\n\n- 文件名：%s\n- 类型：%s\n- 大小：%d bytes\n\n_正文提取有限或尚未完成；AI 处理以原件为准。_\n",
+		title,
+		filepath.Base(filename),
+		ext,
+		len(raw),
+	)
 }
 func mobileImageDimensions(format string, raw []byte) (int, int) {
 	switch format {
@@ -4501,8 +4713,13 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			return
 		}
 		defer file.Close()
-		name := strings.TrimSpace(header.Filename)
+		// Prefer explicit form field for original display name (non-ASCII safe).
+		name := strings.TrimSpace(r.FormValue("filename"))
 		if name == "" {
+			name = strings.TrimSpace(header.Filename)
+		}
+		name = filepath.Base(name)
+		if name == "" || name == "." || name == string(filepath.Separator) {
 			name = "upload"
 		}
 		body, err := io.ReadAll(io.LimitReader(file, mobileDocumentUploadMaxBytes+1))
@@ -4530,6 +4747,14 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			UploadedAt:  now,
 			UpdatedAt:   now,
 		}
+		contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
+		record.ContentType = contentType
+
+		// Always keep the original file on the draft (source of truth for share/AI).
+		attachOriginal := func(draft *mobileDocumentDraftRecord) {
+			mobileAttachDraftOriginal(draft, name, contentType, body)
+		}
+
 		if mobileUploadedFileIsImmediateDraft(name) {
 			if markdown, ok := mobileDraftMarkdownFromUpload(name, body); ok {
 				draft := mobileDocumentDraftRecord{
@@ -4543,9 +4768,10 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				if draft.Title == "" {
 					draft.Title = name
 				}
+				attachOriginal(&draft)
 				record.Status = "ready"
 				record.DraftID = draft.ID
-				record.Message = "文件已解析为移动端文档草稿。"
+				record.Message = "文件已导入（保留原件，并生成可读正文）。"
 				mobileDocuments.Lock()
 				mobileDocuments.drafts[draft.ID] = draft
 				mobileDocuments.uploads[record.TaskID] = record
@@ -4556,20 +4782,19 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				writeJSON(w, http.StatusAccepted, payload)
 				return
 			}
-			record.Message = "文件暂时无法立即解析，等待文档解析管线处理。"
-		}
-		if mobileUploadedFileIsImage(name) {
+			// Office/binary that failed extract: still store original as a draft.
 			draft := mobileDocumentDraftRecord{
 				ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
 				OwnerID:   principal.UserID,
 				Title:     mobileUploadTitle(name),
 				Template:  "report",
-				Markdown:  mobileDraftMarkdownFromImage(name, body),
+				Markdown:  mobileDraftOriginalOnlyMarkdown(name, body),
 				UpdatedAt: now,
 			}
-			record.Status = "needs_ocr"
+			attachOriginal(&draft)
+			record.Status = "ready"
 			record.DraftID = draft.ID
-			record.Message = "图片已导入为移动端草稿，等待 OCR/视觉模型识别。"
+			record.Message = "原件已保存到文稿库（正文提取有限，可分享原文件）。"
 			mobileDocuments.Lock()
 			mobileDocuments.drafts[draft.ID] = draft
 			mobileDocuments.uploads[record.TaskID] = record
@@ -4580,7 +4805,44 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			writeJSON(w, http.StatusAccepted, payload)
 			return
 		}
+		if mobileUploadedFileIsImage(name) {
+			draft := mobileDocumentDraftRecord{
+				ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
+				OwnerID:   principal.UserID,
+				Title:     mobileUploadTitle(name),
+				Template:  "report",
+				Markdown:  mobileDraftMarkdownFromImage(name, body),
+				UpdatedAt: now,
+			}
+			attachOriginal(&draft)
+			record.Status = "needs_ocr"
+			record.DraftID = draft.ID
+			record.Message = "图片原件已保存，等待 OCR/视觉识别（可先分享原图）。"
+			mobileDocuments.Lock()
+			mobileDocuments.drafts[draft.ID] = draft
+			mobileDocuments.uploads[record.TaskID] = record
+			payload := mobileDocumentUploadPayload(record)
+			mobileDocuments.Unlock()
+			mobilePersistState()
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
+			writeJSON(w, http.StatusAccepted, payload)
+			return
+		}
+		// Unknown binary: still keep original as shareable draft.
+		draft := mobileDocumentDraftRecord{
+			ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
+			OwnerID:   principal.UserID,
+			Title:     mobileUploadTitle(name),
+			Template:  "report",
+			Markdown:  mobileDraftOriginalOnlyMarkdown(name, body),
+			UpdatedAt: now,
+		}
+		attachOriginal(&draft)
+		record.Status = "ready"
+		record.DraftID = draft.ID
+		record.Message = "原件已保存到文稿库。"
 		mobileDocuments.Lock()
+		mobileDocuments.drafts[draft.ID] = draft
 		mobileDocuments.uploads[record.TaskID] = record
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
@@ -4600,10 +4862,11 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		}
 		mobileEnsureStateLoaded()
 		taskID := strings.TrimSpace(r.PathValue("taskId"))
+		ownerID := mobilePrincipalOwnerID(principal)
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.uploads[taskID]
 		changed := false
-		if ok && record.OwnerID == principal.UserID {
+		if ok && record.OwnerID == ownerID {
 			record, changed = mobileApplyUploadPipelineResult(record, time.Now().UTC())
 			if changed {
 				mobileDocuments.uploads[taskID] = record
@@ -4611,7 +4874,7 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		}
 		payload := mobileDocumentUploadPayload(record)
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != principal.UserID {
+		if !ok || record.OwnerID != ownerID {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
@@ -4792,6 +5055,7 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 			record.OCRMarkdown = markdown
 			record.OCRMessage = message
 			record.OCRError = errText
+			// Intermediate status so mobileApplyUploadPipelineResult can promote to ready/failed.
 			if record.Status == "" || record.Status == "queued" || record.Status == "in_progress" {
 				record.Status = "needs_ocr"
 			}
@@ -4806,7 +5070,19 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 						Markdown:  markdown,
 						UpdatedAt: now,
 					}
+					// Preserve original from upload when creating draft late.
+					if len(record.SourceBytes) > 0 {
+						mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, record.SourceBytes)
+					}
 					record.DraftID = draft.ID
+					mobileDocuments.drafts[draft.ID] = draft
+				} else {
+					// Keep draft body current; never drop the original attachment.
+					draft.Markdown = markdown
+					draft.UpdatedAt = now
+					if len(draft.SourceBytes) == 0 && len(record.SourceBytes) > 0 {
+						mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, record.SourceBytes)
+					}
 					mobileDocuments.drafts[draft.ID] = draft
 				}
 			}
@@ -4896,9 +5172,9 @@ func MobileSSHAnalyzeHandler(identity *auth.IdentityService) http.HandlerFunc {
 }
 
 // MobileServerProfilesHandler lets mobile viewers list tenant-scoped,
-// sanitized SSH profile metadata and lets authorized desktop agents publish
-// the SSHHosts they can service. No passwords, private keys, or passphrases are
-// accepted or returned by this API.
+// sanitized SSH profile metadata. Desktop agents may publish hosts they can
+// service; mobile viewers may also upsert their own profiles for hub_exec /
+// AI assistant SSH (no passwords in this API — secrets use /ssh/vault).
 func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -4908,10 +5184,14 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 				return
 			}
+			ownerID := mobilePrincipalOwnerID(principal)
 			profiles := make([]map[string]any, 0)
 			mobileServerProfiles.Lock()
 			for _, record := range mobileServerProfiles.profiles {
-				if record.TenantID != principal.TenantID || record.OwnerID != principal.UserID {
+				if record.TenantID != principal.TenantID {
+					continue
+				}
+				if record.OwnerID != ownerID && record.OwnerID != principal.UserID {
 					continue
 				}
 				profiles = append(profiles, mobileServerProfileResponse(record))
@@ -4929,19 +5209,32 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 			})
 			writeJSON(w, http.StatusOK, map[string]any{"profiles": profiles})
 		case http.MethodPut, http.MethodPost:
-			principal, err := authenticateMobileDigitalEmployeeWorker(r, identity)
-			if err != nil {
-				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Worker authentication failed")
-				return
+			// Desktop worker = machine token + X-Machine-ID. Mobile viewer
+			// uses the same route to upsert profiles for hub_exec / AI ssh.
+			// Note: authenticateMobileDigitalEmployeeWorker falls back to
+			// viewer, so we detect real workers via non-empty MachineID.
+			worker, workerErr := authenticateMobileDigitalEmployeeWorker(r, identity)
+			var tenantID, ownerID, sourceMachineID string
+			viewerUpsert := false
+			if workerErr == nil && strings.TrimSpace(worker.MachineID) != "" {
+				tenantID = worker.TenantID
+				ownerID = strings.TrimSpace(worker.UserID)
+				sourceMachineID = strings.TrimSpace(worker.MachineID)
+			} else {
+				viewer, err := authenticateViewerRequest(r, identity)
+				if err != nil {
+					writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer or worker authentication failed")
+					return
+				}
+				viewerUpsert = true
+				tenantID = viewer.TenantID
+				ownerID = mobilePrincipalOwnerID(viewer)
+				sourceMachineID = "mobile-viewer"
 			}
 			var req mobileServerProfileRequest
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
 				writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must be valid JSON")
 				return
-			}
-			sourceMachineID := strings.TrimSpace(principal.MachineID)
-			if sourceMachineID == "" {
-				sourceMachineID = strings.TrimSpace(principal.UserID)
 			}
 			now := time.Now().UTC()
 			next := make(map[string]mobileServerProfileRecord)
@@ -4963,11 +5256,11 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 				if name == "" {
 					name = profileID
 				}
-				key := principal.TenantID + "\x00" + principal.UserID + "\x00" + sourceMachineID + "\x00" + profileID
+				key := tenantID + "\x00" + ownerID + "\x00" + sourceMachineID + "\x00" + profileID
 				next[key] = mobileServerProfileRecord{
 					ProfileID:       profileID,
-					TenantID:        principal.TenantID,
-					OwnerID:         principal.UserID,
+					TenantID:        tenantID,
+					OwnerID:         ownerID,
 					SourceMachineID: sourceMachineID,
 					Name:            name,
 					Host:            host,
@@ -4980,18 +5273,23 @@ func MobileServerProfilesHandler(identity *auth.IdentityService) http.HandlerFun
 				}
 			}
 			mobileServerProfiles.Lock()
-			for key, record := range mobileServerProfiles.profiles {
-				if record.TenantID == principal.TenantID && record.OwnerID == principal.UserID && record.SourceMachineID == sourceMachineID {
-					delete(mobileServerProfiles.profiles, key)
+			// Worker replace-by-source; mobile viewer upserts without wiping desktop publishes.
+			if !viewerUpsert {
+				for key, record := range mobileServerProfiles.profiles {
+					if record.TenantID == tenantID && record.OwnerID == ownerID && record.SourceMachineID == sourceMachineID {
+						delete(mobileServerProfiles.profiles, key)
+					}
 				}
 			}
 			for key, record := range next {
 				mobileServerProfiles.profiles[key] = record
 			}
 			mobileServerProfiles.Unlock()
+			go mobilePersistState()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status": "ok",
 				"count":  len(next),
+				"source": map[bool]string{true: "mobile_viewer", false: "desktop_worker"}[viewerUpsert],
 			})
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET, POST, or PUT")
@@ -6338,7 +6636,21 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 // MobileDigitalEmployeeTaskClaimHandler lets an authorized remote worker claim
 // one queued mobile-origin task for a digital employee. This closes the mobile
 // to remote-capability loop without letting the phone execute commands itself.
+//
+// Path forms:
+//   - POST .../digital-employees/{employeeId}/tasks/claim  — claim for one employee (or its ve_/machine aliases)
+//   - POST .../digital-employees/tasks/claim              — claim next task this worker can host
 func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileDigitalEmployeeTaskClaim(identity, true)
+}
+
+// MobileDigitalEmployeeTaskClaimAnyHandler claims the next queued task that this
+// machine can host (own machine aliases + VE registry hosted on this machine).
+func MobileDigitalEmployeeTaskClaimAnyHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return mobileDigitalEmployeeTaskClaim(identity, false)
+}
+
+func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathEmployee bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
@@ -6350,8 +6662,8 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 			return
 		}
 		mobileEnsureStateLoaded()
-		employeeID := strings.TrimSpace(r.PathValue("employeeId"))
-		if employeeID == "" {
+		pathEmployeeID := strings.TrimSpace(r.PathValue("employeeId"))
+		if requirePathEmployee && pathEmployeeID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "employee id is required")
 			return
 		}
@@ -6362,9 +6674,22 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 			claimedBy = principal.UserID
 		}
 		var claimed mobileDigitalEmployeeTaskRecord
+		// Optional registry for "this machine hosts VE X" matching.
+		var registryEmployees []digitalEmployeeEntry
+		if system := mobileQuotaSystem; system != nil {
+			tenantSystem := scopedSystemSettingsForTenant(principal.TenantID, system)
+			registryEmployees = loadVERegistry(r.Context(), tenantSystem).Employees
+		}
+
 		mobileDigitalEmployeeTasks.Lock()
 		for taskID, record := range mobileDigitalEmployeeTasks.tasks {
-			if !groupDiscussionParticipantIdentityMatches(record.EmployeeID, employeeID) || record.OwnerID != principal.UserID || record.Status != "queued" {
+			if record.Status != "queued" {
+				continue
+			}
+			if requirePathEmployee && !groupDiscussionParticipantIdentityMatches(record.EmployeeID, pathEmployeeID) {
+				continue
+			}
+			if !mobileWorkerCanClaimDigitalEmployeeTask(record, principal, registryEmployees) {
 				continue
 			}
 			record.Status = "in_progress"
@@ -6386,12 +6711,97 @@ func MobileDigitalEmployeeTaskClaimHandler(identity *auth.IdentityService) http.
 		}
 		mobilePersistState()
 		payload := mobileDigitalEmployeeTaskPayload(claimed)
-		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		// Notify the mobile task owner (may differ from machine owner for hosted VEs).
+		mobileRealtimeBroadcast(principal.TenantID, claimed.OwnerID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		if claimed.OwnerID != principal.UserID {
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"task":   payload,
 			"status": "claimed",
 		})
 	}
+}
+
+// mobileWorkerCanClaimDigitalEmployeeTask decides if a machine worker may claim a
+// queued mobile task. Cases:
+//  1. Same Hub user as the phone viewer + any online desktop of that user (personal
+//     execution host). Covers chats with shared/platform employees when the user's
+//     own GUI is online — otherwise those tasks never leave "queued".
+//  2. This machine hosts the target VE in the registry (even for other mobile users).
+//  3. Physical alias match (machine / ve_machine) for the employee id.
+func mobileWorkerCanClaimDigitalEmployeeTask(
+	record mobileDigitalEmployeeTaskRecord,
+	principal mobileDigitalEmployeeWorkerPrincipal,
+	registry []digitalEmployeeEntry,
+) bool {
+	employeeID := strings.TrimSpace(record.EmployeeID)
+	if employeeID == "" {
+		return false
+	}
+	machineID := strings.TrimSpace(principal.MachineID)
+	userID := strings.TrimSpace(principal.UserID)
+
+	// (1) Personal: phone user == machine-bound user; any of their desktops can run it.
+	if userID != "" && machineID != "" && strings.TrimSpace(record.OwnerID) == userID {
+		return true
+	}
+
+	// (2) Host machine for this employee (shared/public VE on this desktop).
+	if machineID != "" && mobileMachineHostsEmployeeInRegistry(machineID, userID, employeeID, registry) {
+		return true
+	}
+	// (3) Physical alias without registry entry.
+	if machineID != "" && mobileMachineIdentityMatchesEmployee(machineID, employeeID) {
+		return true
+	}
+	return false
+}
+
+func mobileMachineIdentityMatchesEmployee(machineID, employeeID string) bool {
+	machineID = strings.TrimSpace(machineID)
+	employeeID = strings.TrimSpace(employeeID)
+	if machineID == "" || employeeID == "" {
+		return false
+	}
+	if groupDiscussionParticipantIdentityMatches(employeeID, machineID) {
+		return true
+	}
+	ve := "ve_" + machineID
+	return groupDiscussionParticipantIdentityMatches(employeeID, ve)
+}
+
+func mobileMachineHostsEmployeeInRegistry(machineID, userID, employeeID string, registry []digitalEmployeeEntry) bool {
+	machineID = strings.TrimSpace(machineID)
+	employeeID = strings.TrimSpace(employeeID)
+	if machineID == "" || employeeID == "" || len(registry) == 0 {
+		return false
+	}
+	for _, entry := range registry {
+		if entry.Status != "" && entry.Status != veStatusActive && entry.Status != veStatusPending {
+			// Still allow active/pending; skip disabled.
+			if entry.Status == veStatusDisabled || entry.Status == veStatusRejected {
+				continue
+			}
+		}
+		if !groupDiscussionParticipantIdentityMatches(entry.ID, employeeID) &&
+			!groupDiscussionParticipantIdentityMatches(entry.MachineID, employeeID) &&
+			!groupDiscussionParticipantIdentityMatches(entry.PlatformEmployeeID, employeeID) {
+			continue
+		}
+		// Hosted on this machine.
+		if groupDiscussionParticipantIdentityMatches(entry.MachineID, machineID) ||
+			groupDiscussionParticipantIdentityMatches(entry.ID, "ve_"+machineID) ||
+			groupDiscussionParticipantIdentityMatches(entry.ID, machineID) {
+			return true
+		}
+		// Owned by this user and physical-type on any of their machines matching id.
+		if userID != "" && strings.TrimSpace(entry.OwnerUserID) == userID &&
+			mobileMachineIdentityMatchesEmployee(machineID, entry.MachineID) {
+			return true
+		}
+	}
+	return false
 }
 
 // MobileDigitalEmployeeTaskUpdateHandler lets the remote worker report task
@@ -6499,7 +6909,14 @@ func MobileDigitalEmployeeTaskStatusHandler(identity *auth.IdentityService) http
 // Design §3.2: free / default Mobile shows only the viewer's own twins
 // (OwnerUserID match + bound machines). Tenant shared pools require
 // entitlements.shared_employees; group-restricted VEs use VisibleGroupIDs.
-func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+// MobileDigitalEmployeesHandler lists digital employees for Mobile.
+// Online status uses the same live presence rules as Hub admin GET /api/ve/list
+// (deviceSvc + MacLawSrv runtime presence via applyVEDiscoverablePresence).
+func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService, presenceGetters ...veMachinePresenceGetter) http.HandlerFunc {
+	var presenceGetter veMachinePresenceGetter
+	if len(presenceGetters) > 0 {
+		presenceGetter = presenceGetters[0]
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, err := authenticateViewerRequest(r, identity)
 		if err != nil {
@@ -6527,13 +6944,14 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 
 		tenantSystem := scopedSystemSettingsForTenant(principal.TenantID, system)
 		authz := loadVEDigitalEmployeeAuthorization(r.Context(), tenantSystem)
-		machineEmployees := mobileMachineDigitalEmployeeEntries(r.Context(), identity, principal)
+		// Bound machines: online from live presence (same source as Hub VE list), not only DB status.
+		machineEmployees := mobileMachineDigitalEmployeeEntries(r.Context(), identity, principal, presenceGetter)
 		if !veAuthorizationActive(authz) {
 			writeJSON(w, http.StatusOK, map[string]any{
-				"employees":        machineEmployees,
-				"authorization":    authz,
-				"scope":            mobileEmployeeListScope(allowShared),
-				"shared_employees": allowShared,
+				"employees":           machineEmployees,
+				"authorization":       authz,
+				"scope":               mobileEmployeeListScope(allowShared),
+				"shared_employees":    allowShared,
 				"group_path_resolved": requesterGroupPathResolved,
 			})
 			return
@@ -6553,8 +6971,9 @@ func MobileDigitalEmployeesHandler(identity *auth.IdentityService, system store.
 			requesterGroupPath,
 			requesterGroupPathResolved,
 		)
+		// Same presence path as VEAdminListHandler /api/ve/list.
 		for i := range employees {
-			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], nil, runtimePresence)
+			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], presenceGetter, runtimePresence)
 		}
 		employees = appendMobileMachineDigitalEmployees(employees, machineEmployees)
 		sort.SliceStable(employees, func(i, j int) bool {
@@ -6641,13 +7060,17 @@ func mobileViewerAllowsSharedEmployees(ctx context.Context, principal *auth.View
 	return mobileSharedEmployeesFromGrant(grant, plan)
 }
 
-func mobileMachineDigitalEmployeeEntries(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal) []digitalEmployeeEntry {
+func mobileMachineDigitalEmployeeEntries(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal, presenceGetters ...veMachinePresenceGetter) []digitalEmployeeEntry {
 	if identity == nil || principal == nil {
 		return nil
 	}
 	repo := identity.MachinesRepo()
 	if repo == nil || strings.TrimSpace(principal.UserID) == "" {
 		return nil
+	}
+	var presenceGetter veMachinePresenceGetter
+	if len(presenceGetters) > 0 {
+		presenceGetter = presenceGetters[0]
 	}
 	machines, err := repo.ListByUserID(ctx, principal.UserID)
 	if err != nil {
@@ -6671,11 +7094,12 @@ func mobileMachineDigitalEmployeeEntries(ctx context.Context, identity *auth.Ide
 		if name == "" {
 			name = "MaClaw Remote"
 		}
+		// Prefer live device presence (Hub VE list source); fall back to machines.status.
 		onlineStatus := veOnlineStatusOffline
 		if strings.EqualFold(strings.TrimSpace(machine.Status), veOnlineStatusOnline) {
 			onlineStatus = veOnlineStatusOnline
 		}
-		out = append(out, digitalEmployeeEntry{
+		entry := digitalEmployeeEntry{
 			ID:               "ve_" + strings.TrimSpace(machine.ID),
 			MachineID:        strings.TrimSpace(machine.ID),
 			EmployeeType:     veEmployeeTypePhysical,
@@ -6688,7 +7112,11 @@ func mobileMachineDigitalEmployeeEntries(ctx context.Context, identity *auth.Ide
 			OnlineStatus:     onlineStatus,
 			RegisteredAt:     machine.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt:        machine.UpdatedAt.UTC().Format(time.RFC3339),
-		})
+		}
+		if presenceGetter != nil {
+			entry = applyVEDiscoverablePresence(ctx, entry, presenceGetter, emptyMacLawSrvRuntimePresence())
+		}
+		out = append(out, entry)
 	}
 	return out
 }

@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/mobile_bootstrap.dart';
 import 'package:maclaw_mobile/core/api/mobile_credits.dart';
+import 'package:maclaw_mobile/core/settings/app_preferences_model.dart';
 import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
+import 'package:maclaw_mobile/l10n/app_strings.dart';
 import 'package:maclaw_mobile/shared/app_shell.dart';
 
 const _assistantTab = 'AI助手';
@@ -33,6 +35,18 @@ void main() {
     ]);
     expect(tabs.map((tab) => tab.label), isNot(contains('查信息')));
     expect(tabs.map((tab) => tab.label), contains('文档'));
+  });
+
+  test('English UI strings relabel bottom tabs', () {
+    final en = AppStrings.forLanguage(appLanguageEnglish);
+    final tabs = mobileAppTabsForFeatures(defaultMobileFeatures, strings: en);
+    expect(tabs.map((tab) => tab.label), [
+      'Assistant',
+      'Docs',
+      'Tasks',
+      'Employees',
+      'Me',
+    ]);
   });
 
   test('mobile app presents the GUI-like AI assistant as the first tab', () {

@@ -171,6 +171,22 @@ func mobileRunCoreAgent(
 	if strings.TrimSpace(userText) == "" {
 		return "", "", fmt.Errorf("user message is required")
 	}
+	// Same-turn convenience: "查状态 host user password" → vault + enable ssh tool.
+	// Password is stripped before the LLM sees the message (even if register fails).
+	if redacted, label, pass, registered := mobileMaybeAutoRegisterSSHFromUserText(principal, userText); pass != "" || registered {
+		userText = redacted
+		if registered {
+			log.Printf("[mobile-core-agent] auto-registered ssh label=%s for user=%s", label, principal.UserID)
+		}
+		// Redact password fragments in prior user turns so they never reach the LLM.
+		if pass != "" {
+			for i := range history {
+				if history[i].Role == agentservice.MessageRoleUser {
+					history[i].Content = mobileRedactPasswordInText(history[i].Content, pass)
+				}
+			}
+		}
+	}
 
 	tenantID := strings.TrimSpace(principal.TenantID)
 	if tenantID == "" {
@@ -210,6 +226,25 @@ func mobileRunCoreAgent(
 	appCfg := mobileCoreAgentAppConfig(systemHint, hubBase)
 	if uc, err := svc.GetUserConfig(ctx, p); err == nil && uc != nil {
 		appCfg = mobileMergeUserAgentConfig(uc.AppConfig, appCfg)
+	}
+	// Inject Linux server profiles + Hub vault secrets as label-based SSH hosts
+	// so the assistant can operate remote machines without AllowDirectSSH.
+	// Always attach a status hint so the model does not invent "no ssh tools"
+	// without explaining setup when hosts are empty. Live sessions come from
+	// the same per-user SSHSessionManager as desktop GUI reuse.
+	mobileEnsureStateLoaded()
+	keyMaterialDir := filepath.Join(dataDir, "ssh-vault-keys")
+	sshHosts := mobileAgentSSHHosts(principal, keyMaterialDir)
+	if len(sshHosts) > 0 {
+		appCfg.SSHHosts = mobileMergeSSHHosts(appCfg.SSHHosts, sshHosts)
+	}
+	liveSSH := executor.ListSSHSessionsForUser(tenantID, userID)
+	if sshHint := mobileAgentSSHSystemHint(sshHosts, liveSSH); sshHint != "" {
+		if strings.TrimSpace(appCfg.MaclawRoleDescription) == "" {
+			appCfg.MaclawRoleDescription = sshHint
+		} else {
+			appCfg.MaclawRoleDescription = appCfg.MaclawRoleDescription + "\n\n" + sshHint
+		}
 	}
 
 	transport := &mobileHubLLMTransport{
@@ -311,6 +346,8 @@ func mobileCoreAgentAppConfig(systemHint, hubBaseURL string) corelib.AppConfig {
 		MaclawRoleName:           "MaClaw",
 		MaclawRoleDescription: strings.TrimSpace(
 			"MaClaw Mobile official assistant on Hub. Full agent tools (web, skills, MCP, knowledge when available). " +
+				"When the user needs Linux server ops, use the built-in ssh tool with preconfigured host labels " +
+				"(Hub vault — credentials never leave Hub). Reuse live session_id like desktop GUI; do not reconnect in a loop. " +
 				"Answer in the user's language. Prefer Markdown.",
 		),
 	}
@@ -351,6 +388,41 @@ func mobileMergeUserAgentConfig(userCfg, hubLLM corelib.AppConfig) corelib.AppCo
 		out.MaclawRoleDescription = hubLLM.MaclawRoleDescription
 	} else if strings.TrimSpace(hubLLM.MaclawRoleDescription) != "" {
 		out.MaclawRoleDescription = out.MaclawRoleDescription + "\n\n" + hubLLM.MaclawRoleDescription
+	}
+	return out
+}
+
+// mobileMergeSSHHosts prefers vault-injected hosts for duplicate labels.
+func mobileMergeSSHHosts(existing, injected []corelib.SSHHostEntry) []corelib.SSHHostEntry {
+	if len(injected) == 0 {
+		return existing
+	}
+	if len(existing) == 0 {
+		return append([]corelib.SSHHostEntry(nil), injected...)
+	}
+	seen := make(map[string]struct{}, len(injected)+len(existing))
+	out := make([]corelib.SSHHostEntry, 0, len(injected)+len(existing))
+	for _, h := range injected {
+		key := strings.ToLower(strings.TrimSpace(h.Label))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, h)
+	}
+	for _, h := range existing {
+		key := strings.ToLower(strings.TrimSpace(h.Label))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, h)
 	}
 	return out
 }

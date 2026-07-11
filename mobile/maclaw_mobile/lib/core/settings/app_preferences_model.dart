@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 
-const appLanguageChinese = 'zh_CN';
-const appLanguageEnglish = 'en_US';
+import '../../l10n/app_locale.dart';
+
+export '../../l10n/app_locale.dart'
+    show appLanguageSystem, appLanguageChinese, appLanguageEnglish;
 
 class AppPreferences {
   final ThemeMode themeMode;
+  /// Stored preference: `system` | `zh_CN` | `en_US`.
   final String language;
 
   const AppPreferences({
     this.themeMode = ThemeMode.system,
+    // Default Chinese UI for first run; users can pick System / English.
     this.language = appLanguageChinese,
   });
 
@@ -38,17 +42,17 @@ class AppPreferences {
 }
 
 String appLanguageLabel(String language) {
-  return switch (appLanguageFromWire(language)) {
+  return switch (appUiLanguagePreferenceFromWire(language)) {
+    appLanguageSystem => '跟随系统 / System',
     appLanguageEnglish => 'English',
     _ => '简体中文',
   };
 }
 
+/// Preference wire value (system / zh_CN / en_US). Use [resolveAppUiLanguage]
+/// for effective Chinese vs English UI.
 String appLanguageFromWire(String? value) {
-  return switch ((value ?? '').trim()) {
-    appLanguageEnglish => appLanguageEnglish,
-    _ => appLanguageChinese,
-  };
+  return appUiLanguagePreferenceFromWire(value);
 }
 
 ThemeMode themeModeFromWire(String? value) {

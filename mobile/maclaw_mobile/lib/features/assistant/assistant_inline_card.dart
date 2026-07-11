@@ -219,24 +219,28 @@ class _ActionButton extends StatelessWidget {
 List<AssistantInlineCardAction> assistantDefaultNextStepActions({
   bool includeEmployee = true,
   bool includeDocuments = true,
+  bool isZh = true,
 }) {
+  final draft = isZh ? '整理为草稿' : 'Save as draft';
+  final employee = isZh ? '派给员工' : 'Assign employee';
+  final documents = isZh ? '打开文档' : 'Open Docs';
   return [
-    const AssistantInlineCardAction(
+    AssistantInlineCardAction(
       key: 'draft',
-      label: '整理为草稿',
+      label: draft,
       icon: Icons.article_outlined,
       primary: true,
     ),
     if (includeEmployee)
-      const AssistantInlineCardAction(
+      AssistantInlineCardAction(
         key: 'employee',
-        label: '派给员工',
+        label: employee,
         icon: Icons.badge_outlined,
       ),
     if (includeDocuments)
-      const AssistantInlineCardAction(
+      AssistantInlineCardAction(
         key: 'documents',
-        label: '打开文档',
+        label: documents,
         icon: Icons.folder_open_outlined,
       ),
   ];

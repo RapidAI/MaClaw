@@ -35,7 +35,10 @@ import (
 // Used by all search and install paths.
 const ClawHubMirrorURL = "https://cn.clawhub-mirror.com"
 
-const hubClientJSONMaxBytes = 5 << 20
+// hubClientJSONMaxBytes is the default for getJSON (search + download).
+// Download paths need MaxSkillPackageDownloadBytes for base64 file maps.
+const hubClientJSONMaxBytes = MaxSkillPackageDownloadBytes
+const hubClientSearchJSONMaxBytes = MaxSkillHubSearchJSONBytes
 
 // ────────────────────────────────────────────────────────────────────────────
 // Unified search result
@@ -217,7 +220,7 @@ func (c *HubClient) SearchSkillHub(ctx context.Context, hubURL, query string) []
 		hubURL, url.QueryEscape(query))
 
 	var raw skillHubSearchResponse
-	if err := c.getJSON(ctx, endpoint, &raw); err != nil {
+	if err := c.getJSONLimited(ctx, endpoint, &raw, hubClientSearchJSONMaxBytes); err != nil {
 		return nil
 	}
 
@@ -270,7 +273,7 @@ func (c *HubClient) SearchClawHub(ctx context.Context, query string) []HubSearch
 	endpoint := ClawHubMirrorURL + "/api/v1/search?q=" + url.QueryEscape(query)
 
 	var raw clawHubSearchResponse
-	if err := c.getJSON(ctx, endpoint, &raw); err != nil {
+	if err := c.getJSONLimited(ctx, endpoint, &raw, hubClientSearchJSONMaxBytes); err != nil {
 		return nil
 	}
 
@@ -486,13 +489,26 @@ func (c *HubClient) DownloadBySkillID(ctx context.Context, hubURL, skillID, vers
 // ────────────────────────────────────────────────────────────────────────────
 
 func (c *HubClient) getJSON(ctx context.Context, endpoint string, dest interface{}) error {
+	// Default covers download payloads with base64 file maps.
+	return c.getJSONLimited(ctx, endpoint, dest, hubClientJSONMaxBytes)
+}
+
+func (c *HubClient) getJSONLimited(ctx context.Context, endpoint string, dest interface{}, maxBytes int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 
-	resp, err := c.httpClient.Do(req)
+	client := c.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	// Install payloads can be tens of MiB; do not inherit a short search timeout.
+	if maxBytes > MaxSkillHubSearchJSONBytes {
+		client = &http.Client{Timeout: 180 * time.Second, Transport: client.Transport}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -501,25 +517,16 @@ func (c *HubClient) getJSON(ctx context.Context, endpoint string, dest interface
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	data, err := readBoundedHubJSON(resp.Body, hubClientJSONMaxBytes)
+	data, err := ReadLimitedHTTPBody(resp.Body, resp.ContentLength, maxBytes)
 	if err != nil {
 		return err
 	}
 	return json.NewDecoder(bytes.NewReader(data)).Decode(dest)
 }
 
-func readBoundedHubJSON(body io.Reader, maxBytes int64) ([]byte, error) {
-	if maxBytes <= 0 {
-		return io.ReadAll(body)
-	}
-	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("hub response exceeds %d bytes", maxBytes)
-	}
-	return data, nil
+// readBoundedHubJSON is retained for unit tests.
+func readBoundedHubJSON(body io.Reader, contentLength, maxBytes int64) ([]byte, error) {
+	return ReadLimitedHTTPBody(body, contentLength, maxBytes)
 }
 
 // ── SkillHub response types ──

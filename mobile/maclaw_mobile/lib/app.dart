@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -10,6 +11,8 @@ import 'core/notifications/mobile_push_sync.dart';
 import 'core/network/mobile_network_recovery.dart';
 import 'core/security/mobile_redaction.dart';
 import 'core/settings/app_preferences.dart';
+import 'l10n/app_locale.dart';
+import 'l10n/app_strings.dart';
 import 'features/account/account_screen.dart';
 import 'features/assistant/assistant_screen.dart';
 import 'features/auth/login_screen.dart';
@@ -157,6 +160,8 @@ class MaClawMobileApp extends ConsumerWidget {
     ref.watch(mobilePushRegistrationProvider);
     final preferences =
         ref.watch(appPreferencesProvider).valueOrNull ?? const AppPreferences();
+    final strings = ref.watch(appStringsProvider);
+    final locale = resolveAppLocale(preferenceLanguage: preferences.language);
     final routerConfig = session.maybeWhen(
       data: (state) {
         if (!state.authenticated) return _loginRouter;
@@ -172,15 +177,46 @@ class MaClawMobileApp extends ConsumerWidget {
     );
     final canRouteNotifications = session.valueOrNull?.authenticated == true;
     return MaterialApp.router(
-      title: 'MaClaw Mobile',
+      title: strings.appTitle,
       debugShowCheckedModeBanner: false,
       theme: buildMaClawTheme(Brightness.light),
       darkTheme: buildMaClawTheme(Brightness.dark),
       themeMode: preferences.themeMode,
-      builder: (context, child) => _NotificationOpenBridge(
-        router: routerConfig,
-        canRoute: canRouteNotifications,
-        child: child ?? const SizedBox.shrink(),
+      locale: locale,
+      supportedLocales: const [
+        Locale('zh', 'CN'),
+        Locale('en', 'US'),
+      ],
+      localeListResolutionCallback: (locales, supported) {
+        // Chinese system UI → Chinese; any other language → English.
+        final preferred = locales == null || locales.isEmpty
+            ? null
+            : locales.first;
+        if (preferred != null &&
+            preferred.languageCode.toLowerCase() == 'zh') {
+          return const Locale('zh', 'CN');
+        }
+        if (preferences.language == appLanguageChinese) {
+          return const Locale('zh', 'CN');
+        }
+        if (preferences.language == appLanguageEnglish) {
+          return const Locale('en', 'US');
+        }
+        // system preference: non-Chinese → English
+        return const Locale('en', 'US');
+      },
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      builder: (context, child) => AppStringsScope(
+        strings: strings,
+        child: _NotificationOpenBridge(
+          router: routerConfig,
+          canRoute: canRouteNotifications,
+          child: child ?? const SizedBox.shrink(),
+        ),
       ),
       routerConfig: routerConfig,
     );

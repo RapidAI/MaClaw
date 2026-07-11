@@ -180,7 +180,8 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 	}
 	req.Header.Set("User-Agent", "MaClaw/1.0")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Multi-asset skill JSON can be tens of MiB; keep timeout aligned with installClient.
+	client := &http.Client{Timeout: 180 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -191,7 +192,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	data, err := readLimitedHubCenterBody(resp.Body, maxDownloadSize)
+	data, err := readLimitedHubCenterBodyWithLength(resp.Body, resp.ContentLength, maxDownloadSize)
 	if err != nil {
 		return nil, err
 	}

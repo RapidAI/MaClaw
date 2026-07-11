@@ -76,6 +76,26 @@ func TestSafeUnzip_ZipSlipPrevention(t *testing.T) {
 	}
 }
 
+func TestSafeUnzip_RejectsParentDirEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "dotdot.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	// Bare ".." must be rejected (filepath.Clean("..") has no "../" prefix).
+	if _, err := w.Create(".."); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if err := SafeUnzip(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected zip slip rejection for '..' entry")
+	}
+}
+
 func TestSafeUnzip_SandboxCleanup(t *testing.T) {
 	zipPath := createTestZip(t, map[string]string{
 		"skill.yaml": "name: test\ndescription: hello\n",

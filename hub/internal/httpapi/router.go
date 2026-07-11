@@ -424,6 +424,8 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/mobile/ssh/vault/{profileId}", MobileSSHVaultHandler(identity))
 	mux.HandleFunc("POST /api/mobile/ssh/vault/{profileId}", MobileSSHVaultHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/ssh/vault/{profileId}", MobileSSHVaultHandler(identity))
+	// Zero-management path: host + username + password → AI assistant ssh ready.
+	mux.HandleFunc("POST /api/mobile/ssh/quick-connect", MobileSSHQuickConnectHandler(identity))
 	// Long-running official assistant jobs (async upgrade path).
 	mux.HandleFunc("GET /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
 	mux.HandleFunc("POST /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
@@ -438,9 +440,11 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/agent/knowledge/ingest", MobileAgentKnowledgeIngestHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/drafts", MobileDocumentDraftsListHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftsListHandler(identity))
+	mux.HandleFunc("GET /api/mobile/documents/drafts/{draftId}/source", MobileDocumentDraftSourceHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/quota", MobileDocumentQuotaHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/drafts", MobileDocumentDraftHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftUpdateHandler(identity))
+	mux.HandleFunc("DELETE /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftUpdateHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/drafts/{draftId}/process", MobileDocumentProcessHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/process-jobs/{jobId}", MobileDocumentProcessJobStatusHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/upload", MobileDocumentUploadHandler(identity))
@@ -475,7 +479,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/ssh/files/claim", MobileBackendSSHFileOperationClaimHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/ssh/files/{operationId}/worker", MobileBackendSSHFileOperationUpdateHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/ssh/sessions/{sessionId}", MobileBackendSSHSessionCloseHandler(identity))
-	mux.HandleFunc("GET /api/mobile/digital-employees", MobileDigitalEmployeesHandler(identity, system, securitySvc))
+	mux.HandleFunc("GET /api/mobile/digital-employees", MobileDigitalEmployeesHandler(identity, system, securitySvc, deviceSvc))
+	// Bulk claim must register before the {employeeId} path so "tasks" is not captured as an id.
+	mux.HandleFunc("POST /api/mobile/digital-employees/tasks/claim", MobileDigitalEmployeeTaskClaimAnyHandler(identity))
 	mux.HandleFunc("POST /api/mobile/digital-employees/{employeeId}/tasks", MobileDigitalEmployeeTaskHandler(identity))
 	mux.HandleFunc("POST /api/mobile/digital-employees/{employeeId}/tasks/claim", MobileDigitalEmployeeTaskClaimHandler(identity))
 	mux.HandleFunc("GET /api/mobile/digital-employees/tasks/{taskId}", MobileDigitalEmployeeTaskStatusHandler(identity))

@@ -417,6 +417,10 @@
     }
     try {
       const data = await api('/api/admin/capabilities/' + encodeURIComponent(id) + '/upload-to-market', { method: 'POST' });
+      if (data.already_submitted) {
+        showToast(mp('marketplaceUploadAlreadySubmitted'), 'info');
+        return;
+      }
       const status = String(data.status || 'pending').toLowerCase();
       if (status === 'published' || status === 'success') {
         showToast(mp('marketplaceUploadPublished', {

@@ -9,6 +9,7 @@ import { TTSLevelBars } from "./TTSLevelBars";
 import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
 import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantUpdateNotice";
+import { AssistantMobileDocsControl } from "./AssistantMobileDocsControl";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
 import { NotificationBell } from "./NotificationBell";
 import { NotificationPanel } from "./NotificationPanel";
@@ -151,6 +152,7 @@ export function AssistantTitleBar({ clearHistory, clearHistoryDisabled, inline, 
                             />
                         )}
                     </div>
+                    <AssistantMobileDocsControl lang={lang} theme={t} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks", "\u641c\u7d22\u4efb\u52a1")}><TitleBarToolIcon name="search" /></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />

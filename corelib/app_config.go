@@ -1003,6 +1003,11 @@ type SSHHostEntry struct {
 	User       string `json:"user"`                  // Login username
 	AuthMethod string `json:"auth_method,omitempty"` // key/password/agent
 	KeyPath    string `json:"key_path,omitempty"`    // Private key path
+	// Password is optional in-memory secret for auth_method=password.
+	// Prefer not persisting this to disk config; Hub mobile agent injects from vault.
+	Password string `json:"password,omitempty"`
+	// Passphrase unlocks KeyPath when the private key is encrypted.
+	Passphrase string `json:"passphrase,omitempty"`
 }
 
 // IsWeixinLocalMode returns the effective WeChat local mode setting.

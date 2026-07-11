@@ -84,3 +84,13 @@ class DigitalEmployee {
     );
   }
 }
+
+/// Mobile lists only surface online employees; offline ones stay hidden.
+List<DigitalEmployee> filterOnlineDigitalEmployees(
+  Iterable<DigitalEmployee> employees,
+) {
+  return [
+    for (final employee in employees)
+      if (employee.online) employee,
+  ];
+}

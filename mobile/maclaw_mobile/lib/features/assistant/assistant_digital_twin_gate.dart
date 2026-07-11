@@ -72,13 +72,13 @@ class AssistantDigitalTwinGate extends ConsumerWidget {
               return Card(
                 child: ListTile(
                   leading: const Icon(Icons.smart_toy_outlined),
-                  title: const Text('还没有可用的数字分身'),
+                  title: const Text('还没有在线的数字分身'),
                   subtitle: Text(
                     shared || scope == 'shared'
-                        ? '当前套餐允许共享池，但列表为空。请在电脑上启用你的分身，'
-                            '或确认租户已注册共享员工后刷新；也可到「我的」开通官方 AI 助手。'
-                        : '请在电脑上打开 MaClaw 并登录同一账号，待分身上线后刷新；'
-                            '或到「我的」购买/兑换服务卡开通官方 AI 助手。免费档不展示他人或公共池员工。',
+                        ? '仅展示在线分身。请在电脑上启用你的分身并保持在线后刷新；'
+                            '也可到「我的」开通官方 AI 助手。'
+                        : '仅展示在线分身。请在电脑上打开 MaClaw 并登录同一账号，待分身上线后刷新；'
+                            '或到「我的」购买/兑换服务卡开通官方 AI 助手。',
                   ),
                 ),
               );

@@ -19,7 +19,8 @@ import 'package:maclaw_mobile/features/documents/documents_controller.dart';
 
 class _TestAppPreferencesController extends AppPreferencesController {
   @override
-  Future<AppPreferences> build() async => const AppPreferences();
+  Future<AppPreferences> build() async =>
+      const AppPreferences(language: appLanguageChinese);
 }
 
 class _FakeAssistantVoiceInput implements AssistantVoiceInput {

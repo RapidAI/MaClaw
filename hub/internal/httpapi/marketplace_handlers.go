@@ -564,19 +564,20 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "skill package is too large")
 			return
 		}
-		// Drop runtime artifacts and enforce HubCenter zip-entry limit so packages
-		// stay market-uploadable (node_modules/.git/venv commonly push entry counts
-		// past SafeUnzip's max of MaxSkillMarketZipEntries).
+		// Drop runtime artifacts and enforce HubCenter package limits (size-first)
+		// so enterprise packages remain market-uploadable.
 		storePath, cleanupFiltered, filterErr := prepareSkillZipForHubCenterMarket(tmp.Name())
 		if filterErr != nil {
 			_ = os.Remove(tmp.Name())
-			writeError(w, http.StatusBadRequest, "PACKAGE_TOO_LARGE", filterErr.Error())
+			writeError(w, http.StatusBadRequest, skillMarketPackageErrorCode(filterErr), filterErr.Error())
 			return
 		}
 		if storePath != tmp.Name() {
 			_ = os.Remove(tmp.Name())
 		}
-		defer cleanupFiltered()
+		// cleanupFiltered removes a temp filtered zip; after a successful move
+		// the path is gone — clear cleanup so we do not race Remove on finalPath.
+		defer func() { cleanupFiltered() }()
 
 		storeFile, openErr := os.Open(storePath)
 		if openErr != nil {
@@ -602,6 +603,8 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
 			return
 		}
+		// Ownership transferred to finalPath.
+		cleanupFiltered = func() {}
 		ctx := capability.WithTenant(r.Context(), principal.TenantID)
 		versionKey := corelib.CapabilitySourceEnterpriseHub + ":" + corelib.CapabilityTypeSkill + ":" + meta.SkillID + "@" + checksum[:12]
 		displayName := firstNonEmpty(meta.Name, humanizeCapabilityReference(meta.SkillID), meta.SkillID)
@@ -4975,9 +4978,34 @@ func enterpriseSkillYAMLPipelineForPreflight(steps []coreskill.SkillYAMLPipeline
 
 func enterpriseSkillZipPathAllowed(name string) bool {
 	name = filepath.ToSlash(strings.TrimSpace(name))
-	clean := filepath.Clean(name)
-	clean = filepath.ToSlash(clean)
-	return name != "" && clean != "." && !strings.HasPrefix(clean, "../") && !strings.HasPrefix(clean, "/") && !strings.Contains(clean, ":")
+	if name == "" || strings.Contains(name, "\x00") {
+		return false
+	}
+	// Absolute / drive-letter / UNC-style paths are never package-relative.
+	if strings.HasPrefix(name, "/") || strings.Contains(name, ":") {
+		return false
+	}
+	clean := filepath.ToSlash(filepath.Clean(name))
+	// filepath.Clean("..") => ".." (no "../" prefix) — must reject explicitly.
+	if clean == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return false
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeEnterpriseSkillZipEntryName returns a cleaned package-relative path
+// (forward slashes, no "." segments) or empty if the name is not allowed.
+func normalizeEnterpriseSkillZipEntryName(name string) string {
+	name = filepath.ToSlash(strings.TrimSpace(name))
+	if !enterpriseSkillZipPathAllowed(name) {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(name))
 }
 
 func readEnterpriseSkillZipFile(f *zip.File, max int64) ([]byte, error) {

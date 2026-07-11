@@ -173,7 +173,9 @@ type skillMarketSearchResponse struct {
 
 var invalidSkillDirChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`)
 
-const skillHubJSONMaxBytes = 5 << 20
+// skillHubJSONMaxBytes caps skill *download/install* payloads (base64 file maps).
+// Multi-asset packages need far more than 5 MiB once files are base64-encoded.
+const skillHubJSONMaxBytes = skill.MaxSkillPackageDownloadBytes
 
 func (s *Service) userSkillsRoot(tenantID, userID string) string {
 	return filepath.Join(s.userRoot(tenantID, userID), "skills")
@@ -1424,38 +1426,33 @@ func doJSONRequest(ctx context.Context, method, endpoint string, body io.Reader,
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	client := &http.Client{Timeout: 45 * time.Second}
+	timeout := 45 * time.Second
+	if maxBytes > skill.MaxSkillHubSearchJSONBytes {
+		// Large skill install payloads need more time on slow links.
+		timeout = 180 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := readBoundedJSONResponse(resp.Body, maxBytes)
-	if err != nil {
-		return nil, err
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Cap error-page reads; ignore Content-Length so a huge CL does not
+		// mask the real HTTP status as "package too large".
+		data, _ := skill.ReadLimitedHTTPBody(resp.Body, -1, 64<<10)
 		trimmed := strings.TrimSpace(string(data))
 		if trimmed == "" {
 			trimmed = resp.Status
 		}
 		return nil, hubCenterStatusError{StatusCode: resp.StatusCode, Message: trimmed}
 	}
-	return data, nil
+	return skill.ReadLimitedHTTPBody(resp.Body, resp.ContentLength, maxBytes)
 }
 
-func readBoundedJSONResponse(body io.Reader, maxBytes int64) ([]byte, error) {
-	if maxBytes <= 0 {
-		return io.ReadAll(body)
-	}
-	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("response exceeds %d bytes", maxBytes)
-	}
-	return data, nil
+// readBoundedJSONResponse is kept for unit tests and thin-wraps the shared helper.
+func readBoundedJSONResponse(body io.Reader, contentLength, maxBytes int64) ([]byte, error) {
+	return skill.ReadLimitedHTTPBody(body, contentLength, maxBytes)
 }
 
 func normalizeSkillDirName(v string) string {

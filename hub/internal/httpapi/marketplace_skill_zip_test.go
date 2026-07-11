@@ -3,6 +3,7 @@ package httpapi
 import (
 	"archive/zip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,9 +16,11 @@ import (
 func TestPrepareSkillZipForHubCenterMarket_StripsRuntimeAndKeepsSkill(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "skill.zip")
+	skillYAML := "name: ppt-master\ndescription: demo\n"
+	runPy := "print('ok')\n"
 	if err := writeTestSkillZip(t, src, map[string]string{
-		"skill.yaml":                         "name: ppt-master\ndescription: demo\n",
-		"scripts/run.py":                     "print('ok')\n",
+		"skill.yaml":                         skillYAML,
+		"scripts/run.py":                     runPy,
 		"node_modules/left-pad/index.js":     "module.exports=1\n",
 		"node_modules/left-pad/package.json": "{}\n",
 		".git/HEAD":                          "ref: refs/heads/main\n",
@@ -41,18 +44,194 @@ func TestPrepareSkillZipForHubCenterMarket_StripsRuntimeAndKeepsSkill(t *testing
 		t.Fatal(err)
 	}
 	defer r.Close()
-	names := make(map[string]bool, len(r.File))
+	contents := map[string]string{}
 	for _, f := range r.File {
-		names[filepath.ToSlash(f.Name)] = true
-		if enterpriseSkillPathHasRuntimeArtifact(f.Name) {
-			t.Fatalf("filtered zip still contains runtime path %q", f.Name)
+		name := filepath.ToSlash(f.Name)
+		if enterpriseSkillPathHasRuntimeArtifact(name) {
+			t.Fatalf("filtered zip still contains runtime path %q", name)
+		}
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents[name] = string(data)
+	}
+	if contents["skill.yaml"] != skillYAML {
+		t.Fatalf("skill.yaml content mismatch: %q", contents["skill.yaml"])
+	}
+	if contents["scripts/run.py"] != runPy {
+		t.Fatalf("scripts/run.py content mismatch: %q", contents["scripts/run.py"])
+	}
+	if len(contents) != 2 {
+		t.Fatalf("kept files = %d, want 2; names=%v", len(contents), contents)
+	}
+}
+
+func TestPrepareSkillZipForHubCenterMarket_StripsMacOSJunkAndBareDirs(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "mac.zip")
+	// Build zip with explicit directory entries + __MACOSX clutter.
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	for _, name := range []string{"scripts/", "assets/"} {
+		hdr := &zip.FileHeader{Name: name, Method: zip.Store}
+		hdr.SetMode(0o755 | os.ModeDir)
+		if _, err := zw.CreateHeader(hdr); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if !names["skill.yaml"] || !names["scripts/run.py"] {
-		t.Fatalf("expected skill files kept, got %v", names)
+	for name, body := range map[string]string{
+		"skill.yaml":            "name: mac\ndescription: ok\n",
+		"scripts/run.py":        "print(1)\n",
+		"assets/icon.png":       "\x89PNG",
+		"__MACOSX/._skill.yaml": "junk",
+		".DS_Store":             "ds",
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if len(r.File) != 2 {
-		t.Fatalf("kept entries = %d, want 2; names=%v", len(r.File), names)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	out, cleanup, err := prepareSkillZipForHubCenterMarket(src)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer cleanup()
+	if out == src {
+		t.Fatal("expected re-pack after stripping dirs/mac junk")
+	}
+	r, err := zip.OpenReader(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var files []string
+	for _, zf := range r.File {
+		name := filepath.ToSlash(zf.Name)
+		if zf.FileInfo().IsDir() || strings.HasSuffix(name, "/") {
+			t.Fatalf("filtered zip should not contain directory entry %q", name)
+		}
+		if enterpriseSkillPathHasRuntimeArtifact(name) {
+			t.Fatalf("filtered zip still has runtime path %q", name)
+		}
+		files = append(files, name)
+	}
+	if len(files) != 3 {
+		t.Fatalf("kept files=%v, want skill.yaml + scripts/run.py + assets/icon.png", files)
+	}
+}
+
+func TestZipMethodForName(t *testing.T) {
+	if zipMethodForName("a.png") != zip.Store {
+		t.Fatal("png should use Store")
+	}
+	if zipMethodForName("a.py") != zip.Deflate {
+		t.Fatal("py should use Deflate")
+	}
+}
+
+func TestEnterpriseSkillZipPathAllowed(t *testing.T) {
+	allowed := []string{"skill.yaml", "scripts/run.py", "assets/a.svg", "foo/./bar.txt"}
+	for _, p := range allowed {
+		if !enterpriseSkillZipPathAllowed(p) {
+			t.Errorf("expected allowed: %q", p)
+		}
+	}
+	denied := []string{"", "..", "../x", "/etc/passwd", "C:/Windows", "a/../../b", "foo\x00bar"}
+	for _, p := range denied {
+		if enterpriseSkillZipPathAllowed(p) {
+			t.Errorf("expected denied: %q", p)
+		}
+	}
+	if normalizeEnterpriseSkillZipEntryName("foo/./bar.txt") != "foo/bar.txt" {
+		t.Fatalf("normalize = %q", normalizeEnterpriseSkillZipEntryName("foo/./bar.txt"))
+	}
+}
+
+func TestPrepareSkillZipForHubCenterMarket_RejectsDuplicatePaths(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "dup.zip")
+	f, err := os.Create(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	// Same logical path after Clean: foo/bar.txt and foo/./bar.txt
+	for _, name := range []string{"skill.yaml", "foo/bar.txt", "foo/./bar.txt"} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	_, cleanup, err := prepareSkillZipForHubCenterMarket(src)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("expected duplicate path rejection")
+	}
+	if skillMarketPackageErrorCode(err) != "PACKAGE_INVALID" {
+		t.Fatalf("code=%s want PACKAGE_INVALID err=%v", skillMarketPackageErrorCode(err), err)
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("error should mention duplicate: %v", err)
+	}
+}
+
+func TestFormatSkillByteCountViaCorelib(t *testing.T) {
+	if coreskill.FormatSkillByteCount(500) != "500 B" {
+		t.Fatalf("got %q", coreskill.FormatSkillByteCount(500))
+	}
+	if got := coreskill.FormatSkillByteCount(50 << 20); !strings.Contains(got, "MiB") && !strings.Contains(got, "M") {
+		t.Fatalf("50MiB format = %q", got)
+	}
+}
+
+func TestPrepareSkillZipForHubCenterMarket_RejectsRuntimeOnlyPackage(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "runtime-only.zip")
+	if err := writeTestSkillZip(t, src, map[string]string{
+		"node_modules/x/index.js": "1",
+		".git/HEAD":               "ref",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, cleanup, err := prepareSkillZipForHubCenterMarket(src)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("expected error for runtime-only package")
+	}
+	if skillMarketPackageErrorCode(err) != "PACKAGE_INVALID" {
+		t.Fatalf("code=%s, want PACKAGE_INVALID", skillMarketPackageErrorCode(err))
 	}
 }
 
@@ -120,8 +299,11 @@ func TestPrepareSkillZipForHubCenterMarket_RejectsEntryDoSCeiling(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected entry-count DoS rejection")
 	}
-	if !strings.Contains(err.Error(), "条目过多") {
-		t.Fatalf("error = %v, want Chinese entry-limit message", err)
+	if !strings.Contains(err.Error(), "文件过多") && !strings.Contains(err.Error(), "条目过多") {
+		t.Fatalf("error = %v, want Chinese too-many-files message", err)
+	}
+	if skillMarketPackageErrorCode(err) != "PACKAGE_TOO_MANY_ENTRIES" {
+		t.Fatalf("code=%s, want PACKAGE_TOO_MANY_ENTRIES", skillMarketPackageErrorCode(err))
 	}
 }
 

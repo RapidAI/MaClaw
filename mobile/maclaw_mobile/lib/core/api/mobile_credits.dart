@@ -64,6 +64,7 @@ bool usesDigitalTwinAssistant(MobileBootstrap? bootstrap) {
   return resolveMobileAssistantMode(bootstrap) == mobileAssistantModeDigitalTwin;
 }
 
+/// Canonical Chinese labels (for logs/tests). UI tabs use [AppStrings].
 String mobileAssistantTabLabel(MobileBootstrap? bootstrap) {
   return usesDigitalTwinAssistant(bootstrap) ? '数字分身' : 'AI助手';
 }

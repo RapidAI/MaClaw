@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
-	github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327
+	github.com/VantageDataChat/GoPDF2 v0.0.0-20260711230316-e8684adfd6f2
 	github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
@@ -125,7 +125,5 @@ replace github.com/RapidAI/CodeClaw/datasrv => ./datasrv
 replace github.com/shakinm/xlsReader => github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b
 
 replace github.com/braheezy/shine-mp3 => ./third_party/shine-mp3
-
-// replace github.com/VantageDataChat/GoPDF2 => ../GoPDF2
 
 // replace github.com/wailsapp/wails/v2 v2.11.0 => C:\Users\yong\go\pkg\mod

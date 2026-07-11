@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/api_client.dart';
@@ -7,7 +8,10 @@ import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
 import '../auth/session_controller.dart';
+import '../documents/documents_controller.dart';
 import '../tasks/mobile_jobs_provider.dart';
+import '../memory/local_memory_controller.dart';
+import '../memory/local_memory_note.dart';
 import 'search_history.dart';
 
 final assistantQueryProvider = StateProvider<String>((ref) => '');
@@ -15,8 +19,8 @@ final assistantQueryProvider = StateProvider<String>((ref) => '');
 final assistantSharedCitationProvider =
     StateProvider<SearchCitation?>((ref) => null);
 
-/// Bound Hub document_id for the official assistant working object (sync path).
-final assistantBoundDocumentIdProvider = StateProvider<String?>((ref) => null);
+// assistantBoundDocumentIdProvider lives in documents_controller.dart so both
+// the documents import pipeline and the assistant can share it without cycles.
 
 final assistantTabsProvider =
     NotifierProvider<AssistantTabsController, AssistantTabsState>(
@@ -30,18 +34,92 @@ final assistantSearchProvider =
 
 const assistantLongTaskNotificationThreshold = Duration(seconds: 10);
 
-/// If interactive SSE has not finished by this budget, upgrade to a Hub
-/// background assistant job so the user can leave the screen.
-const assistantSyncUpgradeTimeout = Duration(seconds: 35);
+/// Absolute max time for interactive SSE before forced handoff to a Hub job.
+/// SSH / multi-tool agent work often needs several minutes; 35s felt like failure.
+const assistantSyncMaxInteractiveTimeout = Duration(minutes: 5);
+
+/// If no stream activity (delta / tool event / meta) for this long, upgrade early
+/// so a stuck connection does not pin the UI until the max budget.
+const assistantSyncIdleUpgradeTimeout = Duration(seconds: 90);
+
+/// @Deprecated Prefer [assistantSyncMaxInteractiveTimeout]; kept as alias for tests/callers.
+const assistantSyncUpgradeTimeout = assistantSyncMaxInteractiveTimeout;
 
 bool shouldNotifyAssistantLongTask(Duration elapsed, String requestId) {
   return elapsed >= assistantLongTaskNotificationThreshold &&
       requestId.trim().isNotEmpty;
 }
 
-/// Whether elapsed interactive wait should hand off to async job.
+/// Whether total interactive wait should hand off to async job (hard ceiling).
 bool shouldUpgradeAssistantToBackground(Duration elapsed) {
-  return elapsed >= assistantSyncUpgradeTimeout;
+  return elapsed >= assistantSyncMaxInteractiveTimeout;
+}
+
+/// Whether idle (no stream events) should hand off before the hard ceiling.
+bool shouldUpgradeAssistantOnIdle(Duration idleElapsed) {
+  return idleElapsed >= assistantSyncIdleUpgradeTimeout;
+}
+
+String assistantBackgroundHandoffText(MobileAgentJob job, String reason) {
+  final id = job.jobId.trim().isEmpty ? '…' : job.jobId.trim();
+  if (reason == 'manual') {
+    return '已转为后台执行（$id）。\n'
+        '本页会自动刷新进度，完成后直接显示结果；也可在「任务」Tab 查看。';
+  }
+  return '任务仍在处理中，已转为后台继续执行（$id）。\n'
+      '本页会自动刷新进度，完成后直接显示结果；也可在「任务」Tab 查看。';
+}
+
+String assistantBackgroundProgressText(MobileAgentJob job) {
+  final id = job.jobId.trim().isEmpty ? '…' : job.jobId.trim();
+  final status = job.status.trim().isEmpty ? 'running' : job.status.trim();
+  final msg = job.message.trim();
+  final progress = job.progress;
+  final progressPart = progress == null
+      ? ''
+      : ' · ${(progress.clamp(0, 1) * 100).toStringAsFixed(0)}%';
+  final msgPart = msg.isEmpty ? '' : '\n$msg';
+  return '后台执行中（$id）\n状态：$status$progressPart$msgPart\n'
+      '完成后结果会自动显示在本对话。';
+}
+
+/// User-facing message for assistant transport/runtime failures.
+String formatAssistantError(Object error) {
+  if (error is DioException) {
+    switch (error.type) {
+      case DioExceptionType.receiveTimeout:
+        return '助手处理时间较长，连接已超时。可点「重新发送」，或稍后再查；'
+            '含 SSH/服务器操作时通常需要更长时间。';
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+        return '网络连接超时，请检查网络后重试。';
+      case DioExceptionType.connectionError:
+        return '无法连接官方服务，请检查网络后重试。';
+      case DioExceptionType.badResponse:
+        final code = error.response?.statusCode;
+        if (code != null) {
+          return '服务暂时不可用（HTTP $code），请稍后重试。';
+        }
+        return '服务暂时不可用，请稍后重试。';
+      case DioExceptionType.cancel:
+        return '请求已取消。';
+      default:
+        break;
+    }
+    final msg = error.message?.trim() ?? '';
+    if (msg.toLowerCase().contains('timeout') ||
+        msg.contains('0:00:15') ||
+        msg.contains('receive timeout')) {
+      return '助手处理时间较长，连接已超时。可点「重新发送」后重试。';
+    }
+  }
+  final text = error.toString().trim();
+  if (text.isEmpty) return '请求失败，请重试。';
+  // Avoid dumping full DioException stacks into the chat bubble.
+  if (text.length > 280) {
+    return '${text.substring(0, 280)}…';
+  }
+  return text;
 }
 
 /// Extract proposed draft rewrite from assistant answer fence
@@ -100,6 +178,67 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
     return '${String.fromCharCodes(runes.take(maxRunes))}…';
   }
 
+  /// Prefer explicit bind; else auto-bind the draft tied to the latest import
+  /// (so OCR/parse results reach the Hub agent via document_id).
+  String _resolveBoundDocumentId() {
+    final explicit = (ref.read(assistantBoundDocumentIdProvider) ?? '').trim();
+    if (explicit.isNotEmpty) return explicit;
+    final docs = ref.read(documentsControllerProvider).valueOrNull;
+    if (docs == null) return '';
+    final draft = docs.draft;
+    final upload = docs.uploadTask;
+    if (draft == null) return '';
+    final draftId = draft.id.trim();
+    if (draftId.isEmpty) return '';
+    if (upload != null &&
+        upload.draftId.trim().isNotEmpty &&
+        upload.draftId.trim() == draftId) {
+      return draftId;
+    }
+    // Keep binding after upload finishes when the current draft still matches.
+    if (upload != null &&
+        (upload.status == 'ready' || upload.status == 'needs_ocr') &&
+        draftId.isNotEmpty) {
+      return draftId;
+    }
+    return '';
+  }
+
+  /// Local fallback: inject draft content so AI can work when Hub document_id
+  /// binding is unavailable. Prefer original-file metadata + extracted text.
+  void _injectBoundDocumentContext({
+    required List<Map<String, String>> historyMessages,
+    required List<String> context,
+  }) {
+    final docs = ref.read(documentsControllerProvider).valueOrNull;
+    final draft = docs?.draft;
+    if (draft == null) return;
+    final id = draft.id.trim();
+    final body = draft.markdown.trim();
+    if (id.isEmpty) return;
+    if (body.isEmpty && !draft.hasOriginal) return;
+    final boundId = _resolveBoundDocumentId();
+    if (boundId.isEmpty || boundId != id) return;
+    final title =
+        draft.title.trim().isEmpty ? '移动文档' : draft.title.trim();
+    final originalLine = draft.hasOriginal
+        ? 'has_original=true source_filename=${draft.sourceFilename} '
+            'source_size=${draft.sourceSize}\n'
+            'The ORIGINAL uploaded file is the source of truth.\n'
+        : 'has_original=false\n';
+    final block = _clipHistory(
+      'Bound mobile document (id=$id, title=$title):\n'
+      '$originalLine\n'
+      '${body.isEmpty ? '(no extracted text yet)' : body}',
+      6000,
+    );
+    historyMessages.insert(0, {
+      'role': 'system',
+      'content': block,
+    });
+    context.insert(0, block);
+  }
+
   Future<void> search(String query) async {
     final text = query.trim();
     if (text.isEmpty) return;
@@ -151,6 +290,17 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
         for (final message in previousMessages)
           '${message.role}: ${_clipHistory(message.text, 4000)}',
       ];
+      // Inject on-device personal memory so the agent can "remember" important notes.
+      final memories =
+          ref.read(localMemoryProvider).valueOrNull ?? const <LocalMemoryNote>[];
+      final memoryBlock = buildLocalMemoryContextBlock(memories);
+      if (memoryBlock.isNotEmpty) {
+        historyMessages.insert(0, {
+          'role': 'system',
+          'content': _clipHistory(memoryBlock, 3000),
+        });
+        context.insert(0, memoryBlock);
+      }
       ref.read(assistantTabsProvider.notifier).appendMessage(
             tabId,
             AssistantConversationMessage.user(text),
@@ -167,8 +317,12 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       // high-frequency token deltas; always emit the final non-streaming frame.
       var lastUiEmit = DateTime.fromMillisecondsSinceEpoch(0);
       const uiMinInterval = Duration(milliseconds: 40);
-      // Bound-document working object removed from product UI.
-      const boundDocumentId = '';
+      // Bind recent import / current draft so OCR text reaches the agent.
+      final boundDocumentId = _resolveBoundDocumentId();
+      _injectBoundDocumentContext(
+        historyMessages: historyMessages,
+        context: context,
+      );
 
       final interactive = _InteractiveSearchSession(
         tabId: tabId,
@@ -192,34 +346,24 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
           );
         },
         applyHandoff: (job, reason) {
-          final reasonText = reason == 'timeout'
-              ? '对话超过 ${assistantSyncUpgradeTimeout.inSeconds}s，已自动转为后台任务'
-              : '已手动转为后台任务';
+          final handoffText = assistantBackgroundHandoffText(job, reason);
           final handoff = AsyncData<SearchAnswer?>(
             SearchAnswer(
-              answer: '$reasonText ${job.jobId}。\n'
-                  '可在「后台」Tab 查看进度；完成后结果会写回本对话。',
+              answer: handoffText,
               citations: const [],
               llmMode: 'async_job_upgrade',
               llmRequestId: job.jobId,
-              streaming: false,
+              // Keep a "working" affordance while the job is still running.
+              streaming: true,
+              agent: true,
             ),
           );
           if (ref.read(assistantTabsProvider).activeTabId == tabId) {
             state = handoff;
           }
           ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, handoff);
-          ref.read(assistantTabsProvider.notifier).appendMessage(
-                tabId,
-                AssistantConversationMessage.assistant(
-                  query: text,
-                  text: handoff.value!.answer,
-                  citations: const [],
-                  llmMode: 'async_job_upgrade',
-                  llmRequestId: job.jobId,
-                  llmUsageRecordId: '',
-                ),
-              );
+          // Do not append a permanent "handoff" chat bubble — poll will write
+          // the final answer (or failure) into the conversation.
         },
       );
       _interactiveSessions[tabId] = interactive;
@@ -227,6 +371,31 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       final streamCompleter = Completer<void>();
       Object? streamError;
       StackTrace? streamStack;
+      var lastStreamActivity = DateTime.now();
+      Timer? idleUpgradeTimer;
+      Timer? maxUpgradeTimer;
+
+      void cancelUpgradeTimers() {
+        idleUpgradeTimer?.cancel();
+        idleUpgradeTimer = null;
+        maxUpgradeTimer?.cancel();
+        maxUpgradeTimer = null;
+      }
+
+      void armIdleUpgradeTimer() {
+        idleUpgradeTimer?.cancel();
+        if (interactive.finished) return;
+        idleUpgradeTimer = Timer(assistantSyncIdleUpgradeTimeout, () {
+          if (interactive.finished) return;
+          final idle = DateTime.now().difference(lastStreamActivity);
+          if (shouldUpgradeAssistantOnIdle(idle)) {
+            unawaited(interactive.requestUpgrade(reason: 'timeout'));
+          } else {
+            armIdleUpgradeTimer();
+          }
+        });
+      }
+
       interactive.subscription = client
           .searchWithContextStream(
             text,
@@ -238,6 +407,8 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
         (snapshot) {
           if (interactive.finished) return;
           answer = snapshot;
+          lastStreamActivity = DateTime.now();
+          armIdleUpgradeTimer();
           final now = DateTime.now();
           final shouldEmit = !snapshot.streaming ||
               now.difference(lastUiEmit) >= uiMinInterval;
@@ -270,12 +441,13 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
         cancelOnError: true,
       );
 
-      // Auto-upgrade timer (same budget as stream.timeout previously).
-      final upgradeTimer = Timer(assistantSyncUpgradeTimeout, () {
+      // Hard ceiling: force handoff after max interactive budget.
+      maxUpgradeTimer = Timer(assistantSyncMaxInteractiveTimeout, () {
         if (!interactive.finished) {
           unawaited(interactive.requestUpgrade(reason: 'timeout'));
         }
       });
+      armIdleUpgradeTimer();
 
       try {
         await Future.any<void>([
@@ -283,7 +455,7 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
           interactive.upgradeDone.future,
         ]);
       } finally {
-        upgradeTimer.cancel();
+        cancelUpgradeTimers();
         await interactive.subscription?.cancel();
         _interactiveSessions.remove(tabId);
       }
@@ -391,7 +563,21 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       for (final message in previousMessages)
         '${message.role}: ${_clipHistory(message.text, 4000)}',
     ];
-    const boundDocumentId = '';
+    final memories =
+        ref.read(localMemoryProvider).valueOrNull ?? const <LocalMemoryNote>[];
+    final memoryBlock = buildLocalMemoryContextBlock(memories);
+    if (memoryBlock.isNotEmpty) {
+      historyMessages.insert(0, {
+        'role': 'system',
+        'content': _clipHistory(memoryBlock, 3000),
+      });
+      context.insert(0, memoryBlock);
+    }
+    final boundDocumentId = _resolveBoundDocumentId();
+    _injectBoundDocumentContext(
+      historyMessages: historyMessages,
+      context: context,
+    );
     final job = await _enqueueBackgroundInternal(
       text,
       historyMessages: historyMessages,
@@ -400,18 +586,19 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       tabId: tabId,
       appendUserMessage: true,
     );
-    ref.read(assistantTabsProvider.notifier).appendMessage(
-          tabId,
-          AssistantConversationMessage.assistant(
-            query: text,
-            text: '已提交后台任务 ${job.jobId}（${job.status}）。\n'
-                '可在「后台」Tab 查看进度；完成后会显示在统一任务列表。',
-            citations: const [],
-            llmMode: 'async_job',
-            llmRequestId: job.jobId,
-            llmUsageRecordId: '',
-          ),
-        );
+    final handoff = SearchAnswer(
+      answer: assistantBackgroundHandoffText(job, 'manual'),
+      citations: const [],
+      llmMode: 'async_job',
+      llmRequestId: job.jobId,
+      streaming: true,
+      agent: true,
+    );
+    final data = AsyncData<SearchAnswer?>(handoff);
+    if (ref.read(assistantTabsProvider).activeTabId == tabId) {
+      state = data;
+    }
+    ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, data);
     return job;
   }
 
@@ -451,6 +638,15 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
   ) async {
     final client = ref.read(apiClientProvider);
     if (client == null || jobId.isEmpty) return;
+
+    void publishResult(SearchAnswer result) {
+      final data = AsyncData<SearchAnswer?>(result);
+      if (ref.read(assistantTabsProvider).activeTabId == tabId) {
+        state = data;
+      }
+      ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, data);
+    }
+
     // Poll up to ~6 minutes (matches Hub job timeout).
     for (var i = 0; i < 72; i++) {
       await Future<void>.delayed(const Duration(seconds: 5));
@@ -459,6 +655,15 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
         if (job.isReady) {
           final answer =
               job.answer.trim().isEmpty ? '（后台任务已完成，无正文）' : job.answer;
+          final finalized = SearchAnswer(
+            answer: answer,
+            citations: const [],
+            llmMode: 'async_job',
+            llmRequestId: job.llmRequestId.isEmpty ? jobId : job.llmRequestId,
+            streaming: false,
+            agent: true,
+          );
+          publishResult(finalized);
           ref.read(assistantTabsProvider.notifier).appendMessage(
                 tabId,
                 AssistantConversationMessage.assistant(
@@ -466,8 +671,7 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
                   text: answer,
                   citations: const [],
                   llmMode: 'async_job',
-                  llmRequestId:
-                      job.llmRequestId.isEmpty ? jobId : job.llmRequestId,
+                  llmRequestId: finalized.llmRequestId,
                   llmUsageRecordId: '',
                 ),
               );
@@ -485,12 +689,23 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
           return;
         }
         if (job.isFailed) {
+          final failText =
+              '后台任务失败：${job.message.isEmpty ? job.status : job.message}';
+          publishResult(
+            SearchAnswer(
+              answer: failText,
+              citations: const [],
+              llmMode: 'async_job',
+              llmRequestId: jobId,
+              streaming: false,
+              agent: true,
+            ),
+          );
           ref.read(assistantTabsProvider.notifier).appendMessage(
                 tabId,
                 AssistantConversationMessage.assistant(
                   query: query,
-                  text:
-                      '后台任务失败：${job.message.isEmpty ? job.status : job.message}',
+                  text: failText,
                   citations: const [],
                   llmMode: 'async_job',
                   llmRequestId: jobId,
@@ -500,10 +715,31 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
           ref.invalidate(mobileJobsProvider);
           return;
         }
+        // Still running: refresh in-place progress on the active answer pane.
+        publishResult(
+          SearchAnswer(
+            answer: assistantBackgroundProgressText(job),
+            citations: const [],
+            llmMode: 'async_job_upgrade',
+            llmRequestId: jobId,
+            streaming: true,
+            agent: true,
+          ),
+        );
       } on Object {
         // Transient poll errors — keep trying until budget exhausted.
       }
     }
+    publishResult(
+      SearchAnswer(
+        answer: '后台任务 $jobId 仍在执行或已超时，请到「任务」Tab 查看最新状态。',
+        citations: const [],
+        llmMode: 'async_job',
+        llmRequestId: jobId,
+        streaming: false,
+        agent: true,
+      ),
+    );
   }
 }
 

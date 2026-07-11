@@ -6,12 +6,19 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/core/api/api_client.dart';
 import 'package:maclaw_mobile/core/network/mobile_network_status.dart';
+import 'package:maclaw_mobile/core/settings/app_preferences.dart';
 import 'package:maclaw_mobile/core/shared_intents/mobile_shared_intent.dart';
 import 'package:maclaw_mobile/core/shared_intents/shared_intent_bootstrap.dart';
 import 'package:maclaw_mobile/features/documents/document_draft.dart';
 import 'package:maclaw_mobile/features/documents/documents_controller.dart';
 import 'package:maclaw_mobile/features/documents/documents_screen.dart';
 import 'package:share_plus/share_plus.dart';
+
+class _DocsTestAppPreferencesController extends AppPreferencesController {
+  @override
+  Future<AppPreferences> build() async =>
+      const AppPreferences(language: appLanguageChinese);
+}
 
 class _TestDocumentsController extends DocumentsController {
   @override
@@ -438,64 +445,23 @@ void main() {
     expect(find.text('AI 处理'), findsOneWidget);
   });
 
-  testWidgets('documents screen creates drafts from every mobile template',
-      (tester) async {
-    _RecordingCreateDraftDocumentsController.created.clear();
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          documentsControllerProvider.overrideWith(
-            _RecordingCreateDraftDocumentsController.new,
-          ),
-          documentDraftHistoryProvider.overrideWith(
-            _EmptyDocumentDraftHistoryController.new,
-          ),
-          mobileNetworkStatusProvider.overrideWith(
-            (ref) => Stream.value(
-              MobileNetworkSnapshot(
-                quality: MobileNetworkQuality.online,
-                message: 'ok',
-                checkedAt: DateTime.utc(2026),
-              ),
-            ),
-          ),
-        ],
-        child: const MaterialApp(home: Scaffold(body: DocumentsScreen())),
-      ),
-    );
-    await tester.pump();
-
-    await tester.enterText(
-      find.widgetWithText(TextField, '标题'),
-      '值班应急材料',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, '要点或原始内容'),
-      '1. 服务异常\n2. 需要 30 分钟内同步处置进展',
-    );
-
-    for (final template in DocumentTemplate.values) {
-      await tester.tap(find.byType(DropdownButtonFormField<DocumentTemplate>));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(documentTemplateLabel(template)).last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('生成草稿'));
-      await tester.pump();
-    }
-
+  test('emergency document template skeletons stay available for other flows',
+      () {
     expect(
-      _RecordingCreateDraftDocumentsController.created
-          .map((item) => item.template),
-      DocumentTemplate.values,
+      emergencyDocumentTemplateSkeleton(DocumentTemplate.report),
+      contains('## 背景'),
     );
-    for (final created in _RecordingCreateDraftDocumentsController.created) {
-      expect(created.title, '值班应急材料');
-      expect(created.content, contains('服务异常'));
-      expect(created.content, contains('30 分钟'));
-    }
+    expect(
+      emergencyDocumentTemplateSkeleton(DocumentTemplate.meetingMinutes),
+      contains('## 会议信息'),
+    );
+    expect(
+      emergencyDocumentTemplateSkeleton(DocumentTemplate.email),
+      contains('收件人'),
+    );
   });
 
-  testWidgets('documents screen fills emergency skeletons for templates',
+  testWidgets('documents screen is browse/import/share only without draft composer',
       (tester) async {
     await tester.pumpWidget(
       ProviderScope(
@@ -506,6 +472,9 @@ void main() {
           documentDraftHistoryProvider.overrideWith(
             _EmptyDocumentDraftHistoryController.new,
           ),
+          appPreferencesProvider.overrideWith(
+            () => _DocsTestAppPreferencesController(),
+          ),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
               MobileNetworkSnapshot(
@@ -521,36 +490,11 @@ void main() {
     );
     await tester.pump();
 
-    var contentField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '要点或原始内容'),
-    );
-    expect(contentField.controller?.text, contains('## 背景'));
-    expect(contentField.controller?.text, contains('## 处理建议'));
-
-    await tester.tap(find.byType(DropdownButtonFormField<DocumentTemplate>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('会议纪要').last);
-    await tester.pumpAndSettle();
-
-    contentField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '要点或原始内容'),
-    );
-    expect(contentField.controller?.text, contains('## 会议信息'));
-    expect(contentField.controller?.text, contains('| 事项 | 负责人 | 截止时间 |'));
-
-    await tester.enterText(
-      find.widgetWithText(TextField, '要点或原始内容'),
-      '用户已经手写的现场记录',
-    );
-    await tester.tap(find.byType(DropdownButtonFormField<DocumentTemplate>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('邮件').last);
-    await tester.pumpAndSettle();
-
-    contentField = tester.widget<TextField>(
-      find.widgetWithText(TextField, '要点或原始内容'),
-    );
-    expect(contentField.controller?.text, '用户已经手写的现场记录');
+    expect(find.text('生成草稿'), findsNothing);
+    expect(find.text('轻量编辑'), findsNothing);
+    expect(find.text('保存修改'), findsNothing);
+    expect(find.text('Hub 文稿库（与 GUI 共享）'), findsOneWidget);
+    expect(find.text('移动导入'), findsOneWidget);
   });
 
   testWidgets('documents screen explains failed export reason', (tester) async {
@@ -616,6 +560,9 @@ void main() {
               return ShareResult.unavailable;
             },
           ),
+          appPreferencesProvider.overrideWith(
+            () => _DocsTestAppPreferencesController(),
+          ),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
               MobileNetworkSnapshot(
@@ -675,6 +622,9 @@ void main() {
               sharedText = text;
               return ShareResult.unavailable;
             },
+          ),
+          appPreferencesProvider.overrideWith(
+            () => _DocsTestAppPreferencesController(),
           ),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
@@ -771,10 +721,10 @@ void main() {
 
     await tester.pumpAndSettle();
 
-    expect(find.text('复制草稿'), findsOneWidget);
+    expect(find.text('复制文本'), findsOneWidget);
     expect(find.text('分享文本'), findsOneWidget);
 
-    await tester.tap(find.text('复制草稿'));
+    await tester.tap(find.text('复制文本'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -789,7 +739,7 @@ void main() {
     expect(sharedText, contains('应急说明'));
     expect(sharedText, contains('请现场负责人确认恢复时间。'));
     expect(sharedSubject, '应急说明');
-    expect(find.text('草稿文本已发送到系统分享'), findsOneWidget);
+    expect(find.text('文档文本已发送到系统分享'), findsOneWidget);
   });
 
   testWidgets('documents screen exports PDF Word and Markdown formats',
@@ -867,7 +817,7 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -900));
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('最近文档草稿'), findsOneWidget);
+    expect(find.text('Hub 文稿库（与 GUI 共享）'), findsOneWidget);
     expect(find.text('现场处置邮件'), findsOneWidget);
     expect(find.textContaining('邮件 · 请同步现场处置进展'), findsOneWidget);
 
@@ -890,6 +840,9 @@ void main() {
           documentDraftHistoryProvider.overrideWith(
             _EmptyDocumentDraftHistoryController.new,
           ),
+          appPreferencesProvider.overrideWith(
+            () => _DocsTestAppPreferencesController(),
+          ),
           mobileNetworkStatusProvider.overrideWith(
             (ref) => Stream.value(
               MobileNetworkSnapshot(
@@ -909,8 +862,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     for (final label in ['摘要', '翻译', '改写', '扩写', '润色', '整理']) {
-      await tester.ensureVisible(find.text(label));
-      await tester.tap(find.text(label));
+      final button = find.widgetWithText(OutlinedButton, label);
+      await tester.ensureVisible(button);
+      await tester.tap(button);
       await tester.pump();
     }
 
@@ -922,58 +876,6 @@ void main() {
       'polish',
       'format',
     ]);
-  });
-
-  testWidgets('documents screen inserts table and comment snippets before save',
-      (tester) async {
-    _useLargeDocumentViewport(tester);
-    _EditableDraftDocumentsController.saved.clear();
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          documentsControllerProvider.overrideWith(
-            _EditableDraftDocumentsController.new,
-          ),
-          documentDraftHistoryProvider.overrideWith(
-            _EmptyDocumentDraftHistoryController.new,
-          ),
-          mobileNetworkStatusProvider.overrideWith(
-            (ref) => Stream.value(
-              MobileNetworkSnapshot(
-                quality: MobileNetworkQuality.online,
-                message: 'ok',
-                checkedAt: DateTime.utc(2026),
-              ),
-            ),
-          ),
-        ],
-        child: const MaterialApp(home: Scaffold(body: DocumentsScreen())),
-      ),
-    );
-    await tester.pump();
-
-    await tester.drag(find.byType(ListView), const Offset(0, -900));
-    await tester.pump(const Duration(milliseconds: 300));
-
-    final insertTable = find.byIcon(Icons.table_chart_outlined);
-    final insertList = find.byIcon(Icons.format_list_bulleted_outlined);
-    final insertComment = find.byIcon(Icons.comment_outlined);
-    await tester.ensureVisible(insertTable);
-    await tester.tap(insertTable);
-    await tester.pump();
-    await tester.tap(insertList);
-    await tester.pump();
-    await tester.tap(insertComment);
-    await tester.pump();
-    await tester.tap(find.byIcon(Icons.save_outlined));
-    await tester.pump();
-
-    expect(_EditableDraftDocumentsController.saved, hasLength(1));
-    final saved = _EditableDraftDocumentsController.saved.single;
-    expect(saved.markdown, contains('|'));
-    expect(saved.markdown, contains('---'));
-    expect(saved.markdown, contains('- 要点一'));
-    expect(saved.markdown, contains('批注'));
   });
 
   testWidgets('documents screen explains long running import tasks',
@@ -1013,7 +915,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('刷新状态'), findsOneWidget);
-    await tester.tap(find.byIcon(Icons.refresh));
+    await tester.tap(find.text('刷新状态'));
     await tester.pump();
     expect(_QueuedUploadDocumentsController.refreshCount, 1);
   });

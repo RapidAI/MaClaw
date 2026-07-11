@@ -43,7 +43,8 @@ class DigitalEmployeesController extends AsyncNotifier<List<DigitalEmployee>> {
     ref.read(digitalEmployeesScopeProvider.notifier).state = catalog.scope;
     ref.read(digitalEmployeesSharedFlagProvider.notifier).state =
         catalog.sharedEmployees;
-    return catalog.employees;
+    // Product rule: only list online digital employees on mobile.
+    return filterOnlineDigitalEmployees(catalog.employees);
   }
 }
 

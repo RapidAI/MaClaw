@@ -84,11 +84,14 @@ func mobileAgentToolDefinitions() []map[string]any {
 }
 
 func mobileAgentSystemAddon() string {
+	// Legacy mini-loop only has web tools. Prefer not to permanently deny SSH —
+	// the full core agent path handles Linux ops when available.
 	return `
 
 You may call tools when needed:
 - web_search: discover sources for current facts
 - web_fetch: open a specific URL to extract details
+This fallback path has web tools only. For Linux server ops the user can paste host, username and password in chat (or use 连服务器); a later turn on the full agent path enables ssh.
 Do not invent tool results. Prefer concise tool use (usually 0–2 calls). After tools, produce the final Markdown answer for the user.`
 }
 

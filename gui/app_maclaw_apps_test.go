@@ -6700,6 +6700,73 @@ func TestMaclawAppDependencySkillMarketSearchQueriesNormalizeInstallRefURI(t *te
 	}
 }
 
+func TestPlanMaclawAppInstallAcceptsEnterpriseHubVersionKeyForSemverAppDependency(t *testing.T) {
+	// Regression: PDF翻译工具 declares appSkill.version "1.0.0", but the skill
+	// installed from enterprise hub records hub_version as a content key
+	// (enterprise_hub:skill:paper_pdf_translator@…). Local preflight must not
+	// block with version_mismatch / dependency_update_failed.
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "Paper PDF Translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skillDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# paper_pdf_translator\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile skill.md: %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	versionKey := "enterprise_hub:skill:paper_pdf_translator@d774c84f9b53"
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:       "Paper PDF Translator",
+		SkillDir:   skillDir,
+		Status:     "active",
+		Source:     "hub",
+		HubSkillID: "paper_pdf_translator",
+		HubVersion: versionKey,
+		Triggers:   []string{"paper_pdf_translator"},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "pdf-translator-app",
+			"name": "PDF翻译工具",
+			"kind": "tool_app",
+			"appSkill": {"id": "paper_pdf_translator", "version": "1.0.0"},
+			"dependencies": { "skills": [
+				{ "id": "paper_pdf_translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall() error = %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || !dep.Installed || dep.Health != "ready" || dep.Action != "skip" || dep.VersionStatus != "matched" {
+		t.Fatalf("installed enterprise-hub skill should satisfy app semver dependency: %#v", dep)
+	}
+	if dep.PreflightStatus != "ready" || dep.PreflightCode != "installed_ready" || dep.PreflightStage != "local_dependency_scan" {
+		t.Fatalf("local preflight should be installed_ready, got %#v", dep)
+	}
+	if dep.InstalledVersion != versionKey || dep.RequiredVersion != "1.0.0" {
+		t.Fatalf("version evidence should keep both coordinate systems: %#v", dep)
+	}
+	if plan.HasMissingRequired || plan.HasBlockingDependency {
+		t.Fatalf("cross-format version pair must not block install plan: %#v", plan)
+	}
+}
+
 func TestInstallMaclawAppDependenciesResolvesPaperPDFTranslatorAlias(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

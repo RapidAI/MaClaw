@@ -32,6 +32,31 @@ void main() {
     expect(employee.online, isFalse);
   });
 
+  test('filterOnlineDigitalEmployees keeps only online entries', () {
+    const online = DigitalEmployee(
+      id: 'on',
+      machineId: 'm1',
+      name: '在线',
+      skillDescription: '',
+      onlineStatus: 'online',
+      accessPolicy: 'public',
+      resident: true,
+      runtimeMissing: false,
+    );
+    const offline = DigitalEmployee(
+      id: 'off',
+      machineId: 'm2',
+      name: '离线',
+      skillDescription: '',
+      onlineStatus: 'offline',
+      accessPolicy: 'public',
+      resident: false,
+      runtimeMissing: false,
+    );
+    final filtered = filterOnlineDigitalEmployees([online, offline]);
+    expect(filtered.map((e) => e.id), ['on']);
+  });
+
   test('blocks mobile task submission when remote runtime is missing', () {
     final employee = DigitalEmployee.fromJson({
       'online_status': 'online',

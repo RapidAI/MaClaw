@@ -563,3 +563,52 @@ func TestRemoteSourcePreview_IsExplicitlyOptIn(t *testing.T) {
 		t.Fatal("disable should clear the preview session")
 	}
 }
+
+func TestBuildRemoteCodingCodeFileEvent_ForceOpensRightHandPanel(t *testing.T) {
+	for _, op := range []string{"read", "modify", "create"} {
+		evt := buildRemoteCodingCodeFileEvent(
+			"remote:ssh-1:1:1",
+			"/home/user/proj/src/main.go",
+			"package main\n",
+			"",
+			op,
+			false,
+			false,
+		)
+		if !evt.ForceOpen {
+			t.Fatalf("op %s: ForceOpen = false, want true so the right-hand code preview opens", op)
+		}
+		if !evt.AutoOpenPreview {
+			t.Fatalf("op %s: AutoOpenPreview = false, want true", op)
+		}
+		if evt.OpType != op {
+			t.Fatalf("opType = %q, want %q", evt.OpType, op)
+		}
+		if evt.FileName != "main.go" {
+			t.Fatalf("fileName = %q, want main.go", evt.FileName)
+		}
+		if evt.ProjectPath != "" {
+			t.Fatalf("remote preview must not set local ProjectPath, got %q", evt.ProjectPath)
+		}
+		if evt.Language != "go" {
+			t.Fatalf("language = %q, want go", evt.Language)
+		}
+	}
+}
+
+func TestEmitRemoteCodePreview_RespectsSourcePreviewOptIn(t *testing.T) {
+	// Disabled by default: must be a no-op (no panic with nil handler fields either).
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{sessionID: "ssh-1"}}
+	cb.emitRemoteCodePreview("/remote/main.go", "package main\n", "", "read", false, false)
+
+	// Enabled with real emitter + nil ctx: EmitCodeFileEvent is a silent no-op.
+	app := &App{}
+	app.codeEventEmitter = NewCodeEventEmitter(app)
+	agent := &RemoteCodingSubAgent{
+		sessionID: "ssh-1",
+		handler:   &IMMessageHandler{app: app},
+	}
+	agent.SetSourcePreviewEnabled(true)
+	cb = &remoteCodingCallbacks{agent: agent}
+	cb.emitRemoteCodePreview("/remote/main.go", "package main\n", "", "modify", false, false)
+}

@@ -69,7 +69,11 @@ type cachedSearchResult struct {
 
 const (
 	maxCacheEntries = 100
-	maxDownloadSize = 5 << 20 // Skill JSON includes base64 file content; 1 MB packages expand beyond 1 MB on the wire.
+	// Search/list/metadata only — keep tight so a runaway endpoint cannot pin RAM.
+	maxSearchJSONSize = skill.MaxSkillHubSearchJSONBytes
+	// Skill install JSON includes base64 file maps; multi-asset packages
+	// (templates, fonts, SVGs) routinely exceed 5 MiB on the wire.
+	maxDownloadSize = skill.MaxSkillPackageDownloadBytes
 )
 
 // SkillHubClient queries the hub's own SkillHub API for skill search, download, and recommendations.
@@ -80,7 +84,7 @@ type SkillHubClient struct {
 	cacheTTL      time.Duration
 	recIndex      []HubSkillMeta
 	client        *http.Client // 10s timeout for search/metadata APIs
-	installClient *http.Client // 120s timeout for skill package downloads
+	installClient *http.Client // long timeout for multi-asset skill package downloads
 }
 
 // NewSkillHubClient creates a new SkillHubClient with default settings.
@@ -90,9 +94,9 @@ func NewSkillHubClient(app *App) *SkillHubClient {
 		cache:    make(map[string]cachedSearchResult),
 		cacheTTL: 5 * time.Minute,
 		client:   &http.Client{Timeout: 10 * time.Second},
-		// installClient uses a longer timeout for skill package downloads
-		// which may be several MB over slow networks.
-		installClient: &http.Client{Timeout: 120 * time.Second},
+		// installClient uses a longer timeout for multi-asset skill packages
+		// (up to MaxSkillPackageDownloadBytes) on slow networks.
+		installClient: &http.Client{Timeout: 180 * time.Second},
 	}
 }
 
@@ -726,7 +730,7 @@ func (c *SkillHubClient) GetRecommendations() []HubSkillMeta {
 // ---------------------------------------------------------------------------
 
 func (c *SkillHubClient) getJSON(ctx context.Context, path string, dest interface{}) (string, []string, error) {
-	return c.app.getHubCenterJSON(ctx, c.client, path, maxDownloadSize, dest)
+	return c.app.getHubCenterJSON(ctx, c.client, path, maxSearchJSONSize, dest)
 }
 
 func (c *SkillHubClient) getJSONFromExplicitHubURL(ctx context.Context, hubURL string, path string, dest interface{}) (string, []string, error) {
@@ -737,12 +741,12 @@ func (c *SkillHubClient) getJSONFromExplicitHubURL(ctx context.Context, hubURL s
 	if authHeader := c.enterpriseHubAuthHeaderForBase(base); authHeader != "" {
 		return c.getJSONFromExplicitHubURLWithAuth(ctx, base, path, dest, authHeader)
 	}
-	return c.app.getHubCenterJSONFromCandidates(ctx, c.client, []string{base}, path, maxDownloadSize, dest)
+	return c.app.getHubCenterJSONFromCandidates(ctx, c.client, []string{base}, path, maxSearchJSONSize, dest)
 }
 
 func (c *SkillHubClient) getBytesFromExplicitHubURL(ctx context.Context, hubURL string, path string, limit int64) (string, []string, []byte, error) {
 	base := strings.TrimSpace(hubURL)
-	// Use installClient (120s timeout) for download operations.
+	// Use installClient (long timeout) for multi-asset package downloads.
 	downloadClient := c.installClient
 	if downloadClient == nil {
 		downloadClient = c.client
@@ -765,8 +769,7 @@ func (c *SkillHubClient) getBytesFromExplicitHubURLWithAuth(ctx context.Context,
 	}
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("User-Agent", "MaClaw/1.0")
-	// Use installClient (120s timeout) for download operations which may
-	// transfer large skill packages over slow networks.
+	// Use installClient (long timeout) for multi-asset package downloads.
 	httpClient := c.installClient
 	if httpClient == nil {
 		httpClient = c.client
@@ -780,12 +783,13 @@ func (c *SkillHubClient) getBytesFromExplicitHubURLWithAuth(ctx context.Context,
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", []string{base}, nil, fmt.Errorf("request hub bytes %s%s failed (%d): %s", base, path, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	data, err := readHubCenterJSONBody(resp.Body, limit)
+	data, err := readLimitedHubCenterBodyWithLength(resp.Body, resp.ContentLength, limit)
 	if err != nil {
 		return "", []string{base}, nil, fmt.Errorf("read hub bytes %s%s failed: %w", base, path, err)
 	}
 	return base, []string{base}, data, nil
 }
+
 func (c *SkillHubClient) enterpriseHubAuthHeaderForBase(base string) string {
 	if c == nil || c.app == nil {
 		return ""
@@ -822,7 +826,7 @@ func (c *SkillHubClient) getJSONFromExplicitHubURLWithAuth(ctx context.Context, 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", []string{base}, fmt.Errorf("request hub JSON %s%s failed (%d): %s", base, path, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	data, err := readHubCenterJSONBody(resp.Body, maxDownloadSize)
+	data, err := readHubCenterJSONBody(resp.Body, maxSearchJSONSize)
 	if err != nil {
 		return "", []string{base}, fmt.Errorf("read hub JSON %s%s failed: %w", base, path, err)
 	}

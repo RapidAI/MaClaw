@@ -294,6 +294,15 @@ func SanitizeAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
 		}
 		cfg.ExtraToolConfigs = configs
 	}
+	if len(cfg.SSHHosts) > 0 {
+		hosts := make([]corelib.SSHHostEntry, len(cfg.SSHHosts))
+		copy(hosts, cfg.SSHHosts)
+		for i := range hosts {
+			hosts[i].Password = maskSecret(hosts[i].Password)
+			hosts[i].Passphrase = maskSecret(hosts[i].Passphrase)
+		}
+		cfg.SSHHosts = hosts
+	}
 	return cfg
 }
 

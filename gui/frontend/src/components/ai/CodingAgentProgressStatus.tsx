@@ -765,7 +765,16 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
     if (codingAgentCommandLooksLikeEnvironmentProbe(progress.command)) return true;
     if (codingAgentCommandLooksLikeExploratoryTest(progress.command, progress.summary)) return true;
     const toolName = (progress.detail || "").trim().toLowerCase();
-    if (["read_file", "list_directory", "ripgrep", "glob"].includes(toolName) && codingAgentPathLookupLooksUnsuccessful(text)) {
+    // Local CodingSubAgent + remote coding tools share the same progress surface.
+    // Exploratory existence probes should stay neutral (gray), not red failures.
+    if ([
+        "read_file",
+        "list_directory",
+        "ripgrep",
+        "glob",
+        "ssh_read_file",
+        "ssh_list_dir",
+    ].includes(toolName) && codingAgentPathLookupLooksUnsuccessful(text)) {
         return true;
     }
     const diagnosticMarkers = [
@@ -814,11 +823,16 @@ function codingAgentPathLookupLooksUnsuccessful(text: string): boolean {
         "path not found",
         "cannot find the path",
         "could not find the path",
+        "cannot access",
+        "not a directory",
+        "is not a directory",
         "not found:",
         "文件不存在",
         "路径不存在",
         "找不到文件",
         "找不到路径",
+        "没有那个文件",
+        "不是目录",
     ].some((marker) => text.includes(marker));
 }
 
@@ -847,7 +861,14 @@ function codingAgentToolDiagnosticStatusText(progress: CodingAgentProgress, lang
     if (codingAgentCommandLooksLikeExploratoryTest(progress.command, progress.summary)) {
         return label("Exploratory test did not pass", "探索性测试未通过");
     }
-    if (["read_file", "list_directory", "ripgrep", "glob"].includes(detail) && codingAgentPathLookupLooksUnsuccessful(summary)) {
+    if ([
+        "read_file",
+        "list_directory",
+        "ripgrep",
+        "glob",
+        "ssh_read_file",
+        "ssh_list_dir",
+    ].includes(detail) && codingAgentPathLookupLooksUnsuccessful(summary)) {
         return label("File or path not found", "文件或路径不存在");
     }
     const commandUnavailable = ["command not found", "not recognized as", "\u65e0\u6cd5\u5c06", "\u8bc6\u522b\u4e3a cmdlet"].some((marker) => summary.includes(marker));
@@ -891,6 +912,7 @@ function codingAgentToolFailureLooksExpectedOrRecoverable(progress: CodingAgentP
         "undefined reference",
     ];
     if (hardFailureMarkers.some((marker) => text.includes(marker))) return false;
+    if (codingAgentRemoteCommandLooksExploratory(progress)) return true;
     const expectedFailureMarkers = [
         "all tests should fail",
         "driver not implemented",
@@ -915,6 +937,24 @@ function codingAgentToolFailureLooksExpectedOrRecoverable(progress: CodingAgentP
         "tdd",
     ];
     return assertionMarkers.some((marker) => text.includes(marker)) && expectedContextMarkers.some((marker) => text.includes(marker));
+}
+
+function codingAgentRemoteCommandLooksExploratory(progress: CodingAgentProgress): boolean {
+    if ((progress.detail || "").trim().toLowerCase() !== "ssh_bash") return false;
+    const command = (progress.command || "").trim().toLowerCase();
+    if (!command) return false;
+
+    // Remote agents frequently probe or prepare a workspace before deciding how
+    // to proceed. A non-zero result here is useful evidence, not a task failure.
+    // Keep build, test, permission, and other operational failures in the red
+    // error state by only accepting narrowly scoped inspection/setup commands.
+    return [
+        /^mkdir\s+-p\s+/,
+        /^(?:pwd|ls|find|which|where|id|uname|whoami)(?:\s|$)/,
+        /^(?:test|\[)\s+/,
+        /^(?:cat|head|tail|stat|file|rg|grep)\s+/,
+        /^git\s+(?:status|diff|rev-parse)\b/,
+    ].some((pattern) => pattern.test(command));
 }
 
 export function normalizeCodingAgentGuardrailStatus(status?: string): CodingAgentGuardrailStatus {

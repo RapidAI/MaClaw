@@ -2128,11 +2128,11 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if summary == "" {
 		summary = strings.TrimSpace(result.Error)
 	}
+	if result.Status != "success" && strings.TrimSpace(result.Error) != "" && !strings.Contains(summary, result.Error) {
+		summary = strings.TrimSpace(summary) + "\n\n失败原因：" + compactSubAgentErrorSummary(result.Error)
+	}
 	if summary == "" {
 		summary = fmt.Sprintf("状态：%s", result.Status)
-	}
-	if onToken != nil {
-		onToken("\n\n" + summary)
 	}
 	return &IMAgentResponse{
 		Text: fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary),

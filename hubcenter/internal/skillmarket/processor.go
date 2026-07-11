@@ -590,6 +590,7 @@ func isValidPublisherSkillID(id string) bool {
 // SafeUnzip 安全解压 zip 到目标目录。
 // 主闸门：解压总大小（≤500MB）、单文件（≤50MB）、解压比（≤20x）。
 // 文件数上限（MaxSkillMarketZipEntries）仅防海量空文件 DoS，不阻止「体积正常、文件多」的资源包。
+// 先完整预检再落盘，避免校验失败时留下半截沙箱内容。
 func SafeUnzip(zipPath, destDir string) error {
 	fi, err := os.Stat(zipPath)
 	if err != nil {
@@ -608,42 +609,69 @@ func SafeUnzip(zipPath, destDir string) error {
 		return fmt.Errorf("too many files: %d (max %d DoS limit); remove node_modules/.git/venv/cache if present, or split oversized asset packs", len(r.File), maxFileCount)
 	}
 
+	cleanDest := filepath.Clean(destDir)
+	destPrefix := cleanDest + string(os.PathSeparator)
+
+	type planned struct {
+		file   *zip.File
+		target string
+		isDir  bool
+	}
+	plan := make([]planned, 0, len(r.File))
+	var totalSize int64
+
+	// Pass 1: validate every entry (zip-slip, sizes, ratio) before writing anything.
+	for _, f := range r.File {
+		name := strings.TrimSpace(f.Name)
+		if name == "" || strings.Contains(name, "\x00") {
+			return fmt.Errorf("zip contains empty or invalid entry name")
+		}
+		// Normalize zip paths to slash form before Join so "a\..\b" style
+		// entries cannot bypass slip checks on Windows.
+		name = filepath.ToSlash(name)
+		if name == ".." || strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") {
+			return fmt.Errorf("zip slip detected: %s", f.Name)
+		}
+		target := filepath.Join(destDir, filepath.FromSlash(name))
+		cleanTarget := filepath.Clean(target)
+		if cleanTarget != cleanDest && !strings.HasPrefix(cleanTarget, destPrefix) {
+			return fmt.Errorf("zip slip detected: %s", f.Name)
+		}
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
+		}
+		isDir := f.FileInfo().IsDir() || strings.HasSuffix(name, "/")
+		if isDir {
+			plan = append(plan, planned{file: f, target: cleanTarget, isDir: true})
+			continue
+		}
+		usize := f.UncompressedSize64
+		if usize > uint64(maxSingleFile) {
+			return fmt.Errorf("file too large: %s (%d bytes, max %d)", f.Name, usize, maxSingleFile)
+		}
+		if usize > uint64(maxTotalSize) || uint64(totalSize)+usize > uint64(maxTotalSize) {
+			return fmt.Errorf("total uncompressed size exceeds %d bytes", maxTotalSize)
+		}
+		totalSize += int64(usize)
+		if zipSize > 0 && totalSize > zipSize*maxZipRatio {
+			return fmt.Errorf("zip bomb detected: ratio %.1fx exceeds %dx", float64(totalSize)/float64(zipSize), maxZipRatio)
+		}
+		plan = append(plan, planned{file: f, target: cleanTarget, isDir: false})
+	}
+
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir dest: %w", err)
 	}
 
-	var totalSize int64
-	for _, f := range r.File {
-		// 防止 zip slip
-		target := filepath.Join(destDir, f.Name)
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) &&
-			filepath.Clean(target) != filepath.Clean(destDir) {
-			return fmt.Errorf("zip slip detected: %s", f.Name)
-		}
-
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+	// Pass 2: extract only after all checks pass.
+	for _, p := range plan {
+		if p.isDir {
+			if err := os.MkdirAll(p.target, 0o755); err != nil {
 				return err
 			}
 			continue
 		}
-
-		// 单文件大小检查（主闸门之一）
-		if f.UncompressedSize64 > uint64(maxSingleFile) {
-			return fmt.Errorf("file too large: %s (%d bytes, max %d)", f.Name, f.UncompressedSize64, maxSingleFile)
-		}
-
-		totalSize += int64(f.UncompressedSize64)
-		if totalSize > maxTotalSize {
-			return fmt.Errorf("total uncompressed size exceeds %d bytes", maxTotalSize)
-		}
-
-		// 解压比率检查
-		if zipSize > 0 && totalSize > zipSize*maxZipRatio {
-			return fmt.Errorf("zip bomb detected: ratio %.1fx exceeds %dx", float64(totalSize)/float64(zipSize), maxZipRatio)
-		}
-
-		if err := extractFile(f, target); err != nil {
+		if err := extractFile(p.file, p.target); err != nil {
 			return err
 		}
 	}
@@ -660,15 +688,29 @@ func extractFile(f *zip.File, target string) error {
 	}
 	defer rc.Close()
 
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode()&0o755|0o644)
+	mode := f.Mode().Perm()
+	if mode == 0 {
+		mode = 0o644
+	}
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", f.Name, err)
 	}
-	defer out.Close()
 
-	// 使用 LimitReader 作为额外保护
-	if _, err := io.Copy(out, io.LimitReader(rc, maxSingleFile+1)); err != nil {
-		return fmt.Errorf("extract %s: %w", f.Name, err)
+	// LimitReader blocks zip bombs that under-declare UncompressedSize64.
+	written, copyErr := io.Copy(out, io.LimitReader(rc, maxSingleFile+1))
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(target)
+		return fmt.Errorf("extract %s: %w", f.Name, copyErr)
+	}
+	if written > maxSingleFile {
+		_ = os.Remove(target)
+		return fmt.Errorf("file too large after decompression: %s", f.Name)
+	}
+	if closeErr != nil {
+		_ = os.Remove(target)
+		return fmt.Errorf("close %s: %w", f.Name, closeErr)
 	}
 	return nil
 }

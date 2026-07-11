@@ -23,7 +23,9 @@ class AppPreferencesController extends AsyncNotifier<AppPreferences> {
 
   Future<void> setLanguage(String language) async {
     final current = state.valueOrNull ?? await future;
-    await _save(current.copyWith(language: appLanguageFromWire(language)));
+    await _save(
+      current.copyWith(language: appLanguageFromWire(language)),
+    );
   }
 
   Future<void> _save(AppPreferences preferences) async {

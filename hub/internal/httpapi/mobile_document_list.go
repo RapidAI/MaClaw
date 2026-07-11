@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"net/http"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -87,6 +89,15 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				"rune_count": utf8.RuneCountInString(rec.Markdown),
 				"preview":    mobileClipRunes(rec.Markdown, 160),
 			}
+			if n := len(rec.SourceBytes); n > 0 {
+				item["has_original"] = true
+				item["source_filename"] = strings.TrimSpace(rec.SourceFilename)
+				item["source_content_type"] = strings.TrimSpace(rec.SourceContentType)
+				item["source_size"] = n
+				item["source_download_url"] = "/api/mobile/documents/drafts/" + rec.ID + "/source"
+			} else {
+				item["has_original"] = false
+			}
 			if includeBody {
 				item["markdown"] = rec.Markdown
 			}
@@ -96,5 +107,52 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			"drafts": out,
 			"count":  len(out),
 		})
+	}
+}
+
+// MobileDocumentDraftSourceHandler streams the original uploaded file for a draft
+// so Mobile can share the real document (WeChat etc.) and AI pipelines can fetch
+// the source of truth.
+func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		mobileEnsureStateLoaded()
+		draftID := strings.TrimSpace(r.PathValue("draftId"))
+		if draftID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "draft id is required")
+			return
+		}
+		ownerID := mobilePrincipalOwnerID(principal)
+		mobileDocuments.Lock()
+		record, ok := mobileDocuments.drafts[draftID]
+		mobileDocuments.Unlock()
+		if !ok || record.OwnerID != ownerID || len(record.SourceBytes) == 0 {
+			writeError(w, http.StatusNotFound, "DRAFT_SOURCE_NOT_FOUND", "original file not found for this draft")
+			return
+		}
+		contentType := strings.TrimSpace(record.SourceContentType)
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		filename := strings.TrimSpace(record.SourceFilename)
+		if filename == "" {
+			filename = filepath.Base(record.Title)
+			if filename == "" || filename == "." {
+				filename = draftID
+			}
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(record.SourceBytes)))
+		w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filepath.Base(filename)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(record.SourceBytes)
 	}
 }

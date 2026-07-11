@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../../shared/theme.dart';
 import 'auth_service.dart';
@@ -53,19 +54,23 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     });
   }
 
+  AppStrings get _s =>
+      ref.read(appStringsProvider);
+
   Future<void> _sendCode() async {
+    final s = _s;
     final phone = _phoneController.text.trim();
     if (_sendingCode) return;
     if (!_looksLikePhoneNumber(phone)) {
       setState(() {
-        _message = '请输入有效手机号，只支持数字和常见手机号分隔符。';
+        _message = s.invalidPhone;
         _messageIsError = true;
       });
       return;
     }
     setState(() {
       _sendingCode = true;
-      _message = '正在连接 MaClaw 官方服务并发送验证码…';
+      _message = s.connectingOfficial;
       _messageIsError = false;
       // Keep previous pending (hub) if re-sending so code entry stays available.
     });
@@ -78,15 +83,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         _sendingCode = false;
         _pendingLogin = result;
         if (result.deliveryUnconfirmed) {
-          _message = result.message.isEmpty
-              ? '短信可能已发出，若已收到请直接输入验证码；未收到请稍后重发。'
-              : result.message;
+          _message = result.message.isEmpty ? s.codeMayBeSent : result.message;
           _messageIsError = false;
         } else {
-          final ttl =
-              result.expiresMinutes > 0 ? '${result.expiresMinutes} 分钟内' : '';
+          final ttl = result.expiresMinutes > 0
+              ? (s.isZh
+                  ? '${result.expiresMinutes} 分钟内'
+                  : ' within ${result.expiresMinutes} min')
+              : '';
           _message = result.message.isEmpty
-              ? '验证码已发送，请在$ttl输入短信验证码。'
+              ? s.codeSentWithTtl(ttl)
               : result.message;
           _messageIsError = false;
         }
@@ -103,12 +109,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         _sendingCode = false;
         // If we already have a hub-bound pending session, keep code entry open.
         if (_pendingLogin != null && _pendingLogin!.hubUrl.isNotEmpty) {
-          _message =
-              '发送未确认（$detail）。若手机已收到验证码，请直接输入；否则请稍后重试。';
+          _message = s.sendUnconfirmed(detail);
           _messageIsError = true;
           _startResendCooldown(PhoneLoginRequestResult.defaultResendCooldownSeconds);
         } else {
-          _message = '验证码发送失败：$detail';
+          _message = s.sendCodeFailed(detail);
           _messageIsError = true;
         }
       });
@@ -116,6 +121,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   String _formatSendError(Object error) {
+    final s = _s;
     if (error is DioException) {
       final status = error.response?.statusCode;
       final data = error.response?.data;
@@ -137,11 +143,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         case DioExceptionType.connectionTimeout:
         case DioExceptionType.sendTimeout:
         case DioExceptionType.receiveTimeout:
-          return '网络超时（短信可能已发出）';
+          return s.networkTimeoutMaybeSent;
         case DioExceptionType.connectionError:
-          return '无法连接官方服务';
+          return s.cannotConnectOfficial;
         case DioExceptionType.badResponse:
-          return status != null ? 'HTTP $status' : '服务响应异常';
+          return status != null
+              ? 'HTTP $status'
+              : (s.isZh ? '服务响应异常' : 'Bad server response');
         default:
           break;
       }
@@ -150,7 +158,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
     final text = error.toString().trim();
     if (text.length > 160) return '${text.substring(0, 160)}…';
-    return text.isEmpty ? '未知错误' : text;
+    return text.isEmpty ? s.unknownError : text;
   }
 
   bool _looksLikePhoneNumber(String value) {
@@ -175,19 +183,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _verifyCode() async {
+    final s = _s;
     final pending = _pendingLogin;
     final code = _codeController.text.trim();
     if (pending == null || code.isEmpty || _verifying) return;
     if (pending.hubUrl.trim().isEmpty) {
       setState(() {
-        _message = '缺少 Hub 地址，请重新发送验证码后再试。';
+        _message = s.missingHubUrl;
         _messageIsError = true;
       });
       return;
     }
     setState(() {
       _verifying = true;
-      _message = '正在验证手机号并进入 MaClaw Mobile...';
+      _message = s.verifyingLogin;
       _messageIsError = false;
     });
     try {
@@ -203,14 +212,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       if (!mounted) return;
       setState(() {
         _verifying = false;
-        _message = ok ? '登录成功，已接入手机号账户的官方服务 credits。' : '验证码尚未确认，请重试。';
+        _message = ok ? s.loginSuccess : s.codeNotConfirmed;
         _messageIsError = !ok;
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _verifying = false;
-        _message = '验证码验证失败：${_formatSendError(error)}';
+        _message = s.verifyFailed(_formatSendError(error));
         _messageIsError = true;
       });
     }
@@ -218,6 +227,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(appStringsProvider);
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final showCodeEntry = _pendingLogin != null;
@@ -254,7 +264,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ),
                 const SizedBox(height: 22),
                 Text(
-                  '手机号注册/登录',
+                  s.loginTitle,
                   textAlign: TextAlign.center,
                   style: text.headlineSmall?.copyWith(
                     fontWeight: FontWeight.w700,
@@ -269,15 +279,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Text(
-                          '账户验证',
+                          s.loginAccountVerify,
                           style: text.titleMedium?.copyWith(
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '先验证手机号，再输入短信验证码进入工作台。'
-                          '若已收到短信但发送按钮报错，仍可在下方输入验证码。',
+                          s.loginAccountHint,
                           style: text.bodySmall?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -293,9 +302,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               unawaited(_sendCode());
                             }
                           },
-                          decoration: const InputDecoration(
-                            labelText: '手机号',
-                            prefixIcon: Icon(Icons.phone_outlined),
+                          decoration: InputDecoration(
+                            labelText: s.phoneNumber,
+                            prefixIcon: const Icon(Icons.phone_outlined),
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -313,10 +322,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               : const Icon(Icons.sms_outlined),
                           label: Text(
                             !showCodeEntry
-                                ? '发送验证码'
+                                ? s.sendCode
                                 : _resendSecondsRemaining > 0
-                                    ? '重新发送验证码（$_resendSecondsRemaining秒）'
-                                    : '重新发送验证码',
+                                    ? s.resendCodeIn(_resendSecondsRemaining)
+                                    : s.resendCode,
                           ),
                         ),
                         if (showCodeEntry) ...[
@@ -335,12 +344,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             },
                             decoration: InputDecoration(
                               labelText: (_pendingLogin?.codeLength ?? 0) > 0
-                                  ? '${_pendingLogin!.codeLength} 位验证码'
-                                  : '验证码',
+                                  ? s.nDigitCode(_pendingLogin!.codeLength)
+                                  : s.verificationCode,
                               prefixIcon: const Icon(Icons.pin_outlined),
                               helperText: _pendingLogin?.deliveryUnconfirmed ==
                                       true
-                                  ? '发送回执未确认：收到短信即可在此输入'
+                                  ? s.codeEntryHelper
                                   : null,
                             ),
                           ),
@@ -355,7 +364,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                     ),
                                   )
                                 : const Icon(Icons.login),
-                            label: const Text('验证并登录'),
+                            label: Text(s.verifyAndLogin),
                           ),
                         ],
                       ],
@@ -380,7 +389,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ],
                 const SizedBox(height: 18),
                 Text(
-                  '登录后默认进入 AI 助手，可随时切换员工、文档与账户设置。',
+                  s.loginFooter,
                   textAlign: TextAlign.center,
                   style: text.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,

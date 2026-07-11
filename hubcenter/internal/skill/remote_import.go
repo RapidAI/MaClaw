@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,11 +38,13 @@ type RemoteImporter struct {
 	client *http.Client
 }
 
-const remoteImportMaxBytes = 5 << 20
+// Align with skill install wire budget so multi-asset remote skills can import.
+const remoteImportMaxBytes = coreskill.MaxSkillPackageDownloadBytes
 
 func NewRemoteImporter() *RemoteImporter {
 	return &RemoteImporter{
-		client: &http.Client{Timeout: 30 * time.Second},
+		// Allow multi-asset packages within remoteImportMaxBytes.
+		client: &http.Client{Timeout: 180 * time.Second},
 	}
 }
 
@@ -515,21 +518,15 @@ func (ri *RemoteImporter) httpGet(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
-	return readLimitedRemoteImportBody(resp.Body, remoteImportMaxBytes)
+	return readLimitedRemoteImportBodyWithLength(resp.Body, resp.ContentLength, remoteImportMaxBytes)
 }
 
 func readLimitedRemoteImportBody(body io.Reader, limit int64) ([]byte, error) {
-	if limit <= 0 {
-		return io.ReadAll(body)
-	}
-	data, err := io.ReadAll(io.LimitReader(body, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("remote import response exceeds %d bytes", limit)
-	}
-	return data, nil
+	return coreskill.ReadLimitedHTTPBody(body, -1, limit)
+}
+
+func readLimitedRemoteImportBodyWithLength(body io.Reader, contentLength, limit int64) ([]byte, error) {
+	return coreskill.ReadLimitedHTTPBody(body, contentLength, limit)
 }
 
 func generateImportID() string {

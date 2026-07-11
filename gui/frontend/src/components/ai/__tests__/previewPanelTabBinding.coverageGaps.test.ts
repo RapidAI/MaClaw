@@ -613,6 +613,21 @@ describe('Path D: project_path routing skip in useCodePreviewState', () => {
         expect(result.current.state.active).toBe(false);
     });
 
+    it('original_missing keeps a modified remote file out of diff mode', () => {
+        const { result } = renderHook(() => useCodePreviewState('pathA'));
+
+        act(() => {
+            eventHandlers.get('code:file_update')?.({
+                session_id: 'remote:ssh-1', file_path: '/srv/app/main.ts', file_name: 'main.ts',
+                content: 'export const value = true;', original: '', original_missing: true,
+                op_type: 'modify', language: 'typescript', auto_open_preview: true,
+            });
+        });
+
+        expect(result.current.state.files.get('/srv/app/main.ts')?.original).toBeUndefined();
+        expect(result.current.state.active).toBe(true);
+    });
+
     it('force_open project-scoped file update opens preview without activeTabProjectPath', () => {
         const { result } = renderHook(() => useCodePreviewState());
 

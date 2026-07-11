@@ -192,9 +192,24 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	// frontend routing.
 	if r != nil && r.sourcePreviewEnabled && r.handler != nil && r.handler.app != nil && r.handler.app.codeEventEmitter != nil {
 		previewSessionID := r.sourcePreviewSessionID
-		r.handler.app.codeEventEmitter.EmitSessionStart(previewSessionID)
+		r.handler.app.codeEventEmitter.EmitPreviewSessionStart(previewSessionID)
 		defer r.handler.app.codeEventEmitter.EmitSessionEnd(previewSessionID)
 	}
+	// A new project directory cannot be created through ssh_bash alone because
+	// that tool first changes into workDir. Bootstrap it before the agent loop.
+	if r.handler == nil || strings.TrimSpace(r.sessionID) == "" || strings.TrimSpace(r.projectDir) == "" {
+		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding project context is incomplete"}
+	}
+	bootstrapResult := r.handler.sshExec(map[string]interface{}{
+		"session_id":   r.sessionID,
+		"command":      "mkdir -p -- " + remoteShellQuote(r.projectDir),
+		"wait_seconds": float64(15),
+	})
+	if remoteCodingToolOutcome(bootstrapResult) != "success" {
+		log.Printf("[remote-source-preview] project bootstrap failed session=%q project=%q result=%q", r.sessionID, r.projectDir, truncateRunesV2(bootstrapResult, 300))
+		return &RemoteCodingSubAgentResult{Status: "failed", Error: "无法创建或访问远程项目目录", Summary: bootstrapResult}
+	}
+	log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	cb := &remoteCodingCallbacks{
 		agent:       r,
 		task:        taskDescription,
@@ -296,6 +311,20 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.Summary = appendRemoteNoChangeEvidenceSummary(result.Summary, noChangeSummary)
 	result.Summary = appendRemoteCommandFailureSummary(result.Summary, commandSummary)
 	if result.Status != "success" {
+		// A task can be satisfied without a write when the requested artifact
+		// already exists and a remote compile/run check proves it works. Do not
+		// let a later agent-loop closing error turn that verified outcome into a
+		// misleading failure in the final task banner. This deliberately does
+		// not recover cancellations, edits, or unverified inspection-only runs.
+		if result.Status == "failed" && len(filesModified) == 0 && len(filesCreated) == 0 && countSuccessfulSubAgentVerificationCommands(commandsRun) > 0 && strings.TrimSpace(commandSummary) == "" {
+			// Keep the underlying loop issue in the server audit trail. The result
+			// itself is intentionally successful because the remote acceptance
+			// evidence is stronger than a late, non-task failure from the agent.
+			log.Printf("[remote-coding] accepting verified no-change completion despite terminal loop failure: %s", compactSubAgentErrorSummary(result.Error))
+			result.Status = "success"
+			result.Error = ""
+			return result
+		}
 		return result
 	}
 	if strings.TrimSpace(noChangeSummary) != "" {
@@ -1068,7 +1097,16 @@ func remoteCodingToolResultLooksBlocked(result string) bool {
 }
 
 func remoteCodingToolFailureIsDiagnostic(name, argsJSON, result, outcome string) bool {
-	if strings.ToLower(strings.TrimSpace(name)) != "ssh_bash" || outcome != "failed" {
+	if outcome != "failed" {
+		return false
+	}
+	canonical := strings.ToLower(strings.TrimSpace(name))
+	// Exploratory path probes (does this file/dir exist?) are expected misses,
+	// not hard failures — match local CodingSubAgent's neutral diagnostic tone.
+	if remoteCodingExploratoryLookupTool(canonical) && remoteCodingPathLookupLooksUnsuccessful(result) {
+		return true
+	}
+	if canonical != "ssh_bash" {
 		return false
 	}
 	normalizedArgsJSON := normalizeCodingSubAgentToolArguments(argsJSON)
@@ -1079,6 +1117,57 @@ func remoteCodingToolFailureIsDiagnostic(name, argsJSON, result, outcome string)
 	applyRemoteCodingSubAgentToolArgumentAliases("ssh_bash", args)
 	command := remoteArgStr(args, "command")
 	return remoteCodingCommandFailureIsDiagnostic(command, result)
+}
+
+func remoteCodingExploratoryLookupTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ssh_read_file", "ssh_list_dir":
+		return true
+	default:
+		return false
+	}
+}
+
+func remoteCodingPathLookupLooksUnsuccessful(result string) bool {
+	text := strings.ToLower(strings.TrimSpace(result))
+	if text == "" {
+		return false
+	}
+	// Hard failures should stay red even if the message also mentions a path.
+	for _, marker := range []string{
+		"access denied",
+		"permission denied",
+		"fatal error",
+		"traceback",
+		"panic:",
+	} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	for _, marker := range []string{
+		"file not found",
+		"no such file",
+		"path does not exist",
+		"path not found",
+		"cannot find the path",
+		"could not find the path",
+		"cannot access",
+		"not a directory",
+		"is not a directory",
+		"not found:",
+		"文件不存在",
+		"路径不存在",
+		"找不到文件",
+		"找不到路径",
+		"没有那个文件",
+		"不是目录",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func remoteCodingToolResultLooksFailed(result string) bool {
@@ -1836,19 +1925,43 @@ func (c *remoteCodingCallbacks) emitRemoteCodePreview(path, content, original, o
 	if c == nil || c.agent == nil || !c.agent.sourcePreviewEnabled || c.agent.handler == nil || c.agent.handler.app == nil || c.agent.handler.app.codeEventEmitter == nil {
 		return
 	}
-	c.agent.handler.app.codeEventEmitter.EmitCodeFileEvent(CodeFileEvent{
-		SessionID:        c.agent.sourcePreviewSessionID,
+	log.Printf("[remote-source-preview] emit file session=%q path=%q op=%s content_len=%d truncated=%v original_missing=%v", c.agent.sourcePreviewSessionID, path, opType, len(content), previewTruncated, originalMissing)
+	c.agent.handler.app.codeEventEmitter.EmitCodeFileEvent(buildRemoteCodingCodeFileEvent(
+		c.agent.sourcePreviewSessionID,
+		path,
+		content,
+		original,
+		opType,
+		previewTruncated,
+		originalMissing,
+	))
+}
+
+// buildRemoteCodingCodeFileEvent builds a code:file_update payload for remote coding.
+//
+// ForceOpen is always set for the remote coding workflow (sourcePreview is opt-in
+// there). Local CodingSubAgent only force-opens writes; remote also force-opens
+// reads so the right-hand pane actually appears — otherwise a leftover active
+// session blocks non-force updates, and auto_open alone never takes over.
+func buildRemoteCodingCodeFileEvent(sessionID, path, content, original, opType string, previewTruncated, originalMissing bool) CodeFileEvent {
+	op := strings.ToLower(strings.TrimSpace(opType))
+	if op == "" {
+		op = "modify"
+	}
+	return CodeFileEvent{
+		SessionID:        sessionID,
 		FilePath:         path,
 		FileName:         pathpkg.Base(path),
 		AbsPath:          path,
 		Content:          content,
 		Original:         original,
-		OpType:           opType,
+		OpType:           op,
 		Language:         detectLanguageFromExt(path),
+		ForceOpen:        true,
 		AutoOpenPreview:  true,
 		PreviewTruncated: previewTruncated,
 		OriginalMissing:  originalMissing,
-	})
+	}
 }
 
 func remoteEditFileResult(path string, commandResult string) string {

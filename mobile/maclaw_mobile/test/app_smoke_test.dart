@@ -97,7 +97,8 @@ class _PendingDocumentFlowController extends DocumentsController {
 
 class _TestAppPreferencesController extends AppPreferencesController {
   @override
-  Future<AppPreferences> build() async => const AppPreferences();
+  Future<AppPreferences> build() async =>
+      const AppPreferences(language: appLanguageChinese);
 }
 
 const _connectingOfficialService =

@@ -11,6 +11,7 @@ import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/notifications/mobile_push_sync.dart';
 import '../../core/settings/app_preferences.dart';
 import '../../core/storage/mobile_local_store.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../assistant/assistant_controller.dart';
 import '../auth/session_controller.dart';
@@ -279,9 +280,10 @@ class AccountScreen extends ConsumerWidget {
     final preferences = ref.watch(appPreferencesProvider);
     final llmServiceStatus = ref.watch(mobileLlmServiceStatusProvider);
     final realtimeCheck = ref.watch(accountRealtimeCheckProvider);
+    final s = ref.watch(appStringsProvider);
     return ScreenScaffold(
-      title: '我的',
-      subtitle: '官方服务绑定、额度、模型/助手联网状态、凭据和本地隐私数据。',
+      title: s.accountTitle,
+      subtitle: s.accountSubtitle,
       trailing: IconButton.filledTonal(
         tooltip: '退出登录',
         onPressed: () => ref.read(sessionControllerProvider.notifier).signOut(),
@@ -465,6 +467,7 @@ class _PreferenceCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -472,27 +475,27 @@ class _PreferenceCard extends ConsumerWidget {
           data: (value) => Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SectionHeader(
+              SectionHeader(
                 icon: Icons.settings_outlined,
-                title: '主题与语言',
+                title: s.themeAndLanguage,
               ),
               const SizedBox(height: 12),
               SegmentedButton<ThemeMode>(
-                segments: const [
+                segments: [
                   ButtonSegment(
                     value: ThemeMode.system,
-                    icon: Icon(Icons.phone_android_outlined),
-                    label: Text('系统'),
+                    icon: const Icon(Icons.phone_android_outlined),
+                    label: Text(s.themeSystem),
                   ),
                   ButtonSegment(
                     value: ThemeMode.light,
-                    icon: Icon(Icons.light_mode_outlined),
-                    label: Text('浅色'),
+                    icon: const Icon(Icons.light_mode_outlined),
+                    label: Text(s.themeLight),
                   ),
                   ButtonSegment(
                     value: ThemeMode.dark,
-                    icon: Icon(Icons.dark_mode_outlined),
-                    label: Text('深色'),
+                    icon: const Icon(Icons.dark_mode_outlined),
+                    label: Text(s.themeDark),
                   ),
                 ],
                 selected: {value.themeMode},
@@ -502,29 +505,35 @@ class _PreferenceCard extends ConsumerWidget {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
+                key: ValueKey<String>('lang-${value.language}'),
                 initialValue: value.language,
-                items: const [
+                items: [
+                  DropdownMenuItem(
+                    value: appLanguageSystem,
+                    child: Text(s.languageSystem),
+                  ),
                   DropdownMenuItem(
                     value: appLanguageChinese,
-                    child: Text('简体中文'),
+                    child: Text(s.languageChinese),
                   ),
                   DropdownMenuItem(
                     value: appLanguageEnglish,
-                    child: Text('English'),
+                    child: Text(s.languageEnglish),
                   ),
                 ],
                 onChanged: (next) {
                   if (next == null) return;
                   ref.read(appPreferencesProvider.notifier).setLanguage(next);
                 },
-                decoration: const InputDecoration(
-                  labelText: '语音输入语言',
-                  prefixIcon: Icon(Icons.language_outlined),
+                decoration: InputDecoration(
+                  labelText: s.speechLanguage,
+                  prefixIcon: const Icon(Icons.language_outlined),
+                  helperText: s.languageHint,
                 ),
               ),
             ],
           ),
-          error: (error, _) => Text('偏好设置加载失败：$error'),
+          error: (error, _) => Text('${s.preferencesLoadFailed}：$error'),
           loading: () => const LinearProgressIndicator(),
         ),
       ),

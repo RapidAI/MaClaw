@@ -90,26 +90,16 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			return
 		}
 
-		// 3. Find the skill package zip on disk.
-		zipPath, err := resolveSkillPackagePath(item, dataDir, tenantID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "PACKAGE_NOT_FOUND", err.Error())
-			return
-		}
-
-		// 3b. Strip runtime/cache artifacts and enforce HubCenter zip entry limit
-		// before reserving an in-flight submission (local failures should not
-		// block later retries with ALREADY_SUBMITTED).
-		uploadZip, cleanupUploadZip, err := prepareSkillZipForHubCenterMarket(zipPath)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "PACKAGE_TOO_LARGE", err.Error())
-			return
-		}
-		defer cleanupUploadZip()
-
-		// 4. Get HubCenter base URL and hub identity.
+		// 3. Get HubCenter base URL and reconcile any prior submission before
+		// touching the package. This makes a retry cheap, including for large zips.
 		baseURL, err := hubCenterMarketplaceBaseURL(ctx, centerStatus)
 		if err != nil || baseURL == "" {
+			// An already accepted upload remains valid even while HubCenter is
+			// temporarily unreachable. Report its local status instead of turning
+			// a harmless retry into a false upload failure.
+			if writeExistingMarketUploadResponse(w, ctx, svc, item.ID) {
+				return
+			}
 			writeError(w, http.StatusBadGateway, "HUBCENTER_UNAVAILABLE", "HubCenter is not configured or unreachable")
 			return
 		}
@@ -120,9 +110,12 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			writeError(w, http.StatusBadGateway, "HUBCENTER_STATUS_CHECK_FAILED", err.Error())
 			return
 		}
+		if writeExistingMarketUploadResponse(w, ctx, svc, item.ID) {
+			return
+		}
 		hubID := hubCenterStateHubIDFromProvider(ctx, centerStatus)
 
-		// 5. Determine publisher email from metadata / admin context.
+		// 4. Determine publisher email from metadata / admin context.
 		// HubCenter SubmitSkill requires a non-empty email; non-email publishers
 		// (e.g. display names) cause confusing accounts and failed ownership paths.
 		email := resolveMarketUploadEmail(r.Context(), item)
@@ -132,11 +125,28 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			return
 		}
 
+		// 5. Find and sanitize the package only after confirming this is a new
+		// submission. Local package errors therefore cannot block future retries.
+		zipPath, err := resolveSkillPackagePath(item, dataDir, tenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "PACKAGE_NOT_FOUND", err.Error())
+			return
+		}
+		uploadZip, cleanupUploadZip, err := prepareSkillZipForHubCenterMarket(zipPath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, skillMarketPackageErrorCode(err), err.Error())
+			return
+		}
+		defer cleanupUploadZip()
+
 		// 6. Atomically reserve an in-flight row BEFORE the network upload so
 		// concurrent admin clicks cannot both pass a check-then-insert window.
 		sub := newMarketSubmissionRecord(tenantID, item, "", "uploading", "")
 		if err := svc.ClaimMarketUpload(ctx, sub); err != nil {
 			if errors.Is(err, capability.ErrMarketSubmissionInFlight) {
+				if writeExistingMarketUploadResponse(w, ctx, svc, item.ID) {
+					return
+				}
 				writeError(w, http.StatusConflict, "ALREADY_SUBMITTED", "this skill already has an in-flight submission to HubCenter (uploading/pending/processing)")
 				return
 			}
@@ -195,6 +205,67 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			"skill_id":            skillID,
 		})
 	}
+}
+
+// writeExistingMarketUploadResponse writes the idempotent response for a live
+// submission. It returns true when it has written a response, including errors.
+func writeExistingMarketUploadResponse(w http.ResponseWriter, ctx context.Context, svc *capability.Service, capabilityRef string) bool {
+	existing, err := svc.ActiveMarketSubmissions(ctx, capabilityRef)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "LOCAL_SUBMISSION_LOOKUP_FAILED", err.Error())
+		return true
+	}
+	changed, err := expireLocallyInvalidMarketSubmissions(ctx, svc, existing)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "LOCAL_SUBMISSION_RECONCILE_FAILED", err.Error())
+		return true
+	}
+	// Re-read after local cleanup so expired reservations do not keep blocking
+	// submissions while HubCenter is unavailable.
+	if changed {
+		existing, err = svc.ActiveMarketSubmissions(ctx, capabilityRef)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LOCAL_SUBMISSION_LOOKUP_FAILED", err.Error())
+			return true
+		}
+	}
+	if len(existing) == 0 {
+		return false
+	}
+	current := existing[0]
+	w.Header().Set("Retry-After", "15")
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"submission_id":       current.HubCenterSubmissionID,
+		"local_submission_id": current.ID,
+		"status":              current.Status,
+		"already_submitted":   true,
+	})
+	return true
+}
+
+// expireLocallyInvalidMarketSubmissions clears records that cannot represent a
+// live remote upload even without contacting HubCenter.
+func expireLocallyInvalidMarketSubmissions(ctx context.Context, svc *capability.Service, subs []capability.MarketSubmission) (bool, error) {
+	changed := false
+	for _, sub := range subs {
+		if strings.TrimSpace(sub.HubCenterSubmissionID) != "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(sub.Status))
+		switch {
+		case status == "uploading" && marketSubmissionTimestampStale(sub.UpdatedAt, marketUploadReservationMaxAge):
+			if err := svc.UpdateMarketSubmissionStatus(ctx, sub.ID, "failed", "upload reservation timed out"); err != nil {
+				return false, err
+			}
+			changed = true
+		case status == "pending" || status == "processing":
+			if err := svc.UpdateMarketSubmissionStatus(ctx, sub.ID, "failed", "missing HubCenter submission id"); err != nil {
+				return false, err
+			}
+			changed = true
+		}
+	}
+	return changed, nil
 }
 
 // newMarketSubmissionRecord builds a local Hub tracking row for a HubCenter submit.

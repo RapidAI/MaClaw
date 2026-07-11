@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
@@ -160,6 +161,84 @@ func TestClaimMarketUploadSerializesConcurrentClaims(t *testing.T) {
 	}
 	if other != 0 {
 		t.Fatalf("other errors=%d", other)
+	}
+}
+
+func TestAdminCapabilityUploadToMarketReturnsExistingInFlightSubmission(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), store.DefaultTenantID)
+	item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
+		ID:             "cap-existing-upload",
+		CapabilityType: corelib.CapabilityTypeSkill,
+		CapabilityID:   "existing-upload",
+		DisplayName:    "Existing Upload",
+		Publisher:      "publisher@example.com",
+		Source:         corelib.CapabilitySourceEnterpriseHub,
+		Status:         "approved",
+		GlobalKey:      "enterprise_hub:skill:publisher:existing-upload",
+	})
+	if err != nil {
+		t.Fatalf("create capability: %v", err)
+	}
+
+	existing := newMarketSubmissionRecord(store.DefaultTenantID, item, "", "uploading", "")
+	if err := svc.ClaimMarketUpload(ctx, existing); err != nil {
+		t.Fatalf("claim existing submission: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/"+item.ID+"/upload-to-market", nil)
+	req.SetPathValue("id", item.ID)
+	rec := httptest.NewRecorder()
+	AdminCapabilityUploadToMarketHandler(svc, fakeCapabilityMarketCenterStatus{
+		// A status outage must not turn an already accepted upload into a 502.
+		err: errors.New("HubCenter offline"),
+	}, t.TempDir())(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "15" {
+		t.Fatalf("Retry-After=%q, want 15", got)
+	}
+	var got struct {
+		LocalSubmissionID string `json:"local_submission_id"`
+		Status            string `json:"status"`
+		AlreadySubmitted  bool   `json:"already_submitted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.AlreadySubmitted || got.LocalSubmissionID != existing.ID || got.Status != "uploading" {
+		t.Fatalf("unexpected idempotent response: %+v", got)
+	}
+}
+
+func TestWriteExistingMarketUploadResponseExpiresStaleReservation(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	ctx := capability.WithTenant(context.Background(), "tenant_a")
+	stale := &capability.MarketSubmission{
+		ID:             capability.NewID("mkt_sub"),
+		CapabilityRef:  "cap-stale",
+		CapabilityName: "Stale Skill",
+		Status:         "uploading",
+		CreatedAt:      time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339),
+		UpdatedAt:      time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339),
+	}
+	if err := svc.ClaimMarketUpload(ctx, stale); err != nil {
+		t.Fatalf("claim stale submission: %v", err)
+	}
+
+	if handled := writeExistingMarketUploadResponse(httptest.NewRecorder(), ctx, svc, stale.CapabilityRef); handled {
+		t.Fatal("stale reservation should be expired rather than returned as accepted")
+	}
+	active, err := svc.HasActiveSubmission(ctx, stale.CapabilityRef)
+	if err != nil {
+		t.Fatalf("check active submission: %v", err)
+	}
+	if active {
+		t.Fatal("stale reservation is still active")
 	}
 }
 

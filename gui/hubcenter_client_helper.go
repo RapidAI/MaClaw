@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func (a *App) resolveHubCenterBaseURL(ctx context.Context, client *http.Client) (string, []string, error) {
@@ -185,7 +186,7 @@ func (a *App) getHubCenterBytesFromCandidates(ctx context.Context, client *http.
 				return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 			}
 			if limit > 0 {
-				return readLimitedHubCenterBody(resp.Body, limit)
+				return readLimitedHubCenterBodyWithLength(resp.Body, resp.ContentLength, limit)
 			}
 			return io.ReadAll(resp.Body)
 		}()
@@ -208,24 +209,15 @@ func (a *App) getHubCenterBytesFromCandidates(ctx context.Context, client *http.
 }
 
 func readLimitedHubCenterBody(body io.Reader, limit int64) ([]byte, error) {
-	if limit <= 0 {
-		return io.ReadAll(body)
-	}
-	data, err := io.ReadAll(io.LimitReader(body, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("hubcenter response exceeds %d bytes", limit)
-	}
-	return data, nil
+	return skill.ReadLimitedHTTPBody(body, -1, limit)
+}
+
+func readLimitedHubCenterBodyWithLength(body io.Reader, contentLength, limit int64) ([]byte, error) {
+	return skill.ReadLimitedHTTPBody(body, contentLength, limit)
 }
 
 func readHubCenterJSONBody(body io.Reader, limit int64) ([]byte, error) {
-	if limit > 0 {
-		return readLimitedHubCenterBody(body, limit)
-	}
-	return io.ReadAll(body)
+	return skill.ReadLimitedHTTPBody(body, -1, limit)
 }
 
 func isUnexpectedEOFError(err error) bool {

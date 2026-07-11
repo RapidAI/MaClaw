@@ -9,6 +9,7 @@ import '../../core/api/api_client.dart';
 import '../../core/api/mobile_bootstrap.dart';
 import '../../core/api/mobile_credits.dart';
 import '../../core/security/mobile_redaction.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../assistant/assistant_employee_handoff.dart';
 import '../auth/session_controller.dart';
@@ -189,9 +190,10 @@ class _DigitalEmployeesScreenState
     final scope = ref.watch(digitalEmployeesScopeProvider);
     final shared = ref.watch(digitalEmployeesSharedFlagProvider);
     final handoff = ref.watch(assistantEmployeeHandoffProvider);
+    final s = ref.watch(appStringsProvider);
     return ScreenScaffold(
-      title: '数字员工',
-      subtitle: '接入远程服务器/电脑上的能力，让手机发起任务、查看结果和请求授权。',
+      title: s.employeesTitle,
+      subtitle: s.employeesSubtitle,
       trailing: IconButton.filledTonal(
         tooltip: '刷新',
         onPressed: () => ref.read(digitalEmployeesProvider.notifier).refresh(),
@@ -202,8 +204,8 @@ class _DigitalEmployeesScreenState
           tone: shared ? StatusTone.success : StatusTone.info,
           icon: shared ? Icons.groups_outlined : Icons.person_outline,
           message: shared || scope == 'shared'
-              ? '当前套餐允许租户/共享员工池（scope=$scope）。仍受远程访问策略约束。'
-              : '免费档仅显示你自己的数字分身与本机绑定机器（scope=own）。升级服务卡可查看共享池。',
+              ? '只列出在线数字员工（scope=$scope 共享池可用）。离线不展示；仍受远程访问策略约束。'
+              : '只列出在线数字员工（scope=own 仅自己的分身）。离线不展示；升级服务卡可查看共享池。',
         ),
         const SizedBox(height: 12),
         if (handoff != null)
@@ -523,10 +525,10 @@ class _EmptyEmployees extends StatelessWidget {
   Widget build(BuildContext context) {
     return EmptyStatePanel(
       icon: Icons.desktop_access_disabled_outlined,
-      title: '暂无可用数字员工',
+      title: '暂无在线数字员工',
       message: sharedAllowed
-          ? '当前套餐允许共享池，但列表为空。请确认租户已注册员工，或在电脑上启用你的分身后刷新。'
-          : '免费档仅自己的分身：请在电脑上登录同一账号并启用数字员工后刷新；升级服务卡可查看租户共享池。',
+          ? '仅展示在线员工。请确认电脑端分身已上线，或租户共享池中有在线员工后下拉刷新。'
+          : '仅展示在线员工。请在电脑上登录同一账号并启用数字员工，待显示在线后刷新；升级服务卡可查看租户共享池。',
     );
   }
 }

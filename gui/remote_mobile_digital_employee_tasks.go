@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 const mobileDigitalEmployeeTaskPollInterval = 12 * time.Second
@@ -67,11 +69,21 @@ func (c *RemoteHubClient) mobileDigitalEmployeeTaskLoop() {
 }
 
 func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
+	// Prefer bulk claim: Hub matches machine-hosted VEs + personal machine aliases.
+	// This unblocks mobile chat with named employees (not only ve_<machineId>).
+	if claim, err := c.claimAnyMobileDigitalEmployeeTask(); err != nil {
+		log.Printf("[hub-client] mobile digital employee bulk claim failed: %v", err)
+	} else if claim != nil && claim.Task != nil && strings.TrimSpace(claim.Task.TaskID) != "" {
+		c.processMobileDigitalEmployeeTask(*claim.Task)
+		return
+	}
+
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		return
 	}
-	for _, employeeID := range mobileDigitalEmployeeCandidateIDs(cfg.RemoteMachineID, cfg.RemoteClientID) {
+	// Fallback: per-id claim for older Hubs without bulk endpoint + extra local VE aliases.
+	for _, employeeID := range c.mobileDigitalEmployeeClaimCandidateIDs(cfg) {
 		claim, err := c.claimMobileDigitalEmployeeTask(employeeID)
 		if err != nil {
 			log.Printf("[hub-client] mobile digital employee claim failed employee=%s: %v", employeeID, err)
@@ -85,8 +97,8 @@ func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
 	}
 }
 
-func mobileDigitalEmployeeCandidateIDs(machineID, clientID string) []string {
-	out := make([]string, 0, 4)
+func mobileDigitalEmployeeCandidateIDs(machineID, clientID string, extra ...string) []string {
+	out := make([]string, 0, 4+len(extra))
 	seen := map[string]struct{}{}
 	add := func(value string) {
 		value = strings.TrimSpace(value)
@@ -109,7 +121,48 @@ func mobileDigitalEmployeeCandidateIDs(machineID, clientID string) []string {
 	}
 	add(machineID)
 	add(clientID)
+	for _, id := range extra {
+		add(id)
+	}
 	return out
+}
+
+// mobileDigitalEmployeeClaimCandidateIDs includes machine aliases plus VEs hosted
+// on this desktop (from local discoverable/status cache when available).
+func (c *RemoteHubClient) mobileDigitalEmployeeClaimCandidateIDs(cfg corelib.AppConfig) []string {
+	extra := make([]string, 0, 8)
+	if c != nil && c.app != nil {
+		// Best-effort: own local VE registration id.
+		if st, err := c.app.GetVEStatus(); err == nil && st != nil && st.Employee != nil {
+			extra = append(extra, st.Employee.ID, st.Employee.MachineID)
+		}
+		// Discoverable list filtered to this machine when hub is reachable.
+		if employees, err := c.app.ListVirtualEmployees(); err == nil {
+			local := strings.TrimSpace(cfg.RemoteMachineID)
+			for _, emp := range employees {
+				if local != "" &&
+					!veGroupParticipantIdentityMatches(emp.MachineID, local) &&
+					!veGroupParticipantIdentityMatches(emp.ID, local) &&
+					!veGroupParticipantIdentityMatches(emp.ID, virtualEmployeeIDForMachine(local)) {
+					// Not hosted here — skip unless identity is empty machine (platform-only).
+					if strings.TrimSpace(emp.MachineID) != "" {
+						continue
+					}
+				}
+				extra = append(extra, emp.ID, emp.MachineID)
+			}
+		}
+	}
+	return mobileDigitalEmployeeCandidateIDs(cfg.RemoteMachineID, cfg.RemoteClientID, extra...)
+}
+
+func (c *RemoteHubClient) claimAnyMobileDigitalEmployeeTask() (*mobileDigitalEmployeeTaskClaimResponse, error) {
+	var out mobileDigitalEmployeeTaskClaimResponse
+	path := "/api/mobile/digital-employees/tasks/claim"
+	if err := c.doMobileDigitalEmployeeTaskRequest(context.Background(), http.MethodPost, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *RemoteHubClient) claimMobileDigitalEmployeeTask(employeeID string) (*mobileDigitalEmployeeTaskClaimResponse, error) {

@@ -24,8 +24,18 @@ func TestGetHubCenterJSONReturnsExplicitLimitErrorInsteadOfUnexpectedEOF(t *test
 	if err == nil {
 		t.Fatal("expected response size error")
 	}
-	if !strings.Contains(err.Error(), "hubcenter response exceeds 32 bytes") {
+	if !strings.Contains(err.Error(), "client download limit") {
 		t.Fatalf("error = %v, want explicit size limit", err)
+	}
+}
+
+func TestReadLimitedHubCenterBodyFailsFastOnContentLength(t *testing.T) {
+	_, err := readLimitedHubCenterBodyWithLength(strings.NewReader("tiny"), 100, 32)
+	if err == nil {
+		t.Fatal("expected content-length rejection")
+	}
+	if !strings.Contains(err.Error(), "client download limit") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -15,6 +15,12 @@ class DocumentDraft {
   final DocumentTemplate template;
   final String markdown;
   final DateTime updatedAt;
+  /// Original uploaded file (source of truth for share / AI).
+  final bool hasOriginal;
+  final String sourceFilename;
+  final String sourceContentType;
+  final int sourceSize;
+  final String sourceDownloadUrl;
 
   const DocumentDraft({
     required this.id,
@@ -22,11 +28,23 @@ class DocumentDraft {
     required this.template,
     required this.markdown,
     required this.updatedAt,
+    this.hasOriginal = false,
+    this.sourceFilename = '',
+    this.sourceContentType = '',
+    this.sourceSize = 0,
+    this.sourceDownloadUrl = '',
   });
 
   factory DocumentDraft.fromJson(Map<String, dynamic> json) {
     final body = (json['markdown'] as String? ?? '').trim();
     final preview = (json['preview'] as String? ?? '').trim();
+    final hasOriginal = json['has_original'] == true;
+    final sourceSizeRaw = json['source_size'];
+    final sourceSize = sourceSizeRaw is int
+        ? sourceSizeRaw
+        : sourceSizeRaw is num
+            ? sourceSizeRaw.toInt()
+            : int.tryParse('$sourceSizeRaw') ?? 0;
     return DocumentDraft(
       id: json['id'] as String? ?? '',
       title: json['title'] as String? ?? '',
@@ -35,6 +53,11 @@ class DocumentDraft {
       markdown: body.isNotEmpty ? body : preview,
       updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
+      hasOriginal: hasOriginal,
+      sourceFilename: json['source_filename'] as String? ?? '',
+      sourceContentType: json['source_content_type'] as String? ?? '',
+      sourceSize: sourceSize,
+      sourceDownloadUrl: json['source_download_url'] as String? ?? '',
     );
   }
 
@@ -45,6 +68,11 @@ class DocumentDraft {
       'template': documentTemplateWireValue(template),
       'markdown': markdown,
       'updated_at': updatedAt.toUtc().toIso8601String(),
+      'has_original': hasOriginal,
+      'source_filename': sourceFilename,
+      'source_content_type': sourceContentType,
+      'source_size': sourceSize,
+      'source_download_url': sourceDownloadUrl,
     };
   }
 
@@ -52,6 +80,11 @@ class DocumentDraft {
     String? title,
     String? markdown,
     DateTime? updatedAt,
+    bool? hasOriginal,
+    String? sourceFilename,
+    String? sourceContentType,
+    int? sourceSize,
+    String? sourceDownloadUrl,
   }) {
     return DocumentDraft(
       id: id,
@@ -59,7 +92,26 @@ class DocumentDraft {
       template: template,
       markdown: markdown ?? this.markdown,
       updatedAt: updatedAt ?? this.updatedAt,
+      hasOriginal: hasOriginal ?? this.hasOriginal,
+      sourceFilename: sourceFilename ?? this.sourceFilename,
+      sourceContentType: sourceContentType ?? this.sourceContentType,
+      sourceSize: sourceSize ?? this.sourceSize,
+      sourceDownloadUrl: sourceDownloadUrl ?? this.sourceDownloadUrl,
     );
+  }
+
+  /// Whether the attached original is a raster image we can thumbnail.
+  bool get isImageOriginal {
+    if (!hasOriginal && sourceDownloadUrl.trim().isEmpty) return false;
+    final mime = sourceContentType.trim().toLowerCase();
+    if (mime.startsWith('image/')) return true;
+    final name = sourceFilename.trim().toLowerCase();
+    return name.endsWith('.png') ||
+        name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.webp') ||
+        name.endsWith('.gif') ||
+        name.endsWith('.bmp');
   }
 }
 

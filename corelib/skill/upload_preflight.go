@@ -2,6 +2,7 @@ package skill
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 )
@@ -215,7 +216,76 @@ const (
 
 	// MaxSkillMarketZipSingleFileBytes is the per-entry uncompressed limit.
 	MaxSkillMarketZipSingleFileBytes int64 = 50 << 20 // 50 MiB
+
+	// MaxSkillHubSearchJSONBytes caps search/list/metadata JSON (no file maps).
+	MaxSkillHubSearchJSONBytes int64 = 2 << 20 // 2 MiB
+
+	// MaxSkillPackageDownloadBytes caps skill install wire payloads
+	// (JSON with base64 file maps, or equivalent download bodies).
+	// Base64 expands ~4/3 over raw files; 96 MiB on the wire supports roughly
+	// ~70 MiB of raw skill content in one install response. Multi-asset skills
+	// (e.g. ppt-master) exceed the old 5 MiB client cap. Keep desktop RAM
+	// bounded — larger market zips should use zip download when available.
+	MaxSkillPackageDownloadBytes int64 = 96 << 20 // 96 MiB
 )
+
+// FormatSkillByteCount formats a byte count for admin/user-facing errors.
+func FormatSkillByteCount(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// ErrSkillPackageDownloadTooLarge returns a stable, user-facing limit error.
+func ErrSkillPackageDownloadTooLarge(limit int64) error {
+	return fmt.Errorf("response exceeds client download limit of %s; multi-asset skill packages need room for base64 file maps",
+		FormatSkillByteCount(limit))
+}
+
+// CheckSkillPackageDownloadLimit fails fast when Content-Length already exceeds
+// the client install budget (avoids reading a huge body only to discard it).
+// contentLength < 0 means unknown (chunked / missing header) and is ignored.
+func CheckSkillPackageDownloadLimit(contentLength, limit int64) error {
+	if limit <= 0 || contentLength < 0 {
+		return nil
+	}
+	if contentLength > limit {
+		return ErrSkillPackageDownloadTooLarge(limit)
+	}
+	return nil
+}
+
+// ReadLimitedHTTPBody reads at most limit bytes from body.
+// When contentLength >= 0 and exceeds limit, fails immediately without reading.
+// Pass contentLength = -1 to skip the header pre-check (e.g. error responses
+// where a large Content-Length must not mask the real HTTP status).
+// limit <= 0 means unbounded read.
+func ReadLimitedHTTPBody(body io.Reader, contentLength, limit int64) ([]byte, error) {
+	if err := CheckSkillPackageDownloadLimit(contentLength, limit); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return io.ReadAll(body)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, ErrSkillPackageDownloadTooLarge(limit)
+	}
+	return data, nil
+}
 
 func IsSkillRuntimePackageFile(name string) bool {
 	base := strings.ToLower(filepath.Base(name))
@@ -225,7 +295,10 @@ func IsSkillRuntimePackageFile(name string) bool {
 		base == "skill_package_manifest.json" ||
 		base == PackageManifestFileName ||
 		base == ".patches.json" ||
-		base == ".maclaw_deps_ok"
+		base == ".maclaw_deps_ok" ||
+		base == ".ds_store" ||
+		base == "thumbs.db" ||
+		base == "desktop.ini"
 }
 
 func IsSkillRuntimePackageDir(name string) bool {
@@ -236,7 +309,9 @@ func IsSkillRuntimePackageDir(name string) bool {
 		"node_modules",
 		".venv", "venv", ".tox", ".eggs",
 		// Local install / build debris should never ship in a market package.
-		".npm", ".yarn", ".pnpm-store":
+		".npm", ".yarn", ".pnpm-store",
+		// macOS zip clutter.
+		"__macosx":
 		return true
 	default:
 		// Also exclude .prev backup directories created during CommitStaging updates.
@@ -248,17 +323,28 @@ func IsSkillRuntimePackageDir(name string) bool {
 // crosses a runtime/cache directory or is a runtime-only file that should
 // not be uploaded to SkillMarket / HubCenter.
 func SkillPackagePathHasRuntimeArtifact(name string) bool {
-	parts := strings.Split(filepath.ToSlash(strings.TrimSpace(name)), "/")
+	name = filepath.ToSlash(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	// Fast path: single-segment names.
+	if !strings.Contains(name, "/") {
+		return IsSkillRuntimePackageFile(name) || IsSkillRuntimePackageDir(name)
+	}
+	parts := strings.Split(name, "/")
+	last := -1
 	for i, part := range parts {
 		if part == "" || part == "." {
 			continue
 		}
-		if i == len(parts)-1 {
-			// Last segment may be a file or a bare directory name.
-			if IsSkillRuntimePackageFile(part) || IsSkillRuntimePackageDir(part) {
-				return true
-			}
+		last = i
+	}
+	for i, part := range parts {
+		if part == "" || part == "." {
 			continue
+		}
+		if i == last {
+			return IsSkillRuntimePackageFile(part) || IsSkillRuntimePackageDir(part)
 		}
 		if IsSkillRuntimePackageDir(part) {
 			return true

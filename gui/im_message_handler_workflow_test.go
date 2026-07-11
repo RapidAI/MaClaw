@@ -1318,6 +1318,61 @@ func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 	}
 }
 
+func TestConsumePendingTemplateRemoteCodingExecutionShowsFailureReason(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "template-remote-coding-failure-reason-user"
+	remoteCtx := remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app"}
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCtx)
+
+	original := remoteCodingTemplateRunner
+	t.Cleanup(func() { remoteCodingTemplateRunner = original })
+	remoteCodingTemplateRunner = func(*IMMessageHandler, corelib.MaclawLLMConfig, *http.Client, remoteCodingTemplateContext, *LoopContext, string, func(string), func(string)) *RemoteCodingSubAgentResult {
+		return &RemoteCodingSubAgentResult{
+			Status:  "failed",
+			Summary: "已完成远程检查，但任务收尾失败。",
+			Error:   "max iterations reached",
+		}
+	}
+
+	resp, handled := handler.consumePendingTemplateSubAgentExecution(
+		IMUserMessage{UserID: userID, Text: "continue", Platform: "desktop"},
+		"verify remote project",
+		NewLoopContext("template-remote-coding-failure-reason-test", 1, nil),
+		"req-template-remote-coding-failure-reason-test",
+		nil,
+		nil,
+	)
+	if !handled || resp == nil || !strings.Contains(resp.Text, "远程编程未完成") || !strings.Contains(resp.Text, "失败原因：max iterations reached") {
+		t.Fatalf("failed remote template response should retain the failure reason, handled=%v resp=%#v", handled, resp)
+	}
+}
+
+func TestRemoteCodingTemplateFinalSummaryIsNotStreamedTwice(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	original := remoteCodingTemplateRunner
+	t.Cleanup(func() { remoteCodingTemplateRunner = original })
+	remoteCodingTemplateRunner = func(*IMMessageHandler, corelib.MaclawLLMConfig, *http.Client, remoteCodingTemplateContext, *LoopContext, string, func(string), func(string)) *RemoteCodingSubAgentResult {
+		return &RemoteCodingSubAgentResult{Status: "success", Summary: "remote verification passed"}
+	}
+
+	var streamed []string
+	resp := handler.runRemoteCodingTemplateSubAgent(
+		"remote-summary-no-duplicate-user",
+		"verify remote project",
+		remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app"},
+		NewLoopContext("remote-summary-no-duplicate-test", 1, nil),
+		nil,
+		func(text string) { streamed = append(streamed, text) },
+	)
+	if resp == nil || !strings.Contains(resp.Text, "remote verification passed") {
+		t.Fatalf("final response should include the remote summary, got %#v", resp)
+	}
+	if len(streamed) != 0 {
+		t.Fatalf("final response summary must not be emitted through onToken again, got %#v", streamed)
+	}
+}
+
 func TestWorkflowToolExecutionGuardBlocksDocOnlyCodingDelegate(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "doc-only-delegate-guard-user"

@@ -66,15 +66,33 @@ class SpeechToTextAssistantVoiceInput implements AssistantVoiceInput {
   }
 }
 
+/// Maps app language preference (or effective UI language) to speech locale.
+///
+/// `system` and unknown non-Chinese codes resolve like the UI: Chinese only
+/// when the effective language is zh*; otherwise English.
 String assistantSpeechLocaleForLanguage(String language) {
   final normalized = language.trim().toLowerCase();
+  if (normalized == 'system' || normalized == 'auto' || normalized.isEmpty) {
+    // Defer to UI resolution rule (platform zh → Chinese, else English).
+    // Callers should pass the already-resolved UI language when possible.
+    return 'zh_CN';
+  }
   if (normalized.startsWith('en')) {
     return 'en_US';
   }
   if (normalized.startsWith('zh-hant') ||
       normalized.startsWith('zh-tw') ||
-      normalized.startsWith('zh-hk')) {
+      normalized.startsWith('zh-hk') ||
+      normalized.startsWith('zh_tw') ||
+      normalized.startsWith('zh_hk')) {
     return 'zh_TW';
   }
-  return 'zh_CN';
+  if (normalized == 'zh' ||
+      normalized.startsWith('zh_') ||
+      normalized.startsWith('zh-') ||
+      normalized == 'zh_cn') {
+    return 'zh_CN';
+  }
+  // Non-Chinese explicit languages → English speech.
+  return 'en_US';
 }

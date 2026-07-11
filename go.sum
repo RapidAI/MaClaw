@@ -1,15 +1,11 @@
 github.com/UserExistsError/conpty v0.1.4 h1:+3FhJhiqhyEJa+K5qaK3/w6w+sN3Nh9O9VbJyBS02to=
 github.com/UserExistsError/conpty v0.1.4/go.mod h1:PDglKIkX3O/2xVk0MV9a6bCWxRmPVfxqZoTG/5sSd9I=
-github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06 h1:TijKfWVUM0qBuy+T6L7+WJPicLBasxgRYweEc83D7ss=
-github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
 github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e h1:fNkUxFEQblbzj0AtvG2Y/hQPKxYApZw09Io1evLto7E=
 github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e/go.mod h1:7JSbDlEu3YX6CiGlNMWBgCYiK2xzvVIDPRKKeHwdezw=
-github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327 h1:Hfs4wGc6QmvMBlBYKK6hmHNTAVNjTZuxmHsfxN/kxas=
-github.com/VantageDataChat/GoPDF2 v0.0.0-20260405225922-b95b4bfad327/go.mod h1:CeOlebFomt072IbNsPGa8Ys1WgNiag15q3q9McuKXB8=
+github.com/VantageDataChat/GoPDF2 v0.0.0-20260711230316-e8684adfd6f2 h1:BGdM3CReVdysklM47uM4pvN40NKiIZCxLMXJTf4V9YE=
+github.com/VantageDataChat/GoPDF2 v0.0.0-20260711230316-e8684adfd6f2/go.mod h1:CeOlebFomt072IbNsPGa8Ys1WgNiag15q3q9McuKXB8=
 github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c h1:G0VZsxZgNIUm/f8hmGokKmgbF6SwilY6viTvhwi/azI=
 github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c/go.mod h1:clmfETR4bGOcP22SXTZ9wqwIalTGqnea4rmTiVmkppk=
-github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8 h1:zdyqOp75QjKV8kNQ2ybbV/CtWNYuWKDoYcbOwvQtuE4=
-github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8/go.mod h1:ME9pqIGf+547L4aE4YTZzwmhsij+5K9dR+k84OO6WSs=
 github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b h1:YACDPb68/yQ/txav7ZPLCu/sW1sIcdGtMoJM74D4rOM=
 github.com/Vantagics/LegacyOfficeReader v0.0.0-20260621074012-a324c1dbb18b/go.mod h1:ME9pqIGf+547L4aE4YTZzwmhsij+5K9dR+k84OO6WSs=
 github.com/anthropics/anthropic-sdk-go v1.50.1 h1:XTd1RkdeHCPusPpzcBY5RIWj/WW6ZktjftxrHvQBJfU=

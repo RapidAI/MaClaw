@@ -41,9 +41,23 @@ func TestSkillHandlersPublishSkillAcceptsBundledSkillJSONAboveOneMB(t *testing.T
 }
 
 func TestSkillHandlersPublishSkillRejectsBodyAboveLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds an over-limit JSON body (~MaxSkillPackageDownloadBytes)")
+	}
 	store := skill.NewSkillStore(t.TempDir())
 	h := NewSkillHandlers(store, nil)
-	body := []byte(`{"id":"too-large","name":"Too Large","files":{"data.txt":"` + strings.Repeat("a", maxSkillPublishJSONBytes) + `"}}`)
+	// Valid JSON larger than the limit so MaxBytesReader trips during Decode
+	// (invalid junk fails as "invalid JSON" before the byte limit is hit).
+	prefix := []byte(`{"id":"too-large","name":"Too Large","files":{"data.txt":"`)
+	suffix := []byte(`"}}`)
+	pad := int(maxSkillPublishJSONBytes) - len(prefix) - len(suffix) + 1
+	if pad < 1 {
+		pad = 1
+	}
+	body := make([]byte, 0, len(prefix)+pad+len(suffix))
+	body = append(body, prefix...)
+	body = append(body, bytes.Repeat([]byte("A"), pad)...)
+	body = append(body, suffix...)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/skills", bytes.NewReader(body))

@@ -4085,51 +4085,166 @@ func maclawAppDependencyVersionStatus(dep maclawAppInstallPlanDependency) string
 	if installed == "" {
 		return "unknown"
 	}
-	if maclawAppDependencyUsesSourceVersionKey(dep, required, installed) {
-		if maclawAppNormalizeSourceVersionKey(required) == maclawAppNormalizeSourceVersionKey(installed) {
-			return "matched"
-		}
-		return "mismatch"
-	}
 	if maclawAppDependencyVersionSatisfied(required, installed) {
 		return "matched"
 	}
 	return "mismatch"
 }
 
-func maclawAppDependencyUsesSourceVersionKey(dep maclawAppInstallPlanDependency, required, installed string) bool {
-	if maclawAppLooksLikeSourceVersionKey(required) || maclawAppLooksLikeSourceVersionKey(installed) {
-		return true
-	}
-	source := strings.ToLower(strings.TrimSpace(dep.Source))
-	kind := strings.ToLower(strings.TrimSpace(dep.InstallRefKind))
-	return (source == "enterprise_hub" || source == "skillmarket" || source == "market" || kind == "enterprise_hub" || kind == "skillmarket") &&
-		(strings.Contains(required, ":") || strings.Contains(installed, ":"))
-}
-
+// maclawAppLooksLikeSourceVersionKey reports whether v is a parseable hub
+// source-version key (enterprise_hub|skillmarket|hubcenter:skill:target[@ver]).
+// Uses the same parser as install-ref enrichment so detection and comparison agree.
 func maclawAppLooksLikeSourceVersionKey(v string) bool {
-	v = strings.TrimSpace(strings.ToLower(v))
-	return strings.Contains(v, ":skill:") || strings.Contains(v, "enterprise_hub:") || strings.Contains(v, "skillmarket:") || strings.Contains(v, "hubcenter:")
+	_, _, _, ok := maclawAppParseSourceVersionKey(v)
+	return ok
 }
 
 func maclawAppNormalizeSourceVersionKey(v string) string {
 	return strings.TrimSpace(strings.ToLower(v))
 }
 
-// maclawAppDependencyVersionSatisfied reports whether an installed dependency
-// version satisfies a required version. A plain required version (e.g. "1.0.0")
-// is treated as a MINIMUM constraint following standard dependency semantics
-// ("does not satisfy required version"): the installed version satisfies it when
-// installed >= required. This avoids false mismatches from:
-//   - cosmetic differences: "v1.0.0" vs "1.0.0", " 1.0.0 " vs "1.0.0"
-//   - segment-count differences: "1.0" vs "1.0.0"
-//   - newer compatible versions: installed "10" satisfies required "1.0.0"
+// maclawAppNormalizeSourceVersionKind collapses marketplace aliases so
+// hubcenter/skillmarket keys for the same skill compare as one coordinate system.
+func maclawAppNormalizeSourceVersionKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "hubcenter", "skillmarket", "market":
+		return "skillmarket"
+	case "enterprise", "enterprise_hub":
+		return "enterprise_hub"
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+// maclawAppVersionLooksLikeContentHash reports whether v looks like a hub
+// content digest (hex with at least one a-f letter), not a human version.
+func maclawAppVersionLooksLikeContentHash(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if len(v) < 8 {
+		return false
+	}
+	hasLetter := false
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'f':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+			// digit ok
+		default:
+			return false
+		}
+	}
+	// Pure digit strings (e.g. "20240101") stay version-like; digests include a-f.
+	return hasLetter
+}
+
+// maclawAppVersionIsSemverLike reports whether v can be compared with minimum
+// semver semantics (numeric, not a content hash).
+func maclawAppVersionIsSemverLike(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || maclawAppVersionLooksLikeContentHash(v) {
+		return false
+	}
+	return maclawAppVersionIsNumeric(v)
+}
+
+// maclawAppRevisionTokensCompatible compares revision tokens after skill
+// identity is already known to match (same hub target, or local dependency
+// identity resolution). Tokens may be semver, content hashes, or codenames.
 //
-// Constraint expressions (^, ~, >=, <, *, etc.) are not resolved here and are
-// treated as satisfied, consistent with maclawAppWorkflowVersionMatches. When
-// either version is not numeric-parseable, it falls back to a conservative
-// normalized exact-match comparison.
-func maclawAppDependencyVersionSatisfied(required, installed string) bool {
+// Policy (shared by dual-key @suffix and cross-coordinate plain↔key paths):
+//   - equal (case-insensitive) → match
+//   - both semver-like → installed >= required
+//   - required content-hash pin → only equal digest matches (pin must be proven)
+//   - required human semver/codename + installed content-hash → match
+//     (appSkill.version "1.0.0" vs hub_version …@hash)
+//   - empty required → match (no pin); empty installed → mismatch
+func maclawAppRevisionTokensCompatible(required, installed string) bool {
+	required = strings.TrimSpace(required)
+	installed = strings.TrimSpace(installed)
+	if required == "" {
+		return true
+	}
+	if installed == "" {
+		return false
+	}
+	if strings.EqualFold(required, installed) {
+		return true
+	}
+	reqSem := maclawAppVersionIsSemverLike(required)
+	instSem := maclawAppVersionIsSemverLike(installed)
+	if reqSem && instSem {
+		return maclawAppPlainVersionSatisfied(required, installed)
+	}
+	// Content-hash pin on the required side: EqualFold already failed.
+	if maclawAppVersionLooksLikeContentHash(required) {
+		return false
+	}
+	// Required is human-facing; installed content digest cannot be ordered but
+	// identity is already resolved — accept (PDF翻译工具 regression).
+	if maclawAppVersionLooksLikeContentHash(installed) {
+		return true
+	}
+	// Non-comparable tokens (codenames, etc.) require exact match (failed above).
+	return false
+}
+
+// maclawAppSourceVersionKeysCompatible compares two hub source-version keys.
+// Prefer the parsed form via maclawAppSourceVersionKeysCompatibleParts when
+// both sides were already parsed by the caller.
+func maclawAppSourceVersionKeysCompatible(required, installed string) bool {
+	if maclawAppNormalizeSourceVersionKey(required) == maclawAppNormalizeSourceVersionKey(installed) {
+		return true
+	}
+	reqKind, reqTarget, reqVer, reqOK := maclawAppParseSourceVersionKey(required)
+	instKind, instTarget, instVer, instOK := maclawAppParseSourceVersionKey(installed)
+	if !reqOK || !instOK {
+		return false
+	}
+	return maclawAppSourceVersionKeysCompatibleParts(reqKind, reqTarget, reqVer, instKind, instTarget, instVer)
+}
+
+func maclawAppSourceVersionKeysCompatibleParts(reqKind, reqTarget, reqVer, instKind, instTarget, instVer string) bool {
+	if maclawAppNormalizeSourceVersionKind(reqKind) != maclawAppNormalizeSourceVersionKind(instKind) ||
+		!strings.EqualFold(strings.TrimSpace(reqTarget), strings.TrimSpace(instTarget)) {
+		return false
+	}
+	return maclawAppRevisionTokensCompatible(reqVer, instVer)
+}
+
+// maclawAppCrossCoordinateVersionSatisfied handles one hub source-version key
+// and one plain version (semver/codename/bare digest). Revision policy is
+// shared with dual-key suffix compare via maclawAppRevisionTokensCompatible.
+func maclawAppCrossCoordinateVersionSatisfied(required, installed string, reqIsKey bool) bool {
+	keySide, plainSide := installed, required
+	if reqIsKey {
+		keySide, plainSide = required, installed
+	}
+	_, _, keyVer, ok := maclawAppParseSourceVersionKey(keySide)
+	if !ok {
+		// Defensive: caller thought this was a key. Do not invent a match for a
+		// required pin; installed-side garbage is ignored as "unknown hub meta".
+		return !reqIsKey
+	}
+	return maclawAppCrossCoordinateVersionSatisfiedParts(keyVer, plainSide, reqIsKey)
+}
+
+func maclawAppCrossCoordinateVersionSatisfiedParts(keyVer, plainSide string, reqIsKey bool) bool {
+	keyVer = strings.TrimSpace(keyVer)
+	plainSide = strings.TrimSpace(plainSide)
+	if keyVer == "" {
+		// Identity-only key (no @suffix revision pin) on the key side.
+		return true
+	}
+	if reqIsKey {
+		return maclawAppRevisionTokensCompatible(keyVer, plainSide)
+	}
+	return maclawAppRevisionTokensCompatible(plainSide, keyVer)
+}
+
+// maclawAppPlainVersionSatisfied compares non-key version strings only
+// (semver minimum, constraints, codenames). Callers must strip hub keys first.
+func maclawAppPlainVersionSatisfied(required, installed string) bool {
 	required = strings.TrimSpace(required)
 	installed = strings.TrimSpace(installed)
 	if required == "" || installed == "" {
@@ -4150,6 +4265,48 @@ func maclawAppDependencyVersionSatisfied(required, installed string) bool {
 	}
 	// Non-numeric versions that don't match exactly → conservative mismatch.
 	return false
+}
+
+// maclawAppDependencyVersionSatisfied reports whether an installed dependency
+// version satisfies a required version. A plain required version (e.g. "1.0.0")
+// is treated as a MINIMUM constraint following standard dependency semantics
+// ("does not satisfy required version"): the installed version satisfies it when
+// installed >= required. This avoids false mismatches from:
+//   - cosmetic differences: "v1.0.0" vs "1.0.0", " 1.0.0 " vs "1.0.0"
+//   - segment-count differences: "1.0" vs "1.0.0"
+//   - newer compatible versions: installed "10" satisfies required "1.0.0"
+//   - coordinate-system mix: app-declared semver "1.0.0" vs installed hub
+//     content key "enterprise_hub:skill:id@hash" (identity already resolved)
+//   - same hub key identity with newer semver @suffix (skillmarket-style keys)
+//   - full content key vs bare digest of the same hash
+//
+// Constraint expressions (^, ~, >=, <, *, etc.) are not resolved here and are
+// treated as satisfied, consistent with maclawAppWorkflowVersionMatches. When
+// either version is not numeric-parseable, it falls back to a conservative
+// normalized exact-match comparison.
+//
+// Each side is parsed at most once.
+func maclawAppDependencyVersionSatisfied(required, installed string) bool {
+	required = strings.TrimSpace(required)
+	installed = strings.TrimSpace(installed)
+	if required == "" || installed == "" {
+		return required == installed
+	}
+	reqKind, reqTarget, reqVer, reqOK := maclawAppParseSourceVersionKey(required)
+	instKind, instTarget, instVer, instOK := maclawAppParseSourceVersionKey(installed)
+	switch {
+	case reqOK && instOK:
+		if maclawAppNormalizeSourceVersionKey(required) == maclawAppNormalizeSourceVersionKey(installed) {
+			return true
+		}
+		return maclawAppSourceVersionKeysCompatibleParts(reqKind, reqTarget, reqVer, instKind, instTarget, instVer)
+	case reqOK:
+		return maclawAppCrossCoordinateVersionSatisfiedParts(reqVer, installed, true)
+	case instOK:
+		return maclawAppCrossCoordinateVersionSatisfiedParts(instVer, required, false)
+	default:
+		return maclawAppPlainVersionSatisfied(required, installed)
+	}
 }
 
 // maclawAppNormalizeVersion lowercases, trims, and strips a leading "v" prefix

@@ -68,4 +68,10 @@ describe('AssistantTitleBar workflow toggle', () => {
         expect(toggle.getAttribute('aria-checked')).toBe('true');
         expect(toggle.getAttribute('aria-label')).toBe('工作流识别已开启，点击关闭');
     });
+
+    it('exposes mobile documents as a title-bar icon near tools', () => {
+        renderTitleBar();
+        const btn = screen.getByTestId('mobile-docs-titlebar-btn');
+        expect(btn.getAttribute('aria-label')).toContain('Mobile');
+    });
 });

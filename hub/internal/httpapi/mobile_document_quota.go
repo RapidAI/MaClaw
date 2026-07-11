@@ -35,18 +35,27 @@ func mobileDocumentQuotaUsedBytes(ownerID string) int64 {
 	var used int64
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
+	draftsWithOriginal := make(map[string]struct{})
 	for _, draft := range mobileDocuments.drafts {
 		if draft.OwnerID != ownerID {
 			continue
 		}
 		used += int64(len(draft.Markdown))
+		if n := len(draft.SourceBytes); n > 0 {
+			used += int64(n)
+			draftsWithOriginal[draft.ID] = struct{}{}
+		}
 	}
 	for _, upload := range mobileDocuments.uploads {
 		if upload.OwnerID != ownerID {
 			continue
 		}
-		// If upload already produced a draft, markdown is counted via drafts;
-		// still count residual source bytes until upload is cleaned up.
+		// Avoid double-counting when the same original bytes already live on the draft.
+		if upload.DraftID != "" {
+			if _, ok := draftsWithOriginal[upload.DraftID]; ok {
+				continue
+			}
+		}
 		used += int64(len(upload.SourceBytes))
 	}
 	return used

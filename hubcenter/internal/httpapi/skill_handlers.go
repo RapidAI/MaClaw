@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 )
 
 const (
-	maxSkillPublishJSONBytes = 5 << 20
+	// Align with skill.MaxSkillPackageDownloadBytes so multi-asset packages
+	// can be published/accepted (base64 file maps exceed the old 5 MiB cap).
+	maxSkillPublishJSONBytes = coreskill.MaxSkillPackageDownloadBytes
 	maxSkillSmallJSONBytes   = 4096
 )
 

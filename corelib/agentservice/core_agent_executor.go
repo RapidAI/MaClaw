@@ -254,6 +254,34 @@ func (e *CoreAgentExecutor) sshResourcesForUser(tenantID, userID string) *coreAg
 	return resources
 }
 
+// ListSSHSessionsForUser returns live SSH session summaries for a tenant user.
+// Sessions are process-scoped (same manager as GUI-style reuse across agent turns).
+func (e *CoreAgentExecutor) ListSSHSessionsForUser(tenantID, userID string) []remote.SSHSessionSummary {
+	if e == nil {
+		return nil
+	}
+	resources := e.sshResourcesForUser(tenantID, userID)
+	if resources == nil || resources.mgr == nil {
+		return nil
+	}
+	sessions := resources.mgr.List()
+	if len(sessions) == 0 {
+		return nil
+	}
+	out := make([]remote.SSHSessionSummary, 0, len(sessions))
+	for _, s := range sessions {
+		if s == nil {
+			continue
+		}
+		sum := s.GetSummary()
+		if strings.TrimSpace(sum.SessionID) == "" {
+			continue
+		}
+		out = append(out, sum)
+	}
+	return out
+}
+
 func convertHistoryToEntries(history []Message, currentID string) []agent.ConversationEntry {
 	entries := make([]agent.ConversationEntry, 0, len(history))
 	for _, msg := range history {
@@ -1317,6 +1345,8 @@ func configuredSSHHostsFrom(hosts []corelib.SSHHostEntry) []corelib.SSHHostEntry
 		host.User = strings.TrimSpace(host.User)
 		host.AuthMethod = strings.TrimSpace(host.AuthMethod)
 		host.KeyPath = strings.TrimSpace(host.KeyPath)
+		host.Password = strings.TrimSpace(host.Password)
+		host.Passphrase = strings.TrimSpace(host.Passphrase)
 		if host.Label == "" || host.Host == "" || host.User == "" {
 			continue
 		}

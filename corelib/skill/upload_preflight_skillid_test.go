@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,7 +55,7 @@ func TestPrepareSkillForUpload_ValidatesSkillIDFormat(t *testing.T) {
 	// Should have a warning about invalid id format
 	found := false
 	for _, w := range result.Warnings {
-		if contains(w, "skill_id") || contains(w, "格式无效") {
+		if strings.Contains(w, "skill_id") || strings.Contains(w, "格式无效") {
 			found = true
 			break
 		}
@@ -97,15 +98,4 @@ func TestPrepareSkillForUpload_NoManifestWhenNotPortable(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstring(s, sub))
-}
 
-func containsSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}

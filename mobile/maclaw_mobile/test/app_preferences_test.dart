@@ -16,15 +16,25 @@ void main() {
     expect(appLanguageLabel(restored.language), 'English');
   });
 
-  test('app preferences default to system theme and Chinese speech', () {
+  test('app preferences default to system theme; unknown language is English UI',
+      () {
     final preferences = AppPreferences.fromJson({
       'theme_mode': 'unknown',
       'language': 'fr_FR',
     });
 
     expect(preferences.themeMode, ThemeMode.system);
-    expect(preferences.language, appLanguageChinese);
-    expect(appLanguageLabel(preferences.language), '简体中文');
+    // Non-Chinese languages use English UI.
+    expect(preferences.language, appLanguageEnglish);
+    expect(appLanguageLabel(preferences.language), 'English');
     expect(themeModeWireValue(preferences.themeMode), 'system');
+  });
+
+  test('system language preference is preserved', () {
+    final preferences = AppPreferences.fromJson({
+      'language': 'system',
+    });
+    expect(preferences.language, appLanguageSystem);
+    expect(appLanguageLabel(preferences.language), contains('System'));
   });
 }

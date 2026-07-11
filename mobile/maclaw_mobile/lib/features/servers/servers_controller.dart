@@ -70,6 +70,15 @@ class ServerProfilesController extends AsyncNotifier<List<ServerProfile>> {
       await ref.read(sessionControllerProvider.future);
       final client = ref.read(apiClientProvider);
       if (client == null) return local;
+      // Push local profiles so Hub AI assistant / hub_exec can see them.
+      final validLocal = local.where((p) => p.isValid).toList();
+      if (validLocal.isNotEmpty) {
+        try {
+          await client.upsertServerProfiles(validLocal);
+        } on Object {
+          // Offline or older Hub — keep local list usable.
+        }
+      }
       final remote = await client.listServerProfiles();
       if (remote.isEmpty) return local;
       final merged = _mergeServerProfiles(local, remote);

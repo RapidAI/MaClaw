@@ -6,13 +6,16 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../core/security/mobile_redaction.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import 'document_draft.dart';
+import 'document_original_image.dart';
 import 'documents_controller.dart';
 
 typedef DocumentsExportFileShare = Future<ShareResult> Function(
   List<XFile> files, {
   String? text,
+  String? subject,
 });
 
 typedef DocumentsDraftTextShare = Future<void> Function(
@@ -36,76 +39,94 @@ class DocumentsScreen extends ConsumerStatefulWidget {
 }
 
 class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
-  final _titleController = TextEditingController(text: '应急情况说明');
-  final _contentController = TextEditingController();
-  DocumentTemplate _template = DocumentTemplate.report;
-  String _lastTemplateSkeleton = emergencyDocumentTemplateSkeleton(
-    DocumentTemplate.report,
-  );
   String? _handledSharedIntentId;
 
-  @override
-  void initState() {
-    super.initState();
-    _contentController.text = _lastTemplateSkeleton;
-  }
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    _contentController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _createDraft() {
-    return ref.read(documentsControllerProvider.notifier).createDraft(
-          title: _titleController.text.trim(),
-          template: _template,
-          content: _contentController.text.trim(),
-        );
-  }
-
-  void _syncEditorsFromDraft(DocumentDraft draft) {
-    setState(() {
-      _titleController.text = draft.title;
-      _contentController.text = draft.markdown;
-      _template = draft.template;
-      _lastTemplateSkeleton = emergencyDocumentTemplateSkeleton(draft.template);
-    });
-  }
-
   Future<void> _shareDraft(DocumentDraft draft) async {
-    final text = ref
-        .read(documentsControllerProvider.notifier)
-        .shareTextForDraft(draft);
+    final s = ref.read(appStringsProvider);
+    final subject = draft.title.trim().isEmpty
+        ? (s.isZh ? 'MaClaw 文档' : 'MaClaw document')
+        : draft.title;
     try {
-      await ref.read(documentsDraftTextShareProvider).call(
-            text,
-            subject: draft.title.trim().isEmpty ? 'MaClaw 文档' : draft.title,
-          );
+      // Prefer original file (docx/pdf/image) for WeChat etc.
+      final file = await ref
+          .read(documentsControllerProvider.notifier)
+          .prepareOriginalShareFile(draft);
+      if (file != null) {
+        final name = draft.sourceFilename.trim().isEmpty
+            ? file.uri.pathSegments.last
+            : draft.sourceFilename.trim();
+        await ref.read(documentsExportFileShareProvider).call(
+          [XFile(file.path, name: name)],
+          subject: subject,
+        );
+      } else {
+        final text = ref
+            .read(documentsControllerProvider.notifier)
+            .shareTextForDraft(draft);
+        await ref.read(documentsDraftTextShareProvider).call(
+              text,
+              subject: subject,
+            );
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已打开系统分享，可发送到微信等应用')),
+        SnackBar(content: Text(s.shareOpened)),
       );
     } on Object catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('分享失败：$e')),
+        SnackBar(
+          content: Text(s.isZh ? '分享失败：$e' : 'Share failed: $e'),
+        ),
       );
     }
   }
 
-  void _changeTemplate(DocumentTemplate value) {
-    final current = _contentController.text.trim();
-    final canReplace = current.isEmpty || current == _lastTemplateSkeleton;
-    final nextSkeleton = emergencyDocumentTemplateSkeleton(value);
-    setState(() {
-      _template = value;
-      _lastTemplateSkeleton = nextSkeleton;
-      if (canReplace) {
-        _contentController.text = nextSkeleton;
-      }
-    });
+  Future<void> _deleteDraft(DocumentDraft draft) async {
+    final s = ref.read(appStringsProvider);
+    final title =
+        draft.title.trim().isEmpty ? s.unnamedDocument : draft.title.trim();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(s.isZh ? '删除文稿' : 'Delete document'),
+        content: Text(
+          s.isZh
+              ? '从 Hub 共享库删除「$title」？电脑 GUI 与其它设备也将同步看不到该文稿。'
+              : 'Delete “$title” from the Hub library? Desktop GUI will sync the same removal.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(s.isZh ? '取消' : 'Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(s.isZh ? '删除' : 'Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(documentDraftHistoryProvider.notifier).deleteDraft(draft);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            s.isZh ? '已删除「$title」' : 'Deleted “$title”',
+          ),
+        ),
+      );
+    } on Object catch (e) {
+      if (!mounted) return;
+      final msg = e is StateError ? e.message : e.toString();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(s.isZh ? '删除失败：$msg' : 'Delete failed: $msg'),
+        ),
+      );
+    }
   }
 
   void _consumeSharedIntent(AsyncValue<DocumentsState> documentsState) {
@@ -129,21 +150,22 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(documentsControllerProvider);
+    final s = ref.watch(appStringsProvider);
     _consumeSharedIntent(state);
     return ScreenScaffold(
-      title: '文档',
-      subtitle: '与电脑端 MaClaw GUI 共享同一 Hub 文稿库；可打开编辑、继续处理、导出或分享到微信等。',
+      title: s.documentsTitle,
+      subtitle: s.documentsSubtitle,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton.filledTonal(
-            tooltip: '刷新文稿库',
+            tooltip: s.refreshLibrary,
             onPressed: () =>
                 ref.read(documentDraftHistoryProvider.notifier).refresh(),
             icon: const Icon(Icons.refresh),
           ),
           IconButton.filledTonal(
-            tooltip: '导入文档',
+            tooltip: s.importDocument,
             onPressed: () => ref
                 .read(documentsControllerProvider.notifier)
                 .pickAndUploadDocument(),
@@ -155,8 +177,10 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
         StatusBanner(
           tone: StatusTone.info,
           icon: Icons.devices_outlined,
-          message: '本列表来自当前账号的 Hub 文稿（GUI 与 Mobile 同源）。'
-              '点开可编辑；可用系统分享发到微信等；长任务进度在「后台」。',
+          message: s.isZh
+              ? '本列表来自当前账号的 Hub 文稿（GUI 与 Mobile 同源）。'
+                  '点开只读预览；改写请用 AI 助手或电脑 GUI。可分享到微信等；长任务在「后台」。'
+              : 'Hub library shared with GUI. Tap for read-only preview; rewrite via AI assistant or desktop GUI. Share sheet available; long jobs under Tasks.',
         ),
         const SizedBox(height: 12),
         _HubDocumentLibraryCard(
@@ -165,21 +189,9 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
             await ref
                 .read(documentsControllerProvider.notifier)
                 .selectDraft(draft);
-            final selected =
-                ref.read(documentsControllerProvider).valueOrNull?.draft;
-            if (selected != null && mounted) {
-              _syncEditorsFromDraft(selected);
-            }
           },
           onShare: (draft) => _shareDraft(draft),
-        ),
-        const SizedBox(height: 12),
-        _DraftComposer(
-          titleController: _titleController,
-          contentController: _contentController,
-          template: _template,
-          onTemplateChanged: _changeTemplate,
-          onCreate: _createDraft,
+          onDelete: (draft) => _deleteDraft(draft),
         ),
         const SizedBox(height: 12),
         const _MobileDocumentImportPanel(),
@@ -189,10 +201,24 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
             children: [
               if (value.operationError != null) ...[
                 Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
                   child: ListTile(
-                    leading: const Icon(Icons.error_outline),
-                    title: const Text('导入操作未完成'),
-                    subtitle: Text(value.operationError!),
+                    leading: Icon(
+                      Icons.error_outline,
+                      color: Theme.of(context).colorScheme.onErrorContainer,
+                    ),
+                    title: Text(
+                      '操作未完成',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                    ),
+                    subtitle: Text(
+                      value.operationError!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -200,22 +226,56 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
               _UploadStatus(state: value),
               if (value.uploadTask != null && value.draft != null)
                 const SizedBox(height: 12),
-              _DraftPreview(state: value),
+              _DocumentReadonlyPreview(state: value),
               if (value.draft != null) ...[
                 const SizedBox(height: 12),
                 _ActiveDocumentActions(
                   draft: value.draft!,
                   onShare: () => _shareDraft(value.draft!),
+                  onDelete: () => _deleteDraft(value.draft!),
                 ),
               ],
             ],
           ),
-          error: (error, _) => Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text('文档处理失败：$error'),
-            ),
-          ),
+          error: (error, _) {
+            final msg = error is StateError
+                ? error.message
+                : error.toString().contains('DioException')
+                    ? '文档服务请求失败，请刷新后重试。若刚导入请确认 Hub 已保存该文稿。'
+                    : error.toString();
+            return Card(
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '操作未完成',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            color:
+                                Theme.of(context).colorScheme.onErrorContainer,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      msg,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () {
+                        ref.invalidate(documentsControllerProvider);
+                      },
+                      child: const Text('重试 / 刷新'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
           loading: () => const LoadingCard(label: '正在处理文档…'),
         ),
         const SizedBox(height: 12),
@@ -297,16 +357,19 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
   final String? currentDraftId;
   final Future<void> Function(DocumentDraft draft) onOpen;
   final Future<void> Function(DocumentDraft draft) onShare;
+  final Future<void> Function(DocumentDraft draft) onDelete;
 
   const _HubDocumentLibraryCard({
     required this.currentDraftId,
     required this.onOpen,
     required this.onShare,
+    required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final history = ref.watch(documentDraftHistoryProvider);
+    final s = ref.watch(appStringsProvider);
     return history.when(
       data: (drafts) {
         final shown = drafts.take(30).toList();
@@ -326,12 +389,12 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Hub 文稿库（与 GUI 共享）',
+                        s.hubLibrary,
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
                     Text(
-                      '${shown.length} 篇',
+                      s.isZh ? '${shown.length} 篇' : '${shown.length}',
                       style: Theme.of(context).textTheme.labelMedium?.copyWith(
                             color: Theme.of(context)
                                 .colorScheme
@@ -343,8 +406,7 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                 const SizedBox(height: 8),
                 if (shown.isEmpty)
                   Text(
-                    '暂无文稿。可在下方新建，或从电脑端 MaClaw 创建后刷新；'
-                    '也可导入/接收系统分享的文件。',
+                    s.hubLibraryEmpty,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
@@ -354,13 +416,22 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                     ListTile(
                       dense: true,
                       contentPadding: EdgeInsets.zero,
-                      leading: Icon(
-                        draft.id == currentDraftId
-                            ? Icons.radio_button_checked
-                            : Icons.description_outlined,
+                      leading: Stack(
+                        alignment: Alignment.bottomRight,
+                        children: [
+                          DocumentOriginalImageThumb(draft: draft),
+                          if (draft.id == currentDraftId)
+                            Icon(
+                              Icons.check_circle,
+                              size: 14,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                        ],
                       ),
                       title: Text(
-                        draft.title.trim().isEmpty ? '未命名文档' : draft.title,
+                        draft.title.trim().isEmpty
+                            ? s.unnamedDocument
+                            : draft.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -369,10 +440,24 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      trailing: IconButton(
-                        tooltip: '分享',
-                        icon: const Icon(Icons.ios_share_outlined, size: 20),
-                        onPressed: () => onShare(draft),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: s.share,
+                            icon: const Icon(Icons.ios_share_outlined, size: 20),
+                            onPressed: () => onShare(draft),
+                          ),
+                          IconButton(
+                            tooltip: s.isZh ? '删除' : 'Delete',
+                            icon: Icon(
+                              Icons.delete_outline,
+                              size: 20,
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                            onPressed: () => onDelete(draft),
+                          ),
+                        ],
                       ),
                       onTap: () => onOpen(draft),
                     ),
@@ -384,7 +469,7 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
       error: (e, _) => Card(
         child: ListTile(
           leading: const Icon(Icons.cloud_off_outlined),
-          title: const Text('文稿库暂不可用'),
+          title: Text(s.hubLibraryUnavailable),
           subtitle: Text('$e'),
           trailing: TextButton(
             onPressed: () =>
@@ -401,10 +486,12 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
 class _ActiveDocumentActions extends ConsumerWidget {
   final DocumentDraft draft;
   final VoidCallback onShare;
+  final VoidCallback onDelete;
 
   const _ActiveDocumentActions({
     required this.draft,
     required this.onShare,
+    required this.onDelete,
   });
 
   @override
@@ -448,6 +535,18 @@ class _ActiveDocumentActions extends ConsumerWidget {
                           ),
                   icon: const Icon(Icons.file_download_outlined, size: 18),
                   label: const Text('导出'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: loading ? null : onDelete,
+                  icon: Icon(
+                    Icons.delete_outline,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  label: Text(
+                    '删除',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
                 ),
                 FilledButton.icon(
                   onPressed: loading ? null : onShare,
@@ -596,107 +695,20 @@ String emergencyDocumentTemplateSkeleton(DocumentTemplate template) {
   };
 }
 
-class _DraftComposer extends StatelessWidget {
-  final TextEditingController titleController;
-  final TextEditingController contentController;
-  final DocumentTemplate template;
-  final ValueChanged<DocumentTemplate> onTemplateChanged;
-  final VoidCallback onCreate;
-
-  const _DraftComposer({
-    required this.titleController,
-    required this.contentController,
-    required this.template,
-    required this.onTemplateChanged,
-    required this.onCreate,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(
-                labelText: '标题',
-                prefixIcon: Icon(Icons.title),
-              ),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<DocumentTemplate>(
-              initialValue: template,
-              items: [
-                for (final item in DocumentTemplate.values)
-                  DropdownMenuItem(
-                    value: item,
-                    child: Text(documentTemplateLabel(item)),
-                  ),
-              ],
-              onChanged: (value) {
-                if (value != null) onTemplateChanged(value);
-              },
-              decoration: const InputDecoration(
-                labelText: '模板',
-                prefixIcon: Icon(Icons.article_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: contentController,
-              minLines: 4,
-              maxLines: 8,
-              decoration: const InputDecoration(
-                labelText: '要点或原始内容',
-                hintText: '粘贴会议记录、告警信息、邮件要点或截图识别文本',
-              ),
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: onCreate,
-                icon: const Icon(Icons.note_add_outlined),
-                label: const Text('生成草稿'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DraftPreview extends ConsumerStatefulWidget {
+/// Read-only preview of the selected Hub document (no phone-side editing).
+class _DocumentReadonlyPreview extends ConsumerStatefulWidget {
   final DocumentsState state;
 
-  const _DraftPreview({required this.state});
+  const _DocumentReadonlyPreview({required this.state});
 
   @override
-  ConsumerState<_DraftPreview> createState() => _DraftPreviewState();
+  ConsumerState<_DocumentReadonlyPreview> createState() =>
+      _DocumentReadonlyPreviewState();
 }
 
-class _DraftPreviewState extends ConsumerState<_DraftPreview> {
-  final _editTitleController = TextEditingController();
-  final _editMarkdownController = TextEditingController();
-  String? _loadedDraftId;
+class _DocumentReadonlyPreviewState
+    extends ConsumerState<_DocumentReadonlyPreview> {
   String? _sharingExportJobId;
-
-  @override
-  void dispose() {
-    _editTitleController.dispose();
-    _editMarkdownController.dispose();
-    super.dispose();
-  }
-
-  void _syncDraft(DocumentDraft draft) {
-    if (_loadedDraftId == draft.id) return;
-    _loadedDraftId = draft.id;
-    _editTitleController.text = draft.title;
-    _editMarkdownController.text = draft.markdown;
-  }
 
   Future<void> _shareExport(DocumentExportJob job, DocumentDraft draft) async {
     setState(() => _sharingExportJobId = job.jobId);
@@ -732,48 +744,36 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
     }
   }
 
-  void _insertSnippet(String snippet) {
-    final text = _editMarkdownController.text;
-    final selection = _editMarkdownController.selection;
-    final start = selection.isValid ? selection.start : text.length;
-    final end = selection.isValid ? selection.end : text.length;
-    final next = text.replaceRange(start, end, snippet);
-    _editMarkdownController.value = TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: start + snippet.length),
-    );
-  }
-
-  String _draftShareText() {
-    final title = _editTitleController.text.trim();
-    final markdown = _editMarkdownController.text.trim();
+  String _draftShareText(DocumentDraft draft) {
+    final title = draft.title.trim();
+    final markdown = draft.markdown.trim();
     if (title.isEmpty) return markdown;
     if (markdown.isEmpty) return title;
     return '# $title\n\n$markdown';
   }
 
-  Future<void> _copyDraftText() async {
-    final text = _draftShareText();
+  Future<void> _copyDraftText(DocumentDraft draft) async {
+    final text = _draftShareText(draft);
     if (text.trim().isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('草稿文本已复制')),
+      const SnackBar(content: Text('文档文本已复制')),
     );
   }
 
-  Future<void> _shareDraftText() async {
-    final text = _draftShareText();
+  Future<void> _shareDraftText(DocumentDraft draft) async {
+    final text = _draftShareText(draft);
     if (text.trim().isEmpty) return;
     await ref.read(documentsDraftTextShareProvider)(
       text,
-      subject: _editTitleController.text.trim(),
+      subject: draft.title.trim(),
     );
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(
-        const SnackBar(content: Text('草稿文本已发送到系统分享')),
+        const SnackBar(content: Text('文档文本已发送到系统分享')),
       );
   }
 
@@ -782,87 +782,88 @@ class _DraftPreviewState extends ConsumerState<_DraftPreview> {
     final state = widget.state;
     final draft = state.draft;
     if (draft == null) return const SizedBox.shrink();
-    _syncDraft(draft);
     final scheme = Theme.of(context).colorScheme;
+    final s = ref.watch(appStringsProvider);
+    final body = draft.markdown.trim().isEmpty
+        ? (s.isZh
+            ? (draft.hasOriginal
+                ? '原件已保存，可分享到微信等。正文提取可能尚未完成。'
+                : '（正文为空）')
+            : (draft.hasOriginal
+                ? 'Original file saved. You can share it; text extract may still be pending.'
+                : '(empty body)'))
+        : draft.markdown;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('轻量编辑', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
+            Text(s.documentPreview, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
             Text(
-              documentTemplateLabel(draft.template),
+              s.documentPreviewHint,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _editTitleController,
-              decoration: const InputDecoration(
-                labelText: '标题',
-                prefixIcon: Icon(Icons.title),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _editMarkdownController,
-              minLines: 8,
-              maxLines: 16,
-              decoration: const InputDecoration(
-                labelText: '正文 Markdown',
-                alignLabelWithHint: true,
-                prefixIcon: Icon(Icons.notes_outlined),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: () => _insertSnippet(
-                    '\n\n| 项目 | 内容 | 负责人 |\n| --- | --- | --- |\n|  |  |  |\n',
+            const SizedBox(height: 8),
+            Text(
+              documentTemplateLabel(draft.template),
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: scheme.primary,
                   ),
-                  icon: const Icon(Icons.table_chart_outlined),
-                  label: const Text('插入表格'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              draft.title.trim().isEmpty ? s.unnamedDocument : draft.title,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            if (draft.hasOriginal) ...[
+              const SizedBox(height: 6),
+              Text(
+                s.isZh
+                    ? '原件：${draft.sourceFilename.isEmpty ? draft.id : draft.sourceFilename}'
+                        '${draft.sourceSize > 0 ? ' · ${(draft.sourceSize / 1024).ceil()} KB' : ''}'
+                    : 'Original: ${draft.sourceFilename.isEmpty ? draft.id : draft.sourceFilename}'
+                        '${draft.sourceSize > 0 ? ' · ${(draft.sourceSize / 1024).ceil()} KB' : ''}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: scheme.tertiary,
+                    ),
+              ),
+            ],
+            if (draft.isImageOriginal) ...[
+              const SizedBox(height: 12),
+              DocumentOriginalImagePreview(draft: draft),
+            ],
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: draft.isImageOriginal ? 160 : 280,
+              ),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  body,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        height: 1.4,
+                      ),
                 ),
-                OutlinedButton.icon(
-                  onPressed: () => _insertSnippet('\n\n- 要点一\n- 要点二\n'),
-                  icon: const Icon(Icons.format_list_bulleted_outlined),
-                  label: const Text('插入列表'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => _insertSnippet('\n\n> 批注：\n'),
-                  icon: const Icon(Icons.comment_outlined),
-                  label: const Text('插入批注'),
-                ),
-              ],
+              ),
             ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                FilledButton.icon(
-                  onPressed: () => ref
-                      .read(documentsControllerProvider.notifier)
-                      .saveDraftEdits(
-                        title: _editTitleController.text,
-                        markdown: _editMarkdownController.text,
-                      ),
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text('保存修改'),
-                ),
                 OutlinedButton.icon(
-                  onPressed: _copyDraftText,
+                  onPressed: () => _copyDraftText(draft),
                   icon: const Icon(Icons.content_copy_outlined),
-                  label: const Text('复制草稿'),
+                  label: const Text('复制文本'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: _shareDraftText,
+                  onPressed: () => _shareDraftText(draft),
                   icon: const Icon(Icons.ios_share_outlined),
                   label: const Text('分享文本'),
                 ),
@@ -989,7 +990,7 @@ class _DocumentAIProcessPanel extends ConsumerWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '对当前草稿执行摘要、翻译、改写、扩写、润色或格式整理。',
+              '对当前选中文档执行摘要、翻译、改写、扩写、润色或格式整理（由 Hub AI 完成，结果写回文稿库）。',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -1093,6 +1094,15 @@ class _UploadStatus extends ConsumerWidget {
                           ),
                     ),
                   ],
+                  if (!inProgress && !failed) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '导入已完成。点「关闭」可收起此卡片。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -1102,8 +1112,8 @@ class _UploadStatus extends ConsumerWidget {
                         onPressed: () => ref
                             .read(documentsControllerProvider.notifier)
                             .refreshUploadTask(),
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('刷新状态'),
+                        icon: Icon(inProgress ? Icons.refresh : Icons.close),
+                        label: Text(inProgress ? '刷新状态' : '关闭'),
                       ),
                       if (state.canRetryLastUpload)
                         OutlinedButton.icon(

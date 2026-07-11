@@ -16,15 +16,20 @@ import '../../core/settings/app_preferences.dart';
 import '../../core/shared_intents/mobile_shared_intent.dart';
 import '../../core/shared_intents/shared_intent_bootstrap.dart';
 import '../../core/text/html_text.dart';
+import '../../l10n/app_locale.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../auth/session_controller.dart';
 import '../documents/document_draft.dart';
 import '../documents/documents_controller.dart';
+import '../memory/local_memory_sheet.dart';
 import 'assistant_controller.dart';
 import 'assistant_digital_twin_gate.dart';
 import 'assistant_employee_handoff.dart';
 import 'assistant_inline_card.dart';
+import 'assistant_input_history.dart';
 import 'assistant_markdown.dart';
+import 'assistant_ssh_quick_connect.dart';
 import 'assistant_voice_input.dart';
 import 'search_history.dart';
 
@@ -111,6 +116,8 @@ class AssistantScreen extends ConsumerStatefulWidget {
 class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   final _queryController = TextEditingController();
   final _scrollController = ScrollController();
+  final _inputFocusNode = FocusNode();
+  final _historyBrowser = AssistantInputHistoryBrowser();
   late final AssistantVoiceInput _voiceInput;
   bool _listening = false;
   String? _voiceStatus;
@@ -130,6 +137,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     unawaited(_voiceInput.stop());
     _queryController.dispose();
     _scrollController.dispose();
+    _inputFocusNode.dispose();
     super.dispose();
   }
 
@@ -146,18 +154,72 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     });
   }
 
-  void _setQuery(String value) {
-    _queryController.text = value;
-    ref.read(assistantTabsProvider.notifier).updateActiveQuery(value);
-    ref.read(assistantQueryProvider.notifier).state = value;
+  void _setQuery(String value, {bool fromHistoryBrowse = false}) {
+    final text = value;
+    _queryController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    ref.read(assistantTabsProvider.notifier).updateActiveQuery(text);
+    ref.read(assistantQueryProvider.notifier).state = text;
+    if (!fromHistoryBrowse && _historyBrowser.isBrowsing) {
+      // Manual edit exits sequential browse but keeps text.
+      setState(() => _historyBrowser.reset());
+    }
   }
 
   void _searchManually(String query) {
     ref.read(assistantSharedCitationProvider.notifier).state = null;
     ref.read(assistantTabsProvider.notifier).setActiveSharedCitation(null);
     unawaited(ref.read(assistantSearchProvider.notifier).search(query));
+    _historyBrowser.reset();
     _setQuery('');
     _scrollConversationToEnd();
+  }
+
+  List<String> _recallPrompts({
+    required List<AssistantConversationMessage> messages,
+    required List<SearchHistoryEntry>? historyItems,
+  }) {
+    return buildAssistantInputRecallPrompts(
+      conversationUserMessages: [
+        for (final m in messages)
+          if (m.role == 'user') m.text,
+      ],
+      historyQueries: [
+        for (final item in historyItems ?? const <SearchHistoryEntry>[])
+          item.query,
+      ],
+    );
+  }
+
+  void _applyHistoryBrowse(String? next, {required bool fromBrowse}) {
+    if (next == null) return;
+    setState(() {
+      _setQuery(next, fromHistoryBrowse: fromBrowse);
+    });
+  }
+
+  void _recallOlder(List<String> prompts) {
+    final next = _historyBrowser.stepOlder(
+      prompts,
+      currentInput: _queryController.text,
+    );
+    _applyHistoryBrowse(next, fromBrowse: true);
+  }
+
+  void _recallNewer(List<String> prompts) {
+    final next = _historyBrowser.stepNewer(prompts);
+    _applyHistoryBrowse(next, fromBrowse: true);
+  }
+
+  void _exitHistoryBrowse() {
+    if (!_historyBrowser.isBrowsing) return;
+    final draft = _historyBrowser.draftBeforeHistory ?? '';
+    setState(() {
+      _historyBrowser.reset();
+      _setQuery(draft, fromHistoryBrowse: true);
+    });
   }
 
   Future<void> _toggleVoiceInput() async {
@@ -175,9 +237,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       });
       return;
     }
-    final language = ref.read(appPreferencesProvider).valueOrNull?.language ??
-        appLanguageChinese;
-    final localeId = assistantSpeechLocaleForLanguage(language);
+    final prefLanguage =
+        ref.read(appPreferencesProvider).valueOrNull?.language ??
+            appLanguageSystem;
+    final uiLanguage =
+        resolveAppUiLanguage(preferenceLanguage: prefLanguage);
+    final localeId = assistantSpeechLocaleForLanguage(uiLanguage);
     _lastVoiceTranscript = '';
     _voicePermissionEvidence = null;
     final sessionGeneration = ++_voiceSessionGeneration;
@@ -413,16 +478,26 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       }
     });
 
+    final s = ref.watch(appStringsProvider);
+    final twin = usesDigitalTwinAssistant(
+      ref.watch(sessionControllerProvider).valueOrNull?.bootstrap,
+    );
     return ChatWorkspaceScaffold(
-      title: 'AI助手',
-      subtitle: '像桌面端一样，随时聊聊、一起处理事情',
+      title: twin ? s.tabTwin : s.assistantTitle,
+      subtitle: s.assistantSubtitle,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton.filledTonal(
-            tooltip: '对话历史',
+            tooltip: s.isZh ? '对话历史' : 'Chat history',
             onPressed: () => _openHistorySheet(history),
             icon: const Icon(Icons.history),
+          ),
+          const SizedBox(width: 6),
+          IconButton.filledTonal(
+            tooltip: s.isZh ? '我的记忆' : 'My memory',
+            onPressed: () => showLocalMemoryListSheet(context, ref),
+            icon: const Icon(Icons.psychology_outlined),
           ),
           if (ref
                   .watch(sessionControllerProvider)
@@ -433,14 +508,16 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
               true) ...[
             const SizedBox(width: 6),
             IconButton.filledTonal(
-              tooltip: '远程维护',
-              onPressed: () => context.push('/servers'),
-              icon: const Icon(Icons.lan_outlined),
+              tooltip: s.isZh ? '连服务器' : 'Connect server',
+              onPressed: () => _openSSHQuickConnect(),
+              icon: const Icon(Icons.terminal),
             ),
           ],
           const SizedBox(width: 6),
           IconButton.filledTonal(
-            tooltip: _listening ? '停止语音输入' : '开始语音输入',
+            tooltip: _listening
+                ? (s.isZh ? '停止语音输入' : 'Stop voice')
+                : (s.isZh ? '开始语音输入' : 'Start voice'),
             onPressed: _toggleVoiceInput,
             icon: Icon(_listening ? Icons.mic : Icons.mic_none),
           ),
@@ -510,7 +587,12 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           ],
 
           if (!compactComposer) ...[
-            _AssistantQuickPrompts(onSelect: _setQuery),
+            _AssistantQuickPrompts(
+              onSelect: _setQuery,
+              onConnectServer: _openSSHQuickConnect,
+              onRemember: () => showRememberMemoryDialog(context, ref),
+              onOpenMemory: () => showLocalMemoryListSheet(context, ref),
+            ),
             const SizedBox(height: 8),
           ],
           if (_voiceStatus != null) ...[
@@ -543,86 +625,189 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             ),
             const SizedBox(height: 4),
           ],
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              IconButton(
-                tooltip: '拍照提问',
-                onPressed: _pickImage,
-                icon: const Icon(Icons.photo_camera_outlined),
-              ),
-              IconButton(
-                tooltip: '从相册选择截图',
-                onPressed: _pickGalleryImage,
-                icon: const Icon(Icons.photo_library_outlined),
-              ),
-              IconButton(
-                tooltip: '导入截图或文件',
-                onPressed: _pickFile,
-                icon: const Icon(Icons.attach_file),
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _queryController,
-                  minLines: 1,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.newline,
-                  onChanged: (value) => _setQuery(value),
-                  onSubmitted: (value) {
-                    if (value.trim().isEmpty || !assistantEnabled) return;
-                    _searchManually(value);
-                  },
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: '说点什么…',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(22),
-                      borderSide: BorderSide(color: scheme.outlineVariant),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(22),
-                      borderSide:
-                          BorderSide(color: scheme.primary, width: 1.4),
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    suffixIcon: IconButton(
-                      tooltip: _listening ? '停止语音输入' : '语音输入',
-                      onPressed: _toggleVoiceInput,
-                      icon: Icon(
-                        _listening ? Icons.mic : Icons.mic_none,
-                        color: _listening ? scheme.primary : null,
+          Builder(
+            builder: (context) {
+              final historyItems = history.valueOrNull;
+              final recallPrompts = _recallPrompts(
+                messages: activeTab.messages,
+                historyItems: historyItems,
+              );
+              final hasRecall = recallPrompts.isNotEmpty;
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_historyBrowser.isBrowsing && hasRecall) ...[
+                    _InputHistoryBrowseBar(
+                      label: s.recallPosition(
+                        _historyBrowser.positionDisplay(recallPrompts),
+                        recallPrompts.length,
                       ),
+                      olderTooltip: s.recallOlder,
+                      newerTooltip: s.recallNewer,
+                      exitTooltip: s.recallExit,
+                      onOlder: () => _recallOlder(recallPrompts),
+                      onNewer: () => _recallNewer(recallPrompts),
+                      onExit: _exitHistoryBrowse,
                     ),
+                    const SizedBox(height: 6),
+                  ],
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      IconButton(
+                        tooltip: '拍照提问',
+                        onPressed: _pickImage,
+                        icon: const Icon(Icons.photo_camera_outlined),
+                      ),
+                      IconButton(
+                        tooltip: '从相册选择截图',
+                        onPressed: _pickGalleryImage,
+                        icon: const Icon(Icons.photo_library_outlined),
+                      ),
+                      IconButton(
+                        tooltip: '导入截图或文件',
+                        onPressed: _pickFile,
+                        icon: const Icon(Icons.attach_file),
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: _queryController,
+                          focusNode: _inputFocusNode,
+                          minLines: 1,
+                          maxLines: 5,
+                          textInputAction: TextInputAction.newline,
+                          onChanged: (value) => _setQuery(value),
+                          onSubmitted: (value) {
+                            if (value.trim().isEmpty || !assistantEnabled) {
+                              return;
+                            }
+                            _searchManually(value);
+                          },
+                          decoration: InputDecoration(
+                            isDense: true,
+                            hintText: s.saySomething,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(22),
+                              borderSide:
+                                  BorderSide(color: scheme.outlineVariant),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(22),
+                              borderSide: BorderSide(
+                                color: scheme.primary,
+                                width: 1.4,
+                              ),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 10,
+                            ),
+                            // Touch-first history: open list (no keyboard arrows).
+                            prefixIcon: IconButton(
+                              tooltip: s.recallInputHistory,
+                              onPressed: !hasRecall
+                                  ? null
+                                  : () => _openInputRecallSheet(
+                                        prompts: recallPrompts,
+                                        strings: s,
+                                      ),
+                              icon: Icon(
+                                Icons.history,
+                                color: hasRecall
+                                    ? (_historyBrowser.isBrowsing
+                                        ? scheme.primary
+                                        : null)
+                                    : scheme.onSurface
+                                        .withValues(alpha: 0.28),
+                              ),
+                            ),
+                            // ↑ steps older; mic stays reachable with a fat hit target.
+                            suffixIcon: SizedBox(
+                              width: hasRecall ? 96 : 48,
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  if (hasRecall)
+                                    IconButton(
+                                      tooltip: s.recallOlder,
+                                      onPressed: () =>
+                                          _recallOlder(recallPrompts),
+                                      icon: const Icon(
+                                        Icons.keyboard_arrow_up,
+                                      ),
+                                    ),
+                                  IconButton(
+                                    tooltip:
+                                        _listening ? '停止语音输入' : '语音输入',
+                                    onPressed: _toggleVoiceInput,
+                                    icon: Icon(
+                                      _listening
+                                          ? Icons.mic
+                                          : Icons.mic_none,
+                                      color:
+                                          _listening ? scheme.primary : null,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            suffixIconConstraints: BoxConstraints(
+                              minHeight: 48,
+                              minWidth: hasRecall ? 96 : 48,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      IconButton.filledTonal(
+                        tooltip: '后台执行（长任务）',
+                        onPressed: query.trim().isEmpty || !assistantEnabled
+                            ? null
+                            : () => _enqueueBackground(query),
+                        icon: const Icon(Icons.schedule_send_outlined),
+                      ),
+                      const SizedBox(width: 4),
+                      IconButton.filled(
+                        tooltip: '发送给 AI 助手',
+                        onPressed: query.trim().isEmpty || !assistantEnabled
+                            ? null
+                            : () => _searchManually(query),
+                        icon: const Icon(Icons.arrow_upward),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-              const SizedBox(width: 6),
-              IconButton.filledTonal(
-                tooltip: '后台执行（长任务）',
-                onPressed: query.trim().isEmpty || !assistantEnabled
-                    ? null
-                    : () => _enqueueBackground(query),
-                icon: const Icon(Icons.schedule_send_outlined),
-              ),
-              const SizedBox(width: 4),
-              IconButton.filled(
-                tooltip: '发送给 AI 助手',
-                onPressed: query.trim().isEmpty || !assistantEnabled
-                    ? null
-                    : () => _searchManually(query),
-                icon: const Icon(Icons.arrow_upward),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _openInputRecallSheet({
+    required List<String> prompts,
+    required AppStrings strings,
+  }) async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) {
+        return _InputRecallSheet(
+          prompts: prompts,
+          strings: strings,
+        );
+      },
+    );
+    if (!mounted || selected == null) return;
+    _historyBrowser.reset();
+    _setQuery(selected, fromHistoryBrowse: true);
+    _inputFocusNode.requestFocus();
   }
 
   Future<void> _enqueueBackground(String rawQuery) async {
@@ -632,6 +817,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
       final job =
           await ref.read(assistantSearchProvider.notifier).enqueueBackground(query);
       if (!mounted) return;
+      _historyBrowser.reset();
       _setQuery('');
       if (job == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -662,6 +848,26 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     }
   }
 
+  Future<void> _openSSHQuickConnect() async {
+    final result = await showAssistantSSHQuickConnectDialog(context, ref);
+    if (!mounted || result == null) return;
+    final label = result.label.trim().isEmpty
+        ? '${result.username}@${result.host}'
+        : result.label.trim();
+    final hint = result.message.trim().isNotEmpty
+        ? result.message.trim()
+        : '服务器已接入（$label），可直接让我操作。';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(hint)),
+    );
+    // Prefill a ready-to-send instruction; user can edit then send.
+    _setQuery(
+      '服务器已接入，label=$label。请先 connect 再用 exec 帮我查看系统负载和磁盘空间。',
+      fromHistoryBrowse: true,
+    );
+    _inputFocusNode.requestFocus();
+  }
+
   Future<void> _openHistorySheet(
     AsyncValue<List<SearchHistoryEntry>> history,
   ) async {
@@ -687,7 +893,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                   history: history,
                   onSelect: (value) {
                     Navigator.of(context).pop();
-                    _setQuery(value);
+                    _historyBrowser.reset();
+                    _setQuery(value, fromHistoryBrowse: true);
+                    _inputFocusNode.requestFocus();
                   },
                 ),
               ),
@@ -695,6 +903,216 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+/// Touch-friendly sequential history indicator (no physical keyboard required).
+class _InputHistoryBrowseBar extends StatelessWidget {
+  final String label;
+  final String olderTooltip;
+  final String newerTooltip;
+  final String exitTooltip;
+  final VoidCallback onOlder;
+  final VoidCallback onNewer;
+  final VoidCallback onExit;
+
+  const _InputHistoryBrowseBar({
+    required this.label,
+    required this.olderTooltip,
+    required this.newerTooltip,
+    required this.exitTooltip,
+    required this.onOlder,
+    required this.onNewer,
+    required this.onExit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.secondaryContainer.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: exitTooltip,
+              onPressed: onExit,
+              icon: const Icon(Icons.close, size: 20),
+              visualDensity: VisualDensity.compact,
+            ),
+            Expanded(
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: scheme.onSecondaryContainer,
+                    ),
+              ),
+            ),
+            IconButton(
+              tooltip: newerTooltip,
+              onPressed: onNewer,
+              icon: const Icon(Icons.keyboard_arrow_down),
+              // Larger hit target than dense icon-only chips.
+              visualDensity: VisualDensity.standard,
+            ),
+            IconButton(
+              tooltip: olderTooltip,
+              onPressed: onOlder,
+              icon: const Icon(Icons.keyboard_arrow_up),
+              visualDensity: VisualDensity.standard,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bottom sheet: search + large tap targets to fill the composer (no auto-send).
+class _InputRecallSheet extends StatefulWidget {
+  final List<String> prompts;
+  final AppStrings strings;
+
+  const _InputRecallSheet({
+    required this.prompts,
+    required this.strings,
+  });
+
+  @override
+  State<_InputRecallSheet> createState() => _InputRecallSheetState();
+}
+
+class _InputRecallSheetState extends State<_InputRecallSheet> {
+  final _filterController = TextEditingController();
+
+  @override
+  void dispose() {
+    _filterController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.strings;
+    final filtered = filterAssistantInputRecallPrompts(
+      widget.prompts,
+      _filterController.text,
+    );
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 4,
+          bottom: bottomInset + 16,
+        ),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                s.recallInputTitle,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                s.isZh
+                    ? '点一项填入输入框，可再编辑后发送（适合手机触控）。'
+                    : 'Tap to fill the input box, edit if needed, then send.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _filterController,
+                textInputAction: TextInputAction.search,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  hintText: s.recallInputHint,
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _filterController.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: s.isZh ? '清除' : 'Clear',
+                          onPressed: () {
+                            _filterController.clear();
+                            setState(() {});
+                          },
+                          icon: const Icon(Icons.clear),
+                        ),
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            widget.prompts.isEmpty
+                                ? s.recallInputEmpty
+                                : (s.isZh ? '没有匹配的历史输入' : 'No matches'),
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final text = filtered[index];
+                          return ListTile(
+                            // Comfortable finger target on phones.
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 6,
+                            ),
+                            leading: CircleAvatar(
+                              radius: 16,
+                              child: Text(
+                                '${index + 1}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                            title: Text(
+                              text,
+                              maxLines: 4,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: TextButton(
+                              onPressed: () =>
+                                  Navigator.of(context).pop(text),
+                              child: Text(s.recallInputFill),
+                            ),
+                            onTap: () => Navigator.of(context).pop(text),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -935,8 +1353,16 @@ class _AssistantSearchUnavailableBanner extends StatelessWidget {
 
 class _AssistantQuickPrompts extends StatelessWidget {
   final ValueChanged<String> onSelect;
+  final VoidCallback? onConnectServer;
+  final VoidCallback? onRemember;
+  final VoidCallback? onOpenMemory;
 
-  const _AssistantQuickPrompts({required this.onSelect});
+  const _AssistantQuickPrompts({
+    required this.onSelect,
+    this.onConnectServer,
+    this.onRemember,
+    this.onOpenMemory,
+  });
 
   static const _prompts = [
     (
@@ -948,11 +1374,6 @@ class _AssistantQuickPrompts extends StatelessWidget {
       label: '助手联网',
       icon: Icons.travel_explore_outlined,
       text: '帮我联网核对这件事，用普通人能懂的话说清楚，并带上来源。',
-    ),
-    (
-      label: '文档草稿',
-      icon: Icons.article_outlined,
-      text: '帮我把下面要点整理成一份可直接发送的应急文档草稿。',
     ),
     (
       label: '日志排障',
@@ -967,6 +1388,36 @@ class _AssistantQuickPrompts extends StatelessWidget {
       scrollDirection: Axis.horizontal,
       child: Row(
         children: [
+          if (onRemember != null) ...[
+            ActionChip(
+              avatar: const Icon(Icons.bookmark_add_outlined, size: 16),
+              label: const Text('记住'),
+              tooltip: '把重要内容存进本机记忆，并尽量同步到 Hub',
+              visualDensity: VisualDensity.compact,
+              onPressed: onRemember,
+            ),
+            const SizedBox(width: 8),
+          ],
+          if (onOpenMemory != null) ...[
+            ActionChip(
+              avatar: const Icon(Icons.psychology_outlined, size: 16),
+              label: const Text('记忆'),
+              tooltip: '查看 / 管理已记住的内容',
+              visualDensity: VisualDensity.compact,
+              onPressed: onOpenMemory,
+            ),
+            const SizedBox(width: 8),
+          ],
+          if (onConnectServer != null) ...[
+            ActionChip(
+              avatar: const Icon(Icons.terminal, size: 16),
+              label: const Text('连服务器'),
+              tooltip: '只需 IP、用户名、密码，接入后 AI 可操作',
+              visualDensity: VisualDensity.compact,
+              onPressed: onConnectServer,
+            ),
+            const SizedBox(width: 8),
+          ],
           for (final prompt in _prompts) ...[
             ActionChip(
               avatar: Icon(prompt.icon, size: 16),
@@ -1057,7 +1508,7 @@ class _AssistantErrorBubble extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return ChatBubble(
-      text: '刚才没接上：$error',
+      text: '刚才没接上：${formatAssistantError(error)}',
       failed: true,
       footer: Align(
         alignment: Alignment.centerLeft,
@@ -1294,7 +1745,9 @@ class _AssistantReplyBubble extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.only(left: 4, bottom: 4),
           child: Text(
-            streaming ? '助手正在回答…' : '助手回答',
+            streaming
+                ? AppStringsScope.of(context).assistantReplying
+                : AppStringsScope.of(context).assistantAnswer,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: scheme.onSurfaceVariant,
                   fontWeight: FontWeight.w600,
@@ -1398,12 +1851,33 @@ class _AssistantReplyBubble extends ConsumerWidget {
                         TextButton(
                           onPressed: () =>
                               ref.read(assistantShareProvider).call(markdown),
-                          child: const Text('分享结果'),
+                          child: Text(AppStringsScope.of(context).shareResult),
                         ),
                         TextButton(
                           onPressed: () =>
                               _copyMarkdown(context, ref, markdown),
-                          child: const Text('复制结果'),
+                          child: Text(AppStringsScope.of(context).copyResult),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            final preview = display.trim();
+                            final title = query.trim().isEmpty
+                                ? '助手结论'
+                                : (query.trim().length > 28
+                                    ? '${query.trim().substring(0, 28)}…'
+                                    : query.trim());
+                            showRememberMemoryDialog(
+                              context,
+                              ref,
+                              initialTitle: title,
+                              initialContent: preview.length > 2000
+                                  ? '${preview.substring(0, 2000)}…'
+                                  : preview,
+                            );
+                          },
+                          child: Text(
+                            AppStringsScope.of(context).isZh ? '记住' : 'Remember',
+                          ),
                         ),
                       ],
                     ),
@@ -1562,9 +2036,10 @@ class _AssistantNextStepsCardState
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(appStringsProvider);
     return AssistantInlineCard(
-      title: '可以继续',
-      description: '把回答落到草稿、文档，或交给数字员工跟进。',
+      title: s.canContinue,
+      description: s.canContinueDesc,
       summaryLines: widget.summaryLines,
       testId: 'assistant-next-steps-card',
       resolved: _resolvedKey != null,
@@ -1572,12 +2047,14 @@ class _AssistantNextStepsCardState
       actions: assistantDefaultNextStepActions(
         includeEmployee: widget.includeEmployee,
         includeDocuments: widget.includeDocuments,
+        isZh: s.isZh,
       ),
       onAction: _handleAction,
     );
   }
 
   Future<void> _handleAction(String key) async {
+    final s = ref.read(appStringsProvider);
     switch (key) {
       case 'draft':
         await widget.onDraft();
@@ -1597,13 +2074,17 @@ class _AssistantNextStepsCardState
         }
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('已带入助手结论，正在打开数字员工任务草稿…'),
+          SnackBar(
+            content: Text(
+              s.isZh
+                  ? '已带入助手结论，正在打开数字员工任务草稿…'
+                  : 'Opening employee task draft with assistant summary…',
+            ),
           ),
         );
         setState(() {
           _resolvedKey = key;
-          _resolvedLabel = '已交接给数字员工';
+          _resolvedLabel = s.handedToEmployee;
         });
       case 'documents':
         if (!mounted) return;
@@ -1615,7 +2096,7 @@ class _AssistantNextStepsCardState
         if (!mounted) return;
         setState(() {
           _resolvedKey = key;
-          _resolvedLabel = '已打开文档';
+          _resolvedLabel = s.openedDocuments;
         });
     }
   }
@@ -1649,11 +2130,13 @@ class _AssistantToolEventsStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final summaries = summarizeAssistantToolEvents(events);
+    final total = events.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '工具调用',
+          total <= 2 ? '工具调用' : '工具调用 · 共 $total 次（已合并重复）',
           style: Theme.of(context).textTheme.labelSmall?.copyWith(
                 color: scheme.onSurfaceVariant,
                 fontWeight: FontWeight.w700,
@@ -1664,19 +2147,17 @@ class _AssistantToolEventsStrip extends StatelessWidget {
           spacing: 6,
           runSpacing: 6,
           children: [
-            for (final event in events)
+            for (final summary in summaries)
               Chip(
                 visualDensity: VisualDensity.compact,
                 avatar: Icon(
-                  event.isCall ? Icons.build_circle_outlined : Icons.check_circle_outline,
+                  summary.inProgress
+                      ? Icons.build_circle_outlined
+                      : Icons.check_circle_outline,
                   size: 16,
-                  color: event.isCall ? scheme.primary : scheme.tertiary,
+                  color: summary.inProgress ? scheme.primary : scheme.tertiary,
                 ),
-                label: Text(
-                  event.isCall
-                      ? '调用 ${event.name}'
-                      : '完成 ${event.name}',
-                ),
+                label: Text(_toolSummaryLabel(summary)),
                 side: BorderSide(color: scheme.outlineVariant),
                 backgroundColor: scheme.surfaceContainerHighest,
               ),
@@ -1684,6 +2165,21 @@ class _AssistantToolEventsStrip extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  String _toolSummaryLabel(AssistantToolEventSummary summary) {
+    final name = summary.name;
+    final calls = summary.callCount;
+    final results = summary.resultCount;
+    if (calls <= 1 && results <= 1) {
+      if (summary.inProgress) return '调用 $name';
+      if (results == 1 && calls == 0) return '完成 $name';
+      if (results == 1) return '完成 $name';
+      return '调用 $name';
+    }
+    // e.g. "ssh · 调用 9 · 完成 9" or "ssh · 调用 10 · 完成 9（进行中）"
+    final progress = summary.inProgress ? '（进行中）' : '';
+    return '$name · 调用 $calls · 完成 $results$progress';
   }
 }
 

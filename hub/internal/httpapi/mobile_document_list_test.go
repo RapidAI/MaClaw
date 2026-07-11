@@ -8,6 +8,70 @@ import (
 	"time"
 )
 
+func TestMobileDocumentDraftDeleteHandler(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "doc-del@example.com")
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["d_del_1"] = mobileDocumentDraftRecord{
+		ID: "d_del_1", OwnerID: enroll.UserID, Title: "T", Markdown: "# T\n", UpdatedAt: time.Now().UTC(),
+	}
+	mobileDocuments.drafts["d_other"] = mobileDocumentDraftRecord{
+		ID: "d_other", OwnerID: "someone-else", Title: "X", Markdown: "x", UpdatedAt: time.Now().UTC(),
+	}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, "d_del_1")
+		delete(mobileDocuments.drafts, "d_other")
+		mobileDocuments.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/drafts/d_del_1", nil)
+	req.SetPathValue("draftId", "d_del_1")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	MobileDocumentDraftUpdateHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	mobileDocuments.Lock()
+	_, still := mobileDocuments.drafts["d_del_1"]
+	other, otherOK := mobileDocuments.drafts["d_other"]
+	mobileDocuments.Unlock()
+	if still {
+		t.Fatal("draft should be deleted")
+	}
+	if !otherOK || other.OwnerID != "someone-else" {
+		t.Fatal("other owner's draft must remain")
+	}
+
+	// Foreign draft: respond 200 already_gone (do not leak existence) and keep it.
+	bad := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/drafts/d_other", nil)
+	bad.SetPathValue("draftId", "d_other")
+	bad.Header.Set("Authorization", "Bearer "+token)
+	badRec := httptest.NewRecorder()
+	MobileDocumentDraftUpdateHandler(identity).ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 already_gone for foreign draft, got %d body=%s", badRec.Code, badRec.Body.String())
+	}
+	mobileDocuments.Lock()
+	_, otherStill := mobileDocuments.drafts["d_other"]
+	mobileDocuments.Unlock()
+	if !otherStill {
+		t.Fatal("other owner's draft must remain")
+	}
+
+	// Missing draft: idempotent 200.
+	miss := httptest.NewRequest(http.MethodDelete, "/api/mobile/documents/drafts/missing", nil)
+	miss.SetPathValue("draftId", "missing")
+	miss.Header.Set("Authorization", "Bearer "+token)
+	missRec := httptest.NewRecorder()
+	MobileDocumentDraftUpdateHandler(identity).ServeHTTP(missRec, miss)
+	if missRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for missing draft, got %d", missRec.Code)
+	}
+}
+
 func TestMobileDocumentDraftsListHandler(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	token, enroll := issueViewerToken(t, identity, "mobile-drafts-list@example.com")

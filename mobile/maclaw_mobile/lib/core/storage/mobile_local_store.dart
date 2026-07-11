@@ -14,6 +14,7 @@ import '../security/mobile_redaction.dart';
 import '../../features/assistant/search_history.dart';
 import '../../features/digital_employees/digital_employee_prompt.dart';
 import '../../features/documents/document_draft.dart';
+import '../../features/memory/local_memory_note.dart';
 import '../../features/servers/server_command.dart';
 import '../../features/servers/server_profile.dart';
 
@@ -131,6 +132,41 @@ class MobileLocalStore {
     });
   }
 
+  Future<List<LocalMemoryNote>> loadLocalMemories() async {
+    final db = await _db();
+    final rows = await db
+        .customSelect(
+          'SELECT id, title, content, category, created_at, updated_at, '
+          'pinned, active, synced_to_hub '
+          'FROM local_memories ORDER BY pinned DESC, updated_at DESC',
+        )
+        .get();
+    return [
+      for (final row in rows)
+        LocalMemoryNote(
+          id: row.read<String>('id'),
+          title: row.read<String>('title'),
+          content: row.read<String>('content'),
+          category: row.read<String>('category'),
+          createdAt: _readDate(row.read<String>('created_at')),
+          updatedAt: _readDate(row.read<String>('updated_at')),
+          pinned: row.read<int>('pinned') == 1,
+          active: row.read<int>('active') == 1,
+          syncedToHub: row.read<int>('synced_to_hub') == 1,
+        ),
+    ];
+  }
+
+  Future<void> saveLocalMemories(List<LocalMemoryNote> notes) async {
+    final db = await _db();
+    await db.transaction(() async {
+      await db.customStatement('DELETE FROM local_memories');
+      for (final note in notes) {
+        await _upsertLocalMemory(db, note);
+      }
+    });
+  }
+
   Future<DocumentDraft?> loadLastDocumentDraft() async {
     final db = await _db();
     final rows = await db
@@ -183,6 +219,17 @@ class MobileLocalStore {
         'ORDER BY is_last DESC, updated_at DESC LIMIT 20)',
       );
     });
+  }
+
+  /// Remove a draft from local cache after Hub delete (sync with phone/GUI library).
+  Future<void> removeDocumentDraft(String draftId) async {
+    final id = draftId.trim();
+    if (id.isEmpty) return;
+    final db = await _db();
+    await db.customStatement(
+      'DELETE FROM document_drafts WHERE id = ?',
+      [id],
+    );
   }
 
   Future<MobileDocumentUploadTask?> loadLastDocumentUploadTask() async {
@@ -581,6 +628,33 @@ class MobileLocalStore {
       'id INTEGER PRIMARY KEY CHECK(id = 1), theme_mode TEXT NOT NULL, '
       'language TEXT NOT NULL)',
     );
+    await db.customStatement(
+      'CREATE TABLE IF NOT EXISTS local_memories ('
+      'id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, '
+      "category TEXT NOT NULL DEFAULT 'user_fact', "
+      "created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '', "
+      'pinned INTEGER NOT NULL DEFAULT 0, '
+      'active INTEGER NOT NULL DEFAULT 1, '
+      'synced_to_hub INTEGER NOT NULL DEFAULT 0)',
+    );
+    await _ensureColumn(
+      db,
+      table: 'local_memories',
+      column: 'category',
+      definition: "TEXT NOT NULL DEFAULT 'user_fact'",
+    );
+    await _ensureColumn(
+      db,
+      table: 'local_memories',
+      column: 'updated_at',
+      definition: "TEXT NOT NULL DEFAULT ''",
+    );
+    await _ensureColumn(
+      db,
+      table: 'local_memories',
+      column: 'active',
+      definition: 'INTEGER NOT NULL DEFAULT 1',
+    );
   }
 
   Future<void> _migrateLegacyJsonCache(_MobileSqliteDatabase db) async {
@@ -703,6 +777,33 @@ class MobileLocalStore {
         redactMobileSensitiveText(entry.answerPreview),
         _dateWireValue(entry.createdAt),
         entry.favorite ? 1 : 0,
+      ],
+    );
+  }
+
+  Future<void> _upsertLocalMemory(
+    _MobileSqliteDatabase db,
+    LocalMemoryNote note,
+  ) {
+    return db.customStatement(
+      'INSERT INTO local_memories '
+      '(id, title, content, category, created_at, updated_at, pinned, active, synced_to_hub) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) '
+      'ON CONFLICT(id) DO UPDATE SET '
+      'title = excluded.title, content = excluded.content, '
+      'category = excluded.category, created_at = excluded.created_at, '
+      'updated_at = excluded.updated_at, pinned = excluded.pinned, '
+      'active = excluded.active, synced_to_hub = excluded.synced_to_hub',
+      [
+        note.id,
+        redactMobileSensitiveText(note.title),
+        redactMobileSensitiveText(note.content),
+        note.category,
+        _dateWireValue(note.createdAt),
+        _dateWireValue(note.updatedAt),
+        note.pinned ? 1 : 0,
+        note.active ? 1 : 0,
+        note.syncedToHub ? 1 : 0,
       ],
     );
   }

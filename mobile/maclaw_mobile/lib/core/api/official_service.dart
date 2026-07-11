@@ -14,6 +14,14 @@ const maclawHubCenterConnectTimeout = Duration(seconds: 8);
 const maclawHubCenterSendTimeout = Duration(seconds: 8);
 const maclawHubCenterReceiveTimeout = Duration(seconds: 15);
 
+// AI assistant / Core Agent (SSH, tools, multi-step) can run for minutes.
+// Do not reuse HubCenter discovery timeouts for /api/mobile/search.
+const mobileAssistantConnectTimeout = Duration(seconds: 30);
+const mobileAssistantSendTimeout = Duration(seconds: 60);
+/// Idle/total receive budget for assistant SSE + non-stream fallback.
+/// Aligns with Hub mobile agent job timeout (~6 minutes).
+const mobileAssistantReceiveTimeout = Duration(minutes: 6);
+
 @Deprecated('Use maclawDefaultHubCenterUrl for HubCenter discovery.')
 const maclawOfficialServiceUrl = maclawDefaultHubCenterUrl;
 @Deprecated('Use maclawMobileRealtimePath.')
