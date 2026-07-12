@@ -1783,6 +1783,79 @@ func TestSendVEMessageRetriesTransientHubFailuresWithStableMessageID(t *testing.
 	}
 }
 
+func TestSendVEMessageRecoversStaleParticipantMembership(t *testing.T) {
+	var oldMessageID, newMessageID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/a2a/consultations/session-old/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Errorf("decode old-session message: %v", err)
+				return
+			}
+			oldMessageID = msg.ID
+			http.Error(w, "participant employee-1 is not in discussion", http.StatusBadRequest)
+		case "/api/ve/employee-1/initiate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id": "session-new",
+				"ve_id":      "employee-1",
+			})
+		case "/api/a2a/consultations/session-new/messages":
+			var msg a2a.GroupDiscussionMessage
+			if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+				t.Errorf("decode recovered-session message: %v", err)
+				return
+			}
+			newMessageID = msg.ID
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/a2a/consultations/session-new/detail":
+			_ = json.NewEncoder(w).Encode(map[string]any{"discussion": map[string]any{"id": "session-new"}})
+		case "/api/ve/discoverable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"employees": []any{}})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	app.cacheVESession("employee-1", "session-old")
+	app.cacheVEGroupDefaultResponder("session-old", "employee-1")
+
+	if err := app.SendVEMessage("session-old", "hello after restart"); err != nil {
+		t.Fatalf("SendVEMessage: %v", err)
+	}
+	if oldMessageID == "" || newMessageID == "" || oldMessageID == newMessageID {
+		t.Fatalf("recovery must send a new message ID, old=%q new=%q", oldMessageID, newMessageID)
+	}
+	if got := app.resolveRenewedVESession("session-old"); got != "session-new" {
+		t.Fatalf("renewed session = %q, want session-new", got)
+	}
+}
+
+func TestIsVESessionRecoveryError(t *testing.T) {
+	for _, input := range []string{
+		"discussion is closed",
+		"participant m_123 is not in discussion",
+	} {
+		if !isVESessionRecoveryError(fmt.Errorf("%s", input)) {
+			t.Fatalf("isVESessionRecoveryError(%q) = false, want true", input)
+		}
+	}
+	if isVESessionRecoveryError(fmt.Errorf("participant is offline")) {
+		t.Fatal("unrelated participant error must not recover the session")
+	}
+}
+
 func TestSendVEA2AMessageSkipsDetailRefreshForStreamChunk(t *testing.T) {
 	detailCalls := int32(0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

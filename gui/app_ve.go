@@ -1140,11 +1140,12 @@ func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage)
 	}); err != nil {
 		log.Printf("[ve] send discussion message failed session=%s from=%s to=%v kind=%s duration=%s: %v", effectiveSessionID, msg.FromID, msg.ToIDs, msg.Kind, time.Since(started), err)
 
-		// Mechanism: detect "session is closed/archived" and auto-recover by
-		// re-initiating a new session with the same VE, then retry once.
-		if isVESessionClosedError(err) {
-			if newSessionID := a.recoverClosedVESession(effectiveSessionID); newSessionID != "" {
-				log.Printf("[ve] session %s is closed, recovered to new session %s", effectiveSessionID, newSessionID)
+		// Treat a closed session and a stale participant membership alike: both
+		// mean this locally cached 1:1 session can no longer accept a message.
+		// Recover once by creating a fresh session for the same VE.
+		if isVESessionRecoveryError(err) {
+			if newSessionID := a.recoverUnusableVESession(effectiveSessionID); newSessionID != "" {
+				log.Printf("[ve] session %s is unusable, recovered to new session %s", effectiveSessionID, newSessionID)
 				msg.ID = fmt.Sprintf("ve-msg-%d", time.Now().UnixNano())
 				retryCtx, retryCancel := groupDiscussionContext()
 				defer retryCancel()
@@ -1172,14 +1173,18 @@ func (a *App) sendVEA2AMessage(sessionID string, msg a2a.GroupDiscussionMessage)
 	return nil
 }
 
-// isVESessionClosedError checks if the error indicates the session is closed or archived.
-func isVESessionClosedError(err error) bool {
+// isVESessionRecoveryError reports whether a cached direct-VE session can no
+// longer accept messages. Hub can retain a discussion while dropping a
+// participant after a restart or membership reconciliation, so membership loss
+// must take the same recovery path as a closed session.
+func isVESessionRecoveryError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "is closed") || strings.Contains(msg, "is archived") ||
-		strings.Contains(msg, "is cancelled") || strings.Contains(msg, "is completed")
+		strings.Contains(msg, "is cancelled") || strings.Contains(msg, "is completed") ||
+		(strings.Contains(msg, "participant") && strings.Contains(msg, "is not in discussion"))
 }
 
 // resolveRenewedVESession returns the new session ID if the given session was
@@ -1220,11 +1225,11 @@ type veSessionRenewalEntry struct {
 // through the normal path (frontend should have updated by then).
 const veSessionRenewalMaxAge = 30 * time.Minute
 
-// recoverClosedVESession invalidates all local caches for the closed session,
+// recoverUnusableVESession invalidates all local caches for an unusable session,
 // identifies the remote VE participant, re-initiates a new session, and emits
 // a frontend event so the UI updates the session binding.
 // Thread-safe: uses sync.Map CAS to ensure only one goroutine recovers a given session.
-func (a *App) recoverClosedVESession(closedSessionID string) string {
+func (a *App) recoverUnusableVESession(closedSessionID string) string {
 	// Guard against concurrent recovery of the same session.
 	entry := &veSessionRenewalEntry{done: make(chan struct{}), createdAt: time.Now()}
 	if existing, loaded := a.veSessionRenewalMap.LoadOrStore(closedSessionID, entry); loaded {
@@ -1246,7 +1251,7 @@ func (a *App) recoverClosedVESession(closedSessionID string) string {
 	// 1. Find the remote VE participant ID from the closed session.
 	veID := a.findRemoteVEParticipantForSession(closedSessionID)
 	if veID == "" {
-		log.Printf("[ve] recoverClosedVESession: cannot find remote VE for session %s", closedSessionID)
+		log.Printf("[ve] recoverUnusableVESession: cannot find remote VE for session %s", closedSessionID)
 		a.veSessionRenewalMap.Delete(closedSessionID) // allow future retry
 		return ""
 	}
@@ -1260,13 +1265,13 @@ func (a *App) recoverClosedVESession(closedSessionID string) string {
 	// 4. Re-initiate a new session with the same VE.
 	info, err := a.InitiateVEConversation(veID)
 	if err != nil {
-		log.Printf("[ve] recoverClosedVESession: re-initiate failed for VE %s: %v", veID, err)
+		log.Printf("[ve] recoverUnusableVESession: re-initiate failed for VE %s: %v", veID, err)
 		a.veSessionRenewalMap.Delete(closedSessionID)
 		return ""
 	}
 	newSessionID := strings.TrimSpace(info.SessionID)
 	if newSessionID == "" || newSessionID == closedSessionID {
-		log.Printf("[ve] recoverClosedVESession: re-initiate returned same or empty session (new=%s, old=%s)", newSessionID, closedSessionID)
+		log.Printf("[ve] recoverUnusableVESession: re-initiate returned same or empty session (new=%s, old=%s)", newSessionID, closedSessionID)
 		a.veSessionRenewalMap.Delete(closedSessionID)
 		return ""
 	}
@@ -1284,7 +1289,7 @@ func (a *App) recoverClosedVESession(closedSessionID string) string {
 		})
 	}
 
-	log.Printf("[ve] recoverClosedVESession: session renewed %s -> %s (VE: %s)", closedSessionID, newSessionID, veID)
+	log.Printf("[ve] recoverUnusableVESession: session renewed %s -> %s (VE: %s)", closedSessionID, newSessionID, veID)
 	return newSessionID
 }
 

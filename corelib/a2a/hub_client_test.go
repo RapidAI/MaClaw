@@ -319,3 +319,16 @@ func TestHubClientDecodesHubError(t *testing.T) {
 		t.Fatalf("expected hub message, got %v", err)
 	}
 }
+
+func TestHubClientDecodesPlainTextHubError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "participant employee-1 is not in discussion", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	_, err := client.ListExperts(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "participant employee-1 is not in discussion") {
+		t.Fatalf("expected plain-text hub message, got %v", err)
+	}
+}

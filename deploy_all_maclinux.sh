@@ -534,6 +534,10 @@ backup_and_write_config() {
 }
 
 stop_hubcenter_process() {
+	if command -v systemctl >/dev/null 2>&1 && systemctl cat "$HUBCENTER_BINARY_NAME.service" >/dev/null 2>&1; then
+		echo "[remote] Stopping systemd service: $HUBCENTER_BINARY_NAME.service"
+		systemctl stop "$HUBCENTER_BINARY_NAME.service"
+	fi
   for file in "$REMOTE_HUBCENTER_DIR/data/$HUBCENTER_BINARY_NAME.pid" "$REMOTE_HUBCENTER_DIR/data/maclaw-hubcenter.pid"; do
     if [ -f "$file" ]; then
       old_pid=$(cat "$file" 2>/dev/null || true)

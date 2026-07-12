@@ -494,15 +494,22 @@ func (c *HubClient) doJSON(ctx context.Context, method, path string, in any, out
 }
 
 func decodeHubError(resp *http.Response) error {
+	const maxHubErrorBodyBytes = 8 << 10
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHubErrorBodyBytes))
+	if readErr != nil {
+		return fmt.Errorf("read hub error response: %w", readErr)
+	}
 	// Hub error responses use two formats:
 	// 1. {"message":"...", "error":"string"}  (legacy)
 	// 2. {"message":"...", "error":{"message":"...", "code":"..."}}  (current)
-	// Use json.RawMessage to handle both without type mismatch failures.
+	// Use json.RawMessage to handle both without type mismatch failures. Some
+	// reverse proxies and older Hub builds return plain text, which is still
+	// useful to callers deciding whether a stale session can be recovered.
 	var payload struct {
 		Message string          `json:"message"`
 		Error   json.RawMessage `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil {
+	if err := json.Unmarshal(body, &payload); err == nil {
 		if msg := strings.TrimSpace(payload.Message); msg != "" {
 			return fmt.Errorf("hub returned %d: %s", resp.StatusCode, msg)
 		}
@@ -520,6 +527,9 @@ func decodeHubError(resp *http.Response) error {
 				return fmt.Errorf("hub returned %d: %s", resp.StatusCode, errObj.Message)
 			}
 		}
+	}
+	if message := strings.TrimSpace(string(body)); message != "" {
+		return fmt.Errorf("hub returned %d: %s", resp.StatusCode, message)
 	}
 	return fmt.Errorf("hub returned %s", resp.Status)
 }
