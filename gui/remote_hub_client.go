@@ -84,6 +84,13 @@ type RemoteHubClient struct {
 	mobileBackendSSHOutput sync.Map // mobile sessionID -> last reported SSH preview
 	mobileBackendSSHTasks  sync.Map // mobile taskID -> corelib SSH background taskID
 
+	// cachedHeartbeatSec avoids LoadConfig() on every heartbeat tick.
+	// Updated when config is loaded for interval computation or after connect.
+	cachedHeartbeatSec atomic.Int64
+
+	// Adaptive poll state for mobile digital-employee / backend task loops.
+	mobileTaskPollState *mobileTaskPollState
+
 	// IO relay for multi-device session roaming cleanup on disconnect.
 	ioRelay *SessionIORelay
 }
@@ -688,7 +695,8 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 	err := c.conn.WriteJSON(msg)
 
 	// After sending hello, asynchronously refresh version cache for all tools.
-	// This runs external processes in background goroutines with a 10s combined timeout.
+	// RefreshAllAsync skips fresh cached versions and only runs safe --version
+	// probes (never bare "version", which would start a full Claude Code session).
 	if c.app.toolVersionCache != nil {
 		allTools := []string{"claude", "codex", "opencode", "codebuddy", "iflow", "kilo"}
 		c.app.toolVersionCache.RefreshAllAsync(allTools, 10*time.Second)
@@ -1130,7 +1138,14 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 	// avoid holding c.mu while iterating sessions (manager has its own lock).
 	sessions := c.collectSessionMetadata()
 	llmTokenUsage := c.collectLLMTokenUsage()
-	cfg, _ := c.app.LoadConfig()
+	// Prefer cached heartbeat interval so we don't re-read config from disk
+	// on every beat (can be every 5–30s for the machine lifetime).
+	heartbeatSec := int(c.cachedHeartbeatSec.Load())
+	if heartbeatSec <= 0 {
+		cfg, _ := c.app.LoadConfig()
+		heartbeatSec = normalizeRemoteHeartbeatIntervalSec(cfg.RemoteHeartbeatSec)
+		c.cachedHeartbeatSec.Store(int64(heartbeatSec))
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1139,7 +1154,7 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 	}
 
 	activeSessions := len(sessions)
-	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, activeSessions)
+	profile := c.app.currentRemoteMachineProfile(heartbeatSec, activeSessions)
 
 	msg := HubEnvelope{
 		Type:      "machine.heartbeat",
@@ -1245,6 +1260,9 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleNicknameAssigned(msg)
 		case hubInboundMessageNotificationPush:
 			go c.app.handleNotificationPush(msg.Payload)
+		case hubInboundMessageMobileDigitalEmployeeTask:
+			// Hub push: claim immediately instead of waiting for the poll timer.
+			go c.handleMobileDigitalEmployeeTaskPush(msg)
 		case hubInboundMessageVEEvent:
 			c.handleVEEvent(msg)
 		case hubInboundMessageAck:
@@ -1891,29 +1909,47 @@ func (c *RemoteHubClient) heartbeatLoop() {
 			c.handleConnectionLoss(fmt.Errorf("heartbeatLoop panic: %v", r))
 		}
 	}()
+	// Reuse one timer across ticks; recreate only when interval changes.
+	interval := c.currentHeartbeatInterval()
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
-		interval := c.currentHeartbeatInterval()
-		timer := time.NewTimer(interval)
 		<-timer.C
 		if !c.IsConnected() {
-			timer.Stop()
 			return
 		}
 		if err := c.SendHeartbeat(); err != nil {
-			timer.Stop()
 			c.handleConnectionLoss(err)
 			return
 		}
-		timer.Stop()
+		next := c.currentHeartbeatInterval()
+		if next != interval {
+			interval = next
+		}
+		timer.Reset(interval)
 	}
 }
 
 func (c *RemoteHubClient) currentHeartbeatInterval() time.Duration {
+	if sec := c.cachedHeartbeatSec.Load(); sec > 0 {
+		return time.Duration(sec) * time.Second
+	}
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		return time.Duration(corelib.DefaultRemoteHeartbeatSec) * time.Second
 	}
-	return time.Duration(normalizeRemoteHeartbeatIntervalSec(cfg.RemoteHeartbeatSec)) * time.Second
+	sec := normalizeRemoteHeartbeatIntervalSec(cfg.RemoteHeartbeatSec)
+	c.cachedHeartbeatSec.Store(int64(sec))
+	return time.Duration(sec) * time.Second
+}
+
+// InvalidateHeartbeatIntervalCache forces the next heartbeat to re-read config.
+// Call after RemoteHeartbeatSec is changed via settings.
+func (c *RemoteHubClient) InvalidateHeartbeatIntervalCache() {
+	if c == nil {
+		return
+	}
+	c.cachedHeartbeatSec.Store(0)
 }
 
 func (c *RemoteHubClient) IsConnected() bool {

@@ -54,21 +54,33 @@ class DigitalEmployee {
   bool get online => onlineStatus.toLowerCase() == 'online';
   bool get canSubmitTask => online && !runtimeMissing;
 
-  String get accessPolicyLabel {
+  String get accessPolicyLabel => accessPolicyLabelFor(isZh: true);
+
+  String accessPolicyLabelFor({bool isZh = true}) {
     return switch (accessPolicy.toLowerCase()) {
-      'public' => '公开可用',
-      'private' => '私有授权',
-      'per_request' => '按次授权',
-      'owner_confirm' => '需拥有者确认',
-      _ => '策略：$accessPolicy',
+      'public' => isZh ? '公开可用' : 'Public',
+      'private' => isZh ? '私有授权' : 'Private',
+      'per_request' => isZh ? '按次授权' : 'Per request',
+      'owner_confirm' => isZh ? '需拥有者确认' : 'Owner confirm',
+      _ => isZh ? '策略：$accessPolicy' : 'Policy: $accessPolicy',
     };
   }
 
-  String get residencyLabel => resident ? '常驻远程端' : '按需唤起';
+  String get residencyLabel => residencyLabelFor(isZh: true);
 
-  String get runtimeLabel {
-    if (runtimeMissing) return '远程运行时缺失';
-    return online ? '远程端在线' : '远程端离线';
+  String residencyLabelFor({bool isZh = true}) => resident
+      ? (isZh ? '常驻远程端' : 'Always-on remote')
+      : (isZh ? '按需唤起' : 'On demand');
+
+  String get runtimeLabel => runtimeLabelFor(isZh: true);
+
+  String runtimeLabelFor({bool isZh = true}) {
+    if (runtimeMissing) {
+      return isZh ? '远程运行时缺失' : 'Remote runtime missing';
+    }
+    return online
+        ? (isZh ? '远程端在线' : 'Remote online')
+        : (isZh ? '远程端离线' : 'Remote offline');
   }
 
   factory DigitalEmployee.fromJson(Map<String, dynamic> json) {
@@ -93,4 +105,52 @@ List<DigitalEmployee> filterOnlineDigitalEmployees(
     for (final employee in employees)
       if (employee.online) employee,
   ];
+}
+
+/// Hub placeholder strings that should not be shown as "live progress".
+const digitalEmployeeTaskProgressPlaceholders = <String>{
+  '远程数字员工已领取任务，正在处理。',
+  '远程数字员工正在处理手机任务。',
+  '任务已提交，等待远程数字员工或授权策略处理。',
+  '任务已提交，等待远程数字员工领取。',
+};
+
+/// Whether the mobile task is still actively running remotely.
+bool digitalEmployeeTaskIsRunning(String status) {
+  switch (status.trim().toLowerCase()) {
+    case 'queued':
+    case 'claimed':
+    case 'running':
+    case 'in_progress':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// Prefer newest agent text for live progress (result), then message.
+///
+/// Filters generic claim/queue placeholders so UI can show real streaming
+/// output from Hub realtime patches.
+String digitalEmployeeTaskProgressPreview({
+  required String result,
+  required String message,
+}) {
+  final trimmedResult = result.trim();
+  final trimmedMessage = message.trim();
+  if (trimmedResult.isNotEmpty &&
+      !digitalEmployeeTaskProgressPlaceholders.contains(trimmedResult)) {
+    return trimmedResult;
+  }
+  if (trimmedMessage.isNotEmpty &&
+      !digitalEmployeeTaskProgressPlaceholders.contains(trimmedMessage) &&
+      !trimmedMessage.contains('等待远程') &&
+      !trimmedMessage.toLowerCase().contains('waiting')) {
+    return trimmedMessage;
+  }
+  if (trimmedResult.isNotEmpty &&
+      !digitalEmployeeTaskProgressPlaceholders.contains(trimmedResult)) {
+    return trimmedResult;
+  }
+  return '';
 }

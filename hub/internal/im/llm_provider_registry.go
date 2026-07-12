@@ -10,9 +10,14 @@ import (
 )
 
 const LLMProviderRegistryKey = "llm_provider_registry"
-const DefaultLLMProviderDownstreamMaxConcurrency = 100
-const DefaultLLMProviderUserRateLimitPerMinute = 120
-const DefaultLLMProviderUserRateLimitBurst = 20
+const DefaultLLMProviderDownstreamMaxConcurrency = 500
+const DefaultLLMProviderUserRateLimitPerMinute = 300
+const DefaultLLMProviderUserRateLimitBurst = 80
+const DefaultLLMProviderUserRateLimitMaxWaitMS = 30000
+
+// MaxLLMProviderUserRateLimitMaxWaitMS caps how long Hub will block a request
+// waiting for a user rate-limit token (guards misconfiguration).
+const MaxLLMProviderUserRateLimitMaxWaitMS = 120000
 const DefaultLLMProviderCircuitBreakerThreshold = 3
 const DefaultLLMProviderCircuitBreakerCooldownMS = 30000
 const DefaultLLMProviderFailureBackoffBaseMS = 500
@@ -43,15 +48,18 @@ type LLMProvider struct {
 }
 
 type LLMProviderRegistry struct {
-	Enabled                  bool                               `json:"enabled"`
-	CurrentProviderID        string                             `json:"current_provider_id"`
-	SmartRouteSingleDevice   bool                               `json:"smart_route_single_device"`
-	DownstreamMaxConcurrency int                                `json:"downstream_max_concurrency,omitempty"`
-	UpstreamTimeoutSec       int                                `json:"upstream_timeout_sec,omitempty"`
-	UserRateLimitPerMinute   int                                `json:"user_rate_limit_per_minute,omitempty"`
-	UserRateLimitBurst       int                                `json:"user_rate_limit_burst,omitempty"`
-	Providers                []LLMProvider                      `json:"providers"`
-	TokenUsage               map[string]*corelib.TokenUsageStat `json:"token_usage,omitempty"`
+	Enabled                  bool   `json:"enabled"`
+	CurrentProviderID        string `json:"current_provider_id"`
+	SmartRouteSingleDevice   bool   `json:"smart_route_single_device"`
+	DownstreamMaxConcurrency int    `json:"downstream_max_concurrency,omitempty"`
+	UpstreamTimeoutSec       int    `json:"upstream_timeout_sec,omitempty"`
+	UserRateLimitPerMinute   int    `json:"user_rate_limit_per_minute,omitempty"`
+	UserRateLimitBurst       int    `json:"user_rate_limit_burst,omitempty"`
+	// UserRateLimitMaxWaitMS is how long a request may wait for a user rate-limit
+	// token before Hub returns 429. 0 means use the default (30s).
+	UserRateLimitMaxWaitMS int                                `json:"user_rate_limit_max_wait_ms,omitempty"`
+	Providers              []LLMProvider                      `json:"providers"`
+	TokenUsage             map[string]*corelib.TokenUsageStat `json:"token_usage,omitempty"`
 }
 
 func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry {
@@ -69,6 +77,12 @@ func normalizeLLMProviderRegistry(reg *LLMProviderRegistry) *LLMProviderRegistry
 	}
 	if reg.UserRateLimitBurst <= 0 {
 		reg.UserRateLimitBurst = DefaultLLMProviderUserRateLimitBurst
+	}
+	if reg.UserRateLimitMaxWaitMS <= 0 {
+		reg.UserRateLimitMaxWaitMS = DefaultLLMProviderUserRateLimitMaxWaitMS
+	}
+	if reg.UserRateLimitMaxWaitMS > MaxLLMProviderUserRateLimitMaxWaitMS {
+		reg.UserRateLimitMaxWaitMS = MaxLLMProviderUserRateLimitMaxWaitMS
 	}
 	if reg.TokenUsage == nil {
 		reg.TokenUsage = map[string]*corelib.TokenUsageStat{}

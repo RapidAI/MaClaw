@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import '../assistant/assistant_voice_input.dart';
 import '../../core/api/api_client.dart';
 import '../../core/security/mobile_redaction.dart';
+import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../../shared/theme.dart';
 import '../documents/document_draft.dart';
@@ -35,28 +36,60 @@ class _DigitalEmployeeChatScreenState
   final _messages = <_EmployeeChatMessage>[];
   String? _activeTaskId;
   bool _listening = false;
+  bool _greetingSeeded = false;
 
   @override
   void initState() {
     super.initState();
     _voiceInput = ref.read(assistantVoiceInputProvider);
-    _messages.add(
-      _EmployeeChatMessage.employee(
-        '你好，我是${widget.employee.name}。告诉我需要处理的服务器、电脑或资料任务，我会通过所属 Hub 执行并把结果带回来。',
-      ),
-    );
     ref.listenManual<AsyncValue<MobileDigitalEmployeeTask?>>(
       digitalEmployeeTaskProvider,
       (previous, next) {
+        final s = ref.read(appStringsProvider);
         final task = next.valueOrNull;
         if (!mounted || task == null || task.taskId != _activeTaskId) return;
-        if (task.status != 'done' && task.status != 'failed') return;
+
+        // Live progress from Hub realtime / poll: update streaming bubble.
+        if (task.status != 'done' && task.status != 'failed') {
+          final preview = _taskProgressPreview(task);
+          if (preview == null || preview.isEmpty) return;
+          setState(() {
+            final idx = _messages.lastIndexWhere(
+              (m) => m.taskId == task.taskId && m.streaming,
+            );
+            final bubble = _EmployeeChatMessage.employee(
+              preview,
+              taskId: task.taskId,
+              task: task,
+              streaming: true,
+            );
+            if (idx >= 0) {
+              _messages[idx] = bubble;
+            } else {
+              // Replace static "running" ack with live progress when possible.
+              final ackIdx = _messages.lastIndexWhere(
+                (m) => m.taskId == task.taskId && !m.fromUser && !m.failed,
+              );
+              if (ackIdx >= 0 && !_messages[ackIdx].streaming) {
+                _messages[ackIdx] = bubble;
+              } else {
+                _messages.add(bubble);
+              }
+            }
+          });
+          _scrollToEnd();
+          return;
+        }
+
         _activeTaskId = null;
         setState(() {
+          _messages.removeWhere((m) => m.taskId == task.taskId && m.streaming);
           _messages.add(
             _EmployeeChatMessage.employee(
               task.status == 'failed'
-                  ? (task.message.trim().isEmpty ? '任务执行失败。' : task.message)
+                  ? (task.message.trim().isEmpty
+                      ? s.taskFailedDefault
+                      : task.message)
                   : (task.result.trim().isEmpty ? task.message : task.result),
               taskId: task.taskId,
               task: task,
@@ -70,6 +103,19 @@ class _DigitalEmployeeChatScreenState
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_greetingSeeded) return;
+    _greetingSeeded = true;
+    final s = ref.read(appStringsProvider);
+    _messages.add(
+      _EmployeeChatMessage.employee(
+        s.employeeGreeting(widget.employee.name),
+      ),
+    );
+  }
+
+  @override
   void dispose() {
     unawaited(_voiceInput.stop());
     _inputController.dispose();
@@ -79,6 +125,7 @@ class _DigitalEmployeeChatScreenState
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(appStringsProvider);
     final taskState = ref.watch(digitalEmployeeTaskProvider);
     final sending = _activeTaskId != null || taskState.isLoading;
     final activeTask = taskState.valueOrNull;
@@ -94,7 +141,7 @@ class _DigitalEmployeeChatScreenState
           children: [
             Text(widget.employee.name),
             Text(
-              widget.employee.online ? '在线' : '离线',
+              widget.employee.online ? s.online : s.offline,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: widget.employee.online
                         ? scheme.secondary
@@ -105,7 +152,7 @@ class _DigitalEmployeeChatScreenState
         ),
         actions: [
           IconButton(
-            tooltip: '刷新员工状态',
+            tooltip: s.refreshEmployeeStatus,
             onPressed: () =>
                 ref.read(digitalEmployeesProvider.notifier).refresh(),
             icon: const Icon(Icons.refresh),
@@ -116,12 +163,12 @@ class _DigitalEmployeeChatScreenState
         children: [
           _EmployeeChatHeader(employee: widget.employee),
           if (unavailable)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: StatusBanner(
                 tone: StatusTone.warning,
                 icon: Icons.cloud_off_outlined,
-                message: '该数字员工当前不可提交任务，请确认远程端在线且运行时可用。',
+                message: s.chatUnavailable,
               ),
             ),
           if (activeTask != null &&
@@ -148,7 +195,7 @@ class _DigitalEmployeeChatScreenState
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 IconButton.outlined(
-                  tooltip: '添加附件',
+                  tooltip: s.addAttachment,
                   onPressed: sending || unavailable
                       ? null
                       : () => _showAttachmentMenu(context),
@@ -156,7 +203,7 @@ class _DigitalEmployeeChatScreenState
                 ),
                 const SizedBox(width: 6),
                 IconButton.outlined(
-                  tooltip: _listening ? '停止语音输入' : '语音输入',
+                  tooltip: _listening ? s.stopVoiceInput : s.voiceInput,
                   onPressed: sending || unavailable ? null : _toggleVoice,
                   icon: Icon(
                     _listening ? Icons.stop : Icons.mic_none,
@@ -171,15 +218,15 @@ class _DigitalEmployeeChatScreenState
                     maxLines: 5,
                     textInputAction: TextInputAction.newline,
                     enabled: !sending && !unavailable,
-                    decoration: const InputDecoration(
-                      hintText: '描述要处理的事情…',
+                    decoration: InputDecoration(
+                      hintText: s.chatHint,
                     ),
                     onSubmitted: (_) => _send(),
                   ),
                 ),
                 const SizedBox(width: 8),
                 IconButton.filled(
-                  tooltip: '发送',
+                  tooltip: s.send,
                   onPressed: sending || unavailable ? null : _send,
                   icon: const Icon(Icons.arrow_upward),
                 ),
@@ -192,6 +239,7 @@ class _DigitalEmployeeChatScreenState
   }
 
   Future<void> _send() async {
+    final s = ref.read(appStringsProvider);
     final prompt = _inputController.text.trim();
     if (prompt.isEmpty ||
         _activeTaskId != null ||
@@ -218,8 +266,8 @@ class _DigitalEmployeeChatScreenState
     if (task == null) {
       setState(() {
         _messages.add(
-          const _EmployeeChatMessage.employee(
-            '任务提交失败，请检查登录状态或网络连接。',
+          _EmployeeChatMessage.employee(
+            s.taskSubmitFailed,
             failed: true,
           ),
         );
@@ -231,7 +279,9 @@ class _DigitalEmployeeChatScreenState
         _messages.add(
           _EmployeeChatMessage.employee(
             task.status == 'failed'
-                ? (task.message.trim().isEmpty ? '任务执行失败。' : task.message)
+                ? (task.message.trim().isEmpty
+                    ? s.taskFailedDefault
+                    : task.message)
                 : (task.result.trim().isEmpty ? task.message : task.result),
             taskId: task.taskId,
             task: task,
@@ -243,7 +293,7 @@ class _DigitalEmployeeChatScreenState
       setState(() => _activeTaskId = task.taskId);
       _messages.add(
         _EmployeeChatMessage.employee(
-          '已收到，我正在处理这项任务。完成后会把结果发回这里。',
+          s.taskRunningAck,
           taskId: task.taskId,
         ),
       );
@@ -252,6 +302,7 @@ class _DigitalEmployeeChatScreenState
   }
 
   Future<void> _showAttachmentMenu(BuildContext context) async {
+    final s = ref.read(appStringsProvider);
     final action = await showModalBottomSheet<_EmployeeAttachmentAction>(
       context: context,
       builder: (context) => SafeArea(
@@ -260,7 +311,7 @@ class _DigitalEmployeeChatScreenState
           children: [
             ListTile(
               leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('拍照并上传'),
+              title: Text(s.takePhotoUpload),
               onTap: () => Navigator.pop(
                 context,
                 _EmployeeAttachmentAction.camera,
@@ -268,7 +319,7 @@ class _DigitalEmployeeChatScreenState
             ),
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('从相册选择图片'),
+              title: Text(s.pickFromGallery),
               onTap: () => Navigator.pop(
                 context,
                 _EmployeeAttachmentAction.gallery,
@@ -276,7 +327,7 @@ class _DigitalEmployeeChatScreenState
             ),
             ListTile(
               leading: const Icon(Icons.upload_file_outlined),
-              title: const Text('选择文档'),
+              title: Text(s.pickDocument),
               onTap: () => Navigator.pop(
                 context,
                 _EmployeeAttachmentAction.file,
@@ -300,7 +351,7 @@ class _DigitalEmployeeChatScreenState
     } on Object {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('无法打开附件选择器，请检查权限后重试。')),
+        SnackBar(content: Text(s.attachmentPickerFailed)),
       );
       return;
     }
@@ -308,7 +359,7 @@ class _DigitalEmployeeChatScreenState
     if (!mounted || selectedPath == null || selectedPath.trim().isEmpty) return;
     setState(() {
       _messages.add(
-        const _EmployeeChatMessage.user('已选择附件，正在提交 Hub 文档解析。'),
+        _EmployeeChatMessage.user(s.attachmentSubmitting),
       );
     });
     _scrollToEnd();
@@ -322,8 +373,10 @@ class _DigitalEmployeeChatScreenState
       _messages.add(
         _EmployeeChatMessage.employee(
           documentState.hasError
-              ? '附件提交失败，请到文档页查看错误并重试。'
-              : '附件已提交到 Hub 文档解析${upload?.taskId.isNotEmpty == true ? '，解析完成后可以继续告诉我如何处理。' : '。'}',
+              ? s.attachmentSubmitFailed
+              : (upload?.taskId.isNotEmpty == true
+                  ? s.attachmentSubmittedContinue
+                  : s.attachmentSubmitted),
           failed: documentState.hasError,
         ),
       );
@@ -332,6 +385,7 @@ class _DigitalEmployeeChatScreenState
   }
 
   Future<void> _toggleVoice() async {
+    final s = ref.read(appStringsProvider);
     if (_listening) {
       await _voiceInput.stop();
       if (mounted) setState(() => _listening = false);
@@ -339,8 +393,9 @@ class _DigitalEmployeeChatScreenState
     }
     setState(() => _listening = true);
     try {
+      final localeId = s.isZh ? 'zh_CN' : 'en_US';
       final started = await _voiceInput.start(
-        localeId: 'zh_CN',
+        localeId: localeId,
         onText: (transcript) {
           if (!mounted || transcript.trim().isEmpty) return;
           _inputController.text = transcript.trim();
@@ -359,7 +414,7 @@ class _DigitalEmployeeChatScreenState
       if (mounted) {
         setState(() => _listening = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('语音输入不可用，请检查麦克风权限。')),
+          SnackBar(content: Text(s.voiceUnavailable)),
         );
       }
     }
@@ -377,13 +432,14 @@ class _DigitalEmployeeChatScreenState
   }
 }
 
-class _EmployeeChatHeader extends StatelessWidget {
+class _EmployeeChatHeader extends ConsumerWidget {
   final DigitalEmployee employee;
 
   const _EmployeeChatHeader({required this.employee});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     return Material(
@@ -423,7 +479,7 @@ class _EmployeeChatHeader extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      employee.online ? '在线 · 通过所属 Hub 接入' : '离线 · 暂不可提交任务',
+                      employee.online ? s.onlineViaHub : s.offlineCannotSubmit,
                       style: text.bodySmall?.copyWith(
                         color: employee.online
                             ? scheme.secondary
@@ -446,6 +502,7 @@ class _EmployeeChatMessage {
   final String text;
   final bool fromUser;
   final bool failed;
+  final bool streaming;
   final String taskId;
   final MobileDigitalEmployeeTask? task;
 
@@ -453,6 +510,7 @@ class _EmployeeChatMessage {
     required this.text,
     required this.fromUser,
     this.failed = false,
+    this.streaming = false,
     this.taskId = '',
     this.task,
   });
@@ -465,24 +523,27 @@ class _EmployeeChatMessage {
     String taskId = '',
     MobileDigitalEmployeeTask? task,
     bool failed = false,
+    bool streaming = false,
   }) : this(
           text: text,
           fromUser: false,
           taskId: taskId,
           task: task,
           failed: failed,
+          streaming: streaming,
         );
 }
 
 enum _EmployeeAttachmentAction { camera, gallery, file }
 
-class _EmployeeTaskStatus extends StatelessWidget {
+class _EmployeeTaskStatus extends ConsumerWidget {
   final MobileDigitalEmployeeTask task;
 
   const _EmployeeTaskStatus({required this.task});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final waitingForApproval = {
       'approval_required',
       'pending_approval',
@@ -490,42 +551,84 @@ class _EmployeeTaskStatus extends StatelessWidget {
       'authorization_required',
       'waiting_authorization',
     }.contains(task.status);
-    final queuedStuck = task.status == 'queued' && _taskQueuedLongerThan(task, const Duration(seconds: 25));
+    final queuedStuck =
+        task.status == 'queued' && _taskQueuedLongerThan(task, const Duration(seconds: 25));
+    final running = task.status == 'claimed' ||
+        task.status == 'running' ||
+        task.status == 'in_progress';
     final label = waitingForApproval
-        ? '等待远程授权'
+        ? s.employeeTaskStatusLabel('approval_required')
         : switch (task.status) {
-            'queued' => queuedStuck ? '远程仍未领取' : '等待远程领取',
-            'claimed' || 'running' || 'in_progress' => '远程处理中',
+            'queued' => queuedStuck
+                ? s.remoteStillUnclaimed
+                : s.employeeTaskStatusLabel('queued'),
+            'claimed' || 'running' || 'in_progress' =>
+              s.employeeTaskStatusLabel('running'),
             'authorization_denied' ||
             'approval_denied' ||
             'rejected' =>
-              '远程授权被拒绝',
-            _ => '任务处理中',
+              s.employeeTaskStatusLabel('rejected'),
+            _ => s.taskProcessing,
           };
     final defaultMessage = switch (task.status) {
-      'queued' when queuedStuck =>
-        '请确认：① 桌面 MaClaw GUI 已登录同一 Hub 账号并在线；② 数字员工已在桌面启用。任务由桌面领取后才会有结果（与 GUI 内聊天通道不同）。',
-      'queued' => '任务已提交，等待桌面端数字员工领取。',
-      _ => '任务仍在远程处理中',
+      'queued' when queuedStuck => s.queuedStuckHint,
+      'queued' => s.taskSubmittedWaitingClaim,
+      _ => s.taskStillProcessingRemote,
     };
+    final messageLooksLikeWaitRemote = task.message.contains('等待远程') ||
+        task.message.toLowerCase().contains('waiting');
+    // Prefer live agent output (result) while running so the banner shows
+    // progressive generation text from Hub realtime patches.
+    final progressPreview = _taskProgressPreview(task);
+    final String bannerMessage;
+    if (running && progressPreview != null && progressPreview.isNotEmpty) {
+      bannerMessage = progressPreview;
+    } else if (task.message.trim().isEmpty) {
+      bannerMessage = defaultMessage;
+    } else if (queuedStuck && messageLooksLikeWaitRemote) {
+      bannerMessage = defaultMessage;
+    } else {
+      bannerMessage = task.message.trim();
+    }
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: StatusBanner(
-        tone: waitingForApproval || queuedStuck
-            ? StatusTone.warning
-            : StatusTone.info,
-        icon: waitingForApproval || queuedStuck
-            ? Icons.gpp_maybe_outlined
-            : Icons.sync,
-        title: label,
-        message: task.message.trim().isEmpty
-            ? defaultMessage
-            : (queuedStuck && task.message.contains('等待远程')
-                ? defaultMessage
-                : task.message.trim()),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          StatusBanner(
+            tone: waitingForApproval || queuedStuck
+                ? StatusTone.warning
+                : StatusTone.info,
+            icon: waitingForApproval || queuedStuck
+                ? Icons.gpp_maybe_outlined
+                : Icons.sync,
+            title: label,
+            message: bannerMessage,
+          ),
+          if (running) ...[
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                minHeight: 3,
+                backgroundColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
+}
+
+/// Prefer newest agent text for live progress (result), then message.
+String? _taskProgressPreview(MobileDigitalEmployeeTask task) {
+  final preview = digitalEmployeeTaskProgressPreview(
+    result: task.result,
+    message: task.message,
+  );
+  return preview.isEmpty ? null : preview;
 }
 
 bool _taskQueuedLongerThan(MobileDigitalEmployeeTask task, Duration threshold) {
@@ -536,22 +639,55 @@ bool _taskQueuedLongerThan(MobileDigitalEmployeeTask task, Duration threshold) {
   return DateTime.now().toUtc().difference(created.toUtc()) >= threshold;
 }
 
-class _EmployeeChatBubble extends StatelessWidget {
+class _EmployeeChatBubble extends ConsumerWidget {
   final _EmployeeChatMessage message;
 
   const _EmployeeChatBubble({required this.message});
 
   @override
-  Widget build(BuildContext context) {
-    return ChatBubble(
-      text: message.text,
-      fromUser: message.fromUser,
-      failed: message.failed,
-      footer: !message.fromUser &&
-              message.task != null &&
-              message.task!.result.trim().isNotEmpty
-          ? _EmployeeResultActions(task: message.task!)
-          : null,
+  Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = ref.watch(appStringsProvider);
+    return Column(
+      crossAxisAlignment:
+          message.fromUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        ChatBubble(
+          text: message.text,
+          fromUser: message.fromUser,
+          failed: message.failed,
+          footer: !message.fromUser &&
+                  !message.streaming &&
+                  message.task != null &&
+                  message.task!.result.trim().isNotEmpty
+              ? _EmployeeResultActions(task: message.task!)
+              : null,
+        ),
+        if (message.streaming)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2, bottom: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: scheme.primary,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  s.employeeTaskStatusLabel('in_progress'),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
@@ -563,12 +699,13 @@ class _EmployeeResultActions extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     return Wrap(
       spacing: 4,
       runSpacing: 4,
       children: [
         IconButton(
-          tooltip: '复制结果',
+          tooltip: s.copyResult,
           visualDensity: VisualDensity.compact,
           onPressed: () async {
             await Clipboard.setData(
@@ -576,13 +713,13 @@ class _EmployeeResultActions extends ConsumerWidget {
             );
             if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('任务结果已复制')),
+              SnackBar(content: Text(s.taskResultCopied)),
             );
           },
           icon: const Icon(Icons.content_copy_outlined, size: 18),
         ),
         IconButton(
-          tooltip: '分享结果',
+          tooltip: s.shareResultTooltip,
           visualDensity: VisualDensity.compact,
           onPressed: () async {
             await Share.share(redactMobileSensitiveText(task.result));
@@ -590,17 +727,17 @@ class _EmployeeResultActions extends ConsumerWidget {
           icon: const Icon(Icons.ios_share_outlined, size: 18),
         ),
         IconButton(
-          tooltip: '整理为草稿',
+          tooltip: s.makeDraftFromResult,
           visualDensity: VisualDensity.compact,
           onPressed: () async {
             await ref.read(documentsControllerProvider.notifier).createDraft(
-                  title: '数字员工任务结果',
+                  title: s.employeeTaskResultTitle,
                   template: DocumentTemplate.report,
                   content: redactMobileSensitiveText(task.result),
                 );
             if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('已整理为文档草稿')),
+              SnackBar(content: Text(s.draftFromResultOk)),
             );
           },
           icon: const Icon(Icons.article_outlined, size: 18),

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -69,6 +70,8 @@ func TestLLMV1ChatCompletionsHandlerUserRateLimit(t *testing.T) {
 	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{
 		UserRateLimitPerMinute: 1,
 		UserRateLimitBurst:     1,
+		// Keep wait tiny so the second request still fails quickly after queue timeout.
+		UserRateLimitMaxWaitMS: 20,
 		Providers:              []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}},
 	}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
@@ -96,7 +99,104 @@ func TestLLMV1ChatCompletionsHandlerUserRateLimit(t *testing.T) {
 			if !bytes.Contains(rec.Body.Bytes(), []byte("LLM_ENDPOINT_USER_RATE_LIMITED")) {
 				t.Fatalf("expected user rate limit error, body = %s", rec.Body.String())
 			}
+			if rec.Header().Get("Retry-After") == "" {
+				t.Fatalf("expected Retry-After header, body = %s", rec.Body.String())
+			}
 		}
+	}
+}
+
+func TestLLMEndpointUserRateLimitQueuesUntilTokenRefills(t *testing.T) {
+	limiter := newLLMEndpointUserLimiter()
+	reg := &im.LLMProviderRegistry{
+		UserRateLimitPerMinute: 120, // 2 tokens/sec
+		UserRateLimitBurst:     1,
+		UserRateLimitMaxWaitMS: 1500,
+	}
+	if !limiter.allowForRegistry("tenant\x00queue@example.com", reg) {
+		t.Fatal("first request should take the only burst token")
+	}
+	start := time.Now()
+	result := limiter.acquireForRegistry(context.Background(), "tenant\x00queue@example.com", reg)
+	waited := time.Since(start)
+	if !result.Allowed {
+		t.Fatalf("expected queued acquire to succeed after refill, result=%#v waited=%s", result, waited)
+	}
+	if waited < 400*time.Millisecond {
+		t.Fatalf("expected acquire to wait for token refill, waited only %s", waited)
+	}
+	if result.Waited < 400*time.Millisecond {
+		t.Fatalf("result.Waited = %s, want >= 400ms", result.Waited)
+	}
+}
+
+func TestLLMEndpointUserRateLimitAcquireHonorsContextCancel(t *testing.T) {
+	limiter := newLLMEndpointUserLimiter()
+	reg := &im.LLMProviderRegistry{
+		UserRateLimitPerMinute: 1,
+		UserRateLimitBurst:     1,
+		UserRateLimitMaxWaitMS: 5000,
+	}
+	if !limiter.allowForRegistry("tenant\x00cancel@example.com", reg) {
+		t.Fatal("first request should consume the burst token")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	result := limiter.acquireForRegistry(ctx, "tenant\x00cancel@example.com", reg)
+	if result.Allowed {
+		t.Fatalf("expected canceled wait to fail, got %#v", result)
+	}
+	if !result.Canceled {
+		t.Fatalf("expected Canceled=true, got %#v", result)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("canceled acquire took too long: %s", time.Since(start))
+	}
+}
+
+func TestLLMEndpointUserRateLimitPrunesIdleBuckets(t *testing.T) {
+	states := map[string]*llmEndpointUserBucket{
+		"old": {tokens: 1, last: time.Now().Add(-llmEndpointUserBucketIdleTTL - time.Minute)},
+		"new": {tokens: 1, last: time.Now()},
+	}
+	pruneIdleLLMEndpointUserBuckets(states, time.Now())
+	if _, ok := states["old"]; ok {
+		t.Fatal("idle bucket should be pruned")
+	}
+	if _, ok := states["new"]; !ok {
+		t.Fatal("active bucket should be kept")
+	}
+}
+
+func TestLLMEndpointUserRateLimitEvictsOldestWhenOverCap(t *testing.T) {
+	now := time.Now()
+	states := map[string]*llmEndpointUserBucket{
+		"a": {tokens: 1, last: now.Add(-3 * time.Minute)},
+		"b": {tokens: 1, last: now.Add(-2 * time.Minute)},
+		"c": {tokens: 1, last: now.Add(-1 * time.Minute)},
+	}
+	evictOldestLLMEndpointUserBuckets(states, 2)
+	if len(states) != 1 {
+		t.Fatalf("len(states)=%d, want 1", len(states))
+	}
+	if _, ok := states["c"]; !ok {
+		t.Fatalf("newest bucket should remain, states=%v", states)
+	}
+}
+
+func TestClampLLMEndpointUserRateLimitMaxWaitMS(t *testing.T) {
+	if got := clampLLMEndpointUserRateLimitMaxWaitMS(0); got != im.DefaultLLMProviderUserRateLimitMaxWaitMS {
+		t.Fatalf("default clamp = %d, want %d", got, im.DefaultLLMProviderUserRateLimitMaxWaitMS)
+	}
+	if got := clampLLMEndpointUserRateLimitMaxWaitMS(5000); got != 5000 {
+		t.Fatalf("in-range clamp = %d, want 5000", got)
+	}
+	if got := clampLLMEndpointUserRateLimitMaxWaitMS(im.MaxLLMProviderUserRateLimitMaxWaitMS + 1); got != im.MaxLLMProviderUserRateLimitMaxWaitMS {
+		t.Fatalf("over-cap clamp = %d, want %d", got, im.MaxLLMProviderUserRateLimitMaxWaitMS)
 	}
 }
 

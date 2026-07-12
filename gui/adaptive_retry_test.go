@@ -253,6 +253,58 @@ func TestIsRetryableLLMError_Includes429(t *testing.T) {
 	}
 }
 
+func TestIsRetryableLLMError_IncludesHubUserRateLimitQueueTimeout(t *testing.T) {
+	err := errors.New("MaClaw官方请求过快，Hub 排队已超时，请约 2 秒 后重试。")
+	if !isRetryableLLMError(err) {
+		t.Error("expected true for hub user rate-limit queue timeout")
+	}
+	if !isTransientServerError(err) {
+		t.Error("hub user rate-limit should be transient/retryable")
+	}
+}
+
+func TestIsRetryableLLMError_ExcludesHubRateLimitWaitCanceled(t *testing.T) {
+	err := errors.New("请求在 Hub 限流排队等待时被取消。")
+	if isRetryableLLMError(err) || isTransientServerError(err) {
+		t.Fatal("wait-canceled should not be auto-retried as transient pressure")
+	}
+	if isProviderPressureLLMError(err) || isForegroundLLMThrottleError(err) {
+		t.Fatal("wait-canceled should not throttle the scheduler")
+	}
+	httpCanceled := &llm.HTTPStatusError{
+		StatusCode: 408,
+		Body:       []byte(`{"code":"LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED","message":"request canceled while waiting in Hub user rate-limit queue"}`),
+	}
+	if isTransientServerError(httpCanceled) || isProviderPressureLLMError(httpCanceled) {
+		t.Fatal("HTTPStatusError wait-canceled must not look like gateway pressure")
+	}
+}
+
+func TestProviderPressureExcludesHubPeriodLimit(t *testing.T) {
+	err := errors.New("MaClaw 官方周期限流：当前周期额度已用尽，约 1 小时 后恢复。")
+	if isProviderPressureLLMError(err) {
+		t.Fatal("period quota should not be treated as gateway pressure")
+	}
+	if isForegroundLLMThrottleError(err) {
+		t.Fatal("period quota should not throttle foreground scheduler")
+	}
+	// HTTPStatusError only prints status/body_len; body still carries the code.
+	httpPeriod := &llm.HTTPStatusError{
+		StatusCode: 429,
+		Body:       []byte(`{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`),
+	}
+	if !isHubPeriodLimitError(httpPeriod) {
+		t.Fatal("HTTPStatusError body should identify period limit")
+	}
+	if isProviderPressureLLMError(httpPeriod) || isForegroundLLMThrottleError(httpPeriod) {
+		t.Fatal("period-limit HTTP 429 must not throttle the scheduler")
+	}
+	pressure := errors.New("MaClaw官方请求过快，Hub 排队已超时，请约 2 秒 后重试。")
+	if !isProviderPressureLLMError(pressure) || !isForegroundLLMThrottleError(pressure) {
+		t.Fatal("hub user rate-limit queue timeout should be treated as pressure")
+	}
+}
+
 func TestIsRetryableLLMError_ExcludesHubPeriodLimit(t *testing.T) {
 	err := errors.New("MaClaw 官方周期限流：当前周期额度已用尽，约 2 小时 后恢复。")
 	if isRetryableLLMError(err) {

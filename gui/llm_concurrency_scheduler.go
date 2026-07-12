@@ -23,14 +23,15 @@ const (
 	// defaultForegroundLLMConcurrency is sized to support multiple concurrent
 	// foreground agent loops (one per desktop tab) without serialization. Each
 	// tab may issue up to 2 LLM requests per agent loop iteration (main LLM +
-	// lightweight intent/task-context call), so 4 slots covers 2 concurrent
-	// tabs with headroom. Under API pressure, ObserveResult halves this to the
-	// degraded limit via isForegroundLLMThrottleError.
-	defaultForegroundLLMConcurrency  = 4
-	defaultBackgroundLLMConcurrency  = 1
-	degradedForegroundLLMConcurrency = 1
+	// lightweight intent/task-context call). 6 slots covers ~3 concurrent tabs
+	// with headroom while Hub-side user rate-limit queue absorbs short bursts.
+	// Under API pressure (429), ObserveResult drops to degradedForeground/background
+	// for llmSchedulerDegradedCooldown so the client self-paces while Hub's queue drains.
+	defaultForegroundLLMConcurrency  = 6
+	defaultBackgroundLLMConcurrency  = 2
+	degradedForegroundLLMConcurrency = 2
 	degradedBackgroundLLMConcurrency = 0
-	llmSchedulerDegradedCooldown     = 60 * time.Second
+	llmSchedulerDegradedCooldown     = 45 * time.Second
 	llmSchedulerWaitLogInterval      = 5 * time.Second
 )
 
@@ -452,7 +453,8 @@ func acquireLLMSchedulerLease(ctx context.Context) (*llmSchedulerLease, llm.Requ
 }
 
 func isProviderPressureLLMError(err error) bool {
-	if err == nil {
+	if err == nil || isHubPeriodLimitError(err) || isHubRateLimitWaitCanceledError(err) {
+		// Period quota / canceled waits are not "pressure" that self-pacing can fix.
 		return false
 	}
 	var httpErr *llm.HTTPStatusError
@@ -471,13 +473,14 @@ func isProviderPressureLLMError(err error) bool {
 		strings.Contains(s, "too many requests") ||
 		strings.Contains(s, "rate limit") ||
 		strings.Contains(s, "rate_limit") ||
+		hasHubGatewayPressureMarker(s) ||
 		strings.Contains(s, "overloaded") ||
 		strings.Contains(s, "service unavailable") ||
 		strings.Contains(s, "gateway timeout")
 }
 
 func isForegroundLLMThrottleError(err error) bool {
-	if err == nil {
+	if err == nil || isHubPeriodLimitError(err) || isHubRateLimitWaitCanceledError(err) {
 		return false
 	}
 	var httpErr *llm.HTTPStatusError
@@ -489,5 +492,6 @@ func isForegroundLLMThrottleError(err error) bool {
 		strings.Contains(s, "too many requests") ||
 		strings.Contains(s, "rate limit") ||
 		strings.Contains(s, "rate_limit") ||
+		hasHubGatewayPressureMarker(s) ||
 		strings.Contains(s, "overloaded")
 }

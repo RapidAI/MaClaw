@@ -86,12 +86,52 @@ class _RecordingNotificationService extends MobileNotificationService {
     required String title,
     required String body,
     String? payload,
+    int? notificationId,
   }) async {
     shown.add((title: title, body: body, payload: payload));
   }
 }
 
 void main() {
+  test('digital employee progress patches update state without notifying',
+      () async {
+    final store = _FakeMobileLocalStore();
+    final notifications = _RecordingNotificationService();
+    final container = ProviderContainer(
+      overrides: [
+        mobileLocalStoreProvider.overrideWithValue(store),
+        mobileNotificationServiceProvider.overrideWithValue(notifications),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(digitalEmployeeTaskProvider.future);
+
+    const progress = MobileRealtimeEvent(
+      type: 'digital_employee_task',
+      payload: {
+        'task_id': 'task-progress-1',
+        'employee_id': 'employee-1',
+        'prompt': '检查磁盘',
+        'status': 'in_progress',
+        'result': '磁盘使用率 42%',
+        'message': '生成中',
+        'claimed_by': 'srv-prod',
+      },
+    );
+
+    await container
+        .read(digitalEmployeeTaskProvider.notifier)
+        .applyRealtimeEvent(progress);
+
+    final current = container.read(digitalEmployeeTaskProvider).valueOrNull;
+    expect(current?.taskId, 'task-progress-1');
+    expect(current?.status, 'in_progress');
+    expect(current?.result, contains('磁盘使用率'));
+    expect(store.lastTask?.result, contains('磁盘使用率'));
+    expect(notifications.shown, isEmpty);
+  });
+
   test('digital employee realtime completion notifies once', () async {
     final store = _FakeMobileLocalStore();
     final notifications = _RecordingNotificationService();

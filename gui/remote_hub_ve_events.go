@@ -36,39 +36,38 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 	if c == nil || c.app == nil {
 		return
 	}
-	if strings.TrimSpace(msg.Type) == veEventDiscussionInvite {
-		c.handleVEDiscussionInvite(msg)
-	}
-	if strings.TrimSpace(msg.Type) == veEventDiscussionRename {
+	msgType := strings.TrimSpace(msg.Type)
+
+	// Network/disk-heavy branches must not run on the WebSocket readLoop.
+	switch msgType {
+	case veEventDiscussionMessage:
+		go c.handleVEDiscussionMessage(msg)
+		return
+	case veEventDiscussionInvite:
+		// AcceptInvite is an HTTP call to Hub — keep readLoop unblocked.
+		go c.handleVEDiscussionInvite(msg)
+		// Still forward invite to frontend below for UI.
+	case veEventDiscussionRename:
 		c.cachePushedVEDiscussionRename(decodeVEEventPayloadMap(msg))
 	}
-	if shouldClearDiscoverableVECacheForEvent(msg.Type) {
+
+	if shouldClearDiscoverableVECacheForEvent(msgType) {
 		c.app.clearDiscoverableVECache()
 	}
 	if c.app.ctx == nil {
 		return
 	}
-	if strings.TrimSpace(msg.Type) == veEventDiscussionMessage {
-		c.handleVEDiscussionMessage(msg)
-		return
-	}
 
 	payload := decodeVEEventPayloadMap(msg)
-
-	// Construct the event data to emit to frontend
 	eventData := map[string]any{
 		"type":    msg.Type,
 		"ts":      msg.TS,
 		"payload": payload,
 	}
-
 	// Emit to frontend using the event type as the Wails event name.
-	// Frontend subscribes to these events via runtime.EventsOn("ve:list_update", ...) etc.
 	runtime.EventsEmit(c.app.ctx, msg.Type, eventData)
-
-	// Also emit a generic "ve-event" for components that want to listen to all VE events
+	// Also emit a generic "ve-event" for components that want all VE events.
 	runtime.EventsEmit(c.app.ctx, "ve-event", eventData)
-
 	log.Printf("[hub-client] handleVEEvent: forwarded %s to frontend", msg.Type)
 }
 

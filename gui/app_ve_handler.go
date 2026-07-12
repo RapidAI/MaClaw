@@ -1239,15 +1239,25 @@ func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
 	})
 }
 
-// batchHubStreamChunks consumes token deltas from ch, batches them with an 80ms
-// flush interval or 2KB size threshold, and sends each batch as a single
+// batchHubStreamChunks consumes token deltas from ch, batches them with a short
+// flush interval or size threshold, and sends each batch as a single
 // SendStreamChunk call to Hub. This gives remote devices progressive streaming
 // without per-token HTTP overhead.
+//
+// First non-empty content is flushed immediately so remote UIs leave "thinking"
+// without waiting for the batch timer; subsequent deltas use the shared group
+// Hub sync cadence (80ms / 2KB).
 func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan string, done chan<- struct{}) {
 	defer close(done)
 
-	const flushInterval = 80 * time.Millisecond
-	const maxBatchBytes = 2048
+	flushInterval := groupHubSyncChunkFlushInterval
+	maxBatchBytes := groupHubSyncChunkMaxBytes
+	if flushInterval <= 0 {
+		flushInterval = 80 * time.Millisecond
+	}
+	if maxBatchBytes <= 0 {
+		maxBatchBytes = 2048
+	}
 
 	var buf strings.Builder
 	timer := time.NewTimer(flushInterval)
@@ -1255,6 +1265,7 @@ func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan stri
 		<-timer.C
 	}
 	timerActive := false
+	firstFlushed := false
 
 	flush := func() {
 		if buf.Len() == 0 {
@@ -1262,6 +1273,7 @@ func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan stri
 		}
 		h.SendStreamChunk(sessionID, buf.String())
 		buf.Reset()
+		firstFlushed = true
 	}
 
 	for {
@@ -1270,15 +1282,36 @@ func (h *VEMessageHandler) batchHubStreamChunks(sessionID string, ch <-chan stri
 			if !ok {
 				// Channel closed — flush remaining buffer.
 				if timerActive && !timer.Stop() {
-					<-timer.C
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				flush()
 				return
 			}
+			if delta == "" {
+				continue
+			}
 			buf.WriteString(delta)
+			// First paint ASAP for remote clients (TTFB for stream_chunk).
+			if !firstFlushed {
+				if timerActive && !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timerActive = false
+				flush()
+				continue
+			}
 			if buf.Len() >= maxBatchBytes {
 				if timerActive && !timer.Stop() {
-					<-timer.C
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 				timerActive = false
 				flush()

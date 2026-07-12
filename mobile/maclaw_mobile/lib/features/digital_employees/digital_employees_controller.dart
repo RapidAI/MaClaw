@@ -205,10 +205,24 @@ class DigitalEmployeeTaskController
     if (!event.digitalEmployeeTask || event.payload.isEmpty) return;
     final task = MobileDigitalEmployeeTask.fromJson(event.payload);
     if (task.taskId.isEmpty) return;
+
+    // While a different task is still active, ignore unrelated push noise.
+    final current = state.valueOrNull;
+    if (current != null &&
+        current.taskId.isNotEmpty &&
+        current.taskId != task.taskId &&
+        !_taskFinished(current)) {
+      return;
+    }
+
     await ref.read(mobileLocalStoreProvider).saveLastDigitalEmployeeTask(task);
-    await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
-    await _notifyTaskFinished(task);
     state = AsyncData(task);
+
+    // Progress patches are frequent; only refresh history / notify on terminal.
+    if (_taskFinished(task)) {
+      await ref.read(digitalEmployeeTaskHistoryProvider.notifier).refresh();
+      await _notifyTaskFinished(task);
+    }
     _ensurePolling(task);
   }
 
@@ -221,7 +235,8 @@ class DigitalEmployeeTaskController
     if (_pollTimer?.isActive ?? false) {
       return;
     }
-    _pollTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+    // Realtime is primary; HTTP poll is a sparse fallback (was 8s).
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       final current = state.valueOrNull;
       if (current == null || _taskFinished(current) || state.isLoading) {
         if (current == null || _taskFinished(current)) {

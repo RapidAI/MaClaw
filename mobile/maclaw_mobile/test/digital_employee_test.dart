@@ -103,6 +103,33 @@ void main() {
     );
     expect(digitalEmployeeTaskAwaitingAuthorization('done'), isFalse);
   });
+
+  test('prefers live result text for digital employee progress preview', () {
+    expect(
+      digitalEmployeeTaskProgressPreview(
+        result: '远程数字员工正在处理手机任务。',
+        message: '远程数字员工已领取任务，正在处理。',
+      ),
+      isEmpty,
+    );
+    expect(
+      digitalEmployeeTaskProgressPreview(
+        result: '磁盘使用率 42%，建议清理 /var/log',
+        message: '生成中',
+      ),
+      contains('磁盘使用率'),
+    );
+    expect(
+      digitalEmployeeTaskProgressPreview(
+        result: '',
+        message: '正在汇总巡检结论…',
+      ),
+      contains('巡检结论'),
+    );
+    expect(digitalEmployeeTaskIsRunning('in_progress'), isTrue);
+    expect(digitalEmployeeTaskIsRunning('queued'), isTrue);
+    expect(digitalEmployeeTaskIsRunning('done'), isFalse);
+  });
   test('builds structured mobile emergency prompts for digital employees', () {
     final prompt = buildDigitalEmployeeMobilePrompt(
       type: DigitalEmployeeMobileTaskType.serverMaintenance,

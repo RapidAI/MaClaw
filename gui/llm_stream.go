@@ -194,6 +194,23 @@ func classifyHubErrorBody(body []byte) string {
 	if friendly := classifyHubLLMServiceError(hubCode, hubMessage, retryAfterSeconds, retryAfterAt); friendly != "" {
 		return appendHubErrorDiagnostics(friendly, hubErr)
 	}
+	switch hubCode {
+	case "LLM_ENDPOINT_USER_RATE_LIMITED":
+		// Hub queues bursts before 429; surface that so users don't think the model itself failed.
+		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
+		if retryText != "" {
+			return appendHubErrorDiagnostics("MaClaw官方请求过快，Hub 排队已超时，请约 "+retryText+" 后重试。", hubErr)
+		}
+		return appendHubErrorDiagnostics("MaClaw官方请求过快，Hub 本地排队已超时，请稍后再试。", hubErr)
+	case "LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED":
+		return appendHubErrorDiagnostics("请求在 Hub 限流排队等待时被取消。", hubErr)
+	case "LLM_PROVIDER_QUEUE_FULL":
+		return appendHubErrorDiagnostics("MaClaw官方上游队列已满，请稍后再试。", hubErr)
+	case "LLM_PROVIDER_QUEUE_TIMEOUT":
+		return appendHubErrorDiagnostics("MaClaw官方上游排队等待超时，请稍后再试。", hubErr)
+	case "LLM_ENDPOINT_CONCURRENCY_FULL":
+		return appendHubErrorDiagnostics("MaClaw官方网关并发已满，请稍后再试。", hubErr)
+	}
 	if (strings.HasPrefix(hubCode, "LLM_UPSTREAM_") || strings.HasPrefix(hubCode, "LLM_OFFICIAL_")) && strings.TrimSpace(hubMessage) != "" {
 		return appendHubErrorDiagnostics(hubMessage, hubErr)
 	}
@@ -395,8 +412,9 @@ func formatHubRetryText(seconds int64, retryAfterAt string) string {
 	if seconds <= 0 {
 		return ""
 	}
+	// Keep units Chinese — messages that embed this text are user-facing CN strings.
 	if seconds < 60 {
-		return fmt.Sprintf("%d seconds", seconds)
+		return fmt.Sprintf("%d 秒", seconds)
 	}
 	minutes := (seconds + 59) / 60
 	if minutes < 60 {
@@ -407,7 +425,7 @@ func formatHubRetryText(seconds int64, retryAfterAt string) string {
 		return fmt.Sprintf("%d 小时", hours)
 	}
 	days := (hours + 23) / 24
-	return fmt.Sprintf("%d days", days)
+	return fmt.Sprintf("%d 天", days)
 }
 
 func classifyOpenAICompatibleHTTPError(err error, providerName string) (string, bool) {

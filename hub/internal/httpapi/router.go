@@ -150,6 +150,10 @@ func NewRouter(
 	InitMobileCoreAgent(runtimeDataDir)
 	// Document write paths resolve free/paid quota from the same service grants as bootstrap.
 	ConfigureMobileDocumentQuota(system, securitySvc)
+	// Desktop push: wake online GUI machines when mobile queues digital-employee tasks.
+	if deviceSvc != nil {
+		ConfigureMobileMachinePush(mobileDevicePushAdapter{svc: deviceSvc})
+	}
 	knowledgeSharePackageDir := filepath.Join(runtimeDataDir, "knowledge-packages")
 	knowledgeSyncPackageDir := filepath.Join(runtimeDataDir, "knowledge-sync")
 	StartKnowledgeSyncCleanup(knowledgeSyncPackageDir)

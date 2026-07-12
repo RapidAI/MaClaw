@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -31,6 +33,45 @@ func TestMobileDigitalEmployeeCandidateIDsIncludesVEAlias(t *testing.T) {
 		if !found {
 			t.Fatalf("extra candidates missing %q: %#v", wantID, gotExtra)
 		}
+	}
+}
+
+func TestMobileTaskPollStateAdaptiveInterval(t *testing.T) {
+	s := newMobileTaskPollState()
+	if got := s.interval(); got != mobileDigitalEmployeeTaskPollIdle {
+		t.Fatalf("idle interval = %s, want %s", got, mobileDigitalEmployeeTaskPollIdle)
+	}
+	s.noteHit()
+	if got := s.interval(); got != mobileDigitalEmployeeTaskPollActive {
+		t.Fatalf("active interval = %s, want %s", got, mobileDigitalEmployeeTaskPollActive)
+	}
+	if s.workers == nil || cap(s.workers) != mobileDigitalEmployeeMaxConcurrent {
+		t.Fatalf("workers cap = %d, want %d", cap(s.workers), mobileDigitalEmployeeMaxConcurrent)
+	}
+	if !s.tryReserveWorker() {
+		t.Fatal("fresh state should reserve a worker")
+	}
+	// Fill remaining slots.
+	for i := 1; i < cap(s.workers); i++ {
+		if !s.tryReserveWorker() {
+			t.Fatalf("reserve %d failed", i)
+		}
+	}
+	if s.tryReserveWorker() {
+		t.Fatal("saturated workers should fail reserve")
+	}
+	s.releaseWorker()
+	if !s.tryReserveWorker() {
+		t.Fatal("after release, reserve should succeed")
+	}
+}
+
+func TestIsHTTPNotFoundError(t *testing.T) {
+	if !isHTTPNotFoundError(fmt.Errorf("hub returned HTTP 404")) {
+		t.Fatal("expected HTTP 404 to match")
+	}
+	if isHTTPNotFoundError(fmt.Errorf("hub returned HTTP 500")) {
+		t.Fatal("HTTP 500 should not match")
 	}
 }
 
@@ -286,6 +327,39 @@ func TestBuildMobileDigitalEmployeeExecutionPromptIncludesTypeAndContext(t *test
 			t.Fatalf("prompt context order is unstable; %q appeared after index %d: %s", want, last, prompt)
 		}
 		last = index
+	}
+}
+
+func TestClipRunesForMobileProgressKeepsTail(t *testing.T) {
+	if got := clipRunesForMobileProgress("short", 10); got != "short" {
+		t.Fatalf("short = %q", got)
+	}
+	long := strings.Repeat("a", 20) + "TAIL"
+	got := clipRunesForMobileProgress(long, 4)
+	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "TAIL") {
+		t.Fatalf("got = %q, want ellipsis + TAIL", got)
+	}
+	// CJK runes count as one each.
+	cjk := "一二三四五六七八九十"
+	gotCJK := clipRunesForMobileProgress(cjk, 3)
+	if gotCJK != "…八九十" {
+		t.Fatalf("cjk = %q, want …八九十", gotCJK)
+	}
+}
+
+func TestMobileDigitalEmployeeProgressCadenceConstants(t *testing.T) {
+	if mobileDigitalEmployeeProgressMinInterval < time.Second {
+		t.Fatalf("min interval too aggressive: %s", mobileDigitalEmployeeProgressMinInterval)
+	}
+	if mobileDigitalEmployeeProgressMinChars < 16 {
+		t.Fatalf("min chars too small: %d", mobileDigitalEmployeeProgressMinChars)
+	}
+	if mobileDigitalEmployeeProgressMaxRunes < 64 {
+		t.Fatalf("max runes too small: %d", mobileDigitalEmployeeProgressMaxRunes)
+	}
+	// Idle poll must stay slower than active so desktops do not hammer Hub.
+	if mobileDigitalEmployeeTaskPollIdle <= mobileDigitalEmployeeTaskPollActive {
+		t.Fatalf("idle=%s should be > active=%s", mobileDigitalEmployeeTaskPollIdle, mobileDigitalEmployeeTaskPollActive)
 	}
 }
 

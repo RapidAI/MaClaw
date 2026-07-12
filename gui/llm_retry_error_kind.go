@@ -90,13 +90,63 @@ func isHubPeriodLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := strings.ToLower(err.Error())
+	if hasHubPeriodLimitMarker(err.Error()) {
+		return true
+	}
+	// HTTPStatusError.Error() only reports status+body_len; inspect the body.
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil && len(httpErr.Body) > 0 {
+		return hasHubPeriodLimitMarker(string(httpErr.Body))
+	}
+	return false
+}
+
+func hasHubPeriodLimitMarker(s string) bool {
+	s = strings.ToLower(s)
 	return strings.Contains(s, "llm_service_period_limited") ||
 		strings.Contains(s, "current period credit limit") ||
 		strings.Contains(s, "period limit") ||
 		strings.Contains(s, "period quota") ||
 		strings.Contains(s, "period credit") ||
-		strings.Contains(s, "鍛ㄦ湡闄愭祦")
+		strings.Contains(s, "周期限流") ||
+		strings.Contains(s, "周期额度") ||
+		strings.Contains(s, "period-limited")
+}
+
+// hasHubGatewayPressureMarker detects Hub/gateway soft rate-limit / queue pressure
+// that should be retried or client-side throttled. Period-quota exhaustion is
+// intentionally excluded (callers must check isHubPeriodLimitError first).
+func hasHubGatewayPressureMarker(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "llm_endpoint_user_rate_limited") ||
+		strings.Contains(s, "llm_provider_queue_full") ||
+		strings.Contains(s, "llm_provider_queue_timeout") ||
+		strings.Contains(s, "llm_endpoint_concurrency_full") ||
+		strings.Contains(s, "请求过于频繁") ||
+		strings.Contains(s, "请求过快") ||
+		strings.Contains(s, "排队已超时") ||
+		strings.Contains(s, "上游队列已满") ||
+		strings.Contains(s, "上游排队等待超时") ||
+		strings.Contains(s, "网关并发已满") ||
+		strings.Contains(s, "调用频率超限")
+}
+
+func isHubRateLimitWaitCanceledError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "llm_endpoint_user_rate_limit_wait_canceled") ||
+		strings.Contains(s, "限流排队等待时被取消") ||
+		strings.Contains(s, "canceled while waiting in hub user rate-limit queue") {
+		return true
+	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil && len(httpErr.Body) > 0 {
+		body := strings.ToLower(string(httpErr.Body))
+		return strings.Contains(body, "llm_endpoint_user_rate_limit_wait_canceled")
+	}
+	return false
 }
 
 func isTransientServerError(err error) bool {
@@ -107,20 +157,19 @@ func isTransientServerError(err error) bool {
 	if isHubPeriodLimitError(err) {
 		return false
 	}
-	if strings.Contains(s, "\u670d\u52a1\u7e41\u5fd9") ||
-		strings.Contains(s, "\u8bf7\u7a0d\u540e\u91cd\u8bd5") ||
-		strings.Contains(s, "\u7f51\u7edc\u9519\u8bef") ||
-		strings.Contains(s, "\u8c03\u7528\u9891\u7387\u8d85\u9650") {
+	// Client/parent canceled while Hub was pacing — do not auto-retry as if the server is busy.
+	if isHubRateLimitWaitCanceledError(err) {
+		return false
+	}
+	if strings.Contains(s, "服务繁忙") ||
+		strings.Contains(s, "网络错误") {
 		return true
 	}
 	if strings.Contains(s, "429") ||
 		strings.Contains(s, "rate limit") ||
 		strings.Contains(s, "rate_limit") ||
 		strings.Contains(s, "too many requests") ||
-		strings.Contains(s, "璇锋眰杩囦簬棰戠箒") ||
-		strings.Contains(s, "璋冪敤棰戠巼瓒呴檺") ||
-		strings.Contains(s, "璋冪敤棰戠巼") ||
-		strings.Contains(s, "闄愭祦") {
+		hasHubGatewayPressureMarker(s) {
 		return true
 	}
 	if strings.Contains(s, "quota exceeded") ||

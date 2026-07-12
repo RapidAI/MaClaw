@@ -145,7 +145,11 @@ type mobileDocumentDraftRecord struct {
 	// pure-text drafts created without a file.
 	SourceFilename    string
 	SourceContentType string
-	SourceBytes       []byte
+	// SourcePath is relative to mobile blob dir (durable). SourceBytes is a
+	// process-local cache and is stripped when writing state.json.
+	SourcePath  string
+	SourceSize  int
+	SourceBytes []byte
 }
 
 type mobileDocumentExportRecord struct {
@@ -167,6 +171,8 @@ type mobileDocumentUploadRecord struct {
 	DraftID     string
 	Message     string
 	ClaimedBy   string
+	SourcePath  string
+	SourceSize  int
 	SourceBytes []byte
 	OCRMarkdown string
 	OCRMessage  string
@@ -197,17 +203,17 @@ type mobileBackendSSHSessionRecord struct {
 	ServerProfileID  string
 	BackendSessionID string
 	// ExecMode: desktop_exec (GUI/agent claim) or hub_exec (Hub vault + direct SSH).
-	ExecMode         string
-	Status           string
-	State            string
-	Message          string
-	RecentOutput     string
-	OutputChunk      string
-	OutputSeq        int64
-	PendingInput     []string
-	ClaimedBy        string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ExecMode     string
+	Status       string
+	State        string
+	Message      string
+	RecentOutput string
+	OutputChunk  string
+	OutputSeq    int64
+	PendingInput []string
+	ClaimedBy    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type mobileBackendSSHTaskRecord struct {
@@ -338,12 +344,23 @@ func mobileEnsureStateLoaded() {
 	}
 	mobileDocuments.Lock()
 	if state.Drafts != nil {
+		// Do not eagerly load multi-MB originals into RAM. Bytes are filled on
+		// demand via mobileDraftLoadSourceBytes; only normalize SourceSize here.
+		// Legacy state.json may still embed SourceBytes — keep them until next persist strips to disk.
+		for id, rec := range state.Drafts {
+			mobileNormalizeDraftSourceMeta(&rec)
+			state.Drafts[id] = rec
+		}
 		mobileDocuments.drafts = state.Drafts
 	}
 	if state.Exports != nil {
 		mobileDocuments.exports = state.Exports
 	}
 	if state.Uploads != nil {
+		for id, rec := range state.Uploads {
+			mobileNormalizeUploadSourceMeta(&rec)
+			state.Uploads[id] = rec
+		}
 		mobileDocuments.uploads = state.Uploads
 	}
 	mobileDocuments.Unlock()
@@ -383,13 +400,14 @@ func mobilePersistState() {
 	}
 	mobileDocuments.Lock()
 	for id, record := range mobileDocuments.drafts {
-		state.Drafts[id] = record
+		// Do not embed multi-MB originals in state.json.
+		state.Drafts[id] = mobileStripDraftBlobForPersist(record)
 	}
 	for id, record := range mobileDocuments.exports {
 		state.Exports[id] = record
 	}
 	for id, record := range mobileDocuments.uploads {
-		state.Uploads[id] = record
+		state.Uploads[id] = mobileStripUploadBlobForPersist(record)
 	}
 	mobileDocuments.Unlock()
 	mobileDigitalEmployeeTasks.Lock()
@@ -597,6 +615,76 @@ func mobileRealtimeDigitalEmployeeTaskEvent(payload map[string]any) map[string]a
 		event["status"] = status
 	}
 	return event
+}
+
+// MobileMachinePush notifies online desktop workers over the machine WebSocket
+// so they can claim digital-employee tasks immediately instead of waiting for poll.
+type MobileMachinePush interface {
+	ListOnlineMachineIDsForUser(ctx context.Context, userID string) []string
+	SendToMachine(machineID string, msg any) error
+}
+
+var mobileMachinePush MobileMachinePush
+
+// ConfigureMobileMachinePush wires desktop push for mobile digital-employee tasks.
+func ConfigureMobileMachinePush(push MobileMachinePush) {
+	mobileMachinePush = push
+}
+
+// mobileNotifyDesktopWorkersOfDigitalEmployeeTask wakes candidate GUI workers.
+// Personal tasks go to all online desktops of the phone user; hosted VEs also
+// try the registry host machine when resolvable.
+func mobileNotifyDesktopWorkersOfDigitalEmployeeTask(ctx context.Context, tenantID, ownerID, employeeID string, taskPayload map[string]any) {
+	if mobileMachinePush == nil {
+		return
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	ownerID = strings.TrimSpace(ownerID)
+	employeeID = strings.TrimSpace(employeeID)
+	if ownerID == "" {
+		return
+	}
+	seen := map[string]struct{}{}
+	add := func(machineID string) {
+		machineID = strings.TrimSpace(machineID)
+		if machineID == "" {
+			return
+		}
+		if _, ok := seen[machineID]; ok {
+			return
+		}
+		seen[machineID] = struct{}{}
+	}
+	for _, id := range mobileMachinePush.ListOnlineMachineIDsForUser(ctx, ownerID) {
+		add(id)
+	}
+	// Host machine of the targeted VE (shared digital employee on another desktop).
+	if employeeID != "" && mobileQuotaSystem != nil {
+		tenantSystem := scopedSystemSettingsForTenant(tenantID, mobileQuotaSystem)
+		for _, emp := range loadVERegistry(ctx, tenantSystem).Employees {
+			if !groupDiscussionParticipantIdentityMatches(emp.ID, employeeID) &&
+				!groupDiscussionParticipantIdentityMatches(emp.MachineID, employeeID) {
+				continue
+			}
+			add(emp.MachineID)
+		}
+	}
+	if len(seen) == 0 {
+		return
+	}
+	msg := map[string]any{
+		"type": "mobile.digital_employee_task",
+		"ts":   time.Now().Unix(),
+		"payload": map[string]any{
+			"action":      "claim_now",
+			"task_id":     taskPayload["task_id"],
+			"employee_id": employeeID,
+			"status":      taskPayload["status"],
+		},
+	}
+	for machineID := range seen {
+		_ = mobileMachinePush.SendToMachine(machineID, msg)
+	}
 }
 
 // MobileRealtimeHandler upgrades authenticated mobile clients to a lightweight
@@ -807,10 +895,10 @@ func mobileHandleRealtimePtyInput(client *mobileRealtimeClient, principal *auth.
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		mobileRealtimeWriteClient(client, map[string]any{
-			"type":    "pty_ack",
-			"ok":      false,
-			"error":   "session_id is required",
-			"code":    "INVALID_INPUT",
+			"type":        "pty_ack",
+			"ok":          false,
+			"error":       "session_id is required",
+			"code":        "INVALID_INPUT",
 			"server_time": time.Now().UTC().Format(time.RFC3339),
 		})
 		return
@@ -986,8 +1074,8 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 			"hub_ssh_exec":         caps.HubSSHExec,
 			"digital_employees":    true,
 			// Remote FCM/webhook only when transport env is set; pending sync always on.
-			"push_notifications":   mobilePushRemoteConfigured(),
-			"push_pending_sync":    true,
+			"push_notifications": mobilePushRemoteConfigured(),
+			"push_pending_sync":  true,
 		},
 		"services": map[string]any{
 			"hub_status":               "online",
@@ -1012,10 +1100,10 @@ func mobileBootstrapPayloadForRequest(principal *auth.ViewerPrincipal, r *http.R
 		},
 		"push": mobilePushTransportSummary(),
 		"limits": map[string]any{
-			"max_upload_bytes":          caps.MaxUploadBytes,
-			"document_quota_bytes":      caps.DocumentQuotaBytes,
-			"document_quota_used_bytes": mobileDocumentQuotaUsedBytes(userID),
-			"max_export_jobs":           caps.MaxExportJobs,
+			"max_upload_bytes":            caps.MaxUploadBytes,
+			"document_quota_bytes":        caps.DocumentQuotaBytes,
+			"document_quota_used_bytes":   mobileDocumentQuotaUsedBytes(userID),
+			"max_export_jobs":             caps.MaxExportJobs,
 			"hub_file_download_max_bytes": caps.HubFileDownloadMaxBytes,
 		},
 		"server_time": time.Now().UTC().Format(time.RFC3339),
@@ -1518,11 +1606,11 @@ func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any
 		"updated_at": record.UpdatedAt.Format(time.RFC3339),
 		"owner_id":   record.OwnerID,
 	}
-	if n := len(record.SourceBytes); n > 0 {
+	if mobileDraftHasOriginal(record) {
 		payload["has_original"] = true
 		payload["source_filename"] = strings.TrimSpace(record.SourceFilename)
 		payload["source_content_type"] = strings.TrimSpace(record.SourceContentType)
-		payload["source_size"] = n
+		payload["source_size"] = mobileDraftSourceSize(record)
 		payload["source_download_url"] = "/api/mobile/documents/drafts/" + record.ID + "/source"
 	} else {
 		payload["has_original"] = false
@@ -1530,7 +1618,7 @@ func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any
 	return payload
 }
 
-// mobileAttachDraftOriginal stores the original file bytes on a draft (source of truth).
+// mobileAttachDraftOriginal stores the original file on a draft (disk + memory cache).
 func mobileAttachDraftOriginal(draft *mobileDocumentDraftRecord, filename, contentType string, raw []byte) {
 	if draft == nil || len(raw) == 0 {
 		return
@@ -1544,7 +1632,10 @@ func mobileAttachDraftOriginal(draft *mobileDocumentDraftRecord, filename, conte
 	if draft.SourceContentType == "" {
 		draft.SourceContentType = "application/octet-stream"
 	}
-	draft.SourceBytes = append([]byte(nil), raw...)
+	path, size, mem := mobilePersistDocumentOriginal(draft.OwnerID, "draft", draft.ID, raw)
+	draft.SourcePath = path
+	draft.SourceSize = size
+	draft.SourceBytes = mem
 }
 
 // mobileDraftWorkingText returns text for AI/preview: prefer extracted/OCR markdown;
@@ -1554,15 +1645,16 @@ func mobileDraftWorkingText(draft mobileDocumentDraftRecord) string {
 	if md != "" && !mobileDraftMarkdownLooksLikeRawBinary(md) {
 		return md
 	}
-	if len(draft.SourceBytes) == 0 {
+	src := mobileDraftLoadSourceBytes(&draft)
+	if len(src) == 0 {
 		return md
 	}
 	// Extract from original on demand (docx/xlsx/pdf/text).
-	if extracted, ok := mobileDraftMarkdownFromUpload(draft.SourceFilename, draft.SourceBytes); ok && strings.TrimSpace(extracted) != "" {
+	if extracted, ok := mobileDraftMarkdownFromUpload(draft.SourceFilename, src); ok && strings.TrimSpace(extracted) != "" {
 		return extracted
 	}
-	if utf8.Valid(draft.SourceBytes) {
-		text := strings.TrimSpace(string(draft.SourceBytes))
+	if utf8.Valid(src) {
+		text := strings.TrimSpace(string(src))
 		if text != "" && !mobileDraftMarkdownLooksLikeRawBinary(text) {
 			return text
 		}
@@ -1575,7 +1667,7 @@ func mobileDraftWorkingText(draft mobileDocumentDraftRecord) string {
 		"# %s\n\n_原始文件已保存（%s，%d bytes）。请以原件为准进行处理；正文提取尚未完成或无法直接显示。_\n",
 		title,
 		draft.SourceFilename,
-		len(draft.SourceBytes),
+		mobileDraftSourceSize(draft),
 	)
 }
 
@@ -1617,6 +1709,14 @@ func mobileDocumentExportPayload(record mobileDocumentExportRecord) map[string]a
 }
 
 func mobileDocumentUploadPayload(record mobileDocumentUploadRecord) map[string]any {
+	payload, _ := mobileDocumentUploadPayloadTracked(record)
+	return payload
+}
+
+// mobileDocumentUploadPayloadTracked is like mobileDocumentUploadPayload but reports
+// whether draft meta was repaired (caller should persist when true).
+// Caller should hold mobileDocuments.Lock.
+func mobileDocumentUploadPayloadTracked(record mobileDocumentUploadRecord) (map[string]any, bool) {
 	payload := map[string]any{
 		"task_id":      record.TaskID,
 		"filename":     record.Filename,
@@ -1629,15 +1729,60 @@ func mobileDocumentUploadPayload(record mobileDocumentUploadRecord) map[string]a
 		"updated_at":   record.UpdatedAt.Format(time.RFC3339),
 		"owner_id":     record.OwnerID,
 	}
+	repaired := false
+	draftHasOriginal := false
 	if record.DraftID != "" {
 		if draft, ok := mobileDocuments.drafts[record.DraftID]; ok {
+			// Single repair pass — avoid re-statting the same draft for source availability.
+			if mobileDraftRepairSourceMeta(&draft) {
+				mobileDocuments.drafts[record.DraftID] = draft
+				repaired = true
+			}
+			draftHasOriginal = mobileDraftHasOriginal(draft)
 			payload["draft"] = mobileDocumentDraftPayload(draft)
 		}
 	}
-	if record.TaskID != "" && len(record.SourceBytes) > 0 {
+	// Source URL when upload still holds bytes/path, or draft can serve as fallback
+	// (worker always hits /upload/{id}/source; handler may stream draft original).
+	if record.TaskID != "" && (mobileUploadHasSource(record) || draftHasOriginal) {
 		payload["source_download_url"] = "/api/mobile/documents/upload/" + record.TaskID + "/source"
 	}
-	return payload
+	return payload, repaired
+}
+
+// mobileUploadSourceAvailable reports whether a worker can download original bytes
+// for this upload task (upload blob and/or linked draft original).
+// repaired is true when draft meta was cleaned as a side effect (caller should persist).
+// Caller should hold mobileDocuments.Lock when draft fallback is possible.
+func mobileUploadSourceAvailable(record mobileDocumentUploadRecord) (ok bool, repaired bool) {
+	if mobileUploadHasSource(record) {
+		return true, false
+	}
+	draft, repaired := mobileUploadDraftOriginal(record)
+	return draft != nil, repaired
+}
+
+// mobileUploadDraftOriginal returns the linked draft when it owns an original.
+// repaired is true when draft meta was mutated (caller should persist).
+// Caller must hold mobileDocuments.Lock.
+func mobileUploadDraftOriginal(record mobileDocumentUploadRecord) (draftPtr *mobileDocumentDraftRecord, repaired bool) {
+	draftID := strings.TrimSpace(record.DraftID)
+	if draftID == "" {
+		return nil, false
+	}
+	draft, ok := mobileDocuments.drafts[draftID]
+	if !ok || draft.OwnerID != record.OwnerID {
+		return nil, false
+	}
+	if mobileDraftRepairSourceMeta(&draft) {
+		mobileDocuments.drafts[draftID] = draft
+		repaired = true
+	}
+	if !mobileDraftHasOriginal(draft) {
+		return nil, repaired
+	}
+	out := draft
+	return &out, repaired
 }
 
 func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time.Time) (mobileDocumentUploadRecord, bool) {
@@ -1648,6 +1793,8 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 		record.Status = "failed"
 		record.Message = strings.TrimSpace(record.OCRError)
 		record.UpdatedAt = now
+		// If draft already holds the original, free the upload-side copy.
+		mobileReleaseUploadOriginalWhenDraftOwns(&record)
 		return record, true
 	}
 	ocrMarkdown := strings.TrimSpace(record.OCRMarkdown)
@@ -1661,8 +1808,10 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 	draft.Markdown = ocrMarkdown
 	draft.UpdatedAt = now
 	// Ensure original survives OCR promotion.
-	if len(draft.SourceBytes) == 0 && len(record.SourceBytes) > 0 {
-		mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, record.SourceBytes)
+	if !mobileDraftHasOriginal(draft) {
+		if src := mobileUploadLoadSourceBytes(&record); len(src) > 0 {
+			mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, src)
+		}
 	}
 	mobileDocuments.drafts[draft.ID] = draft
 	record.Status = "ready"
@@ -1671,6 +1820,8 @@ func mobileApplyUploadPipelineResult(record mobileDocumentUploadRecord, now time
 		record.Message = "OCR/视觉识别已完成，已更新移动端文档草稿（原件仍可分享）。"
 	}
 	record.UpdatedAt = now
+	// Draft owns the original; free upload-side blob/RAM.
+	mobileReleaseUploadOriginalAfterReady(&record)
 	// Best-effort knowledge index for OCR-ready drafts (owner known on record).
 	go mobileIngestDocumentDraft(&auth.ViewerPrincipal{
 		UserID:   draft.OwnerID,
@@ -1747,15 +1898,15 @@ func MobileSearchHandler(identity *auth.IdentityService, llmHandlers ...http.Han
 				return
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{
-				"status":     "accepted",
-				"async":      true,
-				"job_id":     job.JobID,
-				"job":        mobileAgentJobPayload(job),
-				"query":      query,
-				"message":    "assistant job queued; track via GET /api/mobile/agent/jobs/{job_id} or /api/mobile/jobs",
-				"deep_link":  "/tasks",
-				"tenant_id":  principal.TenantID,
-				"user_id":    principal.UserID,
+				"status":    "accepted",
+				"async":     true,
+				"job_id":    job.JobID,
+				"job":       mobileAgentJobPayload(job),
+				"query":     query,
+				"message":   "assistant job queued; track via GET /api/mobile/agent/jobs/{job_id} or /api/mobile/jobs",
+				"deep_link": "/tasks",
+				"tenant_id": principal.TenantID,
+				"user_id":   principal.UserID,
 			})
 			return
 		}
@@ -1978,10 +2129,10 @@ func mobileInjectBoundDocument(messages []map[string]string, draft mobileDocumen
 	if title == "" {
 		title = draft.ID
 	}
-	hasOriginal := len(draft.SourceBytes) > 0
+	hasOriginal := mobileDraftHasOriginal(draft)
 	sourceName := strings.TrimSpace(draft.SourceFilename)
 	sourceType := strings.TrimSpace(draft.SourceContentType)
-	sourceSize := len(draft.SourceBytes)
+	sourceSize := mobileDraftSourceSize(draft)
 	sys := fmt.Sprintf(
 		`Bound mobile document object:
 - document_id: %s
@@ -3521,14 +3672,17 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 		})
 		return
 	}
+	blobPath := record.SourcePath
 	delete(mobileDocuments.drafts, draftID)
 	// Drop related upload tasks that pointed at this draft (free quota/source).
 	for taskID, upload := range mobileDocuments.uploads {
 		if upload.OwnerID == ownerID && upload.DraftID == draftID {
+			mobileDeleteDocumentBlob(upload.SourcePath)
 			delete(mobileDocuments.uploads, taskID)
 		}
 	}
 	mobileDocuments.Unlock()
+	mobileDeleteDocumentBlob(blobPath)
 	mobilePersistState()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "draft_deleted",
@@ -4091,6 +4245,36 @@ func mobileXMLEscape(text string) string {
 }
 
 const mobileDocumentUploadMaxBytes = 25 << 20
+
+// Stale in_progress claims (worker crash / network drop) become claimable again.
+const mobileDocumentUploadClaimTimeout = 5 * time.Minute
+
+// mobileReclaimStaleDocumentUploadClaims resets timed-out in_progress tasks so
+// another (or the same) worker can claim them. Caller must hold mobileDocuments.Lock.
+func mobileReclaimStaleDocumentUploadClaims(now time.Time) int {
+	reclaimed := 0
+	for taskID, record := range mobileDocuments.uploads {
+		if record.Status != "in_progress" {
+			continue
+		}
+		if now.Sub(record.UpdatedAt) < mobileDocumentUploadClaimTimeout {
+			continue
+		}
+		// Prefer needs_ocr when a draft already exists (typical image OCR path).
+		if strings.TrimSpace(record.DraftID) != "" || mobileUploadedFileIsImage(record.Filename) {
+			record.Status = "needs_ocr"
+			record.Message = "远程 OCR/解析超时，等待重新认领。"
+		} else {
+			record.Status = "queued"
+			record.Message = "远程解析超时，等待重新认领。"
+		}
+		record.ClaimedBy = ""
+		record.UpdatedAt = now
+		mobileDocuments.uploads[taskID] = record
+		reclaimed++
+	}
+	return reclaimed
+}
 
 func mobileUploadedFileIsImmediateDraft(filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
@@ -4736,14 +4920,18 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			return
 		}
 		now := time.Now().UTC()
+		taskID := fmt.Sprintf("mobparse_%d", now.UnixNano())
+		blobPath, blobSize, blobMem := mobilePersistDocumentOriginal(principal.UserID, "upload", taskID, body)
 		record := mobileDocumentUploadRecord{
-			TaskID:      fmt.Sprintf("mobparse_%d", now.UnixNano()),
+			TaskID:      taskID,
 			OwnerID:     principal.UserID,
 			Filename:    name,
 			ContentType: strings.TrimSpace(header.Header.Get("Content-Type")),
 			Status:      "queued",
 			Message:     "已上传，等待文档解析管线处理。",
-			SourceBytes: append([]byte(nil), body...),
+			SourcePath:  blobPath,
+			SourceSize:  blobSize,
+			SourceBytes: blobMem,
 			UploadedAt:  now,
 			UpdatedAt:   now,
 		}
@@ -4772,11 +4960,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				record.Status = "ready"
 				record.DraftID = draft.ID
 				record.Message = "文件已导入（保留原件，并生成可读正文）。"
-				mobileDocuments.Lock()
-				mobileDocuments.drafts[draft.ID] = draft
-				mobileDocuments.uploads[record.TaskID] = record
-				payload := mobileDocumentUploadPayload(record)
-				mobileDocuments.Unlock()
+				payload := mobileStoreDraftAndUpload(draft, &record, true)
 				mobilePersistState()
 				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 				writeJSON(w, http.StatusAccepted, payload)
@@ -4795,11 +4979,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			record.Status = "ready"
 			record.DraftID = draft.ID
 			record.Message = "原件已保存到文稿库（正文提取有限，可分享原文件）。"
-			mobileDocuments.Lock()
-			mobileDocuments.drafts[draft.ID] = draft
-			mobileDocuments.uploads[record.TaskID] = record
-			payload := mobileDocumentUploadPayload(record)
-			mobileDocuments.Unlock()
+			payload := mobileStoreDraftAndUpload(draft, &record, true)
 			mobilePersistState()
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 			writeJSON(w, http.StatusAccepted, payload)
@@ -4818,11 +4998,8 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			record.Status = "needs_ocr"
 			record.DraftID = draft.ID
 			record.Message = "图片原件已保存，等待 OCR/视觉识别（可先分享原图）。"
-			mobileDocuments.Lock()
-			mobileDocuments.drafts[draft.ID] = draft
-			mobileDocuments.uploads[record.TaskID] = record
-			payload := mobileDocumentUploadPayload(record)
-			mobileDocuments.Unlock()
+			// Keep upload source for OCR workers until ready.
+			payload := mobileStoreDraftAndUpload(draft, &record, false)
 			mobilePersistState()
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 			writeJSON(w, http.StatusAccepted, payload)
@@ -4841,15 +5018,24 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		record.Status = "ready"
 		record.DraftID = draft.ID
 		record.Message = "原件已保存到文稿库。"
-		mobileDocuments.Lock()
-		mobileDocuments.drafts[draft.ID] = draft
-		mobileDocuments.uploads[record.TaskID] = record
-		payload := mobileDocumentUploadPayload(record)
-		mobileDocuments.Unlock()
+		payload := mobileStoreDraftAndUpload(draft, &record, true)
 		mobilePersistState()
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		writeJSON(w, http.StatusAccepted, payload)
 	}
+}
+
+// mobileStoreDraftAndUpload writes draft+upload under lock. When releaseUploadOriginal
+// is true and draft has an original, the upload-side blob is freed.
+func mobileStoreDraftAndUpload(draft mobileDocumentDraftRecord, record *mobileDocumentUploadRecord, releaseUploadOriginal bool) map[string]any {
+	mobileDocuments.Lock()
+	defer mobileDocuments.Unlock()
+	mobileDocuments.drafts[draft.ID] = draft
+	if releaseUploadOriginal {
+		mobileReleaseUploadOriginalAfterReady(record)
+	}
+	mobileDocuments.uploads[record.TaskID] = *record
+	return mobileDocumentUploadPayload(*record)
 }
 
 // MobileDocumentUploadStatusHandler returns the current upload parse task.
@@ -4865,21 +5051,23 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 		ownerID := mobilePrincipalOwnerID(principal)
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.uploads[taskID]
-		changed := false
+		pipelineChanged := false
 		if ok && record.OwnerID == ownerID {
-			record, changed = mobileApplyUploadPipelineResult(record, time.Now().UTC())
-			if changed {
+			record, pipelineChanged = mobileApplyUploadPipelineResult(record, time.Now().UTC())
+			if pipelineChanged {
 				mobileDocuments.uploads[taskID] = record
 			}
 		}
-		payload := mobileDocumentUploadPayload(record)
+		payload, repaired := mobileDocumentUploadPayloadTracked(record)
 		mobileDocuments.Unlock()
 		if !ok || record.OwnerID != ownerID {
 			writeError(w, http.StatusNotFound, "UPLOAD_NOT_FOUND", "upload task not found")
 			return
 		}
-		if changed {
+		if pipelineChanged || repaired {
 			mobilePersistState()
+		}
+		if pipelineChanged {
 			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
 		}
 		writeJSON(w, http.StatusOK, payload)
@@ -4888,6 +5076,7 @@ func MobileDocumentUploadStatusHandler(identity *auth.IdentityService) http.Hand
 
 // MobileDocumentUploadSourceHandler streams the original upload to the claimed
 // official worker so OCR/Office parsing can run outside the phone.
+// If the upload-side blob was already released, falls back to the linked draft original.
 func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -4902,23 +5091,74 @@ func MobileDocumentUploadSourceHandler(identity *auth.IdentityService) http.Hand
 		taskID := strings.TrimSpace(r.PathValue("taskId"))
 		mobileDocuments.Lock()
 		record, exists := mobileDocuments.uploads[taskID]
+		repaired := false
+		if exists && mobileUploadRepairSourceMeta(&record) {
+			mobileDocuments.uploads[taskID] = record
+			repaired = true
+		}
+		path := record.SourcePath
+		var mem []byte
+		// Prefer disk path; only clone memory when there is no blob path.
+		if strings.TrimSpace(path) == "" && len(record.SourceBytes) > 0 {
+			mem = append([]byte(nil), record.SourceBytes...)
+		}
+		contentType := record.ContentType
+		filename := record.Filename
+		owner := record.OwnerID
+		claimedBy := record.ClaimedBy
+		hasSrc := mobileUploadHasSource(record)
+		// Fallback: draft original (source of truth after upload-side release).
+		if exists && !hasSrc {
+			if draft, draftRepaired := mobileUploadDraftOriginal(record); draft != nil {
+				path = draft.SourcePath
+				mem = nil
+				if strings.TrimSpace(path) == "" && len(draft.SourceBytes) > 0 {
+					mem = append([]byte(nil), draft.SourceBytes...)
+				}
+				if strings.TrimSpace(draft.SourceContentType) != "" {
+					contentType = draft.SourceContentType
+				}
+				if strings.TrimSpace(draft.SourceFilename) != "" {
+					filename = draft.SourceFilename
+				}
+				hasSrc = true
+				if draftRepaired {
+					repaired = true
+				}
+			} else if draftRepaired {
+				repaired = true
+			}
+		}
 		mobileDocuments.Unlock()
-		if !exists || record.OwnerID != principal.UserID || len(record.SourceBytes) == 0 {
+		if repaired {
+			mobilePersistState()
+		}
+		if !exists || owner != principal.UserID || !hasSrc {
 			writeError(w, http.StatusNotFound, "UPLOAD_SOURCE_NOT_FOUND", "upload source not found")
 			return
 		}
-		if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
+		if strings.TrimSpace(claimedBy) != "" && claimedBy != principal.MachineID {
 			writeError(w, http.StatusForbidden, "UPLOAD_CLAIMED_BY_OTHER_WORKER", "upload task is claimed by another worker")
 			return
 		}
-		contentType := strings.TrimSpace(record.ContentType)
-		if contentType == "" {
-			contentType = "application/octet-stream"
+		if !mobileWriteOriginalHTTP(w, contentType, filename, mem, path) {
+			// Stale upload blob (and no memory). Clear and persist so workers do not retry forever.
+			mobileDocuments.Lock()
+			if rec, ok := mobileDocuments.uploads[taskID]; ok && rec.OwnerID == owner {
+				if len(rec.SourceBytes) == 0 {
+					rec.SourcePath = ""
+					rec.SourceSize = 0
+					mobileDocuments.uploads[taskID] = rec
+					mobileDocuments.Unlock()
+					mobilePersistState()
+				} else {
+					mobileDocuments.Unlock()
+				}
+			} else {
+				mobileDocuments.Unlock()
+			}
+			writeError(w, http.StatusNotFound, "UPLOAD_SOURCE_NOT_FOUND", "upload source not found")
 		}
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filepath.Base(record.Filename)))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(record.SourceBytes)
 	}
 }
 
@@ -4945,7 +5185,29 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 		}
 		now := time.Now().UTC()
 		var claimed mobileDocumentUploadRecord
+		reclaimed := 0
+		stateDirty := false
 		mobileDocuments.Lock()
+		reclaimed = mobileReclaimStaleDocumentUploadClaims(now)
+		if reclaimed > 0 {
+			stateDirty = true
+		}
+		// Opportunistic: free upload-side originals for terminal tasks (migration
+		// for records created before release-on-ready).
+		for taskID, record := range mobileDocuments.uploads {
+			if record.OwnerID != principal.UserID {
+				continue
+			}
+			if record.Status != "ready" && record.Status != "failed" {
+				continue
+			}
+			prevPath, prevSize, prevMem := record.SourcePath, record.SourceSize, len(record.SourceBytes)
+			mobileReleaseUploadOriginalWhenDraftOwns(&record)
+			if record.SourcePath != prevPath || record.SourceSize != prevSize || len(record.SourceBytes) != prevMem {
+				mobileDocuments.uploads[taskID] = record
+				stateDirty = true
+			}
+		}
 		for taskID, record := range mobileDocuments.uploads {
 			if record.OwnerID != principal.UserID {
 				continue
@@ -4962,6 +5224,14 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 			if strings.TrimSpace(record.ClaimedBy) != "" && record.ClaimedBy != principal.MachineID {
 				continue
 			}
+			// Worker needs a downloadable original (upload blob or draft fallback).
+			avail, repaired := mobileUploadSourceAvailable(record)
+			if repaired {
+				stateDirty = true
+			}
+			if !avail {
+				continue
+			}
 			record.Status = "in_progress"
 			record.ClaimedBy = principal.MachineID
 			record.Message = "远程解析 worker 正在处理移动端文档。"
@@ -4973,6 +5243,10 @@ func MobileDocumentUploadClaimHandler(identity *auth.IdentityService) http.Handl
 		payload := mobileDocumentUploadPayload(claimed)
 		mobileDocuments.Unlock()
 		if claimed.TaskID == "" {
+			// Persist reclaim / release / draft-repair even when no task was claimed.
+			if stateDirty {
+				mobilePersistState()
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status": "no_task",
 				"task":   nil,
@@ -5071,8 +5345,8 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 						UpdatedAt: now,
 					}
 					// Preserve original from upload when creating draft late.
-					if len(record.SourceBytes) > 0 {
-						mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, record.SourceBytes)
+					if src := mobileUploadLoadSourceBytes(&record); len(src) > 0 {
+						mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, src)
 					}
 					record.DraftID = draft.ID
 					mobileDocuments.drafts[draft.ID] = draft
@@ -5080,8 +5354,10 @@ func MobileDocumentUploadResultHandler(identity *auth.IdentityService) http.Hand
 					// Keep draft body current; never drop the original attachment.
 					draft.Markdown = markdown
 					draft.UpdatedAt = now
-					if len(draft.SourceBytes) == 0 && len(record.SourceBytes) > 0 {
-						mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, record.SourceBytes)
+					if !mobileDraftHasOriginal(draft) {
+						if src := mobileUploadLoadSourceBytes(&record); len(src) > 0 {
+							mobileAttachDraftOriginal(&draft, record.Filename, record.ContentType, src)
+						}
 					}
 					mobileDocuments.drafts[draft.ID] = draft
 				}
@@ -6629,6 +6905,8 @@ func MobileDigitalEmployeeTaskHandler(identity *auth.IdentityService) http.Handl
 		mobilePersistState()
 		payload := mobileDigitalEmployeeTaskPayload(record)
 		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		// Wake desktop GUI workers immediately (sub-second claim vs multi-second poll).
+		mobileNotifyDesktopWorkersOfDigitalEmployeeTask(r.Context(), principal.TenantID, principal.UserID, employeeID, payload)
 		writeJSON(w, http.StatusAccepted, payload)
 	}
 }
@@ -6806,6 +7084,11 @@ func mobileMachineHostsEmployeeInRegistry(machineID, userID, employeeID string, 
 
 // MobileDigitalEmployeeTaskUpdateHandler lets the remote worker report task
 // progress and final results back to the mobile user.
+//
+// Authorization is worker-centric (not owner-only): after claim, any machine that
+// holds ClaimedBy may PATCH progress/completion so hosted VEs can report back to
+// a different phone user. Live updates always target record.OwnerID (the phone
+// viewer); offline push still only fires on terminal status.
 func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch {
@@ -6850,32 +7133,78 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		if workerID == "" {
 			workerID = principal.UserID
 		}
+		// Optional registry for unclaimed fallback (hosted VE without prior claim).
+		var registryEmployees []digitalEmployeeEntry
+		if system := mobileQuotaSystem; system != nil {
+			tenantSystem := scopedSystemSettingsForTenant(principal.TenantID, system)
+			registryEmployees = loadVERegistry(r.Context(), tenantSystem).Employees
+		}
+
 		mobileDigitalEmployeeTasks.Lock()
 		record, ok := mobileDigitalEmployeeTasks.tasks[taskID]
-		if ok && record.OwnerID == principal.UserID {
-			if record.ClaimedBy != "" && record.ClaimedBy != workerID {
-				ok = false
-			} else {
-				record.Status = status
-				if result != "" {
-					record.Result = result
-				}
-				if message != "" {
-					record.Message = message
-				}
-				record.ClaimedBy = workerID
-				record.UpdatedAt = now
-				mobileDigitalEmployeeTasks.tasks[taskID] = record
-			}
-		}
-		mobileDigitalEmployeeTasks.Unlock()
-		if !ok || record.OwnerID != principal.UserID {
+		if !ok {
+			mobileDigitalEmployeeTasks.Unlock()
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
+		// Already finished — reject stale progress patches that could re-open the task.
+		if record.Status == "done" || record.Status == "failed" {
+			if status == "in_progress" {
+				mobileDigitalEmployeeTasks.Unlock()
+				writeError(w, http.StatusConflict, "TASK_ALREADY_FINISHED", "task already finished")
+				return
+			}
+		}
+		claimedBy := strings.TrimSpace(record.ClaimedBy)
+		authorized := false
+		switch {
+		case claimedBy != "" && claimedBy == workerID:
+			// Primary path: this machine claimed the task (personal or hosted VE).
+			authorized = true
+		case claimedBy != "" && claimedBy != workerID:
+			authorized = false
+		case strings.TrimSpace(record.OwnerID) == strings.TrimSpace(principal.UserID):
+			// Same Hub user as phone owner; any of their desktops may update.
+			authorized = true
+		case mobileWorkerCanClaimDigitalEmployeeTask(record, principal, registryEmployees):
+			// Hosted VE host updating before/without claim race.
+			authorized = true
+		}
+		if !authorized {
+			mobileDigitalEmployeeTasks.Unlock()
+			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
+			return
+		}
+		// Do not demote terminal → in_progress if somehow reached (double-check).
+		if (record.Status == "done" || record.Status == "failed") && status == "in_progress" {
+			mobileDigitalEmployeeTasks.Unlock()
+			writeError(w, http.StatusConflict, "TASK_ALREADY_FINISHED", "task already finished")
+			return
+		}
+		record.Status = status
+		if result != "" {
+			record.Result = result
+		}
+		if message != "" {
+			record.Message = message
+		} else if status == "in_progress" && result != "" {
+			// Progress patches often only set result; surface a short message for mobile UI.
+			record.Message = mobileClipRunes(result, 120)
+		}
+		record.ClaimedBy = workerID
+		record.UpdatedAt = now
+		mobileDigitalEmployeeTasks.tasks[taskID] = record
+		ownerID := record.OwnerID
+		mobileDigitalEmployeeTasks.Unlock()
+
 		mobilePersistState()
 		payload := mobileDigitalEmployeeTaskPayload(record)
-		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		// Phone owner always gets the live event (progress + completion).
+		mobileRealtimeBroadcast(principal.TenantID, ownerID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		if ownerID != "" && ownerID != principal.UserID {
+			// Hosted-VE operator console may also watch the same task id.
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDigitalEmployeeTaskEvent(payload))
+		}
 		writeJSON(w, http.StatusOK, payload)
 	}
 }

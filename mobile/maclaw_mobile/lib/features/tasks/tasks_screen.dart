@@ -8,6 +8,7 @@ import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../account/account_agent_status_card.dart';
 import '../auth/session_controller.dart';
+import '../digital_employees/digital_employee.dart';
 import '../digital_employees/digital_employees_controller.dart';
 import '../documents/documents_controller.dart';
 import 'mobile_jobs_provider.dart';
@@ -65,11 +66,11 @@ class TasksScreen extends ConsumerWidget {
         const SizedBox(height: 12),
         hubJobs.when(
           data: (list) => _UnifiedJobsCard(list: list),
-          loading: () => const LoadingCard(label: '加载 Hub 任务…'),
+          loading: () => LoadingCard(label: s.loadingHubJobs),
           error: (error, _) => Card(
             child: ListTile(
               leading: const Icon(Icons.error_outline),
-              title: const Text('Hub 任务加载失败'),
+              title: Text(s.hubJobsLoadFailed),
               subtitle: Text('$error'),
             ),
           ),
@@ -77,11 +78,11 @@ class TasksScreen extends ConsumerWidget {
         const SizedBox(height: 12),
         documents.when(
           data: (state) => _DocumentTasksCard(state: state),
-          loading: () => const LoadingCard(label: '加载文档任务…'),
+          loading: () => LoadingCard(label: s.loadingDocumentTasks),
           error: (error, _) => Card(
             child: ListTile(
               leading: const Icon(Icons.error_outline),
-              title: const Text('文档任务加载失败'),
+              title: Text(s.documentTasksLoadFailed),
               subtitle: Text('$error'),
             ),
           ),
@@ -92,11 +93,11 @@ class TasksScreen extends ConsumerWidget {
             task: task,
             history: employeeHistory.valueOrNull ?? const [],
           ),
-          loading: () => const LoadingCard(label: '加载员工任务…'),
+          loading: () => LoadingCard(label: s.loadingEmployeeTasks),
           error: (error, _) => Card(
             child: ListTile(
               leading: const Icon(Icons.error_outline),
-              title: const Text('员工任务加载失败'),
+              title: Text(s.employeeTasksLoadFailed),
               subtitle: Text('$error'),
             ),
           ),
@@ -104,17 +105,17 @@ class TasksScreen extends ConsumerWidget {
         const SizedBox(height: 12),
         ActionTile(
           icon: Icons.description_outlined,
-          title: '打开文档编辑',
-          subtitle: '查看草稿、轻编辑、导入导出（二级页面）',
-          actionLabel: '进入',
+          title: s.openDocumentsEditor,
+          subtitle: s.openDocumentsEditorHint,
+          actionLabel: s.enter,
           onPressed: () => context.go('/documents'),
         ),
         const SizedBox(height: 12),
         ActionTile(
           icon: Icons.smart_toy_outlined,
-          title: '数字员工',
-          subtitle: '与分身交谈、查看派单',
-          actionLabel: '进入',
+          title: s.employeesTitle,
+          subtitle: s.employeesShortcutHint,
+          actionLabel: s.enter,
           onPressed: () => context.go('/employees'),
         ),
       ],
@@ -127,40 +128,41 @@ class _AgentBackendSummaryCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final knowledge = ref.watch(accountKnowledgeStatusProvider);
     final health = ref.watch(accountMcpHealthProvider);
     final knowledgeLine = knowledge.when(
-      data: (s) {
-        if (s == null || !s.available) {
-          return '知识库：未就绪';
+      data: (st) {
+        if (st == null || !st.available) {
+          return s.knowledgeNotReady;
         }
-        return '知识库：来源 ${s.sources} · 卡片 ${s.cards}（${s.mode}）';
+        return s.knowledgeSummary(st.sources, st.cards, st.mode);
       },
-      loading: () => '知识库：加载中…',
-      error: (_, __) => '知识库：不可用',
+      loading: () => s.knowledgeLoading,
+      error: (_, __) => s.knowledgeUnavailable,
     );
     final skills = ref.watch(accountSkillsProvider);
     final mcpLine = health.when(
       data: (h) {
-        if (h == null) return 'MCP：未探测（点刷新探测）';
-        return 'MCP：健康 ${h.healthyCount}/${h.serverCount} · 工具 ${h.availableTools}';
+        if (h == null) return s.mcpNotProbed;
+        return s.mcpSummary(h.healthyCount, h.serverCount, h.availableTools);
       },
-      loading: () => 'MCP：探测中…',
-      error: (_, __) => 'MCP：探测失败',
+      loading: () => s.mcpProbing,
+      error: (_, __) => s.mcpProbeFailed,
     );
     final skillsLine = skills.when(
-      data: (s) => s == null ? '技能：未知' : '技能：${s.count} 个',
-      loading: () => '技能：加载中…',
-      error: (_, __) => '技能：不可用',
+      data: (st) => st == null ? s.skillsUnknown : s.skillsCount(st.count),
+      loading: () => s.skillsLoading,
+      error: (_, __) => s.skillsUnavailable,
     );
     return Card(
       child: ListTile(
         leading: const Icon(Icons.hub_outlined),
-        title: const Text('官方 Agent 后台'),
+        title: Text(s.officialAgentBackend),
         subtitle: Text('$knowledgeLine\n$mcpLine\n$skillsLine'),
         isThreeLine: true,
         trailing: IconButton(
-          tooltip: '刷新 Agent 状态',
+          tooltip: s.refreshAgentStatus,
           onPressed: () {
             ref.invalidate(accountKnowledgeStatusProvider);
             ref.invalidate(accountSkillsProvider);
@@ -173,7 +175,7 @@ class _AgentBackendSummaryCard extends ConsumerWidget {
   }
 }
 
-class _QuotaCard extends StatelessWidget {
+class _QuotaCard extends ConsumerWidget {
   final MobileLimits limits;
   final bool refreshing;
 
@@ -183,7 +185,8 @@ class _QuotaCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final quota = limits.effectiveDocumentQuotaBytes;
     final used = limits.documentQuotaUsedBytes.clamp(0, quota);
     final ratio = quota <= 0 ? 0.0 : used / quota;
@@ -197,7 +200,7 @@ class _QuotaCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    '文档空间',
+                    s.documentStorage,
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
@@ -214,7 +217,7 @@ class _QuotaCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               '${formatMobileFileSize(used)} / ${formatMobileFileSize(quota)}'
-              '${limits.documentQuotaBytes <= 0 ? '（默认免费额度）' : ''}',
+              '${limits.documentQuotaBytes <= 0 ? s.defaultFreeQuota : ''}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -224,27 +227,27 @@ class _QuotaCard extends StatelessWidget {
   }
 }
 
-class _UnifiedJobsCard extends StatefulWidget {
+class _UnifiedJobsCard extends ConsumerStatefulWidget {
   final MobileJobsList? list;
 
   const _UnifiedJobsCard({required this.list});
 
   @override
-  State<_UnifiedJobsCard> createState() => _UnifiedJobsCardState();
+  ConsumerState<_UnifiedJobsCard> createState() => _UnifiedJobsCardState();
 }
 
-class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
+class _UnifiedJobsCardState extends ConsumerState<_UnifiedJobsCard> {
   /// empty = all kinds
   String _kindFilter = '';
   bool _activeOnly = false;
 
-  static const _kindFilters = <(String id, String label)>[
-    ('', '全部'),
-    ('assistant', '助手'),
-    ('document', '文档'),
-    ('digital_employee', '员工'),
-    ('ssh', 'SSH'),
-  ];
+  List<(String id, String label)> _kindFilters(AppStrings s) => [
+        ('', s.filterAll),
+        ('assistant', s.filterAssistant),
+        ('document', s.filterDocument),
+        ('digital_employee', s.filterEmployee),
+        ('ssh', 'SSH'),
+      ];
 
   List<MobileJob> _filtered(List<MobileJob> jobs) {
     return jobs.where((job) {
@@ -265,13 +268,14 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(appStringsProvider);
     final list = widget.list;
     if (list == null) {
-      return const Card(
+      return Card(
         child: ListTile(
-          leading: Icon(Icons.cloud_off_outlined),
-          title: Text('Hub 任务列表'),
-          subtitle: Text('未登录或 Hub 暂不可用。下方仍显示本机缓存的文档/员工任务。'),
+          leading: const Icon(Icons.cloud_off_outlined),
+          title: Text(s.hubJobsTitle),
+          subtitle: Text(s.hubJobsUnavailableHint),
         ),
       );
     }
@@ -286,15 +290,20 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.playlist_play_outlined),
-              title: const Text('统一任务'),
+              title: Text(s.unifiedJobs),
               subtitle: Text(
                 list.jobs.isEmpty
-                    ? '暂无 Hub 侧长任务'
-                    : '共 ${list.count} 条 · 进行中 ${list.activeCount}'
-                        '${filtered.length != list.jobs.length ? ' · 筛选 ${filtered.length}' : ''}',
+                    ? s.noHubLongJobs
+                    : s.hubJobsCountLine(
+                        list.count,
+                        list.activeCount,
+                        filtered: filtered.length != list.jobs.length
+                            ? filtered.length
+                            : null,
+                      ),
               ),
               trailing: FilterChip(
-                label: Text(_activeOnly ? '仅进行中' : '含已结束'),
+                label: Text(_activeOnly ? s.activeOnly : s.includeFinished),
                 selected: _activeOnly,
                 onSelected: (v) => setState(() => _activeOnly = v),
                 visualDensity: VisualDensity.compact,
@@ -304,7 +313,7 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
               spacing: 6,
               runSpacing: 4,
               children: [
-                for (final (id, label) in _kindFilters)
+                for (final (id, label) in _kindFilters(s))
                   ChoiceChip(
                     label: Text(label),
                     selected: _kindFilter == id,
@@ -315,19 +324,19 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
             ),
             const SizedBox(height: 8),
             if (list.jobs.isEmpty)
-              const ListTile(
+              ListTile(
                 contentPadding: EdgeInsets.zero,
-                title: Text('没有进行中或最近的 Hub 任务'),
-                subtitle: Text('导入/导出、员工派单、SSH 长命令会出现在这里。'),
+                title: Text(s.noRecentHubJobs),
+                subtitle: Text(s.noRecentHubJobsHint),
               )
             else if (filtered.isEmpty)
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('当前筛选无结果'),
+                title: Text(s.filterNoResults),
                 subtitle: Text(
                   _activeOnly
-                      ? '没有进行中的任务（筛选内进行中 $activeInFilter）'
-                      : '试试「全部」或其他类型',
+                      ? s.filterNoActive(activeInFilter)
+                      : s.filterTryOther,
                 ),
               )
             else
@@ -343,8 +352,8 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
                   ),
                   subtitle: Text(
                     [
-                      mobileJobKindLabel(job.kind),
-                      mobileJobStatusLabel(job.status),
+                      s.jobKindLabel(job.kind),
+                      s.jobStatusLabel(job.status),
                       if (job.message.isNotEmpty) job.message,
                     ].join(' · '),
                     maxLines: 2,
@@ -354,7 +363,7 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
                       ? null
                       : TextButton(
                           onPressed: () => context.go(job.deepLink),
-                          child: const Text('打开'),
+                          child: Text(s.openLabel),
                         ),
                 ),
           ],
@@ -364,58 +373,39 @@ class _UnifiedJobsCardState extends State<_UnifiedJobsCard> {
   }
 
   IconData _statusIcon(String status) {
-    final s = status.toLowerCase();
-    if (s.contains('fail') || s.contains('error')) return Icons.error_outline;
-    if (s.contains('ready') ||
-        s.contains('done') ||
-        s.contains('complete') ||
-        s.contains('success')) {
+    final st = status.toLowerCase();
+    if (st.contains('fail') || st.contains('error')) return Icons.error_outline;
+    if (st.contains('ready') ||
+        st.contains('done') ||
+        st.contains('complete') ||
+        st.contains('success')) {
       return Icons.check_circle_outline;
     }
-    if (s.contains('cancel')) return Icons.cancel_outlined;
-    if (s.contains('run') || s.contains('process') || s.contains('queue')) {
+    if (st.contains('cancel')) return Icons.cancel_outlined;
+    if (st.contains('run') || st.contains('process') || st.contains('queue')) {
       return Icons.timelapse;
     }
     return Icons.circle_outlined;
   }
 }
 
-String mobileJobKindLabel(String kind) {
-  return switch (kind.trim().toLowerCase()) {
-    'document_upload' => '文档导入',
-    'document_export' => '文档导出',
-    'document_process' => '文档处理',
-    'digital_employee' => '数字员工',
-    'ssh_command' => 'SSH 命令',
-    'ssh_file' => 'SSH 文件',
-    'ssh_session' => 'SSH 会话',
-    'assistant' => 'AI 助手',
-    _ => kind.isEmpty ? '任务' : kind,
-  };
+/// Kept for tests / other callers that still import the free functions.
+String mobileJobKindLabel(String kind, {bool isZh = true}) {
+  return AppStrings.forLanguage(isZh ? 'zh' : 'en').jobKindLabel(kind);
 }
 
-String mobileJobStatusLabel(String status) {
-  final s = status.trim().toLowerCase();
-  return switch (s) {
-    'queued' || 'pending' => '排队中',
-    'running' || 'processing' => '进行中',
-    'ready' || 'done' || 'completed' || 'success' => '已完成',
-    'failed' || 'error' => '失败',
-    'cancelled' || 'canceled' => '已取消',
-    'agent_claimed' => '已接管',
-    'kill_requested' => '终止中',
-    'wait_requested' => '等待中',
-    _ => status.isEmpty ? '未知' : status,
-  };
+String mobileJobStatusLabel(String status, {bool isZh = true}) {
+  return AppStrings.forLanguage(isZh ? 'zh' : 'en').jobStatusLabel(status);
 }
 
-class _DocumentTasksCard extends StatelessWidget {
+class _DocumentTasksCard extends ConsumerWidget {
   final DocumentsState state;
 
   const _DocumentTasksCard({required this.state});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final upload = state.uploadTask;
     final exportJob = state.exportJob;
     final draft = state.draft;
@@ -423,11 +413,13 @@ class _DocumentTasksCard extends StatelessWidget {
       ListTile(
         contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.description_outlined),
-        title: const Text('文档任务'),
+        title: Text(s.documentTasks),
         subtitle: Text(
           draft == null
-              ? '暂无活动草稿'
-              : '当前草稿：${draft.title.isEmpty ? draft.id : draft.title}',
+              ? s.noActiveDraft
+              : s.currentDraftLine(
+                  draft.title.isEmpty ? draft.id : draft.title,
+                ),
         ),
       ),
     ];
@@ -437,12 +429,14 @@ class _DocumentTasksCard extends StatelessWidget {
           contentPadding: EdgeInsets.zero,
           leading: Icon(_statusIcon(upload.status)),
           title: Text(
-            '导入 · ${upload.filename.isEmpty ? upload.taskId : upload.filename}',
+            s.importTaskLine(
+              upload.filename.isEmpty ? upload.taskId : upload.filename,
+            ),
           ),
           subtitle: Text('${upload.status} · ${upload.message}'),
           trailing: TextButton(
             onPressed: () => context.go('/documents'),
-            child: const Text('详情'),
+            child: Text(s.details),
           ),
         ),
       );
@@ -452,21 +446,21 @@ class _DocumentTasksCard extends StatelessWidget {
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(_statusIcon(exportJob.status)),
-          title: Text('导出 · ${exportJob.jobId}'),
+          title: Text(s.exportTaskLine(exportJob.jobId)),
           subtitle: Text(exportJob.status),
           trailing: TextButton(
             onPressed: () => context.go('/documents'),
-            child: const Text('详情'),
+            child: Text(s.details),
           ),
         ),
       );
     }
     if (upload == null && exportJob == null) {
       rows.add(
-        const ListTile(
+        ListTile(
           contentPadding: EdgeInsets.zero,
-          title: Text('没有进行中的导入/导出'),
-          subtitle: Text('从文档页导入文件或导出后，进度会出现在这里。'),
+          title: Text(s.noActiveImportExport),
+          subtitle: Text(s.noActiveImportExportHint),
         ),
       );
     }
@@ -479,7 +473,7 @@ class _DocumentTasksCard extends StatelessWidget {
   }
 }
 
-class _EmployeeTaskCard extends StatelessWidget {
+class _EmployeeTaskCard extends ConsumerWidget {
   final MobileDigitalEmployeeTask? task;
   final List<MobileDigitalEmployeeTask> history;
 
@@ -489,7 +483,21 @@ class _EmployeeTaskCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
+    final scheme = Theme.of(context).colorScheme;
+    final active = task;
+    final running =
+        active != null && digitalEmployeeTaskIsRunning(active.status);
+    final preview = active == null
+        ? ''
+        : digitalEmployeeTaskProgressPreview(
+            result: active.result,
+            message: active.message,
+          );
+    final statusLabel = active == null
+        ? s.noRecentEmployeeTask
+        : s.employeeTaskStatusLabel(active.status);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -498,20 +506,48 @@ class _EmployeeTaskCard extends StatelessWidget {
           children: [
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.smart_toy_outlined),
-              title: const Text('数字员工任务'),
-              subtitle: task == null
-                  ? const Text('暂无最近任务')
-                  : Text('${task!.taskId} · ${task!.status}'),
+              leading: Icon(
+                running ? Icons.sync : Icons.smart_toy_outlined,
+                color: running ? scheme.primary : null,
+              ),
+              title: Text(s.digitalEmployeeTasks),
+              subtitle: active == null
+                  ? Text(s.noRecentEmployeeTask)
+                  : Text(
+                      '${active.taskId} · $statusLabel',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
               trailing: TextButton(
                 onPressed: () => context.go('/employees'),
-                child: const Text('员工页'),
+                child: Text(s.employeesPage),
               ),
             ),
+            if (active != null && preview.isNotEmpty) ...[
+              Text(
+                preview,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+              if (running) ...[
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    minHeight: 3,
+                    backgroundColor: scheme.surfaceContainerHighest,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 4),
+            ],
             if (history.isNotEmpty) ...[
               const Divider(),
               Text(
-                '最近 ${history.length.clamp(0, 5)} 条',
+                s.recentHistoryCount(history.length.clamp(0, 5)),
                 style: Theme.of(context).textTheme.labelLarge,
               ),
               for (final item in history.take(5))
@@ -523,7 +559,21 @@ class _EmployeeTaskCard extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  subtitle: Text(item.status),
+                  subtitle: Text(
+                    [
+                      s.employeeTaskStatusLabel(item.status),
+                      if (digitalEmployeeTaskProgressPreview(
+                        result: item.result,
+                        message: item.message,
+                      ).isNotEmpty)
+                        digitalEmployeeTaskProgressPreview(
+                          result: item.result,
+                          message: item.message,
+                        ),
+                    ].join(' · '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
             ],
           ],

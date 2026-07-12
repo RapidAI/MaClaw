@@ -40,6 +40,11 @@ type ConnContext struct {
 	// Used to detect actual LLM activity (delta > 0) for duration recording.
 	lastLLMTokenTotal int64
 
+	// Heartbeat log rate-limit state (per connection).
+	lastHBLogAt       time.Time
+	lastHBLogSessions int
+	lastHBLogInterval int
+
 	// gwClaimSeqs tracks the claim sequence for each IM gateway platform
 	// claimed by this connection. Used during cleanup to only release claims
 	// that belong to this specific connection (prevents race where a stale
@@ -53,6 +58,27 @@ type ConnContext struct {
 	// closeSend is closed when the connection is torn down to stop the
 	// writer goroutine.
 	closeSend chan struct{}
+}
+
+const machineHeartbeatLogMinInterval = time.Minute
+
+// shouldLogMachineHeartbeat returns true when this heartbeat is worth logging.
+// First heartbeat, session/interval changes, and ≥1min silence always log.
+func shouldLogMachineHeartbeat(ctx *ConnContext, sessions, intervalSec int) bool {
+	if ctx == nil {
+		return true
+	}
+	now := time.Now()
+	if ctx.lastHBLogAt.IsZero() ||
+		sessions != ctx.lastHBLogSessions ||
+		intervalSec != ctx.lastHBLogInterval ||
+		now.Sub(ctx.lastHBLogAt) >= machineHeartbeatLogMinInterval {
+		ctx.lastHBLogAt = now
+		ctx.lastHBLogSessions = sessions
+		ctx.lastHBLogInterval = intervalSec
+		return true
+	}
+	return false
 }
 
 const (
@@ -928,7 +954,12 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 		log.Printf("[ws] handleMachineHeartbeat: invalid payload for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid machine.heartbeat payload")
 	}
-	log.Printf("[ws] handleMachineHeartbeat: machine_id=%s sessions=%d interval=%d", ctx.MachineID, payload.ActiveSessions, payload.HeartbeatIntervalSec)
+	// Heartbeats are high-frequency (often every 5–30s per machine). Log at most
+	// once per minute per connection unless session count or interval changes —
+	// otherwise hub logs become multi-GB noise that hides real failures.
+	if shouldLogMachineHeartbeat(ctx, payload.ActiveSessions, payload.HeartbeatIntervalSec) {
+		log.Printf("[ws] handleMachineHeartbeat: machine_id=%s sessions=%d interval=%d", ctx.MachineID, payload.ActiveSessions, payload.HeartbeatIntervalSec)
+	}
 	if err := g.Devices.Heartbeat(context.Background(), ctx.MachineID, payload); err != nil {
 		log.Printf("[ws] handleMachineHeartbeat: Heartbeat FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())

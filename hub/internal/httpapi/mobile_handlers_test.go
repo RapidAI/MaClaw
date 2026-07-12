@@ -2169,6 +2169,196 @@ func TestMobileDigitalEmployeeTaskMachineClaimsVEAliasAndUpdates(t *testing.T) {
 	}
 }
 
+// Hosted VE: worker machine owner may differ from phone task owner. ClaimedBy
+// must authorize progress/completion; realtime targets OwnerID; terminal status
+// rejects later in_progress patches.
+func TestMobileDigitalEmployeeTaskUpdateHostedWorkerBroadcastsToOwner(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	phoneToken, _ := issueViewerToken(t, identity, "mobile-phone-owner@example.com")
+	_, hostEnroll := issueViewerToken(t, identity, "mobile-host-worker@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_hosted_shared/tasks", strings.NewReader(`{"prompt":"status check","task_type":"general"}`))
+	createReq.SetPathValue("employeeId", "ve_hosted_shared")
+	createReq.Header.Set("Authorization", "Bearer "+phoneToken)
+	createRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	taskID, _ := created["task_id"].(string)
+	if taskID == "" {
+		t.Fatalf("missing task_id: %#v", created)
+	}
+
+	mobileDigitalEmployeeTasks.Lock()
+	rec := mobileDigitalEmployeeTasks.tasks[taskID]
+	phoneOwnerID := rec.OwnerID
+	rec.Status = "in_progress"
+	rec.ClaimedBy = hostEnroll.MachineID
+	rec.Result = "claimed by host"
+	mobileDigitalEmployeeTasks.tasks[taskID] = rec
+	mobileDigitalEmployeeTasks.Unlock()
+	if phoneOwnerID == "" {
+		t.Fatal("phone owner id empty")
+	}
+
+	tenantID := mobileTestTenantID(t, identity, phoneToken)
+
+	mobileRealtimeClients.Lock()
+	previous := mobileRealtimeClients.clients
+	mobileRealtimeClients.clients = make(map[string]map[*mobileRealtimeClient]struct{})
+	mobileRealtimeClients.Unlock()
+	t.Cleanup(func() {
+		mobileRealtimeClients.Lock()
+		mobileRealtimeClients.clients = previous
+		mobileRealtimeClients.Unlock()
+	})
+	phoneWriter := &mobileRealtimeFakeWriter{}
+	_, cleanup := mobileRealtimeRegister(tenantID, phoneOwnerID, phoneWriter)
+	defer cleanup()
+
+	progressReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"in_progress","result":"正在检查主机状态…"}`))
+	progressReq.SetPathValue("taskId", taskID)
+	progressReq.Header.Set("Authorization", "Bearer "+hostEnroll.MachineToken)
+	progressReq.Header.Set("X-Machine-ID", hostEnroll.MachineID)
+	progressRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(progressRec, progressReq)
+	if progressRec.Code != http.StatusOK {
+		t.Fatalf("progress update status=%d body=%s (hosted worker must update claimed task for other owner)", progressRec.Code, progressRec.Body.String())
+	}
+	var progress map[string]any
+	if err := json.Unmarshal(progressRec.Body.Bytes(), &progress); err != nil {
+		t.Fatal(err)
+	}
+	if progress["status"] != "in_progress" || progress["result"] != "正在检查主机状态…" {
+		t.Fatalf("progress payload = %#v", progress)
+	}
+	if len(phoneWriter.messages) < 1 {
+		t.Fatalf("phone owner realtime messages = %d, want at least 1", len(phoneWriter.messages))
+	}
+	if phoneWriter.messages[0]["type"] != "digital_employee_task" || phoneWriter.messages[0]["status"] != "in_progress" {
+		t.Fatalf("progress event = %#v", phoneWriter.messages[0])
+	}
+
+	doneReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"done","result":"主机正常"}`))
+	doneReq.SetPathValue("taskId", taskID)
+	doneReq.Header.Set("Authorization", "Bearer "+hostEnroll.MachineToken)
+	doneReq.Header.Set("X-Machine-ID", hostEnroll.MachineID)
+	doneRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(doneRec, doneReq)
+	if doneRec.Code != http.StatusOK {
+		t.Fatalf("done status=%d body=%s", doneRec.Code, doneRec.Body.String())
+	}
+
+	staleReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"in_progress","result":"late"}`))
+	staleReq.SetPathValue("taskId", taskID)
+	staleReq.Header.Set("Authorization", "Bearer "+hostEnroll.MachineToken)
+	staleReq.Header.Set("X-Machine-ID", hostEnroll.MachineID)
+	staleRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(staleRec, staleReq)
+	if staleRec.Code != http.StatusConflict {
+		t.Fatalf("stale progress status=%d want %d body=%s", staleRec.Code, http.StatusConflict, staleRec.Body.String())
+	}
+
+	last := phoneWriter.messages[len(phoneWriter.messages)-1]
+	if last["type"] != "digital_employee_task" || last["status"] != "done" {
+		t.Fatalf("last realtime event = %#v, want done digital_employee_task", last)
+	}
+}
+
+func TestMobileDigitalEmployeeTaskProgressBroadcastsToPhoneOwner(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-progress@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_"+enroll.MachineID+"/tasks", strings.NewReader(`{"prompt":"ping","task_type":"general"}`))
+	createReq.SetPathValue("employeeId", "ve_"+enroll.MachineID)
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	taskID, _ := created["task_id"].(string)
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/tasks/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskClaimAnyHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim = %d %s", claimRec.Code, claimRec.Body.String())
+	}
+
+	mobileDigitalEmployeeTasks.Lock()
+	ownerID := mobileDigitalEmployeeTasks.tasks[taskID].OwnerID
+	mobileDigitalEmployeeTasks.Unlock()
+	tenantID := mobileTestTenantID(t, identity, viewerToken)
+
+	mobileRealtimeClients.Lock()
+	previous := mobileRealtimeClients.clients
+	mobileRealtimeClients.clients = make(map[string]map[*mobileRealtimeClient]struct{})
+	mobileRealtimeClients.Unlock()
+	t.Cleanup(func() {
+		mobileRealtimeClients.Lock()
+		mobileRealtimeClients.clients = previous
+		mobileRealtimeClients.Unlock()
+	})
+	writer := &mobileRealtimeFakeWriter{}
+	_, cleanup := mobileRealtimeRegister(tenantID, ownerID, writer)
+	defer cleanup()
+
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"in_progress","result":"部分输出：磁盘 42%"}`))
+	updateReq.SetPathValue("taskId", taskID)
+	updateReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	updateReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	updateRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update = %d %s", updateRec.Code, updateRec.Body.String())
+	}
+	if len(writer.messages) != 1 {
+		t.Fatalf("realtime messages = %d want 1: %#v", len(writer.messages), writer.messages)
+	}
+	ev := writer.messages[0]
+	if ev["type"] != "digital_employee_task" || ev["status"] != "in_progress" {
+		t.Fatalf("event = %#v", ev)
+	}
+	taskPayload, _ := ev["task"].(map[string]any)
+	if taskPayload == nil || taskPayload["result"] != "部分输出：磁盘 42%" {
+		t.Fatalf("task payload = %#v", taskPayload)
+	}
+}
+
+// mobileTestTenantID resolves the viewer's tenant via bootstrap for realtime tests.
+func mobileTestTenantID(t *testing.T, identity *auth.IdentityService, viewerToken string) string {
+	t.Helper()
+	bootReq := httptest.NewRequest(http.MethodGet, "/api/mobile/bootstrap", nil)
+	bootReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	bootRec := httptest.NewRecorder()
+	MobileBootstrapHandler(identity, nil, nil).ServeHTTP(bootRec, bootReq)
+	if bootRec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootRec.Code, bootRec.Body.String())
+	}
+	var boot map[string]any
+	if err := json.Unmarshal(bootRec.Body.Bytes(), &boot); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	user, _ := boot["user"].(map[string]any)
+	tenantID, _ := user["tenant_id"].(string)
+	if tenantID == "" {
+		t.Fatal("bootstrap missing tenant_id")
+	}
+	return tenantID
+}
+
 func TestMobilePersistentStateRoundTrip(t *testing.T) {
 	clearMobileStateForTest(t)
 	path := filepath.Join(t.TempDir(), "mobile-state.json")
@@ -2515,6 +2705,74 @@ func TestMobileDocumentUploadClaimHandlerRequiresMachineToken(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentUploadClaimReclaimsStaleInProgress(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-claim-stale@example.com")
+	clearMobileStateForTest(t)
+	staleAt := time.Now().UTC().Add(-mobileDocumentUploadClaimTimeout - time.Minute)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-stale"] = mobileDocumentUploadRecord{
+		TaskID:      "upload-stale",
+		OwnerID:     enroll.UserID,
+		Filename:    "shot.png",
+		Status:      "in_progress",
+		ClaimedBy:   "dead-machine",
+		DraftID:     "mobdoc_stale",
+		SourceBytes: []byte{0x89, 'P', 'N', 'G'},
+		UploadedAt:  staleAt,
+		UpdatedAt:   staleAt,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/upload/claim?kind=ocr", nil)
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadClaimHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["status"] != "claimed" {
+		t.Fatalf("status=%v want claimed", payload["status"])
+	}
+	task, ok := payload["task"].(map[string]any)
+	if !ok || task["task_id"] != "upload-stale" {
+		t.Fatalf("task=%#v", payload["task"])
+	}
+	if task["claimed_by"] != enroll.MachineID {
+		t.Fatalf("claimed_by=%v want %s", task["claimed_by"], enroll.MachineID)
+	}
+}
+
+func TestMobileReclaimStaleDocumentUploadClaimsHelper(t *testing.T) {
+	clearMobileStateForTest(t)
+	now := time.Now().UTC()
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["fresh"] = mobileDocumentUploadRecord{
+		TaskID: "fresh", Status: "in_progress", UpdatedAt: now.Add(-time.Minute),
+	}
+	mobileDocuments.uploads["stale-img"] = mobileDocumentUploadRecord{
+		TaskID: "stale-img", Filename: "a.png", Status: "in_progress",
+		UpdatedAt: now.Add(-mobileDocumentUploadClaimTimeout - time.Second),
+		ClaimedBy: "x",
+	}
+	n := mobileReclaimStaleDocumentUploadClaims(now)
+	if n != 1 {
+		t.Fatalf("reclaimed=%d want 1", n)
+	}
+	if mobileDocuments.uploads["stale-img"].Status != "needs_ocr" {
+		t.Fatalf("stale status=%q", mobileDocuments.uploads["stale-img"].Status)
+	}
+	if mobileDocuments.uploads["fresh"].Status != "in_progress" {
+		t.Fatalf("fresh should remain in_progress")
+	}
+	mobileDocuments.Unlock()
+}
+
 func TestMobileDocumentUploadSourceHandlerDownloadsClaimedSource(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	_, enroll := issueViewerToken(t, identity, "mobile-source@example.com")
@@ -2837,8 +3095,9 @@ func TestMobileUploadedImageDraftMarkdown(t *testing.T) {
 	if !strings.Contains(markdown, "# screenshot") {
 		t.Fatalf("markdown = %q, want title", markdown)
 	}
-	if !strings.Contains(markdown, "\u7b49\u5f85 OCR") {
-		t.Fatalf("markdown = %q, want OCR pending text", markdown)
+	// Original-first placeholder until desktop OCR fills the body.
+	if !strings.Contains(markdown, "OCR") || !strings.Contains(markdown, "\u539f\u4ef6") {
+		t.Fatalf("markdown = %q, want original-saved + OCR placeholder", markdown)
 	}
 	if !strings.Contains(markdown, "640 x 480") {
 		t.Fatalf("markdown = %q, want dimensions", markdown)

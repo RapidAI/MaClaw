@@ -10,12 +10,28 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-const mobileDigitalEmployeeTaskPollInterval = 12 * time.Second
+// Adaptive poll intervals for mobile digital-employee tasks.
+// Idle desktops should not hammer Hub every few seconds; after work is found
+// (or Hub pushes a task), poll faster so multi-step mobile flows feel snappy.
+const (
+	mobileDigitalEmployeeTaskPollIdle     = 12 * time.Second
+	mobileDigitalEmployeeTaskPollActive   = 3 * time.Second
+	mobileDigitalEmployeeTaskPollAfterHit = 45 * time.Second // stay "active" this long after a task/push
+	mobileDigitalEmployeeHTTPTimeout      = 25 * time.Second
+	mobileDigitalEmployeeMaxConcurrent    = 2 // claimed tasks run async; bound agent fan-out
+	// Progress push cadence while the agent streams tokens to the phone.
+	mobileDigitalEmployeeProgressMinInterval = 1200 * time.Millisecond
+	mobileDigitalEmployeeProgressMinChars    = 64
+	mobileDigitalEmployeeProgressMaxRunes    = 480
+)
 
 type mobileDigitalEmployeeTask struct {
 	TaskID     string            `json:"task_id"`
@@ -35,6 +51,132 @@ type mobileDigitalEmployeeTaskClaimResponse struct {
 	Task   *mobileDigitalEmployeeTask `json:"task"`
 }
 
+// Shared HTTP client for machine-auth task polling (timeout + connection reuse).
+var mobileDigitalEmployeeHTTPClient = &http.Client{
+	Timeout: mobileDigitalEmployeeHTTPTimeout,
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          8,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
+
+// mobileTaskPollState tracks adaptive poll timing for one hub client.
+type mobileTaskPollState struct {
+	mu           sync.Mutex
+	lastHitAt    time.Time
+	bulkClaimOK  atomic.Bool // once bulk claim succeeds, skip expensive per-id fallbacks
+	bulkClaimBad atomic.Bool // once bulk claim returns definitive 404, use per-id path
+	// workers bounds concurrent processMobileDigitalEmployeeTask goroutines.
+	// Poll claims only after tryReserveWorker succeeds (no claim-without-capacity).
+	workers chan struct{}
+	// kick wakes the poll loop immediately (Hub push or reconnect warm-up).
+	kick chan struct{}
+}
+
+func (c *RemoteHubClient) ensureMobileTaskPollState() *mobileTaskPollState {
+	if c == nil {
+		return newMobileTaskPollState()
+	}
+	c.veHandlerMu.Lock()
+	defer c.veHandlerMu.Unlock()
+	if c.mobileTaskPollState == nil {
+		c.mobileTaskPollState = newMobileTaskPollState()
+	}
+	return c.mobileTaskPollState
+}
+
+func newMobileTaskPollState() *mobileTaskPollState {
+	return &mobileTaskPollState{
+		workers: make(chan struct{}, mobileDigitalEmployeeMaxConcurrent),
+		kick:    make(chan struct{}, 1),
+	}
+}
+
+// requestImmediatePoll wakes the mobile task loop without waiting for the timer.
+func (s *mobileTaskPollState) requestImmediatePoll() {
+	if s == nil || s.kick == nil {
+		return
+	}
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
+}
+
+func (s *mobileTaskPollState) noteHit() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.lastHitAt = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *mobileTaskPollState) interval() time.Duration {
+	if s == nil {
+		return mobileDigitalEmployeeTaskPollIdle
+	}
+	s.mu.Lock()
+	last := s.lastHitAt
+	s.mu.Unlock()
+	if !last.IsZero() && time.Since(last) < mobileDigitalEmployeeTaskPollAfterHit {
+		return mobileDigitalEmployeeTaskPollActive
+	}
+	return mobileDigitalEmployeeTaskPollIdle
+}
+
+// tryReserveWorker non-blocking-acquires a worker slot. Returns false when all
+// slots are busy so the poll loop can leave tasks on Hub instead of claiming
+// work it cannot start promptly.
+func (s *mobileTaskPollState) tryReserveWorker() bool {
+	if s == nil || s.workers == nil {
+		return true
+	}
+	select {
+	case s.workers <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *mobileTaskPollState) releaseWorker() {
+	if s == nil || s.workers == nil {
+		return
+	}
+	select {
+	case <-s.workers:
+	default:
+	}
+}
+
+// runMobileDigitalEmployeeTaskAsync processes a claimed task without blocking
+// the poll loop. reserved must already own a worker slot from tryReserveWorker.
+func (c *RemoteHubClient) runMobileDigitalEmployeeTaskAsync(task mobileDigitalEmployeeTask, reserved bool) {
+	poll := c.ensureMobileTaskPollState()
+	poll.noteHit()
+	go func() {
+		if reserved && poll.workers != nil {
+			defer poll.releaseWorker()
+		} else if poll.workers != nil {
+			// Fallback path: block for a slot (should not happen in normal poll).
+			poll.workers <- struct{}{}
+			defer poll.releaseWorker()
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[hub-client] mobile digital employee task panic task=%s: %v", task.TaskID, r)
+				_, _ = c.updateMobileDigitalEmployeeTask(task.TaskID, "failed", fmt.Sprintf("panic: %v", r))
+			}
+		}()
+		c.processMobileDigitalEmployeeTask(task)
+	}()
+}
+
 func (c *RemoteHubClient) mobileDigitalEmployeeTaskLoop() {
 	if c == nil || c.app == nil {
 		return
@@ -44,45 +186,117 @@ func (c *RemoteHubClient) mobileDigitalEmployeeTaskLoop() {
 	}
 	defer c.mobileTaskActive.Store(false)
 
+	poll := c.ensureMobileTaskPollState()
+	// Warm start: poll aggressively right after connect so the first mobile
+	// task after GUI online is claimed quickly even without a Hub push.
+	poll.noteHit()
+
 	c.publishMobileServerProfilesOnce()
 	c.pollMobileDigitalEmployeeTasksOnce()
 	c.pollMobileDocumentUploadTasksOnce()
 	c.pollMobileBackendSSHSessionsOnce()
 	c.pollMobileBackendSSHTasksOnce()
 	c.pollMobileBackendSSHFileOperationsOnce()
-	ticker := time.NewTicker(mobileDigitalEmployeeTaskPollInterval)
-	defer ticker.Stop()
+
+	timer := time.NewTimer(poll.interval())
+	defer timer.Stop()
+	runPollTick := func() {
+		if !c.IsConnected() {
+			return
+		}
+		c.publishMobileServerProfilesOnce()
+		c.pollMobileDocumentUploadTasksOnce()
+		c.pollMobileBackendSSHSessionsOnce()
+		c.pollMobileBackendSSHTasksOnce()
+		c.pollMobileBackendSSHFileOperationsOnce()
+		c.pollMobileDigitalEmployeeTasksOnce()
+	}
 	for {
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			if !c.IsConnected() {
 				return
 			}
-			c.publishMobileServerProfilesOnce()
-			c.pollMobileDocumentUploadTasksOnce()
-			c.pollMobileBackendSSHSessionsOnce()
-			c.pollMobileBackendSSHTasksOnce()
-			c.pollMobileBackendSSHFileOperationsOnce()
-			c.pollMobileDigitalEmployeeTasksOnce()
+			runPollTick()
+			timer.Reset(poll.interval())
+		case <-poll.kick:
+			if !c.IsConnected() {
+				return
+			}
+			// Drain timer so we don't double-fire immediately after a kick.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			runPollTick()
+			timer.Reset(poll.interval())
 		}
 	}
 }
 
-func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
-	// Prefer bulk claim: Hub matches machine-hosted VEs + personal machine aliases.
-	// This unblocks mobile chat with named employees (not only ve_<machineId>).
-	if claim, err := c.claimAnyMobileDigitalEmployeeTask(); err != nil {
-		log.Printf("[hub-client] mobile digital employee bulk claim failed: %v", err)
-	} else if claim != nil && claim.Task != nil && strings.TrimSpace(claim.Task.TaskID) != "" {
-		c.processMobileDigitalEmployeeTask(*claim.Task)
+// handleMobileDigitalEmployeeTaskPush reacts to Hub WS push when a mobile user
+// queues a digital-employee task. Switches to active poll cadence and claims ASAP.
+func (c *RemoteHubClient) handleMobileDigitalEmployeeTaskPush(msg inboundHubEnvelope) {
+	if c == nil {
 		return
 	}
+	poll := c.ensureMobileTaskPollState()
+	poll.noteHit()
+	poll.requestImmediatePoll()
+	// Also claim once immediately in case the poll loop is mid-tick or not started.
+	go c.pollMobileDigitalEmployeeTasksOnce()
+	log.Printf("[hub-client] mobile digital employee task push received type=%s", msg.Type)
+}
 
+func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
+	poll := c.ensureMobileTaskPollState()
+	// Reserve capacity before claim so we never own a Hub task we cannot start.
+	if !poll.tryReserveWorker() {
+		return
+	}
+	reserved := true
+	releaseIfUnused := func() {
+		if reserved {
+			poll.releaseWorker()
+			reserved = false
+		}
+	}
+	defer releaseIfUnused()
+
+	// Prefer bulk claim when available: Hub matches machine-hosted VEs + personal aliases.
+	if !poll.bulkClaimBad.Load() {
+		claim, err := c.claimAnyMobileDigitalEmployeeTask()
+		if err != nil {
+			// Mark bulk claim as unavailable only on definitive 404 so we stop
+			// probing a missing endpoint forever on older hubs.
+			if isHTTPNotFoundError(err) {
+				poll.bulkClaimBad.Store(true)
+			} else {
+				log.Printf("[hub-client] mobile digital employee bulk claim failed: %v", err)
+			}
+		} else {
+			poll.bulkClaimOK.Store(true)
+			if claim != nil && claim.Task != nil && strings.TrimSpace(claim.Task.TaskID) != "" {
+				reserved = false // ownership transferred to task goroutine
+				c.runMobileDigitalEmployeeTaskAsync(*claim.Task, true)
+				return
+			}
+			// Bulk endpoint works and returned empty — skip per-id fallback this tick.
+			return
+		}
+	}
+
+	// Fallback: per-id claim for older Hubs without bulk endpoint.
+	// Skip when bulk claim is known-good to avoid N extra HTTP round-trips every poll.
+	if poll.bulkClaimOK.Load() {
+		return
+	}
 	cfg, err := c.app.LoadConfig()
 	if err != nil {
 		return
 	}
-	// Fallback: per-id claim for older Hubs without bulk endpoint + extra local VE aliases.
 	for _, employeeID := range c.mobileDigitalEmployeeClaimCandidateIDs(cfg) {
 		claim, err := c.claimMobileDigitalEmployeeTask(employeeID)
 		if err != nil {
@@ -92,9 +306,18 @@ func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
 		if claim == nil || claim.Task == nil || strings.TrimSpace(claim.Task.TaskID) == "" {
 			continue
 		}
-		c.processMobileDigitalEmployeeTask(*claim.Task)
+		reserved = false
+		c.runMobileDigitalEmployeeTaskAsync(*claim.Task, true)
 		return
 	}
+}
+
+func isHTTPNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 404") || strings.Contains(msg, "status 404")
 }
 
 func mobileDigitalEmployeeCandidateIDs(machineID, clientID string, extra ...string) []string {
@@ -212,7 +435,18 @@ func (c *RemoteHubClient) doMobileDigitalEmployeeTaskRequest(ctx context.Context
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Bound request lifetime via context. Client.Timeout is a second backstop;
+	// prefer the caller's ctx deadline when present and shorter.
+	reqCtx := ctx
+	cancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		reqCtx, cancel = context.WithTimeout(ctx, mobileDigitalEmployeeHTTPTimeout)
+	}
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, method, base+path, body)
 	if err != nil {
 		return err
 	}
@@ -222,7 +456,7 @@ func (c *RemoteHubClient) doMobileDigitalEmployeeTaskRequest(ctx context.Context
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobileDigitalEmployeeHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -253,7 +487,62 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	sessionID := "mobile-digital-employee:" + taskID
-	result, err := handler.runAgentForVE(ctx, sessionID, buildMobileDigitalEmployeeExecutionPrompt(task), taskID, func(string) {})
+
+	// Stream partial agent text to Hub as throttled in_progress patches so the
+	// phone realtime channel shows live progress without per-token HTTP spam.
+	// A generation counter drops superseded progress writes once we finalize.
+	var (
+		progressMu    sync.Mutex
+		progressBuf   strings.Builder
+		lastProgress  time.Time
+		progressSeq   atomic.Uint64
+		firstProgress atomic.Bool
+	)
+	flushProgress := func() {
+		progressMu.Lock()
+		content := strings.TrimSpace(progressBuf.String())
+		now := time.Now()
+		if content == "" {
+			progressMu.Unlock()
+			return
+		}
+		// First visible chunk: push ASAP so the phone leaves a static "processing" state.
+		// Later chunks: require min interval or min size to limit Hub PATCH rate.
+		if firstProgress.Load() {
+			elapsed := now.Sub(lastProgress)
+			if elapsed < mobileDigitalEmployeeProgressMinInterval &&
+				utf8.RuneCountInString(content) < mobileDigitalEmployeeProgressMinChars {
+				progressMu.Unlock()
+				return
+			}
+		}
+		lastProgress = now
+		progressMu.Unlock()
+		firstProgress.Store(true)
+
+		n := progressSeq.Add(1)
+		clipped := clipRunesForMobileProgress(content, mobileDigitalEmployeeProgressMaxRunes)
+		go func(seq uint64, text string) {
+			if progressSeq.Load() != seq {
+				return
+			}
+			_, _ = c.updateMobileDigitalEmployeeTask(taskID, "in_progress", text)
+		}(n, clipped)
+	}
+
+	onToken := func(delta string) {
+		if delta == "" {
+			return
+		}
+		progressMu.Lock()
+		progressBuf.WriteString(delta)
+		progressMu.Unlock()
+		flushProgress()
+	}
+
+	result, err := handler.runAgentForVE(ctx, sessionID, buildMobileDigitalEmployeeExecutionPrompt(task), taskID, onToken)
+	// Invalidate in-flight progress PATCHes so they cannot race past terminal status.
+	progressSeq.Add(1)
 	if err != nil {
 		_, _ = c.updateMobileDigitalEmployeeTask(taskID, "failed", err.Error())
 		return
@@ -263,6 +552,20 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 		result = "任务已完成，但没有生成可展示结果。"
 	}
 	_, _ = c.updateMobileDigitalEmployeeTask(taskID, "done", result)
+}
+
+// clipRunesForMobileProgress keeps the tail of streaming text so the phone UI
+// shows the newest generated content within a fixed rune budget.
+func clipRunesForMobileProgress(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if maxRunes <= 0 || text == "" {
+		return text
+	}
+	if utf8.RuneCountInString(text) <= maxRunes {
+		return text
+	}
+	runes := []rune(text)
+	return "…" + string(runes[len(runes)-maxRunes:])
 }
 
 func buildMobileDigitalEmployeeExecutionPrompt(task mobileDigitalEmployeeTask) string {

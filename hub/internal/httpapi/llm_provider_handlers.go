@@ -38,6 +38,7 @@ type llmProviderRegistryResponse struct {
 	UpstreamTimeoutSec       int      `json:"upstream_timeout_sec"`
 	UserRateLimitPerMinute   int      `json:"user_rate_limit_per_minute"`
 	UserRateLimitBurst       int      `json:"user_rate_limit_burst"`
+	UserRateLimitMaxWaitMS   int      `json:"user_rate_limit_max_wait_ms"`
 	Providers                []any    `json:"providers"`
 	ExposeAPIBaseURL         string   `json:"expose_api_base_url"`
 	ExposeBaseURL            string   `json:"expose_base_url"`
@@ -239,6 +240,13 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 				req.UserRateLimitBurst = oldReg.UserRateLimitBurst
 			} else {
 				req.UserRateLimitBurst = im.DefaultLLMProviderUserRateLimitBurst
+			}
+		}
+		if req.UserRateLimitMaxWaitMS <= 0 {
+			if oldReg != nil && oldReg.UserRateLimitMaxWaitMS > 0 {
+				req.UserRateLimitMaxWaitMS = oldReg.UserRateLimitMaxWaitMS
+			} else {
+				req.UserRateLimitMaxWaitMS = im.DefaultLLMProviderUserRateLimitMaxWaitMS
 			}
 		}
 		serviceReg, err := llmservice.LoadRegistry(r.Context(), system)
@@ -1204,16 +1212,18 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
 		}
+		// Rate-limit wait must happen BEFORE taking a downstream concurrency slot,
+		// otherwise queued users pin gateway capacity for up to max_wait (30s).
+		if result := globalLLMEndpointUserLimiter.acquireForRegistry(r.Context(), principal.TenantID+"\x00"+principal.Email, providerReg); !result.Allowed {
+			writeLLMEndpointUserRateLimited(w, system, principal.Email, llmEndpointClientIP(r), requestID, startedAt, result, nil)
+			return
+		}
 		downstreamSem, acquired := acquireLLMEndpointDownstreamSlot(r.Context(), principal.TenantID, providerReg)
 		if !acquired {
 			writeError(w, http.StatusServiceUnavailable, "LLM_ENDPOINT_CONCURRENCY_FULL", "llm endpoint is busy, please retry shortly")
 			return
 		}
 		defer downstreamSem.Release()
-		if !globalLLMEndpointUserLimiter.allowForRegistry(principal.TenantID+"\x00"+principal.Email, providerReg) {
-			writeError(w, http.StatusTooManyRequests, "LLM_ENDPOINT_USER_RATE_LIMITED", "user request rate exceeded, please retry shortly")
-			return
-		}
 		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BODY", err.Error())
@@ -1538,16 +1548,17 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
 		}
+		// Rate-limit wait before downstream slot — see chat/completions handler.
+		if result := globalLLMEndpointUserLimiter.acquireForRegistry(r.Context(), principal.TenantID+"\x00"+principal.Email, providerReg); !result.Allowed {
+			writeLLMEndpointUserRateLimited(w, system, principal.Email, llmEndpointClientIP(r), requestID, startedAt, result, map[string]any{"wire_api": "responses"})
+			return
+		}
 		downstreamSem, acquired := acquireLLMEndpointDownstreamSlot(r.Context(), principal.TenantID, providerReg)
 		if !acquired {
 			writeError(w, http.StatusServiceUnavailable, "LLM_ENDPOINT_CONCURRENCY_FULL", "llm endpoint is busy, please retry shortly")
 			return
 		}
 		defer downstreamSem.Release()
-		if !globalLLMEndpointUserLimiter.allowForRegistry(principal.TenantID+"\x00"+principal.Email, providerReg) {
-			writeError(w, http.StatusTooManyRequests, "LLM_ENDPOINT_USER_RATE_LIMITED", "user request rate exceeded, please retry shortly")
-			return
-		}
 		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BODY", err.Error())
@@ -3943,6 +3954,7 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *
 		UpstreamTimeoutSec:       reg.UpstreamTimeoutSec,
 		UserRateLimitPerMinute:   reg.UserRateLimitPerMinute,
 		UserRateLimitBurst:       reg.UserRateLimitBurst,
+		UserRateLimitMaxWaitMS:   reg.UserRateLimitMaxWaitMS,
 		Providers:                providers,
 		ExposeAPIBaseURL:         base,
 		ExposeBaseURL:            base + "/chat/completions",

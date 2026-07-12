@@ -206,6 +206,20 @@ func TestClassifyResponsesAPIHTTPErrorSurfacesTopLevelHubUpstreamRateLimit(t *te
 	}
 }
 
+func TestClassifyOpenAIHTTPErrorSurfacesHubUserRateLimitQueueTimeout(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_ENDPOINT_USER_RATE_LIMITED","message":"user request rate exceeded","retry_after_seconds":2}`)
+	got := classifyOpenAIHTTPError(429, body, "MaClaw官方")
+	if !strings.Contains(got, "Hub") || !strings.Contains(got, "排队") {
+		t.Fatalf("expected hub user rate-limit queue message, got %q", got)
+	}
+	if !strings.Contains(got, "2 秒") {
+		t.Fatalf("expected Chinese second unit in retry text, got %q", got)
+	}
+	if strings.Contains(got, "请求过于频繁") || strings.Contains(got, "seconds") {
+		t.Fatalf("user rate-limit should not fall back to generic/English 429 text: %q", got)
+	}
+}
+
 func TestClassifyOpenAICompatibleHTTPErrorUsesConfiguredProviderName(t *testing.T) {
 	got, ok := classifyOpenAICompatibleHTTPError(errors.New("[https://example.test/v1/chat/completions] HTTP 403: forbidden"), "MaClawOfficial")
 	if !ok {

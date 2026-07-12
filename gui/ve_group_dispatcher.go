@@ -15,9 +15,12 @@ import (
 )
 
 const (
+	// Shared with VE 1:1 stream batching (batchHubStreamChunks).
+	// 80ms keeps remote UIs feeling live while avoiding per-token Hub RTTs.
 	groupHubSyncChunkFlushInterval = 80 * time.Millisecond
 	groupHubSyncChunkMaxBytes      = 2048
-	groupHubSyncTimeout            = 2 * time.Second
+	// Slightly longer than a single RTT so a slow Hub does not drop mid-stream.
+	groupHubSyncTimeout = 4 * time.Second
 )
 
 // GroupChatDispatcher routes group chat messages to the local AI agent
@@ -475,6 +478,7 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 
 	var pendingChunk a2a.GroupDiscussionMessage
 	var pendingContent strings.Builder
+	firstChunkFlushed := false
 	flushPendingChunk := func() {
 		if pendingContent.Len() == 0 {
 			return
@@ -484,6 +488,7 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 		msg.Content = pendingContent.String()
 		pendingChunk = a2a.GroupDiscussionMessage{}
 		pendingContent.Reset()
+		firstChunkFlushed = true
 		if !send(msg) {
 			drainMessages()
 		}
@@ -528,12 +533,19 @@ func (d *GroupChatDispatcher) sendQueuedGroupMessages(sessionID string, messages
 			if msg.Kind == a2a.MessageStreamChunk {
 				if pendingContent.Len() == 0 {
 					pendingChunk = msg
-					resetTimer()
 				}
 				pendingContent.WriteString(msg.Content)
+				// First remote paint ASAP; later chunks batch on timer/size.
+				if !firstChunkFlushed {
+					stopTimer()
+					flushPendingChunk()
+					continue
+				}
 				if pendingContent.Len() >= groupHubSyncChunkMaxBytes {
 					stopTimer()
 					flushPendingChunk()
+				} else if !timerActive {
+					resetTimer()
 				}
 				continue
 			}

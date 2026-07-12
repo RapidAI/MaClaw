@@ -156,6 +156,21 @@ func TestLLMProviderRegistryDefaultsUserLimitsAndResilience(t *testing.T) {
 	if loaded.UserRateLimitBurst != DefaultLLMProviderUserRateLimitBurst {
 		t.Fatalf("user_rate_limit_burst = %d, want %d", loaded.UserRateLimitBurst, DefaultLLMProviderUserRateLimitBurst)
 	}
+	if loaded.UserRateLimitMaxWaitMS != DefaultLLMProviderUserRateLimitMaxWaitMS {
+		t.Fatalf("user_rate_limit_max_wait_ms = %d, want %d", loaded.UserRateLimitMaxWaitMS, DefaultLLMProviderUserRateLimitMaxWaitMS)
+	}
+	// Oversized max_wait must be clamped on normalize/save.
+	reg.UserRateLimitMaxWaitMS = MaxLLMProviderUserRateLimitMaxWaitMS + 5000
+	if err := SaveLLMProviderRegistry(ctx, repo, reg); err != nil {
+		t.Fatalf("SaveLLMProviderRegistry() oversized wait error = %v", err)
+	}
+	loaded, err = LoadLLMProviderRegistry(ctx, repo)
+	if err != nil {
+		t.Fatalf("LoadLLMProviderRegistry() after oversized wait error = %v", err)
+	}
+	if loaded.UserRateLimitMaxWaitMS != MaxLLMProviderUserRateLimitMaxWaitMS {
+		t.Fatalf("clamped user_rate_limit_max_wait_ms = %d, want %d", loaded.UserRateLimitMaxWaitMS, MaxLLMProviderUserRateLimitMaxWaitMS)
+	}
 	provider := loaded.Providers[0]
 	if provider.UpstreamTimeoutSec != DefaultLLMProviderUpstreamTimeoutSec {
 		t.Fatalf("upstream_timeout_sec = %d, want %d", provider.UpstreamTimeoutSec, DefaultLLMProviderUpstreamTimeoutSec)
