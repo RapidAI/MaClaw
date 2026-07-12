@@ -585,7 +585,7 @@ jobs:
             CC="clang -arch $CLANG_ARCH" \
             CXX="clang++ -arch $CLANG_ARCH" \
             CGO_CFLAGS="-arch $CLANG_ARCH" \
-            CGO_LDFLAGS="-arch $CLANG_ARCH" \
+            CGO_LDFLAGS="-arch $CLANG_ARCH -weak_framework UniformTypeIdentifiers" \
             CGO_ENABLED=1 GOOS=darwin GOARCH="$ARCH" \
               go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_$ARCH" ./TigerProxy/
           done

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderContentWithCodeBlocks, renderMessage } from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
-import { lightTheme } from "./aiAssistantPanelTheme";
+import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 
 const { openFileOrShowInFolderMock, showItemInFolderMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
@@ -818,6 +818,10 @@ describe("renderMessage assistant display guard", () => {
         expect(userBubble.style.alignItems).toBe("flex-end");
         expect(screen.getByText("You")).toBeTruthy();
         expect(userBubble.firstElementChild?.nextElementSibling?.getAttribute("style")).toContain("color-mix(in srgb");
+        const userTail = screen.getByTestId("assistant-chat-tail-user-user-bubble");
+        expect(userTail.getAttribute("aria-hidden")).toBe("true");
+        expect(userTail.style.right).toBe("13px");
+        expect(userTail.style.transform).toBe("rotate(45deg)");
 
         rerender(<div>{renderMessage({
             id: "ai-bubble",
@@ -831,6 +835,24 @@ describe("renderMessage assistant display guard", () => {
         expect(assistantBubble.getAttribute("aria-label")).toBe("AI assistant message");
         expect(assistantBubble.style.alignItems).toBe("flex-start");
         expect(screen.getByText("AI Assistant")).toBeTruthy();
+        const assistantTail = screen.getByTestId("assistant-chat-tail-ai-ai-bubble");
+        expect(assistantTail.getAttribute("aria-hidden")).toBe("true");
+        expect(assistantTail.style.left).toBe("13px");
+        expect(assistantTail.style.transform).toBe("rotate(45deg)");
+    });
+
+    it("keeps the assistant bubble tail visually paired with the active theme", () => {
+        render(<div>{renderMessage({
+            id: "dark-ai-bubble",
+            role: "assistant",
+            content: "Dark theme response",
+            timestamp: Date.now(),
+        }, vi.fn(), darkTheme, false, "Saved file", "en", false)}</div>);
+
+        const tail = screen.getByTestId("assistant-chat-tail-ai-dark-ai-bubble");
+        expect(tail.style.background).toBe("rgb(17, 24, 39)");
+        expect(tail.style.borderTop).toContain("rgb(51, 65, 85)");
+        expect(tail.style.pointerEvents).toBe("none");
     });
 
     it("keeps failures compact and announced within the message flow", () => {

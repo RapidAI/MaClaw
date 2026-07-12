@@ -1016,6 +1016,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         boxSizing: "border-box",
                         padding: "8px 12px",
                         borderRadius: "8px",
+                        position: "relative",
                         background: `color-mix(in srgb, ${t.sendBtnBg} 12%, ${t.fieldBg})`,
                         border: `1px solid ${t.sendBtnBorder}`,
                         color: t.text,
@@ -1024,6 +1025,20 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
                     }}>
+                        <span aria-hidden="true" data-testid={`assistant-chat-tail-user-${msg.id}`} style={{
+                            position: "absolute",
+                            top: "-6px",
+                            right: "13px",
+                            width: "10px",
+                            height: "10px",
+                            boxSizing: "border-box",
+                            background: `color-mix(in srgb, ${t.sendBtnBg} 12%, ${t.fieldBg})`,
+                            borderTop: `1px solid ${t.sendBtnBorder}`,
+                            borderLeft: `1px solid ${t.sendBtnBorder}`,
+                            transform: "rotate(45deg)",
+                            borderRadius: "1px 0 0 0",
+                            pointerEvents: "none",
+                        }} />
                         {msg.content}
                     </div>
                 </div>
@@ -1049,12 +1064,27 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         boxSizing: "border-box",
                         padding: "9px 12px",
                         borderRadius: "8px",
+                        position: "relative",
                         background: t.fieldBg,
                         border: `1px solid ${t.fieldBorder}`,
                         color: t.text,
                         lineHeight: 1.55,
                         overflowWrap: "anywhere",
                     }}>
+                    <span aria-hidden="true" data-testid={`assistant-chat-tail-ai-${msg.id}`} style={{
+                        position: "absolute",
+                        top: "-6px",
+                        left: "13px",
+                        width: "10px",
+                        height: "10px",
+                        boxSizing: "border-box",
+                        background: t.fieldBg,
+                        borderTop: `1px solid ${t.fieldBorder}`,
+                        borderLeft: `1px solid ${t.fieldBorder}`,
+                        transform: "rotate(45deg)",
+                        borderRadius: "1px 0 0 0",
+                        pointerEvents: "none",
+                    }} />
                     {/* Streaming: show thinking indicator on the last assistant message placeholder */}
                     {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
                         <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
