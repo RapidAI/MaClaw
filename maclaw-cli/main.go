@@ -15,12 +15,18 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 const (
@@ -208,6 +214,12 @@ func (c *cli) run(args []string) error {
 		return c.runHealth(args)
 	case "doctor":
 		return c.runDoctor(args)
+	case "shared-loop", "sharedloop", "agent-loop":
+		return c.runSharedLoop(args)
+	case "cost", "usage":
+		return c.runCost(args)
+	case "denial-pause", "denial-resume":
+		return c.runDenialPause(args)
 	case "bootstrap", "init":
 		return c.runBootstrap(args)
 	case "srv", "server":
@@ -640,6 +652,7 @@ func normalizeInvokeAckStatus(value string) string {
 
 func (c *cli) runDoctor(args []string) error {
 	cfgp, fs := newFlagSet("doctor")
+	localOnly := fs.Bool("local-only", false, "skip live gateway health/handshake probes; report config readiness only")
 	args = reorderKnownFlags(fs, args)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -648,42 +661,851 @@ func (c *cli) runDoctor(args []string) error {
 	if err := validateConfigValues(cfg); err != nil {
 		return err
 	}
+
+	appCfg, appCfgErr := loadAppConfig(cfg.ConfigPath)
+	extra := make([]doctor.Check, 0, 4)
+	if appCfgErr != nil {
+		extra = append(extra, doctor.Check{
+			ID:      "config.load",
+			Status:  doctor.StatusFail,
+			Message: "failed to load app config: " + appCfgErr.Error(),
+			Hint:    "Fix JSON syntax in " + cfg.ConfigPath,
+		})
+		appCfg = corelib.AppConfig{}
+	}
+
+	// Live gateway probes (optional). Failures become doctor checks so the
+	// full readiness report stays machine-readable even when the gateway is down.
+	var health map[string]any
+	var handshake map[string]any
+	var gatewayErr error
+	if !*localOnly {
+		ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration(cfg.TimeoutSec, 10))
+		defer cancel()
+		if err := c.doJSON(ctx, http.MethodGet, cfg.BaseURL+"/health", "", nil, &health); err != nil {
+			gatewayErr = err
+			extra = append(extra, doctor.Check{
+				ID:      "gateway.health",
+				Status:  doctor.StatusFail,
+				Message: "gateway health failed: " + err.Error(),
+				Hint:    "Start MaClaw GUI (or the IM gateway), then re-run doctor",
+				Detail:  map[string]any{"base_url": cfg.BaseURL},
+			})
+		} else {
+			extra = append(extra, doctor.Check{
+				ID:      "gateway.health",
+				Status:  doctor.StatusOK,
+				Message: "gateway health ok",
+				Detail:  map[string]any{"base_url": cfg.BaseURL, "health": health},
+			})
+			if strings.TrimSpace(cfg.Token) == "" {
+				gatewayErr = errors.New("missing gateway token; run maclaw-cli bootstrap, then start or restart MaClaw GUI gateway")
+				extra = append(extra, doctor.Check{
+					ID:      "gateway.handshake",
+					Status:  doctor.StatusFail,
+					Message: gatewayErr.Error(),
+					Hint:    "Run: maclaw-cli bootstrap",
+				})
+			} else {
+				req := coreim.ThirdPartyHandshakeRequest{
+					ClientID:        cfg.ClientID,
+					ClientName:      cfg.ClientName,
+					ProtocolVersion: coreim.ThirdPartyProtocolVersion,
+					Capabilities:    coreim.ThirdPartyCapabilityMap(),
+				}
+				if err := c.doJSON(ctx, http.MethodPost, cfg.BaseURL+"/handshake", cfg.Token, req, &handshake); err != nil {
+					gatewayErr = err
+					extra = append(extra, doctor.Check{
+						ID:      "gateway.handshake",
+						Status:  doctor.StatusFail,
+						Message: "gateway handshake failed: " + err.Error(),
+						Hint:    "Verify thirdparty_gateway_token matches the running gateway; re-run bootstrap if needed",
+					})
+				} else {
+					extra = append(extra, doctor.Check{
+						ID:      "gateway.handshake",
+						Status:  doctor.StatusOK,
+						Message: "gateway handshake ok",
+					})
+				}
+			}
+		}
+	} else {
+		extra = append(extra, doctor.Check{
+			ID:      "gateway.health",
+			Status:  doctor.StatusSkip,
+			Message: "skipped (--local-only)",
+		})
+	}
+
+	readiness := doctor.Run(doctor.Input{
+		Config:      appCfg,
+		ConfigPath:  cfg.ConfigPath,
+		ExtraChecks: extra,
+	})
+
 	result := map[string]any{
-		"ok":           false,
+		"ok":           readiness.OK,
+		"summary":      readiness.Summary,
 		"configPath":   cfg.ConfigPath,
 		"baseUrl":      cfg.BaseURL,
 		"discovered":   cfg.Discovered,
 		"tokenPresent": strings.TrimSpace(cfg.Token) != "",
+		"localOnly":    *localOnly,
+		"readiness":    readiness,
+		"blockers":     readiness.Blockers,
+		"warnings":     readiness.Warnings,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration(cfg.TimeoutSec, 10))
+	if health != nil {
+		result["health"] = health
+	}
+	if handshake != nil {
+		result["handshake"] = handshake
+	}
+	if gatewayErr != nil {
+		result["error"] = gatewayErr.Error()
+	}
+
+	if err := writeJSON(c.stdout, result, cfg.Pretty); err != nil {
+		return err
+	}
+	if !readiness.OK {
+		// Prefer the first concrete probe error for shell scripts; otherwise a
+		// short readiness summary.
+		if gatewayErr != nil {
+			return gatewayErr
+		}
+		return errors.New(readiness.Summary)
+	}
+	return nil
+}
+
+func (c *cli) runCost(args []string) error {
+	sub := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, args = args[0], args[1:]
+	}
+	switch strings.ToLower(strings.TrimSpace(sub)) {
+	case "export", "export-stats":
+		return c.runCostExport(args)
+	case "merge-exports", "merge":
+		return c.runCostMergeExports(args)
+	case "help", "--help", "-h":
+		fmt.Fprint(c.stdout, costUsage())
+		return nil
+	case "", "status", "show":
+		// fall through to status payload
+	default:
+		// Treat unknown first token as start of flags for backward compatibility
+		// only if it looks like a flag; otherwise error.
+		if strings.HasPrefix(sub, "-") {
+			args = append([]string{sub}, args...)
+		} else if sub != "" {
+			return fmt.Errorf("unknown cost subcommand %q\n\n%s", sub, costUsage())
+		}
+	}
+	return c.runCostStatus(args)
+}
+
+func costUsage() string {
+	return `maclaw-cli cost — local cost-route / daily fleet / budget status
+
+Usage:
+  maclaw-cli cost [status] [flags]
+  maclaw-cli cost export [--out PATH|--write] [flags]
+  maclaw-cli cost merge-exports FILE [FILE...] [--out PATH] [flags]
+
+Subcommands:
+  status          Default: fleet daily $, cost-route tiers, adaptive/compress/denial
+  export          Write portable cost_ops JSON (route + daily fleet)
+  merge-exports   Sum multiple export files (offline fleet rollup)
+
+Related:
+  maclaw-cli shared-loop hub-metrics   # online Hub fleet adaptive_prompt + cost_ops
+`
+}
+
+func (c *cli) runCostExport(args []string) error {
+	cfgp, fs := newFlagSet("cost export")
+	outPath := fs.String("out", "", "write export JSON to this path")
+	writeDefault := fs.Bool("write", false, "write to default path under ~/.maclaw/stats/exports/")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	exp := llm.BuildCostOpsExport()
+	path := strings.TrimSpace(*outPath)
+	if path == "" && *writeDefault {
+		path = llm.DefaultCostOpsExportPath()
+	}
+	written := ""
+	if path != "" {
+		if err := llm.WriteCostOpsExport(path, exp); err != nil {
+			return err
+		}
+		written = path
+	}
+	return writeJSON(c.stdout, map[string]any{
+		"ok":      true,
+		"action":  "cost-export",
+		"export":  exp,
+		"written": written,
+		"default": llm.DefaultCostOpsExportPath(),
+		"summary": exp.Summary,
+		"hint":    "Share export files offline; merge with: maclaw-cli cost merge-exports a.json b.json",
+	}, cfg.Pretty)
+}
+
+func (c *cli) runCostMergeExports(args []string) error {
+	cfgp, fs := newFlagSet("cost merge-exports")
+	outPath := fs.String("out", "", "optional path to write merged result as an export JSON")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	paths := fs.Args()
+	if len(paths) == 0 {
+		return fmt.Errorf("usage: maclaw-cli cost merge-exports FILE [FILE...] [--out PATH]")
+	}
+	exports := make([]llm.CostOpsExport, 0, len(paths))
+	for _, p := range paths {
+		exp, err := llm.LoadCostOpsExport(p)
+		if err != nil {
+			return fmt.Errorf("load %s: %w", p, err)
+		}
+		exports = append(exports, exp)
+	}
+	merged := llm.MergeCostOpsExports(exports)
+	written := ""
+	if path := strings.TrimSpace(*outPath); path != "" {
+		wrap := llm.CostOpsExport{
+			SchemaVersion: llm.CostOpsExportSchemaVersion,
+			ExportedAt:    merged.MergedAt,
+			Host:          "merged",
+			InstanceID:    fmt.Sprintf("merged-%d", merged.SourceCount),
+			CostRoute: llm.CostRouteStats{
+				ByTier:    merged.ByTier,
+				Decisions: merged.RouteDecisions,
+				Applied:   merged.RouteApplied,
+				Shadow:    merged.RouteShadow,
+			},
+			DailyFleet: llm.CostDailyFleetView{
+				CostUSD:    merged.DailyCostUSD,
+				Calls:      merged.DailyCalls,
+				Instances:  merged.DailyInstances,
+			},
+			Summary: merged.Summary,
+		}
+		if err := llm.WriteCostOpsExport(path, wrap); err != nil {
+			return err
+		}
+		written = path
+	}
+	return writeJSON(c.stdout, map[string]any{
+		"ok":      true,
+		"action":  "cost-merge-exports",
+		"merged":  merged,
+		"written": written,
+		"summary": merged.Summary,
+		"hint":    "Merged counters are fleet-level sums across export files (not live Hub online set)",
+	}, cfg.Pretty)
+}
+
+func (c *cli) runCostStatus(args []string) error {
+	cfgp, fs := newFlagSet("cost")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	appCfg, _ := loadAppConfig(cfg.ConfigPath)
+	ap := adaptivePromptPayload()
+	comp := toolresult.GetCompressionStats()
+	denial := security.ProcessDenialLedger().Snapshot()
+	fleet := llm.LoadCostDailyFleet()
+	routeStats := llm.LoadCostRouteStats()
+	summaryParts := make([]string, 0, 6)
+	if line := llm.FormatCostDailyFleetLine(); line != "" {
+		summaryParts = append(summaryParts, line)
+	}
+	if line := llm.FormatCostRouteStatsLine(); line != "" {
+		summaryParts = append(summaryParts, line)
+	}
+	if s, _ := ap["summary"].(string); strings.TrimSpace(s) != "" {
+		summaryParts = append(summaryParts, s)
+	}
+	if line := toolresult.FormatCompressionLine(); line != "" {
+		summaryParts = append(summaryParts, line)
+	}
+	if denial.Paused {
+		summaryParts = append(summaryParts, "DENIAL_PAUSED: "+denial.PauseMessage)
+	} else if denial.ConsecutiveDenies > 0 {
+		summaryParts = append(summaryParts, fmt.Sprintf("denial streak=%d/%d last=%s",
+			denial.ConsecutiveDenies, denial.Threshold, denial.LastTool))
+	}
+	budgetStatus := "ok"
+	if appCfg.DailyLLMBudgetUSD > 0 {
+		pct := 0.0
+		if fleet.CostUSD > 0 {
+			pct = fleet.CostUSD / appCfg.DailyLLMBudgetUSD * 100
+		}
+		if fleet.CostUSD >= appCfg.DailyLLMBudgetUSD {
+			budgetStatus = "exceeded"
+			summaryParts = append(summaryParts, fmt.Sprintf("BUDGET_EXCEEDED budget_usd=%.2f fleet=$%.4f (%.0f%%)",
+				appCfg.DailyLLMBudgetUSD, fleet.CostUSD, pct))
+		} else if fleet.CostUSD >= appCfg.DailyLLMBudgetUSD*0.8 {
+			budgetStatus = "warn"
+			summaryParts = append(summaryParts, fmt.Sprintf("budget_warn budget_usd=%.2f (fleet today %.0f%%)",
+				appCfg.DailyLLMBudgetUSD, pct))
+		} else {
+			summaryParts = append(summaryParts, fmt.Sprintf("budget_usd=%.2f (fleet today %.0f%%)",
+				appCfg.DailyLLMBudgetUSD, pct))
+		}
+	}
+	if len(summaryParts) == 0 {
+		summaryParts = append(summaryParts, "no cost/adaptive/compress stats yet — chat in GUI/TUI to accumulate")
+	}
+	if len(fleet.ByModel) > 0 {
+		// Compact one-liner for top models by cost (operator scan).
+		type pair struct {
+			m string
+			c float64
+		}
+		top := make([]pair, 0, len(fleet.ByModel))
+		for m, b := range fleet.ByModel {
+			top = append(top, pair{m, b.CostUSD})
+		}
+		sort.Slice(top, func(i, j int) bool { return top[i].c > top[j].c })
+		n := len(top)
+		if n > 3 {
+			n = 3
+		}
+		parts := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			parts = append(parts, fmt.Sprintf("%s=$%.4f", top[i].m, top[i].c))
+		}
+		summaryParts = append(summaryParts, "by_model top: "+strings.Join(parts, ", "))
+	}
+	return writeJSON(c.stdout, map[string]any{
+		"ok":             true,
+		"action":         "cost",
+		"llmCostDaily":   fleet,
+		"costRoute":      routeStats,
+		"adaptivePrompt": ap,
+		"toolCompress":   comp,
+		"denialLedger":   denial,
+		"dailyBudgetUSD": appCfg.DailyLLMBudgetUSD,
+		"budgetStatus":   budgetStatus, // ok | warn | exceeded
+		"summary":        strings.Join(summaryParts, "\n"),
+		"hint":           "llmCostDaily + costRoute (tier counts) under ~/.maclaw/stats/. budgetStatus uses fleet vs daily_llm_budget_usd. GUI/TUI (interactive, pipe, rpc, weixin, schedule) hard-stop when exceeded.",
+	}, cfg.Pretty)
+}
+
+func (c *cli) runDenialPause(args []string) error {
+	cfgp, fs := newFlagSet("denial-pause")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	sub := "status"
+	if rest := fs.Args(); len(rest) > 0 {
+		sub = strings.ToLower(strings.TrimSpace(rest[0]))
+	}
+	switch sub {
+	case "clear", "resume", "reset", "unlock":
+		security.ProcessDenialLedger().ClearPause()
+		snap := security.ProcessDenialLedger().Snapshot()
+		return writeJSON(c.stdout, map[string]any{
+			"ok": true, "action": "denial-pause-clear", "ledger": snap,
+			"summary": "denial pause cleared",
+		}, cfg.Pretty)
+	case "status", "show", "":
+		snap := security.ProcessDenialLedger().Snapshot()
+		return writeJSON(c.stdout, map[string]any{
+			"ok": true, "action": "denial-pause-status", "ledger": snap,
+			"summary": snap.PauseMessage,
+		}, cfg.Pretty)
+	default:
+		return fmt.Errorf("usage: maclaw-cli denial-pause [status|clear]")
+	}
+}
+
+func (c *cli) runSharedLoop(args []string) error {
+	sub := "status"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, args = args[0], args[1:]
+	}
+	switch strings.ToLower(strings.TrimSpace(sub)) {
+	case "status", "show", "get", "":
+		return c.runSharedLoopStatus(args)
+	case "stats", "prompt-stats":
+		return c.runSharedLoopStats(args)
+	case "stats-reset", "reset-stats", "prompt-stats-reset":
+		return c.runSharedLoopStatsReset(args)
+	case "export", "export-stats", "prompt-export":
+		return c.runSharedLoopExport(args)
+	case "merge-exports", "merge", "aggregate":
+		return c.runSharedLoopMergeExports(args)
+	case "hub-metrics", "fleet-metrics", "hub-adaptive":
+		return c.runSharedLoopHubMetrics(args)
+	case "enable", "on":
+		return c.runSharedLoopSet(args, true)
+	case "disable", "off":
+		return c.runSharedLoopSet(args, false)
+	case "help", "--help", "-h":
+		fmt.Fprint(c.stdout, sharedLoopUsage())
+		return nil
+	default:
+		return fmt.Errorf("unknown shared-loop subcommand %q\n\n%s", sub, sharedLoopUsage())
+	}
+}
+
+func (c *cli) runSharedLoopStatus(args []string) error {
+	cfgp, fs := newFlagSet("shared-loop status")
+	// --user is defined by newFlagSet (external user id); also used for canary preview.
+	canaryUser := fs.String("canary-user", "", "alias of --user for sticky canary membership preview")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	appCfg, err := loadAppConfig(cfg.ConfigPath)
+	if err != nil {
+		return err
+	}
+	out := sharedLoopResult(cfg.ConfigPath, appCfg, "status", false)
+	u := strings.TrimSpace(cfg.UserID)
+	if u == "" {
+		u = strings.TrimSpace(*canaryUser)
+	}
+	if u != "" {
+		env := doctor.ResolveSharedLoopEnv(appCfg)
+		preview := doctor.PreviewSharedLoopCanaryWithConfig(u, env.Percent, appCfg)
+		out["canaryPreview"] = preview
+		out["summary"] = fmt.Sprint(out["summary"]) + fmt.Sprintf(
+			"\ncanary-preview: user=%q percent=%d bucket=%d allows=%v",
+			preview.UserID, preview.Percent, preview.Bucket, preview.Allows,
+		)
+	}
+	return writeJSON(c.stdout, out, cfg.Pretty)
+}
+
+func (c *cli) runSharedLoopSet(args []string, enabled bool) error {
+	name := "shared-loop disable"
+	if enabled {
+		name = "shared-loop enable"
+	}
+	cfgp, fs := newFlagSet(name)
+	percent := fs.Int("percent", -1, "optional canary percent 0..100 written to config (omit to leave unchanged)")
+	workflow := fs.String("workflow", "", "optional workflow pilot on|off written to config (omit to leave unchanged)")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	appCfg, err := loadAppConfig(cfg.ConfigPath)
+	if err != nil {
+		return err
+	}
+	changed := false
+	if appCfg.SharedAgentLoopEnabled != enabled {
+		appCfg.SharedAgentLoopEnabled = enabled
+		changed = true
+	}
+	// Always mark migrated so the one-time migrator will not re-force enable
+	// after an explicit CLI disable (mirrors GUI SetSharedAgentLoopEnabled).
+	if !appCfg.SharedAgentLoopMigrated {
+		appCfg.SharedAgentLoopMigrated = true
+		changed = true
+	}
+	if *percent >= 0 {
+		p := *percent
+		if p > 100 {
+			p = 100
+		}
+		if appCfg.SharedAgentLoopCanaryPercent == nil || *appCfg.SharedAgentLoopCanaryPercent != p {
+			appCfg.SharedAgentLoopCanaryPercent = &p
+			changed = true
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(*workflow)) {
+	case "1", "true", "yes", "on":
+		if !appCfg.SharedAgentLoopWorkflow {
+			appCfg.SharedAgentLoopWorkflow = true
+			changed = true
+		}
+	case "0", "false", "no", "off":
+		if appCfg.SharedAgentLoopWorkflow {
+			appCfg.SharedAgentLoopWorkflow = false
+			changed = true
+		}
+	}
+	if changed {
+		if err := saveAppConfig(cfg.ConfigPath, appCfg); err != nil {
+			return err
+		}
+	}
+	action := "disable"
+	if enabled {
+		action = "enable"
+	}
+	return writeJSON(c.stdout, sharedLoopResult(cfg.ConfigPath, appCfg, action, changed), cfg.Pretty)
+}
+
+func sharedLoopResult(configPath string, appCfg corelib.AppConfig, action string, changed bool) map[string]any {
+	env := doctor.ResolveSharedLoopEnv(appCfg)
+	check := doctor.SharedLoopCheck(appCfg)
+	out := map[string]any{
+		"ok":             true,
+		"action":         action,
+		"changed":        changed,
+		"configPath":     configPath,
+		"mode":           env.Mode,
+		"percent":        env.Percent,
+		"workflowPilot":  env.WorkflowPilot,
+		"configEnabled":  env.ConfigEnabled,
+		"configMigrated": env.ConfigMigrated,
+		"defaultEnabled": env.DefaultEnabled,
+		"envOverride":    env.EnvOverride,
+		"envLocksMode":   env.EnvOverride != "",
+		"summary":        doctor.FormatSharedLoopLine(env),
+		"check":          check,
+		"hint":           "",
+		"adaptivePrompt": adaptivePromptPayload(),
+	}
+	if line := agent.FormatPromptProfileLine(); line != "" {
+		out["summary"] = doctor.FormatSharedLoopLine(env) + "\n" + line
+	}
+	if env.EnvOverride != "" {
+		out["hint"] = "MACLAW_SHARED_AGENT_LOOP is set and overrides config at runtime; unset it for the config toggle to take effect"
+	} else if action == "enable" || action == "disable" {
+		out["hint"] = "Restart MaClaw GUI/TUI if already running so the new config is loaded"
+	} else if env.Mode == "off" {
+		out["hint"] = "Run: maclaw-cli shared-loop enable  (or set MACLAW_SHARED_AGENT_LOOP=1 / shadow for dry-run)"
+	}
+	return out
+}
+
+func adaptivePromptPayload() map[string]any {
+	promptStats := agent.GetPromptProfileStats()
+	out := map[string]any{
+		"lightTurns":         promptStats.LightTurns,
+		"fullTurns":          promptStats.FullTurns,
+		"lightPercent":       promptStats.LightPercent,
+		"estTokensSaved":     promptStats.EstTokensSaved,
+		"lastProfile":        promptStats.LastProfile,
+		"lastAt":             promptStats.LastAt,
+		"lastFullTokens":     promptStats.LastFullTokens,
+		"lastLightTokens":    promptStats.LastLightTokens,
+		"lastSavedTokens":    promptStats.LastSavedTokens,
+		"lastTask":           promptStats.LastTask,
+		"lastReason":         promptStats.LastReason,
+		"lightToolDenies":    promptStats.LightToolDenies,
+		"lastDeniedTool":     promptStats.LastDeniedTool,
+		"lightUpgrades":      promptStats.LightUpgrades,
+		"lastUpgradeReason":  promptStats.LastUpgradeReason,
+		"abEligibleLight":    promptStats.AbEligibleLight,
+		"abSampleFull":       promptStats.AbSampleFull,
+		"abSamplePercent":    promptStats.AbSamplePercent,
+		"upgradeRatePercent": promptStats.UpgradeRatePercent,
+		"denyRatePercent":    promptStats.DenyRatePercent,
+		"summary":            promptStats.FormatLine(),
+		"statsPath":          agent.PromptProfileStatsPath(),
+		"envKey":             agent.PromptProfileEnvKey,
+		"abPercentEnvKey":    agent.PromptABPercentEnvKey,
+	}
+	if len(promptStats.ByTask) > 0 {
+		out["byTask"] = promptStats.ByTask
+	}
+	if len(promptStats.ByDeniedTool) > 0 {
+		out["byDeniedTool"] = promptStats.ByDeniedTool
+	}
+	if forced, ok := agent.EnvPromptProfileOverride(); ok {
+		out["envOverride"] = true
+		out["forcedProfile"] = string(forced)
+	} else {
+		out["envOverride"] = false
+	}
+	return out
+}
+
+func (c *cli) runSharedLoopStats(args []string) error {
+	cfgp, fs := newFlagSet("shared-loop stats")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	ap := adaptivePromptPayload()
+	return writeJSON(c.stdout, map[string]any{
+		"ok":             true,
+		"action":         "stats",
+		"adaptivePrompt": ap,
+		"summary":        ap["summary"],
+		"hint":           "Stats are process-local + durable at adaptivePrompt.statsPath; GUI/TUI processes accumulate separately until restart reloads disk",
+	}, cfg.Pretty)
+}
+
+func (c *cli) runSharedLoopStatsReset(args []string) error {
+	cfgp, fs := newFlagSet("shared-loop stats-reset")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	if err := agent.ResetPromptProfileStats(); err != nil {
+		return err
+	}
+	ap := adaptivePromptPayload()
+	return writeJSON(c.stdout, map[string]any{
+		"ok":             true,
+		"action":         "stats-reset",
+		"changed":        true,
+		"adaptivePrompt": ap,
+		"summary":        "adaptive-prompt stats cleared",
+		"hint":           "Cleared this process counters and the durable stats file. Restart running GUI/TUI for a clean in-memory view",
+	}, cfg.Pretty)
+}
+
+func (c *cli) runSharedLoopExport(args []string) error {
+	cfgp, fs := newFlagSet("shared-loop export")
+	outPath := fs.String("out", "", "write export JSON to this path (default: stdout only; use --write for default path)")
+	writeDefault := fs.Bool("write", false, "also write to default path under ~/.maclaw/stats/exports/")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+	exp := agent.BuildPromptProfileExport()
+	written := ""
+	path := strings.TrimSpace(*outPath)
+	if path == "" && *writeDefault {
+		path = agent.DefaultPromptProfileExportPath()
+	}
+	if path != "" {
+		if err := agent.WritePromptProfileExport(path, exp); err != nil {
+			return err
+		}
+		written = path
+		exp.SourcePath = path
+	}
+	return writeJSON(c.stdout, map[string]any{
+		"ok":      true,
+		"action":  "export",
+		"export":  exp,
+		"written": written,
+		"summary": exp.Summary,
+		"hint":    "Ship export JSON files from each instance; aggregate with: maclaw-cli shared-loop merge-exports a.json b.json",
+	}, cfg.Pretty)
+}
+
+// normalizeHubBaseURL trims trailing slashes and common accidental path suffixes
+// so operators can paste full metrics URLs or /api bases into --hub.
+func normalizeHubBaseURL(base string) string {
+	base = strings.TrimSpace(base)
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return ""
+	}
+	lower := strings.ToLower(base)
+	for _, suf := range []string{
+		"/api/admin/adaptive-prompt/metrics",
+		"/api/admin",
+		"/api",
+	} {
+		if strings.HasSuffix(lower, suf) {
+			base = base[:len(base)-len(suf)]
+			base = strings.TrimRight(base, "/")
+			lower = strings.ToLower(base)
+		}
+	}
+	return base
+}
+
+func (c *cli) runSharedLoopHubMetrics(args []string) error {
+	cfgp, fs := newFlagSet("shared-loop hub-metrics")
+	hubURL := fs.String("hub", firstNonEmpty(os.Getenv("MACLAW_HUB_URL"), os.Getenv("MACLAW_REMOTE_HUB_URL")), "Hub base URL (default: config remote_hub_url or MACLAW_HUB_URL)")
+	adminToken := fs.String("admin-token", firstNonEmpty(os.Getenv("MACLAW_HUB_ADMIN_TOKEN"), os.Getenv("MACLAW_ADMIN_TOKEN")), "Hub tenant/global admin bearer token")
+	tenantID := fs.String("tenant", firstNonEmpty(os.Getenv("MACLAW_HUB_TENANT_ID"), os.Getenv("MACLAW_TENANT_ID")), "optional tenant_id query (tenant admins are scoped automatically by session)")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
+		return err
+	}
+
+	base := strings.TrimSpace(*hubURL)
+	if base == "" {
+		if appCfg, err := loadAppConfig(cfg.ConfigPath); err == nil {
+			base = strings.TrimSpace(appCfg.RemoteHubURL)
+		}
+	}
+	base = normalizeHubBaseURL(base)
+	token := strings.TrimSpace(*adminToken)
+	if base == "" {
+		return fmt.Errorf("hub URL required: pass --hub, set MACLAW_HUB_URL, or configure remote_hub_url in %s", firstNonEmpty(cfg.ConfigPath, "~/.maclaw/config.json"))
+	}
+	if token == "" {
+		return fmt.Errorf("admin token required: pass --admin-token or set MACLAW_HUB_ADMIN_TOKEN (tenant or global admin JWT)")
+	}
+
+	q := ""
+	if tid := strings.TrimSpace(*tenantID); tid != "" {
+		q = "?tenant_id=" + url.QueryEscape(tid)
+	}
+	adaptiveEP := base + "/api/admin/adaptive-prompt/metrics" + q
+	costOpsEP := base + "/api/admin/cost-ops/metrics" + q
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration(cfg.TimeoutSec, 15))
 	defer cancel()
-	var health map[string]any
-	if err := c.doJSON(ctx, http.MethodGet, cfg.BaseURL+"/health", "", nil, &health); err != nil {
-		result["health"] = map[string]any{"ok": false, "error": err.Error()}
-		_ = writeJSON(c.stdout, result, cfg.Pretty)
+	var adaptiveMetrics map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, adaptiveEP, token, nil, &adaptiveMetrics); err != nil {
+		return fmt.Errorf("hub adaptive-prompt metrics: %w", err)
+	}
+	var costOpsMetrics map[string]any
+	if err := c.doJSON(ctx, http.MethodGet, costOpsEP, token, nil, &costOpsMetrics); err != nil {
+		// Soft-fail: older Hubs lack cost-ops endpoint.
+		costOpsMetrics = map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+			"hint":  "upgrade Hub for GET /api/admin/cost-ops/metrics",
+		}
+	}
+	return writeJSON(c.stdout, map[string]any{
+		"ok":              true,
+		"action":          "hub-metrics",
+		"hub":             base,
+		"endpoint":        adaptiveEP,
+		"costOpsEndpoint": costOpsEP,
+		"metrics":         adaptiveMetrics,
+		"costOps":         costOpsMetrics,
+		"hint":            "Sums online machines' heartbeat adaptive_prompt + cost_ops. Offline drop out. Local: maclaw-cli cost; shared-loop export|merge-exports",
+	}, cfg.Pretty)
+}
+
+func (c *cli) runSharedLoopMergeExports(args []string) error {
+	cfgp, fs := newFlagSet("shared-loop merge-exports")
+	outPath := fs.String("out", "", "optional path to write merged result JSON")
+	args = reorderKnownFlags(fs, args)
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	result["health"] = health
-	if strings.TrimSpace(cfg.Token) == "" {
-		result["error"] = "missing gateway token; run maclaw-cli bootstrap, then start or restart MaClaw GUI gateway"
-		_ = writeJSON(c.stdout, result, cfg.Pretty)
-		return requireToken(cfg)
-	}
-	var handshake map[string]any
-	req := coreim.ThirdPartyHandshakeRequest{
-		ClientID:        cfg.ClientID,
-		ClientName:      cfg.ClientName,
-		ProtocolVersion: coreim.ThirdPartyProtocolVersion,
-		Capabilities:    coreim.ThirdPartyCapabilityMap(),
-	}
-	if err := c.doJSON(ctx, http.MethodPost, cfg.BaseURL+"/handshake", cfg.Token, req, &handshake); err != nil {
-		result["handshake"] = map[string]any{"ok": false, "error": err.Error()}
-		_ = writeJSON(c.stdout, result, cfg.Pretty)
+	cfg := finalizeConfig(*cfgp)
+	if err := validateConfigValues(cfg); err != nil {
 		return err
 	}
-	result["handshake"] = handshake
-	result["ok"] = true
-	return writeJSON(c.stdout, result, cfg.Pretty)
+	paths := fs.Args()
+	if len(paths) == 0 {
+		return fmt.Errorf("usage: maclaw-cli shared-loop merge-exports FILE [FILE...] [--out PATH]")
+	}
+	exports := make([]agent.PromptProfileExport, 0, len(paths))
+	for _, p := range paths {
+		exp, err := agent.LoadPromptProfileExport(p)
+		if err != nil {
+			return fmt.Errorf("load %s: %w", p, err)
+		}
+		exports = append(exports, exp)
+	}
+	merged := agent.MergePromptProfileExports(exports)
+	written := ""
+	if path := strings.TrimSpace(*outPath); path != "" {
+		// Re-use export writer shape for a single file operators can re-merge.
+		wrap := agent.PromptProfileExport{
+			SchemaVersion: agent.PromptProfileExportSchemaVersion,
+			ExportedAt:    merged.MergedAt,
+			Host:          "merged",
+			InstanceID:    fmt.Sprintf("merged-%d", merged.SourceCount),
+			Stats:         merged.Stats,
+			Summary:       merged.Summary,
+		}
+		if err := agent.WritePromptProfileExport(path, wrap); err != nil {
+			return err
+		}
+		written = path
+	}
+	return writeJSON(c.stdout, map[string]any{
+		"ok":      true,
+		"action":  "merge-exports",
+		"merged":  merged,
+		"written": written,
+		"summary": merged.Summary,
+		"hint":    "Merged counters are fleet-level sums; last_* fields come from the newest export by exported_at",
+	}, cfg.Pretty)
+}
+
+func sharedLoopUsage() string {
+	return `maclaw-cli shared-loop manages the shared agent loop strangler flag.
+
+Usage:
+  maclaw-cli shared-loop [status] [flags]
+  maclaw-cli shared-loop enable [--percent N] [--workflow on|off] [flags]
+  maclaw-cli shared-loop disable [flags]
+  maclaw-cli shared-loop stats [flags]
+  maclaw-cli shared-loop stats-reset [flags]
+  maclaw-cli shared-loop export [--out PATH|--write] [flags]
+  maclaw-cli shared-loop merge-exports FILE [FILE...] [--out PATH] [flags]
+  maclaw-cli shared-loop hub-metrics [--hub URL] [--admin-token T] [--tenant ID] [flags]
+
+Subcommands:
+  status         Show effective mode (config + env) and adaptive prompt summary.
+  enable         Set shared_agent_loop_enabled=true; optional --percent / --workflow to config.
+  disable        Set shared_agent_loop_enabled=false and mark migration done.
+  stats          Show adaptive prompt light/full hit rate and est_tokens_saved.
+  stats-reset    Clear durable adaptive prompt stats (~/.maclaw/stats/prompt_profile.json).
+  export         Portable JSON snapshot for multi-instance aggregation.
+  merge-exports  Sum counters from multiple export (or raw stats) JSON files.
+  hub-metrics    Fetch Hub fleet adaptive-prompt rollup (admin JWT).
+
+Notes:
+  Env MACLAW_SHARED_AGENT_LOOP (on|off|shadow) overrides config when set.
+  Canary: env MACLAW_SHARED_AGENT_LOOP_PERCENT or config shared_agent_loop_canary_percent (0..100).
+  Workflow pilot: env MACLAW_SHARED_AGENT_LOOP_WORKFLOW or config shared_agent_loop_workflow.
+  Adaptive prompt: MACLAW_PROMPT_PROFILE=light|full|auto forces system-prompt thickness.
+  Quality A/B: MACLAW_PROMPT_AB_PERCENT=0..100 forces full on a sticky sample of light turns.
+  Adaptive prompt stats are written by GUI/TUI; est_tokens_saved is a shadow estimate.
+  Light tool retry: MACLAW_PROMPT_LIGHT_RETRY=off disables mid-loop light→full recovery.
+  Hub fleet: GET /api/admin/adaptive-prompt/metrics (use hub-metrics with admin token).
+  Restart MaClaw GUI/TUI after enable/disable so the process reloads config.
+
+Common flags:
+  --config PATH   default ~/.maclaw/config.json or MACLAW_CONFIG
+  --pretty=false  emit compact JSON
+  --user ID / --canary-user ID   (status) preview sticky canary membership
+  --hub URL / MACLAW_HUB_URL / config remote_hub_url   (hub-metrics)
+  --admin-token T / MACLAW_HUB_ADMIN_TOKEN             (hub-metrics)
+  --tenant ID / MACLAW_HUB_TENANT_ID                   (hub-metrics optional)
+`
 }
 
 func (c *cli) runBootstrap(args []string) error {
@@ -2927,6 +3749,9 @@ Usage:
   maclaw-cli invoke-schema
   maclaw-cli invoke [--dry-run] [--json '{...}' | --input request.json]
   maclaw-cli doctor [flags]
+  maclaw-cli cost [flags]
+  maclaw-cli denial-pause [status|clear] [flags]
+  maclaw-cli shared-loop [status|enable|disable|stats|stats-reset|export|merge-exports|hub-metrics] [flags]
   maclaw-cli bootstrap [--host 127.0.0.1] [--port 18777] [flags]
   maclaw-cli srv setup|show|disable|token|test [flags]
   maclaw-cli srv tools validate --file tools.json
@@ -3029,8 +3854,9 @@ Command choices:
   send       Send text only. Use when another process will poll.
   poll       Fetch replies for one session.
   watch      Long-running JSONL poll loop.
-  doctor     Verify GUI gateway health and auth.
-  bootstrap  Write local GUI gateway config if missing.
+  doctor       Verify GUI gateway health and auth.
+  shared-loop  Show/enable/disable shared agent loop; adaptive prompt stats.
+  bootstrap    Write local GUI gateway config if missing.
 
 Examples:
   maclaw-cli continue --require-session --client planner --session task-123 "Plan next step"
@@ -3198,9 +4024,25 @@ func agentSpec() map[string]any {
 				"stateful": true,
 			},
 			"doctor": map[string]any{
-				"use":      "Diagnose local gateway connectivity and token auth.",
-				"template": "maclaw-cli doctor",
-				"stdout":   "JSON diagnostic report",
+				"use":      "Diagnose local config readiness plus optional live gateway health/handshake.",
+				"template": "maclaw-cli doctor [--local-only] [--pretty]",
+				"stdout":   "JSON diagnostic report with readiness.checks[] (llm, hub, gateway, paths, security, usage) and legacy health/handshake fields",
+				"flags": map[string]any{
+					"local-only": "Skip live gateway probes; report config/file readiness only",
+				},
+			},
+			"shared-loop": map[string]any{
+				"use":      "Inspect or toggle the shared agent loop strangler; view/reset adaptive prompt stats; Hub fleet metrics.",
+				"template": "maclaw-cli shared-loop [status|enable|disable|stats|stats-reset|export|merge-exports|hub-metrics] [--config PATH] [--pretty]",
+				"stdout":   "JSON with mode, percent, adaptivePrompt (light/full hit rate, est_tokens_saved), export/merge fleet snapshots, hub metrics, summary, and doctor check",
+				"notes": []string{
+					"Env MACLAW_SHARED_AGENT_LOOP overrides config when set",
+					"enable/disable also sets shared_agent_loop_migrated=true",
+					"stats/stats-reset operate on adaptive prompt counters under stats/prompt_profile.json",
+					"export writes portable JSON; merge-exports sums fleet counters from multiple hosts",
+					"hub-metrics calls GET /api/admin/adaptive-prompt/metrics with --admin-token / MACLAW_HUB_ADMIN_TOKEN",
+					"Restart MaClaw GUI/TUI after toggling config",
+				},
 			},
 			"bootstrap": map[string]any{
 				"use":      "Write local gateway settings into MaClaw GUI config.",

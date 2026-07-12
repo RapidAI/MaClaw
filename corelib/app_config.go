@@ -109,6 +109,14 @@ type AppConfig struct {
 	NLSkills          []NLSkillEntry  `json:"nl_skills,omitempty"`
 	SkillHubURLs      []SkillHubEntry `json:"skill_hub_urls,omitempty"`
 	ExternalSkillDirs []string        `json:"external_skill_dirs,omitempty"` // user-added external skill directories
+	// SkillEvolutionRepairCooldownHours is the min interval between automated
+	// self-repair LLM attempts for the same skill. 0 = default (1 hour).
+	SkillEvolutionRepairCooldownHours int `json:"skill_evolution_repair_cooldown_hours,omitempty"`
+	// SkillEvolutionEnabled controls whether automatic post-run self-repair /
+	// optimize / promote is active. Nil means default true. Env kill switch
+	// MACLAW_DISABLE_SKILL_EVOLUTION still overrides when set. Manual
+	// manage_skill trigger_repair/trigger_optimize remain available.
+	SkillEvolutionEnabled *bool `json:"skill_evolution_enabled,omitempty"`
 	// Memory
 	MemoryAutoCompress bool `json:"memory_auto_compress"`
 	MemoryMaxBackups   int  `json:"memory_max_backups"` // 0 means use default (20)
@@ -201,6 +209,14 @@ type AppConfig struct {
 	// operation's query, scores, and returned entries for debugging/improving
 	// the memory system. Default: false (disabled).
 	MemoryRecallLogEnabled bool `json:"memory_recall_log_enabled,omitempty"`
+	// KnowledgeAutoRecallEnabled controls automatic knowledge-base injection
+	// into system prompts (desktop IM, VE, TUI, agentservice). Nil means
+	// default true (enabled). Set false to disable auto-recall only; manual
+	// knowledge_search / knowledge_context_pack tools remain available.
+	KnowledgeAutoRecallEnabled *bool `json:"knowledge_auto_recall_enabled,omitempty"`
+	// KnowledgeAutoRecallMinScore overrides the minimum FTS score required for
+	// auto-recall injection. Zero means use the shared default (0.3).
+	KnowledgeAutoRecallMinScore float64 `json:"knowledge_auto_recall_min_score,omitempty"`
 	// Trial-and-Reflect setting.
 	TrialReflectEnabled bool `json:"trial_reflect_enabled,omitempty"`
 	// LocalNeedleEnabled enables the local Needle micro-router. Default false:
@@ -281,6 +297,26 @@ type AppConfig struct {
 	// route, falls back to AuxiliaryLLM (for lightweight tasks) or primary.
 	// Example: {"intent": {"model": "glm-4-flash"}, "reasoning": {"model": "deepseek-coder"}}
 	ModelRoutes map[string]ModelRouteConfig `json:"model_routes,omitempty"`
+	// SharedAgentLoopEnabled routes eligible chat/background turns through
+	// corelib/agent.RunLoop. Can also be forced via env MACLAW_SHARED_AGENT_LOOP.
+	// Workflow doc phases stay on the legacy IM loop unless the workflow pilot
+	// env is set. New installs default this true via AppConfigDefaults.
+	// No omitempty: default is true and UnmarshalJSON seeds AppConfigDefaults,
+	// so false must be written explicitly to survive reload.
+	SharedAgentLoopEnabled bool `json:"shared_agent_loop_enabled"`
+	// SharedAgentLoopMigrated is set after the one-time upgrade that enables
+	// SharedAgentLoopEnabled for existing installs. Once true, the migrator
+	// will not re-enable the flag if the user later turns it off.
+	// No omitempty for the same default-true reason.
+	SharedAgentLoopMigrated bool `json:"shared_agent_loop_migrated"`
+	// SharedAgentLoopCanaryPercent is optional sticky canary 0..100 for the
+	// shared agent loop. nil = use env MACLAW_SHARED_AGENT_LOOP_PERCENT or 100.
+	// Env always wins when set. 0 explicitly means 0% (never divert by canary).
+	SharedAgentLoopCanaryPercent *int `json:"shared_agent_loop_canary_percent,omitempty"`
+	// SharedAgentLoopWorkflow enables non-doc WorkflowAgentLoop on the shared
+	// path (doc phases stay legacy). Env MACLAW_SHARED_AGENT_LOOP_WORKFLOW
+	// overrides when set (on/off).
+	SharedAgentLoopWorkflow bool `json:"shared_agent_loop_workflow,omitempty"`
 	// DailyLLMBudgetUSD — daily LLM API cost budget in USD. When exceeded,
 	// the agent warns the user and may throttle non-essential LLM calls.
 	// 0 means unlimited (default).
@@ -509,6 +545,39 @@ func NormalizeSubAgentConcurrency(n int) int {
 
 func (c AppConfig) IsIMProgressNudgeEnabled() bool {
 	return c.IMProgressNudgeEnabled == nil || *c.IMProgressNudgeEnabled
+}
+
+// IsKnowledgeAutoRecallEnabled reports whether knowledge auto-recall is on.
+// Default true when the field has never been set (nil).
+func (c AppConfig) IsKnowledgeAutoRecallEnabled() bool {
+	return c.KnowledgeAutoRecallEnabled == nil || *c.KnowledgeAutoRecallEnabled
+}
+
+// DefaultKnowledgeAutoRecallMinScore matches corelib/agent.KnowledgeAutoRecallScoreThreshold.
+const DefaultKnowledgeAutoRecallMinScore = 0.3
+
+// EffectiveKnowledgeAutoRecallMinScore returns the configured min score or default.
+func (c AppConfig) EffectiveKnowledgeAutoRecallMinScore() float64 {
+	if c.KnowledgeAutoRecallMinScore > 0 {
+		return c.KnowledgeAutoRecallMinScore
+	}
+	return DefaultKnowledgeAutoRecallMinScore
+}
+
+// IsSkillEvolutionEnabled returns whether automatic skill evolution after runs
+// is allowed. Default true when the field has never been set (nil).
+// Does not consult the env kill switch — callers should also check
+// skill.EvolutionEnvDisabled() when applicable.
+func (c AppConfig) IsSkillEvolutionEnabled() bool {
+	return c.SkillEvolutionEnabled == nil || *c.SkillEvolutionEnabled
+}
+
+// SetSkillEvolutionEnabled sets the SkillEvolutionEnabled pointer field.
+func (c *AppConfig) SetSkillEvolutionEnabled(v bool) {
+	if c == nil {
+		return
+	}
+	c.SkillEvolutionEnabled = &v
 }
 
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
@@ -816,34 +885,40 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 // defaults — no other code path needs to repeat these values.
 func AppConfigDefaults() AppConfig {
 	return AppConfig{
-		MaclawRoleDescription:  DefaultMaclawRoleDescription,
-		ShowAssistantEntry:     true,
-		ShowCodex:              true,
-		ShowOpenCode:           true,
-		ShowCodeBuddy:          true,
-		ShowIFlow:              true,
-		ShowKilo:               true,
-		PowerOptimization:      true,
-		YoloModeAllowed:        true,
-		SmartRouteEnabled:      true,
-		GossipEnabled:          true,
-		GossipAutoPublish:      true,
-		FileOutboundEnabled:    true,
-		ImageOutboundEnabled:   true,
-		CheckUpdateOnStartup:   true,
-		UseWindowsTerminal:     true,
+		MaclawRoleDescription:      DefaultMaclawRoleDescription,
+		ShowAssistantEntry:         true,
+		ShowCodex:                  true,
+		ShowOpenCode:               true,
+		ShowCodeBuddy:              true,
+		ShowIFlow:                  true,
+		ShowKilo:                   true,
+		PowerOptimization:          true,
+		YoloModeAllowed:            true,
+		SmartRouteEnabled:          true,
+		GossipEnabled:              true,
+		GossipAutoPublish:          true,
+		FileOutboundEnabled:        true,
+		ImageOutboundEnabled:       true,
+		CheckUpdateOnStartup:       true,
+		UseWindowsTerminal:         true,
 		VectorSearchEnabled:        true,
 		ASREnabled:                 true,
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,
-		ScreenParsingEnabled:   boolPtrValue(true),
-		IMProgressNudgeEnabled: boolPtrValue(true),
-		WorkflowEnabled:        boolPtrValue(false),
-		GroupDiscussion:        defaultGroupDiscussionConfig(),
-		LLMPromptCache:         DefaultLLMPromptCacheConfig(),
-		ToolCacheMaintenance:   DefaultToolCacheMaintenanceConfig(),
-		Projects:               defaultProjects(),
-		CurrentProject:         "default",
+		ScreenParsingEnabled:       boolPtrValue(true),
+		IMProgressNudgeEnabled:     boolPtrValue(true),
+		KnowledgeAutoRecallEnabled: boolPtrValue(true),
+		WorkflowEnabled:            boolPtrValue(false),
+		// Shared agent loop: new installs divert eligible chat/background turns
+		// to corelib/agent.RunLoop. Existing installs are migrated once via
+		// ApplySharedAgentLoopMigration (sets SharedAgentLoopMigrated).
+		SharedAgentLoopEnabled:  true,
+		SharedAgentLoopMigrated: true, // new installs need no later migration
+		GroupDiscussion:         defaultGroupDiscussionConfig(),
+		LLMPromptCache:          DefaultLLMPromptCacheConfig(),
+		ToolCacheMaintenance:    DefaultToolCacheMaintenanceConfig(),
+		Projects:                defaultProjects(),
+		CurrentProject:          "default",
 	}
 }
 
@@ -1060,6 +1135,24 @@ func (c *AppConfig) IsTelegramLocalMode() bool {
 // SetTelegramLocal sets the TelegramLocalMode pointer field.
 func (c *AppConfig) SetTelegramLocal(v bool) {
 	c.TelegramLocalMode = &v
+}
+
+// ApplySharedAgentLoopMigration enables the shared agent loop once for
+// existing installs that predate SharedAgentLoopEnabled.
+//
+// Behavior:
+//   - If SharedAgentLoopMigrated is already true → no-op.
+//   - Otherwise sets SharedAgentLoopEnabled=true and SharedAgentLoopMigrated=true.
+//
+// After migration, users who set SharedAgentLoopEnabled=false keep that choice
+// because SharedAgentLoopMigrated remains true. Returns true when cfg changed.
+func ApplySharedAgentLoopMigration(cfg *AppConfig) bool {
+	if cfg == nil || cfg.SharedAgentLoopMigrated {
+		return false
+	}
+	cfg.SharedAgentLoopEnabled = true
+	cfg.SharedAgentLoopMigrated = true
+	return true
 }
 
 // LansengerApiGatewayURL returns the effective API gateway URL.

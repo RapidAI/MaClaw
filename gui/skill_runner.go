@@ -393,6 +393,64 @@ func (r *SkillRunner) runDefaultTimeoutSecForID(runID string) int {
 	return r.runDefaultTimeoutSec(run)
 }
 
+// resolveLoadedSkillForRun picks an installed skill for run_skill / app execution.
+//
+// Resolution order:
+//  1. Stable IDs only (SkillID / HubSkillID / Publisher:Name) via MatchesQualifiedID
+//  2. If none, loose MatchesName (display Name / DirName / path basename)
+//  3. Ambiguous multi-match → error (stable hits preferred when filtering)
+//
+// Returns (nil, nil) when no candidate matches so the caller can attach fuzzy suggestions.
+func resolveLoadedSkillForRun(skillName string, loadedSkills []corelib.NLSkillEntry) (*corelib.NLSkillEntry, error) {
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" || len(loadedSkills) == 0 {
+		return nil, nil
+	}
+
+	pickOne := func(hits []corelib.NLSkillEntry) (*corelib.NLSkillEntry, error) {
+		if len(hits) == 0 {
+			return nil, nil
+		}
+		if len(hits) == 1 {
+			cp := hits[0]
+			return &cp, nil
+		}
+		var qualifiedNames []string
+		for _, s := range hits {
+			if s.Publisher != "" {
+				qualifiedNames = append(qualifiedNames, s.Publisher+":"+s.Name)
+			} else if hubID := strings.TrimSpace(s.HubSkillID); hubID != "" {
+				qualifiedNames = append(qualifiedNames, hubID+" ("+s.Name+")")
+			} else {
+				qualifiedNames = append(qualifiedNames, s.Name+" (local)")
+			}
+		}
+		return nil, fmt.Errorf("skill name %q is ambiguous — multiple skills match:\n  %s\nPlease use the qualified name (publisher:name) to disambiguate",
+			skillName, strings.Join(qualifiedNames, "\n  "))
+	}
+
+	// Pass 1: stable identity (covers PDF app → hub_skill_id paper_pdf_translator).
+	var idHits []corelib.NLSkillEntry
+	for _, s := range loadedSkills {
+		if s.MatchesQualifiedID(skillName) {
+			idHits = append(idHits, s)
+		}
+	}
+	if target, err := pickOne(idHits); target != nil || err != nil {
+		return target, err
+	}
+
+	// Pass 2: loose display / dir name (only when no stable-ID hit).
+	var looseHits []corelib.NLSkillEntry
+	for _, s := range loadedSkills {
+		// Skip entries already considered by pass 1 (none matched query as ID).
+		if s.MatchesName(skillName) {
+			looseHits = append(looseHits, s)
+		}
+	}
+	return pickOne(looseHits)
+}
+
 // StartRun starts a skill asynchronously and returns a run ID for polling.
 func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{}) (string, error) {
 	return r.StartRunForOwner(r.defaultSkillRunPolicyOwnerID(), skillName, runArgs)
@@ -427,50 +485,24 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 	// executor read lock makes new agent runs wait behind unrelated usage-stat
 	// writes from other agent instances.
 	loadStart := time.Now()
-	var target *corelib.NLSkillEntry
-	var collisions []corelib.NLSkillEntry // track bare name collisions across publishers
-	isQualified := strings.Contains(skillName, ":")
 	loadedSkills := r.executor.loadSkills()
 	if elapsed := time.Since(loadStart); elapsed > 100*time.Millisecond {
 		log.Printf("[skill-runner] start_run load_skills owner=%q skill=%q count=%d elapsed=%s", policyOwnerID, skillName, len(loadedSkills), elapsed.Round(time.Millisecond))
 	}
-	for _, s := range loadedSkills {
-		if s.MatchesName(skillName) {
-			if isQualified {
-				// Qualified name: exact match, no collision possible.
-				cp := s
-				target = &cp
-				break
-			}
-			// Bare name: collect all matches to detect collisions.
-			collisions = append(collisions, s)
-		}
+	target, resolveErr := resolveLoadedSkillForRun(skillName, loadedSkills)
+	if resolveErr != nil {
+		return "", resolveErr
 	}
-	// For bare name queries, resolve collisions.
-	if !isQualified {
-		if len(collisions) == 1 {
-			cp := collisions[0]
-			target = &cp
-		} else if len(collisions) > 1 {
-			// Multiple skills match the bare name ? require qualified name.
-			var qualifiedNames []string
-			for _, s := range collisions {
-				if s.Publisher != "" {
-					qualifiedNames = append(qualifiedNames, s.Publisher+":"+s.Name)
-				} else {
-					qualifiedNames = append(qualifiedNames, s.Name+" (local)")
-				}
-			}
-			return "", fmt.Errorf("skill name %q is ambiguous ? multiple skills match:\n  %s\nPlease use the qualified name (publisher:name) to disambiguate",
-				skillName, strings.Join(qualifiedNames, "\n  "))
-		}
-	}
-
 	if target == nil {
-		// Fuzzy match fallback: suggest the closest skill when exact match fails.
+		// Fuzzy match fallback: suggest only — never auto-run disk-scanned names
+		// that are not admitted into the config registry.
 		if similar, score := cskill.FindSimilarSkill(skillName, 0.3); similar != nil {
+			suggest := similar.Name
+			if hubID := strings.TrimSpace(similar.HubSkillID); hubID != "" && !strings.EqualFold(hubID, suggest) {
+				suggest = fmt.Sprintf("%s (hub_skill_id=%s)", suggest, hubID)
+			}
 			return "", fmt.Errorf("skill %q not found. Did you mean %q? (%.0f%% match)\nUse list_skills to see installed skills",
-				skillName, similar.Name, score*100)
+				skillName, suggest, score*100)
 		}
 		return "", fmt.Errorf("skill %q not found. Use list_skills to see installed skills", skillName)
 	}
@@ -1342,7 +1374,7 @@ func detectArtifactPathFromText(text string) string {
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "📁 脚本路径:") {
+		if strings.HasPrefix(line, "脚本路径:") {
 			continue
 		}
 		if candidate := extractArtifactPathCandidate(line); candidate != "" {
@@ -1691,7 +1723,7 @@ func isInstructionOnlySkillStatus(status *SkillRunStatus) bool {
 	if strings.Contains(output, "verification: passed") {
 		return true
 	}
-	return strings.Contains(output, "📝 脚本语言:") && strings.Contains(output, "📁 脚本路径:")
+	return strings.Contains(output, "脚本语言:") && strings.Contains(output, "脚本路径:")
 }
 
 func craftVerificationPassedStatus(status *SkillRunStatus) bool {
@@ -2246,7 +2278,7 @@ func samePath(a, b string) bool {
 //
 //	shell: cmd.exe
 //	elapsed: 5.857s
-//	📂 /path/to/workspace
+//	/path/to/workspace
 //	command: cmd.exe /c ...
 //	───────────────
 //	{actual content starts here}
@@ -2375,7 +2407,7 @@ func isSkillRunnerMetadataLine(line string) bool {
 	if strings.HasPrefix(line, "elapsed: ") {
 		return true
 	}
-	if strings.HasPrefix(line, "📂 ") {
+	if strings.HasPrefix(line, "") {
 		return true
 	}
 	if strings.HasPrefix(line, "command: ") {
@@ -3091,7 +3123,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				// Report progress to user via live output.
 				depKind, depPkg := cskill.MissingDependencyInstallNameFromError(bErr.Stderr() + " " + bErr.Stdout())
 				if depPkg != "" && run.liveOutput != nil {
-					run.liveOutput.Append(fmt.Sprintf("📦 正在自动安装缺失的 %s 包: %s ...", depKind, depPkg))
+					run.liveOutput.Append(fmt.Sprintf("正在自动安装缺失的 %s 包: %s ...", depKind, depPkg))
 				}
 				installErr := cskill.AutoInstallMissingDependencyWithPython(bErr.Stderr(), bErr.Stdout(), resolveCommandForDisplay(resolvedStep), skill.SkillDir, depInstallPython)
 				if installErr != nil {
@@ -3116,7 +3148,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				if retryErr == nil {
 					log.Printf("[skill-runner] run=%s step %d/%d: retry after auto-install succeeded", run.status.RunID, i+1, len(skill.Steps))
 					if run.liveOutput != nil {
-						run.liveOutput.Append("✅ 依赖安装完成，步骤执行成功")
+						run.liveOutput.Append("依赖安装完成，步骤执行成功")
 					}
 				}
 			}
@@ -3241,14 +3273,24 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	finishStatus = finalStatus.String()
 	r.finalizeRunOutcome(run, finalStatus, execStart)
 
-	r.updateUsageStats(skill, execErr)
+	statsEntry := r.updateUsageStats(skill, execErr)
 	r.recordSkillUsageExperience(skill, execErr, run.runArgs)
 
 	// 自动上传触发
 	r.tryAutoUpload(originalSkill, run)
 
 	// Notify evolution pipeline (async, non-blocking).
-	if r.evolutionPipeline != nil {
+	// Skip when env kill switch or config skill_evolution_enabled=false.
+	if r.evolutionPipeline != nil && !cskill.EvolutionEnvDisabled() {
+		cfgEnabled := true
+		if r.executor != nil && r.executor.app != nil {
+			if cfg, err := r.executor.app.LoadConfig(); err == nil {
+				cfgEnabled = cfg.IsSkillEvolutionEnabled()
+			}
+		}
+		if !cfgEnabled {
+			return
+		}
 		var runArgsStr map[string]string
 		if run.runArgs != nil {
 			runArgsStr = make(map[string]string, len(run.runArgs))
@@ -3266,16 +3308,44 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				}
 			}
 		}
-		r.evolutionPipeline.NotifySkillExecution(skill.Name, skill, &cskill.SkillExecutionResultCompat{
+		// Prefer stats-persisted entry (UsageCount/LastError) over runtime pointer.
+		evoEntry := skill
+		if statsEntry != nil {
+			evoEntry = statsEntry
+		}
+		r.evolutionPipeline.NotifySkillExecution(skill.Name, evoEntry, &cskill.SkillExecutionResultCompat{
 			Success:       execErr == nil,
-			OutputQuality: "basic",
+			OutputQuality: r.skillRunOutputQuality(run, execErr),
 		}, runArgsStr)
 	}
 }
 
-func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
+// skillRunOutputQuality maps a finished run to the evolution quality band.
+func (r *SkillRunner) skillRunOutputQuality(run *skillRun, execErr error) string {
+	if execErr != nil || run == nil {
+		return "basic"
+	}
+	if r != nil {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+	}
+	if run.status.LifecycleStatus() != skillRunStatusSuccess {
+		return "basic"
+	}
+	for _, st := range run.status.Steps {
+		if st.IsFailed() {
+			return "basic"
+		}
+	}
+	// All steps succeeded — treat as good (excellent reserved for scorer).
+	return "good"
+}
+
+// updateUsageStats persists usage counters and returns a deep copy of the updated
+// entry (for evolution/self-repair). Nil when the skill was not found in storage.
+func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) *corelib.NLSkillEntry {
 	if r == nil || r.executor == nil || r.executor.app == nil || skill == nil {
-		return
+		return nil
 	}
 	startedAt := time.Now()
 	shouldEmit := false
@@ -3322,13 +3392,8 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 				log.Printf("[skill-runner] usage_stats io skill=%q load=%s save=%s", skill.Name, loadElapsed.Round(time.Millisecond), saveElapsed.Round(time.Millisecond))
 			}
 			shouldEmit = true
-			// Deep copy for async self-repair (outside lock).
-			if execErr != nil {
-				cp := skills[i]
-				cp.Steps = append([]corelib.NLSkillStep(nil), skills[i].Steps...)
-				cp.RepairHistory = append([]corelib.SkillRepairRecord(nil), skills[i].RepairHistory...)
-				updatedEntry = &cp
-			}
+			// Deep copy for evolution / self-repair (outside lock).
+			updatedEntry = cskill.CloneNLSkillEntry(&skills[i])
 			break
 		}
 	}
@@ -3339,7 +3404,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 
 	// Notify frontend to refresh skill list with updated stats (outside lock).
 	if shouldEmit && r.executor.app != nil {
-		r.executor.app.emitEvent("skill:usage_updated")
+		r.executor.app.emitEvent(EventSkillUsageUpdated)
 	}
 
 	// A successful verified run is runtime proof for previously blocked uploads.
@@ -3356,15 +3421,25 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 	}
 
 	// Trigger async self-repair for failed skills (outside lock, non-blocking).
-	if updatedEntry != nil {
-		// Mark the run as having a pending self-repair so the LLM knows to
-		// wait before retrying. The flag is set on the run status (if still
-		// accessible) before launching the goroutine.
+	// Prefer EvolutionPipeline unified scheduling when wired (throttled +
+	// coalesced with optimize/promote). Fall back to a local goroutine when
+	// the pipeline is unavailable or repair is disabled there.
+	if updatedEntry != nil && execErr != nil {
 		if r.canStartRepairSkill(updatedEntry) {
 			r.markSelfRepairPending(updatedEntry.Name)
-			go r.maybeRepairSkill(updatedEntry)
+			if !r.evolutionOwnsRepair() {
+				go r.maybeRepairSkill(updatedEntry)
+			}
+			// When evolution owns repair, NotifySkillExecution (caller) schedules it.
 		}
 	}
+	return updatedEntry
+}
+
+// evolutionOwnsRepair reports whether self-repair is scheduled by EvolutionPipeline.
+func (r *SkillRunner) evolutionOwnsRepair() bool {
+	return r != nil && r.evolutionPipeline != nil &&
+		r.evolutionPipeline.EnableRepair && r.evolutionPipeline.RepairHook != nil
 }
 
 func mergeSkillRunIdentityForUsageStats(dst, runtimeEntry *corelib.NLSkillEntry) {
@@ -3400,12 +3475,11 @@ func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, ex
 	success := execErr == nil
 	finalOutcome := "completed"
 	errorClass := ""
-	followUp := "continue"
 	if !success {
 		finalOutcome = "failed"
-		followUp = "abandon"
 		errorClass = cskill.ExtractErrorClass(formatExecErrorForStorage(execErr))
 	}
+	followUp := cskill.SkillExecutionFollowUp(success, errorClass)
 	// Convert runArgs to string map for UsageTracker persistence.
 	// These are used by RepairGate.Verify to replay historical executions.
 	var argsStr map[string]string
@@ -3437,17 +3511,9 @@ func (r *SkillRunner) recordSkillUsageExperience(skill *corelib.NLSkillEntry, ex
 	// indicates the skill environment is broken (config, dependencies, setup).
 	// This ensures the router does not continue recommending manage_skill based
 	// on stale success data from before the breakage occurred.
-	if errorClass != "" {
-		qualifyingErrors := map[string]bool{
-			"config_error":       true,
-			"dependency_missing": true,
-			"setup_failed":       true,
-			"install_failed":     true,
-		}
-		if qualifyingErrors[errorClass] {
-			r.executor.app.usageTracker.InvalidateOutcomes("manage_skill",
-				fmt.Sprintf("%s: %s", errorClass, skill.Name))
-		}
+	if cskill.ShouldInvalidateManageSkillOutcomes(errorClass) {
+		r.executor.app.usageTracker.InvalidateOutcomes("manage_skill",
+			fmt.Sprintf("%s: %s", errorClass, skill.Name))
 	}
 }
 
@@ -3475,7 +3541,21 @@ func (r *SkillRunner) canStartRepairSkill(entry *corelib.NLSkillEntry) bool {
 // and attempts it in the background. The entry must be a deep copy; this
 // method runs in a goroutine and must not hold any locks.
 func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
-	if !cskill.ShouldAttemptRepair(entry) {
+	r.maybeRepairSkillWithForce(entry, false)
+}
+
+// maybeRepairSkillWithForce is like maybeRepairSkill but force=true allows
+// repair when CanForceAttemptRepair holds even if usage-rate thresholds fail
+// (used by manage_skill trigger_repair).
+func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, force bool) {
+	if entry == nil {
+		return
+	}
+	ok := cskill.ShouldAttemptRepair(entry)
+	if !ok && force {
+		ok = cskill.CanForceAttemptRepair(entry)
+	}
+	if !ok {
 		r.repairingSkills.Delete(entry.Name)
 		return
 	}
@@ -3490,7 +3570,16 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	log.Printf("[skill-repair-gui] attempting repair for %q (attempt %d, usage=%d, success=%d)",
 		entry.Name, entry.RepairAttemptCount+1, entry.UsageCount, entry.SuccessCount)
 
-	result, err := cskill.AttemptRepair(repairer, entry)
+	// Build rich repair context: error class + param contract (declared vs actual).
+	var runArgs map[string]string
+	if r.executor != nil && r.executor.app != nil && r.executor.app.usageTracker != nil {
+		if argsList := r.executor.app.usageTracker.RecentRunArgs("skill:"+entry.Name, 1); len(argsList) > 0 {
+			runArgs = argsList[len(argsList)-1]
+		}
+	}
+	repairCtx := cskill.NewRepairContext(entry, runArgs)
+
+	result, err := cskill.AttemptRepairWithContext(repairer, entry, repairCtx)
 	if err != nil {
 		log.Printf("[skill-repair-gui] repair failed for %q: %v", entry.Name, err)
 		return
@@ -3511,13 +3600,19 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 			gateResult, gateErr := r.evolutionPipeline.Gate.Verify(gateCtx, entry, nlSteps, historicalArgs)
 			gateCancel()
 			if gateErr != nil {
-				log.Printf("[skill-repair-gui] gate verification error for %q: %v", entry.Name, gateErr)
-			} else if !gateResult.Passed {
-				log.Printf("[skill-repair-gui] gate REJECTED repair for %q: %s", entry.Name, gateResult.Reason)
+				// Fail closed: a broken gate must not silently accept a repair.
+				log.Printf("[skill-repair-gui] gate verification error for %q: %v — rejecting repair", entry.Name, gateErr)
 				return
-			} else {
-				log.Printf("[skill-repair-gui] gate PASSED repair for %q: %s", entry.Name, gateResult.Reason)
 			}
+			if gateResult == nil || !gateResult.Passed {
+				reason := "nil gate result"
+				if gateResult != nil {
+					reason = gateResult.Reason
+				}
+				log.Printf("[skill-repair-gui] gate REJECTED repair for %q: %s", entry.Name, reason)
+				return
+			}
+			log.Printf("[skill-repair-gui] gate PASSED repair for %q: %s", entry.Name, gateResult.Reason)
 		}
 	}
 
@@ -3589,7 +3684,7 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 
 	// Notify frontend and re-check any quality-blocked upload for this skill.
 	if r.executor.app != nil {
-		r.executor.app.emitEvent("skill:repaired")
+		r.executor.app.emitEvent(EventSkillRepaired)
 		go func(skillName string) {
 			r.executor.app.ensureSkillLifecycleManager()
 			if r.executor.app.skillLifecycle == nil {
@@ -3611,7 +3706,7 @@ func (r *SkillRunner) refreshSkillIndexesAfterMutation(skillName string) {
 		if r.executor.app.toolRouter != nil {
 			r.executor.app.toolRouter.RefreshSkillIndex()
 		}
-		r.executor.app.emitEvent("skill:index_refreshed", map[string]string{"skill": skillName})
+		r.executor.app.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": skillName})
 	}
 }
 
@@ -3786,7 +3881,7 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 	r.executor.mu.Unlock()
 
 	if shouldEmit && r.executor.app != nil {
-		r.executor.app.emitEvent("skill:usage_updated")
+		r.executor.app.emitEvent(EventSkillUsageUpdated)
 	}
 }
 
@@ -4392,7 +4487,7 @@ func formatBashStepResult(command, shellName string, shellArgs []string, tmpScri
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("shell: %s\n", filepath.Base(shellName)))
 	b.WriteString(fmt.Sprintf("elapsed: %s\n", elapsed.Round(time.Millisecond)))
-	b.WriteString(fmt.Sprintf("📂 %s\n", workDir))
+	b.WriteString(fmt.Sprintf("%s\n", workDir))
 	if tmpScript != "" {
 		b.WriteString(fmt.Sprintf("command: %s (via script)\n", command))
 	} else {

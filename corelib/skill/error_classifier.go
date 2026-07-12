@@ -12,11 +12,13 @@ type ErrorClass string
 
 const (
 	ErrCommandNotFound   ErrorClass = "command_not_found"  // exit 9009 (Windows) / 127 (Unix)
-	ErrRateLimit         ErrorClass = "rate_limit"         // HTTP 429
+	ErrRateLimit         ErrorClass = "rate_limit"         // HTTP 429 / rate_limit phrases
+	ErrQuotaExceeded     ErrorClass = "quota_exceeded"     // API/billing quota or credits exhausted
 	ErrFileNotFound      ErrorClass = "file_not_found"     // ENOENT / no such file
 	ErrTimeout           ErrorClass = "timeout"            // context deadline exceeded / signal killed
 	ErrNetworkError      ErrorClass = "network_error"      // connection refused / reset / DNS
 	ErrAuthError         ErrorClass = "auth_error"         // HTTP 401/403 / permission denied
+	ErrSessionNotFound   ErrorClass = "session_not_found"  // browser/hub/remote session missing or expired
 	ErrMissingParam      ErrorClass = "missing_param"      // usage: / missing argument / required
 	ErrMissingEnvVar     ErrorClass = "missing_env_var"    // environment variable not set
 	ErrMissingDependency ErrorClass = "missing_dependency" // package/library dependency not installed
@@ -163,6 +165,22 @@ var rules = []classificationRule{
 		},
 	},
 	{
+		// Provider billing / plan quota — not fixable by patching skill steps.
+		// Distinct from rate_limit (temporary throttle) and disk quota errors.
+		class:      ErrQuotaExceeded,
+		repairable: false,
+		retryable:  false,
+		match: func(combined string, _ int) bool {
+			return hasSkillQuotaExceededMarker(combined)
+		},
+		userMessage: func(errMsg, _ string, _ int) string {
+			return fmt.Sprintf("API quota or credits are exhausted. Top up, switch plan, or wait for quota reset before retrying. | %s", errMsg)
+		},
+		actionHint: func(_, _ string) string {
+			return "[action: inform_user] Ask the user to restore API quota/credits or switch provider before retrying."
+		},
+	},
+	{
 		class:      ErrTimeout,
 		repairable: true,
 		retryable:  false,
@@ -210,6 +228,22 @@ var rules = []classificationRule{
 		},
 		actionHint: func(_, _ string) string {
 			return "[action: no_retry] Ask the user to provide valid credentials or API keys before retrying."
+		},
+	},
+	{
+		// Session expiry / missing handle is external runtime state — not fixable
+		// by patching skill steps. Agent may re-create the session and retry.
+		class:      ErrSessionNotFound,
+		repairable: false,
+		retryable:  true,
+		match: func(combined string, _ int) bool {
+			return hasSkillSessionNotFoundMarker(combined)
+		},
+		userMessage: func(errMsg, _ string, _ int) string {
+			return fmt.Sprintf("The required session is missing or expired. Re-establish the session (browser/remote/hub) and retry. | %s", errMsg)
+		},
+		actionHint: func(_, _ string) string {
+			return "[action: reestablish_session] Create or reconnect the session, then retry the skill."
 		},
 	},
 	{
@@ -343,6 +377,8 @@ func defaultActionHint(class ErrorClass) string {
 		return "[action: patch] Fix the command dependency."
 	case ErrRateLimit:
 		return "[action: retry_after 60s] Wait, then retry."
+	case ErrQuotaExceeded:
+		return "[action: inform_user] Restore API quota/credits or switch provider before retrying."
 	case ErrFileNotFound:
 		return "[action: check_args] Check file path arguments."
 	case ErrTimeout:
@@ -351,6 +387,8 @@ func defaultActionHint(class ErrorClass) string {
 		return "[action: retry] Retry after checking network connectivity."
 	case ErrAuthError:
 		return "[action: no_retry] Credentials are required before retrying."
+	case ErrSessionNotFound:
+		return "[action: reestablish_session] Create or reconnect the session, then retry."
 	case ErrMissingParam:
 		return "[action: check_args] Provide the required parameters."
 	case ErrMissingEnvVar:
@@ -361,6 +399,57 @@ func defaultActionHint(class ErrorClass) string {
 		return unsupportedActionHint("")
 	default:
 		return "[action: inspect] Inspect the step output and classify the failure."
+	}
+}
+
+// SkillExecutionFollowUp maps a skill run outcome to UsageTracker FollowUp.
+//
+//	success           → "continue"
+//	repairable/retryable/installable failures → "retry" (agent or self-repair should try again)
+//	hard user/config failures → "abandon"
+func SkillExecutionFollowUp(success bool, errorClass string) string {
+	if success {
+		return "continue"
+	}
+	ec := ErrorClass(strings.TrimSpace(errorClass))
+	// Installable/missing deps are not LLM-repairable but should be retried after install.
+	switch ec {
+	case ErrMissingDependency, ErrRateLimit, ErrTimeout, ErrNetworkError, ErrShortPath, ErrSessionNotFound:
+		return "retry"
+	case ErrAuthError, ErrMissingEnvVar, ErrUnsupportedAction, ErrQuotaExceeded:
+		return "abandon"
+	}
+	if IsRepairableError(errorClass) {
+		return "retry"
+	}
+	// Lookup known rule retryable flags.
+	for _, rule := range rules {
+		if rule.class == ec {
+			if rule.retryable {
+				return "retry"
+			}
+			break
+		}
+	}
+	return "abandon"
+}
+
+// ShouldInvalidateManageSkillOutcomes reports whether a skill failure class
+// should clear manage_skill success history so the router stops recommending
+// a broken skill environment.
+//
+// Accepts both canonical ErrorClass values and a few legacy aliases that were
+// previously hard-coded in GUI/TUI (and never matched real classifier output).
+func ShouldInvalidateManageSkillOutcomes(errorClass string) bool {
+	switch ErrorClass(strings.TrimSpace(errorClass)) {
+	case ErrMissingDependency, ErrMissingEnvVar, ErrCommandNotFound, ErrAuthError:
+		return true
+	// Legacy aliases that never matched ErrorClass constants — keep for
+	// backward compatibility with any historical UsageTracker records.
+	case "dependency_missing", "config_error", "setup_failed", "install_failed":
+		return true
+	default:
+		return false
 	}
 }
 

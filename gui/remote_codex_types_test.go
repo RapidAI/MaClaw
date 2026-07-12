@@ -145,7 +145,7 @@ func TestCodexEventToTextCommandStarted(t *testing.T) {
 		},
 	}
 	text := codexEventToText(event)
-	if text != "⚡ go test ./..." {
+	if text != "go test ./..." {
 		t.Fatalf("text = %q", text)
 	}
 }
@@ -159,7 +159,7 @@ func TestCodexEventToTextFileChange(t *testing.T) {
 		},
 	}
 	text := codexEventToText(event)
-	if text != "✓ Modified main.go" {
+	if text != "Modified main.go" {
 		t.Fatalf("text = %q", text)
 	}
 }
@@ -173,7 +173,7 @@ func TestCodexEventToTextReasoning(t *testing.T) {
 		},
 	}
 	text := codexEventToText(event)
-	if text != "💭 Searching for README files" {
+	if text != "Searching for README files" {
 		t.Fatalf("text = %q", text)
 	}
 }
@@ -189,7 +189,7 @@ func TestCodexEventToTextTurnCompleted(t *testing.T) {
 		},
 	}
 	text := codexEventToText(event)
-	if text != "✓ Turn completed (tokens: 1000 in, 200 out, 900 cache read, 64 cache write)" {
+	if text != "Turn completed (tokens: 1000 in, 200 out, 900 cache read, 64 cache write)" {
 		t.Fatalf("text = %q", text)
 	}
 }

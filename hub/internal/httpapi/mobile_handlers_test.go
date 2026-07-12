@@ -2796,6 +2796,58 @@ func TestMobileDocumentUploadClaimHandlerClaimsPendingTask(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentUploadClaimHandlerFailsGhostNeedsOCR(t *testing.T) {
+	// Online store + missing original: claim must terminal-fail instead of leaving
+	// needs_ocr forever (Mobile would poll indefinitely).
+	identity, _, _ := newHTTPAPITestServices(t)
+	_, enroll := issueViewerToken(t, identity, "mobile-claim-ghost@example.com")
+	clearMobileStateForTest(t)
+	t.Setenv(mobileBlobDirEnv, t.TempDir())
+
+	now := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-ghost"] = mobileDocumentUploadRecord{
+		TaskID:     "upload-ghost",
+		OwnerID:    enroll.UserID,
+		Filename:   "gone.png",
+		Status:     "needs_ocr",
+		SourcePath: "missing/ghost.bin",
+		SourceSize: 9999,
+		UploadedAt: now,
+		UpdatedAt:  now,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/mobile/documents/upload/claim", nil)
+	req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	req.Header.Set("X-Machine-ID", enroll.MachineID)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadClaimHandler(identity).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["status"] != "no_task" {
+		t.Fatalf("payload = %#v, want no_task", payload)
+	}
+	mobileDocuments.Lock()
+	up := mobileDocuments.uploads["upload-ghost"]
+	mobileDocuments.Unlock()
+	if up.Status != "failed" {
+		t.Fatalf("status=%q want failed", up.Status)
+	}
+	if up.SourcePath != "" || up.SourceSize != 0 {
+		t.Fatalf("ghost meta not cleared: path=%q size=%d", up.SourcePath, up.SourceSize)
+	}
+	if !strings.Contains(up.Message, "原件不可用") {
+		t.Fatalf("message=%q", up.Message)
+	}
+}
+
 func TestMobileDocumentUploadClaimHandlerDocumentKindSkipsOCRTasks(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	_, enroll := issueViewerToken(t, identity, "mobile-claim-document@example.com")
@@ -2894,6 +2946,53 @@ func TestMobileDocumentUploadClaimReclaimsStaleInProgress(t *testing.T) {
 	}
 	if task["claimed_by"] != enroll.MachineID {
 		t.Fatalf("claimed_by=%v want %s", task["claimed_by"], enroll.MachineID)
+	}
+}
+
+func TestMobileDocumentUploadStatusReclaimsStaleInProgress(t *testing.T) {
+	// Status polling (Mobile) must reclaim timed-out in_progress without waiting
+	// for the next worker claim pass.
+	identity, _, _ := newHTTPAPITestServices(t)
+	token, enroll := issueViewerToken(t, identity, "mobile-status-stale@example.com")
+	clearMobileStateForTest(t)
+	staleAt := time.Now().UTC().Add(-mobileDocumentUploadClaimTimeout - time.Minute)
+	mobileDocuments.Lock()
+	mobileDocuments.uploads["upload-status-stale"] = mobileDocumentUploadRecord{
+		TaskID:      "upload-status-stale",
+		OwnerID:     enroll.UserID,
+		Filename:    "shot.png",
+		Status:      "in_progress",
+		ClaimedBy:   "dead-machine",
+		DraftID:     "mobdoc_status_stale",
+		SourceBytes: []byte{0x89, 'P', 'N', 'G'},
+		UploadedAt:  staleAt,
+		UpdatedAt:   staleAt,
+	}
+	mobileDocuments.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/documents/upload/upload-status-stale", nil)
+	req.SetPathValue("taskId", "upload-status-stale")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	MobileDocumentUploadStatusHandler(identity).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload["status"] != "needs_ocr" {
+		t.Fatalf("status=%v want needs_ocr after reclaim", payload["status"])
+	}
+	if claimed, _ := payload["claimed_by"].(string); claimed != "" {
+		t.Fatalf("claimed_by=%q want empty after reclaim", claimed)
+	}
+	mobileDocuments.Lock()
+	up := mobileDocuments.uploads["upload-status-stale"]
+	mobileDocuments.Unlock()
+	if up.Status != "needs_ocr" || up.ClaimedBy != "" {
+		t.Fatalf("map state status=%q claimed_by=%q", up.Status, up.ClaimedBy)
 	}
 }
 

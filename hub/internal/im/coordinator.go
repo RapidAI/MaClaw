@@ -742,7 +742,7 @@ func (c *Coordinator) hubDirectAnswer(
 
 		return &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "馃",
+			StatusIcon: "info",
 			Title:      "Hub AI",
 			Body:       content + "\n\n 鈥?Hub AI",
 		}, nil

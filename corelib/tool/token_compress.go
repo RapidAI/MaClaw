@@ -36,6 +36,7 @@ var PerToolResultCap = map[string]int{
 	"web_search":         2500,
 	"bash":               4000,
 	"read_file":          5000,
+	"read_tool_result":   6000,
 	"ssh":                3500,
 	"list_directory":     1500,
 	"screenshot":         600,

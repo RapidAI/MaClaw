@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -88,6 +89,43 @@ type coreAgentCallbacks struct {
 	onToolResult               func(name, result string)
 	promptStats                agent.PromptBundleTokenStats
 	promptStableCacheKey       string
+	// lastPromptProfile is set in BuildSystemPrompt so BuildTools can align the
+	// tool surface with light system prompts (same as TUI).
+	lastPromptProfile agent.PromptProfile
+	// forceFullPrompt is set by UpgradeLightPromptToFull (light tool-deny recovery).
+	forceFullPrompt bool
+	// history is pre-turn conversation for multi-turn knowledge auto-recall.
+	history []agent.ConversationEntry
+}
+
+// CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
+func (c *coreAgentCallbacks) CurrentPromptProfile() agent.PromptProfile {
+	if c == nil {
+		return agent.PromptProfileFull
+	}
+	if c.forceFullPrompt {
+		return agent.PromptProfileFull
+	}
+	return c.lastPromptProfile
+}
+
+// UpgradeLightPromptToFull implements agent.LightProfileUpgrader.
+func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
+	if c == nil {
+		return false
+	}
+	if c.forceFullPrompt || !c.lastPromptProfile.IsLight() {
+		if c.forceFullPrompt || c.lastPromptProfile == agent.PromptProfileFull {
+			c.forceFullPrompt = true
+			c.lastPromptProfile = agent.PromptProfileFull
+			return true
+		}
+		return false
+	}
+	c.forceFullPrompt = true
+	c.lastPromptProfile = agent.PromptProfileFull
+	log.Printf("[agentservice] light→full prompt upgrade reason=%s", reason)
+	return true
 }
 
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
@@ -139,10 +177,11 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		mutationScope: req.MutationScope,
 		opsApprovedCommands: append([]v2.OpsApprovedCommand(nil),
 			req.OpsApprovedCommands...),
+		history: convertHistoryToEntries(req.History, req.Message.ID),
 	}
 	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v", req.Session.ID, req.OnToken != nil)
-	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, convertHistoryToEntries(req.History, req.Message.ID), cb.httpClient)
+	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	if result.Error != "" {
 		return nil, errors.New(result.Error)
@@ -313,11 +352,21 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if roleDescription == "" {
 		roleDescription = "A REST-served MaClaw agent runtime for end-user assistance."
 	}
-	bundle := agent.BuildPromptBundle(agent.SystemPromptDeps{
+	var promptProfile agent.PromptProfile
+	var classified llm.ClassifyResult
+	if c.forceFullPrompt {
+		promptProfile = agent.PromptProfileFull
+		classified = llm.ClassifyResult{Task: llm.TaskReasoning, Reason: "force full after light tool-deny upgrade"}
+	} else {
+		promptProfile, classified = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
+	}
+	c.lastPromptProfile = promptProfile
+	deps := agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
 			RoleName:        roleName,
 			RoleDescription: roleDescription,
 			IsProMode:       false,
+			PromptProfile:   promptProfile,
 		},
 		MemoryStore:      c.memory,
 		SSHHostLister:    c.configuredSSHHosts,
@@ -330,18 +379,37 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 				c.appendKnowledgeAutoRecall(b, userMsg)
 			}
 		},
-	}, userText, isFirstTurn)
+	}
+	// Shadow savings estimate + durable hit-rate counters (with classify task).
+	// Skip re-recording when rebuilding after mid-loop light→full upgrade.
+	fullTok, lightTok := 0, 0
+	if promptProfile.IsLight() {
+		fullTok, lightTok = agent.EstimatePromptProfileTokens(deps, userText, isFirstTurn)
+	}
+	if !(c.forceFullPrompt && strings.Contains(classified.Reason, "tool-deny upgrade")) {
+		agent.RecordPromptProfileDecision(agent.PromptProfileDecision{
+			Profile:     promptProfile,
+			FullTokens:  fullTok,
+			LightTokens: lightTok,
+			Task:        string(classified.Task),
+			Reason:      classified.Reason,
+		})
+	}
+
+	bundle := agent.BuildPromptBundle(deps, userText, isFirstTurn)
 
 	// Record prompt bundle observability for cache-hit analysis.
 	c.promptStats = bundle.TokenStats()
 	c.promptStableCacheKey = bundle.StableCacheKey()
 	if os.Getenv("MACLAW_DEBUG_PROMPT_BUNDLE") == "1" {
-		fmt.Printf("[prompt-bundle] surface=core_agent stable=%d session=%d retrieved=%d total=%d stable_key=%s\n",
+		fmt.Printf("[prompt-bundle] surface=core_agent stable=%d session=%d retrieved=%d total=%d stable_key=%s profile=%s saved=%d\n",
 			c.promptStats.StableSystemPromptTokens,
 			c.promptStats.SessionContextTokens,
 			c.promptStats.RetrievedContextTokens,
 			c.promptStats.TotalTokens,
 			c.promptStableCacheKey,
+			promptProfile,
+			fullTok-lightTok,
 		)
 	}
 	return bundle.String()
@@ -923,7 +991,7 @@ func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
 	return out
 }
 
-func (c *coreAgentCallbacks) BuildTools(string) []map[string]interface{} {
+func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
 	specs := c.coreToolSpecs()
 	tools := make([]map[string]interface{}, 0, len(specs))
 	for _, spec := range specs {
@@ -940,6 +1008,16 @@ func (c *coreAgentCallbacks) BuildTools(string) []map[string]interface{} {
 	// Append manage_skill tool if skill provider is available.
 	if skillDefs := c.skillToolDefs(); len(skillDefs) > 0 {
 		tools = append(tools, skillDefs...)
+	}
+	// Align tool surface with light system prompt (no bash/coding/files/MCP bulk).
+	// Prefer the profile from BuildSystemPrompt; re-resolve only when user text
+	// is present (empty text classifies as fast/light and would over-filter).
+	profile := c.lastPromptProfile
+	if profile == "" && strings.TrimSpace(userText) != "" {
+		profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
+	}
+	if profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(tools)
 	}
 	return tools
 }
@@ -965,6 +1043,11 @@ func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, str
 	}
 	if !isMutationScopeAllowed(c.mutationScope, strings.TrimSpace(name)) {
 		return false, fmt.Sprintf("%s is not allowed under mutation scope %s", name, c.mutationScope)
+	}
+	if c.mutationScope == v2.MutationScopeArtifact {
+		if err := v2.ValidateArtifactPhaseToolCall(strings.TrimSpace(name), args); err != nil {
+			return false, err.Error()
+		}
 	}
 	if c.toolPolicy == v2.ToolPolicyOpsControlled {
 		if err := v2.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
@@ -995,6 +1078,11 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	}
 	if err := v2.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	if c.mutationScope == v2.MutationScopeArtifact {
+		if err := v2.ValidateArtifactPhaseToolCall(strings.TrimSpace(name), args); err != nil {
+			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+		}
 	}
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
 		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}

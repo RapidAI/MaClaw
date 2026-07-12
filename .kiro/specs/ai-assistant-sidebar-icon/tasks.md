@@ -103,8 +103,8 @@
 
 - [x] 7. 侧边栏图标集成与国际化
   - [x] 7.1 在 `App.tsx` 侧边栏中添加 AI 助手图标入口
-    - 在远程（📡）图标 `<div>` 之后插入新的 sidebar-item
-    - 使用龙虾 emoji（🦞）作为图标，尺寸 1.2rem
+    - 在远程（）图标 `<div>` 之后插入新的 sidebar-item
+    - 使用龙虾 emoji（）作为图标，尺寸 1.2rem
     - 图标下方显示标签文字：中文"AI 助手" / 英文"AI Asst"
     - 点击时设置 `showAIPanel = true`，弹出 `AIAssistantPanel`
     - 选中状态显示 3px 宽主色调右边框高亮

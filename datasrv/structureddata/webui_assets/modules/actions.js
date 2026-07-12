@@ -81,7 +81,7 @@ PageModules.actions = {
     }));
 
     // === Section 3: Event Contracts (Collapsed) ===
-    container.appendChild(this.buildCollapsible("eventContracts", "📜 " + t("Event Contracts"), false, () => {
+    container.appendChild(this.buildCollapsible("eventContracts", t("Event Contracts"), false, () => {
       const body = h("div", {});
       body.appendChild(h("p", { class: "card-desc" }, "查看业务动作触发的事件契约定义。"));
 

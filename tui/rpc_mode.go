@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -117,6 +118,7 @@ func runRPCMode() {
 		history:       agent.NewPersistentConversationMemory(filepath.Join(dataSubDir, "rpc_conversation.json")),
 		taskStore:     task.NewStore(),
 		toolRegistry:  agent.NewCoreToolRegistry(),
+		costTracker:   llm.NewCostTracker(appCfg.DailyLLMBudgetUSD),
 	}
 	_ = credStore // available for future OAuth token refresh in RPC mode
 
@@ -329,6 +331,7 @@ type rpcCallbacks struct {
 	app       *TUIApp
 	requestID string
 	ctx       context.Context
+	activeLLM tuiActiveLLM
 }
 
 func (c *rpcCallbacks) Cancel() {
@@ -336,7 +339,18 @@ func (c *rpcCallbacks) Cancel() {
 }
 
 func (c *rpcCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.app.llmConfig
+	return c.activeLLM.get(c.app.llmConfig)
+}
+
+func (c *rpcCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *rpcCallbacks) GetMaxIterations() int {
@@ -418,4 +432,18 @@ func (c *rpcCallbacks) ShouldStop() bool {
 	default:
 		return false
 	}
+}
+
+func (c *rpcCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.app == nil {
+		return false, "", ""
+	}
+	return c.app.earlyStopBudget()
+}
+
+func (c *rpcCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.recordLLMCost(model, inputTokens, outputTokens)
 }

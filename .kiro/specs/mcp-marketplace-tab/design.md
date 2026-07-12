@@ -169,7 +169,7 @@ func (a *App) UnregisterMCPServer(serverID string) error {
 | 文件 | 变更 |
 |------|------|
 | `MCPManagementPanel.tsx` | `MCPTab` 类型新增 `"marketplace"`；Tab 栏新增第三个按钮；`activeTab === "marketplace"` 渲染 `MCPMarketplacePanel`；从 `RemoteMCPPanel` 中移除 `MCPMarketplacePanel` |
-| `MCPRemoteServerRow.tsx` | `MCPServerView` interface 新增 `source`/`managed` 字段；`managed=true` 时隐藏删除按钮，显示 🔒 标签 |
+| `MCPRemoteServerRow.tsx` | `MCPServerView` interface 新增 `source`/`managed` 字段；`managed=true` 时隐藏删除按钮，显示 标签 |
 | `MCPMarketplacePanel.tsx` | `onChanged` 回调新增安装类型信息，通知父组件刷新对应列表 |
 | `appTranslations.ts` | 新增 `mcpTabMarketplace`、`mcpManagedLabel`、`mcpCannotDeleteManaged` 翻译 key |
 

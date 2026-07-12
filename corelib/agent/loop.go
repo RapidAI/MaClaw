@@ -25,6 +25,15 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
+// TurnRouter is an optional LoopCallbacks extension for per-turn model routing.
+// When implemented, RunLoop calls RouteTurn once at loop start and uses the
+// returned config for all LLM rounds in that loop.
+type TurnRouter interface {
+	// RouteTurn returns a (possibly overridden) LLM config and a RouteDecision.
+	// applied=false means keep GetLLMConfig() / default primary routing.
+	RouteTurn(userText string) (cfg corelib.MaclawLLMConfig, decision RouteDecision, applied bool)
+}
+
 // LoopCallbacks defines the capabilities the agent loop needs from its host.
 // GUI provides a full implementation; TUI provides a simpler one.
 type LoopCallbacks interface {
@@ -104,6 +113,35 @@ type ToolCallAuthorizer interface {
 	IsToolCallAllowed(name, argsJSON string) (bool, string)
 }
 
+// PromptProfileProvider is an optional host callback that reports the adaptive
+// system-prompt profile for the current turn. When light, RunLoop denies
+// non-allowlisted tools (with misroute metrics) even if the model invents a call.
+type PromptProfileProvider interface {
+	CurrentPromptProfile() PromptProfile
+}
+
+// LightProfileUpgrader is an optional host callback. When a light turn blocks a
+// non-allowlisted tool, RunLoop may call this once, rebuild tools/system prompt,
+// and re-authorize the tool so the turn can recover without user re-ask.
+type LightProfileUpgrader interface {
+	// UpgradeLightPromptToFull switches the turn to full prompt + tools.
+	// Returns true when the host successfully upgraded (profile is now full).
+	UpgradeLightPromptToFull(reason string) bool
+}
+
+// EarlyStopper is an optional host callback for non-cancel stops (e.g. daily
+// LLM budget). Distinct from ShouldStop(), which maps to "cancelled".
+type EarlyStopper interface {
+	// EarlyStop returns stop=true to end the loop with Error=errCode and Text=userText.
+	EarlyStop() (stop bool, errCode, userText string)
+}
+
+// LLMUsageRecorder is an optional host callback invoked after each LLM round
+// with provider-reported tokens so hosts can charge CostTracker mid-loop.
+type LLMUsageRecorder interface {
+	OnLLMUsage(model string, inputTokens, outputTokens int)
+}
+
 // LoopHooks provides optional extension points for the agent loop.
 // Hosts that don't need these features can embed DefaultLoopHooks.
 type LoopHooks interface {
@@ -137,6 +175,19 @@ type LoopResult struct {
 	ToolCalls  int
 	AskUser    *AskUserRequest
 	HardExit   bool // true when loop exited abnormally (consecutive empty responses, same-tool hard stop, etc.)
+
+	// Usage aggregates LLM token/cost accounting for this loop when the host
+	// (or future loop instrumentation) records it. Zero means unknown.
+	Usage TurnUsage
+	// Route is the model-routing decision for this loop when known.
+	Route RouteDecision
+	// LightUpgraded is true when this loop recovered from a light-profile tool
+	// deny by upgrading to full prompt+tools mid-turn.
+	LightUpgraded bool
+	// HistoryDelta is the new conversation entries produced by this loop
+	// (user turn + assistant/tool messages), excluding the system prompt and
+	// any prior history. Hosts can append this to durable session history.
+	HistoryDelta []ConversationEntry
 }
 
 // RunLoop executes the core agent loop: LLM call → tool execution → repeat.
@@ -157,8 +208,68 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 
 	cfg := cb.GetLLMConfig()
+	route := PrimaryRouteDecision(cfg)
+	// Optional host-side turn routing (e.g. GUI ModelRouter + ClassifyTurn).
+	if tr, ok := cb.(TurnRouter); ok {
+		if routed, decision, applied := tr.RouteTurn(userText); applied {
+			cfg = routed
+			route = decision
+			route.Applied = true
+		}
+	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
-		return LoopResult{Error: "LLM not configured"}
+		return LoopResult{
+			Error: "LLM not configured",
+			Route: RouteDecision{Source: "primary", Reason: "LLM not configured", Applied: false},
+		}
+	}
+
+	var usage TurnUsage
+	usage.Model = cfg.Model
+	usage.Provider = cfg.ProviderName
+	// lightUpgraded: at most one light→full recovery per loop (tool-deny path).
+	// Declared early so finish() can surface LightUpgraded on LoopResult.
+	lightUpgraded := false
+	// HistoryDelta tracks durable session entries for hosts (user + assistant + tools).
+	// Store the same multimodal payload the model saw (string or content blocks).
+	historyDelta := make([]ConversationEntry, 0, 8)
+	historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: userContent})
+	finish := func(r LoopResult) LoopResult {
+		if r.Usage.Requests == 0 && usage.Requests > 0 {
+			r.Usage = usage
+		} else if usage.Requests > 0 {
+			// Prefer accumulated loop usage when the caller left Usage zero.
+			if r.Usage.InputTokens == 0 && r.Usage.OutputTokens == 0 {
+				r.Usage = usage
+			}
+		} else if r.Usage.Model == "" {
+			r.Usage.Model = cfg.Model
+			r.Usage.Provider = cfg.ProviderName
+		}
+		if r.Route.Source == "" {
+			r.Route = route
+		}
+		if lightUpgraded {
+			r.LightUpgraded = true
+		}
+		if len(r.HistoryDelta) == 0 && len(historyDelta) > 0 {
+			r.HistoryDelta = append([]ConversationEntry(nil), historyDelta...)
+		}
+		return r
+	}
+	recordUsage := func(resp *llm.Response) {
+		if resp == nil || resp.Usage == nil {
+			return
+		}
+		round := TurnUsageFromLLM(cfg, resp.Usage)
+		usage.Add(round)
+		if rec, ok := cb.(LLMUsageRecorder); ok && (round.InputTokens > 0 || round.OutputTokens > 0) {
+			model := cfg.Model
+			if model == "" {
+				model = usage.Model
+			}
+			rec.OnLLMUsage(model, round.InputTokens, round.OutputTokens)
+		}
 	}
 
 	maxIter := cb.GetMaxIterations()
@@ -169,7 +280,8 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		maxIter = config.EffectiveMaxIterations(0)
 	}
 
-	systemPrompt := cb.BuildSystemPrompt(userText, len(history) == 0)
+	isFirstTurn := len(history) == 0
+	systemPrompt := cb.BuildSystemPrompt(userText, isFirstTurn)
 	tools := FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(userText))
 
 	// Build conversation from history + current message.
@@ -189,6 +301,26 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 
 	totalToolCalls := 0
+	checkEarlyStop := func(iteration int) *LoopResult {
+		es, ok := cb.(EarlyStopper)
+		if !ok {
+			return nil
+		}
+		stop, code, text := es.EarlyStop()
+		if !stop {
+			return nil
+		}
+		if strings.TrimSpace(code) == "" {
+			code = "early_stop"
+		}
+		return &LoopResult{
+			Text:       text,
+			Error:      code,
+			Iterations: iteration,
+			ToolCalls:  totalToolCalls,
+			HardExit:   true,
+		}
+	}
 	consecutiveEmpty := 0
 	const maxConsecutiveEmpty = 5
 	var lastNonEmptyContent string
@@ -222,7 +354,21 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 	for iteration := 0; iteration < maxIter; iteration++ {
 		if cb.ShouldStop() {
-			return LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls}
+			return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+		}
+		// Non-cancel hard stops (budget, host policy) — after prior-round usage recorded.
+		if stopped := checkEarlyStop(iteration); stopped != nil {
+			return finish(*stopped)
+		}
+
+		// Refresh config each iteration so hosts can escalate models mid-loop
+		// (e.g. light → reasoning after tools appear).
+		if next := cb.GetLLMConfig(); strings.TrimSpace(next.URL) != "" && strings.TrimSpace(next.Model) != "" {
+			cfg = next
+			if usage.Model == "" {
+				usage.Model = cfg.Model
+				usage.Provider = cfg.ProviderName
+			}
 		}
 
 		// Mid-loop conversation transformation (e.g., compaction).
@@ -233,7 +379,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
 		ctx, finishLLMRequest, ctxErr := llmRequestContextForLoop(cb, iteration)
 		if ctxErr != nil {
-			return LoopResult{Error: fmt.Sprintf("LLM request context failed: %v", ctxErr), Iterations: iteration, ToolCalls: totalToolCalls}
+			return finish(LoopResult{Error: fmt.Sprintf("LLM request context failed: %v", ctxErr), Iterations: iteration, ToolCalls: totalToolCalls})
 		}
 		resp, err := doLLMRequestWithToolsStream(ctx, cfg, conversation, tools, httpClient, cb.OnToken)
 		if err != nil {
@@ -246,23 +392,24 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				time.Sleep(backoff)
 				if cb.ShouldStop() {
 					finishLLMRequest(err)
-					return LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls}
+					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
 				}
 				resp, err = doLLMRequestWithTools(ctx, cfg, conversation, tools, httpClient)
 			}
 			finishLLMRequest(err)
 			if err != nil {
-				return LoopResult{Error: fmt.Sprintf("LLM call failed: %v", err), Iterations: iteration, ToolCalls: totalToolCalls}
+				return finish(LoopResult{Error: fmt.Sprintf("LLM call failed: %v", err), Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 		} else {
 			finishLLMRequest(nil)
 		}
+		recordUsage(resp)
 
 		if len(resp.Choices) == 0 {
 			if h.OnEmptyResponse(iteration) {
 				continue // hook says retry
 			}
-			return LoopResult{Error: "LLM returned no choices", Iterations: iteration, ToolCalls: totalToolCalls}
+			return finish(LoopResult{Error: "LLM returned no choices", Iterations: iteration, ToolCalls: totalToolCalls})
 		}
 
 		choice := resp.Choices[0]
@@ -354,18 +501,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if consecutiveEmpty >= maxConsecutiveEmpty {
 				log.Printf("[agent-loop] hard exit: %d consecutive empty responses", consecutiveEmpty)
 				// Return the last non-empty content as a fallback.
-				return LoopResult{
+				return finish(LoopResult{
 					Text:       lastNonEmptyContent,
 					Iterations: iteration + 1,
 					ToolCalls:  totalToolCalls,
 					HardExit:   true,
-				}
+				})
 			}
 
 			// Brief pause before retry to avoid rapid-fire empty requests.
 			time.Sleep(time.Duration(consecutiveEmpty) * time.Second)
 			if cb.ShouldStop() {
-				return LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls}
+				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 
 			// Build a context-aware recovery prompt.
@@ -406,6 +553,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
 		}
 		conversation = append(conversation, assistantMsg)
+		historyDelta = append(historyDelta, ConversationEntry{
+			Role:             "assistant",
+			Content:          content,
+			ReasoningContent: reasoningContent,
+			ToolCalls:        choice.Message.ToolCalls,
+		})
 
 		// No tool calls → final answer.
 		if len(choice.Message.ToolCalls) == 0 {
@@ -413,20 +566,47 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// Note: we do NOT call cb.OnToken here. The final text is returned
 			// via LoopResult.Text, and the caller (handleChatSend) sends it as
 			// ChatResponseMsg. Calling OnToken would cause duplicate display.
-			return LoopResult{Text: finalText, Iterations: iteration + 1, ToolCalls: totalToolCalls}
+			// Keep the last assistant entry's content as the cleaned final text.
+			if n := len(historyDelta); n > 0 && historyDelta[n-1].Role == "assistant" {
+				historyDelta[n-1].Content = finalText
+			}
+			return finish(LoopResult{Text: finalText, Iterations: iteration + 1, ToolCalls: totalToolCalls})
 		}
 
 		// Execute tool calls.
 		for _, tc := range choice.Message.ToolCalls {
 			if cb.ShouldStop() {
-				return LoopResult{Error: "cancelled", Iterations: iteration + 1, ToolCalls: totalToolCalls}
+				return finish(LoopResult{Error: "cancelled", Iterations: iteration + 1, ToolCalls: totalToolCalls})
 			}
 			totalToolCalls++
 			argsJSON := normalizeLoopToolArguments(tc.Function.Arguments)
+			// Hard-stop on oversized tool arguments (parity with GUI stream/exec gates).
+			// Without this, complete non-stream LLM responses can deliver huge args that
+			// never hit the streaming accumulator limit and thrash the loop until maxIter.
+			if argSize := len(argsJSON); argSize > llm.MaxToolArgumentsBytes {
+				toolName := strings.TrimSpace(tc.Function.Name)
+				if toolName == "" {
+					toolName = "unknown"
+				}
+				log.Printf("[agent-loop] rejected oversized tool arguments tool=%q args_len=%d limit=%d", toolName, argSize, llm.MaxToolArgumentsBytes)
+				return finish(LoopResult{
+					Error:      fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, llm.MaxToolArgumentsBytes),
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+					HardExit:   true,
+				})
+			}
 			execResult, syntheticFailure := validateLoopToolArguments(tc.Function.Name, argsJSON)
 			if !syntheticFailure {
 				var policyRejected bool
 				execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+				// Light misroute recovery: upgrade once, refresh tools/system, retry tool.
+				if policyRejected && !lightUpgraded && isLightToolDenyResult(execResult) {
+					if tryLightProfileToolRetry(cb, userText, isFirstTurn, tc.Function.Name, &tools, conversation) {
+						lightUpgraded = true
+						execResult, policyRejected = authorizeLoopTool(cb, tc.Function.Name, argsJSON)
+					}
+				}
 				if !policyRejected {
 					cb.OnToolCall(tc.Function.Name)
 					execResult = executeAuthorizedLoopTool(cb, tc.Function.Name, argsJSON)
@@ -440,12 +620,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
 
 			if askReq, ok := ParseAskUserResult(result); ok {
-				return LoopResult{
+				return finish(LoopResult{
 					Text:       FormatAskUserForDisplay(askReq),
 					AskUser:    askReq,
 					Iterations: iteration + 1,
 					ToolCalls:  totalToolCalls,
-				}
+				})
 			}
 
 			// Determine success for outcome tracking.
@@ -465,12 +645,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if consecutiveSameToolFailures >= hardStopSameToolFailures {
 					// Hard stop: LLM ignored the guidance and keeps failing.
 					log.Printf("[agent-loop] hard stop: tool=%q failed %d consecutive times, force-exiting loop", lastFailedTool, consecutiveSameToolFailures)
-					return LoopResult{
+					return finish(LoopResult{
 						Text:       fmt.Sprintf("工具 %s 连续失败 %d 次，已停止执行。请检查环境或换一种方式完成任务。", lastFailedTool, consecutiveSameToolFailures),
 						Iterations: iteration + 1,
 						ToolCalls:  totalToolCalls,
 						HardExit:   true,
-					}
+					})
 				}
 			} else {
 				// Success of the previously-failing tool resets the counter.
@@ -501,6 +681,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"role":         "tool",
 				"tool_call_id": tc.ID,
 				"content":      result,
+			})
+			historyDelta = append(historyDelta, ConversationEntry{
+				Role:        "tool",
+				Content:     result,
+				ToolCallID:  tc.ID,
+				ToolName:    tc.Function.Name,
+				ToolOutcome: string(execResult.Outcome),
 			})
 		}
 
@@ -552,7 +739,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	}
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
-	return LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls}
+	return finish(LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls})
 }
 
 func executeLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {
@@ -603,6 +790,16 @@ func invalidLoopToolArgumentNames(calls []llm.ToolCall) []string {
 }
 
 func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResult, bool) {
+	// Adaptive light profile: deny non-allowlisted tools and record misroute signal.
+	if pp, ok := cb.(PromptProfileProvider); ok && pp.CurrentPromptProfile().IsLight() {
+		if !IsLightTurnToolAllowed(name) {
+			RecordLightToolDeny(name)
+			return ToolExecutionResult{
+				Result:  LightToolDenyMessage(name),
+				Outcome: ToolExecutionOutcomeError,
+			}, true
+		}
+	}
 	if authorizer, ok := cb.(ToolAuthorizer); ok && !authorizer.IsToolAllowed(name) {
 		return ToolExecutionResult{
 			Result:  fmt.Sprintf("Error: tool %q is not allowed by the current execution policy", name),
@@ -621,6 +818,68 @@ func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionRe
 		}
 	}
 	return ToolExecutionResult{}, false
+}
+
+// isLightToolDenyResult detects authorizeLoopTool rejections from the light allowlist.
+func isLightToolDenyResult(res ToolExecutionResult) bool {
+	return res.Outcome == ToolExecutionOutcomeError &&
+		strings.Contains(res.Result, "light prompt profile")
+}
+
+// tryLightProfileToolRetry upgrades light→full once and refreshes tools + system
+// message so subsequent LLM rounds and the current tool can proceed.
+func tryLightProfileToolRetry(
+	cb LoopCallbacks,
+	userText string,
+	isFirstTurn bool,
+	deniedTool string,
+	tools *[]map[string]interface{},
+	conversation []interface{},
+) bool {
+	if !LightToolRetryEnabled() {
+		return false
+	}
+	upgrader, ok := cb.(LightProfileUpgrader)
+	if !ok {
+		return false
+	}
+	reason := "tool_deny_retry:" + strings.TrimSpace(deniedTool)
+	if !upgrader.UpgradeLightPromptToFull(reason) {
+		return false
+	}
+	// Host may still report light if upgrade is a no-op.
+	if pp, ok := cb.(PromptProfileProvider); ok && pp.CurrentPromptProfile().IsLight() {
+		return false
+	}
+	RecordLightUpgrade(reason)
+	// Refresh tool surface for later iterations.
+	if tools != nil {
+		*tools = FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(userText))
+	}
+	// Replace system message so full policy is visible to the model.
+	newPrompt := cb.BuildSystemPrompt(userText, isFirstTurn)
+	replaceConversationSystemPrompt(conversation, newPrompt)
+	log.Printf("[agent-loop] light→full upgrade after tool deny tool=%q tools=%d", deniedTool, len(*tools))
+	return true
+}
+
+// replaceConversationSystemPrompt updates conversation[0] when it is the system turn.
+func replaceConversationSystemPrompt(conversation []interface{}, newPrompt string) {
+	if len(conversation) == 0 || strings.TrimSpace(newPrompt) == "" {
+		return
+	}
+	switch msg := conversation[0].(type) {
+	case map[string]string:
+		if msg["role"] == "system" {
+			msg["content"] = newPrompt
+			conversation[0] = msg
+		}
+	case map[string]interface{}:
+		if role, _ := msg["role"].(string); role == "system" {
+			msg["content"] = newPrompt
+			conversation[0] = msg
+		}
+	}
 }
 
 func executeAuthorizedLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {

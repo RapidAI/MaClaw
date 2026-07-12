@@ -34,8 +34,8 @@ func TestConfirmationApprovedText_WithPendingItems_AsksForInfo(t *testing.T) {
 		EnhancedSummary: "任务类型：远程操作\n" +
 			"任务理解：通过SSH连接至远程服务器\n" +
 			"约束/要求：\n" +
-			"  • ⚠️ 待确认：远程服务器的 SSH 连接凭证（IP、端口、用户名、密码/密钥）\n" +
-			"  • ⚠️ 待确认：目标部署路径",
+			"  • 待确认：远程服务器的 SSH 连接凭证（IP、端口、用户名、密码/密钥）\n" +
+			"  • 待确认：目标部署路径",
 	}
 	result := confirmationApprovedText(item)
 	if strings.Contains(result, "直接开始执行") {
@@ -58,8 +58,8 @@ func TestConfirmationApprovedText_PendingItemsInConstraints(t *testing.T) {
 		OriginalText: "连接服务器查看GPU",
 		ResumeText:   "连接服务器查看GPU",
 		EnhancedSummary: "约束/要求：\n" +
-			"  • ⚠️ 待确认：服务器IP地址\n" +
-			"  • ⚠️ 待确认：SSH用户名和密码",
+			"  • 待确认：服务器IP地址\n" +
+			"  • 待确认：SSH用户名和密码",
 	}
 	result := confirmationApprovedText(item)
 	if strings.Contains(result, "直接开始执行") {
@@ -100,9 +100,9 @@ func TestConfirmationApprovedText_DeduplicatesPendingItems(t *testing.T) {
 	item := &pendingConfirmation{
 		OriginalText: "连接服务器",
 		ResumeText:   "连接服务器",
-		Summary:      "⚠️ 待确认：SSH密码",
+		Summary:      "待确认：SSH密码",
 		EnhancedSummary: "约束/要求：\n" +
-			"  • ⚠️ 待确认：SSH密码",
+			"  • 待确认：SSH密码",
 	}
 	result := confirmationApprovedText(item)
 	// The pending items section should only list "SSH密码" once.
@@ -135,8 +135,8 @@ func TestExtractPendingConfirmItems_NilItem(t *testing.T) {
 
 func TestExtractPendingConfirmItems_MultipleSourcesDedup(t *testing.T) {
 	item := &pendingConfirmation{
-		Summary:         "⚠️ 待确认：服务器地址",
-		EnhancedSummary: "⚠️ 待确认：服务器地址\n⚠️ 待确认：用户名",
+		Summary:         "待确认：服务器地址",
+		EnhancedSummary: "待确认：服务器地址\n待确认：用户名",
 	}
 	items := extractPendingConfirmItems(item)
 	if len(items) != 2 {
@@ -150,12 +150,12 @@ func TestExtractPendingConfirmItems_VariousFormats(t *testing.T) {
 		text  string
 		count int
 	}{
-		{"emoji prefix", "⚠️ 待确认：SSH密码", 1},
+		{"emoji prefix", "待确认：SSH密码", 1},
 		{"no emoji", "待确认：部署路径", 1},
 		{"colon variant", "待确认:端口号", 1},
-		{"bullet prefix", "  • ⚠️ 待确认：凭证信息", 1},
+		{"bullet prefix", "  • 待确认：凭证信息", 1},
 		{"no pending", "一切就绪，可以开始", 0},
-		{"multiple lines", "⚠️ 待确认：A\n⚠️ 待确认：B\n正常内容", 2},
+		{"multiple lines", "待确认：A\n待确认：B\n正常内容", 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,7 +188,7 @@ func TestDriftDetector_RecoverPromptIncludesToolResult(t *testing.T) {
 	// When drift is detected, the recover prompt should include the last
 	// tool result so the LLM has actionable context to change strategy.
 	d := NewDriftDetector(8, 0.8)
-	hint := "SSH 连接失败: unable to authenticate\n\n💡 认证失败且未提供密码。请使用 password 参数重试"
+	hint := "SSH 连接失败: unable to authenticate\n\n认证失败且未提供密码。请使用 password 参数重试"
 	for i := 0; i < 3; i++ {
 		d.Record(ToolCallRecord{
 			ToolName:   "ssh",
@@ -301,9 +301,9 @@ func TestConfirmationFlow_SSHTaskWithMissingCredentials(t *testing.T) {
 			"  • 成功启动并运行 MaCLaw Hub 端服务\n" +
 			"约束/要求：\n" +
 			"  • 目标仓库地址：https://github.com/RapidAI/MaCLaw\n" +
-			"  • ⚠️ 待确认：远程服务器的 SSH 连接凭证（IP、端口、用户名、密码/密钥）\n" +
-			"  • ⚠️ 待确认：目标部署路径（建议在服务器上新建专门目录，避免与本地工作目录混淆）\n" +
-			"  • ⚠️ 待确认：服务运行环境要求（如 Python 版本、Node.js 版本等，需参考仓库 README）",
+			"  • 待确认：远程服务器的 SSH 连接凭证（IP、端口、用户名、密码/密钥）\n" +
+			"  • 待确认：目标部署路径（建议在服务器上新建专门目录，避免与本地工作目录混淆）\n" +
+			"  • 待确认：服务运行环境要求（如 Python 版本、Node.js 版本等，需参考仓库 README）",
 		TaskType:  "ssh",
 		Status:    "pending",
 		CreatedAt: time.Now(),
@@ -479,7 +479,7 @@ func TestDriftDetector_TruncatedHintSame_ButFullResultDiffers_NoDrift(t *testing
 	// despite results actually changing).
 	d := NewDriftDetector(8, 0.8)
 	hash := "same_args_hash"
-	sameHint := "🔄 任务 bg_123\n命令: go install golang.org/dl/go1.24.2@latest 2>&1 || echo trying direct download && wget -q https://go.dev/dl/go1.24.2.linux-amd64.tar.gz -O /tmp/go1.24.2.tar.gz…"
+	sameHint := "任务 bg_123\n命令: go install golang.org/dl/go1.24.2@latest 2>&1 || echo trying direct download && wget -q https://go.dev/dl/go1.24.2.linux-amd64.tar.gz -O /tmp/go1.24.2.tar.gz…"
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameHint, ResultHash: "hash_running_18s"})
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameHint, ResultHash: "hash_running_23s"})
 	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: hash, ResultHint: sameHint, ResultHash: "hash_completed"})

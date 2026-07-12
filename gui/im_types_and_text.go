@@ -30,75 +30,96 @@ type IMUserMessage = agent.UserMessage
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text                                string                        `json:"text"`
-	Reasoning                           string                        `json:"reasoning,omitempty"`
-	ClearUI                             bool                          `json:"clear_ui,omitempty"`
-	Fields                              []IMResponseField             `json:"fields,omitempty"`
-	Actions                             []IMResponseAction            `json:"actions,omitempty"`
-	Confirmation                        *IMResponseConfirmation       `json:"confirmation,omitempty"`
-	UnfinishedTask                      *IMResponseUnfinishedTask     `json:"unfinished_task,omitempty"`
-	UnfinishedSlot                      *IMResponseUnfinishedTask     `json:"unfinished_slot,omitempty"`
-	RecoverableSession                  *IMResponseRecoverableSession `json:"recoverable_session,omitempty"`
-	ImageKey                            string                        `json:"image_key,omitempty"`
-	FileData                            string                        `json:"file_data,omitempty"`
-	FileName                            string                        `json:"file_name,omitempty"`
-	FileMimeType                        string                        `json:"file_mime_type,omitempty"`
-	VoiceData                           string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
-	VoiceFileName                       string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
-	VoiceMimeType                       string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
-	LocalFilePath                       string                        `json:"local_file_path,omitempty"`
-	LocalFilePaths                      []string                      `json:"local_file_paths,omitempty"`
-	ThumbnailBase64                     string                        `json:"thumbnail_base64,omitempty"`
-	Error                               string                        `json:"error,omitempty"`
-	ResponseSource                      string                        `json:"response_source,omitempty"`
-	Deferred                            bool                          `json:"deferred,omitempty"`
-	KeepPanel                           bool                          `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
-	ConfirmedResume                     bool                          `json:"confirmed_resume,omitempty"`
-	HardExit                            bool                          `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
-	JobID                               string                        `json:"job_id,omitempty"`
-	RunID                               string                        `json:"run_id,omitempty"`
-	RequestID                           string                        `json:"request_id,omitempty"`
-	SessionKey                          string                        `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
-	TraceStatus                         string                        `json:"trace_status,omitempty"`
-	TraceSummary                        string                        `json:"trace_summary,omitempty"`
-	TraceEventCount                     int                           `json:"trace_event_count,omitempty"`
-	EvidenceCount                       int                           `json:"evidence_count,omitempty"`
-	TrialReflectSummary                 string                        `json:"trial_reflect_summary,omitempty"`
-	TrialReflectStatus                  string                        `json:"trial_reflect_status,omitempty"`
-	TrialReflectFailures                int                           `json:"trial_reflect_failures,omitempty"`
-	InputTokens                         int                           `json:"input_tokens,omitempty"`
-	OutputTokens                        int                           `json:"output_tokens,omitempty"`
-	TotalTokens                         int                           `json:"total_tokens,omitempty"`
-	CacheReadTokens                     int                           `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens                    int                           `json:"cache_write_tokens,omitempty"`
-	HandlerTailNanos                    int64                         `json:"-"`
-	HandlerBlackholeAfterUsageNanos     int64                         `json:"-"`
-	HandlerBlackholeBeforeReturnNanos   int64                         `json:"-"`
-	HandlerPostStreamUsageNanos         int64                         `json:"-"`
-	HandlerPostStreamResponseNanos      int64                         `json:"-"`
-	HandlerPostStreamToolExecNanos      int64                         `json:"-"`
-	HandlerPostStreamChoiceNanos        int64                         `json:"-"`
-	HandlerPostStreamAssistantMsgNanos  int64                         `json:"-"`
-	HandlerPostStreamHistoryAppendNanos int64                         `json:"-"`
-	HandlerPostStreamNoToolBranchNanos  int64                         `json:"-"`
-	FinalizeTraceNanos                  int64                         `json:"-"`
-	MemorySaveNanos                     int64                         `json:"-"`
-	CapabilityGapNanos                  int64                         `json:"-"`
-	FileMaterializeNanos                int64                         `json:"-"`
-	PreLLMPrepNanos                     int64                         `json:"-"`
-	PreLLMConfigNanos                   int64                         `json:"-"`
-	PreLLMToolsNanos                    int64                         `json:"-"`
-	PreLLMConversationNanos             int64                         `json:"-"`
-	PreLLMIterationPrepNanos            int64                         `json:"-"`
-	FirstTokenWaitNanos                 int64                         `json:"-"`
-	LLMRequestBuildNanos                int64                         `json:"-"`
-	LLMHTTPDoNanos                      int64                         `json:"-"`
-	LLMFirstSSEWaitNanos                int64                         `json:"-"`
-	LLMRetryWaitNanos                   int64                         `json:"-"`
-	LLMStreamMaxTokenGapNanos           int64                         `json:"-"`
-	LLMRetryCount                       int                           `json:"-"`
-	LLMIdleTimeoutCount                 int                           `json:"-"`
-	LLMIdleTimeoutAfterToken            bool                          `json:"-"`
+	Text                 string                        `json:"text"`
+	Reasoning            string                        `json:"reasoning,omitempty"`
+	ClearUI              bool                          `json:"clear_ui,omitempty"`
+	Fields               []IMResponseField             `json:"fields,omitempty"`
+	Actions              []IMResponseAction            `json:"actions,omitempty"`
+	Confirmation         *IMResponseConfirmation       `json:"confirmation,omitempty"`
+	UnfinishedTask       *IMResponseUnfinishedTask     `json:"unfinished_task,omitempty"`
+	UnfinishedSlot       *IMResponseUnfinishedTask     `json:"unfinished_slot,omitempty"`
+	RecoverableSession   *IMResponseRecoverableSession `json:"recoverable_session,omitempty"`
+	ImageKey             string                        `json:"image_key,omitempty"`
+	FileData             string                        `json:"file_data,omitempty"`
+	FileName             string                        `json:"file_name,omitempty"`
+	FileMimeType         string                        `json:"file_mime_type,omitempty"`
+	VoiceData            string                        `json:"voice_data,omitempty"`      // Base64-encoded voice audio (OGG Opus or WAV)
+	VoiceFileName        string                        `json:"voice_file_name,omitempty"` // e.g. "voice.ogg"
+	VoiceMimeType        string                        `json:"voice_mime_type,omitempty"` // e.g. "audio/ogg"
+	LocalFilePath        string                        `json:"local_file_path,omitempty"`
+	LocalFilePaths       []string                      `json:"local_file_paths,omitempty"`
+	ThumbnailBase64      string                        `json:"thumbnail_base64,omitempty"`
+	Error                string                        `json:"error,omitempty"`
+	ResponseSource       string                        `json:"response_source,omitempty"`
+	Deferred             bool                          `json:"deferred,omitempty"`
+	KeepPanel            bool                          `json:"keep_panel,omitempty"` // when true, frontend should NOT dismiss the AG view panel after successful submit
+	ConfirmedResume      bool                          `json:"confirmed_resume,omitempty"`
+	HardExit             bool                          `json:"-"` // set when agent loop exits due to consecutive empty responses; suppresses doc capture
+	JobID                string                        `json:"job_id,omitempty"`
+	RunID                string                        `json:"run_id,omitempty"`
+	RequestID            string                        `json:"request_id,omitempty"`
+	SessionKey           string                        `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
+	TraceStatus          string                        `json:"trace_status,omitempty"`
+	TraceSummary         string                        `json:"trace_summary,omitempty"`
+	TraceEventCount      int                           `json:"trace_event_count,omitempty"`
+	EvidenceCount        int                           `json:"evidence_count,omitempty"`
+	TrialReflectSummary  string                        `json:"trial_reflect_summary,omitempty"`
+	TrialReflectStatus   string                        `json:"trial_reflect_status,omitempty"`
+	TrialReflectFailures int                           `json:"trial_reflect_failures,omitempty"`
+	InputTokens          int                           `json:"input_tokens,omitempty"`
+	OutputTokens         int                           `json:"output_tokens,omitempty"`
+	TotalTokens          int                           `json:"total_tokens,omitempty"`
+	CacheReadTokens      int                           `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens     int                           `json:"cache_write_tokens,omitempty"`
+	// EstCostRMB is a local default-price estimate for this turn (optional).
+	EstCostRMB float64 `json:"est_cost_rmb,omitempty"`
+	// PromptProfile is the adaptive system-prompt thickness (full|light).
+	PromptProfile string `json:"prompt_profile,omitempty"`
+	// PromptFullTokens / PromptLightTokens are dual-build estimates when light.
+	PromptFullTokens  int `json:"prompt_full_tokens,omitempty"`
+	PromptLightTokens int `json:"prompt_light_tokens,omitempty"`
+	// PromptSavedTokens is max(0, full-light) system-prompt tokens avoided.
+	PromptSavedTokens int `json:"prompt_saved_tokens,omitempty"`
+	// PromptUpgraded is true when light→full recovery ran mid-turn.
+	PromptUpgraded bool `json:"prompt_upgraded,omitempty"`
+	// PromptABSample is true when quality A/B forced full on a light-eligible turn.
+	PromptABSample bool `json:"prompt_ab_sample,omitempty"`
+	// PromptSoftFull is true when SoftFullAgentIntent upgraded light→full.
+	PromptSoftFull bool `json:"prompt_soft_full,omitempty"`
+	// Model-route observability (rule-based turn routing).
+	RouteTask                           string `json:"route_task,omitempty"`
+	RouteSource                         string `json:"route_source,omitempty"`
+	RouteModel                          string `json:"route_model,omitempty"`
+	RouteReason                         string `json:"route_reason,omitempty"`
+	RouteEscalated                      bool   `json:"route_escalated,omitempty"`
+	HandlerTailNanos                    int64  `json:"-"`
+	HandlerBlackholeAfterUsageNanos     int64  `json:"-"`
+	HandlerBlackholeBeforeReturnNanos   int64  `json:"-"`
+	HandlerPostStreamUsageNanos         int64  `json:"-"`
+	HandlerPostStreamResponseNanos      int64  `json:"-"`
+	HandlerPostStreamToolExecNanos      int64  `json:"-"`
+	HandlerPostStreamChoiceNanos        int64  `json:"-"`
+	HandlerPostStreamAssistantMsgNanos  int64  `json:"-"`
+	HandlerPostStreamHistoryAppendNanos int64  `json:"-"`
+	HandlerPostStreamNoToolBranchNanos  int64  `json:"-"`
+	FinalizeTraceNanos                  int64  `json:"-"`
+	MemorySaveNanos                     int64  `json:"-"`
+	CapabilityGapNanos                  int64  `json:"-"`
+	FileMaterializeNanos                int64  `json:"-"`
+	PreLLMPrepNanos                     int64  `json:"-"`
+	PreLLMConfigNanos                   int64  `json:"-"`
+	PreLLMToolsNanos                    int64  `json:"-"`
+	PreLLMConversationNanos             int64  `json:"-"`
+	PreLLMIterationPrepNanos            int64  `json:"-"`
+	FirstTokenWaitNanos                 int64  `json:"-"`
+	LLMRequestBuildNanos                int64  `json:"-"`
+	LLMHTTPDoNanos                      int64  `json:"-"`
+	LLMFirstSSEWaitNanos                int64  `json:"-"`
+	LLMRetryWaitNanos                   int64  `json:"-"`
+	LLMStreamMaxTokenGapNanos           int64  `json:"-"`
+	LLMRetryCount                       int    `json:"-"`
+	LLMIdleTimeoutCount                 int    `json:"-"`
+	LLMIdleTimeoutAfterToken            bool   `json:"-"`
 
 	// Corrections provides one-click override options for the user when the
 	// scheduler's automatic interrupt decision may not match their intent.

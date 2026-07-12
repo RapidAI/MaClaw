@@ -193,11 +193,15 @@ type maclawAppInstallPlanDependency struct {
 	InstalledVersion   string   `json:"installed_version,omitempty"`
 	RequiredVersion    string   `json:"required_version,omitempty"`
 	VersionStatus      string   `json:"version_status,omitempty"`
-	InstalledDir       string   `json:"installed_dir,omitempty"`
-	InstalledStatus    string   `json:"installed_status,omitempty"`
-	Health             string   `json:"health,omitempty"`
-	Action             string   `json:"action"`
-	Message            string   `json:"message,omitempty"`
+	// RuntimeSkillRef is the preferred RunNLSkillAsync / run_skill argument after
+	// local resolution (usually HubSkillID, else SkillID, else Name). Authoring,
+	// install planning, and app runtime must share this coordinate.
+	RuntimeSkillRef string `json:"runtime_skill_ref,omitempty"`
+	InstalledDir    string `json:"installed_dir,omitempty"`
+	InstalledStatus string `json:"installed_status,omitempty"`
+	Health          string `json:"health,omitempty"`
+	Action          string `json:"action"`
+	Message         string `json:"message,omitempty"`
 }
 
 type maclawAppBundledDependencies struct {
@@ -954,6 +958,7 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 		dep.Installed = false
 		dep.InstalledName = ""
 		dep.InstalledVersion = ""
+		dep.RuntimeSkillRef = ""
 		dep.RequiredVersion = strings.TrimSpace(dep.Version)
 		dep.VersionStatus = maclawAppDependencyVersionStatus(*dep)
 		dep.InstalledDir = ""
@@ -3946,19 +3951,11 @@ func validateMaclawAppKindContract(entry parsedMaclawAppEntry, path string) erro
 
 func (a *App) installedMaclawAppSkillIndex() map[string]NLSkillDefinition {
 	defs := a.ListNLSkills()
-	index := make(map[string]NLSkillDefinition, len(defs))
+	index := make(map[string]NLSkillDefinition, len(defs)*4)
 	for _, def := range defs {
-		// Primary key: QualifiedID (publisher:name or bare name)
-		if qid := def.QualifiedID(); qid != "" {
-			index[strings.ToLower(qid)] = def
-		}
-		// Secondary keys for backward compatibility: Name, DirName, HubSkillID
-		for _, id := range []string{def.Name, def.DirName, def.HubSkillID} {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			key := strings.ToLower(id)
+		// Same identity key set as MatchesName / run resolution so authoring
+		// hub ids, display names, and directory basenames resolve to one skill.
+		for _, key := range def.SkillIdentityKeys() {
 			if _, exists := index[key]; !exists {
 				index[key] = def
 			}
@@ -3968,8 +3965,9 @@ func (a *App) installedMaclawAppSkillIndex() map[string]NLSkillDefinition {
 }
 
 func maclawAppInstalledSkillMatch(index map[string]NLSkillDefinition, dep maclawAppInstallPlanDependency) (NLSkillDefinition, bool) {
-	for _, id := range maclawAppInstalledSkillCandidateIDs(dep) {
-		if match, ok := index[strings.ToLower(id)]; ok {
+	// Candidate IDs are already CollectSkillIdentityKeys-normalized map keys.
+	for _, key := range maclawAppInstalledSkillCandidateIDs(dep) {
+		if match, ok := index[key]; ok {
 			return match, true
 		}
 	}
@@ -3977,7 +3975,7 @@ func maclawAppInstalledSkillMatch(index map[string]NLSkillDefinition, dep maclaw
 }
 
 func maclawAppInstalledSkillCandidateIDs(dep maclawAppInstallPlanDependency) []string {
-	candidates := []string{dep.ID, dep.InstallRefTarget}
+	candidates := []string{dep.ID, dep.SkillID, dep.InstallRefTarget, dep.RuntimeSkillRef, dep.InstalledName}
 	if strings.TrimSpace(dep.InstallRefTarget) == "" {
 		_, target, _, status, _ := maclawAppParseDependencyInstallRef(dep)
 		if status == "ok" && target != "" {
@@ -3994,37 +3992,29 @@ func maclawAppInstalledSkillCandidateIDs(dep maclawAppInstallPlanDependency) []s
 	if ref := strings.TrimSpace(dep.InstallRef); ref != "" && !strings.Contains(ref, "://") && !strings.HasPrefix(ref, "{") {
 		candidates = append(candidates, ref)
 	}
-	out := make([]string, 0, len(candidates)*2)
-	seen := map[string]bool{}
-	for _, candidate := range candidates {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		for _, value := range []string{candidate, maclawAppStripVersionSuffix(candidate)} {
-			value = strings.TrimSpace(value)
-			key := strings.ToLower(value)
-			if value == "" || seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, value)
-		}
-	}
-	return out
+	// CollectSkillIdentityKeys strips @version and adds underscore-normalized forms.
+	return corelib.CollectSkillIdentityKeys(candidates...)
 }
 
 func maclawAppStripVersionSuffix(value string) string {
-	value = strings.TrimSpace(value)
-	if at := strings.IndexByte(value, '@'); at > 0 {
-		return strings.TrimSpace(value[:at])
-	}
-	return value
+	return corelib.NormalizeSkillMatchQuery(value)
 }
 
 func applyMaclawAppInstalledSkillDependency(dep *maclawAppInstallPlanDependency, match NLSkillDefinition) {
 	dep.Installed = true
 	dep.InstalledName = match.Name
+	// Bind declared app dependency id to stable package identity for run.
+	if hub := strings.TrimSpace(match.HubSkillID); hub != "" {
+		if strings.TrimSpace(dep.CanonicalID) == "" {
+			dep.CanonicalID = hub
+		}
+		if strings.TrimSpace(dep.SkillID) == "" {
+			dep.SkillID = firstNonEmpty(match.SkillID, hub)
+		}
+	} else if sid := strings.TrimSpace(match.SkillID); sid != "" && strings.TrimSpace(dep.SkillID) == "" {
+		dep.SkillID = sid
+	}
+	dep.RuntimeSkillRef = match.PreferredRuntimeSkillRef()
 	dep.RequiredVersion = strings.TrimSpace(dep.Version)
 	dep.InstalledVersion = strings.TrimSpace(match.HubVersion)
 	dep.InstalledDir = match.SkillDir
@@ -8513,13 +8503,13 @@ func maclawAppDependencySupportsHubCenterLookup(dep maclawAppInstallPlanDependen
 	if strings.TrimSpace(dep.ID) == "" || strings.EqualFold(dep.InstallRefKind, "github") || strings.EqualFold(dep.InstallRefKind, "enterprise_hub") {
 		return false
 	}
-	source := strings.ToLower(strings.TrimSpace(dep.Source))
-	if !maclawAppSourceAllowsImplicitHubResolution(source) {
-		return false
-	}
-	// HubCenter lookup only applies to hub-type sources, not market sources.
-	switch source {
-	case "market", "skillmarket", "hubcenter":
+	// Only hub-type sources may be rewritten via HubCenter name lookup.
+	// Explicit local / market / enterprise packages must keep their declared source
+	// (local deps especially must not be "promoted" into a remote install path).
+	switch strings.ToLower(strings.TrimSpace(dep.Source)) {
+	case "", "hub", "skillhub":
+		// allowed
+	default:
 		return false
 	}
 	status := strings.ToLower(strings.TrimSpace(dep.InstallRefStatus))

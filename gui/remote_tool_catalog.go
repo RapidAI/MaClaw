@@ -286,7 +286,10 @@ func listRemoteToolMetadataForApp(app *App) []RemoteToolMetadataView {
 		if !ok {
 			continue
 		}
-		status := toolManager.GetToolStatus(name)
+		// Path-only status: never exec coding CLIs (claude --version, etc.)
+		// just to populate the remote tool catalog. Frontend calls this on
+		// mount and every settings/remote tab switch.
+		status := toolManager.GetToolInstallStatus(name)
 		visible := remoteToolVisible(cfg, name)
 		installedReady := status.Installed && strings.TrimSpace(status.Path) != ""
 		canStart := visible && meta.SupportsRemote && (installedReady || remoteToolAutoInstallSupported(name))

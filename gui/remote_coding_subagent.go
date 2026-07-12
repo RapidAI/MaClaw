@@ -316,7 +316,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		// let a later agent-loop closing error turn that verified outcome into a
 		// misleading failure in the final task banner. This deliberately does
 		// not recover cancellations, edits, or unverified inspection-only runs.
-		if result.Status == "failed" && len(filesModified) == 0 && len(filesCreated) == 0 && countSuccessfulSubAgentVerificationCommands(commandsRun) > 0 && strings.TrimSpace(commandSummary) == "" {
+		if remoteCodingCanRecoverVerifiedCompletion(result, filesModified, filesCreated, commandsRun, commandSummary, confirmationStatus, verificationStatus, diffStatus) {
 			// Keep the underlying loop issue in the server audit trail. The result
 			// itself is intentionally successful because the remote acceptance
 			// evidence is stronger than a late, non-task failure from the agent.
@@ -371,6 +371,33 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		result.Error = compactSubAgentErrorSummary(commandSummary)
 	}
 	return result
+}
+
+func remoteCodingCanRecoverVerifiedCompletion(
+	result *RemoteCodingSubAgentResult,
+	filesModified, filesCreated []string,
+	commandsRun []CodingSubAgentCommandResult,
+	commandSummary string,
+	confirmationStatus, verificationStatus, diffStatus codingSubAgentQualityStatus,
+) bool {
+	if result == nil || result.Status != "failed" || !remoteCodingMaxIterationsReached(result.Error) || strings.TrimSpace(commandSummary) != "" {
+		return false
+	}
+	if len(filesModified) == 0 && len(filesCreated) == 0 {
+		return countSuccessfulSubAgentVerificationCommands(commandsRun) > 0
+	}
+	return remoteCodingPostEditEvidenceIsConclusive(confirmationStatus, verificationStatus, diffStatus)
+}
+
+func remoteCodingMaxIterationsReached(errText string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(errText)), "max iterations reached")
+}
+
+func remoteCodingPostEditEvidenceIsConclusive(confirmationStatus, verificationStatus, diffStatus codingSubAgentQualityStatus) bool {
+	if confirmationStatus != codingSubAgentQualityPassed || verificationStatus != codingSubAgentQualityPassed {
+		return false
+	}
+	return diffStatus == codingSubAgentQualityPassed || diffStatus == codingSubAgentQualityNotNeeded
 }
 
 func summarizeRemoteDiffSelfCheck(filesModified []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) (codingSubAgentQualityStatus, string) {
@@ -577,9 +604,21 @@ func (c *remoteCodingCallbacks) completeRemotePostEditReads() {
 			"limit": float64(200),
 		})
 		if remoteCodingToolOutcome(result) != "success" {
-			log.Printf("[remote-subagent] post-edit read audit failed: path=%q result=%q", compactCodingSubAgentLogText(path, 300), compactCodingSubAgentLogText(result, 800))
+			log.Printf("[remote-subagent] post-edit read audit failed: path=%q result_tail=%q", compactCodingSubAgentLogText(path, 300), compactRemoteCodingResultTail(result, 800))
 		}
 	}
+}
+
+func compactRemoteCodingResultTail(result string, maxRunes int) string {
+	result = compactCodingSubAgentLogText(result, 0)
+	if maxRunes <= 0 {
+		return result
+	}
+	runes := []rune(result)
+	if len(runes) <= maxRunes {
+		return result
+	}
+	return "..." + string(runes[len(runes)-maxRunes:])
 }
 
 func (c *remoteCodingCallbacks) completeRemoteDiffSelfCheck() {
@@ -673,10 +712,16 @@ func (c *remoteCodingCallbacks) trackRemoteCommand(command, workingDir, result s
 }
 
 func remoteCodingCommandFailureIsDiagnostic(command, result string) bool {
-	return subAgentCommandFailureCanBeResolvedByLaterVerification(CodingSubAgentCommandResult{
+	entry := CodingSubAgentCommandResult{
 		Command: command,
 		Summary: result,
-	})
+	}
+	// A diff/status probe in a non-Git directory is expected during remote
+	// exploration. It remains visible as skipped audit evidence, not an error.
+	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(entry) {
+		return true
+	}
+	return subAgentCommandFailureCanBeResolvedByLaterVerification(entry)
 }
 
 func (c *remoteCodingCallbacks) logRemoteCommandFailure(seq uint64, command, workingDir, result string) {
@@ -1451,19 +1496,19 @@ func remoteScopeApprovalProgressMessage(req ScopeApprovalRequest) string {
 	message := strings.TrimSpace(req.Message)
 	switch req.Kind {
 	case localHighRiskApprovalKind:
-		return fmt.Sprintf("⚠️ 编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
+		return fmt.Sprintf("编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
 	case remoteHighRiskApprovalKind:
-		return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
+		return fmt.Sprintf("远程编码 SubAgent 请求执行高风险命令，等待确认...\n命令: %s\n工作目录: %s", req.Path, req.ProjectPath)
 	case remoteDirectoryWriteKind:
 		if message != "" {
-			return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s\n%s", req.Directory, req.ProjectPath, message)
+			return fmt.Sprintf("远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s\n%s", req.Directory, req.ProjectPath, message)
 		}
-		return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s", req.Directory, req.ProjectPath)
+		return fmt.Sprintf("远程编码 SubAgent 请求创建/写入目录，等待确认...\n目录: %s\n项目范围: %s", req.Directory, req.ProjectPath)
 	default:
 		if message != "" {
-			return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s\n%s", req.Path, req.ProjectPath, message)
+			return fmt.Sprintf("远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s\n%s", req.Path, req.ProjectPath, message)
 		}
-		return fmt.Sprintf("⚠️ 远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s", req.Path, req.ProjectPath)
+		return fmt.Sprintf("远程编码 SubAgent 请求访问项目目录外路径，等待确认...\n路径: %s\n项目范围: %s", req.Path, req.ProjectPath)
 	}
 }
 
@@ -1473,12 +1518,12 @@ func remoteScopeApprovalTimeoutDecision(req ScopeApprovalRequest) ScopeApprovalD
 
 func remoteScopeApprovalTimeoutProgress(req ScopeApprovalRequest, decision ScopeApprovalDecision) string {
 	if req.Kind == localHighRiskApprovalKind {
-		return fmt.Sprintf("⚠️ 本地高风险命令确认超时，已拒绝执行: %s", req.Path)
+		return fmt.Sprintf("本地高风险命令确认超时，已拒绝执行: %s", req.Path)
 	}
 	if req.Kind == remoteDirectoryWriteKind || req.Kind == remotePathAccessKind || req.Kind == "" {
-		return fmt.Sprintf("⚠️ 目录/路径确认超时，已拒绝访问: %s", req.Path)
+		return fmt.Sprintf("目录/路径确认超时，已拒绝访问: %s", req.Path)
 	}
-	return fmt.Sprintf("⚠️ 远程高风险命令确认超时，已拒绝执行: %s", req.Path)
+	return fmt.Sprintf("远程高风险命令确认超时，已拒绝执行: %s", req.Path)
 }
 
 func (s *remoteHighRiskApprovalState) check(command, workingDir, rejection string) string {
@@ -1651,7 +1696,12 @@ func remoteReadFileResultHasUsefulEvidence(result string) bool {
 }
 
 func remotePythonCommand(script string) string {
-	return "python3 -c " + remoteShellQuote(script)
+	// The SSH/PTTY command layer can normalize literal newlines. Python's
+	// indentation then becomes invalid, which previously made post-edit reads
+	// fail and left the source-preview panel empty. Transfer the complete script
+	// as one shell-safe token and decode it only on the remote host.
+	encoded := base64EncodeString(script)
+	return "python3 -c \"$(printf '%s' " + remoteShellQuote(encoded) + " | base64 -d)\""
 }
 
 func remoteReadFileRangePythonCommand(path string, offset, limit int) string {
@@ -1755,9 +1805,9 @@ func remoteWriteFileResult(path string, contentLen int, commandResult string, ch
 		createdText = "created=true"
 	}
 	if chunked {
-		return fmt.Sprintf("✅ 已写入 %s (%d bytes, chunked, %s)", path, contentLen, createdText)
+		return fmt.Sprintf("已写入 %s (%d bytes, chunked, %s)", path, contentLen, createdText)
 	}
-	return fmt.Sprintf("✅ 已写入 %s (%d bytes, %s)", path, contentLen, createdText)
+	return fmt.Sprintf("已写入 %s (%d bytes, %s)", path, contentLen, createdText)
 }
 
 func remoteWriteFileResultCreated(commandResult string) bool {
@@ -1968,7 +2018,7 @@ func remoteEditFileResult(path string, commandResult string) string {
 	if remoteCodingToolResultLooksFailed(commandResult) || !remoteEditFileResultHasOK(commandResult) {
 		return fmt.Sprintf("编辑失败: %s", commandResult)
 	}
-	return fmt.Sprintf("✅ 已编辑 %s", path)
+	return fmt.Sprintf("已编辑 %s", path)
 }
 
 func remoteEditFileResultHasOK(commandResult string) bool {

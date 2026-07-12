@@ -2,7 +2,8 @@ import type { Dispatch, SetStateAction } from 'react';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { LoadConfig, RestartTelegram, SetTelegramLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
-import { channelModeLabel, connectionStatusLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 
 type TelegramBotSettingsProps = {
     config: main.AppConfig | null;
@@ -46,7 +47,7 @@ export const TelegramBotSettings = ({
             </button>
             {(config as any)?.telegram_bot_enabled && (
                 <>
-                    <span className="im-settings-status" data-status={telegramStatus}>{connectionStatusLabel(telegramStatus, lang)}</span>
+                    <ConnectionStatusBadge status={telegramStatus} lang={lang} />
                     <button type="button" className="im-settings-button" onClick={() => RestartTelegram().then(setTelegramStatus)}>
                         {restartLabel(lang)}
                     </button>

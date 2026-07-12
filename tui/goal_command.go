@@ -18,7 +18,7 @@ func (m *tuiModel) handleGoalSlashCommand(text string) tea.Cmd {
 
 	store := m.getTUIGoalStore()
 	if store == nil {
-		m.root.Chat.AppendSystemMessage("⚠️ Goal store not initialized")
+		m.root.Chat.AppendSystemMessage("Goal store not initialized")
 		return nil
 	}
 
@@ -41,7 +41,7 @@ func (m *tuiModel) handleGoalSlashCommand(text string) tea.Cmd {
 			return nil
 		}
 		store.Pause("default", g.GoalID)
-		m.root.Chat.AppendSystemMessage(fmt.Sprintf("⏸️ 目标已暂停: %s", g.Objective))
+		m.root.Chat.AppendSystemMessage(fmt.Sprintf("目标已暂停: %s", g.Objective))
 		return nil
 
 	case lower == "resume" || lower == "继续" || lower == "恢复":
@@ -51,12 +51,12 @@ func (m *tuiModel) handleGoalSlashCommand(text string) tea.Cmd {
 			return nil
 		}
 		store.Resume("default", g.GoalID)
-		m.root.Chat.AppendSystemMessage(fmt.Sprintf("▶️ 目标已恢复: %s", g.Objective))
+		m.root.Chat.AppendSystemMessage(fmt.Sprintf("目标已恢复: %s", g.Objective))
 		return nil
 
 	case lower == "cancel" || lower == "clear" || lower == "取消":
 		if store.Clear("default") {
-			m.root.Chat.AppendSystemMessage("🗑️ 目标已清除。")
+			m.root.Chat.AppendSystemMessage("目标已清除。")
 		} else {
 			m.root.Chat.AppendSystemMessage("当前没有目标。")
 		}
@@ -66,7 +66,7 @@ func (m *tuiModel) handleGoalSlashCommand(text string) tea.Cmd {
 		// Treat as new goal creation
 		existing := store.Get("default")
 		if existing != nil && !existing.IsTerminal() {
-			m.root.Chat.AppendSystemMessage(fmt.Sprintf("⚠️ 已有活跃目标：%s（%s）\n使用 /goal cancel 先取消。", existing.Objective, existing.Status))
+			m.root.Chat.AppendSystemMessage(fmt.Sprintf("已有活跃目标：%s（%s）\n使用 /goal cancel 先取消。", existing.Objective, existing.Status))
 			return nil
 		}
 		result := agent.ToolGoal(store, map[string]interface{}{
@@ -87,7 +87,7 @@ func (m *tuiModel) getTUIGoalStore() *goal.Store {
 }
 
 func tuiGoalHelp() string {
-	return `🎯 /goal — 持久化长时间运行目标
+	return `/goal — 持久化长时间运行目标
 
 用法:
   /goal <目标描述>     创建新目标

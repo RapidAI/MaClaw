@@ -1155,11 +1155,22 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 	if err != nil {
 		return nil, err
 	}
-	var payload skillHubDownloadEnvelope
-	if err := json.Unmarshal(body, &payload); err != nil {
+	// Extract into a temp dir; persistImportedEntries copies into the user skill root.
+	tmpDir, err := os.MkdirTemp("", "maclaw-skillhub-dl-*")
+	if err != nil {
 		return nil, err
 	}
-	return skillEntryFromHubDownloadPayload(payload, baseURL, "skillhub")
+	entry, err := skill.ParseSkillHubDownloadJSON(body, skill.HubDownloadOptions{
+		HubURL:    baseURL,
+		SkillID:   skillID,
+		Source:    "skillhub",
+		TargetDir: tmpDir,
+	})
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return nil, err
+	}
+	return entry, nil
 }
 
 func downloadSkillHubEntryCandidates(ctx context.Context, baseURLs []string, skillID string) (*corelib.NLSkillEntry, string, error) {
@@ -1216,12 +1227,25 @@ func downloadSkillMarketEntry(ctx context.Context, baseURL, skillID, email, auth
 			lastErr = fmt.Errorf("skill market returned encrypted package without installable agent skill payload")
 			continue
 		}
-		var payload skillHubDownloadEnvelope
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, err
+		tmpDir, tmpErr := os.MkdirTemp("", "maclaw-skillmarket-dl-*")
+		if tmpErr != nil {
+			return nil, tmpErr
 		}
-		entry, err := skillEntryFromHubDownloadPayload(payload, baseURL, "skillmarket")
+		entry, err := skill.ParseSkillHubDownloadJSON(body, skill.HubDownloadOptions{
+			HubURL:    baseURL,
+			SkillID:   skillID,
+			Source:    "skillmarket",
+			TargetDir: tmpDir,
+		})
 		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+			// Fall back to legacy envelope for partial payloads without steps/files.
+			var payload skillHubDownloadEnvelope
+			if uerr := json.Unmarshal(body, &payload); uerr == nil {
+				if legacy, lerr := skillEntryFromHubDownloadPayload(payload, baseURL, "skillmarket"); lerr == nil {
+					return legacy, nil
+				}
+			}
 			lastErr = err
 			continue
 		}
@@ -1472,6 +1496,18 @@ func writeEntryToSkillDir(dir string, entry corelib.NLSkillEntry) error {
 	if err := secureMkdirAll(dir); err != nil {
 		return err
 	}
+	// Copy package files from the download/extract location so scripts and
+	// SKILL.md survive into the user-scoped skill directory.
+	if src := strings.TrimSpace(entry.SkillDir); src != "" {
+		if err := copySkillPackageFiles(src, dir); err != nil {
+			return fmt.Errorf("copy skill package files: %w", err)
+		}
+		// Best-effort cleanup of download temp dirs created by downloadSkillHubEntry /
+		// downloadSkillMarketEntry (maclaw-skillhub-dl-* / maclaw-skillmarket-dl-*).
+		if isEphemeralSkillDownloadDir(src) {
+			_ = os.RemoveAll(src)
+		}
+	}
 	sf := &skill.SkillYAMLFile{Name: entry.Name, Description: entry.Description, Triggers: entry.Triggers, Status: firstNonEmpty(entry.Status, "active"), Platforms: entry.Platforms, RequiresGUI: entry.RequiresGUI, Type: entry.Type, Content: entry.Content, Mode: entry.Mode, ExecMode: entry.ExecMode, GlobalTimeout: entry.GlobalTimeout, RequiredArgs: entry.RequiredArgs, RequiredEnv: entry.RequiredEnv, PreferredShell: entry.PreferredShell, Capabilities: entry.Capabilities, RequiresTools: entry.RequiresTools, FallbackForTools: entry.FallbackForTools, RequiresToolsets: entry.RequiresToolsets, FallbackForToolsets: entry.FallbackForToolsets, RequiredCredentialFiles: entry.RequiredCredentialFiles}
 	for _, op := range entry.Operations {
 		sf.Operations = append(sf.Operations, skill.SkillYAMLOperation{Name: op.Name, Description: op.Description, Params: op.Params, Labels: op.Labels})
@@ -1487,6 +1523,77 @@ func writeEntryToSkillDir(dir string, entry corelib.NLSkillEntry) error {
 		return err
 	}
 	return fileutil.AtomicWriteFile(filepath.Join(dir, "skill.yaml"), append(data, '\n'), 0o644)
+}
+
+func isEphemeralSkillDownloadDir(dir string) bool {
+	base := filepath.Base(strings.TrimSpace(dir))
+	return strings.HasPrefix(base, "maclaw-skillhub-dl-") ||
+		strings.HasPrefix(base, "maclaw-skillmarket-dl-")
+}
+
+// copySkillPackageFiles copies regular files from src into dst, preserving
+// relative paths. Symlinks and paths that escape dst are skipped. When src and
+// dst resolve to the same directory, this is a no-op.
+func copySkillPackageFiles(src, dst string) error {
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	dstAbs, err := filepath.Abs(dst)
+	if err != nil {
+		return err
+	}
+	if srcAbs == dstAbs {
+		return nil
+	}
+	info, err := os.Stat(srcAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return filepath.Walk(srcAbs, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(srcAbs, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dstAbs, rel)
+		targetAbs, err := filepath.Abs(target)
+		if err != nil {
+			return err
+		}
+		// Refuse path escapes.
+		if relEsc, err := filepath.Rel(dstAbs, targetAbs); err != nil || relEsc == ".." || strings.HasPrefix(relEsc, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("unsafe package path %q", rel)
+		}
+		if fi.IsDir() {
+			return os.MkdirAll(targetAbs, 0o755)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(targetAbs), 0o755); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetAbs, data, 0o644)
+	})
 }
 
 func unzipBytes(data []byte, dest string) error {

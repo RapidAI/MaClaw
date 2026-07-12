@@ -191,9 +191,9 @@ function assertEqual(actual, expected, message) {
   testCount++;
   if (actual === expected) {
     passCount++;
-    console.log('  ✓ ' + message);
+    console.log('  OK ' + message);
   } else {
-    console.log('  ✗ ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
+    console.log('  ERR ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
   }
 }
 

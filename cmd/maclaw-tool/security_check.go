@@ -145,14 +145,14 @@ func runSecurityCheck(mode, projectPath string) int {
 	if allowed {
 		if policyAskTriggered && originalMode == "standard" {
 			// Standard mode PolicyAsk: allow with risk warning on stdout
-			result.Reason = fmt.Sprintf("⚠️ 风险提示: %s (风险等级: %s, 原因: %s)",
+			result.Reason = fmt.Sprintf("风险提示: %s (风险等级: %s, 原因: %s)",
 				req.ToolName, riskAssessment.Level, riskAssessment.Reason)
 		}
 
 		if modeUpgrade != "" {
 			result.ModeUpgrade = modeUpgrade
 			result.Reason = appendReason(result.Reason,
-				fmt.Sprintf("🔒 安全模式已自动升级为 strict（5分钟内累积高风险操作）"))
+				fmt.Sprintf("安全模式已自动升级为 strict（5分钟内累积高风险操作）"))
 		}
 
 		out, _ := json.Marshal(result)

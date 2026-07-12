@@ -76,7 +76,7 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
                 style={{ width: '680px', maxHeight: '80vh', overflow: 'auto' }}
             >
                 <div className="modal-header">
-                    <h3 style={{ fontSize: '0.92rem', margin: 0 }}>{"\u{1F6E1}\uFE0F"} {t('securityEvents')}</h3>
+                    <h3 style={{ fontSize: '0.92rem', margin: 0 }}>{t('securityEvents')}</h3>
                     <button className="btn-close" onClick={onClose}>{"\u00d7"}</button>
                 </div>
                 <div className="modal-body" style={{ padding: '12px 16px' }}>
@@ -92,7 +92,6 @@ export function SecurityEventsDialog({ open, onClose, t }: Props) {
                     )}
                     {!loading && !error && events.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--theme-text-secondary)' }}>
-                            <div style={{ fontSize: '2rem', marginBottom: 8 }}>{"\u2705"}</div>
                             <p style={{ fontSize: '0.82rem', margin: 0 }}>
                                 {t('securityEventsAllClear')}
                             </p>

@@ -86,7 +86,7 @@
 3. WHEN a Background_Loop completes (success or failure), THE system SHALL push a proactive notification to the user via IM
 4. THE sidebar navigation entry currently labeled "远程" SHALL be renamed to "任务"
 5. THE "任务" panel SHALL contain two sub-tabs: "远程"（人工启动的远程会话，即现有"人类"tab）和 "后台"（合并现有"AI"tab 与新增的后台 Agent Loop 列表，统一展示所有 MaClaw 驱动的任务）
-6. THE "后台" sub-tab SHALL display each task with: task type tag (🤖 编程 / ⏰ 定时 / 🌐 ClawNet), task description, iteration progress (current/max), status (running/paused/completed/failed), and associated session ID (if any)
+6. THE "后台" sub-tab SHALL display each task with: task type tag (编程 / ⏰ 定时 / ClawNet), task description, iteration progress (current/max), status (running/paused/completed/failed), and associated session ID (if any)
 7. THE "后台" sub-tab SHALL provide operation buttons per task: "停止" (graceful stop), "续命" (send additional rounds when paused), and for coding sessions: "查看终端" (open read-only console)
 8. THE "后台" sub-tab data SHALL be fetched via Wails bindings from `BackgroundLoopManager`, with periodic auto-refresh (every 5 seconds)
 9. WHEN a user clicks "查看终端" on a coding background task, THE system SHALL open `RemoteSessionConsole` in read-only mode (`readOnly={true}`), displaying real-time terminal output without allowing input

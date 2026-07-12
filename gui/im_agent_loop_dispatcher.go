@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -11,6 +12,26 @@ import (
 )
 
 func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []agent.ConversationEntry, userText string, attachments []MessageAttachment, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
+	// Phase 6: daily LLM budget hard-stop (fleet-aware) before any model call.
+	if blocked, msg := h.checkDailyBudgetGate(); blocked {
+		reqID := ""
+		if ctx != nil {
+			reqID = ctx.Runtime.RequestID
+		}
+		return &IMAgentResponse{
+			Text:           msg,
+			Error:          "daily_llm_budget_exceeded",
+			RequestID:      reqID,
+			ResponseSource: "budget_gate",
+		}
+	}
+
+	// Strangler: eligible chat/background turns use shared corelib/agent.RunLoop.
+	if h.shouldUseSharedAgentLoop(ctx, userID, attachments) {
+		return h.runAgentLoopShared(ctx, userID, systemPrompt, history, userText, attachments, onProgress, onToken, onStreamDone, minIterations, platform)
+	}
+
+	recordLegacyAgentLoopTurn()
 	startedAt := time.Now()
 	requestID := ""
 	loopID := ""
@@ -18,7 +39,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		requestID = ctx.Runtime.RequestID
 		loopID = ctx.ID
 	}
-	log.Printf("[agent-loop] start owner=%q request_id=%q loop=%q platform=%q project=%q text_len=%d", userID, requestID, loopID, platform, projectPathFromUserID(userID), len([]rune(userText)))
+	log.Printf("[agent-loop] start owner=%q request_id=%q loop=%q platform=%q project=%q text_len=%d path=legacy", userID, requestID, loopID, platform, projectPathFromUserID(userID), len([]rune(userText)))
 	defer func() {
 		status := "success"
 		if result != nil && result.Error != "" {
@@ -27,8 +48,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if result != nil && result.RequestID == "" {
 			result.RequestID = requestID
 		}
-		log.Printf("[agent-loop] end owner=%q request_id=%q loop=%q status=%s elapsed=%s", userID, requestID, loopID, status, time.Since(startedAt).Round(time.Millisecond))
-		imPerfLog("agent_loop", startedAt, requestID, userID, "status", status, "loop", loopID, "platform", platform, "text_len", len([]rune(userText)), "prompt_len", len(systemPrompt), "history_len", len(history))
+		if result != nil && result.ResponseSource == "" {
+			result.ResponseSource = "legacy_agent_loop"
+		}
+		log.Printf("[agent-loop] end owner=%q request_id=%q loop=%q status=%s elapsed=%s path=legacy", userID, requestID, loopID, status, time.Since(startedAt).Round(time.Millisecond))
+		imPerfLog("agent_loop", startedAt, requestID, userID, "status", status, "loop", loopID, "platform", platform, "text_len", len([]rune(userText)), "prompt_len", len(systemPrompt), "history_len", len(history), "path", "legacy")
 		if r := recover(); r != nil {
 			result = &IMAgentResponse{Error: fmt.Sprintf("Agent loop panicked: %v", r)}
 			log.Printf("[agent-loop] panic owner=%q request_id=%q loop=%q panic=%v elapsed=%s", userID, requestID, loopID, r, time.Since(startedAt).Round(time.Millisecond))
@@ -36,6 +60,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}()
 
 	telemetry := newAgentLoopTelemetry()
+	if ctx != nil {
+		if pp := strings.TrimSpace(ctx.Runtime.Execution.PromptProfile); pp != "" {
+			telemetry.PromptProfile = pp
+		} else if ctx.Runtime.Execution.IsLight() {
+			telemetry.PromptProfile = "light"
+		}
+		telemetry.PromptFullTokens = ctx.Runtime.PromptFullTokens
+		telemetry.PromptLightTokens = ctx.Runtime.PromptLightTokens
+		telemetry.PromptABSample = ctx.Runtime.PromptABSample
+		telemetry.PromptSoftFull = ctx.Runtime.PromptSoftFull
+	}
 	attachLLMTelemetry := telemetry.Attach
 	firstRequestMetrics := telemetry.FirstRequestMetrics
 	defer h.beginAgentLoopRuntime(ctx, userID, userText, platform)()
@@ -92,6 +127,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	chatFinalizeGrace := startState.ChatFinalizeGrace
 
 	runState := newAgentLoopRunState(cfg)
+	runState.Telemetry = telemetry
+	runState.applyRouteDecision(startState.RouteDecision, cfg)
+	telemetry.Route = startState.RouteDecision
 
 	inFlightLifecycle := h.newInFlightLifecycle(userID, userText)
 	inFlightLifecycle.loopID = loopID

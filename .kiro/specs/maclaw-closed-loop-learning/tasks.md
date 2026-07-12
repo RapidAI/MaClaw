@@ -76,11 +76,11 @@
 
 | 测试文件 | 测试数 | 状态 |
 |----------|--------|------|
-| `corelib/tool/router_skill_test.go` | 7 | ✅ 全部通过 |
-| `corelib/tool/usage_pattern_test.go` | 6 | ✅ 全部通过 |
-| `corelib/tool/router_body_test.go` | (已修复签名) | ✅ 通过 |
-| `corelib/skill/versioner_test.go` | 6 | ✅ 全部通过 |
-| `gui/skill_auto_summary_test.go` | +4 shouldUpdateSkill | ✅ 编译通过（GUI 整体 build 被 browser 包阻塞） |
+| `corelib/tool/router_skill_test.go` | 7 | 全部通过 |
+| `corelib/tool/usage_pattern_test.go` | 6 | 全部通过 |
+| `corelib/tool/router_body_test.go` | (已修复签名) | 通过 |
+| `corelib/skill/versioner_test.go` | 6 | 全部通过 |
+| `gui/skill_auto_summary_test.go` | +4 shouldUpdateSkill | 编译通过（GUI 整体 build 被 browser 包阻塞） |
 
 ## 未完成项说明
 

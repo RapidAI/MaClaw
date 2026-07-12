@@ -79,7 +79,7 @@ Self-crafted skills (source: "crafted", "file", "learned") often contain hardcod
 3. WHEN action is `validate` and `auto_fix` is false, THE Manage_Skill_Tool SHALL run the Portability_Validator and return the Portability_Report as a formatted text summary
 4. WHEN action is `validate` and `auto_fix` is true, THE Manage_Skill_Tool SHALL run the Portability_Validator, then run the Auto_Fixer, then run the Portability_Validator again, and return both the changes made and the final report
 5. IF the skill name does not match any installed skill, THEN THE Manage_Skill_Tool SHALL return a descriptive error message
-6. THE Manage_Skill_Tool SHALL format the report with clear severity indicators (❌ error, ⚠️ warning, ℹ️ info) and actionable fix suggestions
+6. THE Manage_Skill_Tool SHALL format the report with clear severity indicators (error, warning, ℹ️ info) and actionable fix suggestions
 
 ### Requirement 5: SKILL.md Portability Validation
 

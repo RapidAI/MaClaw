@@ -42,7 +42,7 @@ This feature reclassifies how skills are categorized between the "Installed Skil
 
 1. THE SkillsManagementPanel SHALL classify skills with Source `"learned"`, `"crafted"`, `"auto_hub"`, `"auto_github"`, or `"auto_clawhub"` into the Learned_Tab.
 2. THE SkillsManagementPanel SHALL classify skills with Source `"manual"`, `"hub"`, `"file"`, `"zip_import"`, `"github"`, or `"clawhub"` into the Installed_Tab.
-3. WHEN the Learned_Tab contains auto-installed skills, THE SkillsManagementPanel SHALL display a source icon distinguishing auto-installed skills (e.g., `🤖` for auto-installed) from experience-learned skills (`📖`) and crafted skills (`🔧`).
+3. WHEN the Learned_Tab contains auto-installed skills, THE SkillsManagementPanel SHALL display a source icon distinguishing auto-installed skills (e.g., `` for auto-installed) from experience-learned skills (``) and crafted skills (``).
 4. WHEN a user hovers over the source icon of an auto-installed skill, THE SkillsManagementPanel SHALL display a tooltip indicating the original source (e.g., "Auto-installed from SkillHub", "自动安装自 SkillHub").
 
 ### Requirement 3: Backend Learned Skill Filters Update

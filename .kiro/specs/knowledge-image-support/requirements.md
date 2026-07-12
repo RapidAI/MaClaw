@@ -46,7 +46,7 @@ maclaw 的知识库（`corelib/knowledge/`）当前只处理纯文本内容。�
 
 ### FR-6: GUI 展示（maclaw 桌面版）
 
-- FR-6.1: 知识库 Source 列表中图片类型显示缩略图和 🖼️ 图标
+- FR-6.1: 知识库 Source 列表中图片类型显示缩略图和 图标
 - FR-6.2: Source 详情页展示 preview_480 预览图 + 描述 + OCR 文字 + 关联文档
 - FR-6.3: 文档 Source 详情中，DocumentNode 树显示内嵌图片节点（带缩略图）
 - FR-6.4: 导入对话框支持"包含图片"开关

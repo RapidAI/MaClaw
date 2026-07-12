@@ -116,9 +116,9 @@ func main() {
 		httpResp.Body.Close()
 		fmt.Printf("HTTP %d: %s\n", httpResp.StatusCode, string(respBody[:n]))
 		if httpResp.StatusCode != 200 {
-			fmt.Println("⚠️  HTTP Responses API also fails with this token — problem is token, not WebSocket")
+			fmt.Println(" HTTP Responses API also fails with this token — problem is token, not WebSocket")
 		} else {
-			fmt.Println("✅ HTTP Responses API works — token is valid")
+			fmt.Println("HTTP Responses API works — token is valid")
 		}
 	}
 
@@ -209,15 +209,15 @@ func main() {
 				fmt.Printf("\n--- Usage: input=%d output=%d total=%d ---\n",
 					u.InputTokens, u.OutputTokens, u.TotalTokens)
 			}
-			fmt.Println("\n✅ response.completed — WebSocket 协议验证成功!")
+			fmt.Println("\nresponse.completed — WebSocket 协议验证成功!")
 			return
 
 		case "response.failed":
-			fmt.Printf("\n❌ response.failed: %s\n", string(msg))
+			fmt.Printf("\nresponse.failed: %s\n", string(msg))
 			return
 
 		case "error":
-			fmt.Printf("\n❌ error frame: %s\n", string(msg))
+			fmt.Printf("\nerror frame: %s\n", string(msg))
 			return
 
 		default:

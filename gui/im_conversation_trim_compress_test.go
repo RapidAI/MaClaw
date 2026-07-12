@@ -144,7 +144,7 @@ func TestExtractLinePrefix_CommonPatterns(t *testing.T) {
 		{"warning: unused variable", "warning: "},
 		{"error: compilation failed", "error: "},
 		{"ok\tpackage/name", "ok\t"},
-		{"  ✓ should work", ""},
+		{"  \u2713 should work", ""},
 		{"ab", ""},
 		{"", ""},
 	}
@@ -322,7 +322,7 @@ func TestApplyHistoryCompression_PreserveLast4_ExactBugScenario(t *testing.T) {
 	//   [N-4] tool (tcid: "call_sFf", content: "743.6...")
 	//   [N-3] assistant ("PDF 综述已生成完毕！...")
 	//   [N-2] assistant (tool_calls: [{id: "call_fqO", compress_context}])
-	//   [N-1] tool (tcid: "call_fqO", content: "✅ 上下文压缩已排队")
+	//   [N-1] tool (tcid: "call_fqO", content: "上下文压缩已排队")
 	//
 	// With preserve_last=4, raw tailStart = N-4.
 	// Entry [N-4] is tool(tcid=call_sFf) — MIDDLE of group [N-5, N-4].
@@ -348,7 +348,7 @@ func TestApplyHistoryCompression_PreserveLast4_ExactBugScenario(t *testing.T) {
 	history = append(history, agent.ConversationEntry{Role: "tool", Content: "743.6123046875\r\n", ToolCallID: "call_sFf"})
 	history = append(history, agent.ConversationEntry{Role: "assistant", Content: "PDF 综述已生成完毕！"})
 	history = append(history, agent.ConversationEntry{Role: "assistant", Content: "已完成 PDF 综述的生成与交付。", ToolCalls: compressToolCalls})
-	history = append(history, agent.ConversationEntry{Role: "tool", Content: "✅ 上下文压缩已排队。", ToolCallID: "call_fqO"})
+	history = append(history, agent.ConversationEntry{Role: "tool", Content: "上下文压缩已排队。", ToolCallID: "call_fqO"})
 
 	req := &contextCompressionRequest{
 		Summary:       "已完成 HuggingFace 一周 LLM Agent 论文综述 PDF 生成。",

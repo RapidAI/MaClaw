@@ -30,6 +30,7 @@ type agentLoopStartOptions struct {
 
 type agentLoopStartState struct {
 	Config                        corelib.MaclawLLMConfig
+	RouteDecision                 modelRouteDecision
 	TrialState                    *trialReflectState
 	MaxIterations                 int
 	SystemPrompt                  string
@@ -64,6 +65,10 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	if telemetry != nil {
 		telemetry.PreLLMConfigElapsed = configStart.Elapsed
 	}
+	// Rule-based turn routing: cheap tasks → aux/fast routes; coding → primary/reasoning.
+	// Decision is applied onto runState in the dispatcher after startState returns.
+	routedCfg, routeDecision := h.applyTurnModelRoute(cfg, opts.UserText, ctx, opts.Attachments)
+	cfg = routedCfg
 	phase := h.initialAgentLoopPhase(opts.UserText, ctx)
 
 	toolSet := h.prepareAgentLoopTools(opts.UserID, opts.UserText, ctx, phase)
@@ -103,6 +108,7 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 
 	return agentLoopStartState{
 		Config:                        cfg,
+		RouteDecision:                 routeDecision,
 		TrialState:                    configStart.TrialState,
 		MaxIterations:                 configStart.MaxIterations,
 		SystemPrompt:                  systemPrompt,

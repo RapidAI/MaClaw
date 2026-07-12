@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
@@ -27,23 +28,23 @@ import (
 
 // SenseVoiceHParams holds SenseVoiceSmall hyperparameters from GGUF metadata.
 type SenseVoiceHParams struct {
-	VocabSize    int
-	HiddenSize   int // encoder hidden dim (512)
-	LinearUnits  int // FFN intermediate (2048)
-	NumHeads     int // attention heads (4)
-	NumBlocks    int // main encoder blocks (50, includes encoders0)
-	NumTPBlocks  int // TP encoder blocks (20)
-	FSMNKernel   int // FSMN depthwise conv kernel size (11)
-	FeatsDim     int // input feature dim after LFR (560)
+	VocabSize   int
+	HiddenSize  int // encoder hidden dim (512)
+	LinearUnits int // FFN intermediate (2048)
+	NumHeads    int // attention heads (4)
+	NumBlocks   int // main encoder blocks (50, includes encoders0)
+	NumTPBlocks int // TP encoder blocks (20)
+	FSMNKernel  int // FSMN depthwise conv kernel size (11)
+	FeatsDim    int // input feature dim after LFR (560)
 }
 
 // svLayerWeights holds weights for one SANM encoder block.
 type svLayerWeights struct {
 	// Self-attention: either separate Q/K/V or fused QKV
-	fusedQKV bool // true = qW holds [3*hidden, inDim], qB holds [3*hidden]
-	qW, qB   linearWeight
-	kW, kB   linearWeight
-	vW, vB   linearWeight
+	fusedQKV   bool // true = qW holds [3*hidden, inDim], qB holds [3*hidden]
+	qW, qB     linearWeight
+	kW, kB     linearWeight
+	vW, vB     linearWeight
 	outW, outB linearWeight
 	// FSMN depthwise conv kernel [hiddenSize, kernelSize]
 	fsmnW []float32
@@ -95,21 +96,18 @@ type svEncoderBufs struct {
 	// SANM scratch
 	q, k, v   []float32 // [maxFrames * hidden]
 	qkv       []float32 // [maxFrames * 3 * hidden] fused QKV
-	residual  []float32 // [maxFrames * hidden] (or maxFrames*featsDim for entry residual path)
 	residual2 []float32 // [maxFrames * hidden]
 	attnOut   []float32 // [maxFrames * hidden]
-	projOut   []float32 // [maxFrames * hidden]
 	fsmnOut   []float32 // [maxFrames * hidden]
-	fsmnTmp   []float32 // [hidden] FSMN elementwise mul scratch
 	ffOut     []float32 // [maxFrames * ffDim]
 	logits    []float32 // [maxFrames * vocab]
 
 	// Attention scores
-	attnScores    []float32 // [maxFrames] single-worker scores
 	scoresScratch []float32 // [nWorkers * maxFrames]
 
 	// CTC greedy: per-frame argmax IDs (avoids materializing full logits)
-	ctcIDs []int
+	ctcIDs    []int
+	ctcTokens []int
 
 	// Cached positional encoding [maxPosFrames * dim]
 	posEnc    []float32
@@ -176,12 +174,6 @@ func (m *SenseVoiceModel) ensureEncBufs(maxFrames int) *svEncoderBufs {
 	if featsDim == 0 {
 		featsDim = svFeatsDim
 	}
-	vocab := m.hp.VocabSize
-	// residual must hold the larger of featsDim (entry) and hidden
-	resDim := hidden
-	if featsDim > resDim {
-		resDim = featsDim
-	}
 	nWorkers := runtime.NumCPU()
 	if nWorkers < 4 {
 		nWorkers = 4
@@ -200,22 +192,21 @@ func (m *SenseVoiceModel) ensureEncBufs(maxFrames int) *svEncoderBufs {
 		scoreScratchN = need
 	}
 	m.encBufs = &svEncoderBufs{
-		featsBuf:      make([]float32, maxFrames*featsDim),
-		bufA:          make([]float32, maxFrames*hidden),
-		bufB:          make([]float32, maxFrames*hidden),
-		q:             make([]float32, maxFrames*hidden),
-		k:             make([]float32, maxFrames*hidden),
-		v:             make([]float32, maxFrames*hidden),
-		qkv:           make([]float32, maxFrames*3*hidden),
-		residual:      make([]float32, maxFrames*resDim),
-		residual2:     make([]float32, maxFrames*hidden),
-		attnOut:       make([]float32, maxFrames*hidden),
-		projOut:       make([]float32, maxFrames*hidden),
-		fsmnOut:       make([]float32, maxFrames*hidden),
-		fsmnTmp:       make([]float32, hidden),
-		ffOut:         make([]float32, maxFrames*ffDim),
-		logits:        make([]float32, maxFrames*vocab),
-		attnScores:    make([]float32, maxFrames),
+		featsBuf:  make([]float32, maxFrames*featsDim),
+		bufA:      make([]float32, maxFrames*hidden),
+		bufB:      make([]float32, maxFrames*hidden),
+		q:         make([]float32, maxFrames*hidden),
+		k:         make([]float32, maxFrames*hidden),
+		v:         make([]float32, maxFrames*hidden),
+		qkv:       make([]float32, maxFrames*3*hidden),
+		residual2: make([]float32, maxFrames*hidden),
+		attnOut:   make([]float32, maxFrames*hidden),
+		fsmnOut:   make([]float32, maxFrames*hidden),
+		ffOut:     make([]float32, maxFrames*ffDim),
+		// The production Transcribe path calls encodeArgmax and never materializes
+		// CTC logits. Keep this buffer lazy for the diagnostic/full-logit encode
+		// path instead of pinning maxFrames*vocab float32s per loaded model.
+		// For a typical 80-frame utterance this saves roughly 7.6 MiB.
 		scoresScratch: make([]float32, scoreScratchN),
 		maxFrames:     maxFrames,
 	}
@@ -232,11 +223,11 @@ func (m *SenseVoiceModel) Transcribe(pcm []float32) (string, error) {
 	}
 
 	// 1. Frame counts
-	numFbankFrames := (len(pcm) - svWindowSize) / svHopSize + 1
+	numFbankFrames := (len(pcm)-svWindowSize)/svHopSize + 1
 	if numFbankFrames <= 0 {
 		return "", fmt.Errorf("sensevoice: audio too short for fbank")
 	}
-	lfrFrames := (numFbankFrames - svLFRm) / svLFRn + 1
+	lfrFrames := (numFbankFrames-svLFRm)/svLFRn + 1
 	if lfrFrames <= 0 {
 		lfrFrames = 1
 	}
@@ -266,8 +257,9 @@ func (m *SenseVoiceModel) Transcribe(pcm []float32) (string, error) {
 	// 4. Encode + fused CTC argmax (skip full logits materialization)
 	frameIDs := m.encodeArgmax(lfrFeats, lfrFrames)
 
-	// 5. CTC collapse (repeats + blank)
-	tokens := ctcCollapseIDs(frameIDs)
+	// 5. CTC collapse (repeats + blank), reusing the model-owned token scratch.
+	bufs.ctcTokens = ctcCollapseIDsInto(frameIDs, bufs.ctcTokens)
+	tokens := bufs.ctcTokens
 
 	// 6. Detokenize
 	return m.svDetokenize(tokens), nil
@@ -353,6 +345,11 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 		l.ff1W = getLinear(prefix+".feed_forward.w_1.weight", ffDim, hidden)
 		l.ff1B = linearWeight{f32: tryF32(prefix + ".feed_forward.w_1.bias"), rows: 1}
 		l.ff2W = getLinear(prefix+".feed_forward.w_2.weight", hidden, ffDim)
+		// FFN down is the only Q4 experimental target: [512, 2048] receives
+		// nonnegative ReLU activations and has a dedicated 8×2 VNNI panel path.
+		if l.ff2W.q8 != nil && l.ff2W.q8.Rows == hidden && l.ff2W.q8.Cols == ffDim && ffDim == 2048 {
+			l.ff2W.q4 = tensor.QuantizeQ8ToQ4(l.ff2W.q8)
+		}
 		l.ff2B = linearWeight{f32: tryF32(prefix + ".feed_forward.w_2.bias"), rows: 1}
 		l.norm1W = tryF32(prefix + ".norm1.weight")
 		l.norm1B = tryF32(prefix + ".norm1.bias")
@@ -501,7 +498,12 @@ func (m *SenseVoiceModel) ctcGreedyDecode(logits []float32, numFrames int) []int
 
 // ctcCollapseIDs collapses CTC frame IDs: drop blanks (0) and consecutive repeats.
 func ctcCollapseIDs(ids []int) []int {
-	tokens := make([]int, 0, 32)
+	return ctcCollapseIDsInto(ids, nil)
+}
+
+// ctcCollapseIDsInto collapses CTC IDs into dst, reusing its capacity when possible.
+func ctcCollapseIDsInto(ids, dst []int) []int {
+	tokens := dst[:0]
 	prevToken := -1
 	for _, bestID := range ids {
 		if bestID != prevToken {
@@ -676,12 +678,33 @@ func svSortBeams(beams []svBeam) {
 // svDetokenize converts CTC output token IDs to text.
 // Strips special tags (<|xx|>) and handles SentencePiece ▁ tokens.
 func (m *SenseVoiceModel) svDetokenize(tokens []int) string {
-	var sb strings.Builder
+	var w svDetokenizeWriter
+	// Token byte lengths are an upper bound (special and byte tokens may emit
+	// less), but let Builder allocate once for typical multi-token transcripts.
+	capacity := 0
+	for _, tid := range tokens {
+		if tid >= 0 && tid < len(m.vocab) {
+			capacity += len(m.vocab[tid])
+		}
+	}
+	if capacity > 0 {
+		w.sb.Grow(capacity)
+	}
 	for _, tid := range tokens {
 		if tid < 0 || tid >= len(m.vocab) {
 			continue
 		}
 		tok := m.vocab[tid]
+
+		// Decode byte tokens like <0xNN> before general special-token filtering.
+		if len(tok) == 6 && tok[0] == '<' && tok[1] == '0' && tok[2] == 'x' && tok[5] == '>' {
+			hi := hexVal(tok[3])
+			lo := hexVal(tok[4])
+			if hi >= 0 && lo >= 0 {
+				w.WriteByte(byte(hi<<4 | lo))
+				continue
+			}
+		}
 
 		// Skip special tags like <|zh|>, <|NEUTRAL|>, <|Speech|>, <|withitn|>
 		if len(tok) >= 4 && tok[:2] == "<|" && tok[len(tok)-2:] == "|>" {
@@ -692,22 +715,96 @@ func (m *SenseVoiceModel) svDetokenize(tokens []int) string {
 			continue
 		}
 
-		// Decode byte tokens like <0xNN>
-		if len(tok) == 6 && tok[0] == '<' && tok[1] == '0' && tok[2] == 'x' && tok[5] == '>' {
-			hi := hexVal(tok[3])
-			lo := hexVal(tok[4])
-			if hi >= 0 && lo >= 0 {
-				sb.WriteByte(byte(hi<<4 | lo))
-				continue
-			}
-		}
-
-		// Replace SentencePiece ▁ (U+2581) with space
-		tok = strings.ReplaceAll(tok, "\xe2\x96\x81", " ")
-		sb.WriteString(tok)
+		// Replace SentencePiece ▁ (U+2581) with space while writing, avoiding
+		// a transient replacement string for every decoded token.
+		w.WriteSentencePieceToken(tok)
 	}
+	w.Flush()
+	return strings.TrimSpace(w.sb.String())
+}
 
-	result := sb.String()
-	result = removeCJKSpaces(result)
-	return strings.TrimSpace(result)
+// svDetokenizeWriter streams bytes across token boundaries, including byte
+// tokens that form one UTF-8 rune. Spaces are held until their next rune is
+// known, so CJK-adjacent spaces can be omitted without a second output string.
+type svDetokenizeWriter struct {
+	sb            strings.Builder
+	utf8Buf       [utf8.UTFMax]byte
+	utf8N         int
+	pendingSpaces int
+	prev          rune
+	havePrev      bool
+}
+
+func (w *svDetokenizeWriter) WriteSentencePieceToken(tok string) {
+	for i := 0; i < len(tok); {
+		if i+2 < len(tok) && tok[i] == 0xe2 && tok[i+1] == 0x96 && tok[i+2] == 0x81 {
+			w.WriteByte(' ')
+			i += 3
+			continue
+		}
+		w.WriteByte(tok[i])
+		i++
+	}
+}
+
+func (w *svDetokenizeWriter) WriteByte(b byte) {
+	w.utf8Buf[w.utf8N] = b
+	w.utf8N++
+	for w.utf8N > 0 {
+		r, n := utf8.DecodeRune(w.utf8Buf[:w.utf8N])
+		if r == utf8.RuneError && n == 1 && !utf8.FullRune(w.utf8Buf[:w.utf8N]) {
+			return
+		}
+		if r == utf8.RuneError && n == 1 {
+			w.emitByte(w.utf8Buf[0])
+		} else {
+			w.emitRune(r)
+		}
+		copy(w.utf8Buf[:], w.utf8Buf[n:w.utf8N])
+		w.utf8N -= n
+	}
+}
+
+func (w *svDetokenizeWriter) emitByte(b byte) {
+	if w.pendingSpaces > 0 {
+		w.sb.WriteString(strings.Repeat(" ", w.pendingSpaces))
+		w.pendingSpaces = 0
+	}
+	w.sb.WriteByte(b)
+	w.havePrev = false
+}
+
+func (w *svDetokenizeWriter) emitRune(r rune) {
+	if r == ' ' {
+		w.pendingSpaces++
+		return
+	}
+	if w.pendingSpaces > 0 && (!w.havePrev || (!isCJK(w.prev) && !isCJK(r))) {
+		for i := 0; i < w.pendingSpaces; i++ {
+			w.sb.WriteByte(' ')
+		}
+	}
+	w.pendingSpaces = 0
+	w.sb.WriteRune(r)
+	w.prev, w.havePrev = r, true
+}
+
+func (w *svDetokenizeWriter) Flush() {
+	for w.utf8N > 0 {
+		w.emitByte(w.utf8Buf[0])
+		copy(w.utf8Buf[:], w.utf8Buf[1:w.utf8N])
+		w.utf8N--
+	}
+}
+
+func svWriteSentencePieceToken(sb *strings.Builder, tok string) {
+	for i := 0; i < len(tok); {
+		if i+2 < len(tok) && tok[i] == 0xe2 && tok[i+1] == 0x96 && tok[i+2] == 0x81 {
+			sb.WriteByte(' ')
+			i += 3
+			continue
+		}
+		sb.WriteByte(tok[i])
+		i++
+	}
 }

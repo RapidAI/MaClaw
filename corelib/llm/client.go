@@ -18,7 +18,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-const maxToolArgumentsBytes = 180 * 1024
+// MaxToolArgumentsBytes is the hard limit for a single tool-call arguments payload.
+// Stream parsers reject mid-accumulation; the shared agent loop also enforces this
+// before execution so non-stream complete responses cannot bypass the guard.
+const MaxToolArgumentsBytes = 180 * 1024
+
+// maxToolArgumentsBytes is retained as an unexported alias for internal stream code.
+const maxToolArgumentsBytes = MaxToolArgumentsBytes
 
 // HTTPStatusError carries an LLM HTTP error body for structured callers while
 // keeping Error() body-free so logs and UI messages do not echo sensitive data.
@@ -145,29 +151,45 @@ func buildOpenAIChatRequestBody(
 		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
-	if corelib.IsDeepSeekThinkingModeModel(cfg) {
-		// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
-		// returns reasoning_content in the response. Without this parameter,
-		// the API may not produce the thinking/reasoning output even though
-		// the documentation states "defaults to enabled".
+	// Thinking / reasoning controls (cost-route Phase 3 + provider defaults).
+	thinkingMode := strings.ToLower(strings.TrimSpace(cfg.ThinkingMode))
+	switch thinkingMode {
+	case "disabled", "off", "0", "false", "none":
+		reqBody["thinking"] = map[string]interface{}{"type": "disabled"}
+	case "enabled", "on", "1", "true":
 		if _, hasThinking := reqBody["thinking"]; !hasThinking {
 			reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
 		}
-		// When tools are present, cap reasoning budget so tool call arguments
-		// have room to complete. DeepSeek V4 supports thinking.budget_tokens.
-		// This prevents reasoning from consuming the entire output budget.
-		// Use a conservative cap (4096) rather than 25% of max_output because
-		// DeepSeek V4 Flash has been observed to truncate tool call JSON in
-		// production with large contexts (50K+ input tokens), even though the
-		// truncation cannot be reliably reproduced in isolation. A lower budget
-		// ensures more output capacity is reserved for tool call arguments.
-		if len(opts.Tools) > 0 {
-			thinking, _ := reqBody["thinking"].(map[string]interface{})
-			if thinking != nil {
-				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
-					thinking["budget_tokens"] = 4096
-				}
+	default:
+		if corelib.IsDeepSeekThinkingModeModel(cfg) {
+			// DeepSeek V4+ thinking mode: explicitly enable thinking so the API
+			// returns reasoning_content. Without this, some deployments skip it.
+			if _, hasThinking := reqBody["thinking"]; !hasThinking {
+				reqBody["thinking"] = map[string]interface{}{"type": "enabled"}
 			}
+		}
+	}
+	// Cap reasoning budget when tools present (room for tool-call JSON).
+	if thinking, _ := reqBody["thinking"].(map[string]interface{}); thinking != nil {
+		if typ, _ := thinking["type"].(string); strings.EqualFold(typ, "enabled") && len(opts.Tools) > 0 {
+			if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
+				budget := 4096
+				// Low-effort cost tiers: tighter budget.
+				if strings.EqualFold(strings.TrimSpace(cfg.ReasoningEffort), "low") ||
+					strings.EqualFold(strings.TrimSpace(cfg.ReasoningEffort), "minimal") {
+					budget = 1024
+				}
+				thinking["budget_tokens"] = budget
+			}
+		}
+	}
+	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" {
+		// Map "none"/"off" to a low-cost provider value when pass-through.
+		switch strings.ToLower(re) {
+		case "none", "off", "0", "false":
+			reqBody["reasoning_effort"] = "minimal"
+		default:
+			reqBody["reasoning_effort"] = re
 		}
 	}
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {

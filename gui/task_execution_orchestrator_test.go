@@ -348,17 +348,17 @@ func TestProgressSummary(t *testing.T) {
 	o.Tasks = tasks
 
 	summary := o.ProgressSummary()
-	if !strings.Contains(summary, "✓") {
-		t.Error("summary should contain passed checkmark ✓")
+	if !strings.Contains(summary, "[OK]") {
+		t.Error("summary should contain passed marker [OK]")
 	}
-	if !strings.Contains(summary, "⟳") {
-		t.Error("summary should contain in-progress icon ⟳")
+	if !strings.Contains(summary, "[..]") {
+		t.Error("summary should contain in-progress marker [..]")
 	}
-	if !strings.Contains(summary, "T1: Task A ✓") {
-		t.Error("summary should contain 'T1: Task A ✓'")
+	if !strings.Contains(summary, "T1: Task A [OK]") {
+		t.Error("summary should contain 'T1: Task A [OK]'")
 	}
-	if !strings.Contains(summary, "T2: Task B ⟳") {
-		t.Error("summary should contain 'T2: Task B ⟳'")
+	if !strings.Contains(summary, "T2: Task B [..]") {
+		t.Error("summary should contain 'T2: Task B [..]'")
 	}
 	// Pending tasks have no suffix marker
 	if !strings.Contains(summary, "T3: Task C\n") {
@@ -475,10 +475,6 @@ func TestBuildIntegrationPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "编译") {
 		t.Error("prompt should mention compilation")
-	}
-	// Failed task should show ❌
-	if !strings.Contains(prompt, "❌") {
-		t.Error("prompt should show failed task icon")
 	}
 	// Failed task warning
 	if !strings.Contains(prompt, "不完整") {

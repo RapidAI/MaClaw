@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/tui/views"
 )
@@ -236,12 +237,28 @@ func (c *tuiLoopCommandCallbacks) CancelCh() <-chan struct{} { return c.cancelCh
 // ---------------------------------------------------------------------------
 
 type tuiLoopCycleCallbacks struct {
-	parent  *tuiLoopCommandCallbacks
-	workDir string
+	parent    *tuiLoopCommandCallbacks
+	workDir   string
+	activeLLM tuiActiveLLM
 }
 
 func (c *tuiLoopCycleCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.parent.llmCfg
+	fb := c.parent.llmCfg
+	if c.parent != nil && c.parent.app != nil && strings.TrimSpace(fb.Model) == "" {
+		fb = c.parent.app.llmConfig
+	}
+	return c.activeLLM.get(fb)
+}
+
+func (c *tuiLoopCycleCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.parent == nil || c.parent.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.parent.app.routeTurn(userText, llm.ClassifyHints{ToolHeavy: true})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *tuiLoopCycleCallbacks) GetMaxIterations() int {
@@ -353,3 +370,17 @@ func (c *tuiLoopCycleCallbacks) OnToolResult(name string) {
 	}
 }
 func (c *tuiLoopCycleCallbacks) ShouldStop() bool { return c.parent.IsCancelled() }
+
+func (c *tuiLoopCycleCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.parent == nil || c.parent.app == nil {
+		return false, "", ""
+	}
+	return c.parent.app.earlyStopBudget()
+}
+
+func (c *tuiLoopCycleCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.parent == nil || c.parent.app == nil {
+		return
+	}
+	c.parent.app.recordLLMCost(model, inputTokens, outputTokens)
+}

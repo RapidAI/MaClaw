@@ -1061,7 +1061,7 @@ func TestCodexAdapterBuildCommand(t *testing.T) {
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
 
-	adapter := NewCodexAdapter(&App{})
+	adapter := NewCodexAdapter(&App{testHomeDir: tempHome})
 
 	// Verify SDK execution mode
 	if adapter.ExecutionMode() != ExecModeCodexSDK {
@@ -1130,7 +1130,7 @@ func TestCodexAdapterBuildCommandYoloMode(t *testing.T) {
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
 
-	adapter := NewCodexAdapter(&App{})
+	adapter := NewCodexAdapter(&App{testHomeDir: tempHome})
 	cmd, err := adapter.BuildCommand(LaunchSpec{
 		Tool:        "codex",
 		ProjectPath: projectDir,
@@ -1174,7 +1174,7 @@ func TestCodexAdapterBuildCommandResumeSession(t *testing.T) {
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
 
-	adapter := NewCodexAdapter(&App{})
+	adapter := NewCodexAdapter(&App{testHomeDir: tempHome})
 	cmd, err := adapter.BuildCommand(LaunchSpec{
 		Tool:            "codex",
 		ProjectPath:     projectDir,
@@ -1372,7 +1372,7 @@ func TestCodexAdapterBuildCommandOriginalMode(t *testing.T) {
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
 
-	adapter := NewCodexAdapter(&App{})
+	adapter := NewCodexAdapter(&App{testHomeDir: tempHome})
 	cmd, err := adapter.BuildCommand(LaunchSpec{
 		Tool:        "codex",
 		ProjectPath: projectDir,

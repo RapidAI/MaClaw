@@ -310,7 +310,7 @@
       var deTitle = deActive
         ? (deExpiry ? (lang() === 'zh' ? '\u5230\u671f: ' + deExpiry : 'Expires: ' + deExpiry) : '')
         : (de.reason || '');
-      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-icon" style="font-size:14px;line-height:1">\ud83e\udd16</span><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(deLabel) + '</span><span class="badge ' + deBadge + '" title="' + esc(deTitle) + '">' + esc(deStatus) + '</span></div>');
+      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(deLabel) + '</span><span class="badge ' + deBadge + '" title="' + esc(deTitle) + '">' + esc(deStatus) + '</span></div>');
     }
     // Compute module authorization
     var compute = item.compute_authorization;
@@ -327,12 +327,12 @@
       var cTitle = cActive
         ? (lang() === 'zh' ? '\u5230\u671f: ' + cExpiry + (compute.allow_external ? ' | \u5141\u8bb8\u5916\u90e8\u63d0\u4f9b\u5546' : '') : 'Expires: ' + cExpiry + (compute.allow_external ? ' | External providers allowed' : ''))
         : '';
-      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-icon" style="font-size:14px;line-height:1">\u26a1</span><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(cLabel) + '</span><span class="badge ' + cBadge + '" title="' + esc(cTitle) + '">' + esc(cStatus) + '</span></div>');
+      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-label" style="font-weight:700;color:#475569;white-space:nowrap">' + esc(cLabel) + '</span><span class="badge ' + cBadge + '" title="' + esc(cTitle) + '">' + esc(cStatus) + '</span></div>');
     }
     // If neither authorization is present and data was loaded, show a hint
     if (!de && !compute && tenantAuthorizationLoaded) {
       var noAuthLabel = lang() === 'zh' ? '\u672a\u914d\u7f6e\u6388\u6743' : 'No authorization';
-      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-icon" style="font-size:14px">\u26a0\ufe0f</span><span class="authz-label" style="font-weight:700;color:#475569">' + esc(noAuthLabel) + '</span></div>');
+      parts.push('<div class="tenant-authz-badge" style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:#fff;border:1px solid #e2e8f0;font-size:12px"><span class="authz-label" style="font-weight:700;color:#475569">' + esc(noAuthLabel) + '</span></div>');
     }
     return parts.join('');
   }

@@ -207,7 +207,7 @@ func (a *App) performDataMigration(src, dst string) {
 // emitMigrationProgress sends migration progress to the frontend.
 func (a *App) emitMigrationProgress(p DataMigrationProgress) {
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "data-migration-progress", p)
+		a.emitEvent("data-migration-progress", p)
 	}
 }
 

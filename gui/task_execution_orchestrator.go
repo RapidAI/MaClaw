@@ -887,12 +887,12 @@ func (o *TaskExecutionOrchestrator) BuildIntegrationPrompt() string {
 	b.WriteString("### Completed Subtasks And Outputs\n")
 	var failedNames []string
 	for _, t := range o.Tasks {
-		icon := "\u2713"
+		icon := "[OK]"
 		if t.Status == TaskExecFailed {
-			icon = "\u274c"
+			icon = "[ERR]"
 			failedNames = append(failedNames, fmt.Sprintf("Task %d %q", taskDisplayNumber(t), compactSubAgentTaskTitle(t.Title)))
 		} else if t.Status == TaskExecSkipped {
-			icon = "SKIPPED"
+			icon = "[SKIP]"
 		}
 		b.WriteString(fmt.Sprintf("%s task %d: %s\n", icon, taskDisplayNumber(t), compactSubAgentTaskTitle(t.Title)))
 		if files := taskIntegrationFiles(t); len(files) > 0 {
@@ -1168,16 +1168,16 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 		b.WriteString(fmt.Sprintf("T%d: %s", t.Index+1, compactSubAgentTaskTitle(t.Title)))
 		switch t.Status {
 		case TaskExecPassed:
-			b.WriteString(" \u2713")
+			b.WriteString(" [OK]")
 		case TaskExecFailed:
-			b.WriteString(" \u274c")
+			b.WriteString(" [ERR]")
 			if t.ErrorSummary != "" {
 				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
 			}
 		case TaskExecSkipped:
 			b.WriteString(" [skipped]")
 		case TaskExecInProgress, TaskExecTesting:
-			b.WriteString(" \u27f3")
+			b.WriteString(" [..]")
 		}
 		b.WriteString("\n")
 	}

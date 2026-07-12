@@ -241,16 +241,43 @@ func (s *CodingKnowledgeStore) UpdateConfidence(ctx context.Context, id string, 
 }
 
 // UpdateExperience updates an existing experience (for manual edits).
-// This re-indexes the FTS content if title/content/trigger changed.
+// This re-indexes the FTS content if title/content/trigger changed while
+// preserving the experience ID so UI links and recall stats stay stable.
 func (s *CodingKnowledgeStore) UpdateExperience(ctx context.Context, exp CodingExperience) error {
 	if exp.ID == "" {
 		return fmt.Errorf("coding knowledge: experience ID is required for update")
 	}
 
-	// If Content is empty, hydrate from the existing source nodes.
-	// This handles the case where the caller loaded from ListExperiences
-	// (which doesn't populate Content) and only modified metadata fields.
-	if strings.TrimSpace(exp.Content) == "" {
+	// Hydrate from the existing record when the caller only changed metadata
+	// (ListExperiences does not populate Content).
+	existing, existingErr := s.GetExperience(ctx, exp.ID)
+	if existingErr == nil {
+		if strings.TrimSpace(exp.Content) == "" {
+			exp.Content = existing.Content
+		}
+		if exp.CreatedAt.IsZero() {
+			exp.CreatedAt = existing.CreatedAt
+		}
+		// Preserve counters unless the editor explicitly set them.
+		if exp.RecallCount == 0 && existing.RecallCount > 0 {
+			exp.RecallCount = existing.RecallCount
+		}
+		if exp.SuccessCount == 0 && existing.SuccessCount > 0 {
+			exp.SuccessCount = existing.SuccessCount
+		}
+		if exp.FailureCount == 0 && existing.FailureCount > 0 {
+			exp.FailureCount = existing.FailureCount
+		}
+		if exp.Confidence == 0 && existing.Confidence > 0 {
+			exp.Confidence = existing.Confidence
+		}
+		if exp.Status == "" {
+			exp.Status = existing.Status
+		}
+		if exp.LastRecalledAt.IsZero() {
+			exp.LastRecalledAt = existing.LastRecalledAt
+		}
+	} else if strings.TrimSpace(exp.Content) == "" {
 		nodes, err := s.inner.ListNodesBySource(ctx, exp.ID, 1)
 		if err == nil && len(nodes) > 0 && nodes[0].Text != "" {
 			exp.Content = nodes[0].Text
@@ -260,17 +287,52 @@ func (s *CodingKnowledgeStore) UpdateExperience(ctx context.Context, exp CodingE
 	if err := validateExperience(exp); err != nil {
 		return err
 	}
+	forceID := exp.ID
+	forceCreatedAt := exp.CreatedAt
 	exp.UpdatedAt = time.Now().UTC()
+	if exp.CreatedAt.IsZero() {
+		exp.CreatedAt = exp.UpdatedAt
+		forceCreatedAt = exp.CreatedAt
+	}
 
-	// Delete old and re-save to update both metadata AND FTS index.
-	if err := s.inner.DeleteSource(ctx, exp.ID); err != nil {
+	// Delete old and re-save with the same ID so FTS + metadata stay consistent.
+	if err := s.inner.DeleteSource(ctx, forceID); err != nil {
 		return fmt.Errorf("coding knowledge: delete for re-save: %w", err)
 	}
 
-	// Re-save with a new ID. SaveExperience preserves non-zero CreatedAt.
-	exp.ID = ""
-	_, err := s.SaveExperience(ctx, exp)
-	return err
+	if exp.Confidence == 0 {
+		exp.Confidence = CodingConfidenceInitial
+	}
+	if exp.Status == "" {
+		exp.Status = CodingStatusCandidate
+	}
+
+	indexText := buildExperienceIndexText(exp)
+	meta := experienceToMetadata(exp)
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("coding knowledge: marshal metadata: %w", err)
+	}
+	labels := buildExperienceLabels(exp)
+
+	source, err := s.inner.SaveText(ctx, TextSaveRequest{
+		Text:           indexText,
+		Title:          exp.Title,
+		Kind:           SourceKindText,
+		TopicHint:      string(metaJSON),
+		ProjectPath:    exp.ProjectPath,
+		Labels:         labels,
+		DistillMode:    "off",
+		ForceID:        forceID,
+		ForceCreatedAt: forceCreatedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("coding knowledge: re-save: %w", err)
+	}
+	if source.ID != forceID {
+		return fmt.Errorf("coding knowledge: update changed id %q -> %q", forceID, source.ID)
+	}
+	return nil
 }
 
 // AppendContraindication adds a "does not apply" scenario to an experience.
@@ -582,13 +644,13 @@ type CodingSearchOptions struct {
 
 // CodingListFilter controls listing/enumeration of experiences.
 type CodingListFilter struct {
-	Scope       string
-	Language    string
-	Category    string
-	Status      string
-	ProjectPath string
-	Labels      []string
-	Limit       int
+	Scope       string   `json:"scope,omitempty"`
+	Language    string   `json:"language,omitempty"`
+	Category    string   `json:"category,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	ProjectPath string   `json:"project_path,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
+	Limit       int      `json:"limit,omitempty"`
 }
 
 // CodingContextPackOptions controls context pack generation for SubAgent injection.

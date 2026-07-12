@@ -8,11 +8,11 @@ Hub 和 HubCenter 已有良好的基础设施：
 
 | 机制 | 当前实现 | 状态 |
 |------|---------|------|
-| 读写分离连接池 | `Provider.Write` + `Provider.Read` | ✅ 已有 |
-| WAL 模式 | `PRAGMA journal_mode = WAL` | ✅ 已有 |
-| Write Batcher | channel + timer flush + 单事务合并 | ✅ 已有 |
-| 基础 PRAGMA | foreign_keys/busy_timeout/synchronous=NORMAL/temp_store=MEMORY | ✅ 已有 |
-| 索引 | 大量覆盖性索引（hub_user_links、hub_domain_routes、ha_sync_ops 等） | ✅ 已有 |
+| 读写分离连接池 | `Provider.Write` + `Provider.Read` | 已有 |
+| WAL 模式 | `PRAGMA journal_mode = WAL` | 已有 |
+| Write Batcher | channel + timer flush + 单事务合并 | 已有 |
+| 基础 PRAGMA | foreign_keys/busy_timeout/synchronous=NORMAL/temp_store=MEMORY | 已有 |
+| 索引 | 大量覆盖性索引（hub_user_links、hub_domain_routes、ha_sync_ops 等） | 已有 |
 
 ### 当前配置参数
 
@@ -288,7 +288,7 @@ CREATE INDEX IF NOT EXISTS idx_hub_user_usage_daily_hub_tenant_day
 
 受影响的写入点（已在代码中发现部分已这样做）：
 - `userRepo.Create`：`user.Email` → `strings.ToLower(user.Email)`
-- `userRepo.getByEmail`：查询参数 `strings.ToLower(email)` ✅ 已有
+- `userRepo.getByEmail`：查询参数 `strings.ToLower(email)` 已有
 - 查询条件从 `lower(email) = lower(?)` 改为 `email = ?`
 
 **受影响查询**（需要改为 `email = ?`）：
@@ -393,14 +393,14 @@ type Provider struct {
 
 | Phase | 收益 | 改动范围 | 风险 | 推荐顺序 |
 |-------|------|---------|------|---------|
-| 1: PRAGMA 调优 | 🔴 高（读性能 2-5x） | 低（配置） | 极低 | **立即** |
-| 2: WAL 检查点 | 🟡 中（写密集场景） | 低 | 极低 | **立即** |
-| 3: 连接池扩容 | 🟡 中（并发读） | 极低 | 极低 | **立即** |
-| 4: Batcher 增强 | 🟡 中（写吞吐+可靠性） | 中 | 低 | 第二批 |
-| 5: 索引补全 | 🟡 中（特定查询） | 低 | 极低 | 第二批 |
-| 6: email 规范化 | 🟢 低-中（email 查询） | 中 | 低 | 第三批 |
-| 7: 预编译语句 | 🟢 低（减少 CPU） | 中 | 低 | 第三批 |
-| **8: Write Coalescer** | **🔴 极高（万人级核心）** | **中** | **低** | **已实现** |
+| 1: PRAGMA 调优 | 高（读性能 2-5x） | 低（配置） | 极低 | **立即** |
+| 2: WAL 检查点 | 中（写密集场景） | 低 | 极低 | **立即** |
+| 3: 连接池扩容 | 中（并发读） | 极低 | 极低 | **立即** |
+| 4: Batcher 增强 | 中（写吞吐+可靠性） | 中 | 低 | 第二批 |
+| 5: 索引补全 | 中（特定查询） | 低 | 极低 | 第二批 |
+| 6: email 规范化 | 低-中（email 查询） | 中 | 低 | 第三批 |
+| 7: 预编译语句 | 低（减少 CPU） | 中 | 低 | 第三批 |
+| **8: Write Coalescer** | **极高（万人级核心）** | **中** | **低** | **已实现** |
 
 ---
 

@@ -128,7 +128,7 @@
     - displayCount = min(unreadCount, 10)，shouldAnimate = unreadCount > 0
     - _Requirements: FR-4_
   - [x] 11.2 创建 `gui/frontend/src/components/ai/NotificationBell.tsx`：铃铛图标组件
-    - 铃铛图标 🔔 + CSS 闪烁动画（unreadCount > 0 时）
+    - 铃铛图标 + CSS 闪烁动画（unreadCount > 0 时）
     - 未读计数 badge（红点，最大显示 10+）
     - 点击触发 panelOpen toggle
     - 位置：AI 助手面板顶部标题栏区域（`AssistantTitleBar.tsx`）

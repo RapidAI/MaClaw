@@ -233,6 +233,9 @@ func governanceDraftContent(action SkillMaintenanceAction) string {
 	if action.RecommendedAction != "" {
 		parts = append(parts, "Recommended review action: "+action.RecommendedAction)
 	}
+	if IsHighValueMaintenanceAction(action) {
+		parts = append(parts, "Priority: high-value maintenance signal for next-turn experience learning.")
+	}
 	parts = append(parts, "Governance: draft only; review required before repair, merge, archive, or promotion.")
 	return strings.Join(parts, "\n")
 }

@@ -77,6 +77,17 @@ func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettin
 		return cloneLLMServiceRegistry(entry.value), entry.err
 	}
 	reg, err := llmservice.LoadRegistry(ctx, system)
+	if err == nil && reg != nil {
+		// One-shot repair for historical metered grants that were queued behind
+		// an active grant under the old redeem policy. After promote+save, later
+		// loads see StartsAt <= now and skip this path.
+		if n := llmservice.PromoteQueuedMeteredGrants(reg, time.Now().UTC()); n > 0 {
+			if saveErr := llmservice.SaveRegistry(ctx, system, reg); saveErr != nil {
+				// Keep the in-memory promotion for this response even if persist fails.
+				_ = saveErr
+			}
+		}
+	}
 	globalLLMRuntimeCache.mu.Lock()
 	globalLLMRuntimeCache.services[key] = cachedLLMServiceRegistry{loadedAt: now, value: cloneLLMServiceRegistry(reg), err: err}
 	globalLLMRuntimeCache.mu.Unlock()

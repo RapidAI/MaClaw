@@ -372,7 +372,7 @@ POST /api/v1/admin/skill-ownership/revoke
 | 归属绑定粒度 | 个人账户 | 企业租户（tenant_id） |
 | publisher 前缀 | 自由声明（先到先得） | 限制为企业域名 |
 | 归属转移 | 需管理员 | 租户管理员可操作 |
-| 跨实例同步 | 不同步 | HubCenter ↔ Hub 同步归属表 |
+| 跨实例同步 | 不同步 | HubCenter <-> Hub 同步归属表 |
 
 企业 Hub 配置选项：
 ```json
@@ -392,10 +392,7 @@ POST /api/v1/admin/skill-ownership/revoke
 ────────                           ────────────────────────
 1. skill.yaml 声明 id + version
 2. PrepareSkillForUpload()
-   - 校验 id 格式 ✓
-   - 校验 version 格式 ✓
-   - 可移植性检查 ✓
-3. 打包 zip
+   - 校验 id 格式    - 校验 version 格式    - 可移植性检查 3. 打包 zip
 4. POST /api/v1/skills/submit
    (zip + email/token)
                                    5. 解压 + ValidatePackage
@@ -723,10 +720,8 @@ T2: 客户端上传
 T3: 服务端 processOne:
     - 读取 id = "lovstudio.any2pdf"
     - 查询 sm_skill_id_ownership: owner = user-123
-    - 当前上传者 = user-123 → 归属匹配 ✓
-    - 查询 sm_skill_versions: latest = "1.0.0"
-    - 新版本 "1.1.0" > "1.0.0" → 版本递增 ✓
-    - 正常发布
+    - 当前上传者 = user-123 → 归属匹配     - 查询 sm_skill_versions: latest = "1.0.0"
+    - 新版本 "1.1.0" > "1.0.0" → 版本递增     - 正常发布
 ```
 
 #### 场景 3b: 他人尝试覆盖
@@ -737,8 +732,7 @@ T1: 攻击者调用 manage_skill(action="upload")
 T2: 服务端 processOne:
     - 读取 id = "lovstudio.any2pdf"
     - 查询 sm_skill_id_ownership: owner = user-123
-    - 当前上传者 = user-456 → 归属不匹配 ✗
-    - 返回错误: "skill_id 'lovstudio.any2pdf' 已被其他用户注册，无法上传"
+    - 当前上传者 = user-456 → 归属不匹配     - 返回错误: "skill_id 'lovstudio.any2pdf' 已被其他用户注册，无法上传"
     - submission 标记为 failed
 ```
 
@@ -839,15 +833,15 @@ func ParseSkillID(id string) (publisher, name string, valid bool) {
      │ 本地使用    │   │ 上传到 Hub/SkillMarket                       │
      │            │   │                                             │
      │ MatchesName│   │ PrepareSkillForUpload                       │
-     │ MatchesID  │   │   → IsValidSkillID(id) ✓                   │
-     │ 冲突检测    │   │   → 可移植性 ✓                               │
+     │ MatchesID  │   │   → IsValidSkillID(id)                   │
+     │ 冲突检测    │   │   → 可移植性                               │
      │ 依赖解析    │   │                                             │
      └────────────┘   │ POST /api/v1/skills/submit                  │
                       │   → processOne                              │
                       │     → GetSkillIDOwner(id)                   │
                       │     → 首次: RegisterOwnership(id, user)     │
                       │     → 后续: 校验 owner == uploader           │
-                      │     → 版本号 > latest ✓                     │
+                      │     → 版本号 > latest                     │
                       │     → Publish                               │
                       └─────────────────────────────────────────────┘
                                        │
@@ -1305,12 +1299,12 @@ dependencies:
 
 | 能力 | Android | MacLaw Skill（设计后） |
 |------|---------|---------------------|
-| 全局唯一 ID | `com.google.maps` | `lovstudio.any2pdf` ✅ |
-| 不可变 | Play Store 强制 | Hub 首次上传后绑定 ✅ |
-| 格式 | 反向域名 | `publisher.skill-name` ✅ |
-| 版本管理 | versionCode + versionName | semver (`1.3.0`) ✅ |
-| 签名校验 | APK signing | Phase 4 package manifest ✅ |
-| 依赖声明 | implementation 'lib:1.2.0' | `id: x.y, version: ">=1.2.0"` ✅ |
-| 冲突检测 | 安装时拒绝 | scan 时警告，安装时按 id 区分 ✅ |
-| 向后兼容 | N/A | 无 id 的旧 skill 按 name 匹配 ✅ |
-| 本地开发 | 无需网络 | id 本地声明即生效 ✅ |
+| 全局唯一 ID | `com.google.maps` | `lovstudio.any2pdf` |
+| 不可变 | Play Store 强制 | Hub 首次上传后绑定 |
+| 格式 | 反向域名 | `publisher.skill-name` |
+| 版本管理 | versionCode + versionName | semver (`1.3.0`) |
+| 签名校验 | APK signing | Phase 4 package manifest |
+| 依赖声明 | implementation 'lib:1.2.0' | `id: x.y, version: ">=1.2.0"` |
+| 冲突检测 | 安装时拒绝 | scan 时警告，安装时按 id 区分 |
+| 向后兼容 | N/A | 无 id 的旧 skill 按 name 匹配 |
+| 本地开发 | 无需网络 | id 本地声明即生效 |

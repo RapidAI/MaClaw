@@ -6,28 +6,24 @@ import (
 	"log"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
-
-
 // appendKnowledgeAutoRecall searches the knowledge base and injects relevant
 // results into the system prompt. Uses shared constants from corelib/agent/prompt_blocks.go
 // to stay in sync with GUI and agentservice (maclawsrv).
-func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string) {
+func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string, priorUserMessages []string) {
 	if app.knowledgeStore == nil || userMsg == "" {
 		return
 	}
-
-	// Truncate user message to 200 runes for the FTS query.
-	query := userMsg
-	if utf8.RuneCountInString(query) > agent.KnowledgeAutoRecallMaxQueryRunes {
-		runes := []rune(query)
-		query = string(runes[:agent.KnowledgeAutoRecallMaxQueryRunes])
+	if !app.appConfig.IsKnowledgeAutoRecallEnabled() {
+		return
 	}
+	minScore := app.appConfig.EffectiveKnowledgeAutoRecallMinScore()
+
+	query := agent.ExpandKnowledgeAutoRecallQuery(userMsg, priorUserMessages)
 
 	// Execute search with 3-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -48,7 +44,7 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 
 	// Determine max snippets to inject based on top score.
 	topScore := results[0].Score
-	maxInject := agent.KnowledgeAutoRecallMaxInject(topScore)
+	maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
 	if maxInject == 0 {
 		// Results exist but scores too low — hint the LLM to try deeper search.
 		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
@@ -64,7 +60,7 @@ func (app *TUIApp) appendKnowledgeAutoRecall(b *strings.Builder, userMsg string)
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < agent.KnowledgeAutoRecallScoreThreshold {
+		if r.Score < minScore {
 			break
 		}
 		source := r.Source.Title

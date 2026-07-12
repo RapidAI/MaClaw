@@ -51,7 +51,7 @@ def generate_report(df, output_dir: str, base_name: str) -> str:
     lines.append(f"- **列名**: {', '.join(str(c) for c in df.columns)}")
 
     if len(df) == 0:
-        lines.append("\n⚠️ 数据为空（0 行），无法生成统计分析。")
+        lines.append("\n[WARN] 数据为空（0 行），无法生成统计分析。")
         report_text = "\n".join(lines)
         report_path = os.path.join(output_dir, f"{base_name}_analysis.md")
         with open(report_path, 'w', encoding='utf-8') as f:
@@ -188,7 +188,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(input_path))[0]
 
-    print(f"📊 正在分析: {input_path}")
+    print(f"正在分析: {input_path}")
     df = load_dataframe(input_path)
     print(f"   数据维度: {df.shape[0]} 行 × {df.shape[1]} 列")
 
@@ -200,7 +200,7 @@ def main():
         for chart in charts:
             print(f"   可视化: {chart}")
 
-    print(f"\n✅ 分析完成，结果已保存到: {os.path.abspath(output_dir)}")
+    print(f"\n分析完成，结果已保存到: {os.path.abspath(output_dir)}")
 
 
 if __name__ == "__main__":

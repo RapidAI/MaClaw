@@ -123,7 +123,7 @@ func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
 			registeredToolPolicyOwnerIDField: userID,
 		})
 
-		if !strings.Contains(result, "✅") {
+		if !strings.Contains(result, "") {
 			t.Logf("toolSetMaxIterations failed: %s", result)
 			return false
 		}

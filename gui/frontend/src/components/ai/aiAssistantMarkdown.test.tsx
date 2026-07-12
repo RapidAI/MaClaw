@@ -163,7 +163,7 @@ describe("renderContentWithCodeBlocks", () => {
         expect(image.style.display).toBe("block");
     });
 
-    it("splits dense digital employee capability lists into readable lines", () => {
+    it("splits dense digital employee capability lists into plain dash lists without pictographs", () => {
         render(
             <div>
                 {renderContentWithCodeBlocks(
@@ -174,9 +174,12 @@ describe("renderContentWithCodeBlocks", () => {
         );
 
         expect(screen.getByText("I can help:")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c1} read local files")).toBeTruthy();
-        expect(screen.getByText("\u{1f310} search the web")).toBeTruthy();
-        expect(screen.getByText("\u{1f4ac} answer questions and analyze")).toBeTruthy();
+        expect(screen.getByText("read local files")).toBeTruthy();
+        expect(screen.getByText("search the web")).toBeTruthy();
+        expect(screen.getByText("answer questions and analyze")).toBeTruthy();
+        expect(screen.queryByText(/\u{1f4c1}/u)).toBeNull();
+        expect(screen.queryByText(/\u{1f310}/u)).toBeNull();
+        expect(screen.queryByText(/\u{1f4ac}/u)).toBeNull();
     });
 
     it("splits inline markdown headings emitted by digital employees", () => {
@@ -192,26 +195,34 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("Weather update:")).toBeTruthy();
         expect(screen.getByText("Today")).toBeTruthy();
         expect(screen.getByText("Sunny and warm 0%")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c5}Tomorrow")).toBeTruthy();
+        // Decorative heading pictograph stripped after compact-heading normalize.
+        expect(screen.getByText("Tomorrow")).toBeTruthy();
+        expect(screen.queryByText(/\u{1f4c5}/u)).toBeNull();
         expect(screen.getByText("Cloudy")).toBeTruthy();
     });
 
-    it("does not split ordinary pictographs used inside a sentence", () => {
+    it("does not split status marks into list items; renders them as SVG glyphs", () => {
         render(<div>{renderContentWithCodeBlocks("Good job \u2705 keep going", lightTheme)}</div>);
 
-        expect(screen.getByText("Good job \u2705 keep going")).toBeTruthy();
+        expect(screen.getByText(/Good job/)).toBeTruthy();
+        expect(screen.getByText(/keep going/)).toBeTruthy();
+        // Semantic check mark → StatusGlyph SVG, not emoji glyph.
+        expect(screen.getByTestId("inline-status-glyph")).toBeTruthy();
+        expect(screen.getByTestId("inline-status-glyph").getAttribute("data-status")).toBe("ok");
+        expect(screen.queryByText(/\u2705/u)).toBeNull();
     });
 
     it("normalizes compact markdown headings at the start of a line", () => {
         render(<div>{renderContentWithCodeBlocks("###\u{1f4c5}Today\nClear", lightTheme)}</div>);
 
-        expect(screen.getByText("\u{1f4c5}Today")).toBeTruthy();
+        expect(screen.getByText("Today")).toBeTruthy();
+        expect(screen.queryByText(/\u{1f4c5}/u)).toBeNull();
         expect(screen.getByText("Clear")).toBeTruthy();
     });
 
     it.each([
-        ["real newline", "####\n\u{1f4ca} Resource usage", "\u{1f4ca} Resource usage", "####"],
-        ["escaped newline", "####\\n\u{1f4ca} Resource usage", "\u{1f4ca} Resource usage", "####"],
+        ["real newline", "####\n\u{1f4ca} Resource usage", "Resource usage", "####"],
+        ["escaped newline", "####\\n\u{1f4ca} Resource usage", "Resource usage", "####"],
         ["escaped CRLF", "####\\r\\nSummary", "Summary", "####"],
         ["trailing spaces", "###   \nSummary", "Summary", "###"],
         ["CRLF line ending", "####\r\nSummary", "Summary", "####"],
@@ -241,9 +252,10 @@ describe("renderContentWithCodeBlocks", () => {
     });
 
     it("attaches bare heading markers when the title line is indented after a blank line", () => {
-        const { container } = render(<div>{renderContentWithCodeBlocks("####\n\n   📄 幻灯片1：封面\nBody", lightTheme)}</div>);
+        const { container } = render(<div>{renderContentWithCodeBlocks("####\n\n   \u{1F4C4} 幻灯片1：封面\nBody", lightTheme)}</div>);
 
-        expect(screen.getByText("📄 幻灯片1：封面")).toBeTruthy();
+        expect(screen.getByText("幻灯片1：封面")).toBeTruthy();
+        expect(screen.queryByText(/\u{1F4C4}/u)).toBeNull();
         expect(screen.getByText("Body")).toBeTruthy();
         expect(container.textContent).not.toContain("####");
     });
@@ -339,7 +351,8 @@ describe("renderContentWithCodeBlocks", () => {
         render(<div>{renderContentWithCodeBlocks("晴天###\u{1f4c5}明天\n多云", lightTheme)}</div>);
 
         expect(screen.getByText("晴天")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+        expect(screen.getByText("明天")).toBeTruthy();
+        expect(screen.queryByText(/\u{1f4c5}/u)).toBeNull();
         expect(screen.getByText("多云")).toBeTruthy();
     });
 
@@ -418,10 +431,14 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("熟悉 C# 开发和 .NET")).toBeTruthy();
     });
 
-    it("does not split a single capability icon used inline", () => {
+    it("does not split a single capability icon used inline; decorative mark is stripped", () => {
         render(<div>{renderContentWithCodeBlocks("Open the \u{1f4c1} folder", lightTheme)}</div>);
 
-        expect(screen.getByText("Open the \u{1f4c1} folder")).toBeTruthy();
+        // Single mid-sentence pictograph is not rewritten into a list item.
+        expect(screen.queryByText(/^- /)).toBeNull();
+        // Decorative folder mark is stripped (product UI: no emoji chrome).
+        expect(screen.getByText("Open the folder")).toBeTruthy();
+        expect(screen.queryByText(/\u{1f4c1}/u)).toBeNull();
     });
 
     it("does not rewrite escaped separators inside Windows paths", () => {
@@ -689,12 +706,110 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText(/Browser:/)).toBeNull();
     });
 
+    it("strips leading decorative pictographs from assistant body display", () => {
+        render(<div>{renderMessage({
+            id: "assistant-leading-emoji",
+            role: "assistant",
+            content: "\u{1F680} 已完成部署。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("已完成部署。")).toBeTruthy();
+        expect(screen.queryByText(/\u{1F680}/u)).toBeNull();
+    });
+
+    it("strips line-leading pictographs after markdown list/heading prefixes", () => {
+        render(<div>{renderMessage({
+            id: "assistant-line-leading-emoji",
+            role: "assistant",
+            content: "### \u{1F3AF} 目标\n\n- \u{1F4CC} 第一项\n- 第二项",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("目标")).toBeTruthy();
+        expect(screen.getByText(/第一项/)).toBeTruthy();
+        expect(screen.queryByText(/\u{1F3AF}/u)).toBeNull();
+        expect(screen.queryByText(/\u{1F4CC}/u)).toBeNull();
+    });
+
+    it("strips mid-sentence decorative pictographs from assistant body display", () => {
+        render(<div>{renderMessage({
+            id: "assistant-mid-decorative",
+            role: "assistant",
+            content: "完全可以，搭配非常棒！\u{1F44D}\n赶紧安排\u{1F60A}",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText(/完全可以/)).toBeTruthy();
+        expect(screen.getByText(/赶紧安排/)).toBeTruthy();
+        expect(screen.queryByText(/\u{1F44D}/u)).toBeNull();
+        expect(screen.queryByText(/\u{1F60A}/u)).toBeNull();
+    });
+
+    it("maps status and star marks to SVG glyphs in assistant body display", () => {
+        // Keep below the dense-capability-list threshold (2+ pictographs used as list markers).
+        render(<div>{renderMessage({
+            id: "assistant-status-star",
+            role: "assistant",
+            content: "评分 \u2B50\u2B50 很高。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText(/评分/)).toBeTruthy();
+        expect(screen.getByText(/很高/)).toBeTruthy();
+        expect(screen.getAllByTestId("inline-star-glyph").length).toBe(2);
+        expect(screen.queryByText(/\u2B50/u)).toBeNull();
+    });
+
+    it("maps check and warn marks to StatusGlyph SVG in table-like prose", () => {
+        render(<div>{renderMessage({
+            id: "assistant-status-marks",
+            role: "assistant",
+            content: "\u2705 醋可以放\n\u26A0 香油少放\n\u274C 白糖不放",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        const statusGlyphs = screen.getAllByTestId("inline-status-glyph");
+        expect(statusGlyphs.length).toBe(3);
+        expect(statusGlyphs.map((el) => el.getAttribute("data-status"))).toEqual(["ok", "warn", "error"]);
+        expect(screen.queryByText(/\u2705/u)).toBeNull();
+        expect(screen.queryByText(/\u26A0/u)).toBeNull();
+        expect(screen.queryByText(/\u274C/u)).toBeNull();
+        expect(screen.getByText(/醋可以放/)).toBeTruthy();
+        expect(screen.getByText(/香油少放/)).toBeTruthy();
+        expect(screen.getByText(/白糖不放/)).toBeTruthy();
+    });
+
+    it("keeps pictographs inside fenced code blocks", () => {
+        render(<div>{renderMessage({
+            id: "assistant-fence-emoji",
+            role: "assistant",
+            content: "Intro\n\n```\n\u{1F680} keep\n```",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText(/keep/)).toBeTruthy();
+        // Code block text is rendered as a single pre/code node.
+        expect(screen.getByText(/\u{1F680} keep/u)).toBeTruthy();
+    });
+
+    it("does not strip leading pictographs from user messages", () => {
+        render(<div>{renderMessage({
+            id: "user-leading-emoji",
+            role: "user",
+            content: "\u{1F680} 请部署",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText(/> \u{1F680} 请部署/u)).toBeTruthy();
+    });
+
     it("strips Browser role prefixes from /btw body without dropping the body", () => {
         render(<div>{renderMessage({
             id: "assistant-btw-browser-prefix",
             role: "assistant",
             requestId: "btw-test",
-            content: "🔍 **/btw 查询结果**\n\nBrowser: 旁路查询正文。",
+            content: "\u{1F50D} **/btw 查询结果**\n\nBrowser: 旁路查询正文。",
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
 

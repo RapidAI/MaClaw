@@ -11,8 +11,7 @@
 **触发链路**：
 
 1. 用户在左侧"最近项目"列表点击项目 B（如 "C++ 2D game"）
-2. 前端调用 `ResumeProject(proj.project_path)` → 后端清理对话历史和 session 状态 ✅
-3. 前端调用 `aiAssistant.sendMessage("📂 已切换到项目：C++ 2D game\n📁 D:\workprj\steave2")`
+2. 前端调用 `ResumeProject(proj.project_path)` → 后端清理对话历史和 session 状态 3. 前端调用 `aiAssistant.sendMessage("已切换到项目：C++ 2D game\nD:\workprj\steave2")`
 4. 后端 `handleIMMessageWithLoop` → `appendProactiveRecall` → `contextResolver.ResolveProject()` → `GetCurrentProjectPath()`
 5. **`GetCurrentProjectPath()` 读取 `config.CurrentProject`——但 `ResumeProject` 从未更新这个字段**
 6. 返回旧项目 A 的路径 → `RecallDynamic(msg, "", 旧项目A路径)` → 召回旧项目记忆 → 上下文混乱

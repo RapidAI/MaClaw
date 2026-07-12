@@ -17,7 +17,7 @@ MaClaw 的编程工作流（coding workflow）有两条执行路径：
 
 ### Current Behavior (Defect)
 
-1.1 WHEN 用户发送编程任务消息且该任务通过 steering 驱动的 agent loop 处理（而非工作流引擎拦截） THEN 系统不显示全屏建议横幅（"🚀 即将进入「编程」流程，全屏模式体验更佳"），因为 `EmitSuggestMaximize` 仅在 `handleActiveUnderstanding` → `StartWorkflow` 路径中被调用
+1.1 WHEN 用户发送编程任务消息且该任务通过 steering 驱动的 agent loop 处理（而非工作流引擎拦截） THEN 系统不显示全屏建议横幅（"即将进入「编程」流程，全屏模式体验更佳"），因为 `EmitSuggestMaximize` 仅在 `handleActiveUnderstanding` → `StartWorkflow` 路径中被调用
 
 1.2 WHEN LLM 在 steering 驱动的 agent loop 中生成阶段文档（需求文档/技术设计/任务拆分） THEN 右侧文档预览面板不显示，因为 `SavePhaseOutput` 检查 `e.workflows[userID]` 为 nil 返回空字符串，`EmitDocUpdate` 不被调用
 

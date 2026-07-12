@@ -111,8 +111,8 @@ func TestCancelledExitResponse(t *testing.T) {
 	if resp == nil || !strings.Contains(resp.Text, "画一个图") {
 		t.Errorf("cancel message should contain task preview, got: %v", resp)
 	}
-	if !strings.Contains(resp.Text, "⏹️") {
-		t.Errorf("cancel message should contain cancel icon, got: %s", resp.Text)
+	if !strings.Contains(resp.Text, "Task cancelled") {
+		t.Errorf("cancel message should mention cancellation, got: %s", resp.Text)
 	}
 }
 

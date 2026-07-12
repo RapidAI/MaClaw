@@ -580,6 +580,9 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 	if !remoteToolSupported(toolName) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
 	}
+	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: toolName, LaunchSource: launchSource}); err != nil {
+		return RemoteSessionView{}, err
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
@@ -633,6 +636,9 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 	toolName = normalizeRemoteToolName(toolName)
 	if !remoteToolSupported(toolName) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
+	}
+	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: toolName, LaunchSource: launchSource}); err != nil {
+		return RemoteSessionView{}, err
 	}
 	cfg, err := a.LoadConfig()
 	if err != nil {

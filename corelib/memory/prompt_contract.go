@@ -12,7 +12,7 @@ const (
 	PromptCategoryProjectKnowledge  = "project_knowledge"
 	PromptCategoryInstruction       = "instruction"
 	PromptTagProactive              = "proactive"
-	PromptProactiveAck              = "💾 已主动记录"
+	PromptProactiveAck              = "已主动记录"
 	PromptSaveCategorySummary       = "user_fact | 偏好 → preference | 项目知识 → " + PromptCategoryProjectKnowledge + " | 指令 → " + PromptCategoryInstruction
 )
 

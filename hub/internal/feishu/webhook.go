@@ -256,7 +256,7 @@ func handleCommand(n *Notifier, openID, text string) {
 }
 
 func helpText() string {
-	return "📋 可用命令 / Available Commands:\n\n" +
+	return "可用命令 / Available Commands:\n\n" +
 		"/info — 查看概览（有会话时显示会话详情）\n" +
 		"/machines — 查看设备列表\n" +
 		"/call <昵称> — 切换目标设备（也可直接发送设备昵称切换）\n" +
@@ -273,16 +273,16 @@ func helpText() string {
 		"/kill <编号> — 终止会话\n" +
 		"/unbind — 解除飞书绑定\n" +
 		"/help — 显示此帮助\n\n" +
-		"💡 先 /machines 查看设备，/call 昵称 切换设备，再发消息给 Agent。"
+		"先 /machines 查看设备，/call 昵称 切换设备，再发消息给 Agent。"
 }
 
 // bindingGuide returns onboarding text for users who haven't bound their email yet.
 func bindingGuide() string {
-	return "👋 欢迎使用 MaClaw Hub 飞书机器人！\n\n" +
+	return "欢迎使用 MaClaw Hub 飞书机器人！\n\n" +
 		"使用前需要先绑定您的 Hub 账号。步骤很简单：\n\n" +
-		"1️⃣ 直接发送您的 Hub 注册邮箱（例如: you@example.com）\n" +
-		"2️⃣ 系统会向该邮箱发送 6 位验证码\n" +
-		"3️⃣ 在此对话中回复验证码即可完成绑定\n\n" +
+		"1⃣ 直接发送您的 Hub 注册邮箱（例如: you@example.com）\n" +
+		"2⃣ 系统会向该邮箱发送 6 位验证码\n" +
+		"3⃣ 在此对话中回复验证码即可完成绑定\n\n" +
 		"绑定后即可通过飞书查看设备、管理会话、接收通知。\n\n" +
 		"Welcome! Please send your Hub email to get started."
 }
@@ -325,7 +325,7 @@ func (n *Notifier) resolveUserTenantID(openID string) (string, string) {
 
 func handleListMachines(n *Notifier, openID string) {
 	if n.devices == nil {
-		replyText(n, openID, "⚠️ 设备服务未配置。")
+		replyText(n, openID, "设备服务未配置。")
 		return
 	}
 	userID := n.resolveUserID(openID)
@@ -336,7 +336,7 @@ func handleListMachines(n *Notifier, openID string) {
 
 	machines, err := n.devices.ListMachines(context.Background(), userID)
 	if err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 获取设备列表失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("获取设备列表失败: %v", err))
 		return
 	}
 	if len(machines) == 0 {
@@ -345,11 +345,11 @@ func handleListMachines(n *Notifier, openID string) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🖥 设备列表 (%d 台):\n\n", len(machines)))
+	sb.WriteString(fmt.Sprintf("设备列表 (%d 台):\n\n", len(machines)))
 	for _, m := range machines {
-		status := "🔴 离线"
+		status := "离线"
 		if m.Online {
-			status = "🟢 在线"
+			status = "在线"
 		}
 		name := m.Name
 		if name == "" {
@@ -364,7 +364,7 @@ func handleListMachines(n *Notifier, openID string) {
 		}
 		sb.WriteString(fmt.Sprintf("%s %s%s [%s]\n  ID: %s\n", status, name, aliasTag, m.Platform, shortID(m.MachineID)))
 		if m.Online && !m.LLMConfigured {
-			sb.WriteString("  ⚠️ LLM 未配置，Agent 无法运行\n")
+			sb.WriteString("  LLM 未配置，Agent 无法运行\n")
 		}
 		if m.ActiveSessions > 0 {
 			sb.WriteString(fmt.Sprintf("  活跃会话: %d\n", m.ActiveSessions))
@@ -381,12 +381,12 @@ func handleCallMachine(n *Notifier, openID string, args []string) {
 		return
 	}
 	// In legacy mode (no IM adapter), just show a hint.
-	replyText(n, openID, "⚠️ /call 命令需要通过 IM Adapter 处理。请确认 IM 插件已启用。")
+	replyText(n, openID, "/call 命令需要通过 IM Adapter 处理。请确认 IM 插件已启用。")
 }
 
 func handleListSessions(n *Notifier, openID string, args []string) {
 	if n.sessions == nil || n.devices == nil {
-		replyText(n, openID, "⚠️ 会话服务未配置。")
+		replyText(n, openID, "会话服务未配置。")
 		return
 	}
 	userID := n.resolveUserID(openID)
@@ -400,7 +400,7 @@ func handleListSessions(n *Notifier, openID string, args []string) {
 
 	machines, err := n.devices.ListMachines(context.Background(), userID)
 	if err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 获取设备列表失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("获取设备列表失败: %v", err))
 		return
 	}
 
@@ -433,7 +433,7 @@ func handleListSessions(n *Notifier, openID string, args []string) {
 				sb.WriteString(fmt.Sprintf("  任务: %s\n", truncate(s.Summary.CurrentTask, 60)))
 			}
 			if s.Summary.WaitingForUser {
-				sb.WriteString("  ⚠️ 等待用户操作\n")
+				sb.WriteString("  等待用户操作\n")
 			}
 			sb.WriteString("\n")
 		}
@@ -443,8 +443,8 @@ func handleListSessions(n *Notifier, openID string, args []string) {
 		replyText(n, openID, "暂无活跃会话。No active sessions.")
 		return
 	}
-	header := fmt.Sprintf("📋 会话列表 (%d 个):\n\n", total)
-	replyText(n, openID, header+sb.String()+"💡 /use <编号> 切换会话, /detail <编号> 查看详情")
+	header := fmt.Sprintf("会话列表 (%d 个):\n\n", total)
+	replyText(n, openID, header+sb.String()+"/use <编号> 切换会话, /detail <编号> 查看详情")
 }
 
 func handleSessionDetail(n *Notifier, openID string, args []string) {
@@ -462,13 +462,13 @@ func handleSessionDetail(n *Notifier, openID string, args []string) {
 	}
 	entry := n.findSession(openID, sessionPrefix)
 	if entry == nil {
-		replyText(n, openID, "❌ 未找到该会话（仅可查看自己的会话）。")
+		replyText(n, openID, "未找到该会话（仅可查看自己的会话）。")
 		return
 	}
 
 	s := entry.Summary
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📊 会话详情\n\n"))
+	sb.WriteString(fmt.Sprintf("会话详情\n\n"))
 	sb.WriteString(fmt.Sprintf("工具: %s\n", s.Tool))
 	sb.WriteString(fmt.Sprintf("标题: %s\n", truncate(s.Title, 60)))
 	sb.WriteString(fmt.Sprintf("状态: %s %s\n", statusEmoji(s.Status), s.Status))
@@ -489,7 +489,7 @@ func handleSessionDetail(n *Notifier, openID string, args []string) {
 		if action == "" {
 			action = "请查看终端"
 		}
-		sb.WriteString(fmt.Sprintf("⚠️ 等待用户: %s\n", action))
+		sb.WriteString(fmt.Sprintf("等待用户: %s\n", action))
 	}
 	sb.WriteString(fmt.Sprintf("编号: %s\n", n.getAlias(openID, entry.SessionID)))
 	sb.WriteString(fmt.Sprintf("Machine ID: %s\n", shortID(entry.MachineID)))
@@ -531,15 +531,15 @@ func handleSendInput(n *Notifier, openID string, args []string) {
 	// Always verify the session belongs to the current user.
 	entry := n.findSession(openID, args[0])
 	if entry == nil {
-		replyText(n, openID, "❌ 未找到该会话（仅可操作自己的会话）。")
+		replyText(n, openID, "未找到该会话（仅可操作自己的会话）。")
 		return
 	}
 	text := strings.Join(args[1:], " ")
 	if err := n.sendSessionCommand(entry, "session.input", map[string]any{"text": text}); err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 发送失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("发送失败: %v", err))
 		return
 	}
-	replyText(n, openID, fmt.Sprintf("✅ 已发送到会话 %s:\n%s", n.getAlias(openID, entry.SessionID), truncate(text, 100)))
+	replyText(n, openID, fmt.Sprintf("已发送到会话 %s:\n%s", n.getAlias(openID, entry.SessionID), truncate(text, 100)))
 }
 
 func handleInterrupt(n *Notifier, openID string, args []string) {
@@ -557,14 +557,14 @@ func handleInterrupt(n *Notifier, openID string, args []string) {
 	}
 	entry := n.findSession(openID, sessionPrefix)
 	if entry == nil {
-		replyText(n, openID, "❌ 未找到该会话（仅可操作自己的会话）。")
+		replyText(n, openID, "未找到该会话（仅可操作自己的会话）。")
 		return
 	}
 	if err := n.sendSessionCommand(entry, "session.interrupt", nil); err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 中断失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("中断失败: %v", err))
 		return
 	}
-	replyText(n, openID, fmt.Sprintf("⏸ 已发送中断信号到会话 %s", n.getAlias(openID, entry.SessionID)))
+	replyText(n, openID, fmt.Sprintf("已发送中断信号到会话 %s", n.getAlias(openID, entry.SessionID)))
 }
 
 func handleKill(n *Notifier, openID string, args []string) {
@@ -582,11 +582,11 @@ func handleKill(n *Notifier, openID string, args []string) {
 	}
 	entry := n.findSession(openID, sessionPrefix)
 	if entry == nil {
-		replyText(n, openID, "❌ 未找到该会话（仅可操作自己的会话）。")
+		replyText(n, openID, "未找到该会话（仅可操作自己的会话）。")
 		return
 	}
 	if err := n.sendSessionCommand(entry, "session.kill", nil); err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 终止失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("终止失败: %v", err))
 		return
 	}
 	// Clear active session if it was the killed one.
@@ -596,7 +596,7 @@ func handleKill(n *Notifier, openID string, args []string) {
 		delete(n.activeSession, openID)
 	}
 	n.activeMu.Unlock()
-	replyText(n, openID, fmt.Sprintf("⏹ 已发送终止信号到会话 %s", n.getAlias(openID, entry.SessionID)))
+	replyText(n, openID, fmt.Sprintf("已发送终止信号到会话 %s", n.getAlias(openID, entry.SessionID)))
 }
 
 func handleUseSession(n *Notifier, openID string, args []string) {
@@ -606,7 +606,7 @@ func handleUseSession(n *Notifier, openID string, args []string) {
 	}
 	entry := n.findSession(openID, args[0])
 	if entry == nil {
-		replyText(n, openID, "❌ 未找到该会话（仅可切换自己的会话）。")
+		replyText(n, openID, "未找到该会话（仅可切换自己的会话）。")
 		return
 	}
 	// Store the full session ID so subsequent commands match exactly.
@@ -619,7 +619,7 @@ func handleUseSession(n *Notifier, openID string, args []string) {
 	if title == "" {
 		title = entry.Summary.Tool
 	}
-	replyText(n, openID, fmt.Sprintf("✅ 已切换到会话: %s [%s]\n\n现在直接发文本就是给这个会话发命令。\n输入 /exit 退出会话上下文。",
+	replyText(n, openID, fmt.Sprintf("已切换到会话: %s [%s]\n\n现在直接发文本就是给这个会话发命令。\n输入 /exit 退出会话上下文。",
 		truncate(title, 40), alias))
 }
 
@@ -640,7 +640,7 @@ func handleInfo(n *Notifier, openID string) {
 
 	// No active session — show overview.
 	if n.devices == nil {
-		replyText(n, openID, "⚠️ 设备服务未配置。")
+		replyText(n, openID, "设备服务未配置。")
 		return
 	}
 	userID := n.resolveUserID(openID)
@@ -651,7 +651,7 @@ func handleInfo(n *Notifier, openID string) {
 
 	machines, err := n.devices.ListMachines(context.Background(), userID)
 	if err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 获取设备列表失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("获取设备列表失败: %v", err))
 		return
 	}
 	if len(machines) == 0 {
@@ -662,11 +662,11 @@ func handleInfo(n *Notifier, openID string) {
 	var sb strings.Builder
 	totalSessions := 0
 	onlineCount := 0
-	sb.WriteString(fmt.Sprintf("📊 概览 (%d 台设备)\n\n", len(machines)))
+	sb.WriteString(fmt.Sprintf("概览 (%d 台设备)\n\n", len(machines)))
 	for _, m := range machines {
-		status := "🔴 离线"
+		status := "离线"
 		if m.Online {
-			status = "🟢 在线"
+			status = "在线"
 			onlineCount++
 		}
 		name := m.Name
@@ -699,7 +699,7 @@ func handleInfo(n *Notifier, openID string) {
 					parts = append(parts, fmt.Sprintf("%d 运行中", active))
 				}
 				if waiting > 0 {
-					parts = append(parts, fmt.Sprintf("⚠️ %d 等待操作", waiting))
+					parts = append(parts, fmt.Sprintf("%d 等待操作", waiting))
 				}
 				sb.WriteString(" | ")
 				sb.WriteString(strings.Join(parts, ", "))
@@ -709,7 +709,7 @@ func handleInfo(n *Notifier, openID string) {
 	}
 
 	sb.WriteString(fmt.Sprintf("\n在线: %d/%d | 总会话: %d", onlineCount, len(machines), totalSessions))
-	sb.WriteString("\n\n💡 /use <会话号> 切换会话, /sessions 查看详细列表")
+	sb.WriteString("\n\n/use <会话号> 切换会话, /sessions 查看详细列表")
 	replyText(n, openID, sb.String())
 }
 
@@ -742,7 +742,7 @@ func handleScreenshot(n *Notifier, openID string, args []string) {
 
 	entry := n.findSession(openID, sessionPrefix)
 	if entry == nil {
-		replyText(n, openID, "❌ 未找到该会话（仅可操作自己的会话）。")
+		replyText(n, openID, "未找到该会话（仅可操作自己的会话）。")
 		return
 	}
 
@@ -755,10 +755,10 @@ func handleScreenshot(n *Notifier, openID string, args []string) {
 	}
 
 	if err := n.sendSessionCommand(entry, "session.screenshot", payload); err != nil {
-		replyText(n, openID, fmt.Sprintf("❌ 截屏命令发送失败: %v", err))
+		replyText(n, openID, fmt.Sprintf("截屏命令发送失败: %v", err))
 		return
 	}
-	replyText(n, openID, fmt.Sprintf("📸 已向会话 %s 发送截屏请求，稍后图片将发送到此对话。", n.getAlias(openID, entry.SessionID)))
+	replyText(n, openID, fmt.Sprintf("已向会话 %s 发送截屏请求，稍后图片将发送到此对话。", n.getAlias(openID, entry.SessionID)))
 }
 
 func handleExitSession(n *Notifier, openID string) {
@@ -788,7 +788,7 @@ func handleUnbind(n *Notifier, openID string) {
 		return
 	}
 	n.RemoveOpenID(email)
-	replyText(n, openID, fmt.Sprintf("✅ 已解除 %s 的绑定。", email))
+	replyText(n, openID, fmt.Sprintf("已解除 %s 的绑定。", email))
 }
 
 // findSession looks up a session by alias, suffix, or prefix match across all user's machines.
@@ -866,7 +866,7 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 	// Check if this email is already bound to this open_id.
 	existing := n.resolveOpenIDForTenant(tenantID, email)
 	if existing == openID {
-		replyText(n, openID, "✅ 该邮箱已绑定，无需重复操作。\n✅ This email is already bound.")
+		replyText(n, openID, "该邮箱已绑定，无需重复操作。\nThis email is already bound.")
 		return
 	}
 
@@ -971,7 +971,7 @@ func handleVerifyCode(n *Notifier, openID, code string) {
 	}
 
 	n.BindOpenIDForTenant(pb.TenantID, pb.Email, openID, "")
-	replyText(n, openID, "✅ 绑定成功！您将通过飞书接收 Hub 会话通知。\n✅ Binding succeeded! You will receive Hub session notifications via Feishu.")
+	replyText(n, openID, "绑定成功！您将通过飞书接收 Hub 会话通知。\nBinding succeeded! You will receive Hub session notifications via Feishu.")
 }
 
 // ---------------------------------------------------------------------------

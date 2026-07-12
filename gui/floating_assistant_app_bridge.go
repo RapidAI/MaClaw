@@ -54,7 +54,7 @@ func (a *App) OpenPetSettingsFromMenu() {
 	runtime.WindowShow(a.ctx)
 	runtime.WindowSetAlwaysOnTop(a.ctx, true)
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-	runtime.EventsEmit(a.ctx, "open-pet-settings", map[string]any{"source": "pet"})
+	a.emitEvent("open-pet-settings", map[string]any{"source": "pet"})
 }
 
 func (a *App) QuitApp() {

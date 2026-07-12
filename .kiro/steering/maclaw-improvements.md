@@ -420,8 +420,7 @@ python3 {baseDir}/scripts/query_session.py {{SESSION_ID}}
 **根因**：`saveRemoteConfigField`（`useRemotePanel.ts`）使用前端 React state 中缓存的 `config` 对象做 merge + `SaveConfig`。SSO 登录完成后，后端已将 `maclaw_llm_current_provider` 设为 `"CodeGen"`，但前端 state 仍持有旧值 `"免费"`。紧接着 `onSaveField({ remote_email })` 被调用，用 stale config 覆盖了后端的更新，导致 maclaw 仍然连接 `localhost:18099`（免费代理）而非 CodeGen API。
 
 **触发路径**：
-1. `StartCodeGenSSOEmbedded` → 后端 goroutine 中 `SaveMaclawLLMProviders(providers, "CodeGen")` → config.json `maclaw_llm_current_provider = "CodeGen"` ✓
-2. 前端收到 `WaitCodeGenSSOResult` 回调
+1. `StartCodeGenSSOEmbedded` → 后端 goroutine 中 `SaveMaclawLLMProviders(providers, "CodeGen")` → config.json `maclaw_llm_current_provider = "CodeGen"` 2. 前端收到 `WaitCodeGenSSOResult` 回调
 3. 前端调用 `onSaveField({ remote_email: userEmail })` → `saveRemoteConfigField`
 4. `saveRemoteConfigField` 用前端缓存的旧 `config`（`maclaw_llm_current_provider = "免费"`）merge `{ remote_email }` → `SaveConfig` 覆盖回 "免费"
 5. maclaw 发起 LLM 请求 → 解析到 "免费" → `localhost:18099` → connection refused
@@ -848,7 +847,7 @@ python3 {baseDir}/scripts/query_session.py {{SESSION_ID}}
 
 #### 2. `BuildIntegrationPrompt()`（`gui/task_execution_orchestrator.go`）
 
-- 列出所有已完成任务及其产出文件（含状态图标 ✅/❌/⏭️）
+- 列出所有已完成任务及其产出文件（含状态图标 //⏭️）
 - 6 步集成检查清单：import 检查 → main 入口 → 接口匹配 → 胶水代码 → 编译 → 运行
 - 附带精简的需求上下文摘要
 
@@ -1667,7 +1666,7 @@ tool 分支的 `needsConfirmToolBranch` 同步修改。
 之前（原文复述）：
 ```
 我理解你想让我处理这项任务：搜索网上 美发师 vibehair的资料，包括经历，工作单位，水平，所在店名，地址等，越详细越好。
-默认工作目录：📁 D:\workprj\aicoder
+默认工作目录：D:\workprj\aicoder
 识别到的任务类型：ambiguous
 ```
 
@@ -1819,7 +1818,7 @@ tool 分支的 `needsConfirmToolBranch` 同步修改。
 - `WaitForOutput` 等到 deadline 后，检查最后一行是否像 shell prompt
 - 不像 prompt（命令可能挂起）→ 发送 `Interrupt()`（Ctrl+C）中断
 - 等待 500ms 收集中断输出
-- 在输出末尾追加 `[maclaw] ⚠️ 命令执行超时，已发送 Ctrl+C 中断`
+- 在输出末尾追加 `[maclaw] 命令执行超时，已发送 Ctrl+C 中断`
 
 #### 4. `sshConnect` 复用前验证 shell（`gui/im_ssh_tools.go`）
 
@@ -1847,7 +1846,7 @@ tool 分支的 `needsConfirmToolBranch` 同步修改。
 ```
 LLM: "连接确实卡了。强制关闭重建。"
 → ssh(action=close, session_id=ssh_root@api.rapidai.tech:22_1)
-→ "✅ SSH 会话已关闭"
+→ "SSH 会话已关闭"
 → ssh(action=connect, host=api.rapidai.tech, ...)
 → "♻️ 复用已有 SSH 会话"  ← 旧会话没被移除！
 → ssh(action=exec, command="echo test123")
@@ -1901,9 +1900,7 @@ LLM: "连接确实卡了。强制关闭重建。"
 8. LLM 说"现在就登录服务器帮你更新"但无法执行，卡在"执行中"
 
 **日志证据**：
-- `tool_route.log`：`Selected tools (29)` 包含 ssh ✅
-- `trajectory`：`tool_names (10)` 不含 ssh ❌
-- `maclaw.log`：`[frozen_snapshot] reusing cached memory snapshot` — 未重新生成 memory snapshot
+- `tool_route.log`：`Selected tools (29)` 包含 ssh - `trajectory`：`tool_names (10)` 不含 ssh - `maclaw.log`：`[frozen_snapshot] reusing cached memory snapshot` — 未重新生成 memory snapshot
 - `maclaw.log`：`[workflow-gate] NeedsConfirm no-tool engine bypassed: semantic intent=coding active=false bugFix=true` — NeedsConfirm gate 被正确跳过，但工具过滤未跳过
 
 **修复**：
@@ -2483,12 +2480,12 @@ UIC 已有 `LabelDocumentDelivery` 标签，L1 关键词 `"发给我"` 是 Stron
 
 | 调用位置 | 触发条件 | 层次 | 是否正确 |
 |---------|---------|------|---------|
-| `/new`、`/reset`、`/clear` 命令 | 用户主动重置 | 消息处理层 | ✅ 正确 |
-| `StartNewTask` | 用户明确开始新任务 | 消息处理层 | ✅ 正确 |
-| `shouldAutoClearIncompleteTaskContext` | 自动检测到新任务 | 消息处理层 | ✅ 正确（用 `ClearConversationAndDismissSlot`） |
-| TopicDetector `TopicNew` | 话题切换自动清理 | 消息处理层 | ✅ 正确（先归档摘要再清空） |
-| `handleExitCommand` | `/exit` 命令 | 消息处理层 | ✅ 正确 |
-| ~~取消退出点 ×3~~ | ~~agent loop 被取消~~ | ~~Agent Loop 层~~ | ❌ **已修复** |
+| `/new`、`/reset`、`/clear` 命令 | 用户主动重置 | 消息处理层 | 正确 |
+| `StartNewTask` | 用户明确开始新任务 | 消息处理层 | 正确 |
+| `shouldAutoClearIncompleteTaskContext` | 自动检测到新任务 | 消息处理层 | 正确（用 `ClearConversationAndDismissSlot`） |
+| TopicDetector `TopicNew` | 话题切换自动清理 | 消息处理层 | 正确（先归档摘要再清空） |
+| `handleExitCommand` | `/exit` 命令 | 消息处理层 | 正确 |
+| ~~取消退出点 ×3~~ | ~~agent loop 被取消~~ | ~~Agent Loop 层~~ | **已修复** |
 
 修复后，`runAgentLoop` 内部不再有任何 `memory.Clear` 调用。历史生命周期完全由消息处理层管理。
 
@@ -2732,10 +2729,10 @@ Bubble Tea 的事件循环是 `processMsg → render → processMsg → render`�
 |--------|--------|---------|-----------------|
 | GUI `skill_searcher.go` SearchAll | SkillHub + ClawHub + GitHub | 有 | `const ClawHubMirrorURL` |
 | GUI `skillhub_client.go` Search | SkillHub only | 有（含依赖安装+文件提取） | N/A |
-| TUI `app.go` searchSkills | SkillHub only ❌ | 占位（返回提示文本）❌ | N/A |
-| TUI `tool_manage_skill.go` skillSearch | SkillHub only ❌ | 有（但无 ClawHub）❌ | N/A |
-| TUI CLI `skillhub.go` skillhubSearch | SkillHub + GitHub | 有（但无 ClawHub）❌ | N/A |
-| TUI CLI `skill_search_api.go` SearchSkillHub | SkillHub only ❌ | N/A | N/A |
+| TUI `app.go` searchSkills | SkillHub only | 占位（返回提示文本）| N/A |
+| TUI `tool_manage_skill.go` skillSearch | SkillHub only | 有（但无 ClawHub）| N/A |
+| TUI CLI `skillhub.go` skillhubSearch | SkillHub + GitHub | 有（但无 ClawHub）| N/A |
+| TUI CLI `skill_search_api.go` SearchSkillHub | SkillHub only | N/A | N/A |
 
 每条路径各自定义 HTTP 请求逻辑、JSON 解析结构体、URL 常量。新增搜索源或修改 API 格式需要改 5 个文件。ClawHub URL 在 4 个地方重复定义。
 
@@ -2896,7 +2893,7 @@ Repo search 返回的 candidate 默认 `FilePath: "SKILL.md"`，但实际文件�
 
 三个独立问题叠加：
 
-1. **流式内容不完整**：LLM 通过 SSE 逐 token 推送内容，`text_delta` 追加到 assistant 消息后立即触发 `renderLines()` → `RenderMarkdown()`。此时内容可能是 `📁 文件：**HuggingFace_Daily_Papers`（缺少闭合 `**`），`processInlinePattern` 找不到闭合分隔符，原始 `**` 标记直接显示。同理，单行表格 `| 章节 | 内容 |` 因为没有后续行，不满足"至少 2 行连续表格行"的检测条件，原始 `|` 管道符直接显示。
+1. **流式内容不完整**：LLM 通过 SSE 逐 token 推送内容，`text_delta` 追加到 assistant 消息后立即触发 `renderLines()` → `RenderMarkdown()`。此时内容可能是 `文件：**HuggingFace_Daily_Papers`（缺少闭合 `**`），`processInlinePattern` 找不到闭合分隔符，原始 `**` 标记直接显示。同理，单行表格 `| 章节 | 内容 |` 因为没有后续行，不满足"至少 2 行连续表格行"的检测条件，原始 `|` 管道符直接显示。
 
 2. **段落不换行**：`RenderMarkdown` 的普通段落路径只做 `renderInlineMarkdown(line)` + `"  "` 前缀，不做换行。超长段落溢出终端宽度。
 
@@ -3052,7 +3049,7 @@ SSH 后台任务已有正确模式：
 
 `bash(command="babeldoc ...", background=true)` → 调用 `LocalBackgroundTaskManager.Submit()`，立即返回：
 ```
-✅ 后台任务已启动
+后台任务已启动
 task_id: local_1714000000_1
 PID: 12345
 日志文件: ~/.maclaw/data/bg_tasks/local_1714000000_1.log
@@ -3822,13 +3819,13 @@ func ResolveHubCenterWithFailover(ctx context.Context, configuredURL string,
 #### 3. Markdown 链接中的本地路径可点击
 
 - 原逻辑：`[text](href)` 只处理 `https?://` URL，非 HTTP 链接渲染为不可点击的 `<span>`
-- 新增 `looksLikeFilePath(href)` 检查：本地路径渲染为 📂 可点击链接，使用用户提供的 label 文本
+- 新增 `looksLikeFilePath(href)` 检查：本地路径渲染为 可点击链接，使用用户提供的 label 文本
 
 **未修改**：
 - 斜体分支（`*C:\path*`）：LLM 几乎不会斜体化路径，实际场景极少，不值得增加代码复杂度
 
 **验收标准**：
-- `` `D:\workprj\aicoder\docs\iworker\pptx_output\` `` → 绿色可点击链接（📂 图标 + 下划线），点击打开目录
+- `` `D:\workprj\aicoder\docs\iworker\pptx_output\` `` → 绿色可点击链接（图标 + 下划线），点击打开目录
 - `**D:\workprj\file.txt**` → 同上
 - `[打开文件](D:\workprj\file.pdf)` → 可点击链接，显示"打开文件"文本
 - `` `npm install` `` → 红色代码文本（不受影响）
@@ -3969,7 +3966,7 @@ func ResolveHubCenterWithFailover(ctx context.Context, configuredURL string,
 | 工具定义 | ~15,000 token (40+工具) | ~744 token (5工具) | -95% |
 | 初始开销 | ~40,000 token | ~7,000 token | -82% |
 | 可用编码空间 | ~62,000 token | ~95,000 token | +53% |
-| 单任务 context 隔离 | ❌ 所有任务共享 | ✅ 每个任务独立 | 不会累积膨胀 |
+| 单任务 context 隔离 | 所有任务共享 | 每个任务独立 | 不会累积膨胀 |
 
 **设计要点**：
 - SubAgent 不是独立进程——是同一个 Go 进程内的独立 LLM 对话，共享 HTTP client 和 LLM config
@@ -4036,7 +4033,7 @@ Path 2a 将三步压缩为一步：检测编码意图 → 激活 orchestrator �
 用户: "开发一个c++的超级玛利游戏"
   → QuickFilter → FilterNeedsUnderstanding
   → handleNeedsUnderstanding → UIC/IUM 分类 → StartWorkflow(coding)
-  → 返回 "🚀 工作流已启动"
+  → 返回 "工作流已启动"
   → 用户确认需求 → 用户确认设计 → 用户确认任务列表
   → 工作流进入 implementation 阶段
   → Path 1 激活 orchestrator（带需求/设计上下文）
@@ -4065,7 +4062,7 @@ Path 2a 将三步压缩为一步：检测编码意图 → 激活 orchestrator �
 
 ### 77. 工作流启动后停滞——StartWorkflow 后未触发 Agent Loop 的机制性断裂
 
-**来源**：用户截图——"在d:\workprj\steave2 下开发一个c++的警察抓小偷游戏。图形界面，画面精美，cmake管理，有音效。" 发送后，面板显示"🚀 工作流已启动：coding，📋 当前阶段：requirements"，然后就停了。右侧面板显示"暂无文档内容"，LLM 没有生成需求文档。
+**来源**：用户截图——"在d:\workprj\steave2 下开发一个c++的警察抓小偷游戏。图形界面，画面精美，cmake管理，有音效。" 发送后，面板显示"工作流已启动：coding，当前阶段：requirements"，然后就停了。右侧面板显示"暂无文档内容"，LLM 没有生成需求文档。
 
 **根因（机制性分析）**：
 
@@ -4099,7 +4096,7 @@ Path 2a 将三步压缩为一步：检测编码意图 → 激活 orchestrator �
 #### `handlePostStartWorkflow(engine, userID, text, state, extraText)` — 单一实现
 
 1. `EmitSuggestMaximize`（桌面面板全屏建议）
-2. 构建 overview 文本（"🚀 工作流已启动"），可选追加 `extraText`（IUM 的 reply）
+2. 构建 overview 文本（"工作流已启动"），可选追加 `extraText`（IUM 的 reply）
 3. 输入驱动型工作流（`RequiresInput` 非空）→ 返回 overview + 输入引导，等待用户上传
 4. 非输入驱动型工作流 → `SendTextToUser(overview)` → `handleActiveWorkflow(engine, userID, text)`
 
@@ -4180,13 +4177,7 @@ engineGateActive := needsConfirmFromEngine
 - `HasPhaseOutput` 方法本身保留（用于 post-loop doc capture 等其他场景），只是不再用于门控决策
 
 **边界情况验证**：
-- LLM 输出短前言"让我来生成..." → `isSubstantivePhaseDocument` = false → 门控跳过 → loop 继续 ✅
-- LLM 输出完整文档 → `isSubstantivePhaseDocument` = true → 门控触发 → force-return ✅
-- LLM 输出文档 + 自我确认 → `containsSelfConfirmationPattern` 截断自答 → `isSubstantivePhaseDocument` = true → force-return ✅
-- LLM 输出 stall reply → `looksLikeNoToolStallReply` = true → 门控跳过 → loop 继续 ✅
-- `NeedsConfirm=false` 阶段 → `needsConfirmFromEngine = false` → 门控不激活 ✅
-- 用户确认后回来，LLM 输出短过渡 → `isSubstantivePhaseDocument` = false → 门控跳过 ✅
-
+- LLM 输出短前言"让我来生成..." → `isSubstantivePhaseDocument` = false → 门控跳过 → loop 继续 - LLM 输出完整文档 → `isSubstantivePhaseDocument` = true → 门控触发 → force-return - LLM 输出文档 + 自我确认 → `containsSelfConfirmationPattern` 截断自答 → `isSubstantivePhaseDocument` = true → force-return - LLM 输出 stall reply → `looksLikeNoToolStallReply` = true → 门控跳过 → loop 继续 - `NeedsConfirm=false` 阶段 → `needsConfirmFromEngine = false` → 门控不激活 - 用户确认后回来，LLM 输出短过渡 → `isSubstantivePhaseDocument` = false → 门控跳过 
 **验收标准**：
 - PPT 工作流 slide_scripting 阶段：LLM 输出详稿后 → 返回给用户确认，不自动继续
 - 所有 19 个工作流模板的 NeedsConfirm=true 阶段：门控在 LLM 产出实质性文档时立即触发
@@ -4381,9 +4372,9 @@ Go 的 `AppConfig` 有 `WorkflowEnabled *bool` 字段，但 Wails 生成的 Type
 `workflow_enabled=false` 时，`getWorkflowEngine()` 返回 nil，引擎驱动的工作流（19 个模板的多阶段流程）被正确禁用。但 **steering 驱动的编码门控**（`CodingToolGate` + `SteeringWorkflowDetector`）完全不检查这个开关——它们基于意图分类（`gateConfig.active`）和对话历史（`conversationHasCodingContext()`）独立运行。
 
 用户关闭"打开工作流"后发送"开发一个游戏"：
-- ✅ 引擎不启动（`handleWorkflowInterception` 短路）
-- ❌ `CodingToolGate` 仍然激活，拦截编码工具
-- ❌ `SteeringWorkflowDetector` 仍然激活，发射全屏 banner 和 doc preview 事件
+- 引擎不启动（`handleWorkflowInterception` 短路）
+- `CodingToolGate` 仍然激活，拦截编码工具
+- `SteeringWorkflowDetector` 仍然激活，发射全屏 banner 和 doc preview 事件
 
 **修复**：
 - `gui/im_message_handler.go`：`runAgentLoop` 中新增 `workflowOff` 局部变量（从 `h.app.workflowDisabled` 原子变量读取一次），在两个消费点使用：
@@ -4546,11 +4537,11 @@ SSH 操作天然是多步骤序列（connect → exec → check_task → exec �
 
 | 退出路径 | 修复前 | 修复后 |
 |---------|--------|--------|
-| 正常完成（finalize） | `saveConversationHistoryTimed` ✅ | 不变 |
-| 取消退出（cancel ×3） | `cancelledExitResponse` → `saveConversationHistoryTimed` ✅（#54 修复） | 不变 |
-| 空响应 hard exit | `saveConversationHistoryTimed` ✅（#39 修复） | 不变 |
-| LLM 调用失败 | `return &IMAgentResponse{Error}` ❌ **未保存** | `llmErrorExitResponse` → `saveConversationHistoryTimed` ✅ |
-| LLM 返回 0 choices | `return &IMAgentResponse{Error}` ❌ **未保存** | `llmErrorExitResponse` → `saveConversationHistoryTimed` ✅ |
+| 正常完成（finalize） | `saveConversationHistoryTimed` | 不变 |
+| 取消退出（cancel ×3） | `cancelledExitResponse` → `saveConversationHistoryTimed` （#54 修复） | 不变 |
+| 空响应 hard exit | `saveConversationHistoryTimed` （#39 修复） | 不变 |
+| LLM 调用失败 | `return &IMAgentResponse{Error}` **未保存** | `llmErrorExitResponse` → `saveConversationHistoryTimed` |
+| LLM 返回 0 choices | `return &IMAgentResponse{Error}` **未保存** | `llmErrorExitResponse` → `saveConversationHistoryTimed` |
 
 **验收标准**：
 - LLM 调用失败（HTTP 429/超时/网络错误）后，用户说"继续" → LLM 有完整对话历史，知道之前在做什么
@@ -4569,9 +4560,9 @@ Agent loop 中 LLM 调用失败后的重试链路有三层，**全部不识别 4
 
 | 层 | 机制 | 是否识别 429 | 问题 |
 |---|------|-------------|------|
-| Layer 1 | `AdaptiveRetry.Classify()` | ❌ `networkKeywords` 不含 429/rate_limit | 429 被分类为 `FailureUnknown` |
+| Layer 1 | `AdaptiveRetry.Classify()` | `networkKeywords` 不含 429/rate_limit | 429 被分类为 `FailureUnknown` |
 | Layer 2 | `AdaptiveRetry.Decide(FailureUnknown)` | — | `FailureUnknown` 只重试 1 次，延迟 1s |
-| Layer 3 | `isRetryableLLMError()` | ❌ 不含 429 | 只处理 timeout/network/5xx |
+| Layer 3 | `isRetryableLLMError()` | 不含 429 | 只处理 timeout/network/5xx |
 
 同时，`isRateLimitError()` 函数**已经存在**且能正确识别 429，但**没有被 agent loop 的重试链路使用**。
 
@@ -4599,7 +4590,7 @@ Agent loop 中 LLM 调用失败后的重试链路有三层，**全部不识别 4
 - `gui/im_message_handler.go`：AdaptiveRetry 路径从单次重试改为循环重试
   - `for retryAttempt := 0; err != nil && !ctx.IsCancelled(); retryAttempt++`
   - 每次循环调用 `Decide(toolName, category, retryAttempt)`，直到 `Action != "retry"`
-  - 重试期间通过 `onProgress` 回调通知前端："⏳ API 请求频率受限，等待 Ns 后重试 (M/3)..."
+  - 重试期间通过 `onProgress` 回调通知前端："API 请求频率受限，等待 Ns 后重试 (M/3)..."
   - 重试后重新 `Classify` 错误（错误类型可能在重试后变化）
   - Fallback 路径（无 AdaptiveRetry）也支持 429 多次重试：`isRateLimitError` → 3 次指数退避
 
@@ -4618,7 +4609,7 @@ Agent loop 中 LLM 调用失败后的重试链路有三层，**全部不识别 4
 #### Fix 5: 错误消息包含任务上下文
 
 - `gui/im_message_handler.go`：`llmErrorExitResponse` 从 history 中提取最后一条 user 消息作为任务摘要
-  - 错误消息末尾追加 `💡 你之前的任务：{摘要}\n发送任意消息即可继续。`
+  - 错误消息末尾追加 `你之前的任务：{摘要}\n发送任意消息即可继续。`
 
 **指数退避策略**：
 
@@ -5069,11 +5060,11 @@ Phase 2 的问题：重试耗尽后，截断的 tool call 被 `filterTruncatedTo
 
 | 场景 | 原代码 | 活跃工作流方案 | 始终独立方案 |
 |------|--------|--------------|------------|
-| 论文摘要 | ❌ 合并到项目 | ✅ 独立 | ✅ 独立 |
-| SSH 操作 | ❌ 合并到项目 | ✅ 独立 | ✅ 独立 |
-| 编码（有工作流）| ✅ 合并到项目 | ✅ 合并到项目 | ✅ 独立（工作流 artifact 另有项目记录）|
-| 编码（无工作流）| ✅ 合并到项目 | ❌ 独立（回归）| ✅ 独立 |
-| 翻译写到项目目录 | ❌ 合并到项目 | ❌ 合并到项目 | ✅ 独立 |
+| 论文摘要 | 合并到项目 | 独立 | 独立 |
+| SSH 操作 | 合并到项目 | 独立 | 独立 |
+| 编码（有工作流）| 合并到项目 | 合并到项目 | 独立（工作流 artifact 另有项目记录）|
+| 编码（无工作流）| 合并到项目 | 独立（回归）| 独立 |
+| 翻译写到项目目录 | 合并到项目 | 合并到项目 | 独立 |
 
 "始终独立"是唯一在所有场景下都正确的方案。编码任务（有工作流）的项目记录由 `workflow_artifact_saver` 创建，不依赖 sediment entry。编码任务（无工作流）作为独立项出现在列表中，用户可以看到每个任务——这比合并到一个不可区分的项目记录更好。
 
@@ -5213,11 +5204,11 @@ IUM 有更丰富的上下文（system prompt 中包含 maclaw 功能描述、工
 **权力分配（修复后）**：
 ```
 UIC (UnifiedIntentClassifier)
-  ├── 快速 reject 权 ✅：MayTriggerWorkflow=false + conf >= threshold → 直接 reject
-  └── 快速 accept 权 ❌：已删除。WorkflowType 仅作为 hint 记录到日志
+  ├── 快速 reject 权 ：MayTriggerWorkflow=false + conf >= threshold → 直接 reject
+  └── 快速 accept 权 ：已删除。WorkflowType 仅作为 hint 记录到日志
 
 IUM (IntentUnderstandingManager)
-  └── 深度确认权 ✅：所有工作流启动必须经过 IUM 确认
+  └── 深度确认权 ：所有工作流启动必须经过 IUM 确认
 ```
 
 **延迟优化（first-round ready）**：
@@ -5248,7 +5239,7 @@ IUM (IntentUnderstandingManager)
 
 ### 93. Merge Injection 导致 SSH 工具缺失——已取消 loop 仍接受 merge + 工具列表不随 injection 更新
 
-**来源**：用户截图——上一个任务完成/取消后，用户发送"直接用ssh连上api服务器修改配置呀"，系统回复"👌 收到，已纳入当前任务"，然后用 bash 执行原始 `ssh -o StrictHostKeyChecking=n...` 命令挂起 6-10 分钟。
+**来源**：用户截图——上一个任务完成/取消后，用户发送"直接用ssh连上api服务器修改配置呀"，系统回复"收到，已纳入当前任务"，然后用 bash 执行原始 `ssh -o StrictHostKeyChecking=n...` 命令挂起 6-10 分钟。
 
 **根因（两层叠加）**：
 
@@ -5257,9 +5248,7 @@ IUM (IntentUnderstandingManager)
 **根因**：`enterIMMessageSerializationBoundary`（桌面面板消息入口）判断"是否有活跃 loop 可以 merge"时，只检查 `currentLoopCtx != nil`，不检查 `IsCancelled()`。`CancelCurrentSession()` 调用 `ctx.Cancel()` 后等待 `DoneC`（最多 10s），在 cancel 到 defer 清理 `currentLoopCtx=nil` 之间的窗口期内，新消息被错误 merge 进正在死亡的 loop。
 
 同一个判断逻辑在两个入口有不同实现：
-- `shouldTryInlineInterrupt`（IM 通道）：检查 `currentLoopCtx != nil && !IsCancelled()` ✅
-- `enterIMMessageSerializationBoundary`（桌面面板）：只检查 `currentLoopCtx != nil` ❌
-
+- `shouldTryInlineInterrupt`（IM 通道）：检查 `currentLoopCtx != nil && !IsCancelled()` - `enterIMMessageSerializationBoundary`（桌面面板）：只检查 `currentLoopCtx != nil` 
 **修复**：提取 `hasActiveInterruptableLoop()` 作为单一数据源，所有 interrupt/merge/injection 入口共享。
 
 - `gui/im_interrupt_inline.go`：新增 `hasActiveInterruptableLoop()` 方法
@@ -5347,7 +5336,7 @@ onProgress := func(progressText string) {
 ```typescript
 const HIDDEN_PROGRESS_PATTERNS = [
     /^__heartbeat__$/,
-    /^[⏳]\s*命令仍在执行中（已\s*\d+s）:/,
+    /^[]\s*命令仍在执行中（已\s*\d+s）:/,
 ];
 ```
 
@@ -5697,7 +5686,7 @@ Guards 防止误杀合法 session 交互：
 
 ### 100. 多 Agent Tab 并发时结果不显示——`appendUnique` 丢弃已更新消息版本
 
-**来源**：用户在 project tab（如"北京天气"）使用 buffer queue 依次发送多个城市天气查询，每次请求完成后显示 `▶ 🌙 思考中...`（空 placeholder）和最终响应文本**同时**出现，导致结果看似没有正确显示。
+**来源**：用户在 project tab（如"北京天气"）使用 buffer queue 依次发送多个城市天气查询，每次请求完成后显示 `▶ 思考中...`（空 placeholder）和最终响应文本**同时**出现，导致结果看似没有正确显示。
 
 **根因**：`AIAssistantPanel.tsx` 中 `wasSending && !sending` effect 里有一个 `appendUnique` 内联函数，其语义是"只添加 history 里没有的新 ID，跳过已有 ID 的消息"。这导致了以下竞态：
 
@@ -6074,12 +6063,12 @@ SubAgent 激活路径仅保留两条：
 
 | 阶段 | ID | ToolPolicy | NeedsConfirm | 说明 |
 |------|-----|-----------|-------------|------|
-| 论文深度解读 | paper_analysis | doc_only | ✅ | 精读论文提取方法、实验设置、关键数值 |
-| 复现规划 | reproduction_plan | full | ✅ | 搜索源码（GitHub）、搜索数据集、确定项目结构 |
-| 环境搭建与数据准备 | env_and_data | full | ❌ | SSH 连接服务器、安装依赖、下载数据 |
-| 基线实验复现 | baseline_reproduction | full | ❌ | 按论文参数跑实验，对比论文数值 |
-| 迭代改进 | iterative_improvement | full | ❌ | 循环修改程序直到结果超越论文或达到上限 |
-| 实验报告 | experiment_report | full | ✅ | 生成完整报告含对比/消融/超参分析 |
+| 论文深度解读 | paper_analysis | doc_only | | 精读论文提取方法、实验设置、关键数值 |
+| 复现规划 | reproduction_plan | full | | 搜索源码（GitHub）、搜索数据集、确定项目结构 |
+| 环境搭建与数据准备 | env_and_data | full | | SSH 连接服务器、安装依赖、下载数据 |
+| 基线实验复现 | baseline_reproduction | full | | 按论文参数跑实验，对比论文数值 |
+| 迭代改进 | iterative_improvement | full | | 循环修改程序直到结果超越论文或达到上限 |
+| 实验报告 | experiment_report | full | | 生成完整报告含对比/消融/超参分析 |
 
 **复现规划阶段**设为 `ToolPolicyFull`：需要 `web_search`/`web_fetch` 实际搜索 GitHub 源码和数据集下载链接。
 
@@ -6132,12 +6121,12 @@ SubAgent 内部自动判断 ssh_bash 的命令是否为长时间训练（含 tra
 RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 - **任务名**：`论文复现: {paper_title} - 迭代改进`
 - **状态列表**：
-  - `🔧 修改代码中 (exp_017)` — 当 LLM 在生成代码修改
-  - `🏃 训练中 (exp_017, epoch 15/100, loss=0.342)` — 训练后台任务运行中
-  - `📊 评估中 (exp_017)` — 训练完成，正在跑评估脚本
-  - `💤 等待中 (下一轮改进)` — 评估完成，等待开始下一轮
+  - `修改代码中 (exp_017)` — 当 LLM 在生成代码修改
+  - `训练中 (exp_017, epoch 15/100, loss=0.342)` — 训练后台任务运行中
+  - `评估中 (exp_017)` — 训练完成，正在跑评估脚本
+  - `等待中 (下一轮改进)` — 评估完成，等待开始下一轮
   - `⏸️ 已暂停` — 用户暂停
-  - `🎉 达成目标` — 超越论文指标
+  - `达成目标` — 超越论文指标
 - **进度数据**：
   - 当前轮次 / 最大轮数
   - 累计运行时间 / 最大运行时间
@@ -6262,13 +6251,13 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 #### 3. FormData section 标题强化（`corelib/workflow/v2/phase_prompt.go`）
 
 `BuildPhasePrompt` 中 FormData section 的标题和说明改为强制性指令：
-- "## ⚠️ 用户提供的结构化信息（必须使用，禁止再询问）"
+- "## 用户提供的结构化信息（必须使用，禁止再询问）"
 - "请**直接基于这些信息**生成本阶段文档。禁止向用户重复索要这些已提供的信息"
 
 **效果**：
 - System prompt 从 ~28K 缩减到 ~15K（去掉 proactive recall + knowledge auto-recall 噪音）
 - userText 明确指向 FormData section，消除"该从哪里获取输入"的歧义
-- FormData header 使用 ⚠️ + "禁止" 强指令，防止模型忽略
+- FormData header 使用 + "禁止" 强指令，防止模型忽略
 
 **验收标准**：
 - 专利申请工作流表单提交后 → LLM 直接读取交底书文件并生成解析文档，不再询问已提供的信息
@@ -6317,7 +6306,7 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 #### 5. 前端：Tab 标题红点指示（`AITabItem.tsx` + `AITabBar.tsx`）
 
 - `AITabItemProps` 新增 `recording?: boolean` prop
-- Tab 标题区域显示红色录制圆点（🔴 脉冲动画）
+- Tab 标题区域显示红色录制圆点（脉冲动画）
 - `AITabBar` 接收 `recordingTabId` prop，传递给每个 `AITabItem`
 
 #### 6. 前端：顶部按钮状态跟随 tab 切换（`AssistantTitleBar.tsx`）
@@ -6329,10 +6318,9 @@ RemoteCodingSubAgent 启动后注册到 GUI 的任务监控系统：
 
 **交互流程**：
 ```
-用户点顶部"录制" → 当前 Tab A 开始录制 → Tab A 标题出现 🔴
-用户切到 Tab B → 顶部按钮变为 disabled（Tab B 没在录制且 Tab A 正在录制）
+用户点顶部"录制" → 当前 Tab A 开始录制 → Tab A 标题出现 用户切到 Tab B → 顶部按钮变为 disabled（Tab B 没在录制且 Tab A 正在录制）
 用户切回 Tab A → 顶部按钮变为红色激活态
-用户点顶部"录制"停止 → Tab A 停止 → 🔴 消失 → 弹出 skill 保存面板
+用户点顶部"录制"停止 → Tab A 停止 → 消失 → 弹出 skill 保存面板
 ```
 
 **设计决策**：同一时间只允许一个 tab 录制（单实例 recorder，简化心智模型）。
@@ -6636,8 +6624,7 @@ iter N+2: LLM 没有 write_file → 使用 bash + Python 写文件 → 成功
 
 #### 验收标准
 
-- 直连 DeepSeek API：33238 chars 完整 JSON，8179 tokens ✅
-- 通过 hub 转发（nginx timeout 已调大 + hub timeout 600s）：不再 504
+- 直连 DeepSeek API：33238 chars 完整 JSON，8179 tokens - 通过 hub 转发（nginx timeout 已调大 + hub timeout 600s）：不再 504
 - GLM-4（max 4096）首次请求：二分降级 65536→32768→16384→8192→4096，之后缓存
 - Essential tool 反复截断：不再停止，自动切换到 bash 替代方案
 
@@ -6903,7 +6890,7 @@ iter N+2: LLM 没有 write_file → 使用 bash + Python 写文件 → 成功
 
 ### 116. 取消任务后"系统正在恢复中"——bash 子进程不响应取消 + 前端提前恢复输入框
 
-**来源**：用户取消正在执行的 babeldoc 翻译任务后，面板显示"⚠️ 系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。"
+**来源**：用户取消正在执行的 babeldoc 翻译任务后，面板显示"系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。"
 
 **根因（两层叠加）**：
 
@@ -7167,11 +7154,11 @@ Layer 3 — 前端接收点（纵深）：
   - `GetMaclawLLMConfig()`：OAuth key 优先从 CredentialStore 读取
 
 **与 Pi 的对齐点**：
-- ✅ Credential 独立于 config 存储（`credentials.json` vs `auth.json`）
-- ✅ `Modify()` 串行化防止 double-refresh（等价于 Pi 的 `CredentialStore.modify()`）
-- ✅ 独立 mutex 不与全局 config 锁竞争
-- ✅ 原子写入（tmp + rename）
-- ✅ 向后兼容（双写 config.json 给 TUI 读取）
+- Credential 独立于 config 存储（`credentials.json` vs `auth.json`）
+- `Modify()` 串行化防止 double-refresh（等价于 Pi 的 `CredentialStore.modify()`）
+- 独立 mutex 不与全局 config 锁竞争
+- 原子写入（tmp + rename）
+- 向后兼容（双写 config.json 给 TUI 读取）
 
 **迁移策略**：
 - 写入时：同时写 credentials.json 和 config.json（双写）

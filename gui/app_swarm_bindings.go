@@ -3,14 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
-	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
 )
 
 var errSwarmNotInit = fmt.Errorf("swarm orchestrator not initialised")
-
-var swarmInitOnce sync.Once
 
 // ---------------------------------------------------------------------------
 // Wails frontend bindings for SwarmOrchestrator
@@ -18,13 +15,17 @@ var swarmInitOnce sync.Once
 
 // StartSwarmRun starts a new swarm run (exposed to frontend).
 func (a *App) StartSwarmRun(req swarm.SwarmRunRequest) (*swarm.SwarmRun, error) {
-	req.ProjectPath = normalizeProjectSessionPath(req.ProjectPath)
+	// Only an explicit project path on the request binds swarm to a project
+	// workflow policy. Filling ProjectPath from the current desktop project for
+	// execution must not inherit an unrelated desktop-owner workflow gate.
+	explicitProjectPath := normalizeProjectSessionPath(req.ProjectPath)
+	req.ProjectPath = explicitProjectPath
 	if req.ProjectPath == "" {
 		req.ProjectPath = normalizeProjectSessionPath(a.GetCurrentProjectPath())
 	}
 	policyOwnerID := a.defaultManualPolicyOwnerID()
-	if req.ProjectPath != "" {
-		policyOwnerID = projectSessionOwnerID(req.ProjectPath)
+	if explicitProjectPath != "" {
+		policyOwnerID = projectSessionOwnerID(explicitProjectPath)
 	}
 	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, "delegate_task", map[string]interface{}{"agent": "swarm", "request": req.Requirements, "project_path": req.ProjectPath}); err != nil {
 		return nil, err
@@ -83,7 +84,10 @@ func (a *App) ProvideSwarmUserInput(runID, input string) error {
 
 // ensureSwarmOrchestrator lazily initialises the SwarmOrchestrator (thread-safe).
 func (a *App) ensureSwarmOrchestrator() {
-	swarmInitOnce.Do(func() {
+	if a == nil {
+		return
+	}
+	a.swarmInitOnce.Do(func() {
 		a.ensureInteractionInfra()
 		llmCfg := a.GetMaclawLLMConfig()
 

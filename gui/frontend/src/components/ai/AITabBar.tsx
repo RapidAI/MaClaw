@@ -204,7 +204,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                         >
                             <span style={{ fontSize: 13, flexShrink: 0 }}>
-                                {tab.type === "project" ? (tab.archived ? "\u{1F4E6}" : "\u{1F4C1}") : tab.type === "ve" ? "\u{1F916}" : "\u{1F4AC}"}
+                                {tab.type === "project" ? (tab.archived ? "P" : "D") : tab.type === "ve" ? "VE" : "AI"}
                             </span>
                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                 {getAITabDisplayTitle(tab, lang)}
@@ -253,7 +253,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            {isZh ? "\u2795 \u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "\u2795 Invite digital employee"}
+                            {isZh ? "\u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "Invite digital employee"}
                         </div>
                     )}
                     {onAddLocalMaclawToTab && !tabContextMenu.tab.readOnly && !!tabContextMenu.tab.veId && !hasLocalAIParticipant(tabContextMenu.tab) && (
@@ -265,7 +265,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            {isZh ? "\u{1F4BB} \u6dfb\u52a0\u672c\u673a AI \u52a9\u624b" : "\u{1F4BB} Add local AI assistant"}
+                            {isZh ? "\u6dfb\u52a0\u672c\u673a AI \u52a9\u624b" : "Add local AI assistant"}
                         </div>
                     )}
                     {onRenameGroupTab && !tabContextMenu.tab.readOnly && tabContextMenu.tab.type === "group" && (
@@ -277,7 +277,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            {isZh ? "\u270E \u4fee\u6539\u7fa4\u540d" : "\u270E Rename group"}
+                            {isZh ? "\u4fee\u6539\u7fa4\u540d" : "Rename group"}
                         </div>
                     )}
                     {tabContextMenu.tab.closable && (
@@ -289,7 +289,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            {isZh ? "\u2716 \u5173\u95ed" : "\u2716 Close"}
+                            {isZh ? "\u5173\u95ed" : "Close"}
                         </div>
                     )}
                 </div>

@@ -23,6 +23,10 @@ export function agentViewStrings(lang: string) {
         ignore: t("Ignore", "\u5ffd\u7565"),
         approve: t("Approve", "\u6279\u51c6"),
         reject: t("Reject", "\u62d2\u7edd"),
+        decisionNote: t("Decision note", "\u5ba1\u6279\u610f\u89c1"),
+        decisionNotePlaceholder: t("Optional comment for this decision", "\u53ef\u9009\uff1a\u586b\u5199\u5ba1\u6279\u610f\u89c1"),
+        decisionNoteRequired: t("A note is required for this decision.", "\u6b64\u51b3\u7b56\u9700\u8981\u586b\u5199\u610f\u89c1\u3002"),
+        decisionNoteRequiredOnReject: t("A note is required when rejecting.", "\u9a73\u56de\u65f6\u5fc5\u987b\u586b\u5199\u610f\u89c1\u3002"),
         applyMapping: t("Apply mapping", "\u5e94\u7528\u6620\u5c04"),
         pleaseFix: t("Please fix: ", "\u8bf7\u4fee\u6b63\uff1a"),
         risk: t("Risk", "\u98ce\u9669"),
@@ -63,8 +67,8 @@ export function agentViewStrings(lang: string) {
         prefillContext: t("from dialog", "\u5bf9\u8bdd"),
         prefillMemory: t("from memory", "\u8bb0\u5fc6"),
         prefillKnowledge: t("knowledge base", "\u77e5\u8bc6\u5e93"),
-        prefillWeb: t("\u26a0\ufe0f web", "\u26a0\ufe0f \u7f51\u7edc"),
-        prefillNeedsConfirm: t("\u26a0\ufe0f verify", "\u26a0\ufe0f \u8bf7\u786e\u8ba4"),
+        prefillWeb: t("web", "网络"),
+        prefillNeedsConfirm: t("verify", "请确认"),
     };
 }
 

@@ -345,3 +345,63 @@ func TestFormatParamSchema_Synthetic(t *testing.T) {
 		t.Errorf("synthetic param should be annotated, got:\n%s", schema)
 	}
 }
+
+func TestFormatCompactParamTags(t *testing.T) {
+	got := FormatCompactParamTags([]corelib.NLSkillParam{
+		{Name: "input", Required: true},
+		{Name: "format"},
+		{Name: "Input"}, // dedupe
+	})
+	if got != "params: input*, format" {
+		t.Fatalf("FormatCompactParamTags() = %q", got)
+	}
+	if FormatCompactParamTags(nil) != "" {
+		t.Fatal("empty params should yield empty tags")
+	}
+}
+
+func TestParamSchemaJSONObjectAndFormat(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "input", Description: "path", Type: "string", Required: true, Aliases: []string{"file"}},
+		{Name: "limit", Type: "integer", Default: "10"},
+	}
+	obj := ParamSchemaJSONObject(params)
+	if obj == nil {
+		t.Fatal("ParamSchemaJSONObject returned nil")
+	}
+	if obj["type"] != "object" {
+		t.Fatalf("type = %v", obj["type"])
+	}
+	props := obj["properties"].(map[string]interface{})
+	input := props["input"].(map[string]interface{})
+	if input["type"] != "string" || input["description"] != "path" {
+		t.Fatalf("input prop = %#v", input)
+	}
+	req := obj["required"].([]string)
+	if len(req) != 1 || req[0] != "input" {
+		t.Fatalf("required = %#v", req)
+	}
+	js := FormatParamSchemaJSON(params)
+	if !strings.Contains(js, `"input"`) || !strings.Contains(js, `"required"`) {
+		t.Fatalf("FormatParamSchemaJSON = %s", js)
+	}
+}
+
+func TestFormatSkillInspectReport(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name:         "demo",
+		Description:  "demo skill",
+		RequiredArgs: []string{"input"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo {{input}} {{format}}"},
+		}},
+		Params: []corelib.NLSkillParam{{Name: "input", Description: "src", Type: "string", Required: true}},
+	}
+	got := FormatSkillInspectReport(entry)
+	for _, want := range []string{"=== Skill: demo ===", "input", "format", "JSON Schema", "manage_skill(action=\"run\""} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("inspect report missing %q:\n%s", want, got)
+		}
+	}
+}

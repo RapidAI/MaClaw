@@ -31,13 +31,7 @@
   - **Property 2: Preservation** - Non-Self-Confirmed Responses Unchanged
   - **IMPORTANT**: Follow observation-first methodology
   - **Observe on UNFIXED code** the following non-bug-condition behaviors:
-    - Normal NeedsConfirm response (deliverable + confirmation prompt, no self-answer) → gate force-returns full text unchanged ✅
-    - Substantive document without any confirmation request → full text returned unchanged ✅
-    - NeedsConfirm=false phase → gate never activates, self-confirmation detection never runs ✅
-    - First execution (hasOutput=false) → gate skips regardless of content (workflow-double-confirm-fix preserved) ✅
-    - Short non-substantive preamble → `isSubstantivePhaseDocument=false`, loop continues ✅
-    - Text containing "确认" in non-confirmation-request context (e.g., "用户确认功能需求", "确认按钮样式") → `containsSelfConfirmationPattern=false`, no false positives ✅
-  - Write property-based tests capturing these observed behaviors:
+    - Normal NeedsConfirm response (deliverable + confirmation prompt, no self-answer) → gate force-returns full text unchanged     - Substantive document without any confirmation request → full text returned unchanged     - NeedsConfirm=false phase → gate never activates, self-confirmation detection never runs     - First execution (hasOutput=false) → gate skips regardless of content (workflow-double-confirm-fix preserved)     - Short non-substantive preamble → `isSubstantivePhaseDocument=false`, loop continues     - Text containing "确认" in non-confirmation-request context (e.g., "用户确认功能需求", "确认按钮样式") → `containsSelfConfirmationPattern=false`, no false positives   - Write property-based tests capturing these observed behaviors:
     - **Sub-property 2a**: For all inputs where `NeedsConfirm=true` AND `isSubstantivePhaseDocument=true` AND NOT `containsSelfConfirmationPattern` → full text returned unchanged, gate force-returns (from Preservation Requirements: normal NeedsConfirm flow unchanged)
     - **Sub-property 2b**: For all inputs with substantive documents WITHOUT any confirmation request → `containsSelfConfirmationPattern=false`, full text returned unchanged
     - **Sub-property 2c**: For all inputs where `NeedsConfirm=false` → gate does NOT activate, self-confirmation detection never runs (from Preservation Requirements: execution phases unaffected)

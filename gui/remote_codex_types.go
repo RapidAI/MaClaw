@@ -130,15 +130,15 @@ func codexEventToText(event CodexEvent) string {
 
 	case "turn.completed":
 		if event.Usage != nil {
-			return fmt.Sprintf("✓ Turn completed (tokens: %s)", codexUsageSummary(event.Usage))
+			return fmt.Sprintf("Turn completed (tokens: %s)", codexUsageSummary(event.Usage))
 		}
-		return "✓ Turn completed"
+		return "Turn completed"
 
 	case "turn.failed":
 		if event.Error != "" {
-			return fmt.Sprintf("✗ Turn failed: %s", event.Error)
+			return fmt.Sprintf("Turn failed: %s", event.Error)
 		}
-		return "✗ Turn failed"
+		return "Turn failed"
 
 	case "item.started", "item.updated", "item.completed":
 		return codexItemToText(event)
@@ -163,7 +163,7 @@ func codexItemToText(event CodexEvent) string {
 
 	case "reasoning":
 		if item.Text != "" {
-			return fmt.Sprintf("💭 %s", item.Text)
+			return fmt.Sprintf("%s", item.Text)
 		}
 		return ""
 
@@ -175,7 +175,7 @@ func codexItemToText(event CodexEvent) string {
 				if len(cmd) > 100 {
 					cmd = cmd[:100] + "..."
 				}
-				return fmt.Sprintf("⚡ %s", cmd)
+				return fmt.Sprintf("%s", cmd)
 			}
 		case "item.completed":
 			if item.AggregatedOutput != "" {
@@ -196,24 +196,24 @@ func codexItemToText(event CodexEvent) string {
 		switch event.Type {
 		case "item.started":
 			if item.FilePath != "" {
-				return fmt.Sprintf("📝 Editing %s", item.FilePath)
+				return fmt.Sprintf("Editing %s", item.FilePath)
 			}
 		case "item.completed":
 			if item.FilePath != "" {
-				return fmt.Sprintf("✓ Modified %s", item.FilePath)
+				return fmt.Sprintf("Modified %s", item.FilePath)
 			}
 		}
 		return ""
 
 	case "mcp_tool_call":
 		if item.ToolName != "" {
-			return fmt.Sprintf("🔧 MCP: %s", item.ToolName)
+			return fmt.Sprintf("MCP: %s", item.ToolName)
 		}
 		return ""
 
 	case "web_search":
 		if item.Query != "" {
-			return fmt.Sprintf("🔍 Searching: %s", item.Query)
+			return fmt.Sprintf("Searching: %s", item.Query)
 		}
 		return ""
 

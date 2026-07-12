@@ -10,16 +10,16 @@ MaClawSrv 的 `CoreAgentExecutor` 只有 5 类硬编码工具（bash/ssh/ask_use
 
 | 工具类别 | GUI 桌面版 | MaClawSrv | 共享代码位置 |
 |---------|-----------|-----------|------------|
-| bash | ✅ `gui/im_tools_local.go` | ✅ `corelib/agent.ToolBash` | `corelib/agent/tool_bash.go` |
-| ssh | ✅ `gui/im_ssh_tools.go` | ✅ `corelib/agent/sshtool/` | `corelib/agent/sshtool/` |
-| ask_user | ✅ `gui/im_tool_ask_user.go` | ✅ `corelib/agent.ToolAskUser` | `corelib/agent/tool_ask_user.go` |
-| task | ✅ `gui/im_tool_task.go` | ✅ `corelib/agent.ToolTask` | `corelib/task/` |
-| knowledge | ✅ `gui/im_knowledge_*.go` | ✅ `knowledge_integration.go` | `corelib/knowledge/` |
-| MCP | ✅ `gui/local_mcp_manager.go` + `MCPRegistry` | ✅ **刚修复** `mcp_integration.go` | `corelib/agentservice/mcp.go` |
-| **Skill** | ✅ `gui/skill_runner.go` + `manage_skill` | ❌ **缺失** | `corelib/skill/`（扫描/搜索共享，执行不共享） |
-| **文件操作** | ✅ `read_file`/`write_file`/`edit_file`/`list_directory` | ❌ **缺失** | 无共享（GUI 实现在 `gui/im_tools_local.go`） |
-| **Web** | ✅ `web_search`/`web_fetch` | ❌ **缺失** | 无共享（GUI 实现在 `gui/im_tools_web.go`） |
-| **memory** | ✅ `memory(save/recall)` | ❌ **缺失**（只有 proactive recall） | `corelib/memory/` |
+| bash | `gui/im_tools_local.go` | `corelib/agent.ToolBash` | `corelib/agent/tool_bash.go` |
+| ssh | `gui/im_ssh_tools.go` | `corelib/agent/sshtool/` | `corelib/agent/sshtool/` |
+| ask_user | `gui/im_tool_ask_user.go` | `corelib/agent.ToolAskUser` | `corelib/agent/tool_ask_user.go` |
+| task | `gui/im_tool_task.go` | `corelib/agent.ToolTask` | `corelib/task/` |
+| knowledge | `gui/im_knowledge_*.go` | `knowledge_integration.go` | `corelib/knowledge/` |
+| MCP | `gui/local_mcp_manager.go` + `MCPRegistry` | **刚修复** `mcp_integration.go` | `corelib/agentservice/mcp.go` |
+| **Skill** | `gui/skill_runner.go` + `manage_skill` | **缺失** | `corelib/skill/`（扫描/搜索共享，执行不共享） |
+| **文件操作** | `read_file`/`write_file`/`edit_file`/`list_directory` | **缺失** | 无共享（GUI 实现在 `gui/im_tools_local.go`） |
+| **Web** | `web_search`/`web_fetch` | **缺失** | 无共享（GUI 实现在 `gui/im_tools_web.go`） |
+| **memory** | `memory(save/recall)` | **缺失**（只有 proactive recall） | `corelib/memory/` |
 
 ## 设计原则
 
@@ -399,12 +399,12 @@ func ToolWebFetch(ctx context.Context, args map[string]interface{}, provider Web
 
 | Phase | 内容 | 优先级 | 状态 | 说明 |
 |-------|------|--------|------|------|
-| MCP | MCP Provider 接入 | P0 | ✅ 已完成 | `mcp_integration.go` |
-| 1 | Skill Provider 接入 | P0 | ✅ 已完成 | `skill_integration.go` |
-| 2 | Skill Runner 提取到 corelib | P1 | ✅ 已完成 | `corelib/skill/exec_sync.go` |
-| 3 | 文件操作工具 | P1 | ✅ 已完成 | `file_tools.go` |
-| 4 | Web 工具 | P2 | ✅ 已完成 | `web_tools.go` |
-| 5 | Memory 工具接入 | P2 | ✅ 已完成 | 加入 `coreToolSpecs` |
+| MCP | MCP Provider 接入 | P0 | 已完成 | `mcp_integration.go` |
+| 1 | Skill Provider 接入 | P0 | 已完成 | `skill_integration.go` |
+| 2 | Skill Runner 提取到 corelib | P1 | 已完成 | `corelib/skill/exec_sync.go` |
+| 3 | 文件操作工具 | P1 | 已完成 | `file_tools.go` |
+| 4 | Web 工具 | P2 | 已完成 | `web_tools.go` |
+| 5 | Memory 工具接入 | P2 | 已完成 | 加入 `coreToolSpecs` |
 
 ---
 

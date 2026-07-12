@@ -25,3 +25,30 @@ export const EVENT_PROJECT_TASK_CLOSED = "project-task:closed";
 
 /** Emitted after the delayed startup update check finds a newer application release. */
 export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
+
+/** Skill usage stats updated after a run. */
+export const EVENT_SKILL_USAGE_UPDATED = "skill:usage_updated";
+
+/** Skill self-repair completed (steps updated or disabled). */
+export const EVENT_SKILL_REPAIRED = "skill:repaired";
+
+/** Skill optimizer applied bounded edits. */
+export const EVENT_SKILL_OPTIMIZED = "skill:optimized";
+
+/** Nudge promoter created a new auto-discovered skill. */
+export const EVENT_SKILL_AUTO_DISCOVERED = "skill:auto_discovered";
+
+/** Skill execution failed (evolution pipeline observation). */
+export const EVENT_SKILL_EXECUTION_FAILED = "skill:execution_failed";
+
+/** Skill indexes refreshed after mutation (repair/install). */
+export const EVENT_SKILL_INDEX_REFRESHED = "skill:index_refreshed";
+
+/** App config patched/saved (backend EventsEmit after PatchConfigFields). */
+export const EVENT_CONFIG_CHANGED = "config-changed";
+
+/** Alternate config broadcast used by some trays/legacy paths. */
+export const EVENT_CONFIG_UPDATED = "config-updated";
+
+/** Same-window optimistic config patch (CustomEvent on window). */
+export const EVENT_MACLAW_CONFIG_CHANGED = "maclaw-config-changed";

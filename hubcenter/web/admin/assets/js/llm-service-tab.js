@@ -166,7 +166,7 @@ if (typeof I18N_EN !== 'undefined') {
       var providerArg = jsArg(p.id);
       return '<div class="data-row"><div class="data-row-main"><strong>' + esc(p.name||p.id) + '</strong>'
         + '<span class="data-row-meta">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
-        + (p.has_api_key ? ' \u00b7 \u{1f511}' : '') + '</span>'
+        + (p.has_api_key ? ' \u00b7 key' : '') + '</span>'
         + testHTML + '</div>'
         + '<div class="data-row-actions">'
         + '<button class="btn-ghost provider-test-btn" onclick="testLLMProvider(' + providerArg + ')"' + testDisabled + '>' + esc(testState && testState.status === 'testing' ? t('providerTesting') : t('testProvider')) + '</button>'
@@ -422,12 +422,12 @@ if (typeof I18N_EN !== 'undefined') {
         protocol: provider.protocol || 'openai'
       }) });
       if (data.success) {
-        toast((isZh() ? '\u2705 Provider \u7aef\u53ef\u7528\uff01\u8017\u65f6 ' : '\u2705 Provider OK! Latency: ') + (data.latency_ms || 0) + 'ms' + (data.reply ? ' \u00b7 reply: ' + data.reply : '') + (isZh() ? '\u3002\u5982\u5ba2\u6237\u7aef\u4ecd\u4e0d\u53ef\u7528\uff0c\u8bf7\u68c0\u67e5\u670d\u52a1\u7ec4\u8def\u7531\u914d\u7f6e\u548c\u6388\u6743\u3002' : '. If client still fails, check service group routing and grants.'), 'success');
+        toast((isZh() ? 'Provider \u7aef\u53ef\u7528\uff01\u8017\u65f6 ' : 'Provider OK! Latency: ') + (data.latency_ms || 0) + 'ms' + (data.reply ? ' \u00b7 reply: ' + data.reply : '') + (isZh() ? '\u3002\u5982\u5ba2\u6237\u7aef\u4ecd\u4e0d\u53ef\u7528\uff0c\u8bf7\u68c0\u67e5\u670d\u52a1\u7ec4\u8def\u7531\u914d\u7f6e\u548c\u6388\u6743\u3002' : '. If client still fails, check service group routing and grants.'), 'success');
       } else {
-        toast((isZh() ? '\u274c \u670d\u52a1\u4e0d\u53ef\u7528: ' : '\u274c Unavailable: ') + (data.error || 'unknown'), 'error');
+        toast((isZh() ? '\u670d\u52a1\u4e0d\u53ef\u7528: ' : 'Unavailable: ') + (data.error || 'unknown'), 'error');
       }
     } catch(e) {
-      toast((isZh() ? '\u274c \u6d4b\u8bd5\u5931\u8d25: ' : '\u274c Test failed: ') + e.message, 'error');
+      toast((isZh() ? '\u6d4b\u8bd5\u5931\u8d25: ' : 'Test failed: ') + e.message, 'error');
     } finally {
       _testingGroupId = '';
     }

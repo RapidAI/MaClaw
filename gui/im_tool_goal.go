@@ -81,7 +81,7 @@ func (h *IMMessageHandler) goalCreate(args map[string]interface{}) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🎯 目标已创建\n"))
+	b.WriteString(fmt.Sprintf("目标已创建\n"))
 	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
 	b.WriteString(fmt.Sprintf("Goal ID: %s\n", g.GoalID))
 	if g.TokenBudget > 0 {
@@ -124,7 +124,7 @@ func (h *IMMessageHandler) goalComplete(args map[string]interface{}) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("✅ 目标已完成\n")
+	b.WriteString("目标已完成\n")
 	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
 	b.WriteString(fmt.Sprintf("总结: %s\n", summary))
 	if g.TokenBudget > 0 {
@@ -159,7 +159,7 @@ func (h *IMMessageHandler) goalFail(args map[string]interface{}) string {
 		}
 	}
 
-	return fmt.Sprintf("❌ 目标失败\n目标: %s\n原因: %s\nToken 使用: %d | 总轮次: %d",
+	return fmt.Sprintf("目标失败\n目标: %s\n原因: %s\nToken 使用: %d | 总轮次: %d",
 		g.Objective, reason, g.TokensUsed, g.TurnsUsed)
 }
 
@@ -170,18 +170,18 @@ func (h *IMMessageHandler) goalGet() string {
 		return "当前没有目标。使用 goal(action=\"create\", objective=\"...\") 创建目标。"
 	}
 
-	statusIcon := map[goal.Status]string{
-		goal.StatusActive:      "🔄",
-		goal.StatusPaused:      "⏸️",
-		goal.StatusBudgetLimit: "💰",
-		goal.StatusComplete:    "✅",
-		goal.StatusFailed:      "❌",
+	statusMark := map[goal.Status]string{
+		goal.StatusActive:      "[>>]",
+		goal.StatusPaused:      "[||]",
+		goal.StatusBudgetLimit: "[!!]",
+		goal.StatusComplete:    "[OK]",
+		goal.StatusFailed:      "[ERR]",
 	}
 
 	var b strings.Builder
-	icon := statusIcon[g.Status]
+	icon := statusMark[g.Status]
 	if icon == "" {
-		icon = "❓"
+		icon = "[?]"
 	}
 	b.WriteString(fmt.Sprintf("%s 当前目标 [%s]\n", icon, g.Status))
 	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
@@ -222,7 +222,7 @@ func (h *IMMessageHandler) goalPause() string {
 			h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, updated)
 		}
 	}
-	return fmt.Sprintf("⏸️ 目标已暂停: %s\n使用 goal(action=\"resume\") 或发送 /goal resume 恢复。", g.Objective)
+	return fmt.Sprintf("目标已暂停: %s\n使用 goal(action=\"resume\") 或发送 /goal resume 恢复。", g.Objective)
 }
 
 func (h *IMMessageHandler) goalResume() string {
@@ -242,13 +242,13 @@ func (h *IMMessageHandler) goalResume() string {
 			h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, updated)
 		}
 	}
-	return fmt.Sprintf("▶️ 目标已恢复: %s\n系统将继续自动推进。", g.Objective)
+	return fmt.Sprintf("目标已恢复: %s\n系统将继续自动推进。", g.Objective)
 }
 
 func (h *IMMessageHandler) goalClear() string {
 	store := h.getGoalStore()
 	if store.Clear(h.lastUserID) {
-		return "🗑️ 目标已清除。"
+		return "目标已清除。"
 	}
 	return "当前没有目标。"
 }

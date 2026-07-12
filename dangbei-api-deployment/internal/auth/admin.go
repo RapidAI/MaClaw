@@ -22,7 +22,7 @@ func AdminKey() string {
 		return v
 	}
 	warnOnce.Do(func() {
-		slog.Warn("⚠️  DS2API_ADMIN_KEY is not set! Using insecure default \"admin\". Set a strong key in production!")
+		slog.Warn("DS2API_ADMIN_KEY is not set! Using insecure default \"admin\". Set a strong key in production!")
 	})
 	return "admin"
 }

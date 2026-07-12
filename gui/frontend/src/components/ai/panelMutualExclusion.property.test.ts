@@ -104,6 +104,8 @@ const arbCodeFile: fc.Arbitrary<CodeFile> = fc.record({
     opType: fc.constantFrom('create' as const, 'modify' as const),
     language: fc.constantFrom('typescript', 'go', 'python'),
     updatedAt: fc.nat(),
+    // Workflow-authorized preview open; ordinary generation no longer auto-opens.
+    autoOpenPreview: fc.constant(true),
 });
 
 const arbPanelEvent: fc.Arbitrary<PanelEvent> = fc.oneof(

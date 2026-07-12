@@ -115,7 +115,15 @@ export interface SidebarHubCredits {
     serviceActive?: boolean;
     total: number;
     used: number;
+    /** Lifetime account remaining (includes queued metered balances). */
     remaining: number;
+    /**
+     * Currently spendable credits for the active period/route window.
+     * May be lower than `remaining` when period limits apply.
+     */
+    available: number;
+    /** True when available is meaningfully lower than remaining (show both). */
+    showPeriodAvailable: boolean;
     tokensPerCredit: number;
     expiresAt: string;
     unlimited: boolean;

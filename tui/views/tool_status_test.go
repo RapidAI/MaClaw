@@ -391,15 +391,15 @@ func TestToolStatusSetLangUpdatesMCPFormPlaceholders(t *testing.T) {
 
 func TestToolStatusSetLangRelocalizesMessages(t *testing.T) {
 	m := NewToolStatusModel("zh")
-	m.skillMessage = "🔍 " + toolStatusFormat("zh", "searchingPreset", "编程")
-	m.mcpMessage = "❌ " + toolStatusText("zh", "remoteSecretRequired")
+	m.skillMessage = toolStatusFormat("zh", "searchingPreset", "编程")
+	m.mcpMessage = toolStatusText("zh", "remoteSecretRequired")
 
 	m.SetLang("en")
 
-	if got := m.skillMessage; got != "🔍 "+toolStatusFormat("en", "searchingPreset", "编程") {
+	if got := m.skillMessage; got != ""+toolStatusFormat("en", "searchingPreset", "编程") {
 		t.Fatalf("skill message = %q", got)
 	}
-	if got := m.mcpMessage; got != "❌ "+toolStatusText("en", "remoteSecretRequired") {
+	if got := m.mcpMessage; got != ""+toolStatusText("en", "remoteSecretRequired") {
 		t.Fatalf("MCP message = %q", got)
 	}
 }
@@ -407,14 +407,14 @@ func TestToolStatusSetLangRelocalizesMessages(t *testing.T) {
 func TestToolStatusSetLangRelocalizesInstallConfirmationAndCounts(t *testing.T) {
 	m := NewToolStatusModel("zh")
 	m.skillMessage = toolStatusFormat("zh", "confirmInstall", "Playwright", "GitHub")
-	m.mcpMessage = "✅ " + toolStatusFormat("zh", "foundSkillResults", 12)
+	m.mcpMessage = toolStatusFormat("zh", "foundSkillResults", 12)
 
 	m.SetLang("en")
 
 	if got := m.skillMessage; got != toolStatusFormat("en", "confirmInstall", "Playwright", "GitHub") {
 		t.Fatalf("confirm message = %q", got)
 	}
-	if got := m.mcpMessage; got != "✅ "+toolStatusFormat("en", "foundSkillResults", 12) {
+	if got := m.mcpMessage; got != ""+toolStatusFormat("en", "foundSkillResults", 12) {
 		t.Fatalf("count message = %q", got)
 	}
 }

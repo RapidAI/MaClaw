@@ -403,7 +403,7 @@ func buildLoopCyclePrompt(cfg LoopCommandConfig, state *LoopCommandState, iterat
 		sb.WriteString("\n```\n\n")
 
 		if lastRecord.VerifyResult.TimedOut {
-			sb.WriteString("⚠️ The verification command **timed out**. The changes may have caused an infinite loop or hang.\n\n")
+			sb.WriteString("The verification command **timed out**. The changes may have caused an infinite loop or hang.\n\n")
 		}
 
 		sb.WriteString("Analyze the error output above, identify what went wrong, and fix it. ")

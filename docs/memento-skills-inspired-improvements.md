@@ -1,5 +1,8 @@
 # 借鉴 Memento-Skills 的 MacLaw 改进计划
 
+> **OBSOLETE（2026-07）** — 「Self-Repair 未接入 Runner / craft 不持久化 / 只分类不回流」等状态描述已过时。  
+> 现状与剩余缺口见 **[skill-lifecycle-gap-review-2026.md](./skill-lifecycle-gap-review-2026.md)**。本文保留论文映射与历史 Phase 规划，**勿当实现清单**。
+
 ## 论文核心洞察
 
 [Memento-Skills](https://arxiv.org/abs/2603.18743)（Zhou et al., 2026）提出 **deployment-time learning** 范式：LLM 参数冻结，所有学习发生在外部化的 skill 记忆中。核心循环 **Read → Execute → Reflect → Write** 使 agent 从 5 个原子 skill 自动扩展到 235 个，在 HLE 上实现 116.2% 的相对提升。
@@ -57,8 +60,7 @@
 
 #### 验收标准
 
-- 9 个新增测试 + 所有现有 usage_tracker / router 测试通过 ✅
-
+- 9 个新增测试 + 所有现有 usage_tracker / router 测试通过 
 ---
 
 ### Phase 2: Skill Self-Repair 闭环（失败驱动的 Skill 自修复）
@@ -97,8 +99,7 @@
 
 #### 验收标准
 
-- 7 个新增测试 + 所有现有 skill 测试通过 ✅
-
+- 7 个新增测试 + 所有现有 skill 测试通过 
 ---
 
 ### Phase 3: craft_tool 产出持久化（CreateOnMiss → Skill Library）
@@ -128,8 +129,7 @@
 
 #### 验收标准
 
-- 6 个新增测试 + 所有现有 skill 测试通过 ✅
-
+- 6 个新增测试 + 所有现有 skill 测试通过 
 ---
 
 ### Phase 4: 统一 Skill Memory（分散记忆 → 主动进化的能力库）
@@ -168,8 +168,7 @@
 
 #### 验收标准
 
-- 7 个新增测试 + 所有现有测试通过 ✅
-
+- 7 个新增测试 + 所有现有测试通过 
 ---
 
 ## 实施优先级和依赖关系
@@ -186,10 +185,10 @@ Phase 1 (Context-Aware Outcome)
 
 | Phase | 优先级 | 预估工作量 | 依赖 | 风险 | 状态 |
 |-------|--------|-----------|------|------|------|
-| 1 | P0 | 1-2 天 | 无 | 低（纯增量，向后兼容） | ✅ 完成 |
-| 2 | P1 | 2-3 天 | 无 | 中（LLM 修复质量不确定，需要 VerifyRepair 兜底） | ✅ 完成（corelib + GUI Runner 接入） |
-| 3 | P1 | 1-2 天 | 无 | 低（craft_tool 已有，只加持久化） | ✅ corelib 层完成（PersistCraftedSkill + 去重），craft_tool 调用点接入待做 |
-| 4 | P2 | 2-3 天 | Phase 1 | 低（只读聚合，不改现有存储） | ✅ 完成（corelib + system prompt 注入 + drift recovery 增强） |
+| 1 | P0 | 1-2 天 | 无 | 低（纯增量，向后兼容） | 完成 |
+| 2 | P1 | 2-3 天 | 无 | 中（LLM 修复质量不确定，需要 VerifyRepair 兜底） | 完成（corelib + GUI Runner 接入） |
+| 3 | P1 | 1-2 天 | 无 | 低（craft_tool 已有，只加持久化） | corelib 层完成（PersistCraftedSkill + 去重），craft_tool 调用点接入待做 |
+| 4 | P2 | 2-3 天 | Phase 1 | 低（只读聚合，不改现有存储） | 完成（corelib + system prompt 注入 + drift recovery 增强） |
 
 **总预估**：6-10 天。Phase 1-3 可并行，Phase 4 等 Phase 1 完成后开始。
 

@@ -588,9 +588,10 @@ describe("GroupMessageBubble", () => {
         );
 
         expect(screen.getByText("天气：")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c5}今天")).toBeTruthy();
+        // Dense capability pictographs are rewritten to plain list markers.
+        expect(screen.getByText("今天")).toBeTruthy();
         expect(screen.getByText("晴 0%")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+        expect(screen.getByText("明天")).toBeTruthy();
         expect(screen.getByText("多云")).toBeTruthy();
     });
 

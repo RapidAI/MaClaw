@@ -15,6 +15,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -202,7 +203,8 @@ func SearchSkillHub(query string) ([]SkillSearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	results := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
+	report := client.SearchAllFilteredReport(ctx, hubURL, query, allowedSources)
+	results := report.Results
 
 	var out []SkillSearchResult
 	for _, r := range results {
@@ -211,6 +213,15 @@ func SearchSkillHub(query string) ([]SkillSearchResult, error) {
 			Description: r.Description,
 			Source:      r.Source,
 		})
+	}
+	if len(out) == 0 && report.Degraded {
+		// Empty + source failures → not "no skills", surface the failure.
+		return out, fmt.Errorf("%s", report.FormatDegradedNote())
+	}
+	// Partial success: return results without error (UI manage_skill path shows
+	// FormatDegradedNote via SearchAllFilteredReport). Log here for CLI.
+	if report.Degraded {
+		log.Printf("[skill-search] %s", report.FormatDegradedNote())
 	}
 	return out, nil
 }

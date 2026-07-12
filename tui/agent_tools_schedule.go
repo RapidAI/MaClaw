@@ -10,6 +10,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -117,9 +118,9 @@ func (app *TUIApp) toolCreateScheduledTask(args map[string]interface{}) string {
 	}
 
 	if task := app.scheduledTaskManager.Get(id); task != nil && task.NextRunAt != nil {
-		return fmt.Sprintf("✅ 定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, taskAction, task.NextRunAt.Format("2006-01-02 15:04"))
+		return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, taskAction, task.NextRunAt.Format("2006-01-02 15:04"))
 	}
-	return fmt.Sprintf("✅ 定时任务已创建（ID: %s）", id)
+	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
 }
 
 func (app *TUIApp) toolListScheduledTasks() string {
@@ -131,7 +132,7 @@ func (app *TUIApp) toolListScheduledTasks() string {
 		return "当前没有定时任务"
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📋 定时任务列表（共 %d 个）：\n\n", len(tasks)))
+	b.WriteString(fmt.Sprintf("定时任务列表（共 %d 个）：\n\n", len(tasks)))
 	for i, t := range tasks {
 		status := t.Status
 		next := "-"
@@ -162,7 +163,7 @@ func (app *TUIApp) toolDeleteScheduledTask(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("删除失败: %s", err.Error())
 	}
-	return "✅ 定时任务已删除"
+	return "定时任务已删除"
 }
 
 func (app *TUIApp) toolUpdateScheduledTask(args map[string]interface{}) string {
@@ -182,9 +183,9 @@ func (app *TUIApp) toolUpdateScheduledTask(args map[string]interface{}) string {
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
 		}
-		return fmt.Sprintf("✅ 定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
 	}
-	return "✅ 定时任务已更新"
+	return "定时任务已更新"
 }
 
 // buildTUIScheduledTaskExecutor creates a TaskExecutor for the TUI that uses
@@ -211,12 +212,24 @@ func (app *TUIApp) buildScheduledTaskExecutor() scheduler.TaskExecutor {
 // tuiSchedulerCallbacks implements agent.LoopCallbacks for background scheduled
 // task execution. It's a minimal implementation that doesn't stream to the UI.
 type tuiSchedulerCallbacks struct {
-	app *TUIApp
-	ctx context.Context
+	app       *TUIApp
+	ctx       context.Context
+	activeLLM tuiActiveLLM
 }
 
 func (c *tuiSchedulerCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.app.llmConfig
+	return c.activeLLM.get(c.app.llmConfig)
+}
+
+func (c *tuiSchedulerCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *tuiSchedulerCallbacks) GetMaxIterations() int {
@@ -277,6 +290,20 @@ func (c *tuiSchedulerCallbacks) OnToolResult(name string) {}
 
 func (c *tuiSchedulerCallbacks) ShouldStop() bool {
 	return c.ctx.Err() != nil
+}
+
+func (c *tuiSchedulerCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.app == nil {
+		return false, "", ""
+	}
+	return c.app.earlyStopBudget()
+}
+
+func (c *tuiSchedulerCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.recordLLMCost(model, inputTokens, outputTokens)
 }
 
 // stringVal extracts a string value from args map.

@@ -78,11 +78,11 @@ export interface AIAssistantPanelTabState {
 }
 /** Default max digital employee tabs */
 export const DEFAULT_MAX_VE_TABS = 8;
-/** The fixed local AI assistant tab */
+/** The fixed local workbench tab (main session surface). */
 export const LOCAL_TAB: AITab = {
     id: "local",
     type: "local",
-    title: "AI \u52a9\u624b",
+    title: "\u5de5\u4f5c\u53f0",
     closable: false,
 };
 /** Create initial tab state with only the local tab */

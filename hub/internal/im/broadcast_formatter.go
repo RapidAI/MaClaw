@@ -46,17 +46,17 @@ func FormatBroadcastReply(replies []DeviceReply) string {
 	}
 
 	if similar && successCount > 1 {
-		textParts = append(textParts, fmt.Sprintf("\n✅ 其他 %d 台设备观点一致", successCount-1))
+		textParts = append(textParts, fmt.Sprintf("\n其他 %d 台设备观点一致", successCount-1))
 	}
 
 	// Append errors at the end.
 	if len(errorParts) > 0 {
-		textParts = append(textParts, fmt.Sprintf("⚠️ 异常设备:\n%s", strings.Join(errorParts, "\n")))
+		textParts = append(textParts, fmt.Sprintf("异常设备:\n%s", strings.Join(errorParts, "\n")))
 	}
 
 	// Summary line.
 	total := successCount + failCount
-	summary := fmt.Sprintf("📊 参与: %d 台 | 成功: %d | 失败: %d", total, successCount, failCount)
+	summary := fmt.Sprintf("参与: %d 台 | 成功: %d | 失败: %d", total, successCount, failCount)
 	textParts = append(textParts, summary)
 
 	return strings.Join(textParts, "\n\n")

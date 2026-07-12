@@ -15,11 +15,14 @@ package skill
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -146,9 +149,47 @@ func DefaultHubClient() *HubClient {
 // Search — multi-source aggregation
 // ────────────────────────────────────────────────────────────────────────────
 
+// HubSearchSourceStatus reports what happened for one search source.
+// Used so empty merged results are not mistaken for "no skills exist"
+// when one or more sources failed.
+type HubSearchSourceStatus struct {
+	Source  string `json:"source"`
+	Queried bool   `json:"queried"`
+	OK      bool   `json:"ok"`
+	Count   int    `json:"count"`
+	Error   string `json:"error,omitempty"`
+	Skipped string `json:"skipped,omitempty"` // not allowed / empty query / cancelled
+}
+
+// HubSearchReport is the multi-source search outcome with per-source diagnostics.
+type HubSearchReport struct {
+	Results  []HubSearchResult       `json:"results"`
+	Sources  []HubSearchSourceStatus `json:"sources"`
+	Degraded bool                    `json:"degraded"` // true if any queried source failed
+}
+
+// FormatDegradedNote returns a short operator/LLM-facing note, or "".
+func (r HubSearchReport) FormatDegradedNote() string {
+	if r.Degraded {
+		var failed []string
+		for _, s := range r.Sources {
+			if s.Queried && !s.OK && s.Error != "" {
+				failed = append(failed, fmt.Sprintf("%s: %s", s.Source, s.Error))
+			}
+		}
+		if len(failed) == 0 {
+			return "search degraded: one or more sources failed"
+		}
+		return "search degraded (partial source failure): " + strings.Join(failed, "; ")
+	}
+	// All sources skipped or empty query — not degraded network, but helpful.
+	return ""
+}
+
 // SearchAll queries SkillHub + ClawHub + GitHub and returns merged results.
 // Results are ordered: SkillHub first, then ClawHub, then GitHub.
-// Errors from individual sources are non-fatal (silently skipped).
+// Errors from individual sources are non-fatal (skipped); use
+// SearchAllFilteredReport for per-source diagnostics.
 func (c *HubClient) SearchAll(ctx context.Context, skillHubURL, query string) []HubSearchResult {
 	return c.SearchAllFiltered(ctx, skillHubURL, query, nil)
 }
@@ -157,20 +198,78 @@ func (c *HubClient) SearchAll(ctx context.Context, skillHubURL, query string) []
 // allowedSources filters which sources to query. nil/empty = all sources.
 // Valid source values: "skillhub", "clawhub", "github".
 func (c *HubClient) SearchAllFiltered(ctx context.Context, skillHubURL, query string, allowedSources []string) []HubSearchResult {
-	var results []HubSearchResult
-	if isSourceAllowed("skillhub", allowedSources) {
-		results = append(results, c.SearchSkillHub(ctx, skillHubURL, query)...)
+	return c.SearchAllFilteredReport(ctx, skillHubURL, query, allowedSources).Results
+}
+
+// SearchAllFilteredReport is like SearchAllFiltered but includes per-source status.
+func (c *HubClient) SearchAllFilteredReport(ctx context.Context, skillHubURL, query string, allowedSources []string) HubSearchReport {
+	report := HubSearchReport{}
+	query = strings.TrimSpace(query)
+
+	appendSource := func(st HubSearchSourceStatus, hits []HubSearchResult) {
+		if st.Queried && !st.OK {
+			report.Degraded = true
+		}
+		report.Sources = append(report.Sources, st)
+		report.Results = append(report.Results, hits...)
 	}
+
+	if isSourceAllowed("skillhub", allowedSources) {
+		if query == "" {
+			appendSource(HubSearchSourceStatus{Source: "skillhub", Skipped: "empty query"}, nil)
+		} else if strings.TrimSpace(skillHubURL) == "" {
+			appendSource(HubSearchSourceStatus{Source: "skillhub", Skipped: "no skillhub url"}, nil)
+		} else {
+			hits, err := c.searchSkillHub(ctx, skillHubURL, query)
+			st := HubSearchSourceStatus{Source: "skillhub", Queried: true, Count: len(hits), OK: err == nil}
+			if err != nil {
+				st.Error = err.Error()
+				st.OK = false
+			}
+			appendSource(st, hits)
+		}
+	} else {
+		appendSource(HubSearchSourceStatus{Source: "skillhub", Skipped: "not allowed"}, nil)
+	}
+
 	if isSourceAllowed("clawhub", allowedSources) {
-		results = append(results, c.SearchClawHub(ctx, query)...)
+		if query == "" {
+			appendSource(HubSearchSourceStatus{Source: "clawhub", Skipped: "empty query"}, nil)
+		} else {
+			hits, err := c.searchClawHub(ctx, query)
+			st := HubSearchSourceStatus{Source: "clawhub", Queried: true, Count: len(hits), OK: err == nil}
+			if err != nil {
+				st.Error = err.Error()
+				st.OK = false
+			}
+			appendSource(st, hits)
+		}
+	} else {
+		appendSource(HubSearchSourceStatus{Source: "clawhub", Skipped: "not allowed"}, nil)
 	}
 
 	// GitHub search uses its own HTTP client with a 30s timeout (inside
 	// GitHubSearcher). Check ctx before starting to avoid wasted work.
-	if isSourceAllowed("github", allowedSources) && ctx.Err() == nil {
-		results = append(results, c.SearchGitHub(query)...)
+	if isSourceAllowed("github", allowedSources) {
+		if query == "" {
+			appendSource(HubSearchSourceStatus{Source: "github", Skipped: "empty query"}, nil)
+		} else if ctx != nil && ctx.Err() != nil {
+			appendSource(HubSearchSourceStatus{Source: "github", Queried: true, OK: false, Error: ctx.Err().Error()}, nil)
+		} else {
+			hits, err := c.searchGitHub(query)
+			st := HubSearchSourceStatus{Source: "github", Queried: true, Count: len(hits), OK: err == nil}
+			if err != nil {
+				st.Error = err.Error()
+				st.OK = false
+			}
+			// Empty GitHub with no error is still OK (no matches).
+			appendSource(st, hits)
+		}
+	} else {
+		appendSource(HubSearchSourceStatus{Source: "github", Skipped: "not allowed"}, nil)
 	}
-	return results
+
+	return report
 }
 
 // isSourceAllowed checks if a source is in the allowed list.
@@ -211,17 +310,22 @@ func IsSourceAllowed(source string, allowedSources []string) bool {
 }
 
 // SearchSkillHub queries the SkillHub API.
-// Returns nil on any error (non-fatal).
+// Returns nil on any error (non-fatal). Prefer SearchAllFilteredReport for diagnostics.
 func (c *HubClient) SearchSkillHub(ctx context.Context, hubURL, query string) []HubSearchResult {
+	hits, _ := c.searchSkillHub(ctx, hubURL, query)
+	return hits
+}
+
+func (c *HubClient) searchSkillHub(ctx context.Context, hubURL, query string) ([]HubSearchResult, error) {
 	if hubURL == "" || query == "" {
-		return nil
+		return nil, fmt.Errorf("skillhub: missing hub url or query")
 	}
 	endpoint := fmt.Sprintf("%s/api/v1/skills/search?q=%s&page=1",
 		hubURL, url.QueryEscape(query))
 
 	var raw skillHubSearchResponse
 	if err := c.getJSONLimited(ctx, endpoint, &raw, hubClientSearchJSONMaxBytes); err != nil {
-		return nil
+		return nil, err
 	}
 
 	results := make([]HubSearchResult, 0, len(raw.Skills))
@@ -253,7 +357,7 @@ func (c *HubClient) SearchSkillHub(ctx context.Context, hubURL, query string) []
 			ArtifactContractPresentation: s.ArtifactContractPresentation,
 		})
 	}
-	return results
+	return results, nil
 }
 
 func cloneMaclawAppTestEvidence(e *MaclawAppTestEvidence) *MaclawAppTestEvidence {
@@ -265,16 +369,21 @@ func cloneMaclawAppTestEvidence(e *MaclawAppTestEvidence) *MaclawAppTestEvidence
 }
 
 // SearchClawHub queries the ClawHub China mirror.
-// Returns nil on any error (non-fatal).
+// Returns nil on any error (non-fatal). Prefer SearchAllFilteredReport for diagnostics.
 func (c *HubClient) SearchClawHub(ctx context.Context, query string) []HubSearchResult {
+	hits, _ := c.searchClawHub(ctx, query)
+	return hits
+}
+
+func (c *HubClient) searchClawHub(ctx context.Context, query string) ([]HubSearchResult, error) {
 	if query == "" {
-		return nil
+		return nil, fmt.Errorf("clawhub: empty query")
 	}
 	endpoint := ClawHubMirrorURL + "/api/v1/search?q=" + url.QueryEscape(query)
 
 	var raw clawHubSearchResponse
 	if err := c.getJSONLimited(ctx, endpoint, &raw, hubClientSearchJSONMaxBytes); err != nil {
-		return nil
+		return nil, err
 	}
 
 	results := make([]HubSearchResult, 0, len(raw.Results))
@@ -293,22 +402,30 @@ func (c *HubClient) SearchClawHub(ctx context.Context, query string) []HubSearch
 			Source:      "clawhub",
 		})
 	}
-	return results
+	return results, nil
 }
 
 // SearchGitHub queries GitHub for skill definition files (skill.yaml, SKILL.md).
 // Uses the GitHubSearcher already in this package.
 // The token is resolved dynamically on each call (not cached from construction)
 // so that runtime changes to GITHUB_TOKEN are picked up.
-// Returns nil on any error (non-fatal).
+// Returns nil on any error (non-fatal). Prefer SearchAllFilteredReport for diagnostics.
 func (c *HubClient) SearchGitHub(query string) []HubSearchResult {
+	hits, _ := c.searchGitHub(query)
+	return hits
+}
+
+func (c *HubClient) searchGitHub(query string) ([]HubSearchResult, error) {
 	if query == "" {
-		return nil
+		return nil, fmt.Errorf("github: empty query")
 	}
 	gs := NewGitHubSearcher(ResolveGitHubToken())
 	candidates, err := gs.SearchGitHub(query)
-	if err != nil || len(candidates) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
 	}
 
 	results := make([]HubSearchResult, 0, len(candidates))
@@ -330,49 +447,333 @@ func (c *HubClient) SearchGitHub(query string) []HubSearchResult {
 			InstallRef:  string(installRef),
 		})
 	}
-	return results
+	return results, nil
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Install — download + convert to NLSkillEntry
 // ────────────────────────────────────────────────────────────────────────────
 
+// HubDownloadOptions controls how a SkillHub download payload is materialised.
+type HubDownloadOptions struct {
+	// HubURL is recorded as SourceProject.
+	HubURL string
+	// SkillID is the download path id / fallback name.
+	SkillID string
+	// Source is the NLSkillEntry.Source value (default "hub").
+	Source string
+	// TargetDir overrides the extraction directory. Empty means
+	// PrimarySkillsDir/<installName>. Ignored when SkipExtract is true.
+	TargetDir string
+	// SkipExtract builds the entry without writing files to disk (steps are
+	// still synthesised from in-memory SKILL.md when needed).
+	SkipExtract bool
+}
+
 // DownloadSkillHub downloads a skill from SkillHub and returns an NLSkillEntry
-// ready for local registration. Does NOT extract files or install dependencies
-// (caller is responsible for that if needed).
+// ready for local registration.
+//
+// The download payload may contain:
+//   - steps: executable step definitions
+//   - files: path → base64 content map (extracted under PrimarySkillsDir)
+//   - agent_skill_md: markdown skill body (converted via ParseMarkdownSkill)
+//
+// Bundled files are extracted so TUI/agentservice install paths match GUI.
+// Dependency installation is intentionally deferred until after security scan.
 func (c *HubClient) DownloadSkillHub(ctx context.Context, hubURL, skillID string) (*corelib.NLSkillEntry, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download",
-		hubURL, url.PathEscape(skillID))
+		strings.TrimRight(strings.TrimSpace(hubURL), "/"), url.PathEscape(skillID))
 
 	var full skillHubDownloadResponse
 	if err := c.getJSON(ctx, endpoint, &full); err != nil {
 		return nil, fmt.Errorf("下载 Skill 失败: %w", err)
 	}
+	return entryFromSkillHubDownload(full, HubDownloadOptions{
+		HubURL:  hubURL,
+		SkillID: skillID,
+		Source:  "hub",
+	})
+}
+
+// ParseSkillHubDownloadJSON converts a raw SkillHub/SkillMarket download JSON
+// body into an NLSkillEntry. This is the shared materialisation path for GUI,
+// TUI, and agentservice so steps/files/agent_skill_md stay consistent.
+func ParseSkillHubDownloadJSON(data []byte, opts HubDownloadOptions) (*corelib.NLSkillEntry, error) {
+	var full skillHubDownloadResponse
+	if err := json.Unmarshal(data, &full); err != nil {
+		return nil, fmt.Errorf("decode skill download payload: %w", err)
+	}
+	return entryFromSkillHubDownload(full, opts)
+}
+
+// entryFromSkillHubDownload converts a full SkillHub download payload into an
+// NLSkillEntry, extracting bundled files and synthesizing steps when needed.
+func entryFromSkillHubDownload(full skillHubDownloadResponse, opts HubDownloadOptions) (*corelib.NLSkillEntry, error) {
+	hubURL := strings.TrimSpace(opts.HubURL)
+	skillID := strings.TrimSpace(opts.SkillID)
+	source := strings.TrimSpace(opts.Source)
+	if source == "" {
+		source = "hub"
+	}
+
+	// Prefer explicit agent_skill_md when present (market agent format).
+	if md := strings.TrimSpace(full.AgentSkillMD); md != "" {
+		entry, err := ParseMarkdownSkill(md, MarkdownSkillOptions{
+			NameFallback:        firstNonEmptyString(full.Name, skillID),
+			DescriptionFallback: full.Description,
+			Source:              source,
+			SourceProject:       hubURL,
+			TrustLevel:          full.TrustLevel,
+			Triggers:            full.Triggers,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("parse agent_skill_md: %w", err)
+		}
+		entry.SkillID = firstNonEmptyString(full.SkillID, entry.SkillID)
+		entry.HubSkillID = firstNonEmptyString(full.ID, skillID)
+		entry.HubVersion = full.Version
+		entry.Version = firstNonEmptyString(full.SemVer, entry.Version)
+		if pub, _, ok := ParseSkillID(entry.SkillID); ok {
+			entry.Publisher = pub
+		}
+		return entry, nil
+	}
+
+	steps := make([]corelib.NLSkillStep, 0, len(full.Steps))
+	for _, s := range full.Steps {
+		action := strings.TrimSpace(s.Action)
+		if action == "" {
+			continue
+		}
+		steps = append(steps, corelib.NLSkillStep{
+			Action:    action,
+			Params:    s.Params,
+			OnError:   s.OnError,
+			Name:      s.Name,
+			Condition: s.Condition,
+		})
+	}
+
+	installName := firstNonEmptyString(full.Name, skillID)
+	installSkillDir := strings.TrimSpace(opts.TargetDir)
+	if installSkillDir == "" && installName != "" && !opts.SkipExtract {
+		if skillsRoot, err := PrimarySkillsDir(); err == nil {
+			installSkillDir = filepath.Join(skillsRoot, installName)
+		}
+	}
+
+	if len(steps) == 0 {
+		steps = craftToolStepsFromHubFiles(full.Files, installSkillDir)
+	}
+
+	if !opts.SkipExtract && len(full.Files) > 0 {
+		if err := extractHubBundledFiles(installName, full.Files, installSkillDir); err != nil {
+			return nil, fmt.Errorf("extract bundled files for skill %q: %w", installName, err)
+		}
+	}
+
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("skill %s has no steps, no agent_skill_md, and no SKILL.md in files", firstNonEmptyString(full.Name, skillID))
+	}
 
 	trustLevel := full.TrustLevel
 	if trustLevel == "" || trustLevel == "community" {
+		// Official store downloads are treated as trusted so risk assessor
+		// does not escalate legitimate hub packages to community.
 		trustLevel = "trusted"
 	}
 
 	entry := &corelib.NLSkillEntry{
-		SkillID:       full.SkillID, // propagate publisher.name if Hub returned it
-		Name:          full.Name,
+		SkillID:       full.SkillID,
+		Name:          firstNonEmptyString(full.Name, skillID),
 		Description:   full.Description,
 		Triggers:      full.Triggers,
+		Steps:         steps,
 		Status:        "active",
 		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        "hub",
+		Source:        source,
 		SourceProject: hubURL,
-		HubSkillID:    skillID,
+		HubSkillID:    firstNonEmptyString(full.ID, skillID),
 		HubVersion:    full.Version,
-		Version:       full.SemVer, // propagate semver if available
+		Version:       full.SemVer,
 		TrustLevel:    trustLevel,
+		SkillDir:      installSkillDir,
 	}
-	// Derive publisher from skill_id when available
 	if pub, _, ok := ParseSkillID(entry.SkillID); ok {
 		entry.Publisher = pub
 	}
 	return entry, nil
+}
+
+// craftToolStepsFromHubFiles synthesizes a craft_tool step from bundled SKILL.md.
+func craftToolStepsFromHubFiles(files map[string]string, skillDir string) []corelib.NLSkillStep {
+	if len(files) == 0 {
+		return nil
+	}
+	for _, key := range []string{"SKILL.md", "skill.md"} {
+		b64, ok := files[key]
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil || len(decoded) == 0 {
+			continue
+		}
+		params := map[string]interface{}{
+			"instructions":      string(decoded),
+			"verification_mode": "artifact_optional",
+			"register_policy":   "manual",
+		}
+		if strings.TrimSpace(skillDir) != "" {
+			params["working_dir"] = skillDir
+		}
+		return []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: params,
+		}}
+	}
+	return nil
+}
+
+// ExtractSkillPackageFiles writes a base64 path→content map under targetDir
+// (or PrimarySkillsDir/<skillName>). It validates the whole package first and
+// only writes after all paths are safe, so invalid packages never partially
+// materialize. Shared by GUI, TUI, and agentservice.
+func ExtractSkillPackageFiles(skillName string, files map[string]string, targetDir string) error {
+	return extractHubBundledFiles(skillName, files, targetDir)
+}
+
+type hubBundledFile struct {
+	original string
+	destAbs  string
+	data     []byte
+}
+
+// extractHubBundledFiles writes base64 file map under targetDir (or PrimarySkillsDir/name).
+func extractHubBundledFiles(skillName string, files map[string]string, targetDir string) error {
+	if len(files) == 0 {
+		return fmt.Errorf("downloaded skill package contained no writable files")
+	}
+	skillDir := strings.TrimSpace(targetDir)
+	if skillDir == "" {
+		if strings.TrimSpace(skillName) == "" {
+			return fmt.Errorf("skill name is required when target directory is empty")
+		}
+		skillsRoot, err := PrimarySkillsDir()
+		if err != nil {
+			return err
+		}
+		skillDir = filepath.Join(skillsRoot, skillName)
+	}
+	skillDirAbs, err := filepath.Abs(skillDir)
+	if err != nil {
+		return err
+	}
+
+	rootExists := true
+	if info, err := os.Lstat(skillDirAbs); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("unsafe skill directory %q", skillDir)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	} else {
+		rootExists = false
+	}
+
+	// Decode + validate all paths before writing anything.
+	decoded := make([]hubBundledFile, 0, len(files))
+	for relPath, b64Content := range files {
+		data, err := base64.StdEncoding.DecodeString(b64Content)
+		if err != nil {
+			return fmt.Errorf("decode bundled file %q: %w", relPath, err)
+		}
+		normalized := strings.ReplaceAll(relPath, "\\", "/")
+		clean := filepath.Clean(filepath.FromSlash(normalized))
+		if isUnsafeHubBundledPath(normalized, clean) {
+			return fmt.Errorf("unsafe bundled file path %q", relPath)
+		}
+		dest := filepath.Join(skillDirAbs, clean)
+		destAbs, err := filepath.Abs(dest)
+		if err != nil {
+			return fmt.Errorf("resolve bundled file %q: %w", relPath, err)
+		}
+		relToRoot, err := filepath.Rel(skillDirAbs, destAbs)
+		if err != nil || relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(relToRoot) {
+			return fmt.Errorf("unsafe bundled file path %q", relPath)
+		}
+		decoded = append(decoded, hubBundledFile{original: relPath, destAbs: destAbs, data: data})
+	}
+	if len(decoded) == 0 {
+		return fmt.Errorf("downloaded skill package contained no writable files")
+	}
+
+	rootCreated := false
+	if !rootExists {
+		if err := os.MkdirAll(filepath.Dir(skillDirAbs), 0o755); err != nil {
+			return err
+		}
+		if err := os.Mkdir(skillDirAbs, 0o755); err != nil {
+			if !os.IsExist(err) {
+				return err
+			}
+		} else {
+			rootCreated = true
+		}
+	}
+	if info, err := os.Lstat(skillDirAbs); err != nil {
+		return cleanupHubBundledDirOnError(skillDirAbs, rootCreated, err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return cleanupHubBundledDirOnError(skillDirAbs, rootCreated, fmt.Errorf("unsafe skill directory %q", skillDir))
+	}
+
+	for _, f := range decoded {
+		if err := os.MkdirAll(filepath.Dir(f.destAbs), 0o755); err != nil {
+			return cleanupHubBundledDirOnError(skillDirAbs, rootCreated, err)
+		}
+		if info, err := os.Lstat(f.destAbs); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+				return cleanupHubBundledDirOnError(skillDirAbs, rootCreated, fmt.Errorf("unsafe bundled file target %q", f.original))
+			}
+		} else if !os.IsNotExist(err) {
+			return cleanupHubBundledDirOnError(skillDirAbs, rootCreated, err)
+		}
+	}
+	for _, f := range decoded {
+		if err := os.WriteFile(f.destAbs, f.data, 0o644); err != nil {
+			return cleanupHubBundledDirOnError(skillDirAbs, rootCreated, fmt.Errorf("write bundled file %q: %w", f.original, err))
+		}
+	}
+	return nil
+}
+
+func isUnsafeHubBundledPath(normalized, clean string) bool {
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return true
+	}
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || strings.HasPrefix(normalized, "/") {
+		return true
+	}
+	for _, part := range strings.Split(normalized, "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return true
+		}
+		// Windows drive letters and ADS both use ':'. Treat as non-portable.
+		if strings.Contains(part, ":") {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanupHubBundledDirOnError(skillDirAbs string, rootCreated bool, err error) error {
+	if err != nil && rootCreated {
+		_ = os.RemoveAll(skillDirAbs)
+	}
+	return err
 }
 
 // DownloadClawHub downloads a skill from ClawHub mirror and returns an
@@ -566,9 +967,20 @@ type skillHubItem struct {
 	ArtifactContractPresentation string                 `json:"artifact_contract_presentation,omitempty"`
 }
 
+type skillHubDownloadStep struct {
+	Action    string                 `json:"action"`
+	Params    map[string]interface{} `json:"params"`
+	OnError   string                 `json:"on_error"`
+	Name      string                 `json:"name,omitempty"`
+	Condition string                 `json:"condition,omitempty"`
+}
+
 type skillHubDownloadResponse struct {
 	skillHubItem
-	Triggers []string `json:"triggers"`
+	Triggers     []string                 `json:"triggers"`
+	Steps        []skillHubDownloadStep   `json:"steps,omitempty"`
+	Files        map[string]string        `json:"files,omitempty"`          // path → base64 content
+	AgentSkillMD string                   `json:"agent_skill_md,omitempty"` // SKILL.md content
 }
 
 // ── ClawHub response types ──

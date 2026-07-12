@@ -85,6 +85,12 @@ func AppOutputsDir() string {
 	return filepath.Join(DataDir(), "app-outputs")
 }
 
+// ToolResultsDir stores full tool outputs spilled out of the model context
+// (tool_result handles). Preview text stays in the conversation; raw bytes live here.
+func ToolResultsDir() string {
+	return filepath.Join(DataDir(), "tool_results")
+}
+
 func resolveBaseDir(configuredDir string) string {
 	dir := strings.TrimSpace(configuredDir)
 	if dir != "" {

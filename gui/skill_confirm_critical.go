@@ -219,30 +219,30 @@ func localizedSkillInstallResultMessage(lang, skillName string, success bool, er
 	switch normalizeSkillConfirmLangKind(lang) {
 	case appLanguageEnglish:
 		if success {
-			return fmt.Sprintf("✅ Skill %q installed successfully.", skillName)
+			return fmt.Sprintf("Skill %q installed successfully.", skillName)
 		}
-		return fmt.Sprintf("❌ Skill %q was not installed successfully: %s", skillName, errText)
+		return fmt.Sprintf("Skill %q was not installed successfully: %s", skillName, errText)
 	case appLanguageZhHant:
 		if success {
-			return fmt.Sprintf("✅ Skill「%s」安裝成功。", skillName)
+			return fmt.Sprintf("Skill「%s」安裝成功。", skillName)
 		}
-		return fmt.Sprintf("❌ Skill「%s」安裝未成功：%s", skillName, errText)
+		return fmt.Sprintf("Skill「%s」安裝未成功：%s", skillName, errText)
 	default:
 		if success {
-			return fmt.Sprintf("✅ Skill「%s」安装成功。", skillName)
+			return fmt.Sprintf("Skill「%s」安装成功。", skillName)
 		}
-		return fmt.Sprintf("❌ Skill「%s」安装未成功：%s", skillName, errText)
+		return fmt.Sprintf("Skill「%s」安装未成功：%s", skillName, errText)
 	}
 }
 
 func localizedSkillInstallRejectedMessage(lang, skillName string) string {
 	switch normalizeSkillConfirmLangKind(lang) {
 	case appLanguageEnglish:
-		return fmt.Sprintf("⚠️ Skill %q was rejected and not installed.", skillName)
+		return fmt.Sprintf("Skill %q was rejected and not installed.", skillName)
 	case appLanguageZhHant:
-		return fmt.Sprintf("⚠️ Skill %q 已拒絕安裝。", skillName)
+		return fmt.Sprintf("Skill %q 已拒絕安裝。", skillName)
 	default:
-		return fmt.Sprintf("⚠️ Skill %q 已拒绝安装。", skillName)
+		return fmt.Sprintf("Skill %q 已拒绝安装。", skillName)
 	}
 }
 
@@ -269,11 +269,11 @@ func localizedSkillInstallBlockedMessage(lang, skillName string, beforeInstall b
 func localizedSkillInstallSuccessSummary(lang, skillName, description, source, trustLevel string) string {
 	switch normalizeSkillConfirmLangKind(lang) {
 	case appLanguageEnglish:
-		return fmt.Sprintf("✅ Skill %q installed successfully\nDescription: %s\nSource: %s\nTrust level: %s\n", skillName, description, source, trustLevel)
+		return fmt.Sprintf("Skill %q installed successfully\nDescription: %s\nSource: %s\nTrust level: %s\n", skillName, description, source, trustLevel)
 	case appLanguageZhHant:
-		return fmt.Sprintf("✅ 已成功安裝 Skill「%s」\n描述：%s\n來源：%s\n信任等級：%s\n", skillName, description, source, trustLevel)
+		return fmt.Sprintf("已成功安裝 Skill「%s」\n描述：%s\n來源：%s\n信任等級：%s\n", skillName, description, source, trustLevel)
 	default:
-		return fmt.Sprintf("✅ 已成功安装 Skill「%s」\n描述：%s\n来源：%s\n信任等级：%s\n", skillName, description, source, trustLevel)
+		return fmt.Sprintf("已成功安装 Skill「%s」\n描述：%s\n来源：%s\n信任等级：%s\n", skillName, description, source, trustLevel)
 	}
 }
 
@@ -376,7 +376,7 @@ func localizedSkillInstallExecutingStatus(lang, skillName string) string {
 // skill installation.
 func buildCriticalRiskPrompt(skillName, source string, factors []string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "⚠️ 安全警告: Skill「%s」来自 %s 被评估为 Critical 风险。\n", skillName, source)
+	fmt.Fprintf(&sb, "安全警告: Skill「%s」来自 %s 被评估为 Critical 风险。\n", skillName, source)
 	if len(factors) > 0 {
 		sb.WriteString("\n风险因素:\n")
 		for _, f := range factors {

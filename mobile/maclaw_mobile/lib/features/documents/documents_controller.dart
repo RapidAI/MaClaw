@@ -13,12 +13,14 @@ import '../../core/notifications/mobile_notification_service.dart';
 import '../../core/platform/mobile_permission_evidence.dart';
 import '../../core/security/mobile_redaction.dart';
 import '../../core/storage/mobile_local_store.dart';
+import '../../l10n/app_strings.dart';
 import '../auth/session_controller.dart';
 import '../tasks/mobile_jobs_provider.dart';
 import 'document_draft.dart';
 
 /// Map Hub document API errors to short user-facing messages.
-Object mapDocumentStorageError(Object error) {
+/// [isZh] selects Chinese UI copy; English for all other locales.
+Object mapDocumentStorageError(Object error, {bool isZh = true}) {
   if (error is! DioException) return error;
   final code = error.response?.statusCode ?? 0;
   final data = error.response?.data;
@@ -34,28 +36,46 @@ Object mapDocumentStorageError(Object error) {
       blob.contains('document storage quota') ||
       blob.contains('quota exceeded')) {
     return StateError(
-      '文档空间不足（已达配额上限）。请删除部分草稿或导入文件，'
-      '或在「我的」兑换/购买服务卡扩容后重试。',
+      isZh
+          ? '文档空间不足（已达配额上限）。请删除部分草稿或导入文件，'
+              '或在「我的」兑换/购买服务卡扩容后重试。'
+          : 'Document storage full (quota exceeded). Delete drafts or upgrade your plan in Me, then retry.',
     );
   }
   if (code == 404 ||
       apiCode == 'DRAFT_NOT_FOUND' ||
       apiCode == 'UPLOAD_NOT_FOUND') {
-    return StateError('文稿在服务器上不存在或已删除。');
+    return StateError(
+      isZh
+          ? '文稿在服务器上不存在或已删除。'
+          : 'Document is missing or already deleted on the server.',
+    );
   }
   if (code == 401 || apiCode == 'UNAUTHORIZED') {
-    return StateError('登录已失效，请重新登录后再试。');
+    return StateError(
+      isZh ? '登录已失效，请重新登录后再试。' : 'Session expired. Sign in again and retry.',
+    );
   }
   if (code == 403) {
-    return StateError(message.isNotEmpty ? message : '没有权限操作该文稿。');
+    return StateError(
+      message.isNotEmpty
+          ? message
+          : (isZh ? '没有权限操作该文稿。' : 'You do not have permission for this document.'),
+    );
   }
   if (message.isNotEmpty) {
     return StateError(message);
   }
   if (code > 0) {
-    return StateError('文档服务请求失败（HTTP $code）。');
+    return StateError(
+      isZh
+          ? '文档服务请求失败（HTTP $code）。'
+          : 'Document service request failed (HTTP $code).',
+    );
   }
-  return StateError('网络异常，请检查连接后重试。');
+  return StateError(
+    isZh ? '网络异常，请检查连接后重试。' : 'Network error. Check your connection and retry.',
+  );
 }
 
 /// True when Hub says the draft is already gone (idempotent delete).
@@ -143,13 +163,16 @@ class DocumentDraftHistoryController
     }
     final client = ref.read(apiClientProvider);
     if (client == null) {
-      throw StateError('请先登录 MaClaw 官方服务。');
+      final isZh = ref.read(appStringsProvider).isZh;
+      throw StateError(
+        isZh ? '请先登录 MaClaw 官方服务。' : 'Sign in to MaClaw official service first.',
+      );
     }
     try {
       await client.deleteDocumentDraft(id);
     } on Object catch (error) {
       if (!isDocumentDraftAlreadyGone(error)) {
-        throw mapDocumentStorageError(error);
+        throw mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       }
       // 404 / DRAFT_NOT_FOUND: treat as already deleted on Hub.
     }
@@ -214,7 +237,11 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }) async {
     final client = ref.read(apiClientProvider);
     if (client == null) {
-      _setOperationError('请先登录 MaClaw 官方服务。');
+      _setOperationError(
+        ref.read(appStringsProvider).isZh
+            ? '请先登录 MaClaw 官方服务。'
+            : 'Sign in to MaClaw official service first.',
+      );
       return;
     }
     final current = state.valueOrNull ?? const DocumentsState();
@@ -236,7 +263,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         ),
       );
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -269,7 +296,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       );
       _ensureExportPolling(job);
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -325,7 +352,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         ),
       );
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -349,7 +376,11 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     final draft = current?.draft;
     if (client == null) {
-      _setOperationError('请先登录 MaClaw 官方服务。');
+      _setOperationError(
+        ref.read(appStringsProvider).isZh
+            ? '请先登录 MaClaw 官方服务。'
+            : 'Sign in to MaClaw official service first.',
+      );
       return;
     }
     if (current == null || draft == null || draft.id.trim().isEmpty) {
@@ -381,7 +412,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         ),
       );
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       var msg = mapped is StateError ? mapped.message : mapped.toString();
       if (isDocumentDraftAlreadyGone(error)) {
         msg =
@@ -419,7 +450,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
       _ensureExportPolling(refreshed);
     } on Object catch (error) {
       if (silent) return;
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -509,7 +540,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         );
         return;
       }
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -584,11 +615,18 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   Future<File> downloadExportFile(DocumentExportJob job) async {
     final client = ref.read(apiClientProvider);
     final current = state.valueOrNull;
+    final isZh = ref.read(appStringsProvider).isZh;
     if (client == null || current?.draft == null) {
-      throw StateError('请先登录并创建文档草稿。');
+      throw StateError(
+        isZh
+            ? '请先登录并创建文档草稿。'
+            : 'Sign in and create a document draft first.',
+      );
     }
     if (job.status != 'ready') {
-      throw StateError('导出任务尚未完成。');
+      throw StateError(
+        isZh ? '导出任务尚未完成。' : 'Export job is not ready yet.',
+      );
     }
     final bytes = await client.downloadDocumentExport(job);
     final directory = await getTemporaryDirectory();
@@ -643,7 +681,11 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     await ref.read(sessionControllerProvider.future);
     final client = ref.read(apiClientProvider);
     if (client == null) {
-      _setOperationError('请先登录 MaClaw 官方服务。');
+      _setOperationError(
+        ref.read(appStringsProvider).isZh
+            ? '请先登录 MaClaw 官方服务。'
+            : 'Sign in to MaClaw official service first.',
+      );
       return;
     }
     // Outbound share writes temp files under maclaw_outbound_share / maclaw_share_*
@@ -712,7 +754,7 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
         _ensureUploadPolling(upload);
       }
     } on Object catch (error) {
-      final mapped = mapDocumentStorageError(error);
+      final mapped = mapDocumentStorageError(error, isZh: ref.read(appStringsProvider).isZh);
       final msg = mapped is StateError ? mapped.message : mapped.toString();
       state = AsyncData(
         current.copyWith(
@@ -827,8 +869,10 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
   }
 
   String shareTextForDraft(DocumentDraft draft) {
-    final title =
-        draft.title.trim().isEmpty ? 'MaClaw 文档' : draft.title.trim();
+    final s = ref.read(appStringsProvider);
+    final title = draft.title.trim().isEmpty
+        ? s.unnamedDocument
+        : draft.title.trim();
     return redactMobileSensitiveText('# $title\n\n${draft.markdown}');
   }
 
@@ -844,7 +888,10 @@ class DocumentsController extends AsyncNotifier<DocumentsState> {
     }
     final client = ref.read(apiClientProvider);
     if (client == null) {
-      throw StateError('请先登录官方服务。');
+      final isZh = ref.read(appStringsProvider).isZh;
+      throw StateError(
+        isZh ? '请先登录官方服务。' : 'Sign in to the official service first.',
+      );
     }
     final bytes = await client.downloadDocumentOriginal(draft);
     final root = await getTemporaryDirectory();

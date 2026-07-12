@@ -216,7 +216,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			return progress.InterruptResult{
 				PendingConfirm: true,
 				Action:         progress.ActionReplace,
-				Reply:          "⚠️ 检测到可能要停止当前任务，确认吗？",
+				Reply:          "检测到可能要停止当前任务，确认吗？",
 				Corrections: []progress.CorrectionOption{
 					progress.NewCorrectionOption("确认打断", progress.ActionReplace),
 					progress.NewCorrectionOption("补充当前任务", progress.ActionMerge),
@@ -229,9 +229,9 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			log.Printf("[interrupt] CancelSessionForUser error: %v", err)
 			return progress.InterruptResult{}
 		}
-		cancelReply := "⏹️ 已停止当前任务。"
+		cancelReply := "已停止当前任务。"
 		if taskText != "" {
-			cancelReply = "⏹️ 已停止任务「" + truncateForLog(taskText, 20) + "」。"
+			cancelReply = "已停止任务「" + truncateForLog(taskText, 20) + "」。"
 		}
 		if tracker != nil {
 			if summary := tracker.Buffer().CompletedOutputSummary(); summary != "" {
@@ -268,7 +268,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 		return progress.InterruptResult{
 			Handled: true,
 			Action:  progress.ActionMerge,
-			Reply:   "👌 收到，已纳入当前任务。",
+			Reply:   "收到，已纳入当前任务。",
 			Corrections: []progress.CorrectionOption{
 				progress.NewCorrectionOption("改为打断", progress.ActionReplace),
 				progress.NewCorrectionOption("改为排队", progress.ActionQueue),
@@ -288,7 +288,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			Handled: false,
 			Queued:  true,
 			Action:  progress.ActionQueue,
-			Reply:   "📋 收到，当前任务完成后处理。",
+			Reply:   "收到，当前任务完成后处理。",
 		}
 
 	default:
@@ -352,9 +352,9 @@ func (ih *imInterruptHandler) HandleCorrection(
 		taskText, err := ih.handler.CancelSessionForUser(userID)
 		if err != nil {
 			log.Printf("[correction] CancelSessionForUser error: %v", err)
-			return progress.InterruptResult{Reply: "⚠️ 打断失败: " + err.Error()}
+			return progress.InterruptResult{Reply: "打断失败: " + err.Error()}
 		}
-		reply := "⏹️ 已改为打断"
+		reply := "已改为打断"
 		if taskText != "" {
 			reply += "，已停止任务「" + truncateForLog(taskText, 20) + "」。"
 		} else {
@@ -377,7 +377,7 @@ func (ih *imInterruptHandler) HandleCorrection(
 				return progress.InterruptResult{
 					Handled: true,
 					Action:  progress.ActionQueue,
-					Reply:   "⚠️ 消息已被当前任务处理，无法改为排队。",
+					Reply:   "消息已被当前任务处理，无法改为排队。",
 				}
 			}
 		}
@@ -385,7 +385,7 @@ func (ih *imInterruptHandler) HandleCorrection(
 			Handled: false,
 			Queued:  true,
 			Action:  progress.ActionQueue,
-			Reply:   "📋 已改为排队，当前任务完成后处理。",
+			Reply:   "已改为排队，当前任务完成后处理。",
 		}
 
 	case progress.ActionMerge:
@@ -396,12 +396,12 @@ func (ih *imInterruptHandler) HandleCorrection(
 		return progress.InterruptResult{
 			Handled: true,
 			Action:  progress.ActionMerge,
-			Reply:   "👌 已改为注入当前任务。",
+			Reply:   "已改为注入当前任务。",
 		}
 
 	default:
 		return progress.InterruptResult{
-			Reply: "⚠️ 不支持的纠正操作。",
+			Reply: "不支持的纠正操作。",
 		}
 	}
 }

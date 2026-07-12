@@ -564,6 +564,8 @@ func dataSrvHTTPRoutes(t *testing.T) map[string]bool {
 	publicNonAPIRoutes := map[string]bool{
 		"GET /":                    true,
 		"GET /ui":                  true,
+		"GET /console/":            true,
+		"GET /legacy":              true,
 		"GET /api/v1/openapi.json": true,
 	}
 	out := map[string]bool{}

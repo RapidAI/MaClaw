@@ -75,7 +75,7 @@ func TestToolUploadSkill_SuccessPath(t *testing.T) {
 	// used in toolUploadSkill. Since UploadNLSkillToMarket requires
 	// real infrastructure (skill executor, market client, config, etc.),
 	// we verify the format by checking the expected output pattern.
-	expectedFormat := "✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s"
+	expectedFormat := "Skill「%s」已上传到 SkillMarket，提交 ID: %s"
 	result := fmt.Sprintf(expectedFormat, "my-skill", "sub-12345")
 	if !strings.Contains(result, "my-skill") || !strings.Contains(result, "sub-12345") {
 		t.Fatalf("success message format is incorrect: %q", result)
@@ -811,10 +811,16 @@ func TestToolUploadSkill_PortabilityGateRollsBackAutoFixWhenBlocked(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != yaml {
-		t.Fatalf("skill.yaml was not rolled back after blocked upload:\n%s", string(data))
+	// Path auto-fixes are intentionally kept when other blocking issues remain
+	// (e.g. missing input file). Only security-scan failures roll back the dir.
+	gotYAML := string(data)
+	if strings.Contains(gotYAML, absScript) {
+		t.Fatalf("absolute machine path should stay auto-fixed after blocked upload:\n%s", gotYAML)
+	}
+	if !strings.Contains(gotYAML, "{baseDir}") {
+		t.Fatalf("expected portable {baseDir} rewrite to persist after blocked upload:\n%s", gotYAML)
 	}
 	if _, statErr := os.Stat(yamlPath + ".bak"); !os.IsNotExist(statErr) {
-		t.Fatalf("skill.yaml.bak exists after rollback, statErr=%v", statErr)
+		t.Fatalf("skill.yaml.bak exists after gate, statErr=%v", statErr)
 	}
 }

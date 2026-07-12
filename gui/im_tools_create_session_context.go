@@ -19,7 +19,7 @@ func (h *IMMessageHandler) resolveCreateSessionContext(toolName, projectPath str
 		recommended, reason := h.contextResolver.ResolveTool(resolution.ProjectPath, "")
 		if recommended != "" {
 			resolution.Tool = recommended
-			resolution.Hints = append(resolution.Hints, fmt.Sprintf("🔧 自动推荐工具: %s（%s）", resolution.Tool, reason))
+			resolution.Hints = append(resolution.Hints, fmt.Sprintf("自动推荐工具: %s（%s）", resolution.Tool, reason))
 		}
 	}
 	if resolution.Tool == "" {
@@ -31,7 +31,7 @@ func (h *IMMessageHandler) resolveCreateSessionContext(toolName, projectPath str
 		detected, reason := h.contextResolver.ResolveProject()
 		if detected != "" {
 			resolution.ProjectPath = detected
-			resolution.Hints = append(resolution.Hints, fmt.Sprintf("📁 自动检测项目: %s（%s）", resolution.ProjectPath, reason))
+			resolution.Hints = append(resolution.Hints, fmt.Sprintf("自动检测项目: %s（%s）", resolution.ProjectPath, reason))
 		}
 	}
 	return resolution

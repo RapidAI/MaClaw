@@ -207,7 +207,7 @@ func (r *Registry) FixAllWithProgress(violations []Violation, progress FixProgre
 			// Transient failure: retry once after 3s backoff.
 			log.Printf("[requirement] transient fix failure for %s:%s, retrying in 3s: %v", v.Requirement.Type, v.Requirement.Name, err)
 			if progress != nil {
-				progress(fmt.Sprintf("⏳ 安装 %s 遇到网络问题，3秒后重试...", v.Requirement.Name))
+				progress(fmt.Sprintf("安装 %s 遇到网络问题，3秒后重试...", v.Requirement.Name))
 			}
 			time.Sleep(3 * time.Second)
 			err = fixer.Fix(v.Requirement)
@@ -317,11 +317,11 @@ func isTransientFixError(err error) bool {
 func fixProgressMessage(req Requirement) string {
 	switch req.Type {
 	case "pip":
-		return fmt.Sprintf("📦 正在安装 Python 包 %s%s...", req.Name, req.Version)
+		return fmt.Sprintf("正在安装 Python 包 %s%s...", req.Name, req.Version)
 	case "npm":
-		return fmt.Sprintf("📦 正在安装 Node 包 %s%s...", req.Name, req.Version)
+		return fmt.Sprintf("正在安装 Node 包 %s%s...", req.Name, req.Version)
 	default:
-		return fmt.Sprintf("🔧 正在修复依赖 %s...", req.Name)
+		return fmt.Sprintf("正在修复依赖 %s...", req.Name)
 	}
 }
 

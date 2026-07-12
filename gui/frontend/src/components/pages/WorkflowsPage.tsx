@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { StartWorkflowTemplate } from '../../../wailsjs/go/main/App';
-import { getAllWorkflowShortcuts } from '../remote/WorkflowShortcutsSection';
+import { getAllWorkflowShortcuts, WorkflowShortcutIcon } from '../remote/WorkflowShortcutsSection';
 import './WorkflowsPage.css';
 
 type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
@@ -100,7 +100,9 @@ export const WorkflowsPage = ({ lang, switchToAI }: { lang?: string; switchToAI?
                                     disabled={!!startingType}
                                     onClick={() => handleClick(item.type)}
                                 >
-                                    <span className="workflows-page__tile-icon">{item.icon}</span>
+                                    <span className="workflows-page__tile-icon" aria-hidden="true">
+                                        <WorkflowShortcutIcon name={item.icon} size={22} />
+                                    </span>
                                     <span className="workflows-page__tile-label">{item.label}</span>
                                     <span className="workflows-page__tile-desc">{item.description}</span>
                                 </button>

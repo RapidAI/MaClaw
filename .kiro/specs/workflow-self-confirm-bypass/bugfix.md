@@ -14,7 +14,7 @@
 
 1.1 WHEN the LLM generates a response for a NeedsConfirm phase AND the response contains both the phase deliverable AND a self-confirmation pattern (e.g., "已确认"、"确认完毕"、"进入下一阶段") AND the start of next-phase work, all within a single `msgContent`, THEN the NeedsConfirm gate sees the entire output as one substantive document and force-returns it — but the returned text already contains the self-confirmation and next-phase content, effectively bypassing user confirmation
 
-1.2 WHEN the phase prompt (`BuildPhaseSystemPrompt`) instructs the LLM to "output the deliverable and then stop, asking for confirmation" (Section 6: "⚠️ 重要：等待用户确认"), THEN the LLM sometimes ignores this instruction and continues generating beyond the confirmation request within the same streaming response, because the instruction is a soft constraint in the system prompt with no hard enforcement mechanism
+1.2 WHEN the phase prompt (`BuildPhaseSystemPrompt`) instructs the LLM to "output the deliverable and then stop, asking for confirmation" (Section 6: "重要：等待用户确认"), THEN the LLM sometimes ignores this instruction and continues generating beyond the confirmation request within the same streaming response, because the instruction is a soft constraint in the system prompt with no hard enforcement mechanism
 
 1.3 WHEN the NeedsConfirm gate in the no-tool branch evaluates `msgContent` after the LLM finishes its full response for an iteration, THEN it has no opportunity to intervene between the confirmation request portion and the self-confirmation portion of the text — the gate operates at iteration granularity, not at token/sentence granularity
 

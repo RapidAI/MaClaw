@@ -90,14 +90,14 @@ func (s runtimeTaskStatus) HasExitCode() bool {
 func (s runtimeTaskStatus) Icon() string {
 	switch s {
 	case runtimeTaskStatusRunning, runtimeTaskStatusPending:
-		return "🔄"
+		return "[..]"
 	case runtimeTaskStatusCompleted:
-		return "✅"
+		return "[OK]"
 	case runtimeTaskStatusFailed:
-		return "❌"
+		return "[ERR]"
 	case runtimeTaskStatusKilled:
-		return "⏹️"
+		return "[STOP]"
 	default:
-		return "❓"
+		return "[?]"
 	}
 }

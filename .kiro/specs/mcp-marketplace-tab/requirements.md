@@ -33,7 +33,7 @@
 
 **验收标准**:
 - 强制下发的 MCP（`Source == "marketplace"` 且对应的 `HubCapabilityDeployment.ReinstallIfRemoved == true`）在列表中不显示删除按钮
-- 强制下发的 MCP 显示锁定图标（🔒）和"企业下发"标签
+- 强制下发的 MCP 显示锁定图标（）和"企业下发"标签
 - 强制下发的 MCP 仍可查看工具列表、健康状态、配置密钥
 - 强制下发的 MCP 仍可编辑密钥配置（用户需要填入自己的 API Key）
 - 非强制的市场安装 MCP（用户主动搜索安装的）可以正常删除

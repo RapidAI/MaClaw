@@ -34,7 +34,7 @@ func TestAgentProgressTracker_BasicFlow(t *testing.T) {
 	first := messages[0]
 	mu.Unlock()
 
-	if first != "收到，正在处理 🔄" {
+	if first != "收到，正在处理" {
 		t.Fatalf("expected ack message, got %q", first)
 	}
 }

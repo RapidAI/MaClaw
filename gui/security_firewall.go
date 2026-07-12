@@ -39,6 +39,14 @@ func (f *SecurityFirewall) SetOnAsk(fn func(toolName string, risk security.RiskA
 // Check performs a security check before tool execution.
 // Returns (allowed, reason). If not allowed, reason explains why.
 func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, ctx *SecurityCallContext) (bool, string) {
+	// 0. Denial ledger auto-pause (OpenSquilla-inspired).
+	if ledger := security.ProcessDenialLedger(); ledger != nil && ledger.IsPaused() {
+		if msg := ledger.PauseBlockMessage(); msg != "" {
+			return false, msg
+		}
+		return false, "autonomous tools paused after consecutive security denials"
+	}
+
 	if f.analyzer == nil {
 		return true, ""
 	}
@@ -77,25 +85,50 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 	// 5. Execute decision.
 	switch action {
 	case security.PolicyAllow:
+		security.ProcessDenialLedger().RecordAllow()
 		return true, ""
 	case security.PolicyAudit:
+		security.ProcessDenialLedger().RecordAllow()
 		return true, ""
 	case security.PolicyDeny:
 		if mode == "developer" || mode == "relaxed" {
+			security.ProcessDenialLedger().RecordAllow()
 			return true, ""
 		}
 		if mode == "standard" {
-			return f.confirmOrAllowWithoutChannel(toolName, risk, sessionID)
+			ok, reason := f.confirmOrAllowWithoutChannel(toolName, risk, sessionID)
+			if ok {
+				security.ProcessDenialLedger().RecordAllow()
+				return true, ""
+			}
+			return f.denyWithLedger(toolName, reason)
 		}
-		return false, fmt.Sprintf("鐎瑰鍙忕粵鏍殣閹锋帞绮? %s (妞嬪酣娅撶粵澶岄獓: %s, 閸樼喎娲? %s)", toolName, risk.Level, risk.Reason)
+		msg := fmt.Sprintf("security policy deny: %s (risk: %s, reason: %s)", toolName, risk.Level, risk.Reason)
+		return f.denyWithLedger(toolName, msg)
 	case security.PolicyAsk:
 		if mode == "developer" || mode == "relaxed" {
+			security.ProcessDenialLedger().RecordAllow()
 			return true, ""
 		}
-		return f.confirmOrAllowWithoutChannel(toolName, risk, sessionID)
+		ok, reason := f.confirmOrAllowWithoutChannel(toolName, risk, sessionID)
+		if ok {
+			security.ProcessDenialLedger().RecordAllow()
+			return true, ""
+		}
+		return f.denyWithLedger(toolName, reason)
 	default:
+		security.ProcessDenialLedger().RecordAllow()
 		return true, ""
 	}
+}
+
+func (f *SecurityFirewall) denyWithLedger(toolName, reason string) (bool, string) {
+	if security.ProcessDenialLedger().RecordDeny(toolName, reason) {
+		if pause := security.ProcessDenialLedger().PauseBlockMessage(); pause != "" {
+			return false, reason + " | " + pause
+		}
+	}
+	return false, reason
 }
 
 func (f *SecurityFirewall) confirmOrAllowWithoutChannel(toolName string, risk security.RiskAssessment, sessionID string) (bool, string) {

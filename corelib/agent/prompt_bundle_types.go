@@ -57,12 +57,15 @@ func (p PromptBundle) TokenStats() PromptBundleTokenStats {
 }
 
 // BuildPromptBundle builds the system prompt as cache-friendly segments.
+// When Config.PromptProfile is light, bulk policy (coding gate, SSH, MCP,
+// skill catalog, long evidence rules) is omitted to cut token cost on simple turns.
 func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bool) PromptBundle {
 	var stable strings.Builder
 	var session strings.Builder
 	var retrieved strings.Builder
 
 	cfg := deps.Config
+	light := NormalizePromptProfile(string(cfg.PromptProfile)).IsLight()
 	roleName := strings.TrimSpace(cfg.RoleName)
 	if roleName == "" {
 		roleName = "MaClaw"
@@ -76,20 +79,30 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		roleTitle = "AI coding assistant"
 	}
 
-	fmt.Fprintf(&stable, "You are %s, %s: %s. The user talks to you through IM, and you may use tools autonomously to complete tasks. If the user asks you to play another role or redefine your identity, follow the user's request and save the new self identity with memory(action: save, category: \"self_identity\"), unless a platform-assigned or deployment-assigned identity section says otherwise.\n", roleName, roleTitle, roleDesc)
-	stable.WriteString(PromptOutputFormatRules)
-	stable.WriteString(PromptCorePrinciples)
-	stable.WriteString(PromptEvidenceBoundFactualRules)
-	if deps.HasKnowledgeBase {
-		stable.WriteString(PromptKnowledgeBaseRules)
-	}
-	if deps.PostCorePrinciples != nil {
-		deps.PostCorePrinciples(&stable)
-	}
-	stable.WriteString(PromptEncodingRules)
-	stable.WriteString(PromptSSHRules)
-	if cfg.IsProMode && !cfg.SuppressCodingGateRules {
-		appendInternalCodingWorkflowRules(&stable)
+	if light {
+		fmt.Fprintf(&stable, "You are %s, %s: %s. Handle this as a low-complexity turn; prefer a concise answer and only use tools when necessary.\n", roleName, roleTitle, roleDesc)
+		stable.WriteString(PromptOutputFormatRules)
+		stable.WriteString(PromptCorePrinciplesLight)
+		if deps.HasKnowledgeBase {
+			// Keep a one-liner instead of full knowledge-base policy.
+			stable.WriteString("\nIf knowledge-base context appears below, prefer it over guessing.\n")
+		}
+	} else {
+		fmt.Fprintf(&stable, "You are %s, %s: %s. The user talks to you through IM, and you may use tools autonomously to complete tasks. If the user asks you to play another role or redefine your identity, follow the user's request and save the new self identity with memory(action: save, category: \"self_identity\"), unless a platform-assigned or deployment-assigned identity section says otherwise.\n", roleName, roleTitle, roleDesc)
+		stable.WriteString(PromptOutputFormatRules)
+		stable.WriteString(PromptCorePrinciples)
+		stable.WriteString(PromptEvidenceBoundFactualRules)
+		if deps.HasKnowledgeBase {
+			stable.WriteString(PromptKnowledgeBaseRules)
+		}
+		if deps.PostCorePrinciples != nil {
+			deps.PostCorePrinciples(&stable)
+		}
+		stable.WriteString(PromptEncodingRules)
+		stable.WriteString(PromptSSHRules)
+		if cfg.IsProMode && !cfg.SuppressCodingGateRules {
+			appendInternalCodingWorkflowRules(&stable)
+		}
 	}
 
 	home, _ := os.UserHomeDir()
@@ -109,51 +122,66 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		}
 	}
 	fmt.Fprintf(&session, "\nCurrent system: %s/%s\nUser home: %s\nProject directory: %s\nTemp directory: %s\n", runtime.GOOS, runtime.GOARCH, home, projectDir, scratchDir)
-	session.WriteString("All relative paths in tools (read_file, write_file, edit_file, ripgrep, Glob) resolve against Project directory. bash cwd = Project directory unless working_dir is specified. Use Temp directory for scratch files.\n")
-	if deps.SSHHostLister != nil {
-		if hosts := deps.SSHHostLister(); len(hosts) > 0 {
-			session.WriteString("\nConfigured SSH hosts:\n")
-			for _, host := range hosts {
-				port := host.Port
-				if port == 0 {
-					port = 22
+	if light {
+		session.WriteString("Relative tool paths resolve against Project directory. Prefer answering without tools unless live data is needed.\n")
+		session.WriteString(fmt.Sprintf("Prompt profile: light (adaptive)\n"))
+	} else {
+		session.WriteString("All relative paths in tools (read_file, write_file, edit_file, ripgrep, Glob) resolve against Project directory. bash cwd = Project directory unless working_dir is specified. Use Temp directory for scratch files.\n")
+		if deps.SSHHostLister != nil {
+			if hosts := deps.SSHHostLister(); len(hosts) > 0 {
+				session.WriteString("\nConfigured SSH hosts:\n")
+				for _, host := range hosts {
+					port := host.Port
+					if port == 0 {
+						port = 22
+					}
+					fmt.Fprintf(&session, "  - %s -> %s@%s:%d\n", host.Label, host.User, host.Host, port)
 				}
-				fmt.Fprintf(&session, "  - %s -> %s@%s:%d\n", host.Label, host.User, host.Host, port)
 			}
 		}
-	}
-	if deps.PostSSHRules != nil {
-		deps.PostSSHRules(&session)
-	}
-	if deps.PostCodingWorkflow != nil {
-		deps.PostCodingWorkflow(&session)
-	}
-	if deps.MCPServerLister != nil {
-		if servers := deps.MCPServerLister(); len(servers) > 0 {
-			session.WriteString("\n## Registered MCP Servers\n")
-			for _, s := range servers {
-				fmt.Fprintf(&session, "- %s (%s): %s\n", s.Name, s.ID, strings.Join(s.Tools, ", "))
+		if deps.PostSSHRules != nil {
+			deps.PostSSHRules(&session)
+		}
+		if deps.PostCodingWorkflow != nil {
+			deps.PostCodingWorkflow(&session)
+		}
+		if deps.MCPServerLister != nil {
+			if servers := deps.MCPServerLister(); len(servers) > 0 {
+				session.WriteString("\n## Registered MCP Servers\n")
+				for _, s := range servers {
+					fmt.Fprintf(&session, "- %s (%s): %s\n", s.Name, s.ID, strings.Join(s.Tools, ", "))
+				}
 			}
 		}
 	}
 
 	if deps.MemoryStore != nil {
-		if selfIdentityOverride := deps.MemoryStore.SelfIdentitySummary(600); selfIdentityOverride != "" {
+		// Light turns only need a short self-identity cue if present.
+		limit := 600
+		if light {
+			limit = 200
+		}
+		if selfIdentityOverride := deps.MemoryStore.SelfIdentitySummary(limit); selfIdentityOverride != "" {
 			fmt.Fprintf(&retrieved, "\nSelf identity memory for %s:\n%s\nUse this only to guide behavior; do not recite it to the user unless asked.\n", roleName, selfIdentityOverride)
 		}
 	}
-	if deps.SkillLister != nil {
+	if !light && deps.SkillLister != nil {
 		if skills := deps.SkillLister(); len(skills) > 0 {
 			retrieved.WriteString("\n## Registered Skills\n")
 			retrieved.WriteString("Call with manage_skill(action=\"run\", name=\"SkillName\", args={...}).\n")
-			retrieved.WriteString("⚠️ Do NOT pre-check dependencies (Python/Node/etc.) with bash before running a Skill. The Skill Runner has built-in dependency checks and returns actionable error messages if something is missing.\n")
+			retrieved.WriteString("Do NOT pre-check dependencies (Python/Node/etc.) with bash before running a Skill. The Skill Runner has built-in dependency checks and returns actionable error messages if something is missing.\n")
 			for _, s := range skills {
 				fmt.Fprintf(&retrieved, "- %s: %s\n", s.Name, s.Description)
 			}
 		}
 	}
+	// Steering user rules still apply on light turns (usually small and high priority).
 	if deps.SteeringResolver != nil {
-		resolved := deps.SteeringResolver(userMessage, 110000)
+		budget := 110000
+		if light {
+			budget = 8000
+		}
+		resolved := deps.SteeringResolver(userMessage, budget)
 		if len(resolved) > 0 {
 			retrieved.WriteString("\n## User Rules (Steering)\n")
 			for _, sf := range resolved {
@@ -164,19 +192,24 @@ func BuildPromptBundle(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 			}
 		}
 	}
-	if deps.MemoryStore != nil && userMessage != "" && !deps.SkipMemoryRecall {
-		appendMemoryRecall(&retrieved, deps.MemoryStore, userMessage, isFirstTurn)
-	}
-	if deps.KnowledgeAutoRecall != nil && userMessage != "" {
-		deps.KnowledgeAutoRecall(&retrieved, userMessage)
+	// Memory/knowledge auto-recall: skip on light turns to avoid stuffing context.
+	if !light {
+		if deps.MemoryStore != nil && userMessage != "" && !deps.SkipMemoryRecall {
+			appendMemoryRecall(&retrieved, deps.MemoryStore, userMessage, isFirstTurn)
+		}
+		if deps.KnowledgeAutoRecall != nil && userMessage != "" {
+			deps.KnowledgeAutoRecall(&retrieved, userMessage)
+		}
 	}
 	if deps.UserProfileSection != nil {
 		if section := strings.TrimSpace(deps.UserProfileSection()); section != "" {
-			retrieved.WriteString("\n\n")
-			retrieved.WriteString(section)
+			if !light || len(section) < 800 {
+				retrieved.WriteString("\n\n")
+				retrieved.WriteString(section)
+			}
 		}
 	}
-	if deps.Epilogue != nil {
+	if !light && deps.Epilogue != nil {
 		deps.Epilogue(&retrieved)
 	}
 

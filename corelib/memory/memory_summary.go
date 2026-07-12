@@ -80,18 +80,22 @@ func (s *Store) FormatMemorySummary(ownerID string) string {
 
 	// Build output.
 	var b strings.Builder
-	fmt.Fprintf(&b, "📋 记忆概览（共 %d 条活跃记忆", totalActive)
+	fmt.Fprintf(&b, "记忆概览（共 %d 条活跃记忆", totalActive)
 	if staleCount > 0 {
 		fmt.Fprintf(&b, "，%d 条可能过时", staleCount)
 	}
 	b.WriteString("）\n\n")
 
-	writeGroup := func(emoji, title, key string) {
+	writeGroup := func(prefix, title, key string) {
 		entries := groups[key]
 		if len(entries) == 0 {
 			return
 		}
-		fmt.Fprintf(&b, "%s %s（%d 条）：\n", emoji, title, groupTotals[key])
+		if prefix != "" {
+			fmt.Fprintf(&b, "%s %s（%d 条）：\n", prefix, title, groupTotals[key])
+		} else {
+			fmt.Fprintf(&b, "%s（%d 条）：\n", title, groupTotals[key])
+		}
 		for _, e := range entries {
 			content := e.CompactForm
 			if content == "" {
@@ -105,24 +109,24 @@ func (s *Store) FormatMemorySummary(ownerID string) string {
 
 			var marks string
 			if e.Stale {
-				marks += " ⚠️过时"
+				marks += " 过时"
 			}
 			if e.InvalidAt != nil && e.InvalidAt.Before(now) {
-				marks += " ⏰已过期"
+				marks += " 已过期"
 			}
 			fmt.Fprintf(&b, "  • %s%s [%s]\n", content, marks, truncateID(e.ID, 8))
 		}
 		b.WriteByte('\n')
 	}
 
-	writeGroup("🧑", "关于你", "user_info")
-	writeGroup("💼", "项目知识", "projects")
-	writeGroup("⚙️", "偏好与指令", "preferences")
-	writeGroup("📚", "通用知识", "knowledge")
-	writeGroup("📝", "其他", "other")
+	writeGroup("", "关于你", "user_info")
+	writeGroup("", "项目知识", "projects")
+	writeGroup("", "偏好与指令", "preferences")
+	writeGroup("", "通用知识", "knowledge")
+	writeGroup("", "其他", "other")
 
-	b.WriteString("💡 使用 memory(action=recall, query=\"...\") 查询具体记忆\n")
-	b.WriteString("💡 使用 memory(action=delete, id=\"...\") 删除错误记忆\n")
+	b.WriteString("使用 memory(action=recall, query=\"...\") 查询具体记忆\n")
+	b.WriteString("使用 memory(action=delete, id=\"...\") 删除错误记忆\n")
 
 	return b.String()
 }

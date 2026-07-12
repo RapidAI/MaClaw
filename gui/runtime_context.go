@@ -66,6 +66,13 @@ type RuntimeContext struct {
 	WorkflowOwnerID string
 	Execution       ExecutionProfile
 	SemanticIntent  *intent.ClassificationResult `json:"-"`
+	// Adaptive prompt dual-build estimates (set when light profile is chosen).
+	PromptFullTokens  int `json:"-"`
+	PromptLightTokens int `json:"-"`
+	// PromptABSample is set when ResolvePromptProfile forced full via quality A/B.
+	PromptABSample bool `json:"-"`
+	// PromptSoftFull is set when SoftFullAgentIntent upgraded light→full.
+	PromptSoftFull bool `json:"-"`
 }
 
 func runtimeContextFromIMMessage(msg IMUserMessage) RuntimeContext {

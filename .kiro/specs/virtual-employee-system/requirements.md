@@ -146,7 +146,7 @@
 4. WHEN a virtual employee is added to the group, THE System SHALL send a GroupInvitation via the A2A_Protocol to the added virtual employee's maclaw instance.
 4. WHEN the added virtual employee's maclaw instance accepts the invitation (based on its auto-accept policy), THE System SHALL add the virtual employee as a participant in the group discussion.
 5. THE group chat tab title SHALL update to show the names of all participants (truncated with "..." if exceeding display width).
-6. THE group chat tab header SHALL display a participants button (👥 icon with participant count badge). WHEN the user clicks the participants button, THE System SHALL display a participants panel showing all current participants with their name, online status, and role (本地AI/远程虚拟员工). The panel SHALL provide a "移除" (remove) option for each participant (except the user themselves) to remove a participant from the group.
+6. THE group chat tab header SHALL display a participants button (icon with participant count badge). WHEN the user clicks the participants button, THE System SHALL display a participants panel showing all current participants with their name, online status, and role (本地AI/远程虚拟员工). The panel SHALL provide a "移除" (remove) option for each participant (except the user themselves) to remove a participant from the group.
 6. WHEN the user sends a message in a group chat, THE Hub SHALL relay the message to all virtual employee participants using GroupDiscussionMessage with scope="current_hub".
 7. WHEN a virtual employee participant receives a message (from the user or from another virtual employee), THE virtual employee MAY generate a response. The response SHALL be broadcast to the user and all other participants via the Hub, enabling multi-party discussion where virtual employees can respond to each other's messages, ask follow-up questions, agree, disagree, or build upon each other's answers.
 8. EACH message in the group chat SHALL be displayed with the sender's name as a prefix label (user messages labeled with user name, VE messages labeled with VE name).
@@ -188,7 +188,7 @@
 
 #### Acceptance Criteria
 
-1. THE VE conversation input area SHALL provide an attachment button (📎) allowing the user to select local files to attach to a message.
+1. THE VE conversation input area SHALL provide an attachment button () allowing the user to select local files to attach to a message.
 2. THE System SHALL support the following attachment types: text files (.txt, .md, .csv, .json, .xml, .yaml, .log, .go, .py, .js, .ts, .html, .css), images (.png, .jpg, .jpeg, .gif, .webp, .bmp), and documents (.pdf, .docx).
 3. WHEN the user attaches a text file (≤ 500KB), THE Maclaw_Client SHALL read the file content and include it inline in the A2A Message as a `text_attachment` field (base64 encoded content + filename + mime_type).
 4. WHEN the user attaches an image file (≤ 10MB), THE Maclaw_Client SHALL upload the image to the Hub's file relay endpoint and include the resulting file_url in the A2A Message as an `image_attachment` field (file_url + filename + mime_type + dimensions).

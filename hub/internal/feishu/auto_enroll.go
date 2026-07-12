@@ -252,7 +252,7 @@ func (ae *AutoEnroller) AddToFeishuOrg(ctx context.Context, email, displayName, 
 			if openID != "" {
 				ae.binder(email, openID, mobile)
 				ae.trySendWelcome(openID)
-				log.Printf("[feishu/auto-enroll] ✅ added %s to Feishu org (open_id=%s, dept=%s, attempt=%d)", email, openID, deptID, attempt)
+				log.Printf("[feishu/auto-enroll] added %s to Feishu org (open_id=%s, dept=%s, attempt=%d)", email, openID, deptID, attempt)
 				return &AutoEnrollResult{Status: "ok", OpenID: openID}, nil
 			}
 			// API succeeded but returned empty open_id — unexpected.

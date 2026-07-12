@@ -40,7 +40,7 @@ func (s *Service) SearchMCPMarket(ctx context.Context, p Principal, query string
 		}
 	}
 	if shouldSearchHubCenterMCP(cfg.AppConfig.CapabilityMarketPolicy) {
-		for _, base := range cfg.AppConfig.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs) {
+		for _, base := range mcpHubCenterSearchBases(cfg.AppConfig) {
 			extItems, err := listHubCenterMCPCapabilities(ctx, client, base, query)
 			if err == nil {
 				items = mergeMCPCapabilities(items, extItems)
@@ -110,7 +110,7 @@ func (s *Service) resolveMCPMarketCapability(ctx context.Context, cfg UserConfig
 	source := corelib.NormalizeCapabilitySource(item.Source)
 	if item.External || source == corelib.CapabilitySourceHubCenter {
 		query := firstMCPNonEmpty(item.GlobalKey, item.CapabilityID, item.ID, item.DisplayName)
-		for _, base := range cfg.AppConfig.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs) {
+		for _, base := range mcpHubCenterSearchBases(cfg.AppConfig) {
 			items, err := listHubCenterMCPCapabilities(ctx, client, base, query)
 			if err != nil {
 				continue
@@ -222,6 +222,33 @@ func doMCPMarketJSON(client *http.Client, req *http.Request, dest any) error {
 func shouldSearchHubCenterMCP(policy corelib.CapabilityMarketPolicy) bool {
 	policy = policy.WithDefaults()
 	return !policy.EffectiveEnterpriseOnlySearch()
+}
+
+// mcpHubCenterSearchBases returns HubCenter bases for MCP market search/resolve.
+// Explicit RemoteHubCenterURL(s) are kept even when loopback so local HubCenter
+// and httptest-based tests work; production defaults remain available as failover.
+func mcpHubCenterSearchBases(cfg corelib.AppConfig) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	add := func(value string) {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(cfg.RemoteHubCenterURL)
+	for _, value := range cfg.RemoteHubCenterURLs {
+		add(value)
+	}
+	for _, value := range cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs) {
+		add(value)
+	}
+	return out
 }
 
 func capabilityMetadataMap(raw string) map[string]any {

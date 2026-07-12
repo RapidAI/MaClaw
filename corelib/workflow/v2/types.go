@@ -13,6 +13,8 @@ package v2
 // serializable state used by StateMachine and Store.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -138,8 +140,10 @@ const (
 // ---------------------------------------------------------------------------
 
 // DocOnlyAllowedTools is the canonical set of tool names permitted during
-// doc_only workflow phases.
+// doc_only workflow phases. bash is included for document parsing helpers
+// (Python/pandoc/etc.); write_file/edit_file remain blocked.
 var DocOnlyAllowedTools = map[string]bool{
+	"bash":                     true,
 	"read_file":                true,
 	"memory":                   true,
 	"generate_pdf":             true,
@@ -266,7 +270,7 @@ func RequiredToolNamesForPolicy(policy ToolFilterPolicy) []string {
 	case ToolPolicyFull:
 		return []string{"bash", "read_file", "list_directory", "write_file", "edit_file"}
 	case ToolPolicyDocOnly:
-		return []string{"read_file", "list_directory", "send_file"}
+		return []string{"bash", "read_file", "list_directory", "send_file"}
 	case ToolPolicyPlanning:
 		return []string{"read_file", "list_directory", "write_file", "send_file"}
 	case ToolPolicyOpsControlled:
@@ -339,21 +343,60 @@ func isHighRiskOpsCommand(desc string) bool {
 }
 
 func isMutatingOpsCommand(name string, args map[string]interface{}, desc string) bool {
-	if name == "bash" || (name == "ssh" && args != nil) {
+	name = strings.TrimSpace(name)
+	if name == "ssh" && args != nil {
 		action, _ := args["action"].(string)
-		if action == "exec" || action == "submit_task" || action == "upload" || name == "bash" {
+		switch strings.TrimSpace(action) {
+		case "check_task", "list_tasks", "list":
+			return false
+		case "exec", "exec_background", "submit_task", "upload", "download",
+			"kill_task", "sudo_prepare", "close", "close_all", "connect":
 			return true
 		}
 	}
-	return false
+	if name != "bash" {
+		return false
+	}
+	// Conservative default: treat bash as mutating unless it looks clearly
+	// read-only (e.g. systemctl status / journalctl inspections).
+	lower := strings.ToLower(strings.Join(strings.Fields(desc), " "))
+	if lower == "" {
+		return true
+	}
+	mutatingHints := []string{
+		"restart", "start", "stop", "reload", "enable", "disable",
+		"install", "remove", "purge", "upgrade", "rm ", "mv ", "cp ",
+		"chmod", "chown", "mkdir", "touch", "tee ", "systemctl daemon-reload",
+	}
+	for _, hint := range mutatingHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	readOnlyHints := []string{
+		"systemctl status", "journalctl", "cat ", "ls ", "head ", "tail ",
+		"grep ", "awk ", "sed -n", "ps ", "df ", "free ", "uptime", "whoami",
+	}
+	for _, hint := range readOnlyHints {
+		if strings.Contains(lower, hint) {
+			return false
+		}
+	}
+	return true
 }
 
 func opsApprovedCommandMatches(item OpsApprovedCommand, name string, args map[string]interface{}, desc string) bool {
 	if item.Tool != "" && item.Tool != name {
 		return false
 	}
-	if item.Command != "" && !strings.Contains(desc, item.Command) {
-		return false
+	if item.Command != "" {
+		// Normalize whitespace so "systemctl   restart   nginx" still matches
+		// an approved "systemctl restart nginx" entry.
+		normalizedDesc := strings.Join(strings.Fields(desc), " ")
+		normalizedCmd := strings.Join(strings.Fields(item.Command), " ")
+		if !strings.Contains(normalizedDesc, normalizedCmd) {
+			return false
+		}
 	}
 	if item.Action != "" && args != nil {
 		action, _ := args["action"].(string)
@@ -374,12 +417,20 @@ func opsApprovedCommandMatches(item OpsApprovedCommand, name string, args map[st
 
 // ExtractOpsApprovedCommands parses a risk-policy text block into approved commands.
 func ExtractOpsApprovedCommands(text string) []OpsApprovedCommand {
+	riskLevel := ExtractOpsRiskLevel(text)
+	approvalReq := ExtractOpsApprovalRequirement(text)
 	var out []OpsApprovedCommand
 	var current *OpsApprovedCommand
 	flush := func() {
-		if current != nil && (current.Tool != "" || current.Command != "") {
+		if current == nil {
+			return
+		}
+		if current.Tool != "" || current.Command != "" {
+			current.RiskLevel = riskLevel
+			current.ApprovalRequirement = approvalReq
 			out = append(out, *current)
 		}
+		current = nil
 	}
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -839,10 +890,93 @@ const (
 	OpsApprovalRequirementDouble  OpsApprovalRequirement = "double"
 )
 
-// Stub functions for ops assessment — only ExtractOpsRiskDecision,
-// ExtractOpsApprovalRequirement, and OpsApprovalDigest have production consumers.
-func ExtractOpsRiskDecision(_ string) OpsRiskDecision { return OpsRiskDecisionUnknown }
-func ExtractOpsApprovalRequirement(_ string) OpsApprovalRequirement {
+// ExtractOpsRiskDecision parses the decision field from a risk-policy text block.
+func ExtractOpsRiskDecision(policyText string) OpsRiskDecision {
+	for _, raw := range strings.Split(policyText, "\n") {
+		line := strings.TrimSpace(strings.Trim(raw, "`"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := splitOpsYAMLScalar(line)
+		if !ok || key != "decision" {
+			continue
+		}
+		decision := OpsRiskDecision(strings.ToLower(strings.TrimSpace(value)))
+		switch decision {
+		case OpsRiskDecisionDocumentOnly, OpsRiskDecisionPropose, OpsRiskDecisionApprovalRequired,
+			OpsRiskDecisionAutoExecute, OpsRiskDecisionDeny, OpsRiskDecisionApprove,
+			OpsRiskDecisionEscalate, OpsRiskDecisionReject:
+			return decision
+		default:
+			return OpsRiskDecisionUnknown
+		}
+	}
+	return OpsRiskDecisionUnknown
+}
+
+// ExtractOpsRiskLevel parses the risk_level field from a risk-policy text block.
+func ExtractOpsRiskLevel(policyText string) OpsRiskLevel {
+	for _, raw := range strings.Split(policyText, "\n") {
+		line := strings.TrimSpace(strings.Trim(raw, "`"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := splitOpsYAMLScalar(line)
+		if !ok || key != "risk_level" {
+			continue
+		}
+		level := OpsRiskLevel(strings.ToUpper(strings.TrimSpace(value)))
+		switch level {
+		case OpsRiskLevelL0, OpsRiskLevelL1, OpsRiskLevelL2, OpsRiskLevelL3, OpsRiskLevelL4,
+			OpsRiskLevelLow, OpsRiskLevelMedium, OpsRiskLevelHigh, OpsRiskLevelCritical:
+			return level
+		default:
+			// Accept lowercase L# forms via ToUpper above; otherwise unknown.
+			return OpsRiskLevelUnknown
+		}
+	}
+	return OpsRiskLevelUnknown
+}
+
+// ExtractOpsApprovalRequirement parses the approval_required field from a risk-policy text block.
+func ExtractOpsApprovalRequirement(policyText string) OpsApprovalRequirement {
+	for _, raw := range strings.Split(policyText, "\n") {
+		line := strings.TrimSpace(strings.Trim(raw, "`"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := splitOpsYAMLScalar(line)
+		if !ok || key != "approval_required" {
+			continue
+		}
+		req := OpsApprovalRequirement(strings.ToLower(strings.TrimSpace(value)))
+		switch req {
+		case OpsApprovalRequirementNone, OpsApprovalRequirementSingle, OpsApprovalRequirementDouble,
+			OpsApprovalRequirementUser, OpsApprovalRequirementAdmin:
+			return req
+		default:
+			return OpsApprovalRequirementUnknown
+		}
+	}
 	return OpsApprovalRequirementUnknown
 }
-func OpsApprovalDigest(_ string) string { return "" }
+
+// OpsApprovalDigest returns a stable SHA-256 hex digest of the policy text.
+func OpsApprovalDigest(policyText string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(policyText), "\r\n", "\n")
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
+}
+
+func splitOpsYAMLScalar(line string) (key, value string, ok bool) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	key = strings.TrimSpace(parts[0])
+	value = strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+	if key == "" {
+		return "", "", false
+	}
+	return key, value, true
+}

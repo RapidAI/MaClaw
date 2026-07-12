@@ -1514,6 +1514,198 @@ func TestRedeemCardCreatesGrantsAndRejectsReuse(t *testing.T) {
 	}
 }
 
+
+
+func TestPromoteQueuedMeteredGrantsStartsHistoricalPointCards(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	queuedStart := now.Add(24 * time.Hour)
+	duration := 30 * 24 * time.Hour
+	reg := &Registry{
+		Grants: []Grant{
+			{
+				ID:             "active-metered",
+				Email:          "user@example.com",
+				ServiceGroupID: "coding-basic",
+				Source:         "card",
+				StartsAt:       now.Add(-time.Hour),
+				ExpiresAt:      now.Add(24 * time.Hour),
+				CreditsTotal:   100,
+				CreditsUsed:    10,
+			},
+			{
+				ID:             "queued-metered",
+				Email:          "user@example.com",
+				ServiceGroupID: "coding-basic",
+				Source:         "card",
+				StartsAt:       queuedStart,
+				ExpiresAt:      queuedStart.Add(duration),
+				CreditsTotal:   10000,
+				CreditsUsed:    0,
+			},
+			{
+				ID:             "queued-unmetered",
+				Email:          "user@example.com",
+				ServiceGroupID: "coding-basic",
+				Source:         "card",
+				StartsAt:       queuedStart,
+				ExpiresAt:      queuedStart.Add(7 * 24 * time.Hour),
+				CreditsTotal:   0,
+			},
+			{
+				ID:             "queued-spent",
+				Email:          "user@example.com",
+				ServiceGroupID: "coding-basic",
+				Source:         "card",
+				StartsAt:       queuedStart,
+				ExpiresAt:      queuedStart.Add(duration),
+				CreditsTotal:   500,
+				CreditsUsed:    500,
+			},
+		},
+	}
+	changed := PromoteQueuedMeteredGrants(reg, now)
+	if changed != 1 {
+		t.Fatalf("PromoteQueuedMeteredGrants() changed = %d, want 1", changed)
+	}
+	got := reg.Grants[1]
+	if !got.StartsAt.Equal(now) {
+		t.Fatalf("queued metered grant StartsAt = %s, want %s", got.StartsAt, now)
+	}
+	if got.ExpiresAt.Sub(got.StartsAt) != duration {
+		t.Fatalf("duration not preserved: got %s want %s", got.ExpiresAt.Sub(got.StartsAt), duration)
+	}
+	if !reg.Grants[2].StartsAt.Equal(queuedStart) {
+		t.Fatalf("unmetered queued grant should stay queued, starts=%s", reg.Grants[2].StartsAt)
+	}
+	if !reg.Grants[3].StartsAt.Equal(queuedStart) {
+		t.Fatalf("spent queued grant should stay queued, starts=%s", reg.Grants[3].StartsAt)
+	}
+	if PromoteQueuedMeteredGrants(reg, now) != 0 {
+		t.Fatal("second promote should be a no-op")
+	}
+}
+
+func TestPromoteQueuedMeteredGrantsLeavesSoleScheduledGrantQueued(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	queuedStart := now.Add(2 * time.Hour)
+	reg := &Registry{
+		Grants: []Grant{{
+			ID:             "scheduled-metered",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       queuedStart,
+			ExpiresAt:      queuedStart.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}
+	if changed := PromoteQueuedMeteredGrants(reg, now); changed != 0 {
+		t.Fatalf("PromoteQueuedMeteredGrants() changed = %d, want 0 for sole scheduled grant", changed)
+	}
+	if !reg.Grants[0].StartsAt.Equal(queuedStart) {
+		t.Fatalf("sole scheduled grant StartsAt = %s, want %s", reg.Grants[0].StartsAt, queuedStart)
+	}
+}
+
+func TestRedeemCardMeteredCreditsStartImmediatelyWhileActiveGrantExists(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	now := time.Now().UTC()
+	code := "KLMNOPQRST0123456789"
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", Models: []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}}}},
+		Cards: []RechargeCard{{
+			ID:              "card-credits",
+			CodeHash:        HashCode(code),
+			ServiceGroupIDs: []string{"coding-basic"},
+			DurationDays:    30,
+			Credits:         10000,
+			CreatedAt:       now,
+		}},
+		Grants: []Grant{{
+			ID:             "grant-existing",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreatedAt:      now.Add(-time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := RedeemCard(ctx, system, nil, "user@example.com", code, "http://hub.test/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == nil || status.CreditsAvailable < 10000 {
+		t.Fatalf("expected metered top-up to increase available credits immediately, got %#v", status)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 2 {
+		t.Fatalf("expected 2 grants, got %d", len(saved.Grants))
+	}
+	newGrant := saved.Grants[1]
+	if newGrant.StartsAt.After(now.Add(time.Minute)) {
+		t.Fatalf("expected metered grant to start immediately, got starts_at=%s", newGrant.StartsAt)
+	}
+	if newGrant.CreditsTotal != 10000 {
+		t.Fatalf("expected 10000 credits on new grant, got %v", newGrant.CreditsTotal)
+	}
+}
+
+func TestResolveStatusKeepsPaidCreditsWhenUnlimitedGrantAlsoActive(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+		}},
+		Grants: []Grant{
+			{
+				ID:             "unlimited-gift",
+				Email:          "phone:19900001111",
+				ServiceGroupID: "coding-basic",
+				Source:         "default_new_user",
+				StartsAt:       now.Add(-time.Hour),
+				ExpiresAt:      now.Add(7 * 24 * time.Hour),
+				CreatedAt:      now.Add(-time.Hour),
+				CreditsTotal:   0,
+			},
+			{
+				ID:             "paid-point-card",
+				Email:          "phone:19900001111",
+				ServiceGroupID: "coding-basic",
+				Source:         "card",
+				StartsAt:       now.Add(-time.Minute),
+				ExpiresAt:      now.Add(30 * 24 * time.Hour),
+				CreatedAt:      now.Add(-time.Minute),
+				CreditsTotal:   10000,
+				CreditsUsed:    0,
+			},
+		},
+	}
+	status, _, err := ResolveStatusFromRegistry(ctx, reg, nil, "phone:19900001111", "http://hub.test/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if !status.Active {
+		t.Fatalf("expected active status, got %#v", status)
+	}
+	if status.CreditsAvailable < 10000 || status.CreditsRemaining < 10000 {
+		t.Fatalf("expected paid point-card credits to remain visible beside unlimited gift, got total=%v remaining=%v available=%v grants=%#v", status.CreditsTotal, status.CreditsRemaining, status.CreditsAvailable, status.CreditGrants)
+	}
+}
+
 func TestRedeemCardStacksExistingGrantForSameServiceGroup(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()

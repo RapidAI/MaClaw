@@ -70,10 +70,28 @@
         item.arch ? (ml('arch') + ': ' + item.arch) : '',
         item.app_version ? (ml('version') + ': ' + item.app_version) : ''
       ].filter(Boolean);
+      const ap = item.adaptive_prompt || null;
+      const adaptiveLines = [];
+      if (ap && (ap.light_turns || ap.full_turns || ap.summary)) {
+        if (ap.summary) {
+          adaptiveLines.push(String(ap.summary));
+        } else {
+          adaptiveLines.push(
+            ml('adaptivePrompt') + ': ' + ml('adaptiveLight') + '=' + (ap.light_turns || 0) +
+            ' ' + ml('adaptiveFull') + '=' + (ap.full_turns || 0) +
+            (ap.est_tokens_saved ? (' | ' + ml('adaptiveSaved') + '=' + ap.est_tokens_saved) : '')
+          );
+        }
+        if (ap.light_tool_denies) adaptiveLines.push(ml('adaptiveDeny') + '=' + ap.light_tool_denies);
+        if (ap.light_upgrades) adaptiveLines.push(ml('adaptiveUpgrade') + '=' + ap.light_upgrades);
+        if (ap.ab_sample_full || ap.ab_eligible_light) {
+          adaptiveLines.push(ml('adaptiveAB') + '=' + (ap.ab_sample_full || 0) + '/' + (ap.ab_eligible_light || 0));
+        }
+      }
       const heartbeat = [
         item.heartbeat_interval_sec ? (ml('interval') + ': ' + item.heartbeat_interval_sec + 's') : '',
         typeof item.active_sessions === 'number' ? (ml('activeSessions') + ': ' + item.active_sessions) : ''
-      ].filter(Boolean);
+      ].concat(adaptiveLines).filter(Boolean);
       const displayName = escapeHtml(item.alias || item.name || item.machine_id || tr('machine'));
       const aliasLine = item.alias ? '<div class="item-meta">' + escapeHtml(item.name || '') + '</div>' : '';
       const machineID = machineNameExpr(item.machine_id || '');
@@ -136,6 +154,59 @@
     }
   };
 
+  function renderAdaptivePromptFleet(metrics) {
+    const root = document.getElementById('adaptivePromptFleet');
+    if (!root) return;
+    if (!metrics || !metrics.ok) {
+      root.innerHTML = '<div class="item-meta">' + escapeHtml(ml('adaptiveNone')) + '</div>';
+      return;
+    }
+    const totals = metrics.totals || {};
+    const light = Number(totals.light_turns || 0);
+    const full = Number(totals.full_turns || 0);
+    const saved = Number(totals.est_tokens_saved || 0);
+    const deny = Number(totals.light_tool_denies || 0);
+    const upgrade = Number(totals.light_upgrades || 0);
+    const abElig = Number(totals.ab_eligible_light || 0);
+    const abSample = Number(totals.ab_sample_full || 0);
+    const online = Number(metrics.online_machines || 0);
+    const withStats = Number(metrics.machines_with_stats || 0);
+    if (!light && !full && !withStats) {
+      root.innerHTML =
+        '<strong style="display:block;margin-bottom:4px">' + escapeHtml(ml('adaptiveFleet')) + '</strong>' +
+        '<div class="item-meta">' + escapeHtml(ml('adaptiveNone')) + '</div>' +
+        '<div class="item-meta" style="margin-top:4px">' + escapeHtml(ml('adaptiveFleetHint')) + '</div>';
+      return;
+    }
+    const parts = [
+      ml('adaptiveOnline') + '=' + online,
+      ml('adaptiveWithStats') + '=' + withStats,
+      ml('adaptiveLight') + '=' + light,
+      ml('adaptiveFull') + '=' + full
+    ];
+    if (saved) parts.push(ml('adaptiveSaved') + '=' + saved);
+    if (deny) parts.push(ml('adaptiveDeny') + '=' + deny);
+    if (upgrade) parts.push(ml('adaptiveUpgrade') + '=' + upgrade);
+    if (abElig) parts.push(ml('adaptiveAB') + '=' + abSample + '/' + abElig);
+    if (totals.summary) parts.push(String(totals.summary));
+    root.innerHTML =
+      '<strong style="display:block;margin-bottom:4px">' + escapeHtml(ml('adaptiveFleet')) + '</strong>' +
+      '<div class="item-meta">' + escapeHtml(parts.join(' | ')) + '</div>' +
+      '<div class="item-meta" style="margin-top:4px">' + escapeHtml(ml('adaptiveFleetHint')) + '</div>';
+  }
+
+  global.loadAdaptivePromptFleet = async function loadAdaptivePromptFleet() {
+    const root = document.getElementById('adaptivePromptFleet');
+    if (!root) return;
+    try {
+      const data = await api('/api/admin/adaptive-prompt/metrics');
+      renderAdaptivePromptFleet(data);
+    } catch (err) {
+      root.innerHTML = '<div class="item-meta" style="color:var(--danger)">' +
+        escapeHtml(ml('adaptiveLoadFailed').replace('{error}', err.message || String(err))) + '</div>';
+    }
+  };
+
   global.loadMachines = async function loadMachines() {
     try {
       ensureMachinePagingState();
@@ -150,6 +221,8 @@
       }
       const data = await api(path);
       global.renderMachineList(data.machines || []);
+      // Fleet adaptive-prompt rollup (best-effort; does not block machine list).
+      global.loadAdaptivePromptFleet();
     } catch (err) {
       setOutput(tr('machinesLoadFailed', { error: err.message }));
     }

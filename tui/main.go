@@ -209,7 +209,7 @@ Commands:
   skill         技能管理（无参数打开 TUI Skill；list/add/delete/backup/restore/import/export 为脚本命令）
   skillhub      SkillHub 市场（无参数打开 TUI Skill；search/install/rate/check-updates/update 为脚本命令）
   skillmarket   SkillMarket 商店（无参数打开 TUI Skill；search/submit/status/account 为脚本命令）
-  nlskill       NL 技能管理（无参数打开 TUI Skill；list/add/remove/enable/disable/execute 为脚本命令）
+  nlskill       NL 技能管理（无参数打开 TUI Skill；list/add/remove/enable/disable/execute；evolution status|enable|disable [--persist]）
   mcp           MCP 管理（无配置时打开模板选择，已有配置时查看列表；remote 进入远程模板；list/remove/health-check/tools/call-tool 为脚本命令）
   remote        远程模式管理（无参数打开 TUI 初始化；status 查看脚本状态；set-hubcenter/set-email/deactivate；Hub URL 注册后自动选择）
   onboarding    打开完整 TUI 的初始化页（脚本向导：onboarding cli）

@@ -6700,6 +6700,89 @@ func TestMaclawAppDependencySkillMarketSearchQueriesNormalizeInstallRefURI(t *te
 	}
 }
 
+func TestPlanMaclawAppInstallBindsRuntimeSkillRefFromHubSkillID(t *testing.T) {
+	// Authoring declares appSkill.id = hub package id; local registry may use a
+	// localized display Name. Plan must bind runtime_skill_ref to HubSkillID so
+	// frontend RunNLSkillAsync and backend resolveLoadedSkillForRun share one id.
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	skillDir := filepath.Join(tmpHome, ".maclaw", "data", "skills", "Paper PDF Translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# paper_pdf_translator\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:       "Paper PDF Translator",
+		SkillDir:   skillDir,
+		Status:     "active",
+		Source:     "hub",
+		HubSkillID: "paper_pdf_translator",
+		HubVersion: "enterprise_hub:skill:paper_pdf_translator@d774c84f9b53",
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	plan, err := app.PlanMaclawAppInstall(`{
+		"schema": "maclaw.app.v1",
+		"privateMarker": "x_maclaw_apps",
+		"app": {
+			"id": "pdf-translator-app",
+			"name": "PDF翻译工具",
+			"kind": "tool_app",
+			"appSkill": {"id": "paper_pdf_translator", "version": "1.0.0"},
+			"dependencies": { "skills": [
+				{ "id": "paper_pdf_translator", "version": "1.0.0", "kind": "runtime_skill", "required": true, "source": "hub" }
+			] }
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("PlanMaclawAppInstall: %v", err)
+	}
+	dep := maclawAppPlanDepForTest(plan, "paper_pdf_translator")
+	if dep == nil || !dep.Installed || dep.Health != "ready" {
+		t.Fatalf("dependency not ready: %#v", dep)
+	}
+	if dep.InstalledName != "Paper PDF Translator" {
+		t.Fatalf("InstalledName = %q, want display name", dep.InstalledName)
+	}
+	if dep.RuntimeSkillRef != "paper_pdf_translator" {
+		t.Fatalf("RuntimeSkillRef = %q, want hub package id for RunNLSkillAsync", dep.RuntimeSkillRef)
+	}
+	if dep.CanonicalID != "paper_pdf_translator" {
+		t.Fatalf("CanonicalID = %q, want hub package id", dep.CanonicalID)
+	}
+	// Identity index must resolve declared id even when only display name would
+	// have mismatched on a naive lowercase map.
+	idx := app.installedMaclawAppSkillIndex()
+	if _, ok := idx["paper_pdf_translator"]; !ok {
+		t.Fatalf("index missing hub key, keys sample: %v", identityIndexKeySample(idx, 8))
+	}
+	if _, ok := idx[corelib.NormalizeSkillIdentityKey("Paper PDF Translator")]; !ok {
+		t.Fatalf("index missing normalized display name key")
+	}
+}
+
+func identityIndexKeySample(idx map[string]NLSkillDefinition, n int) []string {
+	out := make([]string, 0, n)
+	for k := range idx {
+		out = append(out, k)
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
 func TestPlanMaclawAppInstallAcceptsEnterpriseHubVersionKeyForSemverAppDependency(t *testing.T) {
 	// Regression: PDF翻译工具 declares appSkill.version "1.0.0", but the skill
 	// installed from enterprise hub records hub_version as a content key

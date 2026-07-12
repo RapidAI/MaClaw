@@ -205,6 +205,14 @@ Typical usage: Run shell commands, check system status, install packages`,
 - encoding (string, optional): File encoding, default utf-8
 Typical usage: Read source code, config files, logs`,
 
+	"read_tool_result": `Parameters:
+- id (string): Handle id from a prior [tool_result_handle] footer (preferred)
+- path (string): Absolute path from the handle footer (must be under tool_results)
+- session_key (string, optional): Session/user key used when the handle was spilled
+- offset (int, optional): 0-based byte offset, default 0
+- limit (int, optional): Max bytes to return, default 6000, max 32768
+How to use: When a tool result was truncated and shows [tool_result_handle], call read_tool_result(id=..., offset=0, limit=6000) for a slice; if truncated=true, continue with next_offset.`,
+
 	"FileRead": `Parameters:
 - path (string, required): 要读取的文件路径，可为绝对路径或相对当前项目目录的路径
 - start_line (int, optional): 起始行号，1-based，默认 1
@@ -355,6 +363,13 @@ var BuiltinEnrichments = map[string][]string{
 		"查看文件内容",
 		"open and display a file",
 		"cat a file",
+	},
+	"read_tool_result": {
+		"read truncated tool result handle",
+		"fetch full tool output from handle",
+		"读取 tool_result handle",
+		"page through spilled tool output",
+		"tool result was truncated re-read",
 	},
 	"FileRead": {
 		"read specific lines from a file",

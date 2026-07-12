@@ -215,31 +215,31 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 				taskPreview = string([]rune(taskPreview)[:80]) + "..."
 			}
 			sections = append(sections, fmt.Sprintf(
-				"🔄 **主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s",
+				"**主 Agent**: 正在执行任务（已运行 %s）\n   任务: %s",
 				rs.MainAgentElapsed, taskPreview))
 		} else {
-			sections = append(sections, "🟢 **主 Agent**: 空闲")
+			sections = append(sections, "**主 Agent**: 空闲")
 		}
 	}
 
 	// Filter and format tasks by category.
 	if categoryKind.IncludesLocalTasks() {
-		if s := formatTaskSection("📋 **本地后台任务**", rs.Tasks, "local"); s != "" {
+		if s := formatTaskSection("**本地后台任务**", rs.Tasks, "local"); s != "" {
 			sections = append(sections, s)
 		}
 	}
 	if categoryKind.IncludesSSHTasks() {
-		if s := formatTaskSection("🖥️ **SSH 后台任务**", rs.Tasks, "ssh"); s != "" {
+		if s := formatTaskSection("**SSH 后台任务**", rs.Tasks, "ssh"); s != "" {
 			sections = append(sections, s)
 		}
 	}
 	if categoryKind.IncludesCodingSessions() {
-		if s := formatSessionSection("💻 **编程会话**", rs.Sessions, "coding"); s != "" {
+		if s := formatSessionSection("**编程会话**", rs.Sessions, "coding"); s != "" {
 			sections = append(sections, s)
 		}
 	}
 	if categoryKind.IncludesSSHSessions() {
-		if s := formatSessionSection("🔗 **SSH 连接**", rs.Sessions, "ssh"); s != "" {
+		if s := formatSessionSection("**SSH 连接**", rs.Sessions, "ssh"); s != "" {
 			sections = append(sections, s)
 		}
 	}
@@ -372,7 +372,7 @@ func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) 
 	if len(hints) == 0 {
 		return ""
 	}
-	return "⚠️ 检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
+	return "检测到以下后台任务仍在运行，请优先检查其状态：\n" + strings.Join(hints, "\n")
 }
 
 func hasPendingBackgroundTaskFromStatus(rs RuntimeStatus, loopStart time.Time) bool {

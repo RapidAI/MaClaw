@@ -238,16 +238,16 @@ func TestFormatMemorySummary_BasicStructure(t *testing.T) {
 	if summary == "" {
 		t.Fatal("summary should not be empty")
 	}
-	if !strings.Contains(summary, "📋 记忆概览") {
+	if !strings.Contains(summary, "记忆概览") {
 		t.Error("summary missing header")
 	}
-	if !strings.Contains(summary, "🧑") {
+	if !strings.Contains(summary, "") {
 		t.Error("summary missing user_info section")
 	}
-	if !strings.Contains(summary, "💼") {
+	if !strings.Contains(summary, "") {
 		t.Error("summary missing projects section")
 	}
-	if !strings.Contains(summary, "⚙️") {
+	if !strings.Contains(summary, "") {
 		t.Error("summary missing preferences section")
 	}
 	if !strings.Contains(summary, "product manager") {

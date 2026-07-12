@@ -152,7 +152,7 @@ func (am *ApprovalManager) CancelAll() {
 // FormatApprovalMessage generates a human-readable approval request message
 // suitable for IM channels (Feishu, QQ, etc.).
 func FormatApprovalMessage(req ApprovalRequest) string {
-	msg := fmt.Sprintf("⚠️ 安全审批请求\n\n"+
+	msg := fmt.Sprintf("安全审批请求\n\n"+
 		"工具: %s\n"+
 		"风险等级: %s\n"+
 		"原因: %s\n",
@@ -163,9 +163,9 @@ func FormatApprovalMessage(req ApprovalRequest) string {
 	}
 
 	msg += fmt.Sprintf("\n请回复:\n"+
-		"  ✅ 批准 - 允许本次执行\n"+
-		"  ✅ 批准同类 - 允许本会话内同类操作\n"+
-		"  ❌ 拒绝 - 阻止执行\n"+
+		"  批准 - 允许本次执行\n"+
+		"  批准同类 - 允许本会话内同类操作\n"+
+		"  拒绝 - 阻止执行\n"+
 		"\n超时时间: %v", req.ExpiresAt.Sub(req.CreatedAt))
 
 	return msg
@@ -182,10 +182,10 @@ func ParseApprovalReply(requestID, reply string) ApprovalResponse {
 	case containsAny(reply, "批准全部", "approve all", "全部允许"):
 		resp.Approved = true
 		resp.ApproveScope = "session"
-	case containsAny(reply, "拒绝", "reject", "deny", "no", "❌", "不允许"):
+	case containsAny(reply, "拒绝", "reject", "deny", "no", "", "不允许"):
 		resp.Approved = false
 		resp.ApproveScope = "once"
-	case containsAny(reply, "批准", "approve", "允许", "yes", "ok", "✅"):
+	case containsAny(reply, "批准", "approve", "允许", "yes", "ok", ""):
 		resp.Approved = true
 		resp.ApproveScope = "once"
 	default:

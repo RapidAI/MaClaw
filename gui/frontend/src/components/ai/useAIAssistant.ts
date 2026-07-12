@@ -97,6 +97,32 @@ interface AIAssistantSendResult {
     CacheReadTokens?: number;
     cache_write_tokens?: number;
     CacheWriteTokens?: number;
+    est_cost_rmb?: number;
+    EstCostRMB?: number;
+    route_task?: string;
+    RouteTask?: string;
+    route_source?: string;
+    RouteSource?: string;
+    route_model?: string;
+    RouteModel?: string;
+    route_reason?: string;
+    RouteReason?: string;
+    route_escalated?: boolean;
+    RouteEscalated?: boolean;
+    prompt_profile?: string;
+    PromptProfile?: string;
+    prompt_full_tokens?: number;
+    PromptFullTokens?: number;
+    prompt_light_tokens?: number;
+    PromptLightTokens?: number;
+    prompt_saved_tokens?: number;
+    PromptSavedTokens?: number;
+    prompt_upgraded?: boolean;
+    PromptUpgraded?: boolean;
+    prompt_ab_sample?: boolean;
+    PromptABSample?: boolean;
+    prompt_soft_full?: boolean;
+    PromptSoftFull?: boolean;
     reasoning?: string;
     Reasoning?: string;
 }
@@ -1230,6 +1256,88 @@ function isTokenFieldLabel(label: string): boolean {
         || normalized === 'cache write tokens';
 }
 
+function isVerboseRouteFieldLabel(label: string): boolean {
+    const normalized = label.trim().toLowerCase();
+    return normalized === 'route task'
+        || normalized === 'route source'
+        || normalized === 'route model'
+        || normalized === 'route reason'
+        || normalized === 'route escalated';
+}
+
+function isTurnMetaFieldLabel(label: string): boolean {
+    return label.trim().toLowerCase() === 'turn';
+}
+
+function formatCompactTokenCount(n: number): string {
+    if (!Number.isFinite(n) || n < 0) return '0';
+    if (n < 1000) return String(Math.round(n));
+    if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+    return `${Math.round(n / 1000)}k`;
+}
+
+/** Always-on compact turn chip: route + model + tokens + est. cost. */
+function turnMetaCounterFields(
+    raw: AIAssistantSendResult,
+    existingFields?: Array<{ label: string; value: string }>,
+): Array<{ label: string; value: string }> {
+    if ((existingFields || []).some(field => isTurnMetaFieldLabel(field.label))) {
+        return [];
+    }
+    const parts: string[] = [];
+    const task = optionalTrimmedString(raw.route_task ?? raw.RouteTask);
+    const source = optionalTrimmedString(raw.route_source ?? raw.RouteSource);
+    const model = optionalTrimmedString(raw.route_model ?? raw.RouteModel);
+    if (task) parts.push(task);
+    if (source) parts.push(source);
+    if (model) parts.push(model);
+    const input = numericTokenFieldValue(raw.input_tokens, raw.InputTokens);
+    const output = numericTokenFieldValue(raw.output_tokens, raw.OutputTokens);
+    if (input || output) {
+        parts.push(`in=${formatCompactTokenCount(input || 0)} out=${formatCompactTokenCount(output || 0)}`);
+    }
+    const cache = numericTokenFieldValue(raw.cache_read_tokens, raw.CacheReadTokens);
+    if (cache) parts.push(`cache=${formatCompactTokenCount(cache)}`);
+    const cost = typeof raw.est_cost_rmb === 'number' && raw.est_cost_rmb > 0
+        ? raw.est_cost_rmb
+        : (typeof raw.EstCostRMB === 'number' && raw.EstCostRMB > 0 ? raw.EstCostRMB : 0);
+    if (cost > 0) parts.push(`~¥${cost.toFixed(4)}`);
+    const promptUpgraded = Boolean(raw.prompt_upgraded ?? raw.PromptUpgraded);
+    const promptABSample = Boolean(raw.prompt_ab_sample ?? raw.PromptABSample);
+    const promptSoftFull = Boolean(raw.prompt_soft_full ?? raw.PromptSoftFull);
+    const promptProfile = optionalTrimmedString(raw.prompt_profile ?? raw.PromptProfile);
+    if (promptUpgraded) {
+        // Mid-loop light→full recovery takes precedence over A/B/soft/light tags.
+        parts.push('prompt=full(upgraded)');
+    } else if (promptABSample) {
+        parts.push('prompt=full(ab)');
+    } else if (promptSoftFull) {
+        parts.push('prompt=full(soft)');
+    } else if (promptProfile && promptProfile.toLowerCase() === 'light') {
+        const saved = numericTokenFieldValue(
+            raw.prompt_saved_tokens,
+            raw.PromptSavedTokens,
+        );
+        if (saved) {
+            parts.push(`prompt=light(-${formatCompactTokenCount(saved)})`);
+        } else {
+            // Derive from full/light dual-build fields when savings not precomputed.
+            const full = Number(raw.prompt_full_tokens ?? raw.PromptFullTokens ?? 0);
+            const light = Number(raw.prompt_light_tokens ?? raw.PromptLightTokens ?? 0);
+            if (full > light && light > 0) {
+                parts.push(`prompt=light(-${formatCompactTokenCount(full - light)})`);
+            } else {
+                parts.push('prompt=light');
+            }
+        }
+    }
+    if (raw.route_escalated || raw.RouteEscalated) {
+        if ((source || '').toLowerCase() !== 'escalate') parts.push('escalated');
+    }
+    if (parts.length === 0) return [];
+    return [{ label: 'Turn', value: parts.join(' · ') }];
+}
+
 function numericTokenFieldValue(...values: unknown[]): number | undefined {
     for (const value of values) {
         if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
@@ -1264,7 +1372,10 @@ function normalizeResponseFields(fields: any, showDetailEntry = false): Array<{ 
             value: typeof field.value === 'string' ? field.value : (typeof field.Value === 'string' ? field.Value : ''),
         }))
         .filter(field => field.label && field.value)
-        .filter(field => showDetailEntry || !isTokenFieldLabel(field.label));
+        // Default chat: keep compact Turn chip; hide verbose token/route breakdown.
+        .filter(field => showDetailEntry
+            || isTurnMetaFieldLabel(field.label)
+            || (!isTokenFieldLabel(field.label) && !isVerboseRouteFieldLabel(field.label)));
     return normalized.length > 0 ? normalized : undefined;
 }
 
@@ -1370,12 +1481,13 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
     const raw = response || {};
     const normalizedFields = normalizeResponseFields(raw.fields ?? raw.Fields, showDetailEntry);
     const counterFields = tokenUsageCounterFields(raw, showDetailEntry, normalizedFields);
+    const turnFields = turnMetaCounterFields(raw, mergeResponseFields(normalizedFields, counterFields));
     return {
         ...raw,
         text: typeof raw.text === 'string' ? raw.text : (typeof raw.Text === 'string' ? raw.Text : ''),
         reasoning: typeof raw.reasoning === 'string' ? raw.reasoning : (typeof raw.Reasoning === 'string' ? raw.Reasoning : ''),
         error: typeof raw.error === 'string' ? raw.error : (typeof raw.Error === 'string' ? raw.Error : ''),
-        fields: mergeResponseFields(normalizedFields, counterFields),
+        fields: mergeResponseFields(mergeResponseFields(normalizedFields, counterFields), turnFields),
         actions: raw.actions ?? raw.Actions,
         confirmation: normalizeConfirmation(raw.confirmation ?? raw.Confirmation),
         unfinished_slot: normalizeUnfinishedSlot((raw as any).unfinished_slot ?? (raw as any).UnfinishedSlot ?? (raw as any).unfinished_task ?? (raw as any).UnfinishedTask),
@@ -2220,6 +2332,41 @@ function normalizeAgentViewLifecycle(raw: unknown): AgentViewLifecyclePayload | 
         workflow_user_id: typeof data.workflow_user_id === 'string' ? data.workflow_user_id : undefined,
         error: typeof data.error === 'string' ? data.error : undefined,
     };
+}
+
+/** Pull viewRevision / schemaVersion from meta or hidden fields for stale-submit protection. */
+function extractAgentViewRevisionTokens(
+    view: AgentView | null | undefined,
+    data?: Record<string, unknown>,
+): { viewRevision?: number; schemaVersion?: string } {
+    const out: { viewRevision?: number; schemaVersion?: string } = {};
+    const meta = view && typeof (view as any).meta === 'object' && (view as any).meta
+        ? (view as any).meta as Record<string, unknown>
+        : null;
+    const topRev = view && typeof (view as any).viewRevision === 'number' ? (view as any).viewRevision : undefined;
+    const revFromMeta = topRev ?? meta?.viewRevision;
+    if (typeof revFromMeta === 'number' && Number.isFinite(revFromMeta) && revFromMeta > 0) {
+        out.viewRevision = Math.trunc(revFromMeta);
+    } else if (typeof revFromMeta === 'string' && revFromMeta.trim()) {
+        const n = Number(revFromMeta);
+        if (Number.isFinite(n) && n > 0) out.viewRevision = Math.trunc(n);
+    }
+    const schemaFromMeta = meta?.schemaVersion;
+    if (typeof schemaFromMeta === 'string' && schemaFromMeta.trim()) {
+        out.schemaVersion = schemaFromMeta.trim();
+    }
+    const revField = agentViewFieldValue(view, '_agent_view_revision')
+        || (data && data._agent_view_revision != null ? String(data._agent_view_revision) : '');
+    if (out.viewRevision == null && revField) {
+        const n = Number(revField);
+        if (Number.isFinite(n) && n > 0) out.viewRevision = Math.trunc(n);
+    }
+    const schemaField = agentViewFieldValue(view, '_agent_view_schema_version')
+        || (data && typeof data._agent_view_schema_version === 'string' ? data._agent_view_schema_version : '');
+    if (!out.schemaVersion && schemaField.trim()) {
+        out.schemaVersion = schemaField.trim();
+    }
+    return out;
 }
 
 function agentViewFieldValue(view: AgentView | null | undefined, fieldName: string): string {
@@ -3192,7 +3339,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (pendingTasksByRequestRef.current.has(activeRequestId)) return;
             responseTimeoutControllersByRequestRef.current.delete(round.requestId);
             setMessages(prev => replaceRoundWithError(prev, round.assistantMessageId, activeRequestId,
-                `⏱️ 请求超时（${responseActivityTimeoutSec}秒无响应），请重试。`, true));
+                `请求超时（${responseActivityTimeoutSec}秒无响应），请重试。`, true));
             clearTransientProgress(currentRound.sessionKey || 'desktop-user');
             if (activeRoundRef.current.requestId === activeRequestId) resetActiveRound(round.generation);
             else forgetInFlightRound(activeRequestId);
@@ -4478,13 +4625,13 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                     return; // user cancelled — buttons stay clickable
                 }
                 setMessages(prev => disableActionsForCommand(prev, command));
-                const displayText = localizeText(uiLang, "\ud83d\udeab Abort workflow", "\ud83d\udeab \u4e2d\u6b62\u5de5\u4f5c\u6d41", "\ud83d\udeab \u4e2d\u6b62\u5de5\u4f5c\u6d41");
+                const displayText = localizeText(uiLang, "Abort workflow", "中止工作流", "中止工作流");
                 return sendMessage(command, { uiAction: true, displayText });
             }
 
             // "confirm": send to backend for fast-path processing
             const displayLabels: Record<string, string> = {
-                confirm: localizeText(uiLang, "\u2705 Confirm and proceed", "\u2705 \u786e\u8ba4\u5e76\u63a8\u8fdb", "\u2705 \u78ba\u8a8d\u4e26\u63a8\u9032"),
+                confirm: localizeText(uiLang, "Confirm and proceed", "确认并推进", "確認並推進"),
             };
             setMessages(prev => disableActionsForCommand(prev, command));
             return sendMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
@@ -4842,10 +4989,22 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         const isWorkflowFormSubmit = typeof viewId === 'string' && viewId.startsWith('workflow:form:');
         const activeSubmitSessionKey = normalizeRuntimeSessionKey(activeSessionKeyForEvents() || 'desktop-user');
         const workflowOwnerFromPayload = typeof data._workflow_user_id === 'string' ? data._workflow_user_id : '';
-        const visibleAgentView = isWorkflowFormSubmit ? (agentViewsBySessionRef.current.get(activeAgentViewSessionKeyRef.current) || null) : null;
+        // Prefer the session-scoped visible view for revision tokens (AppView phase 0).
+        const visibleAgentView =
+            agentViewsBySessionRef.current.get(activeAgentViewSessionKeyRef.current)
+            || agentViewsBySessionRef.current.get(activeSubmitSessionKey)
+            || null;
         const workflowOwnerFromVisibleView = visibleAgentView?.id === viewId ? agentViewFieldValue(visibleAgentView, '_workflow_user_id') : '';
         const workflowSubmitSessionKey = normalizeRuntimeSessionKey(workflowOwnerFromPayload || workflowOwnerFromVisibleView || activeSubmitSessionKey);
         const submitRoundSessionKey = isWorkflowFormSubmit ? workflowSubmitSessionKey : activeSubmitSessionKey;
+        const submitView = visibleAgentView?.id === viewId ? visibleAgentView : null;
+        const revisionTokens = extractAgentViewRevisionTokens(submitView, data);
+        if (revisionTokens.viewRevision != null && data._agent_view_revision == null) {
+            data = { ...data, _agent_view_revision: revisionTokens.viewRevision };
+        }
+        if (revisionTokens.schemaVersion && data._agent_view_schema_version == null) {
+            data = { ...data, _agent_view_schema_version: revisionTokens.schemaVersion };
+        }
         if (!isWorkflowFormSubmit) updateVisibleAgentViewForSession(activeSubmitSessionKey, null);
         const payload = JSON.stringify({ view_id: viewId || "", data });
         let workflowSubmitRound: { generation: number; assistantMessageId: string; requestId: string } | null = null;
@@ -4867,7 +5026,23 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             if (isWorkflowFormSubmit) {
                 workflowSubmitRound = startAgentViewSubmitRound(createForegroundRequestID());
             }
-            const rawResponse = await SubmitAgentView({ view_id: viewId || "", data, request_id: workflowSubmitRound?.requestId || undefined }) as AIAssistantSendResult | null | undefined;
+            const appId =
+                (typeof data._app_id === "string" && data._app_id.trim()) ||
+                (submitView && (submitView as any).appId) ||
+                (submitView && typeof (submitView as any).meta?.appId === "string" ? (submitView as any).meta.appId : undefined);
+            const sessionId =
+                (typeof data._session_id === "string" && data._session_id.trim()) ||
+                (submitView && (submitView as any).sessionId) ||
+                undefined;
+            const rawResponse = await SubmitAgentView({
+                view_id: viewId || "",
+                data,
+                request_id: workflowSubmitRound?.requestId || undefined,
+                view_revision: revisionTokens.viewRevision,
+                schema_version: revisionTokens.schemaVersion,
+                app_id: typeof appId === "string" ? appId : undefined,
+                session_id: typeof sessionId === "string" ? sessionId : undefined,
+            }) as AIAssistantSendResult | null | undefined;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const workflowSubmitAccepted = isWorkflowFormSubmit && !response.error;
             if (workflowSubmitAccepted && !response.keep_panel) {

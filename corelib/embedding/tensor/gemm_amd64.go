@@ -174,6 +174,24 @@ func multiDot8DualB(out0, out1 *[8]float32, a, b0, b1 []float32, K int) {
 	multiDot4DualB(out1, a[4*K:8*K], b0, b1, K)
 }
 
+// multiDot2DualB computes two A rows against two B vectors. The K=560 AVX2
+// path is used by the two-row tail of short SenseVoice entry projections.
+// out = [a0·b0, a1·b0, a0·b1, a1·b1].
+func multiDot2DualB(out *[4]float32, a, b0, b1 []float32, K int) {
+	if len(a) >= 2*K && len(b0) >= K && len(b1) >= K && hasAVX2andFMA && K == 560 {
+		multiDot2DualBAVX2K560(out, &a[0], &b0[0], &b1[0])
+		return
+	}
+	*out = [4]float32{}
+	for k := 0; k < K; k++ {
+		x0, x1 := a[k], a[K+k]
+		out[0] += x0 * b0[k]
+		out[1] += x1 * b0[k]
+		out[2] += x0 * b1[k]
+		out[3] += x1 * b1[k]
+	}
+}
+
 // multiDot4TripleB: 4 A rows × 3 B vectors.
 // out[0:4]=b0, out[4:8]=b1, out[8:12]=b2.
 // Loads each A chunk once for all three B (better than dual+single).
@@ -256,6 +274,9 @@ func multiDot4DualBAVX2K512(out *[8]float32, a, b0, b1 *float32)
 func multiDot4DualBAVX2K560(out *[8]float32, a, b0, b1 *float32)
 
 //go:noescape
+func multiDot2DualBAVX2K560(out *[4]float32, a, b0, b1 *float32)
+
+//go:noescape
 func multiDot4DualBAVX2K2048(out *[8]float32, a, b0, b1 *float32)
 
 //go:noescape
@@ -270,9 +291,10 @@ func multiDot4TripleBAVX512K512(out *[12]float32, a, b0, b1, b2 *float32)
 //go:noescape
 func multiDot8TripleBAVX512K512(out0, out1 *[12]float32, a, b0, b1, b2 *float32)
 
-//go:noescape
 // multiDot8TripleReLUAVX512K512N2048: FFN up fused 8A×3B + bias + ReLU for N=2048.
 // out is &out[0]; writes rows m..m+7, cols n..n+2.
+//
+//go:noescape
 func multiDot8TripleReLUAVX512K512N2048(out *float32, a, b0, b1, b2 *float32, m, n int, bn0, bn1, bn2 float32)
 
 // multiDot8TripleReLU tries fused AVX-512 triple+ReLU for N=2048 K=512; returns true if handled.
@@ -312,8 +334,9 @@ func multiDot8TriplePlain(out, a, b0, b1, b2 []float32, m, n, N, K int, bn0, bn1
 	return false
 }
 
-//go:noescape
 // multiDot8TripleArgmaxAVX512K512: CTC 8A×3B + bias + argmax into bestV/bestI (len≥8).
+//
+//go:noescape
 func multiDot8TripleArgmaxAVX512K512(bestV *float32, bestI *int, a, b0, b1, b2 *float32, n int, bn0, bn1, bn2 float32)
 
 // multiDot8TripleArgmax tries fused AVX-512 triple+argmax for K=512.
@@ -350,8 +373,9 @@ func multiDot8DualPlain(out, a, b0, b1 []float32, m, n, N, K int, bn0, bn1 float
 	return false
 }
 
-//go:noescape
 // multiDot8DualArgmaxAVX512K512: CTC 8A×2B dual remainder + bias + argmax.
+//
+//go:noescape
 func multiDot8DualArgmaxAVX512K512(bestV *float32, bestI *int, a, b0, b1 *float32, n int, bn0, bn1 float32)
 
 // multiDot8DualArgmax tries fused AVX-512 dual+argmax for K=512.

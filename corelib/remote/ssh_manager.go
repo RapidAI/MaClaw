@@ -477,7 +477,7 @@ func (m *SSHSessionManager) WaitForOutput(sessionID string, afterLine int, maxWa
 
 	lines, status := s.NewLinesSince(afterLine)
 	if timedOut && len(lines) > 0 {
-		lines = append(lines, "[maclaw] ⚠️ 命令执行超时，已发送 Ctrl+C 中断")
+		lines = append(lines, "[maclaw] 命令执行超时，已发送 Ctrl+C 中断")
 	}
 	return lines, status
 }

@@ -1130,13 +1130,21 @@ func TestOnboardingNextStepGuidance(t *testing.T) {
 	}
 
 	en := NewOnboardingModel("en")
-	if got := en.nextStepText(); !strings.Contains(got, "Done") || !strings.Contains(got, "local LLM") {
-		t.Fatalf("empty email guidance should offer a local LLM path, got %q", got)
+	if got := en.nextStepText(); got != onboardingText("en", "nextEmail") {
+		t.Fatalf("empty identity next step = %q, want %q", got, onboardingText("en", "nextEmail"))
+	}
+	if !strings.Contains(en.nextStepText(), "email") && !strings.Contains(en.nextStepText(), "phone") {
+		t.Fatalf("empty identity guidance should mention email/phone, got %q", en.nextStepText())
 	}
 
 	m.emailInput.SetValue("user@example.com")
-	if got := m.nextStepText(); got != onboardingText("zh", "nextActivate") {
-		t.Fatalf("email next step = %q", got)
+	// Until a verification code is sent, guidance stays on the identity/code step.
+	if got := m.nextStepText(); got != onboardingText("zh", "nextEmail") {
+		t.Fatalf("filled identity next step = %q, want %q", got, onboardingText("zh", "nextEmail"))
+	}
+	m.codeSent = true
+	if got := m.nextStepText(); got != onboardingText("zh", "nextSMSCode") {
+		t.Fatalf("code-sent next step = %q, want %q", got, onboardingText("zh", "nextSMSCode"))
 	}
 
 	m.remoteDone = true

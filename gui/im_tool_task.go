@@ -139,7 +139,7 @@ func (h *IMMessageHandler) taskList() string {
 			b.WriteString(fmt.Sprintf(" (依赖: %s)", strings.Join(t.DependsOn, ", ")))
 		}
 		if t.StatusNote != "" {
-			b.WriteString(fmt.Sprintf("\n  📝 %s", t.StatusNote))
+			b.WriteString(fmt.Sprintf("\n  %s", t.StatusNote))
 		}
 	}
 	return b.String()
@@ -148,16 +148,16 @@ func (h *IMMessageHandler) taskList() string {
 func statusIcon(s task.Status) string {
 	switch s {
 	case task.StatusPending:
-		return "⏳"
+		return "[..]"
 	case task.StatusInProgress:
-		return "🔄"
+		return "[>>]"
 	case task.StatusCompleted:
-		return "✅"
+		return "[OK]"
 	case task.StatusFailed:
-		return "❌"
+		return "[ERR]"
 	case task.StatusBlocked:
-		return "🚫"
+		return "[!!]"
 	default:
-		return "❓"
+		return "[?]"
 	}
 }

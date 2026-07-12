@@ -3,6 +3,7 @@ import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, 
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { localizeText } from '../../i18n';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
+import { IconAlert } from '../ai/WorkbenchIcons';
 
 type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     lang: string;
@@ -181,7 +182,10 @@ export const SidebarSystemStatus = ({
     const providerActionTitle = `${providerLabel}${CREDIT_SEPARATOR}${providerTitle}`;
     const openProviderTarget = isOfficialProvider ? openServiceRedeemPage : openLLMSettingsPage;
     const cardStoreTitle = textForLang(lang, 'Open MaClaw card store', '\u6253\u5f00 MaClaw \u670d\u52a1\u5361\u5546\u5e97', '\u6253\u958b MaClaw \u670d\u52d9\u5361\u5546\u5e97');
-    const lowCreditWarning = isOfficialProvider && !!sidebarHubCredits && sidebarHubCredits.authorized && !sidebarHubCredits.unlimited && sidebarHubCredits.remaining < 1000;
+    const spendableCredits = sidebarHubCredits?.showPeriodAvailable
+        ? sidebarHubCredits.available
+        : (sidebarHubCredits?.remaining ?? 0);
+    const lowCreditWarning = isOfficialProvider && !!sidebarHubCredits && sidebarHubCredits.authorized && !sidebarHubCredits.unlimited && spendableCredits < 1000;
     const isPeriodLimited = !!sidebarHubCredits && String(sidebarHubCredits.status || '').toLowerCase() === 'period_limited';
     const isPeriodLimitedStopped = isPeriodLimited && sidebarHubCredits!.serviceActive === false;
     const lowCreditTitle = isPeriodLimitedStopped
@@ -255,15 +259,27 @@ export const SidebarSystemStatus = ({
             `\u5f53\u524d MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u8fbe\u5230\u672c\u5468\u671f\u9650\u989d\u3002${hubCreditRetryText ? `${hubCreditRetryText}\u540e\u6062\u590d\u3002` : ''}\u70b9\u51fb\u524d\u5f80\u670d\u52a1\u5151\u6362\u3002`,
             `\u76ee\u524d MaClaw \u5b98\u65b9\u901a\u9053\u5df2\u9054\u5230\u672c\u9031\u671f\u9650\u984d\u3002${hubCreditRetryText ? `${hubCreditRetryText}\u5f8c\u6062\u5fa9\u3002` : ''}\u9ede\u64ca\u524d\u5f80\u670d\u52d9\u5151\u63db\u3002`,
         );
+    const accountRemainingText = sidebarHubCredits?.authorized
+        ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining))
+        : noHubAuthorizationText;
+    const periodAvailableText = sidebarHubCredits?.authorized && !sidebarHubCredits.unlimited
+        ? formatSidebarCredit(sidebarHubCredits.available)
+        : '';
+    const showPeriodAvailable = !!sidebarHubCredits?.authorized
+        && !sidebarHubCredits.unlimited
+        && !!sidebarHubCredits.showPeriodAvailable;
     const creditTitle = sidebarHubCredits
         ? textForLang(lang, 'Expires', '\u6709\u6548\u671f', '\u6709\u6548\u671f') + ': ' + formatSidebarHubExpiry(sidebarHubCredits)
             + CREDIT_SEPARATOR + textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf') + ' ' + formatSidebarHubTotalCredits(sidebarHubCredits)
             + CREDIT_SEPARATOR + textForLang(lang, 'Used', '\u5df2\u7528', '\u5df2\u7528') + ' ' + formatSidebarHubUsedCredits(sidebarHubCredits)
-            + CREDIT_SEPARATOR + (hubCreditStateText || (textForLang(lang, 'Left', '\u5269\u4f59', '\u5269\u9918') + ' ' + (sidebarHubCredits.authorized ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)) : noHubAuthorizationText)))
+            + CREDIT_SEPARATOR + textForLang(lang, 'Account left', '\u8d26\u6237\u5269\u4f59', '\u5e33\u6236\u5269\u9918') + ' ' + accountRemainingText
+            + (showPeriodAvailable
+                ? CREDIT_SEPARATOR + textForLang(lang, 'Period available', '\u672c\u5468\u671f\u53ef\u7528', '\u672c\u9031\u671f\u53ef\u7528') + ' ' + periodAvailableText
+                : '')
+            + (hubCreditStateText ? CREDIT_SEPARATOR + hubCreditStateText : '')
         : textForLang(lang, 'Credits unavailable', '\u989d\u5ea6\u4fe1\u606f\u6682\u4e0d\u53ef\u7528', '\u984d\u5ea6\u8cc7\u8a0a\u66ab\u4e0d\u53ef\u7528');
-    const remainingCredit = sidebarHubCredits?.authorized
-        ? (hubCreditStateText || (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)))
-        : noHubAuthorizationText;
+    // Primary number is lifetime account remaining. Period available/state are sub-lines.
+    const remainingCredit = accountRemainingText;
 
     return (
         <div className="sidebar-system-status">
@@ -355,7 +371,7 @@ export const SidebarSystemStatus = ({
                                 {/* Current provider (highlighted) — only show when there are switchable alternatives */}
                                 {switchableProviders.length > 0 && (
                                     <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
-                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">✓</span>
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">OK</span>
                                         <span>{providerLabel}</span>
                                     </div>
                                 )}
@@ -369,7 +385,7 @@ export const SidebarSystemStatus = ({
                                         aria-selected="false"
                                         onClick={() => handleSelectProvider(p.name)}
                                     >
-                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>✓</span>
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>OK</span>
                                         <span>{p.name}</span>
                                     </button>
                                 ))}
@@ -381,7 +397,7 @@ export const SidebarSystemStatus = ({
                                         className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--settings"
                                         onClick={() => { setDropdownOpen(false); (openLLMSettingsPage || openProviderTarget)?.(); }}
                                     >
-                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>⚙</span>
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>·</span>
                                         <span>{textForLang(lang, 'LLM Settings...', '\u5927\u6a21\u578b\u8bbe\u7f6e...', '\u5927\u6a21\u578b\u8a2d\u5b9a...')}</span>
                                     </button>
                                 )}
@@ -397,7 +413,9 @@ export const SidebarSystemStatus = ({
                             title={periodLimitNoticeTitle}
                             aria-label={periodLimitNoticeTitle}
                         >
-                            <span className="sidebar-system-status__stop-icon" aria-hidden="true">!</span>
+                            <span className="sidebar-system-status__stop-icon" aria-hidden="true">
+                                <IconAlert size={12} color="currentColor" />
+                            </span>
                             <span>{hubServiceStoppedByPeriodLimit ? textForLang(lang, 'Stopped', '\u5df2\u505c\u6b62', '\u5df2\u505c\u6b62') : textForLang(lang, 'Limited', '\u9650\u989d', '\u9650\u984d')}</span>
                         </button>
                     )}
@@ -430,6 +448,18 @@ export const SidebarSystemStatus = ({
                             <span className="sidebar-system-status__metric sidebar-system-status__metric--remaining">
                                 <span className="sidebar-system-status__metric-label">{textForLang(lang, 'Left', '\u5269\u4f59', '\u5269\u9918')}</span>
                                 <span className="sidebar-system-status__metric-value">{remainingCredit}</span>
+                                {showPeriodAvailable && (
+                                    <span
+                                        className="sidebar-system-status__metric-sub"
+                                        title={textForLang(lang, 'Currently spendable in this period/route window', '\u5f53\u524d\u5468\u671f/\u901a\u9053\u53ef\u7528\u989d\u5ea6', '\u7576\u524d\u9031\u671f/\u901a\u9053\u53ef\u7528\u984d\u5ea6')}
+                                    >
+                                        {textForLang(lang, 'Avail', '\u53ef\u7528', '\u53ef\u7528')} {periodAvailableText}
+                                        {hubCreditStateText ? `${CREDIT_SEPARATOR}${hubCreditStateText}` : ''}
+                                    </span>
+                                )}
+                                {!showPeriodAvailable && hubCreditStateText ? (
+                                    <span className="sidebar-system-status__metric-sub">{hubCreditStateText}</span>
+                                ) : null}
                             </span>
                         </div>
                         {showHubCreditAction && (

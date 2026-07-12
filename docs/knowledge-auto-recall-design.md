@@ -327,3 +327,72 @@ h.appendSteeringSection(&b, msg)
 | P2 | 自动召回开关 | 前端 ~10 行 + 后端 ~5 行 |
 | P3 | Embedding fallback | 后端 ~20 行（传参数即可） |
 | P3 | 对话上下文增强 query | 后端 ~15 行 |
+
+## 落地状态（2026-07）
+
+| 路径 | 状态 |
+|------|------|
+| IM / 桌面 system prompt（`gui/im_knowledge_auto_recall.go`） | 已用 `corelib/agent` 共享常量 + header / NoMatchHint |
+| TUI（`tui/knowledge_autorecall.go`） | 已对齐共享常量 |
+| Agent service（`corelib/agentservice`） | 已对齐共享常量 |
+| 数字员工 VE（`gui/app_ve_handler.go`） | **已对齐**共享常量（此前硬编码 threshold/注入量/英文 header，已统一） |
+
+共享策略见 `corelib/agent/prompt_blocks.go`：
+
+- `KnowledgeAutoRecallScoreThreshold = 0.3`
+- `KnowledgeAutoRecallMaxInject`：≥3.0 → 5；≥1.0 → 3；≥0.3 → 2
+- `KnowledgeAutoRecallSearchLimit = 8`，snippet 上限 400 runes
+
+### P2 落地（2026-07，本轮）
+
+| 项 | 实现 |
+|----|------|
+| 开关 | `AppConfig.knowledge_auto_recall_enabled`（`*bool`，默认 true）；GUI 知识库总览可关 |
+| 最低分 | `AppConfig.knowledge_auto_recall_min_score`（0=默认 0.3）；`KnowledgeAutoRecallMaxInjectWithMin` |
+| 路径 | IM / VE / TUI / agentservice 均读取 `IsKnowledgeAutoRecallEnabled` + min score |
+| Patch | `PatchConfigFields` 白名单字段 `knowledge_auto_recall_enabled` / `knowledge_auto_recall_min_score` |
+
+关闭后仅停用**自动注入**；`knowledge_search` / `knowledge_context_pack` 等工具不受影响。
+
+### P3a 落地（2026-07）：Embedding hybrid fallback
+
+`knowledge.Search` 在 store 挂有非 noop embedder 时，**已内置** hybrid：
+
+- FTS 为空，或 FTS 最佳分 < 2.0 → 调用 `searchByEmbedding` + RRF 融合
+- 向量分约 `1.0 + (sim-0.3)*4.3`，可过 auto-recall 默认阈值 0.3
+
+本轮补齐的是 **接线**（此前 auto-recall 打开的 store 经常拿不到 embedder）：
+
+| 点 | 改动 |
+|----|------|
+| `openKnowledgeStore` | `attachKnowledgeEmbedder`（memory/intent 共享模型） |
+| `getAutoRecallStore` | 打开后再 attach 一次（防竞态） |
+| `activateEmbedderAsync` | 继续写入已缓存的 auto-recall store |
+| `SearchOptions.PreferEmbedding` | 可选强制 hybrid（auto-recall 默认 false，仍走“空/低分”触发） |
+| 测试 | `TestSearchEmbeddingFallbackWhenFTSEmpty` |
+
+### P3b 落地（2026-07）：多轮 query 增强
+
+具名目标：**Multi-turn auto-recall query**（在冻结文档 Out of freeze 第 1 项下开窗）。
+
+| 点 | 实现 |
+|----|------|
+| 纯函数 | `PriorUserMessagesFromHistory` + `ExpandKnowledgeAutoRecallQuery`（`corelib/agent`） |
+| 预算 | 总 query ≤ 200 runes；当前句优先；每 prior 最多 80 runes |
+| 过滤 | 跳过「好的 / ok / 继续」等低信号短句 |
+| IM | `LoopContext.History` → prior |
+| VE | `veAgentCallbacks.history` |
+| TUI | `tuiCallbacks.history` 在 `RunLoop` 前赋值 |
+| agentservice | `coreAgentCallbacks.history` 来自 `req.History` |
+
+### 仍开放（P3c+）
+
+1. TUI 配置页字段（当前与 GUI 共用 config.json，可在 GUI 改后 TUI 生效）  
+2. agentservice/TUI 侧 embedder 接线（若部署路径独立加载 embedding 模型）  
+3. 反馈学习（引用率调阈值）
+
+## 冻结（2026-07）
+
+本 track **已冻结观察**（P0–P3a + 开关/阈值）。**P3b 多轮 query** 为冻结后的具名增量，完成后仍归 auto-recall 观察范围。
+
+→ [knowledge-auto-recall-track-freeze-2026.md](./knowledge-auto-recall-track-freeze-2026.md)

@@ -118,7 +118,7 @@ def convert_pdf_to_docx(input_path: str, output_path: str) -> str:
 
     pdf.close()
     doc.save(output_path)
-    print(f"✅ 转换完成: {output_path}")
+    print(f"转换完成: {output_path}")
     print(f"   页数: {page_count}")
     print(f"   输出: {os.path.abspath(output_path)}")
     return output_path

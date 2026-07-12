@@ -104,7 +104,9 @@ func DefaultModelAliases() map[string]string {
 	}
 }
 
-func ResolveModel(cfg *Config, requested string) (string, bool) {
+// ResolveModel maps a requested model id to a supported DeepSeek model.
+// The first argument accepts *Config or *Store (historical call sites mix both).
+func ResolveModel(cfg any, requested string) (string, bool) {
 	model := lower(strings.TrimSpace(requested))
 	if model == "" {
 		return "", false
@@ -113,9 +115,7 @@ func ResolveModel(cfg *Config, requested string) (string, bool) {
 		return model, true
 	}
 	aliases := DefaultModelAliases()
-	if cfg != nil {
-		// 从配置中获取别名（暂时不实现，保持兼容）
-	}
+	_ = cfg // reserved for future per-config alias maps
 	if mapped, ok := aliases[model]; ok && IsSupportedDeepSeekModel(mapped) {
 		return mapped, true
 	}
@@ -170,7 +170,7 @@ func OpenAIModelsResponse() map[string]any {
 	return map[string]any{"object": "list", "data": DeepSeekModels}
 }
 
-func OpenAIModelByID(cfg *Config, id string) (ModelInfo, bool) {
+func OpenAIModelByID(cfg any, id string) (ModelInfo, bool) {
 	canonical, ok := ResolveModel(cfg, id)
 	if !ok {
 		return ModelInfo{}, false

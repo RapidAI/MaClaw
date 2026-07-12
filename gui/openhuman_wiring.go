@@ -133,6 +133,157 @@ func (h *IMMessageHandler) routeLLMConfig(task cllm.TaskType) corelib.MaclawLLMC
 	return h.app.ohModules.modelRouter.RouteWithAux(task, primary, h.app.ohModules.cachedAuxLLM)
 }
 
+// modelRouteDecision is the observable outcome of turn/model routing for one
+// agent loop (and optional mid-loop escalations).
+type modelRouteDecision struct {
+	Task      string `json:"task"`
+	Source    string `json:"source"` // route | aux | primary | escalate
+	Model     string `json:"model"`
+	Provider  string `json:"provider,omitempty"`
+	Reason    string `json:"reason"`
+	Baseline  string `json:"baseline_model,omitempty"`
+	Escalated bool   `json:"escalated,omitempty"`
+	// Cost tier observation (OpenSquilla-inspired Phase 1–3).
+	CostTier         string `json:"cost_tier,omitempty"`          // c0–c3
+	CostRouteMode    string `json:"cost_route_mode,omitempty"`    // off|shadow|on
+	CostRouteApplied bool   `json:"cost_route_applied,omitempty"` // Phase 2+ model/thinking apply
+	ThinkingPolicy   string `json:"thinking_policy,omitempty"`    // off|low|high (Phase 3)
+}
+
+// applyTurnModelRoute classifies the user turn and selects a model via
+// ModelRouter + auxiliary LLM. Returns primary unchanged when routing is
+// unavailable or the decision stays on the primary model.
+func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, userText string, ctx *LoopContext, attachments []MessageAttachment) (corelib.MaclawLLMConfig, modelRouteDecision) {
+	decision := modelRouteDecision{
+		Task:     string(cllm.TaskDefault),
+		Source:   "primary",
+		Model:    primary.Model,
+		Provider: primary.ProviderName,
+		Baseline: primary.Model,
+		Reason:   "primary config",
+	}
+	if h == nil {
+		return primary, decision
+	}
+	var router *cllm.ModelRouter
+	var aux corelib.AuxiliaryLLMConfig
+	if h.app != nil {
+		router = h.app.ohModules.modelRouter
+		aux = h.app.ohModules.cachedAuxLLM
+	}
+	hints := cllm.ClassifyHints{
+		HasAttachments: len(attachments) > 0,
+	}
+	if ctx != nil {
+		if ctx.WorkflowAgentLoop || ctx.Kind == LoopKindBackground {
+			hints.ToolHeavy = true
+		}
+		if ctx.Runtime.Execution.Layer != "" {
+			// Execution router already tagged a non-trivial layer — prefer strong model.
+			switch strings.ToLower(ctx.Runtime.Execution.TaskType) {
+			case "coding", "browser", "ssh", "office", "workflow":
+				hints.ToolHeavy = true
+			}
+		}
+	}
+	// Classify once; Phase 2 (on) maps tier→model + thinking, else classic DecideTurn.
+	classified := cllm.ClassifyTurn(userText, hints)
+	cost := cllm.DecideCostRoute(classified.Task, hints, classified.Reason)
+
+	var cfg corelib.MaclawLLMConfig
+	var source, reason string
+	if cost.Mode == cllm.CostRouteOn {
+		var detail string
+		cfg, cost.Applied, source, detail = cllm.ApplyCostTierConfig(router, primary, aux, cost.Tier, cost.Mode)
+		// Phase 3: bind extended thinking to tier when applying.
+		cfg = cllm.ApplyThinkingPolicy(cfg, cost.Thinking)
+		cost.Reason = detail + "; think=" + string(cost.Thinking)
+		reason = classified.Reason + "; " + cost.Reason
+	} else {
+		cfg, _, source, reason = cllm.DecideTurn(router, primary, aux, userText, hints)
+		if cllm.CostRouteSurfaces(cost.Mode) {
+			reason = reason + "; " + cost.Reason
+		}
+	}
+
+	decision = modelRouteDecision{
+		Task:             string(classified.Task),
+		Source:           source,
+		Model:            cfg.Model,
+		Provider:         cfg.ProviderName,
+		Baseline:         primary.Model,
+		Reason:           reason,
+		CostTier:         string(cost.Tier),
+		CostRouteMode:    string(cost.Mode),
+		CostRouteApplied: cost.Applied,
+		ThinkingPolicy:   string(cost.Thinking),
+	}
+	if cllm.CostRouteSurfaces(cost.Mode) {
+		log.Printf("[cost-route] mode=%s tier=%s think=%s task=%s model=%s→%s applied=%v",
+			cost.Mode, cost.Tier, cost.Thinking, classified.Task, primary.Model, cfg.Model, cost.Applied)
+	}
+	if cfg.Model != primary.Model || cfg.URL != primary.URL || source != "primary" {
+		log.Printf("[model-route] task=%s source=%s model=%s→%s reason=%q",
+			classified.Task, source, primary.Model, cfg.Model, reason)
+	} else {
+		log.Printf("[model-route] task=%s source=%s model=%s reason=%q", classified.Task, source, cfg.Model, reason)
+	}
+	if h.app != nil {
+		h.app.recordLastModelRoute(decision)
+	}
+	return cfg, decision
+}
+
+// escalateRunStateToReasoning upgrades a light turn to the reasoning model after
+// tools appear. No-op when already on reasoning/primary-strong config.
+func (h *IMMessageHandler) escalateRunStateToReasoning(run *agentLoopRunState, why string) {
+	if h == nil || run == nil || run.RouteEscalated {
+		return
+	}
+	// Already on a non-light path — skip.
+	switch strings.ToLower(strings.TrimSpace(run.RouteTask)) {
+	case string(cllm.TaskReasoning), string(cllm.TaskDefault), string(cllm.TaskVision):
+		if run.RouteSource == "primary" || run.RouteSource == "route" {
+			// Still allow escalate when we started on aux/fast and task was mislabeled.
+			if run.RouteSource != "aux" && run.RouteTask != string(cllm.TaskFast) && run.RouteTask != string(cllm.TaskSummary) && run.RouteTask != string(cllm.TaskIntent) {
+				return
+			}
+		}
+	}
+	// Only escalate when the loop started on a lightweight path.
+	light := run.RouteTask == string(cllm.TaskFast) ||
+		run.RouteTask == string(cllm.TaskSummary) ||
+		run.RouteTask == string(cllm.TaskIntent) ||
+		run.RouteSource == "aux"
+	if !light {
+		return
+	}
+	before := run.ActiveConfig.Model
+	upgraded := h.routeLLMConfig(cllm.TaskReasoning)
+	if upgraded.Model == "" {
+		return
+	}
+	if upgraded.Model == before && upgraded.URL == run.ActiveConfig.URL {
+		// No stronger model available — keep light path.
+		return
+	}
+	run.ActiveConfig = upgraded
+	run.EffectiveTokenLimit = upgraded.EffectiveContextTokens()
+	run.RouteTask = string(cllm.TaskReasoning)
+	run.RouteSource = "escalate"
+	run.RouteModel = upgraded.Model
+	run.RouteProvider = upgraded.ProviderName
+	run.RouteReason = why
+	run.RouteEscalated = true
+	if run.Telemetry != nil {
+		run.Telemetry.Route = run.routeDecision()
+	}
+	if h.app != nil {
+		h.app.recordLastModelRoute(run.routeDecision())
+	}
+	log.Printf("[model-route] escalate %s→%s reason=%q", before, upgraded.Model, why)
+}
+
 // --- Tool Memory Integration ---
 
 // injectToolMemoryHint returns a hint string to prepend to tool results
@@ -189,6 +340,27 @@ func (h *IMMessageHandler) isOverDailyBudget() bool {
 		return false
 	}
 	return h.app.ohModules.costTracker.IsOverBudget()
+}
+
+// checkDailyBudgetGate blocks new agent turns when daily budget is exhausted.
+// Returns (blocked, user-facing message). Soft-warns at 80% without blocking.
+func (h *IMMessageHandler) checkDailyBudgetGate() (blocked bool, userMsg string) {
+	if h == nil || h.app == nil || h.app.ohModules.costTracker == nil {
+		return false, ""
+	}
+	ct := h.app.ohModules.costTracker
+	if ct.BudgetLimit() <= 0 {
+		return false, ""
+	}
+	if ct.IsOverBudget() {
+		msg := ct.BudgetGateMessage()
+		log.Printf("[cost] budget hard-stop: %s", ct.DailySummary())
+		return true, msg
+	}
+	if ct.ShouldWarn() {
+		log.Printf("[cost] budget warning (≥80%%): %s", ct.DailySummary())
+	}
+	return false, ""
 }
 
 // llmCostSessionSummary returns a human-readable cost summary for logging.

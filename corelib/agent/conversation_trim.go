@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 func EstimateConversationEntryTokens(entries []ConversationEntry) int {
@@ -532,6 +533,13 @@ func TruncateToolResult(s string) string {
 const WebFetchMaxToolResult = 32768
 
 func TruncateToolResultForTool(toolName, s string) string {
+	return TruncateToolResultForToolWithSession(toolName, "", s)
+}
+
+// TruncateToolResultForToolWithSession truncates for the model and spills the
+// full original result to a tool_result handle when the preview is shorter.
+// Preview uses toolresult.StructuredPreview (Phase 4: tool-aware reducers).
+func TruncateToolResultForToolWithSession(toolName, sessionKey, original string) string {
 	// web_fetch gets a higher budget — content is already windowed in handler
 	limit := MaxToolResultLen
 	if toolName == "web_fetch" {
@@ -540,57 +548,20 @@ func TruncateToolResultForTool(toolName, s string) string {
 	if strings.HasPrefix(toolName, "browser") {
 		limit = max(limit, 4096)
 	}
-	if len(s) <= limit {
-		return s
+	// Empty Preview → StructuredPreview inside Project; spill when truncated.
+	proj, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:   toolName,
+		SessionKey: sessionKey,
+		Content:    original,
+		Limit:      limit,
+	})
+	if err != nil {
+		if proj.Preview != "" {
+			return proj.Preview
+		}
+		return toolresult.StructuredPreview(toolName, original, limit)
 	}
-	if toolName == "web_fetch" {
-		return truncateWebFetchToolResult(s, limit)
-	}
-	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
-	sepLen := len(sep)
-	budget := limit - sepLen
-
-	switch toolName {
-	case "get_session_output", "bash":
-		// Terminal output: tail is more important (recent lines)
-		headLen := budget / 4
-		tailLen := budget - headLen
-		return s[:headLen] + sep + s[len(s)-tailLen:]
-	default:
-		// Default: head-heavy (status/headers at top)
-		headLen := budget * 2 / 3
-		tailLen := budget - headLen
-		return s[:headLen] + sep + s[len(s)-tailLen:]
-	}
-}
-
-func truncateWebFetchToolResult(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	marker := "\n\n--- 完整性信号 ---\n"
-	idx := strings.LastIndex(s, marker)
-	if idx < 0 {
-		sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
-		budget := limit - len(sep)
-		headLen := budget * 2 / 3
-		tailLen := budget - headLen
-		return s[:headLen] + sep + s[len(s)-tailLen:]
-	}
-	meta := s[idx:]
-	head := s[:idx]
-	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
-	if len(meta)+len(sep) >= limit {
-		return sep + meta[len(meta)-(limit-len(sep)):]
-	}
-	headBudget := limit - len(meta) - len(sep)
-	if headBudget <= 0 {
-		return sep + meta
-	}
-	if len(head) > headBudget {
-		head = head[:headBudget]
-	}
-	return head + sep + meta
+	return proj.Preview
 }
 
 // InferFileDeliveryMessage is kept for compatibility. Without structured

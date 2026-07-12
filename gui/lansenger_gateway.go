@@ -336,7 +336,7 @@ func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMes
 	}
 	_ = gw.SendText(context.Background(), lansenger.OutgoingText{
 		ToUserID: msg.FromUserID,
-		Text:     "⚠️ 当前为多机模式，但 Hub 未连接。消息已回退到本地处理。",
+		Text:     "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。",
 	})
 }
 
@@ -613,7 +613,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
-			Text:     "❌ " + textutil.StripMarkdown(resp.Error),
+			Text:     "" + textutil.StripMarkdown(resp.Error),
 		})
 	}
 

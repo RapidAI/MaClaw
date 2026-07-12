@@ -247,11 +247,11 @@ func remoteActivate(args []string) error {
 		if smErr == nil && smResult.SessionToken != "" {
 			cfg.SkillMarketSessionToken = smResult.SessionToken
 			_ = store.SaveConfig(cfg)
-			fmt.Println("  SkillMarket: ✅ 已自动登录")
+			fmt.Println("  SkillMarket: 已自动登录")
 		}
 	}
 
-	fmt.Println("✅ 注册成功")
+	fmt.Println("注册成功")
 	fmt.Printf("  Hub URL:    %s\n", result.HubURL)
 	fmt.Printf("  Machine ID: %s\n", result.MachineID)
 	fmt.Printf("  Email:      %s\n", result.Email)

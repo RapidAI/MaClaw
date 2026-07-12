@@ -51,6 +51,8 @@ const arbCodeFile: fc.Arbitrary<CodeFile> = fc.record({
     opType: fc.constantFrom('create' as const, 'modify' as const),
     language: fc.constantFrom('typescript', 'go', 'python', 'javascript'),
     updatedAt: fc.nat({ max: 1_000_000_000 }),
+    // Workflow-authorized preview open; ordinary generation no longer auto-opens.
+    autoOpenPreview: fc.constant(true),
     // No sessionID — events without project_path route to active tab (single tab)
 });
 
@@ -65,6 +67,7 @@ function arbCodeFileWithSession(sessionID: string): fc.Arbitrary<CodeFile> {
         opType: fc.constantFrom('create' as const, 'modify' as const),
         language: fc.constantFrom('typescript', 'go', 'python', 'javascript'),
         updatedAt: fc.nat({ max: 1_000_000_000 }),
+        autoOpenPreview: fc.constant(true),
     });
 }
 

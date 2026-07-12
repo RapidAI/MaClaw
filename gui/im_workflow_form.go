@@ -152,7 +152,7 @@ func (a *App) handleWorkflowFormAgentViewSubmit(phaseID string, data map[string]
 			return resp
 		}
 		return &IMAgentResponse{
-			Text:           "✅ 表单已提交，正在生成文档...",
+			Text:           "表单已提交，正在生成文档...",
 			ResponseSource: imResponseSourceAgentViewSubmit.String(),
 		}
 	}
@@ -237,7 +237,7 @@ func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[
 	log.Printf("[workflow-v1-form] form submitted: user=%s phase=%s fields=%d", userID, phaseID, len(cleanData))
 
 	return &IMAgentResponse{
-		Text:           "✅ 信息已收到！发送「继续」开始生成文档。",
+		Text:           "信息已收到！发送「继续」开始生成文档。",
 		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
 }
@@ -422,7 +422,7 @@ func buildFormSubmissionSummary(data map[string]interface{}) string {
 // Hidden fields and internal routing fields are excluded.
 func buildFormSubmissionEcho(state *v2.WorkflowState, cleanData map[string]interface{}) string {
 	if len(cleanData) == 0 {
-		return "✅ 信息已收到"
+		return "信息已收到"
 	}
 
 	// Collect schema metadata from the active phase.
@@ -448,7 +448,7 @@ func buildFormSubmissionEcho(state *v2.WorkflowState, cleanData map[string]inter
 	}
 
 	var sb strings.Builder
-	sb.WriteString("✅ 信息已收到\n")
+	sb.WriteString("信息已收到\n")
 
 	// Render fields in schema-defined order.
 	rendered := make(map[string]bool, len(orderedFields))

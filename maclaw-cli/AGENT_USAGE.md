@@ -53,7 +53,11 @@ When MaClaw GUI runs on the same machine:
 ```bash
 maclaw-cli bootstrap
 maclaw-cli doctor
+maclaw-cli shared-loop status
 ```
+
+`doctor` includes readiness checks plus `agent.shared_loop` and `agent.adaptive_prompt`
+(light vs full system-prompt hit rate and estimated token savings when GUI/TUI has run).
 
 `bootstrap` writes these GUI config fields into `~/.maclaw/config.json` if needed:
 
@@ -88,6 +92,9 @@ Use `--lock-timeout <sec>` or `MACLAW_CLI_LOCK_TIMEOUT_SEC` when another process
 | Need | Command |
 | --- | --- |
 | Verify MaClaw is reachable | `maclaw-cli doctor` |
+| Shared agent loop mode / enable | `maclaw-cli shared-loop status` / `enable` / `disable` |
+| Adaptive prompt hit rate + savings | `maclaw-cli shared-loop stats` |
+| Reset adaptive prompt counters | `maclaw-cli shared-loop stats-reset` |
 | First-time local config | `maclaw-cli bootstrap` |
 | Send prompt and wait for reply | `maclaw-cli continue --client A --session S "..."` |
 | Send prompt only | `maclaw-cli send --client A --session S --text "..."` |
@@ -483,9 +490,69 @@ Run:
 ```bash
 maclaw-cli bootstrap
 maclaw-cli doctor
+maclaw-cli shared-loop stats
 ```
 
 If `doctor` still fails, restart MaClaw GUI or restart the third-party gateway in GUI.
+
+### Shared loop and adaptive prompt
+
+```bash
+# Mode (on/off/shadow) from config + env
+maclaw-cli shared-loop status
+
+# Process + durable adaptive prompt stats (~/.maclaw/stats/prompt_profile.json)
+maclaw-cli shared-loop stats
+
+# Clear counters (CLI process + disk file; restart GUI/TUI for clean memory views)
+maclaw-cli shared-loop stats-reset
+
+# Portable fleet export (multi-host rollup)
+maclaw-cli shared-loop export --write
+maclaw-cli shared-loop merge-exports a.json b.json --out fleet.json
+
+# Live Hub rollup (tenant/global admin JWT)
+maclaw-cli shared-loop hub-metrics --hub https://hub.example --admin-token "$MACLAW_HUB_ADMIN_TOKEN"
+# Defaults: config remote_hub_url / MACLAW_HUB_URL; MACLAW_HUB_ADMIN_TOKEN; optional --tenant
+
+# Raw Hub admin APIs:
+# GET /api/admin/adaptive-prompt/metrics
+# GET /api/admin/debug/machines → adaptive_prompt
+```
+
+`estTokensSaved` is a **shadow estimate** (CPU dual-build of light vs full system prompt), not a second LLM call.
+
+`byTask` / `lastTask` break down which `ClassifyTurn` task types produced light vs full turns (e.g. `fast:3,reasoning:1`).
+
+`lightToolDenies` / `lastDeniedTool` count non-allowlisted tools blocked during light turns (misroute signal).  
+`lightUpgrades` counts preemptive soft-intent upgrades and in-loop `tool_deny_retry` recoveries.  
+`abEligibleLight` / `abSampleFull` quality A/B: light-eligible turns forced full for comparison.  
+`upgradeRatePercent` / `denyRatePercent` misroute quality proxies.
+
+In-loop recovery (default on): light turn + blocked tool → upgrade to full once, refresh tools/system, re-run tool.  
+Disable: `set MACLAW_PROMPT_LIGHT_RETRY=off`
+
+Chat Turn chip after recovery: `prompt=full(upgraded)` (instead of `prompt=light(-N)`).
+
+Quality A/B sample (optional):
+
+```bash
+set MACLAW_PROMPT_AB_PERCENT=10
+```
+
+Force adaptive system-prompt profile (operator debug):
+
+```bash
+# Always use trimmed system prompt
+set MACLAW_PROMPT_PROFILE=light
+
+# Always use full enterprise/coding prompt
+set MACLAW_PROMPT_PROFILE=full
+
+# Default: auto-classify from user text (unset or auto)
+set MACLAW_PROMPT_PROFILE=
+```
+
 
 ### Repeated Old Messages
 

@@ -46,10 +46,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	beforeProfileFilter := len(tools)
 	tools = filterToolsForExecutionProfile(tools, profile)
-	if profile.IsLight() {
+	if profile.IsLight() || isLightPromptProfile(profile.PromptProfile) {
 		tool.WriteToolExposureLog("execution_profile", userText, requestID, userID, profile.Layer, profile.TaskType, beforeProfileFilter, agentLoopToolNamesForLog(tools))
-		log.Printf("[exec-profile] layer=%s task=%s request_id=%q user=%q confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d routed_before=%d routed_after=%d tools=%q",
-			profile.Layer, profile.TaskType, requestID, userID, profile.Confidence, profile.Reason, profile.ToolBudget, profile.IterationBudget, beforeProfileFilter, len(tools), executionProfileToolNames(tools))
+		log.Printf("[exec-profile] layer=%s prompt=%s task=%s request_id=%q user=%q confidence=%.2f reason=%q tool_budget=%d iteration_budget=%d routed_before=%d routed_after=%d tools=%q",
+			profile.Layer, profile.PromptProfile, profile.TaskType, requestID, userID, profile.Confidence, profile.Reason, profile.ToolBudget, profile.IterationBudget, beforeProfileFilter, len(tools), executionProfileToolNames(tools))
 	}
 
 	browserBeforeWF := len(browserDiagExtractNames(tools))
@@ -199,7 +199,7 @@ func requiredWorkflowToolNamesForPolicy(policy interface{}) []string {
 	}
 	switch v2.ToolFilterPolicy(policyName) {
 	case v2.ToolFilterDocOnly:
-		return []string{"read_file", "list_directory", "send_file"}
+		return []string{"bash", "read_file", "list_directory", "send_file"}
 	case v2.ToolFilterPlanning:
 		return []string{"read_file", "list_directory", "write_file", "send_file"}
 	case v2.ToolFilterOpsControlled:

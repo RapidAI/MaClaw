@@ -20,5 +20,5 @@ func (h *IMMessageHandler) toolUninstallSkill(args map[string]interface{}) strin
 	}
 	h.refreshSkillIndexesAfterMutation(name)
 
-	return fmt.Sprintf("✅ Skill '%s' 已卸载（配置和目录已清理）", name)
+	return fmt.Sprintf("Skill '%s' 已卸载（配置和目录已清理）", name)
 }

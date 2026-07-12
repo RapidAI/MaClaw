@@ -143,19 +143,19 @@ func systemPythonStatus(args []string) error {
 		if st.IsPrivate {
 			label = "私有"
 		}
-		fmt.Printf("  Python:  ✓ v%s (%s) → %s\n", st.Version, label, st.PythonPath)
+		fmt.Printf("  Python:  ready v%s (%s) -> %s\n", st.Version, label, st.PythonPath)
 	} else {
-		fmt.Println("  Python:  ✗ 未检测到 (>= 3.10)")
+		fmt.Println("  Python:  missing (>= 3.10)")
 	}
 	if st.UVAvailable {
-		fmt.Printf("  uv:      ✓ → %s\n", st.UVPath)
+		fmt.Printf("  uv:      ready -> %s\n", st.UVPath)
 	} else {
-		fmt.Println("  uv:      ✗ 未安装")
+		fmt.Println("  uv:      missing")
 	}
 	if st.VenvReady {
-		fmt.Printf("  venv:    ✓ → %s\n", st.VenvPath)
+		fmt.Printf("  venv:    ready -> %s\n", st.VenvPath)
 	} else {
-		fmt.Println("  venv:    ✗ 未创建")
+		fmt.Println("  venv:    missing")
 	}
 	return nil
 }
@@ -177,6 +177,6 @@ func systemPythonEnsure(args []string) error {
 	if st.Error != "" {
 		return fmt.Errorf("Python 环境安装失败: %s", st.Error)
 	}
-	fmt.Printf("✓ Python %s 就绪, venv: %s\n", st.Version, st.VenvPath)
+	fmt.Printf("Python %s ready, venv: %s\n", st.Version, st.VenvPath)
 	return nil
 }

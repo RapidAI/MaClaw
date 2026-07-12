@@ -4,17 +4,16 @@
 
 简体中文 | [English](./README.md)
 
-<a href="https://huggingface.co/RapidAI/RapidSpeech" target="_blank"><img src="https://img.shields.io/badge/🤗-Hugging Face-blue"></a>
+<a href="https://huggingface.co/RapidAI/RapidSpeech" target="_blank"><img src="https://img.shields.io/badge/-Hugging Face-blue"></a>
 <a href="https://www.modelscope.cn/models/RapidAI/RapidSpeech" target="_blank"><img src="https://img.shields.io/badge/ModelScope-blue"></a>
 <a href="https://github.com/RapidAI/RapidSpeech.cpp/stargazers"><img src="https://img.shields.io/github/stars/RapidAI/RapidSpeech.cpp?color=ccf"></a>
 
-# RapidSpeech.cpp 🎙️
-
+# RapidSpeech.cpp 
 **RapidSpeech.cpp** 是一个基于 **ggml** 构建的高性能、边缘原生（Edge-native）语音智能框架，致力于为 ASR（自动语音识别）与 TTS（语音合成）大模型提供 **纯 C++、零依赖、可端侧部署** 的推理解决方案。
 
 ------
 
-## 🌟 核心差异化优势
+## 核心差异化优势
 
 在当前开源生态中，云端侧已有如 **vLLM-omni** 等高吞吐推理框架，端侧也有 **sherpa-onnx** 这样成熟的工具链。而 **RapidSpeech.cpp** 则在以下关键维度实现了代际突破。
 
@@ -42,7 +41,7 @@
 
 ------
 
-## 📦 模型支持
+## 模型支持
 
 **语音识别（ASR）**
 - [x] SenseVoice-small
@@ -69,7 +68,7 @@
 
 ------
 
-## 🏗️ 架构设计
+## 架构设计
 
 RapidSpeech.cpp 并非“单模型推理工具”，而是一套面向真实业务场景设计的完整语音框架：
 
@@ -84,7 +83,7 @@ RapidSpeech.cpp 并非“单模型推理工具”，而是一套面向真实业�
 
 ------
 
-## 🚀 核心特性
+## 核心特性
 
 - [ ] **极致量化支持**：原生支持 4-bit / 5-bit / 6-bit 量化方案，充分适配不同算力与带宽条件的硬件。
 - [ ] **零依赖部署**：纯 C/C++ 实现，最终产物为单一、轻量级二进制文件。
@@ -93,13 +92,13 @@ RapidSpeech.cpp 并非“单模型推理工具”，而是一套面向真实业�
 
 ------
 
-## 🛠️ 快速开始（开发中）
+## 快速开始（开发中）
 
 ### 模型下载
 
 请从以下平台下载对应模型：
 
-- 🤗 Hugging Face：https://huggingface.co/RapidAI/RapidSpeech
+- Hugging Face：https://huggingface.co/RapidAI/RapidSpeech
 - ModelScope：https://www.modelscope.cn/models/RapidAI/RapidSpeech
 
 ### 构建与运行
@@ -218,7 +217,7 @@ for chunk in chunks:
 详见 [docs/deployment.md](docs/deployment.md) 完整 API 文档。
 ------
 
-## 🤝 参与贡献
+## 参与贡献
 
 如果你对以下领域感兴趣，欢迎提交 PR 或参与讨论：
 

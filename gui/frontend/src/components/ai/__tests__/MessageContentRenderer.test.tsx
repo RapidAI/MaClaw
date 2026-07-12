@@ -17,4 +17,12 @@ describe("MessageContentRenderer role prefix display guard", () => {
 
         expect(screen.getByText("Browser: 我输入的文本")).toBeTruthy();
     });
+
+    it("strips leading decorative pictographs from assistant content only", () => {
+        // Display strip is applied inside the shared markdown pipeline.
+        render(<MessageContentRenderer content={"\u{1F680} 部署完成"} theme={lightTheme} />);
+
+        expect(screen.getByText("部署完成")).toBeTruthy();
+        expect(screen.queryByText(/\u{1F680}/u)).toBeNull();
+    });
 });

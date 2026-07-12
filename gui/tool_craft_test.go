@@ -795,11 +795,11 @@ func TestBuildCraftFailureResult_HumanizesAPIError(t *testing.T) {
 		VerificationMessage: `HTTP 400: {"type":"error","error":{"message":"网络错误，错误id：20250715，请稍后重试","code":"1234"}}`,
 	}, "", "")
 
-	// The ⚠️ line should contain the humanized message.
+	// The line should contain the humanized message.
 	if !strings.Contains(result, "API 服务端临时故障（code:1234）") {
 		t.Fatalf("expected humanized message in result, got:\n%s", result)
 	}
-	// The ⚠️ line should NOT contain the raw JSON.
+	// The line should NOT contain the raw JSON.
 	if strings.Contains(result, `"type":"error"`) {
 		t.Fatalf("expected raw JSON to be replaced, but found '\"type\":\"error\"' in result:\n%s", result)
 	}

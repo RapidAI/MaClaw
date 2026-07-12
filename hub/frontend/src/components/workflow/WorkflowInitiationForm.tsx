@@ -301,14 +301,14 @@ export function WorkflowInitiationForm({
             {/* Submit Error */}
             {submitError && (
                 <div style={submitErrorStyle} role="alert" aria-live="polite">
-                    ⚠️ {submitError}
+                    {submitError}
                 </div>
             )}
 
             {/* Success Message */}
             {submitSuccess && (
                 <div style={submitSuccessStyle} role="status" aria-live="polite">
-                    ✅ 工作流已成功发起，正在跳转到实例详情页...
+                    工作流已成功发起，正在跳转到实例详情页...
                 </div>
             )}
 

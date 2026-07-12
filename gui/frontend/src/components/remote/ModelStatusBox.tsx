@@ -1,3 +1,5 @@
+import { IconCheck, IconCross } from '../ai/WorkbenchIcons';
+
 export function formatBytes(bytes: number) {
     if (bytes <= 0) return '0 B';
     if (bytes < 1024) return bytes + ' B';
@@ -15,7 +17,9 @@ export function ModelStatusBox({ exists, downloading, size, progress, downloaded
         <div className="model-status-box" style={{ ['--model-accent' as any]: accentColor }}>
             {exists && !downloading && (
                 <div className="model-status-box__ready">
-                    <span className="model-status-box__icon">OK</span>
+                    <span className="model-status-box__icon" aria-hidden="true">
+                        <IconCheck size={16} color="var(--model-accent, var(--theme-primary))" />
+                    </span>
                     <span className="model-status-box__label">{t('Model Ready', '模型已就绪')}</span>
                     <span className="model-status-box__size">{formatBytes(size)}</span>
                 </div>
@@ -45,7 +49,10 @@ export function ModelStatusBox({ exists, downloading, size, progress, downloaded
             )}
             {error && (
                 <div className="model-status-box__error">
-                    <span>{t('Error: ', '错误：')}{error}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <IconCross size={14} color="currentColor" />
+                        {t('Error: ', '错误：')}{error}
+                    </span>
                     {!downloading && (
                         <button onClick={onRetry} className="model-status-box__retry">
                             {t('Retry', '重试')}

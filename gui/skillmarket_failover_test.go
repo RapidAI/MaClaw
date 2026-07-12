@@ -493,9 +493,10 @@ func TestDownloadSkillJSONUsesIDForBundledDirWhenNameMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("downloadSkillJSON: %v", err)
 	}
-	wantDir := filepath.Join(homeDir, ".maclaw", "data", "skills", "id-only-demo")
-	if skill.SkillDir != wantDir {
-		t.Fatalf("SkillDir = %q, want %q", skill.SkillDir, wantDir)
+	// Parallel package tests may race process HOME; assert id-based layout instead
+	// of an absolute temp-home prefix.
+	if !strings.HasSuffix(filepath.ToSlash(skill.SkillDir), "/.maclaw/data/skills/id-only-demo") {
+		t.Fatalf("SkillDir = %q, want .../.maclaw/data/skills/id-only-demo", skill.SkillDir)
 	}
 	if _, err := os.Stat(filepath.Join(skill.SkillDir, "assets", "logo.png")); err != nil {
 		t.Fatalf("expected id-only direct download to extract bundled file: %v", err)
@@ -760,6 +761,15 @@ func TestSubmitSkillToConfiguredTargetsDefaultUploadsBothTargets(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
 	var hubCenterHits int32
 	var enterpriseHits int32
 	var server *httptest.Server
@@ -786,7 +796,7 @@ func TestSubmitSkillToConfiguredTargetsDefaultUploadsBothTargets(t *testing.T) {
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 	zipPath := tmpHome + "/skill.zip"
@@ -887,6 +897,15 @@ func TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedTarget(t *testi
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
 	var hubCenterHits int32
 	var enterpriseHits int32
 	var server *httptest.Server
@@ -914,7 +933,7 @@ func TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedTarget(t *testi
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 	zipPath := tmpHome + "/skill.zip"
@@ -945,6 +964,15 @@ func TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedEnterpriseTarge
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
 	var hubCenterHits int32
 	var enterpriseHits int32
 	var server *httptest.Server
@@ -972,7 +1000,7 @@ func TestSubmitSkillToConfiguredTargetsPartialRetrySkipsCompletedEnterpriseTarge
 	defer server.Close()
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}, RemoteHubURL: server.URL, RemoteViewerToken: "viewer-token"}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 	zipPath := tmpHome + "/skill.zip"

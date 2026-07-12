@@ -193,7 +193,7 @@ func gossipPublish(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("✓ 发布成功 (ID: %s)\n", result.Post.ID)
+	fmt.Printf("发布成功 (ID: %s)\n", result.Post.ID)
 	return nil
 }
 
@@ -270,7 +270,7 @@ func gossipComment(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("✓ 评论成功 (ID: %s)\n", result.Comment.ID)
+	fmt.Printf("评论成功 (ID: %s)\n", result.Comment.ID)
 	return nil
 }
 
@@ -338,7 +338,7 @@ func gossipRate(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Println("✓ 评分成功")
+	fmt.Println("评分成功")
 	return nil
 }
 
@@ -399,7 +399,7 @@ func gossipComments(args []string) error {
 	fmt.Printf("%-14s %-8s %-30s %s\n", "NICKNAME", "RATING", "CONTENT", "TIME")
 	fmt.Println(strings.Repeat("-", 80))
 	for _, c := range result.Comments {
-		ratingStr := fmt.Sprintf("★%d", c.Rating)
+		ratingStr := fmt.Sprintf("%d/5", c.Rating)
 		if c.Rating == 0 {
 			ratingStr = "-"
 		}

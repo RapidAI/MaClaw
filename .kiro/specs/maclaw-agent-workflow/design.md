@@ -626,7 +626,7 @@ sequenceDiagram
     H->>AL: runAgentLoop(phasePrompt, docOnlyTools)
     AL-->>H: 需求文档内容
     WE->>FE: EmitDocUpdate (Wails Event)
-    H-->>U: "📄 需求文档已生成，请确认"
+    H-->>U: "需求文档已生成，请确认"
 
     U->>H: "确认"
     H->>QF: Classify(userID, text)

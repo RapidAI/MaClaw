@@ -114,7 +114,7 @@ function makeNews(id: string, overrides: Partial<NewsCardData> = {}): ChatMessag
             category: overrides.category ?? 'notice',
             title,
             body,
-            icon: overrides.icon ?? '\u{1F4F0}',
+            icon: overrides.icon ?? 'INFO',
         },
     });
 }
@@ -753,6 +753,7 @@ describe('AIAssistantPanel property tests', () => {
             op_type: 'create',
             language: 'cpp',
             session_id: 'local-coding-session',
+            auto_open_preview: true,
         }));
 
         await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
@@ -780,6 +781,7 @@ describe('AIAssistantPanel property tests', () => {
             language: 'cpp',
             session_id: 'other-project-session',
             project_path: 'D:/other-project',
+            auto_open_preview: true,
         }));
         act(() => codeFileHandler({
             file_path: '/tmp/hello/main.cpp',
@@ -788,6 +790,7 @@ describe('AIAssistantPanel property tests', () => {
             op_type: 'modify',
             language: 'cpp',
             session_id: 'local-coding-session',
+            auto_open_preview: true,
         }));
         await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
 
@@ -830,6 +833,7 @@ describe('AIAssistantPanel property tests', () => {
             language: 'cpp',
             session_id: 'project-owner-session',
             project_path: 'D:/owner-project',
+            auto_open_preview: true,
         }));
         await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
         expect(document.body.textContent || '').toContain('project_owner_preview');
@@ -846,6 +850,7 @@ describe('AIAssistantPanel property tests', () => {
             language: 'cpp',
             session_id: 'project-owner-session',
             project_path: 'D:/owner-project',
+            auto_open_preview: true,
         }));
         expect(document.body.textContent || '').not.toContain('stale_project_after_close');
 
@@ -856,6 +861,7 @@ describe('AIAssistantPanel property tests', () => {
             op_type: 'create',
             language: 'cpp',
             session_id: 'local-after-close-session',
+            auto_open_preview: true,
         }));
         await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
         expect(document.body.textContent || '').toContain('local_after_project_close');
@@ -1039,6 +1045,7 @@ describe('AIAssistantPanel property tests', () => {
         const titledButtons = buttons.map(button => button.getAttribute('title')).filter((title): title is string => !!title);
         expect(titledButtons).toEqual([
             '通知',
+            'Mobile documents (shared Hub library)',
             'Buy service redemption cards',
             'Search tasks',
             'Voice readback OFF - click to enable',
@@ -1221,7 +1228,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Thinking... (you can type ahead)');
+        expect(input.placeholder).toBe('Working... (you can keep typing)');
     });
 
     it('shows processing placeholder and visible busy hint after streaming stops but the request is still active', () => {
@@ -1230,8 +1237,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Running tools... (you can type ahead)');
-        expect(getByText('Running tools... (you can type ahead)')).toBeTruthy();
+        expect(input.placeholder).toBe('Running tools... (you can keep typing)');
+        expect(getByText('Running tools... (you can keep typing)')).toBeTruthy();
     });
 
     it('does not send when Enter confirms an active IME composition', () => {
@@ -1813,6 +1820,10 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('labels new task preparation as agent instance creation while input waits', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
         const sendMessage = vi.fn().mockResolvedValue(true);
 
         const { getByTestId } = renderPanel({
@@ -1827,14 +1838,19 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance'));
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session'));
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toContain('Creating agent instance');
+        // Placeholder uses the softer "project session" copy; progress banner uses "agent instance".
+        expect(input.placeholder).toContain('Creating project session');
 
         fireEvent.change(input, { target: { value: 'queued while creating' } });
         fireEvent.keyDown(input, { key: 'Enter' });
         expect(sendMessage).not.toHaveBeenCalled();
         expect(loadProjectContextMock).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveSession();
+        });
 
         await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while creating', expect.objectContaining({ project_path: 'D:/tasks/new-agent-prepare' })));
     });
@@ -1858,7 +1874,7 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance'));
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session'));
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'send after session exists' } });
         fireEvent.keyDown(input, { key: 'Enter' });
@@ -1890,7 +1906,10 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance');
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session');
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'fallback after registration failure' } });
         fireEvent.keyDown(input, { key: 'Enter' });
@@ -1927,7 +1946,7 @@ describe('AIAssistantPanel property tests', () => {
             actions: { sendMessage },
         });
 
-        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating agent instance'));
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session'));
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'should be dropped on close' } });
         fireEvent.keyDown(input, { key: 'Enter' });
@@ -3180,15 +3199,16 @@ describe('AIAssistantPanel property tests', () => {
             lang: 'zh-Hans',
             state: {
                 messages: [makeMsg({ role: 'user', content: '南京天气' })],
-                progressMessages: [makeMsg({ role: 'progress', content: '🚀 正在执行 Skill「Weather Query 🌤」...' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '\u{1F680} 正在执行 Skill「Weather Query \u{1F324}」...' })],
                 sending: true,
                 streaming: false,
                 ready: true,
             },
         });
 
-        expect(queryByText('🚀 正在执行 Skill「Weather Query 🌤」...')).toBeNull();
-        expect(container.textContent).toContain('正在执行 Weather Query 🌤');
+        expect(queryByText('\u{1F680} 正在执行 Skill「Weather Query \u{1F324}」...')).toBeNull();
+        expect(container.textContent).toContain('正在执行 Weather Query');
+        expect(container.textContent).not.toContain('\u{1F324}');
         expect(container.textContent).toContain('可继续输入');
         expect((container.textContent || '').match(/Weather Query/g) || []).toHaveLength(1);
     });
@@ -3198,15 +3218,16 @@ describe('AIAssistantPanel property tests', () => {
             lang: 'zh-Hans',
             state: {
                 messages: [makeMsg({ role: 'user', content: '南京天气' })],
-                progressMessages: [makeMsg({ role: 'progress', content: '🚀 正在执行 Shell /Weather Query 🌤 / ...' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '\u{1F680} 正在执行 Shell /Weather Query \u{1F324} / ...' })],
                 sending: true,
                 streaming: false,
                 ready: true,
             },
         });
 
-        expect(queryByText('🚀 正在执行 Shell /Weather Query 🌤 / ...')).toBeNull();
-        expect(container.textContent).toContain('正在执行 Weather Query 🌤');
+        expect(queryByText('\u{1F680} 正在执行 Shell /Weather Query \u{1F324} / ...')).toBeNull();
+        expect(container.textContent).toContain('正在执行 Weather Query');
+        expect(container.textContent).not.toContain('\u{1F324}');
         expect(container.textContent).toContain('可继续输入');
         expect((container.textContent || '').match(/Weather Query/g) || []).toHaveLength(1);
     });
@@ -3742,7 +3763,7 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Type a message...');
+        expect(input.placeholder).toBe('Enter a task or command...');
         fireEvent.change(input, { target: { value: 'project tab should not inherit local busy' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -3777,7 +3798,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         fireEvent.click(getByTestId('ai-tab-local'));
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Type a message...');
+        expect(input.placeholder).toBe('Enter a task or command...');
         fireEvent.change(input, { target: { value: 'local tab should not inherit project busy' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -3812,7 +3833,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         fireEvent.click(getByTestId('ai-tab-local'));
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Running tools... (you can type ahead)');
+        expect(input.placeholder).toBe('Running tools... (you can keep typing)');
         fireEvent.change(input, { target: { value: 'local detached should queue' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -3846,7 +3867,7 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Running tools... (you can type ahead)');
+        expect(input.placeholder).toBe('Running tools... (you can keep typing)');
         expect(getByText('Coding Agent: running project session only')).toBeTruthy();
         fireEvent.change(input, { target: { value: 'project detached should queue' } });
         fireEvent.keyDown(input, { key: 'Enter' });
@@ -3878,10 +3899,10 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Thinking... (you can type ahead)');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Working... (you can keep typing)');
 
         fireEvent.click(getByTestId('ai-tab-local'));
-        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Type a message...');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
     });
 
     it('keeps an idle project tab input unlocked when legacy busy state has no session key', async () => {
@@ -3906,7 +3927,7 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Type a message...');
+        expect(input.placeholder).toBe('Enter a task or command...');
         fireEvent.change(input, { target: { value: 'legacy busy should not queue project input' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 

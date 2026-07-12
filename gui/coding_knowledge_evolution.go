@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -309,8 +310,133 @@ const (
 	defaultMaxTotal      = 1000
 )
 
+// CodingKnowledgeProjectCapacity describes a project that exceeds the per-project limit.
+type CodingKnowledgeProjectCapacity struct {
+	ProjectPath string `json:"project_path"`
+	Count       int    `json:"count"`
+	Over        int    `json:"over"`
+}
+
+// CodingKnowledgeCapacityStatus is the capacity snapshot shown in the settings panel.
+type CodingKnowledgeCapacityStatus struct {
+	TotalCount    int                             `json:"total_count"`
+	MaxTotal      int                             `json:"max_total"`
+	MaxPerProject int                             `json:"max_per_project"`
+	OverTotal     int                             `json:"over_total"`
+	WouldEvict    int                             `json:"would_evict"`
+	WithinLimit   bool                            `json:"within_limit"`
+	ProjectsOver  []CodingKnowledgeProjectCapacity `json:"projects_over,omitempty"`
+}
+
+func resolveCodingKnowledgeLimits(cfg corelib.AppConfig) (maxTotal, maxPerProject int) {
+	maxTotal = defaultMaxTotal
+	maxPerProject = defaultMaxPerProject
+	if cfg.CodingKnowledgeMaxTotal > 0 {
+		maxTotal = cfg.CodingKnowledgeMaxTotal
+	}
+	if cfg.CodingKnowledgeMaxPerProject > 0 {
+		maxPerProject = cfg.CodingKnowledgeMaxPerProject
+	}
+	return maxTotal, maxPerProject
+}
+
+// CodingKnowledgeCapacity returns total/per-project usage against configured limits.
+func (a *App) CodingKnowledgeCapacity() (CodingKnowledgeCapacityStatus, error) {
+	store := a.ensureCodingKnowledgeStore()
+	if store == nil {
+		return CodingKnowledgeCapacityStatus{}, fmt.Errorf("coding knowledge store not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cfg, _ := a.LoadConfig()
+	maxTotal, maxPerProject := resolveCodingKnowledgeLimits(cfg)
+
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		return CodingKnowledgeCapacityStatus{}, err
+	}
+	all, err := store.ListExperiences(ctx, knowledge.CodingListFilter{Limit: 10000})
+	if err != nil {
+		return CodingKnowledgeCapacityStatus{}, err
+	}
+
+	status := computeCodingKnowledgeCapacity(stats.TotalCount, maxTotal, maxPerProject, all)
+	return status, nil
+}
+
+func computeCodingKnowledgeCapacity(totalCount, maxTotal, maxPerProject int, all []knowledge.CodingExperience) CodingKnowledgeCapacityStatus {
+	if maxTotal <= 0 {
+		maxTotal = defaultMaxTotal
+	}
+	if maxPerProject <= 0 {
+		maxPerProject = defaultMaxPerProject
+	}
+	overTotal := 0
+	if totalCount > maxTotal {
+		overTotal = totalCount - maxTotal
+	}
+
+	byProject := map[string][]knowledge.CodingExperience{}
+	for _, exp := range all {
+		if exp.Scope != knowledge.CodingScopeProject {
+			continue
+		}
+		path := strings.TrimSpace(exp.ProjectPath)
+		if path == "" {
+			path = "(unknown project)"
+		}
+		byProject[path] = append(byProject[path], exp)
+	}
+
+	var projectsOver []CodingKnowledgeProjectCapacity
+	projectEvict := 0
+	for path, exps := range byProject {
+		if len(exps) <= maxPerProject {
+			continue
+		}
+		over := len(exps) - maxPerProject
+		projectEvict += over
+		projectsOver = append(projectsOver, CodingKnowledgeProjectCapacity{
+			ProjectPath: path,
+			Count:       len(exps),
+			Over:        over,
+		})
+	}
+	sort.Slice(projectsOver, func(i, j int) bool {
+		if projectsOver[i].Over == projectsOver[j].Over {
+			return projectsOver[i].ProjectPath < projectsOver[j].ProjectPath
+		}
+		return projectsOver[i].Over > projectsOver[j].Over
+	})
+
+	// Global eviction may still be needed after project-level cleanup.
+	// would_evict is a conservative upper bound: project overflow + remaining global overflow.
+	remainingAfterProject := totalCount - projectEvict
+	globalAfterProject := 0
+	if remainingAfterProject > maxTotal {
+		globalAfterProject = remainingAfterProject - maxTotal
+	}
+	wouldEvict := projectEvict + globalAfterProject
+	if overTotal > wouldEvict {
+		// If project buckets don't cover global overage, global pass alone would remove overTotal.
+		wouldEvict = overTotal
+	}
+
+	return CodingKnowledgeCapacityStatus{
+		TotalCount:    totalCount,
+		MaxTotal:      maxTotal,
+		MaxPerProject: maxPerProject,
+		OverTotal:     overTotal,
+		WouldEvict:    wouldEvict,
+		WithinLimit:   wouldEvict == 0,
+		ProjectsOver:  projectsOver,
+	}
+}
+
 // CodingKnowledgeEvict runs the eviction policy to keep the store within capacity.
-// Called periodically or after batch saves.
+// Enforces per-project limits first, then the global total limit.
+// Called periodically, after batch saves, or from the settings panel.
 func (a *App) CodingKnowledgeEvict() (int, error) {
 	store := a.ensureCodingKnowledgeStore()
 	if store == nil {
@@ -321,45 +447,72 @@ func (a *App) CodingKnowledgeEvict() (int, error) {
 	defer cancel()
 
 	cfg, _ := a.LoadConfig()
-	maxTotal := defaultMaxTotal
-	if cfg.CodingKnowledgeMaxTotal > 0 {
-		maxTotal = cfg.CodingKnowledgeMaxTotal
-	}
+	maxTotal, maxPerProject := resolveCodingKnowledgeLimits(cfg)
 
-	stats, err := store.Stats(ctx)
+	all, err := store.ListExperiences(ctx, knowledge.CodingListFilter{Limit: 10000})
 	if err != nil {
 		return 0, err
 	}
 
-	if stats.TotalCount <= maxTotal {
-		return 0, nil // Within capacity
+	evicted := 0
+	// 1) Per-project capacity
+	byProject := map[string][]knowledge.CodingExperience{}
+	for _, exp := range all {
+		if exp.Scope != knowledge.CodingScopeProject {
+			continue
+		}
+		path := strings.TrimSpace(exp.ProjectPath)
+		if path == "" {
+			path = "(unknown project)"
+		}
+		byProject[path] = append(byProject[path], exp)
+	}
+	for _, exps := range byProject {
+		if len(exps) <= maxPerProject {
+			continue
+		}
+		evicted += evictExperienceList(ctx, store, exps, len(exps)-maxPerProject)
 	}
 
-	overLimit := stats.TotalCount - maxTotal
-	evicted := evictExperiences(ctx, store, overLimit)
+	// 2) Global total capacity (re-list after project eviction)
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		return evicted, err
+	}
+	if stats.TotalCount > maxTotal {
+		evicted += evictExperiences(ctx, store, stats.TotalCount-maxTotal)
+	}
+
 	if evicted > 0 {
-		log.Printf("[coding-knowledge] evicted %d experiences (total was %d, limit %d)", evicted, stats.TotalCount, maxTotal)
+		log.Printf("[coding-knowledge] evicted %d experiences (limit total=%d project=%d)", evicted, maxTotal, maxPerProject)
 	}
 	return evicted, nil
 }
 
 func evictExperiences(ctx context.Context, store *knowledge.CodingKnowledgeStore, count int) int {
-	// Get all experiences sorted by eviction priority
 	all, err := store.ListExperiences(ctx, knowledge.CodingListFilter{Limit: 10000})
 	if err != nil || len(all) == 0 {
 		return 0
 	}
+	return evictExperienceList(ctx, store, all, count)
+}
 
+func evictExperienceList(ctx context.Context, store *knowledge.CodingKnowledgeStore, candidates []knowledge.CodingExperience, count int) int {
+	if count <= 0 || len(candidates) == 0 {
+		return 0
+	}
 	// Sort by eviction priority (first to evict → first in list):
 	// 1. deprecated (already useless)
 	// 2. candidate older than 30 days (never confirmed)
 	// 3. lowest confidence + oldest last-recalled
-	sort.Slice(all, func(i, j int) bool {
-		return evictionScore(all[i]) < evictionScore(all[j])
+	sorted := make([]knowledge.CodingExperience, len(candidates))
+	copy(sorted, candidates)
+	sort.Slice(sorted, func(i, j int) bool {
+		return evictionScore(sorted[i]) < evictionScore(sorted[j])
 	})
 
 	evicted := 0
-	for _, exp := range all {
+	for _, exp := range sorted {
 		if evicted >= count {
 			break
 		}

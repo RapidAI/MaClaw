@@ -64,7 +64,7 @@ func TestIMProgressVisibilityFilterRemoteKeepsHeartbeatAlive(t *testing.T) {
 
 func TestIMProgressVisibilityFilterCommandStillRunningProgress(t *testing.T) {
 	disabled := newIMProgressVisibilityFilterFromConfig(corelib.AppConfig{IMProgressNudgeEnabled: boolPtr(false)})
-	stillRunning := "⏳ 命令仍在执行中（已 30s）: find / -name *.mp4"
+	stillRunning := "命令仍在执行中（已 30s）: find / -name *.mp4"
 	if disabled.ShouldSendProgress(stillRunning) {
 		t.Fatal("command-still-running progress should be hidden when hints are disabled")
 	}
@@ -79,7 +79,7 @@ func TestIMProgressVisibilityFilterCommandStillRunningProgress(t *testing.T) {
 	if !enabled.ShouldSendProgress(stillRunning) {
 		t.Fatal("first command-still-running progress should be visible when hints are enabled")
 	}
-	if enabled.ShouldSendProgress("⏳ 命令仍在执行中（已 60s）: find / -name *.mp4") {
+	if enabled.ShouldSendProgress("命令仍在执行中（已 60s）: find / -name *.mp4") {
 		t.Fatal("later command-still-running progress should be hidden even when hints are enabled")
 	}
 }

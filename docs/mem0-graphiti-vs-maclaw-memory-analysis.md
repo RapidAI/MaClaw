@@ -19,7 +19,7 @@
 | 触发时机 | **每对消息实时处理** (m_{t-1}, m_t) | **每条消息实时处理** | 被动：会话过期 / LLM 主动调用 / Pipeline 6h |
 | 提取方式 | LLM 提取事实 → 4 操作分类（ADD/UPDATE/DELETE/NOOP） | LLM 提取实体 + 关系三元组 → 实体解析 → 事实解析 → 时间提取 → 边失效 | KnowledgeExtractor（LLM 提取知识点，1h 冷却） |
 | 去重/冲突 | 向量相似度 top-s → LLM 判断操作类型 | 实体解析（embedding + 全文搜索 + LLM）+ 边去重 + 时间失效 | hash 精确去重 + 子串去重 + Pipeline 语义去重 |
-| 上下文感知 | ✅ 对话摘要 S + 最近 m 条消息 | ✅ 最近 n=4 条消息 + 反射技术 | ⚠️ SaveWithContext（Phase 2 已实现，但仅 memory tool 路径） |
+| 上下文感知 | 对话摘要 S + 最近 m 条消息 | 最近 n=4 条消息 + 反射技术 | SaveWithContext（Phase 2 已实现，但仅 memory tool 路径） |
 
 ### 1.3 召回管线
 
@@ -27,8 +27,8 @@
 |------|------|----------------|--------|
 | 检索方式 | 向量相似度 | 三路搜索：cosine + BM25 + BFS 图遍历 | 三路 RRF：BM25 + Vector + Tag 交叉 + 图扩展 |
 | 重排序 | 无（直接返回 top-k） | RRF / MMR / 图距离 / 提及频率 / 交叉编码器 | RRF 融合 + memoryStreamScore + RecallGating |
-| 时间感知 | ❌ | ✅ 边的 valid_at/invalid_at 过滤 | ⚠️ Ebbinghaus 衰减（Strength 字段），但无事件时间过滤 |
-| 社区/全局 | ❌ | ✅ Community 子图提供全局摘要 | ❌ 无社区检测 |
+| 时间感知 | | 边的 valid_at/invalid_at 过滤 | Ebbinghaus 衰减（Strength 字段），但无事件时间过滤 |
+| 社区/全局 | | Community 子图提供全局摘要 | 无社区检测 |
 
 ---
 
@@ -269,9 +269,9 @@ type Entry struct {
 | 图结构 | Entry 相关性网络 | 有向标签图 | **实体-关系三元组** | P1 |
 | 全局视角 | TiMem L5 画像 | 无 | **Community 社区摘要** | P1 |
 | 检索方式 | BM25+Vec+Tag RRF | 向量相似度 | BM25+Vec+**BFS 图遍历** | P2 |
-| 遗忘机制 | ✅ Ebbinghaus 衰减 | ❌ | ❌ | 保持优势 |
-| 多租户 | ✅ OwnerID | ❌（开源版） | ✅（云服务） | 保持优势 |
-| 安全防护 | ✅ 注入扫描+密钥脱敏 | ❌ | ❌ | 保持优势 |
+| 遗忘机制 | Ebbinghaus 衰减 | | | 保持优势 |
+| 多租户 | OwnerID | （开源版） | （云服务） | 保持优势 |
+| 安全防护 | 注入扫描+密钥脱敏 | | | 保持优势 |
 
 **核心结论**：MacLaw 的记忆系统在架构复杂度上已经超过 Mem0（有 TiMem、图、遗忘曲线等），但在**数据流转的及时性**（被动 vs 实时）和**记忆一致性维护**（只 ADD vs 四操作）上存在根本性差距。这两个问题是 Mem0 论文的核心贡献，也是 MacLaw 最应该借鉴的。Graphiti 的双时间线和实体-关系图谱是更高级的能力，可以作为第二阶段的改进目标。
 
@@ -284,17 +284,17 @@ type Entry struct {
 
 | # | 改进 | 文件 | 状态 |
 |---|------|------|------|
-| 1 | **在线增量提取管线**（Mem0 核心机制） | `corelib/memory/online_extractor.go` | ✅ 已实现 |
-| 2 | **四操作更新**（ADD/UPDATE/DELETE/NOOP） | `corelib/memory/online_extractor.go` + `types.go` | ✅ 已实现 |
-| 3 | **提升 maxItems 到 2000** | `corelib/memory/store.go` | ✅ 已实现 |
-| 4 | **事实时间标注**（ValidAt/InvalidAt） | `corelib/memory/types.go` | ✅ 已实现 |
-| 5 | **实体-关系三元组提取**（Phase A: tag + Entities 字段） | `corelib/memory/types.go` + `online_extractor.go` | ✅ 已实现 |
-| 6 | **实体索引**（Phase B: entity name → entry ID） | `corelib/memory/entity_index.go` | ✅ 已实现 |
-| 7 | **主题聚类摘要**（Graphiti Community 轻量替代） | `corelib/memory/topic_cluster.go` | ✅ 已实现 |
-| 8 | **BFS 图遍历检索**（Graphiti φ_bfs） | `corelib/memory/store.go` RecallWithBFS | ✅ 已实现 |
-| 9 | **BM25 索引增强**（实体名纳入索引） | `corelib/memory/bm25.go` | ✅ 已实现 |
-| 10 | **KnowledgeExtractor 冷却降低**（1h → 10min） | `corelib/memory/knowledge_extractor.go` | ✅ 已实现 |
-| 11 | **Pipeline 集成主题聚类** | `corelib/memory/pipeline.go` | ✅ 已实现 |
+| 1 | **在线增量提取管线**（Mem0 核心机制） | `corelib/memory/online_extractor.go` | 已实现 |
+| 2 | **四操作更新**（ADD/UPDATE/DELETE/NOOP） | `corelib/memory/online_extractor.go` + `types.go` | 已实现 |
+| 3 | **提升 maxItems 到 2000** | `corelib/memory/store.go` | 已实现 |
+| 4 | **事实时间标注**（ValidAt/InvalidAt） | `corelib/memory/types.go` | 已实现 |
+| 5 | **实体-关系三元组提取**（Phase A: tag + Entities 字段） | `corelib/memory/types.go` + `online_extractor.go` | 已实现 |
+| 6 | **实体索引**（Phase B: entity name → entry ID） | `corelib/memory/entity_index.go` | 已实现 |
+| 7 | **主题聚类摘要**（Graphiti Community 轻量替代） | `corelib/memory/topic_cluster.go` | 已实现 |
+| 8 | **BFS 图遍历检索**（Graphiti φ_bfs） | `corelib/memory/store.go` RecallWithBFS | 已实现 |
+| 9 | **BM25 索引增强**（实体名纳入索引） | `corelib/memory/bm25.go` | 已实现 |
+| 10 | **KnowledgeExtractor 冷却降低**（1h → 10min） | `corelib/memory/knowledge_extractor.go` | 已实现 |
+| 11 | **Pipeline 集成主题聚类** | `corelib/memory/pipeline.go` | 已实现 |
 
 ### 新增文件
 

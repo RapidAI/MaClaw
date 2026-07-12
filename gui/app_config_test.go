@@ -674,6 +674,156 @@ func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
 	}
 }
 
+func TestPatchConfigFieldsKnowledgeAutoRecall(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"knowledge_auto_recall_enabled":  false,
+		"knowledge_auto_recall_min_score": 1.5,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.IsKnowledgeAutoRecallEnabled() {
+		t.Fatal("expected knowledge auto-recall disabled")
+	}
+	if patched.KnowledgeAutoRecallMinScore != 1.5 {
+		t.Fatalf("min score = %v, want 1.5", patched.KnowledgeAutoRecallMinScore)
+	}
+	// Re-enable with default score (0 clears override).
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"knowledge_auto_recall_enabled":  true,
+		"knowledge_auto_recall_min_score": 0.0,
+	})
+	if err != nil {
+		t.Fatalf("re-enable PatchConfigFields() error = %v", err)
+	}
+	if !patched.IsKnowledgeAutoRecallEnabled() {
+		t.Fatal("expected knowledge auto-recall enabled")
+	}
+	if patched.EffectiveKnowledgeAutoRecallMinScore() != corelib.DefaultKnowledgeAutoRecallMinScore {
+		t.Fatalf("effective min = %v, want default", patched.EffectiveKnowledgeAutoRecallMinScore())
+	}
+}
+
+func TestPatchConfigFieldsSkillEvolutionRepairCooldown(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"skill_evolution_repair_cooldown_hours": 3,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.SkillEvolutionRepairCooldownHours != 3 {
+		t.Fatalf("SkillEvolutionRepairCooldownHours = %d, want 3", patched.SkillEvolutionRepairCooldownHours)
+	}
+}
+
+func TestPatchConfigFieldsSkillEvolutionEnabled(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("MACLAW_DISABLE_SKILL_EVOLUTION", "")
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	// Default enabled
+	st := app.GetSkillEvolutionStatus()
+	if st.ConfigDisabled || !st.ConfigEnabled {
+		t.Fatalf("default config_enabled=%v config_disabled=%v", st.ConfigEnabled, st.ConfigDisabled)
+	}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"skill_evolution_enabled": false,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields() error = %v", err)
+	}
+	if patched.IsSkillEvolutionEnabled() {
+		t.Fatal("expected skill evolution disabled after patch")
+	}
+	st = app.GetSkillEvolutionStatus()
+	if !st.ConfigDisabled || st.ConfigEnabled || !st.Disabled {
+		t.Fatalf("status after disable: %+v", st)
+	}
+
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"skill_evolution_enabled": true,
+	})
+	if err != nil {
+		t.Fatalf("re-enable PatchConfigFields() error = %v", err)
+	}
+	if !patched.IsSkillEvolutionEnabled() {
+		t.Fatal("expected skill evolution enabled after re-enable")
+	}
+	st = app.GetSkillEvolutionStatus()
+	if st.ConfigDisabled || !st.ConfigEnabled || st.Disabled {
+		t.Fatalf("status after re-enable: %+v", st)
+	}
+}
+
+func TestGetSkillEvolutionStatus(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("MACLAW_DISABLE_SKILL_EVOLUTION", "")
+
+	app := &App{testHomeDir: tmpHome}
+	st := app.GetSkillEvolutionStatus()
+	if !st.PipelineStarted {
+		t.Fatal("expected pipeline to start via ensureEvolutionPipeline")
+	}
+	if !st.EnableRepair {
+		t.Fatal("expected repair enabled by default")
+	}
+	if st.RepairCooldown == "" {
+		t.Fatal("expected non-empty repair_cooldown string")
+	}
+	if st.EnvDisabled || st.Disabled {
+		t.Fatal("expected evolution enabled with empty kill switch")
+	}
+
+	t.Setenv("MACLAW_DISABLE_SKILL_EVOLUTION", "1")
+	st = app.GetSkillEvolutionStatus()
+	if !st.EnvDisabled || !st.Disabled {
+		t.Fatal("expected env kill switch reflected in status")
+	}
+	if st.EnableRepair {
+		t.Fatal("effective repair should report off when kill-switched")
+	}
+}
+
+func TestListSkillEvolutionAudit_Empty(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	// Ensure MaclawBaseDir resolves under temp home where possible.
+	app := &App{testHomeDir: tmpHome}
+	rows := app.ListSkillEvolutionAudit(10)
+	if rows == nil {
+		t.Fatal("want non-nil empty slice")
+	}
+	if len(rows) != 0 {
+		// May pick up real home audit if MaclawBaseDir ignores testHomeDir — accept empty only when path is isolated.
+		t.Logf("ListSkillEvolutionAudit returned %d rows (environment may use global data dir)", len(rows))
+	}
+}
+
 func TestPatchConfigFieldsAppliesRuntimeSideEffects(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

@@ -97,20 +97,20 @@ toolCreateSession 中增加 project_id 解析：优先使用 project_id 从配�
 
 成功（无降级）：
 ```
-✅ 会话已创建 [session_id]
-🔧 工具: claude | 📦 服务商: DeepSeek | 📁 项目: /path/to/project
+会话已创建 [session_id]
+工具: claude | 服务商: DeepSeek | 项目: /path/to/project
 ```
 
 成功（有降级）：
 ```
-✅ 会话已创建 [session_id]
-🔧 工具: claude | 📁 项目: /path/to/project
+会话已创建 [session_id]
+工具: claude | 项目: /path/to/project
 ⚡ 服务商已降级: Original → DeepSeek（Original 未配置 API Key）
 ```
 
 失败（所有服务商不可用）：
 ```
-❌ 无法创建会话：所有服务商均不可用
+无法创建会话：所有服务商均不可用
 - Original: 未配置 API Key
 - DeepSeek: 未配置 API Key
 请在桌面端为 Claude 配置至少一个有效的服务商。

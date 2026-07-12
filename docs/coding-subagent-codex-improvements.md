@@ -329,7 +329,7 @@ type SubAgentFileDiffStat struct {
 orchestrator 的 `FinalReport()` 使用 `DiffStat` 生成结构化报告：
 ```
 ## Task T3: 实现用户登录 API
-✅ Passed | 12 iterations | 3 files changed (+145 -23)
+Passed | 12 iterations | 3 files changed (+145 -23)
   src/auth/login.go    +98 -5
   src/auth/login_test.go +42 -3
   src/routes/router.go  +5 -15
@@ -678,7 +678,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, ...) *CodingSubAgentResult 
 
 **`BuildRecoveryContext()` 生成的恢复信息**：
 ```
-## ⚠️ Crash Recovery
+## Crash Recovery
 上一次执行此任务时进程中断。以下是已完成的工作：
 - 已修改文件：src/auth/login.go, src/auth/login_test.go
 - 已创建文件：src/auth/session.go
@@ -742,12 +742,12 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 
 ## 实施顺序
 
-1. **Phase 1（改进 1）**：✅ 已完成。Adaptive Tool Result Truncation。
-2. **Phase 5（改进 5）**：✅ 已完成。Git Diff Stat 结构化。
-3. **Phase 6（改进 6）**：✅ 已完成。Prompt Cache Awareness。
-4. **Phase 3（改进 3）**：✅ 已完成。Built-in Verify Loop。
-5. **Phase 2（改进 2）**：✅ 已完成。Mid-Task Compaction。
-6. **Phase 4（改进 4）**：✅ 已完成。Rollout 持久化。
+1. **Phase 1（改进 1）**：已完成。Adaptive Tool Result Truncation。
+2. **Phase 5（改进 5）**：已完成。Git Diff Stat 结构化。
+3. **Phase 6（改进 6）**：已完成。Prompt Cache Awareness。
+4. **Phase 3（改进 3）**：已完成。Built-in Verify Loop。
+5. **Phase 2（改进 2）**：已完成。Mid-Task Compaction。
+6. **Phase 4（改进 4）**：已完成。Rollout 持久化。
 
 总工作量：全部 6 项均已实施。
 
@@ -765,7 +765,7 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 
 ## 实施状态
 
-### ✅ Phase 1: Adaptive Tool Result Truncation（已完成）
+### Phase 1: Adaptive Tool Result Truncation（已完成）
 
 **修改文件**：
 - `gui/coding_subagent_truncation.go`（新增）：truncation 逻辑
@@ -774,7 +774,7 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 
 **测试结果**：9/9 PASS（含 1 个已有的关联测试）
 
-### ✅ Phase 5: Git Diff Stat 结构化（已完成）
+### Phase 5: Git Diff Stat 结构化（已完成）
 
 **修改文件**：
 - `gui/coding_subagent_diff_stat.go`（新增）：`SubAgentDiffStat` 类型 + `parseGitDiffStat` 解析器
@@ -783,7 +783,7 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 
 **测试结果**：7/7 PASS
 
-### ✅ Phase 3: Built-in Verify Loop（已完成）
+### Phase 3: Built-in Verify Loop（已完成）
 
 **修改文件**：
 - `gui/coding_subagent_verify.go`（新增）：verify loop 实现 + 项目验证命令检测 + 自验证检测
@@ -794,7 +794,7 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 - `hasSubAgentSelfVerified`：检测模型是否已在 loop 内自行验证
 - `runPostLoopVerifyFixCycle`：verify→fix→verify→fix 循环（最多 2 轮），在同一 conversation context 中
 
-### ✅ Phase 2: Mid-Task Compaction（已完成）
+### Phase 2: Mid-Task Compaction（已完成）
 
 **修改文件**：
 - `gui/coding_subagent_compaction.go`（新增）：`SubAgentCompactor` + `codingSubAgentHooks` + `buildLoopHooks`
@@ -807,7 +807,7 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 - 最多 3 次 compaction/任务（防止无限压缩）
 - 通过 `LoopHooks.TransformConversation` 注入 loop 内部，零侵入
 
-### ✅ Phase 4: Rollout 持久化（已完成）
+### Phase 4: Rollout 持久化（已完成）
 
 **修改文件**：
 - `gui/coding_subagent_rollout.go`（新增）：`SubAgentRollout` + `LoadRolloutRecovery` + `CleanOldRollouts`
@@ -820,7 +820,7 @@ Provider 侧可能有隐式 prompt cache（DeepSeek 有，按前缀匹配）。
 - `CleanOldRollouts`：24h 后自动清理
 - 只存 metadata（路径 + hash + 300 rune 摘要），单任务 ~16KB
 
-### ✅ Phase 6: Prompt Cache Awareness（已完成）
+### Phase 6: Prompt Cache Awareness（已完成）
 
 **修改文件**：
 - `corelib/types.go`：`MaclawLLMConfig` 新增 `EnablePromptCache bool` 字段

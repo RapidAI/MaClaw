@@ -248,7 +248,7 @@ class _ServerProfileCardState extends ConsumerState<_ServerProfileCard> {
     final parts = [
       '${server.username}@${server.host}:${server.port}',
       serverAuthModeLabel(server.authMode),
-      if (hasVault) 'Hub密钥✓',
+      if (hasVault) 'Hub密钥',
       if ((server.tag ?? '').trim().isNotEmpty) server.tag!.trim(),
       if ((server.note ?? '').trim().isNotEmpty) server.note!.trim(),
     ];

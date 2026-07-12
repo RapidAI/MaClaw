@@ -1765,6 +1765,8 @@ func (s *HTTPServer) handleKnowledgeRefreshSource(w http.ResponseWriter, r *http
 func sanitizeKnowledgeDirectoryImportResultForAPI(dataRoot string, result knowledge.DirectoryImportResult) knowledge.DirectoryImportResult {
 	result.RootPath = redactKnowledgePathForAPI(dataRoot, result.RootPath)
 	result.CurrentFile = redactKnowledgePathForAPI(dataRoot, result.CurrentFile)
+	result.LastItemPath = redactKnowledgePathForAPI(dataRoot, result.LastItemPath)
+	result.LastItemReason = redactSupportBundleText(dataRoot, result.LastItemReason)
 	for i := range result.Warnings {
 		result.Warnings[i] = redactSupportBundleText(dataRoot, result.Warnings[i])
 	}
@@ -1772,6 +1774,10 @@ func sanitizeKnowledgeDirectoryImportResultForAPI(dataRoot string, result knowle
 		result.Items[i].FilePath = redactKnowledgePathForAPI(dataRoot, result.Items[i].FilePath)
 		result.Items[i].RelativePath = redactKnowledgePathForAPI(dataRoot, result.Items[i].RelativePath)
 		result.Items[i].ErrorMessage = redactSupportBundleText(dataRoot, result.Items[i].ErrorMessage)
+	}
+	for i := range result.FailedItems {
+		result.FailedItems[i].FilePath = redactKnowledgePathForAPI(dataRoot, result.FailedItems[i].FilePath)
+		result.FailedItems[i].Error = redactSupportBundleText(dataRoot, result.FailedItems[i].Error)
 	}
 	return result
 }

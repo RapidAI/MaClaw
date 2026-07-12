@@ -98,12 +98,12 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-        # ⚠️ Critical: Thinking models may be silent for 60-180s during reasoning
+        # Critical: Thinking models may be silent for 60-180s during reasoning
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
         proxy_connect_timeout 30s;
 
-        # ⚠️ Critical: SSE streaming requires buffering disabled
+        # Critical: SSE streaming requires buffering disabled
         proxy_buffering off;
     }
 
@@ -134,10 +134,10 @@ server {
 
 | Model Type | Reasoning silent period | Long tool call risk | Recommendation |
 |-----------|------------------------|--------------------|----|
-| GLM-5.1/5.2 | ❌ None | Low (65K output all for content) | Use directly, no special config needed |
-| DeepSeek V4 Flash (thinking) | ✅ Yes (60-180s) | High (reasoning consumes output budget) | Ensure Nginx timeout ≥ 600s |
-| DeepSeek V4 (non-thinking) | ❌ None | Low | Same as GLM |
-| Kimi K2 / Qwen thinking | ✅ Possible | Medium | Ensure Nginx timeout ≥ 600s |
+| GLM-5.1/5.2 | None | Low (65K output all for content) | Use directly, no special config needed |
+| DeepSeek V4 Flash (thinking) | Yes (60-180s) | High (reasoning consumes output budget) | Ensure Nginx timeout ≥ 600s |
+| DeepSeek V4 (non-thinking) | None | Low | Same as GLM |
+| Kimi K2 / Qwen thinking | Possible | Medium | Ensure Nginx timeout ≥ 600s |
 
 ---
 *For more issues, please visit GitHub Issues: [RapidAI/cceasy/issues](https://github.com/RapidAI/cceasy/issues)*

@@ -3,11 +3,45 @@ package skill
 import "strings"
 
 func hasSkillRateLimitMarker(combined string) bool {
+	// Phrase-first: OpenAI/Anthropic often emit rate_limit_exceeded without a bare "429".
+	if strings.Contains(combined, "rate limit") ||
+		strings.Contains(combined, "rate_limit") ||
+		strings.Contains(combined, "too many requests") ||
+		strings.Contains(combined, "frequency limit") ||
+		strings.Contains(combined, "\u9891\u7387\u9650\u5236") {
+		return true
+	}
+	// Bare status 429 with HTTP/error context (avoid matching unrelated numbers).
 	return strings.Contains(combined, "429") &&
-		(strings.Contains(combined, "rate limit") ||
-			strings.Contains(combined, "too many requests") ||
-			strings.Contains(combined, "frequency limit") ||
-			strings.Contains(combined, "\u9891\u7387\u9650\u5236"))
+		(strings.Contains(combined, "http") ||
+			strings.Contains(combined, "status") ||
+			strings.Contains(combined, "error") ||
+			strings.Contains(combined, "limit") ||
+			strings.Contains(combined, "throttle"))
+}
+
+// hasSkillQuotaExceededMarker matches provider billing/plan quota exhaustion.
+// combined is expected lowercased. Explicitly excludes filesystem disk quota.
+func hasSkillQuotaExceededMarker(combined string) bool {
+	if strings.Contains(combined, "disk quota") ||
+		strings.Contains(combined, "filesystem quota") ||
+		strings.Contains(combined, "disk space") {
+		return false
+	}
+	return strings.Contains(combined, "insufficient_quota") ||
+		strings.Contains(combined, "insufficient quota") ||
+		strings.Contains(combined, "quota_exceeded") ||
+		strings.Contains(combined, "quota exceeded") ||
+		strings.Contains(combined, "exceeded your current quota") ||
+		strings.Contains(combined, "exceeded your quota") ||
+		strings.Contains(combined, "billing hard limit") ||
+		strings.Contains(combined, "billing_not_active") ||
+		(strings.Contains(combined, "credits") &&
+			(strings.Contains(combined, "exhausted") ||
+				strings.Contains(combined, "insufficient") ||
+				strings.Contains(combined, "depleted") ||
+				strings.Contains(combined, "no remaining"))) ||
+		(strings.Contains(combined, "usage limit") && strings.Contains(combined, "exceed"))
 }
 
 func hasSkillAuthErrorMarker(combined string) bool {
@@ -15,6 +49,16 @@ func hasSkillAuthErrorMarker(combined string) bool {
 		(strings.Contains(combined, "403") && strings.Contains(combined, "forbidden")) ||
 		strings.Contains(combined, "permission denied") ||
 		strings.Contains(combined, "access denied")
+}
+
+// hasSkillSessionNotFoundMarker matches browser/hub/remote session loss.
+// combined is expected to already be lowercased by ClassifyStepError.
+func hasSkillSessionNotFoundMarker(combined string) bool {
+	return strings.Contains(combined, "session_not_found") ||
+		strings.Contains(combined, "session not found") ||
+		strings.Contains(combined, "session expired") ||
+		strings.Contains(combined, "invalid session") ||
+		strings.Contains(combined, "no such session")
 }
 
 func hasSkillMissingDependencyMarker(combined string) bool {

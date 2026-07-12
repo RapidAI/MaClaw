@@ -851,7 +851,7 @@ if trimmed {
 compactionCount := h.getCompactionCount(userID)
 if compactionCount > 0 && compactionCount % 2 == 0 { // 每 2 次压缩提醒一次
     warningMsg := fmt.Sprintf(
-        "💡 提示: 当前对话已经过 %d 次上下文压缩。长对话和多次压缩可能导致模型准确性下降。"+
+        "提示: 当前对话已经过 %d 次上下文压缩。长对话和多次压缩可能导致模型准确性下降。"+
         "建议在合适的时候开始新对话 (/new), 保持对话简短和聚焦。",
         compactionCount,
     )

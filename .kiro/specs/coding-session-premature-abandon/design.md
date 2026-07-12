@@ -45,9 +45,9 @@ END FUNCTION
 
 **Unchanged Behaviors:**
 - `send_and_observe` MUST continue to return immediately when session status becomes `exited`, `error`, or `waiting_input` during polling
-- Stop-loss behavior for failed sessions (exit code ≠ 0) must remain intact with the 🛑 hint
+- Stop-loss behavior for failed sessions (exit code ≠ 0) must remain intact with the hint
 - Simple file/command operations must continue to use bash/read_file/write_file directly
-- The `starting` state hint ("⏳ 会话正在启动中") must remain unchanged
+- The `starting` state hint ("会话正在启动中") must remain unchanged
 - The `running` state hint (no output, waiting for input) must remain unchanged
 - Image delivery notes in `send_and_observe` must remain unchanged
 
@@ -75,7 +75,7 @@ Based on code analysis, the root causes are confirmed (not hypothesized):
 3. **Missing busy-state hint in `toolGetSessionOutput`** (im_message_handler.go ~line 2274):
    - Has hints for `running` (no output) → "编程工具在等待输入"
    - Has hints for `starting` → "会话正在启动中"
-   - Has hints for `exited` (error) → "🛑 会话已失败退出"
+   - Has hints for `exited` (error) → "会话已失败退出"
    - NO hint when status is `busy` — Agent gets raw output with no guidance
 
 4. **Missing busy-state guidance in `send_and_observe` return**:
@@ -113,14 +113,14 @@ Replace the current 8-second polling array with a longer default (~30 seconds), 
 
 After the polling loop and before returning, check if session is still `busy`. If so, append a hint:
 ```
-⏳ 编程工具仍在工作中（状态: busy）。请等待 15-30 秒后调用 get_session_output(session_id="...") 检查进度。不要终止会话。
+编程工具仍在工作中（状态: busy）。请等待 15-30 秒后调用 get_session_output(session_id="...") 检查进度。不要终止会话。
 ```
 
 **Change 3: Add busy-state hint in `toolGetSessionOutput`** (~line 2350, after the `starting` hint block)
 
 When session status is `busy`, add a hint similar to the existing `starting` and `running` hints:
 ```
-⏳ 编程工具正在工作中，请等待 15-30 秒后再次检查进度。不要终止正在工作的会话。
+编程工具正在工作中，请等待 15-30 秒后再次检查进度。不要终止正在工作的会话。
 ```
 
 **Change 4: Update system prompt for long-running task guidance** (~line 1560)
@@ -191,7 +191,7 @@ END FOR
 1. **Exited session preservation**: Verify `send_and_observe` returns immediately with error hint when session exits during polling — same behavior before and after fix
 2. **Waiting-input preservation**: Verify `send_and_observe` returns immediately when session enters `waiting_input` — same behavior before and after fix
 3. **Fast output preservation**: Verify `send_and_observe` returns immediately when meaningful output appears within first few seconds — same behavior before and after fix
-4. **Stop-loss preservation**: Verify `toolGetSessionOutput` still shows 🛑 hint for exited sessions with non-zero exit code
+4. **Stop-loss preservation**: Verify `toolGetSessionOutput` still shows hint for exited sessions with non-zero exit code
 
 ### Unit Tests
 

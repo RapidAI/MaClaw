@@ -40,8 +40,8 @@ func (h *IMMessageHandler) createSessionParentRunID() string {
 }
 
 func renderCreateSessionStartError(err error, toolName, projectPath string) string {
-	errMsg := fmt.Sprintf("❌ 创建会话失败: %s", err.Error())
-	errMsg += fmt.Sprintf("\n💡 修复建议:\n- 检查 %s 是否已安装并可正常运行\n- 确认项目路径 %s 存在且可访问\n- 使用 list_providers 查看可用服务商配置", toolName, projectPath)
+	errMsg := fmt.Sprintf("创建会话失败: %s", err.Error())
+	errMsg += fmt.Sprintf("\n修复建议:\n- 检查 %s 是否已安装并可正常运行\n- 确认项目路径 %s 存在且可访问\n- 使用 list_providers 查看可用服务商配置", toolName, projectPath)
 	return errMsg
 }
 

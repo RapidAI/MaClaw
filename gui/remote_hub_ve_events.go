@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // VE WebSocket event type constants emitted by Maclaw Hub.
@@ -65,9 +64,9 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 		"payload": payload,
 	}
 	// Emit to frontend using the event type as the Wails event name.
-	runtime.EventsEmit(c.app.ctx, msg.Type, eventData)
+	c.app.emitEvent(msg.Type, eventData)
 	// Also emit a generic "ve-event" for components that want all VE events.
-	runtime.EventsEmit(c.app.ctx, "ve-event", eventData)
+	c.app.emitEvent("ve-event", eventData)
 	log.Printf("[hub-client] handleVEEvent: forwarded %s to frontend", msg.Type)
 }
 
@@ -242,11 +241,11 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	switch envelope.Message.Kind {
 	case a2a.MessageStreamChunk:
 		if !isOwnMessage && (content != "" || HasAttachments(*envelope.Message)) {
-			runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
+			c.app.emitEvent("ve:stream_chunk", eventPayload)
 		}
 	case a2a.MessageStreamEnd:
 		if !isOwnMessage {
-			runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+			c.app.emitEvent("ve:stream_end", eventPayload)
 		}
 		c.cachePushedVEDiscussionMessage(envelope)
 	default:
@@ -255,8 +254,8 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 			// For initiator-targeted messages: skip if it's our own message echoed back
 			// (user already sees it via optimistic update in frontend)
 			if !isOwnMessage {
-				runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
-				runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+				c.app.emitEvent("ve:stream_chunk", eventPayload)
+				c.app.emitEvent("ve:stream_end", eventPayload)
 			}
 		}
 		dispatcher := c.groupChatDispatcher()
@@ -273,7 +272,7 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 			}
 		}
 	}
-	runtime.EventsEmit(c.app.ctx, "ve-event", map[string]any{"type": msg.Type, "ts": msg.TS, "payload": envelope})
+	c.app.emitEvent("ve-event", map[string]any{"type": msg.Type, "ts": msg.TS, "payload": envelope})
 }
 
 func shouldEmitVEDiscussionMessageToFrontend(targetRole string, msg a2a.GroupDiscussionMessage) bool {

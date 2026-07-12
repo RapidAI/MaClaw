@@ -223,7 +223,7 @@ func (r *RolloutRecoveryContext) BuildRecoveryPromptSection() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## ⚠️ Crash Recovery\n")
+	b.WriteString("\n## Crash Recovery\n")
 	b.WriteString("上一次执行此任务时进程中断。以下是已完成的工作：\n")
 
 	if len(r.FilesModified) > 0 {

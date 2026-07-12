@@ -51,16 +51,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "获取 token 失败: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("✅ token: %s...%s\n\n", token[:8], token[len(token)-4:])
+	fmt.Printf("token: %s...%s\n\n", token[:8], token[len(token)-4:])
 
 	// Step 2: Check if user already exists
 	fmt.Println("=== Step 2: 检查用户是否已存在 ===")
 	openID, err := lookupByEmail(apiBase, token, *flagEmail)
 	if err != nil {
-		fmt.Printf("⚠️  邮箱查找失败: %v\n", err)
+		fmt.Printf(" 邮箱查找失败: %v\n", err)
 	}
 	if openID != "" {
-		fmt.Printf("✅ 用户已存在, open_id=%s\n", openID)
+		fmt.Printf("用户已存在, open_id=%s\n", openID)
 		fmt.Println("无需创建，测试完成。")
 		return
 	}
@@ -83,10 +83,10 @@ func main() {
 	fmt.Println("=== Step 3: 创建用户 ===")
 	newOpenID, err := createUser(apiBase, token, *flagEmail, *flagMobile, name, *flagDeptID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ 创建用户失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "创建用户失败: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("✅ 用户创建成功! open_id=%s\n", newOpenID)
+	fmt.Printf("用户创建成功! open_id=%s\n", newOpenID)
 }
 
 func getTenantToken(apiBase, appID, appSecret string) (string, error) {

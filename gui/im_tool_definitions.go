@@ -90,7 +90,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填；可以是 publisher.skill-name 格式或从 search 结果中获取的 UUID）"},
 				"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
 				"auto_run":     map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（install 时可选，默认 true）"},
-				"name":         map[string]string{"type": "string", "description": "Skill 名称或 skill_id（run/uninstall/upload 时必填，支持 publisher.skill-name 格式精确匹配）"},
+				"name":         map[string]string{"type": "string", "description": "Skill 名称或 skill_id（run/info/uninstall/upload 时必填，支持 publisher.skill-name 格式精确匹配）"},
 				"skill_name":   map[string]string{"type": "string", "description": "Skill 名称（patch/history 时必填，指定要修补或查看历史的 Skill）"},
 				"find":         map[string]string{"type": "string", "description": "要查找的原始文本（patch 时必填，必须精确匹配 Skill 定义文件中的唯一一处位置）"},
 				"replace":      map[string]string{"type": "string", "description": "替换后的新文本（patch 时必填）"},
@@ -152,6 +152,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"lines":  map[string]string{"type": "integer", "description": "最多读取行数（可选，默认 200）"},
 				"offset": map[string]string{"type": "integer", "description": "从文件末尾倒数的行数开始读取（可选，类似 tail -n）。例如 offset=50 表示读取最后 50 行。与 lines 互斥，优先使用 offset"},
 			}, []string{"path"}),
+		toolDef("read_tool_result", "分段回读被截断的工具完整输出（[tool_result_handle] 的 id 或 path）",
+			map[string]interface{}{
+				"id":          map[string]string{"type": "string", "description": "handle id（来自 [tool_result_handle] 页脚）"},
+				"path":        map[string]string{"type": "string", "description": "handle 页脚中的绝对路径"},
+				"session_key": map[string]string{"type": "string", "description": "可选 session/user key"},
+				"offset":      map[string]string{"type": "integer", "description": "字节偏移，默认 0"},
+				"limit":       map[string]string{"type": "integer", "description": "最大字节数，默认 6000"},
+			}, nil),
 		toolDef("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分）",
 			map[string]interface{}{
 				"path":     map[string]string{"type": "string", "description": "文件路径（绝对路径或相对于 Project directory 的路径）"},

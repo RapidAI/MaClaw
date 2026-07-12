@@ -141,7 +141,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 
 		log.Printf("[coding-subagent-verify] round %d/%d: running %q", round+1, subAgentMaxVerifyFixRounds, verifyCmd)
 		if s.onProgress != nil {
-			s.onProgress(fmt.Sprintf("🔍 验证中 (round %d/%d): %s", round+1, subAgentMaxVerifyFixRounds, verifyCmd))
+			s.onProgress(fmt.Sprintf("验证中 (round %d/%d): %s", round+1, subAgentMaxVerifyFixRounds, verifyCmd))
 		}
 
 		// Run verification command
@@ -151,7 +151,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 		if !isSubAgentVerificationFailure(verifyResult) {
 			log.Printf("[coding-subagent-verify] round %d: verification PASSED", round+1)
 			if s.onProgress != nil {
-				s.onProgress("✅ 验证通过")
+				s.onProgress("验证通过")
 			}
 			return
 		}
@@ -182,7 +182,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 	// Exhausted all fix rounds
 	log.Printf("[coding-subagent-verify] exhausted %d verify-fix rounds", subAgentMaxVerifyFixRounds)
 	if s.onProgress != nil {
-		s.onProgress(fmt.Sprintf("⚠️ 验证未通过（已尝试 %d 次修复）", subAgentMaxVerifyFixRounds))
+		s.onProgress(fmt.Sprintf("验证未通过（已尝试 %d 次修复）", subAgentMaxVerifyFixRounds))
 	}
 }
 

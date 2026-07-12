@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
+import {
+    KNOWLEDGE_IMPORT_EXPAND_EVENT,
+    consumeKnowledgeImportExpandFlag,
+    useKnowledgeImportOptional,
+} from './KnowledgeImportContext';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlPanel } from './DeepCrawlPanel';
 import type { DeepCrawlConfig, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
 import {
+    LoadConfig,
+    PatchConfigFields,
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
     KnowledgeDeleteSource,
@@ -76,6 +83,10 @@ import {
     KnowledgeSourcePath,
     KnowledgeSourceDigest,
     KnowledgeShareToHub,
+    KnowledgeListMyHubShares,
+    KnowledgeDeleteHubShare,
+    KnowledgeUpdateHubShare,
+    OpenFileOrShowInFolder,
     KnowledgeSyncDelete,
     KnowledgeSyncDownload,
     KnowledgeSyncStatus,
@@ -97,7 +108,6 @@ import {
     KnowledgeDeepCrawlPreview,
     KnowledgeGetImageAssetPaths,
     KnowledgeOpenImageFile,
-    LoadConfig,
     GetHubLLMServiceStatus,
     OpenSystemUrl,
     SelectKnowledgeDirectory,
@@ -1382,6 +1392,10 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [executionResult, setExecutionResult] = useState<SourceQualityMaintenanceExecuteResult | null>(null);
     const [executionContext, setExecutionContext] = useState<{ source?: string; action?: string; dryRun?: boolean } | null>(null);
     const [importJob, setImportJob] = useState<ImportJob | null>(null);
+    const [importDialogKey, setImportDialogKey] = useState(0);
+    const [autoRecallEnabled, setAutoRecallEnabled] = useState(true);
+    const [autoRecallMinScore, setAutoRecallMinScore] = useState('');
+    const [autoRecallSaving, setAutoRecallSaving] = useState(false);
     const [operationResult, setOperationResult] = useState<any>(null);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
@@ -1397,6 +1411,16 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [syncConflictResult, setSyncConflictResult] = useState<any>(null);
     const [hubLLMServiceStatus, setHubLLMServiceStatus] = useState<any>(null);
     const [hubShareResult, setHubShareResult] = useState<any>(null);
+    const [exportResult, setExportResult] = useState<any>(null);
+    const [exportFormat, setExportFormat] = useState<'jsonl' | 'package'>('jsonl');
+    const [myShares, setMyShares] = useState<any[] | null>(null);
+    const [mySharesTotal, setMySharesTotal] = useState(0);
+    const [mySharesLoading, setMySharesLoading] = useState(false);
+    const [mySharesError, setMySharesError] = useState('');
+    const [mySharesAttempted, setMySharesAttempted] = useState(false);
+    const [editingShareID, setEditingShareID] = useState('');
+    const [editShareForm, setEditShareForm] = useState({ title: '', description: '', visibilityScope: 'hub', visibilityUsers: '' });
+    const [editShareSaving, setEditShareSaving] = useState(false);
     const [exportSources, setExportSources] = useState<Source[] | null>(null);
     const [exportBatches, setExportBatches] = useState<ImportBatch[] | null>(null);
     const [exportSelection, setExportSelection] = useState<Record<string, boolean>>({});
@@ -1418,6 +1442,31 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [showImportDialog, setShowImportDialog] = useState(false);
     const [confirmDialog, setConfirmDialog] = useState<{ show: boolean; title: string; message: string; onConfirm: () => void }>({ show: false, title: '', message: '', onConfirm: () => {} });
     const [deepCrawlBusy, setDeepCrawlBusy] = useState(false);
+    const knowledgeImportGlobal = useKnowledgeImportOptional();
+
+    // Keep global float hidden while the dialog is open; reopen on Expand from any page.
+    useEffect(() => {
+        knowledgeImportGlobal?.setDialogOpen(showImportDialog);
+    }, [showImportDialog, knowledgeImportGlobal]);
+
+    useEffect(() => {
+        const openDialog = () => setShowImportDialog(true);
+        if (consumeKnowledgeImportExpandFlag()) openDialog();
+        window.addEventListener(KNOWLEDGE_IMPORT_EXPAND_EVENT, openDialog);
+        return () => window.removeEventListener(KNOWLEDGE_IMPORT_EXPAND_EVENT, openDialog);
+    }, []);
+
+    // After global float Dismiss (job cleared), remount dialog so the next open is Step 1.
+    const prevGlobalImportJobIdRef = useRef<string>('');
+    useEffect(() => {
+        const id = String(knowledgeImportGlobal?.job?.id || '').trim();
+        const prev = prevGlobalImportJobIdRef.current;
+        prevGlobalImportJobIdRef.current = id;
+        if (prev && !id && !showImportDialog) {
+            setImportJob(null);
+            setImportDialogKey(k => k + 1);
+        }
+    }, [knowledgeImportGlobal?.job?.id, showImportDialog]);
 
     const notifySuccess = useCallback((message: string) => {
         showToastMessage?.(message, 3000);
@@ -1494,6 +1543,10 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         void LoadConfig()
             .then((cfg: any) => {
                 if (cancelled || !cfg) return;
+                // Default on when field is absent (matches AppConfig.IsKnowledgeAutoRecallEnabled).
+                setAutoRecallEnabled(cfg.knowledge_auto_recall_enabled !== false);
+                const minScore = Number(cfg.knowledge_auto_recall_min_score || 0);
+                setAutoRecallMinScore(minScore > 0 ? String(minScore) : '');
                 setHubShareForm(prev => ({
                     ...prev,
                     hubURL: prev.hubURL || cfg.remote_hub_url || '',
@@ -1518,6 +1571,26 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             .catch(() => {});
         return () => { cancelled = true; };
     }, []);
+
+    const saveAutoRecallSettings = useCallback(async (enabled: boolean, minScoreRaw: string) => {
+        setAutoRecallSaving(true);
+        setError('');
+        try {
+            const parsed = Number(String(minScoreRaw || '').trim());
+            const minScore = Number.isFinite(parsed) && parsed > 0 ? Math.min(10, parsed) : 0;
+            await PatchConfigFields({
+                knowledge_auto_recall_enabled: enabled,
+                knowledge_auto_recall_min_score: minScore,
+            });
+            setAutoRecallEnabled(enabled);
+            setAutoRecallMinScore(minScore > 0 ? String(minScore) : '');
+            notifySuccess(t('Auto-recall settings saved.', '自动召回设置已保存。'));
+        } catch (err: any) {
+            setError(err?.message || String(err));
+        } finally {
+            setAutoRecallSaving(false);
+        }
+    }, [notifySuccess, t]);
 
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
@@ -1697,15 +1770,70 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     });
 
     const exportKnowledgeSnapshot = async () => {
-        const outputPath = await SelectKnowledgeSnapshotExportPath();
+        const outputPath = await SelectKnowledgeSnapshotExportPath(exportFormat);
         if (!outputPath) return;
-        await runTask('exportSnapshot', () => KnowledgeExportSnapshotWithOptions({
+        setExportResult(null);
+        const result = await runTask('exportSnapshot', () => KnowledgeExportSnapshotWithOptions({
             output_path: outputPath,
+            format: exportFormat,
             redact_sensitive: exchangeForm.redactSensitive,
             source_ids: selectedExportSourceIDs,
+            title: exportFormat === 'package'
+                ? t('Knowledge export', '知识导出')
+                : '',
+            description: exportFormat === 'package'
+                ? t('Local knowledge package exported from Maclaw.', '从 Maclaw 导出的本地知识包。')
+                : '',
         }), {
-            successMessage: t('Knowledge snapshot exported.', '知识库快照已导出。'),
+            successMessage: exportFormat === 'package'
+                ? t('Knowledge package exported.', '知识包已导出。')
+                : t('Knowledge snapshot exported.', '知识库快照已导出。'),
         });
+        if (result) setExportResult(result);
+    };
+
+    const revealExportPath = async (path: string) => {
+        const p = String(path || '').trim();
+        if (!p) return;
+        try {
+            await OpenFileOrShowInFolder(p);
+        } catch (err: any) {
+            setError(err?.message || String(err));
+        }
+    };
+
+    const openShareURL = async (url: string) => {
+        const u = String(url || '').trim();
+        if (!u) return;
+        try {
+            await OpenSystemUrl(u);
+        } catch (err: any) {
+            setError(err?.message || String(err));
+        }
+    };
+
+    const visibilityScopeHint = (scope: string) => {
+        switch (scope) {
+            case 'public':
+                return t('Anyone who can browse public Hub knowledge may import this share.', '任何可访问公开知识的 Hub 用户都可能导入此知识。');
+            case 'hub':
+                return t('Only users on the current Hub can browse and import this share.', '仅当前 Hub 用户可浏览和导入。');
+            case 'tenant':
+                return t('Only users in the current tenant can browse and import this share.', '仅当前租户用户可浏览和导入。');
+            case 'private':
+                return t('Only you can browse and import this share.', '仅你自己可浏览和导入。');
+            case 'users':
+                return t('Only the listed users can browse and import this share. At least one user is required.', '仅列表中的用户可浏览和导入；至少填写 1 个用户。');
+            default:
+                return '';
+        }
+    };
+
+    const formatExportBytes = (bytes: number) => {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '';
+        if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        if (bytes >= 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+        return `${bytes} B`;
     };
 
     const chooseKnowledgeSnapshotImport = async () => {
@@ -1780,6 +1908,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             });
             setHubShareResult(result || null);
             setShowHubShareDialog(false);
+            void loadMyHubShares();
             return result;
         }, {
             successMessage: t('Knowledge shared to Hub.', '知识已分享到 Hub。'),
@@ -1800,6 +1929,128 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         const token = hubShareForm.hubToken.trim();
         const tokenHash = token ? `#token=${encodeURIComponent(token)}` : '';
         await OpenSystemUrl(`${hubURL}/hub/knowledge/shares/mine${tokenHash}`);
+    };
+
+    const loadMyHubShares = useCallback(async () => {
+        setMySharesAttempted(true);
+        setMySharesLoading(true);
+        setMySharesError('');
+        try {
+            const result = await KnowledgeListMyHubShares({
+                hub_url: hubShareForm.hubURL.trim(),
+                hub_token: hubShareForm.hubToken.trim(),
+                limit: 20,
+            });
+            const items = Array.isArray(result?.items) ? result.items : [];
+            setMyShares(items);
+            setMySharesTotal(Number(result?.total || items.length || 0));
+        } catch (err: any) {
+            setMyShares(null);
+            setMySharesTotal(0);
+            setMySharesError(err?.message || String(err));
+        } finally {
+            setMySharesLoading(false);
+        }
+    }, [hubShareForm.hubURL, hubShareForm.hubToken]);
+
+    useEffect(() => {
+        if (activeTab !== 'export' || mySharesAttempted || mySharesLoading) return;
+        // Auto-load once when export tab is opened (Hub URL/token may still be empty → shows error/empty).
+        void loadMyHubShares();
+    }, [activeTab, mySharesAttempted, mySharesLoading, loadMyHubShares]);
+
+    const openEditMyHubShare = (share: any) => {
+        const id = String(share?.knowledge_id || '').trim();
+        if (!id) return;
+        setEditingShareID(id);
+        setEditShareForm({
+            title: String(share?.title || ''),
+            description: String(share?.description || ''),
+            visibilityScope: String(share?.visibility_scope || 'hub'),
+            visibilityUsers: '',
+        });
+        setMySharesError('');
+    };
+
+    const saveEditMyHubShare = async () => {
+        const id = editingShareID.trim();
+        const description = editShareForm.description.trim();
+        if (!id) return;
+        if (!description) {
+            setMySharesError(t('Knowledge description is required before sharing.', '分享前必须填写知识描述。'));
+            return;
+        }
+        setEditShareSaving(true);
+        setMySharesError('');
+        try {
+            const updated = await KnowledgeUpdateHubShare({
+                hub_url: hubShareForm.hubURL.trim(),
+                hub_token: hubShareForm.hubToken.trim(),
+                knowledge_id: id,
+                title: editShareForm.title.trim(),
+                description,
+                visibility_scope: editShareForm.visibilityScope,
+                visibility_users: editShareForm.visibilityScope === 'users'
+                    ? parseLabelList(editShareForm.visibilityUsers)
+                    : [],
+            });
+            setMyShares(prev => {
+                if (!Array.isArray(prev)) return prev;
+                return prev.map(item => String(item.knowledge_id || '') === id ? { ...item, ...updated } : item);
+            });
+            setEditingShareID('');
+            notifySuccess(t('Share updated.', '分享已更新。'));
+        } catch (err: any) {
+            setMySharesError(err?.message || String(err));
+        } finally {
+            setEditShareSaving(false);
+        }
+    };
+
+    const deleteMyHubShare = async (knowledgeID: string) => {
+        const id = String(knowledgeID || '').trim();
+        if (!id) return;
+        setConfirmDialog({
+            show: true,
+            title: t('Delete share', '删除分享'),
+            message: t(
+                'After deletion the share link can no longer be imported. Your local knowledge base is not deleted.',
+                '删除后，分享链接将不可再导入，但不会删除你本地知识库中的内容。',
+            ),
+            onConfirm: async () => {
+                setConfirmDialog(prev => ({ ...prev, show: false }));
+                setMySharesError('');
+                try {
+                    await KnowledgeDeleteHubShare({
+                        hub_url: hubShareForm.hubURL.trim(),
+                        hub_token: hubShareForm.hubToken.trim(),
+                        knowledge_id: id,
+                    });
+                    notifySuccess(t('Share deleted.', '分享已删除。'));
+                    await loadMyHubShares();
+                } catch (err: any) {
+                    setMySharesError(err?.message || String(err));
+                }
+            },
+        });
+    };
+
+    const visibilityLabel = (scope: string) => {
+        switch (String(scope || '').toLowerCase()) {
+            case 'public': return t('Public internet', '全网公开');
+            case 'hub': return t('This Hub public', '本 Hub 公开');
+            case 'tenant': return t('Tenant public', '本租户公开');
+            case 'private': return t('Only me', '仅自己');
+            case 'users': return t('User list', '用户列表可见');
+            default: return scope || '-';
+        }
+    };
+
+    const truncateShareDescription = (text: string, max = 80) => {
+        const s = String(text || '').trim();
+        if (!s) return '';
+        const runes = Array.from(s);
+        return runes.length > max ? `${runes.slice(0, max).join('')}…` : s;
     };
 
     const openKnowledgeSyncCardStore = async () => {
@@ -2312,6 +2563,55 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                         <Stat label={t('Quality', '质量')} value={summary?.qualityAvgScore ?? 0} />
                         <Stat label={t('Actions', '动作')} value={summary?.actions?.length ?? 0} />
                     </div>
+                    <PanelBlock title={t('Chat auto-recall', '对话自动召回')}>
+                        <span className="knowledge-muted-line">
+                            {t(
+                                'When enabled, relevant knowledge is silently injected into the AI system prompt on each user message. Manual knowledge_search tools stay available either way.',
+                                '开启后，每条用户消息会静默检索知识库并注入系统提示。关闭后仅停用自动召回，knowledge_search 等工具仍可用。',
+                            )}
+                        </span>
+                        <div className="knowledge-checkbox-row" style={{ marginTop: 10 }}>
+                            <label className="knowledge-checkbox">
+                                <input
+                                    type="checkbox"
+                                    checked={autoRecallEnabled}
+                                    disabled={autoRecallSaving}
+                                    onChange={e => {
+                                        const next = e.target.checked;
+                                        setAutoRecallEnabled(next);
+                                        void saveAutoRecallSettings(next, autoRecallMinScore);
+                                    }}
+                                />
+                                {t('Enable knowledge auto-recall', '启用知识库自动召回')}
+                            </label>
+                        </div>
+                        <div className="knowledge-compact-grid" style={{ marginTop: 10, maxWidth: 360 }}>
+                            <label className="knowledge-field">
+                                <span className="knowledge-field-label">{t('Min score (optional)', '最低分数（可选）')}</span>
+                                <input
+                                    className="knowledge-input"
+                                    type="number"
+                                    min={0}
+                                    max={10}
+                                    step={0.1}
+                                    placeholder={t('Default 0.3', '默认 0.3')}
+                                    value={autoRecallMinScore}
+                                    disabled={autoRecallSaving || !autoRecallEnabled}
+                                    onChange={e => setAutoRecallMinScore(e.target.value)}
+                                    onBlur={() => {
+                                        if (!autoRecallEnabled) return;
+                                        void saveAutoRecallSettings(true, autoRecallMinScore);
+                                    }}
+                                />
+                            </label>
+                        </div>
+                        <span className="knowledge-field-hint">
+                            {t(
+                                'Higher min score = fewer, stricter injections. Leave empty for the default 0.3 threshold.',
+                                '最低分越高，注入越严格、越少。留空使用默认阈值 0.3。',
+                            )}
+                        </span>
+                    </PanelBlock>
                     <div className="knowledge-two-column">
                         <PanelBlock title={t('Health Signals', '健康信号')}>
                             <KeyValueList values={[...(summary?.gradeEntries || []), ...(summary?.signalEntries || []), ...(summary?.findingEntries || [])]} empty={t('No health signals.', '暂无健康信号。')} />
@@ -2427,6 +2727,31 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 <div className="knowledge-checkbox-row">
                                     <label className="knowledge-checkbox"><input type="checkbox" checked={exchangeForm.redactSensitive} onChange={event => setExchangeForm({ ...exchangeForm, redactSensitive: event.target.checked })} /> {t('Redact sensitive fields', '脱敏敏感字段')}</label>
                                 </div>
+                                <div className="knowledge-export-format-row" role="radiogroup" aria-label={t('Export format', '导出格式')}>
+                                    <label className="knowledge-checkbox">
+                                        <input
+                                            type="radio"
+                                            name="knowledge-export-format"
+                                            checked={exportFormat === 'jsonl'}
+                                            onChange={() => setExportFormat('jsonl')}
+                                        />
+                                        {t('Snapshot JSONL (full restore)', '快照 JSONL（完整还原）')}
+                                    </label>
+                                    <label className="knowledge-checkbox">
+                                        <input
+                                            type="radio"
+                                            name="knowledge-export-format"
+                                            checked={exportFormat === 'package'}
+                                            onChange={() => setExportFormat('package')}
+                                        />
+                                        {t('Exchange package JSON (share/import)', '交换知识包 JSON（分享/导入）')}
+                                    </label>
+                                </div>
+                                <span className="knowledge-field-hint">
+                                    {exportFormat === 'package'
+                                        ? t('Package JSON matches Hub share packages and is easier for agents to re-import. It may truncate large source bodies.', '知识包 JSON 与 Hub 分享包一致，便于 Agent 再导入；大正文可能被截断。')
+                                        : t('JSONL is a full local snapshot (sources/nodes/cards/facts) for backup and replace-all restore.', 'JSONL 是完整本地快照（来源/节点/卡片/事实），适合备份与整库还原。')}
+                                </span>
                                 <div className="knowledge-action-buttons">
                                     <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={exportKnowledgeSnapshot}>
                                         {busy === 'exportSnapshot'
@@ -2442,6 +2767,39 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                     </button>
                                 </div>
                             </div>
+                            {exportResult ? (
+                                <div className="knowledge-export-result" role="status">
+                                    <div className="knowledge-export-result__head">
+                                        <strong>{t('Export successful', '导出成功')}</strong>
+                                        <button type="button" className="knowledge-modal-close" aria-label={t('Dismiss', '关闭')} onClick={() => setExportResult(null)}>×</button>
+                                    </div>
+                                    <div className="knowledge-export-result__path">
+                                        <code title={exportResult.output_path || ''}>{exportResult.output_path || '-'}</code>
+                                    </div>
+                                    <div className="knowledge-export-result__stats">
+                                        {[
+                                            exportResult.format ? `${t('Format', '格式')} ${exportResult.format}` : '',
+                                            exportResult.sources != null ? `${exportResult.sources} ${t('sources', '来源')}` : '',
+                                            exportResult.nodes != null ? `${exportResult.nodes} ${t('nodes', '节点')}` : '',
+                                            exportResult.cards != null ? `${exportResult.cards} ${t('cards', '卡片')}` : '',
+                                            exportResult.facts != null ? `${exportResult.facts} ${t('facts', '事实')}` : '',
+                                            formatExportBytes(Number(exportResult.bytes || 0)),
+                                            exportResult.redact_sensitive ? t('redacted', '已脱敏') : '',
+                                        ].filter(Boolean).join(' · ')}
+                                    </div>
+                                    <div className="knowledge-inline-actions knowledge-export-result__actions">
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" onClick={() => copyText(exportResult.output_path)}>
+                                            {t('Copy path', '复制路径')}
+                                        </button>
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" onClick={() => void revealExportPath(exportResult.output_path)}>
+                                            {t('Show in folder', '打开所在文件夹')}
+                                        </button>
+                                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!!busy} onClick={openHubShareDialog}>
+                                            {t('Share to Hub', '发布到 Hub')}
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : null}
                             {showHubShareDialog ? (
                                 <div className="knowledge-share-modal-overlay" role="presentation">
                                     <section ref={hubShareDialogRef} className="knowledge-share-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-share-dialog-title" tabIndex={-1}>
@@ -2456,7 +2814,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                             <div className="knowledge-compact-grid knowledge-hub-share-grid">
                                                 <input className="knowledge-input" value={hubShareForm.hubURL} onChange={event => setHubShareForm({ ...hubShareForm, hubURL: event.target.value })} placeholder={t('Hub URL (uses configured Hub if empty)', 'Hub 地址（为空则使用已配置 Hub）')} />
                                                 <input className="knowledge-input" value={hubShareForm.title} onChange={event => setHubShareForm({ ...hubShareForm, title: event.target.value })} placeholder={t('Share title (optional)', '分享标题（可选）')} />
-                                                <select className="knowledge-input" value={hubShareForm.visibilityScope} onChange={event => setHubShareForm({ ...hubShareForm, visibilityScope: event.target.value })}>
+                                                <select className="knowledge-input" value={hubShareForm.visibilityScope} onChange={event => setHubShareForm({ ...hubShareForm, visibilityScope: event.target.value })} aria-describedby="knowledge-hub-share-visibility-help">
                                                     <option value="hub">{t('This Hub public', '本 Hub 公开')}</option>
                                                     <option value="public">{t('Public internet', '全网公开')}</option>
                                                     <option value="tenant">{t('Tenant public', '本租户公开')}</option>
@@ -2471,6 +2829,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                                 </select>
                                                 <input className="knowledge-input" value={hubShareForm.visibilityUsers} onChange={event => setHubShareForm({ ...hubShareForm, visibilityUsers: event.target.value })} placeholder={t('Visible users, emails or IDs', '可见用户，邮箱或 ID')} disabled={hubShareForm.visibilityScope !== 'users'} />
                                             </div>
+                                            <span id="knowledge-hub-share-visibility-help" className="knowledge-field-hint">
+                                                {visibilityScopeHint(hubShareForm.visibilityScope)}
+                                            </span>
                                             <details className="knowledge-advanced-details">
                                                 <summary className="knowledge-details-summary">{t('Advanced authentication', '高级认证')}</summary>
                                                 <input className="knowledge-input" type="password" value={hubShareForm.hubToken} onChange={event => setHubShareForm({ ...hubShareForm, hubToken: event.target.value })} placeholder={t('Hub token override (optional)', 'Hub 令牌覆盖（可选）')} />
@@ -2522,11 +2883,29 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 </div>
                             ) : null}
                             {hubShareResult ? (
-                                <div className="knowledge-share-result">
+                                <div className="knowledge-share-result" role="status">
+                                    <div className="knowledge-export-result__head">
+                                        <strong>{t('Published to Hub', '已发布到 Hub')}</strong>
+                                        <button type="button" className="knowledge-modal-close" aria-label={t('Dismiss', '关闭')} onClick={() => setHubShareResult(null)}>×</button>
+                                    </div>
                                     <div><strong>{t('Knowledge ID', '知识 ID')}</strong><code>{hubShareResult.knowledge_id || '-'}</code></div>
                                     <div><strong>{t('Share link', '分享链接')}</strong><button type="button" className="knowledge-inline-link-button" onClick={() => copyText(hubShareResult.share_url)}>{hubShareResult.share_url || '-'}</button></div>
                                     <div><strong>{t('Agent import', 'Agent 导入')}</strong><button type="button" className="knowledge-inline-link-button" onClick={() => copyText(hubShareResult.agent_import)}>{hubShareResult.agent_import || '-'}</button></div>
                                     <span className="knowledge-muted-line">{[hubShareResult.source_count ? `${hubShareResult.source_count} sources` : '', hubShareContentSources ? `${hubShareContentSources} importable content sources` : '', hubShareResult.expires_at ? `expires ${hubShareResult.expires_at}` : t('No expiry', '无过期时间')].filter(Boolean).join(' · ')}</span>
+                                    <div className="knowledge-inline-actions knowledge-export-result__actions">
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!hubShareResult.knowledge_id} onClick={() => copyText(hubShareResult.knowledge_id)}>
+                                            {t('Copy knowledge ID', '复制知识 ID')}
+                                        </button>
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!hubShareResult.share_url} onClick={() => copyText(hubShareResult.share_url)}>
+                                            {t('Copy share link', '复制分享链接')}
+                                        </button>
+                                        <button type="button" className="knowledge-button knowledge-button--primary" disabled={!hubShareResult.share_url} onClick={() => void openShareURL(hubShareResult.share_url)}>
+                                            {t('Open share page', '打开分享页')}
+                                        </button>
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" onClick={() => void openHubKnowledgeShares()}>
+                                            {t('View Shares', '查看分享')}
+                                        </button>
+                                    </div>
                                     {hubShareWarnings.length ? (
                                         <div className="knowledge-alert knowledge-alert--warning">
                                             <strong>{t('Share warnings', '分享警告')}</strong>
@@ -2535,6 +2914,149 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                     ) : null}
                                 </div>
                             ) : null}
+
+                            <div className="knowledge-my-shares">
+                                <div className="knowledge-export-head">
+                                    <div>
+                                        <strong>{t('My shares', '已分享')}</strong>
+                                        <span className="knowledge-muted-line">
+                                            {t(
+                                                'Shares published under your Hub account. Deleting a share only revokes the link; local knowledge is kept.',
+                                                '你在 Hub 上发布的知识分享。删除分享只会失效链接，不会删除本地知识库。',
+                                            )}
+                                        </span>
+                                    </div>
+                                    <div className="knowledge-inline-actions">
+                                        {mySharesTotal > 0 ? (
+                                            <span className="knowledge-chip knowledge-chip--badge">{mySharesTotal} {t('items', '条')}</span>
+                                        ) : null}
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" disabled={mySharesLoading || !!busy} onClick={() => void loadMyHubShares()}>
+                                            {mySharesLoading ? t('Loading...', '加载中...') : t('Refresh', '刷新')}
+                                        </button>
+                                        <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!!busy} onClick={() => void openHubKnowledgeShares()}>
+                                            {t('Open on Hub', '在 Hub 打开')}
+                                        </button>
+                                    </div>
+                                </div>
+                                {mySharesError ? (
+                                    <div className="knowledge-alert knowledge-alert--warning" role="status">
+                                        <strong>{t('Could not load shares', '无法加载已分享列表')}</strong>
+                                        <span className="knowledge-muted-line">{mySharesError}</span>
+                                        <span className="knowledge-muted-line">
+                                            {t('Configure Hub URL and token under Sync, or use Open on Hub.', '请在同步页配置 Hub 地址与令牌，或使用「在 Hub 打开」。')}
+                                        </span>
+                                    </div>
+                                ) : null}
+                                {mySharesLoading && !myShares ? (
+                                    <div className="knowledge-empty">{t('Loading your Hub shares...', '正在加载已分享条目...')}</div>
+                                ) : myShares && myShares.length === 0 ? (
+                                    <div className="knowledge-empty">
+                                        {t('No shared knowledge yet. Export and share to Hub first.', '还没有已分享的知识条目。先导出并发布到 Hub。')}
+                                    </div>
+                                ) : myShares && myShares.length > 0 ? (
+                                    <div className="knowledge-my-shares-list">
+                                        {myShares.map((share: any) => {
+                                            const id = String(share.knowledge_id || '').trim();
+                                            const shareURL = String(share.share_url || '').trim();
+                                            const isEditing = editingShareID === id && id !== '';
+                                            return (
+                                                <div key={id || shareURL} className="knowledge-my-share-row">
+                                                    {isEditing ? (
+                                                        <div className="knowledge-my-share-edit">
+                                                            <strong>{t('Edit share', '编辑分享')}</strong>
+                                                            <input
+                                                                className="knowledge-input"
+                                                                value={editShareForm.title}
+                                                                onChange={e => setEditShareForm(prev => ({ ...prev, title: e.target.value }))}
+                                                                placeholder={t('Share title (optional)', '分享标题（可选）')}
+                                                                disabled={editShareSaving}
+                                                            />
+                                                            <textarea
+                                                                className="knowledge-input knowledge-textarea knowledge-textarea--compact"
+                                                                value={editShareForm.description}
+                                                                onChange={e => setEditShareForm(prev => ({ ...prev, description: e.target.value }))}
+                                                                placeholder={t('Required knowledge description for readers and Hub management', '必填：给读者和 Hub 管理后台看的知识描述')}
+                                                                disabled={editShareSaving}
+                                                                rows={3}
+                                                            />
+                                                            <select
+                                                                className="knowledge-input"
+                                                                value={editShareForm.visibilityScope}
+                                                                onChange={e => setEditShareForm(prev => ({ ...prev, visibilityScope: e.target.value }))}
+                                                                disabled={editShareSaving}
+                                                                aria-describedby={`knowledge-edit-share-visibility-${id}`}
+                                                            >
+                                                                <option value="hub">{t('This Hub public', '本 Hub 公开')}</option>
+                                                                <option value="public">{t('Public internet', '全网公开')}</option>
+                                                                <option value="tenant">{t('Tenant public', '本租户公开')}</option>
+                                                                <option value="private">{t('Only me', '仅自己')}</option>
+                                                                <option value="users">{t('User list', '用户列表可见')}</option>
+                                                            </select>
+                                                            <span id={`knowledge-edit-share-visibility-${id}`} className="knowledge-field-hint">
+                                                                {visibilityScopeHint(editShareForm.visibilityScope)}
+                                                            </span>
+                                                            {editShareForm.visibilityScope === 'users' ? (
+                                                                <input
+                                                                    className="knowledge-input"
+                                                                    value={editShareForm.visibilityUsers}
+                                                                    onChange={e => setEditShareForm(prev => ({ ...prev, visibilityUsers: e.target.value }))}
+                                                                    placeholder={t('Visible users, emails or IDs', '可见用户，邮箱或 ID')}
+                                                                    disabled={editShareSaving}
+                                                                />
+                                                            ) : null}
+                                                            <div className="knowledge-my-share-row__actions">
+                                                                <button type="button" className="knowledge-button knowledge-button--primary" disabled={editShareSaving || !editShareForm.description.trim()} onClick={() => void saveEditMyHubShare()}>
+                                                                    {editShareSaving ? t('Saving...', '保存中...') : t('Save', '保存')}
+                                                                </button>
+                                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={editShareSaving} onClick={() => setEditingShareID('')}>
+                                                                    {t('Cancel', '取消')}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            <div className="knowledge-my-share-row__main">
+                                                                <strong>{share.title || id || t('Untitled share', '未命名分享')}</strong>
+                                                                {share.description ? (
+                                                                    <span className="knowledge-muted-line">{truncateShareDescription(share.description)}</span>
+                                                                ) : null}
+                                                                <span className="knowledge-muted-line">
+                                                                    {[
+                                                                        id,
+                                                                        visibilityLabel(share.visibility_scope),
+                                                                        share.status,
+                                                                        share.source_count ? `${share.source_count} ${t('sources', '来源')}` : '',
+                                                                        share.import_count != null ? `${share.import_count} ${t('imports', '导入')}` : '',
+                                                                        share.updated_at ? `${t('Updated', '更新')} ${share.updated_at}` : '',
+                                                                        share.expires_at ? `${t('Expires', '到期')} ${share.expires_at}` : '',
+                                                                    ].filter(Boolean).join(' · ')}
+                                                                </span>
+                                                            </div>
+                                                            <div className="knowledge-my-share-row__actions">
+                                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!id} onClick={() => copyText(id)}>
+                                                                    {t('Copy ID', '复制 ID')}
+                                                                </button>
+                                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!shareURL} onClick={() => copyText(shareURL)}>
+                                                                    {t('Copy link', '复制链接')}
+                                                                </button>
+                                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!shareURL} onClick={() => void openShareURL(shareURL)}>
+                                                                    {t('Open', '打开')}
+                                                                </button>
+                                                                <button type="button" className="knowledge-button knowledge-button--secondary" disabled={!id || !!busy || editShareSaving} onClick={() => openEditMyHubShare(share)}>
+                                                                    {t('Edit', '编辑')}
+                                                                </button>
+                                                                <button type="button" className="knowledge-button knowledge-button--danger" disabled={!id || !!busy} onClick={() => void deleteMyHubShare(id)}>
+                                                                    {t('Delete', '删除')}
+                                                                </button>
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                            </div>
                         </div>
                     </>
                     )}
@@ -2894,9 +3416,17 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             ) : null}
         </section>
         <KnowledgeImportDialog
+            key={importDialogKey}
             open={showImportDialog}
-            onClose={() => setShowImportDialog(false)}
-            onJobUpdate={job => { if (job) setImportJob(job); }}
+            onClose={() => {
+                setShowImportDialog(false);
+                knowledgeImportGlobal?.setDialogOpen(false);
+            }}
+            onJobUpdate={job => {
+                if (job) setImportJob(job);
+                knowledgeImportGlobal?.publishJob(job);
+            }}
+            restoreJob={knowledgeImportGlobal?.job || importJob}
             supportedExts={capabilities?.default_include_exts}
             t={t}
             lang={lang || 'en'}

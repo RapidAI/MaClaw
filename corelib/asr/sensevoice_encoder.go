@@ -1,8 +1,9 @@
 // corelib/asr/sensevoice_encoder.go — SAN-M encoder forward pass with FSMN.
 //
 // SANM (Self-Attention Network with Memory) block:
-//   LayerNorm1 → QKV linear → Multi-Head Attention → FSMN(V) → sum + residual
-//   → LayerNorm2 → FFN(ReLU) → residual
+//
+//	LayerNorm1 → QKV linear → Multi-Head Attention → FSMN(V) → sum + residual
+//	→ LayerNorm2 → FFN(ReLU) → residual
 //
 // FSMN: depthwise 1D convolution on V with kernel_size=11, padding=5.
 //
@@ -15,6 +16,7 @@ package asr
 
 import (
 	"math"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 	"github.com/viterin/vek/vek32"
@@ -82,8 +84,14 @@ func (m *SenseVoiceModel) encode(lfrFeats []float32, lfrFrames int) []float32 {
 	bufs := m.encBufs
 	vocab := m.hp.VocabSize
 	hidden := m.hp.HiddenSize
-	// CTC head — return buffer directly; caller holds m.mu and consumes before next encode.
-	logits := bufs.logits[:totalFrames*vocab]
+	// CTC head — only the diagnostic/full-logit path needs this large buffer.
+	// Transcribe uses encodeArgmax, so allocating it eagerly would retain
+	// maxFrames*vocab float32s for every loaded model without ever reading them.
+	logitN := totalFrames * vocab
+	if cap(bufs.logits) < logitN {
+		bufs.logits = make([]float32, logitN)
+	}
+	logits := bufs.logits[:logitN]
 	matMulLinearBias(logits, cur, m.w.ctcW, m.w.ctcB, totalFrames, vocab, hidden)
 	return logits
 }
@@ -157,21 +165,17 @@ func (m *SenseVoiceModel) sanmBlockInto(x []float32, nFrames, inDim int, l *svLa
 	fsmnOut := bufs.fsmnOut[:n]
 	kFSMN := m.hp.FSMNKernel
 
-	runFSMN := func() {
-		if useFused {
-			// V is third plane of interleaved QKV [Q|K|V], stride = 3*hidden
-			svFSMNStridedAddV(fsmnOut, qkv, 2*hidden, 3*hidden, nFrames, hidden, l.fsmnW, kFSMN)
-		} else {
-			svFSMNInto(fsmnOut, v, l.fsmnW, nFrames, hidden, kFSMN, bufs)
-			vek32.Add_Inplace(fsmnOut, v)
-		}
-	}
-
 	// Overlap FSMN with attention (+ proj) via matmul worker pool (no bare go).
 	overlapFSMN := nFrames >= 12
-	var waitFSMN func()
+	var fsmnWG *sync.WaitGroup
+	var fsmnTask *svFSMNTask
 	if overlapFSMN {
-		waitFSMN = tensor.RunAsync(runFSMN)
+		fsmnWG = svWaitGroupPool.Get().(*sync.WaitGroup)
+		fsmnTask = svFSMNTaskPool.Get().(*svFSMNTask)
+		fsmnTask.model, fsmnTask.out, fsmnTask.qkv, fsmnTask.v = m, fsmnOut, qkv, v
+		fsmnTask.frames, fsmnTask.hidden, fsmnTask.kernel = nFrames, hidden, kFSMN
+		fsmnTask.layer, fsmnTask.bufs, fsmnTask.fused = l, bufs, useFused
+		tensor.RunAsyncTask(fsmnTask, fsmnWG)
 	}
 
 	if useFused {
@@ -183,9 +187,15 @@ func (m *SenseVoiceModel) sanmBlockInto(x []float32, nFrames, inDim int, l *svLa
 	// out = attn_proj (pure store — still overlaps remaining FSMN).
 	matMulLinearBias(out[:n], attnOut, l.outW, l.outB.f32, nFrames, hidden, hidden)
 	if overlapFSMN {
-		waitFSMN()
+		fsmnWG.Wait()
+		svWaitGroupPool.Put(fsmnWG)
+		fsmnTask.model, fsmnTask.out, fsmnTask.qkv, fsmnTask.v = nil, nil, nil, nil
+		fsmnTask.layer, fsmnTask.bufs = nil, nil
+		svFSMNTaskPool.Put(fsmnTask)
 	} else {
-		runFSMN()
+		// Short utterances do not overlap work, so avoid creating a closure per
+		// SANM layer just to immediately invoke it.
+		m.svRunFSMN(fsmnOut, qkv, v, nFrames, hidden, kFSMN, l, bufs, useFused)
 	}
 
 	// Fuse residual (out += fsmn [+ x]) with LN2 into residual2:
@@ -210,6 +220,34 @@ func (m *SenseVoiceModel) sanmBlockInto(x []float32, nFrames, inDim int, l *svLa
 	ffOut := bufs.ffOut[:nFrames*ffDim]
 	matMulLinearBiasReLU(ffOut, bufs.residual2[:n], l.ff1W, l.ff1B.f32, nFrames, ffDim, hidden)
 	matMulLinearBiasAdd(out[:n], ffOut, l.ff2W, l.ff2B.f32, nFrames, hidden, ffDim)
+}
+
+type svFSMNTask struct {
+	model                  *SenseVoiceModel
+	out, qkv, v            []float32
+	frames, hidden, kernel int
+	layer                  *svLayerWeights
+	bufs                   *svEncoderBufs
+	fused                  bool
+}
+
+var svFSMNTaskPool = sync.Pool{New: func() any { return new(svFSMNTask) }}
+
+var svWaitGroupPool = sync.Pool{New: func() any { return new(sync.WaitGroup) }}
+
+func (t *svFSMNTask) RunAsyncTask() {
+	t.model.svRunFSMN(t.out, t.qkv, t.v, t.frames, t.hidden, t.kernel, t.layer, t.bufs, t.fused)
+}
+
+// svRunFSMN produces the FSMN contribution for one SANM layer.
+func (m *SenseVoiceModel) svRunFSMN(fsmnOut, qkv, v []float32, nFrames, hidden, kernelSize int, l *svLayerWeights, bufs *svEncoderBufs, fused bool) {
+	if fused {
+		// V is the third plane of interleaved QKV [Q|K|V].
+		svFSMNStridedAddV(fsmnOut, qkv, 2*hidden, 3*hidden, nFrames, hidden, l.fsmnW, kernelSize)
+		return
+	}
+	svFSMNInto(fsmnOut, v, l.fsmnW, nFrames, hidden, kernelSize, bufs)
+	vek32.Add_Inplace(fsmnOut, v)
 }
 
 // svAdd2Inplace: out[i] += a[i] + b[i] (one RMW pass; attention residual).
@@ -284,29 +322,63 @@ func svMultiHeadAttentionFused(out, qkv []float32, nFrames, nHeads, headDim, hid
 	// pack stream). Score writes then skip per-score *scale (was T² muls).
 	packQKVHeads(bufs.q, bufs.k, bufs.v, qkv, nFrames, nHeads, headDim, hidden, scale)
 
-	runHead := func(h int) {
-		hOff := h * headDim
-		base := h * nFrames * headDim
-		qPack := bufs.q[base : base+nFrames*headDim]
-		kPack := bufs.k[base : base+nFrames*headDim]
-		vPack := bufs.v[base : base+nFrames*headDim]
-		scores, _ := ensureAttnScratchHead(bufs, nFrames, headDim, h, nHeads)
-		// scale already in Q; packed V stride=headDim.
-		svAttnScoresPackedQ(out, qPack, kPack, vPack, scores, nFrames, hidden, headDim, hOff, 0, headDim, 1)
+	if nFrames >= 16 && nHeads > 1 && nHeads <= 12 {
+		// Reuse structured pool tasks — avoids a captured range closure per layer.
+		wg := svWaitGroupPool.Get().(*sync.WaitGroup)
+		var tasks [12]*svAttnTask
+		for h := 0; h < nHeads; h++ {
+			t := svAttnTaskPool.Get().(*svAttnTask)
+			t.out, t.bufs = out, bufs
+			t.frames, t.heads, t.headDim, t.hidden, t.head = nFrames, nHeads, headDim, hidden, h
+			tasks[h] = t
+			tensor.RunAsyncTask(t, wg)
+		}
+		wg.Wait()
+		svWaitGroupPool.Put(wg)
+		for h := 0; h < nHeads; h++ {
+			t := tasks[h]
+			t.out, t.bufs = nil, nil
+			svAttnTaskPool.Put(t)
+		}
+		return
 	}
-
 	if nFrames >= 16 && nHeads > 1 {
-		// Reuse matmul worker pool — avoids ~70 layers × N head goroutine spawn/join.
+		// General fallback for unusual models with more heads than the task stack.
 		tensor.ParallelRanges(nHeads, func(s, e int) {
 			for h := s; h < e; h++ {
-				runHead(h)
+				svFusedAttnHead(out, bufs, nFrames, nHeads, headDim, hidden, h)
 			}
 		})
 		return
 	}
 	for h := 0; h < nHeads; h++ {
-		runHead(h)
+		svFusedAttnHead(out, bufs, nFrames, nHeads, headDim, hidden, h)
 	}
+}
+
+type svAttnTask struct {
+	out                            []float32
+	bufs                           *svEncoderBufs
+	frames, heads, headDim, hidden int
+	head                           int
+}
+
+var svAttnTaskPool = sync.Pool{New: func() any { return new(svAttnTask) }}
+
+func (t *svAttnTask) RunAsyncTask() {
+	svFusedAttnHead(t.out, t.bufs, t.frames, t.heads, t.headDim, t.hidden, t.head)
+}
+
+// svFusedAttnHead evaluates one packed attention head without a captured closure.
+func svFusedAttnHead(out []float32, bufs *svEncoderBufs, nFrames, nHeads, headDim, hidden, h int) {
+	hOff := h * headDim
+	base := h * nFrames * headDim
+	qPack := bufs.q[base : base+nFrames*headDim]
+	kPack := bufs.k[base : base+nFrames*headDim]
+	vPack := bufs.v[base : base+nFrames*headDim]
+	scores, _ := ensureAttnScratchHead(bufs, nFrames, headDim, h, nHeads)
+	// Scale is already in Q; packed V stride=headDim.
+	svAttnScoresPackedQ(out, qPack, kPack, vPack, scores, nFrames, hidden, headDim, hOff, 0, headDim, 1)
 }
 
 // packQKVHeads packs fused QKV into contiguous [nHeads][nFrames][headDim] for Q, K, V.
@@ -951,7 +1023,9 @@ func svFSMNStridedOpt(out, v []float32, baseOff, stride, nFrames, hidden int, ke
 
 // svFSMNKernel11 is the hot FSMN path (kernel_size=11, pad=5).
 // When addV, residual V is folded into the center kernel term (ki==pad):
-//   out += V*(k_center+1)  instead of  out += V*k_center; out += V
+//
+//	out += V*(k_center+1)  instead of  out += V*k_center; out += V
+//
 // addV is specialized (SenseVoice fused path always folds V) — no per-ki branch.
 func svFSMNKernel11(out, v []float32, baseOff, stride, nFrames, hidden int, kernel []float32, addV bool) {
 	if addV {
@@ -987,7 +1061,7 @@ func svFSMNKernel11AddV(out, v []float32, baseOff, stride, nFrames, hidden int, 
 			v[src0:src0+hidden], v[src1:src1+hidden], v[src2:src2+hidden], v[src3:src3+hidden], kernel[:hidden])
 		for ki := 1; ki < pad; ki++ {
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			s0 := (f - pad + ki) * stride + baseOff
+			s0 := (f-pad+ki)*stride + baseOff
 			tensor.Fmadd4Into(out0, out1, out2, out3,
 				v[s0:s0+hidden], v[s0+stride:s0+stride+hidden],
 				v[s0+2*stride:s0+2*stride+hidden], v[s0+3*stride:s0+3*stride+hidden], kRow)
@@ -1001,7 +1075,7 @@ func svFSMNKernel11AddV(out, v []float32, baseOff, stride, nFrames, hidden int, 
 		}
 		for ki := pad + 1; ki < ksz; ki++ {
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			s0 := (f - pad + ki) * stride + baseOff
+			s0 := (f-pad+ki)*stride + baseOff
 			tensor.Fmadd4Into(out0, out1, out2, out3,
 				v[s0:s0+hidden], v[s0+stride:s0+stride+hidden],
 				v[s0+2*stride:s0+2*stride+hidden], v[s0+3*stride:s0+3*stride+hidden], kRow)
@@ -1016,7 +1090,7 @@ func svFSMNKernel11AddV(out, v []float32, baseOff, stride, nFrames, hidden int, 
 		tensor.Mul2Into(out0, out1, v[src0:src0+hidden], v[src1:src1+hidden], kernel[:hidden])
 		for ki := 1; ki < pad; ki++ {
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			s0 := (f - pad + ki) * stride + baseOff
+			s0 := (f-pad+ki)*stride + baseOff
 			tensor.Fmadd2Into(out0, out1, v[s0:s0+hidden], v[s0+stride:s0+stride+hidden], kRow)
 		}
 		{
@@ -1026,7 +1100,7 @@ func svFSMNKernel11AddV(out, v []float32, baseOff, stride, nFrames, hidden int, 
 		}
 		for ki := pad + 1; ki < ksz; ki++ {
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			s0 := (f - pad + ki) * stride + baseOff
+			s0 := (f-pad+ki)*stride + baseOff
 			tensor.Fmadd2Into(out0, out1, v[s0:s0+hidden], v[s0+stride:s0+stride+hidden], kRow)
 		}
 	}
@@ -1073,7 +1147,7 @@ func svFSMNKernel11Plain(out, v []float32, baseOff, stride, nFrames, hidden int,
 			v[src0+2*stride:src0+2*stride+hidden], v[src0+3*stride:src0+3*stride+hidden], kernel[:hidden])
 		for ki := 1; ki < ksz; ki++ {
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			s0 := (f - pad + ki) * stride + baseOff
+			s0 := (f-pad+ki)*stride + baseOff
 			tensor.Fmadd4Into(out0, out1, out2, out3,
 				v[s0:s0+hidden], v[s0+stride:s0+stride+hidden],
 				v[s0+2*stride:s0+2*stride+hidden], v[s0+3*stride:s0+3*stride+hidden], kRow)
@@ -1086,7 +1160,7 @@ func svFSMNKernel11Plain(out, v []float32, baseOff, stride, nFrames, hidden int,
 		tensor.Mul2Into(out0, out1, v[src0:src0+hidden], v[src0+stride:src0+stride+hidden], kernel[:hidden])
 		for ki := 1; ki < ksz; ki++ {
 			kRow := kernel[ki*hidden : (ki+1)*hidden]
-			s0 := (f - pad + ki) * stride + baseOff
+			s0 := (f-pad+ki)*stride + baseOff
 			tensor.Fmadd2Into(out0, out1, v[s0:s0+hidden], v[s0+stride:s0+stride+hidden], kRow)
 		}
 	}
@@ -1391,8 +1465,7 @@ func svMultiHeadAttention(q, k, v []float32, nFrames, nHeads, headDim int) []flo
 
 func svFSMN(v []float32, nFrames, hidden int, kernel []float32, kernelSize int) []float32 {
 	out := make([]float32, nFrames*hidden)
-	tmp := make([]float32, hidden)
-	bufs := &svEncoderBufs{fsmnTmp: tmp}
+	bufs := &svEncoderBufs{}
 	svFSMNInto(out, v, kernel, nFrames, hidden, kernelSize, bufs)
 	return out
 }

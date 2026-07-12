@@ -319,10 +319,10 @@ if (baseApplyLLMProvidersI18nConcurrency) { applyLLMProvidersI18n = function() {
 const baseApplyLLMProvidersI18nDownstream = typeof applyLLMProvidersI18n === 'function' ? applyLLMProvidersI18n : null;
 function llmProviderNormalizeDownstreamConcurrency(value) {
   value = Number(value || 0);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 100;
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 500;
 }
 function ensureLLMProviderDownstreamState() {
-  if (!llmProviderRegistryCache) return 100;
+  if (!llmProviderRegistryCache) return 500;
   llmProviderRegistryCache.downstream_max_concurrency = llmProviderNormalizeDownstreamConcurrency(llmProviderRegistryCache.downstream_max_concurrency);
   return llmProviderRegistryCache.downstream_max_concurrency;
 }
@@ -332,10 +332,10 @@ function llmProviderSyncGlobalControls() {
   var upstreamTimeout = document.getElementById('llmProvidersUpstreamTimeoutSec');
   var rateLimit = document.getElementById('llmProvidersUserRateLimitPerMinute');
   var burst = document.getElementById('llmProvidersUserRateLimitBurst');
-  if (downstream && active !== downstream) downstream.value = String(llmProviderRegistryCache ? ensureLLMProviderDownstreamState() : 100);
+  if (downstream && active !== downstream) downstream.value = String(llmProviderRegistryCache ? ensureLLMProviderDownstreamState() : 500);
   if (upstreamTimeout && active !== upstreamTimeout) upstreamTimeout.value = String(llmProviderRegistryCache && llmProviderRegistryCache.upstream_timeout_sec > 0 ? llmProviderRegistryCache.upstream_timeout_sec : 600);
-  if (rateLimit && active !== rateLimit) rateLimit.value = String(llmProviderRegistryCache ? llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_per_minute, 120) : 120);
-  if (burst && active !== burst) burst.value = String(llmProviderRegistryCache ? llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_burst, 20) : 20);
+  if (rateLimit && active !== rateLimit) rateLimit.value = String(llmProviderRegistryCache ? llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_per_minute, 300) : 300);
+  if (burst && active !== burst) burst.value = String(llmProviderRegistryCache ? llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_burst, 80) : 80);
 }
 function initLLMProviderGlobalBindings() {
   if (initLLMProviderGlobalBindings.done) return;
@@ -355,11 +355,11 @@ function initLLMProviderGlobalBindings() {
   });
   if (rateLimit) rateLimit.addEventListener('input', function() {
     if (!llmProviderRegistryCache) return;
-    llmProviderRegistryCache.user_rate_limit_per_minute = llmProviderNormalizeUserRateLimit(rateLimit.value, 120);
+    llmProviderRegistryCache.user_rate_limit_per_minute = llmProviderNormalizeUserRateLimit(rateLimit.value, 300);
   });
   if (burst) burst.addEventListener('input', function() {
     if (!llmProviderRegistryCache) return;
-    llmProviderRegistryCache.user_rate_limit_burst = llmProviderNormalizeUserRateLimit(burst.value, 20);
+    llmProviderRegistryCache.user_rate_limit_burst = llmProviderNormalizeUserRateLimit(burst.value, 80);
   });
 }
 initLLMProviderGlobalBindings.done = false;if (baseApplyLLMProvidersI18nDownstream) {
@@ -692,8 +692,9 @@ const baseBuildLLMProviderPayloadResilience = typeof buildLLMProviderPayload ===
 if (baseBuildLLMProviderPayloadResilience) {
   buildLLMProviderPayload = function() {
     var payload = baseBuildLLMProviderPayloadResilience();
-    payload.user_rate_limit_per_minute = llmProviderNormalizeUserRateLimit(document.getElementById('llmProvidersUserRateLimitPerMinute') && document.getElementById('llmProvidersUserRateLimitPerMinute').value, 120);
-    payload.user_rate_limit_burst = llmProviderNormalizeUserRateLimit(document.getElementById('llmProvidersUserRateLimitBurst') && document.getElementById('llmProvidersUserRateLimitBurst').value, 20);
+    payload.user_rate_limit_per_minute = llmProviderNormalizeUserRateLimit(document.getElementById('llmProvidersUserRateLimitPerMinute') && document.getElementById('llmProvidersUserRateLimitPerMinute').value, 300);
+    payload.user_rate_limit_burst = llmProviderNormalizeUserRateLimit(document.getElementById('llmProvidersUserRateLimitBurst') && document.getElementById('llmProvidersUserRateLimitBurst').value, 80);
+    payload.user_rate_limit_max_wait_ms = llmProviderNormalizeUserRateLimit(llmProviderRegistryCache && llmProviderRegistryCache.user_rate_limit_max_wait_ms, 30000);
     payload.providers = (payload.providers || []).map(function(p, idx) {
       var cached = llmProviderRegistryCache && llmProviderRegistryCache.providers && llmProviderRegistryCache.providers[idx] || {};
       var normalized = llmProviderNormalizeResilience(cached);
@@ -715,8 +716,9 @@ if (baseLoadLLMProvidersResilience) {
   loadLLMProviders = async function() {
     await baseLoadLLMProvidersResilience();
     if (!llmProviderRegistryCache) return;
-    llmProviderRegistryCache.user_rate_limit_per_minute = llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_per_minute, 120);
-    llmProviderRegistryCache.user_rate_limit_burst = llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_burst, 20);
+    llmProviderRegistryCache.user_rate_limit_per_minute = llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_per_minute, 300);
+    llmProviderRegistryCache.user_rate_limit_burst = llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_burst, 80);
+    llmProviderRegistryCache.user_rate_limit_max_wait_ms = llmProviderNormalizeUserRateLimit(llmProviderRegistryCache.user_rate_limit_max_wait_ms, 30000);
     llmProviderRegistryCache.providers = (llmProviderRegistryCache.providers || []).map(function(p) { return llmProviderNormalizeResilience(p); });
     llmProviderSyncGlobalControls();
   };

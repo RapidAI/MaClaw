@@ -863,7 +863,7 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 		return fmt.Errorf("发布失败: %w", err)
 	}
 
-	sendStatus(fmt.Sprintf("Skill「%s」已发布到 SkillHub ✓", entry.Name))
+	sendStatus(fmt.Sprintf("Skill「%s」已发布到 SkillHub OK", entry.Name))
 	return nil
 }
 

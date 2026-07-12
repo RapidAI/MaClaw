@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,6 +55,12 @@ func TestMingMingBaiBaiSenseVoice(t *testing.T) {
 			t.Logf("result: %q (%.0fms, RTF=%.3f)", text, float64(elapsed.Milliseconds()), rtf)
 			if text == "" {
 				t.Error("empty transcription")
+			}
+			// This is a stable Q8 baseline phrase for all three fixtures. Keep it
+			// as the minimum recognition gate for any future lower-bit backend;
+			// the latter half of the lyric varies in the Q8 baseline itself.
+			if !strings.Contains(text, "明明白白我的心") {
+				t.Errorf("expected Q8 baseline phrase in transcription, got %q", text)
 			}
 		})
 	}

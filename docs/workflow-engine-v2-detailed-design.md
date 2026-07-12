@@ -497,7 +497,7 @@ func phaseSpecificInstruction(phaseID string) string {
 - 边界情况
 - 验收标准
 
-信息不足的部分标记为「⚠️ 待确认」。直接生成文档，不要先问澄清问题。`
+信息不足的部分标记为「待确认」。直接生成文档，不要先问澄清问题。`
     case "design":
         return `基于已确认的需求，生成技术设计文档（Markdown 格式），包含：
 - 架构设计
@@ -763,11 +763,11 @@ func (h *IMMessageHandler) executeWorkflowAction(msg IMUserMessage, result *Hand
             // 推进到下一阶段
             return h.runPhaseAgentLoop(msg.UserID, result.Phase, result.PhasePrompt, "")
         }
-        return &IMAgentResponse{Text: "✅ 工作流已完成"}
+        return &IMAgentResponse{Text: "工作流已完成"}
     case ActionModify:
         return h.runPhaseAgentLoop(msg.UserID, result.Phase, result.PhasePrompt, result.ModifyHint)
     case ActionCancelled:
-        return &IMAgentResponse{Text: "❌ 工作流已取消"}
+        return &IMAgentResponse{Text: "工作流已取消"}
     }
     return nil
 }

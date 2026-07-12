@@ -238,13 +238,13 @@ func buildLoopCommandResponseChinese(state *agent.LoopCommandState, lang string)
 
 	switch state.Status {
 	case agent.LoopStatusSucceeded:
-		sb.WriteString(fmt.Sprintf("✅ **Loop 成功** — 验证命令在第 %d 轮通过\n\n", len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf("**Loop 成功** — 验证命令在第 %d 轮通过\n\n", len(state.Iterations)))
 		sb.WriteString(fmt.Sprintf("- 目标: %s\n", state.Config.Goal))
 		sb.WriteString(fmt.Sprintf("- 验证命令: `%s`\n", state.Config.VerifyCmd))
 		sb.WriteString(fmt.Sprintf("- 总耗时: %v\n", state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
 
 	case agent.LoopStatusFailed:
-		sb.WriteString(fmt.Sprintf("❌ **Loop 失败** — %d 轮迭代后验证命令仍未通过\n\n", len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf("**Loop 失败** — %d 轮迭代后验证命令仍未通过\n\n", len(state.Iterations)))
 		sb.WriteString(fmt.Sprintf("- 目标: %s\n", state.Config.Goal))
 		sb.WriteString(fmt.Sprintf("- 验证命令: `%s`\n", state.Config.VerifyCmd))
 		sb.WriteString(fmt.Sprintf("- 总耗时: %v\n", state.EndedAt.Sub(state.StartedAt).Round(100_000_000)))
@@ -263,7 +263,7 @@ func buildLoopCommandResponseChinese(state *agent.LoopCommandState, lang string)
 		}
 
 	case agent.LoopStatusCancelled:
-		sb.WriteString(fmt.Sprintf("⏹️ **Loop 已取消** — 在第 %d 轮被中断\n", len(state.Iterations)))
+		sb.WriteString(fmt.Sprintf("**Loop 已取消** — 在第 %d 轮被中断\n", len(state.Iterations)))
 
 	default:
 		sb.WriteString("Loop 执行完毕。\n")

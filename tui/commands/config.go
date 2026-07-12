@@ -231,7 +231,7 @@ func configImport(args []string) error {
 	}
 	fmt.Printf("Import complete: %d applied, %d skipped\n", report.Applied, report.Skipped)
 	for _, w := range report.Warnings {
-		fmt.Printf("  ⚠ %s\n", w)
+		fmt.Printf("  %s\n", w)
 	}
 	return nil
 }

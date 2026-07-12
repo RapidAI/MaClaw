@@ -188,7 +188,7 @@ function Dashboard({ token, onLogout, config, fetchConfig, showMessage, message 
                                 message.type === 'error' ? "bg-destructive/10 border-destructive/20 text-destructive" :
                                     "bg-emerald-500/10 border-emerald-500/20 text-emerald-500"
                             )}>
-                                {message.type === 'error' ? <X className="w-5 h-5" /> : <div className="w-5 h-5 rounded-full border-2 border-emerald-500 flex items-center justify-center text-[10px]">✓</div>}
+                                {message.type === 'error' ? <X className="w-5 h-5" /> : <div className="w-5 h-5 rounded-full border-2 border-emerald-500 flex items-center justify-center text-[10px] font-bold">OK</div>}
                                 {message.text}
                             </div>
                         )}

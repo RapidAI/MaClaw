@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -48,22 +49,20 @@ func (c *ToolVersionCache) GetCached(name string) *cachedVersion {
 	return cv
 }
 
-// GetInstallStatus checks binary existence only via exec.LookPath or file stat.
+// GetInstallStatus checks binary existence only via file stat / LookPath.
 // It NEVER executes the binary to obtain version output.
+//
+// Prefer the app private tools dir over PATH so version probes target the same
+// binary the remote session launcher uses (privateToolsDirForApp), not a
+// system-wide Claude install that happens to be on PATH.
 func (c *ToolVersionCache) GetInstallStatus(name string) (installed bool, path string) {
-	// First check the private tools directory via the catalog binary name.
 	meta, ok := lookupRemoteToolMetadata(name)
 	binaryName := name
 	if ok && meta.BinaryName != "" {
 		binaryName = meta.BinaryName
 	}
 
-	// Check exec.LookPath (searches PATH).
-	if p, err := exec.LookPath(binaryName); err == nil {
-		return true, p
-	}
-
-	// Check the private tools directory under the active data directory.
+	// 1) Private tools directory (app-managed install).
 	toolsDir := filepath.Join(corelib.MaclawDataDir(), "tools")
 	candidates := []string{binaryName}
 	if binaryName != name {
@@ -74,11 +73,15 @@ func (c *ToolVersionCache) GetInstallStatus(name string) (installed bool, path s
 		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
 			return true, fullPath
 		}
-		// Windows: try with .exe suffix.
 		exePath := fullPath + ".exe"
 		if info, err := os.Stat(exePath); err == nil && !info.IsDir() {
 			return true, exePath
 		}
+	}
+
+	// 2) PATH fallback (optional system install).
+	if p, err := exec.LookPath(binaryName); err == nil {
+		return true, p
 	}
 
 	return false, ""
@@ -150,9 +153,45 @@ func (c *ToolVersionCache) refreshAll(tools []string, timeout time.Duration) {
 	c.saveToDisk()
 }
 
+// toolVersionCacheFreshTTL skips re-executing tool binaries when the same path
+// was probed recently (including failed/empty version results). Hub reconnects
+// call RefreshAllAsync on every machine.hello; without this gate each reconnect
+// can spawn coding CLIs.
+const toolVersionCacheFreshTTL = 1 * time.Hour
+
+// sameToolBinaryPath compares install paths for cache skip decisions.
+// Windows paths are compared case-insensitively after Clean.
+func sameToolBinaryPath(a, b string) bool {
+	a = filepath.Clean(strings.TrimSpace(a))
+	b = filepath.Clean(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 // refreshOne checks the version of a single tool by executing it.
 func (c *ToolVersionCache) refreshOne(ctx context.Context, name string) {
 	installed, path := c.GetInstallStatus(name)
+
+	// Always re-check install state (cheap path/LookPath). Only skip the
+	// expensive binary exec when we already probed this exact path recently —
+	// hub reconnects call this on every machine.hello.
+	//
+	// Skip even when Version is empty: a recent failed/unparseable --version
+	// must not re-spawn the CLI on every reconnect (that was a thrash path for
+	// Claude Code process storms).
+	if installed && path != "" {
+		if existing := c.GetCached(name); existing != nil &&
+			existing.Installed &&
+			sameToolBinaryPath(existing.Path, path) &&
+			time.Since(existing.CheckedAt) < toolVersionCacheFreshTTL {
+			return
+		}
+	}
 
 	entry := &cachedVersion{
 		CheckedAt: time.Now(),
@@ -161,50 +200,42 @@ func (c *ToolVersionCache) refreshOne(ctx context.Context, name string) {
 	}
 
 	if installed && path != "" {
-		// Try to get version by executing the tool with --version flag.
-		version := c.detectVersion(ctx, name, path)
-		entry.Version = version
+		// Safe probe only: --version. Never pass bare "version"/"-v" which
+		// coding CLIs treat as a user prompt and start a full session.
+		entry.Version = c.detectVersion(ctx, path)
 	}
 
 	c.versions.Store(name, entry)
 }
 
-// detectVersion attempts to get the version string from a tool binary.
-// Uses a short timeout derived from the parent context.
-func (c *ToolVersionCache) detectVersion(ctx context.Context, name, path string) string {
-	// Use a per-tool timeout of 5 seconds.
+// detectVersion probes a tool binary with --version only.
+//
+// IMPORTANT: never pass bare "version" or ambiguous "-v". Coding CLIs such as
+// Claude Code treat non-flag args as a user prompt and start a full session —
+// the source of batch "Claude Code" processes under MacLaw/TigerClaw after
+// hub reconnects that re-ran RefreshAllAsync.
+func (c *ToolVersionCache) detectVersion(ctx context.Context, path string) string {
 	toolCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
-	// Check if parent context is already done before starting.
 	if ctx.Err() != nil {
 		return ""
 	}
 
-	// Try common version flags.
-	for _, flag := range []string{"--version", "-v", "version"} {
-		cmd := exec.CommandContext(toolCtx, path, flag)
-		cmd.Env = os.Environ()
-		hideCommandWindow(cmd)
-		out, err := cmd.Output()
-		if err == nil {
-			version := strings.TrimSpace(string(out))
-			// Take only the first line if multi-line.
-			if idx := strings.IndexByte(version, '\n'); idx > 0 {
-				version = strings.TrimSpace(version[:idx])
-			}
-			// Sanity check: version should be reasonable length.
-			if len(version) > 0 && len(version) < 200 {
-				return version
-			}
-		}
-		// If context is done, stop trying.
-		if toolCtx.Err() != nil {
-			break
-		}
+	cmd := exec.CommandContext(toolCtx, path, "--version")
+	cmd.Env = os.Environ()
+	hideCommandWindow(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
 	}
-
-	return ""
+	version := strings.TrimSpace(string(out))
+	if idx := strings.IndexByte(version, '\n'); idx > 0 {
+		version = strings.TrimSpace(version[:idx])
+	}
+	if len(version) == 0 || len(version) >= 200 {
+		return ""
+	}
+	return version
 }
 
 // cacheFilePath returns the path to the JSON persistence file.

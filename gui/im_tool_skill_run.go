@@ -202,7 +202,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 			b.WriteString(fmt.Sprintf("- last_command: %s\n", sp.LastCommand))
 		}
 		if sp.WaitingForUser {
-			b.WriteString("- ⚠️ 会话内部 agent 正在等待输入\n")
+			b.WriteString("- 会话内部 agent 正在等待输入\n")
 		}
 		b.WriteString(fmt.Sprintf("- poll_count: %d\n", sp.PollCount))
 		if sp.UpdatedAt != "" {
@@ -240,7 +240,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 				}
 			}
 			if status.SelfRepairPending {
-				b.WriteString("- ⚙️ 系统正在自动修复此 Skill，建议等待 10 秒后使用 manage_skill(action=\"status\", run_id=\"" + runID + "\") 检查修复状态，再重试执行。\n")
+				b.WriteString("- 系统正在自动修复此 Skill，建议等待 10 秒后使用 manage_skill(action=\"status\", run_id=\"" + runID + "\") 检查修复状态，再重试执行。\n")
 			} else {
 				b.WriteString("- Skill 执行失败，步骤输出已在上方显示。请根据建议操作决定下一步。\n")
 			}
@@ -260,15 +260,15 @@ func emitSkillRunProgress(onProgress tool.ProgressCallback, status *SkillRunStat
 	}
 	switch {
 	case status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "":
-		onProgress("🚀 Skill 已绑定会话，可继续观察输出...")
+		onProgress("Skill 已绑定会话，可继续观察输出...")
 	case status.LifecycleStatus() == skillRunStatusSuccess:
-		onProgress("✅ Skill 已执行完成，正在整理结果...")
+		onProgress("Skill 已执行完成，正在整理结果...")
 	case status.IsFailed():
-		onProgress("❌ Skill 执行失败，正在整理错误摘要...")
+		onProgress("Skill 执行失败，正在整理错误摘要...")
 	case status.Summary.CurrentStep != "":
-		onProgress(fmt.Sprintf("⏳ Skill 正在执行步骤：%s", status.Summary.CurrentStep))
+		onProgress(fmt.Sprintf("Skill 正在执行步骤：%s", status.Summary.CurrentStep))
 	default:
-		onProgress("⏳ Skill 正在运行，等待状态快照...")
+		onProgress("Skill 正在运行，等待状态快照...")
 	}
 }
 
@@ -417,7 +417,7 @@ func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]int
 		return errMsg
 	}
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
+		onProgress(fmt.Sprintf("正在启动 Skill「%s」...", name))
 	}
 	waitDuration := normalizeInitialSkillRunWaitSeconds(args["wait_seconds"])
 	ownerID, explicitRuntime := h.consumeRuntimePolicyOwnerIDFromToolArgsOrCurrentState(args)
@@ -429,7 +429,7 @@ func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]int
 	log.Printf("[run_skill] start owner=%q explicit_runtime=%v skill=%q wait=%s args=%d", ownerID, explicitRuntime, name, waitDuration.Round(time.Millisecond), len(runArgs))
 	// Wire up dependency installation progress reporting: when PipFixer/NpmFixer
 	// installs packages during PrepareRunnerExecution, the progress callback
-	// surfaces real-time status to the user (e.g. "📦 正在安装 Python 包 pymupdf...").
+	// surfaces real-time status to the user (e.g. "正在安装 Python 包 pymupdf...").
 	if onProgress != nil {
 		runner.prepProgressByOwner.Store(ownerID, cskill.FixProgressCallback(func(msg string) { onProgress(msg) }))
 	}
@@ -444,7 +444,7 @@ func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]int
 		return fmt.Sprintf("Skill 启动失败: %s", err.Error())
 	}
 	if onProgress != nil {
-		onProgress("⏳ Skill 已启动，正在等待状态快照...")
+		onProgress("Skill 已启动，正在等待状态快照...")
 	}
 	waitStartedAt := time.Now()
 	status, err := waitForSkillRunnerSnapshot(ctx, runner, runID, waitDuration)
@@ -462,7 +462,7 @@ func (h *IMMessageHandler) toolRunSkill(ctx context.Context, args map[string]int
 	}
 	emitSkillRunProgress(onProgress, status)
 	var b strings.Builder
-	b.WriteString("✅ Skill 已启动\n")
+	b.WriteString("Skill 已启动\n")
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -501,7 +501,7 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 		return fmt.Sprintf("读取 Skill 状态失败: %s（run_id=%s）", err.Error(), runID)
 	}
 	var b strings.Builder
-	b.WriteString("🔎 Skill 状态查询结果\n")
+	b.WriteString("Skill 状态查询结果\n")
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -551,7 +551,7 @@ func (h *IMMessageHandler) checkSkillRunMissingParams(name string, args map[stri
 	}
 	// Build a structured error message that the LLM can act on.
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("❌ Skill「%s」缺少必要参数，无法执行。\n", name))
+	b.WriteString(fmt.Sprintf("Skill「%s」缺少必要参数，无法执行。\n", name))
 	b.WriteString("\n## 缺少的参数\n")
 	for _, key := range missing {
 		desc := findParamDescription(params, key)
@@ -559,6 +559,17 @@ func (h *IMMessageHandler) checkSkillRunMissingParams(name string, args map[stri
 			b.WriteString(fmt.Sprintf("- **%s**: %s\n", key, desc))
 		} else {
 			b.WriteString(fmt.Sprintf("- **%s**\n", key))
+		}
+	}
+	if len(params) > 0 {
+		b.WriteString("\n## 参数契约\n")
+		if schema := cskill.FormatParamSchema(params); schema != "" {
+			b.WriteString(schema)
+		}
+		if js := cskill.FormatParamSchemaJSON(params); js != "" {
+			b.WriteString("JSON Schema: ")
+			b.WriteString(js)
+			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n## 如何修复\n")

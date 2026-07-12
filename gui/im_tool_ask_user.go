@@ -105,7 +105,6 @@ func FormatAskUserForDisplay(req *AskUserRequest) string {
 		b.WriteString(req.Context)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("❓ ")
 	b.WriteString(req.Question)
 	if len(req.Options) > 0 {
 		b.WriteString("\n")

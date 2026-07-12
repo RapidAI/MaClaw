@@ -53,6 +53,17 @@ func multiDot8DualB(out0, out1 *[8]float32, a, b0, b1 []float32, K int) {
 	multiDot4DualB(out1, a[4*K:8*K], b0, b1, K)
 }
 
+func multiDot2DualB(out *[4]float32, a, b0, b1 []float32, K int) {
+	*out = [4]float32{}
+	for k := 0; k < K; k++ {
+		x0, x1 := a[k], a[K+k]
+		out[0] += x0 * b0[k]
+		out[1] += x1 * b0[k]
+		out[2] += x0 * b1[k]
+		out[3] += x1 * b1[k]
+	}
+}
+
 func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	var d8 [8]float32
 	var d4 [4]float32

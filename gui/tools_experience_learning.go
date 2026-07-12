@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -2255,7 +2256,14 @@ func (a *App) QueryExperienceTraceDetails(req ExperienceTraceDetailQuery) Experi
 	if a.memoryStore == nil {
 		a.ensureMemoryStore()
 	}
-	snapshot := buildExperienceLearningSnapshotWithTraceLimit(a.usageTracker, a.memoryStore, 0)
+	var skills []corelib.NLSkillEntry
+	a.ensureSkillRunner()
+	if a.skillExecutor != nil {
+		a.skillExecutor.mu.RLock()
+		skills = a.skillExecutor.loadSkills()
+		a.skillExecutor.mu.RUnlock()
+	}
+	snapshot := buildExperienceLearningSnapshotWithTraceLimit(a.usageTracker, a.memoryStore, 0, skills)
 	details := append([]ExperienceTraceDetail(nil), snapshot.TraceDetails...)
 	a.ensureSessionStore()
 	if a.sessionSearchStore != nil {

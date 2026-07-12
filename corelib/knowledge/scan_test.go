@@ -43,6 +43,16 @@ func TestScanDirectoryFiltersAndDedups(t *testing.T) {
 			t.Fatalf("missing status %s in %#v", status, statuses)
 		}
 	}
+	// ExtCounts covers supported include-ext files (queued + size/dup skips), not unsupported/hidden.
+	if res.ExtCounts[".md"] != 2 {
+		t.Fatalf("ext_counts .md = %d, want 2 (a.md + b.md duplicate)", res.ExtCounts[".md"])
+	}
+	if res.ExtCounts[".txt"] != 2 {
+		t.Fatalf("ext_counts .txt = %d, want 2 (big.txt + nested/d.txt)", res.ExtCounts[".txt"])
+	}
+	if _, ok := res.ExtCounts[".exe"]; ok {
+		t.Fatalf("ext_counts should not include unsupported .exe")
+	}
 }
 
 func TestScanDirectoryHonorsRecursiveFalse(t *testing.T) {

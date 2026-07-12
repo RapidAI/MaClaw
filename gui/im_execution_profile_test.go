@@ -298,9 +298,10 @@ func TestExecutionProfileSemanticResultReusedByCodingGate(t *testing.T) {
 	ctx := NewLoopContext("chat", 300, nil)
 	ctx.Runtime.Execution = profile
 	ctx.Runtime.SemanticIntent = semantic
-	// Legacy coding gate removed — UIC classification happens during execution profile.
-	if calls != 1 {
-		t.Fatalf("UIC calls = %d, want 1", calls)
+	// Execution-profile routing uses ClassifyEmbeddingOnly for latency; the L3
+	// tree/LLM channel must not run on this hot path.
+	if calls != 0 {
+		t.Fatalf("UIC LLM calls = %d, want 0 (embedding-only path)", calls)
 	}
 }
 
@@ -594,8 +595,10 @@ func TestBuildLightIMSystemPromptStaysSmall(t *testing.T) {
 		Reason:        "test",
 	}
 	prompt := buildLightIMSystemPrompt(IMUserMessage{Text: "\u5927\u8fde\u5929\u6c14"}, profile)
-	if len(prompt) > 1200 {
-		t.Fatalf("light prompt len = %d, want <= 1200", len(prompt))
+	// Light bundle includes the shared Chinese output-format fence (~1.5KB) plus a
+	// short GUI capability fence. Keep a hard cap so full-agent sections cannot creep in.
+	if len(prompt) > 2500 {
+		t.Fatalf("light prompt len = %d, want <= 2500", len(prompt))
 	}
 	for _, blocked := range []string{"Group Discussion", "CodingSubAgent", "compress_context"} {
 		if containsText(prompt, blocked) {

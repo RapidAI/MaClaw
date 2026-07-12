@@ -488,6 +488,7 @@ class ApiClient {
       return;
     }
 
+    // Mutable streaming accumulator (not const — updated as deltas arrive).
     var partial = SearchAnswer(
       answer: '',
       citations: const [],
@@ -879,6 +880,11 @@ class ApiClient {
     return DocumentExportJob.fromJson(response.data ?? const {});
   }
 
+  /// Binary downloads (originals/exports) can be multi-MB on slow mobile links.
+  /// Default Hub Dio receiveTimeout is 15s — too short for 25MB originals.
+  static const _binaryDownloadReceiveTimeout = Duration(seconds: 90);
+  static const _binaryDownloadSendTimeout = Duration(seconds: 30);
+
   Future<Uint8List> downloadDocumentExport(DocumentExportJob job) async {
     if (job.downloadUrl.isEmpty) {
       throw StateError('export job has no download URL');
@@ -889,7 +895,11 @@ class ApiClient {
     );
     final response = await _dio.get<List<int>>(
       downloadUrl,
-      options: Options(responseType: ResponseType.bytes),
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: _binaryDownloadReceiveTimeout,
+        sendTimeout: _binaryDownloadSendTimeout,
+      ),
     );
     return Uint8List.fromList(response.data ?? const []);
   }
@@ -902,11 +912,15 @@ class ApiClient {
     final downloadUrl = maclawHubAbsoluteUrl(hubUrl: _hubUrl, pathOrUrl: path);
     final response = await _dio.get<List<int>>(
       downloadUrl,
-      options: Options(responseType: ResponseType.bytes),
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: _binaryDownloadReceiveTimeout,
+        sendTimeout: _binaryDownloadSendTimeout,
+      ),
     );
     final data = response.data;
     if (data == null || data.isEmpty) {
-      throw StateError('empty original file');
+      throw StateError('empty original file / 原件为空');
     }
     return Uint8List.fromList(data);
   }
@@ -915,12 +929,16 @@ class ApiClient {
   Future<Uint8List> downloadHubSSHFile(String pathOrUrl) async {
     final path = pathOrUrl.trim();
     if (path.isEmpty) {
-      throw StateError('download url is empty');
+      throw StateError('download url is empty / 下载地址为空');
     }
     final downloadUrl = maclawHubAbsoluteUrl(hubUrl: _hubUrl, pathOrUrl: path);
     final response = await _dio.get<List<int>>(
       downloadUrl,
-      options: Options(responseType: ResponseType.bytes),
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: _binaryDownloadReceiveTimeout,
+        sendTimeout: _binaryDownloadSendTimeout,
+      ),
     );
     final data = response.data;
     if (data == null || data.isEmpty) {

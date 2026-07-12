@@ -54,6 +54,28 @@ describe('GeneralSettingsPanel', () => {
         expect((toggle as HTMLInputElement).checked).toBe(true);
     });
 
+    it('shows skill self-evolution enabled by default and persists toggle', () => {
+        renderPanel({}, 'zh-Hans');
+
+        const toggle = screen.getByLabelText('技能自进化') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+
+        fireEvent.click(toggle);
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ skill_evolution_enabled: false });
+    });
+
+    it('persists re-enabling skill self-evolution', () => {
+        renderPanel({ skill_evolution_enabled: false }, 'en');
+
+        const toggle = screen.getByLabelText('Skill self-evolution') as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+
+        fireEvent.click(toggle);
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ skill_evolution_enabled: true });
+    });
+
     it('shows and persists the MaClaw app entry switch after language', () => {
         renderPanel({}, 'zh-Hans');
 

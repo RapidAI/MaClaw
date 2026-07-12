@@ -18,6 +18,22 @@ export const GeneralSettingsOptionGrid = ({ effectiveConfig, lang, saveConfigPat
         </label>
 
         <label className="general-settings-option">
+            <input
+                type="checkbox"
+                aria-label={textForLang(lang, 'Skill self-evolution', '技能自进化', '技能自進化')}
+                checked={effectiveConfig?.skill_evolution_enabled !== false}
+                onChange={(e) => saveConfigPatch({ skill_evolution_enabled: e.target.checked })}
+            />
+            <span>{textForLang(lang, 'Skill self-evolution', '技能自进化', '技能自進化')}</span>
+            <small>{textForLang(
+                lang,
+                'After skill runs, automatically attempt self-repair, optimization, and discovery. Manual Repair/Optimize still work when off. Also under Skills → Settings → Evolution.',
+                '技能执行后自动尝试自修复、优化与发现。关闭后仍可手动「立即修复/立即优化」。亦可在 技能 → 设置 → 进化 中配置。',
+                '技能執行後自動嘗試自修復、優化與發現。關閉後仍可手動「立即修復/立即優化」。亦可在 技能 → 設定 → 進化 中配置。',
+            )}</small>
+        </label>
+
+        <label className="general-settings-option">
             <input type="checkbox" aria-label={textForLang(lang, 'Record LLM trajectory', '记录 LLM 轨迹', '記錄 LLM 軌跡')} checked={effectiveConfig?.llm_trajectory_logging || false} onChange={(e) => saveConfigPatch({ llm_trajectory_logging: e.target.checked })} />
             <span>{textForLang(lang, 'Record LLM trajectory', '记录 LLM 轨迹', '記錄 LLM 軌跡')}</span>
             <small>{textForLang(lang, 'Save LLM interaction trajectories for analysis and training.', '保存 LLM 交互轨迹，用于分析和训练。', '保存 LLM 交互軌跡，用於分析和訓練。')}</small>

@@ -43,7 +43,7 @@ const renderTitleBar = (workflowEnabled?: boolean) => render(
         showMaximizeToggle={false}
         theme={overlayTheme}
         themeMode="light"
-        title="AI助手"
+        title="工作台"
         trialReflectEnabled={false}
         ttsEnabled={false}
         ttsPlaying={false}

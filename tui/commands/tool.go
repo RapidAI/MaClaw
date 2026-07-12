@@ -111,9 +111,9 @@ func toolStatus(args []string) error {
 	fmt.Printf("%-15s %-15s %-10s %s\n", "NAME", "DISPLAY", "STATUS", "PATH")
 	fmt.Println(strings.Repeat("-", 65))
 	for _, t := range tools {
-		status := "✗ 未安装"
+		status := "未安装"
 		if t.Available {
-			status = "✓ 就绪"
+			status = "就绪"
 		}
 		fmt.Printf("%-15s %-15s %-10s %s\n", t.Name, t.DisplayName, status, t.Path)
 	}

@@ -54,7 +54,7 @@ describe('deriveProgressPhases', () => {
             'design',
             'tasks',
             'implementation',
-            'verification',
+            'review',
         ]);
         // Labels resolve from the hardcoded phaseLabels map, which is reconciled
         // character-for-character with the generated artifact (the single source of truth).
@@ -65,7 +65,8 @@ describe('deriveProgressPhases', () => {
         expect(result.find(p => p.id === 'implementation')!.expectsDocument).toBe(false);
         // Document phases default to producing a document.
         expect(result.find(p => p.id === 'requirements')!.expectsDocument).toBe(true);
-        expect(result.find(p => p.id === 'verification')!.expectsDocument).toBe(false);
+        // review is a document phase in the generated coding workflow.
+        expect(result.find(p => p.id === 'review')!.expectsDocument).toBe(true);
     });
 
     it('falls back to the hardcoded maps when phases is an empty array', () => {
@@ -74,7 +75,7 @@ describe('deriveProgressPhases', () => {
             'design',
             'tasks',
             'implementation',
-            'verification',
+            'review',
         ]);
     });
 
@@ -115,14 +116,14 @@ describe('deriveProgressPhases', () => {
     it('falls back per-field only when the metadata omits that field', () => {
         const phases: PhaseInfo[] = [
             { id: 'implementation', name: '', index: 0 },   // no name, no expectsDocument
-            { id: 'verification', name: 'Verification!', index: 1 },     // name present, no expectsDocument
+            { id: 'review', name: 'Review!', index: 1 },     // name present, no expectsDocument
         ];
 
         const result = deriveProgressPhases('coding', phases, new Map(), '');
         // implementation: empty name -> fallback label '编码执行'; missing flag -> fallback false.
         expect(result[0]).toEqual({ id: 'implementation', label: '编码执行', expectsDocument: false });
-        // verification: metadata label kept; missing flag -> fallback false (execution/review phase).
-        expect(result[1]).toEqual({ id: 'verification', label: 'Verification!', expectsDocument: false });
+        // review: metadata label kept; missing flag falls back via generated/hardcoded maps (document phase).
+        expect(result[1]).toEqual({ id: 'review', label: 'Review!', expectsDocument: true });
     });
 
     // Requirement 3.4: ids seen only in phaseDocuments or as currentPhaseID are appended
@@ -256,7 +257,7 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
     // index, reaching its maximum (100%) only at the final phase.
     it('produces monotonic progress that reaches 100% only at the final phase', () => {
         // Use the coding fallback order (5 phases) so each current id maps to a known index.
-        const order = ['requirements', 'design', 'tasks', 'implementation', 'verification'];
+        const order = ['requirements', 'design', 'tasks', 'implementation', 'review'];
         const percents: number[] = [];
 
         for (const phaseID of order) {
@@ -290,7 +291,7 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
     it('does not reach 100% from a document collected ahead of the active node', () => {
         const { container } = render(React.createElement(WorkflowDocPreview, {
             // A document exists for the final phase, but the active node is earlier.
-            phaseDocuments: new Map([['verification', '# Verification']]),
+            phaseDocuments: new Map([['review', '# Review']]),
             currentPhaseID: 'design', // index 1 of 5
             latestDocumentPhaseID: '',
             workflowType: 'coding',

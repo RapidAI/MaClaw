@@ -381,8 +381,10 @@ func TestEnsureSharedPythonRuntimeReinstallsPackagesWhenLockNotReady(t *testing.
 		t.Fatal(err)
 	}
 	logText := string(logData)
-	if !strings.Contains(logText, "python install "+plan.Python) {
-		t.Fatalf("expected python install command, got:\n%s", logText)
+	// plan.PythonPath already exists, so Ensure reuses it and only reinstalls packages.
+	// It must not re-run `uv python install` / `venv` for an existing interpreter.
+	if strings.Contains(logText, "python install ") {
+		t.Fatalf("existing python should be reused without python install, got:\n%s", logText)
 	}
 	if strings.Contains(logText, "venv ") {
 		t.Fatalf("existing venv should be reused, got:\n%s", logText)

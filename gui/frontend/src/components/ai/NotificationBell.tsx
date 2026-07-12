@@ -6,7 +6,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
  *
  * 位置：AI 助手面板顶部标题栏区域
  * 功能：
- *   - 铃铛图标 🔔 + CSS 闪烁动画（unreadCount > 0 时）
+ *   - Bell icon + CSS blink animation when unreadCount > 0
  *   - 未读计数 badge（红点，最大显示 10+）
  *   - 点击触发 panelOpen toggle
  *

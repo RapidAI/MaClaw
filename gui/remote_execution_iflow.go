@@ -284,7 +284,7 @@ func acpMessageToText(data []byte) string {
 	case iflowACPMessageToolCall:
 		var payload ACPToolCallPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.ToolName != "" {
-			return fmt.Sprintf("⚡ %s", payload.ToolName)
+			return fmt.Sprintf("%s", payload.ToolName)
 		}
 
 	case iflowACPMessagePlan:
@@ -297,10 +297,10 @@ func acpMessageToText(data []byte) string {
 		var payload ACPTaskFinishPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err == nil {
 			if payload.Summary != "" {
-				return fmt.Sprintf("✓ %s: %s", payload.Status, payload.Summary)
+				return fmt.Sprintf("%s: %s", payload.Status, payload.Summary)
 			}
 			if payload.Status != "" {
-				return fmt.Sprintf("✓ %s", payload.Status)
+				return fmt.Sprintf("%s", payload.Status)
 			}
 		}
 	}

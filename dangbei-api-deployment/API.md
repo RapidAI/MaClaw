@@ -176,11 +176,11 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | 支持 DeepSeek 原生模型 + 常见 alias（如 `gpt-4o`、`gpt-5-codex`、`o3`、`claude-sonnet-4-5`） |
-| `messages` | array | ✅ | OpenAI 风格消息数组 |
-| `stream` | boolean | ❌ | 默认 `false` |
-| `tools` | array | ❌ | Function Calling 定义 |
-| `temperature` 等 | any | ❌ | 兼容透传字段（最终效果由上游决定） |
+| `model` | string | | 支持 DeepSeek 原生模型 + 常见 alias（如 `gpt-4o`、`gpt-5-codex`、`o3`、`claude-sonnet-4-5`） |
+| `messages` | array | | OpenAI 风格消息数组 |
+| `stream` | boolean | | 默认 `false` |
+| `tools` | array | | Function Calling 定义 |
+| `temperature` 等 | any | | 兼容透传字段（最终效果由上游决定） |
 
 #### 非流式响应
 
@@ -280,12 +280,12 @@ OpenAI Responses 风格接口，兼容 `input` 或 `messages`。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | 支持原生模型 + alias 自动映射 |
-| `input` | string/array/object | ❌ | 与 `messages` 二选一 |
-| `messages` | array | ❌ | 与 `input` 二选一 |
-| `instructions` | string | ❌ | 自动前置为 system 消息 |
-| `stream` | boolean | ❌ | 默认 `false` |
-| `tools` | array | ❌ | 与 chat 同样的工具识别与转译策略 |
+| `model` | string | | 支持原生模型 + alias 自动映射 |
+| `input` | string/array/object | | 与 `messages` 二选一 |
+| `messages` | array | | 与 `input` 二选一 |
+| `instructions` | string | | 自动前置为 system 消息 |
+| `stream` | boolean | | 默认 `false` |
+| `tools` | array | | 与 chat 同样的工具识别与转译策略 |
 
 **非流式响应**：返回标准 `response` 对象，`id` 形如 `resp_xxx`，并写入内存 TTL 存储。
 
@@ -319,8 +319,8 @@ data: [DONE]
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | 支持原生模型 + alias 自动映射 |
-| `input` | string/array | ✅ | 支持字符串、字符串数组、token 数组 |
+| `model` | string | | 支持原生模型 + alias 自动映射 |
+| `input` | string/array | | 支持字符串、字符串数组、token 数组 |
 
 > 需配置 `embeddings.provider`。当前支持：`mock` / `deterministic` / `builtin`。未配置或不支持时返回标准错误结构（HTTP 501）。
 
@@ -366,12 +366,12 @@ anthropic-version: 2023-06-01
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | 例如 `claude-sonnet-4-5` / `claude-opus-4-6` / `claude-haiku-4-5`（兼容 `claude-3-5-haiku-latest`），并支持历史 Claude 模型 ID |
-| `messages` | array | ✅ | Claude 风格消息数组 |
-| `max_tokens` | number | ❌ | 缺省自动补 `8192`；当前实现不会硬性截断上游输出 |
-| `stream` | boolean | ❌ | 默认 `false` |
-| `system` | string | ❌ | 可选系统提示 |
-| `tools` | array | ❌ | Claude tool 定义 |
+| `model` | string | | 例如 `claude-sonnet-4-5` / `claude-opus-4-6` / `claude-haiku-4-5`（兼容 `claude-3-5-haiku-latest`），并支持历史 Claude 模型 ID |
+| `messages` | array | | Claude 风格消息数组 |
+| `max_tokens` | number | | 缺省自动补 `8192`；当前实现不会硬性截断上游输出 |
+| `stream` | boolean | | 默认 `false` |
+| `system` | string | | 可选系统提示 |
+| `tools` | array | | Claude tool 定义 |
 
 #### 非流式响应
 
@@ -629,9 +629,9 @@ data: {"type":"message_stop"}
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `identifier` | ✅ | email / mobile / token-only 合成标识 |
-| `model` | ❌ | 默认 `deepseek-chat` |
-| `message` | ❌ | 空字符串时仅测试会话创建 |
+| `identifier` | | email / mobile / token-only 合成标识 |
+| `model` | | 默认 `deepseek-chat` |
+| `message` | | 空字符串时仅测试会话创建 |
 
 **响应**：
 
@@ -689,9 +689,9 @@ data: {"type":"message_stop"}
 
 | 字段 | 必填 | 默认值 |
 | --- | --- | --- |
-| `model` | ❌ | `deepseek-chat` |
-| `message` | ❌ | `你好` |
-| `api_key` | ❌ | 配置中第一个 key |
+| `model` | | `deepseek-chat` |
+| `message` | | `你好` |
+| `api_key` | | 配置中第一个 key |
 
 **响应**：
 
@@ -707,11 +707,11 @@ data: {"type":"message_stop"}
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `vercel_token` | ❌ | 空或 `__USE_PRECONFIG__` 则读环境变量 |
-| `project_id` | ❌ | 空则读 `VERCEL_PROJECT_ID` |
-| `team_id` | ❌ | 空则读 `VERCEL_TEAM_ID` |
-| `auto_validate` | ❌ | 默认 `true` |
-| `save_credentials` | ❌ | 默认 `true` |
+| `vercel_token` | | 空或 `__USE_PRECONFIG__` 则读环境变量 |
+| `project_id` | | 空则读 `VERCEL_PROJECT_ID` |
+| `team_id` | | 空则读 `VERCEL_TEAM_ID` |
+| `auto_validate` | | 默认 `true` |
+| `save_credentials` | | 默认 `true` |
 
 **成功响应**：
 

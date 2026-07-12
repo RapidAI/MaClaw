@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"dangbei-api/internal/config"
-	"dangbei-api/internal/dangbei"
-	"dangbei-api/internal/tools"
+	"ds2api/internal/config"
+	"ds2api/internal/dangbei"
+	"ds2api/internal/tools"
 )
 
 var (
@@ -481,7 +481,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		http.ServeFile(w, r, "/root/clawd/dangbei-api/web/index.html")
+		http.ServeFile(w, r, "/root/clawd/ds2api/web/index.html")
 	})
 	
 	// 健康检查 API
@@ -534,7 +534,7 @@ func main() {
 			fmt.Sscanf(l, "%d", &lines)
 		}
 		
-		file, err := os.Open("/root/clawd/dangbei-api/dangbei.log")
+		file, err := os.Open("/root/clawd/ds2api/dangbei.log")
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{

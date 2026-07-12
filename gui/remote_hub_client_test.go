@@ -239,6 +239,11 @@ func TestRemoteHubClientReadLoopStoresHubError(t *testing.T) {
 	var once sync.Once
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			// Background SyncTools/SyncSessions use plain HTTP; do not Upgrade.
+			http.NotFound(w, r)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)
@@ -305,6 +310,10 @@ func TestRemoteHubClientHandlesSessionInput(t *testing.T) {
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)
@@ -375,6 +384,10 @@ func TestRemoteHubClientHandlesInterruptAndKill(t *testing.T) {
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)
@@ -442,6 +455,10 @@ func TestRemoteHubClientReconnectsAndResyncsSessions(t *testing.T) {
 		t.Fatalf("Listen() error = %v", err)
 	}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.NotFound(w, r)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)

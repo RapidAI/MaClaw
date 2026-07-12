@@ -95,6 +95,22 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
+		Name: "read_tool_result",
+		Description: "Re-read a spilled tool_result handle by id or path (from a prior [tool_result_handle] footer). " +
+			"Use when a tool preview was truncated and you need a specific byte range of the full output. " +
+			"Prefer small limit windows and raise offset to page through large results.",
+		Properties: map[string]interface{}{
+			"id":          map[string]string{"type": "string", "description": "Handle id from [tool_result_handle] (preferred)"},
+			"path":        map[string]string{"type": "string", "description": "Absolute path from the handle footer (must be under tool_results)"},
+			"session_key": map[string]string{"type": "string", "description": "Optional session/user key used when the handle was spilled"},
+			"offset":      map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
+			"limit":       map[string]string{"type": "integer", "description": "Max bytes to return (default 6000, max 32768)"},
+		},
+		// id OR path required — enforced in handler for clearer errors.
+		Handler: func(args map[string]interface{}) string { return ToolReadToolResult(args) },
+	})
+
+	r.Register(ToolEntry{
 		Name:        "FileRead",
 		Description: "按行读取 UTF-8 文本文件。适合在 ripgrep/Glob 找到文件或行号后精确查看代码片段；用 start_line+end_line 读取闭区间，或 start_line+lines 读取指定行数。返回内容默认带行号，便于后续 edit_file 精准修改。",
 		Properties: map[string]interface{}{

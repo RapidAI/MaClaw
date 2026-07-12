@@ -96,36 +96,31 @@ func (c *HubCenterSelectionCache) RememberSelectionThrottled(persister HubCenter
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	discovered = NormalizeHubCenterURLs(discovered)
 
-	// Never persist a local/loopback address as preferred - find the first
-	// public URL from the discovered list instead.
-	if IsLoopbackURL(base) {
-		promoted := ""
-		for _, u := range discovered {
-			if !IsLoopbackURL(u) {
-				promoted = u
-				break
-			}
-		}
-		if promoted != "" {
-			base = promoted
-		}
-		// If all discovered URLs are also loopback, skip persistence entirely
-		// to avoid polluting config with unusable addresses.
-		if promoted == "" {
-			return
-		}
-	}
-
-	// Filter loopback URLs from the discovered list - they are machine-specific
-	// and would pollute the seed list on next startup, potentially being re-selected
-	// by SelectBestCenter.
-	filtered := make([]string, 0, len(discovered))
+	// Preferred URL is the endpoint that just succeeded. Keep loopback preferred
+	// when that is what worked (local/dev failover); do not replace it with a
+	// public seed from discovery that was not actually used.
+	//
+	// Discovered seed list: when public URLs exist, drop other loopbacks but
+	// always keep the successful base so pure-local failover chains survive.
+	public := make([]string, 0, len(discovered))
+	loopback := make([]string, 0, len(discovered))
 	for _, u := range discovered {
-		if !IsLoopbackURL(u) {
-			filtered = append(filtered, u)
+		if IsLoopbackURL(u) {
+			loopback = append(loopback, u)
+		} else {
+			public = append(public, u)
 		}
 	}
-	discovered = filtered
+	if len(public) > 0 {
+		discovered = append([]string{}, public...)
+		if IsLoopbackURL(base) {
+			// Retain the working local base alongside public seeds.
+			discovered = append([]string{base}, discovered...)
+			discovered = NormalizeHubCenterURLs(discovered)
+		}
+	} else {
+		discovered = loopback
+	}
 
 	// Check cache to avoid redundant writes.
 	cachedBase, cachedAll := c.Get()

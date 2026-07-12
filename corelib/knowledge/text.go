@@ -11,7 +11,15 @@ import (
 const maxSavedTextRunes = 20_000_000
 
 func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source, error) {
-	source, nodes, err := buildTextSourceAndNodes(req, Source{})
+	seed := Source{}
+	forceID := strings.TrimSpace(req.ForceID)
+	if forceID != "" {
+		seed.ID = forceID
+		if !req.ForceCreatedAt.IsZero() {
+			seed.CreatedAt = req.ForceCreatedAt.UTC()
+		}
+	}
+	source, nodes, err := buildTextSourceAndNodes(req, seed)
 	if err != nil {
 		return Source{}, err
 	}
@@ -21,17 +29,21 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 	}
 	defer tx.Rollback()
 	isDuplicate := false
-	if existing, ok, err := findExistingTextSourceForSave(ctx, tx, source); err != nil {
-		return Source{}, err
-	} else if ok {
-		isDuplicate = true
-		source.ID = existing.ID
-		source.CreatedAt = existing.CreatedAt
-		if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
+	// Content-hash dedup remaps to another source id. Skip when ForceID is set so
+	// callers (e.g. coding experience UpdateExperience) keep a stable identity.
+	if forceID == "" {
+		if existing, ok, err := findExistingTextSourceForSave(ctx, tx, source); err != nil {
 			return Source{}, err
-		}
-		for i := range nodes {
-			nodes[i].SourceID = source.ID
+		} else if ok {
+			isDuplicate = true
+			source.ID = existing.ID
+			source.CreatedAt = existing.CreatedAt
+			if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
+				return Source{}, err
+			}
+			for i := range nodes {
+				nodes[i].SourceID = source.ID
+			}
 		}
 	}
 	if err := insertSource(ctx, tx, source); err != nil {

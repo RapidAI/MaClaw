@@ -48,9 +48,12 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
   "coding": [
     { id: "requirements", name: "需求文档", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "document_planning", toolPolicy: "doc_only", mutationScope: "workflow_doc", activatesOrchestrator: false },
     { id: "design", name: "技术设计", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "document_planning", toolPolicy: "doc_only", mutationScope: "workflow_doc", activatesOrchestrator: false },
-    { id: "tasks", name: "任务分解", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "code_planning", toolPolicy: "planning", mutationScope: "workflow_doc", activatesOrchestrator: false },
+    { id: "tasks", name: "任务分解", index: 2, expectsDocument: true, canSkip: true, needsConfirm: true, kind: "code_planning", toolPolicy: "planning", mutationScope: "workflow_doc", activatesOrchestrator: false },
     { id: "implementation", name: "编码执行", index: 3, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "execution", toolPolicy: "full", mutationScope: "project", activatesOrchestrator: true },
-    { id: "verification", name: "验收确认", index: 4, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "review", toolPolicy: "full", mutationScope: "project", activatesOrchestrator: false },
+    { id: "review", name: "验收确认", index: 4, expectsDocument: true, canSkip: true, needsConfirm: true, kind: "review", toolPolicy: "doc_only", mutationScope: "workflow_doc", activatesOrchestrator: false },
+  ],
+  "coding_subagent": [
+    { id: "coding_subagent_execution", name: "简化编程", index: 0, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
   ],
   "competitive_analysis": [
     { id: "competitor_id", name: "竞品识别", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
@@ -98,7 +101,7 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "gaokao_profile", name: "考生信息采集", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "gaokao_data_search", name: "录取数据检索与证据整理", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
     { id: "gaokao_candidate_ranking", name: "候选院校专业排序", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
-    { id: "gaokao_final_plan", name: "填报参考资料与建议", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "gaokao_final_plan", name: "填报参考资料与建议", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
   ],
   "grant_proposal": [
     { id: "topic", name: "选题论证", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
@@ -196,6 +199,13 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "yf_review_quality", name: "撰写质量评估", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "yf_review_report", name: "综合评估报告", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
   ],
+  "ops_maintenance": [
+    { id: "ops_intake", name: "Ops Intake", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "readonly_collection", name: "Read-only Collection", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "artifact_plan", name: "Maintenance Artifacts", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "risk_policy", name: "Risk Policy Gate", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+    { id: "controlled_execution", name: "Controlled Execution", index: 4, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
   "paper_reproduction": [
     { id: "paper_analysis", name: "论文深度解读", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
     { id: "reproduction_plan", name: "复现规划", index: 1, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
@@ -244,6 +254,9 @@ export const WORKFLOW_PHASE_META: Record<string, GeneratedPhaseMeta[]> = {
     { id: "plan", name: "方案规划", index: 2, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "budget", name: "资源预算", index: 3, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
     { id: "risk_plan", name: "风险预案", index: 4, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },
+  ],
+  "remote_coding_subagent": [
+    { id: "remote_coding_subagent_execution", name: "远程编程", index: 0, expectsDocument: false, canSkip: false, needsConfirm: false, kind: "", toolPolicy: "full", mutationScope: "", activatesOrchestrator: false },
   ],
   "research_report": [
     { id: "problem_definition", name: "问题定义", index: 0, expectsDocument: true, canSkip: false, needsConfirm: true, kind: "", toolPolicy: "doc_only", mutationScope: "", activatesOrchestrator: false },

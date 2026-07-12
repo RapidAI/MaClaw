@@ -47,7 +47,7 @@ func SetLogDetailEnabled(enabled bool) {
 // CoreToolNames are always included regardless of the user message.
 var CoreToolNames = map[string]bool{
 	"list_sessions": true, "get_session_output": true, "get_session_events": true,
-	"bash": true, "read_file": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
+	"bash": true, "read_file": true, "read_tool_result": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
 	"call_mcp_tool":    true,
 	"manage_skill":     true,
 	"memory":           true,

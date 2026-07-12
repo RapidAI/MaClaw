@@ -12,5 +12,5 @@ func (h *IMMessageHandler) refreshSkillIndexesAfterMutation(skillName string) {
 	if h.app.toolRouter != nil {
 		h.app.toolRouter.RefreshSkillIndex()
 	}
-	h.app.emitEvent("skill:index_refreshed", map[string]string{"skill": skillName})
+	h.app.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": skillName})
 }

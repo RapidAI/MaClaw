@@ -176,7 +176,7 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 
 1. 如果有 SDK `result` 消息且 `is_error` 为 false → 倾向 `completed`
 2. 扫描最近 N 行输出，匹配完成信号和未完成信号：
-   - 完成信号：`✅`、`"I've completed"`、`"已完成"`、`"All done"`、`"Successfully"`、`"Changes applied"`
+   - 完成信号：``、`"I've completed"`、`"已完成"`、`"All done"`、`"Successfully"`、`"Changes applied"`
    - 未完成信号：`"I'll continue"`、`"接下来我会"`、`"Next, I'll"`、`"Let me continue"`、`"I need to"`、`"还需要"`
    - Gemini ACP: `[gemini-acp] turn complete:` 后跟成功指示
 3. 如果完成信号数 > 未完成信号数 → `completed`
@@ -284,11 +284,11 @@ if status == string(SessionBusy) {
 
     switch stallState {
     case StallStateNormal:
-        b.WriteString("\n⏳ 编程工具正在工作中，请等待后再检查进度")
+        b.WriteString("\n编程工具正在工作中，请等待后再检查进度")
     case StallStateSuspected:
-        b.WriteString("\n⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
+        b.WriteString("\n编程工具输出暂停，系统正在尝试恢复，请稍后再检查")
     case StallStateStuck:
-        b.WriteString("\n⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话")
+        b.WriteString("\n编程工具可能已卡住，建议发送具体指令或终止会话")
     }
 }
 
@@ -299,9 +299,9 @@ if status == string(SessionWaitingInput) {
 
     switch completionLevel {
     case CompletionCompleted:
-        b.WriteString("\n✅ 任务似乎已完成，可以查看结果")
+        b.WriteString("\n任务似乎已完成，可以查看结果")
     case CompletionIncomplete:
-        b.WriteString("\n⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作")
+        b.WriteString("\n任务似乎未完成，建议发送「继续」让编程工具继续工作")
     // CompletionUncertain: 保持现有默认提示
     }
 }
@@ -399,7 +399,7 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 
 | 类别 | 模式 | 说明 |
 |------|------|------|
-| 完成 | `✅` | Unicode 勾号 |
+| 完成 | `` | Unicode 勾号 |
 | 完成 | `I've completed` / `已完成` | 自然语言完成声明 |
 | 完成 | `All done` / `Successfully` | 英文完成指示 |
 | 完成 | `Changes applied` | 变更已应用 |
@@ -451,18 +451,18 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 
 ### Property 7: Completion Analysis Classification
 
-*For any* set of output lines and tool type, the `CompletionAnalyzer.Analyze` function shall return exactly one of `{CompletionCompleted, CompletionIncomplete, CompletionUncertain}`. Lines containing completion signals (e.g., `✅`, `"I've completed"`) shall bias toward `CompletionCompleted`, and lines containing incompletion signals (e.g., `"I'll continue"`, `"还需要"`) shall bias toward `CompletionIncomplete`.
+*For any* set of output lines and tool type, the `CompletionAnalyzer.Analyze` function shall return exactly one of `{CompletionCompleted, CompletionIncomplete, CompletionUncertain}`. Lines containing completion signals (e.g., ``, `"I've completed"`) shall bias toward `CompletionCompleted`, and lines containing incompletion signals (e.g., `"I'll continue"`, `"还需要"`) shall bias toward `CompletionIncomplete`.
 
 **Validates: Requirements 4.1, 4.2, 4.3**
 
 ### Property 8: Session Hint Mapping Correctness
 
 *For any* session, the hint text returned by `toolGetSessionOutput` shall be determined by the combination of session status and stall/completion state:
-- (`busy`, `StallStateNormal`) → "⏳ 编程工具正在工作中，请等待后再检查进度"
-- (`busy`, `StallStateSuspected`) → "⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
-- (`busy`, `StallStateStuck`) → "⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话"
-- (`waiting_input`, `CompletionCompleted`) → "✅ 任务似乎已完成，可以查看结果"
-- (`waiting_input`, `CompletionIncomplete`) → "⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作"
+- (`busy`, `StallStateNormal`) → "编程工具正在工作中，请等待后再检查进度"
+- (`busy`, `StallStateSuspected`) → "编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
+- (`busy`, `StallStateStuck`) → "编程工具可能已卡住，建议发送具体指令或终止会话"
+- (`waiting_input`, `CompletionCompleted`) → "任务似乎已完成，可以查看结果"
+- (`waiting_input`, `CompletionIncomplete`) → "任务似乎未完成，建议发送「继续」让编程工具继续工作"
 
 **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5**
 

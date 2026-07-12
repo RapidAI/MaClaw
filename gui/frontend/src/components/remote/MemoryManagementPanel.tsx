@@ -790,7 +790,7 @@ function TimeMachineTab({ t, lang, onDataChanged }: TimeMachineProps) {
             <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "10px 14px", background: colors.surface, marginBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.76rem", color: colors.text, fontWeight: 600, minWidth: 0 }}>
-                        🔄 {t("Auto-Compress", "自动压缩")}
+                        {t("Auto-Compress", "自动压缩")}
                         <span style={{ fontSize: "0.68rem", color: colors.textMuted, fontWeight: 400 }}>
                             {t("Every 6h dedup+LLM", "每6h去重+LLM压缩")}
                         </span>

@@ -1,3 +1,5 @@
+import { StatusGlyph } from '../ai/WorkbenchIcons';
+
 type ToolRepairStatus = {
     show: boolean;
     toolName: string;
@@ -24,8 +26,8 @@ export const ToolRepairProgressDialog = ({ status, t, onClose }: ToolRepairProgr
             )}
             {status.status === 'success' && (
                 <div className="tool-repair-dialog__row tool-repair-dialog__row--success">
-                    <div className="tool-repair-dialog__status-icon" data-status="success">
-                        <span>&#10003;</span>
+                    <div className="tool-repair-dialog__status-icon" data-status="success" aria-hidden="true">
+                        <StatusGlyph kind="ok" size={16} />
                     </div>
                     <span className="tool-repair-dialog__text" data-status="success">
                         {t("toolRepairSuccess").replace("{tool}", status.toolName)}
@@ -35,8 +37,8 @@ export const ToolRepairProgressDialog = ({ status, t, onClose }: ToolRepairProgr
             {status.status === 'failed' && (
                 <div>
                     <div className="tool-repair-dialog__row tool-repair-dialog__row--failed">
-                        <div className="tool-repair-dialog__status-icon" data-status="failed">
-                            <span>&#10005;</span>
+                        <div className="tool-repair-dialog__status-icon" data-status="failed" aria-hidden="true">
+                            <StatusGlyph kind="error" size={16} />
                         </div>
                         <span className="tool-repair-dialog__text" data-status="failed">
                             {t("toolRepairFailed").replace("{tool}", status.toolName)}

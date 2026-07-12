@@ -191,7 +191,7 @@ func (d *DriftDetector) buildDriftResult(count int, toolName, lastResultHint, pa
 	var prompt string
 	if needHuman {
 		prompt = fmt.Sprintf(
-			"[⚠️ 漂移检测 — 严重]\n连续 %d 次调用 %s，已是第 %d 次漂移。\n"+
+			"[漂移检测 — 严重]\n连续 %d 次调用 %s，已是第 %d 次漂移。\n"+
 				"该工具在当前场景下无法完成任务。\n"+
 				"禁止再次调用 %s。\n"+
 				"请直接向用户说明当前遇到的具体问题和限制，不要再尝试。\n",
@@ -207,14 +207,14 @@ func (d *DriftDetector) buildDriftResult(count int, toolName, lastResultHint, pa
 			// type of action with different arguments. Guide it to stop
 			// and deliver the result to the user.
 			prompt = fmt.Sprintf(
-				"[⚠️ 漂移检测]\n检测到语义循环: 在最近 %d 次工具调用中，%s 被调用了 %d 次（参数不同但行为重复）。\n"+
+				"[漂移检测]\n检测到语义循环: 在最近 %d 次工具调用中，%s 被调用了 %d 次（参数不同但行为重复）。\n"+
 					"你正在反复执行同一类操作。用户的任务可能已经完成。\n"+
 					"请停止调用 %s，直接向用户汇报已完成的工作和结果。\n",
 				len(d.records), toolName, count, toolName,
 			)
 		} else {
 			prompt = fmt.Sprintf(
-				"[⚠️ 漂移检测]\n检测到循环模式: 连续 %d 次调用 %s 且参数相似。\n"+
+				"[漂移检测]\n检测到循环模式: 连续 %d 次调用 %s 且参数相似。\n"+
 					"请暂停当前操作，重新审视原始目标，制定新的执行计划。\n"+
 					"不要重复之前失败的方法，尝试不同的解决路径。\n",
 				count, toolName,

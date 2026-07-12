@@ -28,9 +28,9 @@ drawio-skill 的 SKILL.md 写了"先生成 XML 再调用 run.js 转换"，但 LL
 
 | 类别 | 内容来源 | 之前 | 之后 |
 |------|---------|------|------|
-| knowledge skill | `s.Content`（inline） | ✅ 注入 | ✅ 注入（不变） |
-| executable skill + SKILL.md | `loadSkillDocContent(s.SkillDir)` | ❌ 不注入 | ✅ 注入 |
-| executable skill 无 SKILL.md | 无 | ❌ 不注入 | ❌ 不注入（不变） |
+| knowledge skill | `s.Content`（inline） | 注入 | 注入（不变） |
+| executable skill + SKILL.md | `loadSkillDocContent(s.SkillDir)` | 不注入 | 注入 |
+| executable skill 无 SKILL.md | 无 | 不注入 | 不注入（不变） |
 
 ### 匹配规则
 
@@ -41,9 +41,9 @@ drawio-skill 的 SKILL.md 写了"先生成 XML 再调用 run.js 转换"，但 LL
 
 | 文件 | 修改 |
 |------|------|
-| `gui/im_system_prompt.go` | ✅ 已实现：`appendKnowledgeSkillSection` 同时处理 executable skill 的 SKILL.md + 名称匹配 |
-| `gui/app_nl_skills.go` | ✅ 已实现：`NLSkillDefinition` 新增 `HasDocumentation` 字段；`List()` 填充 |
-| `gui/skill_doc_inject_test.go` | ✅ 已实现：6 个测试覆盖所有分支 |
+| `gui/im_system_prompt.go` | 已实现：`appendKnowledgeSkillSection` 同时处理 executable skill 的 SKILL.md + 名称匹配 |
+| `gui/app_nl_skills.go` | 已实现：`NLSkillDefinition` 新增 `HasDocumentation` 字段；`List()` 填充 |
+| `gui/skill_doc_inject_test.go` | 已实现：6 个测试覆盖所有分支 |
 
 ### 验收标准
 
@@ -150,13 +150,13 @@ python3 "{baseDir}/scripts/get_weather.py" "{{city}}"
 
 ### 验收标准
 
-- ✅ 只有 SKILL.md（无 skill.yaml）的 skill 可以声明 triggers、platforms、mode、requires 等完整元数据
-- ✅ 现有的简单 frontmatter（`key: value`）继续正常工作
-- ✅ skill.yaml 存在时，其字段覆盖 SKILL.md frontmatter 的同名字段
-- ✅ Hub 安装的 skill 在本地有 SKILL.md 时，SKILL.md 的元数据生效
-- ✅ `requires_env` 别名在解析边界规范化为 `required_env`，下游代码无需双键检查
-- ✅ 所有 50 个 corelib/skill 测试通过（32 个现有 + 18 个新增）
-- ✅ GUI 和 TUI 编译通过
+- 只有 SKILL.md（无 skill.yaml）的 skill 可以声明 triggers、platforms、mode、requires 等完整元数据
+- 现有的简单 frontmatter（`key: value`）继续正常工作
+- skill.yaml 存在时，其字段覆盖 SKILL.md frontmatter 的同名字段
+- Hub 安装的 skill 在本地有 SKILL.md 时，SKILL.md 的元数据生效
+- `requires_env` 别名在解析边界规范化为 `required_env`，下游代码无需双键检查
+- 所有 50 个 corelib/skill 测试通过（32 个现有 + 18 个新增）
+- GUI 和 TUI 编译通过
 
 
 ---
@@ -171,9 +171,9 @@ python3 "{baseDir}/scripts/get_weather.py" "{{city}}"
 
 两层工具过滤叠加，且 `SkipNeedsConfirmGate` 旁路只覆盖了一层：
 
-1. **Workflow Tool Filter**（`applyWorkflowToolFilter`）：按 `DocOnlyAllowedTools` 白名单过滤。`bash` 和 `write_file` 在白名单中 ✅。`SkipNeedsConfirmGate=true` 时跳过 ✅（#42 已修复）。
+1. **Workflow Tool Filter**（`applyWorkflowToolFilter`）：按 `DocOnlyAllowedTools` 白名单过滤。`bash` 和 `write_file` 在白名单中 。`SkipNeedsConfirmGate=true` 时跳过 （#42 已修复）。
 
-2. **Coding Tool Gate**（`gateConfig.active` 处的定义过滤）：按 `codingToolBlocklist` 黑名单过滤。`bash` 和 `write_file` 在黑名单中 ❌。`SkipNeedsConfirmGate` 不检查 ❌。
+2. **Coding Tool Gate**（`gateConfig.active` 处的定义过滤）：按 `codingToolBlocklist` 黑名单过滤。`bash` 和 `write_file` 在黑名单中 。`SkipNeedsConfirmGate` 不检查 。
 
 当 `handlePendingConfirm` 将消息分类为 "other" 并设置 `SkipNeedsConfirmGate=true` 时，Workflow Tool Filter 被跳过（工具保留），但 Coding Tool Gate 仍然执行（`bash`/`write_file` 被剥离）。LLM 收到的工具列表没有 `bash` 和 `write_file`。
 
@@ -248,11 +248,11 @@ LLM 调用 manage_skill(action=run, args={input:"xx.drawio", format:"png", outpu
 
 | 层级 | 断裂点 | 严重度 | 机制性根因 |
 |------|--------|--------|-----------|
-| 1. 参数契约缺失 | LLM 不知道 skill 期望什么参数名，skill 不知道 LLM 会传什么 | 🔴 P0 | 无参数 schema 声明 |
-| 2. 静默丢弃 | 未被模板引用的 args 被无声丢弃，无警告无错误 | 🔴 P0 | `stripUnresolvedSkillPlaceholders` 无条件剥离 |
-| 3. 单模板困境 | 一个 command 字符串无法表达多种执行模式 | 🟡 P1 | command 是标量而非按模式分发 |
-| 4. 缓存不一致 | config.json 中的 skill 定义可能与磁盘不同步 | 🟡 P1 | identity key 用了可变的 Name 而非稳定的目录路径 |
-| 5. 错误静默 | 空参数产生畸形命令，skill 脚本收到空字符串后产出垃圾结果 | 🟠 P2 | 无执行前参数完整性校验 |
+| 1. 参数契约缺失 | LLM 不知道 skill 期望什么参数名，skill 不知道 LLM 会传什么 | P0 | 无参数 schema 声明 |
+| 2. 静默丢弃 | 未被模板引用的 args 被无声丢弃，无警告无错误 | P0 | `stripUnresolvedSkillPlaceholders` 无条件剥离 |
+| 3. 单模板困境 | 一个 command 字符串无法表达多种执行模式 | P1 | command 是标量而非按模式分发 |
+| 4. 缓存不一致 | config.json 中的 skill 定义可能与磁盘不同步 | P1 | identity key 用了可变的 Name 而非稳定的目录路径 |
+| 5. 错误静默 | 空参数产生畸形命令，skill 脚本收到空字符串后产出垃圾结果 | P2 | 无执行前参数完整性校验 |
 
 ### 根因分析
 
@@ -794,10 +794,10 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 
 | # | maclaw 建议 | 说明 | 覆盖状态 | 对应修复 |
 |---|-----------|------|---------|---------|
-| ① | 读 skill.yaml | command 从 skill.yaml 读取，忽略 SKILL.md frontmatter | ✅ 已覆盖 | 修复 8：`loadSkills` 按目录路径索引，磁盘 skill.yaml 始终是 source of truth；修复 9：每次 `run` 重新扫描磁盘 |
-| ② | 支持 `{args.xxx}` | 从 `manage_skill run` 的 `args` 字典中取值替换 | ✅ 已覆盖（超集） | 修复 1-4：`params` schema 声明 + `BindParams` 别名解析 + CLI 参数构建。比 `{args.xxx}` 更强——支持别名、默认值、必需校验、合成 schema |
-| ③ | 注入 env | 把 `env` 字典注入到子进程 `process.env` | ✅ 已实现（代码已有） | 不在本文修复范围。`StartRun` 从 `runArgs["env"]` 提取 → bash 步骤通过 `params["extra_env"]` 注入 `cmd.Env`；非 bash 步骤通过 `os.Setenv` + defer restore 注入。工具定义已有 `env` 参数描述 |
-| ④ | 不执行示例 | SKILL.md 中的 bash 代码块不自动执行，只作为文档 | ✅ 已实现（代码已有） | `isResolvedBlockExecutable()` 过滤使用示例（含未解析占位符、中文路径等）；问题 1 的 SKILL.md 注入是注入到 LLM system prompt 作为参考文档，不是执行 |
+| ① | 读 skill.yaml | command 从 skill.yaml 读取，忽略 SKILL.md frontmatter | 已覆盖 | 修复 8：`loadSkills` 按目录路径索引，磁盘 skill.yaml 始终是 source of truth；修复 9：每次 `run` 重新扫描磁盘 |
+| ② | 支持 `{args.xxx}` | 从 `manage_skill run` 的 `args` 字典中取值替换 | 已覆盖（超集） | 修复 1-4：`params` schema 声明 + `BindParams` 别名解析 + CLI 参数构建。比 `{args.xxx}` 更强——支持别名、默认值、必需校验、合成 schema |
+| ③ | 注入 env | 把 `env` 字典注入到子进程 `process.env` | 已实现（代码已有） | 不在本文修复范围。`StartRun` 从 `runArgs["env"]` 提取 → bash 步骤通过 `params["extra_env"]` 注入 `cmd.Env`；非 bash 步骤通过 `os.Setenv` + defer restore 注入。工具定义已有 `env` 参数描述 |
+| ④ | 不执行示例 | SKILL.md 中的 bash 代码块不自动执行，只作为文档 | 已实现（代码已有） | `isResolvedBlockExecutable()` 过滤使用示例（含未解析占位符、中文路径等）；问题 1 的 SKILL.md 注入是注入到 LLM system prompt 作为参考文档，不是执行 |
 
 
 ---
@@ -940,12 +940,12 @@ if needsProxy {
 
 | 场景 | 条件 | 期望 |
 |------|------|------|
-| 无 env + 无声明 | `OPENAI_API_KEY` 未设置，skill 无 `no_llm_api` | ✅ 代理启动 |
-| 无 env + no_llm_api | `OPENAI_API_KEY` 未设置，skill 声明 `no_llm_api: true` | ❌ 代理不启动 |
-| 有 env（用户提供） | `OPENAI_API_KEY=sk-real-key` | ❌ 代理不启动（用户 key 优先） |
-| 有 env（stale sentinel） | `OPENAI_API_KEY=sk-maclaw-local-proxy` | ✅ 代理启动（忽略 stale） |
-| extraEnv 提供 | `extraEnv={OPENAI_API_KEY: "sk-xxx"}` | ❌ 代理不启动（调用方已提供） |
-| Hub skill 无声明 | Hub 安装的 skill，无 `no_llm_api` | ✅ 代理启动（安全默认值） |
+| 无 env + 无声明 | `OPENAI_API_KEY` 未设置，skill 无 `no_llm_api` | 代理启动 |
+| 无 env + no_llm_api | `OPENAI_API_KEY` 未设置，skill 声明 `no_llm_api: true` | 代理不启动 |
+| 有 env（用户提供） | `OPENAI_API_KEY=sk-real-key` | 代理不启动（用户 key 优先） |
+| 有 env（stale sentinel） | `OPENAI_API_KEY=sk-maclaw-local-proxy` | 代理启动（忽略 stale） |
+| extraEnv 提供 | `extraEnv={OPENAI_API_KEY: "sk-xxx"}` | 代理不启动（调用方已提供） |
+| Hub skill 无声明 | Hub 安装的 skill，无 `no_llm_api` | 代理启动（安全默认值） |
 
 ### 机制性分析
 
@@ -982,10 +982,10 @@ LLM 调用失败: OpenAI API 错误 (HTTP 400): {"error":{"message":"The `reason
 
 | 场景 | reasoning_content 值 | HTTP 状态 |
 |------|---------------------|----------|
-| A: 完整回传 | `"Let me think..."` (原始值) | 200 ✅ |
-| B: 截断回传 | `"Let me…(truncated)…think"` | 200 ✅ |
-| C: 空字符串 | `""` | 200 ✅ |
-| D: **字段缺失** | 字段不存在 | **400 ❌** |
+| A: 完整回传 | `"Let me think..."` (原始值) | 200 |
+| B: 截断回传 | `"Let me…(truncated)…think"` | 200 |
+| C: 空字符串 | `""` | 200 |
+| D: **字段缺失** | 字段不存在 | **400 ** |
 
 **结论**：DeepSeek API 要求的是 `reasoning_content` **字段必须存在**（哪怕是空字符串），而不是值必须完整。唯一触发 400 的情况是字段在 JSON 中完全不存在。
 

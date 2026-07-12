@@ -49,7 +49,7 @@ func (h *IMMessageHandler) installSkillOnly(ctx context.Context, best *SkillSear
 		if ok, reason := h.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
 			return skillInstallExecutionResult{Text: reason, SilentFailure: true}
 		}
-		sendStatus(fmt.Sprintf("⬇️ 正在从 GitHub 安装: %s ...", best.Name))
+		sendStatus(fmt.Sprintf("正在从 GitHub 安装: %s ...", best.Name))
 		var imported *corelib.NLSkillEntry
 		if strings.TrimSpace(best.InstallRef) != "" {
 			var candidate cskill.GitHubSkillCandidate
@@ -82,7 +82,7 @@ func (h *IMMessageHandler) installSkillOnly(ctx context.Context, best *SkillSear
 		if ok, reason := h.app.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
 			return skillInstallExecutionResult{Text: reason, SilentFailure: true}
 		}
-		sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
+		sendStatus(fmt.Sprintf("正在安装: %s ...", best.Name))
 		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
 		if dlErr != nil {
 			return skillInstallExecutionResult{Text: fmt.Sprintf("Found ClawHub skill %s but download failed: %v", best.Name, dlErr)}
@@ -99,7 +99,7 @@ func (h *IMMessageHandler) installSkillOnly(ctx context.Context, best *SkillSear
 			return skillInstallExecutionResult{Text: reason, SilentFailure: true}
 		}
 	}
-	sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
+	sendStatus(fmt.Sprintf("正在安装: %s ...", best.Name))
 	stagingDir, dlErr := cskill.PrepareStagingDir(firstNonEmpty(best.ID, best.Name, "auto-hub-skill"))
 	if dlErr != nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but staging failed: %v", best.Name, dlErr)}
@@ -152,7 +152,7 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 		}
 	}
 
-	sendStatus(fmt.Sprintf("📦 Registering Skill: %s ...", skill.Name))
+	sendStatus(fmt.Sprintf("Registering Skill: %s ...", skill.Name))
 	if stagingDir != "" {
 		finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
 		if err != nil {
@@ -191,7 +191,7 @@ func (h *IMMessageHandler) registerSkillWithoutExecution(ctx context.Context, sk
 
 	log.Printf("[skill-install-only] skill %q registered from %s (not auto-executed)", skill.Name, source)
 	return skillInstallExecutionResult{
-		Text:    fmt.Sprintf("✅ Skill「%s」已安装。LLM 可在下一轮对话中通过 manage_skill(action=\"run\", name=\"%s\") 执行。", skill.Name, skill.Name),
+		Text:    fmt.Sprintf("Skill「%s」已安装。LLM 可在下一轮对话中通过 manage_skill(action=\"run\", name=\"%s\") 执行。", skill.Name, skill.Name),
 		Success: true,
 	}
 }

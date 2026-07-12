@@ -91,7 +91,7 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 	if sessionID == "" {
 		log.Printf("[workflow-v2-remote] failed to establish SSH session to %s@%s:%d", sshUser, sshHostAddr, sshPort)
 		return &IMAgentResponse{
-			Text: fmt.Sprintf("❌ 无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHostAddr, sshPort),
+			Text: fmt.Sprintf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHostAddr, sshPort),
 		}
 	}
 
@@ -165,7 +165,7 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 				log.Printf("[workflow-v2-remote] PANIC in RemoteExperimentOrchestrator: %v", r)
 				h.activeExperimentOrchestrator.Delete(userID)
 				h.pendingExperimentNotification.Store(userID,
-					fmt.Sprintf("❌ 迭代改进异常终止: %v\n\n请检查服务器状态后重试。", r))
+					fmt.Sprintf("迭代改进异常终止: %v\n\n请检查服务器状态后重试。", r))
 			}
 		}()
 
@@ -188,7 +188,7 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 		}
 
 		// Notify user that the experiment loop has completed
-		completionMsg := fmt.Sprintf("🔬 迭代改进阶段已完成（%s）\n\n%s\n\n请回复「继续」进入实验报告阶段，或回复「继续实验」追加更多轮次。", stopReason, summary)
+		completionMsg := fmt.Sprintf("迭代改进阶段已完成（%s）\n\n%s\n\n请回复「继续」进入实验报告阶段，或回复「继续实验」追加更多轮次。", stopReason, summary)
 		h.pendingExperimentNotification.Store(userID, completionMsg)
 		if h.app != nil {
 			emitWorkflowV2Event(h.app, "workflow:experiment_notification", map[string]interface{}{
@@ -199,7 +199,7 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 	}()
 
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("🚀 迭代改进已启动\n\n"+
+		Text: fmt.Sprintf("迭代改进已启动\n\n"+
 			"• 服务器: %s@%s\n"+
 			"• 项目目录: %s\n"+
 			"• 目标: %s 超出论文 %.1f%%\n"+
@@ -493,7 +493,7 @@ func (h *IMMessageHandler) handleExperimentOrchestratorCommand(userID, text stri
 	if lower == "停止实验" || lower == "停止" || lower == "stop" || lower == "stop experiment" {
 		orch.Stop()
 		return &IMAgentResponse{
-			Text: fmt.Sprintf("⏹️ 正在停止实验（当前轮结束后停止）...\n\n"+
+			Text: fmt.Sprintf("正在停止实验（当前轮结束后停止）...\n\n"+
 				"已完成 %d 轮，当前最佳: %.4f\n"+
 				"等待当前轮完成后将生成实验报告。",
 				len(state.Rounds), state.BestMetric),
@@ -503,7 +503,7 @@ func (h *IMMessageHandler) handleExperimentOrchestratorCommand(userID, text stri
 	// Status commands
 	if lower == "实验状态" || lower == "进度" || lower == "status" {
 		return &IMAgentResponse{
-			Text: fmt.Sprintf("📊 实验进度\n\n"+
+			Text: fmt.Sprintf("实验进度\n\n"+
 				"• 状态: %s\n"+
 				"• 已完成: %d/%d 轮\n"+
 				"• 运行时间: %s\n"+
@@ -524,7 +524,7 @@ func (h *IMMessageHandler) handleExperimentOrchestratorCommand(userID, text stri
 	// Experiment is running and user sent a non-command message.
 	// Inform them that the experiment is active.
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("🔬 实验正在运行中（第 %d/%d 轮）\n\n"+
+		Text: fmt.Sprintf("实验正在运行中（第 %d/%d 轮）\n\n"+
 			"可用命令：\n• 「停止实验」— 停止当前循环\n• 「实验状态」— 查看进度\n\n"+
 			"如需执行其他任务，请先停止实验。",
 			len(state.Rounds)+1, state.Params.MaxRounds),

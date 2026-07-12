@@ -248,7 +248,7 @@ func mcpAdd(args []string) error {
 		}
 		entry.Args = entryArgs
 		cfg.LocalMCPServers = append(cfg.LocalMCPServers, entry)
-		fmt.Printf("✓ 本地 MCP 服务器 '%s' 已添加 (command: %s)\n", *name, *command)
+		fmt.Printf("本地 MCP 服务器 '%s' 已添加 (command: %s)\n", *name, *command)
 	} else {
 		if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": *endpoint}); err != nil {
 			return err
@@ -264,7 +264,7 @@ func mcpAdd(args []string) error {
 			Source:      corelib.MCPSourceManual,
 		}
 		cfg.MCPServers = append(cfg.MCPServers, entry)
-		fmt.Printf("✓ 远程 MCP 服务器 '%s' 已添加 (url: %s)\n", *name, *endpoint)
+		fmt.Printf("远程 MCP 服务器 '%s' 已添加 (url: %s)\n", *name, *endpoint)
 	}
 
 	return store.SaveConfig(cfg)

@@ -12,6 +12,10 @@ import (
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
+// imEarlyProgressText is the first local progress nudge after gates, so the UI
+// shows feedback before history load / profile classify / system prompt.
+const imEarlyProgressText = "收到，正在处理"
+
 type preparedIMEntryExecutionOptions struct {
 	Message                   IMUserMessage
 	Trimmed                   string
@@ -56,9 +60,40 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	}
 	gatesDone := time.Since(execStart)
 
-	historyStart := time.Now()
-	history := h.memory.Load(msg.UserID)
-	historyElapsed := time.Since(historyStart)
+	// Immediate UI feedback before any potentially multi-ms pre-loop work.
+	if opts.OnProgress != nil {
+		opts.OnProgress(imEarlyProgressText)
+	}
+
+	// Load conversation history in parallel with loop-context + profile classify.
+	// History is pure memory/disk; classify does not depend on history contents.
+	// Always drain historyCh before return so the loader goroutine cannot leak.
+	type historyLoadResult struct {
+		entries []agent.ConversationEntry
+		elapsed time.Duration
+	}
+	historyCh := make(chan historyLoadResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[executePreparedIMEntry] history load panic: %v", r)
+				historyCh <- historyLoadResult{}
+			}
+		}()
+		start := time.Now()
+		var entries []agent.ConversationEntry
+		if h != nil && h.memory != nil {
+			entries = h.memory.Load(msg.UserID)
+		}
+		historyCh <- historyLoadResult{entries: entries, elapsed: time.Since(start)}
+	}()
+	// Join history after the parallel branch; use a named drain so any early
+	// return path after this point cannot leave the goroutine blocked on send.
+	// (Channel is buffered size 1 so send never blocks; receive is for ordering.)
+	drainHistory := func() (entries []agent.ConversationEntry, elapsed time.Duration) {
+		hist := <-historyCh
+		return hist.entries, hist.elapsed
+	}
 
 	loopCtxStart := time.Now()
 	loopCtx := h.prepareIMLoopContext(
@@ -88,6 +123,8 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	loopCtx.Runtime.Execution = executionProfile
 	loopCtx.Runtime.SemanticIntent = semanticIntent
 	loopCtxElapsed := time.Since(loopCtxStart)
+
+	history, historyElapsed := drainHistory()
 	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
 
 	// Coding templates wait for the user's next message after their form is
@@ -171,7 +208,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			if phaseName == "" {
 				phaseName = "当前阶段"
 			}
-			hint := "\n\n---\n📋 请确认以上「" + phaseName + "」文档是否符合预期，或提出修改意见。"
+			hint := "\n\n---\n请确认以上「" + phaseName + "」文档是否符合预期，或提出修改意见。"
 			resp.Text += hint
 			// Also send hint via onToken so streaming UI shows it immediately
 			if opts.OnToken != nil {

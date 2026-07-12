@@ -176,11 +176,11 @@ Content-Type: application/json
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | DeepSeek native models + common aliases (`gpt-4o`, `gpt-5-codex`, `o3`, `claude-sonnet-4-5`, etc.) |
-| `messages` | array | ✅ | OpenAI-style messages |
-| `stream` | boolean | ❌ | Default `false` |
-| `tools` | array | ❌ | Function calling schema |
-| `temperature`, etc. | any | ❌ | Accepted but final behavior depends on upstream |
+| `model` | string | | DeepSeek native models + common aliases (`gpt-4o`, `gpt-5-codex`, `o3`, `claude-sonnet-4-5`, etc.) |
+| `messages` | array | | OpenAI-style messages |
+| `stream` | boolean | | Default `false` |
+| `tools` | array | | Function calling schema |
+| `temperature`, etc. | any | | Accepted but final behavior depends on upstream |
 
 #### Non-Stream Response
 
@@ -280,12 +280,12 @@ OpenAI Responses-style endpoint, accepting either `input` or `messages`.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | Supports native models + alias mapping |
-| `input` | string/array/object | ❌ | One of `input` or `messages` is required |
-| `messages` | array | ❌ | One of `input` or `messages` is required |
-| `instructions` | string | ❌ | Prepended as a system message |
-| `stream` | boolean | ❌ | Default `false` |
-| `tools` | array | ❌ | Same tool detection/translation policy as chat |
+| `model` | string | | Supports native models + alias mapping |
+| `input` | string/array/object | | One of `input` or `messages` is required |
+| `messages` | array | | One of `input` or `messages` is required |
+| `instructions` | string | | Prepended as a system message |
+| `stream` | boolean | | Default `false` |
+| `tools` | array | | Same tool detection/translation policy as chat |
 
 **Non-stream**: Returns a standard `response` object with an ID like `resp_xxx`, and stores it in in-memory TTL cache.
 
@@ -319,8 +319,8 @@ Business auth required. Returns OpenAI-compatible embeddings shape.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | Supports native models + alias mapping |
-| `input` | string/array | ✅ | Supports string, string array, token array |
+| `model` | string | | Supports native models + alias mapping |
+| `input` | string/array | | Supports string, string array, token array |
 
 > Requires `embeddings.provider`. Current supported values: `mock` / `deterministic` / `builtin`. If missing/unsupported, returns standard error shape with HTTP 501.
 
@@ -366,12 +366,12 @@ anthropic-version: 2023-06-01
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | For example `claude-sonnet-4-5` / `claude-opus-4-6` / `claude-haiku-4-5` (compatible with `claude-3-5-haiku-latest`), plus historical Claude model IDs |
-| `messages` | array | ✅ | Claude-style messages |
-| `max_tokens` | number | ❌ | Auto-filled to `8192` when omitted; not strictly enforced by upstream bridge |
-| `stream` | boolean | ❌ | Default `false` |
-| `system` | string | ❌ | Optional system prompt |
-| `tools` | array | ❌ | Claude tool schema |
+| `model` | string | | For example `claude-sonnet-4-5` / `claude-opus-4-6` / `claude-haiku-4-5` (compatible with `claude-3-5-haiku-latest`), plus historical Claude model IDs |
+| `messages` | array | | Claude-style messages |
+| `max_tokens` | number | | Auto-filled to `8192` when omitted; not strictly enforced by upstream bridge |
+| `stream` | boolean | | Default `false` |
+| `system` | string | | Optional system prompt |
+| `tools` | array | | Claude tool schema |
 
 #### Non-Stream Response
 
@@ -629,9 +629,9 @@ Updatable fields: `keys`, `accounts`, `claude_mapping`.
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `identifier` | ✅ | email / mobile / token-only synthetic id |
-| `model` | ❌ | default `deepseek-chat` |
-| `message` | ❌ | if empty, only session creation is tested |
+| `identifier` | | email / mobile / token-only synthetic id |
+| `model` | | default `deepseek-chat` |
+| `message` | | if empty, only session creation is tested |
 
 **Response**:
 
@@ -689,9 +689,9 @@ Test API availability through the service itself.
 
 | Field | Required | Default |
 | --- | --- | --- |
-| `model` | ❌ | `deepseek-chat` |
-| `message` | ❌ | `你好` |
-| `api_key` | ❌ | First key in config |
+| `model` | | `deepseek-chat` |
+| `message` | | `你好` |
+| `api_key` | | First key in config |
 
 **Response**:
 
@@ -707,11 +707,11 @@ Test API availability through the service itself.
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `vercel_token` | ❌ | If empty or `__USE_PRECONFIG__`, read env |
-| `project_id` | ❌ | Fallback: `VERCEL_PROJECT_ID` |
-| `team_id` | ❌ | Fallback: `VERCEL_TEAM_ID` |
-| `auto_validate` | ❌ | Default `true` |
-| `save_credentials` | ❌ | Default `true` |
+| `vercel_token` | | If empty or `__USE_PRECONFIG__`, read env |
+| `project_id` | | Fallback: `VERCEL_PROJECT_ID` |
+| `team_id` | | Fallback: `VERCEL_TEAM_ID` |
+| `auto_validate` | | Default `true` |
+| `save_credentials` | | Default `true` |
 
 **Success response**:
 

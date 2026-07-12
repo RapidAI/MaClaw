@@ -6,6 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
@@ -68,9 +69,13 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessa
 	if profile, forced := lengthFullExecutionProfile(msg); forced {
 		return profile, nil
 	}
+	// Execution-profile routing only needs a rough intent signal to choose
+	// light vs full agent. Full UIC fusion waits on the tree/LLM channel
+	// (often multi-second). Embedding-only keeps pre-loop under ~100ms while
+	// remaining conservative: degraded/low-confidence still maps to full.
 	var semantic *intent.ClassificationResult
 	if uic := h.getUnifiedClassifier(); uic != nil {
-		result := uic.Classify(intent.MessageContext{
+		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
 			Text:   msg.Text,
 			UserID: msg.UserID,
 		})
@@ -265,10 +270,17 @@ type ToolExecutionContract struct {
 }
 
 func filterToolsForExecutionProfile(tools []map[string]interface{}, profile ExecutionProfile) []map[string]interface{} {
-	if !profile.IsLight() || len(tools) == 0 {
+	// Light execution layer OR adaptive light prompt profile both need a
+	// reduced tool surface so tools match the light system prompt.
+	if (!profile.IsLight() && !isLightPromptProfile(profile.PromptProfile)) || len(tools) == 0 {
 		return tools
 	}
-	budget := profile.ToolBudget
+	filterProfile := profile
+	if !filterProfile.IsLight() && isLightPromptProfile(filterProfile.PromptProfile) {
+		// Soft light: full layer but light prompt — still restrict tools.
+		filterProfile = softLightExecutionProfile(filterProfile)
+	}
+	budget := filterProfile.ToolBudget
 	if budget <= 0 {
 		budget = 8
 	}
@@ -279,7 +291,7 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 		if !contract.Explicit {
 			continue
 		}
-		if !contractAllowedForLight(contract) || !contractMatchesExecutionProfile(contract, profile) || seen[contract.Name] {
+		if !contractAllowedForLight(contract) || !contractMatchesExecutionProfile(contract, filterProfile) || seen[contract.Name] {
 			continue
 		}
 		filtered = append(filtered, def)
@@ -292,6 +304,28 @@ func filterToolsForExecutionProfile(tools []map[string]interface{}, profile Exec
 		return tools
 	}
 	return filtered
+}
+
+func isLightPromptProfile(s string) bool {
+	return agent.NormalizePromptProfile(s).IsLight()
+}
+
+// softLightExecutionProfile applies default light tool budgets/capabilities when
+// only PromptProfile=light is set (adaptive prompt on a full execution layer).
+func softLightExecutionProfile(p ExecutionProfile) ExecutionProfile {
+	out := p
+	out.Layer = string(executionLayerLight)
+	out.PromptProfile = "light"
+	if out.ToolBudget <= 0 {
+		out.ToolBudget = 8
+	}
+	if len(out.RequiredCapabilities) == 0 {
+		out.RequiredCapabilities = []string{"current_data", "time", "web", "fetch", "status"}
+	}
+	if strings.TrimSpace(out.Reason) == "" {
+		out.Reason = "adaptive light prompt profile"
+	}
+	return out
 }
 
 func executionContractForTool(def map[string]interface{}) ToolExecutionContract {

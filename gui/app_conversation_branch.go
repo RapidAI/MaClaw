@@ -196,9 +196,9 @@ func (h *IMMessageHandler) handleBranchCommand(msg IMUserMessage, trimmed string
 	// would overwrite the branched history on its next save.
 	if h.hasActiveLoopForUser(userID) {
 		if isEN {
-			return &IMAgentResponse{Text: "⚠️ Cannot branch while a task is running. Wait for completion or use /cancel."}
+			return &IMAgentResponse{Text: "Cannot branch while a task is running. Wait for completion or use /cancel."}
 		}
-		return &IMAgentResponse{Text: "⚠️ 无法在任务执行期间创建分支。请先等待任务完成或使用 /cancel 取消当前任务。"}
+		return &IMAgentResponse{Text: "无法在任务执行期间创建分支。请先等待任务完成或使用 /cancel 取消当前任务。"}
 	}
 
 	entries := h.memory.Load(userID)
@@ -216,10 +216,10 @@ func (h *IMMessageHandler) handleBranchCommand(msg IMUserMessage, trimmed string
 		// No argument — show branch points (list messages with indices).
 		var sb strings.Builder
 		if isEN {
-			sb.WriteString("📋 **Conversation Branch Points**\n\n")
+			sb.WriteString("**Conversation Branch Points**\n\n")
 			sb.WriteString("Use `/branch N` to branch from message N (rewind to that point).\n\n")
 		} else {
-			sb.WriteString("📋 **对话历史分支点**\n\n")
+			sb.WriteString("**对话历史分支点**\n\n")
 			sb.WriteString("使用 `/branch N` 从第 N 条消息处创建分支（回退到该点重新开始）。\n\n")
 		}
 		count := 0
@@ -228,9 +228,9 @@ func (h *IMMessageHandler) handleBranchCommand(msg IMUserMessage, trimmed string
 				continue
 			}
 			preview := entryContentPreview(entry, 50)
-			icon := "👤"
+			icon := ""
 			if entry.Role == "assistant" {
-				icon = "🤖"
+				icon = ""
 			}
 			sb.WriteString(fmt.Sprintf("`%d` %s %s\n", i, icon, preview))
 			count++
@@ -283,12 +283,12 @@ func (h *IMMessageHandler) handleBranchCommand(msg IMUserMessage, trimmed string
 
 	if isEN {
 		return &IMAgentResponse{
-			Text:    fmt.Sprintf("🔀 Branched from message #%d\n\n> %s\n\nConversation rewound. Send a new message to start a different path.\n\n⚠️ Previous messages after this point are no longer visible (saved in memory).", targetIndex, preview),
+			Text:    fmt.Sprintf("Branched from message #%d\n\n> %s\n\nConversation rewound. Send a new message to start a different path.\n\nPrevious messages after this point are no longer visible (saved in memory).", targetIndex, preview),
 			ClearUI: true,
 		}
 	}
 	return &IMAgentResponse{
-		Text:    fmt.Sprintf("🔀 已从第 %d 条消息处创建分支\n\n> %s\n\n对话已回退到该点。请发送新消息开始新的对话路径。\n\n⚠️ 注意：之前该点之后的对话内容将不在当前视图中显示（已保存在记忆系统中）。", targetIndex, preview),
+		Text:    fmt.Sprintf("已从第 %d 条消息处创建分支\n\n> %s\n\n对话已回退到该点。请发送新消息开始新的对话路径。\n\n注意：之前该点之后的对话内容将不在当前视图中显示（已保存在记忆系统中）。", targetIndex, preview),
 		ClearUI: true,
 	}
 }

@@ -1,10 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -42,11 +42,21 @@ func (a *App) emitAgentView(view map[string]interface{}) bool {
 		return false
 	}
 	seq := a.nextAgentViewSeq()
+	// Attach/register monotic viewRevision before clients receive the payload.
+	a.rememberAgentViewOpen(view, seq)
 	if a.ctx == nil {
 		return false
 	}
 	a.recordAgentViewSchema(view)
 	payload := map[string]interface{}{"view": view, "seq": seq}
+	if meta, _ := view["meta"].(map[string]interface{}); meta != nil {
+		if rev, ok := meta["viewRevision"]; ok {
+			payload["view_revision"] = rev
+		}
+		if ver := strings.TrimSpace(fmt.Sprint(meta["schemaVersion"])); ver != "" && ver != "<nil>" {
+			payload["schema_version"] = ver
+		}
+	}
 	// Single event channel: agent-view:lifecycle is the formal protocol.
 	// The legacy "agent-view" event is retained only for external consumers
 	// (e.g. IM gateway, older Wails bindings) that haven't migrated.
@@ -99,6 +109,7 @@ func (a *App) clearAgentViewWithPayload(viewID string, extra map[string]interfac
 		return false
 	}
 	seq := a.nextAgentViewSeq()
+	a.forgetAgentViewOpen(viewID)
 	if a.ctx == nil {
 		return false
 	}
@@ -124,7 +135,7 @@ func (a *App) emitAgentViewEvent(name string, payload map[string]interface{}) (o
 			ok = false
 		}
 	}()
-	runtime.EventsEmit(a.ctx, name, payload)
+	a.emitEvent(name, payload)
 	return true
 }
 

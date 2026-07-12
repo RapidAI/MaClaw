@@ -204,7 +204,7 @@ func (l *FailureLearner) BuildConstraintBlock() string {
 		return constraints[i].TriggerCount > constraints[j].TriggerCount
 	})
 
-	header := "[📚 已学习约束]\n"
+	header := "[已学习约束]\n"
 	footer := "[/约束]\n"
 
 	var b strings.Builder

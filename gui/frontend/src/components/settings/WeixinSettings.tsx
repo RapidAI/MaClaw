@@ -1,7 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { LoadConfig, RestartWeixin, SetWeixinLocalMode, StopWeixin } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
-import { channelModeLabel, connectionStatusLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 import { WeixinQRLoginPanel } from './WeixinQRLoginPanel';
 
 type WeixinSettingsProps = {
@@ -46,7 +47,7 @@ export const WeixinSettings = ({
             {textForLang(lang, 'Scan QR code to log in to WeChat and chat with MaClaw Agent.', '\u626b\u7801\u767b\u5f55\u5fae\u4fe1\uff0c\u901a\u8fc7\u5fae\u4fe1\u4e0e MaClaw Agent \u5bf9\u8bdd\u3002', '\u6383\u78bc\u767b\u9304\u5fae\u4fe1\uff0c\u900f\u904e\u5fae\u4fe1\u8207 MaClaw Agent \u5c0d\u8a71\u3002')}
         </p>
         <div className="im-settings-toolbar">
-            <span className="im-settings-status" data-status={weixinStatus}>{connectionStatusLabel(weixinStatus, lang)}</span>
+            <ConnectionStatusBadge status={weixinStatus} lang={lang} />
             {(config as any)?.weixin_account_id && (
                 <span className="im-settings-account-id">ID: {(config as any).weixin_account_id}</span>
             )}

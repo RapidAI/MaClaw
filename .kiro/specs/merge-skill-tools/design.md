@@ -89,7 +89,7 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
     if err != nil {
         return fmt.Sprintf("上传失败: %s", err.Error())
     }
-    return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, submissionID)
+    return fmt.Sprintf("Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, submissionID)
 }
 ```
 

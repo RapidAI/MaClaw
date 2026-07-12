@@ -1,4 +1,4 @@
-import { renderHook, act } from "@testing-library/react";
+﻿import { renderHook, act } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useGroupSessionActions } from "../useGroupSessionActions";
 
@@ -131,8 +131,8 @@ describe("useGroupSessionActions", () => {
         expect(result.current.feedback?.message).not.toBe("Group is full (max 2)");
     });
 
-    it("detects an existing local AI participant case-insensitively", async () => {
-        const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
+    it("detects an existing Local participant case-insensitively", async () => {
+        const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local" });
         const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));
 
         let added: Awaited<ReturnType<typeof result.current.addLocalAI>> | undefined;
@@ -147,11 +147,11 @@ describe("useGroupSessionActions", () => {
 
         expect(added?.success).toBe(false);
         expect(registerLocalExecutor).not.toHaveBeenCalled();
-        expect(result.current.feedback?.message).toBe("Local AI assistant is already in the session");
+        expect(result.current.feedback?.message).toBe("Local node is already in the session");
     });
 
-    it("returns canonical local AI participant identity after registration", async () => {
-        const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
+    it("returns canonical Local participant identity after registration", async () => {
+        const registerLocalExecutor = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local" });
         const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));
 
         let added: Awaited<ReturnType<typeof result.current.addLocalAI>> | undefined;
@@ -164,11 +164,11 @@ describe("useGroupSessionActions", () => {
             });
         });
 
-        expect(added).toMatchObject({ success: true, sessionId: "session-1", participantId: "machine-local", displayName: "Local AI" });
-        expect(result.current.feedback?.message).toBe("Local AI assistant added to session");
+        expect(added).toMatchObject({ success: true, sessionId: "session-1", participantId: "machine-local", displayName: "Local" });
+        expect(result.current.feedback?.message).toBe("Local node added to session");
     });
 
-    it("detects an existing local AI participant by canonical id", async () => {
+    it("detects an existing Local participant by canonical id", async () => {
         const registerLocalExecutor = vi.fn();
         const { result } = renderHook(() => useGroupSessionActions({ lang: "en", registerLocalExecutor }));
 
@@ -185,6 +185,6 @@ describe("useGroupSessionActions", () => {
 
         expect(added?.success).toBe(false);
         expect(registerLocalExecutor).not.toHaveBeenCalled();
-        expect(result.current.feedback?.message).toBe("Local AI assistant is already in the session");
+        expect(result.current.feedback?.message).toBe("Local node is already in the session");
     });
 });

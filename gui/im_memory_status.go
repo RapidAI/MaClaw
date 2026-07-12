@@ -64,23 +64,6 @@ var catLabelZh = map[string]string{
 	"reference":            "引用",
 }
 
-// catEmoji maps category to a representative emoji for the text chart.
-var catEmoji = map[string]string{
-	"self_identity":        "🤖",
-	"user_fact":            "👤",
-	"preference":           "⚙️",
-	"project_knowledge":    "📁",
-	"instruction":          "📌",
-	"conversation_summary": "💬",
-	"session_checkpoint":   "📍",
-	"task_artifact":        "📄",
-	"profile":              "🧑",
-	"user":                 "👤",
-	"feedback":             "💡",
-	"project":              "📁",
-	"reference":            "🔗",
-}
-
 // formatMemoryStatusText builds a text-based memory status report with bar charts.
 func formatMemoryStatusText(hr *memory.HealthReport) string {
 	return formatMemoryStatusTextWithLang(hr, "zh-Hans")
@@ -97,7 +80,7 @@ func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
 	var sb strings.Builder
 
 	// ── Header ──
-	sb.WriteString("🧠 **记忆状态**\n\n")
+	sb.WriteString("**记忆状态**\n\n")
 
 	// ── Capacity gauge ──
 	active := hr.ActiveEntries
@@ -147,47 +130,43 @@ func formatMemoryStatusTextChinese(hr *memory.HealthReport) string {
 		if label == "" {
 			label = r.cat
 		}
-		emoji := catEmoji[r.cat]
-		if emoji == "" {
-			emoji = "📦"
-		}
 		rowPct := float64(r.count) / float64(total) * 100
 		barLen := int(math.Round(float64(barMaxWidth) * float64(r.count) / float64(total)))
 		if barLen == 0 && r.count > 0 {
 			barLen = 1
 		}
-		bar := strings.Repeat("█", barLen) + strings.Repeat("░", barMaxWidth-barLen)
+		bar := strings.Repeat("#", barLen) + strings.Repeat("-", barMaxWidth-barLen)
 		padding := strings.Repeat(" ", maxLabelW-runeWidth(label))
-		sb.WriteString(fmt.Sprintf("%s %s%s %s %3d条 (%4.1f%%)\n",
-			emoji, label, padding, bar, r.count, rowPct))
+		sb.WriteString(fmt.Sprintf("%s%s %s %3d条 (%4.1f%%)\n",
+			label, padding, bar, r.count, rowPct))
 	}
 
 	// ── Summary stats ──
 	sb.WriteString("\n**详细信息**:\n")
 	if hr.ArchivedEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  📦 已归档: %d 条\n", hr.ArchivedEntries))
+		sb.WriteString(fmt.Sprintf("  已归档: %d 条\n", hr.ArchivedEntries))
 	}
 	if hr.StaleEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  🕸️ 过期: %d 条\n", hr.StaleEntries))
+		sb.WriteString(fmt.Sprintf("  过期: %d 条\n", hr.StaleEntries))
 	}
 	if hr.PinnedEntries > 0 {
-		sb.WriteString(fmt.Sprintf("  📌 固定: %d 条\n", hr.PinnedEntries))
+		sb.WriteString(fmt.Sprintf("  固定: %d 条\n", hr.PinnedEntries))
 	}
 	if hr.EmbedderActive {
 		noEmbed := hr.NoEmbedding
 		embedded := active - noEmbed
-		sb.WriteString(fmt.Sprintf("  🔢 向量化: %d / %d\n", embedded, active))
+		sb.WriteString(fmt.Sprintf("  向量化: %d / %d\n", embedded, active))
 	} else {
-		sb.WriteString("  🔢 向量化: 未启用\n")
+		sb.WriteString("  向量化: 未启用\n")
 	}
 	if hr.OldestEntry != "" {
 		if t, err := time.Parse(time.RFC3339, hr.OldestEntry); err == nil {
-			sb.WriteString(fmt.Sprintf("  📅 最早记忆: %s\n", t.Format("2006-01-02 15:04")))
+			sb.WriteString(fmt.Sprintf("  最早记忆: %s\n", t.Format("2006-01-02 15:04")))
 		}
 	}
 	if hr.NewestEntry != "" {
 		if t, err := time.Parse(time.RFC3339, hr.NewestEntry); err == nil {
-			sb.WriteString(fmt.Sprintf("  📅 最新记忆: %s\n", t.Format("2006-01-02 15:04")))
+			sb.WriteString(fmt.Sprintf("  最新记忆: %s\n", t.Format("2006-01-02 15:04")))
 		}
 	}
 
@@ -233,10 +212,6 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 
 	const barMaxWidth = 16
 	for _, r := range rows {
-		emoji := catEmoji[r.cat]
-		if emoji == "" {
-			emoji = "-"
-		}
 		rowPct := float64(r.count) / float64(total) * 100
 		barLen := int(math.Round(float64(barMaxWidth) * float64(r.count) / float64(total)))
 		if barLen == 0 && r.count > 0 {
@@ -244,7 +219,7 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 		}
 		bar := strings.Repeat("#", barLen) + strings.Repeat("-", barMaxWidth-barLen)
 		padding := strings.Repeat(" ", maxLabelW-runeWidth(r.cat))
-		sb.WriteString(fmt.Sprintf("%s %s%s %s %3d item(s) (%4.1f%%)\n", emoji, r.cat, padding, bar, r.count, rowPct))
+		sb.WriteString(fmt.Sprintf("%s%s %s %3d item(s) (%4.1f%%)\n", r.cat, padding, bar, r.count, rowPct))
 	}
 
 	sb.WriteString("\n**Details**:\n")
@@ -279,7 +254,7 @@ func formatMemoryStatusTextEnglish(hr *memory.HealthReport) string {
 }
 
 // renderBarGauge renders a text-based capacity gauge bar.
-// Example: [████████████░░░░░░░░] 60%
+// Example: [############--------] 60%
 func renderBarGauge(pct float64, width int) string {
 	filled := int(math.Round(float64(width) * pct / 100))
 	if filled > width {
@@ -288,15 +263,8 @@ func renderBarGauge(pct float64, width int) string {
 	if filled < 0 {
 		filled = 0
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-	// Color indicator based on usage level.
-	indicator := "🟢"
-	if pct >= 90 {
-		indicator = "🔴"
-	} else if pct >= 70 {
-		indicator = "🟡"
-	}
-	return fmt.Sprintf("%s [%s]", indicator, bar)
+	bar := strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
+	return fmt.Sprintf("[%s]", bar)
 }
 
 // runeWidth estimates the display width of a string (CJK chars = 2, others = 1).

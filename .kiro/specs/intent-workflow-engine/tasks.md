@@ -136,7 +136,7 @@
   - 返回 []CheckResult{Item, Status, Detail}
 - [ ] 实现 `formatPhaseOutput(output string, checks []CheckResult, phase PhaseTemplate) string`:
   - 产出物文本
-  - 检查结果（✅/⚠️/❌ 图标）
+  - 检查结果（//图标）
   - 操作提示（"说'下一步'继续，或直接提修改意见"）
 - [x] 编写单元测试：prompt 构建、checklist 解析、格式化输出
 

@@ -85,7 +85,7 @@ Implement an input buffer queue for the MaClaw AI Assistant Panel that allows us
   - [x] 4.1 Create `BufferQueuePanel.tsx` with `BufferQueuePanelProps` interface and rendering logic
     - Define `BufferQueuePanelProps` interface (queue, lang, theme, editingEntryId, onEdit, onCancelEdit, onSaveEdit, onDelete, onReorder)
     - Render header with queue count localized: "N 条待发送" (zh-Hans) / "N 條待發送" (zh-Hant) / "N queued" (en)
-    - Render each `BufferEntryRow`: drag handle (`⠿`), text preview (truncated 80 chars + `...`), attachment indicators (image thumbnails 24×24px / file-type icons), edit button (✏️), delete button (🗑)
+    - Render each `BufferEntryRow`: drag handle (`⠿`), text preview (truncated 80 chars + `...`), attachment indicators (image thumbnails 24×24px / file-type icons), edit button (✏️), delete button ()
     - Implement inline edit mode: textarea pre-filled with entry text, attachment management area with delete buttons (✕) per attachment, confirm/cancel buttons
     - Enter (without Shift) or confirm button saves edit; Escape or cancel button discards
     - Saving with empty text and no attachments removes the entry
@@ -102,7 +102,7 @@ Implement an input buffer queue for the MaClaw AI Assistant Panel that allows us
     - Map image extensions (.png, .jpg, .jpeg, .gif, .svg, .webp, .bmp)
     - Map archive extensions (.zip, .tar, .gz, .rar)
     - Map script extensions (.sh, .bat, .ps1)
-    - Default icon `📄` for unrecognized extensions
+    - Default icon `` for unrecognized extensions
     - _Requirements: 2.3_
 
   - [ ]* 4.3 Write component tests for `BufferQueuePanel`

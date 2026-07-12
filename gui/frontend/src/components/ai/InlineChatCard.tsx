@@ -1,4 +1,5 @@
 import { useState, useCallback, type CSSProperties } from "react";
+import { IconAlert } from "./WorkbenchIcons";
 
 // --- Generic Inline Chat Card System ---
 // Renders interactive cards within the chat message stream.
@@ -151,7 +152,10 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
             {/* Security warnings */}
             {card.metadata?.security_warnings && Array.isArray(card.metadata.security_warnings) && card.metadata.security_warnings.length > 0 && (
                 <div style={{ ...metadataStyle, background: "rgba(220, 38, 38, 0.08)", border: "1px solid rgba(220, 38, 38, 0.2)", color: theme.dangerColor }}>
-                    <div style={{ fontWeight: 600, marginBottom: "4px" }}>⚠️ {lang === "en" ? "Security Notice" : "安全提示"}</div>
+                    <div style={{ fontWeight: 600, marginBottom: "4px", display: "flex", alignItems: "center", gap: 6 }}>
+                        <IconAlert size={14} color="currentColor" />
+                        {lang === "en" ? "Security Notice" : "安全提示"}
+                    </div>
                     {(card.metadata.security_warnings as string[]).map((w, i) => (
                         <div key={i} style={{ fontSize: "10px" }}>{w}</div>
                     ))}
@@ -202,9 +206,9 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
             {/* Resolved state indicator */}
             {isResolved && card.resolvedAction && (
                 <div style={{ fontSize: "12px", color: card.resolvedAction === "cancel" ? theme.mutedColor : theme.accentColor, marginTop: "8px", fontWeight: 500 }}>
-                    {card.resolvedAction === "save" ? (lang === "en" ? "✅ Skill saved successfully!" : "✅ Skill 已保存成功！") :
+                    {card.resolvedAction === "save" ? (lang === "en" ? "Skill saved successfully." : "Skill 已保存成功。") :
                      card.resolvedAction === "cancel" ? (lang === "en" ? "Dismissed." : "已关闭。") :
-                     `✓ ${card.resolvedAction}`}
+                     String(card.resolvedAction)}
                 </div>
             )}
 

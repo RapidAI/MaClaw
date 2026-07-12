@@ -112,7 +112,7 @@
 
 1. WHEN 用户确认"开工"后，THE Workflow_Engine SHALL 展示工作流阶段概览（所有阶段名称和当前进度），自动进入第一阶段
 2. WHEN 进入某个阶段时，THE Workflow_Engine SHALL 构建该阶段的 system prompt（包含阶段指令 + Structured_Intent + 前序阶段产出物），通过 System_Prompt_Injection 注入到 Agent_Loop 的 conversation 中
-3. WHEN 阶段产出物生成后，THE Workflow_Engine SHALL 使用 LLM 对照该阶段的 Checklist 进行自检，向用户展示检查结果（✅ 通过 / ⚠️ 需关注）
+3. WHEN 阶段产出物生成后，THE Workflow_Engine SHALL 使用 LLM 对照该阶段的 Checklist 进行自检，向用户展示检查结果（通过 / 需关注）
 4. WHEN 阶段的 NeedsConfirm 为 true 时，THE Workflow_Engine SHALL 等待用户说"下一步"、"确认"、"继续"后才推进到下一阶段
 5. WHEN 用户在确认前说"改一下 XX"，THE Workflow_Engine SHALL 将修改请求注入 system prompt，让 LLM 修改当前阶段产出物，不推进阶段
 6. WHEN 用户说"跳过"且当前阶段的 CanSkip 为 true 时，THE Workflow_Engine SHALL 跳过当前阶段，推进到下一阶段
@@ -244,12 +244,12 @@
 4. WHEN 工作流推进到下一阶段时，THE 右侧文档预览 SHALL 自动切换为新阶段的产出物，同时保留前序阶段文档的切换标签
 5. WHEN 工作流处于 implementation 阶段或非工作流模式时，THE AIAssistantPanel SHALL 恢复为单栏全宽聊天布局
 6. THE 分栏布局 SHALL 支持拖拽调整左右宽度比例，默认比例为 50:50
-7. WHEN 质量门禁检查完成后，THE 右侧文档预览 SHALL 在文档顶部展示检查结果摘要（✅/⚠️ 图标）
+7. WHEN 质量门禁检查完成后，THE 右侧文档预览 SHALL 在文档顶部展示检查结果摘要（/图标）
 8. THE 分栏布局仅适用于 GUI 桌面端，TUI 和 IM 渠道不受影响
 9. THE 右侧文档预览区域 SHALL 在右上角提供关闭按钮（×），用户点击后关闭文档预览面板，恢复为单栏聊天布局
 10. WHEN 文档预览面板被用户手动关闭后，THE 左侧聊天区域中的阶段产出物消息 SHALL 以可点击的文档名链接形式展示（类似 Kiro 的 spec 文件链接体验），用户点击文档名即可重新打开右侧文档预览面板
 11. WHEN 用户点击聊天区域中的文档名链接时，THE AIAssistantPanel SHALL 重新切换为分栏布局，右侧展示对应阶段的文档内容
-12. THE 聊天区域中的文档名链接 SHALL 显示阶段名称和文档类型图标（如 📄 需求文档、📐 技术设计、📋 任务列表），便于用户识别
+12. THE 聊天区域中的文档名链接 SHALL 显示阶段名称和文档类型图标（如 需求文档、技术设计、任务列表），便于用户识别
 
 ### 需求 17：兼容性
 

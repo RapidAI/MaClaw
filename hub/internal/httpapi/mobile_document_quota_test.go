@@ -86,6 +86,58 @@ func TestMobileDocumentDraftCreateRespectsQuota(t *testing.T) {
 	}
 }
 
+func TestMobileDocumentQuotaIgnoresMissingBlobOriginals(t *testing.T) {
+	owner := "quota-ghost-owner"
+	t.Setenv(mobileBlobDirEnv, t.TempDir())
+	mobileDocuments.Lock()
+	mobileDocuments.drafts["ghost_d"] = mobileDocumentDraftRecord{
+		ID: "ghost_d", OwnerID: owner, Markdown: "abcd", // 4
+		SourcePath: "missing/ghost.bin", SourceSize: 10_000, // should be repaired away
+	}
+	mobileDocuments.uploads["ghost_u"] = mobileDocumentUploadRecord{
+		TaskID: "ghost_u", OwnerID: owner,
+		SourcePath: "missing/up.bin", SourceSize: 20_000, // repaired away
+	}
+	mobileDocuments.Unlock()
+	t.Cleanup(func() {
+		mobileDocuments.Lock()
+		delete(mobileDocuments.drafts, "ghost_d")
+		delete(mobileDocuments.uploads, "ghost_u")
+		mobileDocuments.Unlock()
+	})
+
+	// Fast path still counts ghost SourceSize (metadata trusted).
+	fast, repairedFast := mobileDocumentQuotaScan(owner, false)
+	if repairedFast {
+		t.Fatal("fast scan must not repair")
+	}
+	if fast < 10_000 {
+		t.Fatalf("fast used=%d want inflated ghost size", fast)
+	}
+	// Repair path drops missing blobs.
+	used, repaired := mobileDocumentQuotaScan(owner, true)
+	if !repaired {
+		t.Fatal("expected repair for missing blobs")
+	}
+	if used != 4 {
+		t.Fatalf("used=%d want 4 (markdown only)", used)
+	}
+	// Write check should pass after repair-on-over-limit path.
+	if err := mobileCheckDocumentQuota(owner, 100, 1000); err != nil {
+		t.Fatalf("check after ghost repair: %v", err)
+	}
+	mobileDocuments.Lock()
+	d := mobileDocuments.drafts["ghost_d"]
+	u := mobileDocuments.uploads["ghost_u"]
+	mobileDocuments.Unlock()
+	if d.SourcePath != "" || d.SourceSize != 0 {
+		t.Fatalf("draft original not cleared: %#v", d)
+	}
+	if u.SourcePath != "" || u.SourceSize != 0 {
+		t.Fatalf("upload original not cleared: %#v", u)
+	}
+}
+
 func TestMobileEffectiveDocumentQuotaPaidBoost(t *testing.T) {
 	// Without system wiring, effective quota is free baseline.
 	p := &auth.ViewerPrincipal{UserID: "u", Email: "u@example.com", TenantID: "t"}

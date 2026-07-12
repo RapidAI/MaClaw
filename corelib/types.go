@@ -423,6 +423,7 @@ type NLSkillEntry struct {
 type NLSkillParam struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
+	Type        string   `json:"type,omitempty"`      // JSON Schema type when known: string/number/integer/boolean/array/object
 	Aliases     []string `json:"aliases,omitempty"`   // alternative names the LLM might use
 	CLIFlag     string   `json:"cli_flag,omitempty"`  // e.g. "--format" — appended to command
 	Default     string   `json:"default,omitempty"`   // default value when not provided
@@ -496,73 +497,192 @@ func (e *NLSkillEntry) QualifiedID() string {
 	return name
 }
 
+// NormalizeSkillMatchQuery trims whitespace and strips a trailing @version
+// pin (e.g. "paper_pdf_translator@1.0.0" → "paper_pdf_translator") so app
+// dependency refs and run_skill calls share one lookup key.
+func NormalizeSkillMatchQuery(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	if at := strings.IndexByte(query, '@'); at > 0 {
+		query = strings.TrimSpace(query[:at])
+	}
+	return query
+}
+
 // MatchesQualifiedID checks if the skill matches the given qualified ID exactly.
 // This is stricter than MatchesName — it only matches against SkillID,
-// QualifiedID() and HubSkillID, not against DirName or directory basename.
-// Used for App dependency resolution where deterministic identity is required.
+// publisher-qualified ID (Publisher:Name), and HubSkillID.
+// It does NOT match bare display Name / DirName (QualifiedID() without a
+// Publisher falls back to Name and must not widen this check).
+// Used for App dependency resolution and collision preference where
+// deterministic identity is required.
 func (e *NLSkillEntry) MatchesQualifiedID(id string) bool {
-	id = strings.TrimSpace(id)
+	id = NormalizeSkillMatchQuery(id)
 	if id == "" {
 		return false
 	}
-	// Check SkillID first (the new authoritative identifier)
 	if sid := strings.TrimSpace(e.SkillID); sid != "" && strings.EqualFold(sid, id) {
 		return true
 	}
-	if qid := e.QualifiedID(); qid != "" && strings.EqualFold(qid, id) {
-		return true
+	// Only treat publisher:name as stable when Publisher is set; otherwise
+	// QualifiedID() returns the bare display Name.
+	if pub := strings.TrimSpace(e.Publisher); pub != "" {
+		if strings.EqualFold(pub+":"+strings.TrimSpace(e.Name), id) {
+			return true
+		}
 	}
-	if e.HubSkillID != "" && strings.EqualFold(strings.TrimSpace(e.HubSkillID), id) {
+	if hubID := strings.TrimSpace(e.HubSkillID); hubID != "" && strings.EqualFold(hubID, id) {
 		return true
 	}
 	return false
 }
 
 // MatchesName checks if the skill matches the given name by comparing against
-// the skill ID (publisher.skill-name), qualified name (Publisher:Name),
-// display name (Name), directory name (DirName), and the SkillDir basename.
-// This allows run_skill to find skills by any of their known identifiers.
-// Matching is case-insensitive to improve usability when skill names contain
-// mixed-case or CJK characters that may be normalised differently.
+// stable IDs first (SkillID / HubSkillID / Publisher:Name), then display Name,
+// DirName, and SkillDir basename. This allows run_skill / MaClaw Apps to find
+// skills by any of their known identifiers.
 //
-// When the query contains "." and looks like a skill ID, it is checked first.
-// When the query contains ":" and the skill has a Publisher, the qualified
-// name (Publisher + ":" + Name) is checked next. This gives structured IDs
-// precedence over bare name matching when resolving collisions.
+// Hub-installed skills commonly have display Name "Paper PDF Translator" while
+// apps/runtime still request the stable HubSkillID "paper_pdf_translator".
+// That identity is matched via HubSkillID (and loose Name/DirName normalisation).
 func (e *NLSkillEntry) MatchesName(query string) bool {
+	query = NormalizeSkillMatchQuery(query)
 	if query == "" {
 		return false
 	}
-	// Skill ID match: if query contains "." and the skill has a SkillID,
-	// check against SkillID (publisher.skill-name format).
-	if strings.Contains(query, ".") && e.SkillID != "" {
-		if e.SkillID == query || strings.EqualFold(e.SkillID, query) {
-			return true
-		}
-	}
-	// Qualified name match: if query contains ":" and skill has a Publisher,
-	// check against "Publisher:Name".
-	if strings.Contains(query, ":") && e.Publisher != "" {
-		qualified := e.Publisher + ":" + e.Name
-		if qualified == query || strings.EqualFold(qualified, query) {
-			return true
-		}
-	}
-	if e.Name == query || strings.EqualFold(e.Name, query) {
+	// Deterministic IDs first (SkillID / HubSkillID / Publisher:Name).
+	if e.MatchesQualifiedID(query) {
 		return true
 	}
-	if e.DirName != "" && (e.DirName == query || strings.EqualFold(e.DirName, query)) {
+	if skillIdentityEqual(e.Name, query) {
+		return true
+	}
+	if e.DirName != "" && skillIdentityEqual(e.DirName, query) {
 		return true
 	}
 	// Fallback: match by directory basename from SkillDir for skills
 	// that were loaded from config without DirName populated.
 	if e.SkillDir != "" && e.DirName == "" {
 		base := filepath.Base(e.SkillDir)
-		if base == query || strings.EqualFold(base, query) {
+		if skillIdentityEqual(base, query) {
 			return true
 		}
 	}
 	return false
+}
+
+// skillIdentityEqual reports whether two skill identity strings refer to the
+// same skill. EqualFold first; then normalize spaces/hyphens to underscores so
+// "Paper PDF Translator" matches "paper_pdf_translator".
+func skillIdentityEqual(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	return NormalizeSkillIdentityKey(a) == NormalizeSkillIdentityKey(b)
+}
+
+// NormalizeSkillIdentityKey lowercases and collapses spaces/hyphens to
+// underscores so "Paper PDF Translator" and "paper_pdf_translator" share a key.
+func NormalizeSkillIdentityKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	prevUnderscore := false
+	for _, r := range s {
+		switch {
+		case r == ' ' || r == '-' || r == '_':
+			if !prevUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+		default:
+			b.WriteRune(r)
+			prevUnderscore = false
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+// SkillIdentityKeys returns every lookup key that should resolve to this skill
+// in maps/indexes used by app install planning and runtime resolution.
+// Keys are lowercased; both raw and underscore-normalized forms are included.
+//
+// Coordinate model (authoring → plan → run):
+//   - Declared app dependency id SHOULD be a stable id (HubSkillID / SkillID)
+//   - Local registry may store a localized display Name
+//   - Indexes and MatchesName must accept both coordinate systems
+func (e NLSkillEntry) SkillIdentityKeys() []string {
+	raw := []string{
+		e.SkillID,
+		e.HubSkillID,
+		e.Name,
+		e.DirName,
+	}
+	if pub := strings.TrimSpace(e.Publisher); pub != "" {
+		if name := strings.TrimSpace(e.Name); name != "" {
+			raw = append(raw, pub+":"+name)
+		}
+	}
+	if e.SkillDir != "" {
+		raw = append(raw, filepath.Base(e.SkillDir))
+	}
+	return CollectSkillIdentityKeys(raw...)
+}
+
+// PreferredRuntimeSkillRef is the preferred argument for run_skill /
+// RunNLSkillAsync. Stable package identity (HubSkillID, SkillID) is preferred
+// over localized display Name so MaClaw Apps that declare appSkill.id as a hub
+// id keep one coordinate from authoring through execution.
+func (e NLSkillEntry) PreferredRuntimeSkillRef() string {
+	if hub := strings.TrimSpace(e.HubSkillID); hub != "" {
+		return hub
+	}
+	if sid := strings.TrimSpace(e.SkillID); sid != "" {
+		return sid
+	}
+	if pub := strings.TrimSpace(e.Publisher); pub != "" {
+		if name := strings.TrimSpace(e.Name); name != "" {
+			return pub + ":" + name
+		}
+	}
+	return strings.TrimSpace(e.Name)
+}
+
+// CollectSkillIdentityKeys normalizes and dedupes raw identity strings into
+// lowercase map keys (including underscore-normalized display names).
+func CollectSkillIdentityKeys(parts ...string) []string {
+	out := make([]string, 0, len(parts)*2)
+	seen := map[string]struct{}{}
+	add := func(v string) {
+		v = NormalizeSkillMatchQuery(v)
+		if v == "" {
+			return
+		}
+		for _, key := range []string{strings.ToLower(v), NormalizeSkillIdentityKey(v)} {
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, key)
+		}
+	}
+	for _, p := range parts {
+		add(p)
+	}
+	return out
 }
 
 // learnedSources is the set of Source values that classify a skill as
@@ -654,6 +774,15 @@ type MaclawLLMConfig struct {
 	// OpenAI/DeepSeek → implicit prefix caching (no client action needed).
 	// Used by CodingSubAgent where system prompt never changes across 80 iterations.
 	EnablePromptCache bool `json:"enable_prompt_cache,omitempty"`
+
+	// ReasoningEffort is optional OpenAI-style reasoning_effort
+	// (none|minimal|low|medium|high). Empty = provider default.
+	// Set by cost-route Phase 3 when MACLAW_COST_ROUTE=on.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// ThinkingMode controls DeepSeek-style request body thinking object:
+	// "" = auto (existing IsDeepSeekThinkingModeModel default),
+	// "enabled" | "disabled" for explicit override (cost-route Phase 3).
+	ThinkingMode string `json:"thinking_mode,omitempty"`
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.
@@ -986,6 +1115,117 @@ type TokenUsageStat struct {
 	CachedRequests           int64   `json:"cached_requests,omitempty"`
 	LocalCacheRequests       int64   `json:"local_cache_requests,omitempty"`
 	LocalCacheHits           int64   `json:"local_cache_hits,omitempty"`
+}
+
+// AdaptivePromptStat is a compact process-level adaptive system-prompt cost
+// snapshot. Safe for machine.heartbeat: no user/tenant/session labels.
+// Reported values are cumulative for the reporting process (GUI/TUI/…).
+type AdaptivePromptStat struct {
+	LightTurns      int64  `json:"light_turns"`
+	FullTurns       int64  `json:"full_turns"`
+	LightPercent    int    `json:"light_percent"`
+	EstTokensSaved  int64  `json:"est_tokens_saved,omitempty"`
+	LightToolDenies int64  `json:"light_tool_denies,omitempty"`
+	LightUpgrades   int64  `json:"light_upgrades,omitempty"`
+	AbEligibleLight int64  `json:"ab_eligible_light,omitempty"`
+	AbSampleFull    int64  `json:"ab_sample_full,omitempty"`
+	LastProfile     string `json:"last_profile,omitempty"`
+	LastTask        string `json:"last_task,omitempty"`
+	LastDeniedTool  string `json:"last_denied_tool,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+}
+
+// Empty reports whether no adaptive-prompt activity is present.
+func (s AdaptivePromptStat) Empty() bool {
+	return s.LightTurns == 0 && s.FullTurns == 0 && s.EstTokensSaved == 0 &&
+		s.LightToolDenies == 0 && s.LightUpgrades == 0 &&
+		s.AbEligibleLight == 0 && s.AbSampleFull == 0 &&
+		strings.TrimSpace(s.LastProfile) == "" && strings.TrimSpace(s.Summary) == ""
+}
+
+// CostOpsStat is a compact process-level cost-route + local daily fleet snapshot
+// for machine.heartbeat. No user/session labels.
+type CostOpsStat struct {
+	// Cost-route tier counters (shadow/on decisions).
+	RouteDecisions int64  `json:"route_decisions,omitempty"`
+	RouteApplied   int64  `json:"route_applied,omitempty"`
+	RouteShadow    int64  `json:"route_shadow,omitempty"`
+	LastTier       string `json:"last_tier,omitempty"`
+	LastMode       string `json:"last_mode,omitempty"`
+	RouteSummary   string `json:"route_summary,omitempty"`
+	// Local durable daily fleet (this machine's llm_cost_daily.json sum).
+	DailyCostUSD   float64 `json:"daily_cost_usd,omitempty"`
+	DailyCalls     int     `json:"daily_calls,omitempty"`
+	DailyInstances int     `json:"daily_instances,omitempty"`
+	DailySummary   string  `json:"daily_summary,omitempty"`
+	// Mode is MACLAW_COST_ROUTE effective mode at report time.
+	CostRouteMode string `json:"cost_route_mode,omitempty"`
+}
+
+// Empty reports whether no cost-ops activity is present.
+func (s CostOpsStat) Empty() bool {
+	return s.RouteDecisions == 0 && s.RouteApplied == 0 && s.RouteShadow == 0 &&
+		s.DailyCostUSD <= 0 && s.DailyCalls == 0 &&
+		strings.TrimSpace(s.LastTier) == "" && strings.TrimSpace(s.RouteSummary) == "" &&
+		strings.TrimSpace(s.DailySummary) == ""
+}
+
+// Add merges other counters into s (fleet rollup of process/machine snapshots).
+func (s *CostOpsStat) Add(other CostOpsStat) {
+	if s == nil {
+		return
+	}
+	s.RouteDecisions += other.RouteDecisions
+	s.RouteApplied += other.RouteApplied
+	s.RouteShadow += other.RouteShadow
+	s.DailyCostUSD += other.DailyCostUSD
+	s.DailyCalls += other.DailyCalls
+	s.DailyInstances += other.DailyInstances
+	if t := strings.TrimSpace(other.LastTier); t != "" {
+		s.LastTier = t
+	}
+	if m := strings.TrimSpace(other.LastMode); m != "" {
+		s.LastMode = m
+	}
+	if m := strings.TrimSpace(other.CostRouteMode); m != "" {
+		s.CostRouteMode = m
+	}
+	if sum := strings.TrimSpace(other.RouteSummary); sum != "" {
+		s.RouteSummary = sum
+	}
+	if sum := strings.TrimSpace(other.DailySummary); sum != "" {
+		s.DailySummary = sum
+	}
+}
+
+// Add merges other counters into s (absolute fleet rollup of process snapshots).
+func (s *AdaptivePromptStat) Add(other AdaptivePromptStat) {
+	if s == nil {
+		return
+	}
+	s.LightTurns += other.LightTurns
+	s.FullTurns += other.FullTurns
+	s.EstTokensSaved += other.EstTokensSaved
+	s.LightToolDenies += other.LightToolDenies
+	s.LightUpgrades += other.LightUpgrades
+	s.AbEligibleLight += other.AbEligibleLight
+	s.AbSampleFull += other.AbSampleFull
+	if total := s.LightTurns + s.FullTurns; total > 0 {
+		s.LightPercent = int((s.LightTurns * 100) / total)
+	}
+	// Prefer non-empty last_* from other when present (caller orders newest last).
+	if p := strings.TrimSpace(other.LastProfile); p != "" {
+		s.LastProfile = p
+	}
+	if t := strings.TrimSpace(other.LastTask); t != "" {
+		s.LastTask = t
+	}
+	if d := strings.TrimSpace(other.LastDeniedTool); d != "" {
+		s.LastDeniedTool = d
+	}
+	if sum := strings.TrimSpace(other.Summary); sum != "" {
+		s.Summary = sum
+	}
 }
 
 const (

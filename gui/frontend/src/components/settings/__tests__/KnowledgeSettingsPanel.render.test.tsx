@@ -31,6 +31,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
     const sourceResult = vi.fn(async () => ({ id: 'ksrc_test', title: 'Test source' }));
     const names = [
         'LoadConfig',
+        'PatchConfigFields',
         'KnowledgeCapabilities',
         'KnowledgeBackfillSourceAutoLabels',
         'KnowledgeDeleteSource',
@@ -57,6 +58,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'SelectKnowledgeSnapshotExportPath',
         'OpenSystemUrl',
         'KnowledgeShareToHub',
+        'KnowledgeListMyHubShares',
+        'KnowledgeDeleteHubShare',
+        'KnowledgeUpdateHubShare',
         'KnowledgeImportHubShare',
         'KnowledgeImportJobStatus',
         'KnowledgeListURLDomainPolicies',
@@ -125,6 +129,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'GetHubLLMServiceStatus',
         'SelectKnowledgeDirectory',
         'SelectKnowledgeFiles',
+        'OpenFileOrShowInFolder',
+        'OpenSystemUrl',
     ];
     const exports = Object.fromEntries(names.map(name => [name, objectResult]));
     return {
@@ -136,6 +142,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         })),
         KnowledgeHealth: vi.fn(async () => ({ status: 'ok', score: 100, quality_avg_score: 100, maintenance_actions: [] })),
         LoadConfig: vi.fn(async () => ({})),
+        PatchConfigFields: vi.fn(async (patch: Record<string, unknown>) => patch || {}),
         KnowledgeListSources: arrayResult,
         KnowledgeSearch: arrayResult,
         KnowledgeSearchStructured: arrayResult,
@@ -165,6 +172,30 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
                 warnings: ['source ksrc_big content truncated: package content byte limit reached'],
             },
         })),
+        KnowledgeListMyHubShares: vi.fn(async () => ({
+            items: [{
+                knowledge_id: 'kn_mine',
+                title: 'Team notes',
+                description: 'Shared notes for the team',
+                visibility_scope: 'hub',
+                status: 'active',
+                share_url: 'https://hub.example/hub/knowledge/shares/kn_mine',
+                source_count: 2,
+                import_count: 1,
+                updated_at: '2026-07-01T00:00:00Z',
+            }],
+            total: 1,
+            hub_url: 'https://hub.example',
+        })),
+        KnowledgeDeleteHubShare: vi.fn(async () => undefined),
+        KnowledgeUpdateHubShare: vi.fn(async (req: any) => ({
+            knowledge_id: req?.knowledge_id || 'kn_mine',
+            title: req?.title || 'Team notes',
+            description: req?.description || 'updated',
+            visibility_scope: req?.visibility_scope || 'hub',
+            share_url: 'https://hub.example/hub/knowledge/shares/kn_mine',
+            status: 'active',
+        })),
         KnowledgeSyncStatus: vi.fn(async () => ({
             service_status: 'official_active',
             has_package: false,
@@ -176,6 +207,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
             active_grants: [{ status: 'active', expires_at: '2099-01-01T00:00:00Z' }],
         })),
         OpenSystemUrl: vi.fn(async () => undefined),
+        OpenFileOrShowInFolder: vi.fn(async () => undefined),
+        KnowledgeExportSnapshotWithOptions: vi.fn(async () => ({})),
         SelectKnowledgeFiles: vi.fn(async () => []),
         SelectKnowledgeDirectory: vi.fn(async () => ''),
         SelectKnowledgeSnapshotExportPath: vi.fn(async () => ''),
@@ -272,7 +305,7 @@ describe('KnowledgeSettingsPanel component', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Renew maclaw official service' }));
 
         await waitFor(() => expect(OpenSystemUrl).toHaveBeenCalledWith(
-            'https://hub.example/card_store?tenant_id=tenant%20acme&email=dev%40example.com#token=viewer%20token',
+            'https://hub.example/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token',
         ));
     });
 
@@ -453,7 +486,69 @@ describe('KnowledgeSettingsPanel component', () => {
             output_path: 'D:\\tmp\\knowledge.jsonl',
             source_ids: ['ksrc_file'],
             redact_sensitive: true,
+            format: 'jsonl',
         })));
+        await waitFor(() => expect(SelectKnowledgeSnapshotExportPath).toHaveBeenCalledWith('jsonl'));
+    });
+
+    it('loads my Hub shares panel on the export tab', async () => {
+        const { KnowledgeListMyHubShares } = await import('../../../../wailsjs/go/main/App');
+        render(<KnowledgeSettingsPanel lang="en" />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
+        expect(await screen.findByText('My shares')).toBeTruthy();
+        expect(await screen.findByText('Team notes')).toBeTruthy();
+        expect(screen.getByText(/kn_mine/)).toBeTruthy();
+        await waitFor(() => expect(KnowledgeListMyHubShares).toHaveBeenCalled());
+    });
+
+    it('edits a Hub share description from the my shares panel', async () => {
+        const { KnowledgeUpdateHubShare } = await import('../../../../wailsjs/go/main/App');
+        render(<KnowledgeSettingsPanel lang="en" showToastMessage={vi.fn()} />);
+        fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
+        expect(await screen.findByText('Team notes')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+        expect(await screen.findByText('Edit share')).toBeTruthy();
+        const description = screen.getByPlaceholderText(/Required knowledge description/i);
+        fireEvent.change(description, { target: { value: 'Updated description for team' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        await waitFor(() => expect(KnowledgeUpdateHubShare).toHaveBeenCalledWith(expect.objectContaining({
+            knowledge_id: 'kn_mine',
+            description: 'Updated description for team',
+        })));
+        expect(await screen.findByText('Updated description for team')).toBeTruthy();
+    });
+
+    it('shows export success card with path and folder action after export', async () => {
+        vi.mocked(KnowledgeListSources).mockResolvedValue([{
+            id: 'ksrc_file',
+            kind: 'file',
+            relative_path: 'docs/a.md',
+            status: 'active',
+            node_count: 1,
+        }]);
+        vi.mocked(SelectKnowledgeSnapshotExportPath).mockImplementation(async () => 'D:\\tmp\\kb.jsonl');
+        vi.mocked(KnowledgeExportSnapshotWithOptions).mockImplementation(async () => ({
+            output_path: 'D:\\tmp\\kb.jsonl',
+            sources: 1,
+            nodes: 2,
+            cards: 3,
+            facts: 0,
+            bytes: 2048,
+            redact_sensitive: true,
+        }));
+        const { OpenFileOrShowInFolder } = await import('../../../../wailsjs/go/main/App');
+        vi.mocked(OpenFileOrShowInFolder).mockImplementation(async () => undefined);
+        render(<KnowledgeSettingsPanel lang="en" />);
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Export' }));
+        await screen.findByText('a.md');
+        fireEvent.click(screen.getByRole('button', { name: 'Export Full to File' }));
+
+        expect(await screen.findByText('Export successful')).toBeTruthy();
+        expect(screen.getByTitle('D:\\tmp\\kb.jsonl')).toBeTruthy();
+        expect(screen.getByText(/1 sources/)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Show in folder' }));
+        await waitFor(() => expect(OpenFileOrShowInFolder).toHaveBeenCalledWith('D:\\tmp\\kb.jsonl'));
     });
 
     it('drops stale selected source IDs after refreshing the export source list', async () => {

@@ -26,7 +26,7 @@ func TestCodexAdapterBuildCommandPinsSafeModelProvider(t *testing.T) {
 		t.Fatalf("WriteFile fake codex: %v", err)
 	}
 
-	adapter := NewCodexAdapter(&App{})
+	adapter := NewCodexAdapter(&App{testHomeDir: tmpHome})
 	cmd, err := adapter.BuildCommand(LaunchSpec{
 		Tool:        "codex",
 		ProjectPath: tmpHome,

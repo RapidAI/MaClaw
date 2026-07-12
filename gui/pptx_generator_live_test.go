@@ -111,7 +111,7 @@ func TestLivePPTXGeneratorSkillRunner(t *testing.T) {
 		t.Fatalf("expected step output, got %#v", status)
 	}
 	stepOutput := status.Steps[0].Output
-	if !strings.Contains(stepOutput, "📁 脚本路径:") {
+	if !strings.Contains(stepOutput, "脚本路径:") {
 		t.Fatalf("expected craft tool script path in output, got %s", stepOutput)
 	}
 	generatedPaths := append([]string{}, newFiles...)

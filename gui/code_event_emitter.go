@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // CodeFileEvent is the payload for code:file_update events.
@@ -46,7 +45,7 @@ func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
 		log.Printf("[code-event] skip file_update session=%q file=%q: app context is nil", evt.SessionID, evt.FilePath)
 		return
 	}
-	runtime.EventsEmit(e.app.ctx, "code:file_update", evt)
+	e.app.emitEvent("code:file_update", evt)
 }
 
 // EmitSessionStart emits a code:session_start event when a coding session begins.
@@ -66,7 +65,7 @@ func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...str
 		payload["project_path"] = projectPath[0]
 	}
 	log.Printf("[code-event] emit session_start session=%q project=%q", sessionID, payload["project_path"])
-	runtime.EventsEmit(e.app.ctx, "code:session_start", payload)
+	e.app.emitEvent("code:session_start", payload)
 }
 
 // EmitPreviewSessionStart starts a workflow-authorized source preview session.
@@ -74,7 +73,7 @@ func (e *CodeEventEmitter) EmitPreviewSessionStart(sessionID string) {
 	if e == nil || e.app == nil || e.app.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(e.app.ctx, "code:session_start", map[string]interface{}{
+	e.app.emitEvent("code:session_start", map[string]interface{}{
 		"session_id":        sessionID,
 		"auto_open_preview": true,
 	})
@@ -97,7 +96,7 @@ func (e *CodeEventEmitter) EmitSessionEnd(sessionID string, projectPath ...strin
 		payload["project_path"] = projectPath[0]
 	}
 	log.Printf("[code-event] emit session_end session=%q project=%q", sessionID, payload["project_path"])
-	runtime.EventsEmit(e.app.ctx, "code:session_end", payload)
+	e.app.emitEvent("code:session_end", payload)
 }
 
 // detectLanguageFromExt maps a file extension to a language identifier.

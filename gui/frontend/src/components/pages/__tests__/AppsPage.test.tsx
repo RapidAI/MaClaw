@@ -32,6 +32,7 @@ const downloadSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const openSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const revealSkillRunArtifactMock = vi.hoisted(() => vi.fn());
 const showItemInFolderMock = vi.hoisted(() => vi.fn());
+const openMaclawAppWorkspaceFromInstallMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ ok: true, opened: true })));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelNLSkillRun: (...args: unknown[]) => cancelNLSkillRunMock(...args),
@@ -55,6 +56,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InstallSelectedMaclawAppPackageFromHub: (...args: unknown[]) => installSelectedMaclawAppPackageFromHubMock(...args),
     PlanMaclawAppInstall: (...args: unknown[]) => planMaclawAppInstallMock(...args),
     RecordMaclawAppInstall: (...args: unknown[]) => recordMaclawAppInstallMock(...args),
+    // Keep approval/business workspace openers undefined so runtime falls back to
+    // StartMaclawAppApprovalWorkflow / ExecuteMaclawAppBusinessOperation in tests.
+    OpenMaclawAppApprovalWorkspace: undefined,
+    OpenMaclawAppBusinessWorkspace: undefined,
+    OpenMaclawAppWorkspaceFromInstall: (...args: unknown[]) => openMaclawAppWorkspaceFromInstallMock(...args),
     OpenSkillRunArtifact: (...args: unknown[]) => openSkillRunArtifactMock(...args),
     RecordMaclawAppRunEvidenceForSkill: (...args: unknown[]) => recordMaclawAppRunEvidenceForSkillMock(...args),
     RevealSkillRunArtifact: (...args: unknown[]) => revealSkillRunArtifactMock(...args),
@@ -120,6 +126,22 @@ function getMarketTab() {
 
 function getCreateAppNameInput() {
     return screen.queryByPlaceholderText('\u4f8b\uff1a\u5408\u540c\u5f52\u6863') || screen.getByPlaceholderText('Example: Contract filing');
+}
+
+/** Primary create action in App Studio (not the studio entry button or create tab). */
+function getCreateLocalAppButton() {
+    const byPanelOnly = screen.queryByRole('button', { name: /仅添加到面板|Add to panel only/ });
+    if (byPanelOnly) return byPanelOnly;
+    const primary = document.querySelector('.apps-actions .apps-primary-button') as HTMLButtonElement | null;
+    if (primary && /创建应用|Create app/i.test(primary.textContent || '')) return primary;
+    const matches = screen.getAllByRole('button', { name: /创建应用|Create app/ });
+    const action = matches.find((node) => node.classList.contains('apps-primary-button'));
+    if (action) return action;
+    throw new Error('local app create button not found');
+}
+
+function clickCreateLocalApp() {
+    fireEvent.click(getCreateLocalAppButton());
 }
 
 function getDraftPromptInput() {
@@ -460,7 +482,7 @@ function latestStoredCustomApp(name: string) {
 async function createAndRunLocalToolApp(name = '合同归档') {
     fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
     fireEvent.change(screen.getByPlaceholderText('\u4f8b\uff1a\u5408\u540c\u5f52\u6863'), { target: { value: name } });
-    fireEvent.click(screen.getAllByText('\u521b\u5efa\u5e94\u7528')[1]);
+    clickCreateLocalApp();
     const createdApp = latestStoredCustomApp(name);
     if (createdApp?.id) {
         planMaclawAppInstallMock.mockImplementation(async () => {
@@ -888,6 +910,7 @@ describe('AppsPage', () => {
         openSkillRunArtifactMock.mockReset().mockResolvedValue(undefined);
         revealSkillRunArtifactMock.mockReset().mockResolvedValue(undefined);
         showItemInFolderMock.mockReset().mockResolvedValue(undefined);
+        openMaclawAppWorkspaceFromInstallMock.mockReset().mockResolvedValue({ ok: true, opened: true });
         stageSkillAppInputFileMock.mockReset().mockImplementation(async (name: string, type: string, lastModified: number) => ({
             name,
             size: 4,
@@ -2020,7 +2043,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(getStudioButton());
         fireEvent.change(getCreateAppNameInput(), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('\u521b\u5efa\u5e94\u7528')[1]);
+        clickCreateLocalApp();
         fireEvent.click(getPublishTab());
 
         expect(screen.getByText('发布检查')).not.toBeNull();
@@ -4948,7 +4971,7 @@ describe('AppsPage', () => {
 
         expect(screen.getByText(/"multipleFiles": true/)).not.toBeNull();
 
-        fireEvent.click(screen.getAllByText('\u521b\u5efa\u5e94\u7528')[1]);
+        clickCreateLocalApp();
         fireEvent.click(screen.getByText('\u5173\u95ed'));
         fireEvent.click(screen.getAllByText('批量合同归档')[0]);
 
@@ -5167,7 +5190,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(getStudioButton());
         fireEvent.change(getCreateAppNameInput(), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('\u521b\u5efa\u5e94\u7528')[1]);
+        clickCreateLocalApp();
         fireEvent.click(screen.getByText('\u5173\u95ed'));
 
         expect(screen.getAllByText('合同归档').length).toBeGreaterThan(0);
@@ -5178,7 +5201,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(getStudioButton());
         fireEvent.change(getCreateAppNameInput(), { target: { value: '合同归档' } });
-        fireEvent.click(screen.getAllByText('\u521b\u5efa\u5e94\u7528')[1]);
+        clickCreateLocalApp();
         fireEvent.click(getManageTab());
 
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;

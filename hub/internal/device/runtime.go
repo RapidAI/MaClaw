@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
@@ -85,6 +86,10 @@ type MachineRuntimeInfo struct {
 	Role                 string     `json:"role,omitempty"`
 	Online               bool       `json:"online"`
 	LLMConfigured        bool       `json:"llm_configured"`
+	// AdaptivePrompt is the latest process-level adaptive prompt stats from heartbeat.
+	AdaptivePrompt *corelib.AdaptivePromptStat `json:"adaptive_prompt,omitempty"`
+	// CostOps is the latest cost-route + daily fleet snapshot from heartbeat.
+	CostOps *corelib.CostOpsStat `json:"cost_ops,omitempty"`
 }
 
 type MachineEvent struct {
@@ -401,6 +406,15 @@ func (s *Service) Heartbeat(ctx context.Context, machineID string, heartbeat ws.
 	if heartbeat.LLMConfigured != nil {
 		info.LLMConfigured = *heartbeat.LLMConfigured
 	}
+	if heartbeat.AdaptivePrompt != nil && !heartbeat.AdaptivePrompt.Empty() {
+		// Copy so callers cannot mutate runtime state via shared pointer.
+		snap := *heartbeat.AdaptivePrompt
+		info.AdaptivePrompt = &snap
+	}
+	if heartbeat.CostOps != nil && !heartbeat.CostOps.Empty() {
+		snap := *heartbeat.CostOps
+		info.CostOps = &snap
+	}
 	lastAccepted := s.runtime.lastHeartbeatAt[machineID]
 	shouldAccept := lastAccepted.IsZero() || now.Sub(lastAccepted) >= 5*time.Second
 	if shouldAccept {
@@ -602,6 +616,17 @@ func (s *Service) ListOnlineMachines() []MachineRuntimeInfo {
 			info.LLMConfigured = meta.LLMConfigured
 			info.LastSeenAt = meta.LastSeenAt
 			info.Status = meta.Status
+			if meta.AdaptivePrompt != nil {
+				snap := *meta.AdaptivePrompt
+				info.AdaptivePrompt = &snap
+			}
+			if meta.CostOps != nil {
+				snap := *meta.CostOps
+				info.CostOps = &snap
+			}
+			if info.TenantID == "" {
+				info.TenantID = meta.TenantID
+			}
 		}
 		if conn != nil {
 			info.TenantID = conn.TenantID
@@ -858,6 +883,14 @@ func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
 		}
 		info.ActiveSessions = meta.ActiveSessions
 		info.LLMConfigured = meta.LLMConfigured
+		if meta.AdaptivePrompt != nil {
+			snap := *meta.AdaptivePrompt
+			info.AdaptivePrompt = &snap
+		}
+		if meta.CostOps != nil {
+			snap := *meta.CostOps
+			info.CostOps = &snap
+		}
 		if meta.LastSeenAt != nil {
 			info.LastSeenAt = meta.LastSeenAt
 		}
@@ -913,6 +946,14 @@ func (s *Service) runtimeOnlyMachineInfo(machineID string, conn *ws.ConnContext)
 		info.HeartbeatIntervalSec = meta.HeartbeatIntervalSec
 		info.ActiveSessions = meta.ActiveSessions
 		info.LLMConfigured = meta.LLMConfigured
+		if meta.AdaptivePrompt != nil {
+			snap := *meta.AdaptivePrompt
+			info.AdaptivePrompt = &snap
+		}
+		if meta.CostOps != nil {
+			snap := *meta.CostOps
+			info.CostOps = &snap
+		}
 		if meta.LastSeenAt != nil {
 			info.LastSeenAt = meta.LastSeenAt
 		}
@@ -924,6 +965,50 @@ func (s *Service) runtimeOnlyMachineInfo(machineID string, conn *ws.ConnContext)
 		info.Status = "offline"
 	}
 	return info
+}
+
+// SumOnlineAdaptivePrompt aggregates adaptive prompt counters from currently
+// online machines (process-level snapshots; no user/session labels in totals).
+// tenantID empty = all tenants (global admin); non-empty scopes to that tenant.
+func (s *Service) SumOnlineAdaptivePrompt(tenantID string) (total corelib.AdaptivePromptStat, onlineWithStats, onlineTotal int) {
+	if s == nil {
+		return total, 0, 0
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	machines := s.ListOnlineMachines()
+	onlineTotal = len(machines)
+	for _, m := range machines {
+		if tenantID != "" && store.NormalizeTenantID(m.TenantID) != store.NormalizeTenantID(tenantID) {
+			continue
+		}
+		if m.AdaptivePrompt == nil || m.AdaptivePrompt.Empty() {
+			continue
+		}
+		onlineWithStats++
+		total.Add(*m.AdaptivePrompt)
+	}
+	return total, onlineWithStats, onlineTotal
+}
+
+// SumOnlineCostOps aggregates cost-route + daily fleet snapshots from online machines.
+func (s *Service) SumOnlineCostOps(tenantID string) (total corelib.CostOpsStat, onlineWithStats, onlineTotal int) {
+	if s == nil {
+		return total, 0, 0
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	machines := s.ListOnlineMachines()
+	onlineTotal = len(machines)
+	for _, m := range machines {
+		if tenantID != "" && store.NormalizeTenantID(m.TenantID) != store.NormalizeTenantID(tenantID) {
+			continue
+		}
+		if m.CostOps == nil || m.CostOps.Empty() {
+			continue
+		}
+		onlineWithStats++
+		total.Add(*m.CostOps)
+	}
+	return total, onlineWithStats, onlineTotal
 }
 
 func (s *Service) DeleteMachine(ctx context.Context, machineID string) error {

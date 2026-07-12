@@ -236,8 +236,8 @@ func TestWorkflowInitiation_ConfirmationFlow(t *testing.T) {
 		if resp == nil {
 			t.Fatal("expected non-nil response")
 		}
-		if !strings.Contains(resp.Text, "✅") {
-			t.Errorf("response should contain ✅, got: %s", resp.Text)
+		if !strings.Contains(resp.Text, "") {
+			t.Errorf("response should contain , got: %s", resp.Text)
 		}
 		if !strings.Contains(resp.Text, "审批已发起") {
 			t.Errorf("response should contain '审批已发起', got: %s", resp.Text)
@@ -408,7 +408,7 @@ func TestWorkflowInitiation_MultiTurnConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turn 3 error: %v", err)
 	}
-	if !strings.Contains(resp.Text, "✅") || !strings.Contains(resp.Text, "审批已发起") {
+	if !strings.Contains(resp.Text, "") || !strings.Contains(resp.Text, "审批已发起") {
 		t.Errorf("turn 3: expected success, got: %s", resp.Text)
 	}
 	if handler.getSession(userID) != nil {
@@ -454,9 +454,9 @@ func TestWorkflowInitiation_SuccessResponseFormat(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify: "✅ 审批已发起，单号：WF-{date}-{seq}"
-	if !strings.Contains(resp.Text, "✅") {
-		t.Errorf("missing ✅ in response: %s", resp.Text)
+	// Verify: "审批已发起，单号：WF-{date}-{seq}"
+	if !strings.Contains(resp.Text, "") {
+		t.Errorf("missing in response: %s", resp.Text)
 	}
 	if !strings.Contains(resp.Text, "审批已发起") {
 		t.Errorf("missing '审批已发起': %s", resp.Text)

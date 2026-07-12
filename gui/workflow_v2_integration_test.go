@@ -404,6 +404,8 @@ func TestRunWorkflowV2PhaseEnsuresProjectPathBeforeAgentLoop(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-workflow-v2-create-phase-workdir"
 	projectPath := filepath.Join(t.TempDir(), "presentation_design")
+	// Use a single-phase template type so DependsOnFull backfill cannot block
+	// the agent-loop route; the assertion here is workdir creation only.
 	state := &v2.WorkflowState{
 		ID:           "wf-test-create-workdir",
 		UserID:       userID,
@@ -411,13 +413,30 @@ func TestRunWorkflowV2PhaseEnsuresProjectPathBeforeAgentLoop(t *testing.T) {
 		Status:       v2.StatusActive,
 		ProjectPath:  projectPath,
 		CurrentPhase: 0,
-		Phases: []v2.Phase{{
-			ID:           "ppt_generation",
-			Name:         "PPT Generation",
-			NeedsConfirm: true,
-			Status:       v2.PhaseRunning,
-		}},
+		Phases: []v2.Phase{
+			{
+				ID:     "outline",
+				Name:   "Outline",
+				Status: v2.PhaseCompleted,
+				Output: strings.Repeat("outline content ", 20),
+			},
+			{
+				ID:     "slide_scripting",
+				Name:   "Slide Scripting",
+				Status: v2.PhaseCompleted,
+				Output: strings.Repeat("script content ", 20),
+			},
+			{
+				ID:           "ppt_generation",
+				Name:         "PPT Generation",
+				NeedsConfirm: true,
+				Status:       v2.PhaseRunning,
+				DependsOnFull: []string{"outline", "slide_scripting"},
+			},
+		},
 	}
+	// Active phase index must point at ppt_generation.
+	state.CurrentPhase = 2
 
 	result := handler.runWorkflowV2Phase(userID, state, "")
 	if result.Response != nil {

@@ -1269,7 +1269,7 @@ describe('useAIAssistant property tests', () => {
             void result.current.sendMessage('stream emoji overlap');
         });
 
-        const repeatedEmoji = '🧪'.repeat(24);
+        const repeatedEmoji = '\u{1F9EA}'.repeat(24);
         const first = `Prefix ${repeatedEmoji}`;
         const second = `${repeatedEmoji} suffix`;
         await act(async () => {
@@ -1928,7 +1928,7 @@ describe('useAIAssistant property tests', () => {
 
     it('keeps sending true after the foreground response returns while an AI session is still active', async () => {
         mockSendResponse = {
-            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            text: '\u{1F514} 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
             error: '',
             fields: null,
             actions: null,
@@ -1970,7 +1970,7 @@ describe('useAIAssistant property tests', () => {
 
     it('keeps sending true when the active AI session matches by job id only', async () => {
         mockSendResponse = {
-            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            text: '\u{1F514} 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
             error: '',
             fields: null,
             actions: null,
@@ -2009,7 +2009,7 @@ describe('useAIAssistant property tests', () => {
 
     it('keeps the pending AI task lock when refresh events only retain the tracked session id', async () => {
         mockSendResponse = {
-            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            text: '\u{1F514} 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
             error: '',
             fields: null,
             actions: null,
@@ -2107,7 +2107,7 @@ describe('useAIAssistant property tests', () => {
 
     it('does not keep sending true for unrelated remote sessions', async () => {
         mockSendResponse = {
-            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            text: '\u{1F514} 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
             error: '',
             fields: null,
             actions: null,
@@ -2153,7 +2153,7 @@ describe('useAIAssistant property tests', () => {
 
     it('clears the pending AI task lock after the tracked remote session exits', async () => {
         mockSendResponse = {
-            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            text: '\u{1F514} 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
             error: '',
             fields: null,
             actions: null,
@@ -2273,7 +2273,7 @@ describe('useAIAssistant property tests', () => {
 
     it('cancels the tracked AI task session when only the pending remote task remains', async () => {
         mockSendResponse = {
-            text: '🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
+            text: '\u{1F514} 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。',
             error: '',
             fields: null,
             actions: null,
@@ -3564,6 +3564,7 @@ describe('useAIAssistant property tests', () => {
 
         const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
         expect(assistantMsg?.content).toBe('done');
+        // Verbose token fields hidden; compact Turn chip stays when counters exist.
         expect(assistantMsg?.fields).toBeUndefined();
     });
 
@@ -3632,7 +3633,11 @@ describe('useAIAssistant property tests', () => {
         });
 
         const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
-        expect(assistantMsg?.fields).toBeUndefined();
+        // Compact Turn chip is always-on when numeric token counters exist.
+        // Cache is only included when raw.cache_read_tokens is set (not field labels).
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Turn', value: 'in=120 out=30' },
+        ]);
     });
 
     it('keeps token usage fields from normalized assistant response when detail entry is enabled', async () => {
@@ -3651,6 +3656,7 @@ describe('useAIAssistant property tests', () => {
             input_tokens: 120,
             output_tokens: 30,
             total_tokens: 150,
+            cache_read_tokens: 96,
         };
 
         const { result } = renderAssistantHook();
@@ -3674,6 +3680,7 @@ describe('useAIAssistant property tests', () => {
             { label: 'Total tokens', value: '150' },
             { label: 'Cache read tokens', value: '96' },
             { label: 'Cache write tokens', value: '12' },
+            { label: 'Turn', value: 'in=120 out=30 · cache=96' },
         ]);
     });
 
@@ -3712,10 +3719,11 @@ describe('useAIAssistant property tests', () => {
             { label: 'Total tokens', value: '150' },
             { label: 'Cache read tokens', value: '96' },
             { label: 'Cache write tokens', value: '12' },
+            { label: 'Turn', value: 'in=120 out=30 · cache=96' },
         ]);
     });
 
-    it('hides numeric token usage counters when detail entry is disabled', async () => {
+    it('shows compact Turn chip for numeric counters when detail entry is disabled', async () => {
         mockSendResponse = {
             text: 'done',
             error: '',
@@ -3735,7 +3743,9 @@ describe('useAIAssistant property tests', () => {
         });
 
         const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
-        expect(assistantMsg?.fields).toBeUndefined();
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Turn', value: 'in=120 out=30 · cache=96' },
+        ]);
     });
 
     it('hides trace summary fields by default when trace entry is disabled', async () => {
@@ -4027,10 +4037,10 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.streaming).toBe(false);
 
         await act(async () => {
-            emitRuntimeEvent('ai-assistant-progress', { request_id: requestEvent().request_id, text: '⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…' });
+            emitRuntimeEvent('ai-assistant-progress', { request_id: requestEvent().request_id, text: '\u{23F3} 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…' });
         });
 
-        expect(result.current.progressMessages[result.current.progressMessages.length - 1]?.content).toBe('⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…');
+        expect(result.current.progressMessages[result.current.progressMessages.length - 1]?.content).toBe('\u{23F3} 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…');
         expect(result.current.sending).toBe(true);
         expect(result.current.streaming).toBe(false);
         expect(result.current.visualBusy).toBe(false);

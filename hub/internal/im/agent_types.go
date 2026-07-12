@@ -47,7 +47,7 @@ func (r *AgentResponse) ToGenericResponse() *GenericResponse {
 	if r.Error != "" {
 		return &GenericResponse{
 			StatusCode: 500,
-			StatusIcon: "❌",
+			StatusIcon: "error",
 			Title:      "Agent 错误",
 			Body:       r.Error,
 		}
@@ -55,7 +55,7 @@ func (r *AgentResponse) ToGenericResponse() *GenericResponse {
 
 	resp := &GenericResponse{
 		StatusCode:    200,
-		StatusIcon:    "🤖",
+		StatusIcon:    "info",
 		Title:         "",
 		Body:          r.Text,
 		Fields:        filterOutTokenFields(r.Fields),

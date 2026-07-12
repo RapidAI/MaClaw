@@ -55,8 +55,7 @@
 
 ## 二、已实施改进验证 (7 个 Phase)
 
-### Phase 1: 高价值产出物实时沉淀 ✅
-
+### Phase 1: 高价值产出物实时沉淀 
 **实现位置**: `gui/workflow_artifact_saver.go`
 
 **机制**:
@@ -64,17 +63,16 @@
 - 新增 `CategoryTaskArtifact` 类别 (TierSemantic, ScopeProject, ImportanceWeight=3.0)
 - 去重机制：ContentHash 精确去重 + phaseTag 更新去重
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
-### Phase 2: 上下文感知的标签增强 ✅
-
+### Phase 2: 上下文感知的标签增强 
 **实现位置**: `corelib/memory/store.go`
 
 **机制**:
 - `SaveWithContext(entry, contextHint)` 从对话上下文中提取实体作为额外 tags
 - `tagExactMatchBoost()` 当 query 实体与 entry tag 精确匹配时给予 +5.0 分 boost (上限 10.0)
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
 ```go
 // store.go:131-140
@@ -86,8 +84,7 @@ if contextHint != "" {
 }
 ```
 
-### Phase 3: 写入时增量子串去重 ✅
-
+### Phase 3: 写入时增量子串去重 
 **实现位置**: `corelib/memory/store.go`
 
 **机制**:
@@ -95,20 +92,18 @@ if contextHint != "" {
 - 双向子串检查：新内容包含已有 OR 已有包含新内容
 - 匹配时合并 tags，保留较长内容
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
-### Phase 4: 产出物可召回索引 ✅
-
+### Phase 4: 产出物可召回索引 
 **实现位置**: `corelib/agent/tool_memory.go`
 
 **机制**:
 - memory tool 的 recall action 对 `task_artifact` 类别读取 SourceURL 指向的文件全文 (最多 5000 字符)
 - proactive recall 仍只注入 200 字符摘要
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
-### Phase 5: 按 Category 分区存储 ✅
-
+### Phase 5: 按 Category 分区存储 
 **实现位置**: `corelib/memory/partition.go`
 
 **机制**:
@@ -116,7 +111,7 @@ if contextHint != "" {
 - `flushDirty()` 只写入 dirty 的分区文件
 - 迁移策略：≥100 条记忆时自动从单文件迁移到分区文件
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
 ```go
 // partition.go:15-21
@@ -129,8 +124,7 @@ var partitionGroups = map[string][]Category{
 }
 ```
 
-### Phase 6: maclawsrv 多用户记忆隔离 ✅
-
+### Phase 6: maclawsrv 多用户记忆隔离 
 **实现位置**: `corelib/memory/store.go`, `corelib/memory/types.go`
 
 **机制**:
@@ -139,7 +133,7 @@ var partitionGroups = map[string][]Category{
 - `RecallDynamic()` 的 ownerID 可变参数过滤
 - `graphExpand()` 后二次过滤
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
 ```go
 // store.go:1024-1027
@@ -148,8 +142,7 @@ if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
 }
 ```
 
-### Phase 7: 对话历史智能压缩 ✅
-
+### Phase 7: 对话历史智能压缩 
 **实现位置**: `gui/im_conversation_trim.go`
 
 **机制**:
@@ -157,7 +150,7 @@ if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
 - 被截断的 entries 用 LLM 摘要替代静态占位符
 - 实质性 assistant 消息 (>500 rune) 沉淀为 task_artifact
 
-**验证结果**: ✅ 代码完整实现
+**验证结果**: 代码完整实现
 
 ---
 
@@ -179,7 +172,7 @@ entry := Entry{
     Tags:     []string{"tmt", "L1", "segment"},
     Level:    LevelSegment,
     Interval: &interval,
-    // ❌ 缺少 OwnerID
+    // 缺少 OwnerID
 }
 if err := c.store.Save(entry); err != nil { ... }
 ```
@@ -194,7 +187,7 @@ entry := Entry{
     Tags:     []string{"tmt", fmt.Sprintf("L%d", level), level.String()},
     Level:    level,
     Interval: &window,
-    // ❌ 缺少 OwnerID
+    // 缺少 OwnerID
 }
 if err := c.store.Save(entry); err != nil { ... }
 ```
@@ -216,7 +209,7 @@ func (c *Consolidator) ConsolidateSegment(ctx context.Context, userMsg, assistan
         Tags:     []string{"tmt", "L1", "segment"},
         Level:    LevelSegment,
         Interval: &interval,
-        OwnerID:  ownerID,  // ✅ 设置 OwnerID
+        OwnerID:  ownerID,  // 设置 OwnerID
     }
     // ...
 }
@@ -245,7 +238,7 @@ entry := Entry{
     Content:  summary,
     Category: CategoryConversationSummary,
     Tags:     tags,
-    // ❌ 缺少 OwnerID
+    // 缺少 OwnerID
 }
 return a.store.Save(entry)  // 应该用 SaveForUser(entry, userID)
 ```
@@ -264,7 +257,7 @@ entry := Entry{
     Content:  summary,
     Category: CategoryConversationSummary,
     Tags:     tags,
-    OwnerID:  userID,  // ✅ 使用已有的 userID 参数
+    OwnerID:  userID,  // 使用已有的 userID 参数
 }
 return a.store.Save(entry)
 ```
@@ -299,7 +292,7 @@ func (a *ArchiveStore) FindRelevant(tags []string, categories []Category, limit 
                 break
             }
         }
-        // ❌ 没有 OwnerID 过滤
+        // 没有 OwnerID 过滤
     }
     return result
 }
@@ -317,7 +310,7 @@ for _, re := range relevant {
     // ...
     revived = append(revived, *removed)
 }
-// ❌ revived entries 可能属于其他用户
+// revived entries 可能属于其他用户
 ```
 
 **影响范围**:
@@ -361,7 +354,7 @@ func (ke *KnowledgeExtractor) Extract(userID string, msgs []ConversationEntry) e
             Content:  kp.Content,
             Category: kp.Category,
             Tags:     kp.Tags,
-            OwnerID:  userID,  // ✅ 正确设置
+            OwnerID:  userID,  // 正确设置
         }
         if err := ke.store.Save(entry); err != nil { ... }
     }
@@ -372,8 +365,7 @@ func (ke *KnowledgeExtractor) Extract(userID string, msgs []ConversationEntry) e
 
 ## 五、Compressor 验证
 
-### 5.1 Store.Update() 保留 OwnerID ✅
-
+### 5.1 Store.Update() 保留 OwnerID 
 `Store.Update()` 方法只更新 `Content`、`Category`、`Tags`、`CompactForm`、`ContentHash`、`UpdatedAt`、`Stale` 字段，**不修改 `OwnerID`**。
 
 这意味着 `mergeBatch()` 在合并时：
@@ -396,7 +388,7 @@ for cat := range catSet {
     var entries []Entry
     for _, e := range mc.store.entries {
         if e.Category == cat && !e.Pinned {
-            entries = append(entries, e)  // ❌ 不检查 OwnerID
+            entries = append(entries, e)  // 不检查 OwnerID
         }
     }
     // ...
@@ -463,7 +455,7 @@ for i := 0; i < n; i++ {
             continue
         }
         loser := pickLoser(mc.store.entries, i, j)
-        remove[loser] = true  // ❌ 不检查 OwnerID
+        remove[loser] = true  // 不检查 OwnerID
     }
 }
 
@@ -472,7 +464,7 @@ func isDuplicateLower(a, b Entry, ca, cb string) bool {
     if ca == cb {
         return true
     }
-    if a.Category == b.Category {  // ❌ 只检查 Category
+    if a.Category == b.Category {  // 只检查 Category
         // ...
     }
     return false
@@ -536,13 +528,13 @@ func isDuplicateLower(a, b Entry, ca, cb string) bool {
 
 | 组件 | OwnerID 处理 | 状态 |
 |------|-------------|------|
-| Compressor.dedup() | 不检查 OwnerID | ❌ 问题 5 |
-| Compressor.mergeSemanticDuplicates() | 不按 OwnerID 分组 | ❌ 问题 4 |
-| Compressor.RunGC() | revive 时不检查 OwnerID | ❌ 问题 3 |
-| Archiver.Archive() | 不设置 OwnerID | ❌ 问题 2 |
-| KnowledgeExtractor.Extract() | 正确设置 OwnerID | ✅ |
-| Consolidator.ConsolidateSegment() | 不设置 OwnerID | ❌ 问题 1 |
-| Consolidator.ConsolidateLevel() | 不设置 OwnerID | ❌ 问题 1 |
+| Compressor.dedup() | 不检查 OwnerID | 问题 5 |
+| Compressor.mergeSemanticDuplicates() | 不按 OwnerID 分组 | 问题 4 |
+| Compressor.RunGC() | revive 时不检查 OwnerID | 问题 3 |
+| Archiver.Archive() | 不设置 OwnerID | 问题 2 |
+| KnowledgeExtractor.Extract() | 正确设置 OwnerID | |
+| Consolidator.ConsolidateSegment() | 不设置 OwnerID | 问题 1 |
+| Consolidator.ConsolidateLevel() | 不设置 OwnerID | 问题 1 |
 
 ---
 

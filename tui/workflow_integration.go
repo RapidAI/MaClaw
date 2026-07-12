@@ -251,10 +251,19 @@ func (app *TUIApp) handleWorkflowReviewTUI(userID, text string) string {
 		raw, err := app.classifyWorkflowReviewIntentTUI(userID, text)
 		if err != nil {
 			log.Printf("[TUI-workflow] review intent classification failed: %v", err)
+			// Fall back to keyword classification when the LLM is unreachable.
+			if kw := v2.ClassifyConfirmIntentKeyword(text); kw != "" && kw != "unrelated" {
+				intent = mapConfirmKeywordToReviewIntent(kw)
+				rawIntent = intent
+			}
 		} else {
 			rawIntent = raw
 			intent = raw
 		}
+	} else if kw := v2.ClassifyConfirmIntentKeyword(text); kw != "" && kw != "unrelated" {
+		// Offline / no-LLM: use the same keyword fallback as confirm classifier.
+		intent = mapConfirmKeywordToReviewIntent(kw)
+		rawIntent = intent
 	}
 
 	// V2 ApplyReviewIntent accepts string intents: "confirm", "skip", "cancel", "switch_task", "supplement", "other"
@@ -541,6 +550,23 @@ func isTUIWorkflowStartConfirmCommand(text string) bool {
 		return false
 	}
 }
+
+// mapConfirmKeywordToReviewIntent maps StateMachine confirm-keyword labels onto
+// ApplyReviewIntent categories used by the review barrier.
+func mapConfirmKeywordToReviewIntent(kw string) string {
+	switch strings.ToLower(strings.TrimSpace(kw)) {
+	case "confirm":
+		return "confirm"
+	case "modify":
+		return "supplement"
+	case "cancel":
+		return "cancel"
+	case "cancel_execute":
+		return "switch_task"
+	default:
+		return "other"
+	}
+}
 func tuiWorkflowProjectPath() string {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -570,6 +596,18 @@ func (app *TUIApp) buildWorkflowStartOverviewV2(userID string, state *v2.Workflo
 	overview := i18n.Tf(i18n.MsgWorkflowStarted, lang, state.Type, phaseName)
 	if strings.TrimSpace(prefix) != "" {
 		overview = strings.TrimSpace(prefix) + "\n\n" + overview
+	}
+
+	// TUI has no form panel: wait for numbered text details when the first phase
+	// declares an InputSchema, instead of arming the agent loop immediately.
+	if phase != nil && phase.InputSchema != nil && phase.FormData == nil {
+		app.workflowMu.Lock()
+		app.pendingPhasePrompt = ""
+		app.workflowAgentLoop = false
+		app.workflowMu.Unlock()
+		if guidance := buildTUIPhaseInputGuidanceNative(phase.InputSchema); guidance != "" {
+			return strings.TrimSpace(overview + "\n\n" + guidance)
+		}
 	}
 
 	// Build and stash the phase prompt for the first phase.
@@ -617,6 +655,96 @@ func buildTUIPhaseInputGuidance(schema *v2.PhaseInputSchemaSpec) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func buildTUIPhaseInputGuidanceNative(schema *v2.PhaseInputSchema) string {
+	if schema == nil {
+		return ""
+	}
+	return buildTUIPhaseInputGuidance(v2.PhaseInputSchemaToSpec(schema))
+}
+
+// parseTUINumberedFormReply maps a numbered chat reply onto schema field names.
+// Lines like "1. value" / "2) value" / bare sequential lines are accepted.
+func parseTUINumberedFormReply(text string, schema *v2.PhaseInputSchema) map[string]interface{} {
+	if schema == nil || len(schema.Fields) == 0 {
+		return nil
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	values := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Strip leading "1." / "1)" / "1、" markers.
+		trimmed := line
+		for i, r := range line {
+			if r >= '0' && r <= '9' {
+				continue
+			}
+			rest := strings.TrimSpace(line[i:])
+			rest = strings.TrimLeft(rest, ".)、:：-")
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				trimmed = rest
+			} else if i > 0 {
+				// Pure number line — ignore.
+				trimmed = ""
+			}
+			break
+		}
+		if trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	if len(values) == 0 {
+		// Single-paragraph free text: put it into the first required textarea/text field.
+		values = []string{text}
+	}
+	out := make(map[string]interface{}, len(schema.Fields))
+	for i, field := range schema.Fields {
+		if i >= len(values) {
+			break
+		}
+		if strings.TrimSpace(values[i]) == "" {
+			continue
+		}
+		out[field.Name] = values[i]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	// Ensure required fields are present when enough values were supplied.
+	for _, field := range schema.Fields {
+		if !field.Required {
+			continue
+		}
+		if v, ok := out[field.Name]; !ok || strings.TrimSpace(fmt.Sprint(v)) == "" {
+			// Incomplete required set — only accept if user clearly numbered enough lines.
+			if len(values) < countRequiredTUIFormFields(schema) {
+				return nil
+			}
+		}
+	}
+	return out
+}
+
+func countRequiredTUIFormFields(schema *v2.PhaseInputSchema) int {
+	if schema == nil {
+		return 0
+	}
+	n := 0
+	for _, field := range schema.Fields {
+		if field.Required {
+			n++
+		}
+	}
+	return n
 }
 
 // expandWorkflowAttachmentInput turns a pasted/dropped local path into explicit

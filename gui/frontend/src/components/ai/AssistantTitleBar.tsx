@@ -15,6 +15,7 @@ import { NotificationBell } from "./NotificationBell";
 import { NotificationPanel } from "./NotificationPanel";
 import { useNotifications } from "./useNotifications";
 import type { AdminNotification } from "./useNotifications";
+import { IconRecord } from "./WorkbenchIcons";
 
 type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "drag" | "no-drag" };
 
@@ -192,15 +193,16 @@ export function AssistantTitleBar({ clearHistory, clearHistoryDisabled, inline, 
                 }}
             >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#ef4444" }}>
-                        🔴 {localizeText(lang, "Urgent Notification", "紧急通知", "緊急通知")}
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#ef4444", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <IconRecord size={12} color="#ef4444" />
+                        {localizeText(lang, "Urgent Notification", "紧急通知", "緊急通知")}
                     </span>
                     <button
                         onClick={dismissUrgentToast}
                         style={{ background: "none", border: "none", cursor: "pointer", color: t.promptColor, fontSize: "14px", padding: "0 2px", lineHeight: 1 }}
                         aria-label={localizeText(lang, "Dismiss", "关闭", "關閉")}
                     >
-                        ✕
+                        ×
                     </button>
                 </div>
                 <span style={{ fontSize: "13px", fontWeight: 500, color: t.titleText }}>{urgentToast.title}</span>

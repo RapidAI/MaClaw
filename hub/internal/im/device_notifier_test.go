@@ -223,7 +223,7 @@ func TestProperty1_PrivateTargetOffline_ReturnsToLobby(t *testing.T) {
 func TestProperty2_AutoReturnNotificationFormat(t *testing.T) {
 	names := []string{
 		"MacBook", "工作站", "iPad-Pro", "设备 A", "My Device",
-		"テスト", "Über-PC", "机器人_01", "dev@home", "🖥️ Server",
+		"テスト", "Über-PC", "机器人_01", "dev@home", "Server",
 	}
 	for iter := 0; iter < 100; iter++ {
 		name := names[iter%len(names)] + fmt.Sprintf("-%d", iter)
@@ -353,7 +353,7 @@ func TestProperty5_UnrelatedDeviceOffline_SimpleNotification(t *testing.T) {
 		entry := &debounceEntry{userID: userID, machineID: unrelatedMachine, name: name}
 		msg := dn.buildOfflineMessage(entry)
 
-		expected := fmt.Sprintf("📴 %s 已离线", name)
+		expected := fmt.Sprintf("%s 已离线", name)
 		if msg != expected {
 			t.Fatalf("iter %d: expected %q, got %q", iter, expected, msg)
 		}
@@ -375,7 +375,7 @@ func TestDeviceNotifier_NilCoordinator_Fallback(t *testing.T) {
 	entry := &debounceEntry{userID: "user1", machineID: "m1", name: "MacBook"}
 	msg := dn.buildOfflineMessage(entry)
 
-	expected := "📴 MacBook 已离线"
+	expected := "MacBook 已离线"
 	if msg != expected {
 		t.Fatalf("expected %q, got %q", expected, msg)
 	}
@@ -395,7 +395,7 @@ func TestDeviceNotifier_MeetingOneRemaining(t *testing.T) {
 	entry := &debounceEntry{userID: "user1", machineID: "m1", name: "MacBook"}
 	msg := dn.buildOfflineMessage(entry)
 
-	expected := "📴 MacBook 已离线，会议仅剩 1 台设备参与。"
+	expected := "MacBook 已离线，会议仅剩 1 台设备参与。"
 	if msg != expected {
 		t.Fatalf("expected %q, got %q", expected, msg)
 	}
@@ -426,7 +426,7 @@ func TestDeviceNotifier_StateChangedDuringDebounce(t *testing.T) {
 	entry := &debounceEntry{userID: "user1", machineID: "m1", name: "MacBook"}
 	msg := dn.buildOfflineMessage(entry)
 
-	expected := "📴 MacBook 已离线"
+	expected := "MacBook 已离线"
 	if msg != expected {
 		t.Fatalf("expected %q, got %q", expected, msg)
 	}

@@ -539,6 +539,8 @@ export namespace main {
 	    ui_zoom_factor: number;
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
+	    skill_evolution_enabled?: boolean;
+	    skill_evolution_repair_cooldown_hours?: number;
 	    favorite_employees?: string[];
 	    favorite_employee_names?: Record<string, string>;
 	    show_coding_tool_entry?: boolean;
@@ -714,6 +716,8 @@ export namespace main {
 	        this.ui_zoom_factor = source["ui_zoom_factor"];
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];
+	        this.skill_evolution_enabled = source["skill_evolution_enabled"];
+	        this.skill_evolution_repair_cooldown_hours = source["skill_evolution_repair_cooldown_hours"];
 	        this.favorite_employees = source["favorite_employees"];
 	        this.favorite_employee_names = source["favorite_employee_names"];
 	        this.show_coding_tool_entry = source["show_coding_tool_entry"];

@@ -10,6 +10,14 @@ import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import {
+    prepareChatBodyForDisplay,
+    prepareChatBodyLines,
+    splitTextByPictographClusters,
+    textMayContainPictograph,
+    type InlineMarkVisual,
+} from "./aiAssistantProgressUtils";
+import { IconBolt, IconSearch, IconStar, StatusGlyph } from "./WorkbenchIcons";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 /* Themed inline markdown rendering */
@@ -20,6 +28,68 @@ const pathTrailingWrappingPattern = /[`'"\u2018\u2019\u201c\u201d]+$/;
 const pathTrailingWrapperPunctuationPattern = /([`'"\u2018\u2019\u201c\u201d])[\s.,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
 const inlineWrapStyle: React.CSSProperties = { overflowWrap: "anywhere", wordBreak: "break-word" };
 const blockWrapStyle: React.CSSProperties = { minWidth: 0, ...inlineWrapStyle };
+/** Inline SVG status/star marks sit on the text baseline without looking like chat emoji. */
+const inlineGlyphWrapStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    verticalAlign: "text-bottom",
+    margin: "0 2px",
+    lineHeight: 0,
+};
+
+function renderInlineMarkGlyph(visual: InlineMarkVisual, key: React.Key): React.ReactNode {
+    if (visual.kind === "star") {
+        return (
+            <span key={key} data-testid="inline-star-glyph" style={inlineGlyphWrapStyle} aria-hidden>
+                <IconStar size={13} color="var(--theme-warning, #d97706)" filled />
+            </span>
+        );
+    }
+    if (visual.kind === "bolt") {
+        return (
+            <span key={key} data-testid="inline-bolt-glyph" style={inlineGlyphWrapStyle} aria-hidden>
+                <IconBolt size={13} color="var(--theme-success, #16a34a)" />
+            </span>
+        );
+    }
+    return (
+        <span key={key} data-testid="inline-status-glyph" data-status={visual.status} style={inlineGlyphWrapStyle} aria-hidden>
+            <StatusGlyph kind={visual.status} size={14} />
+        </span>
+    );
+}
+
+/**
+ * Expand plain text: semantic pictographs → SVG glyphs; residual decorative clusters omitted.
+ * Used for prose, table cells, bold/italic inners (not fenced code / inline code).
+ */
+function expandPlainTextWithIcons(text: string, keyPrefix: string): React.ReactNode[] {
+    if (!text) return [];
+    if (!textMayContainPictograph(text)) return [text];
+    const segments = splitTextByPictographClusters(text);
+    const out: React.ReactNode[] = [];
+    let i = 0;
+    for (const seg of segments) {
+        if (typeof seg === "string") {
+            if (seg) out.push(seg);
+            continue;
+        }
+        out.push(renderInlineMarkGlyph(seg.visual, `${keyPrefix}-mk-${i++}`));
+    }
+    return out;
+}
+
+/** Push plain text into parts, expanding status/star marks to SVG. */
+function pushPlainText(parts: React.ReactNode[], text: string, keyPrefix: string, keyRef: { n: number }): void {
+    if (!text) return;
+    if (!textMayContainPictograph(text)) {
+        parts.push(text);
+        return;
+    }
+    for (const node of expandPlainTextWithIcons(text, `${keyPrefix}-${keyRef.n++}`)) {
+        parts.push(node);
+    }
+}
 
 function stripPathWrapping(s: string): string {
     let value = s.trim();
@@ -137,6 +207,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
     const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let idx = 0;
+    const keyRef = { n: 0 };
     const removeTrailingQuoteFromPreviousText = () => {
         const last = parts[parts.length - 1];
         if (typeof last !== "string") return;
@@ -145,7 +216,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
     while (true) {
         const match = re.exec(text);
         if (!match) break;
-        if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+        if (match.index > lastIndex) pushPlainText(parts, text.slice(lastIndex, match.index), "t", keyRef);
         const m = match[0];
         if (match[1] || match[2]) {
             // Backtick-wrapped content that contains a file path pattern.
@@ -157,11 +228,11 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
             if (path && path.length >= inner.trimStart().length * 0.7) {
                 parts.push(renderPathLink(path, idx++, t));
             } else {
-                // Path is a minor substring; render as inline code.
+                // Path is a minor substring; render as inline code (keep raw; no emoji swap in code).
                 parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", ...inlineWrapStyle }}>{inner}</code>);
             }
         } else if (match[3]) {
-            // Generic inline code (no path inside)
+            // Generic inline code (no path inside) — preserve source glyphs inside code.
             const inner = m.slice(1, -1);
             parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", ...inlineWrapStyle }}>{inner}</code>);
         } else if (match[4]) {
@@ -174,7 +245,11 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                 const codeContent = inner.slice(1, -1);
                 parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", fontWeight: 700, ...inlineWrapStyle }}>{codeContent}</code>);
             } else {
-                parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }}>{inner}</strong>);
+                parts.push(
+                    <strong key={idx++} style={{ color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }}>
+                        {expandPlainTextWithIcons(inner, `b-${keyRef.n++}`)}
+                    </strong>,
+                );
             }
         } else if (match[5]) {
             const inner = m.slice(1, -1);
@@ -183,22 +258,27 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
                 const codeContent = inner.slice(1, -1);
                 parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", fontStyle: "italic", ...inlineWrapStyle }}>{codeContent}</code>);
             } else {
-                parts.push(<em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>{inner}</em>);
+                parts.push(
+                    <em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>
+                        {expandPlainTextWithIcons(inner, `i-${keyRef.n++}`)}
+                    </em>,
+                );
             }
         } else if (match[6]) {
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
                 const href = lm[2];
+                const label = expandPlainTextWithIcons(lm[1], `a-${keyRef.n++}`);
                 if (/^https?:\/\//i.test(href)) {
-                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer", ...inlineWrapStyle }}>{lm[1]}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer", ...inlineWrapStyle }}>{label}</a>);
                 } else if (looksLikeFilePath(href)) {
                     const filePath = stripPathWrapping(href);
-                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={filePath}>{lm[1]}</a>);
+                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={filePath}>{label}</a>);
                 } else {
-                    parts.push(<span key={idx++} style={{ color: t.linkColor, ...inlineWrapStyle }}>{lm[1]}</span>);
+                    parts.push(<span key={idx++} style={{ color: t.linkColor, ...inlineWrapStyle }}>{label}</span>);
                 }
             } else {
-                parts.push(m);
+                pushPlainText(parts, m, "t", keyRef);
             }
         } else if (match[7] || match[8] || match[9] || match[10] || match[12]) {
             const nextChar = text[re.lastIndex] || "";
@@ -212,7 +292,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
         }
         lastIndex = re.lastIndex;
     }
-    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+    if (lastIndex < text.length) pushPlainText(parts, text.slice(lastIndex), "t", keyRef);
     return parts.length > 0 ? parts : ["\u00A0"];
 }
 
@@ -354,7 +434,11 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
     // Normalize compact LLM output outside fenced code blocks.
     const normalized = normalizeInlineListMarkers(content);
     const rawLines = normalized.split("\n");
-    const lines = normalized.includes("#") ? attachBareHeadingMarkers(rawLines) : rawLines;
+    // Compact-heading / bare-marker attach can introduce line-leading pictographs
+    // after a markdown prefix (e.g. "### <pictograph> Title"); strip them for display.
+    // Use line-array form to avoid an extra join/split on long streaming messages.
+    const structureLines = normalized.includes("#") ? attachBareHeadingMarkers(rawLines) : rawLines;
+    const lines = prepareChatBodyLines(structureLines);
     let inCodeBlock = false;
     let codeBlockLines: string[] = [];
     let codeBlockLang = "";
@@ -435,6 +519,7 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
             {fields.map((f, i) => {
                 const isRecovery = f.label === "Recovery";
+                const isTurn = f.label === "Turn";
                 const recoveryTone = String(f.value || '').toLowerCase();
                 const recoveryStyle: React.CSSProperties = isRecovery
                     ? {
@@ -455,14 +540,24 @@ function renderFields(fields: Array<{ label: string; value: string }>, t: Theme)
                                 : "#4f7f6f",
                     }
                     : { color: t.text };
-                return (
-                    <div key={`field-${i}`} data-testid="field-card" style={{
+                const turnChipStyle: React.CSSProperties = isTurn
+                    ? {
+                        background: t.isDark ? "rgba(52, 152, 219, 0.14)" : "rgba(52, 152, 219, 0.10)",
+                        border: `1px solid ${t.isDark ? "rgba(52, 152, 219, 0.35)" : "rgba(52, 152, 219, 0.28)"}`,
+                        borderRadius: "999px",
+                        padding: "3px 10px",
+                        fontSize: "11px",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                    }
+                    : {
                         background: t.fieldBg,
                         border: `1px solid ${t.fieldBorder}`,
                         borderRadius: "4px",
                         padding: "4px 8px",
                         fontSize: "12px",
-                    }}>
+                    };
+                return (
+                    <div key={`field-${i}`} data-testid={isTurn ? "turn-meta-chip" : "field-card"} style={turnChipStyle}>
                         <span style={{ color: t.fieldLabel, marginRight: "6px" }}>{f.label}:</span>
                         <span data-testid={isRecovery ? 'recovery-badge' : undefined} style={recoveryStyle}>{f.value}</span>
                     </div>
@@ -935,7 +1030,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     {/* Streaming: show thinking indicator on the last assistant message placeholder */}
                     {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
                         <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
-                            {lang === "en" ? "Thinking..." : "\u6b63\u5728\u601d\u8003..."}
+                            {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
                         </span>
                     )}
                     {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
@@ -945,6 +1040,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     {msg.reasoning && (() => {
                         const shouldOpen = isLastAssistant && isStreaming;
                         const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
+                        // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
                         const displayReasoning = truncateRolePrefixForDisplay(msg.reasoning || "");
                         if (!displayReasoning.trim()) return null;
                         return (
@@ -957,14 +1053,24 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         );
                     })()}
                     {(() => {
-                        const rawFormattedContent = formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang);
+                        // Strip line-leading pictographs once up front so /btw heading match
+                        // works on legacy history that still prefixes decorative marks.
+                        // renderContentWithCodeBlocks re-strips after compact-heading normalize
+                        // (idempotent; that second pass catches "### <pictograph> …").
+                        const rawFormattedContent = prepareChatBodyForDisplay(
+                            formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang),
+                        );
                         // /btw side query results are collapsible to reduce space.
                         // Detection: requestId starts with "btw-" (set by sendBtwMessage)
                         // OR content starts with the backend prefix (fallback for history reload).
-                        const btwPrefix = "🔍 **/btw 查询结果**\n\n";
-                        const isBtwResult = msg.requestId?.startsWith("btw-") || (rawFormattedContent && rawFormattedContent.startsWith(btwPrefix));
+                        // Prefer requestId; content may still carry a legacy "/btw result" heading from history.
+                        const btwHeadingMatch = rawFormattedContent?.match(
+                            /^\*\*\/btw (?:查询结果|query result)\*\*\n\n/u,
+                        );
+                        const matchedBtwPrefix = btwHeadingMatch?.[0];
+                        const isBtwResult = msg.requestId?.startsWith("btw-") || !!matchedBtwPrefix;
                         if (isBtwResult && rawFormattedContent) {
-                            const rawBtwBody = rawFormattedContent.startsWith(btwPrefix) ? rawFormattedContent.slice(btwPrefix.length) : rawFormattedContent;
+                            const rawBtwBody = matchedBtwPrefix ? rawFormattedContent.slice(matchedBtwPrefix.length) : rawFormattedContent;
                             const btwBody = stripRolePrefixForDisplay(rawBtwBody);
                             // Extract first non-empty line as preview in the collapsed summary.
                             const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
@@ -973,8 +1079,8 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                             const preview = plainFirstLine.length > 60 ? plainFirstLine.slice(0, 60) + '…' : plainFirstLine;
                             return (
                                 <details open style={{ margin: "2px 0 4px 0" }}>
-                                    <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none" }}>
-                                        {"🔍"} <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
+                                    <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                        <IconSearch size={12} color="currentColor" /> <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
                                     </summary>
                                     <div style={{ padding: "4px 0 0 0" }}>
                                         {renderContentWithCodeBlocks(btwBody, t)}
@@ -1006,7 +1112,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                 const codingAgentProgress = renderCodingAgentProgressStatus(msg, t, lang);
                 if (codingAgentProgress) return codingAgentProgress;
             }
-            return <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>{msg.content}</div>;
+            return <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>{prepareChatBodyForDisplay(msg.content)}</div>;
         case "system":
             if (msg.kind === 'guideReceipt') {
                 return renderGuideReceipt(msg, t);
@@ -1019,7 +1125,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
             );
         case "error":
             return (
-                <div key={msg.id} style={{ color: t.errorText, background: t.errorBg, border: `1px solid ${t.errorBorder}`, padding: "6px 8px", margin: "3px 0", borderRadius: "6px", fontSize: "12px" }}>{msg.content}</div>
+                <div key={msg.id} style={{ color: t.errorText, background: t.errorBg, border: `1px solid ${t.errorBorder}`, padding: "6px 8px", margin: "3px 0", borderRadius: "6px", fontSize: "12px" }}>{prepareChatBodyForDisplay(msg.content)}</div>
             );
         default:
             return null;

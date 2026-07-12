@@ -4,6 +4,7 @@ import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import { SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
+import { IconRankBadge } from '../ai/WorkbenchIcons';
 import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 
@@ -274,7 +275,9 @@ export const SidebarNavRail = ({
                         userSelect: 'none',
                     }}
                 >
-                    <span role="img" aria-label="monthly ranking" style={{ fontSize: '20px', lineHeight: 1 }}>🏅</span>
+                    <span aria-label="monthly ranking" style={{ lineHeight: 1, display: 'flex', alignItems: 'center' }}>
+                        <IconRankBadge size={18} />
+                    </span>
                     <span style={{ fontSize: '0.58rem', lineHeight: 1, color: 'var(--theme-text-muted)', fontWeight: 700, marginTop: '3px' }}>
                         {lang === 'en' ? 'Rank' : '排行'}
                     </span>

@@ -87,16 +87,16 @@ VE 仍然不经过以下主 agent 中间件（这些是 IM/桌面面板特有的
 ## 实施路径
 
 ### Phase 1（当前已完成）：知识库工具接入
-- ✅ 添加 knowledge_search / knowledge_context_pack 到 VE 工具列表
-- ✅ 添加知识库自动召回到 VE system prompt
-- ✅ 添加知识库使用规则到 VE system prompt
+- 添加 knowledge_search / knowledge_context_pack 到 VE 工具列表
+- 添加知识库自动召回到 VE system prompt
+- 添加知识库使用规则到 VE system prompt
 
 ### Phase 2：Tool Policy Layer + deny-list 过滤
-- ✅ 定义 `VEToolPolicy` 结构体和 blocked tools 列表（`gui/ve_tool_policy.go`）
-- ✅ `BuildTools` 从主 agent 的 `ToolRegistry` 获取完整工具列表，然后按 policy 过滤
-- ✅ `ExecuteTool` 添加 policy 检查（双重保险：即使工具定义泄漏，执行层也拦截）
-- ✅ `veRemoteToolDefinitions` 保留为 fallback（registry 不可用时）
-- ✅ VE-local 安全加固工具（read_file/list_directory 的敏感文件拦截）优先于 registry handler
+- 定义 `VEToolPolicy` 结构体和 blocked tools 列表（`gui/ve_tool_policy.go`）
+- `BuildTools` 从主 agent 的 `ToolRegistry` 获取完整工具列表，然后按 policy 过滤
+- `ExecuteTool` 添加 policy 检查（双重保险：即使工具定义泄漏，执行层也拦截）
+- `veRemoteToolDefinitions` 保留为 fallback（registry 不可用时）
+- VE-local 安全加固工具（read_file/list_directory 的敏感文件拦截）优先于 registry handler
 
 ### Phase 3：System Prompt 统一
 - VE 的 `BuildSystemPrompt` 复用 `corelib/agent.BuildSystemPrompt` 的核心 section

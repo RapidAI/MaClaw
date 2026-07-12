@@ -137,7 +137,17 @@ String documentTemplateWireValue(DocumentTemplate template) {
   };
 }
 
-String documentTemplateLabel(DocumentTemplate template) {
+String documentTemplateLabel(DocumentTemplate template, {bool isZh = true}) {
+  if (!isZh) {
+    return switch (template) {
+      DocumentTemplate.notice => 'Notice',
+      DocumentTemplate.report => 'Report',
+      DocumentTemplate.email => 'Email',
+      DocumentTemplate.proposal => 'Proposal',
+      DocumentTemplate.meetingMinutes => 'Minutes',
+      DocumentTemplate.statement => 'Statement',
+    };
+  }
   return switch (template) {
     DocumentTemplate.notice => '通知',
     DocumentTemplate.report => '报告',

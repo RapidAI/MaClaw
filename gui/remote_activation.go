@@ -757,15 +757,14 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		enrollCfg.HubCenterURL = ""
 	}
 
-	// Ensure stable client_id.
-	if enrollCfg.ClientID == "" {
-		enrollCfg.ClientID = remote.GenerateClientID()
-		// Persist only client_id so concurrent settings edits are not overwritten.
-		if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
-			cfg.RemoteClientID = enrollCfg.ClientID
-		}); err != nil {
-			return RemoteActivationResult{}, err
-		}
+	// Ensure stable client_id / device key.
+	// Prefer config value, then durable OS store (survives wiped app data dir), else create.
+	enrollCfg.ClientID = remote.EnsureDeviceKey(enrollCfg.ClientID)
+	// Persist only client_id so concurrent settings edits are not overwritten.
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.RemoteClientID = enrollCfg.ClientID
+	}); err != nil {
+		return RemoteActivationResult{}, err
 	}
 
 	// Delegate to shared enrollment client.
@@ -826,11 +825,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 		if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
 			if status, statusErr := a.fetchHubLLMServiceStatusWithTimeout(freshCfg, hubServiceStatusTimeout); statusErr == nil {
 				// Update local cache so sidebar shows fresh status immediately.
-				hubServiceStatusCache.mu.Lock()
-				hubServiceStatusCache.status = status
-				hubServiceStatusCache.fetchedAt = time.Now()
-				hubServiceStatusCache.valid = true
-				hubServiceStatusCache.mu.Unlock()
+				storeHubServiceStatusCache(freshCfg.RemoteHubURL, freshCfg.RemoteViewerToken, status)
 				if _, syncErr := a.syncHubLLMServiceStatusToConfig(status, true); syncErr != nil {
 					log.Printf("[onboarding] ActivateRemote hub_service_sync_failed err=%v", syncErr)
 				}
@@ -841,9 +836,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 					}
 				}
 				// Invalidate cache on auth error so next fetch tries fresh.
-				hubServiceStatusCache.mu.Lock()
-				hubServiceStatusCache.valid = false
-				hubServiceStatusCache.mu.Unlock()
+				clearHubServiceStatusCache()
 				log.Printf("[onboarding] ActivateRemote hub_service_status_failed err=%v", statusErr)
 			}
 		} else if _, syncErr := a.syncHubLLMServiceStatusToConfig(HubLLMServiceStatus{}, false); syncErr != nil {

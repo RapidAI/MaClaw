@@ -534,9 +534,9 @@ go run ./cmd/ds2api-tests \
 
 The testsuite automatically performs:
 
-- ✅ Preflight checks (syntax/build/unit tests)
-- ✅ Isolated config copy startup (no mutation to your original `config.json`)
-- ✅ Live scenario verification (OpenAI/Claude/Admin/concurrency/toolcall/streaming)
-- ✅ Full request/response artifact logging for debugging
+- Preflight checks (syntax/build/unit tests)
+- Isolated config copy startup (no mutation to your original `config.json`)
+- Live scenario verification (OpenAI/Claude/Admin/concurrency/toolcall/streaming)
+- Full request/response artifact logging for debugging
 
 For detailed testsuite documentation, see [TESTING.md](TESTING.md).

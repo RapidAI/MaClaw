@@ -877,7 +877,7 @@ func TestRunAgentLoop_RunningSkillUsesConcreteRunIDGuidanceOnNextRound(t *testin
 		Status:      RegToolAvailable,
 		Source:      "test",
 		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return "✅ Skill 已启动\n## 运行信息\n- run_id: run-555\n- skill: hf_daily_papers_report\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
+			return "Skill 已启动\n## 运行信息\n- run_id: run-555\n- skill: hf_daily_papers_report\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
 		},
 	}); err != nil {
 		t.Fatalf("Register run_skill tool: %v", err)
@@ -1604,7 +1604,7 @@ func TestRunAgentLoop_PendingSkillRunNoToolFragmentStaysInRecover(t *testing.T) 
 		Status:      RegToolAvailable,
 		Source:      "test",
 		HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-			return "✅ Skill 已启动\n## 运行信息\n- run_id: run-1775734674900-1\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
+			return "Skill 已启动\n## 运行信息\n- run_id: run-1775734674900-1\n- status: running\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。"
 		},
 	}); err != nil {
 		t.Fatalf("Register run_skill tool: %v", err)
@@ -3436,7 +3436,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 			if onProgress != nil {
 				onProgress("internal craft progress")
 			}
-			return "📝 脚本语言: python\n📁 脚本路径: /tmp/review.py\n\n[error] timeout after 180s\n\n⚠️ 执行出错: timeout after 180s\n脚本已保存，你可以手动修改后重新执行。"
+			return "脚本语言: python\n脚本路径: /tmp/review.py\n\n[error] timeout after 180s\n\n执行出错: timeout after 180s\n脚本已保存，你可以手动修改后重新执行。"
 		},
 	}); err != nil {
 		t.Fatalf("Register craft_tool: %v", err)
@@ -3494,9 +3494,9 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		t.Fatalf("LLM call count = %d, want 4", callNum)
 	}
 	wantProgress := []string{
-		"🛠️ 正在生成并执行脚本，准备继续完成交付...",
-		"🖥️ 正在执行命令处理文件，请稍候...",
-		"📤 正在整理并发送文件...",
+		"正在生成并执行脚本，准备继续完成交付...",
+		"正在执行命令处理文件，请稍候...",
+		"正在整理并发送文件...",
 	}
 	for _, want := range wantProgress {
 		found := false

@@ -14,7 +14,7 @@
 - **LLM_Caller**: 抽象的 LLM 调用接口（`LLMChatCaller`），用于语义压缩和知识提取
 - **Active_Memory**: 活跃记忆，Status 为空（默认）的 Entry，参与正常 Recall
 - **Archive_Storage**: 归档冷存储，存放被 GC 淘汰的记忆条目，独立于 Active_Memory 的持久化文件
-- **Pinned_Entry**: 被钉住的记忆条目，标记为 📌，永远不会被 LRU 淘汰或 LLM 压缩
+- **Pinned_Entry**: 被钉住的记忆条目，标记为 ，永远不会被 LRU 淘汰或 LLM 压缩
 - **Knowledge_Extractor**: 会话后知识提取器，从对话记录中提取遗漏的知识点并写入 Memory_Store
 - **Cooldown_Period**: 冷却期，Knowledge_Extractor 两次提取之间的最小时间间隔
 - **GC_Threshold**: 垃圾回收触发阈值，当 Active_Memory 条目数达到该值时触发智能 GC
@@ -32,7 +32,7 @@
 2. WHEN the Agent discovers a non-obvious technical detail during a session (such as a workaround, undocumented behavior, configuration quirk, or debugging insight), THE Agent SHALL save the detail as an Entry via the memory save action without requiring explicit user instruction
 3. WHEN the Agent saves a Proactive_Note, THE Memory_Store SHALL store the Entry with category `project_knowledge` or `instruction` and include a tag `proactive` to distinguish proactive notes from user-initiated saves
 4. THE Agent SHALL limit proactive saves to at most 5 entries per session to avoid excessive memory writes
-5. WHEN the Agent saves a Proactive_Note, THE Agent SHALL include a brief inline notification in the response indicating that a memory was proactively saved (e.g., "💾 已主动记录: <summary>")
+5. WHEN the Agent saves a Proactive_Note, THE Agent SHALL include a brief inline notification in the response indicating that a memory was proactively saved (e.g., "已主动记录: <summary>")
 
 ### Requirement 2: 会话后知识提取（Post-Session Knowledge Extraction）
 
@@ -74,7 +74,7 @@
 4. THE Memory_Store SHALL provide a `PinEntry` method that sets `Pinned` to true for the Entry with the given ID
 5. THE Memory_Store SHALL provide a `UnpinEntry` method that sets `Pinned` to false for the Entry with the given ID
 6. THE Agent memory tool SHALL support `pin` and `unpin` actions that call `PinEntry` and `UnpinEntry` respectively, accepting an entry ID as parameter
-7. WHEN listing or searching entries, THE Memory_Store SHALL include a 📌 indicator in the output for pinned entries to provide visual distinction
+7. WHEN listing or searching entries, THE Memory_Store SHALL include a indicator in the output for pinned entries to provide visual distinction
 8. THE Memory_Store SHALL allow any category of Entry to be pinned, providing more flexible protection than the existing `self_identity`-only protection
 
 ### Requirement 5: 智能 GC（Intelligent Garbage Collection）

@@ -9,6 +9,8 @@ const baseCredits: SidebarHubCredits = {
     total: 100,
     used: 10,
     remaining: 90,
+    available: 90,
+    showPeriodAvailable: false,
     tokensPerCredit: 0,
     expiresAt: '2026-05-06T00:00:00Z',
     unlimited: false,
@@ -75,12 +77,21 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(openHubCardStorePage).not.toHaveBeenCalled();
     });
 
-    it('shows period limit state with recovery time instead of remaining credits', () => {
-        renderStatus({ ...baseCredits, status: 'period_limited', retryAfterSeconds: 3600 });
+    it('shows account remaining plus period available and recovery state', () => {
+        renderStatus({
+            ...baseCredits,
+            remaining: 90,
+            available: 0,
+            showPeriodAvailable: true,
+            status: 'period_limited',
+            retryAfterSeconds: 3600,
+        });
 
+        // Lifetime account remaining stays visible for Total/Used/Left accounting.
+        expect(screen.getByText('90')).toBeTruthy();
+        expect(screen.getByText(/\u53ef\u7528/)).toBeTruthy();
         expect(screen.getByText(/\u5468\u671f\u9650\u989d/)).toBeTruthy();
         expect(screen.getByText(/\u7ea6 1 \u5c0f\u65f6\u540e\u6062\u590d/)).toBeTruthy();
-        expect(screen.queryByText('90')).toBeNull();
     });
 
     it('shows a stopped quota badge that opens service redeem for period-limited official service', () => {
@@ -151,19 +162,19 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(openHubCreditsPage).not.toHaveBeenCalled();
     });
 
-    it('shows queued state with activation time instead of remaining credits', () => {
+    it('shows queued state with activation time alongside account remaining', () => {
         renderStatus({ ...baseCredits, status: 'queued', retryAfterSeconds: 7200 });
 
+        expect(screen.getByText('90')).toBeTruthy();
         expect(screen.getByText(/\u5f85\u751f\u6548/)).toBeTruthy();
         expect(screen.getByText(/\u7ea6 2 \u5c0f\u65f6\u540e\u751f\u6548/)).toBeTruthy();
-        expect(screen.queryByText('90')).toBeNull();
     });
 
-    it('shows expired state instead of remaining credits', () => {
+    it('shows expired state alongside account remaining', () => {
         renderStatus({ ...baseCredits, status: 'expired' });
 
+        expect(screen.getByText('90')).toBeTruthy();
         expect(screen.getByText(/\u6388\u6743\u5df2\u8fc7\u671f/)).toBeTruthy();
-        expect(screen.queryByText('90')).toBeNull();
     });
 
     it('shows prompt cache hit rate beside token usage', () => {

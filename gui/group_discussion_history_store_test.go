@@ -813,12 +813,14 @@ func TestGroupDiscussionSendHistoryMessageReturnsBeforePostSendDetailRefresh(t *
 		if err != nil {
 			t.Fatalf("GroupDiscussionSendHistoryMessage: %v", err)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(3 * time.Second):
+		// Under package-parallel load the first detail GET can take >500ms
+		// without waiting on post-send refresh; keep the race check loose.
 		t.Fatal("GroupDiscussionSendHistoryMessage waited for post-send detail refresh")
 	}
 	select {
 	case <-postSendDetailStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for async post-send detail refresh")
 	}
 	releaseOnce.Do(func() { close(releasePostSendDetail) })

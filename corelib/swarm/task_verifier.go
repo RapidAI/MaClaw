@@ -106,7 +106,7 @@ func (v *TaskVerifier) VerifyByTest(workDir, testCmd, testFile string) *TaskVerd
 		return &TaskVerdict{
 			Pass:   true,
 			Score:  100,
-			Reason: "所有测试通过 ✅",
+			Reason: "所有测试通过 ",
 		}
 	}
 

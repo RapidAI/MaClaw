@@ -52,7 +52,7 @@ func TestRouteToAgent_ProgressResetsTimeout(t *testing.T) {
 
 	// Send a progress update after 100ms (before timeout).
 	time.Sleep(100 * time.Millisecond)
-	router.HandleAgentProgress(reqID, "📊 正在分析搜索结果并生成报告")
+	router.HandleAgentProgress(reqID, "正在分析搜索结果并生成报告")
 
 	// Wait another 100ms — without progress, this would have timed out.
 	// But progress reset the timer, so we have another 200ms.
@@ -83,7 +83,7 @@ func TestRouteToAgent_ProgressResetsTimeout(t *testing.T) {
 	if len(progressTexts) != 1 {
 		t.Fatalf("expected 1 progress text, got %d", len(progressTexts))
 	}
-	if progressTexts[0] != "📊 正在分析搜索结果并生成报告" {
+	if progressTexts[0] != "正在分析搜索结果并生成报告" {
 		t.Fatalf("unexpected progress text: %s", progressTexts[0])
 	}
 }
@@ -181,7 +181,7 @@ func TestRouteToAgent_TimeoutWithProgressInfo(t *testing.T) {
 
 	// Send progress.
 	time.Sleep(50 * time.Millisecond)
-	router.HandleAgentProgress(reqID, "⏳ 命令仍在执行中（已 30s）: find / -name *.mp4")
+	router.HandleAgentProgress(reqID, "命令仍在执行中（已 30s）: find / -name *.mp4")
 
 	// Let it timeout after the progress reset.
 	select {
@@ -302,11 +302,11 @@ func TestRouteToAgent_ProgressDedup(t *testing.T) {
 	// All messages arrive within the 10s throttle window.
 	// Intermediate status messages are suppressed entirely — they only
 	// reset the timeout timer but are never delivered to IM users.
-	router.HandleAgentProgress(reqID, "⚙️ 正在执行工具: bash")
+	router.HandleAgentProgress(reqID, "正在执行工具: bash")
 	time.Sleep(50 * time.Millisecond)
-	router.HandleAgentProgress(reqID, "⚙️ 正在执行工具: read_file")
+	router.HandleAgentProgress(reqID, "正在执行工具: read_file")
 	time.Sleep(50 * time.Millisecond)
-	router.HandleAgentProgress(reqID, "⚙️ 正在执行工具: read_file") // dup
+	router.HandleAgentProgress(reqID, "正在执行工具: read_file") // dup
 
 	time.Sleep(50 * time.Millisecond)
 	router.HandleAgentResponse(reqID, &AgentResponse{Text: "done"})
@@ -382,7 +382,7 @@ func TestBroadcastProgressDedup(t *testing.T) {
 
 	// Both devices send the same progress text (non-intermediate, so it gets delivered).
 	for _, id := range reqIDs {
-		router.HandleAgentProgress(id, "📊 正在分析数据并生成报告")
+		router.HandleAgentProgress(id, "正在分析数据并生成报告")
 	}
 
 	// Give progress delivery goroutines time to run.
@@ -464,9 +464,9 @@ func TestBroadcastProgressDedup_DifferentTextsPass(t *testing.T) {
 	for id := range reqMap {
 		reqIDs = append(reqIDs, id)
 		if i == 0 {
-			router.HandleAgentProgress(id, "📊 正在分析搜索结果")
+			router.HandleAgentProgress(id, "正在分析搜索结果")
 		} else {
-			router.HandleAgentProgress(id, "📄 正在整合文档内容")
+			router.HandleAgentProgress(id, "正在整合文档内容")
 		}
 		i++
 	}

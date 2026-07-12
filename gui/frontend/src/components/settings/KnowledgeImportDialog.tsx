@@ -16,9 +16,15 @@ import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 // The authoritative list comes from the backend via the supportedExts prop.
 const fallbackExts = ['.pdf', '.pptx', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.md', '.txt'];
 
-type TFunc = (en: string, zhHans: string, zhHant?: string) => string;
+export type KnowledgeImportTFunc = (en: string, zhHans: string, zhHant?: string) => string;
+type TFunc = KnowledgeImportTFunc;
 
-type ImportResult = {
+export type ImportFailedItem = {
+    file_path?: string;
+    error?: string;
+};
+
+export type ImportResult = {
     batch_id?: string;
     status?: string;
     root_path?: string;
@@ -37,14 +43,49 @@ type ImportResult = {
     estimated_bytes?: number;
     warnings?: string[];
     ext_counts?: Record<string, number>;
+    failed_items?: ImportFailedItem[];
+    last_item_path?: string;
+    last_item_status?: string;
+    last_item_reason?: string;
 };
 
-type ImportJob = {
+export type ImportJob = {
     id?: string;
     status?: string;
     error?: string;
     result?: ImportResult;
 };
+
+/** True when the import job is still in flight. */
+export function isKnowledgeImportJobActive(job: ImportJob | null | undefined): boolean {
+    const st = String(job?.status || '').toLowerCase();
+    return ['queued', 'running', 'pending'].includes(st);
+}
+
+/** True when the import job has finished (success or failure). */
+export function isKnowledgeImportJobTerminal(job: ImportJob | null | undefined): boolean {
+    const st = String(job?.status || '').toLowerCase();
+    return st === 'completed' || st === 'failed';
+}
+
+/** Merge a progress event payload into an ImportJob (shared by dialog + global host). */
+export function mergeKnowledgeImportProgress(prev: ImportJob | null, data: any): ImportJob {
+    const base: ImportJob = prev || { id: data?.job_id };
+    const mergedResult = { ...(base.result || {}), ...data };
+    if ((data?.processed_files || 0) > (base.result?.processed_files || 0)) {
+        mergedResult.current_step = data.current_step ?? '';
+        if (data.step_progress === undefined) mergedResult.step_progress = 0;
+        if (data.current_step_num === undefined) mergedResult.current_step_num = 0;
+        if (data.total_steps === undefined) mergedResult.total_steps = 0;
+    }
+    return {
+        ...base,
+        id: data?.job_id || base.id,
+        status: data?.status || base.status,
+        error: data?.error || base.error,
+        result: mergedResult,
+    };
+}
 
 type LogEntry = {
     path: string;
@@ -58,12 +99,14 @@ type Props = {
     open: boolean;
     onClose: () => void;
     onJobUpdate?: (job: ImportJob | null) => void;
+    /** When the dialog remounts after leaving settings, hydrate from the global job. */
+    restoreJob?: ImportJob | null;
     supportedExts?: string[];
     t: TFunc;
     lang: string;
 };
 
-export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExts, t, lang }: Props) {
+export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, supportedExts, t, lang }: Props) {
     // Single source of truth: backend-provided list, fallback only if not yet loaded.
     const allExts = supportedExts && supportedExts.length > 0 ? supportedExts : fallbackExts;
     const [step, setStep] = useState<ImportDialogStep>('choose');
@@ -107,24 +150,53 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
     onJobUpdateRef.current = onJobUpdate;
     useEffect(() => { onJobUpdateRef.current?.(job); }, [job]);
 
+    // Hydrate after settings remount (global float Expand / leave-and-return).
+    const hydratedJobIdRef = useRef('');
+    useEffect(() => {
+        if (!open) return;
+        const restoreId = String(restoreJob?.id || '').trim();
+        if (!restoreId || job?.id) return;
+        if (hydratedJobIdRef.current === restoreId) return;
+        hydratedJobIdRef.current = restoreId;
+        let cancelled = false;
+        void KnowledgeImportJobStatus(restoreId)
+            .then(j => {
+                if (cancelled || !j) {
+                    if (!cancelled && restoreJob) {
+                        setJob(restoreJob);
+                        setStep(isKnowledgeImportJobTerminal(restoreJob) ? 'done' : 'progress');
+                    }
+                    return;
+                }
+                setJob(j as ImportJob);
+                setStep(isKnowledgeImportJobTerminal(j as ImportJob) ? 'done' : 'progress');
+                // Seed failed items into the log when available on the job result.
+                const failed = (j as ImportJob)?.result?.failed_items;
+                if (Array.isArray(failed) && failed.length) {
+                    setLogEntries(failed
+                        .filter(item => item?.file_path)
+                        .map(item => ({
+                            path: String(item.file_path),
+                            status: 'failed' as const,
+                            reason: item.error || '',
+                        })));
+                }
+            })
+            .catch(() => {
+                if (!cancelled && restoreJob) {
+                    setJob(restoreJob);
+                    setStep(isKnowledgeImportJobTerminal(restoreJob) ? 'done' : 'progress');
+                }
+            });
+        return () => { cancelled = true; };
+    }, [open, restoreJob?.id, job?.id]);
+
     // EventsOn real-time progress
     useEffect(() => {
         if (!job?.id) return;
         const cleanup = EventsOn('knowledge:import-progress', (data: any) => {
             if (data.job_id !== job.id) return;
-            setJob(prev => {
-                if (!prev) return prev;
-                const merged = { ...prev.result, ...data };
-                // When a file completes (processed_files increments), clear step fields
-                // because omitempty won't send 0 values to overwrite stale step_progress
-                if ((data.processed_files || 0) > (prev.result?.processed_files || 0)) {
-                    merged.current_step = '';
-                    merged.step_progress = 0;
-                    merged.current_step_num = 0;
-                    merged.total_steps = 0;
-                }
-                return { ...prev, status: data.status, result: merged };
-            });
+            setJob(prev => mergeKnowledgeImportProgress(prev, data));
             if (data.last_item_path && data.last_item_status) {
                 setLogEntries(prev => {
                     const next = [...prev, {
@@ -133,6 +205,22 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                         reason: data.last_item_reason || '',
                     }];
                     // Cap in-memory entries to prevent unbounded growth
+                    return next.length > 500 ? next.slice(-500) : next;
+                });
+            }
+            // Finish payload may include failed_items (throttled progress can drop mid-run reasons).
+            if (Array.isArray(data.failed_items) && data.failed_items.length > 0) {
+                setLogEntries(prev => {
+                    const existing = new Set(prev.map(e => e.path));
+                    const extras: LogEntry[] = [];
+                    for (const item of data.failed_items as ImportFailedItem[]) {
+                        const path = (item?.file_path || '').trim();
+                        if (!path || existing.has(path)) continue;
+                        extras.push({ path, status: 'failed', reason: item.error || '' });
+                        existing.add(path);
+                    }
+                    if (!extras.length) return prev;
+                    const next = [...prev, ...extras];
                     return next.length > 500 ? next.slice(-500) : next;
                 });
             }
@@ -160,9 +248,10 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
     }, [job?.id, job?.status]);
 
     const handleClose = () => {
-        if (step === 'progress' && (job?.status === 'running' || job?.status === 'queued')) {
-            // Import in progress — just close the dialog, backend continues
-            // Don't reset state so parent can still show status via onJobUpdate
+        const running = ['running', 'queued', 'pending'].includes(String(job?.status || '').toLowerCase());
+        if (step === 'progress' && running) {
+            // Import in progress — minimize to floating bar; backend continues.
+            // Keep dialog state so Expand restores progress/logs.
             onClose();
             return;
         }
@@ -310,7 +399,17 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                                 t('Import Completed', '导入完成'))}
                         </h3>
                     </div>
-                    <button className="knowledge-import-icon-button" aria-label={t('Close', '关闭')} onClick={handleClose}>×</button>
+                    <button
+                        className="knowledge-import-icon-button"
+                        aria-label={
+                            step === 'progress' && ['running', 'queued', 'pending'].includes(String(job?.status || '').toLowerCase())
+                                ? t('Minimize', '最小化')
+                                : t('Close', '关闭')
+                        }
+                        onClick={handleClose}
+                    >
+                        {step === 'progress' && ['running', 'queued', 'pending'].includes(String(job?.status || '').toLowerCase()) ? '–' : '×'}
+                    </button>
                 </div>
 
                 {/* Body */}
@@ -493,6 +592,73 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                         </div>
                     )}
                 </div>
+            </div>
+        </div>
+    );
+}
+
+/** Compact floating status shown when the import dialog is minimized. */
+export function KnowledgeImportFloatingBar({
+    job,
+    t,
+    onExpand,
+    onDismiss,
+}: {
+    job: ImportJob;
+    t: TFunc;
+    onExpand: () => void;
+    onDismiss?: () => void;
+}) {
+    const status = String(job.status || '').toLowerCase();
+    const running = ['queued', 'running', 'pending'].includes(status);
+    const partial = status === 'completed' && (job.result?.failed_files || 0) > 0;
+    const total = job.result?.total_files || 0;
+    const processed = job.result?.processed_files || 0;
+    const percent = !running
+        ? 100
+        : total > 0
+            ? Math.min(99, Math.round((processed / total) * 100))
+            : 0;
+    const tone = !running
+        ? (status === 'failed' || ((job.result?.failed_files || 0) > 0 && (job.result?.imported_files || 0) === 0)
+            ? 'failed'
+            : partial || (job.result?.failed_files || 0) > 0
+                ? 'warning'
+                : 'success')
+        : 'running';
+    const label = running
+        ? t('Importing knowledge…', '正在导入知识…')
+        : status === 'failed' || ((job.result?.failed_files || 0) > 0 && (job.result?.imported_files || 0) === 0)
+            ? t('Knowledge import failed', '知识库导入失败')
+            : (job.result?.failed_files || 0) > 0
+                ? t('Knowledge import finished with errors', '知识库导入完成（有失败）')
+                : t('Knowledge import completed', '知识库导入完成');
+    const detail = [
+        job.result?.current_file,
+        `${job.result?.imported_files || 0} ${t('imported', '已导入')}`,
+        (job.result?.failed_files || 0) > 0 ? `${job.result?.failed_files} ${t('failed', '失败')}` : '',
+        total > 0 ? `${processed}/${total}` : '',
+    ].filter(Boolean).join(' · ');
+
+    return (
+        <div className="knowledge-import-float" role="status" data-tone={tone}>
+            <button type="button" className="knowledge-import-float-main" onClick={onExpand}>
+                <div className="knowledge-import-float-track" aria-hidden="true">
+                    <div className="knowledge-import-float-fill" data-tone={tone} style={{ width: `${percent}%` }} />
+                </div>
+                <div className="knowledge-import-float-text">
+                    <strong>{label}</strong>
+                    {detail && <span className="knowledge-import-float-detail">{detail}</span>}
+                </div>
+                <span className="knowledge-import-float-percent">{percent}%</span>
+            </button>
+            <div className="knowledge-import-float-actions">
+                <button type="button" className="knowledge-import-button knowledge-import-button--secondary" onClick={onExpand}>
+                    {running ? t('Expand', '展开') : t('Details', '详情')}
+                </button>
+                {!running && onDismiss && (
+                    <button type="button" className="knowledge-import-icon-button" aria-label={t('Dismiss', '关闭')} onClick={onDismiss}>×</button>
+                )}
             </div>
         </div>
     );

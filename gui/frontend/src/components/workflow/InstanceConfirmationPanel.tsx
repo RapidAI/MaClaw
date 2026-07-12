@@ -251,7 +251,7 @@ function NotifierView({
                         style={submitting ? confirmButtonDisabledStyle : confirmButtonNotifierStyle}
                         aria-label="确认已知会"
                     >
-                        {submitting ? "提交中..." : "📋 确认已知会"}
+                        {submitting ? "提交中..." : "确认已知会"}
                     </button>
                 </section>
             )}

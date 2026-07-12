@@ -257,12 +257,34 @@ func TestRegisterVirtualEmployeeSendsValidAvatarToHub(t *testing.T) {
 		if got := body["name"]; got != "Name" {
 			t.Fatalf("name = %#v, want trimmed Name", got)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		if got := body["auto_reclaim"]; got != true {
+			t.Fatalf("auto_reclaim = %#v, want true", got)
+		}
+		if got := body["twin_slot"]; got != "personal-default" {
+			t.Fatalf("twin_slot = %#v, want personal-default", got)
+		}
+		if got := body["device_key"]; got != "client-device-1" {
+			t.Fatalf("device_key = %#v, want client-device-1", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"registered": true,
+			"reclaimed":  true,
+			"employee": map[string]any{
+				"id": "ve_stable_old", "name": "Name", "machine_id": "machine-1",
+				"skill_description": "Skill", "access_policy": "public",
+				"status": "active", "online_status": "online",
+			},
+		})
 	}))
 	defer server.Close()
 
 	app := &App{testHomeDir: t.TempDir()}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineID: "machine-1", RemoteMachineToken: "token-1"}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		RemoteClientID:     "client-device-1",
+	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
@@ -271,6 +293,67 @@ func TestRegisterVirtualEmployeeSendsValidAvatarToHub(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hubCalls); got != 1 {
 		t.Fatalf("Hub calls = %d, want 1", got)
+	}
+}
+
+func TestListAndReclaimVirtualEmployee(t *testing.T) {
+	var reclaimBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/ve/reclaimable":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"reclaimable": []map[string]any{
+					{"id": "ve_old", "name": "Orphan", "machine_id": "machine-old", "status": "active"},
+				},
+				"count": 1,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/ve/reclaim":
+			if err := json.NewDecoder(r.Body).Decode(&reclaimBody); err != nil {
+				t.Fatalf("decode reclaim body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"reclaimed": true,
+				"employee": map[string]any{
+					"id": "ve_old", "name": "Orphan", "machine_id": "machine-1",
+					"status": "active", "online_status": "online",
+				},
+			})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		RemoteClientID:     "client-device-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	items, err := app.ListReclaimableVirtualEmployees()
+	if err != nil {
+		t.Fatalf("ListReclaimableVirtualEmployees: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "ve_old" {
+		t.Fatalf("items = %#v", items)
+	}
+
+	employee, err := app.ReclaimVirtualEmployee("ve_old")
+	if err != nil {
+		t.Fatalf("ReclaimVirtualEmployee: %v", err)
+	}
+	if employee == nil || employee.ID != "ve_old" || employee.MachineID != "machine-1" {
+		t.Fatalf("employee = %#v", employee)
+	}
+	if reclaimBody["ve_id"] != "ve_old" {
+		t.Fatalf("reclaim body ve_id = %#v", reclaimBody["ve_id"])
+	}
+	if reclaimBody["device_key"] != "client-device-1" {
+		t.Fatalf("reclaim body device_key = %#v", reclaimBody["device_key"])
 	}
 }
 
@@ -3126,6 +3209,9 @@ func TestAddVEToGroupWaitsUntilInvitedVEIsParticipant(t *testing.T) {
 				t.Errorf("invite body = %+v, want trusted machine-1 -> xiaoyan-machine speak", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"invite_id": "invite-1"})
+		case "/api/a2a/invites/mine":
+			// Wait loop polls invite status between detail checks; keep it pending so join is driven by detail.
+			_ = json.NewEncoder(w).Encode(map[string]any{"invites": []map[string]string{{"id": "invite-1", "to_id": "xiaoyan-machine", "status": "pending"}}})
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -3135,8 +3221,9 @@ func TestAddVEToGroupWaitsUntilInvitedVEIsParticipant(t *testing.T) {
 
 	oldTimeout := veGroupInviteJoinTimeout
 	oldDelay := veGroupInviteJoinPollDelay
-	veGroupInviteJoinTimeout = time.Second
-	veGroupInviteJoinPollDelay = time.Millisecond
+	// Must exceed per-poll invite-status HTTP timeout (2s) under suite load.
+	veGroupInviteJoinTimeout = 5 * time.Second
+	veGroupInviteJoinPollDelay = 5 * time.Millisecond
 	defer func() {
 		veGroupInviteJoinTimeout = oldTimeout
 		veGroupInviteJoinPollDelay = oldDelay

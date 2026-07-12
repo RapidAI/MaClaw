@@ -28,7 +28,7 @@
 
 2.1 WHEN Agent 通过 `send_and_observe` 向编程会话发送复杂编程指令 THEN `send_and_observe` SHALL 提供足够的等待时间（或支持可配置的超时参数），使编程工具有合理时间产出初始结果
 
-2.2 WHEN 编程会话状态为 `busy` 且 Agent 调用 `get_session_output` THEN 返回结果 SHALL 包含明确提示（如"⏳ 编程工具正在工作中，请稍后再检查进度"），引导 Agent 耐心等待而非放弃会话
+2.2 WHEN 编程会话状态为 `busy` 且 Agent 调用 `get_session_output` THEN 返回结果 SHALL 包含明确提示（如"编程工具正在工作中，请稍后再检查进度"），引导 Agent 耐心等待而非放弃会话
 
 2.3 WHEN 系统提示词指导 Agent 处理编程会话 THEN 系统提示词 SHALL 明确区分"快速操作"和"长时间编程任务"，并指导 Agent 对长时间任务定期（如每 15-30 秒）检查进度，而非完全禁止轮询
 

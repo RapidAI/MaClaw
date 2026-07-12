@@ -209,6 +209,13 @@ export type AgentView =
         action: AgentViewActionSummary;
         approveLabel?: string;
         rejectLabel?: string;
+        /** Show a free-text note field for the decision. */
+        noteLabel?: string;
+        notePlaceholder?: string;
+        /** When true, note is required for both approve and reject. */
+        requireNote?: boolean;
+        /** When true (default for AppView approvals), note is required only on reject. */
+        requireNoteOnReject?: boolean;
     }
     | {
         type: "progress";
@@ -231,4 +238,41 @@ export type AgentView =
         title: string;
         description?: string;
         artifact: { label?: string; kind?: string; uri?: string; summary?: string };
+    }
+    /** Controlled multi-region workspace (maclaw.appview.v1). Nested views are never app_view. */
+    | {
+        type: "app_view";
+        schema?: "maclaw.appview.v1" | string;
+        id?: string;
+        appId: string;
+        sessionId?: string;
+        title: string;
+        description?: string;
+        layout?: "workspace" | "record" | "report" | "tool" | string;
+        viewRevision?: number;
+        meta?: Record<string, unknown>;
+        regions: {
+            header?: { title?: string; subtitle?: string };
+            nav?: AppViewNavItem[];
+            main: AgentView | AgentView[];
+            side?: AgentView | AgentView[];
+            footer?: { actions?: AgentViewResultAction[] };
+        };
+        actions?: AppViewAction[];
     };
+
+export interface AppViewNavItem {
+    id: string;
+    label: string;
+    /** When set, selects the main view with this id; otherwise uses index order. */
+    targetViewId?: string;
+    icon?: string;
+}
+
+export interface AppViewAction {
+    id?: string;
+    label: string;
+    primary?: boolean;
+    viewId?: string;
+    data?: Record<string, unknown>;
+}

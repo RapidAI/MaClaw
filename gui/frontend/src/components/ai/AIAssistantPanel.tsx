@@ -37,6 +37,7 @@ import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
 import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText, formatToolProgressStatus, isToolProgressMessage } from "./aiAssistantProgressUtils";
+import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { getAITabDisplayTitle } from "./AITabItem";
 import type { AITab } from "./AITabTypes";
@@ -475,8 +476,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         id: `skill-rec-card-${Date.now()}`,
                         type: "skill_recording_done",
                         title: lang === "en"
-                            ? `🎬 Recording complete! ${data.count} operations captured.`
-                            : `🎬 录制完成！共记录 ${data.count} 个操作步骤。`,
+                            ? `Recording complete. ${data.count} operations captured.`
+                            : `录制完成，共记录 ${data.count} 个操作步骤。`,
                         description: lang === "en"
                             ? "Save as a self-learned Skill?"
                             : "是否保存为自学习 Skill？",
@@ -496,8 +497,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         id: `skill-rec-empty-${Date.now()}`,
                         type: "skill_recording_empty",
                         title: lang === "en"
-                            ? "⚠️ Recording stopped — no operations captured."
-                            : "⚠️ 录制已停止 — 没有记录到可用操作。",
+                            ? "Recording stopped — no operations captured."
+                            : "录制已停止 — 没有记录到可用操作。",
                         description: lang === "en"
                             ? "Only the following operations are recorded as Skill steps:\n• Commands (bash)\n• File writes (write_file)\n• File edits (edit_file)\n\nSearch, read, screenshot and other query operations are not included.\nTry again after letting the AI execute some commands or write files."
                             : "只有以下操作会被记录为 Skill 步骤：\n• 命令执行（bash）\n• 文件写入（write_file）\n• 文件编辑（edit_file）\n\n搜索、读取、截图等查询操作不会被录制。\n请让 AI 执行一些命令或写入文件后再试。",
@@ -528,10 +529,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     setSkillRecordingCard({
                         id: `skill-rec-start-${Date.now()}`,
                         type: "skill_recording_started",
-                        title: lang === "en" ? "🔴 Skill Recording Started" : "🔴 Skill 录制已开始",
+                        title: lang === "en" ? "Skill recording started" : "Skill 录制已开始",
                         description: lang === "en"
-                            ? "All commands, file writes, and edits will be recorded. Click REC again to stop.\n\n💡 Just tell the AI what to do as usual — recording runs silently."
-                            : "所有命令执行、文件写入、文件编辑将被记录。再次点击录制按钮停止。\n\n💡 像平时一样让 AI 工作即可，录制在后台静默进行。",
+                            ? "All commands, file writes, and edits will be recorded. Click REC again to stop.\n\nWork as usual — recording continues in the background."
+                            : "所有命令执行、文件写入、文件编辑将被记录。再次点击录制按钮停止。\n\n正常使用即可，录制在后台静默进行。",
                         fields: [],
                         actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
                         metadata: {},
@@ -1552,11 +1553,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         resetWorkflowState();
         if (agentView) dismissAgentView(agentView.id, undefined, { force: true });
     };
-    const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
-    const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
-    const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
+    // Workbench language: avoid consumer "AI assistant / thinking" persona copy.
+    const title = lang === "en" ? "Workbench" : "\u5de5\u4f5c\u53f0";
+    const thinkingText = lang === "en" ? "Working... (you can keep typing)" : "\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
+    const processingText = lang === "en" ? "Running tools... (you can keep typing)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
-        || (lang === "en" ? "Type a message..." : "\u8f93\u5165\u6d88\u606f...");
+        || (lang === "en" ? "Enter a task or command..." : "\u8f93\u5165\u4efb\u52a1\u6216\u6307\u4ee4\u2026");
     const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
     const hasActiveDetachedProjectRound = useMemo(() => (
         isProjectTabActive && Array.from(detachedProjectRoundsRef.current.values()).some(detached => detached.tabId === activeTab.id)
@@ -1741,7 +1743,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => window.removeEventListener('ai-save-current-chat-as-task', handler);
     }, [openSaveTaskDialog]);
 
-    // Branch command listener: triggered by the 🔀 button on user messages.
+    // Branch command listener: triggered by the branch button on user messages.
     useEffect(() => {
         const handler = (e: Event) => {
             const detail = (e as CustomEvent).detail;
@@ -1753,7 +1755,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return () => window.removeEventListener('ai-send-branch-command', handler);
     }, []);
 
-    // Handle external "run skill" requests (from Skills Management Panel ▶ button)
+    // Handle external "run skill" requests (from Skills Management Panel Run button)
     useEffect(() => {
         const handler = (e: Event) => {
             const text = (e as CustomEvent).detail?.text;
@@ -1843,8 +1845,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [createProjectTab, deriveTaskNameFromMessages, messages, onTaskPrefsChanged, saveTabState]);
     const initLabel = getAssistantInitLabel(initStatus, lang);
     const preparingPlaceholderText = activeProjectPrepareMode === "new-agent"
-        ? (lang === "en" ? "Creating agent instance... type ahead, Enter will wait" : "正在创建 Agent 实例... 可预输入，Enter 会等待")
-        : (lang === "en" ? "Restoring task context... type ahead, Enter will wait" : "正在恢复任务上下文... 可预输入，Enter 会等待");
+        ? (lang === "en" ? "Creating project session... type ahead, Enter will wait" : "正在创建项目会话… 可预输入，Enter 会等待")
+        : (lang === "en" ? "Restoring task context... type ahead, Enter will wait" : "正在恢复任务上下文… 可预输入，Enter 会等待");
     const placeholderText = !ready
         ? initLabel
         : activeProjectPreparing
@@ -2580,7 +2582,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 transition: 'opacity 0.15s',
                                 color: t.textMuted, padding: '2px 6px', borderRadius: 4,
                             }}
-                        >🔀</button>
+                        ><IconBranch size={12} color="currentColor" /></button>
                     </div>
                 );
                 cache.set(msg.id, { contentKey, node: wrappedNode });
@@ -2671,7 +2673,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabFromSearch} onCloseProjectTab={closeProjectTabByPath} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />
                 {workflowStartingLabel && !hasConversation && !showThinkingState && !showProcessingState && (
                     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', background: t.bg, color: t.textMuted }}>
-                        <div style={{ fontSize: '2rem' }}>🚀</div>
+                        <div style={{ opacity: 0.7, display: 'inline-flex' }}><IconRocket size={28} color="currentColor" /></div>
                         <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>
                             {lang?.startsWith('en') ? `Starting workflow: ${workflowStartingLabel}` : `正在启动工作流：${workflowStartingLabel}`}
                         </div>
@@ -2740,7 +2742,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 )}
                 {activeProjectPreparing && <div data-testid="project-tab-restore-progress" style={{ flexShrink: 0, padding: "7px 10px 8px", borderTop: `1px solid ${t.inputBarBorder}`, background: t.inputBarBg, color: t.textMuted, fontSize: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
-                        <span>{activeProjectPrepareMode === "new-agent" ? (lang === "en" ? "Creating agent instance" : "正在创建 Agent 实例") : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
+                        <span>{activeProjectPrepareMode === "new-agent" ? (lang === "en" ? "Creating project session" : "正在创建项目会话") : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
                         <span style={{ opacity: 0.82 }}>{lang === "en" ? "Input will wait" : "输入会先等待"}</span>
                     </div>
                     <div style={{ height: 3, overflow: "hidden", borderRadius: 999, background: `color-mix(in srgb, ${t.headingColor} 16%, transparent)` }}>

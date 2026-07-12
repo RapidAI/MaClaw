@@ -109,13 +109,21 @@ func computeDepsSourceHash(skillDir string) string {
 		"package-lock.json",
 	}
 
+	depFileCount := 0
 	for _, name := range depFiles {
 		path := filepath.Join(skillDir, name)
 		info, err := os.Stat(path)
 		if err != nil {
 			continue // file doesn't exist, skip
 		}
+		depFileCount++
 		parts = append(parts, fmt.Sprintf("%s:%d", name, info.ModTime().UnixNano()))
+	}
+
+	// No dependency-relevant files → no install cache. Python alone is not a
+	// signal that requirements were satisfied for this skill directory.
+	if depFileCount == 0 {
+		return ""
 	}
 
 	// Include Python executable identity — if Python changes (system→bundled,
@@ -123,10 +131,6 @@ func computeDepsSourceHash(skillDir string) string {
 	python := findPythonExecutable()
 	if python != "" {
 		parts = append(parts, "python:"+python)
-	}
-
-	if len(parts) == 0 {
-		return "" // no dependency-relevant files found
 	}
 
 	h := sha256.Sum256([]byte(strings.Join(parts, "|")))

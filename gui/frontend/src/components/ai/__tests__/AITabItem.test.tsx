@@ -57,13 +57,13 @@ describe("AITabItem", () => {
             closable: true,
         };
 
-        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Contract Bot, Local AI");
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Contract Bot, Local");
         render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onClose={vi.fn()} lang="en" />);
 
         const item = screen.getByTestId("ai-tab-group-live");
-        expect(item.textContent).toContain("Agent A, Contract Bot, Local AI");
+        expect(item.textContent).toContain("Agent A, Contract Bot, Local");
         expect(item.textContent).not.toContain("m_b1821505498d817c");
-        expect(item.getAttribute("title")).toBe("Agent A, Contract Bot, Local AI");
+        expect(item.getAttribute("title")).toBe("Agent A, Contract Bot, Local");
     });
 
     it("uses participant names and primary title across ve aliases", () => {
@@ -139,11 +139,11 @@ describe("AITabItem", () => {
             closable: true,
         };
 
-        expect(getAITabDisplayTitle(tab, "en")).toBe("Participant 1, Local AI");
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Participant 1, Local");
         render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onClose={vi.fn()} lang="en" />);
 
         const item = screen.getByTestId("ai-tab-group-raw-title");
-        expect(item.textContent).toContain("Participant 1, Local AI");
+        expect(item.textContent).toContain("Participant 1, Local");
         expect(item.textContent).not.toContain("m_b1821505498d817c");
     });
 
@@ -157,11 +157,11 @@ describe("AITabItem", () => {
             closable: true,
         };
 
-        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("参与者 1, 本机AI");
-        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("參與者 1, 本機AI");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("参与者 1, 本机");
+        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("參與者 1, 本機");
     });
 
-    it("normalizes local AI participant ids in group titles", () => {
+    it("normalizes Local participant ids in group titles", () => {
         const tab = {
             id: "group-local-normalized",
             type: "group" as const,
@@ -171,25 +171,25 @@ describe("AITabItem", () => {
             closable: true,
         };
 
-        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Local AI");
-        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("Agent A, \u672c\u673aAI");
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Local");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("Agent A, \u672c\u673a");
     });
 
 
-    it("localizes canonical local AI participant ids", () => {
+    it("localizes canonical Local participant ids", () => {
         const tab = {
             id: "group-local-canonical",
             type: "group" as const,
             title: "Agent A",
             veId: "ve-a",
             participants: ["ve-a", "machine-local"],
-            participantNames: { "machine-local": "Local AI" },
+            participantNames: { "machine-local": "Local" },
             localParticipantIds: ["machine-local"],
             closable: true,
         };
 
-        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Local AI");
-        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("Agent A, 本机AI");
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Agent A, Local");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("Agent A, 本机");
     });
 
     it("localizes direct VE fallback titles", () => {

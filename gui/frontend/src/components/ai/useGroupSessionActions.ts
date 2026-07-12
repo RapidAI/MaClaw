@@ -220,7 +220,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
 
     const addLocalAI = useCallback(async (ctx: GroupSessionContext): Promise<AddResult> => {
         if (hasLocalParticipant(ctx)) {
-            emit(t(optRef.current.lang, "本机 AI 助手已在会话中", "Local AI assistant is already in the session"), "info");
+            emit(t(optRef.current.lang, "本机已在会话中", "Local node is already in the session"), "info");
             return { success: false, sessionId: ctx.sessionId };
         }
         if (!requireCapacity(ctx)) return { success: false, sessionId: ctx.sessionId };
@@ -240,7 +240,7 @@ export function useGroupSessionActions(options: UseGroupSessionActionsOptions = 
                 emit(t(optRef.current.lang, "添加失败：缺少本机 AI 参与者 ID", "Failed to add: missing local AI participant ID"), "error");
                 return { success: false, sessionId };
             }
-            emit(t(optRef.current.lang, "本机 AI 助手已加入会话", "Local AI assistant added to session"), "success");
+            emit(t(optRef.current.lang, "本机已加入会话", "Local node added to session"), "success");
             return { success: true, sessionId, participantId, displayName: localExecutorDisplayName(registered) };
         } catch (err: any) {
             emit(t(optRef.current.lang, "添加失败：" + (err?.message || "未知错误"), "Failed to add: " + (err?.message || "unknown error")), "error");

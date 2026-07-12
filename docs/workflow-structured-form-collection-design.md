@@ -209,7 +209,7 @@ const (
 if resp.ShowForm && resp.FormSchema != nil {
     // Emit AG UI form for structured information collection.
     h.emitWorkflowPhaseForm(engine, userID, resp.FormSchema)
-    return &IMAgentResponse{Text: "📋 请在右侧面板中填写信息后提交。"}
+    return &IMAgentResponse{Text: "请在右侧面板中填写信息后提交。"}
 }
 ```
 
@@ -442,7 +442,7 @@ IM 通道（飞书/微信/QQ）无法渲染 `AgentTaskPanel`，降级为结构�
 
 func (h *IMMessageHandler) buildIMFormGuidanceText(schema *workflow.PhaseInputSchema) string {
     var sb strings.Builder
-    sb.WriteString(fmt.Sprintf("📋 %s\n\n", schema.Title))
+    sb.WriteString(fmt.Sprintf("%s\n\n", schema.Title))
     if schema.Description != "" {
         sb.WriteString(schema.Description + "\n\n")
     }

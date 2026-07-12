@@ -54,7 +54,11 @@ type encoderLayer struct {
 }
 
 type linearWeight struct {
-	q8   *tensor.Q8Tensor
+	q8 *tensor.Q8Tensor
+	// q4 is an optional load-time Q8→Q4 companion used only by the
+	// SenseVoice FFN-down VNNI experiment. The existing Q8 path remains the
+	// default until the panel store kernel passes recognition regression.
+	q4   *tensor.Q4Tensor
 	f32  []float32
 	rows int
 }

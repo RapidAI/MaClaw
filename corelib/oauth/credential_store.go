@@ -110,12 +110,12 @@ func (s *FileCredentialStore) Modify(providerID string, fn func(old *StoredCrede
 		return err
 	}
 
-	// Skip disk write if nothing changed (pointer equality check).
-	if updated == old {
-		return nil
-	}
-
+	// Callers may mutate the existing *StoredCredential in place and return
+	// the same pointer. Pointer equality therefore cannot mean "no change".
 	if updated == nil {
+		if old == nil {
+			return nil
+		}
 		delete(all, providerID)
 	} else {
 		all[providerID] = updated

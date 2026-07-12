@@ -11,7 +11,7 @@
 
 ## 已实施的对齐改进
 
-### ✅ OAuth CredentialStore 独立化（#119）
+### OAuth CredentialStore 独立化（#119）
 
 **Pi 的做法**: 独立 `auth.json` + `CredentialStore` 接口 + `modify()` 串行化
 
@@ -21,7 +21,7 @@
 - `gui/app_oauth_providers.go`: Anthropic + GitHub Copilot Wails bindings
 - 双写 config.json 向后兼容 TUI
 
-### ✅ 新增 Anthropic + GitHub Copilot OAuth
+### 新增 Anthropic + GitHub Copilot OAuth
 
 **Pi 的做法**: 6 个 OAuth provider（OpenAI Codex、Anthropic、GitHub Copilot、Gemini CLI、Antigravity、Vertex AI）
 
@@ -164,8 +164,8 @@
 | 多用户 | 不支持 | Hub + maclawsrv 多租户 | MaClaw 更复杂 |
 
 **结论**: Pi 是极简哲学的开发者工具，MaClaw 是面向普通用户的全功能产品。大部分 Pi 的"缺失"在 MaClaw 中是有意的设计选择（如 40+ 工具 vs 4 工具）。真正值得借鉴的是：
-1. ✅ CredentialStore 独立化（已实施）
-2. ✅ 多 Provider OAuth（已实施）
+1. CredentialStore 独立化（已实施）
+2. 多 Provider OAuth（已实施）
 3. Session 树形分支（中期，体验提升大）
 4. RPC Mode（中期，生态建设）
 5. Extension 一等公民（长期，生态建设）

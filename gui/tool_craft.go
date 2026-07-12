@@ -306,9 +306,9 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 	for attempt := 1; attempt <= attempts; attempt++ {
 		request.Language = request.RuntimeLanguage
 		if attempt == 1 {
-			sendProgress(fmt.Sprintf("🧠 正在分析任务并生成脚本（第 %d/%d 次）...", attempt, attempts))
+			sendProgress(fmt.Sprintf("正在分析任务并生成脚本（第 %d/%d 次）...", attempt, attempts))
 		} else {
-			sendProgress(fmt.Sprintf("🛠️ 首次执行未通过，正在基于错误信息修复脚本（第 %d/%d 次）...", attempt, attempts))
+			sendProgress(fmt.Sprintf("首次执行未通过，正在基于错误信息修复脚本（第 %d/%d 次）...", attempt, attempts))
 		}
 		script, genErr := generateScriptWithContext(ctx, cfg, request, runtimes, lastAttempt, client)
 		if genErr != nil {
@@ -364,9 +364,9 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 
 func formatCraftExecutionProgress(language string, attempt, attempts, timeout int) string {
 	if timeout > 0 {
-		return fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次，最长等待 %ds）...", language, attempt, attempts, timeout)
+		return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次，最长等待 %ds）...", language, attempt, attempts, timeout)
 	}
-	return fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次）...", language, attempt, attempts)
+	return fmt.Sprintf("正在执行脚本（%s，第 %d/%d 次）...", language, attempt, attempts)
 }
 
 func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAvailability) craftToolRequest {
@@ -693,8 +693,8 @@ func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResul
 
 func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAttemptResult, sendProgress func(string)) string {
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("📝 脚本语言: %s\n", attempt.Language))
-	result.WriteString(fmt.Sprintf("📁 脚本路径: %s\n", attempt.ScriptPath))
+	result.WriteString(fmt.Sprintf("脚本语言: %s\n", attempt.Language))
+	result.WriteString(fmt.Sprintf("脚本路径: %s\n", attempt.ScriptPath))
 	result.WriteString(fmt.Sprintf("attempts: %d\n", attempt.Attempts))
 	result.WriteString(fmt.Sprintf("verification: %s\n", craftVerificationPassed))
 	if attempt.ArtifactPath != "" {
@@ -703,13 +703,13 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 	if output := truncateCraftOutput(attempt.Output); output != "" {
 		result.WriteString(fmt.Sprintf("\n--- 执行输出 ---\n%s\n", output))
 	}
-	result.WriteString("\n✅ 脚本执行成功")
+	result.WriteString("\n脚本执行成功")
 	if attempt.VerificationMessage != "" {
 		result.WriteString("\n")
 		result.WriteString(attempt.VerificationMessage)
 	}
 	if request.ShouldAutoRegister && app.skillExecutor != nil {
-		sendProgress("📦 正在注册为 Skill...")
+		sendProgress("正在注册为 Skill...")
 		result.WriteString("\n")
 		result.WriteString(registerCraftedSkillEntry(app, request.OriginalTask, request.SkillName, attempt.ScriptPath, attempt.Language))
 
@@ -739,7 +739,7 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 			log.Printf("[craft-persist] %s skill %q at %s", action, persistResult.SkillName, persistResult.SkillDir)
 		}()
 	} else if request.SaveAsSkill {
-		result.WriteString("\n📦 默认未自动注册为 Skill：该脚本更像一次性任务或强输出绑定结果。")
+		result.WriteString("\n默认未自动注册为 Skill：该脚本更像一次性任务或强输出绑定结果。")
 	}
 	return result.String()
 }
@@ -764,10 +764,10 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 	var result strings.Builder
 	language := firstNonEmptyCraftText(attempt.Language, request.RuntimeLanguage, request.Language)
 	if language != "" {
-		result.WriteString(fmt.Sprintf("📝 脚本语言: %s\n", language))
+		result.WriteString(fmt.Sprintf("脚本语言: %s\n", language))
 	}
 	if attempt.ScriptPath != "" {
-		result.WriteString(fmt.Sprintf("📁 脚本路径: %s\n", attempt.ScriptPath))
+		result.WriteString(fmt.Sprintf("脚本路径: %s\n", attempt.ScriptPath))
 	}
 	if attempt.Attempts > 0 {
 		result.WriteString(fmt.Sprintf("attempts: %d\n", attempt.Attempts))
@@ -797,12 +797,12 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 	message := strings.TrimSpace(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), "脚本执行失败"))
 	message = humanizeCraftAPIError(message)
 	if message != "" {
-		result.WriteString("\n⚠️ ")
+		result.WriteString("\n")
 		result.WriteString(message)
 		result.WriteString("\n")
 	}
 	if advice != "" {
-		result.WriteString("💡 ")
+		result.WriteString("")
 		result.WriteString(advice)
 		result.WriteString("\n")
 	}
@@ -1070,13 +1070,13 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 			entry.Name = skillName + "_" + time.Now().Format("0102_1504")
 			_, err2 := register(entry)
 			if err2 != nil {
-				return fmt.Sprintf("⚠️ Skill 注册失败: %s", err2.Error())
+				return fmt.Sprintf("Skill 注册失败: %s", err2.Error())
 			}
-			return fmt.Sprintf("📦 已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
+			return fmt.Sprintf("已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
 		}
-		return fmt.Sprintf("⚠️ Skill 注册失败: %s", err.Error())
+		return fmt.Sprintf("Skill 注册失败: %s", err.Error())
 	}
-	return fmt.Sprintf("📦 已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
+	return fmt.Sprintf("已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
 }
 
 func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, script, language string, sendProgress func(string)) (*cskill.ScanReport, error) {

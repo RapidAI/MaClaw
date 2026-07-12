@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func TestSetNLSkillStatusApprovesReviewedSkillAndExposesReason(t *testing.T) {
@@ -53,6 +54,170 @@ func findNLSkillDefinitionForTest(defs []NLSkillDefinition, name string) *NLSkil
 		}
 	}
 	return nil
+}
+
+func TestBatchTriggerSkillSelfRepairEmptyNames(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	res := app.BatchTriggerSkillSelfRepair(nil, true)
+	if res["error"] == nil && res["count"] != 0 {
+		t.Fatalf("expected empty batch to report no names, got %#v", res)
+	}
+	if res["count"] != 0 {
+		t.Fatalf("count=%v", res["count"])
+	}
+}
+
+func TestBatchTriggerSkillOptimizeEmptyAndMissing(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	empty := app.BatchTriggerSkillOptimize(nil, true)
+	if empty["count"] != 0 {
+		t.Fatalf("empty count=%v", empty["count"])
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	missing := app.BatchTriggerSkillOptimize([]string{"no-opt-skill"}, true)
+	failed, _ := missing["failed"].([]string)
+	if len(failed) < 1 {
+		t.Fatalf("expected failure: %#v", missing)
+	}
+}
+
+func TestBatchTriggerSkillSelfRepairMissingSkills(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	res := app.BatchTriggerSkillSelfRepair([]string{"no-such-skill-a", "no-such-skill-b"}, true)
+	failed, _ := res["failed"].([]string)
+	if len(failed) < 1 {
+		t.Fatalf("expected failures for missing skills: %#v", res)
+	}
+	if res["count"] != 0 {
+		t.Fatalf("count should be 0, got %#v", res)
+	}
+}
+
+func TestBatchSetNLSkillStatusMarksMultipleNeedsReview(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	corelib.SetMaclawBaseDir(tempHome)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir("") })
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	for _, name := range []string{"batch-a", "batch-b"} {
+		if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+			Name:      name,
+			Status:    "active",
+			LastError: "[class: command_not_found] missing",
+			Source:    "crafted",
+			CreatedAt: "2026-01-01T00:00:00Z",
+			Steps:     []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}, OnError: "stop"}},
+		}); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+	res := app.BatchSetNLSkillStatus([]string{"batch-a", "batch-b", "batch-a", ""}, "needs_review")
+	if res["count"] != 2 {
+		t.Fatalf("count=%v res=%#v", res["count"], res)
+	}
+	defs := app.ListNLSkills()
+	for _, name := range []string{"batch-a", "batch-b"} {
+		got := findNLSkillDefinitionForTest(defs, name)
+		if got == nil || got.Status != "needs_review" {
+			t.Fatalf("%s status=%#v", name, got)
+		}
+	}
+	events, err := skill.ListEvolutionAudit(skill.DefaultEvolutionAuditPath(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits := 0
+	for _, ev := range events {
+		if ev.Kind == "mark_needs_review" && (ev.Skill == "batch-a" || ev.Skill == "batch-b") {
+			hits++
+		}
+	}
+	if hits < 2 {
+		t.Fatalf("expected >=2 mark_needs_review audits, got %d: %#v", hits, events)
+	}
+}
+
+func TestSetNLSkillStatusNeedsReviewWritesEvolutionAudit(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+	corelib.SetMaclawBaseDir(tempHome)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir("") })
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:      "to-review",
+		Status:    "active",
+		LastError: "[class: command_not_found] missing tool",
+		Source:    "file",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		Steps:     []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}, OnError: "stop"}},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := app.SetNLSkillStatus("to-review", "needs_review"); err != nil {
+		t.Fatalf("SetNLSkillStatus: %v", err)
+	}
+	defs := app.ListNLSkills()
+	got := findNLSkillDefinitionForTest(defs, "to-review")
+	if got == nil || got.Status != "needs_review" {
+		t.Fatalf("expected needs_review: %#v", got)
+	}
+	events, err := skill.ListEvolutionAudit(skill.DefaultEvolutionAuditPath(), 20)
+	if err != nil {
+		t.Fatalf("ListEvolutionAudit: %v", err)
+	}
+	found := false
+	for _, ev := range events {
+		if ev.Skill == "to-review" && ev.Kind == "mark_needs_review" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected mark_needs_review audit row, path=%s events=%#v", skill.DefaultEvolutionAuditPath(), events)
+	}
+}
+
+func TestSetNLSkillStatusClearsMaintenanceRetirementMarker(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.skillExecutor.Register(corelib.NLSkillEntry{
+		Name:      "retired-dup",
+		Status:    "disabled",
+		LastError: "retired_by_maintenance_duplicate: kept other-skill at 2026-01-01T00:00:00Z",
+		Source:    "crafted",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		Steps:     []corelib.NLSkillStep{{Action: "noop", Params: map[string]interface{}{}, OnError: "stop"}},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := app.SetNLSkillStatus("retired-dup", "active"); err != nil {
+		t.Fatalf("SetNLSkillStatus: %v", err)
+	}
+	defs := app.ListNLSkills()
+	got := findNLSkillDefinitionForTest(defs, "retired-dup")
+	if got == nil || got.Status != "active" {
+		t.Fatalf("expected active: %#v", got)
+	}
+	if strings.TrimSpace(got.LastError) != "" {
+		t.Fatalf("expected maintenance last_error cleared, got %q", got.LastError)
+	}
 }
 
 func TestSkillExecutorExecuteStep_CallMCPToolResolvesName(t *testing.T) {

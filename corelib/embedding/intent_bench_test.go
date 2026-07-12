@@ -295,26 +295,26 @@ func TestIntentEmbeddingAccuracy(t *testing.T) {
 			// (ideally below lowThreshold, but ambiguous is also acceptable).
 			if bestScore < highThreshold {
 				isCorrect = true
-				result = "✅"
+				result = ""
 				correct++
 			} else {
-				result = "❌ FALSE_POSITIVE"
+				result = "FALSE_POSITIVE"
 				incorrect++
 			}
 		} else {
 			// For specific intent cases.
 			if bestIntent == tc.ExpectedIntent && bestScore >= lowThreshold {
 				isCorrect = true
-				result = "✅"
+				result = ""
 				correct++
 			} else if bestScore < lowThreshold {
-				result = "❌ MISSED"
+				result = "MISSED"
 				incorrect++
 			} else if bestIntent != tc.ExpectedIntent {
-				result = fmt.Sprintf("❌ WRONG(%s)", bestIntent)
+				result = fmt.Sprintf("WRONG(%s)", bestIntent)
 				incorrect++
 			} else {
-				result = "⚠️ AMBIGUOUS"
+				result = "AMBIGUOUS"
 				ambiguous++
 			}
 		}

@@ -243,6 +243,7 @@ type SkillYAMLOperation struct {
 type SkillYAMLParam struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description,omitempty"`
+	Type        string   `yaml:"type,omitempty"` // JSON Schema type when declared via input_schema/params
 	Aliases     []string `yaml:"aliases,omitempty"`
 	CLIFlag     string   `yaml:"cli_flag,omitempty"`
 	Default     string   `yaml:"default,omitempty"`
@@ -1937,6 +1938,7 @@ func convertSkillYAMLParams(yamlParams []SkillYAMLParam) []corelib.NLSkillParam 
 		params = append(params, corelib.NLSkillParam{
 			Name:        p.Name,
 			Description: p.Description,
+			Type:        strings.TrimSpace(p.Type),
 			Aliases:     p.Aliases,
 			CLIFlag:     p.CLIFlag,
 			Default:     p.Default,

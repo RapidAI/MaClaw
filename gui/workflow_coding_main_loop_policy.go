@@ -246,6 +246,9 @@ func validateWorkflowArtifactPhaseToolCall(name string, args map[string]interfac
 		if dir := matchedProjectMutationDir(path); dir != "" {
 			return fmt.Sprintf("artifact workflow phase cannot write into source/project paths (matched: %s/). Use a temp or output directory instead.", dir)
 		}
+		if v2.IsProjectControlPath(path) {
+			return fmt.Sprintf("artifact workflow phase cannot write project control files (matched: %s). Use a temp or output directory instead.", path)
+		}
 	}
 	return ""
 }

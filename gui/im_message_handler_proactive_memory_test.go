@@ -68,11 +68,20 @@ func TestSystemPrompt_FirstTurn_ContainsProactiveMemoryInstruction(t *testing.T)
 	})
 }
 
-func TestSystemPrompt_NonFirstTurn_NoProactiveMemoryInstruction(t *testing.T) {
+func TestSystemPrompt_NonFirstTurn_KeepsSessionStableMemoryGuide(t *testing.T) {
 	h := newTestIMHandlerWithMemoryStore(t)
-	prompt := h.buildSystemPromptWithMemory("hello", false)
+	// Build first-turn prompt so the frozen static memory snapshot is populated.
+	first := h.buildSystemPromptWithMemory("hello", true)
+	// Subsequent turns reuse the same session-stable snapshot (including the
+	// memory management guide) so the LLM KV prefix for that block stays stable.
+	prompt := h.buildSystemPromptWithMemory("hello again", false)
 
-	assertContainsNone(t, prompt, []string{
+	assertContainsAll(t, first, []string{
+		corememory.PromptSectionMemoryGuide,
+		corememory.PromptActionSaveColon,
+		corememory.PromptSaveCategorySummary,
+	})
+	assertContainsAll(t, prompt, []string{
 		corememory.PromptSectionMemoryGuide,
 		corememory.PromptActionSaveColon,
 		corememory.PromptSaveCategorySummary,

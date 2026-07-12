@@ -76,9 +76,7 @@ END FUNCTION
 - **PPT slide_scripting 阶段**："...以上是全部20页的逐页脚本。\n\n请确认以上全部20页的逐页脚本，或提出修改意见。\n\n好的，逐页脚本已确认！现在进入最终阶段——PPT生成..." → `containsSelfConfirmationPattern = true` → 应截断至"请确认..."之后、"好的，逐页脚本已确认"之前
 - **编码工作流 requirements 阶段**："# 需求文档\n\n## 功能需求\n...\n\n请确认以上需求，或提出修改意见。\n\n好的，需求已确认！现在开始技术设计..." → `containsSelfConfirmationPattern = true` → 应截断
 - **英文工作流**："...Please confirm the above requirements, or suggest changes.\n\nConfirmed! Let me proceed to the design phase..." → `containsSelfConfirmationPattern = true` → 应截断
-- **正常响应（无自我确认）**："# 需求文档\n\n## 功能需求\n...\n\n请确认以上需求，或提出修改意见。\n\n请输入：确认 或 修改意见" → `containsSelfConfirmationPattern = false` → 全文返回，不截断 ✅
-- **无确认请求的文档**："# 技术设计文档\n\n## 架构设计\n..." → `findConfirmationRequest = -1` → `containsSelfConfirmationPattern = false` → 全文返回 ✅
-
+- **正常响应（无自我确认）**："# 需求文档\n\n## 功能需求\n...\n\n请确认以上需求，或提出修改意见。\n\n请输入：确认 或 修改意见" → `containsSelfConfirmationPattern = false` → 全文返回，不截断 - **无确认请求的文档**："# 技术设计文档\n\n## 架构设计\n..." → `findConfirmationRequest = -1` → `containsSelfConfirmationPattern = false` → 全文返回 
 ## Expected Behavior
 
 ### Preservation Requirements
@@ -109,7 +107,7 @@ Based on the bug description and code analysis, the root cause is in the NeedsCo
 
 1. **Gate 不检测自我确认模式**: NeedsConfirm gate（no-tool 分支 ~line 4763，tool 分支 ~line 5610）在评估 `trimmedForGate` / `trimmedAfterTools` 时，只检查 `!= ""` + `!looksLikeNoToolStallReply` + `isSubstantivePhaseDocument`。当 LLM 在单次响应中自我确认时，整个文本仍然是非空、非 stall、且实质性的——gate 条件全部满足，force-return 整个包含自我确认的文本。
 
-2. **Prompt 约束是软约束**: `BuildPhaseSystemPrompt` 中的 Section 6（"⚠️ 重要：等待用户确认"）指示 LLM "输出产出物后立即停止"、"绝对不要在同一次回复中既输出产出物又开始下一阶段的工作"。但这是 system prompt 中的文本指令，LLM 可以忽略。特别是在长文档生成场景中，LLM 的注意力可能已经偏离了 system prompt 中的约束。
+2. **Prompt 约束是软约束**: `BuildPhaseSystemPrompt` 中的 Section 6（"重要：等待用户确认"）指示 LLM "输出产出物后立即停止"、"绝对不要在同一次回复中既输出产出物又开始下一阶段的工作"。但这是 system prompt 中的文本指令，LLM 可以忽略。特别是在长文档生成场景中，LLM 的注意力可能已经偏离了 system prompt 中的约束。
 
 3. **缺少 post-hoc 截断机制**: 系统在 gate 评估之前没有对 `msgContent` 做任何自我确认检测或截断。`stripThinkingTags` 只移除 `<think>` 标签，`looksLikeNoToolStallReply` 只检测 stall 关键词，`isSubstantivePhaseDocument` 只检测文档结构——没有任何函数检测"确认请求后跟自我回答"的模式。
 

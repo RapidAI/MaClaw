@@ -335,6 +335,9 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
     const nudges = Array.isArray(learning?.skill_nudge_candidates) ? learning.skill_nudge_candidates : [];
     const patterns = Array.isArray(learning?.usage_patterns) ? learning.usage_patterns : [];
     const recoveryPatterns = Array.isArray(learning?.recovery_patterns) ? learning.recovery_patterns : [];
+    const skillMaintenanceHints: Array<Record<string, any>> = Array.isArray(learning?.skill_maintenance_hints)
+        ? learning.skill_maintenance_hints
+        : [];
     const traceDetails: TraceDetail[] = Array.isArray(learning?.trace_details) ? learning.trace_details : [];
     const reviewSummaries: ReviewSummary[] = Array.isArray(learning?.review_summaries) ? learning.review_summaries : [];
     const nextActionSummaries: NextActionSummary[] = Array.isArray(learning?.next_action_summaries) ? learning.next_action_summaries : [];
@@ -456,12 +459,13 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
     const skillNudgeCount = toSafeCount(learning?.skill_nudge_count, nudges.length);
     const usagePatternCount = toSafeCount(learning?.usage_pattern_count, patterns.length);
     const recoveryPatternCount = toSafeCount(learning?.recovery_pattern_count, recoveryPatterns.length);
+    const skillMaintenanceHintCount = toSafeCount(learning?.skill_maintenance_hint_count, skillMaintenanceHints.length);
     const protectedMemoryCount = toSafeCount(learning?.protected_memory_count, learning?.memory_experience?.protected_candidates || 0);
     const reviewRequiredTraceCount = toSafeCount(learning?.review_required_trace_count, traceDetails.filter((detail) => detail.review_required).length);
     const nextActionTraceCount = toSafeCount(learning?.next_action_trace_count, traceDetails.filter((detail) => detail.next_action || detail.next_action_kind).length);
     const followUpTraceCount = toSafeCount(learning?.follow_up_trace_count, traceDetails.filter((detail) => detail.follow_up_status).length);
     const hasRoutingDraftEvidence = routingHintCount > 0 || skillNudgeCount > 0 || usagePatternCount > 0 || recoveryPatternCount > 0;
-    const hasSignals = hasRoutingDraftEvidence || protectedMemoryCount > 0 || reviewRequiredTraceCount > 0 || nextActionTraceCount > 0 || followUpTraceCount > 0;
+    const hasSignals = hasRoutingDraftEvidence || skillMaintenanceHintCount > 0 || protectedMemoryCount > 0 || reviewRequiredTraceCount > 0 || nextActionTraceCount > 0 || followUpTraceCount > 0;
     const loadMaintenanceDraft = async () => {
         if (maintenanceDraftLoading) return;
         setMaintenanceDraftLoading(true);
@@ -743,6 +747,7 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
             <div className="memory-learning-stat-grid" style={{ marginBottom: hasSignals || error ? 10 : 0 }}>
                 <LearningStat label={t("Routing Hints", "\u8def\u7531\u63d0\u793a", "\u8def\u7531\u63d0\u793a")} value={routingHintCount} />
                 <LearningStat label={t("Skill Nudges", "\u6280\u80fd\u5019\u9009", "\u6280\u80fd\u5019\u9078")} value={skillNudgeCount} />
+                <LearningStat label={t("Skill Maintenance", "\u6280\u80fd\u6cbb\u7406", "\u6280\u80fd\u6cbb\u7406")} value={skillMaintenanceHintCount} />
                 <LearningStat label={t("Usage Patterns", "\u5de5\u5177\u6a21\u5f0f", "\u5de5\u5177\u6a21\u5f0f")} value={usagePatternCount} />
                 <LearningStat label={t("Recoveries", "\u6062\u590d\u6a21\u5f0f", "\u6062\u5fa9\u6a21\u5f0f")} value={recoveryPatternCount} />
                 <LearningStat label={t("Protected", "\u4fdd\u62a4\u8bb0\u5fc6", "\u4fdd\u8b77\u8a18\u61b6")} value={protectedMemoryCount} />
@@ -751,6 +756,28 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
                 <LearningStat label={t("Follow-ups", "\u540e\u7eed\u8bb0\u5f55", "\u5f8c\u7e8c\u8a18\u9304")} value={followUpTraceCount} />
                 <LearningStat label={t("Rollback Audit", "\u56de\u6eda\u5ba1\u8ba1", "\u56de\u6efe\u5be9\u8a08")} value={triggeredRollbackFollowUpCount} />
             </div>
+            {skillMaintenanceHints.length > 0 && (
+                <div style={{ marginBottom: 10, padding: "8px 10px", border: "1px solid " + colors.borderLight, borderRadius: radius.md, background: colors.surfaceMuted || colors.surface }}>
+                    <div style={{ fontSize: "0.68rem", fontWeight: 700, color: colors.textMuted, marginBottom: 6 }}>
+                        {t("High-value skill maintenance", "\u9ad8\u4ef7\u503c\u6280\u80fd\u6cbb\u7406", "\u9ad8\u50f9\u503c\u6280\u80fd\u6cbb\u7406")}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 6 }}>
+                        {skillMaintenanceHints.slice(0, 6).map((hint, index) => (
+                            <div key={(hint.skill || "skill") + "-" + (hint.action || index)} style={{ ...protectedMemoryCardStyle, borderLeft: "3px solid " + (colors.warning || colors.primary) }}>
+                                <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>{hint.skill || "-"}</span>
+                                    <span style={{ color: colors.textMuted, fontSize: "0.64rem" }}>{hint.action || "-"}</span>
+                                </span>
+                                {(hint.recommended_action || hint.reason) && (
+                                    <span style={{ display: "block", marginTop: 2, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.66rem" }}>
+                                        {hint.recommended_action || hint.reason}
+                                    </span>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.72rem", marginBottom: 8 }}>{error}</div>}
             {displayedGovernanceSummary && (
                 <GovernanceSummaryNotice

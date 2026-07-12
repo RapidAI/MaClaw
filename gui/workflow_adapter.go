@@ -7,7 +7,6 @@ import (
 	"time"
 
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // mapV2StateToV1 converts a V2 native WorkflowState to the EngineState
@@ -118,7 +117,7 @@ func NewGUIWorkflowAdapter(app *App, engine *workflow.WorkflowEngine) *GUIWorkfl
 // SendTextToUser sends a text message to the user via Wails event.
 func (a *GUIWorkflowAdapter) SendTextToUser(userID, text string) error {
 	if a.app.ctx != nil {
-		runtime.EventsEmit(a.app.ctx, "workflow:text", map[string]string{
+		a.app.emitEvent("workflow:text", map[string]string{
 			"user_id": userID,
 			"text":    text,
 		})
@@ -222,7 +221,7 @@ func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.Engi
 		if a.engine != nil {
 			registry = a.engine.GetRegistry()
 		}
-		runtime.EventsEmit(a.app.ctx, "workflow:phase_update", normalizeWorkflowStateForFrontendWithRegistry(state, registry))
+		a.app.emitEvent("workflow:phase_update", normalizeWorkflowStateForFrontendWithRegistry(state, registry))
 	}
 	return nil
 }
@@ -252,7 +251,7 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 		a.mu.RLock()
 		wfID := a.activeWorkflowID
 		a.mu.RUnlock()
-		runtime.EventsEmit(a.app.ctx, "workflow:doc_update", map[string]string{
+		a.app.emitEvent("workflow:doc_update", map[string]string{
 			"user_id":        userID,
 			"phase_id":       phaseID,
 			"content":        content,
@@ -285,7 +284,7 @@ func (a *GUIWorkflowAdapter) SetWorkingDir(userID, dir string) {
 		}
 	}
 	if trimmed != "" && a.app.ctx != nil {
-		runtime.EventsEmit(a.app.ctx, "workflow:workdir_set", map[string]string{
+		a.app.emitEvent("workflow:workdir_set", map[string]string{
 			"user_id": userID,
 			"path":    trimmed,
 		})
@@ -318,7 +317,7 @@ func (a *GUIWorkflowAdapter) EmitSuggestMaximize(userID, workflowType string) {
 		return
 	}
 	if a.app.ctx != nil {
-		runtime.EventsEmit(a.app.ctx, "workflow:suggest_maximize", map[string]string{
+		a.app.emitEvent("workflow:suggest_maximize", map[string]string{
 			"user_id":        userID,
 			"workflow_type":  workflowType,
 			"event_scope_id": a.app.getEventScopeID(userID),
@@ -332,7 +331,7 @@ func (a *GUIWorkflowAdapter) EmitSuggestMaximize(userID, workflowType string) {
 func (a *GUIWorkflowAdapter) ResetSuggestMaximize(userID string) {
 	a.suggestMaximizeSent.Delete(userID)
 	if a.app.ctx != nil {
-		runtime.EventsEmit(a.app.ctx, "workflow:suggest_maximize_dismiss", map[string]string{
+		a.app.emitEvent("workflow:suggest_maximize_dismiss", map[string]string{
 			"user_id":        userID,
 			"event_scope_id": a.app.getEventScopeID(userID),
 		})
@@ -346,7 +345,7 @@ func (a *GUIWorkflowAdapter) EmitGateResult(userID, phaseID string, result *work
 		a.mu.RLock()
 		wfID := a.activeWorkflowID
 		a.mu.RUnlock()
-		runtime.EventsEmit(a.app.ctx, "workflow:gate_result", map[string]interface{}{
+		a.app.emitEvent("workflow:gate_result", map[string]interface{}{
 			"user_id":        userID,
 			"phase_id":       phaseID,
 			"result":         result,

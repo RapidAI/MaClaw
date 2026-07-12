@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const asrModelFilename = asr.DefaultModelFilename
@@ -117,7 +116,7 @@ func (a *App) downloadASRFrom(url, destPath string, emitErrors bool) error {
 }
 
 func (a *App) emitASRProgress(pct int, downloaded, total int64, errMsg string) {
-	runtime.EventsEmit(a.ctx, "asr-download-progress", map[string]interface{}{
+	a.emitEvent("asr-download-progress", map[string]interface{}{
 		"percent":    pct,
 		"downloaded": downloaded,
 		"total":      total,

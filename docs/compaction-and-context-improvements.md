@@ -16,11 +16,11 @@ HuggingFace 论文采集任务中，agent loop 跑了 35 轮迭代（5 分 42 �
 
 | # | 优先级 | 问题 | 根因 | 状态 |
 |---|--------|------|------|------|
-| 1 | P0 | compactHistory 的 token 阈值触发过于频繁——每次 agent loop 结束都触发 | `MaxMemoryTokenEstimate=60000` 对 35 轮工具调用的对话来说太低，entries 数量在 40 以内但 token 超 60K | ✅ 已修复 |
-| 2 | P1 | compactHistory 的 split 点在 `len(entries)/2`——丢弃了前半部分的所有工具调用细节 | 固定 50% 分割不考虑信息密度，前半部分可能包含关键的搜索结果和文件路径 | ✅ 已修复 |
-| 3 | P1 | compactHistory 的 summarizer 输入缺少工具操作语义 | 只有"产出了什么文件"，没有"做了什么操作" | ✅ 已修复 |
-| 4 | P1 | online_extractor 的 `ExtractedFact.Entities` 字段 JSON 反序列化失败 | LLM 返回嵌套数组 `[["entity:X", "relation:Y", "entity:Z"]]`，但 Go 类型是 `[]string`（期望扁平数组） | ✅ 已修复 |
-| 5 | P2 | compaction 后 LLM 的 "好的，我已了解之前的对话上下文。" 是空洞的确认 | 固定文本不包含任何实际上下文信息，浪费一条 assistant entry | ✅ 已修复 |
+| 1 | P0 | compactHistory 的 token 阈值触发过于频繁——每次 agent loop 结束都触发 | `MaxMemoryTokenEstimate=60000` 对 35 轮工具调用的对话来说太低，entries 数量在 40 以内但 token 超 60K | 已修复 |
+| 2 | P1 | compactHistory 的 split 点在 `len(entries)/2`——丢弃了前半部分的所有工具调用细节 | 固定 50% 分割不考虑信息密度，前半部分可能包含关键的搜索结果和文件路径 | 已修复 |
+| 3 | P1 | compactHistory 的 summarizer 输入缺少工具操作语义 | 只有"产出了什么文件"，没有"做了什么操作" | 已修复 |
+| 4 | P1 | online_extractor 的 `ExtractedFact.Entities` 字段 JSON 反序列化失败 | LLM 返回嵌套数组 `[["entity:X", "relation:Y", "entity:Z"]]`，但 Go 类型是 `[]string`（期望扁平数组） | 已修复 |
+| 5 | P2 | compaction 后 LLM 的 "好的，我已了解之前的对话上下文。" 是空洞的确认 | 固定文本不包含任何实际上下文信息，浪费一条 assistant entry | 已修复 |
 
 ---
 

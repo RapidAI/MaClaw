@@ -114,7 +114,7 @@ func transcribeFile(model *asr.MoonshineModel, wavPath string) {
 		durationSec, len(pcm), rmsVal, peakVal)
 
 	if rmsVal < 0.001 {
-		fmt.Printf("  ⚠️  音频能量极低 (RMS=%.5f)，可能是静音\n", rmsVal)
+		fmt.Printf("   音频能量极低 (RMS=%.5f)，可能是静音\n", rmsVal)
 	}
 
 	start := time.Now()
@@ -160,11 +160,11 @@ func recordAndTranscribe(model *asr.MoonshineModel, seconds int) {
 	tmpFile := filepath.Join(os.TempDir(), "maclaw_asr_test.wav")
 	defer os.Remove(tmpFile)
 
-	fmt.Printf("🎤 准备录音 %d 秒...\n", seconds)
+	fmt.Printf("准备录音 %d 秒...\n", seconds)
 	fmt.Println("   (确保麦克风正常，准备好后按 Enter 开始)")
 	fmt.Scanln()
 
-	fmt.Printf("🔴 录音中... (%d秒)\n", seconds)
+	fmt.Printf("录音中... (%d秒)\n", seconds)
 
 	// 尝试 ffmpeg (Windows dshow)
 	cmd := exec.Command("ffmpeg",
@@ -197,7 +197,7 @@ func recordAndTranscribe(model *asr.MoonshineModel, seconds int) {
 		}
 	}
 
-	fmt.Println("⬜ 录音结束")
+	fmt.Println("录音结束")
 	fmt.Println()
 
 	// 检查录音文件

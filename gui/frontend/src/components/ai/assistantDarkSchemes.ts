@@ -353,14 +353,14 @@ export const violetDarkScheme: AssistantDarkScheme = {
     id: "violet",
     storageValue: "violet",
     label: {
-        en: "Violet Nebula",
-        zhHans: "\u7d2b\u661f\u4e91",
-        zhHant: "\u7d2b\u661f\u96f2",
+        en: "Violet",
+        zhHans: "\u7d2b\u7070",
+        zhHant: "\u7d2b\u7070",
     },
     description: {
-        en: "Deep space purple with lavender accents and soft glow.",
-        zhHans: "\u6df1\u7a7a\u7d2b\u5e95\u8272\u642d\u914d\u85b0\u8863\u8349\u7d2b\u5f3a\u8c03\u4e0e\u67d4\u548c\u8f89\u5149\u3002",
-        zhHant: "\u6df1\u7a7a\u7d2b\u5e95\u8272\u642d\u914d\u85b0\u8863\u8349\u7d2b\u5f37\u8abf\u8207\u67d4\u548c\u8f1d\u5149\u3002",
+        en: "Dark purple-gray surface with restrained violet accents.",
+        zhHans: "\u6df1\u7d2b\u7070\u8868\u9762\uff0c\u7d2b\u8272\u4ec5\u7528\u4e8e\u5f3a\u8c03\u4e0e\u94fe\u63a5\u3002",
+        zhHant: "\u6df1\u7d2b\u7070\u8868\u9762\uff0c\u7d2b\u8272\u50c5\u7528\u65bc\u5f37\u8abf\u8207\u9023\u7d50\u3002",
     },
     cssVars: {
         pageBg: "#0e0a18",

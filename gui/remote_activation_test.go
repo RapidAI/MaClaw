@@ -1008,6 +1008,45 @@ func TestBuildClaudeLaunchSpec_UsesSavedCurrentProjectWhenProjectDirEmpty(t *tes
 // because these functions are now delegated to corelib/remote.EnrollmentClient.
 // The corresponding tests are in corelib/remote/enrollment_test.go.
 
+// withIsolatedRemoteHubCenter pins HubCenter defaults to a single test URL so
+// ActivateRemote cannot fall through to public hubs (hubs2.maclaw.top, etc.).
+func withIsolatedRemoteHubCenter(t *testing.T, centerURL string) {
+	t.Helper()
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	origDefault := remote.DefaultRemoteHubCenterURL
+	origGUIDefault := defaultRemoteHubCenterURL
+	remote.DefaultRemoteHubCenterURLs = []string{centerURL}
+	remote.DefaultRemoteHubCenterURL = centerURL
+	defaultRemoteHubCenterURL = centerURL
+	remote.InvalidateCenterCache()
+	t.Cleanup(func() {
+		remote.DefaultRemoteHubCenterURLs = origDefaults
+		remote.DefaultRemoteHubCenterURL = origDefault
+		defaultRemoteHubCenterURL = origGUIDefault
+		remote.InvalidateCenterCache()
+	})
+}
+
+func writeTestHubCenterResolve(w http.ResponseWriter, hubBaseURL string) {
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"email": "user@example.com",
+		"mode":  "single",
+		"hubs": []map[string]any{{
+			"hub_id":   "hub_test",
+			"base_url": hubBaseURL,
+			"status":   "online",
+			"name":     "test-hub",
+		}},
+	})
+}
+
+func writeTestHubCentersList(w http.ResponseWriter, centerURL string) {
+	_ = json.NewEncoder(w).Encode(struct {
+		OK   bool     `json:"ok"`
+		URLs []string `json:"urls"`
+	}{OK: true, URLs: []string{centerURL}})
+}
+
 func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1278,6 +1317,10 @@ func TestActivateRemote_SwitchesToHubProviderWhenRegisteredAccountHasOfficialSer
 	var hubURL string
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
 		case "/api/enroll/start":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":        "approved",
@@ -1311,10 +1354,12 @@ func TestActivateRemote_SwitchesToHubProviderWhenRegisteredAccountHasOfficialSer
 	}))
 	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
+		RemoteHubCenterURL:       hub.URL,
 		MaclawLLMCurrentProvider: "Custom1",
 		MaclawLLMUrl:             "https://custom.example.com/v1",
 		MaclawLLMKey:             "custom-key",
@@ -1362,6 +1407,10 @@ func TestActivateRemote_RemovesStaleHubProviderWhenRegisteredAccountHasNoOfficia
 	var hubURL string
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
 		case "/api/enroll/start":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":        "approved",
@@ -1388,10 +1437,12 @@ func TestActivateRemote_RemovesStaleHubProviderWhenRegisteredAccountHasNoOfficia
 	}))
 	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
+		RemoteHubCenterURL:       hub.URL,
 		RemoteViewerToken:        "viewer-token-old",
 		MaclawLLMCurrentProvider: "Custom1",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
@@ -1423,8 +1474,13 @@ func TestActivateRemote_RemovesStaleHubProviderWhenOfficialServiceAuthorizationF
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
+	var hubURL string
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
 		case "/api/enroll/start":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":        "approved",
@@ -1443,11 +1499,14 @@ func TestActivateRemote_RemovesStaleHubProviderWhenOfficialServiceAuthorizationF
 			http.NotFound(w, r)
 		}
 	}))
+	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
+		RemoteHubCenterURL:       hub.URL,
 		RemoteViewerToken:        "viewer-token-old",
 		MaclawLLMCurrentProvider: "Custom1",
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{
@@ -1482,8 +1541,13 @@ func TestActivateRemote_ClearsStaleViewerTokenAndHubProviderWhenEnrollOmitsViewe
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
+	var hubURL string
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
 		case "/api/enroll/start":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":        "approved",
@@ -1497,11 +1561,14 @@ func TestActivateRemote_ClearsStaleViewerTokenAndHubProviderWhenEnrollOmitsViewe
 			http.NotFound(w, r)
 		}
 	}))
+	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
 	if err := app.SaveConfig(corelib.AppConfig{
 		RemoteHubURL:             hub.URL,
+		RemoteHubCenterURL:       hub.URL,
 		RemoteViewerToken:        "viewer-token-old",
 		MaclawLLMCurrentProvider: hubServiceProviderName,
 		MaclawLLMProviders:       []corelib.MaclawLLMProvider{{Name: hubServiceProviderName, URL: hub.URL + "/api/llm/v1", Key: "viewer-token-old", Model: hubServiceAutoModel, Protocol: "openai", IsHubService: true}},
@@ -1537,9 +1604,14 @@ func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	var authCount atomic.Int32
+	var hubURL string
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
 		case "/api/enroll/start":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":        "approved",
@@ -1572,14 +1644,17 @@ func TestActivateRemote_ReturnsBeforeBackgroundHubConnect(t *testing.T) {
 				}
 			}
 		default:
+			// Non-WS HTTP probes from background connect must not try Upgrade.
 			http.NotFound(w, r)
 		}
 	}))
+	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome}
 	t.Cleanup(func() { app.shutdown(context.Background()) })
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteHubCenterURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -1624,27 +1699,35 @@ func TestActivateRemote_SendsNormalizedPlatform(t *testing.T) {
 	}()
 
 	var enrollPayload map[string]any
+	var hubURL string
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/enroll/start" {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
+		case "/api/enroll/start":
+			if err := json.NewDecoder(r.Body).Decode(&enrollPayload); err != nil {
+				t.Fatalf("decode enroll body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "approved",
+				"user_id":       "u_345",
+				"email":         "user@example.com",
+				"sn":            "SN-2026-000345",
+				"machine_id":    "m_345",
+				"machine_token": "mt_345",
+			})
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		if err := json.NewDecoder(r.Body).Decode(&enrollPayload); err != nil {
-			t.Fatalf("decode enroll body: %v", err)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":        "approved",
-			"user_id":       "u_345",
-			"email":         "user@example.com",
-			"sn":            "SN-2026-000345",
-			"machine_id":    "m_345",
-			"machine_token": "mt_345",
-		})
 	}))
+	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteHubCenterURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -1668,25 +1751,33 @@ func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
 		remoteEnrollTimeout = previousTimeout
 	})
 
+	var hubURL string
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/enroll/start" {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, hubURL)
+		case "/api/entry/resolve":
+			writeTestHubCenterResolve(w, hubURL)
+		case "/api/enroll/start":
+			time.Sleep(remoteEnrollTimeout + 50*time.Millisecond)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":        "approved",
+				"user_id":       "u_slow",
+				"email":         "user@example.com",
+				"sn":            "SN-slow",
+				"machine_id":    "m_slow",
+				"machine_token": "mt_slow",
+			})
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		time.Sleep(remoteEnrollTimeout + 50*time.Millisecond)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":        "approved",
-			"user_id":       "u_slow",
-			"email":         "user@example.com",
-			"sn":            "SN-slow",
-			"machine_id":    "m_slow",
-			"machine_token": "mt_slow",
-		})
 	}))
+	hubURL = hub.URL
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
 	app := &App{testHomeDir: tmpHome, remoteActivationBackgroundDisabled: true}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: hub.URL, RemoteHubCenterURL: hub.URL}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -1709,19 +1800,25 @@ func TestSkillMarketAutoLoginThrottlesFailedMachineLogin(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	var calls atomic.Int32
+	var serverURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/auth/machine-login" {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			writeTestHubCentersList(w, serverURL)
+		case "/api/v1/auth/machine-login":
+			calls.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "Too many requests, please slow down"})
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		calls.Add(1)
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Too many requests, please slow down"})
 	}))
+	serverURL = server.URL
 	defer server.Close()
+	withIsolatedRemoteHubCenter(t, server.URL)
 
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL}); err != nil {
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubCenterURL: server.URL, RemoteHubCenterURLs: []string{server.URL}}); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
@@ -1750,6 +1847,7 @@ func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !websocket.IsWebSocketUpgrade(r) {
+			// Non-WS HTTP probes (LLM status, SyncTools helpers) must not Upgrade.
 			http.NotFound(w, r)
 			return
 		}
@@ -1767,26 +1865,55 @@ func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {
 			}
 			switch msg["type"] {
 			case "auth.machine":
-				_ = conn.WriteJSON(map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "machine"}})
+				// Include viewer_token so Connect does not re-enroll against public hubs.
+				_ = conn.WriteJSON(map[string]any{
+					"type": "auth.ok",
+					"payload": map[string]any{
+						"role":         "machine",
+						"viewer_token": "vt_345",
+					},
+				})
 			default:
 				_ = conn.WriteJSON(map[string]any{"type": "ack", "payload": map[string]any{"ok": true}})
 			}
 		}
 	}))
 	defer hub.Close()
+	withIsolatedRemoteHubCenter(t, hub.URL)
 
-	app := &App{testHomeDir: tmpHome}
+	app := &App{
+		testHomeDir:                        tmpHome,
+		remoteActivationBackgroundDisabled: true,
+		disableBackgroundEmbeddingForTest:  true,
+	}
+	t.Cleanup(func() {
+		// Release hub sockets / SQLite handles so Windows TempDir cleanup succeeds.
+		if app.remoteSessions != nil {
+			if hc := app.remoteSessions.GetHubClient(); hc != nil {
+				_ = hc.Disconnect()
+			}
+		}
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+			app.memoryStore = nil
+		}
+		app.shutdown(context.Background())
+	})
 	cfg := corelib.AppConfig{
-		RemoteHubURL:       hub.URL,
-		RemoteEmail:        "user@example.com",
-		RemoteSN:           "SN-2026-000345",
-		RemoteUserID:       "u_345",
-		RemoteTenantID:     "tenant_345",
-		RemoteTenantName:   "Old Team",
-		RemoteMachineID:    "m_345",
-		RemoteMachineName:  "old-machine",
-		RemoteMachineToken: "mt_345",
-		RemoteNickname:     "Old Desk",
+		RemoteHubURL:        hub.URL,
+		RemoteHubCenterURL:  hub.URL,
+		RemoteHubCenterURLs: []string{hub.URL},
+		RemoteEmail:         "user@example.com",
+		RemoteSN:            "SN-2026-000345",
+		RemoteUserID:        "u_345",
+		RemoteTenantID:      "tenant_345",
+		RemoteTenantName:    "Old Team",
+		RemoteMachineID:     "m_345",
+		RemoteMachineName:   "old-machine",
+		RemoteMachineToken:  "mt_345",
+		// Pre-seed viewer token so hello-path GetMaclawLLMProviders never re-enrolls.
+		RemoteViewerToken: "vt_345",
+		RemoteNickname:    "Old Desk",
 	}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)

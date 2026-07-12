@@ -363,7 +363,7 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 
 	assertContainsAll(t, html, "compute market cache busting", []string{
-		`/admin/assets/css/admin-shell.css?v=notif-card-css-20260704`,
+		`/admin/assets/css/admin-shell.css?v=trust-dialog-20260711`,
 		`/admin/assets/js/compute-market-tab.js?v=compact-compute-orders-20260622-2`,
 	})
 	assertContainsAll(t, js, "compute market archived delete contract", []string{

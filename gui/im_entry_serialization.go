@@ -78,7 +78,7 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 			log.Printf("[IM serialization] TIMEOUT acquiring state.mu user=%q after %v — previous loop may be stuck on a blocking lock", msg.UserID, serializationLockTimeout)
 			result.Handled = true
 			result.Response = &IMAgentResponse{
-				Text: "⚠️ 系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。",
+				Text: "系统正在恢复中（上一个任务因内部锁等待超时未能正常退出），请稍后重试。如持续出现请重启程序。",
 			}
 			return result
 		case <-ticker.C:

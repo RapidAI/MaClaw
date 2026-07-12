@@ -306,7 +306,7 @@ return (
                                     if (!id) return null
                                     return (
                                         <option key={i} value={id} className="bg-popover text-popover-foreground">
-                                            👤 {id}
+                                            {id}
                                         </option>
                                     )
                                 })}

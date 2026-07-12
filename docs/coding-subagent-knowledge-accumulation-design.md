@@ -522,25 +522,25 @@ func appendContraindication(exp *CodingExperience, failureContext string) {
 │ 筛选: [全部分类▼] [全部状态▼] [全部标签▼]                    │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│ ✅ Go interface 不能嵌套指针                    conf: 1.8    │
+│ Go interface 不能嵌套指针                    conf: 1.8    │
 │    pitfall | go/compile_error | 语言:Go | 召回 7 次          │
 │    ─────────────────────────────────────                     │
-│ ✅ 这个项目序列化用 protobuf                    conf: 1.6    │
+│ 这个项目序列化用 protobuf                    conf: 1.6    │
 │    decision | protobuf | 项目:d:\workprj\morio | 召回 5 次   │
 │    ─────────────────────────────────────                     │
-│ ● 大文件先写临时文件再 rename                    conf: 1.2   │
+│ * 大文件先写临时文件再 rename                    conf: 1.2   │
 │    pattern | file_io | 通用 | 召回 3 次                      │
 │    ─────────────────────────────────────                     │
-│ ○ range loop 闭包捕获（候选）                   conf: 1.0   │
+│ - range loop 闭包捕获（候选）                   conf: 1.0   │
 │    pitfall | concurrency | 语言:Go | 未召回                  │
 │    [确认] [删除]                                            │
 │    ─────────────────────────────────────                     │
-│ ⚠️ 用 mutex 包装 map（低置信度）                conf: 0.4   │
+│ 用 mutex 包装 map（低置信度）                conf: 0.4   │
 │    pattern | concurrency | 语言:Go | 召回 4 次 失败 3 次     │
 │    [查看详情] [编辑] [删除]                                 │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
-│ 图例: ✅ verified  ● active  ○ candidate  ⚠️ 低置信度       │
+│ 图例: verified  * active  - candidate  低置信度       │
 │ 当前 tab: Go (15 条) | 总计: 42/1000 条                     │
 │ [清空当前语言] [清空全部]                                    │
 └──────────────────────────────────────────────────────────────┘
@@ -681,6 +681,14 @@ func (c *AppConfig) CodingKnowledgeDefaults() {
 - 前端：经验列表/详情/编辑/删除视图
 - 前端：状态统计 + 容量显示
 - SubAgent 并发配置从 LLM 设置迁移到编程工具设置
+
+**2026-07 接线进度**：设置页已从 stub 改为真实 Wails 绑定（列表/搜索/确认/删除/重置 + 统计）。见 [coding-knowledge-panel-wiring-2026.md](./coding-knowledge-panel-wiring-2026.md)。
+
+**2026-07 Increment 2**：详情/编辑弹窗、导出/导入 pack、verified 毕业到 steering；`UpdateExperience` 保 ID。
+
+**2026-07 Increment 3**：容量上限配置 + `CodingKnowledgeCapacity` + 执行淘汰（先单项目后全局）。
+
+**冻结**：管理面板轨道见 [coding-knowledge-panel-track-freeze-2026.md](./coding-knowledge-panel-track-freeze-2026.md)。批量操作/Doctor 告警仅作命名目标。
 
 ### Phase 5: 演进机制
 

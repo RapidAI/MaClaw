@@ -25,6 +25,20 @@ void main() {
       );
     });
 
+    test('maps 404 to English when isZh is false', () {
+      final err = DioException(
+        requestOptions: RequestOptions(path: '/x'),
+        response: Response(
+          requestOptions: RequestOptions(path: '/x'),
+          statusCode: 404,
+          data: {'code': 'DRAFT_NOT_FOUND'},
+        ),
+        type: DioExceptionType.badResponse,
+      );
+      final mapped = mapDocumentStorageError(err, isZh: false) as StateError;
+      expect(mapped.message.toLowerCase(), contains('missing'));
+    });
+
     test('maps quota 507', () {
       final err = DioException(
         requestOptions: RequestOptions(path: '/x'),
@@ -37,6 +51,8 @@ void main() {
       );
       final mapped = mapDocumentStorageError(err) as StateError;
       expect(mapped.message, contains('空间不足'));
+      final en = mapDocumentStorageError(err, isZh: false) as StateError;
+      expect(en.message.toLowerCase(), contains('quota'));
     });
   });
 

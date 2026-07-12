@@ -320,7 +320,7 @@ func (a *App) ensureRemoteInfra() {
 │  │  │  └─ 前端: A1.content = "我来看看"
 │  │  ├─ SSE: delta tool_call(bash, "ls -la")
 │  │  └─ SSE: [DONE] → 返回 llmResponse (有 tool_calls)
-│  ├─ progress: "⚙️ 正在执行: bash"
+│  ├─ progress: " 正在执行: bash"
 │  │  └─ 前端: 添加 progress 消息
 │  ├─ executeTool("bash", ...)
 │  │

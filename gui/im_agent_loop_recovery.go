@@ -252,9 +252,9 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 	// any partial tool results that follow it.
 	history = stripTrailingBrokenToolGroup(history)
 	h.saveConversationHistoryTimed(userID, history, nil)
-	cancelMsg := "⏹️ Task cancelled."
+	cancelMsg := "Task cancelled."
 	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-		cancelMsg = fmt.Sprintf("⏹️ Task cancelled: %s", taskPreview)
+		cancelMsg = fmt.Sprintf("Task cancelled: %s", taskPreview)
 	}
 	return &IMAgentResponse{Text: cancelMsg}
 }

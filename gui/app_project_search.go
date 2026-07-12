@@ -16,7 +16,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 var recentTaskForkMu sync.Mutex
@@ -1106,15 +1105,15 @@ func (a *App) emitProjectIndexChanged(projectPath string) {
 	if a.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(a.ctx, EventProjectIndexChanged, projectPath)
-	runtime.EventsEmit(a.ctx, EventTasksChanged, nil)
+	a.emitEvent(EventProjectIndexChanged, projectPath)
+	a.emitEvent(EventTasksChanged, nil)
 }
 
 func (a *App) emitProjectTaskClosed(projectPath string) {
 	if a.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(a.ctx, EventProjectTaskClosed, projectPath)
+	a.emitEvent(EventProjectTaskClosed, projectPath)
 }
 
 func (a *App) cancelProjectTaskLoop(projectPath string) {
@@ -1284,7 +1283,7 @@ func (a *App) ResumeProject(projectPath string) string {
 	// frontend save could overwrite the backend's correct current_project
 	// with a stale value (same race pattern as #11/#23).
 	if updatedCfg := a.switchCurrentProjectByPath(projectPath); updatedCfg != nil && a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "config-changed", *updatedCfg)
+		a.emitEvent("config-changed", *updatedCfg)
 	}
 
 	// 1. Cancel any active V2 workflow (user is switching projects).
@@ -1326,7 +1325,7 @@ func (a *App) ResumeProject(projectPath string) string {
 	// ClearAIAssistantHistory. That's a second Clear on already-empty memory —
 	// idempotent, no harm done.
 
-	msg := "🔖 已切换到任务：" + projectName
+	msg := "已切换到任务：" + projectName
 	// Only show the path line if it looks like a real user project path.
 	// Suppress for:
 	//   - Inferred paths like "\path.dirname" from tag fragments
@@ -1340,7 +1339,7 @@ func (a *App) ResumeProject(projectPath string) string {
 		}
 	}
 	if showPath {
-		msg += "\n📁 " + projectPath
+		msg += "\n" + projectPath
 	}
 	return msg
 }
@@ -1585,7 +1584,7 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 	existing, err := persist.LoadSession(tabID)
 	if err == nil && existing != nil {
 		a.upsertProjectTabIndexEntry(persist, tabID, projectPath, time.Now())
-		return fmt.Sprintf("📂 已恢复项目会话：%s", projectName)
+		return fmt.Sprintf("已恢复项目会话：%s", projectName)
 	}
 
 	// Create new session entry in the index.
@@ -1643,7 +1642,7 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		return contextMsg
 	}
 
-	return fmt.Sprintf("📂 已打开项目：%s\n📁 %s\n\n请问需要我做什么？", projectName, projectPath)
+	return fmt.Sprintf("已打开项目：%s\n%s\n\n请问需要我做什么？", projectName, projectPath)
 }
 
 func (a *App) projectTabDisplayName(projectPath string) string {
@@ -1747,7 +1746,7 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 	scene := contextData.Scene
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📂 项目：%s\n📁 路径：%s\n\n", projectName, projectPath))
+	sb.WriteString(fmt.Sprintf("项目：%s\n路径：%s\n\n", projectName, projectPath))
 
 	// --- Section: Recent Progress (from task_artifact entries) ---
 	if len(artifacts) > 0 {

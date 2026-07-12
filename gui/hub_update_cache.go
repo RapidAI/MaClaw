@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,11 +125,18 @@ func (p *guiHubCenterPersister) SaveHubCenterURLs(preferred string, discovered [
 		return nil
 	}
 	return p.app.PatchConfig(func(cfg *corelib.AppConfig) {
-		// Defense-in-depth: never persist a loopback address as the primary
-		// HubCenter URL. The upstream RememberSelectionThrottled should already
-		// filter these, but guard here as well.
-		if preferred != "" && !remote.IsLoopbackURL(preferred) {
-			cfg.RemoteHubCenterURL = preferred
+		// Never replace a public preferred HubCenter with loopback. Allow
+		// loopback preferred only when the user is already on loopback/unset
+		// (local/dev failover among 127.0.0.1 test hubs).
+		if preferred != "" {
+			if !remote.IsLoopbackURL(preferred) {
+				cfg.RemoteHubCenterURL = preferred
+			} else {
+				current := strings.TrimSpace(cfg.RemoteHubCenterURL)
+				if current == "" || remote.IsLoopbackURL(current) {
+					cfg.RemoteHubCenterURL = preferred
+				}
+			}
 		}
 		cfg.RemoteHubCenterURLs = discovered
 	})

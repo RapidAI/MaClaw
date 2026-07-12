@@ -22,8 +22,18 @@ export const connectionStatusLabel = (status: string, lang: string) => {
         error: textForLang(lang, 'error', '\u9519\u8bef', '\u932f\u8aa4'),
         disconnected: textForLang(lang, 'not connected', '\u672a\u8fde\u63a5', '\u672a\u9023\u63a5'),
     };
-    const icon = status === 'connected' ? '\u25cf' : status === 'error' ? '\u2715' : '\u25cb';
-    return icon + ' ' + (labels[status] || labels.disconnected);
+    // Text only — pair with ConnectionStatusBadge / StatusGlyph in UI, not emoji or ON/ERR prefixes.
+    return labels[status] || labels.disconnected;
+};
+
+/** Map IM connection state to workbench StatusGlyph kind. */
+export const connectionStatusGlyphKind = (
+    status: string,
+): 'ok' | 'error' | 'pending' | 'offline' => {
+    if (status === 'connected') return 'ok';
+    if (status === 'error') return 'error';
+    if (status === 'connecting' || status === 'reconnecting' || status === 'paused') return 'pending';
+    return 'offline';
 };
 
 export const pillButtonStyle = (active: boolean): CSSProperties => ({

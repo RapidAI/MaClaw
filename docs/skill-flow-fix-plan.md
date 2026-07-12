@@ -233,9 +233,4 @@
 
 ## 验收标准
 
-- 所有 15 个修改文件零诊断错误 ✓
-- 新增回归测试覆盖 context 过滤逻辑 ✓
-- Cancel 信号传播链完整：用户 Ctrl+C → cancelCh → ctx → args["_ctx"] → baseCtx → execCtx → subprocess kill ✓
-- .prev 备份不被 scanner 发现、不被上传打包、24h 自动清理 ✓
-- 旧版 skill（无 SkillDir）删除行为不变 ✓
-- CommitStaging 所有失败路径返回明确错误 ✓
+- 所有 15 个修改文件零诊断错误 - 新增回归测试覆盖 context 过滤逻辑 - Cancel 信号传播链完整：用户 Ctrl+C → cancelCh → ctx → args["_ctx"] → baseCtx → execCtx → subprocess kill - .prev 备份不被 scanner 发现、不被上传打包、24h 自动清理 - 旧版 skill（无 SkillDir）删除行为不变 - CommitStaging 所有失败路径返回明确错误 

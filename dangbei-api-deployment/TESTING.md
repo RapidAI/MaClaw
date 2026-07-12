@@ -45,12 +45,12 @@ node --test api/helpers/stream-tool-sieve.test.js api/chat-stream.test.js
 2. **隔离启动**：复制 `config.json` 到临时目录，启动独立服务进程
 
 3. **场景测试**：
-   - ✅ OpenAI 非流式 / 流式
-   - ✅ Claude 非流式 / 流式
-   - ✅ Admin API（登录 / 配置 / 账号管理）
-   - ✅ Tool Calling
-   - ✅ 并发压力测试
-   - ✅ Search 模型
+   - OpenAI 非流式 / 流式
+   - Claude 非流式 / 流式
+   - Admin API（登录 / 配置 / 账号管理）
+   - Tool Calling
+   - 并发压力测试
+   - Search 模型
 
 4. **结果收集**：继续执行所有用例（不中断），写入最终汇总
 
@@ -136,8 +136,8 @@ rg "<trace_id>" artifacts/testsuite/<run_id>/server.log
 
 | 退出码 | 含义 |
 | --- | --- |
-| `0` | 所有用例通过 ✅ |
-| `1` | 有用例失败 ❌ |
+| `0` | 所有用例通过 |
+| `1` | 有用例失败 |
 
 可将测试集作为本地发布门禁使用（CI/CD 集成）。
 
@@ -145,7 +145,7 @@ rg "<trace_id>" artifacts/testsuite/<run_id>/server.log
 
 ## 安全提醒 | Sensitive Data Warning
 
-⚠️ 测试集会存储**完整的原始请求/响应载荷**用于调试。
+测试集会存储**完整的原始请求/响应载荷**用于调试。
 
 - **不要**将 artifacts 目录上传到公开仓库
 - **不要**在 Issue tracker 中分享未脱敏的 artifact 文件

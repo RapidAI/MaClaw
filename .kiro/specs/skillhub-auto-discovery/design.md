@@ -345,7 +345,7 @@ if h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(llmResponse)
     )
     if skillName != "" {
         // 将结果追加到响应中
-        h.sendToUser(fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skillName, result))
+        h.sendToUser(fmt.Sprintf("已自动安装并执行 Skill「%s」\n%s", skillName, result))
         return // 请求已处理
     }
 }

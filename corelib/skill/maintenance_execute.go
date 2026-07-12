@@ -62,6 +62,11 @@ type SkillMaintenancePatchDraft struct {
 	Params            []corelib.NLSkillParam `json:"params,omitempty"`
 	SuggestedYAML     string                 `json:"suggested_yaml,omitempty"`
 	RecommendedAction string                 `json:"recommended_action"`
+	// Repair-only fields (kind=attempt_repair). Never auto-applied.
+	ErrorClass string   `json:"error_class,omitempty"`
+	LastError  string   `json:"last_error,omitempty"`
+	ActionHint string   `json:"action_hint,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
 }
 
 // SkillMaintenanceMergeDraft is a non-executing review packet for duplicate
@@ -149,7 +154,12 @@ func ExecuteSkillMaintenancePlan(skills []corelib.NLSkillEntry, plan SkillMainte
 			result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusExecuted, Reason: "repair counter and last error cleared"})
 		case MaintenanceActionAttemptRepair:
 			if isFileBackedMaintenanceSkill(out[skillIndex]) {
-				result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusSkipped, Reason: "file-backed skill repair requires a reviewed patch flow"})
+				draft := buildFileBackedRepairPatchDraft(out[skillIndex])
+				if draft == nil {
+					result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusNoop, Reason: "file-backed skill has no repairable last_error for a repair patch draft"})
+					continue
+				}
+				result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusSkipped, Reason: "file-backed skill repair requires a reviewed patch flow", PatchDraft: draft})
 				continue
 			}
 			if !ShouldAttemptRepair(&out[skillIndex]) {
@@ -302,6 +312,124 @@ func buildContractPatchDraft(skill corelib.NLSkillEntry) *SkillMaintenancePatchD
 		SuggestedYAML:     formatContractPatchYAML(required, params),
 		RecommendedAction: "review this contract, then apply it with manage_skill(action=patch) or edit skill.yaml",
 	}
+}
+
+// buildFileBackedRepairPatchDraft builds a non-executing repair review packet for
+// file-backed skills. It never rewrites skill.yaml; operators apply changes after review.
+func buildFileBackedRepairPatchDraft(skill corelib.NLSkillEntry) *SkillMaintenancePatchDraft {
+	if !isFileBackedMaintenanceSkill(skill) {
+		return nil
+	}
+	lastError := strings.TrimSpace(skill.LastError)
+	if lastError == "" {
+		return nil
+	}
+	// Prefer live classification over a stored tag so action hints stay useful.
+	classified := ClassifyStepError(0, lastError, lastError, "")
+	errorClass := string(classified.Class)
+	if errorClass == "" || errorClass == string(ErrUnknown) {
+		if tagged := ExtractErrorClass(lastError); tagged != "" {
+			errorClass = tagged
+		}
+	}
+	if !IsRepairableError(errorClass) {
+		return nil
+	}
+	hint := strings.TrimSpace(classified.ActionHint)
+	if hint == "" {
+		hint = extractActionHintFromFormattedError(lastError)
+	}
+	evidence := skillUsageEvidence(skill)
+	evidence = append(evidence,
+		"error_class="+errorClass,
+		"skill_dir="+strings.TrimSpace(skill.SkillDir),
+		"source=file",
+	)
+	return &SkillMaintenancePatchDraft{
+		Kind:              MaintenanceActionAttemptRepair,
+		Skill:             skillDisplayName(skill),
+		SkillDir:          strings.TrimSpace(skill.SkillDir),
+		TargetFile:        "skill.yaml",
+		SuggestedYAML:     formatRepairPatchReviewYAML(skill, errorClass, lastError, hint),
+		RecommendedAction: "review this repair packet under skill_dir; edit skill.yaml/scripts only after approval; use YAML version restore if a bad edit is applied",
+		ErrorClass:        errorClass,
+		LastError:         lastError,
+		ActionHint:        hint,
+		Evidence:          evidence,
+	}
+}
+
+func extractActionHintFromFormattedError(lastError string) string {
+	for _, line := range strings.Split(lastError, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "[action:") {
+			return line
+		}
+	}
+	return ""
+}
+
+func formatRepairPatchReviewYAML(skill corelib.NLSkillEntry, errorClass, lastError, actionHint string) string {
+	var b strings.Builder
+	b.WriteString("# file-backed repair patch draft (review only — do not auto-apply)\n")
+	b.WriteString("name: ")
+	b.WriteString(skillDisplayName(skill))
+	b.WriteString("\n")
+	b.WriteString("kind: ")
+	b.WriteString(MaintenanceActionAttemptRepair)
+	b.WriteString("\n")
+	b.WriteString("skill_dir: ")
+	b.WriteString(strings.TrimSpace(skill.SkillDir))
+	b.WriteString("\n")
+	b.WriteString("error_class: ")
+	b.WriteString(errorClass)
+	b.WriteString("\n")
+	if actionHint != "" {
+		b.WriteString("action_hint: ")
+		b.WriteString(strconv.Quote(actionHint))
+		b.WriteString("\n")
+	}
+	b.WriteString("last_error: |\n")
+	for _, line := range strings.Split(lastError, "\n") {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	// Conservative, class-specific YAML suggestions operators can copy.
+	switch ErrorClass(errorClass) {
+	case ErrShebangWindows:
+		b.WriteString("suggested_fields:\n")
+		b.WriteString("  preferred_shell: bash\n")
+	case ErrMissingParam:
+		required, params := buildMaintenanceContractSuggestion(skill)
+		if len(params) > 0 {
+			b.WriteString("suggested_contract:\n")
+			b.WriteString(indentYAMLBlock(formatContractPatchYAML(required, params), 2))
+		}
+	case ErrCommandNotFound, ErrMissingDependency, ErrMissingEnvVar:
+		b.WriteString("review_notes:\n")
+		b.WriteString("  - verify runtime tools/packages/env vars on PATH for this host\n")
+		b.WriteString("  - patch step commands or requirements in skill.yaml / scripts\n")
+		b.WriteString("  - re-run skill after install; do not mark healthy until one success\n")
+	default:
+		b.WriteString("review_notes:\n")
+		b.WriteString("  - inspect failed step output and skill.yaml steps\n")
+		b.WriteString("  - apply the minimal fix that addresses error_class\n")
+		b.WriteString("  - keep Versioner backups before writing skill.yaml\n")
+	}
+	return b.String()
+}
+
+func indentYAMLBlock(text string, spaces int) string {
+	pad := strings.Repeat(" ", spaces)
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(pad)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func buildMaintenanceContractSuggestion(skill corelib.NLSkillEntry) ([]string, []corelib.NLSkillParam) {

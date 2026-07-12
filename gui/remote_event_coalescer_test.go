@@ -90,7 +90,7 @@ func TestCoalescerCompleteToolCallMerges(t *testing.T) {
 	if !got[0].Grouped {
 		t.Fatal("expected event to be marked as grouped")
 	}
-	if got[0].Summary != "writing file ✓" {
+	if got[0].Summary != "writing file [done]" {
 		t.Fatalf("expected merged summary, got %q", got[0].Summary)
 	}
 }

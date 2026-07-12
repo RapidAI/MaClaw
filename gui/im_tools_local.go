@@ -146,7 +146,7 @@ func (h *IMMessageHandler) toolBash(execCtx context.Context, args map[string]int
 					displayCmd = displayCmd[:60] + "…"
 				}
 				if onProgress != nil {
-					onProgress(fmt.Sprintf("⏳ 命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
+					onProgress(fmt.Sprintf("命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
 				}
 			case <-done:
 				return
@@ -328,6 +328,10 @@ func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string
 	return resolvePath("")
 }
 
+func (h *IMMessageHandler) toolReadToolResult(args map[string]interface{}) string {
+	return agent.ToolReadToolResult(args)
+}
+
 func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if hasRuntimeOwner && ownerID == "" {
@@ -488,14 +492,14 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	if strings.HasSuffix(strings.ToLower(absPath), ".svg") && resolvedMode != coretool.WriteModeAppend {
 		pngPath := strings.TrimSuffix(absPath, filepath.Ext(absPath)) + ".png"
 		if convErr := imgconv.ConvertSVGToPNG(absPath, pngPath, 2000); convErr != nil {
-			result += fmt.Sprintf("\n⚠️ SVG→PNG 自动转换失败: %s", convErr.Error())
+			result += fmt.Sprintf("\nSVG→PNG 自动转换失败: %s", convErr.Error())
 		} else {
 			pngInfo, _ := os.Stat(pngPath)
 			pngSize := int64(0)
 			if pngInfo != nil {
 				pngSize = pngInfo.Size()
 			}
-			result += fmt.Sprintf("\n✅ 已自动转换为 PNG: %s（%d 字节）", pngPath, pngSize)
+			result += fmt.Sprintf("\n已自动转换为 PNG: %s（%d 字节）", pngPath, pngSize)
 		}
 	}
 	return result
@@ -686,11 +690,11 @@ func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string
 		}
 		info, _ := entry.Info()
 		if entry.IsDir() {
-			b.WriteString(fmt.Sprintf("  📁 %s/\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  %s/\n", entry.Name()))
 		} else if info != nil {
-			b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", entry.Name(), info.Size()))
+			b.WriteString(fmt.Sprintf("  %s (%d bytes)\n", entry.Name(), info.Size()))
 		} else {
-			b.WriteString(fmt.Sprintf("  📄 %s\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  %s\n", entry.Name()))
 		}
 		shown++
 	}

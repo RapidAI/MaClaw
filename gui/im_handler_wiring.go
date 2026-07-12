@@ -369,6 +369,15 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is bool.
 	snapshotInitialized sync.Map
 
+	// snapshotWarmInflight singleflights static snapshot builds per userID.
+	// Keyed by userID, value is chan struct{} (closed when the builder finishes).
+	snapshotWarmInflight sync.Map
+
+	// snapshotEpoch invalidates in-flight builds after RefreshMemorySnapshot:
+	// a builder that started under gen N discards its result if gen advanced.
+	// Keyed by userID, value is *atomic.Uint64.
+	snapshotEpoch sync.Map
+
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
 	// messages and constructs focused prompts for the internal CodingSubAgent

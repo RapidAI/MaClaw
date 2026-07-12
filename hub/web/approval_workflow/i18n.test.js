@@ -66,9 +66,9 @@ function assertEqual(actual, expected, message) {
   testCount++;
   if (actual === expected) {
     passCount++;
-    console.log('  \u2713 ' + message);
+    console.log('  OK ' + message);
   } else {
-    console.log('  \u2717 ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
+    console.log('  ERR ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
   }
 }
 

@@ -109,7 +109,7 @@
     function skillCategoryBadge(cat) {
       var map = { skill: ['info', 'SKILL'], mcp: ['info', 'MCP'], workflow: ['warn', '\u5ba1\u6279\u5de5\u4f5c\u6d41'], app: ['ok', 'APP'] };
       var pair = map[cat] || map.skill;
-      return '<span class="badge ' + pair[0] + '" style="font-size:9px;padding:3px 7px;font-weight:700">' + escapeHtml(pair[1]) + '</span>';
+      return '<span class="badge skillhub-badge ' + pair[0] + '">' + escapeHtml(pair[1]) + '</span>';
     }
     function renderSkillHubCard(s, idx) {
       var cat = classifySkillCategory(s);
@@ -134,7 +134,7 @@
       var idArg = jsArg(s.id);
       var catBadge = skillCategoryBadge(cat);
       // Description (prominently displayed, with fallback)
-      var description = s.description ? escapeHtml(s.description) : '<span style="opacity:.45">' + escapeHtml(shtr('noDescription')) + '</span>';
+      var description = s.description ? escapeHtml(s.description) : '<span class="skillhub-desc-empty">' + escapeHtml(shtr('noDescription')) + '</span>';
       // Source + status meta line (concise)
       var trustLabels = {trusted: currentLang==='zh'?'可信':'Trusted', official: currentLang==='zh'?'官方':'Official', builtin: currentLang==='zh'?'内置':'Built-in', community: currentLang==='zh'?'社区':'Community', 'agent-created': 'Agent'};
       var trustLabel = trustLabels[s.trust_level] || s.trust_level || shtr('unknown');

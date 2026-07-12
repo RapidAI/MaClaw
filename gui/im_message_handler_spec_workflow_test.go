@@ -338,9 +338,9 @@ func TestSpecWorkflowProperty8_ExecutionTDDAndRetry(t *testing.T) {
 		}
 
 		// (d) Progress format
-		hasProgress := strings.Contains(prompt, "完成 ✅") || strings.Contains(prompt, "失败 ❌")
+		hasProgress := strings.Contains(prompt, "完成 ") || strings.Contains(prompt, "失败 ")
 		if !hasProgress {
-			t.Logf("missing progress format (✅/❌)")
+			t.Logf("missing progress format (/)")
 			return false
 		}
 

@@ -300,7 +300,7 @@ func buildSubAgentScopeApprovalCallback(handler *IMMessageHandler, loopCtx *Loop
 			if message == "" {
 				message = "\u7f16\u7801 SubAgent \u5c1d\u8bd5\u8bbf\u95ee\u9879\u76ee\u76ee\u5f55\u5916\u7684\u8def\u5f84\uff0c\u7b49\u5f85\u786e\u8ba4..."
 			}
-			onProgress(fmt.Sprintf("\u26a0\ufe0f %s\n\u8def\u5f84: %s\n\u9879\u76ee\u8303\u56f4: %s", message, req.Path, req.ProjectPath))
+			onProgress(fmt.Sprintf("%s\n\u8def\u5f84: %s\n\u9879\u76ee\u8303\u56f4: %s", message, req.Path, req.ProjectPath))
 		}
 
 		// Create a channel for the response.

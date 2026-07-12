@@ -3,15 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -281,277 +278,26 @@ func (c *SkillHubClient) InstallToDirWithIntegrity(ctx context.Context, skillID,
 	if err := verifyDownloadedSkillPackageSignatureWithTrustedFingerprints(data, expectedSignature, trustedFingerprints); err != nil {
 		return nil, err
 	}
-	var full hubSkillFull
-	if err := json.Unmarshal(data, &full); err != nil {
+	// Shared materialisation with TUI/agentservice (steps/files/agent_skill_md).
+	entry, err := skill.ParseSkillHubDownloadJSON(data, skill.HubDownloadOptions{
+		HubURL:    base,
+		SkillID:   skillID,
+		Source:    skillEntrySourceHub.String(),
+		TargetDir: targetDir,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("decode skill %q from %s failed after %d bytes: %w", skillID, strings.TrimRight(hubURL, "/"), len(data), err)
 	}
-
-	steps := make([]corelib.NLSkillStep, 0, len(full.Steps))
-	for _, s := range full.Steps {
-		steps = append(steps, corelib.NLSkillStep{
-			Action:    s.Action,
-			Params:    s.Params,
-			OnError:   s.OnError,
-			Name:      s.Name,
-			Condition: s.Condition,
-		})
+	if strings.TrimSpace(entry.Status) == "" {
+		entry.Status = skillEntryStatusActive.String()
 	}
-
-	installName := firstNonEmpty(full.Name, skillID)
-	installSkillDir := targetDir
-	if installSkillDir == "" && installName != "" {
-		if skillsRoot, err := skill.PrimarySkillsDir(); err == nil {
-			installSkillDir = filepath.Join(skillsRoot, installName)
-		}
-	}
-	if len(steps) == 0 {
-		steps = craftToolStepsFromBundledSkillFiles(full.Files, installSkillDir)
-	}
-
-	// Extract bundled files to targetDir (or default skills dir).
-	if len(full.Files) > 0 {
-		if err := extractBundledSkillFiles(installName, full.Files, targetDir); err != nil {
-			return nil, fmt.Errorf("extract bundled files for skill %q: %w", installName, err)
-		}
-	}
-
-	// Skills downloaded from the configured hub (official store) should be
-	// treated as "trusted" rather than "community". The hub server currently
-	// hardcodes all published skills to "community", which causes the risk
-	// assessor to escalate their risk level and block legitimate installs.
-	trustLevel := full.TrustLevel
-	if trustLevel == "" || trustLevel == "community" {
-		trustLevel = "trusted"
-	}
-
-	return &corelib.NLSkillEntry{
-		SkillID:       full.SkillID,
-		Name:          full.Name,
-		Description:   full.Description,
-		Triggers:      full.Triggers,
-		Steps:         steps,
-		Status:        skillEntryStatusActive.String(),
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        skillEntrySourceHub.String(),
-		SourceProject: base,
-		HubSkillID:    full.ID,
-		HubVersion:    full.Version,
-		Version:       full.SemVer,
-		TrustLevel:    trustLevel,
-		SkillDir:      installSkillDir,
-	}, nil
+	return entry, nil
 }
 
-func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir string) []corelib.NLSkillStep {
-	if len(files) == 0 {
-		return nil
-	}
-	for _, key := range []string{"SKILL.md", "skill.md"} {
-		b64, ok := files[key]
-		if !ok {
-			continue
-		}
-		decoded, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil || len(decoded) == 0 {
-			continue
-		}
-		params := map[string]interface{}{
-			"instructions":      string(decoded),
-			"verification_mode": "artifact_optional",
-			"register_policy":   "manual",
-		}
-		if strings.TrimSpace(skillDir) != "" {
-			params["working_dir"] = skillDir
-		}
-		return []corelib.NLSkillStep{{
-			Action: "craft_tool",
-			Params: params,
-		}}
-	}
-	return nil
-}
-
-// extractFiles writes bundled files (base64-encoded) to the specified targetDir.
-// When targetDir is empty, falls back to ~/.maclaw/data/skills/<name>/.
-// It preserves the downloaded package as-is and only rejects structurally unsafe
-// paths or corrupt payloads; security scanning runs on the staged result before
-// registration.
-func (c *SkillHubClient) extractFiles(skillName string, files map[string]string, targetDir string) error {
-	return extractBundledSkillFiles(skillName, files, targetDir)
-}
-
+// extractBundledSkillFiles delegates to the shared corelib extractor so GUI,
+// TUI, and agentservice enforce the same path-safety and atomic-write rules.
 func extractBundledSkillFiles(skillName string, files map[string]string, targetDir string) error {
-	skillDir := targetDir
-	if skillDir == "" {
-		if strings.TrimSpace(skillName) == "" {
-			return fmt.Errorf("skill name is required when target directory is empty")
-		}
-		skillsRoot, err := skill.PrimarySkillsDir()
-		if err != nil {
-			return err
-		}
-		skillDir = filepath.Join(skillsRoot, skillName)
-	}
-	skillDirAbs, err := filepath.Abs(skillDir)
-	if err != nil {
-		return err
-	}
-	rootExists := true
-	if info, err := os.Lstat(skillDirAbs); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("unsafe skill directory %q", skillDir)
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	} else {
-		rootExists = false
-	}
-
-	decodedFiles := make([]bundledSkillFile, 0, len(files))
-	for relPath, b64Content := range files {
-		data, err := base64.StdEncoding.DecodeString(b64Content)
-		if err != nil {
-			return fmt.Errorf("decode bundled file %q: %w", relPath, err)
-		}
-
-		// Sanitize path to prevent directory traversal and absolute paths.
-		normalized := strings.ReplaceAll(relPath, "\\", "/")
-		clean := filepath.Clean(filepath.FromSlash(normalized))
-		if isUnsafeBundledFilePath(normalized, clean) {
-			return fmt.Errorf("unsafe bundled file path %q", relPath)
-		}
-
-		dest := filepath.Join(skillDirAbs, clean)
-		destAbs, err := filepath.Abs(dest)
-		if err != nil {
-			return fmt.Errorf("resolve bundled file %q: %w", relPath, err)
-		}
-		// Double-check the resolved path is still under skillDir.
-		relToRoot, err := filepath.Rel(skillDirAbs, destAbs)
-		if err != nil || relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(relToRoot) {
-			return fmt.Errorf("unsafe bundled file path %q", relPath)
-		}
-		decodedFiles = append(decodedFiles, bundledSkillFile{
-			OriginalPath: relPath,
-			RelDir:       filepath.Dir(relToRoot),
-			DestAbs:      destAbs,
-			Data:         data,
-		})
-	}
-	if len(decodedFiles) == 0 {
-		return fmt.Errorf("downloaded skill package contained no writable files")
-	}
-
-	rootCreated := false
-	if !rootExists {
-		parent := filepath.Dir(skillDirAbs)
-		if err := os.MkdirAll(parent, 0o755); err != nil {
-			return err
-		}
-		if err := os.Mkdir(skillDirAbs, 0o755); err != nil {
-			if !os.IsExist(err) {
-				return err
-			}
-		} else {
-			rootCreated = true
-		}
-	}
-	if info, err := os.Lstat(skillDirAbs); err != nil {
-		return cleanupNewBundledSkillDirOnError(skillDirAbs, rootCreated, err)
-	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return cleanupNewBundledSkillDirOnError(skillDirAbs, rootCreated, fmt.Errorf("unsafe skill directory %q", skillDir))
-	}
-
-	for _, file := range decodedFiles {
-		if err := ensureBundledParentDir(skillDirAbs, file.RelDir); err != nil {
-			return cleanupNewBundledSkillDirOnError(skillDirAbs, rootCreated, fmt.Errorf("create directory for bundled file %q: %w", file.OriginalPath, err))
-		}
-		if info, err := os.Lstat(file.DestAbs); err == nil {
-			if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
-				return cleanupNewBundledSkillDirOnError(skillDirAbs, rootCreated, fmt.Errorf("unsafe bundled file target %q", file.OriginalPath))
-			}
-		} else if !os.IsNotExist(err) {
-			return cleanupNewBundledSkillDirOnError(skillDirAbs, rootCreated, fmt.Errorf("inspect bundled file target %q: %w", file.OriginalPath, err))
-		}
-	}
-
-	for _, file := range decodedFiles {
-		if err := os.WriteFile(file.DestAbs, file.Data, 0o644); err != nil {
-			return cleanupNewBundledSkillDirOnError(skillDirAbs, rootCreated, fmt.Errorf("write bundled file %q: %w", file.OriginalPath, err))
-		}
-	}
-	return nil
-}
-
-func cleanupNewBundledSkillDirOnError(skillDirAbs string, rootCreated bool, err error) error {
-	if err != nil && rootCreated {
-		_ = os.RemoveAll(skillDirAbs)
-	}
-	return err
-}
-
-type bundledSkillFile struct {
-	OriginalPath string
-	RelDir       string
-	DestAbs      string
-	Data         []byte
-}
-
-func isUnsafeBundledFilePath(normalized, clean string) bool {
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return true
-	}
-	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || strings.HasPrefix(normalized, "/") {
-		return true
-	}
-	for _, part := range strings.Split(normalized, "/") {
-		if part == "" || part == "." {
-			continue
-		}
-		if part == ".." {
-			return true
-		}
-		// Windows drive letters and alternate data streams both use ':'. Treat
-		// colon as non-portable for bundled skill paths on every platform.
-		if strings.Contains(part, ":") {
-			return true
-		}
-	}
-	return false
-}
-
-func ensureBundledParentDir(rootAbs, relDir string) error {
-	relDir = filepath.Clean(relDir)
-	if relDir == "." || relDir == "" {
-		return nil
-	}
-	if relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) || filepath.IsAbs(relDir) {
-		return fmt.Errorf("unsafe parent directory %q", relDir)
-	}
-	current := rootAbs
-	for _, part := range strings.Split(relDir, string(filepath.Separator)) {
-		if part == "" || part == "." {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("parent directory %q is a symlink", current)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("parent path %q is not a directory", current)
-			}
-			continue
-		}
-		if !os.IsNotExist(err) {
-			return err
-		}
-		if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
-			return err
-		}
-	}
-	return nil
+	return skill.ExtractSkillPackageFiles(skillName, files, targetDir)
 }
 
 // installDependencies attempts to install declared runtime dependencies.

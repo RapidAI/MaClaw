@@ -19,6 +19,13 @@ func BuildArgsExample(keys []string) string {
 }
 
 func FormatMissingRequiredArgsMessage(skillName string, missing []string, description string) string {
+	return FormatMissingRequiredArgsMessageWithParams(skillName, missing, description, nil)
+}
+
+// FormatMissingRequiredArgsMessageWithParams is the full missing-args report,
+// optionally appending the completed parameter schema so the agent can see
+// the full contract without a separate inspect call.
+func FormatMissingRequiredArgsMessageWithParams(skillName string, missing []string, description string, params []corelib.NLSkillParam) string {
 	missing = canonicalArgKeys(missing)
 	if len(missing) == 0 {
 		return ""
@@ -26,11 +33,16 @@ func FormatMissingRequiredArgsMessage(skillName string, missing []string, descri
 	var b strings.Builder
 	fmt.Fprintf(&b, "skill %q missing required parameter(s): %s. Pass them in args, e.g. args={%s}.", displaySkillName(skillName), strings.Join(missing, ", "), BuildArgsExample(missing))
 	appendDescription(&b, description)
+	appendParamContract(&b, params)
 	b.WriteString("\n[action: provide_args]")
 	return b.String()
 }
 
 func FormatImplicitRequiredArgsMessage(skillName string, missing []string, description string) string {
+	return FormatImplicitRequiredArgsMessageWithParams(skillName, missing, description, nil)
+}
+
+func FormatImplicitRequiredArgsMessageWithParams(skillName string, missing []string, description string, params []corelib.NLSkillParam) string {
 	missing = canonicalArgKeys(missing)
 	if len(missing) == 0 {
 		return ""
@@ -38,8 +50,24 @@ func FormatImplicitRequiredArgsMessage(skillName string, missing []string, descr
 	var b strings.Builder
 	fmt.Fprintf(&b, "skill %q command template references missing parameter(s): %s. Pass them in args, e.g. args={%s}.", displaySkillName(skillName), strings.Join(missing, ", "), BuildArgsExample(missing))
 	appendDescription(&b, description)
+	appendParamContract(&b, params)
 	b.WriteString("\n[action: provide_args]")
 	return b.String()
+}
+
+func appendParamContract(b *strings.Builder, params []corelib.NLSkillParam) {
+	if b == nil || len(params) == 0 {
+		return
+	}
+	if schema := FormatParamSchema(params); schema != "" {
+		b.WriteString("\n\n## Parameter contract\n")
+		b.WriteString(schema)
+	}
+	if js := FormatParamSchemaJSON(params); js != "" {
+		b.WriteString("JSON Schema: ")
+		b.WriteString(js)
+		b.WriteString("\n")
+	}
 }
 
 func FormatNoExecutableStepsMessage(skillName string, entry *corelib.NLSkillEntry, runner string) string {

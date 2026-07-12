@@ -14,12 +14,12 @@
 
 ```mermaid
 flowchart LR
-    Client["🖥️ 客户端\n(OpenAI / Claude 兼容)"]
+    Client["客户端\n(OpenAI / Claude 兼容)"]
 
     subgraph DS2API["DS2API 服务"]
         direction TB
         CORS["CORS 中间件"]
-        Auth["🔐 鉴权中间件"]
+        Auth["鉴权中间件"]
 
         subgraph Adapters["适配器层"]
             OA["OpenAI 适配器\n/v1/*"]
@@ -27,15 +27,15 @@ flowchart LR
         end
 
         subgraph Support["支撑模块"]
-            Pool["📦 账号池 / 并发队列"]
-            PoW["⚙️ PoW WASM\n(wazero)"]
+            Pool["账号池 / 并发队列"]
+            PoW["PoW WASM\n(wazero)"]
         end
 
-        Admin["🛠️ Admin API\n/admin/*"]
-        WebUI["🌐 WebUI\n(/admin)"]
+        Admin["Admin API\n/admin/*"]
+        WebUI["WebUI\n(/admin)"]
     end
 
-    DS["☁️ DeepSeek API"]
+    DS["DeepSeek API"]
 
     Client -- "请求" --> CORS --> Auth
     Auth --> OA & CA
@@ -68,11 +68,11 @@ flowchart LR
 
 | 级别 | 平台 | 当前状态 |
 | --- | --- | --- |
-| P0 | Codex CLI/SDK（`wire_api=chat` / `wire_api=responses`） | ✅ |
-| P0 | OpenAI SDK（JS/Python，chat + responses） | ✅ |
-| P0 | Vercel AI SDK（openai-compatible） | ✅ |
-| P0 | Anthropic SDK（messages） | ✅ |
-| P1 | LangChain / LlamaIndex / OpenWebUI（OpenAI 兼容接入） | ✅ |
+| P0 | Codex CLI/SDK（`wire_api=chat` / `wire_api=responses`） | |
+| P0 | OpenAI SDK（JS/Python，chat + responses） | |
+| P0 | Vercel AI SDK（openai-compatible） | |
+| P0 | Anthropic SDK（messages） | |
+| P1 | LangChain / LlamaIndex / OpenWebUI（OpenAI 兼容接入） | |
 | P2 | MCP 独立桥接层 | 规划中 |
 
 ## 模型支持
@@ -81,10 +81,10 @@ flowchart LR
 
 | 模型 | thinking | search |
 | --- | --- | --- |
-| `deepseek-chat` | ❌ | ❌ |
-| `deepseek-reasoner` | ✅ | ❌ |
-| `deepseek-chat-search` | ❌ | ✅ |
-| `deepseek-reasoner-search` | ✅ | ✅ |
+| `deepseek-chat` | | |
+| `deepseek-reasoner` | | |
+| `deepseek-chat-search` | | |
+| `deepseek-reasoner-search` | | |
 
 ### Claude 接口
 

@@ -83,7 +83,7 @@ func (f *FeedbackInjector) BuildFeedbackBlock(prevSessionID string) string {
 	})
 
 	var b strings.Builder
-	header := "[📋 上次 Session 反馈]\n"
+	header := "[上次 Session 反馈]\n"
 	footer := "[/反馈]\n"
 	b.WriteString(header)
 

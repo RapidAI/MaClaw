@@ -74,6 +74,80 @@ func TestVersioner_LatestVersion_WithVersions(t *testing.T) {
 	}
 }
 
+func TestVersioner_RestoreVersion_WithPreBackup(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "skill.yaml")
+	if err := os.WriteFile(yamlPath, []byte("name: original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := &Versioner{}
+	if _, err := v.BackupCurrent(dir); err != nil { // creates v1 = original
+		t.Fatal(err)
+	}
+	// Mutate current
+	if err := os.WriteFile(yamlPath, []byte("name: broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	written, pre, err := v.RestoreVersion(dir, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written != yamlPath {
+		t.Fatalf("written=%s", written)
+	}
+	if pre < 2 {
+		// pre-restore backup of "broken" should be v2
+		t.Fatalf("preBackupVer=%d want >=2", pre)
+	}
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "name: original\n" {
+		t.Fatalf("restored content=%q", data)
+	}
+	// broken saved as pre-backup
+	if _, err := os.Stat(filepath.Join(dir, "skill.yaml.v2")); err != nil {
+		t.Fatalf("pre-restore backup missing: %v", err)
+	}
+}
+
+func TestVersioner_RestoreLatest(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "skill.yaml")
+	_ = os.WriteFile(yamlPath, []byte("v0\n"), 0o644)
+	v := &Versioner{}
+	_, _ = v.BackupCurrent(dir) // v1
+	_ = os.WriteFile(yamlPath, []byte("v1-content\n"), 0o644)
+	_, _ = v.BackupCurrent(dir) // v2 from current
+	_ = os.WriteFile(yamlPath, []byte("latest-bad\n"), 0o644)
+
+	path, restored, pre, err := v.RestoreLatest(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != 2 || path != yamlPath {
+		t.Fatalf("restored=%d path=%s pre=%d", restored, path, pre)
+	}
+	data, _ := os.ReadFile(yamlPath)
+	if string(data) != "v1-content\n" {
+		// v2 backup was taken from "v1-content"
+		t.Fatalf("content=%q", data)
+	}
+}
+
+func TestVersioner_ListVersions(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("x\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "skill.yaml.v2"), []byte("2"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "skill.yaml.v1"), []byte("1"), 0o644)
+	v := &Versioner{}
+	got := v.ListVersions(dir)
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("got=%v", got)
+	}
+}
+
 func TestVersioner_CleanOldVersions(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("current"), 0o644)

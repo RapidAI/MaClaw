@@ -94,7 +94,7 @@ func SendAndObserveSession(manager *RemoteSessionManager, sessionID, text string
 		output = fmt.Sprintf("会话 %s 已发送输入。", sessionID)
 	}
 	if newImageCount > 0 {
-		output += fmt.Sprintf("\n\n📷 会话产生了 %d 张图片，已自动通过 IM 发送给用户。", newImageCount)
+		output += fmt.Sprintf("\n\n会话产生了 %d 张图片，已自动通过 IM 发送给用户。", newImageCount)
 	}
 	return strings.TrimRight(output, "\n")
 }

@@ -315,7 +315,7 @@ func TestCodingWorkflowProperty6_SkipRFOOnTaskFailure(t *testing.T) {
 			t.Logf("missing skip-to-next")
 			return false
 		}
-		if !(strings.Contains(prompt, "完成 ✅") || strings.Contains(prompt, "失败 ❌")) {
+		if !(strings.Contains(prompt, "完成 ") || strings.Contains(prompt, "失败 ")) {
 			t.Logf("missing progress format")
 			return false
 		}

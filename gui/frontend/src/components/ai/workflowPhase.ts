@@ -5,6 +5,8 @@ import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 const PHASE_ID_ALIASES: Record<string, WorkflowPhaseID> = {
     tech_design: "design",
     task_breakdown: "tasks",
+    // coding workflow: historical "verification" phase was renamed to "review"
+    verification: "review",
 };
 
 /**
@@ -18,7 +20,8 @@ const PHASE_ID_ALIASES: Record<string, WorkflowPhaseID> = {
  */
 export const FALLBACK_NON_DOCUMENT_PHASE_IDS = new Set<WorkflowPhaseID>([
     "implementation",
-    "verification",
+    // Note: legacy coding phase id "verification" aliases to "review" (document phase).
+    // Do not list "verification" here or degraded-mode doc-expectation will be wrong.
     "test_execution",
     "defect_report",
     "ppt_generation",
@@ -104,7 +107,8 @@ export function workflowPhaseExpectsDocument(
     phases: PhaseInfo[],
     workflowType?: string,
 ): boolean {
-    const phase = phases.find(item => item.id === phaseID);
+    const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
+    const phase = phases.find(item => item.id === canonical || item.id === phaseID);
     if (phase && typeof phase.expectsDocument === "boolean") return phase.expectsDocument;
 
     // Degraded mode: prefer the generated artifact (backend truth for all templates)
@@ -112,10 +116,10 @@ export function workflowPhaseExpectsDocument(
     if (workflowType) {
         const generated = WORKFLOW_PHASE_META[workflowType];
         if (generated) {
-            const match = generated.find(m => m.id === phaseID);
+            const match = generated.find(m => m.id === canonical || m.id === phaseID);
             if (match) return match.expectsDocument;
         }
     }
 
-    return !FALLBACK_NON_DOCUMENT_PHASE_IDS.has(phaseID);
+    return !FALLBACK_NON_DOCUMENT_PHASE_IDS.has(canonical);
 }

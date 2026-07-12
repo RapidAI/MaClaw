@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,6 +32,221 @@ func (r *oversizedGUIKnowledgePackageBody) Read(p []byte) (int, error) {
 	}
 	r.remaining -= int64(len(p))
 	return len(p), nil
+}
+
+func TestKnowledgeExportPackageFormatWritesExchangeJSON(t *testing.T) {
+	t.Parallel()
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache:      corelib.AppConfig{RemoteTenantID: "tenant-a", RemoteUserID: "user-a"},
+	}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	_, err = store.SaveText(context.Background(), knowledge.TextSaveRequest{
+		Text:     "package export body",
+		Title:    "Package Note",
+		OwnerID:  "user-a",
+		TenantID: "tenant-a",
+	})
+	_ = store.Close()
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out := filepath.Join(t.TempDir(), "out.knowledge.json")
+	result, err := app.KnowledgeExportSnapshotWithOptions(knowledge.ExportOptions{
+		OutputPath:      out,
+		Format:          "package",
+		RedactSensitive: false,
+		Title:           "Pkg",
+		Description:     "desc",
+	})
+	if err != nil {
+		t.Fatalf("export package: %v", err)
+	}
+	if result.Format != "package" || result.Sources < 1 || result.OutputPath != out {
+		t.Fatalf("result = %#v", result)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(raw), "maclaw.knowledge.package") || !strings.Contains(string(raw), "package export body") {
+		t.Fatalf("package file unexpected: %s", raw)
+	}
+	// Path inference without format field
+	out2 := filepath.Join(t.TempDir(), "infer.knowledge.json")
+	result2, err := app.KnowledgeExportSnapshotWithOptions(knowledge.ExportOptions{
+		OutputPath: out2,
+		// Format empty → inferred from extension
+	})
+	if err != nil {
+		t.Fatalf("export inferred package: %v", err)
+	}
+	if result2.Format != "package" {
+		t.Fatalf("inferred format = %q", result2.Format)
+	}
+}
+
+func TestNormalizeKnowledgeExportFormat(t *testing.T) {
+	t.Parallel()
+	if got := normalizeKnowledgeExportFormat("package", ""); got != "package" {
+		t.Fatalf("got %q", got)
+	}
+	if got := normalizeKnowledgeExportFormat("", "x.knowledge.json"); got != "package" {
+		t.Fatalf("path infer got %q", got)
+	}
+	if got := normalizeKnowledgeExportFormat("", "x.jsonl"); got != "jsonl" {
+		t.Fatalf("jsonl got %q", got)
+	}
+}
+
+func TestKnowledgeListMyHubSharesNormalizesItems(t *testing.T) {
+	t.Parallel()
+	var gotAuth string
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total":1,"offset":0,"limit":20,
+			"items":[{
+				"knowledge_id":"kn_mine",
+				"title":"My Share",
+				"description":"notes for team",
+				"visibility_scope":"hub",
+				"status":"active",
+				"share_url":"/hub/knowledge/shares/kn_mine",
+				"agent_import":"/api/knowledge/shares/kn_mine?intent=import",
+				"view_count":3,
+				"import_count":1,
+				"updated_at":"2026-07-01T00:00:00Z",
+				"source_summary":{"source_count":2}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	result, err := app.KnowledgeListMyHubShares(KnowledgeHubShareListRequest{Limit: 20})
+	if err != nil {
+		t.Fatalf("list shares: %v", err)
+	}
+	if gotAuth != "Bearer viewer-token" {
+		t.Fatalf("auth = %q", gotAuth)
+	}
+	if !strings.HasPrefix(gotPath, "/api/knowledge/shares/mine?") || !strings.Contains(gotPath, "limit=20") {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if result.Total != 1 || len(result.Items) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	item := result.Items[0]
+	if item.KnowledgeID != "kn_mine" || item.Title != "My Share" || item.SourceCount != 2 || item.ImportCount != 1 {
+		t.Fatalf("item = %#v", item)
+	}
+	if !strings.HasPrefix(item.ShareURL, server.URL+"/hub/knowledge/shares/") {
+		t.Fatalf("share_url = %q", item.ShareURL)
+	}
+}
+
+func TestKnowledgeUpdateHubSharePatchesDescription(t *testing.T) {
+	t.Parallel()
+	var method, path, auth string
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		auth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"knowledge_id":"kn_edit",
+			"title":"Updated Title",
+			"description":"Updated description",
+			"visibility_scope":"public",
+			"status":"active",
+			"share_url":"/hub/knowledge/shares/kn_edit",
+			"agent_import":"/api/knowledge/shares/kn_edit?intent=import"
+		}`))
+	}))
+	defer server.Close()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	item, err := app.KnowledgeUpdateHubShare(KnowledgeHubShareUpdateRequest{
+		KnowledgeID:     "kn_edit",
+		Title:           "Updated Title",
+		Description:     "Updated description",
+		VisibilityScope: "public",
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if method != http.MethodPatch || path != "/api/knowledge/shares/kn_edit" {
+		t.Fatalf("request = %s %s", method, path)
+	}
+	if auth != "Bearer viewer-token" {
+		t.Fatalf("auth = %q", auth)
+	}
+	if body["description"] != "Updated description" || body["visibility_scope"] != "public" {
+		t.Fatalf("body = %#v", body)
+	}
+	if item.KnowledgeID != "kn_edit" || item.Description != "Updated description" || !strings.Contains(item.ShareURL, server.URL) {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestKnowledgeDeleteHubShareCallsDELETE(t *testing.T) {
+	t.Parallel()
+	var method, path, auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		auth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      server.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	if err := app.KnowledgeDeleteHubShare(KnowledgeHubShareDeleteRequest{KnowledgeID: "kn_del"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if method != http.MethodDelete || path != "/api/knowledge/shares/kn_del" {
+		t.Fatalf("request = %s %s", method, path)
+	}
+	if auth != "Bearer viewer-token" {
+		t.Fatalf("auth = %q", auth)
+	}
 }
 
 func TestKnowledgeShareToHubPostsPackageAndTTL(t *testing.T) {
@@ -480,7 +697,7 @@ func TestKnowledgeHubShareAgentTools(t *testing.T) {
 func TestTruncateStringToUTF8BytesKeepsValidRunes(t *testing.T) {
 	t.Parallel()
 
-	input := "abc你好🙂xyz"
+	input := "abc你好xyz"
 	got := truncateStringToUTF8Bytes(input, len([]byte("abc你")))
 	if got != "abc你" {
 		t.Fatalf("truncated text = %q", got)

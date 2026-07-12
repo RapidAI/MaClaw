@@ -88,12 +88,23 @@ func (p *Pipeline) SetSynthesizer(s *Synthesizer) {
 
 // RunOnce executes one full maintenance cycle synchronously.
 func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
+	if p == nil {
+		return &PipelineResult{}
+	}
 	p.runMu.Lock()
 	defer p.runMu.Unlock()
 	start := time.Now()
 	result := &PipelineResult{}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Pipeline can be constructed before the store is ready (tests / early boot).
+	// Never touch p.store without a nil check — a nil store previously panic'd the
+	// background QoS runner and flaked the whole gui test package.
+	if p.store == nil {
+		result.Duration = fmt.Sprintf("%.1fs", time.Since(start).Seconds())
+		log.Printf("[pipeline] skip RunOnce: store is nil")
+		return result
 	}
 	budget := NewLLMCallBudget(defaultPipelineLLMCallBudget)
 	ctx = WithLLMCallBudget(ctx, budget)

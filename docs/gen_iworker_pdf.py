@@ -16,7 +16,7 @@ cmd = [
     "--theme", "warm-academic",
     "--page-size", "A4",
     "--edition-line", "V1.0 | 2025",
-    "--copyright", "© 2025 琢光智能 版权所有",
+    "--copyright", "(c) 2025 琢光智能 版权所有",
 ]
 
 print(f"Running: {' '.join(cmd)}")

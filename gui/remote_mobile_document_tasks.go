@@ -12,9 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/browser"
+)
+
+// Match Mobile binary download budget (slow links + multi-MB originals).
+const (
+	mobileDocumentSourceDownloadTimeout = 90 * time.Second
+	mobileDocumentSourceMaxBytes        = 25 * 1024 * 1024
 )
 
 type mobileDocumentUploadTask struct {
@@ -108,7 +115,8 @@ func (c *RemoteHubClient) downloadMobileDocumentUploadSource(task mobileDocument
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Machine-ID", machineID)
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: mobileDocumentSourceDownloadTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +124,14 @@ func (c *RemoteHubClient) downloadMobileDocumentUploadSource(task mobileDocument
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("hub returned HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 25*1024*1024+1))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, mobileDocumentSourceMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > mobileDocumentSourceMaxBytes {
+		return nil, fmt.Errorf("mobile document source exceeds %d bytes", mobileDocumentSourceMaxBytes)
+	}
+	return raw, nil
 }
 
 func (c *RemoteHubClient) processMobileDocumentUploadTask(task mobileDocumentUploadTask) {
@@ -160,7 +175,7 @@ func (c *RemoteHubClient) processMobileDocumentUploadTask(task mobileDocumentUpl
 }
 
 func mobileDocumentSourceMarkdown(filename, contentType string, raw []byte) (string, bool) {
-	if len(raw) > 25*1024*1024 {
+	if len(raw) > mobileDocumentSourceMaxBytes {
 		return "", false
 	}
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -231,7 +246,7 @@ func mobileDocumentOCRMarkdown(filename string, raw []byte) (string, error) {
 	if len(raw) == 0 {
 		return "", fmt.Errorf("图片内容为空，无法 OCR")
 	}
-	if len(raw) > 25*1024*1024 {
+	if len(raw) > mobileDocumentSourceMaxBytes {
 		return "", fmt.Errorf("图片过大，无法 OCR")
 	}
 	sidecar := mobileDocumentOCRSidecar()

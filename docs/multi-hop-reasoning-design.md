@@ -275,7 +275,7 @@ inclusion: always
 推理引擎在生成派生事实前，检查是否与已有事实矛盾：
 - 已有 `(张三, located_in, 北京)` 且 `Negated=false`
 - 推导出 `(张三, based_in, 杭州)`
-- 两者矛盾 → 标记为 `conflicted`，不注入或标注"⚠️ 与已有记忆冲突"
+- 两者矛盾 → 标记为 `conflicted`，不注入或标注"与已有记忆冲突"
 
 复用 `SemanticGraph` 已有的 `semanticIsDominanceRelation` + `semanticHasPolarityCompetition` 机制。
 

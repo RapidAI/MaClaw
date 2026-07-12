@@ -14,7 +14,7 @@ import "github.com/RapidAI/CodeClaw/corelib"
 //   Memory recall:            ~800-1,500 (up to 12 entries)
 //   Knowledge skills:         ~2,000 (defaultKnowledgeSkillTokenBudget)
 //   Workflow phase prompt:    ~500-1,000 (when active)
-//   ★ Steering budget:        ~3,000 (this package)
+//   * Steering budget:        ~3,000 (this package)
 //   Conversation history:    ~70,000-75,000 (remainder)
 const (
 	// MaxSteeringTokenBudget is the total token budget for all steering

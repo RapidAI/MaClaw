@@ -5,22 +5,22 @@ import (
 	"strings"
 )
 
-// severityIndicator returns the emoji indicator for a given severity level.
+// severityIndicator returns a plain-text indicator for a given severity level.
 func severityIndicator(s IssueSeverity) string {
 	switch s {
 	case SeverityError:
-		return "❌"
+		return "[ERR]"
 	case SeverityWarning:
-		return "⚠️"
+		return "[WARN]"
 	case SeverityInfo:
-		return "ℹ️"
+		return "[INFO]"
 	default:
 		return "?"
 	}
 }
 
 // FormatPortabilityReport returns a human-readable text summary of the report
-// with severity indicators (❌ error, ⚠️ warning, ℹ️ info) and fix suggestions.
+// with severity indicators (error, warning, info) and fix suggestions.
 func FormatPortabilityReport(report *PortabilityReport) string {
 	if report == nil {
 		return ""
@@ -29,11 +29,11 @@ func FormatPortabilityReport(report *PortabilityReport) string {
 	var b strings.Builder
 
 	// Header
-	b.WriteString(fmt.Sprintf("📋 Portability Report: %s\n", report.SkillName))
+	b.WriteString(fmt.Sprintf("Portability Report: %s\n", report.SkillName))
 	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
 	if len(report.Issues) == 0 {
-		b.WriteString("\n✅ No portability issues found.\n")
+		b.WriteString("\nNo portability issues found.\n")
 	} else {
 		b.WriteByte('\n')
 		for _, issue := range report.Issues {
@@ -46,7 +46,7 @@ func FormatPortabilityReport(report *PortabilityReport) string {
 			))
 			// Suggestion line (indented)
 			if issue.Suggestion != "" {
-				b.WriteString(fmt.Sprintf("   💡 %s\n", issue.Suggestion))
+				b.WriteString(fmt.Sprintf("   %s\n", issue.Suggestion))
 			}
 			b.WriteByte('\n')
 		}
@@ -64,9 +64,9 @@ func FormatPortabilityReport(report *PortabilityReport) string {
 
 	// Market-ready status
 	if report.MarketReady {
-		b.WriteString("Market Ready: ✅ Yes\n")
+		b.WriteString("Market Ready: Yes\n")
 	} else {
-		b.WriteString("Market Ready: ❌ No (fix errors before uploading)\n")
+		b.WriteString("Market Ready: No (fix errors before uploading)\n")
 	}
 
 	return b.String()
@@ -81,7 +81,7 @@ func FormatPortabilityChanges(changes []PortabilityChange) string {
 
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("🔧 Auto-Fix Changes (%d):\n", len(changes)))
+	b.WriteString(fmt.Sprintf("Auto-Fix Changes (%d):\n", len(changes)))
 	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
 	for i, c := range changes {

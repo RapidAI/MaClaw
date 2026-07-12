@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // FileChangesPayload is the workflow:file_changes event structure.
@@ -66,7 +65,7 @@ func (a *GUIWorkflowAdapter) EmitFileChanges(userID string, payload FileChangesP
 		payload.Truncated = true
 	}
 
-	runtime.EventsEmit(a.app.ctx, "workflow:file_changes", payload)
+	a.app.emitEvent("workflow:file_changes", payload)
 	return nil
 }
 
@@ -86,7 +85,7 @@ func (a *GUIWorkflowAdapter) EmitFileActivity(userID string, payload FileActivit
 	// Truncate file path to max length.
 	payload.FilePath = truncateString(payload.FilePath, maxFilePathChars)
 
-	runtime.EventsEmit(a.app.ctx, "workflow:file_activity", payload)
+	a.app.emitEvent("workflow:file_activity", payload)
 	return nil
 }
 

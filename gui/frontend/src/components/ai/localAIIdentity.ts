@@ -1,9 +1,10 @@
 import type { AITab } from "./AITabTypes";
 
 export const LEGACY_LOCAL_AI_PARTICIPANT_ID = "local-maclaw";
-export const LOCAL_AI_DISPLAY_NAME_EN = "Local AI";
-export const LOCAL_AI_DISPLAY_NAME_ZH_HANS = "本机AI";
-export const LOCAL_AI_DISPLAY_NAME_ZH_HANT = "本機AI";
+// Display names avoid consumer "AI persona" branding; this is the local worker node.
+export const LOCAL_AI_DISPLAY_NAME_EN = "Local";
+export const LOCAL_AI_DISPLAY_NAME_ZH_HANS = "本机";
+export const LOCAL_AI_DISPLAY_NAME_ZH_HANT = "本機";
 
 export type LocalGroupExecutorRegistration = {
     participant_id?: string;
@@ -34,7 +35,10 @@ function participantIdentityMatches(left: string | null | undefined, right: stri
 }
 
 const LOCAL_HUMAN_PARTICIPANT_IDS = new Set(["me", "user", "local", "local-user", "local_user", "operator", "desktop-user", "desktop_user", "initiator"]);
-const LOCAL_AI_NAME_ALIASES = new Set(["localai", "local-ai", "本机ai", "本機ai", "本地ai", "本地"]);
+const LOCAL_AI_NAME_ALIASES = new Set([
+    "local", "localai", "local-ai", "local maclaw", "localmaclaw",
+    "本机", "本机ai", "本機", "本機ai", "本地", "本地ai",
+]);
 
 export function isLocalHumanParticipantId(value: string | null | undefined): boolean {
     return participantIdentityKeys(value).some((key) => LOCAL_HUMAN_PARTICIPANT_IDS.has(key));

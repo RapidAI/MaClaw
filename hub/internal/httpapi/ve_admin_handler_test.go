@@ -4089,6 +4089,446 @@ func TestDigitalEmployeeMachineAuthRequired(t *testing.T) {
 	}
 }
 
+func TestDigitalEmployeeAutoReclaimOnRegister(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 5)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-old": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-old"},
+			"machine-new": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-new"},
+		},
+	}
+
+	// First install: register on old machine.
+	registerRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":         "My Twin",
+		"device_key":   "device-stable-1",
+		"twin_slot":    "personal-default",
+		"auto_reclaim": true,
+	}, "machine-old", "machine-token")
+	if registerRR.Code != http.StatusOK {
+		t.Fatalf("initial register status=%d body=%s", registerRR.Code, registerRR.Body.String())
+	}
+	var initial struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(registerRR.Body.Bytes(), &initial); err != nil {
+		t.Fatalf("decode initial: %v", err)
+	}
+	if initial.Employee.ID == "" {
+		t.Fatal("expected twin id")
+	}
+	// Mark offline so auto-reclaim is unambiguous (reinstall scenario).
+	tenantSettings := veSystemSettingsForMachine(settings, authn.principals["machine-old"])
+	registry := loadVERegistry(context.Background(), tenantSettings)
+	idx := registry.findByID(initial.Employee.ID)
+	if idx < 0 {
+		t.Fatal("registered twin missing from registry")
+	}
+	registry.Employees[idx].OnlineStatus = veOnlineStatusOffline
+	registry.Employees[idx].Status = veStatusActive
+	if err := saveVERegistry(context.Background(), tenantSettings, registry); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	// Reinstall: new machine_id, same durable device_key → rebind same twin.
+	reclaimRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":         "My Twin",
+		"device_key":   "device-stable-1",
+		"twin_slot":    "personal-default",
+		"auto_reclaim": true,
+	}, "machine-new", "machine-token")
+	if reclaimRR.Code != http.StatusOK {
+		t.Fatalf("reclaim register status=%d body=%s", reclaimRR.Code, reclaimRR.Body.String())
+	}
+	var reclaimed struct {
+		Reclaimed bool                 `json:"reclaimed"`
+		Employee  digitalEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(reclaimRR.Body.Bytes(), &reclaimed); err != nil {
+		t.Fatalf("decode reclaim: %v", err)
+	}
+	if !reclaimed.Reclaimed {
+		t.Fatalf("expected reclaimed=true body=%s", reclaimRR.Body.String())
+	}
+	if reclaimed.Employee.ID != initial.Employee.ID {
+		t.Fatalf("twin id changed: got %q want %q", reclaimed.Employee.ID, initial.Employee.ID)
+	}
+	if reclaimed.Employee.MachineID != "machine-new" {
+		t.Fatalf("machine_id = %q, want machine-new", reclaimed.Employee.MachineID)
+	}
+	if reclaimed.Employee.DeviceKey != "" {
+		t.Fatalf("device_key must be redacted from API response, got %q", reclaimed.Employee.DeviceKey)
+	}
+	if reclaimed.Employee.TwinSlot != veTwinSlotPersonalDefault {
+		t.Fatalf("twin_slot = %q", reclaimed.Employee.TwinSlot)
+	}
+
+	// Registry should still have one physical twin for the user (no zombie),
+	// and durable device_key remains stored server-side for future reclaim.
+	registry = loadVERegistry(context.Background(), tenantSettings)
+	count := 0
+	for _, e := range registry.Employees {
+		if e.OwnerUserID == "user-a" && inferVEEmployeeType(e) == veEmployeeTypePhysical {
+			count++
+			if e.DeviceKey != "device-stable-1" {
+				t.Fatalf("registry device_key = %q", e.DeviceKey)
+			}
+			if e.MachineID != "machine-new" {
+				t.Fatalf("registry machine_id = %q", e.MachineID)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("owner physical twins = %d, want 1 (no orphan)", count)
+	}
+}
+
+func TestDigitalEmployeeReclaimableListAndExplicitReclaim(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 5)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-old": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-old"},
+			"machine-new": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-new"},
+			"machine-b":   {TenantID: "tenant-a", UserID: "user-b", MachineID: "machine-b"},
+		},
+	}
+	presence := fakeVEMachinePresence{
+		infos: map[string]*device.MachineRuntimeInfo{
+			"machine-old": {MachineID: "machine-old", Online: false},
+		},
+	}
+
+	regRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name": "Orphan Twin", "device_key": "dk-1",
+	}, "machine-old", "machine-token")
+	if regRR.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", regRR.Code, regRR.Body.String())
+	}
+	var reg struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	_ = json.Unmarshal(regRR.Body.Bytes(), &reg)
+
+	// Simulate wipe: twin stays in registry but machine is offline.
+	tenantSettings := veSystemSettingsForMachine(settings, authn.principals["machine-old"])
+	registry := loadVERegistry(context.Background(), tenantSettings)
+	if idx := registry.findByID(reg.Employee.ID); idx >= 0 {
+		registry.Employees[idx].OnlineStatus = veOnlineStatusOffline
+		_ = saveVERegistry(context.Background(), tenantSettings, registry)
+	}
+
+	listRR := doVEMachineJSON(t, VEReclaimableHandler(settings, authn, presence), http.MethodGet, "/api/ve/reclaimable", nil, "machine-new", "machine-token")
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("reclaimable list status=%d body=%s", listRR.Code, listRR.Body.String())
+	}
+	if !bytes.Contains(listRR.Body.Bytes(), []byte(reg.Employee.ID)) {
+		t.Fatalf("expected reclaimable twin %s in %s", reg.Employee.ID, listRR.Body.String())
+	}
+	if bytes.Contains(listRR.Body.Bytes(), []byte("dk-1")) {
+		t.Fatalf("device_key must be redacted from reclaimable list: %s", listRR.Body.String())
+	}
+
+	// Other user must not see it.
+	otherList := doVEMachineJSON(t, VEReclaimableHandler(settings, authn, presence), http.MethodGet, "/api/ve/reclaimable", nil, "machine-b", "machine-token")
+	if otherList.Code != http.StatusOK || bytes.Contains(otherList.Body.Bytes(), []byte(reg.Employee.ID)) {
+		t.Fatalf("other user should not list foreign twin: %s", otherList.Body.String())
+	}
+
+	// Explicit reclaim API.
+	reclaimRR := doVEMachineJSON(t, VEReclaimHandler(settings, authn), http.MethodPost, "/api/ve/reclaim", map[string]any{
+		"ve_id":      reg.Employee.ID,
+		"device_key": "dk-1",
+	}, "machine-new", "machine-token")
+	if reclaimRR.Code != http.StatusOK {
+		t.Fatalf("reclaim status=%d body=%s", reclaimRR.Code, reclaimRR.Body.String())
+	}
+	var reclaimResp struct {
+		Reclaimed bool                 `json:"reclaimed"`
+		Employee  digitalEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(reclaimRR.Body.Bytes(), &reclaimResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !reclaimResp.Reclaimed || reclaimResp.Employee.MachineID != "machine-new" || reclaimResp.Employee.ID != reg.Employee.ID {
+		t.Fatalf("unexpected reclaim response: %s", reclaimRR.Body.String())
+	}
+
+	// After reclaim, old machine has no VE; new machine status registered.
+	statusNew := doVEMachineJSON(t, VEStatusHandler(settings, authn), http.MethodGet, "/api/ve/status", nil, "machine-new", "machine-token")
+	if statusNew.Code != http.StatusOK || !bytes.Contains(statusNew.Body.Bytes(), []byte(`"registered":true`)) {
+		t.Fatalf("new machine status: %s", statusNew.Body.String())
+	}
+	statusOld := doVEMachineJSON(t, VEStatusHandler(settings, authn), http.MethodGet, "/api/ve/status", nil, "machine-old", "machine-token")
+	if statusOld.Code != http.StatusOK || !bytes.Contains(statusOld.Body.Bytes(), []byte(`"registered":false`)) {
+		t.Fatalf("old machine should no longer own twin: %s", statusOld.Body.String())
+	}
+}
+
+func TestDigitalEmployeeDoesNotAutoReclaimOnlineTwin(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 5)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-b"},
+		},
+	}
+
+	regRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name": "Live Twin", "device_key": "dk-a",
+	}, "machine-a", "machine-token")
+	if regRR.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", regRR.Code, regRR.Body.String())
+	}
+	var reg struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	_ = json.Unmarshal(regRR.Body.Bytes(), &reg)
+
+	// Keep online + fresh update → multi-machine should create a new twin, not steal.
+	tenantSettings := veSystemSettingsForMachine(settings, authn.principals["machine-a"])
+	registry := loadVERegistry(context.Background(), tenantSettings)
+	idx := registry.findByID(reg.Employee.ID)
+	if idx < 0 {
+		t.Fatal("registered twin missing from registry")
+	}
+	registry.Employees[idx].OnlineStatus = veOnlineStatusOnline
+	registry.Employees[idx].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	registry.Employees[idx].DeviceKey = "dk-a" // different device keys for second machine
+	_ = saveVERegistry(context.Background(), tenantSettings, registry)
+
+	reg2 := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name":         "Second Machine Twin",
+		"device_key":   "dk-b",
+		"auto_reclaim": true,
+	}, "machine-b", "machine-token")
+	if reg2.Code != http.StatusOK {
+		t.Fatalf("second register: %d %s", reg2.Code, reg2.Body.String())
+	}
+	var second struct {
+		Reclaimed bool                 `json:"reclaimed"`
+		Employee  digitalEmployeeEntry `json:"employee"`
+	}
+	_ = json.Unmarshal(reg2.Body.Bytes(), &second)
+	if second.Reclaimed {
+		t.Fatalf("should not reclaim online twin of another active machine: %s", reg2.Body.String())
+	}
+	if second.Employee.ID == reg.Employee.ID {
+		t.Fatalf("second machine should get its own twin id, got same %s", second.Employee.ID)
+	}
+}
+
+func TestResolveVEReclaimIndexHelpers(t *testing.T) {
+	principal := &auth.MachinePrincipal{UserID: "user-a", MachineID: "machine-new"}
+	stale := time.Now().UTC().Add(-veReclaimStaleOnlineTTL - time.Hour).Format(time.RFC3339)
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{
+			ID: "ve_old", MachineID: "machine-old", OwnerUserID: "user-a",
+			EmployeeType: veEmployeeTypePhysical, TwinSlot: veTwinSlotPersonalDefault,
+			DeviceKey: "dk-1", OnlineStatus: veOnlineStatusOffline, Status: veStatusActive,
+		},
+	}}
+	yes, no := true, false
+	idx := resolveVEReclaimIndex(registry, principal, veSettingsRequest{DeviceKey: "dk-1", AutoReclaim: &yes})
+	if idx != 0 {
+		t.Fatalf("device_key match idx=%d", idx)
+	}
+	// device_key reclaim works even when stored status is still online (wipe case).
+	registry.Employees[0].OnlineStatus = veOnlineStatusOnline
+	registry.Employees[0].UpdatedAt = fresh
+	idx = resolveVEReclaimIndex(registry, principal, veSettingsRequest{DeviceKey: "dk-1", AutoReclaim: &yes})
+	if idx != 0 {
+		t.Fatalf("device_key match should reclaim wipe online twin, idx=%d", idx)
+	}
+	registry.Employees[0].OnlineStatus = veOnlineStatusOffline
+
+	idx = resolveVEReclaimIndex(registry, principal, veSettingsRequest{AutoReclaim: &no})
+	if idx != -1 {
+		t.Fatalf("auto_reclaim=false should skip, idx=%d", idx)
+	}
+	idx = resolveVEReclaimIndex(registry, principal, veSettingsRequest{ReclaimVEID: "ve_old"})
+	if idx != 0 {
+		t.Fatalf("explicit reclaim idx=%d", idx)
+	}
+
+	// Online fresh twin is not auto-reclaimed without device key match.
+	registry.Employees[0].OnlineStatus = veOnlineStatusOnline
+	registry.Employees[0].UpdatedAt = fresh
+	registry.Employees[0].DeviceKey = "other"
+	idx = resolveVEReclaimIndex(registry, principal, veSettingsRequest{DeviceKey: "dk-new", AutoReclaim: &yes})
+	if idx != -1 {
+		t.Fatalf("fresh online twin should not auto-reclaim, idx=%d", idx)
+	}
+	// Explicit reclaim_ve_id also refuses fresh-online twins.
+	idx = resolveVEReclaimIndex(registry, principal, veSettingsRequest{ReclaimVEID: "ve_old"})
+	if idx != -1 {
+		t.Fatalf("explicit reclaim of fresh-online twin should be refused, idx=%d", idx)
+	}
+
+	// Stale online is reclaimable.
+	registry.Employees[0].UpdatedAt = stale
+	idx = resolveVEReclaimIndex(registry, principal, veSettingsRequest{AutoReclaim: &yes})
+	if idx != 0 {
+		t.Fatalf("stale online twin should reclaim, idx=%d", idx)
+	}
+}
+
+func TestNormalizeVERegistryTwinSlotsBackfill(t *testing.T) {
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{ID: "ve_1", EmployeeType: veEmployeeTypePhysical, TwinSlot: ""},
+		{ID: "ve_2", EmployeeType: veEmployeeTypeVirtual, TwinSlot: ""},
+		{ID: "ve_3", EmployeeType: veEmployeeTypePhysical, TwinSlot: "custom"},
+	}}
+	if !normalizeVERegistryTwinSlots(&registry) {
+		t.Fatal("expected twin slot backfill")
+	}
+	if registry.Employees[0].TwinSlot != veTwinSlotPersonalDefault {
+		t.Fatalf("physical empty slot = %q", registry.Employees[0].TwinSlot)
+	}
+	if registry.Employees[1].TwinSlot != "" {
+		t.Fatalf("virtual should stay empty, got %q", registry.Employees[1].TwinSlot)
+	}
+	if registry.Employees[2].TwinSlot != "custom" {
+		t.Fatalf("custom slot mutated: %q", registry.Employees[2].TwinSlot)
+	}
+	if normalizeVERegistryTwinSlots(&registry) {
+		t.Fatal("second pass should be idempotent")
+	}
+}
+
+func TestPublicDigitalEmployeeEntryRedactsDeviceKey(t *testing.T) {
+	entry := digitalEmployeeEntry{ID: "ve_1", DeviceKey: "secret", Name: "N"}
+	got := publicDigitalEmployeeEntry(entry)
+	if got.DeviceKey != "" || got.ID != "ve_1" || got.Name != "N" {
+		t.Fatalf("public entry = %+v", got)
+	}
+	if entry.DeviceKey != "secret" {
+		t.Fatal("publicDigitalEmployeeEntry must not mutate original")
+	}
+}
+
+func TestListReclaimableRedactsDeviceKeyAndPresenceFallback(t *testing.T) {
+	principal := &auth.MachinePrincipal{UserID: "user-a", MachineID: "machine-new"}
+	registry := digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
+		{
+			ID: "ve_off", MachineID: "machine-old", OwnerUserID: "user-a",
+			EmployeeType: veEmployeeTypePhysical, Name: "Offline Twin",
+			DeviceKey: "secret-key", OnlineStatus: veOnlineStatusOffline, Status: veStatusActive,
+		},
+		{
+			ID: "ve_on", MachineID: "machine-live", OwnerUserID: "user-a",
+			EmployeeType: veEmployeeTypePhysical, Name: "Live Twin",
+			DeviceKey: "other", OnlineStatus: veOnlineStatusOnline, Status: veStatusActive,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}}
+	presence := fakeVEMachinePresence{
+		infos: map[string]*device.MachineRuntimeInfo{
+			"machine-old":  {MachineID: "machine-old", Online: false},
+			"machine-live": {MachineID: "machine-live", Online: true},
+		},
+	}
+	items := listReclaimablePersonalTwins(context.Background(), registry, principal, presence)
+	if len(items) != 1 || items[0].ID != "ve_off" {
+		t.Fatalf("items=%+v", items)
+	}
+	if items[0].DeviceKey != "" {
+		t.Fatalf("device_key must be redacted, got %q", items[0].DeviceKey)
+	}
+
+	// Presence error falls back to stored offline heuristic.
+	errPresence := fakeVEMachinePresence{infos: map[string]*device.MachineRuntimeInfo{}}
+	// GetMachineInfo returns nil info without error → treated as offline-ish; use offline entry only
+	items = listReclaimablePersonalTwins(context.Background(), registry, principal, errPresence)
+	// nil info + err==nil: goes to default branch → stored heuristic
+	// ve_off offline → reclaimable; ve_on online fresh → not
+	if len(items) != 1 || items[0].ID != "ve_off" {
+		t.Fatalf("fallback items=%+v", items)
+	}
+}
+
+func TestDigitalEmployeeReclaimIdempotentWhenAlreadyBound(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 5)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+		},
+	}
+	regRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name": "Bound Twin", "device_key": "dk-a",
+	}, "machine-a", "machine-token")
+	if regRR.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", regRR.Code, regRR.Body.String())
+	}
+	var reg struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	_ = json.Unmarshal(regRR.Body.Bytes(), &reg)
+
+	// Already online on this machine — reclaim must remain idempotent.
+	reclaimRR := doVEMachineJSON(t, VEReclaimHandler(settings, authn), http.MethodPost, "/api/ve/reclaim", map[string]any{
+		"ve_id":      reg.Employee.ID,
+		"device_key": "dk-a",
+	}, "machine-a", "machine-token")
+	if reclaimRR.Code != http.StatusOK {
+		t.Fatalf("idempotent reclaim status=%d body=%s", reclaimRR.Code, reclaimRR.Body.String())
+	}
+	if !bytes.Contains(reclaimRR.Body.Bytes(), []byte(`"reclaimed":true`)) {
+		t.Fatalf("body=%s", reclaimRR.Body.String())
+	}
+	if bytes.Contains(reclaimRR.Body.Bytes(), []byte("dk-a")) {
+		t.Fatalf("device_key leaked in reclaim response: %s", reclaimRR.Body.String())
+	}
+}
+
+func TestDigitalEmployeeReclaimRejectsFreshOnlineTwin(t *testing.T) {
+	settings := &testSystemSettingsRepo{}
+	enableVEDigitalEmployeeAuthorization(t, settings, 5)
+	authn := fakeVEMachineAuth{
+		token: "machine-token",
+		principals: map[string]*auth.MachinePrincipal{
+			"machine-a": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-a"},
+			"machine-b": {TenantID: "tenant-a", UserID: "user-a", MachineID: "machine-b"},
+		},
+	}
+	regRR := doVEMachineJSON(t, VERegisterHandler(settings, authn), http.MethodPost, "/api/ve/register", map[string]any{
+		"name": "Live Twin", "device_key": "dk-a",
+	}, "machine-a", "machine-token")
+	if regRR.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", regRR.Code, regRR.Body.String())
+	}
+	var reg struct {
+		Employee digitalEmployeeEntry `json:"employee"`
+	}
+	_ = json.Unmarshal(regRR.Body.Bytes(), &reg)
+
+	// Keep fresh online on machine-a.
+	tenantSettings := veSystemSettingsForMachine(settings, authn.principals["machine-a"])
+	registry := loadVERegistry(context.Background(), tenantSettings)
+	idx := registry.findByID(reg.Employee.ID)
+	registry.Employees[idx].OnlineStatus = veOnlineStatusOnline
+	registry.Employees[idx].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	_ = saveVERegistry(context.Background(), tenantSettings, registry)
+
+	reclaimRR := doVEMachineJSON(t, VEReclaimHandler(settings, authn), http.MethodPost, "/api/ve/reclaim", map[string]any{
+		"ve_id": reg.Employee.ID,
+	}, "machine-b", "machine-token")
+	if reclaimRR.Code != http.StatusConflict {
+		t.Fatalf("expected 409 TWIN_ONLINE, got %d body=%s", reclaimRR.Code, reclaimRR.Body.String())
+	}
+	if !bytes.Contains(reclaimRR.Body.Bytes(), []byte("TWIN_ONLINE")) {
+		t.Fatalf("body=%s", reclaimRR.Body.String())
+	}
+}
+
 func doVEMachineJSON(t *testing.T, handler http.HandlerFunc, method, target string, body any, machineID, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer

@@ -66,14 +66,14 @@ func (v *Validator) Validate(ctx context.Context, config MCPServerConfig) (*Vali
 	report.Connectivity = v.CheckConnectivity(ctx, config)
 	if !report.Connectivity.Connected {
 		report.OverallStatus = "fail"
-		report.DurationMs = time.Since(start).Milliseconds()
+		report.DurationMs = positiveElapsedMs(start)
 		return report, nil
 	}
 
 	// Check context deadline after each step.
 	if ctx.Err() != nil {
 		report.OverallStatus = "fail"
-		report.DurationMs = time.Since(start).Milliseconds()
+		report.DurationMs = positiveElapsedMs(start)
 		return report, nil
 	}
 
@@ -82,7 +82,7 @@ func (v *Validator) Validate(ctx context.Context, config MCPServerConfig) (*Vali
 
 	if ctx.Err() != nil {
 		report.OverallStatus = computeOverallStatus(report)
-		report.DurationMs = time.Since(start).Milliseconds()
+		report.DurationMs = positiveElapsedMs(start)
 		return report, nil
 	}
 
@@ -98,7 +98,7 @@ func (v *Validator) Validate(ctx context.Context, config MCPServerConfig) (*Vali
 
 	if ctx.Err() != nil {
 		report.OverallStatus = computeOverallStatus(report)
-		report.DurationMs = time.Since(start).Milliseconds()
+		report.DurationMs = positiveElapsedMs(start)
 		return report, nil
 	}
 
@@ -109,7 +109,7 @@ func (v *Validator) Validate(ctx context.Context, config MCPServerConfig) (*Vali
 	report.RuntimeHealth = v.CheckRuntimeHealth(ctx, config, tools)
 
 	report.OverallStatus = computeOverallStatus(report)
-	report.DurationMs = time.Since(start).Milliseconds()
+	report.DurationMs = positiveElapsedMs(start)
 	return report, nil
 }
 
@@ -129,10 +129,10 @@ func (v *Validator) CheckConnectivity(ctx context.Context, config MCPServerConfi
 			"version": "1.0.0",
 		},
 	})
-	latency := time.Since(start).Milliseconds()
+	latency := positiveElapsedMs(start)
 
 	if err != nil {
-		return &ConnectivityResult{Connected: false, Error: err.Error()}
+		return &ConnectivityResult{Connected: false, Error: err.Error(), LatencyMs: latency}
 	}
 	return &ConnectivityResult{Connected: true, LatencyMs: latency}
 }
@@ -227,7 +227,7 @@ func (v *Validator) CheckRuntimeHealth(ctx context.Context, config MCPServerConf
 		"name":      tool.ToolName,
 		"arguments": args,
 	})
-	responseMs := time.Since(start).Milliseconds()
+	responseMs := positiveElapsedMs(start)
 
 	if err != nil {
 		healthy := false
@@ -235,6 +235,16 @@ func (v *Validator) CheckRuntimeHealth(ctx context.Context, config MCPServerConf
 	}
 	healthy := true
 	return &RuntimeHealthResult{Healthy: &healthy, ResponseMs: responseMs, ToolUsed: tool.ToolName}
+}
+
+// positiveElapsedMs returns elapsed wall time in whole milliseconds, floored at 1.
+// Sub-millisecond httptest responses otherwise report 0 and break "positive latency" contracts.
+func positiveElapsedMs(start time.Time) int64 {
+	ms := time.Since(start).Milliseconds()
+	if ms <= 0 {
+		return 1
+	}
+	return ms
 }
 
 // --- Helper functions ---

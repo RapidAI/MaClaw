@@ -118,6 +118,9 @@ func TestDefaultWorkspacePreparerFallsBackToDirectForRepoWithoutCommits(t *testi
 
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available in PATH")
+	}
 
 	cmd := exec.Command("git", "init", dir)
 	output, err := cmd.CombinedOutput()

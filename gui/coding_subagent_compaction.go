@@ -184,9 +184,9 @@ func (c *SubAgentCompactor) buildCompactionSummary(middleSection []interface{}) 
 			shown := 0
 			for i := len(commands) - 1; i >= 0 && shown < 10; i-- {
 				cmd := commands[i]
-				status := "✓"
+				status := "OK"
 				if !cmd.Succeeded {
-					status = "✗"
+					status = "ERR"
 				}
 				b.WriteString(fmt.Sprintf("- [%s] %s\n", status, truncateRunesForSubAgent(cmd.Command, 100)))
 				shown++

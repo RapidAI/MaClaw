@@ -68,7 +68,7 @@ This is a **wiring + new-dependency-implementation** feature, not an interface c
 2. WHERE a Notification_Store is wired into Notification_Dispatcher, WHEN Hub_Notifier returns an offline error for a Completion_Notification, THE Notification_Dispatcher SHALL record the failed delivery in Notification_Store and append a delivery-failure event to Audit_Store using its existing failure-recording behavior.
 3. WHEN a Completion_Notification delivery returns an offline error at a terminal node, THE Workflow_Executor SHALL keep the workflow instance in its completed state and SHALL NOT mark the instance as failed, using its existing terminal-node behavior.
 4. WHERE a Presence_Source is available, THE Hub_Notifier SHALL be able to obtain a boolean online/offline result by querying Presence_Source (`device.Service.IsMachineOnline`) prior to or as part of a delivery attempt.
-5. ⚠️ 待确认: The action taken for an offline Recipient beyond recording the failure — skip (the Recipient relies on the next reminder tick or the Hub UI), queue for re-delivery on reconnect, or retry on a schedule — is an open decision (see Open Questions).
+5. 待确认: The action taken for an offline Recipient beyond recording the failure — skip (the Recipient relies on the next reminder tick or the Hub UI), queue for re-delivery on reconnect, or retry on a schedule — is an open decision (see Open Questions).
 
 ### Requirement 4: Record delivery attempts in the audit trail and notification store
 
@@ -81,7 +81,7 @@ This is a **wiring + new-dependency-implementation** feature, not an interface c
 3. WHERE a Notification_Store is wired into Notification_Dispatcher, WHEN a delivery through Hub_Notifier returns a non-nil error, THE Notification_Dispatcher SHALL record the failure reason in Notification_Store using its existing recording behavior.
 4. WHEN a delivery through Hub_Notifier returns a non-nil error, THE Notification_Dispatcher SHALL append a delivery-failure event to Audit_Store using its existing recording behavior.
 5. THE Hub_Notifier SHALL surface delivery outcomes as the return value of Send (nil on success, non-nil on failure) rather than suppressing them, so that Notification_Dispatcher's audit and notification-store recording is driven by accurate outcomes.
-6. ⚠️ 待确认: Whether successful deliveries are auditable when no Notification_Store is wired (today the Router passes nil) depends on Open Question 2 (Notification_Store wiring).
+6. 待确认: Whether successful deliveries are auditable when no Notification_Store is wired (today the Router passes nil) depends on Open Question 2 (Notification_Store wiring).
 
 ### Requirement 5: Avoid spamming recipients with duplicate reminders
 
@@ -94,7 +94,7 @@ This is a **wiring + new-dependency-implementation** feature, not an interface c
 3. WHEN Confirmation_Tracker's reminder-interval gate (`shouldSendReminder`) suppresses a reminder for a pending confirmation on a reminder-loop tick, THE Confirmation_Tracker SHALL NOT dispatch that reminder through Notification_Dispatcher, so that Hub_Notifier.Send is not invoked for that confirmation on that tick.
 4. IF a pending confirmation's reminder count has reached Confirmation_Tracker's `MaxReminders` limit, THEN THE Confirmation_Tracker SHALL NOT dispatch a further Confirmation_Reminder for that confirmation through Notification_Dispatcher, so that Hub_Notifier.Send is not invoked for an additional reminder for that confirmation.
 5. WHEN Confirmation_Tracker's reminder-interval gate permits a reminder for a pending confirmation on a reminder-loop tick, THE Hub_Notifier SHALL deliver exactly one reminder payload to each non-confirming Recipient for that confirmation on that tick.
-6. ⚠️ 待确认: Whether Hub_Notifier should additionally collapse multiple notifications to the same Recipient within a short interval at the delivery layer is an open decision (see Open Questions).
+6. 待确认: Whether Hub_Notifier should additionally collapse multiple notifications to the same Recipient within a short interval at the delivery layer is an open decision (see Open Questions).
 
 ### Requirement 6: Handle delivery failures without halting the runtime chain
 
@@ -119,7 +119,7 @@ This is a **wiring + new-dependency-implementation** feature, not an interface c
 3. THE Router SHALL pass the existing Audit_Store as the `auditStore` argument to `NewNotificationDispatcher` so that delivery-failure audit recording remains active.
 4. WHERE Hub_Notifier performs presence-based delivery decisions (subject to the offline-recipient decision in Open Questions), THE Router SHALL construct Hub_Notifier with a Presence_Source (`device.Service.IsMachineOnline`) consistent with the source HubAvailabilityChecker uses.
 5. WHERE a Notification_Store is wired into Notification_Dispatcher, THE Router SHALL pass it as the `notifStore` argument to `NewNotificationDispatcher` so that per-channel delivery status is persisted.
-6. ⚠️ 待确认: Whether the Router wires a Notification_Store instance (today it passes nil) as part of this feature is an open decision (see Open Questions).
+6. 待确认: Whether the Router wires a Notification_Store instance (today it passes nil) as part of this feature is an open decision (see Open Questions).
 
 ### Requirement 8: Preserve existing interfaces and call sites
 
@@ -146,7 +146,7 @@ This is a **wiring + new-dependency-implementation** feature, not an interface c
 4. WHERE IM_Push_Notifier is implemented, IF the Recipient is not connected when Push is invoked, THEN THE IM_Push_Notifier SHALL return an error identifying the offline/not-connected condition and SHALL NOT report success.
 5. WHERE IM_Push_Notifier is implemented, THE IM_Push_Notifier.IsConnected SHALL return the Presence_Source (`device.Service.IsMachineOnline`) result for a non-empty recipient and false for an empty recipient.
 6. WHERE IM_Push_Notifier is not implemented in this feature, THE Router SHALL pass nil for the `imPusher` argument and THE Notification_Dispatcher SHALL skip IM push without returning a delivery error, using its existing optional-channel behavior.
-7. ⚠️ 待确认: Whether IM_Push_Notifier is in scope for this feature, and whether a single machine-sender-backed implementation satisfies both `HubInAppNotifier` and `IMPushNotifier`, is an open decision (see Open Questions).
+7. 待确认: Whether IM_Push_Notifier is in scope for this feature, and whether a single machine-sender-backed implementation satisfies both `HubInAppNotifier` and `IMPushNotifier`, is an open decision (see Open Questions).
 
 ### Requirement 10: Optional initiator notifier (open scope)
 
@@ -160,7 +160,7 @@ This is a **wiring + new-dependency-implementation** feature, not an interface c
 4. WHERE the feature provides a real Workflow_Notifier, IF the initiator identifier resolved from the NotifyInitiator call is empty, OR no Machine_Sender is configured, OR Machine_Sender reports the initiator's machine is offline, THEN THE Workflow_Notifier SHALL return an error (identifying the offline condition when applicable) and SHALL NOT report success, and for an empty identifier it SHALL NOT attempt delivery.
 5. IF a blocked-node NotifyInitiator call returns an error, THEN THE Workflow_Executor SHALL treat the dispatch failure as non-fatal and SHALL keep the instance in its existing blocked state without halting the runtime chain.
 6. WHERE the feature does not provide a real Workflow_Notifier, THE Workflow_Executor SHALL no-op the blocked-node initiator notification using its existing nil-guard behavior, and SHALL NOT return an error or alter blocked-node handling.
-7. ⚠️ 待确认: Whether blocked-node initiator notifications (`WorkflowNotifier.NotifyInitiator`) are in scope for this feature is an open decision (see Open Questions).
+7. 待确认: Whether blocked-node initiator notifications (`WorkflowNotifier.NotifyInitiator`) are in scope for this feature is an open decision (see Open Questions).
 
 ## Open Questions / Points to Clarify
 

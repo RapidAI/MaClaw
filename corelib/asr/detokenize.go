@@ -3,6 +3,7 @@ package asr
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // hexVal returns the numeric value of a hex digit, or -1 if invalid.
@@ -59,6 +60,24 @@ func (m *MoonshineModel) detokenize(tokens []int) string {
 
 // removeCJKSpaces removes spaces adjacent to CJK characters.
 func removeCJKSpaces(s string) string {
+	var prev rune
+	havePrev := false
+	for i, r := range s {
+		if r == ' ' {
+			if havePrev && isCJK(prev) {
+				return removeCJKSpacesSlow(s)
+			}
+			next, _ := utf8.DecodeRuneInString(s[i+1:])
+			if isCJK(next) {
+				return removeCJKSpacesSlow(s)
+			}
+		}
+		prev, havePrev = r, true
+	}
+	return s
+}
+
+func removeCJKSpacesSlow(s string) string {
 	runes := []rune(s)
 	out := make([]rune, 0, len(runes))
 	for i, r := range runes {

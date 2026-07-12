@@ -118,7 +118,7 @@ func TestConfigBooleanOptionsAreLocalized(t *testing.T) {
 	m.LoadFromAppConfig(corelib.AppConfig{CheckUpdateOnStartup: true})
 	moveConfigCursorToKey(t, &m, "check_update_on_startup")
 	view := stripANSIForTest(m.View())
-	if !strings.Contains(view, "● 开启") || strings.Contains(view, "ON") || strings.Contains(view, "true") {
+	if !strings.Contains(view, "[ON] 开启") || strings.Contains(view, "true") {
 		t.Fatalf("boolean display should be localized and hide raw bools:\n%s", view)
 	}
 

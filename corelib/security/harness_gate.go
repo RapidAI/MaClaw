@@ -155,7 +155,7 @@ func (g *HarnessGate) BuildViolationReport(violations []Violation) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("[⚠️ 产出违规报告]\n")
+	sb.WriteString("[产出违规报告]\n")
 	for _, v := range violations {
 		sb.WriteString(fmt.Sprintf("- 违规: %s | 详情: %s | 文件: %s\n", v.Rule, v.Detail, v.File))
 	}

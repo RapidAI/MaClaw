@@ -20,7 +20,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // VEMessageHandler processes incoming A2A messages when this maclaw instance
@@ -487,6 +486,11 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 	defer log.Printf("[ve-agent-loop] done owner=%q session=%q request_id=%q loop=%q", ownerID, sessionID, requestID, loopID)
 
 	// Build VE-specific callbacks for the agent loop
+	// Load conversation history for this VE session
+	h.mu.Lock()
+	history := h.getSessionHistory(sessionID)
+	h.mu.Unlock()
+
 	callbacks := &veAgentCallbacks{
 		app:       h.app,
 		ctx:       ctx,
@@ -496,12 +500,8 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 		loopID:    loopID,
 		llmCfg:    llmCfg,
 		onToken:   onToken,
+		history:   history,
 	}
-
-	// Load conversation history for this VE session
-	h.mu.Lock()
-	history := h.getSessionHistory(sessionID)
-	h.mu.Unlock()
 
 	// Run the shared agent loop with VE-specific tools and system prompt
 	result := agent.RunLoop(callbacks, userMessage, history, nil)
@@ -537,6 +537,8 @@ type veAgentCallbacks struct {
 	loopID    string
 	llmCfg    corelib.MaclawLLMConfig
 	onToken   func(string)
+	// history is the pre-turn conversation used for multi-turn auto-recall.
+	history []agent.ConversationEntry
 
 	// Cached knowledge base availability is computed once per agent loop invocation
 	// to avoid repeated SQLite open/close and ensure BuildSystemPrompt and BuildTools
@@ -647,7 +649,8 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 		sb.WriteString("- If auto recall is insufficient, call knowledge_search or knowledge_context_pack.\n")
 		sb.WriteString("- Distinguish knowledge-base information from general model knowledge.\n")
 		sb.WriteString("- If the knowledge base has no relevant information, say that and then supplement with general knowledge.\n")
-		c.appendVEKnowledgeAutoRecall(&sb, userText)
+		prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
+		c.appendVEKnowledgeAutoRecall(&sb, userText, prior)
 	}
 
 	if len(allowedDirs) > 0 {
@@ -670,16 +673,20 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 
 // appendVEKnowledgeAutoRecall searches the knowledge base using the user message
 // and injects top results into the system prompt for VE sessions.
-func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg string) {
+// Thresholds / inject counts / headers match IM + TUI via corelib/agent constants.
+func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string) {
 	if msg == "" || c.app == nil {
 		return
 	}
-
-	query := msg
-	runes := []rune(query)
-	if len(runes) > 200 {
-		query = string(runes[:200])
+	minScore := agent.KnowledgeAutoRecallScoreThreshold
+	if cfg, err := c.app.LoadConfig(); err == nil {
+		if !cfg.IsKnowledgeAutoRecallEnabled() {
+			return
+		}
+		minScore = cfg.EffectiveKnowledgeAutoRecallMinScore()
 	}
+
+	query := agent.ExpandKnowledgeAutoRecallQuery(msg, priorUserMessages)
 
 	store, cleanupStore := getAutoRecallStoreForAppUse(c.app, true)
 	defer cleanupStore()
@@ -692,36 +699,33 @@ func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg s
 
 	results, err := store.Search(ctx, knowledge.SearchOptions{
 		Query: query,
-		Limit: 5,
+		Limit: agent.KnowledgeAutoRecallSearchLimit,
 	})
-	if err != nil || len(results) == 0 {
+	if err != nil {
+		log.Printf("[ve_knowledge_auto_recall] search error: %v", err)
+		return
+	}
+	if len(results) == 0 {
+		// Caller only invokes when the KB has sources — hint deeper tool search.
+		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
-	// Dynamic threshold + injection count based on top score (same logic as main AI assistant)
 	topScore := results[0].Score
-	var maxInject int
-	switch {
-	case topScore >= 3.0:
-		maxInject = 3
-	case topScore >= 1.0:
-		maxInject = 2
-	case topScore >= 0.3:
-		maxInject = 1
-	default:
+	maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
+	if maxInject == 0 {
+		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
-	b.WriteString("\n## Knowledge Base References (auto recall)\n")
-	b.WriteString("The following content may be relevant to the current question. Prefer it when applicable; ignore it if unrelated.\n")
-	b.WriteString("Call knowledge_search or knowledge_context_pack if deeper retrieval is needed.\n\n")
+	b.WriteString(agent.KnowledgeAutoRecallHeader)
 
 	injected := 0
 	for _, r := range results {
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < 0.3 {
+		if r.Score < minScore {
 			break
 		}
 		source := r.Source.Title
@@ -735,8 +739,8 @@ func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg s
 		if text == "" {
 			continue
 		}
-		if len([]rune(text)) > 200 {
-			text = string([]rune(text)[:200]) + "..."
+		if len([]rune(text)) > agent.KnowledgeAutoRecallSnippetMaxRunes {
+			text = string([]rune(text)[:agent.KnowledgeAutoRecallSnippetMaxRunes]) + "..."
 		}
 		b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
 		injected++
@@ -1215,7 +1219,7 @@ func (h *VEMessageHandler) emitStreamChunkLocalWithSender(sessionID, chunk, send
 	if h.app == nil || h.app.ctx == nil || chunk == "" {
 		return
 	}
-	runtime.EventsEmit(h.app.ctx, "ve:stream_chunk", map[string]any{
+	h.app.emitEvent("ve:stream_chunk", map[string]any{
 		"session_id":  sessionID,
 		"content":     chunk,
 		"chunk":       chunk,
@@ -1230,7 +1234,7 @@ func (h *VEMessageHandler) emitStreamEndLocal(sessionID string) {
 		return
 	}
 	senderID := h.getLocalAgentID()
-	runtime.EventsEmit(h.app.ctx, "ve:stream_end", map[string]any{
+	h.app.emitEvent("ve:stream_end", map[string]any{
 		"session_id":  sessionID,
 		"content":     "",
 		"chunk":       "",

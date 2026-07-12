@@ -450,3 +450,75 @@ func mergeIMResponseFields(base []IMResponseField, extra []IMResponseField) []IM
 	merged = append(merged, extra...)
 	return merged
 }
+
+func modelRouteResponseFields(d modelRouteDecision) []IMResponseField {
+	if d.Task == "" && d.Model == "" {
+		return nil
+	}
+	fields := []IMResponseField{
+		{Label: "Route task", Value: firstNonEmpty(d.Task, "-")},
+		{Label: "Route source", Value: firstNonEmpty(d.Source, "-")},
+		{Label: "Route model", Value: firstNonEmpty(d.Model, "-")},
+	}
+	if d.CostTier != "" && (d.CostRouteMode == "shadow" || d.CostRouteMode == "on") {
+		val := d.CostTier
+		if !d.CostRouteApplied {
+			val = d.CostTier + " (shadow)"
+		}
+		fields = append(fields, IMResponseField{Label: "Cost tier", Value: val})
+	}
+	if d.ThinkingPolicy != "" && (d.CostRouteMode == "shadow" || d.CostRouteMode == "on") {
+		val := d.ThinkingPolicy
+		if !d.CostRouteApplied {
+			val = d.ThinkingPolicy + " (shadow)"
+		}
+		fields = append(fields, IMResponseField{Label: "Thinking", Value: val})
+	}
+	if d.Escalated {
+		fields = append(fields, IMResponseField{Label: "Route escalated", Value: "yes"})
+	}
+	if strings.TrimSpace(d.Reason) != "" {
+		fields = append(fields, IMResponseField{Label: "Route reason", Value: d.Reason})
+	}
+	return fields
+}
+
+// turnMetaResponseField returns a single always-on "Turn" chip for chat UI:
+// route tier + model + compact tokens + estimated cost + optional prompt profile/savings.
+func turnMetaResponseField(d modelRouteDecision, input, output, cacheRead int, estCostRMB float64, promptProfile string, promptSavedTokens int, promptUpgraded bool, promptABSample bool, promptSoftFull bool) []IMResponseField {
+	usage := agent.TurnUsage{
+		Model:        d.Model,
+		InputTokens:  input,
+		OutputTokens: output,
+		CachedTokens: cacheRead,
+		EstCostRMB:   estCostRMB,
+	}
+	route := agent.RouteDecision{
+		TaskType:         d.Task,
+		Source:           d.Source,
+		Model:            d.Model,
+		Provider:         d.Provider,
+		Reason:           d.Reason,
+		Applied:          true,
+		CostTier:         d.CostTier,
+		CostRouteMode:    d.CostRouteMode,
+		CostRouteApplied: d.CostRouteApplied,
+		ThinkingPolicy:   d.ThinkingPolicy,
+	}
+	if d.Escalated && route.Source == "" {
+		route.Source = "escalate"
+	}
+	meta := agent.FormatTurnMetaOpts(agent.TurnMetaOptions{
+		Route:             route,
+		Usage:             usage,
+		PromptProfile:     promptProfile,
+		PromptSavedTokens: promptSavedTokens,
+		PromptUpgraded:    promptUpgraded,
+		PromptABSample:    promptABSample,
+		PromptSoftFull:    promptSoftFull,
+	})
+	if meta == "" {
+		return nil
+	}
+	return []IMResponseField{{Label: "Turn", Value: meta}}
+}

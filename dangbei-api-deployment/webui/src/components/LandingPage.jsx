@@ -104,33 +104,32 @@ const LandingPage = ({ onEnter }) => {
                         onClick={onEnter}
                         className="btn-premium text-white px-8 py-3 rounded-xl font-bold transition-all flex items-center gap-2"
                     >
-                        <span>🎛️</span> {t('landing.adminConsole')}
+                        {t('landing.adminConsole')}
                     </button>
                     <a
                         href="/v1/models"
                         target="_blank"
                         className="glass-card text-white px-8 py-3 rounded-xl font-semibold transition-all flex items-center gap-2"
                     >
-                        <span>📡</span> {t('landing.apiStatus')}
+                        {t('landing.apiStatus')}
                     </a>
                     <a
                         href="https://github.com/CJackHwang/ds2api"
                         target="_blank"
                         className="glass-card text-white px-8 py-3 rounded-xl font-semibold transition-all flex items-center gap-2"
                     >
-                        <span>📦</span> GitHub
+                        GitHub
                     </a>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6 text-left">
                     {[
-                        { icon: '🚀', title: t('landing.features.compatibility.title'), desc: t('landing.features.compatibility.desc') },
-                        { icon: '⚖️', title: t('landing.features.loadBalancing.title'), desc: t('landing.features.loadBalancing.desc') },
-                        { icon: '🧠', title: t('landing.features.reasoning.title'), desc: t('landing.features.reasoning.desc') },
-                        { icon: '🔍', title: t('landing.features.search.title'), desc: t('landing.features.search.desc') },
+                        { title: t('landing.features.compatibility.title'), desc: t('landing.features.compatibility.desc') },
+                        { title: t('landing.features.loadBalancing.title'), desc: t('landing.features.loadBalancing.desc') },
+                        { title: t('landing.features.reasoning.title'), desc: t('landing.features.reasoning.desc') },
+                        { title: t('landing.features.search.title'), desc: t('landing.features.search.desc') },
                     ].map((feature, idx) => (
                         <div key={idx} className="glass-card p-6 rounded-2xl">
-                            <span className="text-2xl mb-4 block">{feature.icon}</span>
                             <h3 className="text-lg font-bold mb-2">{feature.title}</h3>
                             <p className="text-sm text-gray-400 leading-relaxed">{feature.desc}</p>
                         </div>

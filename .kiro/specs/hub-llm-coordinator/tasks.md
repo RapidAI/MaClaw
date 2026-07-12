@@ -164,7 +164,7 @@
     - StartDiscussion 中检查 LLM 是否可用
     - LLM 可用时委托给 DiscussionConductor
     - LLM 不可用时保持现有机械式轮次逻辑
-    - ✅ 已完成：conductor 通过 MessageRouter.SetConductor 注入，StartDiscussion 自动委托
+    - 已完成：conductor 通过 MessageRouter.SetConductor 注入，StartDiscussion 自动委托
     - _需求: 5.1, 5.4_
 
 - [x] 9. LLM 回复合并器
@@ -230,7 +230,7 @@
 
   - [x] 13.3 修改 `hub/internal/im/router.go`，集成 BroadcastFormatter
     - routeBroadcast 使用 FormatBroadcastReply 替代现有的简单拼接
-    - ✅ 已完成：routeBroadcast 收集 DeviceReply 后调用 FormatBroadcastReply
+    - 已完成：routeBroadcast 收集 DeviceReply 后调用 FormatBroadcastReply
     - _需求: 12.1_
 
 - [x] 14. 基线优化：讨论格式优化
@@ -244,7 +244,7 @@
     - 每轮结束后发送 FormatRoundSummary
     - 总结使用 FormatDiscussionSummary
     - 超时设备跳过而非传递超时信息
-    - ✅ 已完成：runDiscussion 每轮后调用 FormatRoundSummary，总结使用 FormatDiscussionSummary
+    - 已完成：runDiscussion 每轮后调用 FormatRoundSummary，总结使用 FormatDiscussionSummary
     - _需求: 13.1, 13.2, 13.4, 13.5_
 
 - [x] 15. 基线优化：设备状态通知
@@ -275,7 +275,7 @@
     - Protocol 选择（OpenAI / Anthropic）
     - SmartRouteSingleDevice 开关
     - "测试连接"按钮（调用 /api/admin/hub_llm_test）
-    - LLM 状态指示器（🟢 正常 / 🟡 熔断中 / ⚪ 未配置）
+    - LLM 状态指示器（正常 / 熔断中 / ⚪ 未配置）
     - 新增 GET `/api/admin/hub_llm_status` 端点返回 Coordinator.GetLLMStatus()
     - _需求: 10.1, 10.2, 10.3, 10.4_
 
@@ -287,6 +287,6 @@
     - _需求: 7.7, 11.5_
 
 - [x] 19. 最终集成测试
-  - ✅ `go test ./hub/...` 全部通过
+  - `go test ./hub/...` 全部通过
   - 手动验证：无 LLM 配置时行为与当前完全一致
   - 手动验证：配置 LLM 后无感智能模式正常工作

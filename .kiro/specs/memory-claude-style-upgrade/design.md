@@ -172,7 +172,7 @@ TUI `toolMemory` 和 GUI `toolMemory` 新增 action：
 - 重要的错误原因和解决方案
 
 保存时使用 category=project_knowledge 或 instruction，并添加 tag "proactive"。
-每次会话最多主动保存 5 条。保存后在回复中简要提示：💾 已主动记录: <摘要>
+每次会话最多主动保存 5 条。保存后在回复中简要提示：已主动记录: <摘要>
 ```
 
 ## Data Models
@@ -299,7 +299,7 @@ type GCResult struct {
 
 ### Property 13: Pinned entry indicator in output
 
-*For any* pinned entry returned by list or search operations, the formatted output string should contain the `📌` indicator character.
+*For any* pinned entry returned by list or search operations, the formatted output string should contain the `` indicator character.
 
 **Validates: Requirements 4.7**
 

@@ -31,6 +31,7 @@ const expectedScripts = [
   'usage-stats-tab.js',
   'failure-logs-tab.js',
   'knowledge-management-tab.js',
+  'notification-tab.js',
   'admin-module-health.js',
   'overview-tenant-info.js',
   'admin-bootstrap.js'
@@ -44,7 +45,7 @@ const removedLegacyFiles = [
   'hub-llm-tab.js'
 ];
 const expectedExports = {
-  'machines-tab.js': ['renderMachineList', 'loadMachines'],
+  'machines-tab.js': ['renderMachineList', 'loadMachines', 'loadAdaptivePromptFleet'],
   'security-tab.js': ['loadSecurityTab', 'loadApprovalRolesTab', 'saveSecApprovalRoles', 'selectSecGroup', 'confirmAssignUsers'],
   'llm-provider-tab.js': ['loadLlmProviders', 'openLlmProviderTab', 'saveLLMProviders'],
   'llm-service-tabs.js': ['loadLlmServiceGroups', 'openLlmServiceGroupTab', 'saveLLMServiceAdmin'],

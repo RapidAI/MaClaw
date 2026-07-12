@@ -1561,7 +1561,7 @@ func (s *CreditsService) IncrementDailyFreeDownload(ctx context.Context, userID 
 
 ---
 
-## ⚠️ 以下内容为 Req 35-40 新增设计，部分内容替代上方 Section 11 的经济系统设计
+## 以下内容为 Req 35-40 新增设计，部分内容替代上方 Section 11 的经济系统设计
 
 > **重要**：上方 Section 11（经济系统设计 Requirement 35）中的 bonus Credits、每日免费下载、下载里程碑奖励等设计已被 Req 35 的"平台零支出原则"废弃。以下为最新的经济系统设计，以本节为准。
 
@@ -2372,7 +2372,7 @@ HubCenter Web 前端在 "我的 Skill" 管理页面中，对声明了 `required_
 - API Key 管理入口（批量上传、查看库存状态）
 - 分配记录列表（Key ID 脱敏、买家 email、分配时间、状态）
 - 待发 Key 订单列表（买家 email、购买时间、等待时长）
-- 库存状态指示器（充足 🟢 / 紧张 🟡 / 缺货 🔴）
+- 库存状态指示器（充足 / 紧张 / 缺货 ）
 
 ## 16. 指数回退邮件通知设计（Requirement 39）
 

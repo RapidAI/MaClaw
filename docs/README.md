@@ -2,6 +2,11 @@
 
 This directory contains architecture notes, design records, and operational guides.
 
+## Adaptive prompt & shared agent loop (cost / ops)
+
+- [Ops cheat sheet](adaptive-prompt-and-shared-loop-ops.md): light/full prompt, shared loop strangler, light tools, misroute upgrade, quality A/B, CLI export/merge, Hub metrics.
+- [Track summary](adaptive-prompt-track-summary.md): what shipped, env knobs, package map.
+
 ## Agent Dynamic UI & Enterprise MIS Replacement
 
 - [Agent dynamic UI runtime design](agent-dynamic-ui-runtime-design-zh.md): AG-UI event protocol, Skill/Tool/Business Object non-invasive adapters, right-side Task Panel, structured input validation, and business data persistence.

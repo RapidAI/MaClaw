@@ -24,7 +24,7 @@
 
 1. WHEN Device_Notifier 检测到某设备离线且该设备是用户当前的私聊目标时，THE Device_Notifier SHALL 调用 Space_State_Store 将用户状态从 Space_Private 切换为 Space_Lobby
 2. WHEN Device_Notifier 将用户状态切回 Space_Lobby 时，THE Device_Notifier SHALL 同时清除 Message_Router 中该用户的 selectedMachine 记录
-3. WHEN 私聊目标掉线触发自动返回大厅后，THE Device_Notifier SHALL 向用户发送一条简洁的通知消息，格式为："📴 <设备名> 已离线，已自动返回大厅。"
+3. WHEN 私聊目标掉线触发自动返回大厅后，THE Device_Notifier SHALL 向用户发送一条简洁的通知消息，格式为："<设备名> 已离线，已自动返回大厅。"
 4. THE Device_Notifier SHALL 在自动返回大厅的通知中不再包含手动切换设备的指引（移除原有的 "/call <昵称>" 提示）
 
 ### 需求 2：会议参与者掉线时的空间状态维护
@@ -34,8 +34,8 @@
 #### 验收标准
 
 1. WHEN Device_Notifier 检测到某设备离线且用户当前处于 Space_Meeting 时，THE Device_Notifier SHALL 调用 Space_State_Store 将该设备从会议参与者列表中移除
-2. WHEN 会议参与者列表中仅剩一台设备时，THE Device_Notifier SHALL 向用户发送提示："📴 <设备名> 已离线，会议仅剩 1 台设备参与。"
-3. IF 会议参与者列表变为空（所有参与设备均离线），THEN THE Device_Notifier SHALL 自动结束会议并将用户状态切回 Space_Lobby，通知用户："📴 所有会议设备已离线，会议已结束，已返回大厅。"
+2. WHEN 会议参与者列表中仅剩一台设备时，THE Device_Notifier SHALL 向用户发送提示："<设备名> 已离线，会议仅剩 1 台设备参与。"
+3. IF 会议参与者列表变为空（所有参与设备均离线），THEN THE Device_Notifier SHALL 自动结束会议并将用户状态切回 Space_Lobby，通知用户："所有会议设备已离线，会议已结束，已返回大厅。"
 
 ### 需求 3：非选定设备掉线时的通知简化
 
@@ -43,5 +43,5 @@
 
 #### 验收标准
 
-1. WHEN Device_Notifier 检测到某设备离线且该设备不是用户当前的私聊目标或会议参与者时，THE Device_Notifier SHALL 仅发送简洁的离线通知："📴 <设备名> 已离线"
+1. WHEN Device_Notifier 检测到某设备离线且该设备不是用户当前的私聊目标或会议参与者时，THE Device_Notifier SHALL 仅发送简洁的离线通知："<设备名> 已离线"
 2. THE Device_Notifier SHALL 保持现有的 30 秒防抖机制，避免网络抖动导致的通知风暴

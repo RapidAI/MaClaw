@@ -507,10 +507,10 @@ func (a *App) CheckEnvironment(force bool) {
 				a.log(a.tr("WARNING: Failed to install VC Redistributable: %v", err))
 				// Non-critical: continue with other components
 			} else {
-				a.log(a.tr("✓ Visual C++ Redistributable installed successfully."))
+				a.log(a.tr("Visual C++ Redistributable installed successfully."))
 			}
 		} else {
-			a.log(a.tr("✓ Visual C++ Redistributable is already installed."))
+			a.log(a.tr("Visual C++ Redistributable is already installed."))
 		}
 
 		// ===== 2. Node.js =====
@@ -562,7 +562,7 @@ func (a *App) ensureNodeJS() bool {
 	nodeOutput, nodeErr := nodeCmd.Output()
 
 	if nodeErr == nil {
-		a.log(a.tr("✓ Node.js found: %s", strings.TrimSpace(string(nodeOutput))))
+		a.log(a.tr("Node.js found: %s", strings.TrimSpace(string(nodeOutput))))
 		return true
 	}
 
@@ -591,7 +591,7 @@ func (a *App) ensureNodeJS() bool {
 		a.installMutex.Unlock()
 		return false
 	}
-	a.log(a.tr("✓ Node.js installed successfully."))
+	a.log(a.tr("Node.js installed successfully."))
 
 	a.installMutex.Lock()
 	a.installingNode = false
@@ -610,9 +610,9 @@ func (a *App) ensureGit() {
 		gitCmd := exec.Command(gitPath, "--version")
 		gitCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		if out, err := gitCmd.Output(); err == nil {
-			a.log(a.tr("✓ Git found: %s", strings.TrimSpace(string(out))))
+			a.log(a.tr("Git found: %s", strings.TrimSpace(string(out))))
 		} else {
-			a.log(a.tr("✓ Git found at: %s", gitPath))
+			a.log(a.tr("Git found at: %s", gitPath))
 		}
 		return
 	}
@@ -620,7 +620,7 @@ func (a *App) ensureGit() {
 	// Check standard install location not in PATH
 	if _, err := os.Stat(`C:\Program Files\Git\cmd\git.exe`); err == nil {
 		a.updatePathForGit()
-		a.log(a.tr("✓ Git found in standard location."))
+		a.log(a.tr("Git found in standard location."))
 		return
 	}
 
@@ -642,7 +642,7 @@ func (a *App) ensureGit() {
 		a.installMutex.Unlock()
 		return
 	}
-	a.log(a.tr("✓ Git installed successfully."))
+	a.log(a.tr("Git installed successfully."))
 	a.updatePathForGit()
 	a.installMutex.Lock()
 	a.installingGit = false
@@ -1710,12 +1710,12 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		a.log(fmt.Sprintf("Tool %s not found. Attempting automatic installation...", binaryName))
 
 		// Emit event to show installation progress dialog
-		runtime.EventsEmit(a.ctx, "tool-repair-start", binaryName)
+		a.emitEvent("tool-repair-start", binaryName)
 
 		// Check if npm is available first
 		npmPath := tm.getNpmPath()
 		if npmPath == "" {
-			runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("npm not found. Please run environment check first."))
+			a.emitEvent("tool-repair-failed", binaryName, a.tr("npm not found. Please run environment check first."))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("npm not found. Please run environment check first."))
 			return fmt.Errorf("npm not found. Please run environment check first")
 		}
@@ -1723,7 +1723,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		// Attempt to install the tool
 		err := tm.InstallTool(binaryName)
 		if err != nil {
-			runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, err.Error())
+			a.emitEvent("tool-repair-failed", binaryName, err.Error())
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Failed to install %s: %v", binaryName, err))
 			return fmt.Errorf("failed to install %s: %w", binaryName, err)
 		}
@@ -1731,13 +1731,13 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		// Re-check tool status after installation
 		status = tm.GetToolStatus(binaryName)
 		if !status.Installed {
-			runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("Installation completed but tool not found"))
+			a.emitEvent("tool-repair-failed", binaryName, a.tr("Installation completed but tool not found"))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Installation completed but %s still not found. Please try running environment check.", binaryName))
 			return fmt.Errorf("installation completed but %s still not found", binaryName)
 		}
 
 		binaryPath = status.Path
-		runtime.EventsEmit(a.ctx, "tool-repair-success", binaryName, status.Version)
+		a.emitEvent("tool-repair-success", binaryName, status.Version)
 		a.log(fmt.Sprintf("Tool %s installed successfully. Version: %s", binaryName, status.Version))
 	}
 	a.log("Using binary at: " + binaryPath)

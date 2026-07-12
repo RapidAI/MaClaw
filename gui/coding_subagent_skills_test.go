@@ -310,7 +310,7 @@ func TestCodingSubAgentDynamicToolFailureClassification(t *testing.T) {
 		"错误：参数缺失",
 		"失败: browser crashed",
 		"失败：browser crashed",
-		"❌ skill failed",
+		"skill failed",
 		" failed: runner crashed",
 		"Failure: browser disconnected",
 		"Exception: timeout waiting for selector",

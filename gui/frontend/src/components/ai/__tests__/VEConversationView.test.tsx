@@ -173,9 +173,10 @@ describe("VEConversationView", () => {
         });
 
         expect(screen.getByText("北京天气：")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c5}今天")).toBeTruthy();
+        // Dense capability pictographs are rewritten to plain list markers.
+        expect(screen.getByText("今天")).toBeTruthy();
         expect(screen.getByText("晴天 0%")).toBeTruthy();
-        expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+        expect(screen.getByText("明天")).toBeTruthy();
         expect(screen.getByText("多云")).toBeTruthy();
     });
 
@@ -979,7 +980,7 @@ describe("VEConversationView", () => {
                 lang: "en",
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
 
@@ -994,7 +995,7 @@ describe("VEConversationView", () => {
             expect(screen.getByTestId("ve-input-row").style.overflow).toBe("visible");
 
             fireEvent.click(screen.getByTestId("mention-item-local-maclaw"));
-            expect(textarea.value).toBe("@Local AI ");
+            expect(textarea.value).toBe("@Local ");
         });
 
         it("keeps input containers clipped when no mention popover is open", () => {
@@ -1016,7 +1017,7 @@ describe("VEConversationView", () => {
                 lang: "en",
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
 
@@ -1034,7 +1035,7 @@ describe("VEConversationView", () => {
                 lang: "en",
                 participants: [
                     { id: "m_b1821505498d817c", name: "Participant 1", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
 
@@ -1052,7 +1053,7 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
 
@@ -1060,7 +1061,7 @@ describe("VEConversationView", () => {
             fireEvent.change(textarea, { target: { value: "@Loc", selectionStart: 4 } });
             fireEvent.keyDown(textarea, { key: "Enter" });
 
-            expect(textarea.value).toBe("@Local AI ");
+            expect(textarea.value).toBe("@Local ");
             expect(sendGroupMessage).not.toHaveBeenCalled();
         });
 
@@ -1082,7 +1083,7 @@ describe("VEConversationView", () => {
             renderConversation({
                 sendGroupMessage,
                 participants: [
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-a", name: "Agent A", online: true },
                 ],
             });
@@ -1101,7 +1102,7 @@ describe("VEConversationView", () => {
             renderConversation({
                 sendGroupMessage,
                 participants: [
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-a", name: "Agent A", online: true },
                 ],
             });
@@ -1120,7 +1121,7 @@ describe("VEConversationView", () => {
             const { send } = renderConversation({
                 sendGroupMessage,
                 participants: [
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-a", name: "Agent A", online: true },
                 ],
             });
@@ -1141,14 +1142,14 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-b", name: "Agent B", online: true },
                 ],
             });
             await act(async () => { await vi.runAllTimersAsync(); });
 
             const textarea = screen.getByTestId("ve-input-textarea");
-            fireEvent.change(textarea, { target: { value: "@Local AI inspect" } });
+            fireEvent.change(textarea, { target: { value: "@Local inspect" } });
             fireEvent.keyDown(textarea, { key: "Enter" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
@@ -1156,7 +1157,7 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
-            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local AI inspect", ["local-maclaw"]);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local inspect", ["local-maclaw"]);
             expect(sendGroupMessage).toHaveBeenNthCalledWith(2, "test-session-1", "continue", []);
         });
 
@@ -1166,14 +1167,14 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-b", name: "Agent B", online: true },
                 ],
             });
             await act(async () => { await vi.runAllTimersAsync(); });
 
             const textarea = screen.getByTestId("ve-input-textarea");
-            fireEvent.change(textarea, { target: { value: "@Local AI inspect" } });
+            fireEvent.change(textarea, { target: { value: "@Local inspect" } });
             fireEvent.keyDown(textarea, { key: "Enter" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
@@ -1185,7 +1186,7 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
-            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local AI inspect", ["local-maclaw"]);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local inspect", ["local-maclaw"]);
             expect(sendGroupMessage).toHaveBeenNthCalledWith(2, "test-session-1", "@unknown continue", []);
             expect(sendGroupMessage).toHaveBeenNthCalledWith(3, "test-session-1", "continue again", []);
         });
@@ -1198,14 +1199,14 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-b", name: "Agent B", online: true },
                 ],
             });
             await act(async () => { await vi.runAllTimersAsync(); });
 
             const textarea = screen.getByTestId("ve-input-textarea");
-            fireEvent.change(textarea, { target: { value: "@Local AI inspect" } });
+            fireEvent.change(textarea, { target: { value: "@Local inspect" } });
             fireEvent.keyDown(textarea, { key: "Enter" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
@@ -1213,7 +1214,7 @@ describe("VEConversationView", () => {
             fireEvent.keyDown(textarea, { key: "Enter" });
             await act(async () => { await vi.runAllTimersAsync(); });
 
-            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local AI inspect", ["local-maclaw"]);
+            expect(sendGroupMessage).toHaveBeenNthCalledWith(1, "test-session-1", "@Local inspect", ["local-maclaw"]);
             expect(sendGroupMessage).toHaveBeenNthCalledWith(2, "test-session-1", "continue", []);
         });
 
@@ -1224,7 +1225,7 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                     { id: "ve-b", name: "Agent B", online: true },
                 ],
             });
@@ -1245,7 +1246,7 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "ve-a", name: "Agent A", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -1265,7 +1266,7 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "m_anna", name: "Anna", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -1285,7 +1286,7 @@ describe("VEConversationView", () => {
                 sendGroupMessage,
                 participants: [
                     { id: "m_anna", name: "Anna", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true },
+                    { id: "local-maclaw", name: "Local", online: true },
                 ],
             });
             await act(async () => { await vi.runAllTimersAsync(); });
@@ -1728,7 +1729,8 @@ describe("VEConversationView", () => {
 
             const indicator = screen.getByTestId("ve-streaming-indicator");
             expect(indicator.textContent).toContain("晴天");
-            expect(screen.getByText("\u{1f4c5}明天")).toBeTruthy();
+            // Compact emoji headings normalize to plain heading/list text.
+            expect(screen.getByText("明天")).toBeTruthy();
             expect(screen.getByText("多云")).toBeTruthy();
         });
 
@@ -2910,7 +2912,7 @@ describe("VEConversationView", () => {
 
         it("starts a fresh group session with all remote participants after clear", async () => {
             const initiateGroupConversation = vi.fn().mockResolvedValue({ session_id: "group-session-2", ve_id: "ve-1,ve-2", ve_name: "Group" });
-            const registerLocalExecutorInGroup = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local AI" });
+            const registerLocalExecutorInGroup = vi.fn().mockResolvedValue({ participant_id: "machine-local", display_name: "Local" });
             const close = vi.fn().mockResolvedValue(undefined);
             const { rerender } = renderConversation({
                 existingSessionId: "group-session-1",
@@ -2920,7 +2922,7 @@ describe("VEConversationView", () => {
                 participants: [
                     { id: "ve-1", name: "Agent A", online: true },
                     { id: "ve-2", name: "Agent B", online: true },
-                    { id: "machine-local", name: "Local AI", online: true },
+                    { id: "machine-local", name: "Local", online: true },
                 ],
                 initialMessages: [{ id: "old-msg", role: "assistant", content: "old answer", timestamp: 1 }],
                 clearSignal: 0,
@@ -2942,7 +2944,7 @@ describe("VEConversationView", () => {
                     participants={[
                         { id: "ve-1", name: "Agent A", online: true },
                         { id: "ve-2", name: "Agent B", online: true },
-                        { id: "machine-local", name: "Local AI", online: true },
+                        { id: "machine-local", name: "Local", online: true },
                     ]}
                     clearSignal={1}
                 />
@@ -3098,7 +3100,7 @@ describe("VEConversationView", () => {
             const registerLocalExecutorInGroup = vi.fn().mockResolvedValue({ participant_id: "machine-local" });
             const participants = [
                 { id: "ve-1", name: "Agent A", online: true },
-                { id: "machine-local", name: "Local AI", online: true },
+                { id: "machine-local", name: "Local", online: true },
             ];
             const { rerender } = renderConversation({
                 participants,

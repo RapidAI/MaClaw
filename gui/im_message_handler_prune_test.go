@@ -101,7 +101,7 @@ func TestPruneStaleNoToolTurns_PreservesNonRecoverSystemMessages(t *testing.T) {
 		map[string]string{"role": "system", "content": "system prompt"},
 		map[string]string{"role": "user", "content": "do something"},
 		// Non-recover system message (e.g., goal anchor)
-		map[string]string{"role": "system", "content": "[📋 任务清单]\n- step 1\n[/任务清单]"},
+		map[string]string{"role": "system", "content": "[任务清单]\n- step 1\n[/任务清单]"},
 		// Stale assistant after the non-recover system message
 		map[string]interface{}{"role": "assistant", "content": "stale"},
 	}
@@ -180,7 +180,7 @@ func TestIsRecoverOrNudgeSystemMessage(t *testing.T) {
 	}{
 		{"[Recover 阶段]\n连续 2 轮都没有真正调用工具\n[/Recover 阶段]", true},
 		{"[执行要求]\n当前任务需要真实执行\n[/执行要求]", true},
-		{"[📋 任务清单]\n- step 1\n[/任务清单]", false},
+		{"[任务清单]\n- step 1\n[/任务清单]", false},
 		{"You are a helpful assistant.", false},
 		{"", false},
 		{"[Recover 阶段] partial", true},

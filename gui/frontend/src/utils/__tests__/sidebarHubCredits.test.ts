@@ -8,6 +8,8 @@ describe('normalizeSidebarHubCredits', () => {
             total: 0,
             used: 0,
             remaining: 0,
+            available: 0,
+            showPeriodAvailable: false,
             tokensPerCredit: 0,
             expiresAt: '',
             unlimited: false,
@@ -31,7 +33,8 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.serviceActive).toBe(true);
         expect(credits?.status).toBe('active');
         expect(credits?.total).toBe(300);
-        expect(credits?.remaining).toBe(189);
+        // Includes queued remaining so Total ≈ Used + Left (11 used + 289 left).
+        expect(credits?.remaining).toBe(289);
         expect(credits?.expiresAt).toBe('2026-06-06T00:00:00Z');
         expect(credits?.retryAfterSeconds).toBe(0);
     });
@@ -86,6 +89,8 @@ describe('normalizeSidebarHubCredits', () => {
             total: 0,
             used: 0,
             remaining: 0,
+            available: 0,
+            showPeriodAvailable: false,
             tokensPerCredit: 0,
             expiresAt: '',
             unlimited: true,
@@ -148,7 +153,8 @@ describe('normalizeSidebarHubCredits', () => {
         });
 
         expect(credits?.serviceActive).toBe(true);
-        expect(credits?.remaining).toBe(10000);
+        // Lifetime remaining (period-limited left + queued) for Total ≈ Used + Left.
+        expect(credits?.remaining).toBe(14900);
         expect(credits?.total).toBe(15000);
     });
 
@@ -166,7 +172,8 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.status).toBe('active');
         expect(credits?.retryAfterSeconds).toBe(0);
         expect(credits?.retryAfterAt).toBe('');
-        expect(credits?.remaining).toBe(10000);
+        // Lifetime remaining: period-limited left (4900) + queued (10000).
+        expect(credits?.remaining).toBe(14900);
     });
 
     it('matches service redemption total by including queued future credits', () => {
@@ -186,7 +193,27 @@ describe('normalizeSidebarHubCredits', () => {
 
         expect(credits?.total).toBe(55301);
         expect(credits?.used).toBe(5757.027);
-        expect(credits?.remaining).toBe(49064.005);
+        // Remaining includes queued balances so Total ≈ Used + Left.
+        expect(credits?.remaining).toBeCloseTo(55301 - 5757.027, 3);
+    });
+
+    it('keeps Total ≈ Used + Left when total includes a queued point-card top-up', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_total: 21000,
+            credits_used: 11015,
+            credits_remaining: 9985,
+            credits_available: 9985,
+            credit_grants: [
+                { status: 'active', active: true, credits_total: 21000, credits_used: 11015, credits_remaining: 9985, expires_at: '2028-07-05T00:00:00Z' },
+                { status: 'queued', active: false, credits_total: 10000, credits_used: 0, credits_remaining: 10000, expires_at: '2029-07-05T00:00:00Z' },
+            ],
+        });
+
+        expect(credits?.total).toBe(31000);
+        expect(credits?.used).toBe(11015);
+        expect(credits?.remaining).toBe(19985);
+        expect((credits?.used || 0) + (credits?.remaining || 0)).toBe(credits?.total);
     });
 
     it('keeps the effective recharge-card balance when top-level remaining is only the period window', () => {
@@ -340,5 +367,28 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.used).toBe(0);
         expect(credits?.remaining).toBe(25);
         expect(credits?.tokensPerCredit).toBe(0);
+    });
+
+
+    it('exposes period available separately when below lifetime remaining', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            credits_total: 70000,
+            credits_used: 1658.7,
+            credits_remaining: 68341.3,
+            credits_available: 2293.43,
+            credit_grants: [{
+                status: 'active',
+                active: true,
+                credits_total: 70000,
+                credits_used: 1658.7,
+                credits_remaining: 68341.3,
+                credits_available: 2293.43,
+                period_limits: { monthly: 40000 },
+            }],
+        });
+        expect(credits?.remaining).toBe(68341.3);
+        expect(credits?.available).toBe(2293.43);
+        expect(credits?.showPeriodAvailable).toBe(true);
     });
 });

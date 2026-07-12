@@ -10,9 +10,9 @@ import "strings"
 // 确认动作是确定性的（fast-path 路由），零 LLM 调用延迟。
 //
 // 按钮列表：
-//   - "✅ 确认并推进" (primary) → fast-path ReviewIntentConfirm
-//   - "✏️ 输入补充/修改意见" (secondary) → 前端聚焦输入框，不发消息
-//   - "🚫 中止" (danger) → 前端二次确认后 fast-path ReviewIntentCancel
+//   - "确认并推进" (primary) → fast-path ReviewIntentConfirm
+//   - "输入补充/修改意见" (secondary) → 前端聚焦输入框，不发消息
+//   - "中止" (danger) → 前端二次确认后 fast-path ReviewIntentCancel
 func (h *IMMessageHandler) appendWorkflowReviewActions(resp *IMAgentResponse, userID string, loopCtx *LoopContext) {
 	if resp == nil {
 		return
@@ -54,15 +54,15 @@ func (h *IMMessageHandler) appendWorkflowReviewActions(resp *IMAgentResponse, us
 	// 中止按钮 danger 样式（红色文字，不显眼），放在最后
 	if strings.HasPrefix(lang, "en") {
 		resp.Actions = []IMResponseAction{
-			{Label: "✅ Confirm & Proceed", Command: "__wf_review__ confirm", Style: "primary"},
-			{Label: "✏️ Provide Feedback", Command: "__wf_review__ supplement_focus", Style: "secondary"},
-			{Label: "🚫 Abort", Command: "__wf_review__ abort", Style: "danger"},
+			{Label: "Confirm & Proceed", Command: "__wf_review__ confirm", Style: "primary"},
+			{Label: "Provide Feedback", Command: "__wf_review__ supplement_focus", Style: "secondary"},
+			{Label: "Abort", Command: "__wf_review__ abort", Style: "danger"},
 		}
 	} else {
 		resp.Actions = []IMResponseAction{
-			{Label: "✅ 确认并推进", Command: "__wf_review__ confirm", Style: "primary"},
-			{Label: "✏️ 输入补充/修改意见", Command: "__wf_review__ supplement_focus", Style: "secondary"},
-			{Label: "🚫 中止", Command: "__wf_review__ abort", Style: "danger"},
+			{Label: "确认并推进", Command: "__wf_review__ confirm", Style: "primary"},
+			{Label: "输入补充/修改意见", Command: "__wf_review__ supplement_focus", Style: "secondary"},
+			{Label: "中止", Command: "__wf_review__ abort", Style: "danger"},
 		}
 	}
 
@@ -72,6 +72,6 @@ func (h *IMMessageHandler) appendWorkflowReviewActions(resp *IMAgentResponse, us
 	// If we set resp.Text to a hint string, the frontend's resolveFinalRoundContent
 	// may discard the streamed document content in favor of this shorter text, or
 	// vice versa — either way creates inconsistency. The button labels are self-
-	// explanatory ("✅ 确认并推进" / "✏️ 输入补充/修改意见" / "🚫 中止"), and the
+	// explanatory ("确认并推进" / "输入补充/修改意见" / "中止"), and the
 	// frontend always renders them below the message content regardless of resp.Text.
 }

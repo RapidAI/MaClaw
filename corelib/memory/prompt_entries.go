@@ -55,7 +55,7 @@ func FormatRecallEntriesForPrompt(entries []Entry, opts RecallEntriesPromptOptio
 	}
 	writePromptLine(opts.Footer)
 	if opts.SourceNumbering && len(entries) > 0 {
-		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 📌 来源：[MX] 标注使用了哪些条目。）\n")
+		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 来源：[MX] 标注使用了哪些条目。）\n")
 	}
 	return b.String()
 }
@@ -90,7 +90,7 @@ func FormatExperienceCandidatesForPrompt(candidates []lifecycle.Candidate, opts 
 	}
 	writePromptLine(opts.Footer)
 	if opts.SourceNumbering && len(candidates) > 0 {
-		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 📌 来源：[MX] 标注使用了哪些条目。）\n")
+		b.WriteString("（如果你的回答使用了上述记忆信息，请在末尾用 来源：[MX] 标注使用了哪些条目。）\n")
 	}
 	return b.String()
 }

@@ -69,7 +69,7 @@ docker-compose -f docker-compose.dev.yml up
 4. 推送分支
 5. 发起 Pull Request
 
-> 💡 如果修改了 `webui/` 目录下的文件，无需手动构建——CI 会自动处理。
+> 如果修改了 `webui/` 目录下的文件，无需手动构建——CI 会自动处理。
 
 ## WebUI 构建
 

@@ -1,6 +1,16 @@
-import { useState, useRef, useCallback, useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, type Dispatch, type SetStateAction, type ReactNode } from "react";
 import type { RemoteSessionView } from "./types";
 import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, InterruptRemoteSession, SetFullscreen } from "../../../wailsjs/go/main/App";
+import { IconBolt, IconCheck, IconChevronRight, IconCross, IconFolder, StatusGlyph } from "../ai/WorkbenchIcons";
+import {
+    isPathLine,
+    isUserPromptLine,
+    legacyMarkVisual,
+    parseLegacyStreamMark,
+    SPECIAL_LINE_PREFIX,
+    stripUserPromptPrefix,
+    type StreamStatusKind,
+} from "./remoteStreamMarks";
 
 const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
     lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
@@ -201,9 +211,87 @@ const _controlRe = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const _replacementRe = /\uFFFD\??/g;
 function stripAnsi(s: string): string { return s.replace(_ansiRe, "").replace(_controlRe, "").replace(_replacementRe, ""); }
 
+function streamStatusRow(
+    key: string | number,
+    icon: ReactNode,
+    body: ReactNode,
+    style: React.CSSProperties,
+): React.ReactNode {
+    return (
+        <div
+            key={key}
+            style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 6,
+                minHeight: "1.4em",
+                ...style,
+            }}
+        >
+            <span style={{ display: "inline-flex", marginTop: 2, flexShrink: 0 }} aria-hidden="true">{icon}</span>
+            <span style={{ minWidth: 0 }}>{body}</span>
+        </div>
+    );
+}
+
+type StreamRowStyleKey = StreamStatusKind | "bolt" | "path";
+const STREAM_STATUS_ROW_STYLE: Record<StreamRowStyleKey, React.CSSProperties> = {
+    tool: { color: "var(--theme-primary, #2f5f98)", fontWeight: 700, marginTop: "0.3em" },
+    pending: { color: "#94a3b8" },
+    bolt: { color: "var(--theme-success, #4f7f6f)", fontWeight: 700, marginTop: "0.4em" },
+    ok: { color: "var(--theme-success, #4f7f6f)" },
+    warn: { color: "var(--theme-warning, #d97706)" },
+    error: { color: "var(--theme-danger, #e07a72)" },
+    path: { color: "var(--theme-primary, #2f5f98)" },
+};
+
+const SEND_FEEDBACK_BAR_BASE: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "2px 10px",
+    fontSize: "11px",
+    fontFamily: "Consolas, monospace",
+    flexShrink: 0,
+};
+const SEND_FEEDBACK_BAR_OK: React.CSSProperties = {
+    ...SEND_FEEDBACK_BAR_BASE,
+    background: "rgba(79, 127, 111, 0.12)",
+    color: "var(--theme-success, #4f7f6f)",
+};
+const SEND_FEEDBACK_BAR_ERR: React.CSSProperties = {
+    ...SEND_FEEDBACK_BAR_BASE,
+    background: "rgba(196, 61, 52, 0.12)",
+    color: "var(--theme-danger, #e07a72)",
+};
+
+function renderLegacyStreamLine(key: string | number, mark: string, body: string): React.ReactNode | null {
+    const visual = legacyMarkVisual(mark);
+    if (!visual) return null;
+    const content = renderInlineMarkdown(body);
+    if (visual.kind === "bolt") {
+        return streamStatusRow(
+            key,
+            <IconBolt size={13} color="var(--theme-success, #4f7f6f)" />,
+            content,
+            STREAM_STATUS_ROW_STYLE.bolt,
+        );
+    }
+    const rowStyle = STREAM_STATUS_ROW_STYLE[visual.status];
+    // Prefer row-aligned colors on the dark console so glyphs match line tint.
+    const glyphColor = typeof rowStyle.color === "string" ? rowStyle.color : undefined;
+    return streamStatusRow(
+        key,
+        <StatusGlyph kind={visual.status} size={13} color={glyphColor} />,
+        content,
+        rowStyle,
+    );
+}
+
 // ── Lightweight inline markdown → React elements ──
 // Handles: **bold**, *italic*, `code`, [link](url)
 // Also detects line-level patterns: ### heading, - list, > blockquote, ``` code block
+// Legacy emoji stream prefixes are stripped and replaced with SVG icons.
 function renderMarkdownLine(text: string, key: string | number): React.ReactNode {
     const trimmed = text.trimStart();
 
@@ -228,55 +316,19 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
         );
     }
 
-    // Tool action: ⏺ Write, ⏳ Write running...
-    if (/^⏺/.test(trimmed)) {
-        return (
-            <div key={key} style={{ color: "var(--theme-primary, #2f5f98)", fontWeight: 700, marginTop: "0.3em", minHeight: "1.4em" }}>
-                {renderInlineMarkdown(trimmed)}
-            </div>
-        );
-    }
-    if (/^⏳/.test(trimmed)) {
-        return (
-            <div key={key} style={{ color: "#94a3b8", minHeight: "1.4em" }}>
-                {renderInlineMarkdown(trimmed)}
-            </div>
-        );
-    }
-
-    // Lightning bolt: ⚡ text
-    if (/^⚡/.test(trimmed)) {
-        return (
-            <div key={key} style={{ color: "var(--theme-success, #4f7f6f)", fontWeight: 700, marginTop: "0.4em", minHeight: "1.4em" }}>
-                {">"} {renderInlineMarkdown(trimmed)}
-            </div>
-        );
-    }
-
-    // Success: ✓ or ✅
-    if (/^✓|^✅/.test(trimmed)) {
-        return (
-            <div key={key} style={{ color: "var(--theme-success, #4f7f6f)", minHeight: "1.4em" }}>
-                {">"} {renderInlineMarkdown(trimmed)}
-            </div>
-        );
-    }
-
-    // Error/warning: ✗ ⚠ ❌
-    if (/^✗|^⚠|^❌/.test(trimmed)) {
-        return (
-            <div key={key} style={{ color: "var(--theme-danger, #e07a72)", minHeight: "1.4em" }}>
-                {">"} {renderInlineMarkdown(trimmed)}
-            </div>
-        );
+    const legacy = parseLegacyStreamMark(trimmed);
+    if (legacy) {
+        const node = renderLegacyStreamLine(key, legacy.mark, legacy.body);
+        if (node) return node;
     }
 
     // Path line: C:\... or ~/... or /usr/...
-    if (/^[A-Z]:\\/.test(trimmed) || /^~\//.test(trimmed) || /^\/[a-z][\w.\-]*\//.test(trimmed)) {
-        return (
-            <div key={key} style={{ color: "var(--theme-primary, #2f5f98)", minHeight: "1.4em" }}>
-                {">"} {trimmed}
-            </div>
+    if (isPathLine(trimmed)) {
+        return streamStatusRow(
+            key,
+            <IconFolder size={13} color="var(--theme-primary, #2f5f98)" />,
+            trimmed,
+            STREAM_STATUS_ROW_STYLE.path,
         );
     }
 
@@ -384,7 +436,7 @@ export function RemoteSessionConsole(props: Props) {
 
     const currentLang = getCurrentLang();
     const [sending, setSending] = useState(false);
-    const [lastSendInfo, setLastSendInfo] = useState("");
+    const [sendFeedback, setSendFeedback] = useState<{ ok: boolean; text: string } | null>(null);
     const [imageUploading, setImageUploading] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const inputRef = useRef<HTMLInputElement | null>(null);
@@ -431,11 +483,11 @@ export function RemoteSessionConsole(props: Props) {
 
     const rawLines = lineCacheRef.current.slice(clearOffset);
 
-    // Helper: set status feedback with auto-clear
-    const showSendInfo = useCallback((msg: string) => {
-        setLastSendInfo(msg);
+    // Helper: set status feedback with auto-clear (structured — no OK/ERR text markers)
+    const showSendInfo = useCallback((ok: boolean, text: string) => {
+        setSendFeedback({ ok, text });
         if (sendInfoTimerRef.current) clearTimeout(sendInfoTimerRef.current);
-        sendInfoTimerRef.current = setTimeout(() => setLastSendInfo(""), SEND_INFO_TIMEOUT);
+        sendInfoTimerRef.current = setTimeout(() => setSendFeedback(null), SEND_INFO_TIMEOUT);
     }, []);
 
     // Cleanup send-info timer on unmount
@@ -495,10 +547,10 @@ export function RemoteSessionConsole(props: Props) {
         const text = inputValueRef.current.trim();
         if (!text || sending) return;
         setSending(true);
-        setLastSendInfo("");
+        setSendFeedback(null);
         try {
             await SendRemoteSessionInput(session.id, text + "\n");
-            showSendInfo(`OK "${text}"`);
+            showSendInfo(true, `"${text}"`);
             inputValueRef.current = "";
             setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: "" }));
             setTimeout(() => refreshSessionsOnly(), 200);
@@ -506,7 +558,7 @@ export function RemoteSessionConsole(props: Props) {
             setTimeout(() => refreshSessionsOnly(), 2000);
             setTimeout(() => refreshSessionsOnly(), 5000);
         } catch (e) {
-            showSendInfo(`ERR ${String(e)}`);
+            showSendInfo(false, String(e));
         }
         setSending(false);
     }, [session.id, sending, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo]);
@@ -527,14 +579,14 @@ export function RemoteSessionConsole(props: Props) {
                 if (i < text.length - 1) await new Promise((r) => setTimeout(r, 30));
             }
             await SendRemoteSessionRawInput(session.id, "\r");
-            showSendInfo(`OK raw: "${text}"`);
+            showSendInfo(true, `raw: "${text}"`);
             inputValueRef.current = "";
             setRemoteInputDrafts((prev) => ({ ...prev, [session.id]: "" }));
             setTimeout(() => refreshSessionsOnly(), 200);
             setTimeout(() => refreshSessionsOnly(), 800);
             setTimeout(() => refreshSessionsOnly(), 2000);
         } catch (e) {
-            showSendInfo(`ERR raw: ${String(e)}`);
+            showSendInfo(false, `raw: ${String(e)}`);
         }
         setSending(false);
     }, [session.id, sending, isStructured, handleSend, setRemoteInputDrafts, refreshSessionsOnly, showSendInfo]);
@@ -553,24 +605,24 @@ export function RemoteSessionConsole(props: Props) {
         try {
             if (isStructured) {
                 await InterruptRemoteSession(session.id);
-                showSendInfo("OK Interrupt");
+                showSendInfo(true, "Interrupt");
             } else {
                 await SendRemoteSessionRawInput(session.id, "\x03");
-                showSendInfo("OK Ctrl+C");
+                showSendInfo(true, "Ctrl+C");
             }
             setTimeout(() => refreshSessionsOnly(), 300);
         } catch (e) {
-            showSendInfo(`ERR Ctrl+C: ${String(e)}`);
+            showSendInfo(false, `Ctrl+C: ${String(e)}`);
         }
     }, [session.id, isStructured, refreshSessionsOnly, showSendInfo]);
 
     const handleEsc = useCallback(async () => {
         try {
             await SendRemoteSessionRawInput(session.id, "\x1b");
-            showSendInfo("OK Esc");
+            showSendInfo(true, "Esc");
             setTimeout(() => refreshSessionsOnly(), 300);
         } catch (e) {
-            showSendInfo(`ERR Esc: ${String(e)}`);
+            showSendInfo(false, `Esc: ${String(e)}`);
         }
     }, [session.id, refreshSessionsOnly, showSendInfo]);
 
@@ -608,11 +660,11 @@ export function RemoteSessionConsole(props: Props) {
 
     const handleImageFile = useCallback(async (file: File) => {
         if (!SUPPORTED_IMAGE_TYPES.includes(file.type)) {
-            showSendInfo(localizeText(currentLang, "ERR Unsupported image format. Only PNG/JPEG/GIF/WebP are allowed", "ERR 不支持的图片格式，仅支持 PNG/JPEG/GIF/WebP", "ERR 不支援的圖片格式，僅支援 PNG/JPEG/GIF/WebP"));
+            showSendInfo(false, localizeText(currentLang, "Unsupported image format. Only PNG/JPEG/GIF/WebP are allowed", "不支持的图片格式，仅支持 PNG/JPEG/GIF/WebP", "不支援的圖片格式，僅支援 PNG/JPEG/GIF/WebP"));
             return;
         }
         if (file.size > MAX_IMAGE_SIZE) {
-            showSendInfo(localizeText(currentLang, "ERR Image exceeds the 5MB limit", "ERR 图片超过 5MB 限制", "ERR 圖片超過 5MB 限制"));
+            showSendInfo(false, localizeText(currentLang, "Image exceeds the 5MB limit", "图片超过 5MB 限制", "圖片超過 5MB 限制"));
             return;
         }
         setImageUploading(true);
@@ -629,12 +681,12 @@ export function RemoteSessionConsole(props: Props) {
                 reader.readAsDataURL(file);
             });
             await SendRemoteSessionImage(session.id, file.type, base64);
-            showSendInfo(`${localizeText(currentLang, "OK Image sent", "OK 图片已发送", "OK 圖片已發送")} (${(file.size / 1024).toFixed(0)}KB)`);
+            showSendInfo(true, `${localizeText(currentLang, "Image sent", "图片已发送", "圖片已發送")} (${(file.size / 1024).toFixed(0)}KB)`);
             setTimeout(() => refreshSessionsOnly(), 200);
             setTimeout(() => refreshSessionsOnly(), 800);
             setTimeout(() => refreshSessionsOnly(), 2000);
         } catch (e) {
-            showSendInfo(`${localizeText(currentLang, "ERR Failed to send image", "ERR 图片发送失败", "ERR 圖片發送失敗")}: ${String(e)}`);
+            showSendInfo(false, `${localizeText(currentLang, "Failed to send image", "图片发送失败", "圖片發送失敗")}: ${String(e)}`);
         }
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
@@ -674,14 +726,14 @@ export function RemoteSessionConsole(props: Props) {
         try {
             if (title.trim()) {
                 await CaptureRemoteWindowScreenshot(session.id, title.trim());
-                showSendInfo(`${localizeText(currentLang, "OK Window screenshot sent", "OK 窗口截图已发送", "OK 視窗截圖已發送")}: ${title.trim()}`);
+                showSendInfo(true, `${localizeText(currentLang, "Window screenshot sent", "窗口截图已发送", "視窗截圖已發送")}: ${title.trim()}`);
             } else {
                 await CaptureRemoteScreenshot(session.id);
-                showSendInfo(localizeText(currentLang, "OK Fullscreen screenshot sent", "OK 全屏截图已发送", "OK 全螢幕截圖已發送"));
+                showSendInfo(true, localizeText(currentLang, "Fullscreen screenshot sent", "全屏截图已发送", "全螢幕截圖已發送"));
             }
             setTimeout(() => refreshSessionsOnly(), 500);
         } catch (e) {
-            showSendInfo(`${localizeText(currentLang, "ERR Screenshot failed", "ERR 截图失败", "ERR 截圖失敗")}: ${String(e)}`);
+            showSendInfo(false, `${localizeText(currentLang, "Screenshot failed", "截图失败", "截圖失敗")}: ${String(e)}`);
         }
         setImageUploading(false);
     }, [session.id, refreshSessionsOnly, showSendInfo]);
@@ -752,7 +804,7 @@ export function RemoteSessionConsole(props: Props) {
                 responseLines.push(
                     <div key={`img-${img.image_id}`} style={{ margin: "8px 0", textAlign: "left" }}>
                         <div style={{ color: "#94a3b8", fontSize: "10px", marginBottom: "4px" }}>
-                            🖼 {img.media_type}
+                            {img.media_type}
                         </div>
                         <img
                             src={`data:${img.media_type};base64,${img.data}`}
@@ -823,7 +875,7 @@ export function RemoteSessionConsole(props: Props) {
 
         for (let i = 0; i < merged.length; i++) {
             const line = merged[i];
-            const isUserInput = line.startsWith("❯ ");
+            const isUserInput = isUserPromptLine(line);
 
             if (isUserInput) {
                 if (inCodeBlock) { flushCodeBlock(); inCodeBlock = false; }
@@ -831,9 +883,13 @@ export function RemoteSessionConsole(props: Props) {
                 if (elements.length > 0) {
                     elements.push(<div key={`div-${i}`} style={userDividerStyle} />);
                 }
+                // Strip legacy prompt glyph; show SVG chevron instead.
                 elements.push(
-                    <div key={`line-${i}`} style={promptStyleQA}>
-                        {line}
+                    <div key={`line-${i}`} style={{ ...promptStyleQA, display: "flex", alignItems: "flex-start", gap: 4 }}>
+                        <span style={{ display: "inline-flex", marginTop: 2, flexShrink: 0 }} aria-hidden="true">
+                            <IconChevronRight size={12} color="currentColor" />
+                        </span>
+                        <span style={{ minWidth: 0 }}>{stripUserPromptPrefix(line)}</span>
                     </div>
                 );
             } else {
@@ -853,7 +909,7 @@ export function RemoteSessionConsole(props: Props) {
                 } else {
                     // Check if this is a "special" line (heading, list, blockquote, etc.)
                     const trimmed = line.trimStart();
-                    const isSpecialLine = /^(#{1,4}\s|>\s|[-*]\s|\d+[.)]\s|⚡|⏺|⏳|✓|✅|✗|⚠|❌|[A-Z]:\\|~\/|\/[a-z][\w.\-]*\/)/.test(trimmed);
+                    const isSpecialLine = SPECIAL_LINE_PREFIX.test(trimmed);
                     if (isSpecialLine) {
                         // Flush any accumulated plain text first
                         if (plainTextBuf.length > 0) {
@@ -874,7 +930,7 @@ export function RemoteSessionConsole(props: Props) {
                             while (i + 1 < merged.length) {
                                 const nextLine = merged[i + 1];
                                 const nextTrimmed = nextLine.trimStart();
-                                if (nextTrimmed === "" || /^(#{1,4}\s|>\s|[-*]\s|\d+[.)]\s|⚡|⏺|⏳|✓|✅|✗|⚠|❌|[A-Z]:\\|~\/|\/[a-z][\w.\-]*\/|```)/.test(nextTrimmed) || nextLine.startsWith("❯ ")) break;
+                                if (nextTrimmed === "" || SPECIAL_LINE_PREFIX.test(nextTrimmed) || nextTrimmed.startsWith("```") || isUserPromptLine(nextLine)) break;
                                 itemText += " " + nextTrimmed;
                                 i++;
                             }
@@ -1032,23 +1088,21 @@ export function RemoteSessionConsole(props: Props) {
                 </div>
             )}
 
-            {lastSendInfo && (
-                <div style={{
-                    padding: "2px 10px",
-                    background: lastSendInfo.startsWith("OK") ? "rgba(79, 127, 111, 0.12)" : "rgba(196, 61, 52, 0.12)",
-                    color: lastSendInfo.startsWith("OK") ? "var(--theme-success, #4f7f6f)" : "var(--theme-danger, #e07a72)",
-                    fontSize: "11px",
-                    fontFamily: "Consolas, monospace",
-                    flexShrink: 0,
-                }}>
-                    {lastSendInfo}
+            {sendFeedback && (
+                <div style={sendFeedback.ok ? SEND_FEEDBACK_BAR_OK : SEND_FEEDBACK_BAR_ERR} role="status">
+                    {sendFeedback.ok
+                        ? <IconCheck size={12} color="currentColor" />
+                        : <IconCross size={12} color="currentColor" />}
+                    <span>{sendFeedback.text}</span>
                 </div>
             )}
 
             {/* ── Input bar ── */}
             {!readOnly && (
             <div style={inputBarStyle}>
-                <span style={promptStyle}>❯</span>
+                <span style={{ ...promptStyle, display: "inline-flex", alignItems: "center" }}>
+                    <IconChevronRight size={14} color="currentColor" />
+                </span>
                 <input
                     ref={inputRef}
                     type="text"

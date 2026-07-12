@@ -15,7 +15,7 @@
 1. **ConversationContext 是内存结构**：短期记忆，Hub 重启清空，不持久化。摘要生成异步，不阻塞消息响应。
 2. **SpaceState 嵌入 Coordinator**：不新建文件，作为 Coordinator 的内部状态管理。状态转换严格由命令驱动（私聊），IntentClassifier 仅可触发会议。
 3. **@ 解析统一为 ParseMentions 函数**：所有空间状态共用同一个解析器，语义由空间状态决定。
-4. **会议上下文前缀在 deliver 层拼接**：零 LLM token 消耗，每条讨论回复自带 `🗣️ 会议 | {话题} | 第{N}轮` 前缀。
+4. **会议上下文前缀在 deliver 层拼接**：零 LLM token 消耗，每条讨论回复自带 `会议 | {话题} | 第{N}轮` 前缀。
 5. **讨论 bug 修复最小化**：`runDiscussion`/`runConductedDiscussion` 的 defer 中 `delete(r.discussions, userID)`，一行修复。
 6. **direct_answer 复用 IntentClassifier**：新增意图类型，不新建组件。单设备场景用简化 prompt。
 
@@ -215,8 +215,8 @@ func (s *spaceStateStore) Reset(userID string)
 ```
          → lobby    → private   → meeting
 lobby      -        /call name  /discuss 或 IntentClassifier(discuss)
-private   /call all  -          ✗ (拒绝)
-meeting   /stop      ✗ (拒绝)   -
+private   /call all  -          (拒绝)
+meeting   /stop      (拒绝)   -
 ```
 
 ### 3. HubDirectAnswer（Hub 直接应答）
@@ -433,7 +433,7 @@ wsMsg := map[string]interface{}{
 
 ```go
 func (dc *DiscussionConductor) deliverRoundReplies(..., topic string, round int) {
-    prefix := fmt.Sprintf("🗣️ 会议 | %s | 第%d轮", truncate(topic, 20), round)
+    prefix := fmt.Sprintf("会议 | %s | 第%d轮", truncate(topic, 20), round)
     for _, d := range devices {
         text := replies[d.MachineID]
         msg := fmt.Sprintf("%s\n[%s] %s", prefix, d.Name, text)
@@ -449,7 +449,7 @@ func (dc *DiscussionConductor) deliverRoundReplies(..., topic string, round int)
 func (c *Coordinator) handleMeetingSideChat(ctx, userID, platformName, platformUID string, targets []string, body string, state *SpaceState) {
     // 并行发送给所有被 @ 的设备
     // 收集回复
-    // 格式化为 "💬 主持人与安妮、小明的小会：\n用户: {body}\n[安妮] {reply}\n[小明] {reply}"
+    // 格式化为 "主持人与安妮、小明的小会：\n用户: {body}\n[安妮] {reply}\n[小明] {reply}"
     // 写入 DiscussionContext（通过 InjectUserInput 或直接追加到 ConductedRound）
     // 回复发送给用户（带会议前缀）
 }

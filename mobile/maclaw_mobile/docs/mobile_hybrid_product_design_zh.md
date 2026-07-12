@@ -307,7 +307,7 @@ Bootstrap 建议字段：
 4. 付费套餐权益表：`mobilePlanCapsFor` 单源 + env 覆盖 + `GET .../entitlements/caps` + 账号页实时卡片  
 5. 统一 jobs 筛选 + 未关闭 `ssh_session`  
 6. SSH 完成/下载通知  
-7. raw PTY：Tab/Enter/Esc/^C/^D/方向键；输出 HTTP↔realtime 去重  
+7. raw PTY：Tab/Enter/Esc/^C/^D/方向键；输出 HTTP<->realtime 去重  
 
 ### Phase E（已完成）
 

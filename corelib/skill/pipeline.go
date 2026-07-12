@@ -242,11 +242,11 @@ func FormatPipelineResult(result *PipelineResult) string {
 	b.WriteString(fmt.Sprintf("Pipeline 状态: %s\n", result.Status))
 
 	for i, sr := range result.StepResults {
-		icon := "✅"
+		icon := ""
 		if sr.Status.IsFailed() {
-			icon = "❌"
+			icon = ""
 		} else if sr.Status.IsSkipped() {
-			icon = "⏭️"
+			icon = ""
 		}
 		b.WriteString(fmt.Sprintf("  %d. %s %s (%s)", i+1, icon, sr.Skill, sr.Duration))
 		if sr.Error != "" {

@@ -16,13 +16,13 @@
 
 - [x] 3. Add busy-state guidance to `send_and_observe` return value
   - [x] 3.1 After the polling loop in `toolSendAndObserve`, before calling `toolGetSessionOutput`, check if session status is still `SessionBusy`. If so, set a flag `stillBusy = true`
-  - [x] 3.2 After getting output from `toolGetSessionOutput`, if `stillBusy` is true, append hint: `"\n\n⏳ 编程工具仍在工作中（状态: busy）。请等待 15-30 秒后调用 get_session_output(session_id=\"%s\") 检查进度。不要终止会话。"`
+  - [x] 3.2 After getting output from `toolGetSessionOutput`, if `stillBusy` is true, append hint: `"\n\n编程工具仍在工作中（状态: busy）。请等待 15-30 秒后调用 get_session_output(session_id=\"%s\") 检查进度。不要终止会话。"`
 
 - [x] 4. Add busy-state hint in `toolGetSessionOutput`
-  - [x] 4.1 In `toolGetSessionOutput`, after the existing `starting` state hint block (around the `} else if status == string(SessionStarting) {` block), add a new condition: when `status == string(SessionBusy)`, append hint `"\n⏳ 编程工具正在工作中，请等待 15-30 秒后再次检查进度。不要终止正在工作的会话。"`
+  - [x] 4.1 In `toolGetSessionOutput`, after the existing `starting` state hint block (around the `} else if status == string(SessionStarting) {` block), add a new condition: when `status == string(SessionBusy)`, append hint `"\n编程工具正在工作中，请等待 15-30 秒后再次检查进度。不要终止正在工作的会话。"`
 
 - [x] 5. Update system prompt for long-running task guidance
-  - [x] 5.1 In the system prompt string (around line 1560), replace step 4 content. Change `"4. 跟踪进度：根据输出跟踪执行情况，必要时追加指令\n⚠️ 编程工具启动后会等待输入，不发送指令它不会开始工作。不要反复轮询 get_session_output。"` to new guidance that: (a) distinguishes quick vs long tasks, (b) instructs Agent to call `get_session_output` every 15-30s for busy sessions, (c) warns against terminating busy sessions prematurely
+  - [x] 5.1 In the system prompt string (around line 1560), replace step 4 content. Change `"4. 跟踪进度：根据输出跟踪执行情况，必要时追加指令\n编程工具启动后会等待输入，不发送指令它不会开始工作。不要反复轮询 get_session_output。"` to new guidance that: (a) distinguishes quick vs long tasks, (b) instructs Agent to call `get_session_output` every 15-30s for busy sessions, (c) warns against terminating busy sessions prematurely
 
 ## Fix Verification Phase
 
@@ -38,6 +38,6 @@
   - [x] 7.1 Write test: `TestSendAndObserve_ExitedSession_PreservesEarlyReturn` — verify `send_and_observe` returns immediately (< 2s) when session exits during polling, with no busy hint appended
   - [x] 7.2 Write test: `TestSendAndObserve_WaitingInput_PreservesEarlyReturn` — verify `send_and_observe` returns immediately when session enters `waiting_input`, with no busy hint
   - [x] 7.3 Write test: `TestSendAndObserve_FastOutput_PreservesEarlyReturn` — verify `send_and_observe` returns immediately when meaningful output (>1 new line) appears within first 2s
-  - [x] 7.4 Write test: `TestGetSessionOutput_ExitedError_PreservesStopLoss` — verify 🛑 stop-loss hint is still present for exited sessions with non-zero exit code
+  - [x] 7.4 Write test: `TestGetSessionOutput_ExitedError_PreservesStopLoss` — verify stop-loss hint is still present for exited sessions with non-zero exit code
   - [x] 7.5 Write test: `TestGetSessionOutput_RunningNoOutput_PreservesHint` — verify "编程工具在等待输入" hint is still present for running sessions with no output
   - [x] 7.6 Write test: `TestGetSessionOutput_StartingState_PreservesHint` — verify "会话正在启动中" hint is still present for starting sessions

@@ -1409,30 +1409,15 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 }
 
 func (r *machineRepo) UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error {
+	// Match enroll/runtime policy: unset → 30s default, tiny values clamp to 5s min.
 	heartbeatSec := metadata.HeartbeatIntervalSec
-	if heartbeatSec < 5 {
-		heartbeatSec = 10
+	if heartbeatSec <= 0 || heartbeatSec > 3600 {
+		heartbeatSec = 30
+	} else if heartbeatSec < 5 {
+		heartbeatSec = 5
 	}
-	// Use write-coalescer: metadata updates arrive on every heartbeat (~every 10-60s
-	// per machine). At 10K machines, that's 167-1000 writes/sec. The coalescer
-	// deduplicates per machineID, only flushing the latest values every 5s.
-	if r.coalesce != nil {
-		r.coalesce.Set(
-			"machine_meta:"+machineID,
-			`UPDATE machines
-			 SET name = ?, platform = ?, hostname = ?, arch = ?, app_version = ?, heartbeat_sec = ?, updated_at = ?
-			 WHERE id = ?`,
-			metadata.Name,
-			metadata.Platform,
-			metadata.Hostname,
-			metadata.Arch,
-			metadata.AppVersion,
-			heartbeatSec,
-			time.Now().Format(time.RFC3339),
-			machineID,
-		)
-		return nil
-	}
+	// Metadata writes are infrequent relative to last-seen heartbeats and must be
+	// durable promptly (enroll path + hello). Do not route through the coalescer.
 	return execWrite(
 		ctx,
 		r.batch,

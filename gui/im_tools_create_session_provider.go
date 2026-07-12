@@ -33,7 +33,7 @@ func resolveCreateSessionProvider(cfg corelib.AppConfig, toolName, providerOverr
 	}
 	if err != nil {
 		return createSessionProviderResolution{
-			Error: fmt.Sprintf("❌ 无法创建会话：%s\n请在桌面端为 %s 配置至少一个有效的服务商。", err.Error(), toolName),
+			Error: fmt.Sprintf("无法创建会话：%s\n请在桌面端为 %s 配置至少一个有效的服务商。", err.Error(), toolName),
 		}
 	}
 
@@ -41,7 +41,7 @@ func resolveCreateSessionProvider(cfg corelib.AppConfig, toolName, providerOverr
 		ResolvedProvider: resolveResult.Provider.ModelName,
 	}
 	if resolveResult.Fallback {
-		resolution.Hints = append(resolution.Hints, fmt.Sprintf("⚡ 服务商已降级: %s → %s", resolveResult.OriginalName, resolveResult.Provider.ModelName))
+		resolution.Hints = append(resolution.Hints, fmt.Sprintf("服务商已降级: %s → %s", resolveResult.OriginalName, resolveResult.Provider.ModelName))
 	}
 	return resolution
 }

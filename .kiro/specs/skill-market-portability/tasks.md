@@ -157,13 +157,13 @@ Implement a portability validation and auto-fix pipeline for skills before marke
 
 - [x] 5. Implement report formatter
   - [x] 5.1 Create `corelib/skill/portability_format.go` with `FormatPortabilityReport(report *PortabilityReport) string` and `FormatPortabilityChanges(changes []PortabilityChange) string`
-    - Use severity indicators: ❌ error, ⚠️ warning, ℹ️ info
-    - Include category, file, message, and 💡 suggestion for each issue
+    - Use severity indicators: error, warning, ℹ️ info
+    - Include category, file, message, and suggestion for each issue
     - Include summary line and market-ready status
     - _Requirements: 4.6_
 
   - [ ]* 5.2 Write unit test for format output
-    - `TestFormatReport_SeverityIndicators` — verify ❌/⚠️/ℹ️ appear in formatted output for each severity level
+    - `TestFormatReport_SeverityIndicators` — verify //ℹ️ appear in formatted output for each severity level
     - _Requirements: 4.6_
 
 - [x] 6. Checkpoint

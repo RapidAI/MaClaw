@@ -425,18 +425,18 @@ func main() {
 		token:  *token,
 	}
 
-	log.Printf("[maclaw-tool] ▶ Starting: version=%s, hub=%s, command=%s %s, time=%s",
+	log.Printf("[maclaw-tool] Starting: version=%s, hub=%s, command=%s %s, time=%s",
 		version, *hubURL, command, action, time.Now().Format(time.RFC3339))
 
 	if err := client.Connect(); err != nil {
-		log.Fatalf("[maclaw-tool] ✖ Connection failed: %v\nCheck Hub URL (%s) and token.", err, *hubURL)
+		log.Fatalf("[maclaw-tool] ERR Connection failed: %v\nCheck Hub URL (%s) and token.", err, *hubURL)
 	}
 	defer func() {
 		client.Close()
-		log.Printf("[maclaw-tool] ◼ Disconnected from Hub, time=%s", time.Now().Format(time.RFC3339))
+		log.Printf("[maclaw-tool] Disconnected from Hub, time=%s", time.Now().Format(time.RFC3339))
 	}()
 
-	log.Printf("[maclaw-tool] ✔ Connected to Hub at %s", *hubURL)
+	log.Printf("[maclaw-tool] OK Connected to Hub at %s", *hubURL)
 
 	var err error
 	switch action {
@@ -469,7 +469,7 @@ func main() {
 	}
 
 	if err != nil {
-		log.Fatalf("[maclaw-tool] ✖ Error: %v", err)
+		log.Fatalf("[maclaw-tool] ERR Error: %v", err)
 	}
-	log.Printf("[maclaw-tool] ✔ Command completed: %s %s", command, action)
+	log.Printf("[maclaw-tool] OK Command completed: %s %s", command, action)
 }

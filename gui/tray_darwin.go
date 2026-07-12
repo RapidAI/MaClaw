@@ -61,7 +61,7 @@ func setupTrayNative(app *App, appOptions *options.App) {
 		}
 
 		OnConfigChanged = func(cfg corelib.AppConfig) {
-			runtime.EventsEmit(app.ctx, "config-changed", cfg)
+			app.emitEvent("config-changed", cfg)
 		}
 
 		ShowNotification = func(title, message string, iconFlag uint32) {

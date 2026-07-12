@@ -2,7 +2,8 @@ import type { Dispatch, SetStateAction } from 'react';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { LoadConfig, RestartQQBot, SetQQBotLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
-import { channelModeLabel, connectionStatusLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 
 type QQBotSettingsProps = {
     config: main.AppConfig | null;
@@ -46,7 +47,7 @@ export const QQBotSettings = ({
             </button>
             {config?.qqbot_enabled && (
                 <>
-                    <span className="im-settings-status" data-status={qqBotStatus}>{connectionStatusLabel(qqBotStatus, lang)}</span>
+                    <ConnectionStatusBadge status={qqBotStatus} lang={lang} />
                     <button type="button" className="im-settings-button" onClick={() => RestartQQBot().then(setQQBotStatus)}>
                         {restartLabel(lang)}
                     </button>

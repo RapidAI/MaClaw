@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -130,6 +131,8 @@ func (r *ToolRegistry) ListAvailable() []RegisteredTool {
 			out = append(out, *t)
 		}
 	}
+	// Stable alphabetical order keeps LLM tool-list prefix cache hits stable.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

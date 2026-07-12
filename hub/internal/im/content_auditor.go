@@ -227,13 +227,13 @@ func (ca *ContentAuditor) Audit(ctx context.Context, userID, platform string, re
 		blockMsg := blockMessage(returnCode)
 		result.Response = &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Body:       blockMsg,
 		}
 	case AuditManualReview:
 		result.Response = &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "⏳",
+			StatusIcon: "busy",
 			Body:       "内容需要人工审核，请等待管理员审批",
 		}
 	case AuditSanitize:
@@ -245,7 +245,7 @@ func (ca *ContentAuditor) Audit(ctx context.Context, userID, platform string, re
 	case AuditDelay:
 		result.Response = &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "⏳",
+			StatusIcon: "busy",
 			Body:       "内容正在审核中，请稍候",
 		}
 	case AuditError:
@@ -256,7 +256,7 @@ func (ca *ContentAuditor) Audit(ctx context.Context, userID, platform string, re
 			result.Action = AuditBlock
 			result.Response = &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "⚠️",
+				StatusIcon: "warning",
 				Body:       "内容审核服务异常，消息已被拦截",
 			}
 		}
@@ -309,7 +309,7 @@ func (ca *ContentAuditor) StartDelayPolling(ctx context.Context, userID, platfor
 				} else {
 					deliverFn(pollCtx, &GenericResponse{
 						StatusCode: 200,
-						StatusIcon: "⚠️",
+						StatusIcon: "warning",
 						Body:       "内容审核服务异常，消息已被拦截",
 					})
 				}
@@ -323,14 +323,14 @@ func (ca *ContentAuditor) StartDelayPolling(ctx context.Context, userID, platfor
 			case 2:
 				deliverFn(pollCtx, &GenericResponse{
 					StatusCode: 200,
-					StatusIcon: "⚠️",
+					StatusIcon: "warning",
 					Body:       "内容不符合数据安全规则，已被拦截",
 				})
 				return
 			case 3:
 				deliverFn(pollCtx, &GenericResponse{
 					StatusCode: 200,
-					StatusIcon: "⚠️",
+					StatusIcon: "warning",
 					Body:       "内容包含非法信息，已被拦截",
 				})
 				return
@@ -344,7 +344,7 @@ func (ca *ContentAuditor) StartDelayPolling(ctx context.Context, userID, platfor
 				} else {
 					deliverFn(pollCtx, &GenericResponse{
 						StatusCode: 200,
-						StatusIcon: "⚠️",
+						StatusIcon: "warning",
 						Body:       "内容审核服务异常，消息已被拦截",
 					})
 				}
@@ -355,7 +355,7 @@ func (ca *ContentAuditor) StartDelayPolling(ctx context.Context, userID, platfor
 		// Exceeded max poll attempts.
 		deliverFn(pollCtx, &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Body:       "审核超时，内容未通过",
 		})
 	}()

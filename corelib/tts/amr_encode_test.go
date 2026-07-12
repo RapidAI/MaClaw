@@ -1,11 +1,17 @@
 package tts
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEncodeWAVToAMR(t *testing.T) {
 	wav := generateTestWAV(16000, 1, 0.2, 440)
 	amr, err := EncodeWAVToAMR(wav)
 	if err != nil {
+		if strings.Contains(err.Error(), "unavailable without cgo") {
+			t.Skip(err.Error())
+		}
 		t.Fatalf("EncodeWAVToAMR() error = %v", err)
 	}
 	if string(amr[:6]) != "#!AMR\n" {

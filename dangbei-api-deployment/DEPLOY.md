@@ -534,9 +534,9 @@ go run ./cmd/ds2api-tests \
 
 测试集自动执行内容：
 
-- ✅ 语法/构建/单测 preflight
-- ✅ 隔离副本配置启动服务（不污染原始 `config.json`）
-- ✅ 真实调用场景验证（OpenAI/Claude/Admin/并发/toolcall/流式）
-- ✅ 全量请求与响应日志落盘（用于故障复盘）
+- 语法/构建/单测 preflight
+- 隔离副本配置启动服务（不污染原始 `config.json`）
+- 真实调用场景验证（OpenAI/Claude/Admin/并发/toolcall/流式）
+- 全量请求与响应日志落盘（用于故障复盘）
 
 详细测试集说明参阅 [TESTING.md](TESTING.md)。

@@ -13,6 +13,7 @@ type manageSkillAction string
 const (
 	manageSkillActionUnknown                manageSkillAction = ""
 	manageSkillActionList                   manageSkillAction = "list"
+	manageSkillActionInfo                   manageSkillAction = "info"
 	manageSkillActionSearch                 manageSkillAction = "search"
 	manageSkillActionInstall                manageSkillAction = "install"
 	manageSkillActionUninstall              manageSkillAction = "uninstall"
@@ -23,13 +24,21 @@ const (
 	manageSkillActionPatch                  manageSkillAction = "patch"
 	manageSkillActionHistory                manageSkillAction = "history"
 	manageSkillActionMaintenancePlan        manageSkillAction = "maintenance_plan"
+	manageSkillActionMaintenanceDrafts      manageSkillAction = "maintenance_drafts"
 	manageSkillActionExecuteMaintenancePlan manageSkillAction = "execute_maintenance_plan"
+	manageSkillActionEvolutionStatus        manageSkillAction = "evolution_status"
+	manageSkillActionEvolutionAudit         manageSkillAction = "evolution_audit"
+	manageSkillActionSetEvolutionEnabled    manageSkillAction = "set_evolution_enabled"
+	manageSkillActionTriggerRepair          manageSkillAction = "trigger_repair"
+	manageSkillActionTriggerOptimize        manageSkillAction = "trigger_optimize"
 )
 
 func classifyManageSkillAction(action string) manageSkillAction {
 	switch manageSkillAction(cskill.NormalizeManageSkillAction(action)) {
 	case manageSkillActionList:
 		return manageSkillActionList
+	case manageSkillActionInfo:
+		return manageSkillActionInfo
 	case manageSkillActionSearch:
 		return manageSkillActionSearch
 	case manageSkillActionInstall:
@@ -50,8 +59,20 @@ func classifyManageSkillAction(action string) manageSkillAction {
 		return manageSkillActionHistory
 	case manageSkillActionMaintenancePlan:
 		return manageSkillActionMaintenancePlan
+	case manageSkillActionMaintenanceDrafts:
+		return manageSkillActionMaintenanceDrafts
 	case manageSkillActionExecuteMaintenancePlan:
 		return manageSkillActionExecuteMaintenancePlan
+	case manageSkillActionEvolutionStatus:
+		return manageSkillActionEvolutionStatus
+	case manageSkillActionEvolutionAudit:
+		return manageSkillActionEvolutionAudit
+	case manageSkillActionSetEvolutionEnabled:
+		return manageSkillActionSetEvolutionEnabled
+	case manageSkillActionTriggerRepair:
+		return manageSkillActionTriggerRepair
+	case manageSkillActionTriggerOptimize:
+		return manageSkillActionTriggerOptimize
 	default:
 		return manageSkillAction(strings.TrimSpace(action))
 	}
@@ -67,6 +88,8 @@ func (h *IMMessageHandler) toolManageSkill(ctx context.Context, args map[string]
 	switch classifyManageSkillAction(action) {
 	case manageSkillActionList:
 		return h.toolListSkills()
+	case manageSkillActionInfo:
+		return h.toolSkillInfo(args)
 	case manageSkillActionSearch:
 		return h.toolSearchSkillHub(args)
 	case manageSkillActionInstall:
@@ -87,8 +110,20 @@ func (h *IMMessageHandler) toolManageSkill(ctx context.Context, args map[string]
 		return h.toolSkillPatchHistory(args)
 	case manageSkillActionMaintenancePlan:
 		return h.toolSkillMaintenancePlan(args)
+	case manageSkillActionMaintenanceDrafts:
+		return h.toolSkillMaintenanceDrafts(args)
 	case manageSkillActionExecuteMaintenancePlan:
 		return h.toolExecuteSkillMaintenancePlan(args)
+	case manageSkillActionEvolutionStatus:
+		return h.toolSkillEvolutionStatus(args)
+	case manageSkillActionEvolutionAudit:
+		return h.toolSkillEvolutionAudit(args)
+	case manageSkillActionSetEvolutionEnabled:
+		return h.toolSetSkillEvolutionEnabled(args)
+	case manageSkillActionTriggerRepair:
+		return h.toolTriggerSkillRepair(args)
+	case manageSkillActionTriggerOptimize:
+		return h.toolTriggerSkillOptimize(args)
 	default:
 		return cskill.ManageSkillUnknownActionError(action)
 	}

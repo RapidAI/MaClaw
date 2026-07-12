@@ -405,6 +405,34 @@
     color: var(--apps-icon-color, var(--theme-primary-strong));
     background: color-mix(in srgb, var(--theme-surface-muted) 82%, var(--theme-surface));
     border: 1px solid var(--theme-border-subtle);
+    position: relative;
+}
+
+.apps-app-tile__workspace-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 12px;
+    height: 12px;
+    padding: 0 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--theme-danger, #e11d48) 92%, #fff);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 12px;
+    text-align: center;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-surface) 80%, transparent);
+    pointer-events: none;
+}
+
+.apps-app-tile.has-workspace-issue {
+    border-color: color-mix(in srgb, var(--theme-danger, #e11d48) 35%, var(--theme-border-subtle));
+}
+
+.apps-app-tile.has-workspace-issue:hover,
+.apps-app-tile.has-workspace-issue:focus-visible {
+    border-color: color-mix(in srgb, var(--theme-danger, #e11d48) 48%, var(--theme-border));
 }
 
 .apps-app-icon svg {

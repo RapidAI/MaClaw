@@ -244,12 +244,21 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 		status.EffectiveExpiresAt = effectiveExpiresAt.Format(time.RFC3339)
 	}
 	status.CreditsAvailable = roundCredits(creditsAvailable)
-	if status.Active && len(serviceGroupIDs) > 0 && (hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, serviceGroupIDs, now)) {
+	// Unlimited free path: hide credit meters when nothing is currently
+	// spendable on a metered grant (CreditsAvailable==0). If a paid point card
+	// is currently spendable (Available>0), keep showing its balance even when
+	// a free unlimited gift is also present.
+	if status.Active && len(serviceGroupIDs) > 0 && status.CreditsAvailable <= 0 && (hasUnlimitedActiveGrantForServiceGroups(reg, owner, serviceGroupIDs, now) || hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, serviceGroupIDs, now)) {
 		status.CreditsTotal = 0
 		status.CreditsUsed = 0
 		status.CreditsRemaining = 0
 		status.CreditsAvailable = 0
-	} else if (status.Active || status.CreditsRemaining == 0) && status.CreditsAvailable > 0 {
+	} else if status.CreditsAvailable > status.CreditsRemaining {
+		// Early-started queued top-ups can make currently spendable credits exceed
+		// effective lifetime remaining. Lift remaining up so UI is not understated.
+		// Never shrink remaining down to a period window (Available < Remaining).
+		status.CreditsRemaining = status.CreditsAvailable
+	} else if status.CreditsRemaining <= 0 && status.CreditsAvailable > 0 {
 		status.CreditsRemaining = status.CreditsAvailable
 	}
 	if status.CreditsRemaining > 0 && status.CreditsTotal < status.CreditsUsed+status.CreditsRemaining {
@@ -515,6 +524,12 @@ func RedeemCardForUserID(ctx context.Context, system SystemSettingsRepository, s
 	if err != nil {
 		return nil, err
 	}
+	// Promote historical metered grants still queued under the old policy so a
+	// fresh top-up is not stacked after an obsolete queue window. Best-effort
+	// persist so a failed redeem code still repairs ownership timeline.
+	if n := PromoteQueuedMeteredGrants(reg, time.Now().UTC()); n > 0 {
+		_ = SaveRegistry(ctx, system, reg)
+	}
 	card, idx := reg.FindCardByCode(code)
 	if card == nil || idx < 0 {
 		return nil, fmt.Errorf("invalid redeem code")
@@ -545,7 +560,13 @@ func RedeemCardForUserID(ctx context.Context, system SystemSettingsRepository, s
 		creditsPerGroup = card.Credits / float64(len(validServiceGroupIDs))
 	}
 	for _, serviceGroupID := range validServiceGroupIDs {
-		startsAt := nextGrantStart(reg, owner, serviceGroupID, now)
+		// Metered top-ups (credits > 0) always start immediately so purchased
+		// point cards increase available balance right away. Duration-only /
+		// unmetered cards still queue after active grants to extend the window.
+		startsAt := now
+		if creditsPerGroup <= 0 {
+			startsAt = nextGrantStart(reg, owner, serviceGroupID, now)
+		}
 		expiresAt := startsAt.Add(time.Duration(days) * 24 * time.Hour)
 		reg.Grants = append(reg.Grants, Grant{
 			ID:             NewID("grant"),
@@ -572,6 +593,76 @@ func RedeemCardForUserID(ctx context.Context, system SystemSettingsRepository, s
 		return nil, err
 	}
 	return status, nil
+}
+
+// PromoteQueuedMeteredGrants starts historical metered grants that are still
+// queued (StartsAt in the future) because the old redeem policy stacked point
+// cards after an active grant. Only rewrites grants that share an owner+service
+// group with another grant already inside its validity window; a sole scheduled
+// future grant is left alone so LLM_SERVICE_GRANT_QUEUED remains meaningful.
+// Unmetered / duration-only grants (CreditsTotal <= 0) keep serial stacking.
+// Returns the number of grants rewritten.
+func PromoteQueuedMeteredGrants(reg *Registry, now time.Time) int {
+	if reg == nil {
+		return 0
+	}
+	now = now.UTC()
+	changed := 0
+	for i := range reg.Grants {
+		g := &reg.Grants[i]
+		if !g.StartsAt.After(now) {
+			continue
+		}
+		if g.CreditsTotal <= 0 {
+			// Duration-only / unlimited grants still queue for serial validity windows.
+			continue
+		}
+		if remainingGrantCredits(*g) <= 0 {
+			continue
+		}
+		owner := newUserAccountRef(g.UserID, g.Email)
+		if !hasActiveWindowGrantForOwnerGroup(reg, owner, g.ServiceGroupID, now, i) {
+			// Sole/scheduled future metered grants are intentional (admin gift, delayed start).
+			continue
+		}
+		duration := g.ExpiresAt.Sub(g.StartsAt)
+		if duration <= 0 {
+			duration = 30 * 24 * time.Hour
+		}
+		g.StartsAt = now
+		g.ExpiresAt = now.Add(duration)
+		changed++
+	}
+	return changed
+}
+
+// hasActiveWindowGrantForOwnerGroup reports whether the owner already has another
+// grant for the service group whose validity window covers now (active, exhausted,
+// or period-limited — anything with StartsAt <= now < ExpiresAt).
+func hasActiveWindowGrantForOwnerGroup(reg *Registry, owner userAccountRef, serviceGroupID string, now time.Time, skipIndex int) bool {
+	if reg == nil || owner.empty() {
+		return false
+	}
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	if serviceGroupID == "" {
+		return false
+	}
+	for i, grant := range reg.Grants {
+		if i == skipIndex {
+			continue
+		}
+		if !grantMatchesUser(grant, owner) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(grant.ServiceGroupID), serviceGroupID) {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func nextGrantStart(reg *Registry, owner userAccountRef, serviceGroupID string, now time.Time) time.Time {

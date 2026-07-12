@@ -16,9 +16,8 @@ _ = taskEmbed
 
 `Relevance` 始终为 -1，`Schedule()` 退化为 domain match + structure only。三信号决策矩阵变成了两信号，准确率大幅下降：
 
-- "颜色改红色"（当前任务: 开发游戏）→ `domainMatch=true`（都是 coding）→ Merge ✅
-- "帮我查天气"（当前任务: 开发游戏）→ `domainMatch=false` + `IsShort=true` → StatusQuery ❌（应该是 Insert）
-- "用 C++ 不要 Python"（当前任务: 开发游戏）→ `HasNegation=true` → Replace ❌（应该是 Merge，高相关的修改请求）
+- "颜色改红色"（当前任务: 开发游戏）→ `domainMatch=true`（都是 coding）→ Merge - "帮我查天气"（当前任务: 开发游戏）→ `domainMatch=false` + `IsShort=true` → StatusQuery （应该是 Insert）
+- "用 C++ 不要 Python"（当前任务: 开发游戏）→ `HasNegation=true` → Replace （应该是 Merge，高相关的修改请求）
 
 没有 Relevance 信号，调度器无法区分"与当前任务相关的修改"和"无关的新任务"。否定结构一刀切 Replace，把"不要 Python 改 C++"这种任务调整也当成了取消。
 
@@ -44,19 +43,19 @@ _ = taskEmbed
 
 | 组件 | 状态 | 位置 |
 |------|------|------|
-| `Schedule()` 三信号决策矩阵 | ✅ 已实现 | `corelib/progress/scheduler.go` |
-| `StructureSignal` + `DetectNegation` | ✅ 已实现 | `corelib/progress/structure.go` |
-| `MilestoneBuffer` + `taskEmbed` 存储 | ✅ 已实现 | `corelib/progress/milestone.go` |
-| `InterruptHandler` 接口 + 5 通道接入 | ✅ 已实现 | `corelib/progress/interrupt.go` + 各 gateway |
-| `imInterruptHandler.TryInterrupt` | ✅ 已实现（3/5 action） | `gui/im_interrupt_handler.go` |
-| `pendingInjection` Merge 注入 | ✅ 已实现 | `gui/im_message_handler.go` |
-| `AgentProgressTracker` + `RecordToolCall` | ✅ 已实现 | `corelib/progress/agent_integration.go` |
-| Embedder（memory store / tool router） | ✅ 可用 | `gui/app.go` 中 `a.memoryStore.Embedder()` |
-| `CosineSimilarity` | ✅ 已实现 | `corelib/progress/scheduler.go` |
-| Embedding 接线到 TryInterrupt | ❌ TODO | `gui/im_interrupt_handler.go:59` |
-| Insert action 实现 | ❌ 未实现 | `TryInterrupt` default 分支 |
-| Enqueue action 实现 | ❌ 未实现 | `TryInterrupt` default 分支 |
-| Merge 注入强度分级 | ❌ 未实现 | 固定 `[用户补充]` 前缀 |
+| `Schedule()` 三信号决策矩阵 | 已实现 | `corelib/progress/scheduler.go` |
+| `StructureSignal` + `DetectNegation` | 已实现 | `corelib/progress/structure.go` |
+| `MilestoneBuffer` + `taskEmbed` 存储 | 已实现 | `corelib/progress/milestone.go` |
+| `InterruptHandler` 接口 + 5 通道接入 | 已实现 | `corelib/progress/interrupt.go` + 各 gateway |
+| `imInterruptHandler.TryInterrupt` | 已实现（3/5 action） | `gui/im_interrupt_handler.go` |
+| `pendingInjection` Merge 注入 | 已实现 | `gui/im_message_handler.go` |
+| `AgentProgressTracker` + `RecordToolCall` | 已实现 | `corelib/progress/agent_integration.go` |
+| Embedder（memory store / tool router） | 可用 | `gui/app.go` 中 `a.memoryStore.Embedder()` |
+| `CosineSimilarity` | 已实现 | `corelib/progress/scheduler.go` |
+| Embedding 接线到 TryInterrupt | TODO | `gui/im_interrupt_handler.go:59` |
+| Insert action 实现 | 未实现 | `TryInterrupt` default 分支 |
+| Enqueue action 实现 | 未实现 | `TryInterrupt` default 分支 |
+| Merge 注入强度分级 | 未实现 | 固定 `[用户补充]` 前缀 |
 
 ### 2.2 核心不变量
 
@@ -172,7 +171,7 @@ type InterruptResult struct {
 ```
 
 **效果**：
-- 用户发"帮我查天气" → 立即收到"📋 收到，当前任务完成后立即处理" → 当前 loop 结束 → 消息被正常处理 → 用户收到天气结果
+- 用户发"帮我查天气" → 立即收到"收到，当前任务完成后立即处理" → 当前 loop 结束 → 消息被正常处理 → 用户收到天气结果
 - 多条 Insert 消息不会互相覆盖——每条都在 gateway 的队列里等着
 - 响应投递走 gateway 的正常路径，不需要额外的投递机制
 
@@ -192,7 +191,7 @@ case progress.ActionMerge:
     return progress.InterruptResult{
         Handled: true,
         Action:  progress.ActionMerge,
-        Reply:   "👌 收到，已纳入当前任务。",
+        Reply:   "收到，已纳入当前任务。",
     }
 ```
 
@@ -249,7 +248,7 @@ LLM 对 system message 的遵从度与措辞强度正相关。"必须立即执�
 | 4 | 查询进度 | "？"、"到哪了" | StatusQuery | 返回 `ProgressSummary()` |
 | 5 | 插入紧急任务 | "先帮我查个天气" | Insert | 存入队列 → loop 结束后自动处理 |
 | 6 | 排队等完成 | "做完这个再帮我翻译" | Enqueue | 存入队列 → loop 结束后自动处理 |
-| 7 | 否定式新任务 | "取消服务器上的定时任务" | Replace（低相关+否定）→ 实际应为 Insert | **Embedding 修复后**：低相关+否定 → Replace ✅（用户确实要放弃当前任务去做新的） |
+| 7 | 否定式新任务 | "取消服务器上的定时任务" | Replace（低相关+否定）→ 实际应为 Insert | **Embedding 修复后**：低相关+否定 → Replace （用户确实要放弃当前任务去做新的） |
 
 ### 场景 7 的特殊分析
 

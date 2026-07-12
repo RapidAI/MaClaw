@@ -1857,7 +1857,7 @@ func (h *IMMessageHandler) applyWorkflowToolFilterWithCatalogV2Compat(userID str
 			tools = ensureWorkflowRequiredTools(policy, tools, allTools)
 			return v2.FilterToolDefinitions(policy, tools)
 		}
-		tools = ensureWorkflowRequiredToolsForNames([]string{"read_file", "list_directory", "send_file"}, tools, allTools)
+		tools = ensureWorkflowRequiredToolsForNames([]string{"bash", "read_file", "list_directory", "send_file"}, tools, allTools)
 		return v2.FilterToolDefinitions(v2.ToolFilterDocOnly, tools)
 	}
 	if h != nil && h.isWorkflowArtifactPhase(userID) {

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GroupParticipantPanel } from "../GroupParticipantPanel";
@@ -132,7 +132,7 @@ describe("GroupParticipantPanel", () => {
             <GroupParticipantPanel
                 participants={[
                     { id: "ve-1", name: "Agent 1", online: true },
-                    { id: "local-maclaw", name: "Local AI", online: true, isLocal: true },
+                    { id: "local-maclaw", name: "Local", online: true, isLocal: true },
                 ]}
                 theme={theme}
                 lang="en"
@@ -140,7 +140,7 @@ describe("GroupParticipantPanel", () => {
         );
 
         expect(screen.getByLabelText("Digital employee")).toBeTruthy();
-        expect(screen.getByLabelText("Local AI")).toBeTruthy();
+        expect(screen.getByLabelText("Local")).toBeTruthy();
         expect(screen.getByTestId("participant-status-ve-1")).toBeTruthy();
         expect(screen.getByTestId("participant-status-local-maclaw")).toBeTruthy();
     });
@@ -161,7 +161,7 @@ describe("GroupParticipantPanel", () => {
 
         const image = await screen.findByTestId("participant-avatar-machine-1");
         expect(image.getAttribute("src")).toBe(avatar);
-        expect(screen.queryByLabelText("Local AI")).toBeNull();
+        expect(screen.queryByLabelText("Local")).toBeNull();
     });
 
     it("coalesces concurrent avatar list refreshes across mounted panels", async () => {
@@ -588,7 +588,7 @@ describe("GroupParticipantPanel", () => {
         );
 
         expect(screen.getByText("\u53c2\u4e0e\u8005 1")).toBeTruthy();
-        expect(screen.getByText("本机AI")).toBeTruthy();
+        expect(screen.getByText("本机")).toBeTruthy();
         expect(screen.queryByText("m_b1821505498d817c")).toBeNull();
         expect(screen.queryByTitle("local-maclaw")).toBeNull();
     });

@@ -91,28 +91,28 @@ func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func
 				Error:     "dependency not met",
 			}
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("⏭️ T%d: %s — 跳过（依赖未满足）", task.Index, task.Title))
+				onProgress(fmt.Sprintf("T%d: %s — 跳过（依赖未满足）", task.Index, task.Title))
 			}
 			continue
 		}
 
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("▶️ T%d/%d: %s", task.Index, len(tasks), task.Title))
+			onProgress(fmt.Sprintf("T%d/%d: %s", task.Index, len(tasks), task.Title))
 		}
 		// Send task separator via onToken so the streaming UI shows clear task boundaries
 		if onToken != nil {
-			onToken(fmt.Sprintf("\n\n---\n### 📝 T%d: %s\n\n", task.Index, task.Title))
+			onToken(fmt.Sprintf("\n\n---\n### T%d: %s\n\n", task.Index, task.Title))
 		}
 
 		result := r.runWithRetry(ctx, task, onToken, onProgress)
 		r.results[i] = result
 
 		if onProgress != nil {
-			icon := "✅"
+			mark := "[OK]"
 			if result.Status == TaskFailed {
-				icon = "❌"
+				mark = "[ERR]"
 			}
-			onProgress(fmt.Sprintf("%s T%d: %s — %s", icon, task.Index, task.Title, result.Status))
+			onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 		}
 	}
 
@@ -136,15 +136,15 @@ func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken f
 			DependsOn:   task.DependsOn,
 		}
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("🧪 T%d: generating tests (TDD red phase)", task.Index))
+			onProgress(fmt.Sprintf("T%d: generating tests (TDD red phase)", task.Index))
 		}
 		if onToken != nil {
-			onToken("\n\n#### 🧪 TDD Red Phase: Writing Tests\n\n")
+			onToken("\n\n#### TDD Red Phase: Writing Tests\n\n")
 		}
 		testResult := r.runSingleAttempt(ctx, testTask, onToken, onProgress)
 		if testResult != nil && testResult.Status == TaskFailed {
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("⚠️ T%d: test generation failed, continuing to implementation", task.Index))
+				onProgress(fmt.Sprintf("T%d: test generation failed, continuing to implementation", task.Index))
 			}
 		}
 		// Now run implementation with instruction to make tests pass
@@ -156,10 +156,10 @@ func (r *TaskRunner) runWithRetry(ctx context.Context, task *TaskItem, onToken f
 			DependsOn:   task.DependsOn,
 		}
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("💻 T%d: implementing (TDD green phase)", task.Index))
+			onProgress(fmt.Sprintf("T%d: implementing (TDD green phase)", task.Index))
 		}
 		if onToken != nil {
-			onToken("\n\n#### 💻 TDD Green Phase: Implementation\n\n")
+			onToken("\n\n#### TDD Green Phase: Implementation\n\n")
 		}
 	}
 
@@ -177,7 +177,7 @@ func (r *TaskRunner) runSingleAttempt(ctx context.Context, task *TaskItem, onTok
 		case <-time.After(3 * time.Second):
 		}
 		if onProgress != nil {
-			onProgress(fmt.Sprintf("🔄 T%d: test phase transient error, retrying once", task.Index))
+			onProgress(fmt.Sprintf("T%d: test phase transient error, retrying once", task.Index))
 		}
 		if retry := r.subAgentFunc(ctx, task, r.config, onToken, onProgress); retry != nil {
 			return retry
@@ -195,7 +195,7 @@ func (r *TaskRunner) runSingleTaskWithRetry(ctx context.Context, task *TaskItem,
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("🔄 T%d: 重试 (%d/%d)", task.Index, attempt, maxRetries))
+				onProgress(fmt.Sprintf("T%d: 重试 (%d/%d)", task.Index, attempt, maxRetries))
 			}
 			// Exponential backoff: 3s, 6s, 12s...
 			backoff := time.Duration(3<<(attempt-1)) * time.Second
@@ -233,7 +233,7 @@ func (r *TaskRunner) runSingleTaskWithRetry(ctx context.Context, task *TaskItem,
 		// For transient errors (502/503/504/429/timeout), allow extra retries beyond MaxRetries
 		if isTransientTaskError(result.Error) && attempt == maxRetries && maxRetries < maxTransientRetries {
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("⚠️ T%d: 临时网络错误，额外重试...", task.Index))
+				onProgress(fmt.Sprintf("T%d: 临时网络错误，额外重试...", task.Index))
 			}
 			maxRetries++
 		}
@@ -283,17 +283,17 @@ func (r *TaskRunner) FinalReport() string {
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("**总计**: %d 个任务 | ✅ %d 通过 | ❌ %d 失败 | ⏭️ %d 跳过\n\n", len(r.results), passed, failed, skipped))
+	sb.WriteString(fmt.Sprintf("**总计**: %d 个任务 | %d 通过 | %d 失败 | %d 跳过\n\n", len(r.results), passed, failed, skipped))
 
 	for _, result := range r.results {
-		icon := "✅"
+		mark := "[OK]"
 		switch result.Status {
 		case TaskFailed:
-			icon = "❌"
+			mark = "[ERR]"
 		case TaskSkipped:
-			icon = "⏭️"
+			mark = "[SKIP]"
 		}
-		sb.WriteString(fmt.Sprintf("%s **T%d: %s** (%s, %s)\n", icon, result.TaskIndex, result.Title, result.Status, result.Duration.Round(time.Second)))
+		sb.WriteString(fmt.Sprintf("%s **T%d: %s** (%s, %s)\n", mark, result.TaskIndex, result.Title, result.Status, result.Duration.Round(time.Second)))
 		if result.Error != "" {
 			sb.WriteString(fmt.Sprintf("   错误: %s\n", result.Error))
 		}

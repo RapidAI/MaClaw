@@ -1,7 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { LoadConfig, RestartLansenger, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
-import { channelModeLabel, connectionStatusLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
 
 type LansengerSettingsProps = {
     config: main.AppConfig | null;
@@ -42,7 +43,7 @@ export const LansengerSettings = ({
             </label>
             {(config as any)?.lansenger_enabled && (
                 <>
-                    <span className="im-settings-status" data-status={lansengerStatus}>{connectionStatusLabel(lansengerStatus, lang)}</span>
+                    <ConnectionStatusBadge status={lansengerStatus} lang={lang} />
                     <button
                         type="button"
                         className="im-settings-button"

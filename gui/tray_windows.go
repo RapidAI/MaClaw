@@ -84,7 +84,7 @@ func setupTray(app *App, appOptions *options.App) {
 				if app.ctx == nil {
 					return
 				}
-				runtime.EventsEmit(app.ctx, "config-changed", cfg)
+				app.emitEvent("config-changed", cfg)
 			}
 
 			ShowNotification = func(title, message string, iconFlag uint32) {

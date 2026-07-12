@@ -48,9 +48,7 @@ END FUNCTION
 - **Additive requirements**: User says "需要音效，需要偷东西的中间目标" during requirements confirmation → LLM classify returns "other" (additive info, not explicit change request) → falls through without markers → **stall** (expected: treated as modify, updated doc generated and saved)
 - **Feature additions**: User says "还需要一个排行榜功能" during requirements confirmation → LLM classify returns "other" → **stall** (expected: treated as modify)
 - **Constraint additions**: User says "用 C++ 和 cmake" during requirements confirmation → LLM classify returns "other" → **stall** (expected: treated as modify)
-- **Explicit modification**: User says "把技术栈改成 React" → LLM classify returns "modify" → correctly handled ✅
-- **Confirmation**: User says "确认" / "OK" → `HandleInput` matches `confirmWords` → `advancePhase` → correctly handled ✅
-- **Unrelated query**: User says "查询天气" → LLM classify returns "other" → falls through to normal agent loop → correctly handled ✅ (but this is the same path as the bug — the fix must distinguish supplementary info from truly unrelated queries)
+- **Explicit modification**: User says "把技术栈改成 React" → LLM classify returns "modify" → correctly handled - **Confirmation**: User says "确认" / "OK" → `HandleInput` matches `confirmWords` → `advancePhase` → correctly handled - **Unrelated query**: User says "查询天气" → LLM classify returns "other" → falls through to normal agent loop → correctly handled (but this is the same path as the bug — the fix must distinguish supplementary info from truly unrelated queries)
 - **LLM classify failure**: LLM call times out → fallback to "confirm" → `advanceAndRespond` with stale v1 output → **supplementary info lost** (expected: treated as modify or at minimum not advance with stale output)
 
 ## Expected Behavior

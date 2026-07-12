@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HistoryGroupDiscussionTab } from "../HistoryGroupDiscussionTab";
@@ -124,12 +124,12 @@ describe("HistoryGroupDiscussionTab", () => {
     it("leaves unmentioned history follow-ups untargeted so Hub owns default reply routing", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a", "local-maclaw", "ve-b"] },
-            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "local-maclaw", name: "Local AI", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
+            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "local-maclaw", name: "Local", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
 
         const input = await screen.findByPlaceholderText("Continue discussion...");
-        fireEvent.change(input, { target: { value: "@Local AI inspect" } });
+        fireEvent.change(input, { target: { value: "@Local inspect" } });
         fireEvent.click(screen.getByText("Send"));
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
 
@@ -137,7 +137,7 @@ describe("HistoryGroupDiscussionTab", () => {
         fireEvent.click(screen.getByText("Send"));
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(2));
 
-        expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(1, "disc-1", expect.objectContaining({ content: "@Local AI inspect", to_ids: ["local-maclaw"] }));
+        expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(1, "disc-1", expect.objectContaining({ content: "@Local inspect", to_ids: ["local-maclaw"] }));
         expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(2, "disc-1", expect.objectContaining({ content: "continue" }));
         expect(sendHistoryMessageMock.mock.calls[1][1]).not.toHaveProperty("to_ids");
     });
@@ -145,12 +145,12 @@ describe("HistoryGroupDiscussionTab", () => {
     it("leaves unresolved mention history follow-ups untargeted for Hub routing", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a", "local-maclaw", "ve-b"] },
-            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "local-maclaw", name: "Local AI", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
+            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "local-maclaw", name: "Local", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
 
         const input = await screen.findByPlaceholderText("Continue discussion...");
-        fireEvent.change(input, { target: { value: "@Local AI inspect" } });
+        fireEvent.change(input, { target: { value: "@Local inspect" } });
         fireEvent.click(screen.getByText("Send"));
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
 
@@ -162,7 +162,7 @@ describe("HistoryGroupDiscussionTab", () => {
         fireEvent.click(screen.getByText("Send"));
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(3));
 
-        expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(1, "disc-1", expect.objectContaining({ content: "@Local AI inspect", to_ids: ["local-maclaw"] }));
+        expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(1, "disc-1", expect.objectContaining({ content: "@Local inspect", to_ids: ["local-maclaw"] }));
         expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(2, "disc-1", expect.objectContaining({ content: "@unknown continue" }));
         expect(sendHistoryMessageMock.mock.calls[1][1]).not.toHaveProperty("to_ids");
         expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(3, "disc-1", expect.objectContaining({ content: "continue again" }));
@@ -175,12 +175,12 @@ describe("HistoryGroupDiscussionTab", () => {
             .mockResolvedValue(undefined);
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a", "local-maclaw", "ve-b"] },
-            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "local-maclaw", name: "Local AI", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
+            session: { participants: [{ id: "me", name: "Alice", role_code: "initiator" }, { id: "ve-a", name: "Contract Bot", role_code: "speak" }, { id: "local-maclaw", name: "Local", role_code: "speak" }, { id: "ve-b", name: "Xiaoyan", role_code: "speak" }] },
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);
 
         const input = await screen.findByPlaceholderText("Continue discussion...");
-        fireEvent.change(input, { target: { value: "@Local AI inspect" } });
+        fireEvent.change(input, { target: { value: "@Local inspect" } });
         fireEvent.click(screen.getByText("Send"));
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(1));
 
@@ -188,7 +188,7 @@ describe("HistoryGroupDiscussionTab", () => {
         fireEvent.click(screen.getByText("Send"));
         await waitFor(() => expect(sendHistoryMessageMock).toHaveBeenCalledTimes(2));
 
-        expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(1, "disc-1", expect.objectContaining({ content: "@Local AI inspect", to_ids: ["local-maclaw"] }));
+        expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(1, "disc-1", expect.objectContaining({ content: "@Local inspect", to_ids: ["local-maclaw"] }));
         expect(sendHistoryMessageMock).toHaveBeenNthCalledWith(2, "disc-1", expect.objectContaining({ content: "continue" }));
         expect(sendHistoryMessageMock.mock.calls[1][1]).not.toHaveProperty("to_ids");
     });
@@ -240,10 +240,10 @@ describe("HistoryGroupDiscussionTab", () => {
         }));
     });
 
-    it("routes localized local AI mentions in history messages", async () => {
+    it("routes localized Local mentions in history messages", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "machine-1"] },
-            session: { participants: [{ id: "me", name: "Alice" }, { id: "machine-1", name: "Local AI" }] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: "machine-1", name: "Local" }] },
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="zh-CN" />);
 
@@ -258,10 +258,10 @@ describe("HistoryGroupDiscussionTab", () => {
         }));
     });
 
-    it("routes normalized local AI ids in history messages", async () => {
+    it("routes normalized Local ids in history messages", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", " LOCAL-MACLAW "] },
-            session: { participants: [{ id: "me", name: "Alice" }, { id: " LOCAL-MACLAW ", name: "Local AI" }] },
+            session: { participants: [{ id: "me", name: "Alice" }, { id: " LOCAL-MACLAW ", name: "Local" }] },
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="zh-CN" />);
 
@@ -346,12 +346,12 @@ describe("HistoryGroupDiscussionTab", () => {
             session: { participants: [
                 { id: "human-a", name: "Alice", role_code: "initiator" },
                 { id: "ve-a", name: "Contract Bot", role_code: "speak" },
-                { id: "local-maclaw", name: "Local AI", role_code: "speak" },
+                { id: "local-maclaw", name: "Local", role_code: "speak" },
             ] },
             messages: [
                 { id: "m1", from_id: "human-a", from_name: "Alice", content: "hello", created_at: "2026-01-01T00:00:00Z" },
                 { id: "m2", from_id: "ve-a", from_name: "Contract Bot", content: "reviewed", created_at: "2026-01-01T00:00:01Z" },
-                { id: "m3", from_id: "local-maclaw", from_name: "Local AI", content: "noted", created_at: "2026-01-01T00:00:02Z" },
+                { id: "m3", from_id: "local-maclaw", from_name: "Local", content: "noted", created_at: "2026-01-01T00:00:02Z" },
             ],
         }));
         render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Writable" readOnly={false} theme={theme} lang="en" />);

@@ -91,10 +91,10 @@ Systematically improve resilience:
 - Avoid fixed widths on text containers
 
 ```jsx
-// ❌ Bad: Assumes short English text
+// Bad: Assumes short English text
 <button className="w-24">Submit</button>
 
-// ✅ Good: Adapts to content
+// Good: Adapts to content
 <button className="px-4 py-2">Submit</button>
 ```
 
@@ -117,7 +117,7 @@ border-inline-end: 1px solid; /* Not border-right */
 
 **Date/Time formatting**:
 ```javascript
-// ✅ Use Intl API for proper formatting
+// Use Intl API for proper formatting
 new Intl.DateTimeFormat('en-US').format(date); // 1/15/2024
 new Intl.DateTimeFormat('de-DE').format(date); // 15.1.2024
 
@@ -129,10 +129,10 @@ new Intl.NumberFormat('en-US', {
 
 **Pluralization**:
 ```javascript
-// ❌ Bad: Assumes English pluralization
+// Bad: Assumes English pluralization
 `${count} item${count !== 1 ? 's' : ''}`
 
-// ✅ Good: Use proper i18n library
+// Good: Use proper i18n library
 t('items', { count }) // Handles complex plural rules
 ```
 

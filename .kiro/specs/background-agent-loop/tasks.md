@@ -63,7 +63,7 @@
 - [x] `RemoteSessionList.tsx`：`sessionTab` 类型从 `"human" | "ai"` 改为 `"remote" | "background"`
 - [x] "远程" sub-tab：显示 `remoteSessions.filter(s => s.launch_source !== "ai")`（即现有"人类"tab 内容）
 - [x] "后台" sub-tab：分两个区域 — Agent Loop 任务列表 + AI 编程会话列表
-- [x] Agent Loop 区域：调用 `ListBackgroundLoops()` Wails binding，显示类型标签（🤖/⏰/🌐）、描述、轮次进度、状态
+- [x] Agent Loop 区域：调用 `ListBackgroundLoops()` Wails binding，显示类型标签（/⏰/）、描述、轮次进度、状态
 - [x] Agent Loop 操作按钮：停止（`StopBackgroundLoop`）、续命（`ContinueBackgroundLoop`，仅 paused 状态显示）
 - [x] 编程类 Agent Loop 和 AI 编程会话：点击"查看终端"打开 `RemoteSessionConsole` with `readOnly={true}`
 - [x] 数据刷新：`EventsOn("background-loops-changed")` 监听 + 每 5 秒轮询 `ListBackgroundLoops()` 兜底

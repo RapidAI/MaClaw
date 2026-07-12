@@ -236,7 +236,7 @@ func TestTruncateUnicode(t *testing.T) {
 }
 
 func TestStatusHelpers(t *testing.T) {
-	if statusEmoji("running") != "🔄" {
+	if statusEmoji("running") != "" {
 		t.Error("wrong emoji for running")
 	}
 	if statusColor("error") != "red" {

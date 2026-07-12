@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
@@ -444,7 +445,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		log.Printf("[IM Adapter] ResolveUser FAILED: platform=%s uid=%s err=%v", msg.PlatformName, msg.PlatformUID, err)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 403,
-			StatusIcon: "👋",
+			StatusIcon: "info",
 			Title:      "尚未绑定账号",
 			Body: "您还没有绑定 Hub 账号，无法使用机器人功能。\n\n" +
 				"绑定方法很简单：直接在此对话中发送您的 Hub 注册邮箱地址（例如 you@example.com），" +
@@ -469,7 +470,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if !a.limiter.allow(tenantUserRuntimeKey(tenantID, unifiedID)) {
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 429,
-			StatusIcon: "⏳",
+			StatusIcon: "busy",
 			Title:      "请求过于频繁",
 			Body:       "您的操作频率已超过限制（每分钟 30 次），请稍后再试。",
 		})
@@ -498,7 +499,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if len(machines) == 0 {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "📴",
+				StatusIcon: "info",
 				Title:      "设备列表",
 				Body:       "暂无在线设备。请确认 MaClaw 客户端已启动并连接到 Hub。",
 			})
@@ -506,15 +507,15 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		}
 		selected, _ := a.messageRouter.GetSelectedMachineForTenant(tenantID, unifiedID)
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("🖥 在线设备 (%d 台):\n\n", len(machines)))
+		sb.WriteString(fmt.Sprintf("在线设备 (%d 台):\n\n", len(machines)))
 		for _, m := range machines {
 			marker := "  "
 			if m.MachineID == selected {
-				marker = "▶ "
+				marker = ""
 			}
 			llmTag := ""
 			if !m.LLMConfigured {
-				llmTag = " ⚠️LLM未配置"
+				llmTag = " LLM未配置"
 			}
 			sb.WriteString(fmt.Sprintf("%s%s%s\n", marker, m.Name, llmTag))
 		}
@@ -522,7 +523,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		log.Printf("[IM Adapter] /machines response: %d devices, sending to platform=%s uid=%s", len(machines), msg.PlatformName, msg.PlatformUID)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "🖥️",
+			StatusIcon: "info",
 			Title:      "设备列表",
 			Body:       sb.String(),
 		})
@@ -538,7 +539,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if name == "" {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 400,
-				StatusIcon: "❓",
+				StatusIcon: "info",
 				Title:      "缺少参数",
 				Body:       "用法: /call <设备昵称>\n\n输入 /machines 查看在线设备列表。",
 			})
@@ -552,7 +553,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			if state.State == SpaceMeeting {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 400,
-					StatusIcon: "⚠️",
+					StatusIcon: "warning",
 					Title:      "会议进行中",
 					Body:       "会议进行中，无法切换设备。使用 /ask <设备名> <消息> 临时交互，或 /stop 结束会议。",
 				})
@@ -564,7 +565,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 				a.messageRouter.ClearSelectedMachineForTenant(tenantID, unifiedID)
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 200,
-					StatusIcon: "🏠",
+					StatusIcon: "info",
 					Title:      "已返回大厅",
 					Body:       fmt.Sprintf("已退出与 %s 的私聊，返回大厅模式。", state.PrivateName),
 				})
@@ -578,10 +579,10 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		}
 
 		result := a.messageRouter.SelectMachine(ctx, unifiedID, name)
-		icon := "✅"
+		icon := ""
 		code := 200
 		if !result.OK {
-			icon = "⚠️"
+			icon = ""
 			code = 400
 		}
 
@@ -614,7 +615,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if topic == "" {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 400,
-				StatusIcon: "❓",
+				StatusIcon: "info",
 				Title:      "缺少参数",
 				Body:       "用法: /discuss <话题>",
 			})
@@ -627,7 +628,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			if state.State == SpacePrivate {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 400,
-					StatusIcon: "⚠️",
+					StatusIcon: "warning",
 					Title:      "私聊模式中",
 					Body:       "私聊模式中无法发起讨论。发送 /call all 返回大厅后再发起。",
 				})
@@ -636,7 +637,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			if state.State == SpaceMeeting {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 400,
-					StatusIcon: "⚠️",
+					StatusIcon: "warning",
 					Title:      "已有会议",
 					Body:       "已有会议进行中，请先 /stop 结束当前会议。",
 				})
@@ -657,7 +658,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if text == "/discuss" {
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 400,
-			StatusIcon: "❓",
+			StatusIcon: "info",
 			Title:      "缺少参数",
 			Body:       "用法: /discuss <话题>\n\n让多台设备的 AI 围绕话题进行多轮讨论。",
 		})
@@ -675,18 +676,18 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 				if len(runes) > 30 {
 					preview = string(runes[:30]) + "…"
 				}
-				body = fmt.Sprintf("⏹️ 已取消任务「%s」。", preview)
+				body = fmt.Sprintf("已取消任务「%s」。", preview)
 			}
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "⏹️",
+				StatusIcon: "info",
 				Title:      "已取消",
 				Body:       body,
 			})
 		} else {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "ℹ️",
+				StatusIcon: "info",
 				Title:      "无活跃任务",
 				Body:       "当前没有正在执行的任务。",
 			})
@@ -704,9 +705,9 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			if state.State == SpaceMeeting {
 				ss.ExitMeetingForTenant(tenantID, unifiedID)
 				if resp.Body != "" {
-					resp.Body += "\n🏠 已退出会议，返回大厅。"
+					resp.Body += "\n已退出会议，返回大厅。"
 				} else {
-					resp.Body = "🏠 已退出会议，返回大厅。"
+					resp.Body = "已退出会议，返回大厅。"
 				}
 			}
 		}
@@ -721,7 +722,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if spaceIdx <= 0 {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 400,
-				StatusIcon: "❓",
+				StatusIcon: "info",
 				Title:      "缺少参数",
 				Body:       "用法: /ask <设备名> <消息>\n\n不影响当前空间状态，一次性发送。",
 			})
@@ -732,7 +733,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if askText == "" {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 400,
-				StatusIcon: "❓",
+				StatusIcon: "info",
 				Title:      "缺少消息",
 				Body:       "用法: /ask <设备名> <消息>",
 			})
@@ -750,7 +751,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if targetMachine == nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 404,
-				StatusIcon: "📴",
+				StatusIcon: "info",
 				Title:      "设备未找到",
 				Body:       fmt.Sprintf("未找到名为 %q 的在线设备。", deviceName),
 			})
@@ -760,7 +761,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if err != nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 500,
-				StatusIcon: "❌",
+				StatusIcon: "error",
 				Title:      "发送失败",
 				Body:       err.Error(),
 			})
@@ -775,7 +776,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if a.coordinator == nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "📭",
+				StatusIcon: "info",
 				Title:      "对话上下文",
 				Body:       "智能路由未启用，无对话上下文。",
 			})
@@ -786,7 +787,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			cc.Clear()
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "🗑️",
+				StatusIcon: "info",
 				Title:      "已清除",
 				Body:       "对话上下文已清除。",
 			})
@@ -794,7 +795,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		}
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "📋",
+			StatusIcon: "info",
 			Title:      "对话上下文",
 			Body:       cc.FormatDisplay(),
 		})
@@ -809,7 +810,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		helpText := BuildHelpMessage(len(machines), selected, llmEnabled)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "📋",
+			StatusIcon: "info",
 			Title:      "帮助",
 			Body:       helpText,
 		})
@@ -831,7 +832,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if n <= 0 || n > 20 {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 400,
-				StatusIcon: "❓",
+				StatusIcon: "info",
 				Title:      "参数错误",
 				Body:       "用法: /rounds <1-20>",
 			})
@@ -840,7 +841,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		a.messageRouter.SetDiscussionRoundsForTenant(tenantID, unifiedID, n)
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "✅",
+			StatusIcon: "ok",
 			Title:      "已调整",
 			Body:       fmt.Sprintf("讨论轮数已调整为 %d 轮。", n),
 		})
@@ -852,7 +853,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if a.taskDispatcher == nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "📋",
+				StatusIcon: "info",
 				Title:      "任务队列",
 				Body:       "任务队列未启用。",
 			})
@@ -861,15 +862,15 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		stats := a.taskDispatcher.StatsForTenant(tenantID, unifiedID)
 		var body string
 		if stats.Running {
-			body = fmt.Sprintf("🔄 正在执行 1 个任务，队列中还有 %d 个等待。（容量 %d）", stats.Pending, stats.Capacity)
+			body = fmt.Sprintf("正在执行 1 个任务，队列中还有 %d 个等待。（容量 %d）", stats.Pending, stats.Capacity)
 		} else if stats.Pending > 0 {
-			body = fmt.Sprintf("📋 队列中有 %d 个任务等待处理。（容量 %d）", stats.Pending, stats.Capacity)
+			body = fmt.Sprintf("队列中有 %d 个任务等待处理。（容量 %d）", stats.Pending, stats.Capacity)
 		} else {
-			body = "✅ 队列空闲，没有待处理任务。"
+			body = "队列空闲，没有待处理任务。"
 		}
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "📋",
+			StatusIcon: "info",
 			Title:      "任务队列状态",
 			Body:       body,
 		})
@@ -888,7 +889,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		if err != nil {
 			a.sendResponse(ctx, plugin, target, &GenericResponse{
 				StatusCode: 500,
-				StatusIcon: "❌",
+				StatusIcon: "error",
 				Title:      "路由失败",
 				Body:       fmt.Sprintf("无法将命令路由到设备: %v", err),
 			})
@@ -906,7 +907,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		}
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 400,
-			StatusIcon: "❓",
+			StatusIcon: "info",
 			Title:      "未知命令",
 			Body:       fmt.Sprintf("未识别的命令 %q，发送 /help 查看可用命令。", cmd),
 		})
@@ -922,14 +923,14 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			if a.messageRouter.InjectUserInputForTenant(tenantID, unifiedID, text) {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 200,
-					StatusIcon: "💬",
+					StatusIcon: "info",
 					Title:      "已收到",
 					Body:       "你的发言将加入下一轮讨论。",
 				})
 			} else {
 				a.sendResponse(ctx, plugin, target, &GenericResponse{
 					StatusCode: 429,
-					StatusIcon: "⏳",
+					StatusIcon: "busy",
 					Title:      "缓冲已满",
 					Body:       "发言过多，请稍后再试。",
 				})
@@ -981,7 +982,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 		queueResp := a.taskDispatcher.Enqueue(task)
 		// Only send the queue ack if the task is actually queued behind
 		// another running task. When the worker is idle the task starts
-		// immediately, so the ack ("⏳ 已收到") would race with (and
+		// immediately, so the ack ("已收到") would race with (and
 		// often arrive after) the real progress/response — suppress it.
 		if queueResp.StatusCode == 429 || queueResp.StatusCode != 202 {
 			// 429 = queue full, non-202 = error — user needs to know.
@@ -1011,7 +1012,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if routeErr != nil {
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 500,
-			StatusIcon: "❌",
+			StatusIcon: "error",
 			Title:      "路由失败",
 			Body:       fmt.Sprintf("无法将消息路由到 Agent: %s", routeErr.Error()),
 		})
@@ -1038,9 +1039,10 @@ func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, pla
 		return
 	}
 
-	// Progress messages are always sent as plain text; strip Markdown
-	// so users don't see raw formatting marks.
+	// Progress messages are always sent as plain text; strip Markdown and
+	// line-leading decorative pictographs so users don't see raw chrome.
 	text = stripMarkdown(text)
+	text = textutil.PrepareChatBodyForDisplay(text)
 
 	target := UserTarget{PlatformUID: platformUID, UnifiedUserID: userID}
 	if err := plugin.SendText(ctx, target, text); err != nil {
@@ -1171,7 +1173,7 @@ func (a *Adapter) sendResponse(ctx context.Context, plugin IMPlugin, target User
 		if out.Urgent {
 			if urgentPlugin, ok := plugin.(UrgentSender); ok {
 				// Send a lightweight urgent text to trigger the buzz notification.
-				_ = urgentPlugin.SendUrgentText(ctx, target, "⚡ "+out.Title)
+				_ = urgentPlugin.SendUrgentText(ctx, target, ""+out.Title)
 			}
 		}
 		return

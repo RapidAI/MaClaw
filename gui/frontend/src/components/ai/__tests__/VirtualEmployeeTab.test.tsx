@@ -161,11 +161,11 @@ describe('VirtualEmployeeTab', () => {
 
     describe('policyIcon', () => {
         it('returns correct icons for each policy', () => {
-            expect(policyIcon("public")).toBe("\u{1F310}");
-            expect(policyIcon("whitelist")).toBe("\u2705");
-            expect(policyIcon("blacklist")).toBe("\u{1F6AB}");
-            expect(policyIcon("per_request")).toBe("\u{1F512}");
-            expect(policyIcon("unknown")).toBe("\u2753");
+            expect(policyIcon("public")).toBe("[pub]");
+            expect(policyIcon("whitelist")).toBe("[allow]");
+            expect(policyIcon("blacklist")).toBe("[block]");
+            expect(policyIcon("per_request")).toBe("[ask]");
+            expect(policyIcon("unknown")).toBe("[?]");
         });
 
         it('returns readable labels for each policy', () => {

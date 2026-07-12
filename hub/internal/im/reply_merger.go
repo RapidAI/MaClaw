@@ -58,7 +58,7 @@ func (rm *ReplyMerger) MergeReplies(ctx context.Context, replies []DeviceReply) 
 	if len(good) == 0 {
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "❌",
+			StatusIcon: "error",
 			Title:      "全部失败",
 			Body:       "所有设备均未返回有效回复。",
 		}, nil
@@ -67,7 +67,7 @@ func (rm *ReplyMerger) MergeReplies(ctx context.Context, replies []DeviceReply) 
 	if len(good) == 1 {
 		resp := good[0].Response
 		if len(errors) > 0 {
-			resp.Body += fmt.Sprintf("\n\n⚠️ %d 台设备未回复", len(errors))
+			resp.Body += fmt.Sprintf("\n\n%d 台设备未回复", len(errors))
 		}
 		return resp, nil
 	}
@@ -75,9 +75,9 @@ func (rm *ReplyMerger) MergeReplies(ctx context.Context, replies []DeviceReply) 
 	// Check similarity.
 	if rm.areSimilar(good) {
 		resp := good[0].Response
-		resp.Body += fmt.Sprintf("\n\n✅ 其他 %d 台设备观点一致", len(good)-1)
+		resp.Body += fmt.Sprintf("\n\n其他 %d 台设备观点一致", len(good)-1)
 		if len(errors) > 0 {
-			resp.Body += fmt.Sprintf("\n⚠️ %d 台设备未回复", len(errors))
+			resp.Body += fmt.Sprintf("\n%d 台设备未回复", len(errors))
 		}
 		return resp, nil
 	}
@@ -88,13 +88,13 @@ func (rm *ReplyMerger) MergeReplies(ctx context.Context, replies []DeviceReply) 
 		merged := rm.llmMerge(ctx, good, cfg)
 		if merged != "" {
 			body := merged
-			body += fmt.Sprintf("\n\n📊 统计: %d 台设备回复", len(good))
+			body += fmt.Sprintf("\n\n统计: %d 台设备回复", len(good))
 			if len(errors) > 0 {
 				body += fmt.Sprintf(", %d 台未回复", len(errors))
 			}
 			return &GenericResponse{
 				StatusCode: 200,
-				StatusIcon: "📢",
+				StatusIcon: "info",
 				Title:      "合并回复",
 				Body:       body,
 			}, nil
@@ -104,7 +104,7 @@ func (rm *ReplyMerger) MergeReplies(ctx context.Context, replies []DeviceReply) 
 	// Fallback: structured format.
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "📢",
+		StatusIcon: "info",
 		Title:      "群聊回复",
 		Body:       FormatBroadcastReply(replies),
 	}, nil

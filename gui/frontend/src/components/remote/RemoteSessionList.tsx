@@ -545,7 +545,7 @@ export function RemoteSessionList(props: Props) {
                                                 title={localizeText("Stop", "停止", "停止")}
                                                 onClick={() => handleStopLoop(loop.id)}
                                             >
-                                                ⏹
+                                                {localizeText("Stop", "停止", "停止")}
                                             </button>
                                         </div>
                                     </td>

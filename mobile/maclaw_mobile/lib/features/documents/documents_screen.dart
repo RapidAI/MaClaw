@@ -43,9 +43,8 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
 
   Future<void> _shareDraft(DocumentDraft draft) async {
     final s = ref.read(appStringsProvider);
-    final subject = draft.title.trim().isEmpty
-        ? (s.isZh ? 'MaClaw 文档' : 'MaClaw document')
-        : draft.title;
+    final subject =
+        draft.title.trim().isEmpty ? s.unnamedDocument : draft.title;
     try {
       // Prefer original file (docx/pdf/image) for WeChat etc.
       final file = await ref
@@ -75,9 +74,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
     } on Object catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(s.isZh ? '分享失败：$e' : 'Share failed: $e'),
-        ),
+        SnackBar(content: Text(s.shareFailed(e))),
       );
     }
   }
@@ -89,20 +86,16 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(s.isZh ? '删除文稿' : 'Delete document'),
-        content: Text(
-          s.isZh
-              ? '从 Hub 共享库删除「$title」？电脑 GUI 与其它设备也将同步看不到该文稿。'
-              : 'Delete “$title” from the Hub library? Desktop GUI will sync the same removal.',
-        ),
+        title: Text(s.deleteDocumentTitle),
+        content: Text(s.deleteDocumentConfirm(title)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text(s.isZh ? '取消' : 'Cancel'),
+            child: Text(s.cancel),
           ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(s.isZh ? '删除' : 'Delete'),
+            child: Text(s.delete),
           ),
         ],
       ),
@@ -112,19 +105,13 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
       await ref.read(documentDraftHistoryProvider.notifier).deleteDraft(draft);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            s.isZh ? '已删除「$title」' : 'Deleted “$title”',
-          ),
-        ),
+        SnackBar(content: Text(s.deletedDocument(title))),
       );
     } on Object catch (e) {
       if (!mounted) return;
       final msg = e is StateError ? e.message : e.toString();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(s.isZh ? '删除失败：$msg' : 'Delete failed: $msg'),
-        ),
+        SnackBar(content: Text(s.deleteFailed(msg))),
       );
     }
   }
@@ -177,10 +164,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
         StatusBanner(
           tone: StatusTone.info,
           icon: Icons.devices_outlined,
-          message: s.isZh
-              ? '本列表来自当前账号的 Hub 文稿（GUI 与 Mobile 同源）。'
-                  '点开只读预览；改写请用 AI 助手或电脑 GUI。可分享到微信等；长任务在「后台」。'
-              : 'Hub library shared with GUI. Tap for read-only preview; rewrite via AI assistant or desktop GUI. Share sheet available; long jobs under Tasks.',
+          message: s.documentsLibraryHint,
         ),
         const SizedBox(height: 12),
         _HubDocumentLibraryCard(
@@ -208,7 +192,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
                       color: Theme.of(context).colorScheme.onErrorContainer,
                     ),
                     title: Text(
-                      '操作未完成',
+                      s.operationIncomplete,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.onErrorContainer,
                       ),
@@ -241,7 +225,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
             final msg = error is StateError
                 ? error.message
                 : error.toString().contains('DioException')
-                    ? '文档服务请求失败，请刷新后重试。若刚导入请确认 Hub 已保存该文稿。'
+                    ? s.documentServiceError
                     : error.toString();
             return Card(
               color: Theme.of(context).colorScheme.errorContainer,
@@ -251,7 +235,7 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '操作未完成',
+                      s.operationIncomplete,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
                             color:
                                 Theme.of(context).colorScheme.onErrorContainer,
@@ -269,14 +253,14 @@ class _DocumentsScreenState extends ConsumerState<DocumentsScreen> {
                       onPressed: () {
                         ref.invalidate(documentsControllerProvider);
                       },
-                      child: const Text('重试 / 刷新'),
+                      child: Text(s.retryRefresh),
                     ),
                   ],
                 ),
               ),
             );
           },
-          loading: () => const LoadingCard(label: '正在处理文档…'),
+          loading: () => LoadingCard(label: s.processingDocument),
         ),
         const SizedBox(height: 12),
         const _DocumentAIProcessPanel(),
@@ -290,6 +274,7 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final loading = ref.watch(documentsControllerProvider).isLoading;
     final controller = ref.read(documentsControllerProvider.notifier);
     return Card(
@@ -305,12 +290,12 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
-                Text('移动导入', style: Theme.of(context).textTheme.titleMedium),
+                Text(s.mobileImport, style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
             const SizedBox(height: 6),
             Text(
-              '从文件、拍照或相册快速提交给官方服务解析，适合截图、纸质通知、现场照片和临时材料。',
+              s.mobileImportHint,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -324,7 +309,7 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
                   onPressed:
                       loading ? null : () => controller.pickAndUploadDocument(),
                   icon: const Icon(Icons.upload_file_outlined),
-                  label: const Text('文件导入'),
+                  label: Text(s.importFromFile),
                 ),
                 OutlinedButton.icon(
                   onPressed: loading
@@ -333,7 +318,7 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
                             ImageSource.camera,
                           ),
                   icon: const Icon(Icons.photo_camera_outlined),
-                  label: const Text('拍照导入'),
+                  label: Text(s.importFromCamera),
                 ),
                 OutlinedButton.icon(
                   onPressed: loading
@@ -342,7 +327,7 @@ class _MobileDocumentImportPanel extends ConsumerWidget {
                             ImageSource.gallery,
                           ),
                   icon: const Icon(Icons.photo_library_outlined),
-                  label: const Text('相册导入'),
+                  label: Text(s.importFromGallery),
                 ),
               ],
             ),
@@ -394,7 +379,7 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                       ),
                     ),
                     Text(
-                      s.isZh ? '${shown.length} 篇' : '${shown.length}',
+                      '${shown.length}',
                       style: Theme.of(context).textTheme.labelMedium?.copyWith(
                             color: Theme.of(context)
                                 .colorScheme
@@ -436,7 +421,7 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        '${documentTemplateLabel(draft.template)} · ${_draftPreviewText(draft.markdown)}',
+                        '${documentTemplateLabel(draft.template, isZh: s.isZh)} · ${_draftPreviewText(draft.markdown, emptyLabel: s.blankDraft)}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -449,7 +434,7 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
                             onPressed: () => onShare(draft),
                           ),
                           IconButton(
-                            tooltip: s.isZh ? '删除' : 'Delete',
+                            tooltip: s.delete,
                             icon: Icon(
                               Icons.delete_outline,
                               size: 20,
@@ -474,11 +459,11 @@ class _HubDocumentLibraryCard extends ConsumerWidget {
           trailing: TextButton(
             onPressed: () =>
                 ref.read(documentDraftHistoryProvider.notifier).refresh(),
-            child: const Text('重试'),
+            child: Text(s.retry),
           ),
         ),
       ),
-      loading: () => const LoadingCard(label: '加载 Hub 文稿库…'),
+      loading: () => LoadingCard(label: s.hubLibraryLoading),
     );
   }
 }
@@ -496,8 +481,10 @@ class _ActiveDocumentActions extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final loading = ref.watch(documentsControllerProvider).isLoading;
     final controller = ref.read(documentsControllerProvider.notifier);
+    final title = draft.title.trim().isEmpty ? draft.id : draft.title;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -505,7 +492,7 @@ class _ActiveDocumentActions extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '继续处理：${draft.title.trim().isEmpty ? draft.id : draft.title}',
+              s.continueProcessingFor(title),
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 8),
@@ -518,14 +505,14 @@ class _ActiveDocumentActions extends ConsumerWidget {
                       ? null
                       : () => controller.processDraft('summarize'),
                   icon: const Icon(Icons.auto_awesome, size: 18),
-                  label: const Text('摘要整理'),
+                  label: Text(s.summarize),
                 ),
                 FilledButton.tonalIcon(
                   onPressed: loading
                       ? null
                       : () => controller.processDraft('polish'),
                   icon: const Icon(Icons.spellcheck, size: 18),
-                  label: const Text('润色'),
+                  label: Text(s.polish),
                 ),
                 FilledButton.tonalIcon(
                   onPressed: loading
@@ -534,7 +521,7 @@ class _ActiveDocumentActions extends ConsumerWidget {
                             DocumentExportFormat.markdown,
                           ),
                   icon: const Icon(Icons.file_download_outlined, size: 18),
-                  label: const Text('导出'),
+                  label: Text(s.export),
                 ),
                 OutlinedButton.icon(
                   onPressed: loading ? null : onDelete,
@@ -544,14 +531,16 @@ class _ActiveDocumentActions extends ConsumerWidget {
                     color: Theme.of(context).colorScheme.error,
                   ),
                   label: Text(
-                    '删除',
+                    s.delete,
                     style: TextStyle(color: Theme.of(context).colorScheme.error),
                   ),
                 ),
                 FilledButton.icon(
                   onPressed: loading ? null : onShare,
                   icon: const Icon(Icons.ios_share, size: 18),
-                  label: const Text('分享到微信等'),
+                  label: Text(
+                    draft.hasOriginal ? s.shareOriginal : s.shareToWechat,
+                  ),
                 ),
               ],
             ),
@@ -562,9 +551,9 @@ class _ActiveDocumentActions extends ConsumerWidget {
   }
 }
 
-String _draftPreviewText(String markdown) {
+String _draftPreviewText(String markdown, {String emptyLabel = 'Empty draft'}) {
   final compact = markdown.replaceAll(RegExp(r'\s+'), ' ').trim();
-  if (compact.isEmpty) return '空白草稿';
+  if (compact.isEmpty) return emptyLabel;
   return compact.length > 32 ? '${compact.substring(0, 32)}...' : compact;
 }
 
@@ -711,9 +700,10 @@ class _DocumentReadonlyPreviewState
   String? _sharingExportJobId;
 
   Future<void> _shareExport(DocumentExportJob job, DocumentDraft draft) async {
+    final s = ref.read(appStringsProvider);
     setState(() => _sharingExportJobId = job.jobId);
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('正在准备导出文件...')),
+      SnackBar(content: Text(s.preparingExport)),
     );
     try {
       final file = await ref
@@ -725,9 +715,9 @@ class _DocumentReadonlyPreviewState
       );
       if (!mounted) return;
       final message = switch (result.status) {
-        ShareResultStatus.success => '导出文件已交给系统分享。',
-        ShareResultStatus.dismissed => '已取消分享，文件仍保存在临时导出目录。',
-        ShareResultStatus.unavailable => '系统分享不可用，文件已保存到 ${file.path}',
+        ShareResultStatus.success => s.exportShareSuccess,
+        ShareResultStatus.dismissed => s.exportShareDismissed,
+        ShareResultStatus.unavailable => s.exportShareUnavailable(file.path),
       };
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
@@ -735,7 +725,7 @@ class _DocumentReadonlyPreviewState
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('分享导出文件失败：$error')),
+        SnackBar(content: Text(s.exportShareFailed(error))),
       );
     } finally {
       if (mounted) {
@@ -753,16 +743,18 @@ class _DocumentReadonlyPreviewState
   }
 
   Future<void> _copyDraftText(DocumentDraft draft) async {
+    final s = ref.read(appStringsProvider);
     final text = _draftShareText(draft);
     if (text.trim().isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('文档文本已复制')),
+      SnackBar(content: Text(s.documentTextCopied)),
     );
   }
 
   Future<void> _shareDraftText(DocumentDraft draft) async {
+    final s = ref.read(appStringsProvider);
     final text = _draftShareText(draft);
     if (text.trim().isEmpty) return;
     await ref.read(documentsDraftTextShareProvider)(
@@ -773,8 +765,42 @@ class _DocumentReadonlyPreviewState
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(
-        const SnackBar(content: Text('文档文本已发送到系统分享')),
+        SnackBar(content: Text(s.documentTextShared)),
       );
+  }
+
+  Future<void> _shareOriginalFile(DocumentDraft draft) async {
+    final s = ref.read(appStringsProvider);
+    final subject =
+        draft.title.trim().isEmpty ? s.unnamedDocument : draft.title;
+    try {
+      final file = await ref
+          .read(documentsControllerProvider.notifier)
+          .prepareOriginalShareFile(draft);
+      if (file == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(s.noOriginalToShare)),
+        );
+        return;
+      }
+      final name = draft.sourceFilename.trim().isEmpty
+          ? file.uri.pathSegments.last
+          : draft.sourceFilename.trim();
+      await ref.read(documentsExportFileShareProvider).call(
+        [XFile(file.path, name: name)],
+        subject: subject,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.shareOpened)),
+      );
+    } on Object catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.shareOriginalFailed(e))),
+      );
+    }
   }
 
   @override
@@ -785,13 +811,9 @@ class _DocumentReadonlyPreviewState
     final scheme = Theme.of(context).colorScheme;
     final s = ref.watch(appStringsProvider);
     final body = draft.markdown.trim().isEmpty
-        ? (s.isZh
-            ? (draft.hasOriginal
-                ? '原件已保存，可分享到微信等。正文提取可能尚未完成。'
-                : '（正文为空）')
-            : (draft.hasOriginal
-                ? 'Original file saved. You can share it; text extract may still be pending.'
-                : '(empty body)'))
+        ? (draft.hasOriginal
+            ? s.documentOriginalOnlyBody
+            : s.documentBodyEmpty)
         : draft.markdown;
     return Card(
       child: Padding(
@@ -809,7 +831,7 @@ class _DocumentReadonlyPreviewState
             ),
             const SizedBox(height: 8),
             Text(
-              documentTemplateLabel(draft.template),
+              documentTemplateLabel(draft.template, isZh: s.isZh),
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
                     color: scheme.primary,
                   ),
@@ -824,11 +846,12 @@ class _DocumentReadonlyPreviewState
             if (draft.hasOriginal) ...[
               const SizedBox(height: 6),
               Text(
-                s.isZh
-                    ? '原件：${draft.sourceFilename.isEmpty ? draft.id : draft.sourceFilename}'
-                        '${draft.sourceSize > 0 ? ' · ${(draft.sourceSize / 1024).ceil()} KB' : ''}'
-                    : 'Original: ${draft.sourceFilename.isEmpty ? draft.id : draft.sourceFilename}'
-                        '${draft.sourceSize > 0 ? ' · ${(draft.sourceSize / 1024).ceil()} KB' : ''}',
+                s.documentOriginalLabel(
+                  draft.sourceFilename.isEmpty ? draft.id : draft.sourceFilename,
+                  draft.sourceSize > 0
+                      ? ' · ${(draft.sourceSize / 1024).ceil()} KB'
+                      : '',
+                ),
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: scheme.tertiary,
                     ),
@@ -860,13 +883,19 @@ class _DocumentReadonlyPreviewState
                 OutlinedButton.icon(
                   onPressed: () => _copyDraftText(draft),
                   icon: const Icon(Icons.content_copy_outlined),
-                  label: const Text('复制文本'),
+                  label: Text(s.copyText),
                 ),
                 OutlinedButton.icon(
                   onPressed: () => _shareDraftText(draft),
                   icon: const Icon(Icons.ios_share_outlined),
-                  label: const Text('分享文本'),
+                  label: Text(s.shareText),
                 ),
+                if (draft.hasOriginal)
+                  FilledButton.tonalIcon(
+                    onPressed: () => _shareOriginalFile(draft),
+                    icon: const Icon(Icons.attach_file_outlined),
+                    label: Text(s.shareOriginal),
+                  ),
                 const _ExportButton(
                   format: DocumentExportFormat.pdf,
                   label: 'PDF',
@@ -884,7 +913,10 @@ class _DocumentReadonlyPreviewState
             if (state.exportJob != null) ...[
               const SizedBox(height: 10),
               Text(
-                '导出任务 ${state.exportJob!.jobId}：${_exportStatusLabel(state.exportJob!.status)}',
+                s.exportJobStatus(
+                  state.exportJob!.jobId,
+                  s.exportStatusLabel(state.exportJob!.status),
+                ),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               if (state.exportJob!.message.isNotEmpty) ...[
@@ -901,7 +933,7 @@ class _DocumentReadonlyPreviewState
               if (state.exportJob!.status == 'ready') ...[
                 const SizedBox(height: 4),
                 Text(
-                  '文件已生成，可直接调起系统分享；分享前会先下载到本机临时目录。',
+                  s.exportReadyHint,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
@@ -917,7 +949,7 @@ class _DocumentReadonlyPreviewState
                         .read(documentsControllerProvider.notifier)
                         .refreshExportJob(),
                     icon: const Icon(Icons.refresh),
-                    label: const Text('刷新状态'),
+                    label: Text(s.refreshStatus),
                   ),
                   if (state.canRetryLastExport)
                     OutlinedButton.icon(
@@ -925,7 +957,7 @@ class _DocumentReadonlyPreviewState
                           .read(documentsControllerProvider.notifier)
                           .retryLastExport(),
                       icon: const Icon(Icons.replay_outlined),
-                      label: const Text('重试导出'),
+                      label: Text(s.retryExport),
                     ),
                   if (state.exportJob!.downloadUrl.isNotEmpty)
                     OutlinedButton.icon(
@@ -942,8 +974,8 @@ class _DocumentReadonlyPreviewState
                           : const Icon(Icons.ios_share_outlined),
                       label: Text(
                         _sharingExportJobId == state.exportJob!.jobId
-                            ? '准备分享'
-                            : '分享文件',
+                            ? s.preparingShare
+                            : s.shareFile,
                       ),
                     ),
                 ],
@@ -961,16 +993,17 @@ class _DocumentAIProcessPanel extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final state = ref.watch(documentsControllerProvider);
     final hasDraft = state.valueOrNull?.draft != null;
     final loading = state.isLoading;
-    const actions = [
-      _DocumentProcessAction('summarize', '摘要', Icons.summarize_outlined),
-      _DocumentProcessAction('translate', '翻译', Icons.translate_outlined),
-      _DocumentProcessAction('rewrite', '改写', Icons.edit_note_outlined),
-      _DocumentProcessAction('expand', '扩写', Icons.unfold_more_outlined),
-      _DocumentProcessAction('polish', '润色', Icons.auto_fix_high_outlined),
-      _DocumentProcessAction('format', '整理', Icons.format_list_bulleted),
+    final actions = [
+      _DocumentProcessAction('summarize', s.processSummarizeShort, Icons.summarize_outlined),
+      _DocumentProcessAction('translate', s.translate, Icons.translate_outlined),
+      _DocumentProcessAction('rewrite', s.rewrite, Icons.edit_note_outlined),
+      _DocumentProcessAction('expand', s.expand, Icons.unfold_more_outlined),
+      _DocumentProcessAction('polish', s.polish, Icons.auto_fix_high_outlined),
+      _DocumentProcessAction('format', s.formatDoc, Icons.format_list_bulleted),
     ];
     return Card(
       child: Padding(
@@ -985,12 +1018,12 @@ class _DocumentAIProcessPanel extends ConsumerWidget {
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: 8),
-                Text('AI 处理', style: Theme.of(context).textTheme.titleMedium),
+                Text(s.aiProcess, style: Theme.of(context).textTheme.titleMedium),
               ],
             ),
             const SizedBox(height: 6),
             Text(
-              '对当前选中文档执行摘要、翻译、改写、扩写、润色或格式整理（由 Hub AI 完成，结果写回文稿库）。',
+              s.aiProcessHint,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -1034,10 +1067,11 @@ class _UploadStatus extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(appStringsProvider);
     final upload = state.uploadTask;
     if (upload == null) return const SizedBox.shrink();
     final permissionEvidence = ref.watch(documentPermissionEvidenceProvider);
-    final statusLabel = _uploadStatusLabel(upload.status);
+    final statusLabel = s.uploadStatusLabel(upload.status);
     final failed = upload.status == 'failed';
     final inProgress = _uploadInProgress(upload.status);
     final scheme = Theme.of(context).colorScheme;
@@ -1061,7 +1095,7 @@ class _UploadStatus extends ConsumerWidget {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: 4),
-                  Text('导入任务 ${upload.taskId}：$statusLabel'),
+                  Text(s.uploadTaskLine(upload.taskId, statusLabel)),
                   if (permissionEvidence != null &&
                       permissionEvidence.isNotEmpty) ...[
                     const SizedBox(height: 4),
@@ -1079,7 +1113,7 @@ class _UploadStatus extends ConsumerWidget {
                   if (failed) ...[
                     const SizedBox(height: 4),
                     Text(
-                      '可重试导入，或改用文本、PDF、Word、图片截图等移动端更稳定的格式。',
+                      s.uploadFailedHint,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -1088,7 +1122,7 @@ class _UploadStatus extends ConsumerWidget {
                   if (inProgress) ...[
                     const SizedBox(height: 4),
                     Text(
-                      '这是官方服务长任务，可以先离开页面；完成后会通过通知或回到文档页继续处理。',
+                      s.uploadInProgressHint,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -1097,7 +1131,7 @@ class _UploadStatus extends ConsumerWidget {
                   if (!inProgress && !failed) ...[
                     const SizedBox(height: 4),
                     Text(
-                      '导入已完成。点「关闭」可收起此卡片。',
+                      s.uploadDoneHint,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
@@ -1113,7 +1147,7 @@ class _UploadStatus extends ConsumerWidget {
                             .read(documentsControllerProvider.notifier)
                             .refreshUploadTask(),
                         icon: Icon(inProgress ? Icons.refresh : Icons.close),
-                        label: Text(inProgress ? '刷新状态' : '关闭'),
+                        label: Text(inProgress ? s.refreshStatus : s.close),
                       ),
                       if (state.canRetryLastUpload)
                         OutlinedButton.icon(
@@ -1121,7 +1155,7 @@ class _UploadStatus extends ConsumerWidget {
                               .read(documentsControllerProvider.notifier)
                               .retryLastUpload(),
                           icon: const Icon(Icons.replay_outlined),
-                          label: const Text('重试导入'),
+                          label: Text(s.retryImport),
                         ),
                     ],
                   ),
@@ -1135,31 +1169,10 @@ class _UploadStatus extends ConsumerWidget {
   }
 }
 
-String _uploadStatusLabel(String status) {
-  return switch (status) {
-    'queued' => '等待远程解析',
-    'in_progress' => '远程解析中',
-    'needs_ocr' => '等待 OCR/视觉识别',
-    'ready' => '已生成草稿',
-    'failed' => '解析失败',
-    _ => status,
-  };
-}
-
 bool _uploadInProgress(String status) {
   return switch (status) {
     'queued' || 'in_progress' || 'needs_ocr' => true,
     _ => false,
-  };
-}
-
-String _exportStatusLabel(String status) {
-  return switch (status) {
-    'queued' => '等待生成',
-    'in_progress' => '生成中',
-    'ready' => '已可分享',
-    'failed' => '导出失败',
-    _ => status,
   };
 }
 

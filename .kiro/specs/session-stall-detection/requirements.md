@@ -69,13 +69,13 @@ MaClaw 管理多种编程工具会话（Claude Code SDK、Gemini ACP、Codex 等
 
 1. WHEN 会话状态转换为 `waiting_input`，THE Completion_Analyzer SHALL 分析最近 N 行输出内容（N 可配置，默认 50 行），判断任务完成度
 2. THE Completion_Analyzer SHALL 识别以下完成信号（Completion_Signal）：
-   - Claude Code SDK: `result` 消息中的 `is_error` 为 false、输出包含"✅"标记、输出包含"I've completed"/"已完成"等模式
+   - Claude Code SDK: `result` 消息中的 `is_error` 为 false、输出包含""标记、输出包含"I've completed"/"已完成"等模式
    - Gemini ACP: `[gemini-acp] turn complete:` 标记后跟成功指示
    - 通用模式: 输出不包含"I'll continue..."/"接下来我会..."/"Next, I'll..."等未完成指示词
 3. THE Completion_Analyzer SHALL 将分析结果分为三个级别：`completed`（任务完成）、`incomplete`（任务未完成，工具中途停下）、`uncertain`（无法确定）
-4. WHEN Completion_Analyzer 判定为 `completed`，THE Session_Hint SHALL 显示"✅ 任务似乎已完成，可以查看结果"
-5. WHEN Completion_Analyzer 判定为 `incomplete`，THE Session_Hint SHALL 显示"⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作"
-6. WHEN Completion_Analyzer 判定为 `uncertain`，THE Session_Hint SHALL 保持当前默认提示（"⚠️ 会话正在等待用户输入"）
+4. WHEN Completion_Analyzer 判定为 `completed`，THE Session_Hint SHALL 显示"任务似乎已完成，可以查看结果"
+5. WHEN Completion_Analyzer 判定为 `incomplete`，THE Session_Hint SHALL 显示"任务似乎未完成，建议发送「继续」让编程工具继续工作"
+6. WHEN Completion_Analyzer 判定为 `uncertain`，THE Session_Hint SHALL 保持当前默认提示（"会话正在等待用户输入"）
 
 ### Requirement 5: Session Hint 增强
 
@@ -83,11 +83,11 @@ MaClaw 管理多种编程工具会话（Claude Code SDK、Gemini ACP、Codex 等
 
 #### Acceptance Criteria
 
-1. WHEN 会话状态为 `busy` 且 Stall_Detector 未标记停滞，THE `get_session_output` SHALL 返回提示"⏳ 编程工具正在工作中，请等待后再检查进度"
-2. WHEN 会话状态为 `busy` 且 Stall_Detector 已标记停滞且 Auto_Nudger 正在尝试恢复，THE `get_session_output` SHALL 返回提示"⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
-3. WHEN 会话状态为 `busy` 且 Auto_Nudger 已达到最大 nudge 次数仍未恢复，THE `get_session_output` SHALL 返回提示"⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话"
-4. WHEN 会话状态为 `waiting_input` 且 Completion_Analyzer 判定为 `completed`，THE `get_session_output` SHALL 返回提示"✅ 任务似乎已完成，可以查看结果"
-5. WHEN 会话状态为 `waiting_input` 且 Completion_Analyzer 判定为 `incomplete`，THE `get_session_output` SHALL 返回提示"⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作"
+1. WHEN 会话状态为 `busy` 且 Stall_Detector 未标记停滞，THE `get_session_output` SHALL 返回提示"编程工具正在工作中，请等待后再检查进度"
+2. WHEN 会话状态为 `busy` 且 Stall_Detector 已标记停滞且 Auto_Nudger 正在尝试恢复，THE `get_session_output` SHALL 返回提示"编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
+3. WHEN 会话状态为 `busy` 且 Auto_Nudger 已达到最大 nudge 次数仍未恢复，THE `get_session_output` SHALL 返回提示"编程工具可能已卡住，建议发送具体指令或终止会话"
+4. WHEN 会话状态为 `waiting_input` 且 Completion_Analyzer 判定为 `completed`，THE `get_session_output` SHALL 返回提示"任务似乎已完成，可以查看结果"
+5. WHEN 会话状态为 `waiting_input` 且 Completion_Analyzer 判定为 `incomplete`，THE `get_session_output` SHALL 返回提示"任务似乎未完成，建议发送「继续」让编程工具继续工作"
 6. THE Session_Hint 增强 SHALL 不影响现有的 `exited`、`error`、`starting`、`running` 状态提示逻辑
 
 ### Requirement 6: 停滞与完成状态同步到 Hub

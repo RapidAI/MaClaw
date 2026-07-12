@@ -23,6 +23,19 @@ func TestFormatMissingRequiredArgsMessageIsActionable(t *testing.T) {
 	}
 }
 
+func TestFormatMissingRequiredArgsMessageWithParamsIncludesContract(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "input_file", Required: true, Description: "source"},
+		{Name: "format", Default: "pdf"},
+	}
+	got := FormatMissingRequiredArgsMessageWithParams("demo", []string{"input_file"}, "Convert documents", params)
+	for _, want := range []string{"Parameter contract", "input_file", "format", "JSON Schema", "[action: provide_args]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("message %q missing %q", got, want)
+		}
+	}
+}
+
 func TestFormatNoExecutableStepsMessageMentionsRunnerCapabilities(t *testing.T) {
 	entry := &corelib.NLSkillEntry{Name: "doc-only", RequiredArgs: []string{"input"}, Description: "Docs only", SkillDir: `/tmp/skill`}
 	got := FormatNoExecutableStepsMessage("", entry, RunnerBackendTUI)

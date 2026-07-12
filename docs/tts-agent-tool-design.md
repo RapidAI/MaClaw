@@ -5,8 +5,8 @@
 maclaw agent 在 IM 通道（飞书/企微/QQ/蓝信等）回复用户时，能够将回复内容的摘要转换为语音，以**语音消息**（非文件附件）的形式直接发送给用户。
 
 **关键区分**：
-- ✅ 语音消息（voice message）：在聊天界面中显示为可播放的语音气泡，用户点击即播
-- ❌ 文件附件（file attachment）：显示为文件卡片，需要下载后播放
+- 语音消息（voice message）：在聊天界面中显示为可播放的语音气泡，用户点击即播
+- 文件附件（file attachment）：显示为文件卡片，需要下载后播放
 
 ## 2. 各 IM 平台语音消息格式调研
 
@@ -88,12 +88,12 @@ maclaw agent 在 IM 通道（飞书/企微/QQ/蓝信等）回复用户时，能�
 
 | 平台 | 语音气泡格式 | 文件附件格式 | 是否需要专用 API |
 |------|------------|------------|----------------|
-| **飞书** | OGG Opus（必须） | 任意 | ✅ 需要 `msg_type=audio` + `file_type=opus` 上传 |
-| **企微** | AMR / MP3 / WAV | 任意 | ❌ 现有 `SendFile` 已自动路由到 voice |
-| **QQ** | silk / wav / mp3 / flac | 任意 | ❌ 现有 `SendFile` 已自动路由到 `file_type=3`（语音） |
-| **钉钉** | ogg / amr（需上传获取 mediaId） | xlsx/pdf/zip/rar/doc/docx | ✅ 需要 `sampleAudio` msgKey + 上传媒体文件 |
-| **蓝信** | ❌ 不支持 | MP3 / WAV | — |
-| **Telegram** | OGG Opus（推荐） | MP3 / WAV | ✅ 需要 `sendVoice` API |
+| **飞书** | OGG Opus（必须） | 任意 | 需要 `msg_type=audio` + `file_type=opus` 上传 |
+| **企微** | AMR / MP3 / WAV | 任意 | 现有 `SendFile` 已自动路由到 voice |
+| **QQ** | silk / wav / mp3 / flac | 任意 | 现有 `SendFile` 已自动路由到 `file_type=3`（语音） |
+| **钉钉** | ogg / amr（需上传获取 mediaId） | xlsx/pdf/zip/rar/doc/docx | 需要 `sampleAudio` msgKey + 上传媒体文件 |
+| **蓝信** | 不支持 | MP3 / WAV | — |
+| **Telegram** | OGG Opus（推荐） | MP3 / WAV | 需要 `sendVoice` API |
 
 ## 3. 音频编码方案
 
@@ -105,10 +105,10 @@ TTS 引擎（Piper）输出 PCM float32 @ 22050Hz 单声道。需要编码为各
 
 | 方案 | 覆盖平台 | 纯 Go | 文件大小（10s 音频） | 复杂度 |
 |------|---------|-------|-------------------|--------|
-| **A: WAV only** | 企微 ✅ QQ ✅ 飞书 ❌ 蓝信 ✅ | ✅ | ~430KB | 最低 |
-| **B: WAV + OGG Opus** | 企微 ✅ QQ ✅ 飞书 ✅ 蓝信 ✅ Telegram ✅ | ✅ 内置纯 Go Opus | WAV ~430KB, Opus ~20KB | 中 |
-| **C: MP3 only** | 企微 ✅ QQ ✅ 飞书 ❌ 蓝信 ✅ | ✅ `shine-mp3` | ~80KB | 中 |
-| **D: WAV（默认）+ 平台适配** | 全平台 | ✅ 核心 + 按需 | 按平台 | 最灵活 |
+| **A: WAV only** | 企微 QQ 飞书 蓝信 | | ~430KB | 最低 |
+| **B: WAV + OGG Opus** | 企微 QQ 飞书 蓝信 Telegram | 内置纯 Go Opus | WAV ~430KB, Opus ~20KB | 中 |
+| **C: MP3 only** | 企微 QQ 飞书 蓝信 | `shine-mp3` | ~80KB | 中 |
+| **D: WAV（默认）+ 平台适配** | 全平台 | 核心 + 按需 | 按平台 | 最灵活 |
 
 ### 3.3 推荐方案：D（WAV 默认 + 平台适配层）
 
@@ -134,9 +134,9 @@ TTS 引擎（Piper）输出 PCM float32 @ 22050Hz 单声道。需要编码为各
 
 | 库 | 纯 Go | 编码支持 | 成熟度 | 备注 |
 |----|-------|---------|--------|------|
-| `pion/opus` | ✅ | ⚠️ 主要是解码器 | 活跃（WebRTC 生态） | 编码器可能不完整 |
-| `hraban/opus` | ❌ CGo | ✅ 完整 | 成熟 | 依赖 libopus C 库 |
-| `gopxl/audio` | ✅ | ✅ MP3 编码 | 较新 | 不支持 Opus |
+| `pion/opus` | | 主要是解码器 | 活跃（WebRTC 生态） | 编码器可能不完整 |
+| `hraban/opus` | CGo | 完整 | 成熟 | 依赖 libopus C 库 |
+| `gopxl/audio` | | MP3 编码 | 较新 | 不支持 Opus |
 
 **务实选择**：
 
@@ -328,17 +328,17 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(userID string, resp *IMAgentR
 
 | 组件 | 状态 | 复用方式 |
 |------|------|---------|
-| `corelib/tts.Manager` | ✅ 已有 | 直接调用 `SynthesizeText` |
-| `tts.cleanForSpeech()` | ✅ 已有 | 清理 Markdown/URL |
-| `tts.truncateRunes()` | ✅ 已有 | 截断到句子边界 |
-| `tts.GenerateVoiceSummary()` | ✅ 已有 | 自动摘要生成 |
-| `tts.EncodeWAV()` | ✅ 已有 | PCM → WAV |
-| 企微 `SendFile` voice 路由 | ✅ 已有 | `audio/*` MIME → voice mediaType |
-| QQ `SendFile` 语音路由 | ✅ 已有 | `audio/*` MIME → `file_type=3`（语音） |
-| 飞书 `SendFile` | ⚠️ 需增强 | 新增 `SendAudio`（`msg_type=audio`） |
-| 钉钉 `Gateway` | ⚠️ 需增强 | 新增 `uploadMedia` + `SendAudio`（`sampleAudio`） |
-| `[file_base64\|...\|im]` 协议 | ✅ 已有 | 复用 IM 转发机制 |
-| 桌面 `tts:audio` 事件 | ✅ 已有 | 复用前端播放 |
+| `corelib/tts.Manager` | 已有 | 直接调用 `SynthesizeText` |
+| `tts.cleanForSpeech()` | 已有 | 清理 Markdown/URL |
+| `tts.truncateRunes()` | 已有 | 截断到句子边界 |
+| `tts.GenerateVoiceSummary()` | 已有 | 自动摘要生成 |
+| `tts.EncodeWAV()` | 已有 | PCM → WAV |
+| 企微 `SendFile` voice 路由 | 已有 | `audio/*` MIME → voice mediaType |
+| QQ `SendFile` 语音路由 | 已有 | `audio/*` MIME → `file_type=3`（语音） |
+| 飞书 `SendFile` | 需增强 | 新增 `SendAudio`（`msg_type=audio`） |
+| 钉钉 `Gateway` | 需增强 | 新增 `uploadMedia` + `SendAudio`（`sampleAudio`） |
+| `[file_base64\|...\|im]` 协议 | 已有 | 复用 IM 转发机制 |
+| 桌面 `tts:audio` 事件 | 已有 | 复用前端播放 |
 
 ## 7. 风险与缓解
 

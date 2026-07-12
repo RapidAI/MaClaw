@@ -13,7 +13,20 @@ import (
 type matmulRangeJob struct {
 	start, end int
 	fn         func(start, end int)
+	run        func()
+	task       matmulRangeTask
+	asyncTask  AsyncTask
 	wg         *sync.WaitGroup
+}
+
+type matmulRangeTask interface {
+	runRange(start, end int)
+}
+
+// AsyncTask is one non-partitioned unit of work submitted to the matmul pool.
+// It lets hot callers reuse a structured task instead of allocating a closure.
+type AsyncTask interface {
+	RunAsyncTask()
 }
 
 var (
@@ -39,7 +52,15 @@ func ensureMatmulPool() {
 		for i := 0; i < n; i++ {
 			go func() {
 				for j := range jobQueue {
-					j.fn(j.start, j.end)
+					if j.task != nil {
+						j.task.runRange(j.start, j.end)
+					} else if j.asyncTask != nil {
+						j.asyncTask.RunAsyncTask()
+					} else if j.run != nil {
+						j.run()
+					} else {
+						j.fn(j.start, j.end)
+					}
 					j.wg.Done()
 				}
 			}()
@@ -61,12 +82,32 @@ func poolWorkers() int {
 	return int(atomic.LoadInt32(&poolSize))
 }
 
+// matMulWorkersFor limits only small encoder projections. For these shapes the
+// 12-way pool's dispatch and cache traffic can outweigh its extra compute lanes;
+// SenseVoice command-length audio commonly reaches M=5..8 here. Very wide CTC
+// argmax (N≈25k) retains the full pool even for short utterances.
+func matMulWorkersFor(M, N, K int) int {
+	nw := poolWorkers()
+	if M >= 2 && M <= 8 && N >= 512 && N <= 4096 && K >= 256 && nw > 8 {
+		return 8
+	}
+	return nw
+}
+
 // ParallelRanges splits [0, total) into up to nw contiguous ranges and runs
 // fn(start,end) on the matmul worker pool. fn must be safe for concurrent
 // disjoint ranges. Prefer this over spawning goroutines per call site
 // (e.g. attention heads across ~70 SANM layers).
 func ParallelRanges(total int, fn func(start, end int)) {
 	parallelRanges(total, fn)
+}
+
+// RunAsyncTask submits a reusable structured task. The caller owns wg and must
+// wait before returning its task to a pool or mutating its fields.
+func RunAsyncTask(task AsyncTask, wg *sync.WaitGroup) {
+	ensureMatmulPool()
+	wg.Add(1)
+	jobQueue <- matmulRangeJob{asyncTask: task, wg: wg}
 }
 
 // RunAsync submits fn to the matmul worker pool and returns a wait func.
@@ -77,9 +118,8 @@ func RunAsync(fn func()) (wait func()) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	jobQueue <- matmulRangeJob{
-		start: 0, end: 1,
-		fn: func(_, _ int) { fn() },
-		wg: &wg,
+		run: fn,
+		wg:  &wg,
 	}
 	return wg.Wait
 }
@@ -90,23 +130,19 @@ func RunAsync(fn func()) (wait func()) {
 // For large totals (matmul N-partition), prefer chunks ≥32 so workers are not
 // starved of B columns. Small totals (heads=4) keep full parallel width.
 func parallelRanges(total int, fn func(start, end int)) {
-	if total <= 0 {
+	parallelRangesWithWorkers(total, poolWorkers(), fn)
+}
+
+func parallelRangesForMatMul(M, N, K int, fn func(start, end int)) {
+	parallelRangesWithWorkers(N, matMulWorkersFor(M, N, K), fn)
+}
+
+func parallelRangesWithWorkers(total, nw int, fn func(start, end int)) {
+	nw = rangeWorkers(total, nw)
+	if nw <= 0 {
 		return
 	}
-	nw := poolWorkers()
-	if nw > total {
-		nw = total
-	}
-	// Wide partitions only: avoid N=512 → 12×42-col slices (A reload thrash).
-	// Keep minChunk=32: fatter floors (64/256) cut workers to ≤8 and regressed
-	// e2e ~126ms → ~190ms+ on 8745HS (parallelism loss > L3 thrash savings).
-	if total >= 384 {
-		const minChunk = 32
-		if maxUseful := (total + minChunk - 1) / minChunk; nw > maxUseful {
-			nw = maxUseful
-		}
-	}
-	if nw <= 1 {
+	if nw == 1 {
 		fn(0, total)
 		return
 	}
@@ -126,6 +162,28 @@ func parallelRanges(total int, fn func(start, end int)) {
 		jobQueue <- matmulRangeJob{start: s, end: e, fn: fn, wg: &wg}
 	}
 	wg.Wait()
+}
+
+func rangeWorkers(total, nw int) int {
+	if total <= 0 {
+		return 0
+	}
+	if nw > total {
+		nw = total
+	}
+	// Wide partitions only: avoid N=512 → 12×42-col slices (A reload thrash).
+	// Keep minChunk=32: fatter floors (64/256) cut workers to ≤8 and regressed
+	// e2e ~126ms → ~190ms+ on 8745HS (parallelism loss > L3 thrash savings).
+	if total >= 384 {
+		const minChunk = 32
+		if maxUseful := (total + minChunk - 1) / minChunk; nw > maxUseful {
+			nw = maxUseful
+		}
+	}
+	if nw <= 1 {
+		return 1
+	}
+	return nw
 }
 
 // flopThreshold: below this, serial is faster than pool dispatch.

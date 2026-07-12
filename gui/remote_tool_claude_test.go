@@ -84,7 +84,7 @@ func TestClaudeAdapterBuildCommandIncludesPrintFlag(t *testing.T) {
 		t.Fatalf("WriteFile error = %v", err)
 	}
 
-	adapter := NewClaudeAdapter(&App{})
+	adapter := NewClaudeAdapter(&App{testHomeDir: tmpHome})
 
 	spec := LaunchSpec{
 		Tool:        "claude",

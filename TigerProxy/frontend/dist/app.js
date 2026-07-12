@@ -282,7 +282,7 @@ if (window.runtime && window.runtime.EventsOn) {
       // Deduplicate: skip if already shown as done (poll may have fired first)
       if (progressEl.classList.contains("done")) return;
       progressEl.className = "codex-progress done";
-      progressPct.textContent = "✓";
+      progressPct.textContent = "OK";
       progressFill.style.width = "100%";
       notify(data.message || "Codex Desktop 安装完成！");
       $("installCodexBtn").style.display = "none";
@@ -292,7 +292,7 @@ if (window.runtime && window.runtime.EventsOn) {
       // Deduplicate: skip if already terminal
       if (progressEl.classList.contains("done") || progressEl.classList.contains("error")) return;
       progressEl.className = "codex-progress error";
-      progressPct.textContent = "✗";
+      progressPct.textContent = "ERR";
       progressFill.style.width = "100%";
       $("installCodexBtn").style.display = "";
       delete $("installCodexBtn").dataset.installing;
@@ -316,7 +316,7 @@ function pollCodexInstalled(remaining, intervalMs) {
       // Only notify if progress bar hasn't already shown "done"
       if (progressEl && !progressEl.classList.contains("done")) {
         progressEl.className = "codex-progress done";
-        $("codexProgressPct").textContent = "✓";
+        $("codexProgressPct").textContent = "OK";
         $("codexProgressFill").style.width = "100%";
         $("codexProgressMsg").textContent = "Codex Desktop 安装成功！";
         notify("Codex Desktop 安装完成！现在可以点击「配置 Codex」。");

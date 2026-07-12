@@ -5,14 +5,14 @@ import "github.com/RapidAI/CodeClaw/corelib/remote"
 func backgroundTaskStatusIcon(status remote.SSHBackgroundTaskStatus) string {
 	switch {
 	case status.IsCompleted():
-		return "✅"
+		return "[OK]"
 	case status.IsFailed():
-		return "❌"
+		return "[ERR]"
 	case status.IsKilled():
-		return "🛑"
+		return "[STOP]"
 	case status.IsUnknown():
-		return "❓"
+		return "[?]"
 	default:
-		return "🔄"
+		return "[..]"
 	}
 }

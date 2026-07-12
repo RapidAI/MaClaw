@@ -203,13 +203,13 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 			b.WriteString(fmt.Sprintf("   代码片段:\n   ```\n   %s\n   ```\n", snippet))
 		}
 		if len(exp.FailedAttempts) > 0 {
-			b.WriteString("   ⚠️ 失败尝试（不要重复）:\n")
+			b.WriteString("   失败尝试（不要重复）:\n")
 			for _, fa := range exp.FailedAttempts {
 				b.WriteString(fmt.Sprintf("   - %s\n", truncateRunesForSubAgent(fa, 100)))
 			}
 		}
 		if len(exp.Contraindications) > 0 {
-			b.WriteString("   ❌ 不适用场景:\n")
+			b.WriteString("   不适用场景:\n")
 			for _, ci := range exp.Contraindications {
 				b.WriteString(fmt.Sprintf("   - %s\n", truncateRunesForSubAgent(ci, 100)))
 			}

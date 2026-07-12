@@ -304,7 +304,7 @@ func llmSetup(args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("  ✓ 已配置 %s\n", providerName)
+	fmt.Printf("  已配置 %s\n", providerName)
 	fmt.Printf("    模型: %s\n", model)
 	fmt.Printf("    URL:  %s\n", apiURL)
 	fmt.Printf("    Key:  %s****\n", apiKey[:min(4, len(apiKey))])
@@ -677,7 +677,7 @@ func llmTest(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{"success": true, "response": resp.Content, "elapsed_ms": elapsed.Milliseconds()})
 	}
-	fmt.Printf("✓ 成功 (%v)\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("成功 (%v)\n", elapsed.Round(time.Millisecond))
 	fmt.Printf("  响应: %s\n", TruncateDisplay(resp.Content, 80))
 	return nil
 }
@@ -742,7 +742,7 @@ func llmPing(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{"reachable": true, "status": resp.StatusCode, "elapsed_ms": elapsed.Milliseconds()})
 	}
-	fmt.Printf("✓ 端点可达 (HTTP %d, %v)\n", resp.StatusCode, elapsed.Round(time.Millisecond))
+	fmt.Printf("端点可达 (HTTP %d, %v)\n", resp.StatusCode, elapsed.Round(time.Millisecond))
 	return nil
 }
 
@@ -986,7 +986,7 @@ func llmLoginOpenAI(args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Println("✓ OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
+	fmt.Println("OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
 	return nil
 }
 
@@ -1109,7 +1109,7 @@ func llmLoginCodeGen(args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Println("✓ CodeGen SSO 登录成功")
+	fmt.Println("CodeGen SSO 登录成功")
 	if result.Email != "" {
 		fmt.Printf("  用户: %s\n", result.Email)
 	}

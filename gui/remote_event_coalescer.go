@@ -77,7 +77,7 @@ func (c *EventCoalescer) Enqueue(event ImportantEvent) {
 // CompleteToolCall is called when a tool_result arrives for a pending
 // tool_use event. If the tool_use is still buffered, the event is
 // enriched with a completion marker and flushed immediately, giving
-// the IM user a single "tool X ✓" message instead of two separate ones.
+// the IM user a single "tool X [done]" message instead of two separate ones.
 func (c *EventCoalescer) CompleteToolCall(eventID string) {
 	c.mu.Lock()
 	pe, ok := c.pending[eventID]
@@ -95,7 +95,7 @@ func (c *EventCoalescer) CompleteToolCall(eventID string) {
 
 	// Mark the event as completed (grouped) before flushing.
 	pe.event.Grouped = true
-	pe.event.Summary = pe.event.Summary + " ✓"
+	pe.event.Summary = pe.event.Summary + " [done]"
 	evt := pe.event
 	delete(c.pending, eventID)
 	c.mu.Unlock()

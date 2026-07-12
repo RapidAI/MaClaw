@@ -138,7 +138,7 @@ function ConditionEditor({
         aria-label={textForLang(lang, "Remove condition", "移除条件", "移除條件")}
         title={textForLang(lang, "Remove condition", "移除条件", "移除條件")}
       >
-        ✕
+        ×
       </button>
     </div>
   );

@@ -194,7 +194,7 @@ PhaseExecutor.Run(phase=requirements)
     ├─ len > 200 rune → phase.Status = waiting_confirm
     │
     ▼
-返回给用户: "📄 需求文档已生成，请确认或修改"
+返回给用户: "需求文档已生成，请确认或修改"
 ```
 
 ### Case 2: 用户确认

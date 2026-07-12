@@ -22,12 +22,7 @@
   - **Property 2: Preservation** - Substantive Documents Still Force-Return
   - **IMPORTANT**: Follow observation-first methodology
   - Observe behavior on UNFIXED code for substantive document inputs (cases where `isBugCondition` returns false):
-    - Observe: `"# 需求文档\n\n## 1. 功能需求\n\n1. 用户可以...\n2. 系统应当..."` (200+ chars, has headings + numbered list) — gate force-returns ✅
-    - Observe: A 200+ rune string with `## Architecture` heading — gate force-returns ✅
-    - Observe: A string with `1. First item\n2. Second item` numbered list — gate force-returns ✅
-    - Observe: A string with 3+ bullet lines (`- item1\n- item2\n- item3`) — gate force-returns ✅
-    - Observe: Empty string or stall reply (`"让我先分析一下需求..."`) — gate does NOT force-return ✅
-  - Write property-based tests using `testing/quick` (100+ iterations):
+    - Observe: `"# 需求文档\n\n## 1. 功能需求\n\n1. 用户可以...\n2. 系统应当..."` (200+ chars, has headings + numbered list) — gate force-returns     - Observe: A 200+ rune string with `## Architecture` heading — gate force-returns     - Observe: A string with `1. First item\n2. Second item` numbered list — gate force-returns     - Observe: A string with 3+ bullet lines (`- item1\n- item2\n- item3`) — gate force-returns     - Observe: Empty string or stall reply (`"让我先分析一下需求..."`) — gate does NOT force-return   - Write property-based tests using `testing/quick` (100+ iterations):
     - Generate random markdown documents (200+ runes with headings/lists) → verify `isSubstantivePhaseDocument` returns `true`
     - Generate random strings containing `# ` / `## ` heading markers → verify returns `true` regardless of length
     - Generate random strings containing numbered list patterns (`1. `, `2. `, `1、`) → verify returns `true`

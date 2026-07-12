@@ -127,7 +127,7 @@ func ToolBashWithContext(parent context.Context, args map[string]interface{}, on
 					displayCmd = displayCmd[:60] + "…"
 				}
 				if onProgress != nil {
-					onProgress(fmt.Sprintf("⏳ 命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
+					onProgress(fmt.Sprintf("命令仍在执行中（已 %ds）: %s", elapsed, displayCmd))
 				}
 			case <-done:
 				return
@@ -844,11 +844,11 @@ func ToolListDirectory(args map[string]interface{}) string {
 		}
 		info, _ := entry.Info()
 		if entry.IsDir() {
-			b.WriteString(fmt.Sprintf("  📁 %s/\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  %s/\n", entry.Name()))
 		} else if info != nil {
-			b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", entry.Name(), info.Size()))
+			b.WriteString(fmt.Sprintf("  %s (%d bytes)\n", entry.Name(), info.Size()))
 		} else {
-			b.WriteString(fmt.Sprintf("  📄 %s\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  %s\n", entry.Name()))
 		}
 		shown++
 	}

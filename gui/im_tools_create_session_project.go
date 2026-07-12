@@ -43,7 +43,7 @@ func resolveCreateSessionProjectID(cfg corelib.AppConfig, projectID string) crea
 		if p.Id == projectID {
 			return createSessionProjectIDResolution{
 				ProjectPath: p.Path,
-				Hint:        fmt.Sprintf("📁 通过项目 ID 解析: %s → %s", projectID, p.Path),
+				Hint:        fmt.Sprintf("通过项目 ID 解析: %s → %s", projectID, p.Path),
 			}
 		}
 	}

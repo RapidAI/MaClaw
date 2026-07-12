@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
+import {
+    clearWorkspaceLaunchIssue,
+    formatWorkspaceLaunchError,
+    formatWorkspaceLaunchIssue,
+    isEnterpriseAppKindForWorkspace,
+    setWorkspaceLaunchIssue,
+} from './appsWorkspaceLaunch';
 import './AppsPage.css';
 
 type AppKind = 'enterprise_approval_app' | 'enterprise_normal_app' | 'tool_app' | 'automation_app';
@@ -120,6 +127,10 @@ type BackendAppInstallDependency = {
     installed_version?: string;
     required_version?: string;
     version_status?: 'matched' | 'mismatch' | 'unknown' | string;
+    /** Preferred RunNLSkillAsync argument after plan resolution (usually hub_skill_id). */
+    runtime_skill_ref?: string;
+    runtimeSkillRef?: string;
+    RuntimeSkillRef?: string;
     installed_dir?: string;
     installed_status?: string;
     health?: 'ready' | 'missing' | 'disabled' | 'needs_setup' | 'unknown' | string;
@@ -2577,8 +2588,57 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
     return Array.from(merged.values());
 }
 
-function appRunnableSkillID(app?: AppEntry | null): string {
-    return String(app?.manifest?.appSkill?.id || app?.manifest?.skill?.id || '').trim();
+/**
+ * Resolve the skill id used for RunNLSkillAsync.
+ *
+ * Coordinate model (authoring → plan → run):
+ * 1. Declared appSkill.id / skill.id (stable hub/package id preferred at authoring)
+ * 2. After PlanMaclawAppInstall: dependency.runtime_skill_ref (HubSkillID) or
+ *    installed_name when the local registry display name is the only handle
+ * 3. Fall back to declared id so cold start without a plan still works once
+ *    backend MatchesName accepts HubSkillID
+ */
+function appRunnableSkillID(app?: AppEntry | null, plan?: BackendAppInstallPlan | null): string {
+    const declared = String(app?.manifest?.appSkill?.id || app?.manifest?.skill?.id || '').trim();
+    if (!declared) return '';
+    const deps = plan?.dependencies || [];
+    if (!deps.length) return declared;
+    // Mirror corelib.NormalizeSkillMatchQuery + NormalizeSkillIdentityKey.
+    const stripAt = (value: string) => {
+        const trimmed = String(value || '').trim();
+        const at = trimmed.indexOf('@');
+        return (at > 0 ? trimmed.slice(0, at) : trimmed).trim().toLowerCase();
+    };
+    const identityKey = (value: string) => stripAt(value).replace(/[\s\-_]+/g, '_').replace(/^_+|_+$/g, '');
+    const declaredKey = stripAt(declared);
+    const declaredIdentity = identityKey(declared);
+    const matchesDeclared = (dep: BackendAppInstallDependency) => {
+        const candidates = [
+            dep.id,
+            dep.canonical_id,
+            dep.canonicalID,
+            dep.install_ref_target,
+            dep.runtime_skill_ref,
+            dep.runtimeSkillRef,
+            dep.RuntimeSkillRef,
+            dep.installed_name,
+            ...(Array.isArray(dep.aliases) ? dep.aliases : []),
+        ];
+        return candidates.some((raw) => {
+            const v = String(raw || '').trim();
+            if (!v) return false;
+            return stripAt(v) === declaredKey || identityKey(v) === declaredIdentity;
+        });
+    };
+    // Prefer installed deps so a ready plan binds runtime_skill_ref.
+    const dep = deps.find((d) => matchesDeclared(d) && d.installed) || deps.find((d) => matchesDeclared(d));
+    if (!dep) return declared;
+    const runtimeRef = String(dep.runtime_skill_ref || dep.runtimeSkillRef || dep.RuntimeSkillRef || '').trim();
+    if (runtimeRef) return runtimeRef;
+    const canonical = String(dep.canonical_id || dep.canonicalID || '').trim();
+    if (canonical) return canonical;
+    // Last resort: local display name (only when no stable package id exists).
+    return String(dep.installed_name || declared).trim() || declared;
 }
 
 function makeAutomationManifest(): AppManifestBinding {
@@ -5381,6 +5441,7 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
             installed_version: String(dep.installed_version || dep.installedVersion || dep.InstalledVersion || '').trim() || undefined,
             required_version: String(dep.required_version || dep.requiredVersion || dep.RequiredVersion || '').trim() || undefined,
             version_status: String(dep.version_status || dep.versionStatus || dep.VersionStatus || '').trim() || undefined,
+            runtime_skill_ref: String(dep.runtime_skill_ref || dep.runtimeSkillRef || dep.RuntimeSkillRef || '').trim() || undefined,
             installed_dir: String(dep.installed_dir || dep.installedDir || dep.InstalledDir || '').trim() || undefined,
             installed_status: String(dep.installed_status || dep.installedStatus || dep.InstalledStatus || '').trim() || undefined,
             health: String(dep.health || dep.Health || '').trim() || undefined,
@@ -7229,6 +7290,9 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
     const [datasrvDiscovery, setDataSrvDiscovery] = useState<DataSrvDiscovery>(emptyDiscovery);
     const [skillDiscovery, setSkillDiscovery] = useState<SkillAppDiscovery>(emptySkillDiscovery);
     const [activeRunRevision, setActiveRunRevision] = useState(0);
+    const [workspaceLaunchHint, setWorkspaceLaunchHint] = useState('');
+    /** Per-app one-click workspace open failure (tile badge + footer hint). */
+    const [workspaceLaunchByAppId, setWorkspaceLaunchByAppId] = useState<Record<string, string>>({});
     const notifyActiveRunChanged = useCallback(() => setActiveRunRevision((value) => value + 1), []);
 
     useEffect(() => {
@@ -7342,6 +7406,36 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
         setActiveTabId(app.id);
         setStudioOpen(false);
         setActiveOperation(null);
+        setWorkspaceLaunchHint('');
+        setWorkspaceLaunchByAppId((current) => clearWorkspaceLaunchIssue(current, app.id));
+        // One-click: open right-pane AppView workspace for enterprise apps (best-effort).
+        const kind = String(app.kind || '');
+        if (isEnterpriseAppKindForWorkspace(kind)) {
+            const openFromInstall = typeof OpenMaclawAppWorkspaceFromInstall === 'function'
+                ? OpenMaclawAppWorkspaceFromInstall
+                : null;
+            if (openFromInstall) {
+                const rememberLaunchIssue = (message: string) => {
+                    setWorkspaceLaunchHint(message);
+                    setWorkspaceLaunchByAppId((current) => setWorkspaceLaunchIssue(current, app.id, message));
+                };
+                void Promise.resolve(openFromInstall({
+                    app_id: canonicalAppManifestID(app),
+                    app_name: app.name,
+                    kind,
+                })).then((result: any) => {
+                    const issue = formatWorkspaceLaunchIssue(app.name, result, lang);
+                    if (!issue) {
+                        setWorkspaceLaunchHint('');
+                        setWorkspaceLaunchByAppId((current) => clearWorkspaceLaunchIssue(current, app.id));
+                        return;
+                    }
+                    rememberLaunchIssue(issue);
+                }).catch((error: any) => {
+                    rememberLaunchIssue(formatWorkspaceLaunchError(app.name, error, lang));
+                });
+            }
+        }
     };
 
     const openOperation = (operation: AppOperation, options?: { appId?: string }) => {
@@ -7596,6 +7690,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
 
     const renderTile = (app: AppEntry) => {
         const status = appStatusInfo(app);
+        const launchIssue = workspaceLaunchByAppId[app.id] || '';
         const moveTileFocus = (event: KeyboardEvent<HTMLButtonElement>) => {
             if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
                 event.preventDefault();
@@ -7618,14 +7713,20 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                     : Math.max(0, Math.min(tiles.length - 1, index + offset));
             tiles[nextIndex]?.focus();
         };
+        const tooltip = launchIssue
+            ? `${buildAppTileTooltip(app, text, status.label, lang)}\n${launchIssue}`
+            : buildAppTileTooltip(app, text, status.label, lang);
         return (
             <button
                 key={app.id}
-                className={`apps-app-tile ${activeApp?.id === app.id && !studioOpen ? 'is-active' : ''}`}
+                className={`apps-app-tile ${activeApp?.id === app.id && !studioOpen ? 'is-active' : ''}${launchIssue ? ' has-workspace-issue' : ''}`}
                 data-status={status.key}
+                data-workspace-issue={launchIssue ? 'true' : undefined}
                 style={{ '--apps-icon-color': app.accent } as CSSProperties}
-                title={buildAppTileTooltip(app, text, status.label, lang)}
-                aria-label={buildAppTileAriaLabel(app, text, status.label, lang)}
+                title={tooltip}
+                aria-label={launchIssue
+                    ? `${buildAppTileAriaLabel(app, text, status.label, lang)}. ${launchIssue}`
+                    : buildAppTileAriaLabel(app, text, status.label, lang)}
                 onClick={() => openApp(app)}
                 onContextMenu={(event) => {
                     event.preventDefault();
@@ -7633,7 +7734,19 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                 }}
 	                onKeyDown={moveTileFocus}
 	            >
-	                <span className="apps-app-icon"><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
+	                <span className="apps-app-icon">
+                        <AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} />
+                        {launchIssue ? (
+                            <span
+                                className="apps-app-tile__workspace-badge"
+                                data-testid={`apps-workspace-badge-${app.id}`}
+                                title={launchIssue}
+                                aria-hidden="true"
+                            >
+                                !
+                            </span>
+                        ) : null}
+                    </span>
 	                <span className="apps-app-label">
                         <span className="apps-app-name">{app.name}</span>
                         <span className="apps-app-status">{status.label}</span>
@@ -7722,6 +7835,23 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                         </div>
                         {visibleListApps.length > 0 ? <div className="apps-grid">{visibleListApps.map(renderTile)}</div> : <div className="apps-empty">{pinnedApps.length > 0 ? text.noMoreApps : text.noApps}</div>}
                     </section>
+                    {workspaceLaunchHint && (
+                        <div
+                            className="apps-empty"
+                            role="status"
+                            data-testid="apps-workspace-launch-hint"
+                            style={{ marginTop: 12, textAlign: 'left' }}
+                        >
+                            <span>{workspaceLaunchHint}</span>
+                            <button
+                                type="button"
+                                style={{ marginLeft: 12 }}
+                                onClick={() => setWorkspaceLaunchHint('')}
+                            >
+                                {isZh(lang) ? '关闭' : 'Dismiss'}
+                            </button>
+                        </div>
+                    )}
                 </div>
                 {tileMenuApp && tileMenu && (
                     <div
@@ -9022,7 +9152,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                         dependencyVerification,
                         approvalInstance,
                     });
-                    const evidenceSkillID = appRunnableSkillID(app);
+                    const evidenceSkillID = appRunnableSkillID(app, activeRunDependencyPlanRef.current || runtimeDependencyPlan || runtimeInstallEvidencePlan || null);
                     if (app?.source === 'skill' && evidenceSkillID) {
                         void RecordMaclawAppRunEvidenceForSkill(evidenceSkillID, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
                     }
@@ -9201,7 +9331,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 setRunState('error');
                 return;
             }
-            const skillID = appRunnableSkillID(app);
+            const skillID = appRunnableSkillID(app, activeRunDependencyPlanRef.current || runtimeDependencyPlan || runtimeInstallEvidencePlan || null);
             if (skillID) {
                 setRunState('running');
                 setCurrentRunContext({ inputSummary: toolInputSummary, outputMode });
@@ -9389,7 +9519,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             };
             approvalRunContextRef.current = { instance: fallbackPayload };
             try {
-                const started = await StartMaclawAppApprovalWorkflow({
+                const startApproval = typeof OpenMaclawAppApprovalWorkspace === 'function'
+                    ? OpenMaclawAppApprovalWorkspace
+                    : StartMaclawAppApprovalWorkflow;
+                const started = await startApproval({
                     app_id: canonicalAppManifestID(app),
                     app_name: app.name,
                     dataset_id: approvalDatasetID || undefined,
@@ -9547,7 +9680,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             setBusinessResult(null);
             setCurrentRunContext({ inputSummary, outputMode: 'business' });
             try {
-                const result = await ExecuteMaclawAppBusinessOperation({
+                // Open right-pane AppView workspace (DataSrv → table/result_browser) while
+                // still returning the same business operation result package for AppsPage UI.
+                const openWorkspace = typeof OpenMaclawAppBusinessWorkspace === 'function'
+                    ? OpenMaclawAppBusinessWorkspace
+                    : ExecuteMaclawAppBusinessOperation;
+                const result = await openWorkspace({
                     app_id: app.id,
                     app_name: app.name,
                     dataset_id: app.manifest?.datasrv?.datasetID || '',
@@ -9636,7 +9774,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         setRuntimeBusinessError(null);
         setCurrentRunContext({ inputSummary, outputMode: 'approval' });
         try {
-            const started = await StartMaclawAppApprovalWorkflow({
+            const startApproval = typeof OpenMaclawAppApprovalWorkspace === 'function'
+                ? OpenMaclawAppApprovalWorkspace
+                : StartMaclawAppApprovalWorkflow;
+            const started = await startApproval({
                 app_id: canonicalAppManifestID(app),
                 app_name: app.name,
                 approval_id: instance.approvalID,

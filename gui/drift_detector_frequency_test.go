@@ -316,10 +316,10 @@ func TestFrequencyAnomaly_SlowPollWithDifferentArgs_Detected(t *testing.T) {
 func TestFrequencyAnomaly_SSHMultiStepWorkflow_ResultsProgressing_NotDetected(t *testing.T) {
 	d := NewDriftDetector(8, 0.8)
 
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h1", ResultHash: "rh1", ResultHint: "✅ SSH 连接成功 会话ID: ssh_root@api:22_1"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h2", ResultHash: "rh2", ResultHint: "✅ 后台任务已提交 任务ID: bg_1"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h3", ResultHash: "rh3", ResultHint: "❌ docker-compose: command not found EXIT: 127"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h4", ResultHash: "rh4", ResultHint: "✅ 后台任务已提交 任务ID: bg_2"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h1", ResultHash: "rh1", ResultHint: "SSH 连接成功 会话ID: ssh_root@api:22_1"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h2", ResultHash: "rh2", ResultHint: "后台任务已提交 任务ID: bg_1"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h3", ResultHash: "rh3", ResultHint: "docker-compose: command not found EXIT: 127"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h4", ResultHash: "rh4", ResultHint: "后台任务已提交 任务ID: bg_2"})
 
 	result := d.DetectDrift()
 	if result.Drifted {
@@ -331,20 +331,20 @@ func TestFrequencyAnomaly_SSHMultiStepWorkflow_ResultsProgressing_NotDetected(t 
 func TestFrequencyAnomaly_SSHFullBugScenario_8Calls_NotDetected(t *testing.T) {
 	d := NewDriftDetector(8, 0.8)
 
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h1", ResultHash: "rh1", ResultHint: "✅ SSH 连接成功"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h2", ResultHash: "rh2", ResultHint: "✅ 后台任务已提交 bg_1"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h3", ResultHash: "rh3", ResultHint: "❌ command not found EXIT: 127"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h4", ResultHash: "rh4", ResultHint: "✅ 后台任务已提交 bg_2"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h1", ResultHash: "rh1", ResultHint: "SSH 连接成功"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h2", ResultHash: "rh2", ResultHint: "后台任务已提交 bg_1"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h3", ResultHash: "rh3", ResultHint: "command not found EXIT: 127"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h4", ResultHash: "rh4", ResultHint: "后台任务已提交 bg_2"})
 
 	result1 := d.DetectDrift()
 	if result1.Drifted {
 		t.Fatalf("Window 1: should NOT trigger, got pattern=%q", result1.Pattern)
 	}
 
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h5", ResultHash: "rh5", ResultHint: "✅ omniroute:base Up 15h EXIT: 0"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h6", ResultHash: "rh6", ResultHint: "✅ 后台任务已提交 bg_3"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h7", ResultHash: "rh7", ResultHint: "✅ HEAD detached at v3.7.0 EXIT: 0"})
-	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h8", ResultHash: "rh8", ResultHint: "✅ git fetch origin v3.7.2"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h5", ResultHash: "rh5", ResultHint: "omniroute:base Up 15h EXIT: 0"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h6", ResultHash: "rh6", ResultHint: "后台任务已提交 bg_3"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h7", ResultHash: "rh7", ResultHint: "HEAD detached at v3.7.0 EXIT: 0"})
+	d.Record(ToolCallRecord{ToolName: "ssh", ArgsHash: "h8", ResultHash: "rh8", ResultHint: "git fetch origin v3.7.2"})
 
 	result2 := d.DetectDrift()
 	if result2.Drifted {

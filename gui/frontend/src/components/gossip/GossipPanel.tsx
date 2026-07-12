@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { GossipSnapshot, GossipPublish, GossipComment, GossipRate, GossipGetComments } from '../../../wailsjs/go/main/App';
 import { colors, radius, remoteCardStyle, remoteEmptyStateStyle, remoteLoadingStateStyle } from '../remote/styles';
+import { IconLock, IconStar, IconUsers } from '../ai/WorkbenchIcons';
 
 interface GossipPost {
     id: string;
@@ -333,16 +334,16 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                             }}>
                                 {categoryLabel(lang, p.category)}
                             </span>
-                            {p.locked && <span style={{ fontSize: '0.65rem', color: colors.danger }}>🔒</span>}
+                            {p.locked && <span style={{ color: colors.danger, display: 'inline-flex' }}><IconLock size={11} color="currentColor" /></span>}
                         </div>
                         <span style={{ fontSize: '0.7rem', color: colors.textMuted }}>
                             {new Date(p.created_at).toLocaleString(getDateTimeLocale(lang))}
                         </span>
                     </div>
                     <div style={{ color: colors.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{p.content}</div>
-                    <div style={{ display: 'flex', gap: '12px', marginTop: '6px', fontSize: '0.7rem', color: colors.textSecondary }}>
-                        <span>⭐ {p.score > 0 ? (p.score / Math.max(p.votes, 1)).toFixed(1) : '-'}</span>
-                        <span>👥 {p.votes} {localizeText(lang, 'votes', '票')}</span>
+                    <div style={{ display: 'flex', gap: '12px', marginTop: '6px', fontSize: '0.7rem', color: colors.textSecondary, alignItems: 'center' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><IconStar size={11} color="currentColor" /> {p.score > 0 ? (p.score / Math.max(p.votes, 1)).toFixed(1) : '-'}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><IconUsers size={11} color="currentColor" /> {p.votes} {localizeText(lang, 'votes', '票')}</span>
                     </div>
 
                     {/* Comment button + Rating stars */}
@@ -358,17 +359,20 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                             {localizeText(lang, 'Comment', '评论')}
                         </button>
                         {p.locked ? (
-                            <span style={{ fontSize: '0.7rem', color: colors.textMuted }}>🔒 {localizeText(lang, 'Locked', '已锁定')}</span>
+                            <span style={{ fontSize: '0.7rem', color: colors.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <IconLock size={11} color="currentColor" />
+                                {localizeText(lang, 'Locked', '已锁定')}
+                            </span>
                         ) : (
                             <span style={{ display: 'flex', gap: '2px', cursor: 'pointer', color: colors.warning }}>
                                 {[1, 2, 3, 4, 5].map(star => (
                                     <span
                                         key={star}
                                         onClick={() => handleRate(p.id, star)}
-                                        style={{ fontSize: '0.9rem', cursor: 'pointer' }}
+                                        style={{ display: 'inline-flex', cursor: 'pointer' }}
                                         title={`${localizeText(lang, 'Rate', '评分')} ${star}`}
                                     >
-                                        {star <= Math.round(p.score / Math.max(p.votes, 1)) ? '★' : '☆'}
+                                        <IconStar size={14} filled={star <= Math.round(p.score / Math.max(p.votes, 1))} />
                                     </span>
                                 ))}
                             </span>
@@ -389,9 +393,9 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                                             <span style={{ fontWeight: 600, color: colors.primary }}>{c.nickname}</span>
                                             <span style={{ color: colors.text, marginLeft: '6px' }}>{c.content}</span>
                                             {c.rating > 0 && (
-                                                <span style={{ marginLeft: '6px', color: colors.warning }}>
+                                                <span style={{ marginLeft: '6px', color: colors.warning, display: 'inline-flex', gap: 1, verticalAlign: 'middle' }}>
                                                     {[1, 2, 3, 4, 5].map(s => (
-                                                        <span key={s}>{s <= c.rating ? '★' : '☆'}</span>
+                                                        <IconStar key={s} size={12} filled={s <= c.rating} />
                                                     ))}
                                                 </span>
                                             )}
@@ -463,7 +467,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                         onClick={() => setPage(p => Math.max(1, p - 1))}
                         style={{ ...toolbarButtonStyle, padding: '4px 10px', borderRadius: '4px', cursor: currentPage <= 1 ? 'default' : 'pointer', opacity: currentPage <= 1 ? 0.4 : 1 }}
                     >
-                        ‹ {localizeText(lang, 'Prev', '上一页')}
+                        ← {localizeText(lang, 'Prev', '上一页')}
                     </button>
                     <span style={{ color: colors.textSecondary }}>{currentPage} / {totalPages}</span>
                     <button
@@ -471,7 +475,7 @@ export function GossipPanel({ lang }: GossipPanelProps) {
                         onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                         style={{ ...toolbarButtonStyle, padding: '4px 10px', borderRadius: '4px', cursor: currentPage >= totalPages ? 'default' : 'pointer', opacity: currentPage >= totalPages ? 0.4 : 1 }}
                     >
-                        {localizeText(lang, 'Next', '下一页')} ›
+                        {localizeText(lang, 'Next', '下一页')} →
                     </button>
                 </div>
             )}

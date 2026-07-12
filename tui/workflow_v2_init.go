@@ -186,6 +186,10 @@ func mapToolPolicyToFilterPolicy(policy v2.ToolPolicy) v2.ToolFilterPolicy {
 	switch policy {
 	case v2.ToolPolicyDocOnly:
 		return v2.ToolFilterDocOnly
+	case v2.ToolPolicyPlanning:
+		return v2.ToolFilterPlanning
+	case v2.ToolPolicyOpsControlled:
+		return v2.ToolFilterOpsControlled
 	case v2.ToolPolicyFull:
 		return v2.ToolFilterFull
 	default:
@@ -240,6 +244,12 @@ func (app *TUIApp) routeWithV2Router(userID, text string) string {
 		return ""
 	}
 
+	// TUI is text-only: when a phase is waiting for form input, accept a numbered
+	// reply as form submission before the router re-emits ActionShowForm.
+	if submitted := app.trySubmitTUIFormFromText(userID, text); submitted {
+		return ""
+	}
+
 	// Use the V2 Router to get a routing decision.
 	result := wf.router.Route(userID, text, nil)
 	if result == nil || result.Target == v2.RouteToAgentLoop {
@@ -255,12 +265,52 @@ func (app *TUIApp) routeWithV2Router(userID, text string) string {
 	return ""
 }
 
+// trySubmitTUIFormFromText maps a numbered chat reply onto the active phase form.
+// Returns true when the form was submitted and the agent loop was armed.
+func (app *TUIApp) trySubmitTUIFormFromText(userID, text string) bool {
+	wf := app.getWorkflowV2TUI()
+	if wf == nil || wf.machine == nil {
+		return false
+	}
+	state := wf.machine.GetActive(userID)
+	if state == nil {
+		return false
+	}
+	phase := state.ActivePhase()
+	if phase == nil || phase.InputSchema == nil || phase.FormData != nil {
+		return false
+	}
+	formData := parseTUINumberedFormReply(text, phase.InputSchema)
+	if len(formData) == 0 {
+		return false
+	}
+	if err := wf.machine.SubmitForm(userID, formData); err != nil {
+		log.Printf("[TUI-workflow-v2] SubmitForm from text failed: %v", err)
+		return false
+	}
+	state = wf.machine.GetActive(userID)
+	if state == nil {
+		return false
+	}
+	phasePrompt := v2.BuildPhasePrompt(state)
+	app.workflowMu.Lock()
+	app.pendingPhasePrompt = phasePrompt
+	app.workflowAgentLoop = phasePrompt != ""
+	app.workflowMu.Unlock()
+	log.Printf("[TUI-workflow-v2] form submitted via text; agent loop armed=%v", phasePrompt != "")
+	return true
+}
+
 // handleV2HandleResult translates a V2 HandleResult into TUI behavior.
 // Maps V2 actions to the TUI's phase prompt stashing / text response pattern.
 func (app *TUIApp) handleV2HandleResult(userID string, hr *v2.HandleResult, state *v2.WorkflowState) string {
 	switch hr.Action {
 	case v2.ActionRunPhase:
 		// Phase needs execution — stash phase prompt for agent loop.
+		// If the phase still needs form input, surface text guidance instead.
+		if hr.Phase != nil && hr.Phase.InputSchema != nil && hr.Phase.FormData == nil {
+			return app.tuiFormGuidanceReply(hr.State, hr.Phase)
+		}
 		if hr.Phase != nil && hr.State != nil {
 			phasePrompt := v2.BuildPhasePrompt(hr.State)
 			if hr.ModifyHint != "" {
@@ -274,10 +324,16 @@ func (app *TUIApp) handleV2HandleResult(userID string, hr *v2.HandleResult, stat
 		}
 		return "" // fall through to agent loop with stashed phase prompt
 
+	case v2.ActionShowForm:
+		return app.tuiFormGuidanceReply(hr.State, hr.Phase)
+
 	case v2.ActionConfirmed:
-		// User confirmed. If there's a next phase, stash its prompt.
+		// User confirmed. If there's a next phase, stash its prompt (or form guidance).
 		if hr.State != nil {
 			nextPhase := hr.State.ActivePhase()
+			if nextPhase != nil && nextPhase.InputSchema != nil && nextPhase.FormData == nil {
+				return app.tuiFormGuidanceReply(hr.State, nextPhase)
+			}
 			if nextPhase != nil {
 				phasePrompt := v2.BuildPhasePrompt(hr.State)
 				app.workflowMu.Lock()
@@ -294,7 +350,7 @@ func (app *TUIApp) handleV2HandleResult(userID string, hr *v2.HandleResult, stat
 		app.pendingPhasePrompt = ""
 		app.workflowMu.Unlock()
 		log.Printf("[TUI-workflow-v2] ActionConfirmed: workflow completed")
-		return "✅ 工作流已完成"
+		return "工作流已完成"
 
 	case v2.ActionModify:
 		// User wants to modify — re-run phase with hint.
@@ -317,7 +373,7 @@ func (app *TUIApp) handleV2HandleResult(userID string, hr *v2.HandleResult, stat
 		app.pendingPhasePrompt = ""
 		app.workflowMu.Unlock()
 		log.Printf("[TUI-workflow-v2] ActionCancelled")
-		return "❌ 工作流已取消"
+		return "工作流已取消"
 
 	case v2.ActionPassThrough:
 		return "" // not workflow-related, pass to agent loop
@@ -332,4 +388,17 @@ func (app *TUIApp) handleV2HandleResult(userID string, hr *v2.HandleResult, stat
 	}
 
 	return ""
+}
+
+// tuiFormGuidanceReply renders numbered text guidance for a phase InputSchema.
+// TUI has no side-panel form UI, so form-gated phases collect details in chat.
+func (app *TUIApp) tuiFormGuidanceReply(state *v2.WorkflowState, phase *v2.Phase) string {
+	app.workflowMu.Lock()
+	app.workflowAgentLoop = false
+	app.pendingPhasePrompt = ""
+	app.workflowMu.Unlock()
+	if phase == nil || phase.InputSchema == nil {
+		return ""
+	}
+	return buildTUIPhaseInputGuidanceNative(phase.InputSchema)
 }

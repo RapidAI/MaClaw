@@ -90,7 +90,7 @@ func (p *ProgressPusher) OnMilestone(m Milestone) {
 	// Layer 1: instant acknowledgment (once).
 	if !p.ackSent && p.complexity != ComplexityLight {
 		p.ackSent = true
-		p.pushFn("收到，正在处理 🔄")
+		p.pushFn("收到，正在处理")
 		p.lastPushTime = time.Now()
 	}
 
@@ -125,7 +125,7 @@ func (p *ProgressPusher) Tick() {
 			p.complexity = ComplexityMedium
 			if !p.ackSent {
 				p.ackSent = true
-				p.pushFn("收到，正在处理 🔄")
+				p.pushFn("收到，正在处理")
 				p.lastPushTime = time.Now()
 			}
 		}

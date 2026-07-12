@@ -400,11 +400,11 @@ func (m TaskModel) viewRemote() string {
 	}
 	for i := start; i < end; i++ {
 		t := m.remoteTasks[i]
-		statusIcon := "● "
+		statusIcon := "* "
 		if t.Status == "completed" {
-			statusIcon = "✓ "
+			statusIcon = "OK "
 		} else if t.Status == "failed" {
-			statusIcon = "✗ "
+			statusIcon = "ERR "
 		}
 		line := fmt.Sprintf("  %-14s %-20s %s%-8s %-12s %s",
 			truncate(t.ID, 14), truncate(t.Host, 20), statusIcon, truncate(taskStatusDisplay(t.Status, m.lang), 8),
@@ -467,9 +467,9 @@ func (m TaskModel) viewBackground() string {
 	}
 	for i := start; i < end; i++ {
 		t := m.bgTasks[i]
-		statusIcon := "● "
+		statusIcon := "* "
 		if t.Status == "stopped" {
-			statusIcon = "○ "
+			statusIcon = "- "
 		}
 		line := fmt.Sprintf("  %-14s %-24s %s%-8s %-10s %s",
 			truncate(t.ID, 14), truncate(t.Name, 24), statusIcon, truncate(taskStatusDisplay(t.Status, m.lang), 8),
@@ -538,9 +538,9 @@ func (m TaskModel) viewScheduled() string {
 	for i := start; i < end; i++ {
 		t := m.tasks[i]
 		action := truncate(t.Action, 25)
-		statusIcon := "● "
+		statusIcon := "* "
 		if t.Status == "paused" {
-			statusIcon = "⏸ "
+			statusIcon = ""
 		}
 		line := fmt.Sprintf("  %-18s %s%-6s %-6s %-5d %s",
 			truncate(t.Name, 18), statusIcon, truncate(taskStatusDisplay(t.Status, m.lang), 6), t.Time, t.Runs, action)

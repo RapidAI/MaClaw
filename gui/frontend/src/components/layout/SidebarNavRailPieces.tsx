@@ -1,4 +1,5 @@
 import { AppsRailIcon } from './SidebarNavIcons';
+import { IconRankBadge } from '../ai/WorkbenchIcons';
 
 type SidebarMedal = {
     rank: number;
@@ -63,15 +64,6 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
     const rank = medal.rank;
     const rankChange = medal.rankChange || 0;
 
-    // Colorful emoji — vibrant on any background, no color tuning needed
-    const iconElement = rank === 1
-        ? <span role="img" aria-label="gold trophy">🏆</span>
-        : rank === 2
-        ? <span role="img" aria-label="silver medal">🥈</span>
-        : rank === 3
-        ? <span role="img" aria-label="bronze medal">🥉</span>
-        : <span role="img" aria-label="medal">🏅</span>;
-
     const rankText = rank > 0 ? (lang === 'en' ? `#${rank}` : `第${rank}名`) : (lang === 'en' ? 'Rank' : '排行');
 
     return (
@@ -113,9 +105,11 @@ export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
                 }}
             >
                 <span
-                    className="sidebar-medal-emoji"
-                    style={{ fontSize: '22px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
-                >{iconElement}</span>
+                    className="sidebar-medal-icon"
+                    style={{ lineHeight: 1, display: 'flex', alignItems: 'center' }}
+                >
+                    <IconRankBadge rank={rank} size={20} />
+                </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '2px', marginTop: '2px' }}>
                     <span style={{ fontSize: '0.62rem', lineHeight: 1, color: 'var(--theme-text)', fontWeight: 700 }}>
                         {rankText}

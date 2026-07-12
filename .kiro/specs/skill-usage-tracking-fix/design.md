@@ -51,7 +51,7 @@ END FUNCTION
 - `SkillExecutor.Execute()` write lock block must continue the same stats update logic
 - `SkillExecutor.List()` must continue to compute `SuccessRate` as `SuccessCount / UsageCount`
 - Manual navigation away from and back to the panel must continue to reload skills via `loadData()` on remount
-- The existing manual "🔄 Refresh" button must continue to work
+- The existing manual "Refresh" button must continue to work
 
 **Scope:**
 All inputs that do NOT involve skill execution completing with stats persistence should be completely unaffected by this fix. This includes:

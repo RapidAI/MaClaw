@@ -131,11 +131,11 @@ sequenceDiagram
             A->>R: create_session + send_and_observe(任务+上下文)
             R->>R: 编码 + 运行 TDD 测试
             alt 测试通过
-                A->>U: "任务 X/Y 完成 ✅"
+                A->>U: "任务 X/Y 完成 "
             else 测试失败(≤3次重试)
                 R->>R: 修复并重试
             else 重试耗尽
-                A->>U: "任务 X/Y 失败 ❌"
+                A->>U: "任务 X/Y 失败 "
             end
         end
     end
@@ -169,7 +169,7 @@ sequenceDiagram
 **文件**: `gui/im_message_handler.go`
 **方法签名**: `func (h *IMMessageHandler) buildSystemPrompt() string`
 
-该方法使用 `strings.Builder` 拼接系统提示词。修改范围限定在 `isProMode` 分支内的 `## ⚠️ 编程任务工作流（极其重要）` 文本块。
+该方法使用 `strings.Builder` 拼接系统提示词。修改范围限定在 `isProMode` 分支内的 `## 编程任务工作流（极其重要）` 文本块。
 
 #### 修改边界
 
@@ -202,7 +202,7 @@ sequenceDiagram
 ```
 身份定义（角色名、角色描述）
 ## 核心原则
-## ⚠️ 编程任务工作流（极其重要）     ← 【修改区域开始】
+## 编程任务工作流（极其重要）     ← 【修改区域开始】
   ### 第一步：识别任务类型              ← 保留不变
   ### 第二步：检查跳过信号              ← 扩展（三阶段跳过）
   ### 第三步：需求确认 Requirements Phase  ← 新增（替换原第三步）
@@ -212,8 +212,8 @@ sequenceDiagram
   ### 第七步：完成验收 Verification Phase  ← 替换原第五步
   ### 第八步：自动续接 Auto-Resume         ← 原第六步重编号
                                           ← 【修改区域结束】
-## ⚠️ 执行验证原则                     ← 保留不变
-## 🛑 会话失败止损原则                  ← 保留不变
+## 执行验证原则                     ← 保留不变
+## 会话失败止损原则                  ← 保留不变
 ## 工具使用要点                         ← 保留不变
 ## 当前设备状态                         ← 保留不变（动态生成）
 ## 当前会话列表                         ← 保留不变（动态生成）
@@ -252,11 +252,11 @@ flowchart LR
 
 | 阶段 | write_file | bash | craft_tool | send_file | create_session | send_and_observe |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|
-| Requirements Phase | ✅ | ✅ | ✅ | ✅ | ✗ | ✗ |
-| Design Phase | ✅ | ✅ | ✅ | ✅ | ✗ | ✗ |
-| TaskBreakdown Phase | ✅ | ✅ | ✅ | ✅ | ✗ | ✗ |
-| Execution Phase | ✗ | ✗ | ✗ | ✗ | ✅ | ✅ |
-| Verification Phase | ✗ | ✗ | ✗ | ✗ | ✗ | ✅ |
+| Requirements Phase | | | | | | |
+| Design Phase | | | | | | |
+| TaskBreakdown Phase | | | | | | |
+| Execution Phase | | | | | | |
+| Verification Phase | | | | | | |
 
 ### 3. 阶段间上下文传递机制
 
@@ -477,7 +477,7 @@ type ToolRegistry struct { /* ... */ }
 
 ### Property 8: Execution Phase TDD 验证与重试
 
-*For any* valid system configuration, the output must contain: (a) run TDD test after each task, (b) max 3 retry attempts, (c) skip to next task after exhaustion, (d) progress format ("任务 X/Y 完成 ✅" / "任务 X/Y 失败 ❌").
+*For any* valid system configuration, the output must contain: (a) run TDD test after each task, (b) max 3 retry attempts, (c) skip to next task after exhaustion, (d) progress format ("任务 X/Y 完成 " / "任务 X/Y 失败 ").
 
 **Validates**: Requirements 5.3-5.6
 
@@ -523,7 +523,7 @@ type ToolRegistry struct { /* ... */ }
 
 | 场景 | 缓解措施 |
 |------|----------|
-| 跳过确认阶段直接 create_session | 提示词中用 ⚠️ 强调标记 + "极其重要"提高优先级 |
+| 跳过确认阶段直接 create_session | 提示词中用 强调标记 + "极其重要"提高优先级 |
 | 遗漏某个阶段 | 阶段使用清晰编号（第三步/第四步/...）和结构化格式 |
 | 混淆阶段顺序 | 每个阶段开头明确前置条件（"用户确认需求文档后"） |
 

@@ -26,11 +26,7 @@
   - **Property 2: Preservation** - Post-Output Confirmation and Non-NeedsConfirm Phases Unchanged
   - **IMPORTANT**: Follow observation-first methodology
   - **Observe on UNFIXED code** the following non-bug-condition behaviors:
-    - Post-output confirmation (`needsConfirmFromEngine=true`, `HasPhaseOutput=true`, substantive text) → gate force-returns ✅
-    - NeedsConfirm=false phases (`IsPhaseNeedsConfirm=false`) → gate never activates regardless of hasOutput ✅
-    - Steering-based path (`needsConfirmFromSteering=true`, no WorkflowEngine workflow) → gate behavior unchanged ✅
-    - Short preamble (< 200 rune, no Markdown structure) with any hasOutput state → `isSubstantivePhaseDocument=false`, loop continues ✅
-  - Write property-based tests capturing these observed behaviors:
+    - Post-output confirmation (`needsConfirmFromEngine=true`, `HasPhaseOutput=true`, substantive text) → gate force-returns     - NeedsConfirm=false phases (`IsPhaseNeedsConfirm=false`) → gate never activates regardless of hasOutput     - Steering-based path (`needsConfirmFromSteering=true`, no WorkflowEngine workflow) → gate behavior unchanged     - Short preamble (< 200 rune, no Markdown structure) with any hasOutput state → `isSubstantivePhaseDocument=false`, loop continues   - Write property-based tests capturing these observed behaviors:
     - **Sub-property 2a**: For all inputs where `needsConfirmFromEngine=true` AND `HasPhaseOutput=true` AND `isSubstantivePhaseDocument=true` AND `!looksLikeNoToolStallReply` → gate force-returns (from Preservation Requirements in design: "已有产出物的 NeedsConfirm 阶段仍 force-return")
     - **Sub-property 2b**: For all inputs where `IsPhaseNeedsConfirm=false` → gate does NOT activate regardless of hasOutput state (from Preservation Requirements: "NeedsConfirm=false 阶段的 agent loop 正常执行")
     - **Sub-property 2c**: For all inputs where `needsConfirmFromSteering=true` (no engine workflow) → steering gate behavior unchanged (from Preservation Requirements: "steering-based 编码工作流的 NeedsConfirm gate 不变")

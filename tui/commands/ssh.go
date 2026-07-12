@@ -106,7 +106,7 @@ func sshAddHost(args []string) error {
 	}
 
 	data, _ := json.Marshal(entry)
-	fmt.Printf("✅ SSH 主机已添加: %s\n%s\n", label, string(data))
+	fmt.Printf("SSH 主机已添加: %s\n%s\n", label, string(data))
 	return nil
 }
 
@@ -141,7 +141,7 @@ func sshRemoveHost(args []string) error {
 		return err
 	}
 
-	fmt.Printf("✅ SSH 主机 %q 已删除\n", label)
+	fmt.Printf("SSH 主机 %q 已删除\n", label)
 	return nil
 }
 

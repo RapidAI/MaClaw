@@ -14,8 +14,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -1274,7 +1272,7 @@ func (h *IMMessageHandler) emitWorkflowV2FormWithPrefill(userID, phaseID string,
 	fields = append(fields, map[string]interface{}{"name": "_agent_view_variant", "type": "hidden", "value": "manual_mode"})
 
 	viewID := "workflow:form:" + phaseID
-	description := fmt.Sprintf("✅ 已从简历中提取 %d 个字段（绿色标记）。请核对信息，补充未提取到的字段后提交。", len(prefilled))
+	description := fmt.Sprintf("已从简历中提取 %d 个字段（绿色标记）。请核对信息，补充未提取到的字段后提交。", len(prefilled))
 
 	view := map[string]interface{}{
 		"type":        "form",
@@ -1389,7 +1387,7 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 		h.emitWorkflowV2FormWithPrefill(userID, phaseID, phaseSchema, prefilled)
 
 		return &IMAgentResponse{
-			Text:      fmt.Sprintf("✅ 已从简历中提取 %d 个字段，请在右侧面板核对信息并补充未提取到的字段后提交。", len(prefilled)),
+			Text:      fmt.Sprintf("已从简历中提取 %d 个字段，请在右侧面板核对信息并补充未提取到的字段后提交。", len(prefilled)),
 			KeepPanel: true, // prevent frontend from auto-dismissing the AG view panel
 		}
 	}
@@ -1468,7 +1466,7 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 						// Emit a final response to resolve the frontend's deferred round.
 						// Without this, the round stays in "requesting" state with spinner forever.
 						h.app.emitAIAssistantResponse(requestID, &IMAgentResponse{
-							Text:       echoText + "\n\n⚠️ 自动执行失败，请发送「继续」手动触发。",
+							Text:       echoText + "\n\n自动执行失败，请发送「继续」手动触发。",
 							SessionKey: userID,
 						})
 					}
@@ -1732,7 +1730,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 		// Send progress to the frontend spinner area via the standard progress event.
 		// The frontend's useAIAssistant hook listens to this and shows it below the spinner.
 		if h.app != nil && h.app.ctx != nil {
-			runtime.EventsEmit(h.app.ctx, "ai-assistant-progress", progress)
+			h.app.emitEvent("ai-assistant-progress", progress)
 		}
 	})
 	report := runner.FinalReport()
@@ -1760,7 +1758,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *
 	log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
 
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("🚀 执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
+		Text: fmt.Sprintf("执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
 			len(tasks), state.ProjectPath, formatTaskListBrief(tasks), report),
 	}
 }
@@ -1809,7 +1807,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 
 	// Send initial progress so frontend shows "coding started"
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("🚀 开始编码执行：%d 个任务", len(tasks)))
+		onProgress(fmt.Sprintf("开始编码执行：%d 个任务", len(tasks)))
 	}
 
 	// Wrap onToken to route SubAgent text output to the reasoning/thinking UI
@@ -1915,7 +1913,7 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 	log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
 
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("🚀 执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
+		Text: fmt.Sprintf("执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
 			len(tasks), state.ProjectPath, formatTaskListBrief(tasks), report),
 	}
 }
@@ -1966,7 +1964,7 @@ func emitWorkflowV2Event(a *App, eventName string, data interface{}) {
 		log.Printf("[workflow-v2-event] %s (no ctx): %v", eventName, data)
 		return
 	}
-	runtime.EventsEmit(a.ctx, eventName, data)
+	a.emitEvent(eventName, data)
 }
 
 // workflowEventProjectPath resolves the project_path for frontend event routing.
@@ -2001,7 +1999,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	log.Printf("[workflow-v2] coding_subagent: user=%s project=%s task=%q", userID, projectPath, truncateRunesV2(userText, 80))
 
 	if onProgress != nil {
-		onProgress("🚀 模板编程模式：开始执行")
+		onProgress("模板编程模式：开始执行")
 	}
 
 	cfg := h.getMaclawLLMConfig()
@@ -2078,7 +2076,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	log.Printf("[workflow-v2] coding_subagent complete: user=%s\n%s", userID, report)
 
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("✅ 编码完成\n项目路径：%s\n\n%s", projectPath, report),
+		Text: fmt.Sprintf("编码完成\n项目路径：%s\n\n%s", projectPath, report),
 	}
 }
 
@@ -2088,7 +2086,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		userText = "执行远程编程任务"
 	}
 	if strings.TrimSpace(remoteCtx.SessionID) == "" {
-		return &IMAgentResponse{Text: "⚠️ 远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。"}
+		return &IMAgentResponse{Text: "远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。"}
 	}
 	if remoteCtx.ProjectDir == "" {
 		remoteCtx.ProjectDir = "."
@@ -2099,7 +2097,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 
 	log.Printf("[workflow-v2] remote_coding_subagent: user=%s session=%s project=%s task=%q", userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80))
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("🚀 远程编程模式：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
+		onProgress(fmt.Sprintf("远程编程模式：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
 	}
 
 	cfg := h.getMaclawLLMConfig()
@@ -2117,12 +2115,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 	result := runner(h, cfg, httpClient, remoteCtx, loopCtx, userText, onProgress, onToken)
 	if result == nil {
-		return &IMAgentResponse{Text: "❌ 远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
+		return &IMAgentResponse{Text: "远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
 	}
 
-	statusText := "✅ 远程编程完成"
+	statusText := "远程编程完成"
 	if result.Status != "success" {
-		statusText = "❌ 远程编程未完成"
+		statusText = "远程编程未完成"
 	}
 	summary := strings.TrimSpace(result.Summary)
 	if summary == "" {
@@ -2391,18 +2389,18 @@ func (h *IMMessageHandler) setupRemoteCodingTemplateFromWorkflowForm(userID stri
 	}
 
 	if sshHost == "" || sshUser == "" || sshPassword == "" || workDir == "" || requestText == "" {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "⚠️ 远程编程表单信息不完整，请重新填写主机、用户名、密码、默认工作目录和项目描述。"}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "远程编程表单信息不完整，请重新填写主机、用户名、密码、默认工作目录和项目描述。"}}
 	}
 	if sshPort <= 0 || sshPort >= 65536 {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "⚠️ SSH 端口无效，请填写 1-65535 之间的端口。"}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "SSH 端口无效，请填写 1-65535 之间的端口。"}}
 	}
 	if h.ensureSSHManager() == nil {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "⚠️ SSH 会话管理器不可用，无法启动远程编程。"}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "SSH 会话管理器不可用，无法启动远程编程。"}}
 	}
 
 	sessionID := h.findOrCreateSSHSession(sshUser, sshHost, sshPort, sshPassword)
 	if sessionID == "" {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("❌ 无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHost, sshPort)}}
+		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHost, sshPort)}}
 	}
 
 	if state != nil {
@@ -2503,7 +2501,7 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 	var actions []IMResponseAction
 
 	if result.WorkflowType == "coding" {
-		text = "🛠️ 识别到这可能是一个**编程开发任务**，请选择处理方式：\n\n" +
+		text = "识别到这可能是一个**编程开发任务**，请选择处理方式：\n\n" +
 			"**1. 完整开发流程 SDD（推荐用于中大型项目）**\n" +
 			"系统引导完成：需求文档 → 技术设计 → 任务拆分 → 逐任务编码 → 验收\n" +
 			"耗时较长，但能显著提升代码质量和可维护性：\n" +
@@ -2521,10 +2519,10 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 			"不走编程流程，当作普通任务由 AI 自由发挥\n" +
 			"适合：翻译、整理文档、搜索资料、格式转换、内容生成等"
 		actions = []IMResponseAction{
-			{Label: "📋 完整开发流程", Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-			{Label: "⚡ 简化编程", Command: buildWorkflowChoiceCommand(workflowChoiceCodingSubAgent, choiceID), Style: "secondary"},
-			{Label: "🖥️ 远程编程", Command: buildWorkflowChoiceCommand(workflowChoiceRemoteCoding, choiceID), Style: "secondary"},
-			{Label: "🔄 不是编程任务", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
+			{Label: "完整开发流程", Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+			{Label: "简化编程", Command: buildWorkflowChoiceCommand(workflowChoiceCodingSubAgent, choiceID), Style: "secondary"},
+			{Label: "远程编程", Command: buildWorkflowChoiceCommand(workflowChoiceRemoteCoding, choiceID), Style: "secondary"},
+			{Label: "不是编程任务", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
 		}
 	} else {
 		templateName := result.WorkflowType
@@ -2542,25 +2540,25 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 					runnerUpName = tmpl.Name
 				}
 			}
-			text = fmt.Sprintf("🔍 识别到多个可能匹配的工作流，请选择：\n\n"+
+			text = fmt.Sprintf("识别到多个可能匹配的工作流，请选择：\n\n"+
 				"**1. %s**\n"+
 				"**2. %s**\n"+
 				"**3. 直接处理**（不走工作流）", templateName, runnerUpName)
 			// Store runner-up in pending choice for retrieval when user clicks option 2
 			actions = []IMResponseAction{
-				{Label: fmt.Sprintf("📋 %s", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-				{Label: fmt.Sprintf("📋 %s", runnerUpName), Command: buildWorkflowChoiceCommand("alt_"+result.RunnerUp, choiceID), Style: "secondary"},
-				{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
+				{Label: fmt.Sprintf("%s", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+				{Label: fmt.Sprintf("%s", runnerUpName), Command: buildWorkflowChoiceCommand("alt_"+result.RunnerUp, choiceID), Style: "secondary"},
+				{Label: "直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
 			}
 		} else {
-			text = fmt.Sprintf("🔍 识别到这可能适合使用**%s**工作流，请选择处理方式：\n\n"+
+			text = fmt.Sprintf("识别到这可能适合使用**%s**工作流，请选择处理方式：\n\n"+
 				"**1. 进入%s工作流（推荐）**\n"+
 				"系统按阶段引导完成，每个阶段产出结构化文档，完成后再进入下一阶段\n\n"+
 				"**2. 直接处理**\n"+
 				"不走工作流，当作普通任务由 AI 自由发挥完成", templateName, templateName)
 			actions = []IMResponseAction{
-				{Label: fmt.Sprintf("📋 进入%s工作流", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-				{Label: "🔄 直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
+				{Label: fmt.Sprintf("进入%s工作流", templateName), Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
+				{Label: "直接处理", Command: buildWorkflowChoiceCommand(workflowChoiceDirect, choiceID), Style: "secondary"},
 			}
 		}
 	}
@@ -2601,19 +2599,19 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 					prefilled := h.prefillWorkflowFormFields(msg.UserID, phase, "")
 					h.emitWorkflowV2PhaseForm(msg.UserID, active, phase, prefilled)
 					result := workflowIMRouteResult{
-						Response: &IMAgentResponse{Text: "📋 请在右侧任务面板填写信息后提交。"},
+						Response: &IMAgentResponse{Text: "请在右侧任务面板填写信息后提交。"},
 					}
 					return &result
 				}
 				result := workflowIMRouteResult{
-					Response: &IMAgentResponse{Text: "✅ 工作流已在进行中，请在右侧面板操作或直接输入内容继续。"},
+					Response: &IMAgentResponse{Text: "工作流已在进行中，请在右侧面板操作或直接输入内容继续。"},
 				}
 				return &result
 			}
 		}
 		// Truly stale/expired button click — no active workflow either.
 		result := workflowIMRouteResult{
-			Response: &IMAgentResponse{Text: "⚠️ 选择已过期，请重新发送任务。"},
+			Response: &IMAgentResponse{Text: "选择已过期，请重新发送任务。"},
 		}
 		return &result
 	}
@@ -2623,7 +2621,7 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 	// from a previous prompt that was superseded by a new one.
 	if pending.ChoiceID != choiceID {
 		result := workflowIMRouteResult{
-			Response: &IMAgentResponse{Text: "⚠️ 选择已过期，请重新发送任务。"},
+			Response: &IMAgentResponse{Text: "选择已过期，请重新发送任务。"},
 		}
 		return &result
 	}
@@ -2697,7 +2695,7 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 			return &result
 		}
 		result := workflowIMRouteResult{
-			Response: &IMAgentResponse{Text: "⚠️ 无效选择，请重新发送任务。"},
+			Response: &IMAgentResponse{Text: "无效选择，请重新发送任务。"},
 		}
 		return &result
 	}

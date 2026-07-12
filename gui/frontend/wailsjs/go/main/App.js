@@ -30,6 +30,78 @@ export function ClipboardGetText() {
   return window['go']['main']['App']['ClipboardGetText']();
 }
 
+export function CodingKnowledgeStats() {
+  return window['go']['main']['App']['CodingKnowledgeStats']();
+}
+
+export function CodingKnowledgeList(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeList'](arg1);
+}
+
+export function CodingKnowledgeGet(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeGet'](arg1);
+}
+
+export function CodingKnowledgeUpdate(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeUpdate'](arg1);
+}
+
+export function CodingKnowledgeConfirm(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeConfirm'](arg1);
+}
+
+export function CodingKnowledgeDelete(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeDelete'](arg1);
+}
+
+export function CodingKnowledgeDeleteByScope(arg1, arg2) {
+  return window['go']['main']['App']['CodingKnowledgeDeleteByScope'](arg1, arg2);
+}
+
+export function CodingKnowledgeReset() {
+  return window['go']['main']['App']['CodingKnowledgeReset']();
+}
+
+export function CodingKnowledgeResetFile() {
+  return window['go']['main']['App']['CodingKnowledgeResetFile']();
+}
+
+export function CodingKnowledgeSave(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeSave'](arg1);
+}
+
+export function CodingKnowledgeSearch(arg1, arg2) {
+  return window['go']['main']['App']['CodingKnowledgeSearch'](arg1, arg2);
+}
+
+export function CodingKnowledgeEvict() {
+  return window['go']['main']['App']['CodingKnowledgeEvict']();
+}
+
+export function CodingKnowledgeCapacity() {
+  return window['go']['main']['App']['CodingKnowledgeCapacity']();
+}
+
+export function CodingKnowledgeExportToFile(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeExportToFile'](arg1);
+}
+
+export function CodingKnowledgeImportFromFile(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeImportFromFile'](arg1);
+}
+
+export function CodingKnowledgeGraduateToSteering(arg1) {
+  return window['go']['main']['App']['CodingKnowledgeGraduateToSteering'](arg1);
+}
+
+export function SelectCodingKnowledgeExportPath() {
+  return window['go']['main']['App']['SelectCodingKnowledgeExportPath']();
+}
+
+export function SelectCodingKnowledgeImportFile() {
+  return window['go']['main']['App']['SelectCodingKnowledgeImportFile']();
+}
+
 export function DeleteSkill(arg1, arg2) {
   return window['go']['main']['App']['DeleteSkill'](arg1, arg2);
 }
@@ -471,6 +543,10 @@ export function ListValidProviders(arg1) {
   return window['go']['main']['App']['ListValidProviders'](arg1);
 }
 
+export function GetSkillEvolutionStatus() {
+  return window['go']['main']['App']['GetSkillEvolutionStatus']();
+}
+
 export function GetSkillsDir(arg1) {
   return window['go']['main']['App']['GetSkillsDir'](arg1);
 }
@@ -860,6 +936,10 @@ export function SetNLSkillStatus(arg1, arg2) {
   return window['go']['main']['App']['SetNLSkillStatus'](arg1, arg2);
 }
 
+export function BatchSetNLSkillStatus(arg1, arg2) {
+  return window['go']['main']['App']['BatchSetNLSkillStatus'](arg1, arg2);
+}
+
 export function DeleteNLSkill(arg1) {
   return window['go']['main']['App']['DeleteNLSkill'](arg1);
 }
@@ -1223,6 +1303,50 @@ export function GetMemoryHealth() {
   return window['go']['main']['App']['GetMemoryHealth']();
 }
 
+export function RunDoctor() {
+  return window['go']['main']['App']['RunDoctor']();
+}
+
+export function RunDoctorFormatted() {
+  return window['go']['main']['App']['RunDoctorFormatted']();
+}
+
+export function GetLastModelRoute() {
+  return window['go']['main']['App']['GetLastModelRoute']();
+}
+
+export function GetSharedAgentLoopStatus() {
+  return window['go']['main']['App']['GetSharedAgentLoopStatus']();
+}
+
+export function PreviewSharedLoopCanary(arg1, arg2) {
+  return window['go']['main']['App']['PreviewSharedLoopCanary'](arg1, arg2);
+}
+
+export function SetSharedAgentLoopEnabled(arg1) {
+  return window['go']['main']['App']['SetSharedAgentLoopEnabled'](arg1);
+}
+
+export function SetSharedAgentLoopCanaryPercent(arg1) {
+  return window['go']['main']['App']['SetSharedAgentLoopCanaryPercent'](arg1);
+}
+
+export function SetSharedAgentLoopWorkflow(arg1) {
+  return window['go']['main']['App']['SetSharedAgentLoopWorkflow'](arg1);
+}
+
+export function ResetAdaptivePromptStats() {
+  return window['go']['main']['App']['ResetAdaptivePromptStats']();
+}
+
+export function ExportAdaptivePromptStats() {
+  return window['go']['main']['App']['ExportAdaptivePromptStats']();
+}
+
+export function OpenAdaptivePromptExportsDir() {
+  return window['go']['main']['App']['OpenAdaptivePromptExportsDir']();
+}
+
 export function GetMemoryStatus() {
   return window['go']['main']['App']['GetMemoryStatus']();
 }
@@ -1362,6 +1486,42 @@ export function ResumeScheduledTask(arg1) {
 
 export function TriggerScheduledTask(arg1) {
   return window['go']['main']['App']['TriggerScheduledTask'](arg1);
+}
+
+export function TriggerSkillSelfRepair(arg1, arg2) {
+  return window['go']['main']['App']['TriggerSkillSelfRepair'](arg1, arg2);
+}
+
+export function BatchTriggerSkillSelfRepair(arg1, arg2) {
+  return window['go']['main']['App']['BatchTriggerSkillSelfRepair'](arg1, arg2);
+}
+
+export function TriggerSkillOptimize(arg1, arg2) {
+  return window['go']['main']['App']['TriggerSkillOptimize'](arg1, arg2);
+}
+
+export function BatchTriggerSkillOptimize(arg1, arg2) {
+  return window['go']['main']['App']['BatchTriggerSkillOptimize'](arg1, arg2);
+}
+
+export function ListSkillEvolutionAudit(arg1) {
+  return window['go']['main']['App']['ListSkillEvolutionAudit'](arg1);
+}
+
+export function ListSkillMaintenanceDrafts() {
+  return window['go']['main']['App']['ListSkillMaintenanceDrafts']();
+}
+
+export function ApplySkillMaintenanceAction(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['ApplySkillMaintenanceAction'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ListSkillYAMLBackups(arg1) {
+  return window['go']['main']['App']['ListSkillYAMLBackups'](arg1);
+}
+
+export function RestoreSkillYAMLBackup(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RestoreSkillYAMLBackup'](arg1, arg2, arg3);
 }
 
 
@@ -1754,6 +1914,10 @@ export function GetHubLLMServiceStatus() {
   return window['go']['main']['App']['GetHubLLMServiceStatus']();
 }
 
+export function RefreshHubLLMServiceStatus() {
+  return window['go']['main']['App']['RefreshHubLLMServiceStatus']();
+}
+
 export function RedeemHubLLMService(arg1) {
   return window['go']['main']['App']['RedeemHubLLMService'](arg1);
 }
@@ -1869,6 +2033,18 @@ export function KnowledgeImportHubShare(arg1) {
 
 export function KnowledgeShareToHub(arg1) {
   return window['go']['main']['App']['KnowledgeShareToHub'](arg1);
+}
+
+export function KnowledgeListMyHubShares(arg1) {
+  return window['go']['main']['App']['KnowledgeListMyHubShares'](arg1);
+}
+
+export function KnowledgeDeleteHubShare(arg1) {
+  return window['go']['main']['App']['KnowledgeDeleteHubShare'](arg1);
+}
+
+export function KnowledgeUpdateHubShare(arg1) {
+  return window['go']['main']['App']['KnowledgeUpdateHubShare'](arg1);
 }
 
 export function KnowledgeSyncDelete(arg1) {
@@ -2187,8 +2363,8 @@ export function SelectKnowledgeFiles() {
   return window['go']['main']['App']['SelectKnowledgeFiles']();
 }
 
-export function SelectKnowledgeSnapshotExportPath() {
-  return window['go']['main']['App']['SelectKnowledgeSnapshotExportPath']();
+export function SelectKnowledgeSnapshotExportPath(arg1) {
+  return window['go']['main']['App']['SelectKnowledgeSnapshotExportPath'](arg1);
 }
 
 export function SelectKnowledgeSnapshotFile() {
@@ -2260,6 +2436,18 @@ export function RequestHubCapabilityInstallIntent(arg1) {
 // MacLaw App package bindings
 export function ExecuteMaclawAppBusinessOperation(arg1) {
   return window['go']['main']['App']['ExecuteMaclawAppBusinessOperation'](arg1);
+}
+export function OpenMaclawAppBusinessWorkspace(arg1) {
+  return window['go']['main']['App']['OpenMaclawAppBusinessWorkspace'](arg1);
+}
+export function OpenMaclawAppApprovalWorkspace(arg1) {
+  return window['go']['main']['App']['OpenMaclawAppApprovalWorkspace'](arg1);
+}
+export function OpenMaclawAppWorkspaceFromInstall(arg1) {
+  return window['go']['main']['App']['OpenMaclawAppWorkspaceFromInstall'](arg1);
+}
+export function DecideMaclawAppApprovalInstance(arg1) {
+  return window['go']['main']['App']['DecideMaclawAppApprovalInstance'](arg1);
 }
 
 export function InstallMaclawAppDependencies(arg1) {
@@ -2333,6 +2521,14 @@ export function ListVirtualEmployees() {
 
 export function RegisterVirtualEmployee(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['RegisterVirtualEmployee'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ListReclaimableVirtualEmployees() {
+  return window['go']['main']['App']['ListReclaimableVirtualEmployees']();
+}
+
+export function ReclaimVirtualEmployee(arg1) {
+  return window['go']['main']['App']['ReclaimVirtualEmployee'](arg1);
 }
 
 export function UpdateVESettings(arg1, arg2, arg3, arg4, arg5) {

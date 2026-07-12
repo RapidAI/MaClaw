@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -40,21 +39,25 @@ var (
 
 // appendKnowledgeAutoRecall searches the knowledge base using the user message
 // and injects top results into the system prompt if they exceed the score threshold.
-func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg string) {
+func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg string, priorUserMessages []string) {
 	if msg == "" {
 		return
+	}
+	minScore := agent.KnowledgeAutoRecallScoreThreshold
+	if h != nil && h.app != nil {
+		if cfg, err := h.app.LoadConfig(); err == nil {
+			if !cfg.IsKnowledgeAutoRecallEnabled() {
+				return
+			}
+			minScore = cfg.EffectiveKnowledgeAutoRecallMinScore()
+		}
 	}
 	if !h.hasKnowledgeSources() {
 		return
 	}
 
-	// Truncate long messages to first N chars for FTS query —
-	// long pastes (code, logs) produce noisy tokens that hurt precision.
-	query := msg
-	if utf8.RuneCountInString(query) > agent.KnowledgeAutoRecallMaxQueryRunes {
-		runes := []rune(query)
-		query = string(runes[:agent.KnowledgeAutoRecallMaxQueryRunes])
-	}
+	// Multi-turn: blend prior user turns; expand also enforces MaxQueryRunes.
+	query := agent.ExpandKnowledgeAutoRecallQuery(msg, priorUserMessages)
 
 	store, cleanupStore := h.getAutoRecallStoreForUse()
 	defer cleanupStore()
@@ -69,31 +72,35 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	// Search without ProjectPath restriction so personal-scope and project-scope
 	// sources are both included. The knowledge base is small enough that cross-scope
 	// search is not a performance concern.
+	// Search hybrids FTS + embedding when the store has an embedder (attached via
+	// openKnowledgeStore / activateEmbedderAsync). PreferEmbedding is left false so
+	// embedding runs automatically when FTS is empty or low-confidence.
 	results, err := store.Search(ctx, knowledge.SearchOptions{
 		Query: query,
 		Limit: agent.KnowledgeAutoRecallSearchLimit,
 	})
 	queryDuration := time.Since(queryStart)
+	hasEmbedder := store.HasEmbedder()
 
 	if err != nil {
 		log.Printf("[knowledge_auto_recall] search error: %v (took %s)", err, queryDuration)
 		return
 	}
 	if len(results) == 0 {
-		log.Printf("[knowledge_auto_recall] no results for query=%d chars (took %s)", len(msg), queryDuration)
+		log.Printf("[knowledge_auto_recall] no results for query=%d chars embedder=%v (took %s)", len(msg), hasEmbedder, queryDuration)
 		// hasKnowledgeSources() pre-check above guarantees the KB is non-empty,
-		// but FTS found zero matches. Hint the LLM to try knowledge_search.
+		// but FTS (+ optional embedding hybrid) found zero matches. Hint tools.
 		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
 
 	// Dynamic threshold + injection count based on top score.
-	// Uses shared constants from corelib/agent/prompt_blocks.go.
+	// Uses shared constants from corelib/agent/prompt_blocks.go (+ optional config min score).
 	topScore := results[0].Score
-	maxInject := agent.KnowledgeAutoRecallMaxInject(topScore)
+	maxInject := agent.KnowledgeAutoRecallMaxInjectWithMin(topScore, minScore)
 	if maxInject == 0 {
-		log.Printf("[knowledge_auto_recall] below threshold: topScore=%.2f, results=%d, query=%d chars (took %s)",
-			topScore, len(results), len(msg), queryDuration)
+		log.Printf("[knowledge_auto_recall] below threshold: topScore=%.2f min=%.2f, results=%d, query=%d chars (took %s)",
+			topScore, minScore, len(results), len(msg), queryDuration)
 		b.WriteString(agent.KnowledgeAutoRecallNoMatchHint)
 		return
 	}
@@ -105,7 +112,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < agent.KnowledgeAutoRecallScoreThreshold {
+		if r.Score < minScore {
 			break
 		}
 		source := r.Source.Title
@@ -190,6 +197,8 @@ func getAutoRecallStoreForApp(app *App, rebuildFTS bool) *knowledge.SQLiteStore 
 		log.Printf("[knowledge_auto_recall] getAutoRecallStore: open failed: %v", err)
 		return nil
 	}
+	// Ensure embedder is attached even if open raced before embedding activation.
+	app.attachKnowledgeEmbedder(store)
 	knowledgeAutoRecallStore = store
 	knowledgeAutoRecallDBPath = dbPath
 	// Trigger FTS rebuild in background — does not block the current search.

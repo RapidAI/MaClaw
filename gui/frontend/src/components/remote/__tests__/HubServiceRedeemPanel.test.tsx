@@ -3,12 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 
 const GetHubLLMServiceStatusMock = vi.fn();
+const RefreshHubLLMServiceStatusMock = vi.fn();
 const RedeemHubLLMServiceMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetHubLLMServiceStatus: (...args: unknown[]) => GetHubLLMServiceStatusMock(...args),
+    RefreshHubLLMServiceStatus: (...args: unknown[]) => RefreshHubLLMServiceStatusMock(...args),
     RedeemHubLLMService: (...args: unknown[]) => RedeemHubLLMServiceMock(...args),
     LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
 }));
@@ -32,14 +34,16 @@ import { HubServiceRedeemPanel } from '../HubServiceRedeemPanel';
 describe('HubServiceRedeemPanel', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        GetHubLLMServiceStatusMock.mockResolvedValue({
+        const defaultStatus = {
             active: true,
             skip_llm_config: true,
             service_group_names: ['LLM'],
             default_model: 'auto',
             available_models: ['auto'],
             hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
-        });
+        };
+        GetHubLLMServiceStatusMock.mockResolvedValue(defaultStatus);
+        RefreshHubLLMServiceStatusMock.mockImplementation(() => GetHubLLMServiceStatusMock());
         LoadConfigMock.mockResolvedValue({ remote_hub_url: 'https://hub.example.com/', remote_viewer_token: 'viewer token', remote_tenant_id: 'tenant acme', remote_email: 'dev@example.com' });
         RedeemHubLLMServiceMock.mockResolvedValue({ active: true, skip_llm_config: true });
     });
@@ -453,7 +457,7 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.queryByText('default_new_user_backfill')).toBeNull();
     });
 
-    it('shows currently available credits instead of blocked remaining credits while service is active', async () => {
+    it('keeps Total ≈ Used + Remaining including queued point-card balances', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: true,
             skip_llm_config: true,
@@ -487,7 +491,8 @@ describe('HubServiceRedeemPanel', () => {
         render(<HubServiceRedeemPanel lang="en" onStatusChange={vi.fn()} />);
 
         await screen.findByText('coding-monthly');
-        expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('10000');
+        // Lifetime remaining: 4900 (period-limited left) + 10000 (queued) = 14900.
+        expect(screen.getByText('Remaining credits').parentElement?.textContent).toContain('14900');
         expect(screen.getByText('Total credits').parentElement?.textContent).toContain('15000');
     });
 
@@ -552,7 +557,8 @@ describe('HubServiceRedeemPanel', () => {
         const usedText = screen.getByText('已用额度').parentElement?.textContent || '';
         const remainingText = screen.getByText('剩余额度').parentElement?.textContent || '';
         expect(usedText).toContain('5672.12');
-        expect(remainingText).toContain('49148.92');
+        // Lifetime remaining includes queued (1 + 300) so Total ≈ Used + Remaining.
+        expect(remainingText).toContain('49628.88');
         expect(usedText).not.toContain('5672.116');
         expect(remainingText).not.toContain('49148.916');
     });
@@ -777,7 +783,8 @@ describe('HubServiceRedeemPanel', () => {
         fireEvent.click(buyCredits);
 
         await waitFor(() => {
-            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=usr_phone&user_id=usr_phone&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
+            // Prefer phone/email as account identity; keep user_id as a separate stable key.
+            expect(BrowserOpenURLMock).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=phone%3A19900001111&user_id=usr_phone&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
         });
     });
 

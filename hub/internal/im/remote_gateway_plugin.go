@@ -125,11 +125,7 @@ func (p *RemoteGatewayPlugin) SendText(ctx context.Context, target UserTarget, t
 
 func (p *RemoteGatewayPlugin) SendCard(ctx context.Context, target UserTarget, card OutgoingMessage) error {
 	// Client-side gateways (QQ/TG) don't support rich cards - fall back to text.
-	fallback := card.FallbackText
-	if fallback == "" {
-		fallback = fmt.Sprintf("%s %s\n%s", card.StatusIcon, card.Title, card.Body)
-	}
-	return p.SendText(ctx, target, fallback)
+	return p.SendText(ctx, target, FormatCardFallback(card))
 }
 
 func (p *RemoteGatewayPlugin) SendImage(ctx context.Context, target UserTarget, imageKey string, caption string) error {
@@ -372,7 +368,7 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 					"payload": map[string]any{
 						"reply_type":   "text",
 						"platform_uid": msg.PlatformUID,
-						"text":         fmt.Sprintf("⚠️ Hub 未识别此 %s 网关的所有权，消息被拒绝。请尝试重启连接或切回单机模式。", p.platform),
+						"text":         fmt.Sprintf("Hub 未识别此 %s 网关的所有权，消息被拒绝。请尝试重启连接或切回单机模式。", p.platform),
 					},
 				},
 			})
@@ -389,7 +385,7 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 					"payload": map[string]any{
 						"reply_type":   "text",
 						"platform_uid": msg.PlatformUID,
-						"text":         "⚠️ Hub IM 处理器未就绪，请稍后重试。",
+						"text":         "Hub IM 处理器未就绪，请稍后重试。",
 					},
 				},
 			})

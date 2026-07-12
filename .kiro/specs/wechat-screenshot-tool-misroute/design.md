@@ -46,10 +46,10 @@ END FUNCTION
 
 ### Examples
 
-- "帮我截屏桌面发给我图片" → "截屏"不在注册表，"发给我"命中 `LabelDocumentDelivery` Strong → `craft_tool` 激活 → LLM 选择 `craft_tool` 生成 PowerShell 截屏脚本（❌ 应直接调用 `screenshot`）
-- "截图桌面发给我" → "截图"仅为 `LabelBrowser` Weak（单个 weak 被删除），"发给我"命中 `LabelDocumentDelivery` Strong → 同上（❌）
-- "帮我截屏" → "截屏"不在注册表 → `LabelUnknown` → 无条件工具激活 → `screenshot` 作为 CoreTool 可用但 LLM 可能不确定该用哪个工具（⚠️ 次优）
-- "截图发给我" → "截图" Weak 被删除，"发给我" Strong → `document_delivery` → `craft_tool` 激活（❌）
+- "帮我截屏桌面发给我图片" → "截屏"不在注册表，"发给我"命中 `LabelDocumentDelivery` Strong → `craft_tool` 激活 → LLM 选择 `craft_tool` 生成 PowerShell 截屏脚本（应直接调用 `screenshot`）
+- "截图桌面发给我" → "截图"仅为 `LabelBrowser` Weak（单个 weak 被删除），"发给我"命中 `LabelDocumentDelivery` Strong → 同上（）
+- "帮我截屏" → "截屏"不在注册表 → `LabelUnknown` → 无条件工具激活 → `screenshot` 作为 CoreTool 可用但 LLM 可能不确定该用哪个工具（次优）
+- "截图发给我" → "截图" Weak 被删除，"发给我" Strong → `document_delivery` → `craft_tool` 激活（）
 
 ## Expected Behavior
 

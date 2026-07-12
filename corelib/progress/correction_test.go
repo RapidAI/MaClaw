@@ -161,8 +161,8 @@ func TestFormatCorrectionsText(t *testing.T) {
 		NewCorrectionOption("改为排队", ActionQueue),
 	}
 
-	result := FormatCorrectionsText("👌 收到，已纳入当前任务。", corrections)
-	expected := "👌 收到，已纳入当前任务。\n  回复1: 改为打断 | 回复2: 改为排队"
+	result := FormatCorrectionsText("收到，已纳入当前任务。", corrections)
+	expected := "收到，已纳入当前任务。\n  回复1: 改为打断 | 回复2: 改为排队"
 	if result != expected {
 		t.Errorf("expected:\n%s\ngot:\n%s", expected, result)
 	}

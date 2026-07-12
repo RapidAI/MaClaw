@@ -125,8 +125,7 @@ if output == 0 && usageNil {
 - API 报告 input tokens > 85% effective 时 trimConversation 被强制触发
 - 空响应后下一轮 conversation 被主动裁剪到 60% effective
 - 所有现有 CodingGate / SubAgent / DriftDetector 测试通过
-- GUI / TUI / corelib 编译通过 ✅
-
+- GUI / TUI / corelib 编译通过 
 ## 修改文件
 
 | 文件 | 修改 |

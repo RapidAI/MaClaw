@@ -109,6 +109,22 @@ func q8DualMultiDot4T(out *[8]float32, a []float32, t *Q8Tensor, row0, row1, nBl
 	q8DualMultiDot4(out, a, t.Data, row0, row1, nBlocks, K)
 }
 
+// q8DualMultiDot2T computes two A rows against two scaled Q8 rows. The fixed
+// K=512 path is used by the M=6 CTC argmax tail and walks each Q8 B block once.
+// out = [a0·b0, a1·b0, a0·b1, a1·b1].
+func q8DualMultiDot2T(out *[4]float32, a []float32, t *Q8Tensor, row0, row1, nBlocks, K int) {
+	need := (row1 + 1) * nBlocks
+	if K == 512 && nBlocks == 16 && len(a) >= 2*K && len(t.Scales) >= need && hasAVX2andFMA {
+		rowBytes := nBlocks * q8BlockBytes
+		q8DualMultiDot2ScaledAVX2K512(out, &a[0], &t.Data[0],
+			&t.Scales[row0*nBlocks], &t.Scales[row1*nBlocks], row0*rowBytes, row1*rowBytes)
+		return
+	}
+	s0, s1 := DotQ8RowDualScaled(a[:K], t, row0, row1)
+	t0, t1 := DotQ8RowDualScaled(a[K:2*K], t, row0, row1)
+	out[0], out[1], out[2], out[3] = s0, t0, s1, t1
+}
+
 // q8TripleMultiDot4T: 4 A × 3 B with f32 scales.
 // out[0:4]=B0, out[4:8]=B1, out[8:12]=B2 (same layout as multiDot4TripleB / storeTriple4*).
 func q8TripleMultiDot4T(out *[12]float32, a []float32, t *Q8Tensor, row0, row1, row2, nBlocks, K int) {
@@ -208,6 +224,9 @@ func q8DualMultiDot4ScaledAVX2(out *[8]float32, a *float32, K int, data *byte, s
 func q8DualMultiDot4ScaledAVX2N16(out *[8]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int)
 
 //go:noescape
+func q8DualMultiDot2ScaledAVX2K512(out *[4]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int)
+
+//go:noescape
 func q8DualMultiDot4ScaledAVX2N64(out *[8]float32, a *float32, data *byte, scales0, scales1 *float32, rowOff0, rowOff1 int)
 
 //go:noescape
@@ -260,11 +279,19 @@ func q8TryDual8AccumVNNI(out []float32, ap *q8APanel8, t *Q8Tensor, m, n, nBlock
 	if !hasAVX512VNNI || nBlocks != 64 || len(t.Scales) < need || len(out) < (m+8)*512 {
 		return false
 	}
-	rowBytes := nBlocks * q8BlockBytes
-	q8uQ8sDual8AccumVNNI(&out[0], &ap.q[0], &ap.s[0], &t.Data[0],
-		&t.Scales[n*nBlocks], &t.Scales[(n+1)*nBlocks],
-		n*rowBytes, (n+1)*rowBytes, m, n, bn0, bn1)
+	q8Dual8AccumVNNIKnown(out, ap, t, m, n, bn0, bn1)
 	return true
+}
+
+// q8Dual8AccumVNNIKnown is the unchecked VNNI call used after
+// tryFusedAccumVNNI has validated the fixed N=512/K=2048 geometry. Keeping
+// the checks outside the B-pair loop avoids repeating feature, shape, and
+// slice-length checks for every output pair.
+func q8Dual8AccumVNNIKnown(out []float32, ap *q8APanel8, t *Q8Tensor, m, n int, bn0, bn1 float32) {
+	const rowBytes = 64 * q8BlockBytes
+	q8uQ8sDual8AccumVNNI(&out[0], &ap.q[0], &ap.s[0], &t.Data[0],
+		&t.Scales[n*64], &t.Scales[(n+1)*64],
+		n*rowBytes, (n+1)*rowBytes, m, n, bn0, bn1)
 }
 
 func quantizePanel8Q8U(ap *q8APanel8, a []float32) {
@@ -319,8 +346,17 @@ func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne,
 	if !enableFusedAccumVNNI || !hasAVX512VNNI || nBlocks != 64 || len(a) < M*2048 || len(b.Scales) < b.Rows*nBlocks {
 		return false
 	}
-	ap0 := q8APanelPool.Get().(*q8APanel8)
-	ap1 := q8APanelPool.Get().(*q8APanel8)
+	// Panels are only consumed by 8-row blocks. Very short utterances take the
+	// scalar remainder below, so avoid even the first pool round-trip for M < 8.
+	var ap0 *q8APanel8
+	if M >= 8 {
+		ap0 = q8APanelPool.Get().(*q8APanel8)
+	}
+	// The second panel is used only by the 16-row loop below.
+	var ap1 *q8APanel8
+	if M >= 16 {
+		ap1 = q8APanelPool.Get().(*q8APanel8)
+	}
 	m := 0
 	// 16-row outer: two prequant panels share each B group.
 	for ; m+15 < M; m += 16 {
@@ -333,12 +369,8 @@ func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne,
 		// incorrect under register pressure; keep dual only.
 		for ; n+1 < ne; n += 2 {
 			bn0, bn1 := bias[n], bias[n+1]
-			if !q8TryDual8AccumVNNI(out, ap0, b, m, n, nBlocks, bn0, bn1) {
-				q8TryDual8AccumN512(out, a0, b, m, n, nBlocks, 2048, bn0, bn1)
-			}
-			if !q8TryDual8AccumVNNI(out, ap1, b, m+8, n, nBlocks, bn0, bn1) {
-				q8TryDual8AccumN512(out, a1, b, m+8, n, nBlocks, 2048, bn0, bn1)
-			}
+			q8Dual8AccumVNNIKnown(out, ap0, b, m, n, bn0, bn1)
+			q8Dual8AccumVNNIKnown(out, ap1, b, m+8, n, bn0, bn1)
 		}
 		for ; n < ne; n++ {
 			var d8 [8]float32
@@ -354,9 +386,7 @@ func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne,
 		quantizePanel8Q8U(ap0, aPanel)
 		n := ns
 		for ; n+1 < ne; n += 2 {
-			if !q8TryDual8AccumVNNI(out, ap0, b, m, n, nBlocks, bias[n], bias[n+1]) {
-				q8TryDual8AccumN512(out, aPanel, b, m, n, nBlocks, 2048, bias[n], bias[n+1])
-			}
+			q8Dual8AccumVNNIKnown(out, ap0, b, m, n, bias[n], bias[n+1])
 		}
 		for ; n < ne; n++ {
 			var d8 [8]float32
@@ -396,8 +426,12 @@ func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne,
 		_ = dDual1
 		_ = d8
 	}
-	q8APanelPool.Put(ap0)
-	q8APanelPool.Put(ap1)
+	if ap0 != nil {
+		q8APanelPool.Put(ap0)
+	}
+	if ap1 != nil {
+		q8APanelPool.Put(ap1)
+	}
 	return true
 }
 

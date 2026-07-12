@@ -45,6 +45,8 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 		switch action {
 		case "list":
 			return skillList(app)
+		case "info":
+			return skillInfo(app, args)
 		case "search":
 			return skillSearch(app, args)
 		case "install":
@@ -65,12 +67,341 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 			return skillPatchHistory(app, args)
 		case "maintenance_plan":
 			return skillMaintenancePlan(app, args)
+		case "maintenance_drafts":
+			return skillMaintenanceDrafts(app)
 		case "execute_maintenance_plan":
 			return skillExecuteMaintenancePlan(app, args)
+		case "evolution_status":
+			return skillEvolutionStatus(app)
+		case "evolution_audit":
+			return skillEvolutionAudit(args)
+		case "set_evolution_enabled":
+			return skillSetEvolutionEnabled(app, args)
+		case "trigger_repair":
+			return skillTriggerRepair(app, args)
+		case "trigger_optimize":
+			return skillTriggerOptimize(app, args)
 		default:
 			return skill.ManageSkillUnknownActionError(action)
 		}
 	}
+}
+
+// skillEvolutionAudit returns durable skill evolution audit JSON (TUI/CLI).
+func skillEvolutionAudit(args map[string]interface{}) string {
+	limit := 50
+	if args != nil {
+		switch v := args["limit"].(type) {
+		case float64:
+			limit = int(v)
+		case int:
+			limit = v
+		case string:
+			fmt.Sscanf(strings.TrimSpace(v), "%d", &limit)
+		}
+	}
+	name := sval(args, "name")
+	if name == "" {
+		name = sval(args, "skill")
+	}
+	payload := skill.EvolutionAuditToolPayload("", limit, name)
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("Skill evolution audit marshal failed: %v", err)
+	}
+	return string(data)
+}
+
+// skillSetEvolutionEnabled persists skill_evolution_enabled for TUI/CLI.
+func skillSetEvolutionEnabled(app *TUIApp, args map[string]interface{}) string {
+	enabled, ok := parseBoolArg(args, "enabled")
+	if !ok {
+		if v, present := parseBoolArg(args, "enable"); present {
+			enabled, ok = v, true
+		} else if v, present := parseBoolArg(args, "value"); present {
+			enabled, ok = v, true
+		}
+	}
+	if !ok {
+		return `{"ok":false,"error":"enabled is required for set_evolution_enabled (true or false)"}`
+	}
+	if err := commands.PersistSkillEvolutionEnabled(enabled); err != nil {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok": false, "error": err.Error(),
+		}, "", "  ")
+		return string(data)
+	}
+	if enabled {
+		// Clear session opt-out so enable actually takes effect this process.
+		commands.SetSkillEvolutionSessionDisabled(false)
+	}
+	if app != nil {
+		if refreshed, err := commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig(); err == nil {
+			app.appConfig = refreshed
+		}
+	}
+	payload := map[string]interface{}{
+		"ok":               true,
+		"enabled":          enabled,
+		"config_enabled":   enabled,
+		"config_disabled":  !enabled,
+		"session_disabled": commands.SkillEvolutionSessionDisabled(),
+		"env_disabled":     commands.SkillEvolutionEnvDisabled(),
+		"disabled":         commands.SkillEvolutionDisabled() || !enabled,
+		"message":          "skill_evolution_enabled updated",
+	}
+	if commands.SkillEvolutionEnvDisabled() {
+		payload["note"] = "MACLAW_DISABLE_SKILL_EVOLUTION still suppresses automatic evolution"
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return string(data)
+}
+
+func parseBoolArg(args map[string]interface{}, key string) (bool, bool) {
+	if args == nil {
+		return false, false
+	}
+	v, exists := args[key]
+	if !exists || v == nil {
+		return false, false
+	}
+	switch t := v.(type) {
+	case bool:
+		return t, true
+	case string:
+		s := strings.TrimSpace(strings.ToLower(t))
+		if s == "1" || s == "true" || s == "yes" || s == "on" {
+			return true, true
+		}
+		if s == "0" || s == "false" || s == "no" || s == "off" {
+			return false, true
+		}
+		return false, false
+	case float64:
+		return t != 0, true
+	case int:
+		return t != 0, true
+	default:
+		return false, false
+	}
+}
+
+// skillTriggerOptimize runs a one-shot optimization for a named skill (TUI).
+func skillTriggerOptimize(app *TUIApp, args map[string]interface{}) string {
+	name := sval(args, "name")
+	if name == "" {
+		return `{"ok":false,"error":"name is required for trigger_optimize"}`
+	}
+	force := false
+	if v, ok := args["force"]; ok {
+		switch t := v.(type) {
+		case bool:
+			force = t
+		case string:
+			force = strings.EqualFold(strings.TrimSpace(t), "true") || strings.TrimSpace(t) == "1"
+		}
+	}
+	if app == nil {
+		return `{"ok":false,"error":"app not initialized"}`
+	}
+	entry := findSkillEntry(app, name)
+	if entry == nil {
+		return fmt.Sprintf(`{"ok":false,"error":"skill %q not found"}`, name)
+	}
+	cp := skill.CloneNLSkillEntry(entry)
+	app.ensureEvolutionPipeline()
+	if app.evolutionPipeline == nil || app.evolutionPipeline.Optimizer == nil {
+		return `{"ok":false,"error":"skill optimizer not available"}`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	res := app.evolutionPipeline.TriggerOptimize(ctx, cp, force)
+	if refreshed, err := commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig(); err == nil {
+		app.appConfig = refreshed
+	}
+	payload := map[string]interface{}{
+		"ok":          res.Optimized || res.Attempted,
+		"skill":       cp.Name,
+		"forced":      force,
+		"attempted":   res.Attempted,
+		"optimized":   res.Optimized,
+		"skipped":     res.Skipped,
+		"skip_reason": res.SkipReason,
+		"explanation": res.Explanation,
+	}
+	if res.Skipped && !res.Attempted {
+		payload["ok"] = false
+		payload["error"] = res.SkipReason
+	}
+	if res.Optimized {
+		payload["message"] = "optimization applied"
+		payload["optimization_count"] = cp.OptimizationCount
+		payload["last_optimized_at"] = cp.LastOptimizedAt
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return string(data)
+}
+
+// skillTriggerRepair starts an immediate self-repair for a named skill (TUI).
+func skillTriggerRepair(app *TUIApp, args map[string]interface{}) string {
+	name := sval(args, "name")
+	if name == "" {
+		return `{"ok":false,"error":"name is required for trigger_repair"}`
+	}
+	force := false
+	wait := false
+	if v, ok := args["force"]; ok {
+		switch t := v.(type) {
+		case bool:
+			force = t
+		case string:
+			force = strings.EqualFold(strings.TrimSpace(t), "true") || strings.TrimSpace(t) == "1"
+		}
+	}
+	if v, ok := args["wait"]; ok {
+		switch t := v.(type) {
+		case bool:
+			wait = t
+		case string:
+			wait = strings.EqualFold(strings.TrimSpace(t), "true") || strings.TrimSpace(t) == "1"
+		}
+	}
+
+	entry := findSkillEntry(app, name)
+	if entry == nil {
+		return fmt.Sprintf(`{"ok":false,"error":"skill %q not found"}`, name)
+	}
+	// Work on a copy so concurrent list views stay stable.
+	cp := *entry
+	cp.Steps = append([]corelib.NLSkillStep(nil), entry.Steps...)
+	cp.RepairHistory = append([]corelib.SkillRepairRecord(nil), entry.RepairHistory...)
+
+	eligible := skill.ShouldAttemptRepair(&cp)
+	forced := false
+	if !eligible && force && skill.CanForceAttemptRepair(&cp) {
+		eligible = true
+		forced = true
+	}
+	if !eligible {
+		reason := "not eligible for self-repair"
+		switch {
+		case cp.LastError == "":
+			reason = "no LastError recorded; run the skill first"
+		case skill.IsFileBackedSkill(cp):
+			reason = "file-backed skills require a reviewed patch flow"
+		case cp.RepairAttemptCount >= skill.SelfRepairMaxAttempts:
+			reason = fmt.Sprintf("repair attempt limit reached (%d)", skill.SelfRepairMaxAttempts)
+		case !skill.IsRepairableError(skill.ExtractErrorClass(cp.LastError)):
+			reason = fmt.Sprintf("error class %q is not auto-repairable", skill.ExtractErrorClass(cp.LastError))
+		case !force:
+			reason = "usage statistics do not meet auto-repair threshold; pass force=true to try anyway"
+		}
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok": false, "skill": cp.Name, "error": reason, "last_error": cp.LastError,
+		}, "", "  ")
+		return string(data)
+	}
+
+	cfg := app.appConfig
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	if !commands.CanStartTUISkillRepair(&cp, cfg) && !forced {
+		// CanStart also requires LLM; re-check LLM only.
+		if !commands.NewTUISkillRepairerFromAppConfig(cfg).IsConfigured() {
+			data, _ := json.MarshalIndent(map[string]interface{}{
+				"ok": false, "skill": cp.Name, "error": "LLM not configured for skill repair",
+			}, "", "  ")
+			return string(data)
+		}
+	}
+	if !commands.NewTUISkillRepairerFromAppConfig(cfg).IsConfigured() {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok": false, "skill": cp.Name, "error": "LLM not configured for skill repair",
+		}, "", "  ")
+		return string(data)
+	}
+
+	if wait {
+		commands.PerformTUISkillRepairWithForce(&cp, cfg, store, forced)
+		if refreshed, err := store.LoadConfig(); err == nil {
+			app.appConfig = refreshed
+		}
+		payload := map[string]interface{}{
+			"ok": true, "skill": cp.Name, "forced": forced, "waited": true,
+			"message":              "self-repair attempt finished",
+			"repair_attempt_count": cp.RepairAttemptCount,
+			"last_repair_at":       cp.LastRepairAt,
+			"last_error":           cp.LastError,
+			"status":               cp.Status,
+		}
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		return string(data)
+	}
+
+	if forced {
+		go commands.PerformTUISkillRepairWithForce(&cp, cfg, store, true)
+	} else if !commands.MaybeRepairSkillTUI(&cp, cfg, store) {
+		data, _ := json.MarshalIndent(map[string]interface{}{
+			"ok": false, "skill": cp.Name, "error": "could not start self-repair",
+		}, "", "  ")
+		return string(data)
+	}
+	data, _ := json.MarshalIndent(map[string]interface{}{
+		"ok": true, "skill": cp.Name, "forced": forced, "waited": false,
+		"message": "self-repair started in background",
+	}, "", "  ")
+	return string(data)
+}
+
+// skillEvolutionStatus returns JSON diagnostics for the TUI EvolutionPipeline.
+func skillEvolutionStatus(app *TUIApp) string {
+	payload := map[string]interface{}{
+		"ok":               true,
+		"non_executing":    true,
+		"boundary":         "read-only skill evolution pipeline status",
+		"session_disabled": commands.SkillEvolutionSessionDisabled(),
+		"env_disabled":     commands.SkillEvolutionEnvDisabled(),
+		"config_enabled":   app != nil && app.appConfig.IsSkillEvolutionEnabled(),
+		"config_disabled":  app != nil && !app.appConfig.IsSkillEvolutionEnabled(),
+		"disabled":         commands.SkillEvolutionDisabled() || (app != nil && !app.appConfig.IsSkillEvolutionEnabled()),
+		"pipeline_started": false,
+	}
+	if app != nil {
+		// Prefer freshest config for config_enabled / cooldown.
+		if refreshed, err := commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig(); err == nil {
+			app.appConfig = refreshed
+			payload["config_enabled"] = refreshed.IsSkillEvolutionEnabled()
+			payload["config_disabled"] = !refreshed.IsSkillEvolutionEnabled()
+			payload["disabled"] = commands.SkillEvolutionDisabled() || !refreshed.IsSkillEvolutionEnabled()
+		}
+		disabled, _ := payload["disabled"].(bool)
+		// Ensure pipeline is wired so status reflects live capabilities.
+		app.ensureEvolutionPipeline()
+		if app.evolutionPipeline != nil {
+			st := app.evolutionPipeline.Status()
+			payload["pipeline_started"] = true
+			payload["pending_skills"] = st.PendingSkills
+			payload["coalesced_notifications"] = st.CoalescedNotifications
+			payload["dropped_notifications"] = st.DroppedNotifications
+			payload["processed_requests"] = st.ProcessedRequests
+			payload["enable_repair"] = st.EnableRepair && !disabled
+			payload["enable_optimizer"] = st.EnableOptimizer && !disabled
+			payload["enable_promoter"] = st.EnablePromoter && !disabled
+			payload["repair_cooldown"] = st.RepairCooldown.String()
+			payload["has_repair_hook"] = st.HasRepairHook
+			payload["has_optimizer"] = st.HasOptimizer
+			payload["has_promoter"] = st.HasPromoter
+		}
+		if hours := app.appConfig.SkillEvolutionRepairCooldownHours; hours > 0 {
+			payload["repair_cooldown_hours"] = hours
+		} else {
+			payload["repair_cooldown_hours"] = 1
+		}
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("Skill evolution status marshal failed: %v", err)
+	}
+	return string(data)
 }
 
 func sval(args map[string]interface{}, key string) string {
@@ -111,9 +442,38 @@ func skillList(app *TUIApp) string {
 		if labels := tuiSkillHealthLabels(s); len(labels) > 0 {
 			line += " " + strings.Join(labels, " ")
 		}
+		if tags := skill.FormatCompactParamTags(skill.CompleteParamsForRunner(s.Params, s.Steps, s.RequiredArgs)); tags != "" {
+			line += " (" + tags + ")"
+		}
 		b.WriteString(line + "\n")
 	}
 	return b.String()
+}
+
+func skillInfo(app *TUIApp, args map[string]interface{}) string {
+	name := sval(args, "name")
+	if name == "" {
+		name = sval(args, "skill_name")
+	}
+	if name == "" {
+		name = sval(args, "skill_id")
+	}
+	if name == "" {
+		return "缺少 name 参数（manage_skill action=info 需要 Skill 名称）"
+	}
+	entry := findSkillEntry(app, name)
+	if entry == nil {
+		if similar, score := skill.FindSimilarSkill(name, 0.3); similar != nil {
+			return fmt.Sprintf("Skill '%s' 不存在。你是否指的是 %q？(%.0f%% 匹配)", name, similar.Name, score*100)
+		}
+		return fmt.Sprintf("Skill '%s' 不存在", name)
+	}
+	if entry.SkillDir != "" {
+		if err := skill.HydrateRunMetadataFromDir(entry); err != nil {
+			log.Printf("[skill-info-tui] hydrate skill metadata from %q failed: %v", entry.SkillDir, err)
+		}
+	}
+	return skill.FormatSkillInspectReport(entry)
 }
 
 func tuiSkillHealthLabels(s corelib.NLSkillEntry) []string {
@@ -131,6 +491,28 @@ func tuiSkillHealthLabels(s corelib.NLSkillEntry) []string {
 
 func tuiSkillHasIncompleteContract(s corelib.NLSkillEntry) bool {
 	return skill.HasIncompleteSkillContract(s.Type, s.Steps, s.Params, s.RequiredArgs)
+}
+
+func skillMaintenanceDrafts(app *TUIApp) string {
+	skills := tuiCollectMaintenanceSkills(app)
+	drafts := skill.CollectMaintenanceReviewDrafts(skills, skill.SkillMaintenancePlanOptions{
+		Now:        time.Now(),
+		MaxActions: 40,
+	})
+	payload := map[string]interface{}{
+		"ok":            true,
+		"non_executing": true,
+		"boundary":      "read-only maintenance review drafts; no skill was modified",
+		"drafts":        drafts,
+		"patch_count":   len(drafts.PatchDrafts),
+		"merge_count":   len(drafts.MergeDrafts),
+		"queued_repair": len(drafts.QueuedRepair),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("收集维护草案失败: %v", err)
+	}
+	return string(data)
 }
 
 func skillMaintenancePlan(app *TUIApp, args map[string]interface{}) string {
@@ -448,7 +830,8 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 	defer cancel()
 
 	client := skill.DefaultHubClient()
-	results := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
+	report := client.SearchAllFilteredReport(ctx, hubURL, query, allowedSources)
+	results := report.Results
 
 	// Rerank by local execution history: demote skills with poor local
 	// success rates or disabled status (P2 #A signal feedback).
@@ -456,12 +839,20 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 	localSkills = append(localSkills, app.appConfig.NLSkills...)
 	results = skill.RerankByLocalHistory(results, localSkills)
 
+	degraded := report.FormatDegradedNote()
 	if len(results) == 0 {
+		if degraded != "" {
+			return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。\n⚠️ %s\n（源失败时空结果不等于「没有 skill」）", query, degraded)
+		}
 		return fmt.Sprintf("未找到匹配 \"%s\" 的 Skill。", query)
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("搜索 \"%s\" — %d 个结果（SkillHub + ClawHub + GitHub）\n\n", query, len(results)))
+	b.WriteString(fmt.Sprintf("搜索 \"%s\" — %d 个结果（SkillHub + ClawHub + GitHub）\n", query, len(results)))
+	if degraded != "" {
+		b.WriteString("⚠️ " + degraded + "\n（部分源失败，列表可能不完整）\n")
+	}
+	b.WriteString("\n")
 	for _, s := range results {
 		sourceLabel := "SkillHub"
 		switch s.Source {
@@ -519,7 +910,7 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 
 	// Check if source is allowed by policy/config.
 	if !tuiSkillSourceAllowedByPolicy(app.appConfig, effectiveSource) {
-		return fmt.Sprintf("❌ 来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, app.appConfig.SkillSourcesAllowed)
+		return fmt.Sprintf("来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, app.appConfig.SkillSourcesAllowed)
 	}
 
 	recordTUIDeveloperSkillRisk(app.appConfig, effectiveSource, "install", guardArgs)
@@ -573,7 +964,7 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	case "github":
 		sourceLabel = "GitHub"
 	}
-	return fmt.Sprintf("✅ Skill '%s' 已安装 (来源: %s)", entry.Name, sourceLabel)
+	return fmt.Sprintf("Skill '%s' 已安装 (来源: %s)", entry.Name, sourceLabel)
 }
 
 // --- uninstall ---
@@ -627,7 +1018,7 @@ func skillUninstall(app *TUIApp, args map[string]interface{}) string {
 		return fmt.Sprintf("Skill '%s' 未找到（不在配置中，也不在磁盘上）", name)
 	}
 
-	return fmt.Sprintf("✅ Skill '%s' 已卸载（配置和目录已清理）", name)
+	return fmt.Sprintf("Skill '%s' 已卸载（配置和目录已清理）", name)
 }
 
 // --- run ---
@@ -684,7 +1075,7 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 	if skill.IsPipelineSkill(entry) {
 		result := skillRunPipelineDetailed(app, entry, args, templateVars)
 		if !internalPipelineCall {
-			updateTUISkillRunStats(name, entry, result.OK, result.Output)
+			updateTUISkillRunStatsForApp(app, name, entry, result.OK, result.Output, templateVars)
 		}
 		return result
 	}
@@ -764,20 +1155,20 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 	for i, step := range entry.Steps {
 		// Early exit if context was cancelled between steps.
 		if execCtx.Err() != nil {
-			results = append(results, fmt.Sprintf("[Step %d/%d] ⏹ cancelled", i+1, len(entry.Steps)))
+			results = append(results, fmt.Sprintf("[Step %d/%d] cancelled", i+1, len(entry.Steps)))
 			ok = false
 			break
 		}
 		if len(selectedSteps) > 0 {
 			if step.Label == "" || !skill.StepLabelSelected(step.Label, selectedSteps) {
-				results = append(results, fmt.Sprintf("[Step %d/%d] ⏭ skipped (not selected)", i+1, len(entry.Steps)))
+				results = append(results, fmt.Sprintf("[Step %d/%d] skipped (not selected)", i+1, len(entry.Steps)))
 				continue
 			}
 		}
 		// Conditional execution (when field).
 		if step.When != "" {
 			if !skill.EvaluateStepWhen(step.When, vars) {
-				results = append(results, fmt.Sprintf("[Step %d/%d] ⏭ skipped (when=%q)", i+1, len(entry.Steps), step.When))
+				results = append(results, fmt.Sprintf("[Step %d/%d] skipped (when=%q)", i+1, len(entry.Steps), step.When))
 				continue
 			}
 		}
@@ -787,7 +1178,7 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 		step = withTUISkillPreferredShell(step, entry.PreferredShell)
 		resolveResult, resolveErr := skill.ResolveStep(step, vars, entry.SkillDir, skillParams, quoteTUIRunValueForStep(step))
 		if resolveErr != nil {
-			results = append(results, fmt.Sprintf("[Step %d/%d] ✗ %s", i+1, len(entry.Steps), resolveErr.Error()))
+			results = append(results, fmt.Sprintf("[Step %d/%d] ERR %s", i+1, len(entry.Steps), resolveErr.Error()))
 			ok = false
 			if step.OnError != "continue" {
 				break
@@ -814,7 +1205,7 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 				exitCode = exitErr.ExitCode()
 			}
 			ce := skill.ClassifyStepError(exitCode, out, err.Error(), sval(step.Params, "command"))
-			errMsg := fmt.Sprintf("[Step %d/%d] ✗ %s", i+1, len(entry.Steps), ce.UserMessage)
+			errMsg := fmt.Sprintf("[Step %d/%d] ERR %s", i+1, len(entry.Steps), ce.UserMessage)
 			if ce.ActionHint != "" {
 				errMsg += "\n  " + ce.ActionHint
 			}
@@ -827,7 +1218,7 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 			if len(out) > 500 {
 				out = out[:500] + "..."
 			}
-			results = append(results, fmt.Sprintf("[Step %d/%d] ✓\n%s", i+1, len(entry.Steps), out))
+			results = append(results, fmt.Sprintf("[Step %d/%d] OK\n%s", i+1, len(entry.Steps), out))
 		}
 	}
 
@@ -836,7 +1227,7 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 		if len(results) > 0 {
 			lastError = results[len(results)-1]
 		}
-		updateTUISkillRunStats(name, entry, ok, lastError)
+		updateTUISkillRunStatsForApp(app, name, entry, ok, lastError, vars)
 	}
 
 	var b strings.Builder
@@ -844,9 +1235,9 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 		b.WriteString(r + "\n")
 	}
 	if ok {
-		b.WriteString("✓ 执行完成")
+		b.WriteString("执行完成")
 	} else {
-		b.WriteString("✗ 执行失败")
+		b.WriteString("执行失败")
 	}
 	return tuiSkillRunResult{Output: b.String(), OK: ok, Captured: cloneTUIStringMap(vars)}
 }
@@ -863,6 +1254,10 @@ func cloneTUIStringMap(in map[string]string) map[string]string {
 }
 
 func updateTUISkillRunStats(name string, entry *corelib.NLSkillEntry, ok bool, lastError string) {
+	updateTUISkillRunStatsForApp(nil, name, entry, ok, lastError, nil)
+}
+
+func updateTUISkillRunStatsForApp(app *TUIApp, name string, entry *corelib.NLSkillEntry, ok bool, lastError string, runArgs map[string]string) {
 	if entry == nil {
 		return
 	}
@@ -875,7 +1270,12 @@ func updateTUISkillRunStats(name string, entry *corelib.NLSkillEntry, ok bool, l
 		entry.FailureCount++
 		entry.LastError = formatTUISkillRunLastError(lastError)
 	}
+	// persistStats also records usage experience.
 	persistStats(name, entry)
+	// Prefer EvolutionPipeline for self-repair scheduling when TUIApp is available.
+	if app != nil {
+		app.notifySkillEvolution(entry, ok, runArgs)
+	}
 }
 
 func formatTUISkillRunLastError(lastError string) string {
@@ -1216,13 +1616,12 @@ func recordTUISkillUsageExperience(entry *corelib.NLSkillEntry, success bool) {
 		tokens = tokens[:5]
 	}
 	finalOutcome := "completed"
-	followUp := "continue"
 	errorClass := ""
 	if !success {
 		finalOutcome = "failed"
-		followUp = "abandon"
 		errorClass = skill.ExtractErrorClass(entry.LastError)
 	}
+	followUp := skill.SkillExecutionFollowUp(success, errorClass)
 	tracker.RecordExperience(coretool.ToolExperience{
 		ToolName:     "skill:" + entry.Name,
 		QueryTokens:  tokens,
@@ -1237,17 +1636,9 @@ func recordTUISkillUsageExperience(entry *corelib.NLSkillEntry, success bool) {
 	// indicates the skill environment is broken (config, dependencies, setup).
 	// This ensures the router does not continue recommending manage_skill based
 	// on stale success data from before the breakage occurred.
-	if errorClass != "" {
-		qualifyingErrors := map[string]bool{
-			"config_error":       true,
-			"dependency_missing": true,
-			"setup_failed":       true,
-			"install_failed":     true,
-		}
-		if qualifyingErrors[errorClass] {
-			tracker.InvalidateOutcomes("manage_skill",
-				fmt.Sprintf("%s: %s", errorClass, entry.Name))
-		}
+	if skill.ShouldInvalidateManageSkillOutcomes(errorClass) {
+		tracker.InvalidateOutcomes("manage_skill",
+			fmt.Sprintf("%s: %s", errorClass, entry.Name))
 	}
 }
 
@@ -1336,7 +1727,7 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 		return fmt.Sprintf("上传失败: %s", errMsg)
 	}
 
-	return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s\n使用 CLI `maclaw-tui skillmarket status %s` 查看审核状态。",
+	return fmt.Sprintf("Skill「%s」已上传到 SkillMarket，提交 ID: %s\n使用 CLI `maclaw-tui skillmarket status %s` 查看审核状态。",
 		name, submissionID, submissionID)
 }
 
@@ -1645,7 +2036,7 @@ func skillPatchStructured(app *TUIApp, skillName string, args map[string]interfa
 		log.Printf("[skill-patch-step] warning: failed to write audit trail: %v", auditErr)
 	}
 
-	return fmt.Sprintf("✅ Skill「%s」步骤 %d 的 %s 已修改为 %q", skillName, stepIdx, field, value)
+	return fmt.Sprintf("Skill「%s」步骤 %d 的 %s 已修改为 %q", skillName, stepIdx, field, value)
 }
 
 // skillPatchText performs the original text-level find-and-replace patch.
@@ -1708,7 +2099,7 @@ func skillPatchText(app *TUIApp, skillName string, args map[string]interface{}) 
 		log.Printf("[skill-patch] warning: failed to write audit trail: %v", auditErr)
 	}
 
-	return fmt.Sprintf("✅ Skill「%s」已成功 patch（替换了 1 处匹配）", skillName)
+	return fmt.Sprintf("Skill「%s」已成功 patch（替换了 1 处匹配）", skillName)
 }
 
 // --- history ---

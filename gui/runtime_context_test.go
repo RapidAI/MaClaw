@@ -128,12 +128,13 @@ func TestRuntimePolicyOwnerWithoutRequestIDStillDrivesWorkflowPolicy(t *testing.
 
 	loopCtx := NewLoopContext("chat", 1, nil)
 	loopCtx.Runtime = RuntimeContext{PolicyOwnerID: ownerID}
+	// write_file remains blocked in doc-only phases (bash is allowed for doc parsing).
 	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		UserID:  "weixin-user",
 		Context: loopCtx,
-		ToolCall: llm.ToolCall{ID: "call_bash", Function: llm.ToolCallFunction{
-			Name:      "bash",
-			Arguments: `{}`,
+		ToolCall: llm.ToolCall{ID: "call_write", Function: llm.ToolCallFunction{
+			Name:      "write_file",
+			Arguments: `{"path":"out.md","content":"x"}`,
 		}},
 	})
 	if result.FailureKind != toolFailurePolicyRejected {

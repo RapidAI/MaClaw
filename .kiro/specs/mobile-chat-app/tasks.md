@@ -1,7 +1,6 @@
 # Mobile Chat App — Tasks
 
-## Phase 1: 骨架搭建 ✅
-
+## Phase 1: 骨架搭建 
 - [x] Task 1: 整理 mobile 目录，现有内容移入 terminal/
 - [x] Task 2: 创建 Flutter Chat 项目骨架 (pubspec.yaml, models, services, screens, widgets)
 - [x] Task 3: 创建 hub/internal/chat/ 后端模块 (types, store, services)

@@ -11,7 +11,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -407,7 +406,7 @@ func (d *GroupChatDispatcher) emitAttachmentToFrontend(sessionID string, msg a2a
 		"from_id":     senderID,
 		"attachments": groupDiscussionMessageAttachmentsPayload(msg),
 	}
-	runtime.EventsEmit(d.app.ctx, "ve:stream_chunk", payload)
+	d.app.emitEvent("ve:stream_chunk", payload)
 }
 
 // emitStreamToFrontend sends stream events directly to the frontend via Wails runtime,
@@ -422,7 +421,7 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 	}
 	if chunk == "" {
 		// Stream end
-		runtime.EventsEmit(d.app.ctx, "ve:stream_end", map[string]any{
+		d.app.emitEvent("ve:stream_end", map[string]any{
 			"session_id":  sessionID,
 			"content":     "",
 			"chunk":       "",
@@ -431,7 +430,7 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 		})
 	} else {
 		// Stream chunk
-		runtime.EventsEmit(d.app.ctx, "ve:stream_chunk", map[string]any{
+		d.app.emitEvent("ve:stream_chunk", map[string]any{
 			"session_id":  sessionID,
 			"content":     chunk,
 			"chunk":       chunk,

@@ -159,9 +159,18 @@ class DocumentOriginalImagePreview extends ConsumerWidget {
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, __) => _ImagePreviewRetry(
+        scheme: scheme,
+        onRetry: () => ref.invalidate(documentOriginalImageBytesProvider(draft.id)),
+      ),
       data: (bytes) {
-        if (bytes == null || bytes.isEmpty) return const SizedBox.shrink();
+        if (bytes == null || bytes.isEmpty) {
+          return _ImagePreviewRetry(
+            scheme: scheme,
+            onRetry: () =>
+                ref.invalidate(documentOriginalImageBytesProvider(draft.id)),
+          );
+        }
         // Decode near display scale to cut GPU/memory for multi-megapixel sources.
         final dpr = MediaQuery.devicePixelRatioOf(context);
         final cacheW = (dpr * 480).round().clamp(240, 1280);
@@ -178,12 +187,57 @@ class DocumentOriginalImagePreview extends ConsumerWidget {
                 width: double.infinity,
                 gaplessPlayback: true,
                 cacheWidth: cacheW,
-                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                errorBuilder: (_, __, ___) => _ImagePreviewRetry(
+                  scheme: scheme,
+                  onRetry: () => ref.invalidate(
+                    documentOriginalImageBytesProvider(draft.id),
+                  ),
+                ),
               ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+class _ImagePreviewRetry extends StatelessWidget {
+  final ColorScheme scheme;
+  final VoidCallback onRetry;
+
+  const _ImagePreviewRetry({
+    required this.scheme,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.broken_image_outlined, color: scheme.onSurfaceVariant),
+          const SizedBox(height: 8),
+          Text(
+            '图片预览加载失败',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('重试'),
+          ),
+        ],
+      ),
     );
   }
 }

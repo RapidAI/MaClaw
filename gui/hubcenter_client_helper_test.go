@@ -159,7 +159,14 @@ func TestGetHubCenterJSONDoesNotPromoteDefaultFailoverOverLoopback(t *testing.T)
 		t.Fatalf("dest = %+v", dest)
 	}
 	base, all := app.hubCenterCache.Get()
-	if base != server.URL || !remote.StringSliceEqual(all, []string{server.URL}) {
-		t.Fatalf("cache = (%q, %#v), want loopback server only", base, all)
+	// Successful loopback endpoint must remain preferred. Public default seeds
+	// may appear in the discovered list for future failover, but must not
+	// replace the working local preferred URL.
+	if base != server.URL {
+		t.Fatalf("preferred cache base = %q, want loopback %q (all=%#v)", base, server.URL, all)
 	}
+	if remote.IsLoopbackURL(base) == false {
+		t.Fatalf("preferred base %q must stay loopback", base)
+	}
+	_ = all
 }

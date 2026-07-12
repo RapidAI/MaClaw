@@ -153,15 +153,31 @@ func failedSkillMaintenanceAction(s corelib.NLSkillEntry, minRuns int) (SkillMai
 }
 
 func repairableFailedSkillMaintenanceAction(s corelib.NLSkillEntry) (SkillMaintenanceAction, bool) {
-	if isFileBackedMaintenanceSkill(s) {
-		return SkillMaintenanceAction{}, false
-	}
 	lastError := strings.TrimSpace(s.LastError)
-	if lastError == "" || s.RepairAttemptCount >= SelfRepairMaxAttempts {
+	if lastError == "" {
 		return SkillMaintenanceAction{}, false
 	}
 	errorClass := ExtractErrorClass(lastError)
 	if !IsRepairableError(errorClass) {
+		return SkillMaintenanceAction{}, false
+	}
+	// File-backed skills never auto-rewrite disk definitions. Surface a reviewed
+	// repair patch draft so operators/GUI can human-approve edits under skill_dir.
+	if isFileBackedMaintenanceSkill(s) {
+		return SkillMaintenanceAction{
+			Action: MaintenanceActionAttemptRepair,
+			Skill:  skillDisplayName(s),
+			Risk:   MaintenanceRiskLow,
+			Reason: "file-backed skill has a repairable failure; generate a review-only repair patch draft",
+			Evidence: append(skillUsageEvidence(s),
+				"error_class="+errorClass,
+				"skill_dir="+strings.TrimSpace(s.SkillDir),
+				"source=file",
+			),
+			RecommendedAction: "open the file-backed repair patch draft, review skill.yaml/scripts, then apply manually or via approved YAML restore flow",
+		}, true
+	}
+	if s.RepairAttemptCount >= SelfRepairMaxAttempts {
 		return SkillMaintenanceAction{}, false
 	}
 	return SkillMaintenanceAction{

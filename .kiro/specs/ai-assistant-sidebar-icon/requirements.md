@@ -23,7 +23,7 @@
 
 #### 验收标准
 
-1. THE Sidebar SHALL 在远程（📡）图标下方显示一个 AI_Assistant_Icon
+1. THE Sidebar SHALL 在远程（）图标下方显示一个 AI_Assistant_Icon
 2. THE AI_Assistant_Icon SHALL 使用龙虾 AI 主题的 SVG 或 PNG 图标，尺寸与其他导航图标一致（约 1.2rem）
 3. THE AI_Assistant_Icon SHALL 在图标下方显示"AI 助手"（中文）或"AI Asst"（英文）标签文字，字号与其他导航项一致（0.65rem）
 4. WHEN 用户点击 AI_Assistant_Icon 时，THE AI_Assistant_Panel SHALL 以全屏覆盖方式弹出

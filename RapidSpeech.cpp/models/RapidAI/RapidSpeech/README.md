@@ -9,7 +9,7 @@ It aims to provide **pure C++**, **zero-dependency**, and **on-device inference*
 
 ------
 
-## 🌟 Key Differentiators
+## Key Differentiators
 
 While the open-source ecosystem already offers powerful cloud-side frameworks such as **vLLM-omni**, as well as mature on-device solutions like **sherpa-onnx**, **RapidSpeech.cpp** introduces a new generation of design choices focused on edge deployment.
 

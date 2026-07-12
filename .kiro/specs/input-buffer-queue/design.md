@@ -147,7 +147,7 @@ interface BufferQueuePanelProps {
 **每条 BufferEntryRow**:
 - 左侧：Drag Handle（`⠿` 或 `≡` 图标），cursor: grab
 - 中间：文本预览（截断 80 字符 + `...`）+ 附件指示器（图片缩略图 24×24px / 文件类型图标）
-- 右侧：编辑按钮（✏️）+ 删除按钮（🗑）
+- 右侧：编辑按钮（✏）+ 删除按钮（）
 - 编辑模式：替换为 textarea + 附件管理区 + 确认/取消按钮
 
 ### 3. `AIAssistantPanel.tsx` 修改
@@ -243,23 +243,23 @@ const [dragState, setDragState] = useState<{
 ```typescript
 const FILE_TYPE_ICONS: Record<string, string> = {
   // 文档
-  '.pdf': '📕', '.doc': '📘', '.docx': '📘', '.xls': '📗', '.xlsx': '📗',
-  '.ppt': '📙', '.pptx': '📙', '.txt': '📝', '.md': '📝', '.csv': '📊',
+  '.pdf': '', '.doc': '', '.docx': '', '.xls': '', '.xlsx': '',
+  '.ppt': '', '.pptx': '', '.txt': '', '.md': '', '.csv': '',
   // 代码
-  '.js': '🟨', '.ts': '🔷', '.jsx': '🟨', '.tsx': '🔷',
-  '.py': '🐍', '.go': '🔵', '.rs': '🦀', '.java': '☕',
-  '.c': '🔧', '.cpp': '🔧', '.h': '🔧', '.cs': '🟣',
-  '.html': '🌐', '.css': '🎨', '.json': '📋', '.xml': '📋',
-  '.yaml': '📋', '.yml': '📋', '.toml': '📋',
+  '.js': '', '.ts': '', '.jsx': '', '.tsx': '',
+  '.py': '', '.go': '', '.rs': '', '.java': '☕',
+  '.c': '', '.cpp': '', '.h': '', '.cs': '',
+  '.html': '', '.css': '', '.json': '', '.xml': '',
+  '.yaml': '', '.yml': '', '.toml': '',
   // 图片（非粘贴图片，用户浏览选择的）
-  '.png': '🖼️', '.jpg': '🖼️', '.jpeg': '🖼️', '.gif': '🖼️',
-  '.svg': '🖼️', '.webp': '🖼️', '.bmp': '🖼️',
+  '.png': '', '.jpg': '', '.jpeg': '', '.gif': '',
+  '.svg': '', '.webp': '', '.bmp': '',
   // 压缩
-  '.zip': '📦', '.tar': '📦', '.gz': '📦', '.rar': '📦',
+  '.zip': '', '.tar': '', '.gz': '', '.rar': '',
   // 其他
-  '.sh': '⚙️', '.bat': '⚙️', '.ps1': '⚙️',
+  '.sh': '', '.bat': '', '.ps1': '',
 };
-const DEFAULT_FILE_ICON = '📄';
+const DEFAULT_FILE_ICON = '';
 
 function getFileTypeIcon(extension: string): string {
   return FILE_TYPE_ICONS[extension.toLowerCase()] || DEFAULT_FILE_ICON;

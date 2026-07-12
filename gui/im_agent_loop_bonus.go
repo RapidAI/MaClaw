@@ -158,7 +158,7 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		if opts.StreamDone {
 			toolExecElapsed += time.Since(toolExecStartedAt)
 		}
-		truncated := truncateToolResultForTool(tc.Function.Name, toolResult)
+		truncated := truncateToolResultForToolWithSession(tc.Function.Name, opts.UserID, toolResult)
 		opts.RecordToolResult(tc.ID, truncated)
 		conversation = append(conversation, map[string]interface{}{"role": "tool", "tool_call_id": tc.ID, "content": truncated})
 		history = append(history, agent.ConversationEntry{Role: "tool", Content: truncated, ToolCallID: tc.ID, ToolOutcome: execResult.Outcome.String()})

@@ -483,6 +483,15 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 	if args == nil {
 		args = map[string]interface{}{}
 	}
+	// Artifact phases use V2 phase Kind/MutationScope (may be ahead of the V1
+	// engine phase index). Evaluate them before DocOnly/Planning name blocks so
+	// deliverable writes (deck.pptx, etc.) are not rejected by a lagging policy.
+	if h.isWorkflowArtifactPhase(policyUserID) {
+		if reason := validateWorkflowArtifactPhaseToolCall(name, args); reason != "" {
+			return false, reason
+		}
+		return true, ""
+	}
 	if h.shouldConstrainCodingWorkflowImplementationMainLoop(policyUserID) {
 		if reason := validateCodingWorkflowImplementationMainLoopToolCall(name, args); reason != "" {
 			return false, reason
@@ -493,11 +502,6 @@ func (h *IMMessageHandler) isWorkflowToolCallAllowedForOwner(policyUserID, name,
 	}
 	if reason := validateWorkflowPolicyManagedSkillCall(policy, name, args); reason != "" {
 		return false, reason
-	}
-	if h.isWorkflowArtifactPhase(policyUserID) {
-		if reason := validateWorkflowArtifactPhaseToolCall(name, args); reason != "" {
-			return false, reason
-		}
 	}
 	approved := []v2.OpsApprovedCommand(nil)
 	if policy == v2.ToolFilterOpsControlled {
@@ -534,7 +538,7 @@ func validateWorkflowPolicyManagedSkillCall(policy v2.ToolFilterPolicy, name str
 		return ""
 	}
 	switch action {
-	case "run", "status", "list", "show", "search":
+	case "run", "status", "list", "info", "inspect", "show", "describe", "get", "detail", "schema", "params", "search":
 		if action == "run" && workflowPolicyManagedSkillRunHasProjectPath(args) {
 			return "manage_skill is not allowed by the current workflow tool policy for project-scoped skill runs"
 		}
@@ -558,8 +562,9 @@ func workflowPolicyBlocksImplementationTool(policy v2.ToolFilterPolicy, name str
 	name = strings.TrimSpace(name)
 	switch string(policy) {
 	case string(v2.ToolFilterDocOnly):
+		// bash stays allowed for document parsing; block project mutation tools.
 		switch name {
-		case "bash", "write_file", "edit_file", "edit_lines", "task", "delegate_task":
+		case "write_file", "edit_file", "edit_lines", "task", "delegate_task":
 			return true
 		}
 	case string(v2.ToolFilterPlanning):

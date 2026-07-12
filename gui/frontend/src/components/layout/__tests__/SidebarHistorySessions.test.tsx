@@ -54,9 +54,11 @@ describe('SidebarHistorySessions', () => {
         expect(await screen.findByText('Contract review')).toBeTruthy();
         expect(screen.getByText('Vendor audit')).toBeTruthy();
         expect(screen.getByText('Archived research')).toBeTruthy();
-        expect(screen.getAllByText('\u2197')).toHaveLength(3);
+        // Relation icons are SVG (no emoji/unicode glyphs in the UI).
+        expect(document.querySelectorAll('svg').length).toBeGreaterThanOrEqual(5);
+        expect(screen.getAllByTitle('Started by me')).toHaveLength(3);
         expect(screen.getAllByText('Started by me')).toHaveLength(3);
-        expect(screen.getAllByText('\u2199')).toHaveLength(2);
+        expect(screen.getAllByTitle('My digital employee invited')).toHaveLength(2);
         expect(screen.getAllByText('My digital employee invited')).toHaveLength(2);
         expect(screen.getAllByText('Read-only')).toHaveLength(3);
         expect(screen.getByText('History sessions')).toBeTruthy();

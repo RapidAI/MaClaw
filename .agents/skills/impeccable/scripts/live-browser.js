@@ -2619,7 +2619,7 @@
       cursor: 'pointer', transition: 'filter 0.12s ease, transform 0.1s ease',
       whiteSpace: 'nowrap',
     });
-    accept.textContent = '\u2713 Accept';
+    accept.textContent = 'OK Accept';
     accept.addEventListener('mouseenter', () => accept.style.filter = 'brightness(1.08)');
     accept.addEventListener('mouseleave', () => accept.style.filter = 'none');
     accept.addEventListener('mousedown', () => accept.style.transform = 'scale(0.97)');
@@ -2683,7 +2683,7 @@
       fontSize: '15px', lineHeight: '1', flexShrink: '0',
       color: 'oklch(45% 0.15 145)',
     });
-    check.textContent = '\u2713';
+    check.textContent = 'OK';
     row.appendChild(check);
     const label = el('span', {
       fontSize: '12px', color: 'oklch(35% 0.1 145)', fontWeight: '600',

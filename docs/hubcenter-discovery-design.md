@@ -1,6 +1,6 @@
 # HubCenter 自动发现与最优选择 + 邮箱关联 Hub 高效查找
 
-> **实施状态**：Phase 1 ✅ 已实现 | Phase 2 ✅ 已实现 | Phase 3 待实施
+> **实施状态**：Phase 1 已实现 | Phase 2 已实现 | Phase 3 待实施
 
 ## 现状分析
 

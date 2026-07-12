@@ -77,7 +77,7 @@ func runAuditRecord(auditDir string) int {
 				fmt.Sprintf("[sensitive_detected: %s]", strings.Join(sensitiveCategories, ", ")))
 
 			// Warn on stdout if sensitive info found
-			fmt.Fprintf(os.Stdout, "⚠️ 敏感信息检测: 输出中包含 %s\n", strings.Join(sensitiveCategories, ", "))
+			fmt.Fprintf(os.Stdout, "敏感信息检测: 输出中包含 %s\n", strings.Join(sensitiveCategories, ", "))
 		}
 	}
 

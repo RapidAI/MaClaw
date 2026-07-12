@@ -28,7 +28,7 @@ func TestSdkMessageToText_ImageBlock(t *testing.T) {
 					},
 				},
 			},
-			want: "🖼 Image (image/png)",
+			want: "Image (image/png)",
 		},
 		{
 			name: "image block with nil source",
@@ -41,7 +41,7 @@ func TestSdkMessageToText_ImageBlock(t *testing.T) {
 					},
 				},
 			},
-			want: "🖼 Image",
+			want: "Image",
 		},
 		{
 			name: "image block with empty media_type",
@@ -57,7 +57,7 @@ func TestSdkMessageToText_ImageBlock(t *testing.T) {
 					},
 				},
 			},
-			want: "🖼 Image",
+			want: "Image",
 		},
 	}
 
@@ -90,7 +90,7 @@ func TestExtractStreamEventText_ImageBlock(t *testing.T) {
 					},
 				},
 			},
-			want: "\n🖼 Image (image/jpeg)",
+			want: "\nImage (image/jpeg)",
 		},
 		{
 			name: "content_block_start with image type no source",
@@ -100,7 +100,7 @@ func TestExtractStreamEventText_ImageBlock(t *testing.T) {
 					"type": "image",
 				},
 			},
-			want: "\n🖼 Image",
+			want: "\nImage",
 		},
 		{
 			name: "content_block_start with image type empty media_type",
@@ -114,7 +114,7 @@ func TestExtractStreamEventText_ImageBlock(t *testing.T) {
 					},
 				},
 			},
-			want: "\n🖼 Image",
+			want: "\nImage",
 		},
 	}
 

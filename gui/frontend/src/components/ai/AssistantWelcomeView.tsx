@@ -28,44 +28,47 @@ interface ScenarioTab {
     prompts: WelcomePrompt[];
 }
 
-// SVG path data for prompt card icons (16x16 viewBox, stroke-only design)
-const PROMPT_ICONS: Record<string, string> = {
-    // Business
-    ppt: "M2 2h12v12H2zM5 6h3M5 6v5M5 8.5h2.5",
-    plan: "M4 1h5l4 4v10H4V1zM9 1v4h4M6 8h5M6 10h5M6 12h3",
-    contract: "M4 1h5l4 4v10H4V1zM9 1v4h4M6 9l1 3 1.5-2 1.5 2 1-3",
-    // Dev
-    code: "M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5M9 2L7 14",
-    bug: "M6 6v4a2 2 0 0 0 4 0V6a2 2 0 0 0-4 0zM5 6.5H3M5 8.5H3M5 10.5H3M11 6.5h2M11 8.5h2M11 10.5h2M6.5 4.5L5 3M9.5 4.5L11 3",
-    docker: "M1 9h14M4 9V7h2v2M7 9V7h2v2M10 9V7h2v2M7 7V5h2v2M4 7V5h2v2M3 11c1 3 5 4 9 2.5 2-1 3-2.5 3.5-4",
-    // Ops
-    server: "M2 3h12v4H2zM2 9h12v4H2zM5 5h.01M5 11h.01M10 5h2M10 11h2",
-    install: "M8 2v7M5.5 6.5L8 9l2.5-2.5M3 11v2h10v-2",
-    deploy: "M3 10l5 5 5-5M3 10h10M8 1v5M5.5 3.5L8 1l2.5 2.5",
-    // Research
-    search: "M10.5 10.5L14 14M6.5 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z",
-    translate: "M2 2h5M4.5 2v2M3 6c1 1.5 2.5 2.5 4 3M7.5 2C7 4 5.5 5.5 4 7M9.5 7l2 6M10 11h3M13 5V3h-2.5",
-    chart: "M3 13V8M6.5 13V5M10 13V9M13.5 13V6M1.5 13h13",
-    award: "M8 1.5l1.7 3.4 3.8.6-2.7 2.7.6 3.8L8 10.2 4.6 12l.6-3.8L2.5 5.5l3.8-.6L8 1.5zM5.5 11.5v3L8 13l2.5 1.5v-3",
-    // More scenarios
-    write: "M3 13l2.8-.7L13 5.1 10.9 3 3.7 10.2 3 13zM9.8 4.1l2.1 2.1M5 12l-1-1",
-    mail: "M2 4h12v8H2zM2 4l6 5 6-5",
-    meeting: "M3 3h10v10H3zM5 6h6M5 8h6M5 10h3",
-    knowledge: "M3 2h7l3 3v9H3zM10 2v3h3M5 8h6M5 10h6M5 12h3",
-    qa: "M4 3h8v6H7l-3 3V3zM7 6h2M9 6a1.5 1.5 0 0 1-1 1.4V8",
-    checklist: "M3 4l1.2 1.2L6.5 3M8 4h5M3 8l1.2 1.2L6.5 7M8 8h5M3 12l1.2 1.2L6.5 11M8 12h5",
-    workflow: "M2 4h4v4H2zM10 8h4v4h-4zM6 6h2.5a2 2 0 0 1 2 2M8 10H6a2 2 0 0 1-2-2",
-    form: "M3 2h10v12H3zM5 5h6M5 8h6M5 11h3",
-    schedule: "M3 3h10v10H3zM5 1v3M11 1v3M3 6h10M5 9h2M9 9h2",
-    strategy: "M2 12h12M4 12V8l2-2 2 2 4-5M10 3h2v2",
-    review: "M3 2h10v12H3zM5 5h6M5 8h4M5 11h3M11.5 10.5l1 1 2-2",
-    monitor: "M2 10h3l1.5-5 2 8 1.5-3h4",
-    diagram: "M2 3h4v3H2zM10 3h4v3h-4zM6 4.5h4M4 6v4h8V6M10 10h4v3h-4zM2 10h4v3H2z",
-    target: "M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM8 7.5v1",
-    users: "M5.5 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM1.5 13c.5-2.2 2-3.5 4-3.5s3.5 1.3 4 3.5M11.5 7.5a1.8 1.8 0 1 0 0-3.6M10.5 10c1.7.2 2.9 1.3 3.3 3",
-    shield: "M8 2l5 2v3.5c0 3.1-2.1 5.4-5 6.5-2.9-1.1-5-3.4-5-6.5V4l5-2zM5.8 8l1.4 1.4L10.5 6",
-    spark: "M8 1.5l.9 3.1L12 5.5l-3.1.9L8 9.5l-.9-3.1L4 5.5l3.1-.9L8 1.5zM3 10l.5 1.6L5 12l-1.5.4L3 14l-.5-1.6L1 12l1.5-.4L3 10zM12 10l.5 1.6L14 12l-1.5.4L12 14l-.5-1.6L10 12l1.5-.4L12 10z",
-};
+/** Multi-path professional icons (24×24) for scenario cards — not single-stroke “AI slop” glyphs. */
+function WelcomePromptIcon({ name, color }: { name: string; color: string }) {
+    const s = { fill: "none", stroke: color, strokeWidth: 1.55, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+    const paths: Record<string, React.ReactNode> = {
+        ppt: (<><rect {...s} x="4" y="4" width="16" height="12" rx="1.5" /><path {...s} d="M8 20h8" /><path {...s} d="M12 16v4" /><path {...s} d="M8 8h4v4H8z" /><path {...s} d="M14 9h3M14 12h2" /></>),
+        plan: (<><path {...s} d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" /><path {...s} d="M14 3v4h4" /><path {...s} d="M9 11h7M9 14h7M9 17h4" /></>),
+        contract: (<><path {...s} d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" /><path {...s} d="M14 3v4h4" /><path {...s} d="m9 14 1.5 1.5L14 12" /><path {...s} d="M9 18h6" /></>),
+        code: (<><path {...s} d="m8 8-3.5 4L8 16" /><path {...s} d="m16 8 3.5 4L16 16" /><path {...s} d="m13.2 6-2.4 12" /></>),
+        bug: (<><path {...s} d="M9 9v5a3 3 0 0 0 6 0V9a3 3 0 0 0-6 0Z" /><path {...s} d="M7 10H4M7 13H4M7 16H5" /><path {...s} d="M17 10h3M17 13h3M17 16h2" /><path {...s} d="m8.5 7.5-1.5-2M15.5 7.5 17 5.5" /><path {...s} d="M12 9v8" /></>),
+        docker: (<><path {...s} d="M3 13h18" /><path {...s} d="M6 13V10h2.5v3M10 13V10h2.5v3M14 13V10h2.5v3" /><path {...s} d="M10 10V7h2.5v3M6 10V7h2.5v3" /><path {...s} d="M5 16c1.2 2.8 4.5 4 8.5 3 2.2-.6 3.8-1.8 4.8-3.2" /></>),
+        server: (<><rect {...s} x="4" y="4" width="16" height="6" rx="1.2" /><rect {...s} x="4" y="14" width="16" height="6" rx="1.2" /><path {...s} d="M8 7h.01M8 17h.01" /><path {...s} d="M12 7h4M12 17h4" /></>),
+        install: (<><path {...s} d="M12 4v10" /><path {...s} d="m8 11 4 3 4-3" /><path {...s} d="M5 18h14" /><path {...s} d="M7 18v2h10v-2" /></>),
+        deploy: (<><path {...s} d="M12 4v9" /><path {...s} d="m8 9 4-5 4 5" /><path {...s} d="M6 15h12" /><path {...s} d="m7 15 5 5 5-5" /></>),
+        search: (<><circle {...s} cx="11" cy="11" r="6" /><path {...s} d="m16 16 3.5 3.5" /><path {...s} d="M8.5 11h5M11 8.5v5" /></>),
+        translate: (<><path {...s} d="M4 5h7M7.5 5v2.5" /><path {...s} d="M5.5 11c1.5 2 3.5 3.5 5.5 4.5" /><path {...s} d="M11 5c-.8 2.5-2.5 4.5-4.5 6" /><path {...s} d="m14 10 3 9M15.2 15.5h4.3" /><path {...s} d="M18 7V5h-3" /></>),
+        chart: (<><path {...s} d="M4 19V10M9 19V6M14 19v-7M19 19V8" /><path {...s} d="M3 19h18" /></>),
+        award: (<><path {...s} d="m12 3 1.9 3.9 4.3.6-3.1 3 .7 4.3L12 12.8 8.2 14.8l.7-4.3-3.1-3 4.3-.6L12 3Z" /><path {...s} d="M9 16v4l3-1.5L15 20v-4" /></>),
+        write: (<><path {...s} d="M5 19h4L19 9l-4-4L5 15v4Z" /><path {...s} d="m13.5 6.5 4 4" /><path {...s} d="M14 19h5" /></>),
+        mail: (<><rect {...s} x="3.5" y="5.5" width="17" height="13" rx="1.5" /><path {...s} d="m3.5 7 8.5 6.5L20.5 7" /></>),
+        meeting: (<><rect {...s} x="4" y="4" width="16" height="16" rx="1.5" /><path {...s} d="M8 9h8M8 12h8M8 15h5" /></>),
+        knowledge: (<><path {...s} d="M6 4h8l4 4v12H6V4Z" /><path {...s} d="M14 4v4h4" /><path {...s} d="M9 12h7M9 15h7M9 18h4" /></>),
+        qa: (<><path {...s} d="M6 5h12v8H10l-4 3.5V5Z" /><path {...s} d="M10 9.5h4" /><path {...s} d="M12 9.5v.2a2 2 0 0 1-1.2 1.8V12.2" /><circle {...s} cx="12" cy="14.2" r="0.6" fill={color} stroke="none" /></>),
+        checklist: (<><path {...s} d="m5 7 1.5 1.5L9.5 5.5" /><path {...s} d="M12 7h7" /><path {...s} d="m5 12 1.5 1.5L9.5 10.5" /><path {...s} d="M12 12h7" /><path {...s} d="m5 17 1.5 1.5L9.5 15.5" /><path {...s} d="M12 17h7" /></>),
+        workflow: (<><rect {...s} x="3.5" y="4" width="6" height="5" rx="1" /><rect {...s} x="14.5" y="15" width="6" height="5" rx="1" /><path {...s} d="M9.5 6.5h2.8a3 3 0 0 1 3 3V15" /><path {...s} d="M14.5 17.5H12a3 3 0 0 1-3-3V9" /></>),
+        form: (<><rect {...s} x="5" y="3.5" width="14" height="17" rx="1.5" /><path {...s} d="M8 8h8M8 12h8M8 16h5" /></>),
+        schedule: (<><rect {...s} x="4" y="5" width="16" height="15" rx="1.5" /><path {...s} d="M8 3.5v3M16 3.5v3M4 10h16" /><path {...s} d="M8 14h2M12 14h2M8 17h2" /></>),
+        strategy: (<><path {...s} d="M4 19h16" /><path {...s} d="M6 19V12l3-3 3 3 5-6" /><path {...s} d="M15 6h3v3" /></>),
+        review: (<><path {...s} d="M6 3.5h9l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z" /><path {...s} d="M15 3.5V8h4" /><path {...s} d="M8 12h8M8 15h5" /><path {...s} d="m14 17 1.2 1.2L18 15.5" /></>),
+        monitor: (<><path {...s} d="M4 16h3l2-7 2.5 11 2-5h5" /><path {...s} d="M3 19h18" /></>),
+        diagram: (<><rect {...s} x="3.5" y="3.5" width="6" height="4.5" rx="1" /><rect {...s} x="14.5" y="3.5" width="6" height="4.5" rx="1" /><rect {...s} x="3.5" y="16" width="6" height="4.5" rx="1" /><rect {...s} x="14.5" y="16" width="6" height="4.5" rx="1" /><path {...s} d="M9.5 5.8h5" /><path {...s} d="M6.5 8v3.5h11V8" /><path {...s} d="M6.5 16v-4.5M17.5 16v-4.5" /></>),
+        target: (<><circle {...s} cx="12" cy="12" r="8" /><circle {...s} cx="12" cy="12" r="4.5" /><circle {...s} cx="12" cy="12" r="1.3" fill={color} stroke="none" /></>),
+        users: (<><circle {...s} cx="9" cy="8" r="2.5" /><path {...s} d="M3.5 19c.7-3 2.7-4.5 5.5-4.5S14 16 14.5 19" /><circle {...s} cx="17" cy="9" r="2.1" /><path {...s} d="M15.5 14.5c1.8.3 3.2 1.4 3.8 3.5" /></>),
+        shield: (<><path {...s} d="M12 3.5 19 6v5c0 4.5-2.9 7.8-7 9.5-4.1-1.7-7-5-7-9.5V6l7-2.5Z" /><path {...s} d="m9 12 2 2 4-4.5" /></>),
+        spark: (<><path {...s} d="m12 3 1.2 4.2L17.5 8.5 13.2 9.8 12 14l-1.2-4.2L6.5 8.5l4.3-1.3L12 3Z" /><path {...s} d="m6 15 .7 2.2L9 18l-2.3.6L6 20.8l-.7-2.2L3 18l2.3-.8L6 15Z" /><path {...s} d="m17 15 .7 2.2 2.3.8-2.3.8-.7 2.2-.7-2.2-2.3-.8 2.3-.8.7-2.2Z" /></>),
+    };
+    return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ flexShrink: 0, marginTop: 1 }}>
+            {paths[name] || paths.plan}
+        </svg>
+    );
+}
 
 const SCENARIO_TABS: ScenarioTab[] = [
     {
@@ -457,7 +460,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
     return (
         <div
             role="region"
-            aria-label={isZh ? "AI 助手启动页" : "AI assistant welcome"}
+            aria-label={isZh ? "工作台任务入口" : "Workbench task entry"}
             tabIndex={0}
             style={{
                 display: "flex",
@@ -484,33 +487,30 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                 flexDirection: "column",
                 alignItems: "center",
                 padding: "16px 16px 16px",
-                gap: "18px",
+                gap: "14px",
                 margin: "auto 0",
                 flexShrink: 0,
             }}>
 
-            {/* Title */}
+            {/* Title — restrained product label, not chatbot hero copy */}
             <h2 style={{
                 margin: 0,
-                fontSize: "22px",
-                fontWeight: 700,
-                color: t.text,
+                fontSize: "13px",
+                fontWeight: 600,
+                color: t.textMuted,
                 textAlign: "center",
                 fontFamily: "system-ui, -apple-system, sans-serif",
-                letterSpacing: "-0.3px",
+                letterSpacing: "0.01em",
             }}>
-                {isZh ? "从一个具体任务开始" : "Start with a concrete task"}
+                {isZh ? "任务入口" : "Task entry"}
             </h2>
 
-            {/* Centered input composer with refined style */}
+            {/* Centered input composer — workbench field, not chat bubble */}
             <div style={{
                 width: "100%",
                 maxWidth: CONTENT_MAX_WIDTH,
-                borderRadius: "14px",
+                borderRadius: "8px",
                 border: `1px solid ${t.inputBarBorder}`,
-                boxShadow: themeMode === "dark"
-                    ? "0 2px 12px rgba(0,0,0,0.32)"
-                    : "0 2px 12px rgba(0,0,0,0.06)",
                 background: t.inputBarBg,
                 // Visible so history autocomplete can paint above the composer.
                 overflow: "visible",
@@ -550,7 +550,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                     onPermissionModeChange={cp.onPermissionModeChange}
                     placeholderText={
                         getComposeActionPlaceholder(cp.composeAction, isZh)
-                            || (isZh ? "描述你的需求，或直接问我任何问题..." : "Describe what you need, or ask me anything...")
+                            || (isZh ? "输入任务或指令…" : "Enter a task or command...")
                     }
                     ready={cp.ready}
                     recallHistory={cp.recallHistory}
@@ -606,24 +606,24 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                             onClick={() => setActiveTab(tab.id)}
                             onKeyDown={event => handleScenarioTabKeyDown(event, index)}
                             style={{
-                                padding: "5px 8px",
+                                padding: "4px 10px",
                                 fontSize: "12px",
                                 fontWeight: isActive ? 600 : 400,
                                 lineHeight: 1.3,
-                                color: isActive ? t.sendBtnBg : t.textMuted,
-                                background: isActive ? `color-mix(in srgb, ${t.sendBtnBg} 10%, transparent)` : "transparent",
-                                border: `1px solid ${isActive ? t.sendBtnBg : "transparent"}`,
-                                borderRadius: "16px",
+                                color: isActive ? t.text : t.textMuted,
+                                background: isActive ? t.fieldBg : "transparent",
+                                border: `1px solid ${isActive ? t.fieldBorder : "transparent"}`,
+                                borderRadius: "6px",
                                 boxSizing: "border-box",
                                 cursor: "pointer",
-                                transition: "background 0.15s ease, border-color 0.15s ease, color 0.15s ease",
+                                transition: "background 0.12s ease, border-color 0.12s ease, color 0.12s ease",
                                 whiteSpace: "nowrap",
                                 fontFamily: "system-ui, -apple-system, sans-serif",
                             }}
                             onMouseEnter={e => {
                                 if (!isActive) {
                                     e.currentTarget.style.color = t.text;
-                                    e.currentTarget.style.background = `color-mix(in srgb, ${t.text} 5%, transparent)`;
+                                    e.currentTarget.style.background = t.fieldBg;
                                 }
                             }}
                             onMouseLeave={e => {
@@ -662,51 +662,34 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                             display: "flex",
                             alignItems: "flex-start",
                             gap: "10px",
-                            padding: "10px 14px",
+                            padding: "10px 12px",
                             background: t.fieldBg,
                             border: `1px solid ${t.fieldBorder}`,
-                            borderRadius: "10px",
+                            borderRadius: "6px",
                             boxSizing: "border-box",
                             cursor: "pointer",
                             textAlign: "left",
-                            transition: "border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease",
+                            transition: "border-color 0.12s ease, background 0.12s ease",
                             width: "100%",
                             minWidth: 0,
                             minHeight: "64px",
                         }}
                         onMouseEnter={e => {
-                            e.currentTarget.style.borderColor = t.sendBtnBg;
-                            e.currentTarget.style.transform = "translateY(-1px)";
-                            e.currentTarget.style.boxShadow = `0 2px 8px color-mix(in srgb, ${t.sendBtnBg} 12%, transparent)`;
+                            e.currentTarget.style.borderColor = t.inputBarBorder;
+                            e.currentTarget.style.background = t.inputBarBg;
                         }}
                         onMouseLeave={e => {
                             e.currentTarget.style.borderColor = t.fieldBorder;
-                            e.currentTarget.style.transform = "none";
-                            e.currentTarget.style.boxShadow = "none";
+                            e.currentTarget.style.background = t.fieldBg;
                         }}
                         onFocus={e => {
-                            e.currentTarget.style.borderColor = t.sendBtnBg;
-                            e.currentTarget.style.boxShadow = `0 0 0 2px color-mix(in srgb, ${t.sendBtnBg} 18%, transparent)`;
+                            e.currentTarget.style.borderColor = t.sendBtnBorder || t.sendBtnBg;
                         }}
                         onBlur={e => {
                             e.currentTarget.style.borderColor = t.fieldBorder;
-                            e.currentTarget.style.boxShadow = "none";
                         }}
                     >
-                        <svg
-                            width="18"
-                            height="18"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke={t.textMuted}
-                            strokeWidth="1.3"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{ flexShrink: 0, marginTop: "1px" }}
-                            aria-hidden="true"
-                        >
-                            <path d={PROMPT_ICONS[prompt.icon] || ""} />
-                        </svg>
+                        <WelcomePromptIcon name={prompt.icon} color={t.textMuted} />
                         <div style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: 0 }}>
                             <span style={{
                                 fontSize: "13px",

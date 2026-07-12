@@ -58,7 +58,7 @@
 
 ### Task 9: 讨论增强 — discussion_conductor.go
 - [x] askDevices 注入 discussion_context（role、participants、round、topic、instruction）
-- [x] deliverRoundReplies 添加会议上下文前缀 `🗣️ 会议 | {话题} | 第{N}轮`
+- [x] deliverRoundReplies 添加会议上下文前缀 `会议 | {话题} | 第{N}轮`
 - [x] 小会写入 DiscussionContext
 
 ### Task 10: router.go 扩展

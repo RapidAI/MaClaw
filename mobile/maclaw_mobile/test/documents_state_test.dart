@@ -60,6 +60,7 @@ class _RecordingNotificationService extends MobileNotificationService {
     required String title,
     required String body,
     String? payload,
+    int? notificationId,
   }) async {
     shown.add((title: title, body: body, payload: payload));
   }
@@ -121,6 +122,7 @@ class _ProcessDraftApiClient extends ApiClient {
   Future<DocumentDraft> processDocumentDraft({
     required String draftId,
     required String action,
+    bool async = false,
   }) async {
     return DocumentDraft(
       id: '$draftId-processed',
@@ -299,8 +301,12 @@ void main() {
         .retryLastUpload();
 
     final state = container.read(documentsControllerProvider);
-    expect(state.hasError, isTrue);
-    expect(state.error.toString(), contains('没有失败的导入任务可重试'));
+    // Errors stay on DocumentsState.operationError so the page is not wiped.
+    expect(state.hasError, isFalse);
+    expect(
+      state.valueOrNull?.operationError,
+      contains('没有失败的导入任务可重试'),
+    );
   });
 
   test('document export retry is available only for failed exports with draft',
@@ -400,8 +406,11 @@ void main() {
         .uploadSharedDocument('/tmp/server-backup.zip');
 
     final state = container.read(documentsControllerProvider);
-    expect(state.hasError, isTrue);
-    expect(state.error.toString(), contains('暂不支持该文件类型'));
+    expect(state.hasError, isFalse);
+    expect(
+      state.valueOrNull?.operationError,
+      contains('暂不支持该文件类型'),
+    );
     expect(client.uploadedPaths, isEmpty);
   });
 
@@ -552,9 +561,10 @@ void main() {
         .uploadSharedDocument(file.path);
 
     final state = container.read(documentsControllerProvider);
-    expect(state.hasError, isTrue);
-    expect(state.error.toString(), contains('超过官方服务上传限制'));
-    expect(state.error.toString(), contains('8 B'));
+    expect(state.hasError, isFalse);
+    final err = state.valueOrNull?.operationError ?? '';
+    expect(err, contains('超过官方服务上传限制'));
+    expect(err, contains('8 B'));
   });
 
   test('document realtime export completion is cached and notified once',

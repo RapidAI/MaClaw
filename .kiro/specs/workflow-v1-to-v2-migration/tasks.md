@@ -109,9 +109,9 @@ Migrate the workflow engine from V1 (`corelib/workflow/engine.go` + 30+ GUI inte
   - Description: TUI production code fully migrated to V2 (sub-tasks 17a-17c complete). V1 `workflowEngine` field retained solely for test backward compatibility — 50+ test files still create V1 engines. `engine_stub.go` retained for compilation. Runtime behavior is 100% V2.
   - Files: `corelib/workflow/v2/machine.go`, `tui/workflow_integration.go`, `tui/workflow_v2_init.go`, `tui/app.go`
   - Sub-tasks:
-    - 17a. ✅ Implement V2 equivalents for SkipPhaseForm, ApplyReviewIntent, GetRegistry, GetStore
-    - 17b. ✅ Migrate TUI handleActiveWorkflowTUI() from V1 HandleInput to V2
-    - 17c. ✅ Migrate TUI handleWorkflowReviewTUI() from V1 ApplyReviewIntent to V2 + all remaining production V1 references
+    - 17a. Implement V2 equivalents for SkipPhaseForm, ApplyReviewIntent, GetRegistry, GetStore
+    - 17b. Migrate TUI handleActiveWorkflowTUI() from V1 HandleInput to V2
+    - 17c. Migrate TUI handleWorkflowReviewTUI() from V1 ApplyReviewIntent to V2 + all remaining production V1 references
     - 17d. (deferred) Migrate 50+ test files from V1 to V2 test helpers
     - 17e. (deferred) Delete engine_stub.go after test migration
 

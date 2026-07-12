@@ -53,11 +53,11 @@ func NewSDKExecutionStrategy() *SDKExecutionStrategy {
 }
 
 func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
-	log.Printf("[sdk-lifecycle] ▶ Starting SDK process: cmd=%q, args_summary=%s, cwd=%q", cmd.Command, summarizeLaunchArgs(cmd.Args), cmd.Cwd)
+	log.Printf("[sdk-lifecycle] Starting SDK process: cmd=%q, args_summary=%s, cwd=%q", cmd.Command, summarizeLaunchArgs(cmd.Args), cmd.Cwd)
 
 	execPath, err := resolveExecutablePath(cmd.Command)
 	if err != nil {
-		log.Printf("[sdk-lifecycle] ✖ Executable not found: cmd=%q, error=%v", cmd.Command, err)
+		log.Printf("[sdk-lifecycle] ERR Executable not found: cmd=%q, error=%v", cmd.Command, err)
 		return nil, fmt.Errorf("sdk: %w", err)
 	}
 	log.Printf("[sdk-lifecycle] resolved executable: %s", execPath)
@@ -67,17 +67,17 @@ func (s *SDKExecutionStrategy) Start(cmd CommandSpec) (ExecutionHandle, error) {
 
 	pipes, err := createProcessPipes(c)
 	if err != nil {
-		log.Printf("[sdk-lifecycle] ✖ Pipe creation failed: %v", err)
+		log.Printf("[sdk-lifecycle] ERR Pipe creation failed: %v", err)
 		return nil, fmt.Errorf("sdk: %w", err)
 	}
 
 	if err := c.Start(); err != nil {
-		log.Printf("[sdk-lifecycle] ✖ Process start failed: cmd=%s, args_summary=%s, cwd=%s, error=%v",
+		log.Printf("[sdk-lifecycle] ERR Process start failed: cmd=%s, args_summary=%s, cwd=%s, error=%v",
 			execPath, summarizeLaunchArgs(args), cmd.Cwd, err)
 		return nil, fmt.Errorf("sdk: start: %w", err)
 	}
 
-	log.Printf("[sdk-lifecycle] ✔ SDK process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
+	log.Printf("[sdk-lifecycle] OK SDK process started: pid=%d, cmd=%s, cwd=%s", c.Process.Pid, execPath, cmd.Cwd)
 	logLaunchEnv("sdk-lifecycle", cmd.Env)
 
 	sdkDiag("process started: pid=%d, cmd=%s, args_summary=%s, cwd=%s",
@@ -475,7 +475,7 @@ func (h *SDKExecutionHandle) readStdout() {
 				if normalizeRemoteSDKMessageSubtypeKind(sub) == remoteSDKMessageSubtypeAPIRetry {
 					attempt, _ := raw["attempt"].(float64)
 					errStr, _ := raw["error"].(string)
-					line := fmt.Sprintf("⚠️ API retry (attempt %.0f): %s", attempt, errStr)
+					line := fmt.Sprintf("API retry (attempt %.0f): %s", attempt, errStr)
 					h.outputCh <- []byte(line + "\n")
 				}
 			}
@@ -488,7 +488,7 @@ func (h *SDKExecutionHandle) readStdout() {
 						if len(errText) > 500 {
 							errText = errText[:500] + "..."
 						}
-						h.outputCh <- []byte(fmt.Sprintf("❌ %s\n", errText))
+						h.outputCh <- []byte(fmt.Sprintf("%s\n", errText))
 					}
 				}
 			}
@@ -564,10 +564,10 @@ func (h *SDKExecutionHandle) waitProcess() {
 	// Log detailed exit information for debugging unexpected exits.
 	ps := h.cmd.ProcessState
 	if ps != nil {
-		log.Printf("[sdk-lifecycle] ◼ SDK process exited: pid=%d, exit_code=%d, user_time=%s, sys_time=%s",
+		log.Printf("[sdk-lifecycle] SDK process exited: pid=%d, exit_code=%d, user_time=%s, sys_time=%s",
 			h.pid, exitCode, ps.UserTime(), ps.SystemTime())
 	} else {
-		log.Printf("[sdk-lifecycle] ◼ SDK process exited: pid=%d, no ProcessState available", h.pid)
+		log.Printf("[sdk-lifecycle] SDK process exited: pid=%d, no ProcessState available", h.pid)
 	}
 	if err != nil {
 		log.Printf("[sdk-lifecycle] process exit error: pid=%d, error=%v", h.pid, err)
@@ -656,7 +656,7 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 		//
 		// NOTE: When hasStreamEvents is true, tool_use block names were
 		// already emitted by extractStreamEventText on content_block_start,
-		// so we skip them to avoid duplicate lines like "⏺ Bash ⏺ Bash ls ...".
+		// so we skip them to avoid duplicate lines like "Bash Bash ls ...".
 		// When hasStreamEvents is false (e.g. CodeBuddy/Cursor without
 		// --include-partial-messages), we still render tool_use blocks here.
 		// Exception: AskUserQuestion always needs its full details rendered.
@@ -691,12 +691,12 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 						summary += " " + cmd
 					}
 				}
-				parts = append(parts, fmt.Sprintf("⏺ %s", summary))
+				parts = append(parts, summary)
 			case remoteSDKContentBlockImage:
 				if block.Source != nil && block.Source.MediaType != "" {
-					parts = append(parts, fmt.Sprintf("🖼 Image (%s)", block.Source.MediaType))
+					parts = append(parts, fmt.Sprintf("Image (%s)", block.Source.MediaType))
 				} else {
-					parts = append(parts, "🖼 Image")
+					parts = append(parts, "Image")
 				}
 			}
 		}
@@ -713,7 +713,7 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 					if len(result) > 150 {
 						result = result[:150] + "..."
 					}
-					return fmt.Sprintf("⏺ %s", result)
+					return result
 				}
 				// Suppress successful tool results — they're verbose
 				return ""
@@ -734,9 +734,9 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 func formatAskUserQuestionBlock(block SDKContentBlock) string {
 	view := buildAskUserQuestionView(block.ID, block.Name, block.Input)
 	if view == nil {
-		return "⏺ AskUserQuestion"
+		return "AskUserQuestion"
 	}
-	parts := []string{"⏺ AskUserQuestion"}
+	parts := []string{"AskUserQuestion"}
 	if view.Header != "" {
 		parts = append(parts, view.Header)
 	}
@@ -773,7 +773,7 @@ func extractStreamEventText(event map[string]interface{}) string {
 		// the session observer from timing out during the gap between
 		// message_start and the first content_block_start (which can
 		// be tens of seconds with slow API proxies like GLM).
-		return "\n⏳ LLM responding...\n"
+		return "\nLLM responding...\n"
 
 	case anthropicStreamEventContentBlockDelta:
 		delta, ok := event["delta"].(map[string]interface{})
@@ -787,8 +787,8 @@ func extractStreamEventText(event map[string]interface{}) string {
 		}
 		if normalizeRemoteSDKStreamDeltaTypeKind(deltaType) == remoteSDKStreamDeltaThinking {
 			// Don't emit individual thinking tokens — they would flood
-			// RawOutputLines with hundreds of "💭" markers. The single
-			// "💭 Thinking..." line from content_block_start is enough
+			// RawOutputLines with hundreds of "" markers. The single
+			// "Thinking..." line from content_block_start is enough
 			// to signal the session observer that the LLM is alive.
 			return ""
 		}
@@ -802,12 +802,12 @@ func extractStreamEventText(event map[string]interface{}) string {
 		}
 		blockType, _ := block["type"].(string)
 		if normalizeRemoteSDKContentBlockTypeKind(blockType) == remoteSDKContentBlockThinking {
-			return "\n💭 Thinking...\n"
+			return "\nThinking...\n"
 		}
 		if normalizeRemoteSDKContentBlockTypeKind(blockType) == remoteSDKContentBlockToolUse {
 			name, _ := block["name"].(string)
 			if name != "" {
-				return fmt.Sprintf("\n⏺ %s", name)
+				return fmt.Sprintf("\n%s", name)
 			}
 		}
 		if normalizeRemoteSDKContentBlockTypeKind(blockType) == remoteSDKContentBlockImage {
@@ -815,10 +815,10 @@ func extractStreamEventText(event map[string]interface{}) string {
 			if source != nil {
 				mediaType, _ := source["media_type"].(string)
 				if mediaType != "" {
-					return fmt.Sprintf("\n🖼 Image (%s)", mediaType)
+					return fmt.Sprintf("\nImage (%s)", mediaType)
 				}
 			}
-			return "\n🖼 Image"
+			return "\nImage"
 		}
 		return ""
 

@@ -49,11 +49,7 @@ corelib/i18n/
 
 ### 当前覆盖
 - 200+ 翻译 key
-- IM 通道状态消息 ✅
-- TUI 全部界面文本 ✅
-- 工作流引擎用户消息 ✅
-- 确认面板文本 ✅
-
+- IM 通道状态消息 - TUI 全部界面文本 - 工作流引擎用户消息 - 确认面板文本 
 ## 前端 (`gui/frontend/src/i18n/`)
 
 ### 文件结构
@@ -74,10 +70,10 @@ gui/frontend/src/i18n/
 ### 历史遗留的 i18n 工具（已统一）
 | 文件 | 函数 | 状态 |
 |------|------|------|
-| `components/ai/aiAssistantI18n.ts` | `localizeText()` | ✅ 已改为 re-export `src/i18n` |
+| `components/ai/aiAssistantI18n.ts` | `localizeText()` | 已改为 re-export `src/i18n` |
 | `utils/hubServiceI18n.ts` | `localizeByLang()` | Hub 专用错误翻译，保留 |
-| `components/settings/imSettingsShared.ts` | `textForLang` | ✅ 已改为 `localizeText` alias |
-| 各 settings/layout 组件内联 `textForLang()` | 匿名函数 | ✅ 已迁移为 `localizeText` 导入 + alias |
+| `components/settings/imSettingsShared.ts` | `textForLang` | 已改为 `localizeText` alias |
+| 各 settings/layout 组件内联 `textForLang()` | 匿名函数 | 已迁移为 `localizeText` 导入 + alias |
 
 ## 文本分类
 
@@ -122,10 +118,10 @@ gui/frontend/src/i18n/
 const MsgSkillInstallSuccess = "msg.skill_install_success"
 
 // 2. zh 翻译表
-"msg.skill_install_success": "✅ 技能 %s 安装成功",
+"msg.skill_install_success": "技能 %s 安装成功",
 
 // 3. en 翻译表
-"msg.skill_install_success": "✅ Skill %s installed successfully",
+"msg.skill_install_success": "Skill %s installed successfully",
 
 // 4. 使用
 msg := i18n.Tf(i18n.MsgSkillInstallSuccess, userLang, skillName)

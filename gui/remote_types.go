@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -92,6 +94,52 @@ func normalizeRemoteLaunchSource(source RemoteLaunchSource) RemoteLaunchSource {
 // confirmation windows.
 func isHeadlessLaunchSource(source RemoteLaunchSource) bool {
 	return source == RemoteLaunchSourceMobile || source == RemoteLaunchSourceHandoff || source == RemoteLaunchSourceAI
+}
+
+// isExternalCodingCLITool reports tools that own a real external process
+// (Claude Code, Codex, ...). These must never be auto-launched by agent paths.
+func isExternalCodingCLITool(tool string) bool {
+	name := strings.ToLower(strings.TrimSpace(tool))
+	// Built-in non-CLI session kinds.
+	if name == "browser" || name == "ai-assistant" {
+		return false
+	}
+	// Empty tool is still a coding-CLI attempt: many call sites normalize
+	// empty → "claude", so treating "" as safe would create a bypass.
+	if name == "" {
+		return true
+	}
+	// Catalog: remote-capable coding tools + OEM extras (SupportsRemote).
+	if meta, ok := lookupRemoteToolMetadata(name); ok {
+		return meta.Name != "browser" && meta.SupportsRemote
+	}
+	switch name {
+	case "claude", "codex", "opencode", "codebuddy", "iflow", "kilo", "cursor", "gemini":
+		return true
+	default:
+		return false
+	}
+}
+
+// isAIExternalCodingSessionLaunch is true when an agent/AI path tries to
+// start an external coding CLI session. Coding work must use CodingSubAgent;
+// Claude Code and peers are only launched by explicit user actions.
+func isAIExternalCodingSessionLaunch(source RemoteLaunchSource, tool string) bool {
+	if normalizeRemoteLaunchSource(source) != RemoteLaunchSourceAI {
+		return false
+	}
+	return isExternalCodingCLITool(tool)
+}
+
+// rejectAIExternalCodingSessionLaunch returns an error when AI must not spawn
+// an external coding CLI process.
+func rejectAIExternalCodingSessionLaunch(spec LaunchSpec) error {
+	if !isAIExternalCodingSessionLaunch(spec.LaunchSource, spec.Tool) {
+		return nil
+	}
+	tool := normalizeRemoteToolName(spec.Tool)
+	return fmt.Errorf("AI launch of external coding tool %q is disabled; coding tasks must run through CodingSubAgent, and %s is only managed as an independent external tool",
+		tool, remoteToolDisplayName(tool))
 }
 
 type LaunchSpec struct {

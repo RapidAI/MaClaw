@@ -96,9 +96,9 @@ func TestProperty5_SkillCacheTTLCorrectness(t *testing.T) {
 
 // Feature: gui-startup-response-optimization, Property 6: Stale-while-revalidate pattern
 //
-// For any expired cache (age > 30 seconds), calling Get() SHALL return the stale
-// cached results immediately (without blocking) AND SHALL initiate a background
-// scan to refresh the cache.
+// For any expired cache (age > skillCacheTTL), calling Get() SHALL return the stale
+// cached results without waiting for the refresh scan to finish, AND SHALL initiate
+// a background scan to refresh the cache.
 //
 // **Validates: Requirements 2.6**
 func TestProperty6_StaleWhileRevalidatePattern(t *testing.T) {
@@ -118,14 +118,32 @@ func TestProperty6_StaleWhileRevalidatePattern(t *testing.T) {
 		scanner.cache.Store(expiredEntry)
 		scanner.scanning.Store(false)
 
-		// Act: call Get() on expired cache
-		start := time.Now()
-		result := scanner.Get()
-		elapsed := time.Since(start)
+		// Act: call Get() on expired cache. Avoid absolute sub-50ms wall-clock
+		// asserts — under parallel go test load, GC/scheduler can delay an O(1)
+		// Get() for hundreds of ms without it actually blocking on the scan.
+		type getResult struct {
+			skills  []corelib.NLSkillEntry
+			elapsed time.Duration
+		}
+		done := make(chan getResult, 1)
+		go func() {
+			start := time.Now()
+			result := scanner.Get()
+			done <- getResult{skills: result, elapsed: time.Since(start)}
+		}()
+		var got getResult
+		select {
+		case got = <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Get() blocked for >2s — should return stale data without waiting for scan")
+		}
+		result := got.skills
 
-		// Property 1: Get() returns stale data immediately (non-blocking)
-		if elapsed > 50*time.Millisecond {
-			t.Fatalf("Get() took %v — should return immediately with stale data", elapsed)
+		// Property 1: Get() returns without waiting for a slow refresh.
+		// A 2s budget only catches true blocking; sub-ms timing is not reliable
+		// under full-suite parallel load (observed flakes ~400ms+).
+		if got.elapsed > 2*time.Second {
+			t.Fatalf("Get() took %v — should return stale data without waiting for scan", got.elapsed)
 		}
 
 		// Property 2: returned data is the stale cached data
@@ -142,21 +160,22 @@ func TestProperty6_StaleWhileRevalidatePattern(t *testing.T) {
 			}
 		}
 
-		// Property 3: a background scan was triggered
-		// Give the goroutine a moment to start and complete (roots are empty)
-		time.Sleep(50 * time.Millisecond)
-
-		// After background scan completes with empty roots, cache should be updated
-		// (the scan will produce an empty list since roots is [])
-		// The key property is that the scan WAS triggered — we verify by checking
-		// that the cache entry has been updated (createdAt is recent)
-		newEntry := scanner.cache.Load()
+		// Property 3: a background scan was triggered and refreshes the cache.
+		// Poll instead of a fixed sleep so parallel suite load does not flake.
+		deadline := time.Now().Add(2 * time.Second)
+		var newEntry *skillCacheEntry
+		for {
+			newEntry = scanner.cache.Load()
+			if newEntry != nil && newEntry.createdAt.After(expiredEntry.createdAt) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("background scan did not refresh the cache — createdAt not updated")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if newEntry == nil {
 			t.Fatal("cache is nil after background scan should have completed")
-		}
-		// The new entry should have a more recent createdAt than the expired one
-		if !newEntry.createdAt.After(expiredEntry.createdAt) {
-			t.Fatal("background scan did not refresh the cache — createdAt not updated")
 		}
 	})
 }

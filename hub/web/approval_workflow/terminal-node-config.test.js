@@ -44,9 +44,9 @@ function assert(condition, message) {
   testCount++;
   if (condition) {
     passCount++;
-    console.log('  ✓ ' + message);
+    console.log('  OK ' + message);
   } else {
-    console.log('  ✗ FAIL: ' + message);
+    console.log('  ERR FAIL: ' + message);
   }
 }
 
@@ -54,9 +54,9 @@ function assertEqual(actual, expected, message) {
   testCount++;
   if (actual === expected) {
     passCount++;
-    console.log('  ✓ ' + message);
+    console.log('  OK ' + message);
   } else {
-    console.log('  ✗ FAIL: ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
+    console.log('  ERR FAIL: ' + message + ' (expected: ' + JSON.stringify(expected) + ', got: ' + JSON.stringify(actual) + ')');
   }
 }
 

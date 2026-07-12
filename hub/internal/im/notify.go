@@ -83,7 +83,7 @@ func (b *NotifyBroadcaster) BroadcastVerifyCodeForTenant(ctx context.Context, te
 	if b.adapter != nil {
 		plugins := b.adapter.PluginsForTenant(tenantID)
 
-		msg := fmt.Sprintf("🔑 MaClaw Hub 绑定验证码: %s\n\n请在发起绑定的 IM 中回复此验证码完成绑定（5 分钟内有效）。", code)
+		msg := fmt.Sprintf("MaClaw Hub 绑定验证码: %s\n\n请在发起绑定的 IM 中回复此验证码完成绑定（5 分钟内有效）。", code)
 
 		for name, plugin := range plugins {
 			if name == excludePlatform {
@@ -130,7 +130,7 @@ func (b *NotifyBroadcaster) BroadcastLoginLinkForTenant(ctx context.Context, ten
 
 	plugins := b.adapter.PluginsForTenant(tenantID)
 
-	msg := fmt.Sprintf("🔐 MaClaw Hub 登录确认\n\n请点击以下链接完成登录:\n%s\n\n链接 15 分钟内有效，如非本人操作请忽略。", confirmURL)
+	msg := fmt.Sprintf("MaClaw Hub 登录确认\n\n请点击以下链接完成登录:\n%s\n\n链接 15 分钟内有效，如非本人操作请忽略。", confirmURL)
 
 	var channels []string
 	for name, plugin := range plugins {
@@ -226,7 +226,7 @@ func (b *NotifyBroadcaster) BroadcastFileForTenant(ctx context.Context, tenantID
 			}
 		} else {
 			// 平台不支持文件，发送文本提示
-			fallback := fmt.Sprintf("📎 文件「%s」已生成，但当前平台不支持文件发送。请在桌面端查看。", fileName)
+			fallback := fmt.Sprintf("文件「%s」已生成，但当前平台不支持文件发送。请在桌面端查看。", fileName)
 			_ = plugin.SendText(ctx, target, fallback)
 		}
 	}

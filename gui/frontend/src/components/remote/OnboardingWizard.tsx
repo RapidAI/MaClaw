@@ -32,6 +32,7 @@ import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../u
 import { HubRegisterButtonContent } from "./HubConnectionStatus";
 import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
 import { OfflineModeNoticeDialog } from "./OfflineModeNoticeDialog";
+import { stripLeadingEmojiCluster } from "../ai/aiAssistantProgressUtils";
 import {
     getOnboardingFlow,
     getOnboardingStepDone,
@@ -959,9 +960,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const registrationToastDetail = (() => {
         if (!regResult) return "";
         if (!regResult.ok || regResultWarning) return regResult.msg;
-        if (/Device binding complete|Phone verified/i.test(regResult.msg)) return regResult.msg.replace(/^✅\s*/, "");
+        // Strip legacy leading pictographs (shared helper — no emoji literals in source).
+        if (/Device binding complete|Phone verified/i.test(regResult.msg)) return stripLeadingEmojiCluster(regResult.msg);
         const extraNote = regResult.msg.split("\n").slice(1).map(item => item.trim()).filter(Boolean).join(" ");
-        if (extraNote) return extraNote.replace(/^✅\s*/, "");
+        if (extraNote) return stripLeadingEmojiCluster(extraNote);
         if (offlineMode) return t("已进入离线模式，可继续下一步", "Offline mode is ready. You can continue.", "已進入離線模式，可繼續下一步");
         if (hubConnecting) return t("正在连接 Hub，可继续下一步", "Connecting to Hub. You can continue.", "正在連線 Hub，可繼續下一步");
         if (freeTrial && freeTrialVerified && llmDone) return t("Hub 已连接，免费试用已激活，可继续下一步", "Hub connected. Free trial activated. You can continue.", "Hub 已連線，免費試用已啟用，可繼續下一步");
@@ -1023,11 +1025,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         color: colors.textMuted, lineHeight: 1,
                     }}>X</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{
-                            width: 40, height: 40, borderRadius: "50%", flexShrink: 0,
-                            background: "var(--theme-surface)", boxShadow: "0 2px 6px rgba(15,23,42,0.12)",
-                            display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.35rem",
-                        }}>👋</div>
                         <div style={{ minWidth: 0 }}>
                             <h3 style={{ margin: 0, color: colors.primaryDark, fontSize: "1.05rem", fontWeight: 600, lineHeight: 1.25 }}>
                                 {t(`来，配置一下 ${displayName} 吧`, `Let's get ${displayName} ready!`)}
@@ -1107,7 +1104,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                         ? t("RUN 注册中...", "RUN Registering...")
                                         : (llmDone && regDone)
                                             ? t("认证并注册完成", "Authenticated & Registered")
-                                            : t("🏢 企业 SSO 登录", "🏢 Enterprise SSO Login")}
+                                            : t("企业 SSO 登录", "Enterprise SSO Login")}
                             </button>
                             {embeddedSSOLoading && (
                                 <div style={{ textAlign: "center", padding: "20px 0" }}>
@@ -1118,7 +1115,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             )}
                             {ssoBusy && !embeddedSSOLoading && (
                                 <div style={{ textAlign: "center", padding: "16px 0" }}>
-                                    <div style={{ fontSize: "2rem", marginBottom: 8 }}>🔐</div>
                                     <p style={{ fontSize: "0.76rem", color: colors.textSecondary, marginTop: 10 }}>
                                         {t("请在弹出的浏览器页面中扫码", "Please scan the QR code in the browser window")}
                                     </p>
@@ -1167,7 +1163,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     <button onClick={handleEmbeddedSSOLogin} style={{
                                         ...wizardGhostButtonBlockStyle, color: colors.primaryDark,
                                     }}>
-                                        {t("🔄 重试", "🔄 Retry")}
+                                        {t("重试", "Retry")}
                                     </button>
                                 </div>
                             )}
@@ -1214,7 +1210,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             {/* TigerClaw Code 模型 */}
                                             <div style={{ marginBottom: 10 }}>
                                                 <label style={{ fontSize: "0.72rem", color: colors.textSecondary, display: "block", marginBottom: 4 }}>
-                                                    🐯 {t("TigerClaw Code 模型", "TigerClaw Code Model")}
+                                                    {t("TigerClaw Code 模型", "TigerClaw Code Model")}
                                                 </label>
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (
@@ -1561,7 +1557,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     padding: "16px", textAlign: "center", borderRadius: 8,
                                     background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.2)",
                                 }}>
-                                    <div style={{ fontSize: "1.4rem", marginBottom: 4 }}>⏭️</div>
                                     <div style={{ fontSize: "0.82rem", color: colors.textMuted, fontWeight: 600 }}>
                                         {t("已跳过，可稍后在设置中绑定", "Skipped — you can bind later in settings")}
                                     </div>
@@ -1592,7 +1587,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                                     cursor: wxLoading ? "default" : "pointer",
                                                     opacity: wxLoading ? 0.5 : 1,
                                                 }}>
-                                                    🔄 {t("刷新二维码", "Refresh QR Code")}
+                                                    {t("刷新二维码", "Refresh QR Code")}
                                                 </button>
                                             </div>
                                         </div>
@@ -1709,7 +1704,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     }} onClick={e => e.stopPropagation()}>
                         {/* Header: icon + title */}
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                            <span style={{ fontSize: 18 }}>✉️</span>
                             <span style={{ fontSize: 15, fontWeight: 700 }}>
                                 {t("注册账号", "Confirm Registration")}
                             </span>
@@ -1754,7 +1748,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             <button onClick={doRegister} style={{
                                 ...wizardPrimaryButtonStyle, width: "auto", padding: "8px 18px", fontSize: "0.8rem",
                             }}>
-                                OK {t("确认注册", "Confirm & Register")}
+                                {t("确认注册", "Confirm & Register")}
                             </button>
                         </div>
                     </div>

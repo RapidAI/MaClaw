@@ -184,20 +184,49 @@ func sortAgentViewSchemaRecords(records []agentViewSchemaRecord) {
 }
 
 func appendAgentViewHiddenField(view map[string]interface{}, name string, value interface{}) {
-	rawFields, ok := view["fields"].([]map[string]interface{})
-	if !ok {
+	if view == nil || strings.TrimSpace(name) == "" {
 		return
 	}
-	for _, field := range rawFields {
-		if strings.TrimSpace(fmt.Sprint(field["name"])) == name {
-			field["value"] = value
-			return
+	if rawFields, ok := view["fields"].([]map[string]interface{}); ok {
+		for _, field := range rawFields {
+			if strings.TrimSpace(fmt.Sprint(field["name"])) == name {
+				field["value"] = value
+				return
+			}
 		}
+		view["fields"] = append(rawFields, map[string]interface{}{
+			"name":  name,
+			"label": name,
+			"type":  "hidden",
+			"value": value,
+		})
+		return
 	}
-	view["fields"] = append(rawFields, map[string]interface{}{
+	// Builders sometimes store fields as []interface{} of maps.
+	if list, ok := view["fields"].([]interface{}); ok {
+		for _, item := range list {
+			field, _ := item.(map[string]interface{})
+			if field == nil {
+				continue
+			}
+			if strings.TrimSpace(fmt.Sprint(field["name"])) == name {
+				field["value"] = value
+				return
+			}
+		}
+		view["fields"] = append(list, map[string]interface{}{
+			"name":  name,
+			"label": name,
+			"type":  "hidden",
+			"value": value,
+		})
+		return
+	}
+	// No fields slice yet — create a typed map slice for later form rendering.
+	view["fields"] = []map[string]interface{}{{
 		"name":  name,
 		"label": name,
 		"type":  "hidden",
 		"value": value,
-	})
+	}}
 }

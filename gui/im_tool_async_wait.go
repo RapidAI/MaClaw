@@ -64,7 +64,7 @@ func (h *IMMessageHandler) toolBashBackgroundForOwner(command, workDir, taskRole
 		return fmt.Sprintf("[错误] 后台任务启动失败: %v", err)
 	}
 
-	return fmt.Sprintf("✅ 后台任务已启动\n"+
+	return fmt.Sprintf("后台任务已启动\n"+
 		"task_id: %s\n"+
 		"PID: %d\n"+
 		"日志文件: %s\n"+
@@ -153,7 +153,7 @@ func (h *IMMessageHandler) asyncWaitWaitForOwner(mgr *coretool.LocalBackgroundTa
 	}
 
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("⏳ 等待后台任务 %s 完成（最长 %ds）...", taskID, timeout))
+		onProgress(fmt.Sprintf("等待后台任务 %s 完成（最长 %ds）...", taskID, timeout))
 	}
 
 	// Build a context that cancels when the agent loop is cancelled.
@@ -200,7 +200,7 @@ func (h *IMMessageHandler) asyncWaitKillForOwner(mgr *coretool.LocalBackgroundTa
 		return fmt.Sprintf("[error] %v%s", err, localBackgroundTaskSnapshotForOwner(mgr, taskID, ownerID))
 	}
 
-	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+	return fmt.Sprintf("后台任务 %s 已终止", taskID)
 }
 
 func authorizeLocalBackgroundTaskOwner(mgr *coretool.LocalBackgroundTaskManager, taskID, ownerID string) error {
@@ -273,14 +273,14 @@ func localBackgroundTaskSnapshotForOwner(mgr *coretool.LocalBackgroundTaskManage
 func formatTaskStatus(s *coretool.LocalTaskStatus) string {
 	var b strings.Builder
 
-	icon := "🔄"
+	icon := ""
 	switch normalizeLocalBackgroundTaskStatus(s.Status) {
 	case localBackgroundTaskStatusCompleted:
-		icon = "✅"
+		icon = ""
 	case localBackgroundTaskStatusFailed:
-		icon = "❌"
+		icon = ""
 	case localBackgroundTaskStatusKilled:
-		icon = "⏹️"
+		icon = ""
 	}
 
 	fmt.Fprintf(&b, "%s 任务 %s: %s\n", icon, s.TaskID, s.Status)

@@ -123,20 +123,20 @@ export function ConfirmationPanel({
                         {submitting
                             ? "提交中..."
                             : confirmation.type === "executor"
-                                ? "✅ 确认已操作"
-                                : "✅ 确认已知会"
+                                ? "确认已操作"
+                                : "确认已知会"
                         }
                     </button>
 
                     {/* Feedback */}
                     {error && (
                         <div style={errorStyle} role="alert">
-                            ❌ 提交失败: {error}
+                            提交失败: {error}
                         </div>
                     )}
                     {success && (
                         <div style={successStyle} role="status">
-                            ✅ 确认成功
+                            确认成功
                         </div>
                     )}
                 </div>
@@ -151,7 +151,7 @@ function ConfirmationStatusBanner({ confirmation }: { confirmation: Confirmation
     if (confirmation.status === "confirmed") {
         return (
             <div style={statusBannerConfirmedStyle} role="status" aria-label="确认状态">
-                <div style={statusIconStyle}>✅ 已确认</div>
+                <div style={statusIconStyle}>已确认</div>
                 {confirmation.confirmed_at && (
                     <div style={statusTimestampStyle}>
                         确认时间: {formatTimestamp(confirmation.confirmed_at)}
@@ -169,7 +169,7 @@ function ConfirmationStatusBanner({ confirmation }: { confirmation: Confirmation
     if (confirmation.status === "auto_closed") {
         return (
             <div style={statusBannerAutoClosedStyle} role="status" aria-label="确认状态">
-                <div style={statusIconStyle}>⏰ 已自动关闭</div>
+                <div style={statusIconStyle}>已自动关闭</div>
                 {confirmation.auto_closed_at && (
                     <div style={statusTimestampStyle}>
                         关闭时间: {formatTimestamp(confirmation.auto_closed_at)}
@@ -187,7 +187,7 @@ function ConfirmationStatusBanner({ confirmation }: { confirmation: Confirmation
     // pending
     return (
         <div style={statusBannerPendingStyle} role="status" aria-label="确认状态">
-            <div style={statusIconStyle}>⏳ 待确认</div>
+            <div style={statusIconStyle}>待确认</div>
             <div style={statusDescStyle}>
                 {confirmation.type === "executor"
                     ? "请确认您已完成相关操作"

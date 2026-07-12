@@ -11,10 +11,10 @@ func BuildHelpMessage(machineCount int, selectedMachine string, llmEnabled bool)
 	var b strings.Builder
 
 	if llmEnabled && machineCount > 1 {
-		b.WriteString("🤖 当前处于无感智能模式 — 直接发消息即可，系统自动判断路由。\n\n")
+		b.WriteString("当前处于无感智能模式 — 直接发消息即可，系统自动判断路由。\n\n")
 		b.WriteString("以下命令可手动覆盖智能路由：\n\n")
 	} else {
-		b.WriteString("📋 可用命令：\n\n")
+		b.WriteString("可用命令：\n\n")
 	}
 
 	b.WriteString("/call <昵称>  — 切换到指定设备\n")
@@ -36,19 +36,19 @@ func BuildHelpMessage(machineCount int, selectedMachine string, llmEnabled bool)
 
 	// Context-specific hints.
 	if selectedMachine == broadcastMachineID {
-		b.WriteString("\n💡 当前处于群聊模式，使用 /call <昵称> 可切回单聊。\n")
+		b.WriteString("\n当前处于群聊模式，使用 /call <昵称> 可切回单聊。\n")
 	}
 
 	if machineCount == 1 {
-		b.WriteString("\n💡 当前只有一台设备在线，消息会自动发送到该设备。\n")
+		b.WriteString("\n当前只有一台设备在线，消息会自动发送到该设备。\n")
 	}
 
 	if machineCount > 1 && !llmEnabled {
-		b.WriteString(fmt.Sprintf("\n💡 您有 %d 台设备在线，使用 /call <昵称> 选择目标设备。\n", machineCount))
+		b.WriteString(fmt.Sprintf("\n您有 %d 台设备在线，使用 /call <昵称> 选择目标设备。\n", machineCount))
 	}
 
 	if llmEnabled && machineCount > 1 {
-		b.WriteString("\n📍 空间模型：\n")
+		b.WriteString("\n空间模型：\n")
 		b.WriteString("  大厅 — 智能路由，@ 定向发送\n")
 		b.WriteString("  私聊 — /call <名> 进入，/call all 退出\n")
 		b.WriteString("  会议 — /discuss 进入，/stop 退出\n")

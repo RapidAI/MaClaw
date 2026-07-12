@@ -142,7 +142,7 @@
         "modelLabel": "模型",
         "streamMode": "流式模式",
         "accountSelector": "选择账号",
-        "autoRandom": "🤖 自动 / 随机",
+        "autoRandom": "自动 / 随机",
         "apiKeyOptional": "API 密钥 (可选)",
         "apiKeyDefault": "默认: ...{suffix}",
         "apiKeyPlaceholder": "输入自定义密钥",

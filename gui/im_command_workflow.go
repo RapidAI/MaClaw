@@ -193,9 +193,9 @@ func (h *IMMessageHandler) forceStartWorkflow(msg IMUserMessage, workflowType, l
 		displayName = workflowType
 	}
 	return &IMAgentResponse{Text: localizeWorkflowText(lang,
-		fmt.Sprintf("🚀 Starting workflow: %s", displayName),
-		fmt.Sprintf("🚀 正在启动工作流：%s", displayName),
-		fmt.Sprintf("🚀 正在啟動工作流：%s", displayName),
+		fmt.Sprintf("Starting workflow: %s", displayName),
+		fmt.Sprintf("正在启动工作流：%s", displayName),
+		fmt.Sprintf("正在啟動工作流：%s", displayName),
 	)}
 }
 

@@ -911,6 +911,17 @@ func (m OnboardingModel) View() string {
 	if m.weixinQR != "" {
 		return m.viewWeixinQR()
 	}
+	if m.hubCenterSelect {
+		// HubCenter picker is available from Enter/Space on the hub row and must
+		// render in both compact and full layouts.
+		var b strings.Builder
+		b.WriteString(onboardingTitle.Render("  "+onboardingText(m.lang, "title")) + "\n")
+		b.WriteString("  " + onboardingNext.Render(fitOnboarding(m.nextStepText(), max(10, m.width-2))) + "\n")
+		b.WriteString(m.renderRow(onboardingRowHubCenter, onboardingText(m.lang, "hubCenter"), m.hubCenterInput.View(), ""))
+		b.WriteString(m.renderHubCenterSelector())
+		b.WriteString("  " + onboardingDim.Render(fitOnboarding(onboardingText(m.lang, "footerCompact"), max(10, m.width-2))))
+		return fitRenderedLines(b.String(), m.width)
+	}
 	if m.useCompactView() {
 		return m.viewCompact()
 	}
@@ -1111,6 +1122,24 @@ func (m OnboardingModel) startResolveIdentity() (OnboardingModel, tea.Cmd) {
 		m.cursor = onboardingRowEmail
 		m.focusCursor()
 		return m, nil
+	}
+	// Client-side guard: reject values that are neither a plausible email nor phone.
+	// Server still re-validates; this avoids starting a resolve round-trip on typos.
+	if strings.Contains(identity, "@") {
+		if !validOnboardingEmail(normalizeOnboardingEmail(identity)) {
+			m.remoteStatus = onboardingText(m.lang, "emailInvalid")
+			m.cursor = onboardingRowEmail
+			m.focusCursor()
+			return m, nil
+		}
+	} else {
+		phone := normalizeOnboardingPhone(identity)
+		if len(phone) < 8 || len(phone) > 15 {
+			m.remoteStatus = onboardingText(m.lang, "emailInvalid")
+			m.cursor = onboardingRowEmail
+			m.focusCursor()
+			return m, nil
+		}
 	}
 	hubCenterURL := normalizeOnboardingHubCenter(m.hubCenterInput.Value())
 	m.remoteBusy = true

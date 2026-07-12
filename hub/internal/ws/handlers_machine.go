@@ -222,6 +222,10 @@ type MachineHeartbeatPayload struct {
 	AppVersion           string                  `json:"app_version,omitempty"`
 	LLMConfigured        *bool                   `json:"llm_configured,omitempty"`
 	LLMTokenUsage        *corelib.TokenUsageStat `json:"llm_token_usage,omitempty"`
+	// AdaptivePrompt is optional process-level light/full prompt cost stats.
+	AdaptivePrompt *corelib.AdaptivePromptStat `json:"adaptive_prompt,omitempty"`
+	// CostOps is optional cost-route + local daily fleet snapshot.
+	CostOps *corelib.CostOpsStat `json:"cost_ops,omitempty"`
 }
 
 type DeviceBinder interface {

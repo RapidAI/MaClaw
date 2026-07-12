@@ -127,6 +127,12 @@ func TestExecuteSkillMaintenancePlanSkipsFileBackedAttemptRepair(t *testing.T) {
 	if result.SkippedCount != 1 || result.QueuedCount != 0 || !strings.Contains(result.Actions[0].Reason, "reviewed patch flow") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
+	if result.Actions[0].PatchDraft == nil || result.Actions[0].PatchDraft.Kind != MaintenanceActionAttemptRepair {
+		t.Fatalf("expected file-backed repair patch draft, got %#v", result.Actions[0])
+	}
+	if result.Actions[0].PatchDraft.SuggestedYAML == "" || result.Actions[0].PatchDraft.ErrorClass == "" {
+		t.Fatalf("incomplete repair patch draft: %#v", result.Actions[0].PatchDraft)
+	}
 }
 
 func TestExecuteSkillMaintenancePlanNoopsAttemptRepairWhenNotEligible(t *testing.T) {

@@ -81,12 +81,32 @@ func (tm *ToolManager) privateToolsDir() string {
 	return privateToolsDirForApp(tm.app)
 }
 
-func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
-	normalized := remote.NormalizeRemoteToolName(name)
+// GetToolInstallStatus reports whether a tool binary exists under the private
+// tools directory without executing it. Prefer this for UI catalog / metadata
+// paths so tab switches never spawn claude/codex processes.
+//
+// Version is intentionally left empty — callers that need a version must use
+// GetToolStatus (or ToolVersionCache) so TTL / refresh semantics stay correct.
+func (tm *ToolManager) GetToolInstallStatus(name string) ToolStatus {
 	status := ToolStatus{Name: name}
 	toolsDir := tm.privateToolsDir()
 	if strings.TrimSpace(toolsDir) == "" {
 		return status
+	}
+	path, found := remote.ResolveToolPathInDir(name, toolsDir)
+	if !found {
+		return status
+	}
+	status.Installed = true
+	status.Path = path
+	return status
+}
+
+func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
+	normalized := remote.NormalizeRemoteToolName(name)
+	toolsDir := tm.privateToolsDir()
+	if strings.TrimSpace(toolsDir) == "" {
+		return ToolStatus{Name: name}
 	}
 	cacheKey := normalized + "\x00" + toolsDir
 
@@ -106,8 +126,9 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 
 	tm.app.log(fmt.Sprintf("GetToolStatus: Checking tool '%s'", name))
 
-	path, found := remote.ResolveToolPathInDir(name, toolsDir)
-	if !found {
+	// Path probe only first (no process). Version probe may spawn the tool.
+	status := tm.GetToolInstallStatus(name)
+	if !status.Installed {
 		tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' NOT found", name))
 		toolStatusCacheMu.Lock()
 		toolStatusCacheMap[cacheKey] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
@@ -115,16 +136,11 @@ func (tm *ToolManager) GetToolStatus(name string) ToolStatus {
 		return status
 	}
 
-	tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' found at: %s", name, path))
-	status.Installed = true
-	status.Path = path
-
-	version, err := tm.getToolVersion(name, path)
-	if err == nil {
+	tm.app.log(fmt.Sprintf("GetToolStatus: Tool '%s' found at: %s", name, status.Path))
+	if version, err := tm.getToolVersion(name, status.Path); err == nil {
 		status.Version = version
 	}
 
-	// Cache positive result.
 	toolStatusCacheMu.Lock()
 	toolStatusCacheMap[cacheKey] = toolStatusCacheEntry{status: status, cachedAt: time.Now()}
 	toolStatusCacheMu.Unlock()
@@ -414,7 +430,7 @@ func (tm *ToolManager) InstallTool(name string) error {
 		return fmt.Errorf("installation completed but tool verification failed - %s not found", name)
 	}
 
-	tm.app.log(tm.app.tr("✓ %s installed and verified successfully (version: %s)", name, status.Version))
+	tm.app.log(tm.app.tr("OK %s installed and verified successfully (version: %s)", name, status.Version))
 	return nil
 }
 
@@ -825,7 +841,7 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 		os.Remove(status.Path)
 		return fmt.Errorf("claude binary exists but failed to execute: %v", err)
 	} else {
-		tm.app.log(tm.app.tr("✓ Claude Code %s installed successfully!", strings.TrimSpace(string(out))))
+		tm.app.log(tm.app.tr("OK Claude Code %s installed successfully!", strings.TrimSpace(string(out))))
 	}
 
 	return nil

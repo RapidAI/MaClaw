@@ -19,7 +19,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // MaclawLLMProvider and MaclawLLMConfig are defined in corelib.
@@ -412,11 +411,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 				hubStatus = status
 				haveHubStatus = true
 				// Update local status cache so sidebar sees fresh state.
-				hubServiceStatusCache.mu.Lock()
-				hubServiceStatusCache.status = status
-				hubServiceStatusCache.fetchedAt = time.Now()
-				hubServiceStatusCache.valid = true
-				hubServiceStatusCache.mu.Unlock()
+				storeHubServiceStatusCache(syncCfg.RemoteHubURL, syncCfg.RemoteViewerToken, status)
 				a.applyHubLLMServiceStatusToConfig(&syncCfg, status)
 				providers = syncCfg.MaclawLLMProviders
 			} else {
@@ -467,7 +462,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	}
 	log.Printf("[LLM] SaveMaclawLLMProviders:save_config=%s", time.Since(persistStart))
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", current)
+		a.emitEvent("llm-token-usage-changed", current)
 	}
 	// Invalidate LLM-dependent tool outcome records when the provider changes.
 	// PatchConfig (used above) does not go through PatchConfigFields, so the
@@ -1502,7 +1497,7 @@ func (a *App) AccumulateLLMTokenUsageWithCache(providerName string, inputTokens,
 		return
 	}
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", providerName)
+		a.emitEvent("llm-token-usage-changed", providerName)
 	}
 }
 
@@ -1533,7 +1528,7 @@ func (a *App) AccumulateLLMLocalCacheRequest(providerName string, hit bool) {
 		return
 	}
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", providerName)
+		a.emitEvent("llm-token-usage-changed", providerName)
 	}
 }
 

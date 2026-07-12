@@ -402,7 +402,7 @@ function renderRegistrationAuthConfig(cfg = {}) {
   if (methodEl) methodEl.value = method;
   _s('registrationAuthAliyunAccessKeyID', 'value', cfg.aliyun_access_key_id || '');
   _s('registrationAuthAliyunAccessKeySecret', 'value', cfg.aliyun_access_key_secret || '');
-  _s('registrationAuthAliyunSignName', 'value', cfg.aliyun_sign_name || '速通互联验证平台');
+  _s('registrationAuthAliyunSignName', 'value', cfg.aliyun_sign_name || '\u901f\u901a\u4e92\u8054\u9a8c\u8bc1\u5e73\u53f0');
   _s('registrationAuthCodeTTLMinutes', 'value', String(cfg.code_ttl_minutes || 5));
   _s('registrationAuthCodeLength', 'value', String(cfg.code_length || 6));
   _s('registrationAuthDailySMSLimit', 'value', String(cfg.daily_sms_limit || 3));

@@ -97,20 +97,32 @@ func TestLLMConcurrencySchedulerBackgroundRunsWhenForegroundAgentIdleNoLLMActive
 }
 
 func TestLLMConcurrencySchedulerDegradedLimitsForegroundToOne(t *testing.T) {
+	// Under 429 pressure, foreground is capped at degradedForegroundLLMConcurrency (2).
 	s := newLLMConcurrencyScheduler()
 	s.foregroundWork = func() int64 { return 0 }
 	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"}, errors.New("HTTP 429 too many requests"))
 
-	first, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"})
-	if err != nil {
-		t.Fatalf("first foreground acquire: %v", err)
+	leases := make([]*llmSchedulerLease, degradedForegroundLLMConcurrency)
+	for i := range leases {
+		lease, err := s.Acquire(context.Background(), llm.RequestTrace{
+			Caller:  "agent_loop",
+			OwnerID: "desktop-user-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatalf("foreground acquire %d: %v", i, err)
+		}
+		leases[i] = lease
 	}
-	defer first.Release()
+	defer func() {
+		for _, lease := range leases {
+			lease.Release()
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user:task"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second foreground acquire err = %v, want deadline", err)
+	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user:overflow"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("overflow foreground acquire err = %v, want deadline at degraded cap %d", err, degradedForegroundLLMConcurrency)
 	}
 }
 
@@ -138,20 +150,32 @@ func TestLLMConcurrencySchedulerBackgroundPressurePausesOnlyBackground(t *testin
 }
 
 func TestLLMConcurrencySchedulerForegroundPressureStillLimitsForeground(t *testing.T) {
+	// 429 on a foreground caller degrades fg slots to degradedForegroundLLMConcurrency.
 	s := newLLMConcurrencyScheduler()
 	s.foregroundWork = func() int64 { return 0 }
 	s.ObserveResult(llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"}, errors.New("HTTP 429 too many requests"))
 
-	first, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-a"})
-	if err != nil {
-		t.Fatalf("first foreground acquire: %v", err)
+	leases := make([]*llmSchedulerLease, degradedForegroundLLMConcurrency)
+	for i := range leases {
+		lease, err := s.Acquire(context.Background(), llm.RequestTrace{
+			Caller:  "agent_loop",
+			OwnerID: "owner-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatalf("foreground acquire %d: %v", i, err)
+		}
+		leases[i] = lease
 	}
-	defer first.Release()
+	defer func() {
+		for _, lease := range leases {
+			lease.Release()
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-b"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second foreground acquire err = %v, want deadline", err)
+	if _, err := s.Acquire(ctx, llm.RequestTrace{Caller: "agent_loop", OwnerID: "owner-overflow"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("overflow foreground acquire err = %v, want deadline at degraded cap %d", err, degradedForegroundLLMConcurrency)
 	}
 }
 
@@ -264,29 +288,27 @@ func TestLLMConcurrencySchedulerQueuedForegroundBeatsBackground(t *testing.T) {
 }
 
 func TestLLMConcurrencySchedulerFourForegroundTabsCanRunConcurrently(t *testing.T) {
-	// The slot limit was raised from 2→4 to support multiple desktop tabs.
-	// Verify that 4 FG requests all acquire slots immediately (no blocking),
-	// and the 5th must wait.
+	// defaultForegroundLLMConcurrency covers multiple desktop tabs (currently 6).
+	// Fill every slot, then the next request must wait.
 	s := newLLMConcurrencyScheduler()
 	s.foregroundWork = func() int64 { return 0 }
 
-	leases := make([]*llmSchedulerLease, 4)
+	leases := make([]*llmSchedulerLease, defaultForegroundLLMConcurrency)
 	for i := range leases {
 		lease, err := s.Acquire(context.Background(), llm.RequestTrace{
 			Caller:  "agent_loop",
 			OwnerID: "tab-" + string(rune('a'+i)),
 		})
 		if err != nil {
-			t.Fatalf("tab-%c acquire err = %v, all 4 tabs should get slots immediately", 'a'+i, err)
+			t.Fatalf("tab-%d acquire err = %v, all %d slots should acquire immediately", i, err, defaultForegroundLLMConcurrency)
 		}
 		leases[i] = lease
 	}
 
-	// 5th request must wait.
-	ctx5, cancel5 := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel5()
-	if _, err := s.Acquire(ctx5, llm.RequestTrace{Caller: "agent_loop", OwnerID: "tab-e"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal("5th foreground acquire should block when all 4 slots are occupied")
+	ctxOverflow, cancelOverflow := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelOverflow()
+	if _, err := s.Acquire(ctxOverflow, llm.RequestTrace{Caller: "agent_loop", OwnerID: "tab-overflow"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("overflow foreground acquire should block when all %d slots are occupied", defaultForegroundLLMConcurrency)
 	}
 
 	for _, l := range leases {

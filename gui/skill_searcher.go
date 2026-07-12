@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib"
 	"log"
 	"net/http"
 	"net/url"
@@ -12,8 +12,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
+
+// SearchDegradedError means some sources failed but results may still be usable.
+// Callers should display Results and surface Messages as a warning.
+type SearchDegradedError struct {
+	Messages    []string
+	ResultCount int
+}
+
+func (e *SearchDegradedError) Error() string {
+	if e == nil || len(e.Messages) == 0 {
+		return "skill search degraded"
+	}
+	return "skill search degraded: " + strings.Join(e.Messages, "; ")
+}
+
+// AsSearchDegraded unwraps a SearchDegradedError from err.
+func AsSearchDegraded(err error) (*SearchDegradedError, bool) {
+	var d *SearchDegradedError
+	if errors.As(err, &d) {
+		return d, true
+	}
+	return nil, false
+}
 
 // SkillSearchResult is one SkillMarket search result.
 type SkillSearchResult struct {
@@ -214,23 +238,32 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 		}
 	}
 
-	// ClawHub + GitHub via shared HubClient (single implementation).
+	// ClawHub + GitHub via shared HubClient report API (per-source diagnostics).
 	hubClient := cskill.DefaultHubClient()
+	var hubSources []string
 	if isAllowedSkillSourceList("clawhub", allowedSources) {
 		if ok, reason := s.allowSearchSource("clawhub", cskill.ClawHubMirrorURL, query); !ok {
 			errs = append(errs, fmt.Sprintf("clawhub: %s", reason))
 		} else {
-			for _, r := range hubClient.SearchClawHub(ctx, query) {
-				results = append(results, hubSearchResultToMixed(r))
-			}
+			hubSources = append(hubSources, "clawhub")
 		}
 	}
 	if isAllowedSkillSourceList("github", allowedSources) && contextErr(ctx) == nil {
 		if ok, reason := s.allowSearchSource("github", "https://github.com", query); !ok {
 			errs = append(errs, fmt.Sprintf("github: %s", reason))
 		} else {
-			for _, r := range hubClient.SearchGitHub(query) {
-				results = append(results, hubSearchResultToMixed(r))
+			hubSources = append(hubSources, "github")
+		}
+	}
+	if len(hubSources) > 0 {
+		// skillhub already handled above via SkillMarket Search; only clawhub+github here.
+		report := hubClient.SearchAllFilteredReport(ctx, "", query, hubSources)
+		for _, r := range report.Results {
+			results = append(results, hubSearchResultToMixed(r))
+		}
+		for _, st := range report.Sources {
+			if st.Queried && !st.OK && st.Error != "" {
+				errs = append(errs, fmt.Sprintf("%s: %s", st.Source, st.Error))
 			}
 		}
 	}
@@ -241,6 +274,10 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	}
 	if len(results) == 0 && len(errs) > 0 {
 		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	// Partial success: return results + SearchDegradedError so callers can warn.
+	if len(results) > 0 && len(errs) > 0 {
+		return results, &SearchDegradedError{Messages: errs, ResultCount: len(results)}
 	}
 	sort.SliceStable(results, func(i, j int) bool {
 		li := sourcePriority(results[i].Source)

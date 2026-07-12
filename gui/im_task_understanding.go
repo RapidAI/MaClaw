@@ -67,7 +67,7 @@ const taskUnderstandingSystemPrompt = `你是一个任务理解助手。用户�
 - summary 不要复述用户原文，要用结构化语言重新表述
 - enhanced_instruction 要比用户原文更清晰、更具体、更可执行
 - execution_plan 列出 2-5 个关键步骤
-- 如果用户意图模糊，在 constraints 中标注"⚠️ 待确认：xxx"
+- 如果用户意图模糊，在 constraints 中标注"待确认：xxx"
 - 只输出 JSON，不要输出其他内容`
 
 // taskUnderstandingSimplifiedPrompt is a shorter, more forgiving prompt used

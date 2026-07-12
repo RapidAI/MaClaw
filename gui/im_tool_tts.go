@@ -6,7 +6,6 @@ import (
 	"log"
 
 	"github.com/RapidAI/CodeClaw/corelib/tts"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // toolTTS synthesizes speech from text and delivers it as a voice message.
@@ -47,7 +46,7 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 				return
 			}
 			if wav != nil && app.ctx != nil {
-				runtime.EventsEmit(app.ctx, "tts:audio", base64.StdEncoding.EncodeToString(wav))
+				app.emitEvent("tts:audio", base64.StdEncoding.EncodeToString(wav))
 			}
 		}()
 		return "Voice message is being generated and will play shortly."

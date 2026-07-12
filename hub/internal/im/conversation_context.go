@@ -114,10 +114,10 @@ func (cc *ConversationContext) Len() int {
 func (cc *ConversationContext) FormatDisplay() string {
 	recent := cc.GetRecentSummaries(5)
 	if len(recent) == 0 {
-		return "📭 暂无对话上下文记录。"
+		return "暂无对话上下文记录。"
 	}
 	var b strings.Builder
-	b.WriteString("📋 最近对话上下文：\n\n")
+	b.WriteString("最近对话上下文：\n\n")
 	for i, r := range recent {
 		ts := r.Timestamp.Format("15:04:05")
 		fmt.Fprintf(&b, "%d. [%s] → %s\n   用户: %s\n   摘要: %s\n\n",

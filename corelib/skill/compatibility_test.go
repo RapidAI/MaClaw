@@ -477,6 +477,37 @@ steps:
 	if byName["format"].Default != "pdf" || byName["format"].Description != "Output format" {
 		t.Fatalf("format schema param was not normalized: %#v", byName["format"])
 	}
+	// Type is preserved from JSON Schema properties when present.
+	dataWithTypes := []byte(`name: compat-json-schema-typed
+input_schema:
+  type: object
+  required: [count]
+  properties:
+    count:
+      type: integer
+      description: Item count
+    enabled:
+      type: boolean
+      default: "true"
+steps:
+  - action: run
+    command: echo ok
+`)
+	sf2, err := ParseSkillYAMLFile(dataWithTypes)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile typed error: %v", err)
+	}
+	runtime := convertSkillYAMLParams(sf2.Params)
+	byRuntime := map[string]corelib.NLSkillParam{}
+	for _, p := range runtime {
+		byRuntime[p.Name] = p
+	}
+	if byRuntime["count"].Type != "integer" || !byRuntime["count"].Required {
+		t.Fatalf("count type/required = %#v", byRuntime["count"])
+	}
+	if byRuntime["enabled"].Type != "boolean" {
+		t.Fatalf("enabled type = %#v", byRuntime["enabled"])
+	}
 }
 
 func TestParseSkillYAMLFile_ToleratesStringStepsAndWithParams(t *testing.T) {

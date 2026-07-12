@@ -55,7 +55,7 @@ func TestSessionStartupFeedbackWatchStartupInjectsOnlyForExplicitResume(t *testi
 	if got := string(handle.writes[0]); got != "resume previous task" {
 		t.Fatalf("injected prompt = %q, want %q", got, "resume previous task")
 	}
-	if len(messages) < 2 || messages[1] != "📋 已加载显式选择的未完成任务进度，已自动注入上下文" {
+	if len(messages) < 2 || messages[1] != "已加载显式选择的未完成任务进度，已自动注入上下文" {
 		t.Fatalf("messages = %#v, want startup injection feedback", messages)
 	}
 }
@@ -87,7 +87,7 @@ func TestSessionStartupFeedbackWatchStartupSkipsFreshSessionInjection(t *testing
 	if len(handle.writes) != 0 {
 		t.Fatal("expected no injected prompt for fresh session")
 	}
-	if len(messages) != 1 || messages[0] != "✅ 会话已就绪 (ID: sess-fresh, 工具: claude)" {
+	if len(messages) != 1 || messages[0] != "会话已就绪 (ID: sess-fresh, 工具: claude)" {
 		t.Fatalf("messages = %#v, want only ready message", messages)
 	}
 }

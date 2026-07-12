@@ -1,4 +1,5 @@
 import React from "react";
+import { IconBell } from "./WorkbenchIcons";
 
 export type NotificationCategory =
     | "system_announcement"
@@ -350,7 +351,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                             gap: "8px",
                         }}
                     >
-                        <span style={{ fontSize: "28px", opacity: 0.5 }}>🔔</span>
+                        <span style={{ opacity: 0.45, display: "inline-flex" }}><IconBell size={28} /></span>
                         <span>
                             {localizeText(lang, "No notifications", "没有通知", "沒有通知")}
                         </span>

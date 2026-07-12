@@ -86,7 +86,7 @@ func (c *EventCoalescer) CompleteToolCall(eventID string) {
 	}
 
 	pe.event.Grouped = true
-	pe.event.Summary = pe.event.Summary + " ✓"
+	pe.event.Summary = pe.event.Summary + " [done]"
 	evt := pe.event
 	delete(c.pending, eventID)
 	c.mu.Unlock()

@@ -269,6 +269,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	}
 
 	result := agent.RunLoop(cb, cb.buildTaskUserMessage(), nil, s.httpClient, s.buildLoopHooks(cb))
+	if s.handler != nil {
+		accumulateLoopResultUsage(s.handler.app, s.cfg, result)
+	}
 
 	// Codex-inspired post-loop verification: if the model completed without
 	// errors but didn't run verification itself, automatically verify + fix.
@@ -512,6 +515,39 @@ func (c *codingSubAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	// system prompt's KV state, reducing latency and cost by ~90% for iters 2-80.
 	cfg.EnablePromptCache = true
 	return cfg
+}
+
+// RouteTurn forces the reasoning path for coding subagent loops when a
+// model router / aux config is available on the host app.
+func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	cfg := c.GetLLMConfig()
+	decision := agent.RouteDecision{
+		TaskType: string(llm.TaskReasoning),
+		Model:    cfg.Model,
+		Provider: cfg.ProviderName,
+		Source:   "primary",
+		Reason:   "coding subagent",
+		Applied:  true,
+	}
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return cfg, decision, true
+	}
+	h := c.subagent.handler
+	if h.app == nil || h.app.ohModules.modelRouter == nil {
+		return cfg, decision, true
+	}
+	routed := h.routeLLMConfig(llm.TaskReasoning)
+	if routed.Model != "" {
+		cfg = routed
+		cfg.EnablePromptCache = true
+		decision.Model = cfg.Model
+		decision.Provider = cfg.ProviderName
+		if h.app.ohModules.modelRouter.HasRoute(llm.TaskReasoning) {
+			decision.Source = "route"
+			decision.Reason = "coding subagent → reasoning route"
+		}
+	}
+	return cfg, decision, true
 }
 
 func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
@@ -770,7 +806,14 @@ func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) a
 	// how to access omitted content). Only truncate successful results — errors
 	// are already compact and should be shown in full.
 	if outcome == agent.ToolExecutionOutcomeOK {
-		result.Text = truncateToolResultForSubAgent(canonicalCodingSubAgentToolName(name), result.Text)
+		toolName := canonicalCodingSubAgentToolName(name)
+		full := result.Text
+		preview := truncateToolResultForSubAgent(toolName, full)
+		sessionKey := ""
+		if c.subagent != nil && c.subagent.handler != nil {
+			sessionKey = c.subagent.handler.currentRuntimeOrLegacyPolicyOwnerID()
+		}
+		result.Text = projectToolResultHandle(toolName, sessionKey, full, preview, maxToolResultLen)
 	}
 
 	return agent.ToolExecutionResult{Result: result.Text, Outcome: outcome}

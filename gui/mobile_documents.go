@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // MobileDocumentDraftSummary is a Hub-shared emergency draft visible on desktop.
@@ -471,4 +473,152 @@ func (a *App) GetMobileDocumentDraft(draftID string) (*MobileDocumentDraftSummar
 		return nil, fmt.Errorf("get mobile document failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return decodeMobileDocumentDraftResponse(data)
+}
+
+const mobileDocumentOriginalMaxBytes = 25 << 20
+
+// SaveMobileDocumentOriginal downloads the Hub-stored original and prompts for a
+// local save path. Returns the saved path, or empty string if the user cancels.
+func (a *App) SaveMobileDocumentOriginal(draftID string) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app is not initialized")
+	}
+	filename, raw, err := a.fetchMobileDocumentOriginal(draftID)
+	if err != nil {
+		return "", err
+	}
+	if a.ctx == nil {
+		// Headless / tests: write next to temp without dialog.
+		dest := filepath.Join(os.TempDir(), "maclaw_mobile_original_"+sanitizeMobileOriginalFilename(filename))
+		if err := os.WriteFile(dest, raw, 0o600); err != nil {
+			return "", err
+		}
+		return dest, nil
+	}
+	dest, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save original / 保存原件",
+		DefaultFilename: sanitizeMobileOriginalFilename(filename),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(dest) == "" {
+		return "", nil
+	}
+	if err := os.WriteFile(dest, raw, 0o600); err != nil {
+		return "", fmt.Errorf("save original: %w", err)
+	}
+	return dest, nil
+}
+
+// OpenMobileDocumentOriginal downloads the Hub original to a temp file and opens
+// it with the OS default app. Returns the temp path.
+func (a *App) OpenMobileDocumentOriginal(draftID string) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app is not initialized")
+	}
+	filename, raw, err := a.fetchMobileDocumentOriginal(draftID)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(os.TempDir(), "maclaw_mobile_originals")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	safe := sanitizeMobileOriginalFilename(filename)
+	dest := filepath.Join(dir, safe)
+	// Avoid collisions when re-opening the same name.
+	if _, statErr := os.Stat(dest); statErr == nil {
+		dest = filepath.Join(dir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), safe))
+	}
+	if err := os.WriteFile(dest, raw, 0o600); err != nil {
+		return "", fmt.Errorf("write temp original: %w", err)
+	}
+	if openErr := a.OpenFileOrShowInFolder(dest); openErr != nil {
+		// Still return path so the UI can show it.
+		return dest, fmt.Errorf("saved to %s but open failed: %w", dest, openErr)
+	}
+	return dest, nil
+}
+
+// fetchMobileDocumentOriginal downloads original bytes for a draft the viewer owns.
+func (a *App) fetchMobileDocumentOriginal(draftID string) (filename string, raw []byte, err error) {
+	draft, err := a.GetMobileDocumentDraft(draftID)
+	if err != nil {
+		return "", nil, err
+	}
+	if draft == nil || !draft.HasOriginal {
+		return "", nil, fmt.Errorf("this draft has no original file on Hub")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return "", nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return "", nil, fmt.Errorf("MaClaw Hub login is required to download originals")
+	}
+	sourcePath := strings.TrimSpace(draft.SourceDownloadURL)
+	if sourcePath == "" {
+		sourcePath = "/api/mobile/documents/drafts/" + url.PathEscape(strings.TrimSpace(draft.ID)) + "/source"
+	}
+	fullURL := sourcePath
+	if !strings.HasPrefix(sourcePath, "http://") && !strings.HasPrefix(sourcePath, "https://") {
+		if !strings.HasPrefix(sourcePath, "/") {
+			sourcePath = "/" + sourcePath
+		}
+		fullURL = hubURL + sourcePath
+	}
+	req, err := http.NewRequest(http.MethodGet, fullURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("download original failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, mobileDocumentOriginalMaxBytes+1))
+	if readErr != nil {
+		return "", nil, fmt.Errorf("download original failed: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil, fmt.Errorf("download original failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if len(body) > mobileDocumentOriginalMaxBytes {
+		return "", nil, fmt.Errorf("original file exceeds 25MB limit")
+	}
+	filename = strings.TrimSpace(draft.SourceFilename)
+	if filename == "" {
+		filename = strings.TrimSpace(draft.Title)
+	}
+	if filename == "" {
+		filename = draft.ID + ".bin"
+	}
+	filename = filepath.Base(filename)
+	return filename, body, nil
+}
+
+func sanitizeMobileOriginalFilename(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "original.bin"
+	}
+	// Strip characters unsafe on Windows paths.
+	replacer := strings.NewReplacer(
+		"<", "_", ">", "_", ":", "_", "\"", "_",
+		"/", "_", "\\", "_", "|", "_", "?", "_", "*", "_",
+	)
+	name = replacer.Replace(name)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "original.bin"
+	}
+	return name
 }

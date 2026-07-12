@@ -7,6 +7,11 @@ import (
 	"github.com/viterin/vek/vek32"
 )
 
+// enableSenseVoiceQ4FFN remains off until the panel kernel folds scale
+// reduction and stores into its VNNI loop. The current experimental path is
+// numerically valid but slower than the established Q8 kernel end-to-end.
+const enableSenseVoiceQ4FFN = false
+
 type kvCache struct {
 	selfK  [][]float32 // [layer] pre-allocated, grows with step*dim
 	selfV  [][]float32
@@ -121,6 +126,10 @@ func matMulLinearBiasReLU(out, a []float32, w linearWeight, bias []float32, M, N
 func matMulLinearBiasAdd(out, a []float32, w linearWeight, bias []float32, M, N, K int) {
 	if w.f32 != nil {
 		tensor.MatMulBiasAdd(out, a, w.f32, bias, M, N, K)
+		return
+	}
+	if enableSenseVoiceQ4FFN && w.q4 != nil {
+		tensor.MatMulQ4BiasAdd(out, a, w.q4, bias, M, N, K)
 		return
 	}
 	tensor.MatMulQ8BiasAdd(out, a, w.q8, bias, M, N, K)

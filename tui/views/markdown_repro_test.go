@@ -10,9 +10,9 @@ import (
 // to identify which markdown elements fail to render.
 func TestScreenshotRepro(t *testing.T) {
 	// Content that matches the screenshot
-	md := `PDF 已经生成并发送给你了！ 🎉
+	md := `PDF 已经生成并发送给你了！ 
 
-📁 文件：**HuggingFace_Daily_Papers_综述_2026-04-23.pdf**
+文件：**HuggingFace_Daily_Papers_综述_2026-04-23.pdf**
 
 报告内容概览：
 
@@ -27,9 +27,9 @@ func TestScreenshotRepro(t *testing.T) {
 
 | # | 论文 | 热度 | 方向 |
 |---|------|------|------|
-| 1 | LLaDA2.0-Uni（统一多模态扩散模型） | 🔥207 | 多模态 |
-| 2 | Near-Future Policy Optimization | 🔥43 | RLHF |
-| 3 | DR-Venus（4B边缘研究智能体） | 🔥37 | Agent |`
+| 1 | LLaDA2.0-Uni（统一多模态扩散模型） | 207 | 多模态 |
+| 2 | Near-Future Policy Optimization | 43 | RLHF |
+| 3 | DR-Venus（4B边缘研究智能体） | 37 | Agent |`
 
 	lines := RenderMarkdown(md, 100)
 
@@ -88,7 +88,7 @@ func TestScreenshotRepro(t *testing.T) {
 
 // TestBoldInParagraph tests that **bold** in normal paragraphs is rendered.
 func TestBoldInParagraph(t *testing.T) {
-	md := "📁 文件：**HuggingFace_Daily_Papers.pdf**"
+	md := "文件：**HuggingFace_Daily_Papers.pdf**"
 	lines := RenderMarkdown(md, 80)
 	fmt.Println("=== Bold in paragraph ===")
 	for i, l := range lines {
@@ -114,7 +114,7 @@ func TestBoldWithFullwidthColon(t *testing.T) {
 		{"halfwidth colon", "文件: **name.pdf**"},
 		{"no space", "文件：**name.pdf**"},
 		{"with space", "文件： **name.pdf**"},
-		{"emoji prefix", "📁 **name.pdf**"},
+		{"emoji prefix", "**name.pdf**"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestWrapLineBreaksMarkdown(t *testing.T) {
 func TestStreamingPartialBold(t *testing.T) {
 	// During streaming, content arrives incrementally.
 	// At some point the content might be:
-	partial := "📁 文件：**HuggingFace_Daily_Papers_综述_2026-04-23.pdf"
+	partial := "文件：**HuggingFace_Daily_Papers_综述_2026-04-23.pdf"
 	// Missing closing **
 	lines := RenderMarkdown(partial, 80)
 	fmt.Println("=== Partial bold (no closing **) ===")
@@ -358,7 +358,7 @@ func TestWrapToWidthShortString(t *testing.T) {
 
 // TestEmojiInTableCells tests tables with emoji content.
 func TestEmojiInTableCells(t *testing.T) {
-	md := "| # | 名称 | 热度 |\n|---|------|------|\n| 1 | Test | 🔥207 |"
+	md := "| # | 名称 | 热度 |\n|---|------|------|\n| 1 | Test | 207 |"
 	lines := RenderMarkdown(md, 80)
 	fmt.Println("=== Emoji table ===")
 	for i, l := range lines {

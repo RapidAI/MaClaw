@@ -32,4 +32,13 @@ const (
 	// EventAppUpdateAvailable is emitted after the delayed startup update check
 	// finds a newer application release.
 	EventAppUpdateAvailable = "app-update-available"
+
+	// Skill evolution / self-repair events (EvolutionPipeline + SkillRunner).
+	// Values must match corelib/skill event constants and frontend events.ts.
+	EventSkillUsageUpdated    = "skill:usage_updated"
+	EventSkillRepaired        = "skill:repaired"
+	EventSkillOptimized       = "skill:optimized"
+	EventSkillAutoDiscovered  = "skill:auto_discovered"
+	EventSkillExecutionFailed = "skill:execution_failed"
+	EventSkillIndexRefreshed  = "skill:index_refreshed"
 )

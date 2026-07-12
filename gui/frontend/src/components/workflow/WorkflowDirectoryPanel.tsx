@@ -271,7 +271,14 @@ export function WorkflowDirectoryPanel({ hubBaseUrl, getWorkflowDirectory }: Wor
                 {!loading && error && <CenteredMessage color="var(--theme-danger, #c43d34)">加载失败: {error}</CenteredMessage>}
                 {!loading && !error && items.length === 0 && (
                     <CenteredMessage>
-                        <span style={{ fontSize: "1.5rem", display: "block", marginBottom: 8 }}>📋</span>
+                        <span style={{ display: "inline-flex", marginBottom: 8, opacity: 0.55 }}>
+                            {/* inline SVG to avoid extra import surface in workflow package */}
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <rect x="6" y="5" width="12" height="16" rx="1.5" />
+                                <path d="M9 5V4h6v1" />
+                                <path d="M9 10h6M9 13.5h6M9 17h4" />
+                            </svg>
+                        </span>
                         暂无数据
                     </CenteredMessage>
                 )}

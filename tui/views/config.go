@@ -980,7 +980,7 @@ func llmURLSuggestions(cfg corelib.AppConfig) []string {
 
 func llmModelSuggestions(cfg corelib.AppConfig) []string {
 	values := providerModelOptionsFromConfig(&cfg, currentLLMPresetName(&cfg))
-	values = append(values, cfg.MaclawLLMModel)
+	values = append(values, cfg.MaclawLLMModel, "auto")
 	for _, p := range cfg.MaclawLLMProviders {
 		if strings.TrimSpace(p.Name) == strings.TrimSpace(cfg.MaclawLLMCurrentProvider) {
 			continue
@@ -1543,9 +1543,9 @@ func (m ConfigModel) View() string {
 
 		if isBoolField {
 			if val == "true" {
-				val = cfgToggleOn.Render("● " + configOptionDisplay(e.Key, val, m.lang))
+				val = cfgToggleOn.Render("[ON] " + configOptionDisplay(e.Key, val, m.lang))
 			} else {
-				val = cfgToggleOff.Render("○ " + configOptionDisplay(e.Key, val, m.lang))
+				val = cfgToggleOff.Render("[OFF] " + configOptionDisplay(e.Key, val, m.lang))
 			}
 		} else if len(options) > 0 {
 			val = configOptionDisplay(e.Key, val, m.lang)

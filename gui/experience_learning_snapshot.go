@@ -6,10 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/session"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+const experienceSnapshotSkillMaintenanceHintLimit = 12
 
 const (
 	experienceSnapshotRoutingHintLimit   = 8
@@ -205,6 +209,9 @@ type ExperienceLearningSnapshot struct {
 	LayeredMemoryReason               string                                      `json:"layered_memory_reason,omitempty"`
 	MemoryMaintenanceRecommendation   string                                      `json:"memory_maintenance_recommendation,omitempty"`
 	MemoryMaintenanceBoundary         string                                      `json:"memory_maintenance_boundary,omitempty"`
+	// High-value skill curator recommendations for next-turn / UI review.
+	SkillMaintenanceHints     []skill.MaintenanceExperienceHint `json:"skill_maintenance_hints"`
+	SkillMaintenanceHintCount int                               `json:"skill_maintenance_hint_count"`
 }
 
 // GetExperienceLearningSnapshot returns the current learning signals for UI
@@ -214,7 +221,14 @@ func (a *App) GetExperienceLearningSnapshot() ExperienceLearningSnapshot {
 	if a.memoryStore == nil {
 		a.ensureMemoryStore()
 	}
-	snapshot := buildExperienceLearningSnapshot(a.usageTracker, a.memoryStore)
+	var skills []corelib.NLSkillEntry
+	a.ensureSkillRunner()
+	if a.skillExecutor != nil {
+		a.skillExecutor.mu.RLock()
+		skills = a.skillExecutor.loadSkills()
+		a.skillExecutor.mu.RUnlock()
+	}
+	snapshot := buildExperienceLearningSnapshot(a.usageTracker, a.memoryStore, skills)
 	a.ensureSessionStore()
 	if a.sessionSearchStore != nil {
 		if summaries, err := a.sessionSearchStore.ListRecent(experienceSnapshotSessionTraceLimit); err == nil {
@@ -235,11 +249,15 @@ func (a *App) GetExperienceLearningSnapshot() ExperienceLearningSnapshot {
 	return snapshot
 }
 
-func buildExperienceLearningSnapshot(tracker *coretool.UsageTracker, mem *memory.Store) ExperienceLearningSnapshot {
-	return buildExperienceLearningSnapshotWithTraceLimit(tracker, mem, experienceSnapshotTraceDetailLimit)
+func buildExperienceLearningSnapshot(tracker *coretool.UsageTracker, mem *memory.Store, skills ...[]corelib.NLSkillEntry) ExperienceLearningSnapshot {
+	var skillList []corelib.NLSkillEntry
+	if len(skills) > 0 {
+		skillList = skills[0]
+	}
+	return buildExperienceLearningSnapshotWithTraceLimit(tracker, mem, experienceSnapshotTraceDetailLimit, skillList)
 }
 
-func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracker, mem *memory.Store, traceDetailLimit int) ExperienceLearningSnapshot {
+func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracker, mem *memory.Store, traceDetailLimit int, skills []corelib.NLSkillEntry) ExperienceLearningSnapshot {
 	snapshot := ExperienceLearningSnapshot{
 		RoutingHints:              []coretool.ToolRoutingHint{},
 		SkillNudgeCandidates:      []coretool.ToolSkillNudgeCandidate{},
@@ -259,6 +277,7 @@ func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracke
 		ApprovedSkillDraftReviews: []ExperienceApprovedSkillDraftReviewSummary{},
 		SkillDraftReviewQueues:    emptyExperienceSkillDraftReviewQueues(),
 		ToolRecoverySummaries:     []ExperienceToolRecoverySummary{},
+		SkillMaintenanceHints:     []skill.MaintenanceExperienceHint{},
 	}
 
 	if tracker != nil {
@@ -297,6 +316,13 @@ func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracke
 		snapshot.LayeredMemoryReason = result.Reason
 		snapshot.MemoryMaintenanceRecommendation = experienceMemoryMaintenanceRecommendation(result)
 		snapshot.MemoryMaintenanceBoundary = "read-only memory maintenance snapshot; no compression, promotion, deletion, or rewrite was performed"
+	}
+
+	// High-value skill maintenance curator hints (read-only; no skill mutation).
+	if len(skills) > 0 {
+		hints := skill.CollectHighValueMaintenanceHints(skills, experienceSnapshotSkillMaintenanceHintLimit)
+		snapshot.SkillMaintenanceHints = hints
+		snapshot.SkillMaintenanceHintCount = len(hints)
 	}
 
 	traceDetails := collectExperienceTraceDetails(snapshot, mem)

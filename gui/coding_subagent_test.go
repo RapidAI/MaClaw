@@ -1185,7 +1185,7 @@ func TestRemoteCodingSubAgentDefaultWorkingDirFallsBackToWorkDir(t *testing.T) {
 
 func TestRemoteWriteFileResultRequiresExplicitOK(t *testing.T) {
 	success := remoteWriteFileResult("/repo/main.py", 12, "OK\n", false)
-	if !strings.Contains(success, "✅ 已写入 /repo/main.py") || !strings.Contains(success, "12 bytes") || !strings.Contains(success, "created=false") {
+	if !strings.Contains(success, "已写入 /repo/main.py") || !strings.Contains(success, "12 bytes") || !strings.Contains(success, "created=false") {
 		t.Fatalf("write result should report success when command prints OK, got %q", success)
 	}
 	created := remoteWriteFileResult("/repo/new.py", 8, "OK created=true\n", false)
@@ -1217,7 +1217,7 @@ func TestRemoteWriteFileResultRequiresExplicitOK(t *testing.T) {
 
 func TestRemoteEditFileResultRequiresExplicitOK(t *testing.T) {
 	success := remoteEditFileResult("/repo/main.py", "OK: replaced 1 occurrence\n")
-	if !strings.Contains(success, "✅ 已编辑 /repo/main.py") {
+	if !strings.Contains(success, "已编辑 /repo/main.py") {
 		t.Fatalf("edit result should report success when command prints OK, got %q", success)
 	}
 	for _, result := range []string{
@@ -1424,6 +1424,40 @@ func TestRemoteCodingSubAgentKeepsVerifiedExistingArtifactSuccessful(t *testing.
 	})
 	if result.Status != "failed" {
 		t.Fatalf("unresolved command failures must not recover a failed remote task, got %#v", result)
+	}
+}
+
+func TestRemoteCodingSubAgentKeepsConclusiveEditedTaskSuccessfulAfterIterationLimit(t *testing.T) {
+	cb := &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/hello.cpp", true)
+	cb.trackRemoteFileRead("/repo/hello.cpp")
+	cb.trackRemoteCommand("g++ -o hello hello.cpp", "/repo", "compiled successfully", true)
+	cb.trackRemoteCommand("./hello", "/repo", "Hello, World!\nexit code = 0", true)
+	cb.trackRemoteCommand("git status --short", "/repo", "fatal: not a git repository", false)
+
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "max iterations reached",
+		Summary:   "created and verified hello world",
+		ToolCalls: 5,
+	})
+	if result.Status != "success" || result.Error != "" {
+		t.Fatalf("conclusively verified edited task should recover from the iteration limit, got %#v", result)
+	}
+
+	cb = &remoteCodingCallbacks{}
+	cb.trackRemoteFileChanged("/repo/hello.cpp", true)
+	cb.trackRemoteFileRead("/repo/hello.cpp")
+	cb.trackRemoteCommand("g++ -o hello hello.cpp", "/repo", "compiled successfully", true)
+	cb.trackRemoteCommand("./hello", "/repo", "Hello, World!\nexit code = 0", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "failed",
+		Error:     "LLM call failed: connection reset",
+		Summary:   "created and verified hello world",
+		ToolCalls: 4,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("non-iteration terminal failures must remain failures, got %#v", result)
 	}
 }
 
@@ -2563,7 +2597,7 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 	successes := []string{
 		"",
 		"OK: replaced 1 occurrence",
-		"✅ 已写入 /tmp/file.py (42 bytes, created=false)",
+		"已写入 /tmp/file.py (42 bytes, created=false)",
 		"0 errors and 0 warnings",
 		"[completed] task task-123\nstatus: completed\nexit_code: 0\n--- latest log ---\n1 passed",
 		"EXIT: 0\nall checks passed",
@@ -2657,6 +2691,9 @@ func TestRemoteCodingSubAgentToolFinishedEventIncludesRedactedBashCommand(t *tes
 	t.Fatalf("expected remote tool_finished event, progress=%#v", progress)
 }
 func TestRemoteCodingToolFailureDiagnosticSeverityClassifier(t *testing.T) {
+	if !remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"git diff --stat && git status --short"}`, "fatal: not a git repository", "failed") {
+		t.Fatal("remote non-Git diff probe should be marked diagnostic")
+	}
 	if !remoteCodingToolFailureIsDiagnostic("ssh_bash", `{"command":"g++ --version 2>&1; cmake --version 2>&1"}`, "g++: command not found", "failed") {
 		t.Fatal("remote diagnostic probe failure should be marked diagnostic")
 	}
@@ -2784,25 +2821,27 @@ func TestRemoteCodingSubAgentPythonCommandsEncodePaths(t *testing.T) {
 	pathB64 := base64.StdEncoding.EncodeToString([]byte(path))
 
 	writeCmd := remoteWriteFilePythonCommand(path, "print('hello')\n")
-	if !strings.Contains(writeCmd, pathB64) {
-		t.Fatalf("write command should contain base64 path %q, got %q", pathB64, writeCmd)
+	writeScript := decodeRemotePythonCommandForTest(t, writeCmd)
+	if !strings.Contains(writeScript, pathB64) {
+		t.Fatalf("write command should contain base64 path %q, got %q", pathB64, writeScript)
 	}
-	if strings.Contains(writeCmd, path) || strings.Contains(writeCmd, "pathlib.Path('/repo") {
-		t.Fatalf("write command should not embed raw path in Python string, got %q", writeCmd)
+	if strings.Contains(writeScript, path) || strings.Contains(writeScript, "pathlib.Path('/repo") {
+		t.Fatalf("write command should not embed raw path in Python string, got %q", writeScript)
 	}
-	if strings.Contains(writeCmd, "\n\timport ") || strings.Contains(writeCmd, "\n\tp =") {
-		t.Fatalf("write command should not embed Go indentation into Python source, got %q", writeCmd)
+	if strings.Contains(writeScript, "\n\timport ") || strings.Contains(writeScript, "\n\tp =") {
+		t.Fatalf("write command should not embed Go indentation into Python source, got %q", writeScript)
 	}
-	if !strings.Contains(writeCmd, "base64.b64decode") {
-		t.Fatalf("write command should decode path/content via base64, got %q", writeCmd)
+	if !strings.Contains(writeScript, "base64.b64decode") {
+		t.Fatalf("write command should decode path/content via base64, got %q", writeScript)
 	}
-	if !strings.Contains(writeCmd, "created = not p.exists()") || !strings.Contains(writeCmd, "created=") {
-		t.Fatalf("write command should report whether it created or overwrote the file, got %q", writeCmd)
+	if !strings.Contains(writeScript, "created = not p.exists()") || !strings.Contains(writeScript, "created=") {
+		t.Fatalf("write command should report whether it created or overwrote the file, got %q", writeScript)
 	}
 
 	largeCmd := remoteWriteFileLargeDecodeCommand(path, "/tmp/maclaw_write_123")
-	if !strings.Contains(largeCmd, pathB64) {
-		t.Fatalf("large-write decode command should contain base64 path %q, got %q", pathB64, largeCmd)
+	largeScript := decodeRemotePythonCommandForTest(t, strings.Split(largeCmd, " && rm -f ")[0])
+	if !strings.Contains(largeScript, pathB64) {
+		t.Fatalf("large-write decode command should contain base64 path %q, got %q", pathB64, largeScript)
 	}
 	if strings.Contains(largeCmd, path) || strings.Contains(largeCmd, "pathlib.Path('/repo") {
 		t.Fatalf("large-write decode command should not embed raw path in Python string, got %q", largeCmd)
@@ -2813,8 +2852,8 @@ func TestRemoteCodingSubAgentPythonCommandsEncodePaths(t *testing.T) {
 	if !strings.Contains(largeCmd, "rm -f '/tmp/maclaw_write_123'") {
 		t.Fatalf("large-write decode command should shell-quote tmp cleanup path, got %q", largeCmd)
 	}
-	if !strings.Contains(largeCmd, "created = not p.exists()") || !strings.Contains(largeCmd, "created=") {
-		t.Fatalf("large-write command should report whether it created or overwrote the file, got %q", largeCmd)
+	if !strings.Contains(largeScript, "created = not p.exists()") || !strings.Contains(largeScript, "created=") {
+		t.Fatalf("large-write command should report whether it created or overwrote the file, got %q", largeScript)
 	}
 
 	chunkCmd := remoteWriteFileLargeChunkCommand("/tmp/maclaw write '123'", "YWJjZA==", false)
@@ -2832,18 +2871,27 @@ func TestRemoteCodingSubAgentPythonCommandsEncodePaths(t *testing.T) {
 	}
 
 	editCmd := remoteEditFilePythonCommand(path, "  old\n", "")
-	if !strings.Contains(editCmd, pathB64) {
-		t.Fatalf("edit command should contain base64 path %q, got %q", pathB64, editCmd)
+	editScript := decodeRemotePythonCommandForTest(t, editCmd)
+	if !strings.Contains(editScript, pathB64) {
+		t.Fatalf("edit command should contain base64 path %q, got %q", pathB64, editScript)
 	}
-	if strings.Contains(editCmd, path) || strings.Contains(editCmd, "pathlib.Path('/repo") {
-		t.Fatalf("edit command should not embed raw path in Python string, got %q", editCmd)
+	if strings.Contains(editScript, path) || strings.Contains(editScript, "pathlib.Path('/repo") {
+		t.Fatalf("edit command should not embed raw path in Python string, got %q", editScript)
 	}
-	if strings.Contains(editCmd, "\n\timport ") || strings.Contains(editCmd, "\n\tif ") {
-		t.Fatalf("edit command should not embed Go indentation into Python source, got %q", editCmd)
+	if strings.Contains(editScript, "\n\timport ") || strings.Contains(editScript, "\n\tif ") {
+		t.Fatalf("edit command should not embed Go indentation into Python source, got %q", editScript)
 	}
-	if !strings.Contains(editCmd, base64.StdEncoding.EncodeToString([]byte("  old\n"))) ||
-		!strings.Contains(editCmd, base64.StdEncoding.EncodeToString([]byte(""))) {
-		t.Fatalf("edit command should base64 encode old/new strings, got %q", editCmd)
+	if !strings.Contains(editScript, base64.StdEncoding.EncodeToString([]byte("  old\n"))) ||
+		!strings.Contains(editScript, base64.StdEncoding.EncodeToString([]byte(""))) {
+		t.Fatalf("edit command should base64 encode old/new strings, got %q", editScript)
+	}
+}
+
+func TestCompactRemoteCodingResultTailPreservesFailureDetail(t *testing.T) {
+	result := "very long echoed command " + strings.Repeat("x", 80) + " SyntaxError: invalid syntax near indentation"
+	got := compactRemoteCodingResultTail(result, 48)
+	if !strings.HasPrefix(got, "...") || !strings.Contains(got, "SyntaxError: invalid syntax near indentation") {
+		t.Fatalf("remote result tail should retain the actionable failure detail, got %q", got)
 	}
 }
 
@@ -2851,35 +2899,37 @@ func TestRemoteCodingSubAgentReadFileRangeCommandAndArgs(t *testing.T) {
 	path := "/repo/src/O'Reilly $HOME/main.py"
 	pathB64 := base64.StdEncoding.EncodeToString([]byte(path))
 	cmd := remoteReadFileRangePythonCommand(path, 25, 40)
-	if !strings.Contains(cmd, pathB64) {
-		t.Fatalf("read range command should contain base64 path %q, got %q", pathB64, cmd)
+	decodedScript := decodeRemotePythonCommandForTest(t, cmd)
+	if !strings.Contains(decodedScript, pathB64) {
+		t.Fatalf("read range command should contain base64 path %q, got %q", pathB64, decodedScript)
 	}
 	if strings.Contains(cmd, path) || strings.Contains(cmd, "pathlib.Path('/repo") {
 		t.Fatalf("read range command should not embed raw path in Python string, got %q", cmd)
 	}
 	for _, want := range []string{"start = 25", "limit = 40", "with p.open", "errors=", "for lineno, line in enumerate(f, start=1)", "shown >= limit", "remote read_file EOF", "remote read_file truncated", "offset=%d"} {
-		if !strings.Contains(cmd, want) {
-			t.Fatalf("read range command should contain %q, got %q", want, cmd)
+		if !strings.Contains(decodedScript, want) {
+			t.Fatalf("read range command should contain %q, got %q", want, decodedScript)
 		}
 	}
-	if strings.Contains(cmd, "read_text(encoding='utf-8').splitlines") || strings.Contains(cmd, "lines[begin:end]") {
-		t.Fatalf("read range command should stream line ranges instead of loading the full file, got %q", cmd)
+	if strings.Contains(decodedScript, "read_text(encoding='utf-8').splitlines") || strings.Contains(decodedScript, "lines[begin:end]") {
+		t.Fatalf("read range command should stream line ranges instead of loading the full file, got %q", decodedScript)
 	}
-	if strings.Contains(cmd, "sys.stdout.buffer.write(p.read_bytes())") {
-		t.Fatalf("read range command should not dump full binary/non-UTF8 files, got %q", cmd)
+	if strings.Contains(decodedScript, "sys.stdout.buffer.write(p.read_bytes())") {
+		t.Fatalf("read range command should not dump full binary/non-UTF8 files, got %q", decodedScript)
 	}
-	if strings.Contains(cmd, "%!d(MISSING)") {
-		t.Fatalf("read range command should preserve Python percent-format placeholders, got %q", cmd)
+	if strings.Contains(decodedScript, "%!d(MISSING)") {
+		t.Fatalf("read range command should preserve Python percent-format placeholders, got %q", decodedScript)
 	}
-	if strings.Contains(cmd, "\n\timport ") || strings.Contains(cmd, "\n\tfor ") || strings.Contains(cmd, "\n\tif ") {
-		t.Fatalf("read range command should not embed Go indentation into Python source, got %q", cmd)
+	if strings.Contains(decodedScript, "\n\timport ") || strings.Contains(decodedScript, "\n\tfor ") || strings.Contains(decodedScript, "\n\tif ") {
+		t.Fatalf("read range command should not embed Go indentation into Python source, got %q", decodedScript)
 	}
-	if !strings.Contains(cmd, "remote read_file binary/non-UTF8") || !strings.Contains(cmd, "text line range unavailable") {
-		t.Fatalf("read range command should report bounded binary/non-UTF8 diagnostics, got %q", cmd)
+	if !strings.Contains(decodedScript, "remote read_file binary/non-UTF8") || !strings.Contains(decodedScript, "text line range unavailable") {
+		t.Fatalf("read range command should report bounded binary/non-UTF8 diagnostics, got %q", decodedScript)
 	}
 
 	cmd = remoteReadFileRangePythonCommand(path, 0, 0)
-	if !strings.Contains(cmd, "start = 1") || !strings.Contains(cmd, "limit = 200") {
+	decodedScript = decodeRemotePythonCommandForTest(t, cmd)
+	if !strings.Contains(decodedScript, "start = 1") || !strings.Contains(decodedScript, "limit = 200") {
 		t.Fatalf("read range command should default to offset=1 limit=200, got %q", cmd)
 	}
 
@@ -2896,6 +2946,21 @@ func TestRemoteCodingSubAgentReadFileRangeCommandAndArgs(t *testing.T) {
 	if got := remoteArgInt(map[string]interface{}{"offset": -5}, 10, 0, 2000, "offset"); got != 0 {
 		t.Fatalf("remoteArgInt should clamp min value, got %d", got)
 	}
+}
+
+func decodeRemotePythonCommandForTest(t *testing.T, command string) string {
+	t.Helper()
+	const prefix = "python3 -c \"$(printf '%s' '"
+	const suffix = "' | base64 -d)\""
+	if !strings.HasPrefix(command, prefix) || !strings.HasSuffix(command, suffix) {
+		t.Fatalf("remote Python command must use a base64 single-line transport, got %q", command)
+	}
+	encoded := strings.TrimSuffix(strings.TrimPrefix(command, prefix), suffix)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode remote Python command: %v", err)
+	}
+	return string(decoded)
 }
 
 func TestCodingSubAgentEditLinesAliasesPassExecution(t *testing.T) {
@@ -3787,7 +3852,7 @@ func TestCodingToolExecutionUsesStructuredOutcome(t *testing.T) {
 	if got := compactCodingToolResultSummary("ordinary prelude\ncoverage: 12.3%\nFAIL: TestCheckout expected 200 got 500\ncommand exited with code 1"); got != "FAIL: TestCheckout expected 200 got 500" {
 		t.Fatalf("stdout failure diagnostic summary = %q", got)
 	}
-	if got := compactCodingToolResultSummary("ordinary prelude\n✖ 10 errors and 0 warnings\ncommand exited with code 1"); got != "✖ 10 errors and 0 warnings" {
+	if got := compactCodingToolResultSummary("ordinary prelude\n\u2716 10 errors and 0 warnings\ncommand exited with code 1"); got != "\u2716 10 errors and 0 warnings" {
 		t.Fatalf("double-digit error count should remain actionable diagnostic, got %q", got)
 	}
 	if got := compactCodingToolResultSummary("ordinary prelude\n0 errors and 0 warnings\nsrc/main.ts:12: TypeError: missing handler\ncommand exited with code 1"); got != "src/main.ts:12: TypeError: missing handler" {

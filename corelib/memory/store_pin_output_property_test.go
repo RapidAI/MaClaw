@@ -9,11 +9,15 @@ import (
 	"pgregory.net/rapid"
 )
 
+// pinOutputIndicator is the display marker used for pinned memory entries.
+// Keep this as a stable UTF-8 rune so property tests and product UIs stay aligned.
+const pinOutputIndicator = "📌"
+
 // Feature: memory-claude-style-upgrade, Property 13: Pinned entry indicator in output
 // **Validates: Requirements 4.7**
 //
 // For any pinned entry returned by list or search operations, the formatted
-// output string should contain the 📌 indicator character.
+// output string should contain the indicator character.
 func TestProperty_PinIndicatorInOutput(t *testing.T) {
 	dir := t.TempDir()
 
@@ -61,12 +65,12 @@ func TestProperty_PinIndicatorInOutput(t *testing.T) {
 		for _, e := range listed {
 			line := formatEntryLine(e)
 			if e.Pinned {
-				if !strings.Contains(line, "📌") {
-					rt.Fatalf("pinned entry %s missing 📌 indicator in output: %s", e.ID, line)
+				if !strings.Contains(line, pinOutputIndicator) {
+					rt.Fatalf("pinned entry %s missing indicator in output: %s", e.ID, line)
 				}
 			} else {
-				if strings.Contains(line, "📌") {
-					rt.Fatalf("unpinned entry %s should not have 📌 indicator in output: %s", e.ID, line)
+				if strings.Contains(line, pinOutputIndicator) {
+					rt.Fatalf("unpinned entry %s should not have indicator in output: %s", e.ID, line)
 				}
 			}
 		}
@@ -76,8 +80,8 @@ func TestProperty_PinIndicatorInOutput(t *testing.T) {
 		for _, e := range searched {
 			line := formatEntryLine(e)
 			if e.Pinned {
-				if !strings.Contains(line, "📌") {
-					rt.Fatalf("pinned entry %s missing 📌 indicator in search output: %s", e.ID, line)
+				if !strings.Contains(line, pinOutputIndicator) {
+					rt.Fatalf("pinned entry %s missing indicator in search output: %s", e.ID, line)
 				}
 			}
 		}
@@ -85,11 +89,11 @@ func TestProperty_PinIndicatorInOutput(t *testing.T) {
 }
 
 // formatEntryLine mirrors the formatting logic used in both TUI and GUI
-// toolMemory list/search output. Pinned entries get a 📌 prefix.
+// toolMemory list/search output. Pinned entries get a prefix.
 func formatEntryLine(e Entry) string {
 	prefix := ""
 	if e.Pinned {
-		prefix = "📌 "
+		prefix = pinOutputIndicator + " "
 	}
 	return fmt.Sprintf("%s[%s] %s: %s (tags: %s)", prefix, e.ID, e.Category, e.Content, strings.Join(e.Tags, ","))
 }

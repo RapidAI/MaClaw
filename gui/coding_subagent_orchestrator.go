@@ -460,7 +460,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			}
 			log.Printf("[subagent-runner] launching parallel batch: concurrency=%d tasks=[%s]", len(handles), strings.Join(taskNames, ","))
 			if onProgress != nil {
-				onProgress(fmt.Sprintf("🚀 并行执行 %d 个任务: %s", len(handles), strings.Join(taskNames, ", ")))
+				onProgress(fmt.Sprintf("并行执行 %d 个任务: %s", len(handles), strings.Join(taskNames, ", ")))
 			}
 		}
 		prevOutputs := r.collectPreviousOutputs()
@@ -492,7 +492,7 @@ func (r *SubAgentTaskRunner) RunAllTasks(
 			concurrency = 1
 			log.Printf("[subagent-runner] batch had failed task(s), reducing next batch to sequential (concurrency=1)")
 			if onProgress != nil {
-				onProgress("⚠️ 检测到任务运行错误，下一批次将顺序执行")
+				onProgress("检测到任务运行错误，下一批次将顺序执行")
 			}
 		} else if concurrency < configuredConc {
 			// Previous batch had a failure that reduced concurrency;

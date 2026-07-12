@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,8 +31,149 @@ type RepairContext struct {
 	FailedStepIndex     int               `json:"failed_step_index"`
 	StepOutput          string            `json:"step_output"` // truncated to 2000 chars
 	ErrorClass          string            `json:"error_class"` // from classifySkillStepError
-	RunArgs             map[string]string `json:"run_args"`    // args used in this run
+	RunArgs             map[string]string `json:"run_args"`    // actual args used in this run (ActualArgs)
 	PreviousRepairCount int               `json:"previous_repair_count"`
+
+	// Parameter contract (DeclaredParams vs ActualArgs) so the repair LLM can
+	// distinguish "caller passed wrong/missing param names" from "skill logic bug".
+	// Filled by EnrichRepairParamContract when empty.
+	DeclaredParams      []corelib.NLSkillParam `json:"declared_params,omitempty"`
+	MissingRequired     []string               `json:"missing_required,omitempty"`
+	UnknownArgs         []string               `json:"unknown_args,omitempty"`
+	ResolvedByAlias     map[string]string      `json:"resolved_by_alias,omitempty"` // actual→declared
+	ParamContractNote   string                 `json:"param_contract_note,omitempty"`
+}
+
+// NewRepairContext builds a RepairContext with error class from LastError and
+// optional run args, then enriches the parameter contract from the skill schema.
+func NewRepairContext(skill *corelib.NLSkillEntry, runArgs map[string]string) *RepairContext {
+	ctx := &RepairContext{}
+	if skill != nil {
+		ctx.ErrorClass = ExtractErrorClass(skill.LastError)
+		ctx.StepOutput = skill.LastError
+		ctx.PreviousRepairCount = skill.RepairAttemptCount
+	}
+	if len(runArgs) > 0 {
+		ctx.RunArgs = make(map[string]string, len(runArgs))
+		for k, v := range runArgs {
+			ctx.RunArgs[k] = v
+		}
+	}
+	EnrichRepairParamContract(skill, ctx)
+	return ctx
+}
+
+// EnrichRepairParamContract fills DeclaredParams / mismatch fields when empty.
+// Safe to call multiple times; does not overwrite non-empty DeclaredParams.
+func EnrichRepairParamContract(skill *corelib.NLSkillEntry, ctx *RepairContext) {
+	if ctx == nil || skill == nil {
+		return
+	}
+	if len(ctx.DeclaredParams) == 0 {
+		ctx.DeclaredParams = skillParamContract(skill)
+	}
+	if ctx.RunArgs == nil {
+		ctx.RunArgs = map[string]string{}
+	}
+	missing, unknown, aliasHits := analyzeParamContract(ctx.DeclaredParams, ctx.RunArgs)
+	ctx.MissingRequired = missing
+	ctx.UnknownArgs = unknown
+	ctx.ResolvedByAlias = aliasHits
+	ctx.ParamContractNote = formatParamContractNote(missing, unknown, aliasHits)
+}
+
+// skillParamContract returns declared params, or synthesizes from steps when absent.
+// Descriptions are enriched from SKILL.md / Content when present so repair LLM
+// sees the same human contract as manage_skill(action="info").
+func skillParamContract(skill *corelib.NLSkillEntry) []corelib.NLSkillParam {
+	return CompleteParamsForSkill(skill)
+}
+
+func analyzeParamContract(declared []corelib.NLSkillParam, actual map[string]string) (missing, unknown []string, aliasHits map[string]string) {
+	aliasHits = map[string]string{}
+	if len(declared) == 0 {
+		return nil, nil, nil
+	}
+	// canonical declared names + alias → canonical
+	canonByKey := map[string]string{}
+	required := map[string]bool{}
+	for _, p := range declared {
+		name := canonicalRunVarKey(p.Name)
+		if name == "" {
+			continue
+		}
+		canonByKey[name] = name
+		for _, a := range p.Aliases {
+			ak := canonicalRunVarKey(a)
+			if ak != "" {
+				canonByKey[ak] = name
+			}
+		}
+		if p.Required {
+			required[name] = true
+		}
+	}
+	provided := map[string]bool{}
+	for k := range actual {
+		ck := canonicalRunVarKey(k)
+		if ck == "" {
+			continue
+		}
+		if canon, ok := canonByKey[ck]; ok {
+			provided[canon] = true
+			if canon != ck {
+				aliasHits[k] = canon
+			}
+		} else {
+			unknown = append(unknown, k)
+		}
+	}
+	for name := range required {
+		if !provided[name] {
+			// Check defaulted params — treat Default as satisfied for "missing" list
+			// (repair cares about unbound required placeholders more than defaults).
+			hasDefault := false
+			for _, p := range declared {
+				if canonicalRunVarKey(p.Name) == name && strings.TrimSpace(p.Default) != "" {
+					hasDefault = true
+					break
+				}
+			}
+			if !hasDefault {
+				missing = append(missing, name)
+			}
+		}
+	}
+	if len(aliasHits) == 0 {
+		aliasHits = nil
+	}
+	sort.Strings(missing)
+	sort.Strings(unknown)
+	return missing, unknown, aliasHits
+}
+
+func formatParamContractNote(missing, unknown []string, aliasHits map[string]string) string {
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, "missing required params: "+strings.Join(missing, ", "))
+	}
+	if len(unknown) > 0 {
+		parts = append(parts, "args not in schema (possible wrong names): "+strings.Join(unknown, ", "))
+	}
+	if len(aliasHits) > 0 {
+		pairs := make([]string, 0, len(aliasHits))
+		for actual, declared := range aliasHits {
+			pairs = append(pairs, fmt.Sprintf("%s→%s", actual, declared))
+		}
+		parts = append(parts, "resolved via alias: "+strings.Join(pairs, ", "))
+	}
+	if len(parts) == 0 {
+		if len(missing) == 0 && len(unknown) == 0 {
+			return "param contract: actual args match declared schema (or schema empty)"
+		}
+		return ""
+	}
+	return strings.Join(parts, "; ")
 }
 
 // IsRepairableError returns true if the error class is worth attempting
@@ -59,6 +201,35 @@ func IsRepairableError(errorClass string) bool {
 //
 // Path 2 (statistical): Enough usage data to judge — success rate below 50%.
 func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
+	if !canAttemptRepairBase(skill) {
+		return false
+	}
+
+	// Path 1: Newly installed hub/github skill — first failure is a strong
+	// signal (environment incompatibility). Repair immediately if the error
+	// class is repairable.
+	if skill.UsageCount <= 2 && isHubSource(skill.Source) {
+		return true
+	}
+
+	// Path 2: Statistical — enough data to judge.
+	if skill.UsageCount < SelfRepairThreshold {
+		return false
+	}
+	successRate := float64(skill.SuccessCount) / float64(skill.UsageCount)
+	return successRate < 0.5
+}
+
+// CanForceAttemptRepair reports whether a manual/agent-triggered repair is
+// allowed: same safety guards as auto-repair (LastError, status, file-backed,
+// max attempts, repairable class) but without the usage-rate threshold.
+// Used by manage_skill(action="trigger_repair", force=true).
+func CanForceAttemptRepair(skill *corelib.NLSkillEntry) bool {
+	return canAttemptRepairBase(skill)
+}
+
+// canAttemptRepairBase is the shared safety gate for auto and forced repair.
+func canAttemptRepairBase(skill *corelib.NLSkillEntry) bool {
 	if skill == nil {
 		return false
 	}
@@ -78,20 +249,7 @@ func ShouldAttemptRepair(skill *corelib.NLSkillEntry) bool {
 	if !IsRepairableError(errorClass) {
 		return false
 	}
-
-	// Path 1: Newly installed hub/github skill — first failure is a strong
-	// signal (environment incompatibility). Repair immediately if the error
-	// class is repairable.
-	if skill.UsageCount <= 2 && isHubSource(skill.Source) {
-		return true
-	}
-
-	// Path 2: Statistical — enough data to judge.
-	if skill.UsageCount < SelfRepairThreshold {
-		return false
-	}
-	successRate := float64(skill.SuccessCount) / float64(skill.UsageCount)
-	return successRate < 0.5
+	return true
 }
 
 // IsFileBackedSkill returns true for skills whose authoritative definition
@@ -190,14 +348,24 @@ func AttemptRepairWithContext(llm LLMRepairer, skill *corelib.NLSkillEntry, ctx 
 		stepsDesc.WriteString("\n")
 	}
 
+	// Ensure param contract is present for the prompt even if caller only set RunArgs.
+	if ctx != nil {
+		EnrichRepairParamContract(skill, ctx)
+	}
+
 	systemPrompt := `You are a skill repair assistant. A skill has been failing repeatedly.
-Analyze the error and the current steps, then propose fixed steps.
+Analyze the error, the parameter contract, and the current steps, then propose fixed steps.
 
 Rules:
 - Keep the same action names (tool names) — only modify params or step order
 - Do NOT change the skill's core functionality — only fix the specific failure
 - If a step consistently fails, add on_error: "skip" or "continue"
 - If the error is fundamental (wrong tool, impossible task), set should_disable: true
+- Distinguish PARAMETER CONTRACT failures from SKILL LOGIC failures:
+  * If "missing required params" or "args not in schema" appear, prefer fixing
+    placeholders/aliases/defaults or documenting expected arg names — do NOT rewrite
+    the whole skill just because the caller used a wrong key (e.g. file vs input).
+  * If params match the schema, fix the failing command/template/environment instead.
 - Return ONLY a JSON object with fields: repaired (bool), new_steps (array), explanation (string), should_disable (bool)
 - Each step in new_steps has: action (string), params (object), on_error (string, optional)`
 
@@ -209,18 +377,23 @@ Rules:
 			output = string([]rune(output)[:2000]) + "\n... (truncated)"
 		}
 		argsJSON, _ := json.Marshal(ctx.RunArgs)
+		declaredJSON, _ := json.Marshal(ctx.DeclaredParams)
 		contextSection = fmt.Sprintf(`
 Failed step index: %d
 Error classification: %s
 Step output:
 %s
 
-Run arguments: %s
+Parameter contract (declared schema): %s
+Actual run arguments: %s
+Param contract analysis: %s
 Previous repair attempts: %d`,
 			ctx.FailedStepIndex,
 			ctx.ErrorClass,
 			output,
+			string(declaredJSON),
 			string(argsJSON),
+			firstNonEmptyRepairNote(ctx.ParamContractNote, "(none)"),
 			ctx.PreviousRepairCount,
 		)
 	}
@@ -321,6 +494,15 @@ func recordRepairAttempt(skill *corelib.NLSkillEntry, errorClass, explanation st
 	if len(skill.RepairHistory) > 5 {
 		skill.RepairHistory = skill.RepairHistory[len(skill.RepairHistory)-5:]
 	}
+}
+
+func firstNonEmptyRepairNote(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // MarkRepairVerified marks the last repair history entry as verified (success).

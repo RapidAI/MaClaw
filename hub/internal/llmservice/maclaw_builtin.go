@@ -271,22 +271,27 @@ func (c *MaClawProviderClient) streamHTTPClient() *http.Client {
 }
 
 func streamHTTPClientFrom(base *http.Client) *http.Client {
+	// Streaming must never use a full-request Timeout (it would kill long SSE
+	// responses). Always bound ResponseHeaderTimeout so hung upstreams fail fast.
+	const defaultHeaderTimeout = 120 * time.Second
 	if base == nil {
-		return &http.Client{Transport: defaultStreamTransport(600 * time.Second)}
-	}
-	if base.Timeout == 0 {
-		if base.Transport == nil {
-			client := *base
-			client.Transport = defaultStreamTransport(600 * time.Second)
-			return &client
-		}
-		return base
+		return &http.Client{Transport: defaultStreamTransport(defaultHeaderTimeout)}
 	}
 	client := *base
-	if client.Transport == nil {
-		client.Transport = defaultStreamTransport(base.Timeout)
-	}
 	client.Timeout = 0
+	if client.Transport == nil {
+		// Unbounded base client (Timeout==0, Transport==nil): apply a safe header wait.
+		client.Transport = defaultStreamTransport(defaultHeaderTimeout)
+		return &client
+	}
+	// Preserve a custom transport when present, but still enforce a header timeout.
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		clone := transport.Clone()
+		if clone.ResponseHeaderTimeout <= 0 {
+			clone.ResponseHeaderTimeout = defaultHeaderTimeout
+		}
+		client.Transport = clone
+	}
 	return &client
 }
 

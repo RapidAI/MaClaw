@@ -76,7 +76,7 @@ func (f *SessionStartupFeedback) watchLoop(sessionID string, callback tool.Progr
 		case <-ticker.C:
 			session, ok := f.manager.Get(sessionID)
 			if !ok {
-				callback("⚠️ 会话未找到: " + sessionID)
+				callback("会话未找到: " + sessionID)
 				return
 			}
 
@@ -85,7 +85,7 @@ func (f *SessionStartupFeedback) watchLoop(sessionID string, callback tool.Progr
 			session.mu.RUnlock()
 
 			if status == SessionRunning {
-				callback(fmt.Sprintf("✅ 会话已就绪 (ID: %s, 工具: %s)", session.ID, session.Tool))
+				callback(fmt.Sprintf("会话已就绪 (ID: %s, 工具: %s)", session.ID, session.Tool))
 
 				// Inject resume context only for sessions explicitly launched to continue
 				// an unfinished slot. Plain same-project fresh launches must not inherit it.
@@ -97,7 +97,7 @@ func (f *SessionStartupFeedback) watchLoop(sessionID string, callback tool.Progr
 					if slot := f.unfinishedSlotFor(projectPath); slot != nil {
 						if resumePrompt := f.checkpointer.BuildResumePromptForSlot(slot); resumePrompt != "" {
 							if err := f.manager.WriteInput(sessionID, resumePrompt); err == nil {
-								callback("📋 已加载显式选择的未完成任务进度，已自动注入上下文")
+								callback("已加载显式选择的未完成任务进度，已自动注入上下文")
 							}
 						}
 					}
@@ -109,7 +109,7 @@ func (f *SessionStartupFeedback) watchLoop(sessionID string, callback tool.Progr
 			msgIdx++
 
 		case <-timer.C:
-			callback("⚠️ 会话启动超时（已等待 60 秒），请检查日志或重试")
+			callback("会话启动超时（已等待 60 秒），请检查日志或重试")
 			return
 		}
 	}

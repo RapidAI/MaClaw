@@ -92,7 +92,8 @@ func TestRegisterPWAStaticRoutesServesIndexAndAssets(t *testing.T) {
 
 func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<title>MaClaw Hub Admin</title>"), 0644); err != nil {
+	// Admin is served as external script assets (not inlined into index).
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<title>MaClaw Hub Admin</title><script src="/admin/admin.js"></script>`), 0644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "admin.js"), []byte("console.log('admin');"), 0644); err != nil {
@@ -112,8 +113,8 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	if !strings.Contains(body, "<title>MaClaw Hub Admin</title>") {
 		t.Fatalf("index body missing title: %q", body)
 	}
-	if !strings.Contains(body, "console.log('admin');") {
-		t.Fatalf("index body missing injected admin js: %q", body)
+	if !strings.Contains(body, `src="/admin/admin.js"`) {
+		t.Fatalf("index body missing external admin script ref: %q", body)
 	}
 
 	assetReq := httptest.NewRequest(http.MethodGet, "/admin/admin.js", nil)
@@ -136,12 +137,13 @@ func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	if !strings.Contains(body, "<title>MaClaw Hub Admin</title>") {
 		t.Fatalf("spa fallback body missing title: %q", body)
 	}
-	if !strings.Contains(body, "console.log('admin');") {
-		t.Fatalf("spa fallback body missing injected admin js: %q", body)
+	if !strings.Contains(body, `src="/admin/admin.js"`) {
+		t.Fatalf("spa fallback body missing external admin script ref: %q", body)
 	}
 }
 
-func TestRegisterAdminStaticRoutesEscapesInlineScriptEndTags(t *testing.T) {
+func TestRegisterAdminStaticRoutesServesExternalScriptAssets(t *testing.T) {
+	// Admin JS is loaded as external assets; no fragile inline-injection path.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<body><script src="/admin/admin.js"></script></body>`), 0644); err != nil {
 		t.Fatalf("write index: %v", err)
@@ -161,11 +163,18 @@ func TestRegisterAdminStaticRoutesEscapesInlineScriptEndTags(t *testing.T) {
 		t.Fatalf("index status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, `window.msg = "</script>`) {
-		t.Fatalf("inline admin script was not escaped: %q", body)
+	if !strings.Contains(body, `src="/admin/admin.js"`) {
+		t.Fatalf("index should keep external script ref: %q", body)
 	}
-	if !strings.Contains(body, `window.msg = "<\/script><script>throw new Error('truncated')<\/script>";`) {
-		t.Fatalf("inline admin script missing escaped content: %q", body)
+	// Asset is served raw (not inlined), so </script> in the JS body is fine.
+	assetReq := httptest.NewRequest(http.MethodGet, "/admin/admin.js", nil)
+	assetRec := httptest.NewRecorder()
+	mux.ServeHTTP(assetRec, assetReq)
+	if assetRec.Code != http.StatusOK {
+		t.Fatalf("asset status = %d", assetRec.Code)
+	}
+	if got := assetRec.Body.String(); got != js {
+		t.Fatalf("asset body = %q, want raw JS", got)
 	}
 }
 
@@ -656,6 +665,10 @@ func TestAdminIndexScriptRefsExist(t *testing.T) {
 	}
 	for _, match := range matches {
 		name := match[1]
+		// Strip cache-busting query string (?v=...).
+		if q := strings.IndexByte(name, '?'); q >= 0 {
+			name = name[:q]
+		}
 		if strings.Contains(name, "/") || strings.Contains(name, `\\`) {
 			t.Fatalf("script ref should point to top-level admin asset, got %q", name)
 		}
@@ -667,6 +680,7 @@ func TestAdminIndexScriptRefsExist(t *testing.T) {
 }
 
 func TestHubProfessionalStylesheetsLinkedAndExist(t *testing.T) {
+	// href may include a cache-busting query string.
 	pages := map[string]string{
 		"admin":             "/admin/professional.css",
 		"bind":              "/bind/professional.css",
@@ -680,7 +694,8 @@ func TestHubProfessionalStylesheetsLinkedAndExist(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s index: %v", dir, err)
 		}
-		if !strings.Contains(string(body), `href="`+href+`"`) {
+		content := string(body)
+		if !strings.Contains(content, `href="`+href) {
 			t.Fatalf("%s index missing professional stylesheet %s", dir, href)
 		}
 		cssPath := filepath.Join("..", "..", "web", dir, "professional.css")

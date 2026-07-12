@@ -103,7 +103,7 @@ S(t) = S₀ × exp(-λ × hours_elapsed)
 
 **相关论文：**
 
-#### 📄 MemoryBank: Enhancing Large Language Models with Long-Term Memory
+#### MemoryBank: Enhancing Large Language Models with Long-Term Memory
 - **作者：** Zhong et al.
 - **发表：** AAAI 2024
 - **链接：** arxiv.org/abs/2305.10250
@@ -117,6 +117,6 @@ MemoryBank 是首个将 Ebbinghaus 遗忘曲线系统性地应用于 LLM 记忆�
 
 **与 MaClaw 的关系：** MaClaw 的 `forgetting.go` 直接实现了 MemoryBank 提出的遗忘曲线核心公式，并在其基础上增加了分类保护（self_identity 永不衰减）和批量衰减优化。
 
-#### 📄 Replication and Analysis of Ebbinghaus' Forgetting Curve
+#### Replication and Analysis of Ebbinghaus' Forgetting Curve
 - **作者：** Murre & Dros
 - **发表：** PLoS ONE

@@ -218,5 +218,5 @@ func reportLLMRetryWait(isTransient bool, onProgress tool.ProgressCallback, dela
 	if !isTransient || onProgress == nil {
 		return
 	}
-	onProgress(fmt.Sprintf("⏳ API 暂时不可用，%d 秒后重试 (%d/%d)...", int(delay.Seconds()), attempt, max))
+	onProgress(fmt.Sprintf("API 暂时不可用，%d 秒后重试 (%d/%d)...", int(delay.Seconds()), attempt, max))
 }

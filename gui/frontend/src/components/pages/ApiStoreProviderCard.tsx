@@ -58,7 +58,7 @@ export const ApiStoreProviderCard = ({ provider, t }: ApiStoreProviderCardProps)
             {provider.name}
         </div>
         <div style={{ fontSize: '0.85rem', color: 'var(--theme-text-muted)' }}>
-            {'\u{1F6C5}'}
+            {t('officialWebsite') || 'Open'}
         </div>
     </div>
 );

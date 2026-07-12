@@ -1,7 +1,7 @@
 # GoSkills 兼容性对比分析 — MacLaw Skill Runner 改进建议
 
 > 基于 https://github.com/smallnest/goskills 的对比分析。
-> 已实施的改进标记为 ✅。
+> 已实施的改进标记为 。
 
 ## 一、两个项目的核心差异
 

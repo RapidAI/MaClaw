@@ -60,6 +60,24 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		EffectiveTokenLimit:     opts.EffectiveTokenLimit,
 		DirectModeToolsFiltered: opts.DirectModeToolsFiltered,
 	}
+	// Mid-loop budget gate (iteration 0 already checked at runAgentLoop entry;
+	// re-check after prior rounds may have recorded cost).
+	if opts.Iteration > 0 {
+		if blocked, msg := h.checkDailyBudgetGate(); blocked {
+			reqID := ""
+			if ctx != nil {
+				reqID = ctx.Runtime.RequestID
+			}
+			result.Response = &IMAgentResponse{
+				Text:           msg,
+				Error:          "daily_llm_budget_exceeded",
+				RequestID:      reqID,
+				ResponseSource: "budget_gate",
+				HardExit:       true,
+			}
+			return result
+		}
+	}
 	effectiveMax := h.refreshAgentLoopEffectiveMax(ctx, opts.Iteration, opts.EffectiveMax, opts.MinIterations, opts.DriftDetector, opts.SendProgress)
 	result.EffectiveMax = effectiveMax
 	if resp, handled := handleBackgroundIterationPause(ctx, opts.Iteration, effectiveMax); handled {

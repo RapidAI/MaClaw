@@ -108,14 +108,37 @@ func (s *Service) SaveRegistry(ctx context.Context, reg *Registry) error {
 	return nil
 }
 
+// Default queue wait timeout when a provider has MaxConcurrency > 0 but no
+// explicit QueueTimeoutMS. MaxQueueWaiters is intentionally left alone:
+// 0 means unlimited waiters in llmpool.ConcurrencyController (do not coerce).
+const defaultProviderQueueTimeoutMS = 120000
+
 func normalizeRegistry(reg *Registry) {
 	if reg == nil {
 		return
 	}
 	ensureDefaultComputeAgent(reg)
+	for i := range reg.Providers {
+		normalizeProviderGatewayLimits(&reg.Providers[i])
+	}
 	for i := range reg.ServiceGroups {
 		normalizeServiceGroupModels(&reg.ServiceGroups[i])
 		normalizeServiceGroupAgent(reg, &reg.ServiceGroups[i])
+	}
+}
+
+func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
+	if provider == nil {
+		return
+	}
+	// MaxConcurrency <= 0 remains unlimited (no queue needed).
+	if provider.MaxConcurrency <= 0 {
+		return
+	}
+	// Only fill missing queue timeout. MaxQueueWaiters=0 must stay 0 so the
+	// concurrency controller keeps an unbounded waiter list.
+	if provider.QueueTimeoutMS <= 0 {
+		provider.QueueTimeoutMS = defaultProviderQueueTimeoutMS
 	}
 }
 

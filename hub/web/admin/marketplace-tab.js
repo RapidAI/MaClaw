@@ -158,7 +158,7 @@
   }
   function isInternalCapabilityRecordId(value) {
     value = textValue(value);
-    // Hub row ids look like "cap_a1b2c3…"; not useful as a user-facing skill id.
+    // Hub row ids look like "cap_a1b2c3..."; not useful as a user-facing skill id.
     return /^cap_[0-9a-f]{6,}$/i.test(value);
   }
   function isRedundantSkillId(id, name) {
@@ -191,7 +191,7 @@
     ]) || extractReadableName(item.display_name || item.capability_id || item.skill_id || item.id) || '-';
   }
   // Prefer short user-facing label from keys like "enterprise_hub:skill:ppt-master@1.2.3".
-  // Hides bare package digests (e.g. 12-char hex) which are not meaningful as "v…".
+  // Hides bare package digests (e.g. 12-char hex) which are not meaningful as "v...".
   function shortVersionLabel(versionKey) {
     var value = textValue(versionKey);
     if (!value) return '';
@@ -246,7 +246,7 @@
       // Type badge color
       var typeBadgeClass = 'info';
       var typeLabel = item.capability_type || 'skill';
-      if (item.capability_type === 'approval_workflow') { typeBadgeClass = 'warn'; typeLabel = '审批工作流'; }
+      if (item.capability_type === 'approval_workflow') { typeBadgeClass = 'warn'; typeLabel = '\u5ba1\u6279\u5de5\u4f5c\u6d41'; }
       else if (isApp) { typeBadgeClass = 'ok'; typeLabel = 'APP'; }
       else if (item.capability_type === 'mcp') { typeBadgeClass = 'info'; typeLabel = 'MCP'; }
       else { typeLabel = 'SKILL'; }

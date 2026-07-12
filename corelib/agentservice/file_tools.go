@@ -162,11 +162,11 @@ func (c *coreAgentCallbacks) executeListDirectory(args map[string]interface{}) s
 		}
 		info, _ := entry.Info()
 		if entry.IsDir() {
-			b.WriteString(fmt.Sprintf("  📁 %s/\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  %s/\n", entry.Name()))
 		} else if info != nil {
-			b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", entry.Name(), info.Size()))
+			b.WriteString(fmt.Sprintf("  %s (%d bytes)\n", entry.Name(), info.Size()))
 		} else {
-			b.WriteString(fmt.Sprintf("  📄 %s\n", entry.Name()))
+			b.WriteString(fmt.Sprintf("  %s\n", entry.Name()))
 		}
 		shown++
 	}

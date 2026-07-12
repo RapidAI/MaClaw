@@ -38,7 +38,7 @@
 
 1. THE Buffer_Entry SHALL support a text content field of type string.
 2. THE Buffer_Entry SHALL support an optional list of file path attachments (strings), including both user-browsed files and paste-saved image temp files.
-3. WHEN a Buffer_Entry is displayed in the Buffer_Queue, THE AI_Assistant_Panel SHALL show a text preview (truncated to 80 characters with ellipsis if longer) and compact attachment indicators: pasted images as small thumbnails (24×24px), other files as a file-type icon based on extension (e.g., Word icon for .docx, PDF icon for .pdf, code icon for .py/.js); unrecognized extensions SHALL use a unified generic file icon (📄).
+3. WHEN a Buffer_Entry is displayed in the Buffer_Queue, THE AI_Assistant_Panel SHALL show a text preview (truncated to 80 characters with ellipsis if longer) and compact attachment indicators: pasted images as small thumbnails (24×24px), other files as a file-type icon based on extension (e.g., Word icon for .docx, PDF icon for .pdf, code icon for .py/.js); unrecognized extensions SHALL use a unified generic file icon ().
 4. THE Buffer_Entry SHALL store image attachments as file paths (not base64), with an associated thumbnail data URL for display purposes only.
 5. WHEN the user enters edit mode for a Buffer_Entry, THE AI_Assistant_Panel SHALL display each attachment indicator (thumbnail or file-type icon) with a delete button (✕) to remove individual attachments, keeping the layout compact.
 6. WHEN the user hovers the mouse over any file attachment indicator (file-type icon or image thumbnail), THE AI_Assistant_Panel SHALL display a tooltip showing the full absolute file path and file name of that attachment.

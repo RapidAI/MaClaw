@@ -35,7 +35,7 @@ describe('resolveFinalRoundContent — Bug Condition Exploration', () => {
         // then agent loop continues and the last round produces a 200-char
         // confirmation prompt with different wording.
         const streamedContent = '# 需求文档\n\n' + '这是一段详细的需求描述内容。'.repeat(150) + '\n\n请确认以上需求文档是否满足您的要求。';
-        const finalText = '📄 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。如需修改请告诉我具体的修改点，我会立即更新文档。';
+        const finalText = '\u{1F4C4} 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。如需修改请告诉我具体的修改点，我会立即更新文档。';
 
         // Verify bug condition holds
         expect(streamedContent.length).toBeGreaterThanOrEqual(finalText.length * 2);

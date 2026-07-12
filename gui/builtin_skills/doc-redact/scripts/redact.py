@@ -148,7 +148,7 @@ def main():
         print(f"ERROR: Unsupported file format: {ext}. Supported: .txt .md .docx .csv .log", file=sys.stderr)
         sys.exit(1)
 
-    print(f"✅ 脱敏完成: {output_path}")
+    print(f"脱敏完成: {output_path}")
     print(f"   替换数量: {count} 处敏感信息")
     print(f"   输出文件: {os.path.abspath(output_path)}")
 

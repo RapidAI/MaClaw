@@ -276,30 +276,8 @@ func (p *Plugin) SendText(ctx context.Context, target im.UserTarget, text string
 }
 
 func (p *Plugin) SendCard(ctx context.Context, target im.UserTarget, card im.OutgoingMessage) error {
-	text := card.FallbackText
-	if text == "" {
-		var sb strings.Builder
-		if card.Title != "" {
-			sb.WriteString("### ")
-			sb.WriteString(card.Title)
-			sb.WriteString("\n\n")
-		}
-		if card.StatusIcon != "" {
-			sb.WriteString(card.StatusIcon)
-			sb.WriteString(" ")
-		}
-		if card.Body != "" {
-			sb.WriteString(card.Body)
-		}
-		for _, f := range card.Fields {
-			sb.WriteString("\n\n**")
-			sb.WriteString(f.Label)
-			sb.WriteString("**: ")
-			sb.WriteString(f.Value)
-		}
-		text = sb.String()
-	}
-	return p.SendText(ctx, target, text)
+	// Degrade card to plain text with ASCII status marks (no emoji / raw tokens).
+	return p.SendText(ctx, target, im.FormatCardFallback(card))
 }
 
 func (p *Plugin) SendImage(ctx context.Context, target im.UserTarget, imageKey string, caption string) error {
@@ -311,7 +289,7 @@ func (p *Plugin) SendImage(ctx context.Context, target im.UserTarget, imageKey s
 }
 
 func (p *Plugin) SendFile(ctx context.Context, target im.UserTarget, fileData, fileName, mimeType string) error {
-	return p.SendText(ctx, target, fmt.Sprintf("📎 %s", fileName))
+	return p.SendText(ctx, target, fmt.Sprintf("%s", fileName))
 }
 
 // SendVoice implements im.VoiceSender using DingTalk's native sampleAudio
@@ -767,7 +745,7 @@ func (p *Plugin) handleBotMessage(data json.RawMessage) {
 
 	if !bound {
 		_ = p.replyViaWebhook(staffID,
-			"👋 欢迎使用 MaClaw 钉钉 Bot！\n\n"+
+			"欢迎使用 MaClaw 钉钉 Bot！\n\n"+
 				"请先绑定您的 Hub 账号，发送您的注册邮箱地址即可开始绑定。")
 		return
 	}
@@ -1357,7 +1335,7 @@ func (p *Plugin) handleEmailSubmit(staffID, email string) {
 	}
 	if err != nil || user == nil {
 		_ = p.replyViaWebhook(staffID,
-			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
+			fmt.Sprintf("未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
 		return
 	}
 
@@ -1375,14 +1353,14 @@ func (p *Plugin) handleEmailSubmit(staffID, email string) {
 		sentTo, err := p.broadcaster.BroadcastVerifyCodeForTenant(ctx, tenantID, email, code, "dingtalk")
 		if err != nil {
 			log.Printf("[dingtalk] broadcast verification code for %s failed: %v", email, err)
-			_ = p.replyViaWebhook(staffID, fmt.Sprintf("❌ 验证码发送失败: %v", err))
+			_ = p.replyViaWebhook(staffID, fmt.Sprintf("验证码发送失败: %v", err))
 			p.pendingMu.Lock()
 			delete(p.pending, staffID)
 			p.pendingMu.Unlock()
 			return
 		}
 		_ = p.replyViaWebhook(staffID,
-			fmt.Sprintf("📧 验证码已发送到: %s\n\n请查看验证码，回复给我完成绑定（5 分钟内有效）。", sentTo))
+			fmt.Sprintf("验证码已发送到: %s\n\n请查看验证码，回复给我完成绑定（5 分钟内有效）。", sentTo))
 		return
 	}
 
@@ -1395,14 +1373,14 @@ func (p *Plugin) handleEmailSubmit(staffID, email string) {
 	if p.mailer != nil {
 		if err := p.mailer.Send(ctx, []string{email}, subject, body); err != nil {
 			log.Printf("[dingtalk] send verification email to %s failed: %v", email, err)
-			_ = p.replyViaWebhook(staffID, fmt.Sprintf("❌ 验证邮件发送失败: %v", err))
+			_ = p.replyViaWebhook(staffID, fmt.Sprintf("验证邮件发送失败: %v", err))
 			p.pendingMu.Lock()
 			delete(p.pending, staffID)
 			p.pendingMu.Unlock()
 			return
 		}
 	} else {
-		_ = p.replyViaWebhook(staffID, "❌ Hub 邮件服务未配置，无法发送验证码。请联系管理员。")
+		_ = p.replyViaWebhook(staffID, "Hub 邮件服务未配置，无法发送验证码。请联系管理员。")
 		p.pendingMu.Lock()
 		delete(p.pending, staffID)
 		p.pendingMu.Unlock()
@@ -1410,7 +1388,7 @@ func (p *Plugin) handleEmailSubmit(staffID, email string) {
 	}
 
 	_ = p.replyViaWebhook(staffID,
-		fmt.Sprintf("📧 验证码已发送到邮箱: %s\n\n请查收邮件，将 6 位验证码回复给我完成绑定（5 分钟内有效）。", email))
+		fmt.Sprintf("验证码已发送到邮箱: %s\n\n请查收邮件，将 6 位验证码回复给我完成绑定（5 分钟内有效）。", email))
 }
 
 func (p *Plugin) handleVerifyCode(staffID, code string, pb *pendingBind) bool {
@@ -1418,12 +1396,12 @@ func (p *Plugin) handleVerifyCode(staffID, code string, pb *pendingBind) bool {
 		p.pendingMu.Lock()
 		delete(p.pending, staffID)
 		p.pendingMu.Unlock()
-		_ = p.replyViaWebhook(staffID, "⏰ 验证码已过期，请重新发送邮箱地址。")
+		_ = p.replyViaWebhook(staffID, "验证码已过期，请重新发送邮箱地址。")
 		return true
 	}
 
 	if strings.TrimSpace(code) != pb.Code {
-		_ = p.replyViaWebhook(staffID, "❌ 验证码不正确，请重新输入。")
+		_ = p.replyViaWebhook(staffID, "验证码不正确，请重新输入。")
 		return true
 	}
 
@@ -1434,7 +1412,7 @@ func (p *Plugin) handleVerifyCode(staffID, code string, pb *pendingBind) bool {
 	p.pendingMu.Unlock()
 
 	_ = p.replyViaWebhook(staffID,
-		fmt.Sprintf("✅ 绑定成功！\n\n邮箱: %s\n\n现在您可以直接发送消息与 MaClaw Agent 交互了。", pb.Email))
+		fmt.Sprintf("绑定成功！\n\n邮箱: %s\n\n现在您可以直接发送消息与 MaClaw Agent 交互了。", pb.Email))
 	return true
 }
 
@@ -1448,7 +1426,7 @@ func (p *Plugin) handleUnbind(staffID string) {
 	}
 	p.RemoveBinding(staffID)
 	log.Printf("[dingtalk] unbound email=%s for staffId=%s", email, staffID)
-	_ = p.replyViaWebhook(staffID, fmt.Sprintf("✅ 已解除 %s 的绑定。", email))
+	_ = p.replyViaWebhook(staffID, fmt.Sprintf("已解除 %s 的绑定。", email))
 }
 
 // RemoveBinding removes a staffId→email binding.

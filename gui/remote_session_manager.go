@@ -337,7 +337,17 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 	spec.SessionID = sessionID
 	spec.LaunchSource = normalizeRemoteLaunchSource(spec.LaunchSource)
 
-	log.Printf("[session-lifecycle] 鈻?Creating session %s: tool=%s, project=%q, source=%s, model=%s, time=%s",
+	// Agents no longer drive external coding CLIs (Claude Code, Codex, ...).
+	// Those tools are managed only as user-launched external sessions
+	// (desktop / mobile / handoff). Block AI launch sources so leftover
+	// agent/skill/resume paths cannot spawn a batch of Claude processes.
+	if err := rejectAIExternalCodingSessionLaunch(spec); err != nil {
+		log.Printf("[session-lifecycle] ERR Session %s rejected: tool=%s source=%s err=%v",
+			sessionID, spec.Tool, spec.LaunchSource, err)
+		return nil, err
+	}
+
+	log.Printf("[session-lifecycle] Creating session %s: tool=%s, project=%q, source=%s, model=%s, time=%s",
 		sessionID, spec.Tool, spec.ProjectPath, spec.LaunchSource, spec.ModelID, now.Format(time.RFC3339))
 
 	workspace, err := m.workspacePreparer.Prepare(sessionID, spec)

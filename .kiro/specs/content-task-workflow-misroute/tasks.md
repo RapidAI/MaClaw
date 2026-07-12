@@ -25,7 +25,7 @@
   - **Property 2: Preservation** - Valid Workflow Routing & Existing Prompt Sections Unchanged
   - **IMPORTANT**: Follow observation-first methodology
   - **Two preservation properties to verify on UNFIXED code:**
-  - Property 2a (Preservation - Valid Workflow Categories): For all valid registered workflow types (coding, literature_review, product_design, etc.) with `ready=true`, `handleActiveUnderstanding()` calls `StartWorkflow` and returns the workflow startup message. Observe on unfixed code: `handleActiveUnderstanding` with `category="coding"` + `ready=true` calls `StartWorkflow` and returns "🚀 工作流已启动" message
+  - Property 2a (Preservation - Valid Workflow Categories): For all valid registered workflow types (coding, literature_review, product_design, etc.) with `ready=true`, `handleActiveUnderstanding()` calls `StartWorkflow` and returns the workflow startup message. Observe on unfixed code: `handleActiveUnderstanding` with `category="coding"` + `ready=true` calls `StartWorkflow` and returns "工作流已启动" message
   - Property 2b (Preservation - Existing Prompt Sections): `buildSystemPrompt()` output contains all existing sections: "核心判断：是否需要工作流", "可用的工作流类型", "你的职责", "输出格式", "category 判断规则", "易混淆示例", "ready 判断规则" — observe these all exist on unfixed code
   - Test file: `corelib/workflow/intent_understanding_content_misroute_test.go` for Property 2b (prompt sections)
   - Test file: `gui/im_message_handler_workflow_test.go` for Property 2a (valid category routing)

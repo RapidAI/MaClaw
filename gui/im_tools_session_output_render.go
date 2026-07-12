@@ -52,7 +52,7 @@ func appendSessionSummaryOutput(b *strings.Builder, summary SessionSummary) {
 		b.WriteString(fmt.Sprintf("最近命令: %s\n", summary.LastCommand))
 	}
 	if summary.WaitingForUser {
-		b.WriteString("⚠️ 会话正在等待用户输入\n")
+		b.WriteString("会话正在等待用户输入\n")
 	}
 	if summary.SuggestedAction != "" {
 		b.WriteString(fmt.Sprintf("建议操作: %s\n", summary.SuggestedAction))

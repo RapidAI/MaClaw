@@ -81,14 +81,14 @@ func (p *WindowsPTYSession) Start(cmd CommandSpec) (int, error) {
 		conpty.ConPtyEnv(env),
 	)
 	if err != nil {
-		log.Printf("[conpty-lifecycle] ✖ ConPTY start failed: cmd=%q, cwd=%q, error=%v", cmd.Command, cmd.Cwd, err)
+		log.Printf("[conpty-lifecycle] ERR ConPTY start failed: cmd=%q, cwd=%q, error=%v", cmd.Command, cmd.Cwd, err)
 		return 0, fmt.Errorf("start conpty: %w", err)
 	}
 
 	proc, err := os.FindProcess(pty.Pid())
 	if err != nil {
 		_ = pty.Close()
-		log.Printf("[conpty-lifecycle] ✖ FindProcess failed: pid=%d, error=%v", pty.Pid(), err)
+		log.Printf("[conpty-lifecycle] ERR FindProcess failed: pid=%d, error=%v", pty.Pid(), err)
 		return 0, fmt.Errorf("find process: %w", err)
 	}
 
@@ -96,7 +96,7 @@ func (p *WindowsPTYSession) Start(cmd CommandSpec) (int, error) {
 	p.proc = proc
 	p.started = true
 
-	log.Printf("[conpty-lifecycle] ✔ ConPTY process started: pid=%d, cmd=%q, cwd=%q, size=%dx%d, env_count=%d",
+	log.Printf("[conpty-lifecycle] OK ConPTY process started: pid=%d, cmd=%q, cwd=%q, size=%dx%d, env_count=%d",
 		pty.Pid(), cmd.Command, cmd.Cwd, width, height, len(env))
 
 	p.startReadLoopLocked(pty)
@@ -223,12 +223,12 @@ func (p *WindowsPTYSession) startWaitLoopLocked(pty *conpty.ConPty) {
 			// level to avoid alarming users.
 			errStr := err.Error()
 			if strings.Contains(errStr, "handle is invalid") || strings.Contains(errStr, "access is denied") {
-				log.Printf("[conpty-lifecycle] ◼ ConPTY process already exited: pid=%d (handle invalidated)", pty.Pid())
+				log.Printf("[conpty-lifecycle] ConPTY process already exited: pid=%d (handle invalidated)", pty.Pid())
 			} else {
-				log.Printf("[conpty-lifecycle] ◼ ConPTY process exited with error: pid=%d, error=%v", pty.Pid(), err)
+				log.Printf("[conpty-lifecycle] ConPTY process exited with error: pid=%d, error=%v", pty.Pid(), err)
 			}
 		} else {
-			log.Printf("[conpty-lifecycle] ◼ ConPTY process exited: pid=%d, exit_code=%d", pty.Pid(), exitCode)
+			log.Printf("[conpty-lifecycle] ConPTY process exited: pid=%d, exit_code=%d", pty.Pid(), exitCode)
 		}
 
 		p.exitCh <- PTYExit{

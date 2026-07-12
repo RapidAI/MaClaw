@@ -4,18 +4,17 @@
 
 English | [简体中文](./README-CN.md)
 
-<a href="https://huggingface.co/RapidAI/RapidSpeech" target="_blank"><img src="https://img.shields.io/badge/🤗-Hugging Face-blue"></a>
+<a href="https://huggingface.co/RapidAI/RapidSpeech" target="_blank"><img src="https://img.shields.io/badge/-Hugging Face-blue"></a>
 <a href="https://www.modelscope.cn/models/RapidAI/RapidSpeech/files?version=main" target="_blank"><img src="https://img.shields.io/badge/ModelScope-blue"></a>
 <a href="https://github.com/RapidAI/RapidSpeech.cpp/stargazers"><img src="https://img.shields.io/github/stars/RapidAI/RapidSpeech.cpp?color=ccf"></a>
 
-# RapidSpeech.cpp 🎙️
-
+# RapidSpeech.cpp 
 **RapidSpeech.cpp** is a high-performance, **edge-native speech intelligence framework** built on top of **ggml**.  
 It aims to provide **pure C++**, **zero-dependency**, and **on-device inference** for large-scale ASR (Automatic Speech Recognition) and TTS (Text-to-Speech) models.
 
 ------
 
-## 🌟 Key Differentiators
+## Key Differentiators
 
 While the open-source ecosystem already offers powerful cloud-side frameworks such as **vLLM-omni**, as well as mature on-device solutions like **sherpa-onnx**, **RapidSpeech.cpp** introduces a new generation of design choices focused on edge deployment.
 
@@ -43,7 +42,7 @@ While the open-source ecosystem already offers powerful cloud-side frameworks su
 
 ------
 
-## 📦 Model Support
+## Model Support
 
 **Automatic Speech Recognition (ASR)**
 - [x] SenseVoice-small
@@ -70,7 +69,7 @@ While the open-source ecosystem already offers powerful cloud-side frameworks su
 
 ------
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 RapidSpeech.cpp is not just an inference wrapper — it is a full-featured speech application framework:
 
@@ -85,7 +84,7 @@ RapidSpeech.cpp is not just an inference wrapper — it is a full-featured speec
 
 ------
 
-## 🚀 Core Features
+## Core Features
 
 - [ ] **Extreme Quantization**: Native support for 4-bit, 5-bit, and 6-bit quantization schemes to match diverse hardware constraints.
 - [ ] **Zero Dependencies**: Implemented entirely in C/C++, producing a single lightweight binary.
@@ -94,13 +93,13 @@ RapidSpeech.cpp is not just an inference wrapper — it is a full-featured speec
 
 ------
 
-## 🛠️ Quick Start (WIP)
+## Quick Start (WIP)
 
 ### Download Models
 
 Models are available on:
 
-- 🤗 Hugging Face: https://huggingface.co/RapidAI/RapidSpeech
+- Hugging Face: https://huggingface.co/RapidAI/RapidSpeech
 - ModelScope: https://www.modelscope.cn/models/RapidAI/RapidSpeech
 
 ### Build & Run
@@ -221,7 +220,7 @@ See [docs/deployment.md](docs/deployment.md) for full API documentation.
 
 ------
 
-## 🤝 Contributing
+## Contributing
 
 If you are interested in the following areas, we welcome your PRs or participation in discussions:
 

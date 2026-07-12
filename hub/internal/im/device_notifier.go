@@ -140,7 +140,7 @@ func (dn *DeviceNotifier) fireNotification(entry *debounceEntry) {
 
 	var msg string
 	if entry.online {
-		msg = fmt.Sprintf("📱 %s 已上线", entry.name)
+		msg = fmt.Sprintf("%s 已上线", entry.name)
 	} else {
 		msg = dn.buildOfflineMessage(entry)
 	}
@@ -158,7 +158,7 @@ func (dn *DeviceNotifier) fireNotification(entry *debounceEntry) {
 // to the user's current interaction space.
 func (dn *DeviceNotifier) buildOfflineMessage(entry *debounceEntry) string {
 	if dn.coordinator == nil {
-		return fmt.Sprintf("📴 %s 已离线", entry.name)
+		return fmt.Sprintf("%s 已离线", entry.name)
 	}
 
 	ss := dn.coordinator.SpaceStateStore()
@@ -169,10 +169,10 @@ func (dn *DeviceNotifier) buildOfflineMessage(entry *debounceEntry) string {
 		if state.PrivateTarget == entry.machineID {
 			if err := ss.ExitPrivateForTenant(entry.tenantID, entry.userID); err != nil {
 				log.Printf("[DeviceNotifier] ExitPrivate failed for user=%s: %v", entry.userID, err)
-				return fmt.Sprintf("📴 %s 已离线", entry.name)
+				return fmt.Sprintf("%s 已离线", entry.name)
 			}
 			dn.coordinator.router.ClearSelectedMachineForTenant(entry.tenantID, entry.userID)
-			return fmt.Sprintf("📴 %s 已离线，已自动返回大厅。", entry.name)
+			return fmt.Sprintf("%s 已离线，已自动返回大厅。", entry.name)
 		}
 
 	case SpaceMeeting:
@@ -182,16 +182,16 @@ func (dn *DeviceNotifier) buildOfflineMessage(entry *debounceEntry) string {
 			case remaining == 0:
 				_ = ss.ExitMeetingForTenant(entry.tenantID, entry.userID)
 				dn.coordinator.router.StopDiscussionForTenant(entry.tenantID, entry.userID)
-				return "📴 所有会议设备已离线，会议已结束，已返回大厅。"
+				return "所有会议设备已离线，会议已结束，已返回大厅。"
 			case remaining == 1:
-				return fmt.Sprintf("📴 %s 已离线，会议仅剩 1 台设备参与。", entry.name)
+				return fmt.Sprintf("%s 已离线，会议仅剩 1 台设备参与。", entry.name)
 			default:
-				return fmt.Sprintf("📴 %s 已离线", entry.name)
+				return fmt.Sprintf("%s 已离线", entry.name)
 			}
 		}
 	}
 
-	return fmt.Sprintf("📴 %s 已离线", entry.name)
+	return fmt.Sprintf("%s 已离线", entry.name)
 }
 
 func containsParticipant(participants []string, machineID string) bool {

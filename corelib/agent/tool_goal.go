@@ -64,7 +64,7 @@ func toolGoalCreate(store *goal.Store, args map[string]interface{}) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🎯 目标已创建: %s\n", g.Objective))
+	b.WriteString(fmt.Sprintf("目标已创建: %s\n", g.Objective))
 	b.WriteString(fmt.Sprintf("Goal ID: %s\n", g.GoalID))
 	b.WriteString(fmt.Sprintf("最大轮次: %d", g.MaxTurns))
 	if g.TokenBudget > 0 {
@@ -86,7 +86,7 @@ func toolGoalComplete(store *goal.Store, args map[string]interface{}) string {
 		summary = "目标已完成"
 	}
 	store.UpdateStatus("default", g.GoalID, goal.StatusComplete, summary)
-	return fmt.Sprintf("✅ 目标已完成: %s\n总结: %s\n轮次: %d", g.Objective, summary, g.TurnsUsed)
+	return fmt.Sprintf("目标已完成: %s\n总结: %s\n轮次: %d", g.Objective, summary, g.TurnsUsed)
 }
 
 func toolGoalFail(store *goal.Store, args map[string]interface{}) string {
@@ -102,7 +102,7 @@ func toolGoalFail(store *goal.Store, args map[string]interface{}) string {
 		reason = "目标无法完成"
 	}
 	store.UpdateStatus("default", g.GoalID, goal.StatusFailed, reason)
-	return fmt.Sprintf("❌ 目标失败: %s\n原因: %s", g.Objective, reason)
+	return fmt.Sprintf("目标失败: %s\n原因: %s", g.Objective, reason)
 }
 
 func toolGoalGet(store *goal.Store) string {

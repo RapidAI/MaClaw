@@ -63,7 +63,7 @@
 - [x] 5.1 修改 `tui/agent_tools.go` 的 `toolMemory`：新增 `pin`/`unpin`/`list_archive`/`restore` action 分支
 - [x] 5.2 修改 `tui/agent_handler.go` 的 memory 工具定义：在 action description 中添加 pin/unpin/list_archive/restore
 - [x] 5.3 修改 GUI `toolMemory`（`gui/im_message_handler.go`）：新增 `pin`/`unpin`/`list_archive`/`restore` action 分支
-- [x] 5.4 修改 list/search 输出格式：pinned 条目前缀添加 📌 标记
+- [x] 5.4 修改 list/search 输出格式：pinned 条目前缀添加 标记
 - [x] 5.5 编写属性测试 `TestProperty_PinIndicatorInOutput` (P13)
 - [x] 5.6 编写属性测试 `TestProperty_TagPreservation` (P1)
 

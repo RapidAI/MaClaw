@@ -206,14 +206,14 @@ func (o *RemoteExperimentOrchestrator) Run() (StopReason, string) {
 		// Check time limit
 		elapsed := time.Since(o.state.StartedAt)
 		if elapsed >= params.MaxRuntime {
-			msg := fmt.Sprintf("⏰ 时间到期（已运行 %s）。当前最佳 %.2f%%，共完成 %d 轮\n回复\"继续\"/\"停止\"",
+			msg := fmt.Sprintf("时间到期（已运行 %s）。当前最佳 %.2f%%，共完成 %d 轮\n回复\"继续\"/\"停止\"",
 				formatDuration(elapsed), o.state.BestMetric, len(o.state.Rounds))
 			o.notify(msg)
 			return StopReasonTimeExpired, o.buildProgressSummary()
 		}
 
 		// Execute one round
-		o.progress(fmt.Sprintf("🔄 第 %d/%d 轮改进...", round, params.MaxRounds))
+		o.progress(fmt.Sprintf("第 %d/%d 轮改进...", round, params.MaxRounds))
 		result := o.executeOneRound(round)
 
 		// Record result
@@ -233,7 +233,7 @@ func (o *RemoteExperimentOrchestrator) Run() (StopReason, string) {
 		// environment, parsing, or execution problems that should be surfaced
 		// directly instead of spending more rounds on similar attempts.
 		if consecutiveFailures >= params.FailureTolerance {
-			msg := fmt.Sprintf("❌ 连续 %d 轮实验失败，已暂停自动迭代。最近错误：%s\n请检查环境/日志或调整实验方向后继续。",
+			msg := fmt.Sprintf("连续 %d 轮实验失败，已暂停自动迭代。最近错误：%s\n请检查环境/日志或调整实验方向后继续。",
 				consecutiveFailures, o.recentFailureSummary(1))
 			o.notify(msg)
 			return StopReasonError, o.buildProgressSummary()
@@ -243,7 +243,7 @@ func (o *RemoteExperimentOrchestrator) Run() (StopReason, string) {
 		deltaFromPaper := result.DeltaFromPaper
 		targetDelta := experimentTargetDeltaThreshold(params)
 		if result.Status == "completed" && deltaFromPaper >= targetDelta {
-			msg := fmt.Sprintf("🎉 目标达成！当前最佳 %.2f%%（论文 %.2f%%，超出 +%.2f%%）\n第 %d 轮，关键改进：%s\n回复\"继续\"继续冲击更高 / \"停止\"生成报告",
+			msg := fmt.Sprintf("目标达成！当前最佳 %.2f%%（论文 %.2f%%，超出 +%.2f%%）\n第 %d 轮，关键改进：%s\n回复\"继续\"继续冲击更高 / \"停止\"生成报告",
 				o.state.BestMetric, params.BaselineMetricValue, deltaFromPaper, round, result.Modification)
 			o.notify(msg)
 			return StopReasonTargetReached, o.buildProgressSummary()
@@ -252,7 +252,7 @@ func (o *RemoteExperimentOrchestrator) Run() (StopReason, string) {
 		// Check plateau
 		if consecutiveNoImprovement >= params.PlateauTolerance {
 			directions := o.recentDirections(3)
-			msg := fmt.Sprintf("📊 遇到平台期（连续 %d 轮无进展）。当前 %.2f%%，已尝试：%s\n回复新方向（如\"试试对比学习\"）/ \"继续\" / \"停止\"",
+			msg := fmt.Sprintf("遇到平台期（连续 %d 轮无进展）。当前 %.2f%%，已尝试：%s\n回复新方向（如\"试试对比学习\"）/ \"继续\" / \"停止\"",
 				consecutiveNoImprovement, o.state.BestMetric, directions)
 			o.notify(msg)
 			return StopReasonPlateau, o.buildProgressSummary()
@@ -261,7 +261,7 @@ func (o *RemoteExperimentOrchestrator) Run() (StopReason, string) {
 	}
 
 	// Max rounds exhausted
-	msg := fmt.Sprintf("🔄 已完成全部 %d 轮改进。最佳 %.2f%%（基线 %.2f%%，论文 %.2f%%）\n回复\"继续\"追加轮数 / \"停止\"生成报告",
+	msg := fmt.Sprintf("已完成全部 %d 轮改进。最佳 %.2f%%（基线 %.2f%%，论文 %.2f%%）\n回复\"继续\"追加轮数 / \"停止\"生成报告",
 		params.MaxRounds, o.state.BestMetric, o.state.BaselineRepro, params.BaselineMetricValue)
 	o.notify(msg)
 	return StopReasonMaxRounds, o.buildProgressSummary()

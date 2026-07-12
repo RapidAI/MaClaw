@@ -20,11 +20,11 @@
 涉及文件：`gui/im_message_handler.go`、`gui/weixin_gateway.go`、`gui/telegram_gateway.go`、`gui/qqbot_gateway.go`
 
 ## Task 3: 替换 im_message_handler.go 中的硬编码字符串
-- [x] ack 消息：`"⏳ 需要一点时间处理，请稍候..."` → `i18n.T("msg.ack_processing", lang)`
-- [x] 任务复杂：`"⏳ 任务较复杂，仍在处理中，请稍候..."` → `i18n.T("msg.task_complex", lang)`
-- [x] 推理轮次：`"🔄 Agent 推理中（第 %d/%d 轮）…"` → `i18n.Tf("msg.agent_round_of", lang, iteration+1, effectiveMax)`
-- [x] 推理轮次（无上限）：`"🔄 Agent 推理中（第 %d 轮）…"` → `i18n.Tf("msg.agent_round", lang, iteration+1)`
-- [x] 轮次用完：`"⏳ 推理轮次已用完..."` → `i18n.T("msg.rounds_exhausted", lang)`
+- [x] ack 消息：`"需要一点时间处理，请稍候..."` → `i18n.T("msg.ack_processing", lang)`
+- [x] 任务复杂：`"任务较复杂，仍在处理中，请稍候..."` → `i18n.T("msg.task_complex", lang)`
+- [x] 推理轮次：`"Agent 推理中（第 %d/%d 轮）…"` → `i18n.Tf("msg.agent_round_of", lang, iteration+1, effectiveMax)`
+- [x] 推理轮次（无上限）：`"Agent 推理中（第 %d 轮）…"` → `i18n.Tf("msg.agent_round", lang, iteration+1)`
+- [x] 轮次用完：`"推理轮次已用完..."` → `i18n.T("msg.rounds_exhausted", lang)`
 - [x] `inferFileDeliveryMessage` 中的 PDF 交付提示
 
 涉及文件：`gui/im_message_handler.go`

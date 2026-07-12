@@ -17,7 +17,7 @@ func TestExtractFailedSkillInfo_RunSkillFailed(t *testing.T) {
 			},
 		},
 	}
-	toolResults := []string{"❌ Skill 执行失败: status: failed\n依赖 wkhtmltopdf 未安装"}
+	toolResults := []string{"Skill 执行失败: status: failed\n依赖 wkhtmltopdf 未安装"}
 
 	name, errMsg := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "pdf-converter" {
@@ -40,7 +40,7 @@ func TestExtractFailedSkillInfo_ManageSkillRunFailed(t *testing.T) {
 			},
 		},
 	}
-	toolResults := []string{"❌ status: failed — timeout after 60s"}
+	toolResults := []string{"status: failed — timeout after 60s"}
 
 	name, errMsg := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "my-skill" {
@@ -63,7 +63,7 @@ func TestExtractFailedSkillInfo_ManageSkillNonRunAction(t *testing.T) {
 			},
 		},
 	}
-	toolResults := []string{"❌ 列表获取失败"}
+	toolResults := []string{"列表获取失败"}
 
 	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "" {
@@ -83,7 +83,7 @@ func TestExtractFailedSkillInfo_SuccessfulSkill(t *testing.T) {
 			},
 		},
 	}
-	toolResults := []string{"✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: success"}
+	toolResults := []string{"Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: success"}
 
 	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeSucceeded})
 	if name != "" {
@@ -155,7 +155,7 @@ func TestExtractFailedSkillInfo_SkillNameParam(t *testing.T) {
 			},
 		},
 	}
-	toolResults := []string{"❌ status: failed — dependency missing"}
+	toolResults := []string{"status: failed — dependency missing"}
 
 	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "alt-skill" {
@@ -176,7 +176,7 @@ func TestExtractFailedSkillInfo_TruncatesLongError(t *testing.T) {
 		},
 	}
 	// Create a very long error message (>300 chars)
-	longError := "❌ status: failed — "
+	longError := "status: failed — "
 	for i := 0; i < 400; i++ {
 		longError += "x"
 	}

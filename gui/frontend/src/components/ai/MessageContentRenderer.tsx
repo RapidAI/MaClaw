@@ -30,6 +30,7 @@ export interface MessageContentRendererProps {
  * 用户消息保持 pre-wrap 纯文本。
  */
 export function MessageContentRenderer({ content, theme, isUser, isStreaming, messageId }: MessageContentRendererProps) {
+    // Role-prefix only; line-leading pictograph strip runs inside renderContentWithCodeBlocks.
     const displayContent = useMemo(
         () => isUser ? content : stripRolePrefixForDisplay(content),
         [content, isUser]

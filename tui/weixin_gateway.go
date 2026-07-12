@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	tea "github.com/charmbracelet/bubbletea"
@@ -254,7 +255,7 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[tui-weixin] PANIC in processMessage (user=%s): %v", userID, r)
-			g.sendText(userID, contextToken, "❌ 内部错误，请稍后重试")
+			g.sendText(userID, contextToken, "内部错误，请稍后重试")
 		}
 	}()
 
@@ -334,17 +335,17 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 
 	// Send the response.
 	if result.Error != "" && result.Text == "" {
-		g.sendText(userID, contextToken, "❌ "+result.Error)
+		g.sendText(userID, contextToken, ""+result.Error)
 		return
 	}
 	responseText := textutil.StripMarkdown(result.Text)
 	if responseText == "" && result.Error != "" {
-		responseText = "❌ " + result.Error
+		responseText = result.Error
 	}
 	if responseText == "" {
 		// Agent loop returned nothing (e.g., cancelled or empty LLM response).
 		// Send a minimal acknowledgment so the user knows the message was received.
-		responseText = "✅"
+		responseText = ""
 	}
 	g.sendText(userID, contextToken, responseText)
 }
@@ -380,10 +381,22 @@ type tuiWeixinCallbacks struct {
 	app        *TUIApp
 	onProgress func(string)
 	stopCh     <-chan struct{} // closed when gateway is stopping
+	activeLLM  tuiActiveLLM
 }
 
 func (c *tuiWeixinCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.app.llmConfig
+	return c.activeLLM.get(c.app.llmConfig)
+}
+
+func (c *tuiWeixinCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *tuiWeixinCallbacks) GetMaxIterations() int {
@@ -452,6 +465,20 @@ func (c *tuiWeixinCallbacks) ShouldStop() bool {
 	}
 }
 
+func (c *tuiWeixinCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.app == nil {
+		return false, "", ""
+	}
+	return c.app.earlyStopBudget()
+}
+
+func (c *tuiWeixinCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.recordLLMCost(model, inputTokens, outputTokens)
+}
+
 // ---------------------------------------------------------------------------
 // Bubble Tea integration
 // ---------------------------------------------------------------------------
@@ -492,9 +519,9 @@ func handleTUIWeixinIncoming(m *tuiModel, msg tuiWeixinIncomingMsg) {
 	}
 	var statusMsg string
 	if lang == "zh" {
-		statusMsg = fmt.Sprintf("📱 微信消息: %s", preview)
+		statusMsg = fmt.Sprintf("微信消息: %s", preview)
 	} else {
-		statusMsg = fmt.Sprintf("📱 WeChat: %s", preview)
+		statusMsg = fmt.Sprintf("WeChat: %s", preview)
 	}
 	m.root.StatusBar.SetMessage(statusMsg)
 }

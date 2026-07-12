@@ -1,11 +1,15 @@
 package skill
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -164,6 +168,81 @@ func truncateGateOutput(s string, maxRunes int) string {
 }
 
 // --- Default Sandbox Executor (temp-dir based) ---
+
+// NewDefaultSandboxExecutor returns a TempDirSandboxExecutor that runs bash-only
+// skill steps via the shared ExecuteStepsSync engine. Non-bash steps (craft_tool,
+// call_mcp_tool, etc.) are skipped with a soft pass so they do not false-reject
+// repairs that cannot be verified in-process.
+func NewDefaultSandboxExecutor() *TempDirSandboxExecutor {
+	return &TempDirSandboxExecutor{StepRunner: defaultBashSandboxStepRunner}
+}
+
+// defaultBashSandboxStepRunner executes only bash steps inside the sandbox.
+// Skills with no bash steps return success=true (nothing to verify).
+func defaultBashSandboxStepRunner(ctx context.Context, sk *corelib.NLSkillEntry, steps []corelib.NLSkillStep, args map[string]string, workDir string) (bool, string, error) {
+	bashSteps := make([]corelib.NLSkillStep, 0, len(steps))
+	for _, s := range steps {
+		action := strings.ToLower(strings.TrimSpace(s.Action))
+		if action == "bash" || action == "shell" || action == "run" {
+			bashSteps = append(bashSteps, s)
+		}
+	}
+	if len(bashSteps) == 0 {
+		return true, "sandbox_skipped_non_bash: no bash steps to verify", nil
+	}
+	entry := *sk
+	entry.Steps = bashSteps
+	result, err := ExecuteStepsSync(ctx, &entry, args, ExecConfig{
+		SkillDir: entry.SkillDir,
+		Timeout:  0, // caller already set context deadline
+	}, &sandboxBashDeps{})
+	if result == nil {
+		if err != nil {
+			return false, "", err
+		}
+		return false, "", fmt.Errorf("sandbox execution returned nil result")
+	}
+	out := result.Output
+	if result.LastStepOutput != "" {
+		out = result.LastStepOutput
+	}
+	if err != nil || result.StepsFailed > 0 {
+		if err == nil {
+			err = fmt.Errorf("sandbox: %d step(s) failed", result.StepsFailed)
+		}
+		return false, out, err
+	}
+	return true, out, nil
+}
+
+// sandboxBashDeps implements ExecDeps for sandbox verification only.
+type sandboxBashDeps struct{}
+
+func (d *sandboxBashDeps) ExecuteBash(ctx context.Context, command, workDir string, env map[string]string) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	environ := append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1", "MACLAW_SKILL_SANDBOX=1")
+	for k, v := range env {
+		environ = append(environ, k+"="+v)
+	}
+	cmd.Env = environ
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	return output.String(), err
+}
+
+func (d *sandboxBashDeps) OnStepProgress(stepIndex, totalSteps int, stepAction, status string) {
+	// no-op in sandbox
+}
 
 // TempDirSandboxExecutor is the default SandboxExecutor that uses OS temp
 // directories for isolation. It copies the skill directory into a temp dir,

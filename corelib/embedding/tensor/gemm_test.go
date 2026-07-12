@@ -317,6 +317,84 @@ func TestMultiDot8DualK560(t *testing.T) {
 	}
 }
 
+func TestMultiDot2DualK560(t *testing.T) {
+	const K = 560
+	a := make([]float32, 2*K)
+	b0 := make([]float32, K)
+	b1 := make([]float32, K)
+	for i := range a {
+		a[i] = float32(i%13)*0.01 - 0.06
+	}
+	for i := 0; i < K; i++ {
+		b0[i] = float32((i%7)-3) * 0.02
+		b1[i] = float32((i%5)-2) * 0.03
+	}
+	var got [4]float32
+	multiDot2DualB(&got, a, b0, b1, K)
+	want := [4]float32{
+		Dot(a[:K], b0), Dot(a[K:], b0),
+		Dot(a[:K], b1), Dot(a[K:], b1),
+	}
+	for i := range got {
+		if abs32(got[i]-want[i]) > 2e-3 {
+			t.Fatalf("i=%d got %v want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestQ8DualMultiDot2ScaledK512(t *testing.T) {
+	const K = 512
+	a := make([]float32, 2*K)
+	raw := make([]float32, 2*K)
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.03
+	}
+	for i := range raw {
+		raw[i] = float32((i%13)-6) * 0.05
+	}
+	w := QuantizeToQ8(raw, 2, K)
+	w.PrepareScales()
+	var got [4]float32
+	q8DualMultiDot2T(&got, a, w, 0, 1, K/q8BlockSize, K)
+	want := [4]float32{
+		DotQ8RowScaled(a[:K], w, 0), DotQ8RowScaled(a[K:], w, 0),
+		DotQ8RowScaled(a[:K], w, 1), DotQ8RowScaled(a[K:], w, 1),
+	}
+	for i := range got {
+		if abs32(got[i]-want[i]) > 2e-3 {
+			t.Fatalf("i=%d got %v want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func BenchmarkQ8DualMultiDot2ScaledK512(b *testing.B) {
+	const K = 512
+	a := make([]float32, 2*K)
+	raw := make([]float32, 2*K)
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.03
+	}
+	for i := range raw {
+		raw[i] = float32((i%13)-6) * 0.05
+	}
+	w := QuantizeToQ8(raw, 2, K)
+	w.PrepareScales()
+	b.Run("2x2", func(b *testing.B) {
+		var out [4]float32
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			q8DualMultiDot2T(&out, a, w, 0, 1, K/q8BlockSize, K)
+		}
+	})
+	b.Run("two_1x2", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			DotQ8RowDualScaled(a[:K], w, 0, 1)
+			DotQ8RowDualScaled(a[K:], w, 0, 1)
+		}
+	})
+}
+
 // TestDotQ8RowScaledAVX512 matches scalar scaled dot (and dual shares A).
 func TestDotQ8RowScaledAVX512(t *testing.T) {
 	K := 2048
@@ -436,6 +514,34 @@ func TestMatMulQ8Argmax_CTC(t *testing.T) {
 			if math.Abs(float64(got-ref)) > 2e-3 {
 				t.Fatalf("m=%d: got id %d (%.6f) want %d (%.6f)", m, gotI[m], got, refI[m], ref)
 			}
+		}
+	}
+}
+
+// TestQ8DualMultiDot2T checks the 2A×2B CTC-tail kernel layout used when an
+// argmax tile has two rows remaining. It compares directly against independent
+// scaled Q8 dot products so the SIMD path cannot silently swap its outputs.
+func TestQ8DualMultiDot2T(t *testing.T) {
+	const K = 512
+	a := make([]float32, 2*K)
+	raw := make([]float32, 2*K)
+	for i := range a {
+		a[i] = float32((i%17)-8) * 0.03125
+	}
+	for i := range raw {
+		raw[i] = float32((i%13)-6) * 0.046875
+	}
+	w := QuantizeToQ8(raw, 2, K)
+	w.PrepareScales()
+
+	var got [4]float32
+	q8DualMultiDot2T(&got, a, w, 0, 1, K/q8BlockSize, K)
+	r00, r01 := DotQ8RowDualScaled(a[:K], w, 0, 1)
+	r10, r11 := DotQ8RowDualScaled(a[K:], w, 0, 1)
+	want := [4]float32{r00, r10, r01, r11}
+	for i := range got {
+		if math.Abs(float64(got[i]-want[i])) > 1e-3 {
+			t.Fatalf("output %d: got %.6f want %.6f", i, got[i], want[i])
 		}
 	}
 }

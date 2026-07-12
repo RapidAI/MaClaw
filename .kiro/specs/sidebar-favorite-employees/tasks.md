@@ -11,7 +11,7 @@
 - [ ] 2. SidebarNavRail 重构：移除中间导航项，改为"系统"弹出菜单
   - [ ] 2.1 移除 `navItems` 数组定义（monitor/skills/mcp/gossip/agentnet）
   - [ ] 2.2 移除 `pinnedItems`/`collapsedItems` 过滤逻辑和 `sidebarExpanded` 展开/折叠 UI
-  - [ ] 2.3 底部"设置"按钮文字从 `t('settings')` 改为"系统"（中文）/ "System"（英文），图标保留 ⚙️
+  - [ ] 2.3 底部"设置"按钮文字从 `t('settings')` 改为"系统"（中文）/ "System"（英文），图标保留 
   - [ ] 2.4 点击"系统"按钮改为 toggle `systemMenuOpen` state（不再调用 `switchTool('settings')`）
   - [ ] 2.5 "关于"按钮保留在"系统"按钮下方，行为不变
   - [ ] 2.6 从 `SidebarNavRailProps` 中移除不再需要的 props：`runningTaskCount`, `gossipAllowed`, `sidebarExpanded`, `setSidebarExpanded`
@@ -22,7 +22,7 @@
   - [ ] 3.1 创建 `gui/frontend/src/components/layout/SystemPopupMenu.tsx`
   - [ ] 3.2 实现横向菜单条布局：flex-direction: row，每项为图标+文字的纵向小块
   - [ ] 3.3 定位：absolute，left = SIDEBAR_NAV_RAIL_WIDTH (60px)，bottom 对齐触发按钮
-  - [ ] 3.4 菜单项数据：设置(⚙️) | 监控(📡) | 技能(🧩) | MCP(🔌) | 八卦(🗣️) | 智网(AgentNet图标)
+  - [ ] 3.4 菜单项数据：设置() | 监控() | 技能() | MCP() | 八卦() | 智网(AgentNet图标)
   - [ ] 3.5 点击菜单项：调用 `switchTool(id)` + 关闭菜单
   - [ ] 3.6 点击外部关闭：useEffect + document mousedown listener
   - [ ] 3.7 样式：圆角 10px、border、box-shadow、theme-aware 背景色
@@ -44,7 +44,7 @@
 
 - [ ] 5. VirtualEmployeeTab 右键菜单扩展："设为常用"
   - [ ] 5.1 `VETabProps` 新增 `favoriteEmployeeIds?: string[]` 和 `onSetFavorite?: (ve: VirtualEmployeeEntry) => void`
-  - [ ] 5.2 右键菜单新增第三项：`⭐ 设为常用` / `已是常用`（灰色不可点击）
+  - [ ] 5.2 右键菜单新增第三项：`设为常用` / `已是常用`（灰色不可点击）
   - [ ] 5.3 判断逻辑：`favoriteEmployeeIds?.includes(ve.id)` → 显示"已是常用"灰色文字
   - [ ] 5.4 点击"设为常用"时调用 `onSetFavorite(contextMenu.ve)` + 关闭菜单
     - _Requirements: 4.1, 4.2, 4.5_

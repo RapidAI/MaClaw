@@ -236,9 +236,10 @@ func (c *codingSubAgentCallbacks) executeCallMCPTool(args map[string]interface{}
 
 	outcome := codingToolOutcomeSuccess
 	if isCodingSubAgentDynamicToolFailure(result) ||
-		strings.HasPrefix(result, "\u274c") ||
 		strings.HasPrefix(result, "MCP tool error") ||
-		strings.HasPrefix(result, "local MCP server") {
+		strings.HasPrefix(result, "local MCP server") ||
+		// Legacy failure rows may start with U+274C (cross mark).
+		(len(result) > 0 && []rune(result)[0] == 0x274C) {
 		outcome = codingToolOutcomeFailed
 	}
 	c.trackDynamicToolResult("call_mcp_tool", serverID+"/"+toolName, result, outcome == codingToolOutcomeSuccess)

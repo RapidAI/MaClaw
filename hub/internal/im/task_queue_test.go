@@ -64,7 +64,7 @@ func TestTaskDispatcher_BasicFlow(t *testing.T) {
 		time.Sleep(50 * time.Millisecond) // simulate work
 		return &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "✅",
+			StatusIcon: "ok",
 			Title:      "Done",
 			Body:       fmt.Sprintf("Result for: %s", task.Text),
 		}, nil
@@ -82,7 +82,7 @@ func TestTaskDispatcher_BasicFlow(t *testing.T) {
 	if resp1.StatusCode != 202 {
 		t.Fatalf("expected 202, got %d", resp1.StatusCode)
 	}
-	if resp1.StatusIcon != "⏳" {
+	if resp1.StatusIcon != "busy" {
 		t.Fatalf("first task should show processing icon, got %q", resp1.StatusIcon)
 	}
 
@@ -94,7 +94,7 @@ func TestTaskDispatcher_BasicFlow(t *testing.T) {
 	if resp2.StatusCode != 202 {
 		t.Fatalf("expected 202, got %d", resp2.StatusCode)
 	}
-	if resp2.StatusIcon != "📋" {
+	if resp2.StatusIcon != "info" {
 		t.Fatalf("second task should show queue icon, got %q", resp2.StatusIcon)
 	}
 

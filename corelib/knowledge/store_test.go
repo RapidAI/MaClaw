@@ -625,6 +625,124 @@ func TestSQLiteStoreSetEmbedderConcurrentSearch(t *testing.T) {
 	wg.Wait()
 }
 
+func TestLastItemProgressFields(t *testing.T) {
+	path, status, reason := lastItemProgressFields(ImportItem{})
+	if path != "" || status != "" || reason != "" {
+		t.Fatalf("empty item should yield empty fields, got %q %q %q", path, status, reason)
+	}
+	path, status, reason = lastItemProgressFields(ImportItem{
+		RelativePath: "docs/a.md",
+		Status:       ItemStatusImported,
+	})
+	if path != "docs/a.md" || status != "imported" || reason != "" {
+		t.Fatalf("imported fields = %q %q %q", path, status, reason)
+	}
+	path, status, reason = lastItemProgressFields(ImportItem{
+		FilePath:     "/abs/b.md",
+		Status:       ItemStatusFailed,
+		ErrorMessage: "parse failed",
+	})
+	if path != "/abs/b.md" || status != "failed" || reason != "parse failed" {
+		t.Fatalf("failed fields = %q %q %q", path, status, reason)
+	}
+	path, status, reason = lastItemProgressFields(ImportItem{
+		RelativePath: "c.bin",
+		Status:       ItemStatusSkippedType,
+		ErrorMessage: "unsupported file type",
+	})
+	if path != "c.bin" || status != "skipped" || reason != "unsupported file type" {
+		t.Fatalf("skipped fields = %q %q %q", path, status, reason)
+	}
+}
+
+func TestImportProgressEmitsLastItemReasonAndFailedItems(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "ok.md"), []byte("Import progress reason coverage note."))
+	mustWrite(t, filepath.Join(root, "nope.exe"), []byte("binary"))
+	// Missing path after scan: create a file that will fail hash? Use zero-byte unreadable is hard on Windows.
+	// Scan-time failure: path that disappears is hard; use too-large? that's skipped not failed.
+	// Use ScanFiles with a path that does not exist for FailedItems coverage instead via import of pre-failed items:
+	// For directory import, unsupported is skipped with reason — assert LastItemReason.
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	var snapshots []DirectoryImportResult
+	store.SetImportProgressCallback(func(progress DirectoryImportResult) {
+		snapshots = append(snapshots, progress)
+	})
+
+	res, err := store.ImportDirectory(ctx, DirectoryImportRequest{
+		RootPath:     root,
+		ProjectPath:  "D:/project",
+		SaveScope:    SaveScopeProject,
+		Recursive:    true,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("ImportDirectory: %v", err)
+	}
+	if res.ImportedFiles != 1 {
+		t.Fatalf("imported=%d want 1, result=%#v", res.ImportedFiles, res)
+	}
+	if res.SkippedFiles < 1 {
+		t.Fatalf("expected at least one skipped file, got %#v", res)
+	}
+
+	var sawSkippedReason bool
+	var sawImported bool
+	for _, snap := range snapshots {
+		if snap.LastItemStatus == "skipped" && snap.LastItemReason != "" {
+			sawSkippedReason = true
+		}
+		if snap.LastItemStatus == "imported" && snap.LastItemPath != "" {
+			sawImported = true
+		}
+	}
+	if !sawSkippedReason {
+		t.Fatalf("expected progress snapshot with skipped last_item_reason, snapshots=%d", len(snapshots))
+	}
+	if !sawImported {
+		t.Fatalf("expected progress snapshot with imported last_item_path")
+	}
+}
+
+func TestImportFailedItemsFromScanFailure(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	missing := filepath.Join(root, "gone.md")
+	// ScanFiles records missing paths as failed items; ImportFiles should surface FailedItems.
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	res, err := store.ImportFiles(ctx, DirectoryImportRequest{
+		ProjectPath:  "D:/project",
+		SaveScope:    SaveScopeProject,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	}, []string{missing})
+	if err != nil {
+		t.Fatalf("ImportFiles: %v", err)
+	}
+	if res.FailedFiles < 1 {
+		t.Fatalf("expected failed files, got %#v", res)
+	}
+	if len(res.FailedItems) < 1 {
+		t.Fatalf("expected FailedItems details, got %#v", res)
+	}
+	if res.FailedItems[0].Error == "" {
+		t.Fatalf("expected FailedItems error message, got %#v", res.FailedItems[0])
+	}
+}
+
 func TestSQLiteStoreImportFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -732,6 +850,54 @@ func TestSQLiteStoreImportFiles(t *testing.T) {
 	}
 	if len(enabledResults) == 0 {
 		t.Fatalf("enabled source should return to default search")
+	}
+}
+
+func TestSearchEmbeddingFallbackWhenFTSEmpty(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "brain.md")
+	mustWrite(t, path, []byte("SQLite external brain guide for semantic recall testing."))
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	// Without embedder, nonsense query should return nothing.
+	empty, err := store.Search(ctx, SearchOptions{Query: "zzzzqwertyuiopnomatch", ProjectPath: "D:/project", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search without embedder: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty FTS results without embedder, got %#v", empty)
+	}
+
+	store.SetEmbedder(testKnowledgeEmbedder{})
+	res, err := store.ImportFiles(ctx, DirectoryImportRequest{
+		ProjectPath:  "D:/project",
+		SaveScope:    SaveScopeProject,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	}, []string{path})
+	if err != nil {
+		t.Fatalf("ImportFiles: %v", err)
+	}
+	if res.ImportedFiles != 1 {
+		t.Fatalf("imported=%d want 1", res.ImportedFiles)
+	}
+
+	// Lexical FTS has no match; hybrid embedding path should still surface content.
+	got, err := store.Search(ctx, SearchOptions{Query: "zzzzqwertyuiopnomatch", ProjectPath: "D:/project", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search with embedder: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected embedding hybrid fallback to return results when FTS is empty")
+	}
+	if got[0].Score < 0.3 {
+		t.Fatalf("embedding fallback score too low for auto-recall threshold: %#v", got[0])
 	}
 }
 

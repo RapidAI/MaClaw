@@ -18,6 +18,92 @@ bool looksLikeAssistantMarkdown(String text) {
       value.contains('> ');
 }
 
+// Regional indicators sit inside 0x1F300–0x1FAFF (aligned with corelib/textutil).
+bool _isPictographBase(int r) {
+  return (r >= 0x1F300 && r <= 0x1FAFF) ||
+      (r >= 0x2600 && r <= 0x27BF) ||
+      (r >= 0x2300 && r <= 0x23FF);
+}
+
+/// Strip leading decorative pictograph clusters (ZWJ sequences + trailing spaces).
+String stripLeadingEmojiCluster(String text) {
+  if (text.isEmpty) return text;
+  final runes = text.runes.toList();
+  var i = 0;
+  while (i < runes.length && _isPictographBase(runes[i])) {
+    i++;
+    if (i < runes.length && runes[i] == 0xFE0F) i++;
+    while (i + 1 < runes.length &&
+        runes[i] == 0x200D &&
+        _isPictographBase(runes[i + 1])) {
+      i++; // ZWJ
+      i++; // next base
+      if (i < runes.length && runes[i] == 0xFE0F) i++;
+    }
+    while (i < runes.length && (runes[i] == 0x20 || runes[i] == 0x09)) {
+      i++;
+    }
+  }
+  if (i == 0) return text;
+  return String.fromCharCodes(runes.sublist(i));
+}
+
+final _mdLinePrefix = RegExp(r'^(#{1,6}[ \t]+|[-*+][ \t]+|\d+\.[ \t]+|>[ \t]+)');
+final _fenceLine = RegExp(r'^[ \t]*(`{3,}|~{3,})');
+
+String stripLineLeadingEmoji(String line) {
+  var wsEnd = 0;
+  while (wsEnd < line.length) {
+    final ch = line.codeUnitAt(wsEnd);
+    if (ch == 0x20 || ch == 0x09) {
+      wsEnd++;
+    } else {
+      break;
+    }
+  }
+  final afterWs = line.substring(wsEnd);
+  final mdMatch = _mdLinePrefix.matchAsPrefix(afterWs);
+  final mdPrefix = mdMatch?.group(0) ?? '';
+  final rest =
+      mdPrefix.isNotEmpty ? afterWs.substring(mdPrefix.length) : afterWs;
+  final stripped = stripLeadingEmojiCluster(rest);
+  // No pictograph removed — keep original line identity.
+  if (identical(stripped, rest) || stripped == rest) return line;
+  return '${line.substring(0, wsEnd)}$mdPrefix$stripped';
+}
+
+bool _mayContainPictograph(String text) {
+  for (final r in text.runes) {
+    if (_isPictographBase(r)) return true;
+  }
+  return false;
+}
+
+/// Display policy: strip line-leading decorative pictographs outside fences.
+String prepareChatBodyForDisplay(String text) {
+  if (text.isEmpty || !_mayContainPictograph(text)) return text;
+  final lines = text.split('\n');
+  var inFence = false;
+  var changed = false;
+  final out = <String>[];
+  for (final line in lines) {
+    if (_fenceLine.hasMatch(line)) {
+      inFence = !inFence;
+      out.add(line);
+      continue;
+    }
+    if (inFence) {
+      out.add(line);
+      continue;
+    }
+    final cleaned = stripLineLeadingEmoji(line);
+    if (cleaned != line) changed = true;
+    out.add(cleaned);
+  }
+  if (!changed) return text;
+  return out.join('\n');
+}
+
 /// Normalize assistant answer text before Markdown rendering.
 String prepareAssistantMarkdown(String raw) {
   final cleaned = cleanSearchSnippet(
@@ -26,7 +112,7 @@ String prepareAssistantMarkdown(String raw) {
     preserveNewlines: true,
   ).trim();
   if (cleaned.isEmpty) return raw.trim();
-  return cleaned;
+  return prepareChatBodyForDisplay(cleaned);
 }
 
 /// Themed, soft-wrap Markdown body for companion chat bubbles.

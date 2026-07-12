@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -247,6 +248,11 @@ func FormatParamSchema(params []corelib.NLSkillParam) string {
 	for _, p := range params {
 		b.WriteString("  - ")
 		b.WriteString(p.Name)
+		if typ := strings.TrimSpace(p.Type); typ != "" {
+			b.WriteString(" (")
+			b.WriteString(typ)
+			b.WriteString(")")
+		}
 		if len(p.Aliases) > 0 {
 			b.WriteString(" (别名: ")
 			b.WriteString(strings.Join(p.Aliases, ", "))
@@ -275,5 +281,164 @@ func FormatParamSchema(params []corelib.NLSkillParam) string {
 		b.WriteString("\n")
 	}
 
+	return b.String()
+}
+
+// FormatCompactParamTags returns a single-line param summary for skill list
+// lines, e.g. "params: input*, format". Required params are marked with '*'.
+func FormatCompactParamTags(params []corelib.NLSkillParam) string {
+	if len(params) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(params))
+	seen := map[string]bool{}
+	for _, p := range params {
+		name := canonicalRunVarKey(p.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if p.Required {
+			parts = append(parts, name+"*")
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "params: " + strings.Join(parts, ", ")
+}
+
+// ParamSchemaJSONObject builds a JSON Schema (draft-style) object for skill
+// args so agent UIs / MCP-style consumers can treat skill params as a real
+// declarative schema rather than free-form prose.
+func ParamSchemaJSONObject(params []corelib.NLSkillParam) map[string]interface{} {
+	if len(params) == 0 {
+		return nil
+	}
+	properties := make(map[string]interface{}, len(params))
+	var required []string
+	for _, p := range params {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			continue
+		}
+		prop := map[string]interface{}{
+			"type": paramJSONSchemaType(p.Type),
+		}
+		if desc := strings.TrimSpace(p.Description); desc != "" {
+			prop["description"] = desc
+		}
+		if def := strings.TrimSpace(p.Default); def != "" {
+			prop["default"] = def
+		}
+		if flag := strings.TrimSpace(p.CLIFlag); flag != "" {
+			prop["x-cli-flag"] = flag
+		}
+		if len(p.Aliases) > 0 {
+			aliases := make([]string, 0, len(p.Aliases))
+			for _, a := range p.Aliases {
+				a = strings.TrimSpace(a)
+				if a != "" {
+					aliases = append(aliases, a)
+				}
+			}
+			if len(aliases) > 0 {
+				prop["x-aliases"] = aliases
+			}
+		}
+		if p.Synthetic {
+			prop["x-synthetic"] = true
+		}
+		properties[name] = prop
+		if p.Required {
+			required = append(required, name)
+		}
+	}
+	if len(properties) == 0 {
+		return nil
+	}
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
+// FormatParamSchemaJSON returns a compact JSON Schema string for params, or "".
+func FormatParamSchemaJSON(params []corelib.NLSkillParam) string {
+	schema := ParamSchemaJSONObject(params)
+	if schema == nil {
+		return ""
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func paramJSONSchemaType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "number", "integer", "boolean", "array", "object", "string":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "string"
+	}
+}
+
+// FormatSkillInspectReport builds a full param-contract report for
+// manage_skill(action="info"). Completes declared + synthesized params and
+// enriches missing descriptions from SKILL.md when available.
+func FormatSkillInspectReport(entry *corelib.NLSkillEntry) string {
+	if entry == nil {
+		return "skill not found"
+	}
+	params := CompleteParamsForSkill(entry)
+	var b strings.Builder
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = "(unnamed)"
+	}
+	fmt.Fprintf(&b, "=== Skill: %s ===\n", name)
+	if id := strings.TrimSpace(entry.SkillID); id != "" {
+		fmt.Fprintf(&b, "skill_id: %s\n", id)
+	}
+	if desc := strings.TrimSpace(entry.Description); desc != "" {
+		fmt.Fprintf(&b, "description: %s\n", desc)
+	}
+	if status := strings.TrimSpace(entry.Status); status != "" {
+		fmt.Fprintf(&b, "status: %s\n", status)
+	}
+	if typ := strings.TrimSpace(entry.Type); typ != "" {
+		fmt.Fprintf(&b, "type: %s\n", typ)
+	}
+	if mode := strings.TrimSpace(entry.Mode); mode != "" {
+		fmt.Fprintf(&b, "mode: %s\n", mode)
+	}
+	if len(entry.RequiredArgs) > 0 {
+		fmt.Fprintf(&b, "required_args: %s\n", strings.Join(entry.RequiredArgs, ", "))
+	}
+	if len(entry.RequiredEnv) > 0 {
+		fmt.Fprintf(&b, "required_env: %s\n", strings.Join(entry.RequiredEnv, ", "))
+	}
+	b.WriteString("\n")
+	if schema := FormatParamSchema(params); schema != "" {
+		b.WriteString(schema)
+	} else {
+		b.WriteString("参数: (无声明 / 无模板占位符)\n")
+	}
+	if js := FormatParamSchemaJSON(params); js != "" {
+		b.WriteString("\nJSON Schema (args):\n")
+		b.WriteString(js)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n提示: manage_skill(action=\"run\", name=\"")
+	b.WriteString(name)
+	b.WriteString("\", args={...})\n")
 	return b.String()
 }

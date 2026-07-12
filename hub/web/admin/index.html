@@ -931,6 +931,7 @@
           <button class="btn-danger" onclick="forceDeleteAllMachinesByEmail()" id="machineEmailForceDeleteButton"></button>
         </div>
         <div class="hint" style="margin-bottom:10px;padding:12px 14px" data-i18n="machinesHint"></div>
+        <div id="adaptivePromptFleet" class="hint" style="margin-bottom:10px;padding:12px 14px"></div>
         <div class="table" id="machines"></div>
         <div id="machinesPager" class="pager hidden">
           <div id="machinesPagerMeta" class="pager-meta"></div>
@@ -1212,8 +1213,8 @@
               <div><label id="llmProvidersUpstreamTimeoutSecHintLabel"></label><div id="llmProvidersUpstreamTimeoutSecHint" class="hint"></div></div>
             </div>
             <div class="grid2" style="margin-top:10px">
-              <div><label id="llmProvidersUserRateLimitPerMinuteLabel"></label><input id="llmProvidersUserRateLimitPerMinute" type="number" min="1" step="1" value="120"></div>
-              <div><label id="llmProvidersUserRateLimitBurstLabel"></label><input id="llmProvidersUserRateLimitBurst" type="number" min="1" step="1" value="20"></div>
+              <div><label id="llmProvidersUserRateLimitPerMinuteLabel"></label><input id="llmProvidersUserRateLimitPerMinute" type="number" min="1" step="1" value="300"></div>
+              <div><label id="llmProvidersUserRateLimitBurstLabel"></label><input id="llmProvidersUserRateLimitBurst" type="number" min="1" step="1" value="80"></div>
             </div>
             <div id="llmProvidersUserRateLimitHint" class="hint" style="margin-top:10px"></div><div class="actions" style="margin-top:10px;justify-content:flex-end"><button class="btn-primary" type="button" onclick="saveLLMProviderGlobals()" id="llmProvidersSaveBtn"></button></div>
           </div>

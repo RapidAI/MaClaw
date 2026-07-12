@@ -53,7 +53,7 @@ func (h *IMMessageHandler) toolCompressContext(args map[string]interface{}) stri
 		Timestamp:     time.Now(),
 	})
 
-	return "✅ 上下文压缩已排队。下一轮迭代开始时，之前的详细历史将被替换为你提供的摘要。"
+	return "上下文压缩已排队。下一轮迭代开始时，之前的详细历史将被替换为你提供的摘要。"
 }
 
 // contextCompressionRequest holds a pending compression request.

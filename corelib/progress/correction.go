@@ -130,7 +130,7 @@ func (cs *CorrectionStore) purgeLocked() {
 //
 // Example output:
 //
-//	👌 收到，已纳入当前任务。
+//	收到，已纳入当前任务。
 //	  回复1: 改为打断 | 回复2: 改为排队
 func FormatCorrectionsText(reply string, corrections []CorrectionOption) string {
 	if len(corrections) == 0 {

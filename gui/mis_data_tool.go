@@ -50,9 +50,13 @@ func (h *IMMessageHandler) toolMISData(args map[string]interface{}) string {
 }
 
 type AgentViewSubmitPayload struct {
-	ViewID    string                 `json:"view_id"`
-	Data      map[string]interface{} `json:"data"`
-	RequestID string                 `json:"request_id,omitempty"`
+	ViewID        string                 `json:"view_id"`
+	Data          map[string]interface{} `json:"data"`
+	RequestID     string                 `json:"request_id,omitempty"`
+	ViewRevision  int64                  `json:"view_revision,omitempty"`
+	SchemaVersion string                 `json:"schema_version,omitempty"`
+	AppID         string                 `json:"app_id,omitempty"`
+	SessionID     string                 `json:"session_id,omitempty"`
 }
 
 type AgentViewDismissPayload struct {
@@ -170,9 +174,21 @@ func (a *App) handleAgentViewControlMessage(text string) (*IMAgentResponse, bool
 }
 
 func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp *IMAgentResponse) {
+	if stale := a.validateAgentViewSubmitRevision(payload); stale != nil {
+		// Do not run handlers on a superseded panel; surface recoverable error.
+		a.emitAgentViewLifecycle(agentViewLifecycleError, map[string]interface{}{
+			"view_id":        payload.ViewID,
+			"error":          stale.Error,
+			"view_revision":  agentViewSubmitRevision(payload),
+			"schema_version": agentViewSubmitSchemaVersion(payload),
+		})
+		return stale
+	}
 	a.emitAgentViewLifecycle(agentViewLifecycleSubmit, map[string]interface{}{
-		"view_id": payload.ViewID,
-		"data":    payload.Data,
+		"view_id":        payload.ViewID,
+		"data":           payload.Data,
+		"view_revision":  agentViewSubmitRevision(payload),
+		"schema_version": agentViewSubmitSchemaVersion(payload),
 	})
 	startSeq := a.agentViewSeq()
 	defer func() {
@@ -193,6 +209,8 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 			a.emitAgentViewLifecycle(agentViewLifecycleError, lifecyclePayload)
 			return
 		}
+		// Successful terminal submit for this open generation.
+		a.forgetAgentViewOpen(payload.ViewID)
 		a.emitAgentViewLifecycle(agentViewLifecycleComplete, lifecyclePayload)
 	}()
 	a.ensureMISBusinessTransactionsLoaded()
@@ -231,6 +249,9 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 	case misAgentViewIDWorkflowForm:
 		return a.handleWorkflowFormAgentViewSubmit(viewID.Arg, payload.Data, payload.RequestID)
 	default:
+		if strings.HasPrefix(strings.TrimSpace(payload.ViewID), "app:") {
+			return a.handleMaclawAppWorkspaceSubmit(payload)
+		}
 		return &IMAgentResponse{Text: avTr("Task panel submission received.", "任务面板提交已收到。"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 }

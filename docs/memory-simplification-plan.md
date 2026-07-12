@@ -29,11 +29,11 @@
 
 | 能力 | TopicClusterer | ThemeManager.buildFallbackTagThemes |
 |------|---------------|-------------------------------------|
-| 按 tag 分组 | ✅ `tagEntries[tag]` | ✅ `tagToIDs[tag]` |
-| 最小簇大小 ≥3 | ✅ `len(ids) >= 3` | ✅ `len(ids) < 3 → continue` |
-| 合并重叠簇 | ✅ `>50% overlap → merge` | ❌ 不合并（每个 tag 独立成簇） |
-| LLM summary | ✅ `GenerateSummaries` | ✅ `summarizeTheme` |
-| 消费方 | ❌ 无 | ✅ diversityRerank + AdaptiveRecall |
+| 按 tag 分组 | `tagEntries[tag]` | `tagToIDs[tag]` |
+| 最小簇大小 ≥3 | `len(ids) >= 3` | `len(ids) < 3 → continue` |
+| 合并重叠簇 | `>50% overlap → merge` | 不合并（每个 tag 独立成簇） |
+| LLM summary | `GenerateSummaries` | `summarizeTheme` |
+| 消费方 | 无 | diversityRerank + AdaptiveRecall |
 
 唯一差异是"合并重叠簇"——但这个能力的结果没有任何消费方，等于不存在。
 
@@ -379,12 +379,12 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 ## 实施顺序与依赖
 
 ```
-精简项 1 (TopicClusterer)     ← ✅ 已完成
-精简项 3 (ThemeManager 缓存)  ← ✅ 已完成
-精简项 4 (KE/OE 互斥)        ← ✅ 已完成
-精简项 5 (RecallGating 移除)  ← ✅ 已完成
-精简项 6 (Archiver 互斥)      ← ✅ 已完成（依赖精简项 4 的 HasRecentSuccess 方法）
-精简项 2 (Promoter+Reflector) ← ✅ 已完成（合并为 Synthesizer）
+精简项 1 (TopicClusterer)     ← 已完成
+精简项 3 (ThemeManager 缓存)  ← 已完成
+精简项 4 (KE/OE 互斥)        ← 已完成
+精简项 5 (RecallGating 移除)  ← 已完成
+精简项 6 (Archiver 互斥)      ← 已完成（依赖精简项 4 的 HasRecentSuccess 方法）
+精简项 2 (Promoter+Reflector) ← 已完成（合并为 Synthesizer）
 ```
 
 ---

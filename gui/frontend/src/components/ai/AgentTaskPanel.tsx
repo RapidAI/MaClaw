@@ -5,6 +5,8 @@ import type { Theme } from "./aiAssistantPanelTheme";
 import { agentViewStrings, type AgentViewStrings } from "./agentViewI18n";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
+import { IconCheck, IconCross, IconDocument, IconEdit, IconHourglass, IconPaperclip, StatusGlyph } from "./WorkbenchIcons";
+import { AppViewShell } from "./AppViewShell";
 
 interface AgentTaskPanelProps {
     view: AgentView;
@@ -646,7 +648,7 @@ function renderField(
                 {isFilePathList && currentLines.length > 0 ? (
                     <details style={{ marginBottom: 2 }}>
                         <summary style={{ fontSize: 11, color: theme.textMuted, cursor: "pointer", userSelect: "none" }}>
-                            ✏️ {label}
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><IconEdit size={12} /> {label}</span>
                         </summary>
                         <textarea
                             id={controlId}
@@ -1060,7 +1062,151 @@ function isPanelHeaderInteractiveTarget(target: EventTarget | null, currentTarge
     return !!target.closest('button, a, input, select, textarea, [role="button"], [data-preview-no-maximize="true"]');
 }
 
+type ApprovalView = Extract<AgentView, { type: "approval" }>;
+
+function ApprovalDecisionPanel({
+    view,
+    theme,
+    s,
+    submitting,
+    primaryButtonStyle,
+    buttonStyle,
+    onDecide,
+}: {
+    view: ApprovalView;
+    theme: Theme;
+    s: AgentViewStrings;
+    submitting: boolean;
+    primaryButtonStyle: React.CSSProperties;
+    buttonStyle: React.CSSProperties;
+    onDecide: (approved: boolean, note: string) => void;
+}) {
+    const [note, setNote] = useState("");
+    const [localError, setLocalError] = useState("");
+    const requireAlways = !!view.requireNote;
+    const requireOnReject = view.requireNoteOnReject !== false; // default true when field omitted for app approvals
+
+    const tryDecide = (approved: boolean) => {
+        const trimmed = note.trim();
+        if (requireAlways && !trimmed) {
+            setLocalError(s.decisionNoteRequired);
+            return;
+        }
+        if (!approved && requireOnReject && !trimmed) {
+            setLocalError(s.decisionNoteRequiredOnReject);
+            return;
+        }
+        setLocalError("");
+        onDecide(approved, trimmed);
+    };
+
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}>
+            <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>{view.action.summary}</div>
+                {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>{s.risk}: {view.action.risk}</div>}
+            </div>
+            {view.action.effects && view.action.effects.length > 0 && (
+                <div>
+                    <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.effects}</div>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>{view.action.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>
+                </div>
+            )}
+            {view.action.reviewData && Object.keys(view.action.reviewData).length > 0 && (
+                <div>
+                    <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.data}</div>
+                    {keyValueList(view.action.reviewData, theme)}
+                </div>
+            )}
+            {keyValueList(view.action.parameters, theme)}
+            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 600 }}>
+                    {view.noteLabel || s.decisionNote}
+                    {(requireAlways || requireOnReject) && <span style={{ color: theme.errorText }}> *</span>}
+                </span>
+                <textarea
+                    value={note}
+                    onChange={(event) => {
+                        setNote(event.target.value);
+                        if (localError) setLocalError("");
+                    }}
+                    placeholder={view.notePlaceholder || s.decisionNotePlaceholder}
+                    rows={3}
+                    style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        border: `1px solid ${localError ? theme.errorBorder : theme.fieldBorder}`,
+                        background: theme.fieldBg,
+                        color: theme.inputText,
+                        borderRadius: 8,
+                        padding: "9px 12px",
+                        fontSize: 13,
+                        fontFamily: "inherit",
+                        resize: "vertical",
+                        outline: "none",
+                    }}
+                />
+                {requireOnReject && !requireAlways && (
+                    <span style={{ color: theme.textMuted, fontSize: 11 }}>{s.decisionNoteRequiredOnReject}</span>
+                )}
+            </label>
+            {localError && (
+                <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                    {localError}
+                </div>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+                <button
+                    type="button"
+                    disabled={submitting}
+                    style={{ ...primaryButtonStyle, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }}
+                    onClick={() => tryDecide(true)}
+                >
+                    {submitting ? s.submitting : view.approveLabel || s.approve}
+                </button>
+                <button
+                    type="button"
+                    disabled={submitting}
+                    style={{ ...buttonStyle, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }}
+                    onClick={() => tryDecide(false)}
+                >
+                    {view.rejectLabel || s.reject}
+                </button>
+            </div>
+        </div>
+    );
+}
+
 export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
+    // AppView workspace shell — never nested (backend forbids nested app_view).
+    // Route before any hooks so React rules of hooks stay valid.
+    if (view.type === "app_view") {
+        return (
+            <AppViewShell
+                view={view}
+                onDismiss={onDismiss}
+                onResizeStart={onResizeStart}
+                onToggleMaximize={onToggleMaximize}
+                onSubmit={onSubmit}
+                theme={theme}
+                lang={lang}
+            />
+        );
+    }
+    return (
+        <AgentTaskPanelContent
+            view={view}
+            onDismiss={onDismiss}
+            onResizeStart={onResizeStart}
+            onToggleMaximize={onToggleMaximize}
+            onSubmit={onSubmit}
+            theme={theme}
+            lang={lang}
+        />
+    );
+}
+
+function AgentTaskPanelContent({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
     const s = useMemo(() => agentViewStrings(lang || "en"), [lang]);
     const { showConfirm } = useDialog();
     const [activeVariantId, setActiveVariantId] = useState<string | undefined>(() => {
@@ -1523,29 +1669,21 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     </form>
                 )}
                 {view.type === "approval" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}>
-                        <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
-                            <div style={{ fontWeight: 700, marginBottom: 8 }}>{view.action.summary}</div>
-                            {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>{s.risk}: {view.action.risk}</div>}
-                        </div>
-                        {view.action.effects && view.action.effects.length > 0 && (
-                            <div>
-                                <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.effects}</div>
-                                <ul style={{ margin: 0, paddingLeft: 18 }}>{view.action.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>
-                            </div>
-                        )}
-                        {view.action.reviewData && Object.keys(view.action.reviewData).length > 0 && (
-                            <div>
-                                <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.data}</div>
-                                {keyValueList(view.action.reviewData, theme)}
-                            </div>
-                        )}
-                        {keyValueList(view.action.parameters, theme)}
-                        <div style={{ display: "flex", gap: 8 }}>
-                            <button type="button" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }} onClick={() => void submitAgentView({ approved: true, parameters: view.action.parameters || {} })}>{submitting ? s.submitting : view.approveLabel || s.approve}</button>
-                            <button type="button" disabled={submitting} style={{ ...buttonStyle, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }} onClick={() => void submitAgentView({ approved: false, parameters: view.action.parameters || {} })}>{view.rejectLabel || s.reject}</button>
-                        </div>
-                    </div>
+                    <ApprovalDecisionPanel
+                        view={view}
+                        theme={theme}
+                        s={s}
+                        submitting={submitting}
+                        primaryButtonStyle={primaryButtonStyle}
+                        buttonStyle={buttonStyle}
+                        onDecide={(approved, note) => {
+                            void submitAgentView({
+                                approved,
+                                note,
+                                parameters: view.action.parameters || {},
+                            });
+                        }}
+                    />
                 )}
                 {view.type === "progress" && (
                     <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 640, margin: "0 auto" }}>
@@ -1683,7 +1821,7 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
 
     return (
         <div style={containerStyle}>
-            <span style={{ fontSize: 20 }}>📄</span>
+            <IconDocument size={20} color="currentColor" style={{ opacity: 0.8 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
                 {status === "idle" && (
                     <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.5 }}>
@@ -1691,10 +1829,14 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
                     </div>
                 )}
                 {status === "parsing" && (
-                    <div style={{ color: theme.text, fontSize: 12 }}>⏳ 正在解析简历并提取信息...</div>
+                    <div style={{ color: theme.text, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                        <IconHourglass size={13} /> 正在解析简历并提取信息...
+                    </div>
                 )}
                 {status === "done" && (
-                    <div style={{ color: "var(--theme-success, #16a34a)", fontSize: 12 }}>✅ 已从简历中提取 {filledCount} 个字段，请核对后提交</div>
+                    <div style={{ color: "var(--theme-success, #16a34a)", fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                        <IconCheck size={13} color="currentColor" /> 已从简历中提取 {filledCount} 个字段，请核对后提交
+                    </div>
                 )}
                 {status === "error" && (
                     <div style={{ color: theme.errorText, fontSize: 12 }}>{errorMsg}</div>
@@ -1827,7 +1969,7 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
     return (
         <div style={containerStyle}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 18 }}>📎</span>
+                <IconPaperclip size={18} color="currentColor" style={{ opacity: 0.85 }} />
                 <div style={{ flex: 1 }}>
                     <div style={{ color: theme.text, fontSize: 12, fontWeight: 600 }}>{config.label}</div>
                     <div style={{ color: theme.textMuted, fontSize: 11, lineHeight: 1.4, marginTop: 2 }}>{config.description}</div>
@@ -1857,18 +1999,19 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {files.map((file, index) => (
                         <div key={file.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: theme.fieldBg, borderRadius: 6, fontSize: 12 }}>
-                            <span style={{ color: file.status === "done" ? "#4ade80" : file.status === "error" ? theme.errorText : theme.textMuted }}>
-                                {file.status === "done" ? "✅" : file.status === "error" ? "❌" : "⏳"}
+                            <span style={{ color: file.status === "done" ? "#4ade80" : file.status === "error" ? theme.errorText : theme.textMuted, display: "inline-flex" }}>
+                                <StatusGlyph kind={file.status === "done" ? "ok" : file.status === "error" ? "error" : "pending"} size={13} />
                             </span>
                             <span style={{ flex: 1, color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={file.path}>{file.name}</span>
                             <button
                                 type="button"
                                 onClick={() => void handleRemove(index)}
                                 disabled={uploading}
-                                style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", padding: "2px 6px", fontSize: 14, lineHeight: 1 }}
+                                style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", padding: "2px 6px", display: "inline-flex", alignItems: "center" }}
                                 title="移除"
+                                aria-label="移除"
                             >
-                                ×
+                                <IconCross size={12} color="currentColor" />
                             </button>
                         </div>
                     ))}

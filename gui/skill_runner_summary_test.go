@@ -47,7 +47,7 @@ func TestSummarizeSkillRun_MarksInstructionOnlyCraftTool(t *testing.T) {
 			Index:  0,
 			Action: "craft_tool",
 			Status: skillStepStatusSuccess,
-			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\n" + outputPath + "\n\n✅ 脚本执行成功",
+			Output: "脚本语言: python\n脚本路径: C:/tmp/tool.py\n" + outputPath + "\n\n脚本执行成功",
 		}},
 	}
 	summarizeSkillRun(status)
@@ -71,7 +71,7 @@ func TestSummarizeSkillRun_VerificationPassedSkipsArtifactVerification(t *testin
 			Index:  0,
 			Action: "craft_tool",
 			Status: skillStepStatusSuccess,
-			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\nattempts: 1\nverification: passed\nartifact: C:/tmp/done.pdf\n\n✅ 脚本执行成功",
+			Output: "脚本语言: python\n脚本路径: C:/tmp/tool.py\nattempts: 1\nverification: passed\nartifact: C:/tmp/done.pdf\n\n脚本执行成功",
 		}},
 	}
 	summarizeSkillRun(status)
@@ -93,7 +93,7 @@ func TestSummarizeSkillRun_VerifiesExpectedOutputArtifact(t *testing.T) {
 		Skill:          "xh-md-to-pdf",
 		Status:         skillRunStatusSuccess,
 		ExpectedOutput: outputPath,
-		Steps:          []StepResult{{Index: 0, Action: "craft_tool", Status: skillStepStatusSuccess, Output: "✅ 脚本执行成功"}},
+		Steps:          []StepResult{{Index: 0, Action: "craft_tool", Status: skillStepStatusSuccess, Output: "脚本执行成功"}},
 	}
 	summarizeSkillRun(status)
 	if status.Summary.ArtifactPath != outputPath {

@@ -29,32 +29,40 @@ type veGroupConfig struct {
 }
 
 type digitalEmployeeEntry struct {
-	ID                         string   `json:"id"`
-	MachineID                  string   `json:"machine_id"`
-	EmployeeType               string   `json:"employee_type,omitempty"`
-	PlatformID                 string   `json:"platform_id,omitempty"`
-	PlatformEmployeeID         string   `json:"platform_employee_id,omitempty"`
-	RuntimeProviderID          string   `json:"runtime_provider_id,omitempty"`
-	OwnerUserID                string   `json:"owner_user_id"`
-	OwnerEmail                 string   `json:"owner_email,omitempty"`
-	Name                       string   `json:"name"`
-	SkillDescription           string   `json:"skill_description"`
-	AvatarDataURL              string   `json:"avatar_data_url,omitempty"`
-	AccessPolicy               string   `json:"access_policy"`
-	Whitelist                  []string `json:"whitelist,omitempty"`
-	Blacklist                  []string `json:"blacklist,omitempty"`
-	VisibleGroupIDs            []string `json:"visible_group_ids,omitempty"`
-	Resident                   bool     `json:"resident,omitempty"`
-	ApprovalCapabilityEnabled  bool     `json:"approval_capability_enabled,omitempty"`
-	Status                     string   `json:"status"`
-	OnlineStatus               string   `json:"online_status"`
-	RegisteredAt               string   `json:"registered_at,omitempty"`
-	UpdatedAt                  string   `json:"updated_at,omitempty"`
-	DisabledAt                 string   `json:"disabled_at,omitempty"`
-	RejectedAt                 string   `json:"rejected_at,omitempty"`
-	RejectReason               string   `json:"reject_reason,omitempty"`
-	RuntimeMissing             bool     `json:"runtime_missing,omitempty"`
-	HistoryRetained            bool     `json:"history_retained,omitempty"`
+	ID                        string   `json:"id"`
+	MachineID                 string   `json:"machine_id"`
+	EmployeeType              string   `json:"employee_type,omitempty"`
+	PlatformID                string   `json:"platform_id,omitempty"`
+	PlatformEmployeeID        string   `json:"platform_employee_id,omitempty"`
+	RuntimeProviderID         string   `json:"runtime_provider_id,omitempty"`
+	OwnerUserID               string   `json:"owner_user_id"`
+	OwnerEmail                string   `json:"owner_email,omitempty"`
+	// TwinSlot is the stable personal-twin slot for this physical user
+	// (default: "personal-default"). Multiple machines reclaim/bind slots
+	// instead of creating endless orphan VEs after reinstall.
+	TwinSlot string `json:"twin_slot,omitempty"`
+	// DeviceKey is the durable desktop device key last bound to this twin.
+	DeviceKey                 string   `json:"device_key,omitempty"`
+	Name                      string   `json:"name"`
+	SkillDescription          string   `json:"skill_description"`
+	AvatarDataURL             string   `json:"avatar_data_url,omitempty"`
+	AccessPolicy              string   `json:"access_policy"`
+	Whitelist                 []string `json:"whitelist,omitempty"`
+	Blacklist                 []string `json:"blacklist,omitempty"`
+	VisibleGroupIDs           []string `json:"visible_group_ids,omitempty"`
+	Resident                  bool     `json:"resident,omitempty"`
+	ApprovalCapabilityEnabled bool     `json:"approval_capability_enabled,omitempty"`
+	Status                    string   `json:"status"`
+	OnlineStatus              string   `json:"online_status"`
+	RegisteredAt              string   `json:"registered_at,omitempty"`
+	UpdatedAt                 string   `json:"updated_at,omitempty"`
+	DisabledAt                string   `json:"disabled_at,omitempty"`
+	RejectedAt                string   `json:"rejected_at,omitempty"`
+	RejectReason              string   `json:"reject_reason,omitempty"`
+	RuntimeMissing            bool     `json:"runtime_missing,omitempty"`
+	HistoryRetained           bool     `json:"history_retained,omitempty"`
+	// Reclaimed reports whether this register/ensure rebound an existing twin.
+	Reclaimed bool `json:"reclaimed,omitempty"`
 }
 
 type digitalEmployeeRegistry struct {
@@ -273,9 +281,10 @@ func VEAdminListHandler(system store.SystemSettingsRepository, presenceGetter ve
 		if veRegistryHasMacLawSrvRuntimeEmployees(registry, false) {
 			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), baseSystem, tenantID)
 		}
-		employees := registry.Employees
+		employees := make([]digitalEmployeeEntry, len(registry.Employees))
+		copy(employees, registry.Employees)
 		for i := range employees {
-			employees[i] = applyVEDiscoverablePresence(r.Context(), employees[i], presenceGetter, runtimePresence)
+			employees[i] = publicDigitalEmployeeEntry(applyVEDiscoverablePresence(r.Context(), employees[i], presenceGetter, runtimePresence))
 		}
 		sort.SliceStable(employees, func(i, j int) bool {
 			return employees[i].RegisteredAt > employees[j].RegisteredAt
@@ -372,12 +381,17 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 		entry.RegisteredAt = now
 		entry.UpdatedAt = now
 		entry.OnlineStatus = veOnlineStatusOnline
+		entry.TwinSlot = firstNonEmptyVE(strings.TrimSpace(req.TwinSlot), veTwinSlotPersonalDefault)
+		entry.DeviceKey = strings.TrimSpace(req.DeviceKey)
+		entry.Reclaimed = false
 		autoApprove := loadVEGroupConfig(r.Context(), system).AutoApprove
 		authz := loadVEDigitalEmployeeAuthorization(r.Context(), system)
 		if idx >= 0 {
 			previous := registry.Employees[idx]
 			entry.ID = previous.ID
 			entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+			entry.TwinSlot = firstNonEmptyVE(previous.TwinSlot, entry.TwinSlot, veTwinSlotPersonalDefault)
+			entry.DeviceKey = firstNonEmptyVE(entry.DeviceKey, previous.DeviceKey)
 			preserveOwnerManagedFields(&previous, &entry)
 			if req.AvatarDataURL == nil {
 				entry.AvatarDataURL = previous.AvatarDataURL
@@ -391,8 +405,51 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 				entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, entry.Status)
 			}
 			registry.Employees[idx] = entry
+		} else if reclaimIdx := resolveVEReclaimIndex(registry, principal, req); reclaimIdx >= 0 {
+			// Rebind an existing twin slot to this machine (reinstall / new machine_id).
+			previous := registry.Employees[reclaimIdx]
+			rebound := rebindPersonalTwin(previous, principal, entry.DeviceKey, time.Now().UTC())
+			// Overlay request profile onto the reclaimed twin while keeping stable ID.
+			entry.ID = previous.ID
+			entry.MachineID = rebound.MachineID
+			entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+			entry.TwinSlot = rebound.TwinSlot
+			entry.DeviceKey = rebound.DeviceKey
+			entry.OnlineStatus = rebound.OnlineStatus
+			entry.UpdatedAt = rebound.UpdatedAt
+			entry.DisabledAt = ""
+			entry.RejectedAt = ""
+			entry.RejectReason = ""
+			entry.Reclaimed = true
+			preserveOwnerManagedFields(&previous, &entry)
+			if req.AvatarDataURL == nil || strings.TrimSpace(entry.AvatarDataURL) == "" {
+				entry.AvatarDataURL = previous.AvatarDataURL
+			}
+			if strings.TrimSpace(entry.Name) == "" {
+				entry.Name = previous.Name
+			}
+			if strings.TrimSpace(entry.SkillDescription) == "" {
+				entry.SkillDescription = previous.SkillDescription
+			}
+			if strings.TrimSpace(entry.AccessPolicy) == "" {
+				entry.AccessPolicy = previous.AccessPolicy
+			}
+			if len(entry.Whitelist) == 0 {
+				entry.Whitelist = previous.Whitelist
+			}
+			if len(entry.Blacklist) == 0 {
+				entry.Blacklist = previous.Blacklist
+			}
+			entry.RegisteredAt = firstNonEmptyVE(previous.RegisteredAt, now)
+			entry.Status = previous.Status
+			if entry.Status == "" || entry.Status == veStatusRejected || entry.Status == veStatusDisabled {
+				entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, entry.Status)
+			}
+			registry.Employees[reclaimIdx] = entry
+			idx = reclaimIdx
 		} else {
 			entry.ID = veIDForMachine(principal.MachineID)
+			entry.TwinSlot = firstNonEmptyVE(entry.TwinSlot, veTwinSlotPersonalDefault)
 			entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, "")
 			registry.Employees = append(registry.Employees, entry)
 			idx = len(registry.Employees) - 1
@@ -403,7 +460,93 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"registered": true, "employee": entry})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"registered": true,
+			"reclaimed":  entry.Reclaimed,
+			"employee":   publicDigitalEmployeeEntry(entry),
+		})
+	}
+}
+
+// VEReclaimableHandler lists personal twins of the current user that can be
+// rebound to this machine (orphaned after reinstall / wiped client_id).
+func VEReclaimableHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, presence ...veMachinePresenceGetter) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateVEMachine(w, r, authenticator)
+		if !ok {
+			return
+		}
+		system := veSystemSettingsForMachine(system, principal)
+		registry := loadVERegistry(r.Context(), system)
+		items := listReclaimablePersonalTwins(r.Context(), registry, principal, firstVEPresenceGetter(presence...))
+		writeJSON(w, http.StatusOK, map[string]any{"reclaimable": items, "count": len(items)})
+	}
+}
+
+// VEReclaimHandler binds the current machine to an existing personal twin.
+func VEReclaimHandler(system store.SystemSettingsRepository, authenticator veMachineAuthenticator, ownerLookups ...veOwnerLookup) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := authenticateVEMachine(w, r, authenticator)
+		if !ok {
+			return
+		}
+		system := veSystemSettingsForMachine(system, principal)
+		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
+			return
+		}
+		var req struct {
+			VEID      string `json:"ve_id"`
+			DeviceKey string `json:"device_key,omitempty"`
+		}
+		if !decodeVEJSON(w, r, &req, 64*1024) {
+			return
+		}
+		veID := strings.TrimSpace(req.VEID)
+		if veID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "ve_id is required")
+			return
+		}
+		registry := loadVERegistry(r.Context(), system)
+		idx := registry.findByID(veID)
+		if idx < 0 {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "virtual employee not found")
+			return
+		}
+		previous := registry.Employees[idx]
+		if !strings.EqualFold(strings.TrimSpace(previous.OwnerUserID), strings.TrimSpace(principal.UserID)) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "virtual employee is owned by another user")
+			return
+		}
+		if inferVEEmployeeType(previous) != veEmployeeTypePhysical {
+			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "only personal digital twins can be reclaimed")
+			return
+		}
+		// If another VE currently occupies this machine, refuse (should re-register that machine first).
+		if other := registry.findByMachineID(principal.MachineID); other >= 0 && other != idx {
+			writeError(w, http.StatusConflict, "MACHINE_HAS_VE", "this machine already has a virtual employee; disable it before reclaim")
+			return
+		}
+		// Idempotent when already bound to this machine. Otherwise refuse a twin
+		// that is still fresh-online on a different machine.
+		alreadyBound := groupDiscussionParticipantIdentityMatches(previous.MachineID, principal.MachineID)
+		if !alreadyBound && !isVEEntryReclaimableOffline(previous, time.Now().UTC()) {
+			writeError(w, http.StatusConflict, "TWIN_ONLINE", "virtual employee is still online on another machine")
+			return
+		}
+		entry := rebindPersonalTwin(previous, principal, strings.TrimSpace(req.DeviceKey), time.Now().UTC())
+		if entry.Status == veStatusRejected || entry.Status == veStatusDisabled || entry.Status == "" {
+			autoApprove := loadVEGroupConfig(r.Context(), system).AutoApprove
+			authz := loadVEDigitalEmployeeAuthorization(r.Context(), system)
+			entry.Status = veRegistrationStatus(autoApprove, authz, registry.Employees, entry.Status)
+		}
+		entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, lookupVEOwnerEmail(r.Context(), firstVEOwnerLookup(ownerLookups...), entry.OwnerUserID))
+		registry.Employees[idx] = entry
+		normalizeVERegistryResidentFlags(&registry)
+		if err := saveVERegistry(r.Context(), system, registry); err != nil {
+			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"reclaimed": true, "employee": publicDigitalEmployeeEntry(entry)})
 	}
 }
 
@@ -472,6 +615,8 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 		previous := registry.Employees[idx]
 		entry.ID = previous.ID
 		entry.OwnerEmail = firstNonEmptyVE(entry.OwnerEmail, previous.OwnerEmail)
+		entry.TwinSlot = firstNonEmptyVE(previous.TwinSlot, entry.TwinSlot, veTwinSlotPersonalDefault)
+		entry.DeviceKey = firstNonEmptyVE(strings.TrimSpace(req.DeviceKey), previous.DeviceKey)
 		preserveOwnerManagedFields(&previous, &entry)
 		if req.AvatarDataURL == nil {
 			entry.AvatarDataURL = previous.AvatarDataURL
@@ -490,7 +635,7 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+		writeJSON(w, http.StatusOK, map[string]any{"employee": publicDigitalEmployeeEntry(entry)})
 	}
 }
 
@@ -510,7 +655,7 @@ func VEStatusHandler(system store.SystemSettingsRepository, authenticator veMach
 		if idx := registry.findByMachineID(principal.MachineID); idx >= 0 {
 			entry := registry.Employees[idx]
 			entry.OnlineStatus = veOnlineStatusOnline
-			writeJSON(w, http.StatusOK, map[string]any{"registered": true, "employee": entry})
+			writeJSON(w, http.StatusOK, map[string]any{"registered": true, "employee": publicDigitalEmployeeEntry(entry)})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"registered": false})
@@ -599,7 +744,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 				if !strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline) {
 					continue
 				}
-				employees = append(employees, entry)
+				employees = append(employees, publicDigitalEmployeeEntry(entry))
 			}
 			sort.SliceStable(employees, func(i, j int) bool { return employees[i].Name < employees[j].Name })
 			data, err := json.Marshal(map[string]any{
@@ -1441,7 +1586,7 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 			}
 			emitVEAdminActionEvent(firstVEMachineEventSender(senders...), action, removed)
 			postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, action, removed)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": removed})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": publicDigitalEmployeeEntry(removed)})
 			return
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_ACTION", "unknown digital employee action")
@@ -1455,7 +1600,7 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 		}
 		emitVEAdminActionEvent(firstVEMachineEventSender(senders...), action, entry)
 		postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, action, entry)
-		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+		writeJSON(w, http.StatusOK, map[string]any{"employee": publicDigitalEmployeeEntry(entry)})
 	}
 }
 
@@ -1522,7 +1667,7 @@ func VEAdminForceDeleteHandler(system store.SystemSettingsRepository, groupSvc *
 		}
 		emitVEAdminActionEvent(firstVEMachineEventSender(senders...), "force_delete", removed)
 		postPlatformEmployeeActionCallback(r.Context(), baseSystem, tenantID, "delete", removed)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": removed, "deleted_history_sessions": deletedHistory})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "employee": publicDigitalEmployeeEntry(removed), "deleted_history_sessions": deletedHistory})
 	}
 }
 
@@ -1591,7 +1736,7 @@ func VEAdminResidentHandler(system store.SystemSettingsRepository) http.HandlerF
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+		writeJSON(w, http.StatusOK, map[string]any{"employee": publicDigitalEmployeeEntry(entry)})
 	}
 }
 
@@ -1642,7 +1787,7 @@ func VEAdminVisibilityHandler(system store.SystemSettingsRepository, securitySvc
 			writeError(w, http.StatusInternalServerError, "SAVE_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"employee": entry})
+		writeJSON(w, http.StatusOK, map[string]any{"employee": publicDigitalEmployeeEntry(entry)})
 	}
 }
 
@@ -1780,7 +1925,7 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 				return
 			}
 			decorated := decorateVEHistorySummaries(r.Context(), tenantID, items, employee, ownerLookup, machineLookup)
-			matches = append(matches, veHistorySearchMatch{Employee: employee, Discussions: decorated})
+			matches = append(matches, veHistorySearchMatch{Employee: publicDigitalEmployeeEntry(employee), Discussions: decorated})
 			for _, item := range decorated {
 				if item.ID != "" {
 					if seenDiscussions[item.ID] {
@@ -1835,7 +1980,10 @@ func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDisc
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"employee": employee, "discussions": decorateVEHistorySummaries(r.Context(), tenantID, items, employee, ownerLookup, firstVEMachineLookup(machineLookups...))})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"employee":    publicDigitalEmployeeEntry(employee),
+			"discussions": decorateVEHistorySummaries(r.Context(), tenantID, items, employee, ownerLookup, firstVEMachineLookup(machineLookups...)),
+		})
 	}
 }
 
@@ -1889,7 +2037,18 @@ type veSettingsRequest struct {
 	Whitelist                 []string `json:"whitelist"`
 	Blacklist                 []string `json:"blacklist"`
 	ApprovalCapabilityEnabled *bool    `json:"approval_capability_enabled,omitempty"`
+	// TwinSlot defaults to personal-default for physical-user digital twins.
+	TwinSlot string `json:"twin_slot,omitempty"`
+	// DeviceKey is the durable desktop device identity (client_id).
+	DeviceKey string `json:"device_key,omitempty"`
+	// ReclaimVEID forces binding this machine to an existing twin of the owner.
+	ReclaimVEID string `json:"reclaim_ve_id,omitempty"`
+	// AutoReclaim (default true) reclaims the sole offline personal twin when
+	// this machine has no VE yet (reinstall / wiped data with new machine_id).
+	AutoReclaim *bool `json:"auto_reclaim,omitempty"`
 }
+
+const veTwinSlotPersonalDefault = "personal-default"
 
 const (
 	veAvatarImageMaxBytes  = 1024 * 1024
@@ -2145,7 +2304,8 @@ func emitVEAdminActionEvent(sender veMachineEventSender, action string, entry di
 		return
 	}
 	eventType := veAdminActionEventType(action)
-	payload := map[string]any{"employee": entry, "action": action}
+	// Never push durable device_key to desktops via control-plane events.
+	payload := map[string]any{"employee": publicDigitalEmployeeEntry(entry), "action": action}
 	for _, msgType := range []string{eventType, "ve:status_change", "ve:list_update"} {
 		sendVEControlEvent(sender, entry.MachineID, map[string]any{
 			"type":    msgType,
@@ -2192,6 +2352,233 @@ func firstVEMachineLookup(machineLookups ...veMachineLookup) veMachineLookup {
 		}
 	}
 	return nil
+}
+
+func firstVEPresenceGetter(presence ...veMachinePresenceGetter) veMachinePresenceGetter {
+	for _, getter := range presence {
+		if getter != nil {
+			return getter
+		}
+	}
+	return nil
+}
+
+// veReclaimStaleOnlineTTL treats a twin still marked "online" as reclaimable
+// when it has not been updated recently (stale heartbeat after wipe/reinstall).
+const veReclaimStaleOnlineTTL = 72 * time.Hour
+
+// publicDigitalEmployeeEntry strips durable secrets that clients never need.
+func publicDigitalEmployeeEntry(entry digitalEmployeeEntry) digitalEmployeeEntry {
+	entry.DeviceKey = ""
+	return entry
+}
+
+func publicDigitalEmployeeEntries(entries []digitalEmployeeEntry) []digitalEmployeeEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	out := make([]digitalEmployeeEntry, len(entries))
+	for i := range entries {
+		out[i] = publicDigitalEmployeeEntry(entries[i])
+	}
+	return out
+}
+
+// rebindPersonalTwin moves a personal twin onto the authenticated machine.
+func rebindPersonalTwin(previous digitalEmployeeEntry, principal *auth.MachinePrincipal, deviceKey string, now time.Time) digitalEmployeeEntry {
+	entry := previous
+	if principal != nil {
+		entry.MachineID = principal.MachineID
+	}
+	entry.DeviceKey = firstNonEmptyVE(strings.TrimSpace(deviceKey), previous.DeviceKey)
+	entry.TwinSlot = firstNonEmptyVE(previous.TwinSlot, veTwinSlotPersonalDefault)
+	entry.OnlineStatus = veOnlineStatusOnline
+	entry.UpdatedAt = now.UTC().Format(time.RFC3339)
+	entry.DisabledAt = ""
+	entry.RejectedAt = ""
+	entry.RejectReason = ""
+	entry.Reclaimed = true
+	return entry
+}
+
+func autoReclaimEnabled(req veSettingsRequest) bool {
+	if req.AutoReclaim == nil {
+		return true
+	}
+	return *req.AutoReclaim
+}
+
+// resolveVEReclaimIndex picks an existing personal twin to rebind when the
+// current machine has no VE yet. Prefer explicit reclaim_ve_id, then matching
+// durable device_key, then a sole offline personal-default twin for the owner.
+func resolveVEReclaimIndex(registry digitalEmployeeRegistry, principal *auth.MachinePrincipal, req veSettingsRequest) int {
+	if principal == nil {
+		return -1
+	}
+	ownerID := strings.TrimSpace(principal.UserID)
+	if ownerID == "" {
+		return -1
+	}
+	now := time.Now().UTC()
+
+	if veID := strings.TrimSpace(req.ReclaimVEID); veID != "" {
+		idx := registry.findByID(veID)
+		if idx < 0 {
+			return -1
+		}
+		entry := registry.Employees[idx]
+		if !strings.EqualFold(strings.TrimSpace(entry.OwnerUserID), ownerID) {
+			return -1
+		}
+		if inferVEEmployeeType(entry) != veEmployeeTypePhysical {
+			return -1
+		}
+		if groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
+			return -1
+		}
+		// Explicit reclaim still refuses a fresh-online twin (multi-machine safety).
+		// Stale online (wiped client) remains reclaimable via isVEEntryReclaimableOffline.
+		if !isVEEntryReclaimableOffline(entry, now) {
+			return -1
+		}
+		return idx
+	}
+
+	if !autoReclaimEnabled(req) {
+		return -1
+	}
+
+	slot := firstNonEmptyVE(strings.TrimSpace(req.TwinSlot), veTwinSlotPersonalDefault)
+	deviceKey := strings.TrimSpace(req.DeviceKey)
+	var deviceKeyMatches []int
+	var slotCandidates []int
+
+	for i, entry := range registry.Employees {
+		if !strings.EqualFold(strings.TrimSpace(entry.OwnerUserID), ownerID) {
+			continue
+		}
+		if inferVEEmployeeType(entry) != veEmployeeTypePhysical {
+			continue
+		}
+		if groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
+			continue
+		}
+		// Strong signal: same durable device key ⇒ same physical desktop after wipe.
+		// Reclaim even when stored online (wiped client never flushes offline).
+		if deviceKey != "" && strings.EqualFold(strings.TrimSpace(entry.DeviceKey), deviceKey) {
+			deviceKeyMatches = append(deviceKeyMatches, i)
+			continue
+		}
+		entrySlot := firstNonEmptyVE(strings.TrimSpace(entry.TwinSlot), veTwinSlotPersonalDefault)
+		if !strings.EqualFold(entrySlot, slot) {
+			continue
+		}
+		if !isVEEntryReclaimableOffline(entry, now) {
+			continue
+		}
+		slotCandidates = append(slotCandidates, i)
+	}
+
+	if n := len(deviceKeyMatches); n == 1 {
+		return deviceKeyMatches[0]
+	} else if n > 1 {
+		// Prefer the most recently updated match when history has duplicates.
+		best := deviceKeyMatches[0]
+		bestAt := veEntryTouchTime(registry.Employees[best])
+		for _, i := range deviceKeyMatches[1:] {
+			if at := veEntryTouchTime(registry.Employees[i]); at.After(bestAt) {
+				best, bestAt = i, at
+			}
+		}
+		return best
+	}
+
+	// Only auto-reclaim when unambiguous (avoids stealing an active second machine).
+	if len(slotCandidates) == 1 {
+		return slotCandidates[0]
+	}
+	return -1
+}
+
+func veEntryTouchTime(entry digitalEmployeeEntry) time.Time {
+	for _, raw := range []string{strings.TrimSpace(entry.UpdatedAt), strings.TrimSpace(entry.RegisteredAt)} {
+		if raw == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func isVEEntryReclaimableOffline(entry digitalEmployeeEntry, now time.Time) bool {
+	status := strings.TrimSpace(entry.Status)
+	if status == veStatusDisabled || status == veStatusRejected {
+		return true
+	}
+	online := strings.EqualFold(strings.TrimSpace(entry.OnlineStatus), veOnlineStatusOnline)
+	if !online {
+		return true
+	}
+	// Online flag can be stale after a wiped client never disconnects cleanly.
+	updated := veEntryTouchTime(entry)
+	if updated.IsZero() {
+		return false
+	}
+	return now.Sub(updated) >= veReclaimStaleOnlineTTL
+}
+
+// listReclaimablePersonalTwins returns the owner's physical twins bound to other
+// machines that appear offline (live presence when available, else stored status).
+// device_key is redacted in the returned copies (not needed by clients to reclaim).
+func listReclaimablePersonalTwins(ctx context.Context, registry digitalEmployeeRegistry, principal *auth.MachinePrincipal, presence veMachinePresenceGetter) []digitalEmployeeEntry {
+	if principal == nil {
+		return nil
+	}
+	ownerID := strings.TrimSpace(principal.UserID)
+	if ownerID == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	out := make([]digitalEmployeeEntry, 0)
+	for _, entry := range registry.Employees {
+		if !strings.EqualFold(strings.TrimSpace(entry.OwnerUserID), ownerID) {
+			continue
+		}
+		if inferVEEmployeeType(entry) != veEmployeeTypePhysical {
+			continue
+		}
+		if groupDiscussionParticipantIdentityMatches(entry.MachineID, principal.MachineID) {
+			continue
+		}
+		reclaimable := false
+		if presence != nil && strings.TrimSpace(entry.MachineID) != "" {
+			info, err := presence.GetMachineInfo(ctx, entry.MachineID)
+			switch {
+			case err == nil && info != nil && info.Online:
+				// Live online — not reclaimable (even if stored status is stale offline).
+				reclaimable = false
+			case err == nil && info != nil && !info.Online:
+				reclaimable = true
+			default:
+				// Presence probe failed / unknown → fall back to stored offline heuristic.
+				reclaimable = isVEEntryReclaimableOffline(entry, now)
+			}
+		} else {
+			reclaimable = isVEEntryReclaimableOffline(entry, now)
+		}
+		if !reclaimable {
+			continue
+		}
+		safe := entry
+		safe.DeviceKey = "" // never expose durable device identity in list APIs
+		out = append(out, safe)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
 }
 
 func lookupVEOwnerEmail(ctx context.Context, lookup veOwnerLookup, ownerUserID string) string {
@@ -2285,7 +2672,8 @@ func loadVERegistry(ctx context.Context, system store.SystemSettingsRepository) 
 	avatarChanged := normalizeVERegistryAvatarDataURLs(&registry)
 	visibilityChanged := normalizeVERegistryVisibleGroupIDs(&registry)
 	residentChanged := normalizeVERegistryResidentFlags(&registry)
-	if onlineChanged || typeChanged || avatarChanged || visibilityChanged || residentChanged {
+	slotChanged := normalizeVERegistryTwinSlots(&registry)
+	if onlineChanged || typeChanged || avatarChanged || visibilityChanged || residentChanged || slotChanged {
 		_ = saveVERegistry(ctx, system, registry)
 	}
 	return registry
@@ -2297,6 +2685,7 @@ func saveVERegistry(ctx context.Context, system store.SystemSettingsRepository, 
 	normalizeVERegistryAvatarDataURLs(&registry)
 	normalizeVERegistryVisibleGroupIDs(&registry)
 	normalizeVERegistryResidentFlags(&registry)
+	normalizeVERegistryTwinSlots(&registry)
 	data, err := json.Marshal(registry)
 	if err != nil {
 		return err
@@ -2329,6 +2718,26 @@ func normalizeVERegistryResidentFlags(registry *digitalEmployeeRegistry) bool {
 			continue
 		}
 		seenResident = true
+	}
+	return changed
+}
+
+// normalizeVERegistryTwinSlots backfills personal-default for historical
+// physical twins so reclaim/slot matching works after upgrades.
+func normalizeVERegistryTwinSlots(registry *digitalEmployeeRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	changed := false
+	for i := range registry.Employees {
+		if inferVEEmployeeType(registry.Employees[i]) != veEmployeeTypePhysical {
+			continue
+		}
+		if strings.TrimSpace(registry.Employees[i].TwinSlot) != "" {
+			continue
+		}
+		registry.Employees[i].TwinSlot = veTwinSlotPersonalDefault
+		changed = true
 	}
 	return changed
 }

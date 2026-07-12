@@ -25,7 +25,7 @@ func TestSkillRunnerExecuteStepWithContext_SendAndObserveUsesSharedHelper(t *tes
 		UpdatedAt: time.Now(),
 		Exec:      newFakeExecutionHandle(500),
 		RawOutputLines: []string{
-			"❯ do work",
+			"\u276F do work",
 		},
 	}
 

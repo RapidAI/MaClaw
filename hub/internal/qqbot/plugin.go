@@ -202,30 +202,8 @@ func (p *Plugin) SendText(ctx context.Context, target im.UserTarget, text string
 }
 
 func (p *Plugin) SendCard(ctx context.Context, target im.UserTarget, card im.OutgoingMessage) error {
-	// QQ Bot C2C 不支持富卡片，降级为文本
-	text := card.FallbackText
-	if text == "" {
-		var sb strings.Builder
-		if card.Title != "" {
-			sb.WriteString(card.Title)
-			sb.WriteString("\n")
-		}
-		if card.StatusIcon != "" {
-			sb.WriteString(card.StatusIcon)
-			sb.WriteString(" ")
-		}
-		if card.Body != "" {
-			sb.WriteString(card.Body)
-		}
-		for _, f := range card.Fields {
-			sb.WriteString("\n")
-			sb.WriteString(f.Label)
-			sb.WriteString(": ")
-			sb.WriteString(f.Value)
-		}
-		text = sb.String()
-	}
-	return p.SendText(ctx, target, text)
+	// QQ Bot C2C 不支持富卡片，降级为带 ASCII 状态标记的纯文本
+	return p.SendText(ctx, target, im.FormatCardFallback(card))
 }
 
 func (p *Plugin) SendImage(ctx context.Context, target im.UserTarget, imageKey string, caption string) error {
@@ -292,7 +270,7 @@ func (p *Plugin) sendImageAsLink(ctx context.Context, openID, base64Data, mimeTy
 	if err != nil {
 		return fmt.Errorf("qqbot: store temp file for link fallback: %w", err)
 	}
-	text := "📷 图片发送失败，请通过链接查看（5分钟内有效）：\n" + downloadURL
+	text := "图片发送失败，请通过链接查看（5分钟内有效）：\n" + downloadURL
 	if caption != "" {
 		text = caption + "\n" + text
 	}
@@ -1143,7 +1121,7 @@ func (p *Plugin) handleC2CMessage(data json.RawMessage) {
 	if !bound {
 		ctx := context.Background()
 		_ = p.sendC2CMessage(ctx, openID,
-			"👋 欢迎使用 MaClaw QQ Bot！\n\n"+
+			"欢迎使用 MaClaw QQ Bot！\n\n"+
 				"请先绑定您的 Hub 账号，发送您的注册邮箱地址即可开始绑定。")
 		return
 	}
@@ -1306,7 +1284,7 @@ func (p *Plugin) handleEmailSubmit(openID, email string) {
 	}
 	if err != nil || user == nil {
 		_ = p.sendC2CMessage(ctx, openID,
-			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
+			fmt.Sprintf("未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
 		return
 	}
 
@@ -1326,14 +1304,14 @@ func (p *Plugin) handleEmailSubmit(openID, email string) {
 		if err != nil {
 			log.Printf("[qqbot] broadcast verification code for %s failed: %v", email, err)
 			_ = p.sendC2CMessage(ctx, openID,
-				fmt.Sprintf("❌ 验证码发送失败: %v", err))
+				fmt.Sprintf("验证码发送失败: %v", err))
 			p.pendingMu.Lock()
 			delete(p.pending, openID)
 			p.pendingMu.Unlock()
 			return
 		}
 		_ = p.sendC2CMessage(ctx, openID,
-			fmt.Sprintf("📧 验证码已发送到: %s\n\n请查看验证码，回复给我完成绑定（5 分钟内有效）。", sentTo))
+			fmt.Sprintf("验证码已发送到: %s\n\n请查看验证码，回复给我完成绑定（5 分钟内有效）。", sentTo))
 		return
 	}
 
@@ -1347,7 +1325,7 @@ func (p *Plugin) handleEmailSubmit(openID, email string) {
 		if err := p.mailer.Send(ctx, []string{email}, subject, body); err != nil {
 			log.Printf("[qqbot] send verification email to %s failed: %v", email, err)
 			_ = p.sendC2CMessage(ctx, openID,
-				fmt.Sprintf("❌ 验证邮件发送失败，请确认 Hub 邮件服务已配置。\n错误: %v", err))
+				fmt.Sprintf("验证邮件发送失败，请确认 Hub 邮件服务已配置。\n错误: %v", err))
 			p.pendingMu.Lock()
 			delete(p.pending, openID)
 			p.pendingMu.Unlock()
@@ -1355,7 +1333,7 @@ func (p *Plugin) handleEmailSubmit(openID, email string) {
 		}
 	} else {
 		log.Printf("[qqbot] mailer not configured, cannot send verification code")
-		_ = p.sendC2CMessage(ctx, openID, "❌ Hub 邮件服务未配置，无法发送验证码。请联系管理员。")
+		_ = p.sendC2CMessage(ctx, openID, "Hub 邮件服务未配置，无法发送验证码。请联系管理员。")
 		p.pendingMu.Lock()
 		delete(p.pending, openID)
 		p.pendingMu.Unlock()
@@ -1363,7 +1341,7 @@ func (p *Plugin) handleEmailSubmit(openID, email string) {
 	}
 
 	_ = p.sendC2CMessage(ctx, openID,
-		fmt.Sprintf("📧 验证码已发送到邮箱: %s\n\n请查收邮件，将 6 位验证码回复给我完成绑定（5 分钟内有效）。", email))
+		fmt.Sprintf("验证码已发送到邮箱: %s\n\n请查收邮件，将 6 位验证码回复给我完成绑定（5 分钟内有效）。", email))
 }
 
 func (p *Plugin) handleVerifyCode(openID, code string, pb *pendingBind) bool {
@@ -1373,12 +1351,12 @@ func (p *Plugin) handleVerifyCode(openID, code string, pb *pendingBind) bool {
 		p.pendingMu.Lock()
 		delete(p.pending, openID)
 		p.pendingMu.Unlock()
-		_ = p.sendC2CMessage(ctx, openID, "⏰ 验证码已过期，请重新发送邮箱地址。")
+		_ = p.sendC2CMessage(ctx, openID, "验证码已过期，请重新发送邮箱地址。")
 		return true
 	}
 
 	if strings.TrimSpace(code) != pb.Code {
-		_ = p.sendC2CMessage(ctx, openID, "❌ 验证码不正确，请重新输入。")
+		_ = p.sendC2CMessage(ctx, openID, "验证码不正确，请重新输入。")
 		return true
 	}
 
@@ -1389,7 +1367,7 @@ func (p *Plugin) handleVerifyCode(openID, code string, pb *pendingBind) bool {
 	p.pendingMu.Unlock()
 
 	_ = p.sendC2CMessage(ctx, openID,
-		fmt.Sprintf("✅ 绑定成功！\n\n邮箱: %s\n\n现在您可以直接发送消息与 MaClaw Agent 交互了。", pb.Email))
+		fmt.Sprintf("绑定成功！\n\n邮箱: %s\n\n现在您可以直接发送消息与 MaClaw Agent 交互了。", pb.Email))
 	return true
 }
 
@@ -1512,7 +1490,7 @@ func (p *Plugin) handleUnbind(openID string) {
 	p.RemoveBinding(openID)
 	log.Printf("[qqbot] unbound email=%s for open_id=%s", email, openID)
 	ctx := context.Background()
-	_ = p.sendC2CMessage(ctx, openID, fmt.Sprintf("✅ 已解除 %s 的绑定。\n✅ Unbound %s.", email, email))
+	_ = p.sendC2CMessage(ctx, openID, fmt.Sprintf("已解除 %s 的绑定。\nUnbound %s.", email, email))
 }
 
 // RemoveBinding removes an openid→email binding.

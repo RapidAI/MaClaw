@@ -58,17 +58,22 @@ func TestSendQueuedGroupMessagesCoalescesStreamChunks(t *testing.T) {
 	for msg := range got {
 		sent = append(sent, msg)
 	}
-	if len(sent) != 3 {
-		t.Fatalf("sent messages = %d, want 3: %#v", len(sent), sent)
+	// First stream chunk is flushed immediately for remote paint latency; later
+	// chunks batch until channel close / timer / size limit.
+	if len(sent) != 4 {
+		t.Fatalf("sent messages = %d, want 4: %#v", len(sent), sent)
 	}
 	if sent[0].Kind != a2a.MessageStatement || sent[0].Content != "question" {
 		t.Fatalf("first message = %#v", sent[0])
 	}
-	if sent[1].Kind != a2a.MessageStreamChunk || sent[1].Content != "hello world" {
-		t.Fatalf("coalesced chunk = %#v", sent[1])
+	if sent[1].Kind != a2a.MessageStreamChunk || sent[1].Content != "hello " {
+		t.Fatalf("first stream chunk = %#v, want immediate first paint", sent[1])
 	}
-	if sent[2].Kind != a2a.MessageStreamEnd {
-		t.Fatalf("last message = %#v", sent[2])
+	if sent[2].Kind != a2a.MessageStreamChunk || sent[2].Content != "world" {
+		t.Fatalf("second stream chunk = %#v, want trailing batch on close", sent[2])
+	}
+	if sent[3].Kind != a2a.MessageStreamEnd {
+		t.Fatalf("last message = %#v", sent[3])
 	}
 }
 

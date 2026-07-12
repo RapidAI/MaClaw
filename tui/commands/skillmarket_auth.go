@@ -62,7 +62,7 @@ func smAuthLogin(args []string) error {
 		return fmt.Errorf("登录成功但保存 token 失败: %w", err)
 	}
 
-	fmt.Printf("✅ 登录成功！\n")
+	fmt.Printf("登录成功！\n")
 	fmt.Printf("   邮箱: %s\n", result.Email)
 	fmt.Printf("   Token 已保存到配置文件\n")
 	return nil
@@ -94,7 +94,7 @@ func smAuthRegister(args []string) error {
 		return fmt.Errorf("注册失败: %w", err)
 	}
 
-	fmt.Printf("✅ 注册成功！激活邮件已发送到 %s\n", *email)
+	fmt.Printf("注册成功！激活邮件已发送到 %s\n", *email)
 	fmt.Printf("   请检查邮箱并点击激活链接，然后使用 login 命令登录。\n")
 	return nil
 }
@@ -121,7 +121,7 @@ func smAuthLookup(args []string) error {
 		return fmt.Errorf("发送验证邮件失败: %w", err)
 	}
 
-	fmt.Printf("✅ 验证邮件已发送到 %s\n", *email)
+	fmt.Printf("验证邮件已发送到 %s\n", *email)
 	fmt.Printf("   请检查邮箱，点击链接后使用 verify 命令完成登录。\n")
 	return nil
 }
@@ -153,7 +153,7 @@ func smAuthVerify(args []string) error {
 		return fmt.Errorf("验证成功但保存 token 失败: %w", err)
 	}
 
-	fmt.Printf("✅ 验证成功！已登录为 %s\n", result.Email)
+	fmt.Printf("验证成功！已登录为 %s\n", result.Email)
 	fmt.Printf("   Token 已保存到配置文件\n")
 	return nil
 }
@@ -186,17 +186,17 @@ func smAuthWhoami(args []string) error {
 
 	valid, err := client.ValidateToken(ctx, baseURL, token)
 	if err != nil {
-		fmt.Printf("⚠️  无法验证 token（网络错误）: %v\n", err)
+		fmt.Printf(" 无法验证 token（网络错误）: %v\n", err)
 		fmt.Printf("   配置邮箱: %s\n", email)
 		return nil
 	}
 
 	if valid {
-		fmt.Printf("✅ 已登录 SkillMarket\n")
+		fmt.Printf("已登录 SkillMarket\n")
 		fmt.Printf("   邮箱: %s\n", email)
 		fmt.Printf("   Token: %s...（有效）\n", token[:min(20, len(token))])
 	} else {
-		fmt.Printf("❌ Token 已过期\n")
+		fmt.Printf("Token 已过期\n")
 		fmt.Printf("   邮箱: %s\n", email)
 		fmt.Printf("   请重新登录: maclaw-tui skillmarket login --email %s --password <密码>\n", email)
 	}

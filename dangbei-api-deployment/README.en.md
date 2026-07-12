@@ -14,12 +14,12 @@ DS2API converts DeepSeek Web chat capability into OpenAI-compatible and Claude-c
 
 ```mermaid
 flowchart LR
-    Client["🖥️ Clients\n(OpenAI / Claude compat)"]
+    Client["Clients\n(OpenAI / Claude compat)"]
 
     subgraph DS2API["DS2API Service"]
         direction TB
         CORS["CORS Middleware"]
-        Auth["🔐 Auth Middleware"]
+        Auth["Auth Middleware"]
 
         subgraph Adapters["Adapter Layer"]
             OA["OpenAI Adapter\n/v1/*"]
@@ -27,15 +27,15 @@ flowchart LR
         end
 
         subgraph Support["Support Modules"]
-            Pool["📦 Account Pool / Queue"]
-            PoW["⚙️ PoW WASM\n(wazero)"]
+            Pool["Account Pool / Queue"]
+            PoW["PoW WASM\n(wazero)"]
         end
 
-        Admin["🛠️ Admin API\n/admin/*"]
-        WebUI["🌐 WebUI\n(/admin)"]
+        Admin["Admin API\n/admin/*"]
+        WebUI["WebUI\n(/admin)"]
     end
 
-    DS["☁️ DeepSeek API"]
+    DS["DeepSeek API"]
 
     Client -- "Request" --> CORS --> Auth
     Auth --> OA & CA
@@ -68,11 +68,11 @@ flowchart LR
 
 | Tier | Platform | Status |
 | --- | --- | --- |
-| P0 | Codex CLI/SDK (`wire_api=chat` / `wire_api=responses`) | ✅ |
-| P0 | OpenAI SDK (JS/Python, chat + responses) | ✅ |
-| P0 | Vercel AI SDK (openai-compatible) | ✅ |
-| P0 | Anthropic SDK (messages) | ✅ |
-| P1 | LangChain / LlamaIndex / OpenWebUI (OpenAI-compatible integration) | ✅ |
+| P0 | Codex CLI/SDK (`wire_api=chat` / `wire_api=responses`) | |
+| P0 | OpenAI SDK (JS/Python, chat + responses) | |
+| P0 | Vercel AI SDK (openai-compatible) | |
+| P0 | Anthropic SDK (messages) | |
+| P1 | LangChain / LlamaIndex / OpenWebUI (OpenAI-compatible integration) | |
 | P2 | MCP standalone bridge | Planned |
 
 ## Model Support
@@ -81,10 +81,10 @@ flowchart LR
 
 | Model | thinking | search |
 | --- | --- | --- |
-| `deepseek-chat` | ❌ | ❌ |
-| `deepseek-reasoner` | ✅ | ❌ |
-| `deepseek-chat-search` | ❌ | ✅ |
-| `deepseek-reasoner-search` | ✅ | ✅ |
+| `deepseek-chat` | | |
+| `deepseek-reasoner` | | |
+| `deepseek-chat-search` | | |
+| `deepseek-reasoner-search` | | |
 
 ### Claude Endpoint
 

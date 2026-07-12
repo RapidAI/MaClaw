@@ -343,7 +343,7 @@ export function ASRConfigPanel({ lang }: Props) {
                     {calibPhase === 'silence' && (
                         <div className="model-config-phase-card">
                             <div className="model-config-phase-title model-config-phase-title--warning">
-                                🤫 {t('Phase 1/2 — Measuring background noise...', '第 1 步（共 2 步）— 正在测量背景噪声...', '第 1 步（共 2 步）— 正在測量背景噪聲...')}
+                                {t('Phase 1/2 — Measuring background noise...', '第 1 步（共 2 步）— 正在测量背景噪声...', '第 1 步（共 2 步）— 正在測量背景噪聲...')}
                             </div>
                             <div className="model-config-phase-copy">
                                 {t('Please stay quiet for 3 seconds.', '请保持安静 3 秒。', '請保持安靜 3 秒。')}
@@ -380,7 +380,7 @@ export function ASRConfigPanel({ lang }: Props) {
                         >
                             {calibPhase !== 'idle'
                                 ? t('Calibrating...', '校准中...', '校準中...')
-                                : t('🎙️ Calibrate Microphone', '🎙️ 校准麦克风', '🎙️ 校準麥克風')}
+                                : t('Calibrate Microphone', '校准麦克风', '校準麥克風')}
                         </button>
                         {(calibratedValue > 0 || speechLevelValue > 0) && calibPhase === 'idle' && (
                             <button

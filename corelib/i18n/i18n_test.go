@@ -7,7 +7,7 @@ import (
 
 func TestT_ZhLookup(t *testing.T) {
 	got := T(MsgAckProcessing, "zh")
-	want := "⏳ 需要一点时间处理，请稍候..."
+	want := "需要一点时间处理，请稍候..."
 	if got != want {
 		t.Errorf("T(%q, %q) = %q, want %q", MsgAckProcessing, "zh", got, want)
 	}
@@ -15,7 +15,7 @@ func TestT_ZhLookup(t *testing.T) {
 
 func TestT_EnLookup(t *testing.T) {
 	got := T(MsgAckProcessing, "en")
-	want := "⏳ Processing, please wait..."
+	want := "Processing, please wait..."
 	if got != want {
 		t.Errorf("T(%q, %q) = %q, want %q", MsgAckProcessing, "en", got, want)
 	}
@@ -47,7 +47,7 @@ func TestT_UnknownKeyReturnsKey(t *testing.T) {
 
 func TestTf_FormatWithArgs(t *testing.T) {
 	got := Tf(MsgAgentRoundOf, "zh", 2, 5)
-	want := "🔄 Agent 推理中（第 2/5 轮）…"
+	want := "Agent 推理中（第 2/5 轮）…"
 	if got != want {
 		t.Errorf("Tf(%q, zh, 2, 5) = %q, want %q", MsgAgentRoundOf, got, want)
 	}
@@ -55,7 +55,7 @@ func TestTf_FormatWithArgs(t *testing.T) {
 
 func TestTf_FormatEn(t *testing.T) {
 	got := Tf(MsgAgentRoundOf, "en", 3, 10)
-	want := "🔄 Agent reasoning (round 3/10)…"
+	want := "Agent reasoning (round 3/10)…"
 	if got != want {
 		t.Errorf("Tf(%q, en, 3, 10) = %q, want %q", MsgAgentRoundOf, got, want)
 	}
@@ -63,7 +63,7 @@ func TestTf_FormatEn(t *testing.T) {
 
 func TestTf_SingleArg(t *testing.T) {
 	got := Tf(MsgAgentRound, "en", 4)
-	want := "🔄 Agent reasoning (round 4)…"
+	want := "Agent reasoning (round 4)…"
 	if got != want {
 		t.Errorf("Tf(%q, en, 4) = %q, want %q", MsgAgentRound, got, want)
 	}
@@ -71,7 +71,7 @@ func TestTf_SingleArg(t *testing.T) {
 
 func TestTf_FileGeneric(t *testing.T) {
 	got := Tf(MsgFileGeneric, "zh", "design.pdf")
-	want := "📄 已生成文件 design.pdf，请查看并确认，或提出修改意见。\n\n请输入：确认 或 修改意见"
+	want := "已生成文件 design.pdf，请查看并确认，或提出修改意见。\n\n请输入：确认 或 修改意见"
 	if got != want {
 		t.Errorf("Tf(%q, zh, design.pdf) = %q, want %q", MsgFileGeneric, got, want)
 	}

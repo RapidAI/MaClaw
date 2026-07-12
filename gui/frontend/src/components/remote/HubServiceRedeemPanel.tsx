@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
+import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService, RefreshHubLLMServiceStatus } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { useDialog } from "../CustomDialog";
-import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric } from "../../utils/hubCredits";
+import { buildHubCardStoreURL, buildHubCreditsURL, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from "../../utils/hubCredits";
 import { localizeHubServiceReason, localizeHubServiceRedeemError, localizeHubServiceStatusError } from "../../utils/hubServiceI18n";
 
 interface HubLLMAuthorizedModel {
@@ -186,35 +186,14 @@ function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
 }
 
 function creditTotals(status: HubLLMServiceStatus | null) {
-    const grants = creditGrants(status);
-    const visibleGrants = grants.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
-    // Use the backend's "effective" flag as single source of truth for which
-    // grants count toward used/remaining. Falls back to status string check for
-    // backward compatibility with older hub versions that don't send "effective".
-    const effectiveGrants = grants.filter((grant) => {
-        if (typeof grant.effective === "boolean") return grant.effective;
-        const s = String(grant.status || "").toLowerCase();
-        return s !== "queued" && s !== "expired";
+    return summarizeHubCreditTotals({
+        active: status?.active,
+        credits_total: status?.credits_total,
+        credits_used: status?.credits_used,
+        credits_remaining: status?.credits_remaining,
+        credits_available: status?.credits_available,
+        grants: creditGrants(status),
     });
-    const visibleGrantTotal = visibleGrants.reduce((sum, grant) => {
-        const total = numeric(grant.credits_total);
-        if (total > 0) return sum + total;
-        return sum + Math.max(numeric(grant.credits_available), numeric(grant.credits_remaining));
-    }, 0);
-    const grantTotal = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_total), 0);
-    const grantUsed = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_used), 0);
-    const grantRemaining = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_remaining), 0);
-    const grantAvailable = effectiveGrants.reduce((sum, grant) => sum + numeric(grant.credits_available), 0);
-    let total = Math.max(numeric(status?.credits_total ?? grantTotal), visibleGrantTotal);
-    const used = numeric(status?.credits_used ?? grantUsed);
-    const remainingRaw = numeric(status?.credits_remaining ?? grantRemaining);
-    const statusAvailable = numeric(status?.credits_available);
-    const available = statusAvailable > 0 ? statusAvailable : grantAvailable;
-    const onlyExpiredGrants = !status?.active && grants.length > 0 && grants.every((grant) => String(grant.status || "").toLowerCase() === "expired");
-    if (onlyExpiredGrants) return { total, used, remaining: Math.max(0, available) };
-    const remaining = (status?.active || remainingRaw <= 0) && available > 0 ? available : remainingRaw;
-    if (remaining > 0 && total < used + remaining) total = used + remaining;
-    return { total, used, remaining };
 }
 
 function localizeServiceStatusReason(
@@ -412,12 +391,16 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         lang === "zh-Hans" ? zhHans : lang === "zh-Hant" ? zhHant : en
     ), [lang]);
 
-    const loadStatus = useCallback(async (silent?: boolean) => {
+    // forceRefresh: bypass the 30s local status cache (open panel / manual refresh).
+    // Event-driven silent reloads keep the cache so token ticks do not hammer Hub.
+    const loadStatus = useCallback(async (silent?: boolean, forceRefresh: boolean = true) => {
         if (silent) setRefreshing(true);
         else setLoading(true);
         setLoadError(null);
         try {
-            const next = await callBackend(() => GetHubLLMServiceStatus()) as HubLLMServiceStatus;
+            const next = await callBackend(() => (
+                forceRefresh ? RefreshHubLLMServiceStatus() : GetHubLLMServiceStatus()
+            )) as HubLLMServiceStatus;
             setStatus(next);
             onStatusChangeRef.current?.(next);
         } catch (error) {
@@ -430,7 +413,7 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
 
     // Load once on mount. Inline errors are localized at render time.
     useEffect(() => {
-        loadStatus();
+        void loadStatus();
     }, [loadStatus]);
 
     useEffect(() => {
@@ -438,12 +421,12 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         const scheduleReload = (delayMs: number) => {
             const timer = window.setTimeout(() => {
                 timers.delete(timer);
-                void loadStatus(true);
+                void loadStatus(true, false);
             }, delayMs);
             timers.add(timer);
         };
         const handler = () => {
-            void loadStatus(true);
+            void loadStatus(true, false);
             scheduleReload(2500);
         };
         const offTokenUsageChanged = safeEventsOn("llm-token-usage-changed", handler);

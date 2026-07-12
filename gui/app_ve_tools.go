@@ -213,11 +213,11 @@ func veToolListDirectory(args map[string]interface{}) string {
 	for _, entry := range entries {
 		info, _ := entry.Info()
 		if entry.IsDir() {
-			sb.WriteString(fmt.Sprintf("📁 %s/\n", entry.Name()))
+			sb.WriteString(fmt.Sprintf("%s/\n", entry.Name()))
 		} else if info != nil {
-			sb.WriteString(fmt.Sprintf("📄 %s (%d bytes)\n", entry.Name(), info.Size()))
+			sb.WriteString(fmt.Sprintf("%s (%d bytes)\n", entry.Name(), info.Size()))
 		} else {
-			sb.WriteString(fmt.Sprintf("📄 %s\n", entry.Name()))
+			sb.WriteString(fmt.Sprintf("%s\n", entry.Name()))
 		}
 	}
 

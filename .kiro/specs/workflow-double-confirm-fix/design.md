@@ -46,11 +46,9 @@ END FUNCTION
 
 ### Examples
 
-- **PPT 工作流首次执行**："收到，马上为您启动PPT制作工作流！我们将按以下步骤进行：\n1. 受众目标定义\n2. 内容大纲\n3. 视觉设计\n让我们开始吧！"（含编号列表，≥200 rune）→ `isBugCondition=true` → gate 应 NOT force-return（当前行为：force-return ❌）
-- **编码工作流首次执行**："好的，我来为您生成需求文档。\n\n# 贪吃蛇游戏需求文档\n\n## 1. 功能需求\n..."（含 Markdown 标题，≥200 rune）→ `isBugCondition=true` → gate 应 NOT force-return（当前行为：force-return ❌）
-- **产出后修改场景**：用户确认需求后说"把技术栈改成 React"，LLM 输出修改后的完整文档（hasOutput=true）→ `isBugCondition=false` → gate 应 force-return ✅
-- **NeedsConfirm=false 阶段**：implementation 阶段 LLM 输出代码 → `needsConfirmFromEngine=false` → gate 不激活 ✅
-
+- **PPT 工作流首次执行**："收到，马上为您启动PPT制作工作流！我们将按以下步骤进行：\n1. 受众目标定义\n2. 内容大纲\n3. 视觉设计\n让我们开始吧！"（含编号列表，≥200 rune）→ `isBugCondition=true` → gate 应 NOT force-return（当前行为：force-return ）
+- **编码工作流首次执行**："好的，我来为您生成需求文档。\n\n# 贪吃蛇游戏需求文档\n\n## 1. 功能需求\n..."（含 Markdown 标题，≥200 rune）→ `isBugCondition=true` → gate 应 NOT force-return（当前行为：force-return ）
+- **产出后修改场景**：用户确认需求后说"把技术栈改成 React"，LLM 输出修改后的完整文档（hasOutput=true）→ `isBugCondition=false` → gate 应 force-return - **NeedsConfirm=false 阶段**：implementation 阶段 LLM 输出代码 → `needsConfirmFromEngine=false` → gate 不激活 
 ## Expected Behavior
 
 ### Preservation Requirements

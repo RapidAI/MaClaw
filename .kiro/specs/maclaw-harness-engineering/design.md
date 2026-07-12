@@ -461,7 +461,7 @@ project-root/
 #### GoalAnchor 注入格式
 
 ```
-[🎯 目标锚定]
+[目标锚定]
 原始目标: <用户目标文本，≤200字符>
 当前进度: 已完成 3/7 步 | 当前: 实现 DriftDetector | 剩余: 4 项
 [/目标锚定]
@@ -470,7 +470,7 @@ project-root/
 #### DriftDetector 重规划提示格式
 
 ```
-[⚠️ 漂移检测]
+[漂移检测]
 检测到循环模式: 连续 3 次调用 bash 且参数相似。
 请暂停当前操作，重新审视原始目标，制定新的执行计划。
 不要重复之前失败的方法，尝试不同的解决路径。
@@ -480,7 +480,7 @@ project-root/
 #### FeedbackInjector 反馈块格式
 
 ```
-[📋 上次 Session 反馈]
+[上次 Session 反馈]
 来源: linter | 文件: gui/goal_anchor.go:42 | 错误: undefined: GoalAnchor
 来源: test  | 文件: gui/goal_anchor_test.go:15 | 错误: TestGoalAnchor/basic failed
 来源: build | 文件: gui/drift_detector.go:88 | 错误: cannot use x (type int) as string

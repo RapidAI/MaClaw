@@ -48,7 +48,7 @@ Rather than adding a separate boolean field (e.g., `AutoInstalled bool`) to `NLS
 │  + isLearnedSource(source: string): boolean              │
 │  installedSkills = skills.filter(!isLearnedSource)       │
 │  learnedSkills = skills.filter(isLearnedSource)          │
-│  Source icon: 🤖 for auto_*, 📖 for learned, 🔧 crafted │
+│  Source icon: for auto_*, for learned, crafted │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -181,10 +181,10 @@ Update the source icon in the Learned tab table:
 
 ```typescript
 const learnedSourceIcon = (source: string) => {
-    if (source === "learned") return "📖";
-    if (source === "crafted") return "🔧";
-    if (source.startsWith("auto_")) return "🤖";
-    return "📁"; // fallback
+    if (source === "learned") return "";
+    if (source === "crafted") return "";
+    if (source.startsWith("auto_")) return "";
+    return ""; // fallback
 };
 
 const learnedSourceTooltip = (source: string) => {

@@ -17,7 +17,7 @@
     - 定义 `CompletionAnalyzerConfig` struct（AnalyzeLineCount 默认 50）
     - 实现 `NewCompletionAnalyzer` 构造函数
     - 实现 `Analyze(lines []string, tool string, sdkResult *SDKResultPayload) CompletionLevel` 方法
-    - 完成信号匹配：`✅`、`I've completed`、`已完成`、`All done`、`Successfully`、`Changes applied`
+    - 完成信号匹配：``、`I've completed`、`已完成`、`All done`、`Successfully`、`Changes applied`
     - 未完成信号匹配：`I'll continue`、`接下来我会`、`Next, I'll`、`Let me continue`、`I need to`、`还需要`
     - Gemini ACP: `[gemini-acp] turn complete:` 后跟成功指示
     - SDK result: `is_error` 为 false 时倾向 completed
@@ -137,16 +137,16 @@
 - [x] 6. 增强 toolGetSessionOutput 的 Session Hint 逻辑
   - [x] 6.1 修改 im_message_handler.go 中 toolGetSessionOutput 的 busy 状态 hint
     - 读取 `session.StallState`，根据 StallStateNormal/StallStateSuspected/StallStateStuck 返回不同提示文本
-    - StallStateNormal: "⏳ 编程工具正在工作中，请等待后再检查进度"
-    - StallStateSuspected: "⏳ 编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
-    - StallStateStuck: "⚠️ 编程工具可能已卡住，建议发送具体指令或终止会话"
+    - StallStateNormal: "编程工具正在工作中，请等待后再检查进度"
+    - StallStateSuspected: "编程工具输出暂停，系统正在尝试恢复，请稍后再检查"
+    - StallStateStuck: "编程工具可能已卡住，建议发送具体指令或终止会话"
     - _Requirements: 5.1, 5.2, 5.3_
 
   - [x] 6.2 修改 im_message_handler.go 中 toolGetSessionOutput 的 waiting_input 状态 hint
     - 读取 `session.CompletionLevel`，根据 CompletionCompleted/CompletionIncomplete/CompletionUncertain 返回不同提示文本
-    - CompletionCompleted: "✅ 任务似乎已完成，可以查看结果"
-    - CompletionIncomplete: "⚠️ 任务似乎未完成，建议发送「继续」让编程工具继续工作"
-    - CompletionUncertain: 保持现有默认提示（"⚠️ 会话正在等待用户输入"）
+    - CompletionCompleted: "任务似乎已完成，可以查看结果"
+    - CompletionIncomplete: "任务似乎未完成，建议发送「继续」让编程工具继续工作"
+    - CompletionUncertain: 保持现有默认提示（"会话正在等待用户输入"）
     - 确保不影响 exited、error、starting、running 状态的现有 hint 逻辑
     - _Requirements: 5.4, 5.5, 5.6_
 

@@ -412,6 +412,16 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
+    useEffect(() => {
+        const openSettings = (e: Event) => {
+            const detail = (e as CustomEvent<{ tab?: string }>).detail;
+            const tab = (detail?.tab || 'general') as SettingsTabId;
+            setNavTabNow('settings');
+            setSettingsTab(tab);
+        };
+        window.addEventListener('maclaw:open-settings', openSettings);
+        return () => window.removeEventListener('maclaw:open-settings', openSettings);
+    }, [setNavTabNow]);
     const openMISDataSettings = useCallback(() => {
         setNavTabNow('settings');
         setSettingsTab('misData');

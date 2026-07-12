@@ -10,7 +10,9 @@ import type { main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
+import { SystemDoctorDialog } from './SystemDoctorDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
+import { IconRankBadge } from './ai/WorkbenchIcons';
 
 // Load Monoton font for the stylized "6" in product name
 const monotonLink = document.querySelector('link[href*="Monoton"]');
@@ -392,6 +394,7 @@ export function AboutPanel({
     };
 
     const [showHealthDialog, setShowHealthDialog] = useState(false);
+    const [showSystemDoctor, setShowSystemDoctor] = useState(false);
     const [showSecurityEvents, setShowSecurityEvents] = useState(false);
     const [showErrorLog, setShowErrorLog] = useState(false);
     const [errorLogLines, setErrorLogLines] = useState<string[]>([]);
@@ -517,11 +520,9 @@ export function AboutPanel({
         return tokens.toLocaleString();
     };
 
-    // Format rank with medal emoji for top 3
     const formatRank = (rank: number, total: number): string => {
         if (rank <= 0) return '';
-        const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
-        return `${medal} ${t("aboutRankPrefix")}${rank}/${total}${t("aboutRankSuffix")}`;
+        return `${t("aboutRankPrefix")}${rank}/${total}${t("aboutRankSuffix")}`;
     };
 
     const formatRankingValue = (value: string, rank: number, total: number): string => {
@@ -529,14 +530,10 @@ export function AboutPanel({
         return rankText ? `${value} ${rankText}` : value;
     };
 
-    const bestRankingIcon = (() => {
+    const bestRank = (() => {
         const ranks = [ranking?.tokenRank || 0, ranking?.durationRank || 0].filter(rank => rank > 0);
-        if (ranks.length === 0) return '🏅';
-        const best = Math.min(...ranks);
-        if (best === 1) return '🏆';
-        if (best === 2) return '🥈';
-        if (best === 3) return '🥉';
-        return '🏅';
+        if (ranks.length === 0) return 0;
+        return Math.min(...ranks);
     })();
 
     return (
@@ -654,8 +651,9 @@ export function AboutPanel({
                         {hasRegisteredMachine && (
                             <div className="about-identity-row">
                                 <div className="about-identity-item">
-                                    <dt className="about-kv-label">
-                                        {bestRankingIcon} {t("aboutTotalOnline")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span>
+                                    <dt className="about-kv-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                        <IconRankBadge rank={bestRank} size={16} />
+                                        {t("aboutTotalOnline")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span>
                                     </dt>
                                     <dd className="about-identity-value about-identity-value--muted">
                                         {ranking
@@ -688,6 +686,7 @@ export function AboutPanel({
                         <button className="btn-link about-action-button" onClick={onOpenWebsite}>{t("officialWebsite")}</button>
                         <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
+                        <button className="btn-link about-action-button" onClick={() => setShowSystemDoctor(true)}>{t("systemDoctor")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowSecurityEvents(true)}>{t("securityEvents")}</button>
                         <button className="btn-link about-action-button" onClick={() => setShowErrorLog(true)}>{t("errorLog")}</button>
                         {showGithubActions && (
@@ -722,6 +721,11 @@ export function AboutPanel({
             <MemoryHealthDialog
                 open={showHealthDialog}
                 onClose={() => setShowHealthDialog(false)}
+                t={t}
+            />
+            <SystemDoctorDialog
+                open={showSystemDoctor}
+                onClose={() => setShowSystemDoctor(false)}
                 t={t}
             />
             <SecurityEventsDialog

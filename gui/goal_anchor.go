@@ -48,14 +48,14 @@ func (g *GoalAnchor) ShouldAnchor(iteration int) bool {
 // progressSummary 来自 ProgressTracker，例如 "已完成 3/7 步 | 当前: 实现 DriftDetector | 剩余: 4 项"。
 // 输出控制在 maxTokens (500) 以内。
 func (g *GoalAnchor) BuildAnchorContent(progressSummary string) string {
-	content := fmt.Sprintf("[🎯 目标锚定]\n原始目标: %s\n当前进度: %s\n[/目标锚定]", g.originalGoal, progressSummary)
+	content := fmt.Sprintf("[目标锚定]\n原始目标: %s\n当前进度: %s\n[/目标锚定]", g.originalGoal, progressSummary)
 
 	// Token 估算：混合中英文内容使用 len(content)/2 作为粗略估算
 	estimatedTokens := len(content) / 2
 	if estimatedTokens > g.maxTokens {
 		// 截断 progressSummary 以满足 token 限制
 		// 保留目标锚定框架和原始目标，压缩进度摘要
-		maxSummaryBytes := (g.maxTokens * 2) - len("[🎯 目标锚定]\n原始目标: ") - len(g.originalGoal) - len("\n当前进度: \n[/目标锚定]")
+		maxSummaryBytes := (g.maxTokens * 2) - len("[目标锚定]\n原始目标: ") - len(g.originalGoal) - len("\n当前进度: \n[/目标锚定]")
 		if maxSummaryBytes < 0 {
 			maxSummaryBytes = 0
 		}
@@ -72,7 +72,7 @@ func (g *GoalAnchor) BuildAnchorContent(progressSummary string) string {
 			}
 			progressSummary = truncated + goalTruncationMark
 		}
-		content = fmt.Sprintf("[🎯 目标锚定]\n原始目标: %s\n当前进度: %s\n[/目标锚定]", g.originalGoal, progressSummary)
+		content = fmt.Sprintf("[目标锚定]\n原始目标: %s\n当前进度: %s\n[/目标锚定]", g.originalGoal, progressSummary)
 	}
 	return content
 }

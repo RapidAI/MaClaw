@@ -67,7 +67,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 	if len(targets) < 2 {
 		return &GenericResponse{
 			StatusCode: 400,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Title:      "无法开始讨论",
 			Body:       "至少需要 2 台 LLM 已配置的在线设备才能进行讨论。",
 		}
@@ -79,7 +79,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 		r.mu.Unlock()
 		return &GenericResponse{
 			StatusCode: 409,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Title:      "讨论进行中",
 			Body:       "已有讨论正在进行，请先 /stop 终止当前讨论。",
 		}
@@ -129,7 +129,7 @@ func (r *MessageRouter) StartDiscussion(ctx context.Context, userID, platformNam
 
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "🗣️",
+		StatusIcon: "info",
 		Title:      "讨论开始",
 		Body: fmt.Sprintf("话题: %s\n参与者: %s\n轮数: %d 轮 + 总结\n\n讨论进行中，每轮结果会实时推送。发送 /stop 可提前终止。",
 			topic, strings.Join(names, "、"), ds.MaxRounds),
@@ -146,7 +146,7 @@ func (r *MessageRouter) runDiscussion(tenantID, userID, platformName, platformUI
 	defer func() {
 		if rv := recover(); rv != nil {
 			r.deliverProgress(context.Background(), userID, platformName, platformUID,
-				fmt.Sprintf("❌ 讨论异常终止: %v", rv))
+				fmt.Sprintf("讨论异常终止: %v", rv))
 		}
 		r.mu.Lock()
 		ds.Running = false
@@ -168,11 +168,11 @@ func (r *MessageRouter) runDiscussion(tenantID, userID, platformName, platformUI
 
 	for round := 1; round <= ds.MaxRounds; round++ {
 		if ds.stopped() {
-			r.deliverProgress(ctx, userID, platformName, platformUID, "⏹ 讨论已被用户终止。")
+			r.deliverProgress(ctx, userID, platformName, platformUID, "讨论已被用户终止。")
 			break
 		}
 		if ctx.Err() != nil {
-			r.deliverProgress(context.Background(), userID, platformName, platformUID, "⏰ 讨论总时间超限，自动终止。")
+			r.deliverProgress(context.Background(), userID, platformName, platformUID, "讨论总时间超限，自动终止。")
 			break
 		}
 
@@ -186,11 +186,11 @@ func (r *MessageRouter) runDiscussion(tenantID, userID, platformName, platformUI
 		var roundParts []string
 		for _, res := range results {
 			if res.Err != nil {
-				line := fmt.Sprintf("[%s] ❌ 错误: %v", res.Name, res.Err)
+				line := fmt.Sprintf("[%s] 错误: %v", res.Name, res.Err)
 				roundParts = append(roundParts, line)
 				r.deliverProgress(ctx, userID, platformName, platformUID, line)
 			} else if res.Text == "" {
-				line := fmt.Sprintf("[%s] ⏰ 超时未回复", res.Name)
+				line := fmt.Sprintf("[%s] 超时未回复", res.Name)
 				roundParts = append(roundParts, line)
 				r.deliverProgress(ctx, userID, platformName, platformUID, line)
 			} else {
@@ -221,10 +221,10 @@ func (r *MessageRouter) runDiscussion(tenantID, userID, platformName, platformUI
 		// Next round prompt = all replies from this round + human input if any.
 		if len(userInputs) > 0 {
 			humanText := strings.Join(userInputs, "\n")
-			prompt = fmt.Sprintf("以下是第 %d 轮各参与者的观点：\n\n%s\n\n💬 主持人补充：\n%s\n\n请基于以上观点和主持人的补充继续讨论。",
+			prompt = fmt.Sprintf("以下是第 %d 轮各参与者的观点：\n\n%s\n\n主持人补充：\n%s\n\n请基于以上观点和主持人的补充继续讨论。",
 				round, strings.Join(roundParts, "\n\n"), humanText)
 			r.deliverProgress(ctx, userID, platformName, platformUID,
-				fmt.Sprintf("💬 主持人发言已加入第 %d 轮讨论", round+1))
+				fmt.Sprintf("主持人发言已加入第 %d 轮讨论", round+1))
 		} else {
 			prompt = fmt.Sprintf("以下是第 %d 轮各参与者的观点：\n\n%s\n\n请基于以上观点继续讨论，补充、反驳或深化。",
 				round, strings.Join(roundParts, "\n\n"))
@@ -262,7 +262,7 @@ func (r *MessageRouter) runDiscussion(tenantID, userID, platformName, platformUI
 	r.mu.Unlock()
 
 	r.deliverProgress(ctx, userID, platformName, platformUID,
-		fmt.Sprintf("📋 总结 (by %s):\n%s\n\n讨论结束。直接发消息可追加话题继续讨论，/stop 退出讨论模式。",
+		fmt.Sprintf("总结 (by %s):\n%s\n\n讨论结束。直接发消息可追加话题继续讨论，/stop 退出讨论模式。",
 			summarizer.Name, summaryText))
 }
 
@@ -322,7 +322,7 @@ func (r *MessageRouter) StopDiscussionForTenant(tenantID, userID string) *Generi
 	if ds == nil {
 		return &GenericResponse{
 			StatusCode: 404,
-			StatusIcon: "❓",
+			StatusIcon: "info",
 			Title:      "无讨论",
 			Body:       "当前没有进行中的讨论。",
 		}
@@ -332,7 +332,7 @@ func (r *MessageRouter) StopDiscussionForTenant(tenantID, userID string) *Generi
 		ds.requestStop()
 		return &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "⏹",
+			StatusIcon: "info",
 			Title:      "终止讨论",
 			Body:       "已请求终止讨论，当前轮次完成后将停止并生成总结。",
 		}
@@ -345,7 +345,7 @@ func (r *MessageRouter) StopDiscussionForTenant(tenantID, userID string) *Generi
 
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "✅",
+		StatusIcon: "ok",
 		Title:      "退出讨论",
 		Body:       "已退出讨论模式。",
 	}

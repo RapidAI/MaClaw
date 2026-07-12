@@ -251,11 +251,17 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		}()
 	}
 
+	// Prefer run-state ActiveConfig so mid-loop escalations take effect.
+	llmCfg := opts.Config
+	if opts.RunState != nil && strings.TrimSpace(opts.RunState.ActiveConfig.Model) != "" {
+		llmCfg = opts.RunState.ActiveConfig
+	}
+
 	phaseStartedAt = time.Now()
 	llmDispatch := h.dispatchAgentLoopLLMRound(agentLoopLLMDispatchOptions{
 		Context:             opts.Context,
 		RequestContext:      llmRequestContext,
-		Config:              opts.Config,
+		Config:              llmCfg,
 		Conversation:        *opts.Conversation,
 		Tools:               *opts.Tools,
 		HTTPClient:          opts.HTTPClient,
@@ -481,6 +487,10 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 	*opts.History = toolPath.History
 	opts.RunState.ApplyToolPath(toolPath)
 	opts.Telemetry.ApplyToolPath(toolPath)
+	// Tools appeared after a light model turn — escalate next rounds to reasoning.
+	if len(choice.Message.ToolCalls) > 0 {
+		h.escalateRunStateToReasoning(opts.RunState, "tools requested after light turn")
+	}
 	if toolPath.Response != nil {
 		return agentLoopIterationDispatchResult{Response: toolPath.Response}
 	}

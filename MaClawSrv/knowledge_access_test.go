@@ -25,13 +25,19 @@ func TestSanitizeKnowledgeDirectoryImportResultForAPIRedactsPaths(t *testing.T) 
 	dataRoot := t.TempDir()
 	localDoc := filepath.Join(dataRoot, "imports", "secret-import.md")
 	result := knowledge.DirectoryImportResult{
-		RootPath:    filepath.Dir(localDoc),
-		CurrentFile: localDoc,
-		Warnings:    []string{"failed token=warning-secret path=" + dataRoot},
+		RootPath:       filepath.Dir(localDoc),
+		CurrentFile:    localDoc,
+		LastItemPath:   localDoc,
+		LastItemReason: "failed token=last-secret path=" + dataRoot,
+		Warnings:       []string{"failed token=warning-secret path=" + dataRoot},
 		Items: []knowledge.ImportItem{{
 			FilePath:     localDoc,
 			RelativePath: localDoc,
 			ErrorMessage: "failed token=item-secret path=" + dataRoot,
+		}},
+		FailedItems: []knowledge.ImportFailedItem{{
+			FilePath: localDoc,
+			Error:    "failed token=failed-item-secret path=" + dataRoot,
 		}},
 	}
 
@@ -40,13 +46,16 @@ func TestSanitizeKnowledgeDirectoryImportResultForAPIRedactsPaths(t *testing.T) 
 	if err != nil {
 		t.Fatalf("marshal import result: %v", err)
 	}
-	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "warning-secret", "item-secret"} {
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "warning-secret", "item-secret", "last-secret", "failed-item-secret"} {
 		if strings.Contains(string(body), leaked) {
 			t.Fatalf("expected import result to redact %q, got %s", leaked, body)
 		}
 	}
 	if got.CurrentFile != filepath.Base(localDoc) || got.Items[0].FilePath != filepath.Base(localDoc) || got.Items[0].RelativePath != filepath.Base(localDoc) {
 		t.Fatalf("expected import paths to use basename, got %#v", got)
+	}
+	if got.LastItemPath != filepath.Base(localDoc) || got.FailedItems[0].FilePath != filepath.Base(localDoc) {
+		t.Fatalf("expected last/failed item paths to use basename, got %#v", got)
 	}
 }
 

@@ -84,6 +84,10 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	if !remoteToolSupported(tool) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", tool)
 	}
+	// Early reject: agent must never spawn external coding CLIs.
+	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: tool, LaunchSource: req.LaunchSource}); err != nil {
+		return RemoteSessionView{}, err
+	}
 	if err := a.ensureRemoteLaunchToolInstalled(tool, req.LaunchSource); err != nil {
 		return RemoteSessionView{}, err
 	}

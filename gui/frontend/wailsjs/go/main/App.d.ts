@@ -16,6 +16,42 @@ export function CheckUpdateBeta(arg1:string):Promise<main.UpdateResult>;
 
 export function ClipboardGetText():Promise<string>;
 
+export function CodingKnowledgeStats():Promise<any>;
+
+export function CodingKnowledgeList(arg1:any):Promise<Array<any>>;
+
+export function CodingKnowledgeGet(arg1:string):Promise<any>;
+
+export function CodingKnowledgeUpdate(arg1:any):Promise<void>;
+
+export function CodingKnowledgeConfirm(arg1:string):Promise<void>;
+
+export function CodingKnowledgeDelete(arg1:string):Promise<void>;
+
+export function CodingKnowledgeDeleteByScope(arg1:string,arg2:string):Promise<number>;
+
+export function CodingKnowledgeReset():Promise<void>;
+
+export function CodingKnowledgeResetFile():Promise<void>;
+
+export function CodingKnowledgeSave(arg1:any):Promise<any>;
+
+export function CodingKnowledgeSearch(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function CodingKnowledgeEvict():Promise<number>;
+
+export function CodingKnowledgeCapacity():Promise<any>;
+
+export function CodingKnowledgeExportToFile(arg1:string):Promise<void>;
+
+export function CodingKnowledgeImportFromFile(arg1:string):Promise<number>;
+
+export function CodingKnowledgeGraduateToSteering(arg1:string):Promise<string>;
+
+export function SelectCodingKnowledgeExportPath():Promise<string>;
+
+export function SelectCodingKnowledgeImportFile():Promise<string>;
+
 export function DeleteSkill(arg1:string,arg2:string):Promise<void>;
 
 export function DeletePassthroughCommand(arg1:string):Promise<void>;
@@ -231,6 +267,8 @@ export function StartRemoteHandoffSession(arg1:string,arg2:string,arg3:boolean,a
 
 export function ListValidProviders(arg1:string):Promise<any>;
 
+export function GetSkillEvolutionStatus():Promise<Record<string, any>>;
+
 export function GetSkillsDir(arg1:string):Promise<string>;
 
 export function GetSystemInfo():Promise<main.SystemInfo>;
@@ -430,6 +468,8 @@ export function UpdateNLSkill(arg1:any):Promise<void>;
 
 export function SetNLSkillStatus(arg1:string,arg2:string):Promise<void>;
 
+export function BatchSetNLSkillStatus(arg1:Array<string>,arg2:string):Promise<Record<string, any>>;
+
 export function DeleteNLSkill(arg1:string):Promise<void>;
 
 export function RenameNLSkill(arg1:string,arg2:string):Promise<void>;
@@ -615,6 +655,28 @@ export function IsMemoryCompressing():Promise<boolean>;
 
 export function GetMemoryHealth():Promise<any>;
 
+export function RunDoctor():Promise<any>;
+
+export function RunDoctorFormatted():Promise<string>;
+
+export function GetLastModelRoute():Promise<any>;
+
+export function GetSharedAgentLoopStatus():Promise<any>;
+
+export function SetSharedAgentLoopEnabled(arg1:boolean):Promise<any>;
+
+export function SetSharedAgentLoopCanaryPercent(arg1:number):Promise<any>;
+
+export function SetSharedAgentLoopWorkflow(arg1:boolean):Promise<any>;
+
+export function PreviewSharedLoopCanary(arg1:string,arg2:number):Promise<Record<string, any>>;
+
+export function ResetAdaptivePromptStats():Promise<any>;
+
+export function ExportAdaptivePromptStats():Promise<Record<string, any>>;
+
+export function OpenAdaptivePromptExportsDir():Promise<Record<string, any>>;
+
 export function GetMemoryStatus():Promise<any>;
 
 export function GetExperienceLearningSnapshot():Promise<any>;
@@ -685,6 +747,25 @@ export function PauseScheduledTask(arg1:string):Promise<void>;
 export function ResumeScheduledTask(arg1:string):Promise<void>;
 
 export function TriggerScheduledTask(arg1:string):Promise<void>;
+
+// Skill self-repair / optimize (skill detail modal + manage_skill)
+export function TriggerSkillSelfRepair(arg1:string,arg2:boolean):Promise<string>;
+
+export function BatchTriggerSkillSelfRepair(arg1:Array<string>,arg2:boolean):Promise<Record<string, any>>;
+
+export function TriggerSkillOptimize(arg1:string,arg2:boolean):Promise<string>;
+
+export function BatchTriggerSkillOptimize(arg1:Array<string>,arg2:boolean):Promise<Record<string, any>>;
+
+export function ListSkillEvolutionAudit(arg1:number):Promise<Array<Record<string, any>>>;
+
+export function ListSkillMaintenanceDrafts():Promise<Record<string, any>>;
+
+export function ApplySkillMaintenanceAction(arg1:string,arg2:string,arg3:string,arg4:boolean,arg5:boolean):Promise<Record<string, any>>;
+
+export function ListSkillYAMLBackups(arg1:string):Promise<Record<string, any>>;
+
+export function RestoreSkillYAMLBackup(arg1:string,arg2:number,arg3:boolean):Promise<Record<string, any>>;
 
 
 
@@ -907,6 +988,7 @@ export function QuerySecurityEvents(arg1:number):Promise<Array<any>>;
 export function ReadErrorLog():Promise<Array<string>>;
 
 export function GetHubLLMServiceStatus():Promise<any>;
+export function RefreshHubLLMServiceStatus():Promise<any>;
 export function RedeemHubLLMService(arg1:string):Promise<any>;
 export function OnFloatingButtonClicked():Promise<void>;
 export function OnFloatingButtonDragged(arg1:number,arg2:number):Promise<void>;
@@ -955,6 +1037,12 @@ export function KnowledgeImportSnapshot(arg1:any):Promise<any>;
 export function KnowledgeImportHubShare(arg1:any):Promise<any>;
 
 export function KnowledgeShareToHub(arg1:any):Promise<any>;
+
+export function KnowledgeListMyHubShares(arg1:any):Promise<any>;
+
+export function KnowledgeDeleteHubShare(arg1:any):Promise<void>;
+
+export function KnowledgeUpdateHubShare(arg1:any):Promise<any>;
 
 export function KnowledgeSyncDelete(arg1:any):Promise<any>;
 
@@ -1114,7 +1202,7 @@ export function SelectKnowledgeDirectory():Promise<string>;
 
 export function SelectKnowledgeFiles():Promise<Array<string>>;
 
-export function SelectKnowledgeSnapshotExportPath():Promise<string>;
+export function SelectKnowledgeSnapshotExportPath(arg1:string):Promise<string>;
 
 export function SelectKnowledgeSnapshotFile():Promise<string>;
 
@@ -1140,6 +1228,10 @@ export function RequestHubCapabilityInstallIntent(arg1:any):Promise<any>;
 
 // MacLaw App package bindings
 export function ExecuteMaclawAppBusinessOperation(arg1:any):Promise<any>;
+export function OpenMaclawAppBusinessWorkspace(arg1:any):Promise<any>;
+export function OpenMaclawAppApprovalWorkspace(arg1:any):Promise<any>;
+export function OpenMaclawAppWorkspaceFromInstall(arg1:any):Promise<any>;
+export function DecideMaclawAppApprovalInstance(arg1:any):Promise<any>;
 export function InstallMaclawAppDependencies(arg1:string):Promise<any>;
 export function PlanMaclawAppInstall(arg1:string):Promise<any>;
 export function RecordMaclawAppInstall(arg1:string,arg2:string):Promise<any>;
@@ -1168,6 +1260,10 @@ export function RecordMaclawAppRunEvidenceForSkill(arg1:string,arg2:string,arg3:
 export function ListVirtualEmployees():Promise<Array<any>>;
 
 export function RegisterVirtualEmployee(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<void>;
+
+export function ListReclaimableVirtualEmployees():Promise<Array<any>>;
+
+export function ReclaimVirtualEmployee(arg1:string):Promise<any>;
 
 export function UpdateVESettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<void>;
 

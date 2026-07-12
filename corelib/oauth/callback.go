@@ -13,7 +13,7 @@ import (
 const successHTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>MaClaw</title></head>
 <body style="font-family:sans-serif;text-align:center;padding:60px">
-  <h2>✅ 授权成功</h2>
+  <h2>授权成功</h2>
   <p>请返回 MaClaw 继续使用。此页面将自动关闭。</p>
   <script>setTimeout(()=>window.close(),3000)</script>
 </body></html>`
@@ -22,7 +22,7 @@ const successHTML = `<!DOCTYPE html>
 const errorHTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>MaClaw</title></head>
 <body style="font-family:sans-serif;text-align:center;padding:60px">
-  <h2>❌ 授权失败</h2>
+  <h2>授权失败</h2>
   <p>错误: %s</p>
   <p>%s</p>
   <p>请关闭此页面并重试。</p>

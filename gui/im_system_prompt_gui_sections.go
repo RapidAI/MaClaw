@@ -86,7 +86,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 		if len(skills) > 0 {
 			b.WriteString("\n## 已注册 Skill\n")
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
-			b.WriteString("⚠️ **Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n")
+			b.WriteString("**Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n")
 			for _, s := range skills {
 				if normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
 					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
@@ -202,7 +202,7 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 				}
 				b.WriteString("\n")
 			}
-			b.WriteString("⚠️ 有后台任务正在运行时，如果用户提出新的编程需求，先记录需求，等后台任务完成后再处理。\n")
+			b.WriteString("有后台任务正在运行时，如果用户提出新的编程需求，先记录需求，等后台任务完成后再处理。\n")
 		}
 	}
 
@@ -261,7 +261,7 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 // appendGUIEpilogue injects final GUI-only sections:
 // steering (handled by deps), memory, knowledge auto-recall, knowledge skills,
 // skill repairs, bundle context.
-func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string) {
+func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string, history []agent.ConversationEntry) {
 	epilogueStart := time.Now()
 	userID = strings.TrimSpace(userID)
 
@@ -278,9 +278,10 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 	}
 	memoryElapsed := time.Since(epilogueStart)
 
-	// Knowledge base auto-recall
+	// Knowledge base auto-recall (multi-turn query when history is available)
 	knowledgeStart := time.Now()
-	h.appendKnowledgeAutoRecall(b, msg)
+	prior := agent.PriorUserMessagesFromHistory(history, agent.KnowledgeAutoRecallPriorUserTurns)
+	h.appendKnowledgeAutoRecall(b, msg, prior)
 	knowledgeElapsed := time.Since(knowledgeStart)
 
 	// Knowledge skill section
@@ -288,6 +289,9 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 
 	// Skill repair notifications
 	h.appendSkillRepairNotifications(b)
+
+	// High-value skill maintenance hints (read-only curator → next-turn prompt)
+	h.appendMaintenanceExperienceHints(b)
 
 	// Bundle context banner
 	h.appendBundleContextBanner(b)

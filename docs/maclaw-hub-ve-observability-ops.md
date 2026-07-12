@@ -3,6 +3,21 @@
 This note documents Hub-side observability for digital employee discovery and
 communication.
 
+## Related: adaptive prompt cost metrics
+
+Online GUI machines report compact adaptive system-prompt counters on
+`machine.heartbeat` (`adaptive_prompt`). Tenant admins can query:
+
+```text
+GET /api/admin/adaptive-prompt/metrics
+```
+
+Response fields: `online_machines`, `machines_with_stats`, `totals`
+(`light_turns`, `full_turns`, `est_tokens_saved`, `light_tool_denies`,
+`light_upgrades`, …). Per-machine detail is on
+`GET /api/admin/debug/machines`. See also
+`docs/adaptive-prompt-and-shared-loop-ops.md`.
+
 ## Endpoint
 
 Tenant admins can query:

@@ -293,7 +293,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 Dangbei API 管理面板</h1>
+            <h1>Dangbei API 管理面板</h1>
         </div>
         
         <div class="tabs">
@@ -324,7 +324,7 @@
             
             <div class="panel">
                 <div class="panel-header">
-                    <div class="panel-title">➕ 添加账号</div>
+                    <div class="panel-title">添加账号</div>
                 </div>
                 
                 <div id="add-account-alert"></div>
@@ -350,7 +350,7 @@
             
             <div class="panel">
                 <div class="panel-header">
-                    <div class="panel-title">📋 账号列表</div>
+                    <div class="panel-title">账号列表</div>
                     <button class="btn" onclick="loadAccounts()">刷新</button>
                 </div>
                 
@@ -463,7 +463,7 @@
                 } else {
                     container.innerHTML = `
                         <div class="empty-state">
-                            <div class="empty-state-icon">📭</div>
+                            <div class="empty-state-icon"></div>
                             <h3>还没有账号</h3>
                             <p>请在上方添加第一个账号</p>
                         </div>
@@ -495,15 +495,15 @@
                 const data = await response.json();
                 
                 if (response.ok) {
-                    alertDiv.innerHTML = '<div class="alert alert-success">✅ 账号添加成功！</div>';
+                    alertDiv.innerHTML = '<div class="alert alert-success">账号添加成功！</div>';
                     document.getElementById('add-account-form').reset();
                     setTimeout(() => { alertDiv.innerHTML = ''; }, 3000);
                     loadAccounts();
                 } else {
-                    alertDiv.innerHTML = `<div class="alert alert-error">❌ ${data.error || '添加失败'}</div>`;
+                    alertDiv.innerHTML = `<div class="alert alert-error">${data.error || '添加失败'}</div>`;
                 }
             } catch (error) {
-                alertDiv.innerHTML = `<div class="alert alert-error">❌ 网络错误: ${error.message}</div>`;
+                alertDiv.innerHTML = `<div class="alert alert-error">网络错误: ${error.message}</div>`;
             }
         }
         
@@ -544,14 +544,14 @@
                 const data = await response.json();
                 
                 if (response.ok && data.success) {
-                    alert('✅ 测试成功！账号可用\n响应时间: ' + data.responseTime + 'ms');
+                    alert('测试成功！账号可用\n响应时间: ' + data.responseTime + 'ms');
                     loadAccounts(); // 刷新列表显示最新状态
                 } else {
-                    alert('❌ 测试失败\n' + (data.error || '账号不可用'));
+                    alert('测试失败\n' + (data.error || '账号不可用'));
                     loadAccounts();
                 }
             } catch (error) {
-                alert('❌ 测试失败: ' + error.message);
+                alert('测试失败: ' + error.message);
             } finally {
                 btn.textContent = originalText;
                 btn.disabled = false;
@@ -570,7 +570,7 @@
                 
                 if (response.ok) {
                     document.getElementById('service-status').innerHTML = 
-                        '<span style="color: #10b981;">● 运行中</span>';
+                        '<span style="color: #10b981; display:inline-flex; align-items:center; gap:6px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.2 12.2 2.4 2.4 5.2-5.4"/></svg>运行中</span>';
                     
                     if (data.stats) {
                         document.getElementById('total-requests').textContent = 
@@ -583,7 +583,7 @@
                 }
             } catch (error) {
                 document.getElementById('service-status').innerHTML = 
-                    '<span style="color: #ef4444;">● 离线</span>';
+                    '<span style="color: #ef4444; display:inline-flex; align-items:center; gap:6px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/></svg>离线</span>';
             }
         }
         

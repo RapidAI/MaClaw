@@ -12,11 +12,26 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
+// DefaultFusionTreeDeadline is how long dual-channel fusion waits for the L3
+// tree/LLM channel before degrading to embedding-only. Reasoning models often
+// exceed this with thinking phase; that is intentional — fusion prefers a fast
+// usable L2 signal over blocking the control path for a full LLM timeout.
+const DefaultFusionTreeDeadline = 5 * time.Second
+
+// DefaultLLMTimeout is the outer budget for tree-only classification (no L2).
+// Kept longer than fusion wait so pure-LLM mode can still complete on remote
+// chat models when embedding is unavailable.
+const DefaultLLMTimeout = 30 * time.Second
+
 // Config holds initialization parameters for the UnifiedIntentClassifier.
 type Config struct {
 	Embedder   embedding.Embedder
 	LLMFunc    LLMClassifyFunc // optional, can be nil
-	LLMTimeout time.Duration   // 0 -> default 30s
+	LLMTimeout time.Duration   // tree-only path; 0 -> DefaultLLMTimeout (30s)
+	// FusionTreeDeadline caps how long classifyWithFusion waits on the tree
+	// channel when embedding is also available. 0 -> DefaultFusionTreeDeadline (5s).
+	// Never exceeds LLMTimeout when both are set.
+	FusionTreeDeadline time.Duration
 }
 
 // UnifiedIntentClassifier is the single entry point for all user-intent
@@ -34,8 +49,9 @@ type UnifiedIntentClassifier struct {
 	affinity   *ToolAffinityRegistry
 	embedder   embedding.Embedder
 	anchors    []intentAnchor
-	llmFunc    LLMClassifyFunc
-	llmTimeout time.Duration
+	llmFunc            LLMClassifyFunc
+	llmTimeout         time.Duration
+	fusionTreeDeadline time.Duration
 
 	// Intent Tree text for Layer 3 tree reasoning (pre-built from definitions).
 	treeText string
@@ -63,7 +79,15 @@ type UnifiedIntentClassifier struct {
 func New(cfg Config) *UnifiedIntentClassifier {
 	timeout := cfg.LLMTimeout
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = DefaultLLMTimeout
+	}
+	fusionTreeDeadline := cfg.FusionTreeDeadline
+	if fusionTreeDeadline <= 0 {
+		fusionTreeDeadline = DefaultFusionTreeDeadline
+	}
+	// Fusion wait never exceeds the outer LLM budget.
+	if timeout > 0 && fusionTreeDeadline > timeout {
+		fusionTreeDeadline = timeout
 	}
 
 	// Build intent tree text from unified definitions for Layer 3 tree reasoning.
@@ -76,6 +100,7 @@ func New(cfg Config) *UnifiedIntentClassifier {
 		anchors:            BuildAnchorsFromDefinitions(defs),
 		llmFunc:            cfg.LLMFunc,
 		llmTimeout:         timeout,
+		fusionTreeDeadline: fusionTreeDeadline,
 		treeText:           treeText,
 		llmPrompt:          buildLLMSystemPrompt(defs),
 		fusionCfg:          DefaultFusionConfigWithWorkflowTypes(defs),
@@ -303,6 +328,7 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 	}
 
 	result, _ := classifyByEmbedding(emb, anchors, msg.Text)
+	applyExecutionAffordances(msg.Text, &result)
 	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
 	return result
 }
@@ -312,6 +338,30 @@ func (u *UnifiedIntentClassifier) Ready() bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.ready
+}
+
+// FusionTreeDeadline returns the dual-channel wait budget for the tree channel.
+func (u *UnifiedIntentClassifier) FusionTreeDeadline() time.Duration {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	if u.fusionTreeDeadline <= 0 {
+		return DefaultFusionTreeDeadline
+	}
+	return u.fusionTreeDeadline
+}
+
+// SetFusionTreeDeadline updates how long dual-channel fusion waits for L3.
+// Values <= 0 reset to DefaultFusionTreeDeadline. Capped by llmTimeout when set.
+func (u *UnifiedIntentClassifier) SetFusionTreeDeadline(d time.Duration) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if d <= 0 {
+		d = DefaultFusionTreeDeadline
+	}
+	if u.llmTimeout > 0 && d > u.llmTimeout {
+		d = u.llmTimeout
+	}
+	u.fusionTreeDeadline = d
 }
 
 // SetLLMFunc sets or replaces the Layer 3 LLM callback.
@@ -491,7 +541,7 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	u.mu.RLock()
 	fusionCfg := u.fusionCfg
 	llmFn := u.llmFunc
-	llmTimeout := u.llmTimeout
+	treeDeadline := u.fusionTreeDeadline
 	u.mu.RUnlock()
 
 	type embResult struct {
@@ -524,16 +574,12 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	// Wait for embedding (fast, <100ms typically).
 	emb := <-embCh
 
-	// Wait for tree channel using the configured classifier timeout. Reasoning models
-	// may have a thinking phase, but short inner deadlines make routing jitter look
-	// like semantic uncertainty. When tree times out, we proceed with
-	// embedding-only results — this is the designed degradation path.
-	// The deadline here is aligned with the LLM request timeout.
-	// Timeout returns: tree channel contributes label="ambiguous",
-	// confidence=0.0, Degraded=true to the fusion result.
-	treeDeadline := llmTimeout
+	// Wait for tree channel with a short fusion-only deadline (default 5s), NOT the
+	// full 30s LLM timeout. Dual-channel fusion already has embedding; waiting for a
+	// slow reasoning model only delays the control path. On timeout we degrade to
+	// embedding-only (designed path) while the tree goroutine finishes in background.
 	if treeDeadline <= 0 {
-		treeDeadline = 30 * time.Second
+		treeDeadline = DefaultFusionTreeDeadline
 	}
 	var tree treeResult
 	treeTimer := time.NewTimer(treeDeadline)

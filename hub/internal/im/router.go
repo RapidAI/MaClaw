@@ -283,7 +283,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 		return MachineSelectResult{OK: false, Message: i18n.T(i18n.MsgNoOnlineDevices, "zh")}
 	}
 	if len(machines) == 1 {
-		return MachineSelectResult{OK: true, Message: fmt.Sprintf("✅ 当前只有一台在线设备 %s，无需切换。", machines[0].Name)}
+		return MachineSelectResult{OK: true, Message: fmt.Sprintf("当前只有一台在线设备 %s，无需切换。", machines[0].Name)}
 	}
 
 	// "/call all" — enter broadcast mode.
@@ -295,7 +295,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 		for _, m := range machines {
 			names = append(names, m.Name)
 		}
-		guide := fmt.Sprintf("📢 已进入群聊模式\n在线设备：%s\n\n使用方式：\n• 直接发消息 → 所有设备同时回复\n• @昵称 消息 → 只发给指定设备\n• /call <昵称> → 切回单聊\n• /discuss 话题 → 发起多轮讨论\n• /stop → 停止讨论", strings.Join(names, "、"))
+		guide := fmt.Sprintf("已进入群聊模式\n在线设备：%s\n\n使用方式：\n• 直接发消息 → 所有设备同时回复\n• @昵称 消息 → 只发给指定设备\n• /call <昵称> → 切回单聊\n• /discuss 话题 → 发起多轮讨论\n• /stop → 停止讨论", strings.Join(names, "、"))
 		return MachineSelectResult{
 			OK:      true,
 			Message: guide,
@@ -322,7 +322,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 		list := r.formatMachineList(machines)
 		return MachineSelectResult{
 			OK:      false,
-			Message: fmt.Sprintf("⚠️ 有 %d 台设备同名 %q，请先在客户端修改昵称使其唯一，然后重试。\n\n%s", len(matched), name, list),
+			Message: fmt.Sprintf("有 %d 台设备同名 %q，请先在客户端修改昵称使其唯一，然后重试。\n\n%s", len(matched), name, list),
 		}
 	}
 
@@ -332,7 +332,7 @@ func (r *MessageRouter) SelectMachine(ctx context.Context, userID, name string) 
 
 	return MachineSelectResult{
 		OK:          true,
-		Message:     fmt.Sprintf("✅ 已切换设备，你当前正在与 %s 交流。", matched[0].Name),
+		Message:     fmt.Sprintf("已切换设备，你当前正在与 %s 交流。", matched[0].Name),
 		MachineID:   matched[0].MachineID,
 		MachineName: matched[0].Name,
 	}
@@ -365,7 +365,7 @@ func (r *MessageRouter) TrySelectByName(ctx context.Context, userID, text string
 		list := r.formatMachineList(machines)
 		return true, &GenericResponse{
 			StatusCode: 409,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Title:      "设备重名",
 			Body:       fmt.Sprintf("有 %d 台设备同名 %q，请先在客户端修改昵称使其唯一。\n\n%s\n\n修改后使用 /call <昵称> 切换。", len(matched), text, list),
 		}
@@ -387,7 +387,7 @@ func (r *MessageRouter) TrySelectByName(ctx context.Context, userID, text string
 
 	return true, &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "✅",
+		StatusIcon: "ok",
 		Title:      "已切换设备",
 		Body:       fmt.Sprintf("已切换设备，你当前正在与 %s 交流。", matched[0].Name),
 	}
@@ -419,11 +419,11 @@ func (r *MessageRouter) ClearSelectedMachineForTenant(tenantID, userID string) {
 // formatMachineList builds a human-readable list of online machines.
 func (r *MessageRouter) formatMachineList(machines []OnlineMachineInfo) string {
 	var b strings.Builder
-	b.WriteString("📋 在线设备列表：\n")
+	b.WriteString("在线设备列表：\n")
 	for i, m := range machines {
-		llm := "❌"
+		llm := ""
 		if m.LLMConfigured {
-			llm = "✅"
+			llm = ""
 		}
 		fmt.Fprintf(&b, "%d. %s (LLM: %s)\n", i+1, m.Name, llm)
 	}
@@ -477,7 +477,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 	if len(machines) == 0 {
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "📴",
+			StatusIcon: "info",
 			Title:      "设备不在线",
 			Body:       "您的设备当前不在线，无法处理请求。\n\n请确认 MaClaw 客户端已启动并连接到 Hub。",
 		}, nil
@@ -490,7 +490,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 				if !m.LLMConfigured {
 					return &GenericResponse{
 						StatusCode: 503,
-						StatusIcon: "⚠️",
+						StatusIcon: "warning",
 						Title:      "Agent 未就绪",
 						Body:       fmt.Sprintf("设备 %s 的 LLM 未配置，Agent 无法运行。", m.Name),
 					}, nil
@@ -501,7 +501,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 		}
 		return &GenericResponse{
 			StatusCode: 404,
-			StatusIcon: "❓",
+			StatusIcon: "info",
 			Title:      "设备未找到",
 			Body:       fmt.Sprintf("未找到名为 %q 的在线设备。", targetName),
 		}, nil
@@ -516,7 +516,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 		if !m.LLMConfigured {
 			return &GenericResponse{
 				StatusCode: 503,
-				StatusIcon: "⚠️",
+				StatusIcon: "warning",
 				Title:      "Agent 未就绪",
 				Body:       "设备已在线，但 MaClaw LLM 未配置。Agent 无法运行。\n\n请在 MaClaw 客户端的设置中配置 LLM（URL、Key、Model），然后重试。",
 			}, nil
@@ -533,7 +533,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 		list := r.formatMachineList(machines)
 		return &GenericResponse{
 			StatusCode: 300,
-			StatusIcon: "🖥️",
+			StatusIcon: "info",
 			Title:      "请选择设备",
 			Body:       fmt.Sprintf("您有 %d 台设备在线，请先选择目标设备：\n\n%s", len(machines), list),
 		}, nil
@@ -550,7 +550,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 			if !m.LLMConfigured {
 				return &GenericResponse{
 					StatusCode: 503,
-					StatusIcon: "⚠️",
+					StatusIcon: "warning",
 					Title:      "Agent 未就绪",
 					Body:       "设备已在线，但 MaClaw LLM 未配置。Agent 无法运行。\n\n请在 MaClaw 客户端的设置中配置 LLM（URL、Key、Model），然后重试。",
 				}, nil
@@ -566,7 +566,7 @@ func (r *MessageRouter) RouteToAgent(ctx context.Context, userID, platformName, 
 	list := r.formatMachineList(machines)
 	return &GenericResponse{
 		StatusCode: 503,
-		StatusIcon: "📴",
+		StatusIcon: "info",
 		Title:      "设备已离线",
 		Body:       fmt.Sprintf("之前选择的设备已离线，请重新选择：\n\n%s", list),
 	}, nil
@@ -633,7 +633,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 		}
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "📴",
+			StatusIcon: "info",
 			Title:      "发送失败",
 			Body:       body,
 		}, nil
@@ -658,7 +658,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 				}
 				return &GenericResponse{
 					StatusCode: 500,
-					StatusIcon: "❌",
+					StatusIcon: "error",
 					Title:      "Agent 返回空响应",
 					Body:       body,
 				}, nil
@@ -734,7 +734,7 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 			}
 			return &GenericResponse{
 				StatusCode: 504,
-				StatusIcon: "⏰",
+				StatusIcon: "info",
 				Title:      "Agent 响应超时",
 				Body:       body,
 			}, nil
@@ -763,7 +763,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	if len(targets) == 0 {
 		return &GenericResponse{
 			StatusCode: 503,
-			StatusIcon: "⚠️",
+			StatusIcon: "warning",
 			Title:      "无可用设备",
 			Body:       "所有在线设备的 LLM 均未配置，Agent 无法运行。",
 		}, nil
@@ -778,7 +778,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	ch := make(chan result, len(targets))
 
 	// Create a shared dedup filter so identical progress messages from
-	// different devices (e.g. "⏳ 需要一点时间处理，请稍候...") are only sent once.
+	// different devices (e.g. "需要一点时间处理，请稍候...") are only sent once.
 	dedupCtx := withBroadcastDedup(ctx, newBroadcastProgressDedup())
 
 	// Pop attachments once and re-stash for each target device so every
@@ -824,7 +824,7 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 
 	if len(skipped) > 0 {
 		deviceReplies = append(deviceReplies, DeviceReply{
-			Name: "⚠️ LLM 未配置",
+			Name: "LLM 未配置",
 			Err:  fmt.Errorf("已跳过: %s", strings.Join(skipped, "、")),
 		})
 	}
@@ -832,15 +832,15 @@ func (r *MessageRouter) routeBroadcast(ctx context.Context, userID, platformName
 	if len(deviceReplies) == 0 {
 		return &GenericResponse{
 			StatusCode: 200,
-			StatusIcon: "📢",
+			StatusIcon: "info",
 			Title:      i18n.T(i18n.MsgGroupChatReply, "zh"),
-			Body:       fmt.Sprintf("📢 %d 条回复已分别发送（含图片/文件）", richDelivered),
+			Body:       fmt.Sprintf("%d 条回复已分别发送（含图片/文件）", richDelivered),
 		}, nil
 	}
 
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "📢",
+		StatusIcon: "info",
 		Title:      i18n.T(i18n.MsgGroupChatReply, "zh"),
 		Body:       FormatBroadcastReply(deviceReplies),
 	}, nil
@@ -864,7 +864,7 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 	if len(targets) == 0 {
 		return &GenericResponse{
 			StatusCode: 404,
-			StatusIcon: "📴",
+			StatusIcon: "info",
 			Title:      "设备不在线",
 			Body:       "目标设备均已离线。",
 		}, nil
@@ -906,7 +906,7 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "📨",
+		StatusIcon: "info",
 		Title:      i18n.T(i18n.MsgMultiDeviceReply, "zh"),
 		Body:       FormatBroadcastReply(deviceReplies),
 	}, nil

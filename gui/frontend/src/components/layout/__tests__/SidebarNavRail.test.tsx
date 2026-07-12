@@ -100,7 +100,8 @@ describe('SidebarNavRail favorite employees', () => {
         fireEvent.click(screen.getByTitle('Monthly ranking pending'));
 
         expect(BrowserOpenURL).toHaveBeenCalledWith('https://hub.example/user-ranking');
-        expect(screen.getByText('Rank')).toBeTruthy();
+        // Icon title and visible label both say "Rank".
+        expect(screen.getAllByText('Rank').length).toBeGreaterThan(0);
     });
 
     it('opens the hub ranking page scoped to the configured tenant', () => {
@@ -134,7 +135,8 @@ describe('SidebarNavRail favorite employees', () => {
         await waitFor(() => expect(screen.getByTitle('This month: Token #-/1, Online #-/1')).toBeTruthy());
 
         expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
-        expect(screen.getByText('Rank')).toBeTruthy();
+        // Icon title and visible label both say "Rank".
+        expect(screen.getAllByText('Rank').length).toBeGreaterThan(0);
     });
 
     it('retries startup ranking fetch with exponential backoff until it gets valid data', async () => {

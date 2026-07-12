@@ -11,10 +11,16 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// stripLeadingToolStatusEmoji removes a legacy leading pictograph (+ spaces).
+func stripLeadingToolStatusEmoji(s string) string {
+	return strings.TrimSpace(textutil.StripLeadingEmojiCluster(strings.TrimSpace(s)))
+}
 
 // Sub-tab constants.
 const (
@@ -70,6 +76,8 @@ type ToolSkillSearchMsg struct{ Query string }
 type ToolSkillSearchResultMsg struct {
 	Results []SkillSearchResult
 	Error   string
+	// Warning is non-fatal (e.g. partial source failure / degraded search).
+	Warning string
 }
 
 // ToolSkillInstallMsg triggers a skill install.
@@ -170,13 +178,8 @@ func translateToolStatusMessage(message, oldLang, newLang string) string {
 
 	prefix := ""
 	body := message
-	for _, marker := range []string{"❌ ", "✅ ", "📦 ", "🔍 "} {
-		if strings.HasPrefix(body, marker) {
-			prefix = marker
-			body = strings.TrimPrefix(body, marker)
-			break
-		}
-	}
+	// Strip a single leading decorative pictograph cluster (legacy status rows).
+	body = stripLeadingToolStatusEmoji(body)
 
 	for _, key := range []string{
 		"noSkillResults", "searching", "localRequired", "localArgsInvalid",
@@ -365,7 +368,7 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 	case ToolSkillSearchResultMsg:
 		m.skillSearching = false
 		if msg.Error != "" {
-			m.skillMessage = "❌ " + msg.Error
+			m.skillMessage = msg.Error
 			m.skillResults = nil
 		} else {
 			m.skillResults = msg.Results
@@ -375,24 +378,25 @@ func (m ToolStatusModel) Update(msg tea.Msg) (ToolStatusModel, tea.Cmd) {
 			} else {
 				m.skillMessage = toolStatusFormat(m.lang, "foundSkillResults", len(msg.Results))
 			}
+			if strings.TrimSpace(msg.Warning) != "" {
+				if m.skillMessage != "" {
+					m.skillMessage += "\n"
+				}
+				m.skillMessage += "⚠️ " + msg.Warning
+			}
 		}
 		return m, nil
 
 	case ToolSkillInstallResultMsg:
 		if msg.Error != "" {
-			m.skillMessage = "❌ " + msg.Error
+			m.skillMessage = msg.Error
 		} else {
-			m.skillMessage = "✅ " + toolStatusText(m.lang, "installedPrefix") + msg.Name
+			m.skillMessage = toolStatusText(m.lang, "installedPrefix") + msg.Name
 		}
 		return m, nil
 
 	case ToolOperationResultMsg:
 		message := msg.Message
-		if !msg.Success {
-			message = "❌ " + message
-		} else {
-			message = "✅ " + message
-		}
 		if msg.Tab == ToolSubSkill {
 			m.skillMessage = message
 		} else {
@@ -489,7 +493,7 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 			m.skillConfirming = false
 			if m.skillConfirmIdx < len(m.skillResults) {
 				sr := m.skillResults[m.skillConfirmIdx]
-				m.skillMessage = "📦 " + toolStatusText(m.lang, "installingPrefix") + sr.Name
+				m.skillMessage = toolStatusText(m.lang, "installingPrefix") + sr.Name
 				return m, func() tea.Msg {
 					return ToolSkillInstallMsg{
 						SkillID:    sr.ID,
@@ -515,7 +519,7 @@ func (m ToolStatusModel) updateSkill(msg tea.KeyMsg) (ToolStatusModel, tea.Cmd) 
 			query := strings.TrimSpace(m.skillSearch.Value())
 			if query != "" {
 				m.skillSearching = true
-				m.skillMessage = "🔍 " + toolStatusText(m.lang, "searching")
+				m.skillMessage = toolStatusText(m.lang, "searching")
 				m.skillSearch.Blur()
 				return m, func() tea.Msg { return ToolSkillSearchMsg{Query: query} }
 			}
@@ -600,7 +604,7 @@ func (m ToolStatusModel) startSkillPresetSearch() (ToolStatusModel, tea.Cmd) {
 	label := m.currentSkillSearchPresetLabel()
 	m.skillSearch.SetValue(query)
 	m.skillSearching = true
-	m.skillMessage = "🔍 " + toolStatusFormat(m.lang, "searchingPreset", label)
+	m.skillMessage = toolStatusFormat(m.lang, "searchingPreset", label)
 	m.cycleSkillSearchPreset(1)
 	return m, func() tea.Msg { return ToolSkillSearchMsg{Query: query} }
 }
@@ -1120,7 +1124,7 @@ func (m ToolStatusModel) submitMCPLocal() (ToolStatusModel, tea.Cmd) {
 			m.mcpFocused = 2
 		}
 		m.focusMCPLocalFocusedInput()
-		m.mcpMessage = "❌ " + toolStatusText(m.lang, "localRequired")
+		m.mcpMessage = toolStatusText(m.lang, "localRequired")
 		return m, nil
 	}
 
@@ -1132,7 +1136,7 @@ func (m ToolStatusModel) submitMCPLocal() (ToolStatusModel, tea.Cmd) {
 			m.blurMCPLocalFocusedInput()
 			m.mcpFocused = 3
 			m.focusMCPLocalFocusedInput()
-			m.mcpMessage = "❌ " + toolStatusText(m.lang, "localArgsInvalid")
+			m.mcpMessage = toolStatusText(m.lang, "localArgsInvalid")
 			return m, nil
 		}
 	}
@@ -1141,7 +1145,7 @@ func (m ToolStatusModel) submitMCPLocal() (ToolStatusModel, tea.Cmd) {
 		m.blurMCPLocalFocusedInput()
 		m.mcpFocused = 4
 		m.focusMCPLocalFocusedInput()
-		m.mcpMessage = "❌ " + toolStatusText(m.lang, "localEnvInvalid")
+		m.mcpMessage = toolStatusText(m.lang, "localEnvInvalid")
 		return m, nil
 	}
 
@@ -1154,7 +1158,7 @@ func (m ToolStatusModel) submitMCPLocal() (ToolStatusModel, tea.Cmd) {
 
 	m.mcpAdding = false
 	m.mcpInputs = nil
-	m.mcpMessage = "📦 " + toolStatusText(m.lang, "addingPrefix") + name
+	m.mcpMessage = toolStatusText(m.lang, "addingPrefix") + name
 	return m, func() tea.Msg { return ToolMCPAddMsg{Entry: entry} }
 }
 
@@ -1172,14 +1176,14 @@ func (m ToolStatusModel) submitMCPRemote() (ToolStatusModel, tea.Cmd) {
 			m.mcpFocused = 2
 		}
 		m.focusMCPRemoteFocusedInput()
-		m.mcpMessage = "❌ " + toolStatusText(m.lang, "remoteRequired")
+		m.mcpMessage = toolStatusText(m.lang, "remoteRequired")
 		return m, nil
 	}
 	if authType != "none" && authSecret == "" {
 		m.blurMCPRemoteFocusedInput()
 		m.mcpFocused = 4
 		m.focusMCPRemoteFocusedInput()
-		m.mcpMessage = "❌ " + toolStatusText(m.lang, "remoteSecretRequired")
+		m.mcpMessage = toolStatusText(m.lang, "remoteSecretRequired")
 		return m, nil
 	}
 	if authType == "none" {
@@ -1195,7 +1199,7 @@ func (m ToolStatusModel) submitMCPRemote() (ToolStatusModel, tea.Cmd) {
 
 	m.mcpAdding = false
 	m.mcpInputs = nil
-	m.mcpMessage = "📦 " + toolStatusText(m.lang, "addingPrefix") + name
+	m.mcpMessage = toolStatusText(m.lang, "addingPrefix") + name
 	return m, func() tea.Msg { return ToolMCPAddRemoteMsg{Entry: entry} }
 }
 
@@ -1278,7 +1282,7 @@ func (m ToolStatusModel) viewSkill() string {
 			// For GitHub, Downloads field holds star count.
 			metric := fmt.Sprintf("%d↓", sr.Downloads)
 			if sr.Source == "github" {
-				metric = fmt.Sprintf("★%d", sr.Downloads)
+				metric = fmt.Sprintf("*%d", sr.Downloads)
 			}
 			line := fmt.Sprintf("  %s %s %s %s",
 				padDisplay(fitDisplay(sr.Name, nameWidth), nameWidth),
@@ -1315,11 +1319,11 @@ func (m ToolStatusModel) viewSkill() string {
 	descWidth := max(8, m.width-nameWidth-9)
 	for i := start; i < end; i++ {
 		sk := m.skills[i]
-		status := ok.Render("●")
+		status := ok.Render("*")
 		if sk.Status == "disabled" {
-			status = dim.Render("○")
+			status = dim.Render("-")
 		} else if sk.Status == "needs_setup" {
-			status = warn.Render("◌")
+			status = warn.Render("?")
 		}
 		name := sk.Name
 		if sk.Publisher != "" {
@@ -1422,9 +1426,9 @@ func (m ToolStatusModel) viewMCP() string {
 		if srv.Type == "remote" {
 			typeLabel = toolStatusText(m.lang, "mcpRemote")
 		}
-		status := ok.Render("●")
+		status := ok.Render("*")
 		if srv.Status == "stopped" {
-			status = dim.Render("○")
+			status = dim.Render("-")
 		}
 		line := fmt.Sprintf("  %s [%s] %s %s",
 			status,

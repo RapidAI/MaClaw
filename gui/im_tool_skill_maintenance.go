@@ -13,6 +13,34 @@ import (
 
 const skillMaintenancePlanBoundary = "read-only skill maintenance plan; no skill was modified, archived, merged, deleted, installed, or executed"
 
+func (h *IMMessageHandler) toolSkillMaintenanceDrafts(_ map[string]interface{}) string {
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return "Skill Executor 未初始化"
+	}
+	exec.mu.RLock()
+	skills := exec.loadSkills()
+	exec.mu.RUnlock()
+	drafts := cskill.CollectMaintenanceReviewDrafts(skills, cskill.SkillMaintenancePlanOptions{
+		Now:        time.Now(),
+		MaxActions: 40,
+	})
+	payload := map[string]interface{}{
+		"ok":            true,
+		"non_executing": true,
+		"boundary":      "read-only maintenance review drafts; no skill was modified",
+		"drafts":        drafts,
+		"patch_count":   len(drafts.PatchDrafts),
+		"merge_count":   len(drafts.MergeDrafts),
+		"queued_repair": len(drafts.QueuedRepair),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("收集维护草案失败: %v", err)
+	}
+	return string(data)
+}
+
 func (h *IMMessageHandler) toolSkillMaintenancePlan(args map[string]interface{}) string {
 	exec := h.getSkillExecutor()
 	if exec == nil {

@@ -20,6 +20,23 @@ void main() {
     expect(prepared, contains('结论'));
   });
 
+  test('prepareChatBodyForDisplay strips line-leading pictographs only', () {
+    expect(prepareChatBodyForDisplay('\u{1F680} Done.'), 'Done.');
+    expect(prepareChatBodyForDisplay('### \u{1F3AF} Goals'), '### Goals');
+    expect(prepareChatBodyForDisplay('- \u{1F4CC} note'), '- note');
+    expect(prepareChatBodyForDisplay('Score \u2B50\u2B50 high'), 'Score \u2B50\u2B50 high');
+    expect(
+      prepareChatBodyForDisplay('```\n\u{1F680} keep\n```'),
+      '```\n\u{1F680} keep\n```',
+    );
+  });
+
+  test('prepareAssistantMarkdown strips leading pictographs', () {
+    final prepared = prepareAssistantMarkdown('\u{1F680} 部署完成');
+    expect(prepared, '部署完成');
+    expect(prepared, isNot(contains('\u{1F680}')));
+  });
+
   testWidgets('AssistantMarkdownBody renders table and heading text',
       (tester) async {
     await tester.pumpWidget(

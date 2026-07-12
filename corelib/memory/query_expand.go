@@ -193,7 +193,7 @@ func ExpandQuery(userMessage string) ExpandResult {
 // window n-gram fragments.
 //
 // Design principle: every token produced must be a meaningful word or phrase
-// that a human would recognize as a concept. "北京" ✓, "京天" ✗.
+// that a human would recognize as a concept. "北京" OK, "京天" ERR.
 func tokenizeForTagMatch(msg string) []string {
 	seen := make(map[string]bool)
 	var tokens []string

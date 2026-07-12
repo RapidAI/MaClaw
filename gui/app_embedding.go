@@ -17,7 +17,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const embeddingModelFilename = "embeddinggemma-300M-Q8_0.gguf"
@@ -442,7 +441,7 @@ func (a *App) emitDownloadProgressNamed(eventName string, pct int, downloaded, t
 	if a.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(a.ctx, eventName, map[string]interface{}{
+	a.emitEvent(eventName, map[string]interface{}{
 		"percent":    pct,
 		"downloaded": downloaded,
 		"total":      total,
@@ -596,7 +595,8 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		a.refreshMemoryEvolutionLLM()
 	}
 
-	// Wire embedder into knowledge auto-recall store (enables semantic search).
+	// Wire embedder into knowledge auto-recall store (enables semantic hybrid Search).
+	// openKnowledgeStore also attaches via attachKnowledgeEmbedder for stores created later.
 	knowledgeAutoRecallStoreMu.Lock()
 	if knowledgeAutoRecallStore != nil {
 		knowledgeAutoRecallStore.SetEmbedder(emb)
@@ -654,11 +654,16 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// FuseScores 鈫?GetBatch which synchronously computes and caches embeddings
 	// for all candidate tools, so the first real user message is fast.
 	var handler *IMMessageHandler
-	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+	if a.imHandler != nil {
+		handler = a.imHandler
+	} else if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
 		handler = a.remoteSessions.hubClient.imHandler
 	}
 	if handler != nil {
 		handler.WarmupTools()
+		// Precompute frozen static memory section off the first-message path.
+		// StaticMemorySectionForPrompt can be multi-second on large user_fact stores.
+		go handler.WarmFrozenMemorySnapshot(desktopUserID)
 	}
 
 	a.logMemorySnapshot("activateEmbedderAsync:done")
@@ -811,8 +816,9 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 // app's current LLM config to make a classification request with system + user
 // messages. Used by the UnifiedIntentClassifier's Layer 3.
 //
-// Timeout: 30s. Classification is on the workflow control path, so remote LLM
-// routing jitter should not force a degraded semantic decision.
+// Timeout: 30s for the HTTP/LLM call itself (tree-only Classify can still use
+// DefaultLLMTimeout). Dual-channel fusion only waits DefaultFusionTreeDeadline
+// (5s) before degrading to embedding-only — see corelib/intent.classifyWithFusion.
 func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 	return func(systemPrompt, userText string) (string, error) {
 		cfg := a.GetMaclawLLMConfig()

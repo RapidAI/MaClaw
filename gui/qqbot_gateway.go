@@ -458,7 +458,7 @@ func (m *qqBotGatewayManager) sendAgentResponse(gw *qqbot.Gateway, openID string
 	if resp.Error != "" && resp.Text == "" {
 		_ = gw.SendText(ctx, qqbot.OutgoingText{
 			OpenID: openID,
-			Text:   "❌ " + textutil.StripMarkdown(resp.Error),
+			Text:   "" + textutil.StripMarkdown(resp.Error),
 		})
 	}
 

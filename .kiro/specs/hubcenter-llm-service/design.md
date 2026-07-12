@@ -176,10 +176,10 @@ type TenantLLMAuthorization struct {
 | | Hub Grant | HubCenter Authorization |
 |---|---|---|
 | 绑定对象 | 用户 (email) | Hub 租户 (hub_id + tenant_id) |
-| 服务组 | ✅ 绑定 | ✅ 绑定 |
-| Credits | ✅ | ✅ |
-| 有效期 | ✅ | ✅ |
-| Period limits (5h/daily/weekly/monthly) | ✅ | ❌ 不需要 |
+| 服务组 | 绑定 | 绑定 |
+| Credits | | |
+| 有效期 | | |
+| Period limits (5h/daily/weekly/monthly) | | 不需要 |
 | Source | card/admin_grant | card/admin_grant |
 
 ### 3.4 Card Store（动态卡型）
@@ -371,7 +371,7 @@ func IsBuiltinServiceGroup(id string) bool {
 | 租户状态 | 可见的服务组 | 可添加 Provider | 可创建服务组 |
 |----------|-------------|-----------------|-------------|
 | 未获得"算力接入"授权 | 只有 MaClaw 官方服务组 | 按钮可见但不可用（提示联系 MaClaw 官方获取授权） | 按钮可见但不可用（同上提示） |
-| 已获得"算力接入"授权 | MaClaw 官方 + 自建服务组 | ✅ | ✅ |
+| 已获得"算力接入"授权 | MaClaw 官方 + 自建服务组 | | |
 
 **未授权时的 UI 行为**：
 - "添加 LLM 服务商"按钮始终可见（让管理员知道此能力存在）

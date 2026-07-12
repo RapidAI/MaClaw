@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent } from 'react';
 import { safeAvatarDataURL } from '../ai/virtualEmployeeAvatar';
+import { IconMessage } from '../ai/WorkbenchIcons';
 import { MAX_USER_FAVORITES } from '../settings/favoriteEmployees';
 
 export interface FavoriteEmployeeSlot {
@@ -466,7 +467,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>💬</span>
+                        <span aria-hidden="true" style={{ ...menuIconStyle, display: "inline-flex" }}><IconMessage size={14} /></span>
                         {text.startChat}
                     </button>
 
@@ -712,7 +713,21 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             <div style={infoRowStyle}>
                                 <span style={infoLabelStyle}>{text.infoStatus}</span>
                                 <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)', fontWeight: 600 }}>
-                                    ● {viewInfoSlot.online ? text.infoOnline : text.infoOffline}
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                        <span
+                                            aria-hidden="true"
+                                            style={{
+                                                width: 8,
+                                                height: 8,
+                                                borderRadius: '50%',
+                                                background: viewInfoSlot.online
+                                                    ? 'var(--theme-success, #4f7f6f)'
+                                                    : 'var(--theme-text-muted, #64748b)',
+                                                flexShrink: 0,
+                                            }}
+                                        />
+                                        {viewInfoSlot.online ? text.infoOnline : text.infoOffline}
+                                    </span>
                                 </span>
                             </div>
 

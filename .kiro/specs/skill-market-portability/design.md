@@ -83,11 +83,11 @@ sequenceDiagram
     Upload->>V: ValidateSkillPortability(tmpDir)
     V-->>Upload: PortabilityReport
     alt report has errors
-        Upload-->>User: ❌ Blocked + suggest auto_fix
+        Upload-->>User: Blocked + suggest auto_fix
     else warnings/info only
         Upload->>Market: Submit zip
         Market-->>Upload: submissionID
-        Upload-->>User: ✅ Uploaded (with warnings)
+        Upload-->>User: Uploaded (with warnings)
     end
 ```
 
@@ -248,7 +248,7 @@ For SKILL.md files, the fixer performs string replacement on the raw markdown co
 package skill
 
 // FormatPortabilityReport returns a human-readable text summary of the report
-// with severity indicators (❌ error, ⚠️ warning, ℹ️ info) and fix suggestions.
+// with severity indicators (error, warning, ℹ️ info) and fix suggestions.
 func FormatPortabilityReport(report *PortabilityReport) string
 
 // FormatPortabilityChanges returns a human-readable summary of auto-fix changes.
@@ -258,21 +258,21 @@ func FormatPortabilityChanges(changes []PortabilityChange) string
 The formatter produces output like:
 
 ```
-📋 Portability Report: my-skill
+Portability Report: my-skill
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-❌ [hardcoded_path] skill.yaml: Command contains absolute path "/home/user/scripts/run.py"
-   💡 Use {baseDir}/scripts/run.py instead
+[hardcoded_path] skill.yaml: Command contains absolute path "/home/user/scripts/run.py"
+   Use {baseDir}/scripts/run.py instead
 
-⚠️ [missing_platforms] skill.yaml: No platforms declared
-   💡 Add platforms: ["universal"] or specify target platforms
+[missing_platforms] skill.yaml: No platforms declared
+   Add platforms: ["universal"] or specify target platforms
 
 ℹ️ [platform_compat] skill.yaml: Command uses python3, which may not be available on Windows
-   💡 Consider using python3/python conditional or document the requirement
+   Consider using python3/python conditional or document the requirement
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Summary: 1 error, 1 warning, 1 info
-Market Ready: ❌ No (fix errors before uploading)
+Market Ready: No (fix errors before uploading)
 ```
 
 ### 5. manage_skill Validate Action
@@ -318,7 +318,7 @@ func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
         return "", fmt.Errorf("portability validation failed: %w", err)
     }
     if report.Summary.Errors > 0 {
-        return "", fmt.Errorf("upload blocked: %d portability error(s) found.\n%s\n\n💡 Run manage_skill(action=\"validate\", name=\"%s\", auto_fix=true) to attempt automatic fixes",
+        return "", fmt.Errorf("upload blocked: %d portability error(s) found.\n%s\n\nRun manage_skill(action=\"validate\", name=\"%s\", auto_fix=true) to attempt automatic fixes",
             report.Summary.Errors, skill.FormatPortabilityReport(report), skillName)
     }
     
@@ -522,7 +522,7 @@ Each property from the Correctness Properties section maps to a single property-
 | `TestValidateAction_AutoFixFlow` | Verifies validate → fix → validate flow via tool action |
 | `TestUploadGate_BlocksOnErrors` | Verifies upload is blocked with error-severity issues |
 | `TestUploadGate_PassesWithWarnings` | Verifies upload proceeds with warning-only issues |
-| `TestFormatReport_SeverityIndicators` | Verifies ❌/⚠️/ℹ️ in formatted output |
+| `TestFormatReport_SeverityIndicators` | Verifies //ℹ️ in formatted output |
 
 ### Integration Tests
 

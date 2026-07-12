@@ -529,7 +529,7 @@ func CheckRunnerRequirements(entry *corelib.NLSkillEntry, extraEnv map[string]st
 
 // CheckRunnerRequirementsWithProgress validates requirements and attempts auto-fix
 // with progress reporting. The progress callback receives messages like
-// "📦 正在安装 Python 包 pdfplumber..." during fix operations.
+// "正在安装 Python 包 pdfplumber..." during fix operations.
 func CheckRunnerRequirementsWithProgress(entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string, progress FixProgressCallback) []Violation {
 	return CheckRunnerRequirementsWithProgressWithDataDir("", entry, extraEnv, runner, progress)
 }
@@ -607,7 +607,7 @@ func PreparePipelineRunnerExecutionWithDataDir(dataDir string, entry *corelib.NL
 	entry.Params = params
 	ApplyRunInputInference(entry, vars, runArgs)
 	if missing := MissingRunRequiredArgs(entry.RequiredArgs, params, vars); len(missing) > 0 {
-		return nil, fmt.Errorf("%s", FormatMissingRequiredArgsMessage(entry.Name, missing, entry.Description))
+		return nil, fmt.Errorf("%s", FormatMissingRequiredArgsMessageWithParams(entry.Name, missing, entry.Description, enrichParamsForDiagnostics(entry, params)))
 	}
 	checkEntry := *entry
 	checkEntry.Params = params
@@ -640,7 +640,7 @@ func PrepareRunnerExecution(entry *corelib.NLSkillEntry, vars map[string]string,
 // PrepareRunnerExecutionWithProgress is like PrepareRunnerExecution but reports
 // dependency installation progress via callback. When a Fixer needs to install
 // packages (pip/npm), the progress callback receives messages like
-// "📦 正在安装 Python 包 pdfplumber..." so the caller can display real-time
+// "正在安装 Python 包 pdfplumber..." so the caller can display real-time
 // status to the user.
 func PrepareRunnerExecutionWithProgress(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}, extraEnv map[string]string, runner string, progress FixProgressCallback) (*RunnerExecutionPreparation, error) {
 	return PrepareRunnerExecutionWithProgressWithDataDir("", entry, vars, runArgs, extraEnv, runner, progress)
@@ -674,10 +674,10 @@ func PrepareRunnerExecutionWithProgressWithDataDir(dataDir string, entry *coreli
 	precheckParams := CompleteParamsForRunner(originalParams, precheckSteps, precheckRequiredArgs)
 
 	if missing := MissingRunRequiredArgs(precheckRequiredArgs, precheckParams, vars); len(missing) > 0 {
-		return nil, fmt.Errorf("%s", FormatMissingRequiredArgsMessage(entry.Name, missing, entry.Description))
+		return nil, fmt.Errorf("%s", FormatMissingRequiredArgsMessageWithParams(entry.Name, missing, entry.Description, enrichParamsForDiagnostics(entry, precheckParams)))
 	}
 	if implicit := DetectImplicitRunRequiredArgs(precheckSteps, vars, precheckRequiredArgs, precheckParams); len(implicit) > 0 {
-		return nil, fmt.Errorf("%s", FormatImplicitRequiredArgsMessage(entry.Name, implicit, entry.Description))
+		return nil, fmt.Errorf("%s", FormatImplicitRequiredArgsMessageWithParams(entry.Name, implicit, entry.Description, enrichParamsForDiagnostics(entry, precheckParams)))
 	}
 
 	resolvedPrecheckSteps, err := ResolveStepsForRunnerPrecheck(precheckSteps, vars, entry.SkillDir, precheckParams)

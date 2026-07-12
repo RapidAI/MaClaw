@@ -161,7 +161,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 				if mgr.CheckShellResponsive(existing.ID) {
 					h.registerSSHBackgroundLoop(existing, cfg)
 					summary := existing.GetSummary()
-					result := fmt.Sprintf("♻️ 复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
+					result := fmt.Sprintf("复用已有 SSH 会话\n会话 ID: %s\n主机: %s\n状态: %s",
 						existing.ID, summary.HostID, summary.Status)
 					if summary.LastOutput != "" {
 						result += "\n\n最近输出: " + summary.LastOutput
@@ -182,7 +182,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 						h.bgTaskMgr.RediscoverOrphanTasksForOwner(existing.ID, ownerID)
 					}
 					preview := strings.Join(existing.PreviewTail(10), "\n")
-					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
+					result := fmt.Sprintf("复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
 						existing.ID, targetID)
 					if preview != "" {
 						result += "\n\n--- 重连后输出 ---\n" + preview
@@ -239,10 +239,10 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 
 	preview := strings.Join(session.PreviewTail(20), "\n")
 
-	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: running",
+	result := fmt.Sprintf("SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: running",
 		session.ID, cfg.SSHHostID())
 	if activeTasks > 0 {
-		result += fmt.Sprintf("\n\n⚠️ 该服务器有 %d 个后台任务仍在运行，请先用 list_tasks 查看再决定是否需要新建任务。", activeTasks)
+		result += fmt.Sprintf("\n\n该服务器有 %d 个后台任务仍在运行，请先用 list_tasks 查看再决定是否需要新建任务。", activeTasks)
 	}
 	if preview != "" {
 		result += "\n\n--- 初始输出 ---\n" + preview
@@ -307,9 +307,9 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 
 	if sessionDead {
 		if err := mgr.ReconnectByID(sessionID); err != nil {
-			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v\n\n💡 建议使用 ssh(action=close, session_id=%s) 关闭此会话，然后重新 connect", err, sessionID)
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v\n\n建议使用 ssh(action=close, session_id=%s) 关闭此会话，然后重新 connect", err, sessionID)
 		}
-		reconnectNote = "⚠️ 连接已断开并自动重连\n"
+		reconnectNote = "连接已断开并自动重连\n"
 		time.Sleep(2 * time.Second)
 	}
 
@@ -326,7 +326,7 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 			return fmt.Sprintf("发送命令失败: %v", err)
 		}
 		if reconnected {
-			reconnectNote = "⚠️ 连接已断开并自动重连\n"
+			reconnectNote = "连接已断开并自动重连\n"
 			time.Sleep(2 * time.Second)
 			linesBefore = session.LineCount()
 		}
@@ -362,9 +362,9 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 				// Shell 无响应，自动关闭并提示重建
 				mgr.RemoveSession(sessionID)
 				h.completeSSHBackgroundLoop(sessionID)
-				return fmt.Sprintf("⚠️ SSH 会话 %s 连续 %d 次执行无响应，shell 可能被挂起的进程锁住。\n"+
+				return fmt.Sprintf("SSH 会话 %s 连续 %d 次执行无响应，shell 可能被挂起的进程锁住。\n"+
 					"已自动关闭此会话。请使用 ssh(action=connect, ...) 重新建立连接。\n\n"+
-					"💡 如果远程服务器上有挂起的进程（如 sqlite3），重连后可用 `kill` 命令清理",
+					"如果远程服务器上有挂起的进程（如 sqlite3），重连后可用 `kill` 命令清理",
 					sessionID, failCount)
 			}
 			// Ctrl+C 恢复了 shell，重置计数
@@ -435,23 +435,23 @@ func (h *IMMessageHandler) sshExecBackground(args map[string]interface{}) string
 
 	if task.Reused {
 		elapsed := time.Since(task.StartedAt).Round(time.Second)
-		return fmt.Sprintf("♻️ 检测到相同命令的任务已在运行，复用已有任务（避免重复创建）\n"+
+		return fmt.Sprintf("检测到相同命令的任务已在运行，复用已有任务（避免重复创建）\n"+
 			"任务 ID: %s\n"+
 			"命令: %s\n"+
 			"PID: %s\n"+
 			"已运行: %s\n\n"+
-			"💡 使用 check_task (task_id=%s) 查看进度",
+			"使用 check_task (task_id=%s) 查看进度",
 			task.TaskID, task.Command, task.PID, elapsed, task.TaskID)
 	}
 
-	return fmt.Sprintf("✅ 后台任务已提交\n"+
+	return fmt.Sprintf("后台任务已提交\n"+
 		"任务 ID: %s\n"+
 		"命令: %s\n"+
 		"日志文件: %s\n"+
 		"PID: %s\n"+
 		"状态: running\n\n"+
-		"💡 使用 check_task (task_id=%s) 查看进度\n"+
-		"💡 SSH 断连不影响任务执行，重连后可继续查看",
+		"使用 check_task (task_id=%s) 查看进度\n"+
+		"SSH 断连不影响任务执行，重连后可继续查看",
 		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID)
 }
 
@@ -801,7 +801,7 @@ func (h *IMMessageHandler) sshKillTask(args map[string]interface{}) string {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
 	h.emitAppEvent("background-loops-changed")
-	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+	return fmt.Sprintf("后台任务 %s 已终止", taskID)
 }
 
 // sshSudoPrepare 预先获取 sudo token，使后续后台任务可以使用 sudo。
@@ -817,9 +817,9 @@ func (h *IMMessageHandler) sshSudoPrepare(args map[string]interface{}) string {
 
 	ok, msg := h.bgTaskMgr.EnsureSudoToken(sessionID)
 	if ok {
-		return fmt.Sprintf("✅ %s", msg)
+		return fmt.Sprintf("%s", msg)
 	}
-	return fmt.Sprintf("⚠️ %s", msg)
+	return fmt.Sprintf("%s", msg)
 }
 
 // sshUpload uploads a local file/directory to the remote server via SFTP.
@@ -835,7 +835,7 @@ func (h *IMMessageHandler) sshUpload(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("上传失败: %v", err)
 	}
-	return fmt.Sprintf("✅ 上传完成: %s → %s\n%s", localPath, remotePath, result)
+	return fmt.Sprintf("上传完成: %s → %s\n%s", localPath, remotePath, result)
 }
 
 // sshDownload downloads a remote file/directory to local via SFTP.
@@ -851,7 +851,7 @@ func (h *IMMessageHandler) sshDownload(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("下载失败: %v", err)
 	}
-	return fmt.Sprintf("✅ 下载完成: %s → %s\n%s", remotePath, localPath, result)
+	return fmt.Sprintf("下载完成: %s → %s\n%s", remotePath, localPath, result)
 }
 
 func (h *IMMessageHandler) sshList() string {
@@ -902,7 +902,7 @@ func (h *IMMessageHandler) sshClose(args map[string]interface{}) string {
 	// Complete the corresponding background loop.
 	h.completeSSHBackgroundLoop(sessionID)
 
-	return fmt.Sprintf("✅ SSH 会话 %s 已关闭", sessionID)
+	return fmt.Sprintf("SSH 会话 %s 已关闭", sessionID)
 }
 
 // sshCloseAll closes all running SSH sessions.
@@ -926,7 +926,7 @@ func (h *IMMessageHandler) sshCloseAll() string {
 		h.sshMgr.RemoveSession(s.ID)
 		h.completeSSHBackgroundLoop(s.ID)
 	}
-	return fmt.Sprintf("✅ 已关闭 %d 个 SSH 会话", len(running))
+	return fmt.Sprintf("已关闭 %d 个 SSH 会话", len(running))
 }
 
 // ---------------------------------------------------------------------------

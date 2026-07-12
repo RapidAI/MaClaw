@@ -39,7 +39,7 @@
   - _Requirements: 4_
 
 - [x] 5. MCPRemoteServerRow 强制下发 UI 保护
-  - `managed === true` 时：隐藏删除按钮，显示 🔒 图标 + "企业下发" 标签
+  - `managed === true` 时：隐藏删除按钮，显示 图标 + "企业下发" 标签
   - `managed === true` 时：编辑按钮保留（用户可配置密钥）
   - `source === "marketplace"` 且 `managed === false` 时：正常显示删除按钮（用户主动安装的可删除）
   - `appTranslations.ts` 新增 `mcpManagedLabel`（EN: "Managed", ZH: "企业下发"）和 `mcpCannotDeleteManaged`
@@ -47,7 +47,7 @@
   - _Requirements: 3_
 
 - [x] 6. 本地 MCP 列表强制下发 UI 保护
-  - `LocalMCPPanel` 中 `managed === true` 的本地 MCP：隐藏删除按钮，显示 🔒 标签
+  - `LocalMCPPanel` 中 `managed === true` 的本地 MCP：隐藏删除按钮，显示 标签
   - 来源为 `"marketplace"` 的本地 MCP 显示来源标签
   - Files: `gui/frontend/src/components/remote/MCPManagementPanel.tsx`
   - _Requirements: 3, 4_

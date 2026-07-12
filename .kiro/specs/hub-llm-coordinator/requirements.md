@@ -119,8 +119,8 @@
 
 1. WHEN Hub_LLM 已配置且用户有多台设备在线时，THE Coordinator SHALL 默认进入"无感智能模式"：所有非命令消息都先经过 Intent_Classifier，由 LLM 决定走单聊、广播还是讨论
 2. THE 无感智能模式下，用户无需执行 `/call`、`/call all`、`/discuss` 等命令即可自然使用所有功能——LLM 意图分类是 primary，命令系统是 fallback
-3. WHEN Intent_Classifier 返回 `discuss` 意图时，THE Coordinator SHALL 自动启动讨论编排，并向用户发送一条简短通知（如"🗣️ 检测到讨论意图，已自动发起多设备讨论"）
-4. WHEN Intent_Classifier 返回 `broadcast` 意图时，THE Coordinator SHALL 自动广播到所有设备，并向用户发送一条简短通知（如"📢 已广播到所有设备"）
+3. WHEN Intent_Classifier 返回 `discuss` 意图时，THE Coordinator SHALL 自动启动讨论编排，并向用户发送一条简短通知（如"检测到讨论意图，已自动发起多设备讨论"）
+4. WHEN Intent_Classifier 返回 `broadcast` 意图时，THE Coordinator SHALL 自动广播到所有设备，并向用户发送一条简短通知（如"已广播到所有设备"）
 5. THE `/call`、`/call all`、`/discuss`、`/stop` 等显式命令 SHALL 继续有效，作为用户手动覆盖智能路由的方式
 6. WHEN Hub_LLM 未配置时，THE 无感智能模式 SHALL 不生效，多设备用户仍需使用 `/call` 命令选择设备（现有行为）
 7. WHEN 用户首次进入无感智能模式时，THE Coordinator SHALL 发送一条欢迎消息，说明当前处于智能模式，可直接发消息，也可使用命令手动控制
@@ -157,7 +157,7 @@
 
 1. THE Admin 页面 SHALL 在设置区域新增"Hub LLM"配置卡片，包含：启用开关、API Base URL 输入框、API Key 输入框（密码模式）、Model Name 输入框
 2. THE 配置卡片 SHALL 提供"测试连接"按钮，点击后调用测试端点并显示结果（成功/失败 + 耗时）
-3. THE 配置卡片 SHALL 显示当前 LLM 状态指示器：🟢 正常 / 🟡 熔断中 / ⚪ 未配置
+3. THE 配置卡片 SHALL 显示当前 LLM 状态指示器：正常 / 熔断中 / ⚪ 未配置
 4. THE 配置变更 SHALL 通过 Admin API 保存，保存成功后页面显示确认提示
 
 ---
@@ -218,7 +218,7 @@
 
 #### 验收标准
 
-1. WHEN 用户的某台设备上线或离线时，THE Hub SHALL 通过 IM 向该用户发送一条简短的状态通知（如"📱 MacBook-Pro 已上线"或"📴 MacBook-Pro 已离线"）
+1. WHEN 用户的某台设备上线或离线时，THE Hub SHALL 通过 IM 向该用户发送一条简短的状态通知（如"MacBook-Pro 已上线"或"MacBook-Pro 已离线"）
 2. THE 状态通知 SHALL 仅在用户有活跃的 IM 会话时发送（即该用户在某个 IM 平台上有过消息交互），避免打扰未使用 IM 的用户
 3. WHEN 用户当前选定的设备离线时，THE 通知 SHALL 额外提示用户切换设备或等待重连
 4. THE 状态通知 SHALL 有防抖机制：同一设备在 30 秒内的多次上下线只发送最终状态，避免网络抖动导致消息轰炸

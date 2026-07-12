@@ -4,6 +4,7 @@ import './style.css'
 import App from './App'
 import { DialogProvider } from './components/CustomDialog'
 import { ToastProvider } from './components/Toast'
+import { KnowledgeImportProvider } from './components/settings/KnowledgeImportContext'
 
 function getStartupLang() {
     const lang = document.documentElement.lang || navigator.language || 'en'
@@ -71,9 +72,11 @@ try {
     appRoot.render(
         <React.StrictMode>
             <ToastProvider>
-                <DialogProvider>
-                    <App/>
-                </DialogProvider>
+                <KnowledgeImportProvider>
+                    <DialogProvider>
+                        <App/>
+                    </DialogProvider>
+                </KnowledgeImportProvider>
             </ToastProvider>
         </React.StrictMode>
     )

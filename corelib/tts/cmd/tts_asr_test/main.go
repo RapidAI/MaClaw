@@ -123,7 +123,7 @@ func main() {
 			}
 			match := ""
 			if text == tt.text || text == tt.text+"." {
-				match = " ✅"
+				match = " "
 			}
 			fmt.Printf("  %-25s → %q%s\n", tt.text, text, match)
 		}

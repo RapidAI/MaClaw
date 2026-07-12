@@ -169,10 +169,8 @@ func downloadClawHubSkill(ctx context.Context, slug string) (*corelib.NLSkillEnt
 }
 
 // downloadSkillJSON fetches a skill definition from the given URL and
-// converts it to an NLSkillEntry ready for local registration.
-// Handles both step-based skills (steps array) and file-based skills
-// (files map with SKILL.md in base64). All bundled files are extracted
-// to ~/.maclaw/data/skills/<name>/.
+// converts it to an NLSkillEntry ready for local registration via the shared
+// corelib materialisation path (steps / files / agent_skill_md).
 func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEntry, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -197,78 +195,16 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		return nil, err
 	}
 
-	var full struct {
-		ID          string            `json:"id"`
-		SkillID     string            `json:"skill_id"`
-		SemVer      string            `json:"semver"`
-		Name        string            `json:"name"`
-		Description string            `json:"description"`
-		Triggers    []string          `json:"triggers"`
-		TrustLevel  string            `json:"trust_level"`
-		Version     string            `json:"version"`
-		Steps       []json.RawMessage `json:"steps"`
-		Files       map[string]string `json:"files"` // path → base64 content
+	var peek struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(data, &full); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-
-	var steps []corelib.NLSkillStep
-
-	if len(full.Steps) > 0 {
-		for _, raw := range full.Steps {
-			var s struct {
-				Action  string                 `json:"action"`
-				Params  map[string]interface{} `json:"params"`
-				OnError string                 `json:"on_error"`
-			}
-			if err := json.Unmarshal(raw, &s); err == nil && s.Action != "" {
-				steps = append(steps, corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError})
-			}
-		}
-	}
-
-	// Extract all bundled files to ~/.maclaw/data/skills/<name>/.
-	installName := firstNonEmpty(full.Name, full.ID)
-	installSkillDir := ""
-	if len(full.Files) > 0 && installName != "" {
-		if err := extractSkillFiles(installName, full.Files, ""); err != nil {
-			return nil, fmt.Errorf("extract bundled files for skill %q: %w", installName, err)
-		}
-		if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
-			installSkillDir = filepath.Join(skillsRoot, installName)
-		}
-	}
-
-	if len(steps) == 0 {
-		steps = craftToolStepsFromBundledSkillFiles(full.Files, installSkillDir)
-	}
-
-	if len(steps) == 0 {
-		return nil, fmt.Errorf("skill %s has no steps and no SKILL.md", full.Name)
-	}
-
-	// Skills from the configured hub (official store) are treated as "trusted".
-	trustLevel := full.TrustLevel
-	if trustLevel == "" || trustLevel == "community" {
-		trustLevel = "trusted"
-	}
-
-	return &corelib.NLSkillEntry{
-		SkillID:     full.SkillID,
-		Name:        full.Name,
-		Description: full.Description,
-		Triggers:    full.Triggers,
-		Steps:       steps,
-		Status:      "active",
-		CreatedAt:   time.Now().Format(time.RFC3339),
-		Source:      "hub",
-		HubSkillID:  full.ID,
-		HubVersion:  full.Version,
-		Version:     full.SemVer,
-		TrustLevel:  trustLevel,
-		SkillDir:    installSkillDir,
-	}, nil
+	_ = json.Unmarshal(data, &peek)
+	return cskill.ParseSkillHubDownloadJSON(data, cskill.HubDownloadOptions{
+		HubURL:  endpoint,
+		SkillID: firstNonEmpty(peek.ID, peek.Name),
+		Source:  "hub",
+	})
 }
 
 func skillStagingDir(skillDir string) string {
@@ -292,17 +228,6 @@ func skillStagingDir(skillDir string) string {
 		return absDir
 	}
 	return ""
-}
-
-// extractSkillFiles decodes base64-encoded files and writes them to the
-// specified targetDir, preserving subdirectory structure.
-// When targetDir is empty, falls back to ~/.maclaw/data/skills/<skillName>/.
-func extractSkillFiles(skillName string, files map[string]string, targetDir string) error {
-	if err := extractBundledSkillFiles(skillName, files, targetDir); err != nil {
-		return err
-	}
-	log.Printf("[skill-install] extracted %d files for %s", len(files), skillName)
-	return nil
 }
 
 // registerAndExecuteSkill registers a skill locally, runs security review,

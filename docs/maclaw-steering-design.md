@@ -327,7 +327,7 @@ MacLaw 的 context 窗口分配（以默认 128K token 为例）：
 │   ├── 记忆召回:               ~800-1,500 token  (最多 12 条)
 │   ├── 知识技能:               ~2,000 token  (defaultKnowledgeSkillTokenBudget)
 │   ├── 工作流阶段 prompt:       ~500-1,000 token  (活跃工作流时)
-│   ├── ★ Steering 预算:        ~3,000 token  ← 新增
+│   ├── Steering 预算:        ~3,000 token  ← 新增
 │   └── 对话历史:               ~85,000-90,000 token  (剩余全部)
 ```
 
@@ -458,16 +458,14 @@ func (h *IMMessageHandler) extractSteeringRefs(text string) (cleanText string, r
 
 ## 3. 实现计划
 
-### Phase 1: 核心框架 ✅
-
+### Phase 1: 核心框架 
 - `corelib/steering/types.go`：`File`、`Scope`、`InclusionMode`、`ResolveContext`
 - `corelib/steering/budget.go`：Token 预算常量 + 动态缩放 + token 估算
 - `corelib/steering/parser.go`：YAML front-matter 解析 + Markdown body 提取
 - `corelib/steering/store.go`：Store（Load/Resolve/合并/截断/30 秒热加载）
 - `corelib/steering/store_test.go`：13 个单元测试
 
-### Phase 2: 内置默认文件 + System Prompt 注入 ✅
-
+### Phase 2: 内置默认文件 + System Prompt 注入 
 - `corelib/steering/defaults.go`：`EnsureDefaults()` + 3 个内置默认文件
 - `gui/app.go`：`steeringStore` 字段 + 启动初始化
 - `gui/app_steering_init.go`：`initSteeringStore()`
@@ -477,15 +475,13 @@ func (h *IMMessageHandler) extractSteeringRefs(text string) (cleanText string, r
 - `tui/app.go`：`steeringStore` 字段 + `WithSteeringStore` option
 - `tui/app_workflow_init.go`：`initTUISteeringStore()`
 
-### Phase 3: contextMatch + 文件追踪 ✅
-
+### Phase 3: contextMatch + 文件追踪 
 - `corelib/steering/defaults.go`：新增 `ssh-operations.md`（contextMatch 模式）
 - `gui/im_system_prompt_steering.go`：`trackSteeringFile()` / `trackSteeringFileFromArgs()` / `resetSteeringContextFiles()`
 - `gui/im_tool_execution.go`：`executeTool()` 中 hook 文件追踪
 - `gui/im_message_handler.go`：`steeringContextFiles sync.Map` + `/new` 重置
 
-### Phase 4: 集成测试 ✅
-
+### Phase 4: 集成测试 
 - `corelib/steering/integration_test.go`：6 个端到端测试覆盖全部四种模式
 
 ---

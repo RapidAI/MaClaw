@@ -88,13 +88,13 @@ const HeavyChart = lazy(() => import('./HeavyChart'));
 
 **Avoid Layout Thrashing**:
 ```javascript
-// ❌ Bad: Alternating reads and writes (causes reflows)
+// Bad: Alternating reads and writes (causes reflows)
 elements.forEach(el => {
   const height = el.offsetHeight; // Read (forces layout)
   el.style.height = height * 2; // Write
 });
 
-// ✅ Good: Batch reads, then batch writes
+// Good: Batch reads, then batch writes
 const heights = elements.map(el => el.offsetHeight); // All reads
 elements.forEach((el, i) => {
   el.style.height = heights[i] * 2; // All writes
@@ -118,13 +118,13 @@ elements.forEach((el, i) => {
 
 **GPU Acceleration**:
 ```css
-/* ✅ GPU-accelerated (fast) */
+/* GPU-accelerated (fast) */
 .animated {
   transform: translateX(100px);
   opacity: 0.5;
 }
 
-/* ❌ CPU-bound (slow) */
+/* CPU-bound (slow) */
 .animated {
   left: 100px;
   width: 300px;

@@ -42,7 +42,7 @@ func TestBroadcastFormatter_WithErrors(t *testing.T) {
 		{Name: "iMac", Err: fmt.Errorf("timeout")},
 	}
 	result := FormatBroadcastReply(replies)
-	if !strings.Contains(result, "⚠️ 异常设备") {
+	if !strings.Contains(result, "异常设备") {
 		t.Fatal("expected error section")
 	}
 	if !strings.Contains(result, "成功: 1") || !strings.Contains(result, "失败: 1") {

@@ -10,17 +10,145 @@ function appendQuery(path: string, params: Record<string, string | undefined>) {
 export interface HubCreditGrantLike {
     status?: unknown;
     Status?: unknown;
+    effective?: unknown;
+    Effective?: unknown;
+    source?: unknown;
+    Source?: unknown;
     credits_total?: unknown;
     CreditsTotal?: unknown;
+    credits_used?: unknown;
+    CreditsUsed?: unknown;
     credits_remaining?: unknown;
     CreditsRemaining?: unknown;
     credits_available?: unknown;
     CreditsAvailable?: unknown;
 }
 
+export type HubCreditTotalsInput = {
+    active?: unknown;
+    Active?: unknown;
+    credits_total?: unknown;
+    CreditsTotal?: unknown;
+    credits_used?: unknown;
+    CreditsUsed?: unknown;
+    credits_remaining?: unknown;
+    CreditsRemaining?: unknown;
+    credits_available?: unknown;
+    CreditsAvailable?: unknown;
+    grants?: HubCreditGrantLike[] | null;
+};
+
+export type HubCreditTotals = {
+    total: number;
+    used: number;
+    remaining: number;
+    available: number;
+};
+
 export function numeric(value: unknown): number {
     const parsed = Number(value ?? 0);
     return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function grantStatusOf(grant: HubCreditGrantLike): string {
+    return String(grant.status ?? grant.Status ?? '').trim().toLowerCase();
+}
+
+function grantMeteredTotal(grant: HubCreditGrantLike): number {
+    const total = numeric(grant.credits_total ?? grant.CreditsTotal);
+    if (total > 0) return total;
+    return Math.max(
+        numeric(grant.credits_available ?? grant.CreditsAvailable),
+        numeric(grant.credits_remaining ?? grant.CreditsRemaining),
+    );
+}
+
+function grantOwnedRemaining(grant: HubCreditGrantLike): number {
+    const left = numeric(grant.credits_remaining ?? grant.CreditsRemaining);
+    if (left > 0) return left;
+    return Math.max(
+        numeric(grant.credits_total ?? grant.CreditsTotal),
+        numeric(grant.credits_available ?? grant.CreditsAvailable),
+    );
+}
+
+/**
+ * Shared Total / Used / Remaining math for sidebar + service redeem UI.
+ *
+ * Semantics (aligned with Hub ResolveStatus accounting):
+ * - Exclude only expired grants from wallet totals
+ * - Queued grants raise Total and Remaining (owned but not started)
+ * - Exhausted grants raise Total and Used (spent history), Remaining 0
+ * - Never shrink Remaining to a period window; only fill from Available
+ *   when Remaining is empty
+ * - Prefer Total ≈ Used + Remaining after point-card purchases
+ */
+export function summarizeHubCreditTotals(input?: HubCreditTotalsInput | null): HubCreditTotals {
+    const grants = (input?.grants || []).filter((grant) => {
+        const source = String(grant.source ?? grant.Source ?? '').trim().toLowerCase();
+        return source !== 'hubcenter_compute';
+    });
+    const active = Boolean(input?.active ?? input?.Active);
+
+    let grantTotal = 0;
+    let used = 0;
+    let grantRemaining = 0;
+    let grantAvailable = 0;
+    let visibleGrantTotal = 0;
+    let queuedRemaining = 0;
+
+    for (const grant of grants) {
+        const status = grantStatusOf(grant);
+        if (status === 'expired') continue;
+
+        visibleGrantTotal += grantMeteredTotal(grant);
+
+        if (status === 'queued') {
+            // Owned but not started: count toward remaining, not used.
+            queuedRemaining += grantOwnedRemaining(grant);
+            continue;
+        }
+
+        // active | period_limited | exhausted | unknown — same as Hub status
+        // totals (effective flag is routing-only, not wallet accounting).
+        grantTotal += numeric(grant.credits_total ?? grant.CreditsTotal);
+        used += numeric(grant.credits_used ?? grant.CreditsUsed);
+        grantRemaining += numeric(grant.credits_remaining ?? grant.CreditsRemaining);
+        grantAvailable += numeric(grant.credits_available ?? grant.CreditsAvailable);
+    }
+
+    const effectiveVisibleTotal = Math.max(grantTotal, visibleGrantTotal);
+    let total = Math.max(
+        numeric(input?.credits_total ?? input?.CreditsTotal ?? effectiveVisibleTotal),
+        effectiveVisibleTotal,
+    );
+    // Prefer backend used when present (includes all spent grants); fall back to sum.
+    const backendUsed = input?.credits_used ?? input?.CreditsUsed;
+    used = backendUsed !== undefined && backendUsed !== null && String(backendUsed).trim() !== ''
+        ? numeric(backendUsed)
+        : used;
+
+    const statusRemaining = numeric(input?.credits_remaining ?? input?.CreditsRemaining);
+    let remaining = 0;
+    if (grantRemaining > 0 || queuedRemaining > 0) {
+        remaining = grantRemaining + queuedRemaining;
+    } else if (statusRemaining > 0) {
+        remaining = statusRemaining;
+    }
+
+    const statusAvailable = numeric(input?.credits_available ?? input?.CreditsAvailable);
+    const available = statusAvailable > 0 ? statusAvailable : grantAvailable;
+    const onlyExpired = !active
+        && grants.length > 0
+        && grants.every((grant) => grantStatusOf(grant) === 'expired');
+    if (onlyExpired) {
+        return { total, used, remaining: Math.max(0, available), available };
+    }
+    // Fill from available only when remaining is empty — never shrink lifetime
+    // remaining to the current period window.
+    if (remaining <= 0 && available > 0) remaining = available;
+    if (remaining > 0 && total < used + remaining) total = used + remaining;
+    return { total, used, remaining, available };
 }
 
 export function latestExpiry(values: string[]): string {
@@ -49,12 +177,18 @@ export function grantCanContributeExpiry(grant: HubCreditGrantLike): boolean {
 }
 
 function accountFromIdentity(email?: string, userID?: string, mobile?: string) {
-    const id = String(userID || '').trim();
-    if (id) return id;
+    // Prefer human account identities for card-store / credits pages. User IDs
+    // are still passed separately as user_id; using them as "account" breaks
+    // buyer identity validation (email or phone: only).
     const mail = String(email || '').trim();
     if (mail) return mail;
     const phone = String(mobile || '').trim();
-    return phone ? `phone:${phone}` : '';
+    if (phone) {
+        const digits = phone.replace(/\D/g, '');
+        if (digits) return `phone:${digits}`;
+        if (phone.toLowerCase().startsWith('phone:')) return phone;
+    }
+    return String(userID || '').trim();
 }
 
 export function buildHubCreditsURL(hubURL?: string, viewerToken?: string, tenantID?: string, email?: string, userID?: string, mobile?: string) {

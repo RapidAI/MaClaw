@@ -196,7 +196,7 @@ export const phaseLabels: Record<string, string> = {
     tech_design: "技术设计",
     task_breakdown: "任务分解",
     implementation: "编码执行",
-    review: "代码审查",
+    // review label is defined once below with the generated artifact name "验收确认"
     // Maintenance workflow (lightweight coding)
     maint_analysis: "影响分析与方案",
     maint_execution: "执行改造",
@@ -376,7 +376,8 @@ export const phaseLabels: Record<string, string> = {
     gaokao_data_search: "录取数据检索与证据整理",
     gaokao_candidate_ranking: "候选院校专业排序",
     gaokao_final_plan: "填报参考资料与建议",
-    verification: "验收确认",
+    verification: "验收确认", // legacy id; normalizeWorkflowPhaseID maps to review
+    review: "验收确认",
     test_cases: "用例设计",
     outline: "内容大纲",
     // Legacy aliases (canonical ids -> generated names, kept consistent with the above)
@@ -413,7 +414,7 @@ function workflowPhaseLabel(lang: string | undefined, phaseID: string, phaseLabe
 }
 
 export const workflowPhaseOrders: Record<string, string[]> = {
-    coding: ["requirements", "design", "tasks", "implementation", "verification"],
+    coding: ["requirements", "design", "tasks", "implementation", "review"],
     testing: ["test_strategy", "test_cases", "test_environment", "test_execution", "defect_report"],
     presentation_design: ["audience_goal", "outline", "slide_scripting", "ppt_generation"],
     paper_reproduction: ["paper_analysis", "reproduction_plan", "env_and_data", "baseline_reproduction", "iterative_improvement", "experiment_report"],
@@ -437,12 +438,14 @@ export interface ProgressPhase {
 
 /** Per-id label fallback used only in degraded mode: the hardcoded map, then the id itself. */
 function fallbackPhaseLabel(phaseID: string): string {
-    return phaseLabels[phaseID] || phaseID;
+    const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
+    return phaseLabels[phaseID] || phaseLabels[canonical] || phaseID;
 }
 
 /** Per-id document-expectation fallback used only in degraded mode. */
 function fallbackPhaseExpectsDocument(phaseID: string): boolean {
-    return !fallbackNonDocumentPhaseIDs.has(phaseID);
+    const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
+    return !fallbackNonDocumentPhaseIDs.has(canonical);
 }
 
 /**

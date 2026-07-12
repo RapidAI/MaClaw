@@ -19,7 +19,7 @@
 
 ## Task 4: Humanize API error messages in failure results
 
-- [x] 4.1 In `buildCraftFailureResult`, when `attempt.VerificationMessage` contains raw JSON API error patterns (e.g., `"code":"1234"` or `"type":"error"`), replace the raw JSON with a human-readable summary (e.g., "API 服务端临时故障（code:1234），请稍后重试") in the `⚠️` message line.
+- [x] 4.1 In `buildCraftFailureResult`, when `attempt.VerificationMessage` contains raw JSON API error patterns (e.g., `"code":"1234"` or `"type":"error"`), replace the raw JSON with a human-readable summary (e.g., "API 服务端临时故障（code:1234），请稍后重试") in the `` message line.
 
 ## Task 5: Write tests for retry predicate extension
 
@@ -31,7 +31,7 @@
 
 - [x] 6.1 Write a unit test that calls `buildCraftFailureResult` with provider info (name="智谱编程", url="https://open.bigmodel.cn/api/anthropic") and a script execution failure, and asserts the output contains a `provider:` line with both name and URL.
 - [x] 6.2 Write a unit test that calls `buildCraftFailureResult` without provider info (empty strings) and asserts the output does NOT contain a `provider:` line — backward compatibility preserved.
-- [x] 6.3 Write a unit test that calls `buildCraftFailureResult` with a code:1234 API error in `VerificationMessage` and asserts the `⚠️` line contains a human-readable message, not raw JSON.
+- [x] 6.3 Write a unit test that calls `buildCraftFailureResult` with a code:1234 API error in `VerificationMessage` and asserts the `` line contains a human-readable message, not raw JSON.
 
 ## Task 7: Verify compilation and existing tests
 

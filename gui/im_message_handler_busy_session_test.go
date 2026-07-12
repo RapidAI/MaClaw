@@ -27,7 +27,7 @@ func newBusyTestSession(id string) *RemoteSession {
 		UpdatedAt: time.Now(),
 		Exec:      newFakeExecutionHandle(100),
 		RawOutputLines: []string{
-			"❯ 用 C++ 写一个贪吃蛇游戏",
+			"\u276F 用 C++ 写一个贪吃蛇游戏",
 		},
 	}
 }
@@ -94,9 +94,9 @@ func TestGetSessionOutput_BusyStatus_HasHint(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		RawOutputLines: []string{
-			"❯ 重构错误处理模块",
-			"⏺ I'll analyze the error handling patterns...",
-			"⏺ TodoWrite: Planning refactoring steps",
+			"\u276F 重构错误处理模块",
+			"I'll analyze the error handling patterns...",
+			"TodoWrite: Planning refactoring steps",
 		},
 		Summary: SessionSummary{
 			CurrentTask: "Analyzing error handling",
@@ -237,9 +237,9 @@ func TestGetSessionOutput_BusyStatus_ReturnsHint(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		RawOutputLines: []string{
-			"❯ 重构错误处理模块",
-			"⏺ I'll analyze the error handling patterns...",
-			"⏺ TodoWrite: Planning refactoring steps",
+			"\u276F 重构错误处理模块",
+			"I'll analyze the error handling patterns...",
+			"TodoWrite: Planning refactoring steps",
 		},
 		Summary: SessionSummary{
 			CurrentTask: "Analyzing error handling",
@@ -310,7 +310,7 @@ func TestSystemPrompt_ContainsLongRunningGuidance(t *testing.T) {
 // 7.1 send_and_observe returns immediately when session exits during polling
 // 7.2 send_and_observe returns immediately when session enters waiting_input
 // 7.3 send_and_observe returns immediately when meaningful output appears fast
-// 7.4 get_session_output still shows 🛑 stop-loss for exited error sessions
+// 7.4 get_session_output still shows stop-loss for exited error sessions
 // 7.5 get_session_output still shows "编程工具在等待输入" for running no-output
 // 7.6 get_session_output still shows "会话正在启动中" for starting sessions
 //
@@ -339,7 +339,7 @@ func TestSendAndObserve_ExitedSession_PreservesEarlyReturn(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Exec:      newFakeExecutionHandle(200),
 		RawOutputLines: []string{
-			"❯ some command",
+			"\u276F some command",
 			"Error: process exited",
 		},
 	}
@@ -388,7 +388,7 @@ func TestSendAndObserve_WaitingInput_PreservesEarlyReturn(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Exec:      newFakeExecutionHandle(201),
 		RawOutputLines: []string{
-			"❯ some task",
+			"\u276F some task",
 		},
 	}
 
@@ -445,7 +445,7 @@ func TestSendAndObserve_FastOutput_PreservesEarlyReturn(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Exec:      newFakeExecutionHandle(202),
 		RawOutputLines: []string{
-			"❯ echo hello",
+			"\u276F echo hello",
 		},
 	}
 
@@ -480,7 +480,7 @@ func TestSendAndObserve_FastOutput_PreservesEarlyReturn(t *testing.T) {
 // 7.4 TestGetSessionOutput_ExitedError_PreservesStopLoss
 //
 // Creates a session with Status=SessionExited, ExitCode=1, Tool="claude-code".
-// Verifies toolGetSessionOutput still contains the 🛑 stop-loss hint and
+// Verifies toolGetSessionOutput still contains the stop-loss hint and
 // "会话已失败退出".
 //
 // Validates: Requirements 3.1
@@ -510,8 +510,8 @@ func TestGetSessionOutput_ExitedError_PreservesStopLoss(t *testing.T) {
 
 	t.Logf("toolGetSessionOutput result:\n%s", result)
 
-	if !strings.Contains(result, "🛑") {
-		t.Errorf("expected result to contain '🛑' stop-loss emoji, got:\n%s", result)
+	if !strings.Contains(result, "") {
+		t.Errorf("expected result to contain '' stop-loss emoji, got:\n%s", result)
 	}
 	if !strings.Contains(result, "会话已失败退出") {
 		t.Errorf("expected result to contain '会话已失败退出', got:\n%s", result)

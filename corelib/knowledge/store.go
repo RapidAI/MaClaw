@@ -41,6 +41,12 @@ func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	s.embedder = emb
 }
 
+// HasEmbedder reports whether a non-noop embedding model is wired for hybrid search.
+func (s *SQLiteStore) HasEmbedder() bool {
+	emb := s.currentEmbedder()
+	return emb != nil && !embedding.IsNoop(emb)
+}
+
 func (s *SQLiteStore) currentEmbedder() embedding.Embedder {
 	if s == nil {
 		return nil
@@ -1779,7 +1785,8 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 
 	// Embedding vector search: fuse with FTS/LIKE results using RRF.
 	// This provides semantic matching (e.g., "学历" matches "博士") that
-	// neither FTS nor LIKE can achieve.
+	// neither FTS nor LIKE can achieve — used by knowledge auto-recall fallback
+	// when lexical FTS is empty or low-confidence.
 	// Triggered when FTS+LIKE didn't find high-confidence results from the
 	// ORIGINAL FTS path (ignoring LIKE-injected scores). LIKE may produce
 	// high scores from term-count heuristics that don't reflect true semantic
@@ -1793,7 +1800,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 				bestFTSScore = r.Score
 			}
 		}
-		needsEmbedding := len(results) == 0
+		needsEmbedding := len(results) == 0 || opts.PreferEmbedding
 		if !needsEmbedding && bestFTSScore < 2.0 {
 			// FTS found nothing high-confidence — embedding may find semantic matches
 			needsEmbedding = true
@@ -3635,6 +3642,28 @@ func (s *SQLiteStore) ImportFiles(ctx context.Context, req DirectoryImportReques
 	return s.importScannedItems(ctx, req, result, items)
 }
 
+// lastItemProgressFields maps a finished ImportItem into frontend log fields.
+// Empty path means the item is not a completed per-file event (e.g. initial progress).
+func lastItemProgressFields(item ImportItem) (path, status, reason string) {
+	path = item.RelativePath
+	if path == "" {
+		path = item.FilePath
+	}
+	if path == "" || item.Status == "" || item.Status == ItemStatusQueued {
+		return "", "", ""
+	}
+	switch item.Status {
+	case ItemStatusImported:
+		status = "imported"
+	case ItemStatusFailed:
+		status = "failed"
+	default:
+		// skipped_* and other non-queued terminal statuses
+		status = "skipped"
+	}
+	return path, status, item.ErrorMessage
+}
+
 func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImportRequest, result DirectoryImportResult, items []ImportItem) (DirectoryImportResult, error) {
 	batchID := NewID("kbatch")
 	result.BatchID = batchID
@@ -3674,6 +3703,21 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	failed := result.FailedFiles
 	processed := 0
 	importedSourceIDs := make([]string, 0)
+	const maxFailedItems = 20
+	failedItems := make([]ImportFailedItem, 0)
+	recordFailedItem := func(item ImportItem) {
+		if len(failedItems) >= maxFailedItems {
+			return
+		}
+		path := item.RelativePath
+		if path == "" {
+			path = item.FilePath
+		}
+		failedItems = append(failedItems, ImportFailedItem{
+			FilePath: path,
+			Error:    item.ErrorMessage,
+		})
+	}
 	emitImportProgress := func(current ImportItem) {
 		if s == nil || s.importProgress == nil {
 			return
@@ -3693,6 +3737,13 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		snapshot.TotalSteps = 0
 		snapshot.CurrentStepNum = 0
 		snapshot.Items = nil
+		snapshot.FailedItems = failedItems
+		// Fill last-item fields for per-file frontend log (path/status/reason).
+		if path, status, reason := lastItemProgressFields(current); path != "" {
+			snapshot.LastItemPath = path
+			snapshot.LastItemStatus = status
+			snapshot.LastItemReason = reason
+		}
 		s.importProgress(snapshot)
 	}
 	emitStepProgress := func(current ImportItem, stepName string, stepNum, totalSteps int) {
@@ -3726,6 +3777,9 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		item := items[i]
 		item.BatchID = batchID
 		if item.Status != ItemStatusQueued {
+			if item.Status == ItemStatusFailed {
+				recordFailedItem(item)
+			}
 			if err := insertImportItem(ctx, tx, item); err != nil {
 				return result, err
 			}
@@ -3758,6 +3812,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			item.Status = ItemStatusFailed
 			item.ErrorMessage = err.Error()
 			failed++
+			recordFailedItem(item)
 			if err := insertImportItem(ctx, tx, item); err != nil {
 				return result, err
 			}
@@ -3768,6 +3823,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			item.Status = ItemStatusFailed
 			item.ErrorMessage = err.Error()
 			failed++
+			recordFailedItem(item)
 			if err := insertImportItem(ctx, tx, item); err != nil {
 				return result, err
 			}
@@ -3794,6 +3850,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					item.Status = ItemStatusFailed
 					item.ErrorMessage = parseErr.Error()
 					failed++
+					recordFailedItem(item)
 					if err := insertImportItem(ctx, tx, item); err != nil {
 						return result, err
 					}
@@ -3817,6 +3874,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					item.Status = ItemStatusFailed
 					item.ErrorMessage = err.Error()
 					failed++
+					recordFailedItem(item)
 					if err := insertImportItem(ctx, tx, item); err != nil {
 						return result, err
 					}
@@ -3852,6 +3910,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						item.Status = ItemStatusFailed
 						item.ErrorMessage = err.Error()
 						failed++
+						recordFailedItem(item)
 						if err := insertImportItem(ctx, tx, item); err != nil {
 							return result, err
 						}
@@ -3872,6 +3931,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					item.Status = ItemStatusFailed
 					item.ErrorMessage = err.Error()
 					failed++
+					recordFailedItem(item)
 					if err := insertImportItem(ctx, tx, item); err != nil {
 						return result, err
 					}
@@ -3893,6 +3953,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						item.Status = ItemStatusFailed
 						item.ErrorMessage = err.Error()
 						failed++
+						recordFailedItem(item)
 						if err := insertImportItem(ctx, tx, item); err != nil {
 							return result, err
 						}
@@ -3911,6 +3972,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						item.Status = ItemStatusFailed
 						item.ErrorMessage = err.Error()
 						failed++
+						recordFailedItem(item)
 						if err := insertImportItem(ctx, tx, item); err != nil {
 							return result, err
 						}
@@ -3936,7 +3998,11 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	result.ImportedFiles = imported
 	result.FailedFiles = failed
 	result.ProcessedFiles = processed
+	result.FailedItems = failedItems
 	result.CurrentFile = ""
+	result.LastItemPath = ""
+	result.LastItemStatus = ""
+	result.LastItemReason = ""
 	if failed > 0 {
 		result.Status = ImportStatusFailed
 		batch.Status = ImportStatusFailed

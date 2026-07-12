@@ -1,8 +1,14 @@
+import { PRESERVED_INLINE_MARK_CLASS } from "../remote/remoteStreamMarks";
+
 const escapedNewlinePattern = /\\r\\n|\\n|\\r/g;
-const digitalEmployeeCapabilityIconPattern = "[\\u{1f4c1}\\u{1f4c2}\\u{1f4c4}\\u{1f4cb}\\u{1f4dd}\\u{1f4ca}\\u{1f310}\\u{1f50d}\\u{1f4ac}\\u{1f4a1}\\u{1f527}\\u{1f4e6}]";
+// Older digital-employee copy used pictographs as list markers.
+// Detect via Unicode property (no emoji literals in source), rewrite as plain "-" lists.
+// Exclude semantic status/star marks (kept for SVG glyphs) from capability-list rewriting.
+const digitalEmployeeCapabilityIconPattern = `(?:(?![${PRESERVED_INLINE_MARK_CLASS}])\\p{Extended_Pictographic})`;
 const digitalEmployeeCapabilityIconScanPattern = new RegExp(digitalEmployeeCapabilityIconPattern, "gu");
-const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])\\s*(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
-const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])\\s+(${digitalEmployeeCapabilityIconPattern}\\s*)`, "gu");
+// Horizontal space only — do not let \\s eat newlines and rewrite the next line's leading mark.
+const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])[ \\t]*${digitalEmployeeCapabilityIconPattern}[ \\t]*`, "gu");
+const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])[ \\t]+${digitalEmployeeCapabilityIconPattern}[ \\t]*`, "gu");
 const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
 const bareHeadingMarkerLinePattern = /^(#{1,6})(?:\s+#{1,6})*$/;
@@ -99,22 +105,29 @@ export function normalizeInlineListMarkers(content: string): string {
                 .replace(/\\r(```\s*)$/, "\n$1");
             continue;
         }
-        let normalized = withMarkdownSensitiveSpansProtected(parts[i], (segment) => segment
-            .replace(escapedNewlinePattern, "\n")
-            .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
-            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,6}\s+)/g, "$1\n$2")
-            .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,6})(?=[^#\s])/g, "$1\n$2 ")
-            .replace(compactHeadingMarkerPattern, "$1\n$2 ")
-            .replace(/([^#\n\s])\s*(#{2,6})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
-            .replace(/(^|\n)(#{2,6})(?=[^#\s])/g, "$1$2 ")
-            .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
-            .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
-            .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")
-            .replace(capabilityIconAfterPunctuationPattern, "$1\n$2"));
+        // Count dense capability lists on the original segment — after the first
+        // pictograph is rewritten, fewer than 2 remain and mid-list items would be skipped.
+        const denseCapabilityList = hasMultipleCapabilityIcons(parts[i]);
+        let normalized = withMarkdownSensitiveSpansProtected(parts[i], (segment) => {
+            let out = segment
+                .replace(escapedNewlinePattern, "\n")
+                .replace(/\|\|(?=\s*[^|\s])/g, "\n|")
+                .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{1,6}\s+)/g, "$1\n$2")
+                .replace(/([\uff1a:;\uff1b.!?\uff01\uff1f\u3002,%\uff05)\uff09\]])\s*(#{2,6})(?=[^#\s])/g, "$1\n$2 ")
+                .replace(compactHeadingMarkerPattern, "$1\n$2 ")
+                .replace(/([^#\n\s])\s*(#{2,6})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
+                .replace(/(^|\n)(#{2,6})(?=[^#\s])/g, "$1$2 ")
+                .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
+                .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
+                .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")
+                // Rewrite capability pictograph markers to plain list dashes (no emoji in UI).
+                .replace(capabilityIconAfterPunctuationPattern, "$1\n- ");
+            if (denseCapabilityList) {
+                out = out.replace(capabilityIconMidSentencePattern, "$1\n- ");
+            }
+            return out;
+        });
         normalized = normalizeCompactPipeTables(normalized);
-        if (hasMultipleCapabilityIcons(normalized)) {
-            normalized = normalized.replace(capabilityIconMidSentencePattern, "$1\n$2");
-        }
         parts[i] = normalized;
     }
     return parts.join("");

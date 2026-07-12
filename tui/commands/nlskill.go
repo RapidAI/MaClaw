@@ -19,7 +19,7 @@ import (
 // RunNLSkill 执行 nlskill 子命令（NL 技能管理）。
 func RunNLSkill(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui nlskill <list|add|remove|enable|disable|execute>")
+		return NewUsageError("usage: maclaw-tui nlskill <list|add|remove|enable|disable|execute|evolution>; evolution: status|enable|disable [--persist]")
 	}
 	switch args[0] {
 	case "list":
@@ -34,8 +34,78 @@ func RunNLSkill(args []string) error {
 		return nlskillToggle(args[1:], "disabled")
 	case "execute":
 		return nlskillExecute(args[1:])
+	case "evolution":
+		return nlskillEvolution(args[1:])
 	default:
 		return NewUsageError("unknown nlskill action: %s", args[0])
+	}
+}
+
+// nlskillEvolution controls/diagnoses background skill self-repair & optimize.
+//
+//	nlskill evolution status
+//	nlskill evolution disable           # session-only (this process)
+//	nlskill evolution disable --persist # session + config skill_evolution_enabled=false
+//	nlskill evolution enable
+//	nlskill evolution enable --persist  # session + config skill_evolution_enabled=true
+func nlskillEvolution(args []string) error {
+	if len(args) == 0 {
+		return NewUsageError("usage: nlskill evolution <status|enable|disable> [--persist]")
+	}
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	persist := false
+	for _, a := range args[1:] {
+		switch strings.ToLower(strings.TrimSpace(a)) {
+		case "--persist", "-p":
+			persist = true
+		case "":
+			// skip
+		default:
+			return NewUsageError("unknown flag %q (supported: --persist)", a)
+		}
+	}
+	switch action {
+	case "status":
+		st := SharedEvolutionStatus()
+		return PrintJSON(st)
+	case "disable":
+		SetSkillEvolutionSessionDisabled(true)
+		if persist {
+			if err := PersistSkillEvolutionEnabled(false); err != nil {
+				return fmt.Errorf("persist skill_evolution_enabled=false: %w", err)
+			}
+			fmt.Println("Skill evolution disabled (session + config skill_evolution_enabled=false).")
+			fmt.Println("Manual manage_skill trigger_repair/trigger_optimize still work.")
+			return nil
+		}
+		fmt.Println("Skill evolution disabled for this process session.")
+		fmt.Println("Tip: use --persist to also write skill_evolution_enabled=false to config.")
+		fmt.Println("(Also respects MACLAW_DISABLE_SKILL_EVOLUTION env.)")
+		return nil
+	case "enable":
+		SetSkillEvolutionSessionDisabled(false)
+		if persist {
+			if err := PersistSkillEvolutionEnabled(true); err != nil {
+				return fmt.Errorf("persist skill_evolution_enabled=true: %w", err)
+			}
+			fmt.Println("Skill evolution enabled (session + config skill_evolution_enabled=true).")
+		} else {
+			fmt.Println("Skill evolution session flag cleared.")
+			fmt.Println("Tip: use --persist to also write skill_evolution_enabled=true to config.")
+		}
+		if SkillEvolutionEnvDisabled() {
+			fmt.Println("Note: MACLAW_DISABLE_SKILL_EVOLUTION still disables automatic evolution.")
+		}
+		// Reflect remaining config disable without --persist
+		if !persist {
+			store := NewFileConfigStore(ResolveDataDir())
+			if cfg, err := store.LoadConfig(); err == nil && !cfg.IsSkillEvolutionEnabled() {
+				fmt.Println("Note: config skill_evolution_enabled=false still disables automatic evolution (use --persist to re-enable).")
+			}
+		}
+		return nil
+	default:
+		return NewUsageError("usage: nlskill evolution <status|enable|disable> [--persist]")
 	}
 }
 
@@ -113,7 +183,7 @@ func nlskillAdd(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("✓ NL 技能 '%s' 已添加\n", *name)
+	fmt.Printf("NL 技能 '%s' 已添加\n", *name)
 	return nil
 }
 
@@ -188,10 +258,11 @@ func nlskillToggle(args []string, status string) error {
 func nlskillExecute(args []string) error {
 	fs := flag.NewFlagSet("nlskill execute", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	noEvolution := fs.Bool("no-evolution", false, "skip background self-repair/optimize after this run")
 	fs.Parse(args)
 
 	if fs.NArg() == 0 {
-		return NewUsageError("usage: nlskill execute <skill-name>")
+		return NewUsageError("usage: nlskill execute [--json] [--no-evolution] <skill-name>")
 	}
 	name := fs.Arg(0)
 
@@ -254,7 +325,7 @@ func nlskillExecute(args []string) error {
 			r.Output = output
 			results = append(results, r)
 			hasFailure = true
-			fmt.Printf("  ✗ %s\n", execErr.Error())
+			fmt.Printf("  ERR %s\n", execErr.Error())
 			if step.OnError != "continue" {
 				success = false
 				break
@@ -269,9 +340,9 @@ func nlskillExecute(args []string) error {
 				if len(display) > 200 {
 					display = display[:200] + "..."
 				}
-				fmt.Printf("  ✓ %s\n", display)
+				fmt.Printf("  OK %s\n", display)
 			} else {
-				fmt.Printf("  ✓ done\n")
+				fmt.Printf("  OK done\n")
 			}
 		}
 	}
@@ -288,16 +359,26 @@ func nlskillExecute(args []string) error {
 	} else {
 		for _, r := range results {
 			if r.Error != "" {
-				skill.LastError = r.Error
+				// Classify for self-repair eligibility ([class: ...] tags).
+				ce := cskill.ClassifyStepError(0, "", r.Error, "")
+				skill.LastError = cskill.TruncateFormattedErrorForStorage(cskill.FormatErrorForLLM(ce), 500)
 				break
 			}
 		}
 	}
+	// Write stats back into cfg slice.
+	for i := range cfg.NLSkills {
+		if cfg.NLSkills[i].MatchesName(skill.Name) {
+			cfg.NLSkills[i] = *skill
+			break
+		}
+	}
 	_ = store.SaveConfig(cfg)
 
-	// Attempt self-repair for skills with low success rate.
-	if !success && skill.LastError != "" {
-		maybeRepairSkillTUI(skill, cfg, store)
+	// Shared EvolutionPipeline: self-repair + optimize (throttled/coalesced).
+	// Skip with --no-evolution or MACLAW_DISABLE_SKILL_EVOLUTION=1.
+	if !*noEvolution {
+		NotifySharedSkillEvolution(cfg, store, skill, success, nil)
 	}
 
 	if *jsonOut {
@@ -308,9 +389,9 @@ func nlskillExecute(args []string) error {
 		})
 	}
 	if success {
-		fmt.Printf("✓ 技能 '%s' 执行完成 (%d 步)\n", name, len(results))
+		fmt.Printf("技能 '%s' 执行完成 (%d 步)\n", name, len(results))
 	} else {
-		fmt.Printf("✗ 技能 '%s' 执行失败\n", name)
+		fmt.Printf("技能 '%s' 执行失败\n", name)
 	}
 	return nil
 }

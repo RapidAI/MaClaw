@@ -143,13 +143,13 @@ const msg = localizeText(lang, 'Processing...', '处理中...', '處理中...');
 
 | 场景 | 走 i18n？ | 机制 |
 |------|----------|------|
-| IM 聊天中的状态进度 | ✅ | `i18n.T()` |
-| TUI 界面标签 | ✅ | `i18n.T()` |
-| GUI 按钮/标签/标题 | ✅ | `translations[lang][key]` 或 `localizeText()` |
-| 错误弹框/Toast | ✅ | 同上 |
-| 工作流确认面板 | ✅ | `i18n.T()` |
-| SSH 工具 description | ❌ | 硬编码中文（给 LLM 看） |
-| Agent loop 注入的系统消息 | ❌ | 硬编码中文（给 LLM 看） |
-| Steering 规则文件 | ❌ | 硬编码中文（给 LLM 看） |
-| `buildDriftRecoverPrompt` | ❌ | 硬编码中文（给 LLM 看） |
-| 日志消息 | ❌ | 英文（开发者看的） |
+| IM 聊天中的状态进度 | | `i18n.T()` |
+| TUI 界面标签 | | `i18n.T()` |
+| GUI 按钮/标签/标题 | | `translations[lang][key]` 或 `localizeText()` |
+| 错误弹框/Toast | | 同上 |
+| 工作流确认面板 | | `i18n.T()` |
+| SSH 工具 description | | 硬编码中文（给 LLM 看） |
+| Agent loop 注入的系统消息 | | 硬编码中文（给 LLM 看） |
+| Steering 规则文件 | | 硬编码中文（给 LLM 看） |
+| `buildDriftRecoverPrompt` | | 硬编码中文（给 LLM 看） |
+| 日志消息 | | 英文（开发者看的） |

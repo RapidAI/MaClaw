@@ -14,18 +14,18 @@
 
 | 写入路径 | 文件 | 设置 OwnerID? | 影响 |
 |---------|------|-------------|------|
-| `conversation_archiver.Archive()` | gui/conversation_archiver.go | ✅ `userID` | |
-| `knowledge_extractor.Extract()` | corelib/memory/knowledge_extractor.go | ✅ `userID` | |
-| `online_extractor.classifyAndApply()` | corelib/memory/online_extractor.go | ✅ `ownerID` param | |
-| iWorkerCenter handler | iWorkerCenter/.../handler.go | ✅ `SaveForUser` | |
-| `sedimentTaskEntry()` | gui/im_task_sediment.go | ❌ | maclawsrv: 任务沉淀跨用户可见 |
-| `workflow_artifact_saver.SaveArtifact()` | gui/workflow_artifact_saver.go | ❌ | maclawsrv: 工作流产出物跨用户可见 |
-| `memorySink` in `saveConversationHistoryTimed` | gui/im_message_handler.go | ❌ | maclawsrv: 截断沉淀跨用户可见 |
-| `toolMemory` save (GUI) | gui/im_tools_misc.go | ❌ | maclawsrv: LLM 保存的记忆跨用户可见 |
-| `ToolMemory` save (corelib) | corelib/agent/tool_memory.go | ❌ | TUI: 无影响（单用户）|
-| `session_checkpoint` | gui/session_checkpoint.go | ❌ | maclawsrv: 编程会话快照跨用户可见 |
-| TUI CLI `memorySave` | tui/commands/memory.go | ❌ | TUI: 无影响（单用户）|
-| Wails `SaveMemory` | gui/app_wails_bindings.go | ❌ | GUI: 无影响（单用户）|
+| `conversation_archiver.Archive()` | gui/conversation_archiver.go | `userID` | |
+| `knowledge_extractor.Extract()` | corelib/memory/knowledge_extractor.go | `userID` | |
+| `online_extractor.classifyAndApply()` | corelib/memory/online_extractor.go | `ownerID` param | |
+| iWorkerCenter handler | iWorkerCenter/.../handler.go | `SaveForUser` | |
+| `sedimentTaskEntry()` | gui/im_task_sediment.go | | maclawsrv: 任务沉淀跨用户可见 |
+| `workflow_artifact_saver.SaveArtifact()` | gui/workflow_artifact_saver.go | | maclawsrv: 工作流产出物跨用户可见 |
+| `memorySink` in `saveConversationHistoryTimed` | gui/im_message_handler.go | | maclawsrv: 截断沉淀跨用户可见 |
+| `toolMemory` save (GUI) | gui/im_tools_misc.go | | maclawsrv: LLM 保存的记忆跨用户可见 |
+| `ToolMemory` save (corelib) | corelib/agent/tool_memory.go | | TUI: 无影响（单用户）|
+| `session_checkpoint` | gui/session_checkpoint.go | | maclawsrv: 编程会话快照跨用户可见 |
+| TUI CLI `memorySave` | tui/commands/memory.go | | TUI: 无影响（单用户）|
+| Wails `SaveMemory` | gui/app_wails_bindings.go | | GUI: 无影响（单用户）|
 
 **根因**：#67 只修复了 archiver、knowledge_extractor、online_extractor、consolidator 四个路径。其余路径在 GUI/TUI 单用户场景下 OwnerID 为空（共享），不影响功能。但在 maclawsrv 多租户场景下，这些路径写入的记忆对所有用户可见。
 

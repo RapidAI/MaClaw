@@ -274,7 +274,7 @@ func (n *Notifier) sendWelcomeMessage(openID string) {
 	if n == nil || n.bot == nil || openID == "" {
 		return
 	}
-	card := buildCardJSON("👋 Welcome to MaClaw", "blue", []cardField{
+	card := buildCardJSON("Welcome to MaClaw", "blue", []cardField{
 		{label: "Status", value: "Your account has been set up."},
 		{label: "Next", value: "Send me a message to get started."},
 	})
@@ -717,7 +717,7 @@ func (n *Notifier) onSessionCreated(event session.Event) {
 	if title == "" {
 		title = "New Session"
 	}
-	cardJSON := buildCardJSON("🚀 会话已创建", "green", []cardField{
+	cardJSON := buildCardJSON("会话已创建", "green", []cardField{
 		{"工具", tool},
 		{"会话", truncate(title, 60)},
 		{"Session ID", shortID(event.SessionID)},
@@ -771,9 +771,9 @@ func (n *Notifier) onSessionSummary(event session.Event) {
 		fields = append(fields, cardField{"进度", truncate(s.ProgressSummary, 80)})
 	}
 	if s.WaitingForUser {
-		fields = append(fields, cardField{"⚠️ 等待用户操作", defaultStr(s.SuggestedAction, "请查看终端")})
+		fields = append(fields, cardField{"等待用户操作", defaultStr(s.SuggestedAction, "请查看终端")})
 	}
-	cardJSON := buildCardJSON("📊 会话状态更新", statusColor(s.Status), fields)
+	cardJSON := buildCardJSON("会话状态更新", statusColor(s.Status), fields)
 	// Use urgent notification when the session is waiting for user action.
 	if s.WaitingForUser {
 		n.sendToUserUrgentForTenant(event.TenantID, event.UserID, cardJSON)
@@ -821,7 +821,7 @@ func (n *Notifier) onImportantEvent(event session.Event) {
 	if ie.Command != "" {
 		fields = append(fields, cardField{"命令", truncate(ie.Command, 80)})
 	}
-	cardJSON := buildCardJSON("🔔 重要事件", severityColor(ie.Severity), fields)
+	cardJSON := buildCardJSON("重要事件", severityColor(ie.Severity), fields)
 	// Use urgent notification for error/critical severity events.
 	if sev == "error" || sev == "critical" {
 		n.sendToUserUrgentForTenant(event.TenantID, event.UserID, cardJSON)
@@ -941,7 +941,7 @@ func (n *Notifier) flushPreview(sid string) {
 
 	alias := n.getAlias(watcherOpenID, sid)
 	var sb strings.Builder
-	sb.WriteString("📺 ")
+	sb.WriteString("")
 	sb.WriteString(alias)
 	sb.WriteString("\n")
 	for _, line := range cleaned {
@@ -1066,7 +1066,7 @@ func (n *Notifier) onSessionImage(event session.Event) {
 
 		// Send the image as a post message with a caption.
 		alias := n.getAlias(openID, sessionID)
-		caption := fmt.Sprintf("📷 %s", alias)
+		caption := fmt.Sprintf("%s", alias)
 		sendImagePost(n, openID, imageKey, caption)
 	}()
 }
@@ -1133,15 +1133,15 @@ func (n *Notifier) onSessionClosed(event session.Event) {
 
 	// Notify watchers that their active session context was cleared.
 	for _, oid := range watcherOIDs {
-		replyText(n, oid, fmt.Sprintf("⏹ 会话 %s 已结束，已自动退出会话上下文。", n.getAlias(oid, event.SessionID)))
+		replyText(n, oid, fmt.Sprintf("会话 %s 已结束，已自动退出会话上下文。", n.getAlias(oid, event.SessionID)))
 	}
 
 	// Build a comprehensive close card. Use red for errors, grey for normal exit.
 	isErr := strings.EqualFold(status, "error") || strings.EqualFold(status, "failed")
-	title := "✅ 会话已结束"
+	title := "会话已结束"
 	color := "grey"
 	if isErr {
-		title = "❌ 会话异常退出"
+		title = "会话异常退出"
 		color = "red"
 	}
 	fields := []cardField{
@@ -1419,17 +1419,17 @@ func defaultStr(v, fallback string) string {
 func statusEmoji(status string) string {
 	switch strings.ToLower(status) {
 	case "running", "busy":
-		return "🔄"
+		return ""
 	case "stopped", "finished", "completed", "done":
-		return "✅"
+		return ""
 	case "failed", "error":
-		return "❌"
+		return ""
 	case "waiting", "waiting_for_user":
-		return "⏳"
+		return ""
 	case "exited", "killed", "terminated":
-		return "🛑"
+		return ""
 	default:
-		return "ℹ️"
+		return ""
 	}
 }
 

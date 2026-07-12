@@ -36,15 +36,6 @@ func NewProgressTracker() *ProgressTracker {
 	}
 }
 
-// progressToolIcons maps tool names to display icons.
-var progressToolIcons = map[string]string{
-	"Write": "📝", "Edit": "✏️", "MultiEdit": "✏️",
-	"Read": "📖", "Bash": "⚡", "TodoWrite": "📝",
-	"TodoRead": "📖", "ListDir": "📂", "Grep": "🔍",
-	"Glob": "🔍", "WebSearch": "🌐", "WebFetch": "🌐",
-	"AskUserQuestion": "❓", "Task": "📋",
-}
-
 var progressKnownTools = map[string]bool{
 	"Write": true, "Edit": true, "MultiEdit": true,
 	"Read": true, "Bash": true, "TodoWrite": true,
@@ -107,15 +98,11 @@ func (t *ProgressTracker) FormatProgress(sessionID string) string {
 		return ""
 	}
 	step := p.CurrentStep
-	icon := progressToolIcons[step.Action]
-	if icon == "" {
-		icon = "🔧"
-	}
 	target := progressTruncateTarget(step.Target, progressMaxTargetRunes)
 	if target != "" {
-		return fmt.Sprintf("%s 第 %d 步: %s %s", icon, step.StepNumber, step.Action, target)
+		return fmt.Sprintf("第 %d 步: %s %s", step.StepNumber, step.Action, target)
 	}
-	return fmt.Sprintf("%s 第 %d 步: %s", icon, step.StepNumber, step.Action)
+	return fmt.Sprintf("第 %d 步: %s", step.StepNumber, step.Action)
 }
 
 func (t *ProgressTracker) Reset(sessionID string) {

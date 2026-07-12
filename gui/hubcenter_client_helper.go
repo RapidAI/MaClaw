@@ -76,15 +76,9 @@ func (a *App) rememberHubCenterSelection(base string, discovered []string) {
 	if a == nil {
 		return
 	}
-	if remote.IsLoopbackURL(base) {
-		localOnly := make([]string, 0, len(discovered))
-		for _, candidate := range discovered {
-			if remote.IsLoopbackURL(candidate) {
-				localOnly = append(localOnly, candidate)
-			}
-		}
-		discovered = localOnly
-	}
+	// Delegate filtering to RememberSelectionThrottled: it prefers public URLs
+	// when present, keeps pure-loopback chains for local/dev, and never replaces
+	// a public preferred URL with loopback.
 	a.rememberHubCenterSelectionThrottled(base, discovered)
 }
 

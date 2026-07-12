@@ -21,7 +21,8 @@ type ManageSkillAction struct {
 //  3. Add the handler case in tui/tool_manage_skill.go newManageSkillHandler().
 //  4. Done. All descriptions, error messages, and tests auto-update.
 var ManageSkillActions = []ManageSkillAction{
-	{"list", "列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）"},
+	{"list", "列出本地已注册 Skill（无 Skill 时展示 Hub 推荐；行内附带 params 摘要）"},
+	{"info", "查看指定 Skill 的参数契约（完整 params + JSON Schema；run 前建议先 inspect）"},
 	{"search", "在 SkillHub 搜索可用 Skill"},
 	{"install", "从 Hub 安装 Skill 到本地"},
 	{"uninstall", "卸载/移除本地已安装的 Skill（删除目录和配置）"},
@@ -32,7 +33,13 @@ var ManageSkillActions = []ManageSkillAction{
 	{"patch", "对 Skill 定义执行修补（mode=text: find-and-replace；mode=step: 结构化修改步骤字段）"},
 	{"history", "查看 Skill 的修补历史记录"},
 	{"maintenance_plan", "生成只读 Skill 维护计划（不修改、不归档、不合并、不执行 Skill）"},
+	{"maintenance_drafts", "收集需人审的 patch_draft / merge_draft 与排队自修复项（只读 dry-run；不修改 Skill）"},
 	{"execute_maintenance_plan", "执行已批准的 Skill 维护动作，默认 dry_run 预演"},
+	{"evolution_status", "查询 Skill 自进化管道状态（自修复/优化/自动发现是否启用、排队数、冷却时间等；只读）"},
+	{"evolution_audit", "查询 Skill 自进化持久审计日志（只读；limit 默认 50 最大 200；可选 name 过滤技能；路径 ~/.maclaw/skill_evolution/audit.jsonl）"},
+	{"set_evolution_enabled", "开关自动自进化（enabled=true/false 必填；写入 skill_evolution_enabled 配置；true 时同时清除 session 禁用；不影响手动 trigger_repair/trigger_optimize；环境变量 MACLAW_DISABLE_SKILL_EVOLUTION 仍优先强制关闭）"},
+	{"trigger_repair", "立即对指定 Skill 尝试 LLM 自修复（name 必填；force=true 时跳过成功率门槛但仍受安全与次数限制；wait=true 时同步等待结果）"},
+	{"trigger_optimize", "立即对指定 Skill 尝试 LLM 优化（name 必填；force=true 时跳过自动优化门槛与 24h 节流；默认同步执行）"},
 }
 
 // ManageSkillActionNames returns the ordered list of action name strings.
@@ -90,6 +97,20 @@ func NormalizeManageSkillAction(action string) string {
 	switch normalized {
 	case "publish", "pub", "submit", "release", "发布", "發布", "上架", "提交":
 		return "upload"
+	case "info", "inspect", "show", "describe", "get", "detail", "schema", "params":
+		return "info"
+	case "evolution", "evol_status", "self_repair_status", "optimize_status":
+		return "evolution_status"
+	case "evolution_log", "audit", "audit_log", "evolution_history", "skill_evolution_audit":
+		return "evolution_audit"
+	case "list_drafts", "review_drafts", "patch_drafts", "governance_drafts":
+		return "maintenance_drafts"
+	case "set_evolution", "evolution_enable", "enable_evolution", "disable_evolution", "set_skill_evolution":
+		return "set_evolution_enabled"
+	case "repair", "repair_now", "self_repair", "attempt_repair", "fix_skill":
+		return "trigger_repair"
+	case "optimize", "optimize_now", "trigger_opt", "improve_skill":
+		return "trigger_optimize"
 	default:
 		return normalized
 	}

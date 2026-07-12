@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/go-lark/lark/v2"
 )
@@ -138,20 +139,26 @@ func (p *FeishuPlugin) SendCard(ctx context.Context, target im.UserTarget, card 
 	// Convert OutgoingMessage fields to cardField slice for buildCardJSON.
 	var fields []cardField
 	if card.StatusIcon != "" || card.StatusCode != 0 {
-		// Include status as a field if present.
-		statusText := card.StatusIcon
+		// ASCII status mark only (never raw semantic tokens or emoji).
+		statusText := im.FormatStatusIconMark(card.StatusIcon)
 		if card.StatusCode != 0 {
-			statusText = fmt.Sprintf("%s %d", card.StatusIcon, card.StatusCode)
+			if statusText != "" {
+				statusText = fmt.Sprintf("%s %d", statusText, card.StatusCode)
+			} else {
+				statusText = fmt.Sprintf("%d", card.StatusCode)
+			}
 		}
 		if statusText != "" {
 			fields = append(fields, cardField{label: "状态", value: statusText})
 		}
 	}
+	// Body/Title/fields are usually already display-normalized by ToOutgoingMessage;
+	// PrepareChatBodyForDisplay is idempotent (fast-path no-op on clean text).
 	if card.Body != "" {
-		fields = append(fields, cardField{label: "详情", value: card.Body})
+		fields = append(fields, cardField{label: "详情", value: textutil.PrepareChatBodyForDisplay(card.Body)})
 	}
 	for _, f := range card.Fields {
-		fields = append(fields, cardField{label: f.Label, value: f.Value})
+		fields = append(fields, cardField{label: f.Label, value: textutil.PrepareChatBodyForDisplay(f.Value)})
 	}
 	// Append action buttons as text hints (Feishu cards support markdown).
 	for _, a := range card.Actions {
@@ -162,7 +169,7 @@ func (p *FeishuPlugin) SendCard(ctx context.Context, target im.UserTarget, card 
 		fields = append(fields, cardField{label: "操作", value: hint})
 	}
 
-	title := card.Title
+	title := textutil.PrepareChatBodyForDisplay(card.Title)
 	if title == "" {
 		title = "消息"
 	}
@@ -404,7 +411,7 @@ func (p *FeishuPlugin) sendFileViaTempURL(ctx context.Context, target im.UserTar
 
 	downloadURL := fmt.Sprintf("%s/api/feishu/tempfile/%s", p.publicBaseURL, token)
 	sizeMB := float64(len(raw)) / (1024 * 1024)
-	text := fmt.Sprintf("📎 文件过大（%.1f MB），请通过链接下载（%d 分钟内有效）：\n%s\n文件名: %s",
+	text := fmt.Sprintf("文件过大（%.1f MB），请通过链接下载（%d 分钟内有效）：\n%s\n文件名: %s",
 		sizeMB, int(feishuTempFileTTL.Minutes()), downloadURL, fileName)
 
 	return p.sendTextWithLink(ctx, target, text, downloadURL, "点击下载文件")

@@ -278,6 +278,7 @@ func skillYAMLParamsFromCore(params []corelib.NLSkillParam) []SkillYAMLParam {
 		result = append(result, SkillYAMLParam{
 			Name:        param.Name,
 			Description: param.Description,
+			Type:        param.Type,
 			Aliases:     append([]string(nil), param.Aliases...),
 			CLIFlag:     param.CLIFlag,
 			Default:     param.Default,

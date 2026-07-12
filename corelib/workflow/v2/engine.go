@@ -70,7 +70,10 @@ func NewQuickFilter(engine WorkflowChecker) *QuickFilter {
 	return &QuickFilter{engine: engine}
 }
 
-// Classify returns simple_directive for all messages (stub).
+// Classify routes messages based on active workflow/understanding state.
+// When neither is active, non-empty text is sent to intent understanding so the
+// IUM can accept or reject a workflow start. Empty text falls through as a
+// simple directive.
 func (f *QuickFilter) Classify(userID, text string) FilterResult {
 	if f.engine != nil {
 		if f.engine.HasActiveWorkflow(userID) {
@@ -79,6 +82,9 @@ func (f *QuickFilter) Classify(userID, text string) FilterResult {
 		if f.engine.HasActiveUnderstanding(userID) {
 			return FilterActiveUnderstanding
 		}
+	}
+	if strings.TrimSpace(text) != "" {
+		return FilterNeedsUnderstanding
 	}
 	return FilterSimpleDirective
 }
@@ -406,6 +412,12 @@ func phaseInputFieldFromSpec(field PhaseInputFieldSpec) PhaseInputField {
 		Default:     field.Default,
 		Reusable:    field.Reusable,
 	}
+}
+
+// PhaseInputSchemaToSpec converts a native V2 form schema into the legacy
+// PhaseInputSchemaSpec shape used by older TUI/GUI guidance helpers.
+func PhaseInputSchemaToSpec(schema *PhaseInputSchema) *PhaseInputSchemaSpec {
+	return phaseInputSchemaToSpec(schema)
 }
 
 func phaseInputSchemaToSpec(schema *PhaseInputSchema) *PhaseInputSchemaSpec {

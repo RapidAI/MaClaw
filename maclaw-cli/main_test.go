@@ -17,7 +17,10 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 func TestAskAutoDiscoversGUIConfig(t *testing.T) {
@@ -289,6 +292,547 @@ func TestBootstrapWritesZeroConfigGatewaySettings(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), cfg.ThirdPartyGatewayToken) {
 		t.Fatal("bootstrap output leaked token")
+	}
+}
+
+func TestDoctorLocalOnlyReportsReadiness(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		MaclawLLMUrl:   "http://127.0.0.1:9/v1",
+		MaclawLLMModel: "test-model",
+		MaclawLLMKey:   "sk-test",
+		OnboardingDone: true,
+	})
+	var stdout, stderr bytes.Buffer
+	err := testCLI(&stdout, &stderr).run([]string{"doctor", "--local-only", "--config", cfgPath, "--pretty=false"})
+	if err != nil {
+		t.Fatalf("doctor --local-only: %v stderr=%s stdout=%s", err, stderr.String(), stdout.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, stdout.String())
+	}
+	if out["ok"] != true {
+		t.Fatalf("ok=%v out=%s", out["ok"], stdout.String())
+	}
+	if out["localOnly"] != true {
+		t.Fatalf("localOnly=%v", out["localOnly"])
+	}
+	readiness, _ := out["readiness"].(map[string]any)
+	if readiness == nil {
+		t.Fatalf("missing readiness: %s", stdout.String())
+	}
+	checks, _ := readiness["checks"].([]any)
+	if len(checks) < 5 {
+		t.Fatalf("expected readiness checks, got %#v", checks)
+	}
+	// Live gateway fields should be absent when local-only.
+	if _, has := out["health"]; has {
+		t.Fatalf("health should be omitted in local-only mode: %s", stdout.String())
+	}
+}
+
+func TestDoctorLocalOnlyFailsWithoutLLM(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{})
+	var stdout, stderr bytes.Buffer
+	err := testCLI(&stdout, &stderr).run([]string{"doctor", "--local-only", "--config", cfgPath, "--pretty=false"})
+	if err == nil {
+		t.Fatalf("expected error without LLM, stdout=%s", stdout.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, stdout.String())
+	}
+	if out["ok"] != false {
+		t.Fatalf("ok should be false: %s", stdout.String())
+	}
+	if _, has := out["readiness"]; !has {
+		t.Fatalf("expected readiness report even on failure: %s", stdout.String())
+	}
+}
+
+func TestSharedLoopEnableDisable(t *testing.T) {
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP", "")
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP_SHADOW", "")
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP_PERCENT", "")
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		SharedAgentLoopEnabled:  false,
+		SharedAgentLoopMigrated: true,
+	})
+
+	var stdout, stderr bytes.Buffer
+	c := testCLI(&stdout, &stderr)
+	if err := c.run([]string{"shared-loop", "status", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("status: %v stderr=%s stdout=%s", err, stderr.String(), stdout.String())
+	}
+	var status map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v: %s", err, stdout.String())
+	}
+	if status["mode"] != "off" || status["configEnabled"] != false {
+		t.Fatalf("expected off, got %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := c.run([]string{"shared-loop", "enable", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("enable: %v stderr=%s stdout=%s", err, stderr.String(), stdout.String())
+	}
+	var enabled map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &enabled); err != nil {
+		t.Fatalf("decode enable: %v: %s", err, stdout.String())
+	}
+	if enabled["mode"] != "on" || enabled["configEnabled"] != true || enabled["changed"] != true {
+		t.Fatalf("expected enable on/changed, got %s", stdout.String())
+	}
+	if !strings.Contains(fmt.Sprint(enabled["summary"]), "shared-loop: on") {
+		t.Fatalf("summary missing: %s", stdout.String())
+	}
+
+	// Persist: re-load via status after process-less write
+	stdout.Reset()
+	stderr.Reset()
+	if err := c.run([]string{"shared-loop", "disable", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("disable: %v stderr=%s stdout=%s", err, stderr.String(), stdout.String())
+	}
+	var disabled map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &disabled); err != nil {
+		t.Fatalf("decode disable: %v: %s", err, stdout.String())
+	}
+	if disabled["mode"] != "off" || disabled["configEnabled"] != false {
+		t.Fatalf("expected disable off, got %s", stdout.String())
+	}
+
+	// Env overrides config after enable
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP", "shadow")
+	stdout.Reset()
+	stderr.Reset()
+	if err := c.run([]string{"shared-loop", "enable", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("enable under env: %v", err)
+	}
+	var shadowed map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &shadowed); err != nil {
+		t.Fatalf("decode shadow: %v: %s", err, stdout.String())
+	}
+	if shadowed["mode"] != "shadow" || shadowed["envLocksMode"] != true {
+		t.Fatalf("env should lock mode to shadow: %s", stdout.String())
+	}
+	if !strings.Contains(fmt.Sprint(shadowed["hint"]), "MACLAW_SHARED_AGENT_LOOP") {
+		t.Fatalf("expected env lock hint: %s", stdout.String())
+	}
+}
+
+func TestSharedLoopEnableWritesPercentAndWorkflow(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		SharedAgentLoopEnabled:  false,
+		SharedAgentLoopMigrated: true,
+	})
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP", "")
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP_PERCENT", "")
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP_WORKFLOW", "")
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{
+		"shared-loop", "enable", "--config", cfgPath, "--percent", "25", "--workflow", "on", "--pretty=false",
+	}); err != nil {
+		t.Fatalf("enable: %v %s", err, stderr.String())
+	}
+	appCfg, err := loadAppConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !appCfg.SharedAgentLoopEnabled {
+		t.Fatal("expected enabled")
+	}
+	if appCfg.SharedAgentLoopCanaryPercent == nil || *appCfg.SharedAgentLoopCanaryPercent != 25 {
+		t.Fatalf("percent=%v", appCfg.SharedAgentLoopCanaryPercent)
+	}
+	if !appCfg.SharedAgentLoopWorkflow {
+		t.Fatal("expected workflow pilot")
+	}
+	env := doctor.ResolveSharedLoopEnv(appCfg)
+	if env.Percent != 25 || !env.WorkflowPilot {
+		t.Fatalf("resolved=%+v", env)
+	}
+}
+
+func TestSharedLoopStatusCanaryPreviewUser(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"shared_agent_loop_enabled":true,"shared_agent_loop_migrated":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP", "")
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP_PERCENT", "50")
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{
+		"shared-loop", "status", "--config", cfgPath, "--user", "sticky-user-xyz", "--pretty=false",
+	}); err != nil {
+		t.Fatalf("err=%v stderr=%s", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("json: %v body=%s", err, stdout.String())
+	}
+	preview, ok := out["canaryPreview"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing canaryPreview: %#v", out)
+	}
+	if preview["user_id"] != "sticky-user-xyz" {
+		t.Fatalf("preview=%#v", preview)
+	}
+	if _, ok := preview["bucket"]; !ok {
+		t.Fatalf("bucket missing: %#v", preview)
+	}
+	if _, ok := preview["allows"]; !ok {
+		t.Fatalf("allows missing: %#v", preview)
+	}
+	sum := fmt.Sprint(out["summary"])
+	if !strings.Contains(sum, "canary-preview:") {
+		t.Fatalf("summary=%q", sum)
+	}
+}
+
+func TestSharedLoopStatusIncludesAdaptivePrompt(t *testing.T) {
+	// Ensure status payload always has adaptivePrompt object (may be zeroed).
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		SharedAgentLoopEnabled:  true,
+		SharedAgentLoopMigrated: true,
+	})
+	t.Setenv("MACLAW_SHARED_AGENT_LOOP", "")
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{"shared-loop", "status", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("status: %v stderr=%s", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, stdout.String())
+	}
+	ap, ok := out["adaptivePrompt"].(map[string]any)
+	if !ok || ap == nil {
+		t.Fatalf("missing adaptivePrompt: %s", stdout.String())
+	}
+	if _, ok := ap["lightTurns"]; !ok {
+		t.Fatalf("adaptivePrompt fields incomplete: %#v", ap)
+	}
+	if _, ok := ap["estTokensSaved"]; !ok {
+		t.Fatalf("missing estTokensSaved: %#v", ap)
+	}
+	if ap["envKey"] != agent.PromptProfileEnvKey {
+		t.Fatalf("envKey=%v want %s", ap["envKey"], agent.PromptProfileEnvKey)
+	}
+	if _, ok := ap["envOverride"]; !ok {
+		t.Fatalf("missing envOverride: %#v", ap)
+	}
+}
+
+func TestSharedLoopStatsExposesEnvOverride(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		SharedAgentLoopEnabled:  true,
+		SharedAgentLoopMigrated: true,
+	})
+	t.Setenv(agent.PromptProfileEnvKey, "full")
+	agent.ResetPromptProfileStatsForTest()
+
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{"shared-loop", "stats", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("stats: %v stderr=%s", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, stdout.String())
+	}
+	ap, _ := out["adaptivePrompt"].(map[string]any)
+	if ap == nil {
+		t.Fatalf("missing adaptivePrompt: %s", stdout.String())
+	}
+	if ap["envOverride"] != true {
+		t.Fatalf("envOverride=%v want true: %#v", ap["envOverride"], ap)
+	}
+	if ap["forcedProfile"] != "full" {
+		t.Fatalf("forcedProfile=%v want full", ap["forcedProfile"])
+	}
+	if sum, _ := ap["summary"].(string); !strings.Contains(sum, agent.PromptProfileEnvKey+"=full") {
+		t.Fatalf("summary missing env force: %q", sum)
+	}
+}
+
+func TestSharedLoopExportAndMerge(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		SharedAgentLoopEnabled:  true,
+		SharedAgentLoopMigrated: true,
+	})
+	agent.ResetPromptProfileStatsForTest()
+	agent.RecordPromptProfileDecision(agent.PromptProfileDecision{
+		Profile:     agent.PromptProfileLight,
+		FullTokens:  4000,
+		LightTokens: 1000,
+		Task:        "fast",
+	})
+	agent.RecordLightToolDeny("bash")
+
+	dir := t.TempDir()
+	outA := filepath.Join(dir, "a.json")
+	var stdout, stderr bytes.Buffer
+	c := testCLI(&stdout, &stderr)
+	if err := c.run([]string{"shared-loop", "export", "--config", cfgPath, "--out", outA, "--pretty=false"}); err != nil {
+		t.Fatalf("export: %v stderr=%s", err, stderr.String())
+	}
+	var expOut map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &expOut); err != nil {
+		t.Fatalf("decode export: %v: %s", err, stdout.String())
+	}
+	if expOut["action"] != "export" {
+		t.Fatalf("action=%v", expOut["action"])
+	}
+	if expOut["written"] != outA {
+		t.Fatalf("written=%v", expOut["written"])
+	}
+
+	// Second synthetic export for merge.
+	outB := filepath.Join(dir, "b.json")
+	b := agent.PromptProfileExport{
+		SchemaVersion: 1,
+		ExportedAt:    "2099-01-01T00:00:00Z",
+		Host:          "other-host",
+		Stats: agent.PromptProfileStats{
+			LightTurns:     1,
+			FullTurns:      2,
+			EstTokensSaved: 100,
+			LightUpgrades:  1,
+		},
+	}
+	if err := agent.WritePromptProfileExport(outB, b); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := c.run([]string{"shared-loop", "merge-exports", outA, outB, "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("merge: %v stderr=%s", err, stderr.String())
+	}
+	var mergeOut map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &mergeOut); err != nil {
+		t.Fatalf("decode merge: %v: %s", err, stdout.String())
+	}
+	if mergeOut["action"] != "merge-exports" {
+		t.Fatalf("action=%v", mergeOut["action"])
+	}
+	merged, _ := mergeOut["merged"].(map[string]any)
+	if merged == nil {
+		t.Fatalf("missing merged: %s", stdout.String())
+	}
+	stats, _ := merged["stats"].(map[string]any)
+	if stats == nil {
+		t.Fatalf("missing stats: %#v", merged)
+	}
+	// light 1+1=2, full 0+2=2
+	if n, _ := stats["light_turns"].(float64); n != 2 {
+		t.Fatalf("light_turns=%v stats=%#v", stats["light_turns"], stats)
+	}
+	if n, _ := stats["full_turns"].(float64); n != 2 {
+		t.Fatalf("full_turns=%v", stats["full_turns"])
+	}
+}
+
+func TestCLICostAndDenialPause(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{DailyLLMBudgetUSD: 3.5})
+	security.ResetProcessDenialLedgerForTest()
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{"cost", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("cost: %v %s", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["action"] != "cost" {
+		t.Fatalf("%#v", out)
+	}
+	if out["dailyBudgetUSD"] != 3.5 && out["dailyBudgetUSD"] != float64(3.5) {
+		t.Fatalf("budget=%#v", out["dailyBudgetUSD"])
+	}
+	if _, ok := out["llmCostDaily"]; !ok {
+		t.Fatalf("expected llmCostDaily in cost payload: %#v", out)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := testCLI(&stdout, &stderr).run([]string{"denial-pause", "clear", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("denial-pause: %v", err)
+	}
+}
+
+func TestNormalizeHubBaseURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"https://hub.example", "https://hub.example"},
+		{"https://hub.example/", "https://hub.example"},
+		{"https://hub.example/api", "https://hub.example"},
+		{"https://hub.example/api/", "https://hub.example"},
+		{"https://hub.example/api/admin", "https://hub.example"},
+		{"https://hub.example/api/admin/adaptive-prompt/metrics", "https://hub.example"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := normalizeHubBaseURL(tc.in); got != tc.want {
+			t.Fatalf("normalizeHubBaseURL(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSharedLoopHubMetrics(t *testing.T) {
+	var gotAuth, gotTenant string
+	paths := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		paths[r.URL.Path]++
+		gotTenant = r.URL.Query().Get("tenant_id")
+		if r.Method != http.MethodGet {
+			t.Errorf("method=%s", r.Method)
+		}
+		switch r.URL.Path {
+		case "/api/admin/cost-ops/metrics":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":                  true,
+				"online_machines":     3,
+				"machines_with_stats": 1,
+				"totals": map[string]any{
+					"route_decisions": 12,
+					"daily_cost_usd":  0.5,
+				},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":                  true,
+				"online_machines":     3,
+				"machines_with_stats": 2,
+				"totals": map[string]any{
+					"light_turns": 10,
+					"full_turns":  5,
+				},
+			})
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		RemoteHubURL: server.URL + "/",
+	})
+	t.Setenv("MACLAW_HUB_ADMIN_TOKEN", "")
+	t.Setenv("MACLAW_ADMIN_TOKEN", "")
+	t.Setenv("MACLAW_HUB_URL", "")
+
+	var stdout, stderr bytes.Buffer
+	if err := testCLI(&stdout, &stderr).run([]string{
+		"shared-loop", "hub-metrics",
+		"--config", cfgPath,
+		"--admin-token", "admin-jwt",
+		"--tenant", "tenant_acme",
+		"--pretty=false",
+	}); err != nil {
+		t.Fatalf("hub-metrics: %v stderr=%s", err, stderr.String())
+	}
+	if gotAuth != "Bearer admin-jwt" {
+		t.Fatalf("Authorization=%q", gotAuth)
+	}
+	if paths["/api/admin/adaptive-prompt/metrics"] != 1 {
+		t.Fatalf("adaptive path hits=%v", paths)
+	}
+	if paths["/api/admin/cost-ops/metrics"] != 1 {
+		t.Fatalf("cost-ops path hits=%v", paths)
+	}
+	if gotTenant != "tenant_acme" {
+		t.Fatalf("tenant=%q", gotTenant)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v: %s", err, stdout.String())
+	}
+	if out["action"] != "hub-metrics" {
+		t.Fatalf("action=%v", out["action"])
+	}
+	metrics, _ := out["metrics"].(map[string]any)
+	if metrics == nil {
+		t.Fatalf("missing metrics: %s", stdout.String())
+	}
+	if n, _ := metrics["online_machines"].(float64); n != 3 {
+		t.Fatalf("online_machines=%v", metrics["online_machines"])
+	}
+	costOps, _ := out["costOps"].(map[string]any)
+	if costOps == nil {
+		t.Fatalf("missing costOps: %s", stdout.String())
+	}
+	if ok, _ := costOps["ok"].(bool); !ok {
+		t.Fatalf("costOps=%#v", costOps)
+	}
+}
+
+func TestSharedLoopHubMetricsRequiresToken(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		RemoteHubURL: "https://hub.example",
+	})
+	t.Setenv("MACLAW_HUB_ADMIN_TOKEN", "")
+	t.Setenv("MACLAW_ADMIN_TOKEN", "")
+	var stdout, stderr bytes.Buffer
+	err := testCLI(&stdout, &stderr).run([]string{"shared-loop", "hub-metrics", "--config", cfgPath, "--pretty=false"})
+	if err == nil {
+		t.Fatal("expected error without admin token")
+	}
+	if !strings.Contains(err.Error(), "admin token") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSharedLoopStatsAndReset(t *testing.T) {
+	cfgPath := writeConfig(t, corelib.AppConfig{
+		SharedAgentLoopEnabled:  true,
+		SharedAgentLoopMigrated: true,
+	})
+	// Seed counters in this process (CLI shares agent package state).
+	agent.ResetPromptProfileStatsForTest()
+	agent.RecordPromptProfileSavings(agent.PromptProfileLight, 4000, 1000)
+
+	var stdout, stderr bytes.Buffer
+	c := testCLI(&stdout, &stderr)
+	if err := c.run([]string{"shared-loop", "stats", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("stats: %v stderr=%s", err, stderr.String())
+	}
+	var stats map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats: %v: %s", err, stdout.String())
+	}
+	if stats["action"] != "stats" {
+		t.Fatalf("action=%v", stats["action"])
+	}
+	ap, _ := stats["adaptivePrompt"].(map[string]any)
+	if ap == nil {
+		t.Fatalf("missing adaptivePrompt: %s", stdout.String())
+	}
+	// lightTurns may be float64 from JSON
+	if n, _ := ap["estTokensSaved"].(float64); n < 3000 {
+		t.Fatalf("estTokensSaved=%v out=%s", ap["estTokensSaved"], stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := c.run([]string{"shared-loop", "stats-reset", "--config", cfgPath, "--pretty=false"}); err != nil {
+		t.Fatalf("stats-reset: %v", err)
+	}
+	var reset map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &reset); err != nil {
+		t.Fatalf("decode reset: %v: %s", err, stdout.String())
+	}
+	if reset["action"] != "stats-reset" || reset["changed"] != true {
+		t.Fatalf("reset=%s", stdout.String())
+	}
+	ap2, _ := reset["adaptivePrompt"].(map[string]any)
+	if ap2 == nil {
+		t.Fatal("missing adaptivePrompt after reset")
+	}
+	if n, _ := ap2["lightTurns"].(float64); n != 0 {
+		t.Fatalf("lightTurns after reset=%v", ap2["lightTurns"])
+	}
+	if n, _ := ap2["estTokensSaved"].(float64); n != 0 {
+		t.Fatalf("estTokensSaved after reset=%v", ap2["estTokensSaved"])
 	}
 }
 

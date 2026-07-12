@@ -3,7 +3,9 @@ package structureddata
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,9 +20,15 @@ import (
 // This tests the theoretical limits of SQLite WAL mode with our read/write pool separation.
 //
 // On a typical machine this should complete within 120 seconds with zero errors.
+//
+// Opt-in only: launching 105k goroutines is a stress probe, not a unit gate.
+// Run with DATASRV_EXTREME_CONCURRENCY=1 when intentionally load-testing SQLite.
 func TestExtremeConcurrency_100kReads_5kWrites(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping extreme concurrency test in short mode")
+	}
+	if strings.TrimSpace(os.Getenv("DATASRV_EXTREME_CONCURRENCY")) == "" {
+		t.Skip("skipping extreme concurrency stress test; set DATASRV_EXTREME_CONCURRENCY=1 to run")
 	}
 
 	// Use high-performance options: 32 read connections, 256 MB cache, 1 GB mmap.
@@ -256,7 +264,7 @@ func TestExtremeConcurrency_100kReads_5kWrites(t *testing.T) {
 	if missing > 0 {
 		t.Errorf("DATA INTEGRITY: %d/%d spot-check records missing", missing, verifyCount)
 	} else {
-		t.Logf("Data integrity: %d/%d spot-check records verified ✓", verifyCount, verifyCount)
+		t.Logf("Data integrity: %d/%d spot-check records verified", verifyCount, verifyCount)
 	}
 }
 
@@ -274,7 +282,7 @@ func isExtremeBusyError(err error) bool {
 
 func passOrFail(ok bool) string {
 	if ok {
-		return "✓"
+		return "PASS"
 	}
-	return "✗"
+	return "FAIL"
 }

@@ -16,9 +16,9 @@ MacLaw 内置的纯 Go 语音合成引擎，用于中文语音回复。不依赖
 
 | 模型 | 架构 | 中文支持 | 纯 Go 可行性 | 问题 |
 |------|------|---------|-------------|------|
-| MeloTTS (MyShell AI) | VITS 变体 | ✅ | ❌ | 中文需要 1.3GB BERT 模型做韵律增强，不可接受 |
-| Piper (rhasspy) | VITS | ✅ | ✅ | 无 BERT 依赖，拼音音素，模型 60MB |
-| sherpa-onnx | VITS/MMS | ✅ | ❌ | 依赖 ONNX Runtime C 库 |
+| MeloTTS (MyShell AI) | VITS 变体 | | | 中文需要 1.3GB BERT 模型做韵律增强，不可接受 |
+| Piper (rhasspy) | VITS | | | 无 BERT 依赖，拼音音素，模型 60MB |
+| sherpa-onnx | VITS/MMS | | | 依赖 ONNX Runtime C 库 |
 
 ### 2.2 选定模型：Piper xiao_ya
 

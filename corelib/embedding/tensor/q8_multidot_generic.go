@@ -39,6 +39,12 @@ func q8DualMultiDot4T(out *[8]float32, a []float32, t *Q8Tensor, row0, row1, nBl
 	q8DualMultiDot4(out, a, t.Data, row0, row1, nBlocks, K)
 }
 
+func q8DualMultiDot2T(out *[4]float32, a []float32, t *Q8Tensor, row0, row1, nBlocks, K int) {
+	s0, s1 := DotQ8RowDualScaled(a[:K], t, row0, row1)
+	t0, t1 := DotQ8RowDualScaled(a[K:2*K], t, row0, row1)
+	out[0], out[1], out[2], out[3] = s0, t0, s1, t1
+}
+
 func q8DualMultiDot8(out0, out1 *[8]float32, a []float32, data []byte, row0, row1, nBlocks, K int) {
 	q8DualMultiDot4(out0, a[:4*K], data, row0, row1, nBlocks, K)
 	q8DualMultiDot4(out1, a[4*K:8*K], data, row0, row1, nBlocks, K)

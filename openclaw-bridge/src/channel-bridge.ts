@@ -65,9 +65,9 @@ export class ChannelBridge {
       if (!channelCfg.enabled) continue;
       try {
         await this.loadChannel(channelId, channelCfg);
-        console.log(`[bridge] ✓ channel "${channelId}" loaded`);
+        console.log(`[bridge] channel "${channelId}" loaded`);
       } catch (err) {
-        console.error(`[bridge] ✗ failed to load channel "${channelId}":`, err);
+        console.error(`[bridge] failed to load channel "${channelId}":`, err);
       }
     }
   }

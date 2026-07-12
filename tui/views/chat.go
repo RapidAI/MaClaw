@@ -270,16 +270,16 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 			if idx := m.lastAssistantAfterUser(); idx >= 0 && idx == len(m.messages)-1 {
 				m.messages = m.messages[:len(m.messages)-1]
 			}
-			m.messages = append(m.messages, ChatMessage{Role: "system", Content: "🔧 " + msg.Tool + "..."})
+			m.messages = append(m.messages, ChatMessage{Role: "system", Content: msg.Tool + "..."})
 		case "tool_result":
 			// Update the last tool message with result status and optional elapsed time.
 			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].Role == "system" && strings.HasPrefix(m.messages[i].Content, "🔧 "+msg.Tool) {
-					suffix := " ✓"
+				if m.messages[i].Role == "system" && strings.HasPrefix(m.messages[i].Content, msg.Tool) {
+					suffix := " OK"
 					if msg.Content != "" {
-						suffix = " ✓ " + msg.Content
+						suffix = " OK " + msg.Content
 					}
-					m.messages[i].Content = "🔧 " + msg.Tool + suffix
+					m.messages[i].Content = msg.Tool + suffix
 					break
 				}
 			}
@@ -531,15 +531,16 @@ func (m ChatModel) renderLines() []string {
 			prefix = "  "
 			style = sysStyle
 			// 工具调用消息用特殊颜色
-			if strings.HasPrefix(msg.Content, "🔧") {
+			if strings.HasPrefix(msg.Content, "") {
 				style = toolStyle
 			}
 		}
 
 		// Assistant messages: render Markdown with syntax highlighting.
+		// Display policy: strip line-leading decorative pictographs (not stored content).
 		if msg.Role == "assistant" {
 			lines = append(lines, assistStyle.Render(prefix))
-			mdLines := RenderMarkdown(msg.Content, maxWidth-2)
+			mdLines := RenderMarkdown(PrepareChatBodyForDisplay(msg.Content), maxWidth-2)
 			for _, ml := range mdLines {
 				lines = append(lines, truncateToWidthVisible("  "+ml, maxWidth))
 			}
@@ -628,13 +629,13 @@ func (m ChatModel) hasUserMessages() bool {
 	return false
 }
 
-// cleanupToolMessages 移除末尾连续的工具调用中间消息（🔧 开头的 system 消息）。
+// cleanupToolMessages 移除末尾连续的工具调用中间消息（开头的 system 消息）。
 // 在最终 assistant 回复到达时调用，避免工具调用噪音残留。
 func (m *ChatModel) cleanupToolMessages() {
 	// 从末尾向前扫描，移除连续的工具消息
 	for len(m.messages) > 0 {
 		last := m.messages[len(m.messages)-1]
-		if last.Role == "system" && strings.HasPrefix(last.Content, "🔧") {
+		if last.Role == "system" && strings.HasPrefix(last.Content, "") {
 			m.messages = m.messages[:len(m.messages)-1]
 		} else {
 			break
@@ -739,7 +740,7 @@ func (m ChatModel) View() string {
 			if len([]rune(preview)) > 40 {
 				preview = string([]rune(preview)[:40]) + "..."
 			}
-			label := fmt.Sprintf("  📋 %d. %s", i+1, preview)
+			label := fmt.Sprintf("  %d. %s", i+1, preview)
 			if m.queueActive && i == m.queueCursor {
 				b.WriteString(selectedStyle.Render(fitDisplay(label, max(1, m.width-2))) + "\n")
 			} else {
@@ -777,7 +778,7 @@ func (m ChatModel) View() string {
 		if pct > 100 {
 			pct = 100
 		}
-		scrollInfo = fmt.Sprintf("  ↕%d%%", pct)
+		scrollInfo = fmt.Sprintf("  %d%%", pct)
 	}
 
 	statusText := fmt.Sprintf("%s  [%s]  %s%s", hint, modeLabel, i18n.Tf(i18n.MsgTUIChatMessageCount, m.lang, len(m.messages)-1), scrollInfo)

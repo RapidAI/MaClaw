@@ -69,7 +69,7 @@ docker-compose -f docker-compose.dev.yml up
 4. Push your branch
 5. Open a Pull Request
 
-> 💡 If you modify files under `webui/`, no manual build is needed — CI handles it automatically.
+> If you modify files under `webui/`, no manual build is needed — CI handles it automatically.
 
 ## Build WebUI
 

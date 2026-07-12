@@ -131,10 +131,10 @@ func (ic *IntentClassifier) Classify(text string) IntentResult
 ## 5. 验收标准
 
 - 基准测试准确率 ≥ 85%（Layer 1 + Layer 2 组合）→ 实际达到 98%（49/50）
-- 问句模式误报（"什么是X"被当作操作意图）降为 0 → ✅ 全部 9 个问句 case 正确
-- 延迟 < 30ms（不含 LLM 层）→ ✅ Layer 1 ~0ms, Layer 2 ~20ms
+- 问句模式误报（"什么是X"被当作操作意图）降为 0 → 全部 9 个问句 case 正确
+- 延迟 < 30ms（不含 LLM 层）→ Layer 1 ~0ms, Layer 2 ~20ms
 - 现有 `router_bm25_test.go` 不受影响（pre-existing failure 与本改动无关）
-- 新增 `intent_classifier_test.go` 覆盖 50 个测试用例 → ✅ 全部通过
+- 新增 `intent_classifier_test.go` 覆盖 50 个测试用例 → 全部通过
 
 ## 6. 测试结果（2026-04-14）
 

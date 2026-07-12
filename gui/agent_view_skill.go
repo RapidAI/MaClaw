@@ -105,7 +105,7 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 		a.clearAgentView("skill:run:" + skillName)
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("✅ Skill「%s」已从任务面板启动\n", skillName))
+	b.WriteString(fmt.Sprintf("Skill「%s」已从任务面板启动\n", skillName))
 	appendSkillRunSummary(&b, status, runID)
 	return &IMAgentResponse{Text: strings.TrimRight(b.String(), "\n"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
@@ -197,7 +197,7 @@ func skillRunParameterContract(skill *corelib.NLSkillEntry, vars map[string]stri
 	}
 	selectedSteps, err := cskill.ResolveSelectedStepLabels(skill, runArgs)
 	if err != nil {
-		params := cskill.CompleteParamsForRunner(skill.Params, skill.Steps, skill.RequiredArgs)
+		params := cskill.CompleteParamsForSkill(skill)
 		if skillNeedsOperationChoice(skill, runArgs) {
 			params = ensureSkillOperationParam(params)
 			return params, []string{"operation"}
@@ -209,6 +209,11 @@ func skillRunParameterContract(skill *corelib.NLSkillEntry, vars map[string]stri
 		executionSteps = skill.Steps
 	}
 	params := cskill.CompleteParamsForRunner(skill.Params, executionSteps, skill.RequiredArgs)
+	params = cskill.EnrichParamsFromSkillDir(params, skill.SkillDir)
+	if content := strings.TrimSpace(skill.Content); content != "" {
+		params = cskill.EnrichParamsFromDoc(params, content)
+	}
+	params = cskill.ApplyCommonParamDescriptionFallbacks(params)
 	missingSet := map[string]bool{}
 	for _, item := range cskill.MissingRunRequiredArgs(skill.RequiredArgs, params, vars) {
 		missingSet[item] = true
@@ -426,7 +431,7 @@ func skillAgentViewFields(params []corelib.NLSkillParam, missing []string, runAr
 			continue
 		}
 		seen[name] = true
-		fieldType := skillAgentViewFieldType(name, param.Description)
+		fieldType := skillAgentViewFieldTypeFromParam(param)
 		field := map[string]interface{}{
 			"name":        name,
 			"label":       skillAgentViewFieldLabel(name),
@@ -696,6 +701,21 @@ func skillOperationsWithLabels(operations []corelib.NLSkillOperation) []corelib.
 
 func skillAgentViewFieldType(name, description string) string {
 	return inferSkillAgentViewFieldKind(name, description).FieldType().String()
+}
+
+// skillAgentViewFieldTypeFromParam prefers declared JSON Schema type on the
+// param contract, then falls back to name/description heuristics.
+func skillAgentViewFieldTypeFromParam(param corelib.NLSkillParam) string {
+	switch strings.ToLower(strings.TrimSpace(param.Type)) {
+	case "number", "integer":
+		return agentViewFieldTypeNumber.String()
+	case "boolean":
+		return agentViewFieldTypeBoolean.String()
+	case "array":
+		// Multi-value text is the safest form control for free-form arrays.
+		return agentViewFieldTypeTextarea.String()
+	}
+	return skillAgentViewFieldType(param.Name, param.Description)
 }
 
 func skillAgentViewFieldHints(param corelib.NLSkillParam, fieldType string) map[string]interface{} {

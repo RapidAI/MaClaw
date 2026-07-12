@@ -91,7 +91,7 @@
 3. WHEN a task's coding is complete, THE MaClaw_Agent SHALL instruct the Remote_Coding_Tool to run the corresponding TDD_Test_Case to verify the task
 4. IF a TDD_Test_Case fails, THEN THE MaClaw_Agent SHALL instruct the Remote_Coding_Tool to fix the issue and re-run the test, up to 3 retry attempts
 5. IF a task fails after 3 retry attempts, THEN THE MaClaw_Agent SHALL record the failure, skip to the next task, and include the failure in the final verification report
-6. WHILE in Execution_Phase, THE MaClaw_Agent SHALL send progress updates to IM_User after each task completes (e.g., "任务 3/8 完成 ✅" or "任务 4/8 失败 ❌")
+6. WHILE in Execution_Phase, THE MaClaw_Agent SHALL send progress updates to IM_User after each task completes (e.g., "任务 3/8 完成 " or "任务 4/8 失败 ")
 
 ### Requirement 6: 完成检查阶段（Verification Phase）
 

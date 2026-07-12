@@ -19,6 +19,51 @@ func openTestCodingStore(t *testing.T) *CodingKnowledgeStore {
 	return store
 }
 
+func TestCodingKnowledgeStore_UpdatePreservesID(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+
+	saved, err := store.SaveExperience(ctx, CodingExperience{
+		Title:            "timeouts matter",
+		Category:         CodingCategoryPattern,
+		Scope:            CodingScopeLanguage,
+		Language:         "go",
+		TriggerCondition: "http timeout",
+		Content:          "Always set client timeouts.",
+		Status:           CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	if err := store.UpdateConfidence(ctx, saved.ID, true); err != nil {
+		t.Fatalf("UpdateConfidence: %v", err)
+	}
+
+	updated := saved
+	updated.Title = "timeouts still matter"
+	updated.Content = "Always set client timeouts and cancel contexts."
+	if err := store.UpdateExperience(ctx, updated); err != nil {
+		t.Fatalf("UpdateExperience: %v", err)
+	}
+
+	got, err := store.GetExperience(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("GetExperience after update: %v", err)
+	}
+	if got.ID != saved.ID {
+		t.Fatalf("id changed: %q -> %q", saved.ID, got.ID)
+	}
+	if got.Title != "timeouts still matter" {
+		t.Fatalf("title = %q", got.Title)
+	}
+	if got.Content == "" || got.Content == saved.Content {
+		t.Fatalf("content not updated: %q", got.Content)
+	}
+	if got.RecallCount < 1 {
+		t.Fatalf("expected recall stats preserved, got %+v", got)
+	}
+}
+
 func TestCodingKnowledgeStore_SaveAndGet(t *testing.T) {
 	store := openTestCodingStore(t)
 	ctx := context.Background()

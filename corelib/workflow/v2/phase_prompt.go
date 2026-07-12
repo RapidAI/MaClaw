@@ -150,7 +150,7 @@ func BuildPhasePrompt(state *WorkflowState) string {
 
 	// Inject form data as structured context (when phase has InputSchema + user submitted form)
 	if phase.FormData != nil && len(phase.FormData) > 0 {
-		sb.WriteString("## ⚠️ 用户提供的结构化信息（必须使用，禁止再询问）\n\n")
+		sb.WriteString("## 用户提供的结构化信息（必须使用，禁止再询问）\n\n")
 		sb.WriteString("以下信息由用户通过表单提交，请**直接基于这些信息**生成本阶段文档。禁止向用户重复索要这些已提供的信息：\n\n")
 		// Inject active variant label (tells the LLM which input mode to use).
 		if phase.InputSchema != nil {
@@ -182,7 +182,7 @@ func BuildPhasePrompt(state *WorkflowState) string {
 			}
 		}
 		if hasPriorFormData {
-			sb.WriteString("## ⚠️ 工作流已收集的结构化信息（必须继承，禁止重复询问）\n\n")
+			sb.WriteString("## 工作流已收集的结构化信息（必须继承，禁止重复询问）\n\n")
 			sb.WriteString("以下信息已在前序阶段由用户确认；请直接继承并使用，除非用户明确要求修改。\n\n")
 			for i := 0; i < state.CurrentPhase && i < len(state.Phases); i++ {
 				prior := &state.Phases[i]
@@ -220,7 +220,7 @@ func BuildPhasePrompt(state *WorkflowState) string {
 		sort.Strings(suppNames)
 		for _, name := range suppNames {
 			content := state.SupplementaryDocs[name]
-			sb.WriteString(fmt.Sprintf("### 📄 %s\n\n", name))
+			sb.WriteString(fmt.Sprintf("### %s\n\n", name))
 			runes := []rune(content)
 			if len(runes) > perDocBudget {
 				sb.WriteString(string(runes[:perDocBudget]))
@@ -576,7 +576,7 @@ func phaseInstruction(workflowType WorkflowType, phaseID string) string {
 - 边界情况
 - 验收标准
 
-信息不足的部分标记为「⚠️ 待确认」。直接生成文档，不要先问澄清问题。
+信息不足的部分标记为「待确认」。直接生成文档，不要先问澄清问题。
 
 ## 重要约束（违反将导致错误）
 - 只生成一份需求文档，输出完毕后立即停止。
@@ -765,7 +765,7 @@ Reference the task breakdown explicitly so CodingSubAgent knows which task to ex
 
 这是最终 PPT 产物生成阶段，必须实际生成可下载的 .pptx 文件，不要只输出 Markdown 文案，也不要把最终交付降级为 PDF。
 
-⚠️ 关键约束——分步写入，禁止单次大输出：
+关键约束——分步写入，禁止单次大输出：
 由于模型输出长度限制，一次 tool call 中写入超过 3000 字符的内容会被系统截断导致失败。
 你必须按以下模式分步执行：
 1. 先用 write_file 写入一个 Python 生成脚本（< 2500 字符），该脚本内嵌少量页面数据或读取外部数据。
@@ -802,11 +802,11 @@ title: 第2页标题
 - 只有在已有 Skill、安装 Skill、手动脚本生成都明确失败时，才说明失败原因。
 
 禁止事项：
-- ❌ 禁止在单次 write_file/bash/craft_tool 的参数中放入超过 2500 字符的内容——会被截断！
-- ❌ 禁止把完整 Python 脚本（含所有页面数据）塞进一个 tool call。
-- ❌ 禁止只承诺“将生成 PPT”但不调用工具。
-- ❌ 禁止只调用 generate_pdf 生成 PDF 作为最终结果。
-- ❌ 禁止输出“完整 PPT 内容如下”后停止；本阶段的完成标准是实际 .pptx 文件已生成并发送。
+- 禁止在单次 write_file/bash/craft_tool 的参数中放入超过 2500 字符的内容——会被截断！
+- 禁止把完整 Python 脚本（含所有页面数据）塞进一个 tool call。
+- 禁止只承诺“将生成 PPT”但不调用工具。
+- 禁止只调用 generate_pdf 生成 PDF 作为最终结果。
+- 禁止输出“完整 PPT 内容如下”后停止；本阶段的完成标准是实际 .pptx 文件已生成并发送。
 `
 
 	case "problem_discovery":
@@ -1246,10 +1246,10 @@ title: 第2页标题
 
 通知必须通过 IM 通道（飞书/微信/QQ）推送，确保用户不在电脑前也能收到。使用 ask_user 工具发送通知——系统会自动将消息推送到用户绑定的 IM 通道（飞书/微信/QQ）。
 
-1. **达成目标**：主指标超越论文 ≥ 目标超出值 → 推送通知"🎉 目标达成！当前最佳 XX.X%（论文 YY.Y%，超出 +Z.Z%）"，询问是继续冲击更高结果还是生成报告
-2. **时间到期**：累计运行时间 ≥ 最大运行时间 → 推送通知"⏰ 时间到期（已运行 Nh）。当前最佳 XX.X%，共完成 N 轮"，询问是延长还是停止
-3. **平台期**：连续 N 轮主指标无改善（波动 < 0.1%）→ 推送通知"📊 遇到平台期（连续 N 轮无进展）。当前 XX.X%，已尝试：[方向列表]"，请求用户给出新方向
-4. **轮数用尽**：完成最大改进轮数 → 推送通知"🔄 已完成全部 N 轮改进。最佳 XX.X%（基线 YY.Y%）"
+1. **达成目标**：主指标超越论文 ≥ 目标超出值 → 推送通知"目标达成！当前最佳 XX.X%（论文 YY.Y%，超出 +Z.Z%）"，询问是继续冲击更高结果还是生成报告
+2. **时间到期**：累计运行时间 ≥ 最大运行时间 → 推送通知"时间到期（已运行 Nh）。当前最佳 XX.X%，共完成 N 轮"，询问是延长还是停止
+3. **平台期**：连续 N 轮主指标无改善（波动 < 0.1%）→ 推送通知"遇到平台期（连续 N 轮无进展）。当前 XX.X%，已尝试：[方向列表]"，请求用户给出新方向
+4. **轮数用尽**：完成最大改进轮数 → 推送通知"已完成全部 N 轮改进。最佳 XX.X%（基线 YY.Y%）"
 
 通知格式要求：
 - 第一行：关键数据（指标值、对比），用户扫一眼就知道状态
@@ -1700,7 +1700,7 @@ bash(command="powershell -ExecutionPolicy Bypass -File OUTPUT_DIR/md2docx_desc.p
 
 **方式 A：SVG 文件（首选，系统自动转 PNG）**
 用 write_file 将 SVG 源码写入项目目录下的 .svg 文件（如 图1-系统架构.svg）。
-⚠️ **系统会自动将 SVG 转换为同名 PNG 文件**（write_file 写入 .svg 时自动触发转换），无需手动执行任何转换命令。
+**系统会自动将 SVG 转换为同名 PNG 文件**（write_file 写入 .svg 时自动触发转换），无需手动执行任何转换命令。
 SVG 规范要求：
 - **必须使用纯黑白**：stroke="#000" fill="none" 或 fill="#fff"，禁止彩色/渐变
 - **文字用数字标记**：<text> 中只写阿拉伯数字（1、2、3...），不写中文
@@ -1794,22 +1794,22 @@ SVG 规范要求：
 生成文档内容：
 1. **按专利类型生成完整申请文件清单（必须严格区分）**：
    - 发明专利（patent_type=invention）：
-     - ☐ 请求书
-     - ☐ 说明书
-     - ☐ 权利要求书
-     - ☐ 摘要
-     - ☐ 附图（必要时提供；如技术方案无图也必须在检查报告中说明“无附图”）
+     - [ ] 请求书
+     - [ ] 说明书
+     - [ ] 权利要求书
+     - [ ] 摘要
+     - [ ] 附图（必要时提供；如技术方案无图也必须在检查报告中说明“无附图”）
    - 实用新型（patent_type=utility_model）：
-     - ☐ 请求书
-     - ☐ 说明书
-     - ☐ 权利要求书
-     - ☐ 摘要
-     - ☐ 附图（必须提供）
+     - [ ] 请求书
+     - [ ] 说明书
+     - [ ] 权利要求书
+     - [ ] 摘要
+     - [ ] 附图（必须提供）
    - 外观设计（patent_type=design）：
-     - ☐ 请求书
-     - ☐ 外观设计图片或照片
-     - ☐ 简要说明
-     - ☐ 不生成权利要求书、说明书、摘要；如前序阶段已有这些草稿，仅作为内部参考，不列为提交产物
+     - [ ] 请求书
+     - [ ] 外观设计图片或照片
+     - [ ] 简要说明
+     - [ ] 不生成权利要求书、说明书、摘要；如前序阶段已有这些草稿，仅作为内部参考，不列为提交产物
 2. **摘要/简要说明**：
    - 发明专利、实用新型：生成摘要（300 字以内）
      - 写明发明创造名称、技术领域、技术问题、主要技术特征和用途

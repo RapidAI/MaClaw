@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -39,7 +38,16 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 		if draftID != "" {
 			mobileDocuments.Lock()
 			record, ok := mobileDocuments.drafts[draftID]
+			repaired := false
+			if ok && mobileDraftRepairSourceMeta(&record) {
+				mobileDocuments.drafts[draftID] = record
+				repaired = true
+			}
 			mobileDocuments.Unlock()
+			if repaired {
+				// Drop dead blob paths from state.json so restarts do not revive them.
+				mobilePersistState()
+			}
 			if !ok || record.OwnerID != ownerID {
 				writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 				return
@@ -60,13 +68,21 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 
 		mobileDocuments.Lock()
 		items := make([]mobileDocumentDraftRecord, 0)
-		for _, rec := range mobileDocuments.drafts {
+		repaired := false
+		for id, rec := range mobileDocuments.drafts {
 			if rec.OwnerID != ownerID {
 				continue
+			}
+			if mobileDraftRepairSourceMeta(&rec) {
+				mobileDocuments.drafts[id] = rec
+				repaired = true
 			}
 			items = append(items, rec)
 		}
 		mobileDocuments.Unlock()
+		if repaired {
+			mobilePersistState()
+		}
 
 		sort.SliceStable(items, func(i, j int) bool {
 			return items[i].UpdatedAt.After(items[j].UpdatedAt)
@@ -89,11 +105,11 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				"rune_count": utf8.RuneCountInString(rec.Markdown),
 				"preview":    mobileClipRunes(rec.Markdown, 160),
 			}
-			if n := len(rec.SourceBytes); n > 0 {
+			if mobileDraftHasOriginal(rec) {
 				item["has_original"] = true
 				item["source_filename"] = strings.TrimSpace(rec.SourceFilename)
 				item["source_content_type"] = strings.TrimSpace(rec.SourceContentType)
-				item["source_size"] = n
+				item["source_size"] = mobileDraftSourceSize(rec)
 				item["source_download_url"] = "/api/mobile/documents/drafts/" + rec.ID + "/source"
 			} else {
 				item["has_original"] = false
@@ -133,26 +149,57 @@ func MobileDocumentDraftSourceHandler(identity *auth.IdentityService) http.Handl
 		ownerID := mobilePrincipalOwnerID(principal)
 		mobileDocuments.Lock()
 		record, ok := mobileDocuments.drafts[draftID]
+		repaired := false
+		if ok && mobileDraftRepairSourceMeta(&record) {
+			mobileDocuments.drafts[draftID] = record
+			repaired = true
+		}
+		// Snapshot for streaming outside the lock. Prefer disk path: skip cloning
+		// SourceBytes when a blob path is present (avoids extra multi-MB copy).
+		path := record.SourcePath
+		var mem []byte
+		if strings.TrimSpace(path) == "" && len(record.SourceBytes) > 0 {
+			mem = append([]byte(nil), record.SourceBytes...)
+		}
+		contentType := record.SourceContentType
+		filename := record.SourceFilename
+		title := record.Title
+		owner := record.OwnerID
+		hasOrig := mobileDraftHasOriginal(record)
 		mobileDocuments.Unlock()
-		if !ok || record.OwnerID != ownerID || len(record.SourceBytes) == 0 {
+		if repaired {
+			mobilePersistState()
+		}
+		if !ok || owner != ownerID || !hasOrig {
 			writeError(w, http.StatusNotFound, "DRAFT_SOURCE_NOT_FOUND", "original file not found for this draft")
 			return
 		}
-		contentType := strings.TrimSpace(record.SourceContentType)
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		filename := strings.TrimSpace(record.SourceFilename)
 		if filename == "" {
-			filename = filepath.Base(record.Title)
+			filename = filepath.Base(title)
 			if filename == "" || filename == "." {
 				filename = draftID
 			}
 		}
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Content-Length", strconv.Itoa(len(record.SourceBytes)))
-		w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filepath.Base(filename)))
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(record.SourceBytes)
+		if !mobileWriteOriginalHTTP(w, contentType, filename, mem, path) {
+			// Clear stale meta only when the blob is confirmed missing — not during
+			// store outages or open errors where the file may still exist.
+			if mobileShouldClearSourceMetaAfterStreamFail(path) {
+				mobileDocuments.Lock()
+				if rec, exists := mobileDocuments.drafts[draftID]; exists && rec.OwnerID == owner {
+					if len(rec.SourceBytes) == 0 {
+						rec.SourcePath = ""
+						rec.SourceSize = 0
+						mobileDocuments.drafts[draftID] = rec
+						mobileDocuments.Unlock()
+						mobilePersistState()
+					} else {
+						mobileDocuments.Unlock()
+					}
+				} else {
+					mobileDocuments.Unlock()
+				}
+			}
+			writeError(w, http.StatusNotFound, "DRAFT_SOURCE_NOT_FOUND", "original file not found for this draft")
+		}
 	}
 }

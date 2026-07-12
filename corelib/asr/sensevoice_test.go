@@ -61,6 +61,69 @@ func TestSenseVoiceLoadModel(t *testing.T) {
 	}
 }
 
+func TestSenseVoiceEncoderBuffersAllocateLogitsLazily(t *testing.T) {
+	m := &SenseVoiceModel{hp: SenseVoiceHParams{
+		VocabSize:   25055,
+		HiddenSize:  512,
+		LinearUnits: 2048,
+		NumHeads:    4,
+		FeatsDim:    svFeatsDim,
+	}}
+	bufs := m.ensureEncBufs(80)
+	if len(bufs.logits) != 0 || cap(bufs.logits) != 0 {
+		t.Fatalf("logits allocated eagerly: len=%d cap=%d", len(bufs.logits), cap(bufs.logits))
+	}
+}
+
+func TestCTCCollapseIDsIntoReusesBuffer(t *testing.T) {
+	buf := make([]int, 0, 8)
+	got := ctcCollapseIDsInto([]int{0, 3, 3, 0, 3, 4, 4}, buf)
+	want := []int{3, 3, 4}
+	if len(got) != len(want) {
+		t.Fatalf("collapsed length = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("collapsed[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+	if &got[0] != &buf[:cap(buf)][0] {
+		t.Fatal("collapse allocated instead of reusing destination capacity")
+	}
+}
+
+func TestSVWriteSentencePieceToken(t *testing.T) {
+	var sb strings.Builder
+	svWriteSentencePieceToken(&sb, "\xe2\x96\x81hello\xe2\x96\x81world")
+	if got, want := sb.String(), " hello world"; got != want {
+		t.Fatalf("SentencePiece token = %q, want %q", got, want)
+	}
+}
+
+func TestSVDetokenizeFusesCJKSpacesAndByteTokens(t *testing.T) {
+	m := &SenseVoiceModel{vocab: []string{
+		"<|zh|>", "\xe2\x96\x81你", "\xe2\x96\x81好", "\xe2\x96\x81world", "<0xE4>", "<0xBD>", "<0xA0>", "\xe2\x96\x81a\xe2\x96\x81\xe2\x96\x81b",
+	}}
+	if got, want := m.svDetokenize([]int{0, 1, 2, 3}), "你好world"; got != want {
+		t.Fatalf("CJK detokenize = %q, want %q", got, want)
+	}
+	if got, want := m.svDetokenize([]int{4, 5, 6}), "你"; got != want {
+		t.Fatalf("split UTF-8 byte tokens = %q, want %q", got, want)
+	}
+	if got, want := m.svDetokenize([]int{7}), "a  b"; got != want {
+		t.Fatalf("ASCII spaces = %q, want %q", got, want)
+	}
+}
+
+func TestRemoveCJKSpaces(t *testing.T) {
+	if got := removeCJKSpaces("hello world"); got != "hello world" {
+		t.Fatalf("non-CJK text changed: %q", got)
+	}
+	if got := removeCJKSpaces("你 好 world"); got != "你好world" {
+		t.Fatalf("CJK spaces not removed: %q", got)
+	}
+}
+
 func TestSenseVoiceTranscribe(t *testing.T) {
 	modelPath := findSenseVoiceModel(t)
 	wavPath := findWAV(t)

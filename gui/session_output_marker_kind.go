@@ -22,7 +22,7 @@ func classifySessionOutputMarker(line string) sessionOutputMarkerKind {
 	switch {
 	case strings.Contains(line, "API retry") || strings.Contains(line, "api_retry"):
 		return sessionOutputMarkerAPIRetry
-	case strings.Contains(line, "❌"):
+	case strings.Contains(line, ""):
 		return sessionOutputMarkerAPIError
 	default:
 		return sessionOutputMarkerNone

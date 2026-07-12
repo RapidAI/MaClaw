@@ -21,7 +21,7 @@ func (s *Store) UpsertRating(ctx context.Context, r *Rating) error {
 	return err
 }
 
-// GetRatingStats 杩斿洖 Skill 鐨勮瘎鍒嗙粺璁★紙鍘婚噸鍚庯級銆?
+// GetRatingStats 杩斿洖 Skill 鐨勮瘎鍒嗙粺璁紙鍘婚噸鍚庯級銆?
 func (s *Store) GetRatingStats(ctx context.Context, skillID string) (*RatingStats, error) {
 	var stats RatingStats
 	stats.SkillID = skillID

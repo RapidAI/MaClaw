@@ -695,7 +695,7 @@ const webConsoleHTML = `<!doctype html>
           <button class="tab" data-tab="dashboards" data-testid="tab-dashboards">Dashboards</button>
           <button class="tab" data-tab="reports" data-testid="tab-reports">Reports</button>
           <div class="nav-group" role="presentation" data-count="7">Security</div>
-          <button class="tab" data-tab="apikeys" data-testid="tab-apikeys">🔑 API Keys</button>
+          <button class="tab" data-tab="apikeys" data-testid="tab-apikeys">API Keys</button>
           <button class="tab" data-tab="admins" data-testid="tab-admins">Admins</button>
           <button class="tab" data-tab="quality" data-testid="tab-quality">Quality</button>
           <button class="tab" data-tab="backups" data-testid="tab-backups">Backups</button>

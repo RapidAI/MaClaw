@@ -261,7 +261,7 @@ func RunGridSearch(cases []CalibrationCase, defs []IntentDefinition,
 
 ## 3. 实现计划
 
-### Phase 1: 统一意图定义 + Intent Tree prompt ✅ 已完成
+### Phase 1: 统一意图定义 + Intent Tree prompt 已完成
 
 **文件变更**：
 - `corelib/intent/fusion_types.go`：新增 `IntentDefinition`、`FusionVerdict`、`FusionResult`、`FusedCandidate`、`FusionConfig`
@@ -270,14 +270,14 @@ func RunGridSearch(cases []CalibrationCase, defs []IntentDefinition,
 - `corelib/intent/fusion.go`：新文件，`MergeAndScore()` 加权融合算法，`Decide()` 三态判决
 - `corelib/intent/keyword_registry.go`：提取 `newKeywordRegistryFromEntries()` 共享构建逻辑
 
-### Phase 2: 并行融合 + 三态判决 ✅ 已完成
+### Phase 2: 并行融合 + 三态判决 已完成
 
 **文件变更**：
 - `corelib/intent/classifier.go`：`Classify()` 改为并行执行 L2+L3 并融合；新增 `classifyWithFusion()`、`embeddingTopK()`、`fusionToClassification()`；`New()` 改为使用 definitions-derived 构造器
 - `corelib/intent/classifier_fusion_test.go`：7 个融合路径测试
 - `corelib/intent/definitions_test.go`：4 个 round-trip 等价性测试
 
-### Phase 3: 工作流意图融合 ✅ 已完成（实现方式与原设计不同）
+### Phase 3: 工作流意图融合 已完成（实现方式与原设计不同）
 
 **实际实现**：没有新增 `LabelWorkflow` 标签。而是通过 `IntentDefinition.MayTriggerWorkflow` + `WorkflowTypes` 字段让现有标签（LabelCoding、LabelOffice）携带工作流元数据。`ClassificationResult.WorkflowType` 字段在融合阶段填充（L3 tree 提供或 degraded mode 从定义推断）。`handleNeedsUnderstanding` 使用 UIC 预检快速拒绝非工作流意图。8 个测试覆盖所有路径。
 
@@ -289,7 +289,7 @@ func RunGridSearch(cases []CalibrationCase, defs []IntentDefinition,
 - `corelib/intent/workflow_type_fallback_test.go`：8 个测试
 - `corelib/intent/workflow_candidate_test.go`：候选标签测试
 
-### Phase 4: 校准工具 ✅ 已完成
+### Phase 4: 校准工具 已完成
 
 **文件变更**：
 - `corelib/intent/calibration.go`：`RunGridSearch()` grid search 实现，`FormatReport()` 报告格式化，支持 embedding-only / tree-only / dual-channel 三种模式

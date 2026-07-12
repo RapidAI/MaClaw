@@ -17,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -84,6 +85,8 @@ type VESessionInfo struct {
 }
 
 // RegisterVirtualEmployee submits a VE registration request to the Hub.
+// Sends durable device_key + auto_reclaim so reinstall rebinds the same twin
+// instead of creating an orphan personal digital twin.
 func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []string, avatarDataURL string) error {
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
@@ -99,6 +102,8 @@ func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []str
 		"skill_description": strings.TrimSpace(skillDesc),
 		"access_policy":     strings.TrimSpace(policy),
 		"avatar_data_url":   avatarDataURL,
+		"twin_slot":         "personal-default",
+		"auto_reclaim":      true,
 	}
 	if policy == "whitelist" {
 		body["whitelist"] = list
@@ -110,15 +115,113 @@ func (a *App) RegisterVirtualEmployee(name, skillDesc, policy string, list []str
 	if approvalCfg, err := a.GetVEApprovalConfig(); err == nil && approvalCfg != nil {
 		body["approval_capability_enabled"] = approvalCfg.Enabled
 	}
+	if deviceKey := a.durableDeviceKey(); deviceKey != "" {
+		body["device_key"] = deviceKey
+	}
 
-	_, err = a.postHubJSON(hubURL, token, "/api/ve/register", body)
+	data, err := a.postHubJSON(hubURL, token, "/api/ve/register", body)
 	if err != nil {
 		return err
 	}
 	a.clearDiscoverableVECache()
-	a.emitEvent("ve:status_change", map[string]any{"employee": a.localVirtualEmployeeEventPayload(name, skillDesc, policy, list, avatarDataURL)})
+	// Prefer Hub employee payload so auto-reclaim keeps the stable twin id
+	// instead of a local machine-derived id that would diverge after reinstall.
+	eventEmployee := a.localVirtualEmployeeEventPayload(name, skillDesc, policy, list, avatarDataURL)
+	reclaimed := false
+	if len(data) > 0 {
+		var resp struct {
+			Reclaimed bool                  `json:"reclaimed"`
+			Employee  *VirtualEmployeeEntry `json:"employee"`
+		}
+		if json.Unmarshal(data, &resp) == nil && resp.Employee != nil && strings.TrimSpace(resp.Employee.ID) != "" {
+			eventEmployee = *resp.Employee
+			reclaimed = resp.Reclaimed
+		}
+	}
+	a.emitEvent("ve:status_change", map[string]any{"employee": eventEmployee, "reclaimed": reclaimed})
 	a.emitDigitalEmployeeFeatureStatusChanged()
 	return nil
+}
+
+// ReclaimableVirtualEmployee is a personal twin that can be rebound after reinstall.
+type ReclaimableVirtualEmployee struct {
+	ID               string `json:"id"`
+	MachineID        string `json:"machine_id,omitempty"`
+	Name             string `json:"name"`
+	SkillDescription string `json:"skill_description,omitempty"`
+	Status           string `json:"status,omitempty"`
+	OnlineStatus     string `json:"online_status,omitempty"`
+	TwinSlot         string `json:"twin_slot,omitempty"`
+	RegisteredAt     string `json:"registered_at,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
+}
+
+// ListReclaimableVirtualEmployees returns orphan personal twins that this
+// machine can reclaim (different machine_id, currently offline).
+func (a *App) ListReclaimableVirtualEmployees() ([]ReclaimableVirtualEmployee, error) {
+	hubURL, token, err := a.getHubCredentials()
+	if err != nil {
+		return nil, err
+	}
+	data, err := a.getHubJSON(hubURL, token, "/api/ve/reclaimable")
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Reclaimable []ReclaimableVirtualEmployee `json:"reclaimable"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("decode reclaimable: %w", err)
+	}
+	if resp.Reclaimable == nil {
+		return []ReclaimableVirtualEmployee{}, nil
+	}
+	return resp.Reclaimable, nil
+}
+
+// ReclaimVirtualEmployee binds this machine to an existing personal twin by ID.
+func (a *App) ReclaimVirtualEmployee(veID string) (*VirtualEmployeeEntry, error) {
+	veID = strings.TrimSpace(veID)
+	if veID == "" {
+		return nil, fmt.Errorf("ve_id is required")
+	}
+	hubURL, token, err := a.getHubCredentials()
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"ve_id": veID}
+	if deviceKey := a.durableDeviceKey(); deviceKey != "" {
+		body["device_key"] = deviceKey
+	}
+	data, err := a.postHubJSON(hubURL, token, "/api/ve/reclaim", body)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Reclaimed bool                  `json:"reclaimed"`
+		Employee  *VirtualEmployeeEntry `json:"employee"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("decode reclaim: %w", err)
+	}
+	a.clearDiscoverableVECache()
+	if resp.Employee != nil {
+		a.emitEvent("ve:status_change", map[string]any{"employee": *resp.Employee, "reclaimed": true})
+	}
+	a.emitDigitalEmployeeFeatureStatusChanged()
+	return resp.Employee, nil
+}
+
+// durableDeviceKey returns the stable desktop device key for twin reclaim.
+func (a *App) durableDeviceKey() string {
+	if a != nil {
+		if cfg, err := a.LoadConfig(); err == nil {
+			if key := strings.TrimSpace(cfg.RemoteClientID); key != "" {
+				return remote.EnsureDeviceKey(key)
+			}
+		}
+	}
+	return remote.LoadOrCreateDeviceKey()
 }
 
 // UpdateVESettings updates the VE's name, skill description, and access policy.
@@ -147,6 +250,10 @@ func (a *App) UpdateVESettings(name, skillDesc, policy string, list []string, av
 	// on every VE settings update (startup, profile edit, etc.).
 	if approvalCfg, err := a.GetVEApprovalConfig(); err == nil && approvalCfg != nil {
 		body["approval_capability_enabled"] = approvalCfg.Enabled
+	}
+	// Keep durable device_key on the twin so reinstall reclaim stays reliable.
+	if deviceKey := a.durableDeviceKey(); deviceKey != "" {
+		body["device_key"] = deviceKey
 	}
 
 	_, err = a.putHubJSON(hubURL, token, "/api/ve/settings", body)
@@ -1170,7 +1277,7 @@ func (a *App) recoverClosedVESession(closedSessionID string) string {
 
 	// 6. Emit event to frontend so it updates the tab's session binding.
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "ve:session_renewed", map[string]any{
+		a.emitEvent("ve:session_renewed", map[string]any{
 			"old_session_id": closedSessionID,
 			"new_session_id": newSessionID,
 			"ve_id":          veID,
@@ -1434,7 +1541,7 @@ func (a *App) AddVEToGroup(sessionID, veID string) error {
 	}
 	inviteeID := a.resolveVEInviteMachineID(hubURL, token, veID)
 	fromID := strings.TrimSpace(groupDiscussionAgentID(cfg))
-	if a.veGroupParticipantAvailable(client, sessionID, fromID, inviteeID) {
+	if a.veGroupParticipantAvailable(client, sessionID, fromID, inviteeID, 2*time.Second) {
 		a.cacheVESession(veID, sessionID)
 		a.cacheVESession(inviteeID, sessionID)
 		a.cacheVESession(virtualEmployeeIDForMachine(inviteeID), sessionID)
@@ -1477,27 +1584,64 @@ func (a *App) sendVEGroupInvitation(client *a2a.HubClient, sessionID, fromID, in
 func (a *App) waitForVEGroupParticipant(client *a2a.HubClient, sessionID, requesterID, participantID, inviteID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		if a.veGroupParticipantAvailable(client, sessionID, requesterID, participantID) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("invitation sent but participant %s has not joined discussion %s yet", participantID, sessionID)
+		}
+		// Cap each poll HTTP budget so a single slow hub call cannot exhaust the join wait.
+		pollBudget := 2 * time.Second
+		if remaining < pollBudget {
+			pollBudget = remaining
+		}
+		// Parallelize participant + invite status polls (independent hub GETs).
+		pollStart := time.Now()
+		var (
+			joined         bool
+			status, reason string
+			wg             sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			joined = a.veGroupParticipantAvailable(client, sessionID, requesterID, participantID, pollBudget)
+		}()
+		go func() {
+			defer wg.Done()
+			status, reason = a.veGroupInvitationStatus(client, inviteID, requesterID, pollBudget)
+		}()
+		wg.Wait()
+		if joined {
 			return nil
 		}
-		if status, reason := a.veGroupInvitationStatus(client, inviteID, requesterID); strings.EqualFold(status, "reject") {
+		if strings.EqualFold(status, "reject") {
 			if reason != "" {
 				return fmt.Errorf("invitation %s rejected: %s", inviteID, reason)
 			}
 			return fmt.Errorf("invitation %s rejected", inviteID)
 		}
-		if time.Now().Add(veGroupInviteJoinPollDelay).After(deadline) {
-			return fmt.Errorf("invitation sent but participant %s has not joined discussion %s yet", participantID, sessionID)
+		// Account for poll duration so total wait stays near timeout under slow hubs.
+		sleepFor := veGroupInviteJoinPollDelay - time.Since(pollStart)
+		if sleepFor <= 0 {
+			continue
 		}
-		time.Sleep(veGroupInviteJoinPollDelay)
+		if rem := time.Until(deadline); sleepFor > rem {
+			if rem <= 0 {
+				return fmt.Errorf("invitation sent but participant %s has not joined discussion %s yet", participantID, sessionID)
+			}
+			sleepFor = rem
+		}
+		time.Sleep(sleepFor)
 	}
 }
 
-func (a *App) veGroupInvitationStatus(client *a2a.HubClient, inviteID, requesterID string) (string, string) {
+func (a *App) veGroupInvitationStatus(client *a2a.HubClient, inviteID, requesterID string, budget time.Duration) (string, string) {
 	if client == nil || strings.TrimSpace(inviteID) == "" || strings.TrimSpace(requesterID) == "" {
 		return "", ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if budget <= 0 {
+		budget = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	invite, ok, err := client.GetSentInvite(ctx, requesterID, inviteID)
 	if err != nil {
@@ -1509,7 +1653,7 @@ func (a *App) veGroupInvitationStatus(client *a2a.HubClient, inviteID, requester
 	return "", ""
 }
 
-func (a *App) veGroupParticipantAvailable(client *a2a.HubClient, sessionID, requesterID, participantID string) bool {
+func (a *App) veGroupParticipantAvailable(client *a2a.HubClient, sessionID, requesterID, participantID string, budget time.Duration) bool {
 	if client == nil {
 		return false
 	}
@@ -1519,7 +1663,10 @@ func (a *App) veGroupParticipantAvailable(client *a2a.HubClient, sessionID, requ
 	if sessionID == "" || requesterID == "" || participantID == "" {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if budget <= 0 {
+		budget = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	detail, err := client.GetConsultationDetailForAgent(ctx, sessionID, requesterID)
 	if err != nil || detail.Session == nil {

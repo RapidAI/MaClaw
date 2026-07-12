@@ -98,6 +98,9 @@ func (h *IMMessageHandler) toolListSkills() string {
 				if labels := skillHealthLabels(s); len(labels) > 0 {
 					line += " " + strings.Join(labels, " ")
 				}
+				if tags := skillListParamTags(s); tags != "" {
+					line += " (" + tags + ")"
+				}
 				b.WriteString(line + "\n")
 			}
 		}
@@ -137,4 +140,35 @@ func skillHealthLabels(s NLSkillDefinition) []string {
 
 func skillDefinitionHasIncompleteContract(s NLSkillDefinition) bool {
 	return cskill.HasIncompleteSkillContract(s.Type, s.Steps, s.Params, s.RequiredArgs)
+}
+
+func skillListParamTags(s NLSkillDefinition) string {
+	params := cskill.CompleteParamsForRunner(s.Params, s.Steps, s.RequiredArgs)
+	return cskill.FormatCompactParamTags(params)
+}
+
+// toolSkillInfo returns the full parameter contract for a skill so the agent
+// can inspect args before run (manage_skill action=info|inspect|show|describe).
+func (h *IMMessageHandler) toolSkillInfo(args map[string]interface{}) string {
+	name := strings.TrimSpace(stringVal(args, "name"))
+	if name == "" {
+		name = strings.TrimSpace(stringVal(args, "skill_name"))
+	}
+	if name == "" {
+		name = strings.TrimSpace(stringVal(args, "skill_id"))
+	}
+	if name == "" {
+		return "缺少 name 参数（manage_skill action=info 需要 Skill 名称或 skill_id）"
+	}
+	if h == nil || h.app == nil {
+		return "Skill 系统未初始化"
+	}
+	entry := h.app.findSkillForAgentView(name)
+	if entry == nil {
+		if similar, score := cskill.FindSimilarSkill(name, 0.3); similar != nil {
+			return fmt.Sprintf("Skill '%s' 不存在。你是否指的是 %q？(%.0f%% 匹配)", name, similar.Name, score*100)
+		}
+		return fmt.Sprintf("Skill '%s' 不存在。使用 manage_skill(action=\"list\") 查看已安装 Skill。", name)
+	}
+	return cskill.FormatSkillInspectReport(entry)
 }

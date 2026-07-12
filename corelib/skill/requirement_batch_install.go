@@ -110,7 +110,7 @@ func batchPipInstallFromRequirementsTxt(violations []Violation, skillDir string,
 	}
 
 	if progress != nil {
-		progress(fmt.Sprintf("📦 正在通过 requirements.txt 批量安装 %d 个 Python 依赖...", len(pipViolations)))
+		progress(fmt.Sprintf("正在通过 requirements.txt 批量安装 %d 个 Python 依赖...", len(pipViolations)))
 	}
 	log.Printf("[requirement-batch] attempting pip install -r %s (python=%s, %d violations)", reqTxtPath, python, len(pipViolations))
 
@@ -184,7 +184,7 @@ func batchNpmInstallFromPackageJson(violations []Violation, skillDir string, pro
 	}
 
 	if progress != nil {
-		progress(fmt.Sprintf("📦 正在通过 package.json 批量安装 %d 个 Node 依赖...", len(npmViolations)))
+		progress(fmt.Sprintf("正在通过 package.json 批量安装 %d 个 Node 依赖...", len(npmViolations)))
 	}
 	log.Printf("[requirement-batch] attempting npm install in %s (%d violations)", skillDir, len(npmViolations))
 

@@ -136,7 +136,8 @@ describe('RemoteSessionConsole AskUserQuestion UI', () => {
         await waitFor(() => {
             expect(refreshSessionsOnly).toHaveBeenCalled();
         });
-        expect(screen.getByText('✓ "API Key"')).toBeTruthy();
+        // SVG check + message body (no emoji; "OK " prefix stripped for display)
+        expect(screen.getByText('"API Key"')).toBeTruthy();
     });
 
     it('keeps input enabled while session status stays busy after send', async () => {

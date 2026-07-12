@@ -108,7 +108,7 @@ sequenceDiagram
     C->>IC: Classify(text, deviceProfiles, recentHistory)
     Note over IC: LLM 分析：前端 bug → route_single → MacBook-Pro(前端项目)
     IC-->>C: Intent{type: route_single, target: MacBook-Pro, reason: "检测到前端项目"}
-    C-->>U: "📍 已发送到 MacBook-Pro（检测到前端项目）"
+    C-->>U: "已发送到 MacBook-Pro（检测到前端项目）"
     C->>MR: RouteToAgent(MacBook-Pro, text)
     MR->>D: im.user_message
     D-->>MR: im.agent_response
@@ -133,7 +133,7 @@ sequenceDiagram
     C->>IC: Classify(text, deviceProfiles)
     Note over IC: LLM 分析：讨论意图 → discuss
     IC-->>C: Intent{type: discuss, topic: "架构方案怎么改"}
-    C-->>U: "🗣️ 检测到讨论意图，已自动发起多设备讨论"
+    C-->>U: "检测到讨论意图，已自动发起多设备讨论"
     C->>DC: StartDiscussion(topic, devices)
     DC->>MR: 第1轮 → 所有设备
     MR->>D1: prompt
@@ -142,7 +142,7 @@ sequenceDiagram
     D2-->>DC: 回复
     DC->>DC: LLM 编排下一轮
     Note over DC: 重复直到 LLM 决定收敛
-    DC-->>U: 📋 讨论总结
+    DC-->>U: 讨论总结
 ```
 
 ## 组件与接口

@@ -971,7 +971,7 @@ export function FloatingButton() {
                         onClick={handleToggleSoundOff}
                     >
                         <span className="floating-context-menu-check" aria-hidden="true">
-                            {soundOff ? "\u2713" : ""}
+                            {soundOff ? "OK" : ""}
                         </span>
                         <span>{"\u97f3\u6548\u5173\u95ed"}</span>
                     </button>

@@ -225,10 +225,10 @@ func doResolveBundledPython() string {
 	// packages depending on uv's site-packages layout.
 	//
 	// Verified empirically:
-	//   install/python.exe -m pip --version  → pip 24.3.1 ✓
-	//   venv/Scripts/python.exe -m pip       → No module named pip ✗
-	//   install/python.exe -c "import pymupdf" → works ✓
-	//   venv/Scripts/python.exe -c "import pymupdf" → ModuleNotFoundError ✗
+	//   install/python.exe -m pip --version  → pip 24.3.1 OK
+	//   venv/Scripts/python.exe -m pip       → No module named pip ERR
+	//   install/python.exe -c "import pymupdf" → works OK
+	//   venv/Scripts/python.exe -c "import pymupdf" → ModuleNotFoundError ERR
 	st := pyenv.Detect()
 	if st.Available && st.IsPrivate {
 		return st.PythonPath

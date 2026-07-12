@@ -236,7 +236,7 @@ if (typeof I18N_EN !== 'undefined') {
         + buildCardTemplateSVG(t, 120, 72)
         + '</div>'
         + '<div class="cm-template-name">' + esc(t.name) + '</div>'
-        + (selected ? '<div class="cm-template-selected">\u2713 \u5df2\u9009</div>' : '')
+        + (selected ? '<div class="cm-template-selected">\u5df2\u9009</div>' : '')
         + '</div>';
     }).join('');
   }

@@ -259,11 +259,19 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 		}
 	}
 
-	// --- Step 3: Ensure client_id ---
+	// --- Step 3: Ensure client_id (stable device key) ---
+	// Prefer config, then OS-level durable store so reinstall / wiped app data
+	// still maps to the same Hub machine_id (hash of user_id + client_id).
 	clientID := strings.TrimSpace(cfg.ClientID)
 	if clientID == "" {
-		clientID = GenerateClientID()
-		log.Printf("[enrollment] generated new client_id=%s", clientID[:8]+"...")
+		clientID = LoadOrCreateDeviceKey()
+		prefix := clientID
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		log.Printf("[enrollment] using durable device key client_id=%s...", prefix)
+	} else {
+		clientID = EnsureDeviceKey(clientID)
 	}
 
 	// --- Step 4: Build enroll request ---

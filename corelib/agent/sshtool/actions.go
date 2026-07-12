@@ -64,7 +64,7 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 			if existing.Handle != nil && existing.Handle.IsAlive() {
 				if mgr.CheckShellResponsive(existing.ID) {
 					summary := existing.GetSummary()
-					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（无需重连）\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
+					result := fmt.Sprintf("复用已有 SSH 会话（无需重连）\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
 						"请直接 exec，session_id=%s。不要 force_new / 再次 connect。",
 						existing.ID, summary.HostID, summary.Status, existing.ID)
 					if summary.LastOutput != "" {
@@ -82,7 +82,7 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 				if err := mgr.ReconnectByID(existing.ID); err == nil {
 					time.Sleep(2 * time.Second)
 					preview := strings.Join(existing.PreviewTail(10), "\n")
-					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: %s",
+					result := fmt.Sprintf("复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: %s",
 						existing.ID, targetID, runningSessionStatusLabel())
 					if preview != "" {
 						result += "\n\n--- 重连后输出 ---\n" + preview
@@ -120,9 +120,9 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 		errMsg := fmt.Sprintf("SSH 连接失败: %v", err)
 		if classifySSHError(err) == sshErrorAuthentication {
 			if cfg.Password == "" {
-				errMsg += "\n\n💡 认证失败且未提供密码。请使用 password 参数重试，例如：\nssh connect host=... user=... port=... password=<密码> auth_method=password"
+				errMsg += "\n\n认证失败且未提供密码。请使用 password 参数重试，例如：\nssh connect host=... user=... port=... password=<密码> auth_method=password"
 			} else {
-				errMsg += "\n\n💡 已提供密码但认证仍失败，请检查密码是否正确"
+				errMsg += "\n\n已提供密码但认证仍失败，请检查密码是否正确"
 			}
 		}
 		return errMsg
@@ -137,8 +137,8 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 
 	preview := strings.Join(session.PreviewTail(20), "\n")
 
-	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
-		"📌 会话管理（与桌面 GUI 相同内核）:\n"+
+	result := fmt.Sprintf("SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: %s\n\n"+
+		"会话管理（与桌面 GUI 相同内核）:\n"+
 		"- 后续命令请用 exec，session_id=%s（不要再次 connect）\n"+
 		"- 下方「初始输出」仅为 shell 横幅/预览（最多约 20 行），不是命令完整结果；不完整也禁止重连\n"+
 		"- 查状态示例: ssh(action=exec, session_id=%s, command=\"uptime; free -h; df -h /\" , wait_seconds=15)\n"+
@@ -180,9 +180,9 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 
 	if sessionDead {
 		if err := mgr.ReconnectByID(sessionID); err != nil {
-			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v\n\n💡 建议使用 ssh(action=close, session_id=%s) 关闭此会话，然后重新 connect", err, sessionID)
+			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v\n\n建议使用 ssh(action=close, session_id=%s) 关闭此会话，然后重新 connect", err, sessionID)
 		}
-		reconnectNote = "⚠️ 连接已断开并自动重连\n"
+		reconnectNote = "连接已断开并自动重连\n"
 		time.Sleep(2 * time.Second)
 	}
 
@@ -198,7 +198,7 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 			return fmt.Sprintf("发送命令失败: %v", err)
 		}
 		if reconnected {
-			reconnectNote = "⚠️ 连接已断开并自动重连\n"
+			reconnectNote = "连接已断开并自动重连\n"
 			time.Sleep(2 * time.Second)
 			linesBefore = session.LineCount()
 		}
@@ -234,9 +234,9 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 				if deps.OnClosed != nil {
 					deps.OnClosed(sessionID)
 				}
-				return fmt.Sprintf("⚠️ SSH 会话 %s 连续 %d 次执行无响应，shell 可能被挂起的进程锁住。\n"+
+				return fmt.Sprintf("SSH 会话 %s 连续 %d 次执行无响应，shell 可能被挂起的进程锁住。\n"+
 					"已自动关闭此会话。请使用 ssh(action=connect, ...) 重新建立连接。\n\n"+
-					"💡 如果远程服务器上有挂起的进程（如 sqlite3），重连后可用 `kill` 命令清理",
+					"如果远程服务器上有挂起的进程（如 sqlite3），重连后可用 `kill` 命令清理",
 					sessionID, failCount)
 			}
 			mgr.RecordExecSuccess(sessionID)
@@ -295,24 +295,24 @@ func SSHExecBackground(deps SSHToolDeps, args map[string]interface{}) string {
 
 	if task.Reused {
 		elapsed := time.Since(task.StartedAt).Round(time.Second)
-		return fmt.Sprintf("♻️ 检测到相同命令的任务已在运行，复用已有任务（避免重复创建）\n"+
+		return fmt.Sprintf("检测到相同命令的任务已在运行，复用已有任务（避免重复创建）\n"+
 			"任务 ID: %s\n"+
 			"命令: %s\n"+
 			"PID: %s\n"+
 			"已运行: %s\n\n"+
-			"💡 使用 check_task (task_id=%s) 查看进度",
+			"使用 check_task (task_id=%s) 查看进度",
 			task.TaskID, task.Command, task.PID, elapsed, task.TaskID)
 	}
 
-	return fmt.Sprintf("✅ 后台任务已提交\n"+
+	return fmt.Sprintf("后台任务已提交\n"+
 		"任务 ID: %s\n"+
 		"命令: %s\n"+
 		"日志文件: %s\n"+
 		"PID: %s\n"+
 		"状态: "+runningSessionStatusLabel()+"\n\n"+
-		"💡 使用 check_task (task_id=%s) 查看进度\n"+
-		"💡 使用 kill_task (task_id=%s) 终止任务\n"+
-		"💡 SSH 断连不影响任务执行，重连后可继续查看",
+		"使用 check_task (task_id=%s) 查看进度\n"+
+		"使用 kill_task (task_id=%s) 终止任务\n"+
+		"SSH 断连不影响任务执行，重连后可继续查看",
 		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID, task.TaskID)
 }
 
@@ -408,7 +408,7 @@ func SSHKillTask(deps SSHToolDeps, args map[string]interface{}) string {
 	if err := deps.BGTaskMgr.KillTaskForOwner(taskID, deps.PolicyOwnerID); err != nil {
 		return fmt.Sprintf("终止任务失败: %v", err)
 	}
-	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+	return fmt.Sprintf("后台任务 %s 已终止", taskID)
 }
 
 // SSHSudoPrepare pre-acquires a sudo token via PTY interaction.
@@ -424,9 +424,9 @@ func SSHSudoPrepare(deps SSHToolDeps, args map[string]interface{}) string {
 
 	ok, msg := deps.BGTaskMgr.EnsureSudoToken(sessionID)
 	if ok {
-		return fmt.Sprintf("✅ %s", msg)
+		return fmt.Sprintf("%s", msg)
 	}
-	return fmt.Sprintf("⚠️ %s", msg)
+	return fmt.Sprintf("%s", msg)
 }
 
 // SSHUpload uploads a local file/directory to the remote server via SFTP.
@@ -445,7 +445,7 @@ func SSHUpload(deps SSHToolDeps, args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("上传失败: %v", err)
 	}
-	return fmt.Sprintf("✅ 上传完成: %s → %s\n%s", localPath, remotePath, result)
+	return fmt.Sprintf("上传完成: %s → %s\n%s", localPath, remotePath, result)
 }
 
 // SSHDownload downloads a remote file/directory to local via SFTP.
@@ -464,7 +464,7 @@ func SSHDownload(deps SSHToolDeps, args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("下载失败: %v", err)
 	}
-	return fmt.Sprintf("✅ 下载完成: %s → %s\n%s", remotePath, localPath, result)
+	return fmt.Sprintf("下载完成: %s → %s\n%s", remotePath, localPath, result)
 }
 
 // SSHList lists all active SSH sessions.
@@ -516,7 +516,7 @@ func SSHClose(deps SSHToolDeps, args map[string]interface{}) string {
 		deps.OnClosed(sessionID)
 	}
 
-	return fmt.Sprintf("✅ SSH 会话 %s 已关闭", sessionID)
+	return fmt.Sprintf("SSH 会话 %s 已关闭", sessionID)
 }
 
 // SSHCloseAll closes all running SSH sessions.
@@ -543,5 +543,5 @@ func SSHCloseAll(deps SSHToolDeps) string {
 			deps.OnClosed(s.ID)
 		}
 	}
-	return fmt.Sprintf("✅ 已关闭 %d 个 SSH 会话", len(running))
+	return fmt.Sprintf("已关闭 %d 个 SSH 会话", len(running))
 }

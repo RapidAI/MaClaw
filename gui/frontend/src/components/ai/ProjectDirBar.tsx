@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
+import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 
 export interface ProjectDirBarProps {
     /** Current active tab ID. Empty string = local tab. */
@@ -68,7 +69,7 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
                 fontSize: 12, lineHeight: "20px", borderBottom: `1px solid ${t.titleBarBorder}`,
                 background: t.titleBarBg, minHeight: 0, flexShrink: 0,
             }}>
-                <span style={{ opacity: 0.3 }}>📁</span>
+                <span style={{ opacity: 0.35, display: "inline-flex" }}><IconFolder size={14} color="currentColor" /></span>
             </div>
         );
     }
@@ -96,7 +97,9 @@ export function ProjectDirBar({ tabId, theme: t, lang }: ProjectDirBarProps) {
                 overflow: "hidden",
             }}
         >
-            <span style={{ opacity: 0.7, flexShrink: 0 }}>{isDefault ? "📁" : "📂"}</span>
+            <span style={{ opacity: 0.75, flexShrink: 0, display: "inline-flex", color: t.textMuted }}>
+                {isDefault ? <IconFolder size={14} /> : <IconFolderOpen size={14} />}
+            </span>
             <span
                 title={dirState.path}
                 onClick={handleOpenDir}

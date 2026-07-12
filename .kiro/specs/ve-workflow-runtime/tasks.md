@@ -251,7 +251,7 @@
   - [x] 10.3 实现确认和提交流程
     - 用户确认 → 调用 Hub API POST /api/v1/workflows/{id}/initiate 创建实例
     - 用户修改 → 更新 ExtractedData，重新展示
-    - 创建成功 → 回复用户"✅ 审批已发起，单号：WF-{date}-{seq}"
+    - 创建成功 → 回复用户"审批已发起，单号：WF-{date}-{seq}"
     - _Requirements: 2.3, 2.6_
 
   - [ ]* 10.4 编写单元测试：IM 发起流程

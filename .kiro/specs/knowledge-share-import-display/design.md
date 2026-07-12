@@ -137,12 +137,12 @@ func (s *SQLiteStore) CreateImportItem(ctx context.Context, item ImportItem) err
 
 | Caller | Store Type | BatchCreator? | Behavior |
 |--------|-----------|---------------|----------|
-| GUI `KnowledgeImportHubShare` | `*SQLiteStore` | ✅ Yes | Creates batch automatically |
-| AgentService `executeKnowledgeImportShare` | `KnowledgeStore` (wraps `*SQLiteStore`) | ✅ Yes (if wrapper forwards) | Creates batch automatically |
-| AgentService `executeKnowledgeImportPackage` | Same | ✅ Yes | Creates batch automatically |
-| Hub `KnowledgeSyncDownload` | `*SQLiteStore` | ✅ Yes | Creates batch automatically |
-| Test mocks | Custom struct | ❌ No | No batch, no change |
-| DryRun (store=nil) | nil | ❌ No | No batch, no change |
+| GUI `KnowledgeImportHubShare` | `*SQLiteStore` | Yes | Creates batch automatically |
+| AgentService `executeKnowledgeImportShare` | `KnowledgeStore` (wraps `*SQLiteStore`) | Yes (if wrapper forwards) | Creates batch automatically |
+| AgentService `executeKnowledgeImportPackage` | Same | Yes | Creates batch automatically |
+| Hub `KnowledgeSyncDownload` | `*SQLiteStore` | Yes | Creates batch automatically |
+| Test mocks | Custom struct | No | No batch, no change |
+| DryRun (store=nil) | nil | No | No batch, no change |
 
 **Note on `multiKnowledgeStore` (MaClawSrv):** This wrapper delegates to `*SQLiteStore`. For `BatchCreator` to work through the wrapper, `multiKnowledgeStore` needs to forward the `BatchCreator` methods. This is a trivial 3-method delegation.
 

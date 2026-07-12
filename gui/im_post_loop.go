@@ -136,7 +136,7 @@ func (h *IMMessageHandler) captureWorkflowDocAfterAgentLoop(msg IMUserMessage, l
 						// Next phase uses RemoteExperimentOrchestrator — append a hint to
 						// the response so the user knows to send a message to trigger it.
 						if resp != nil && resp.Text != "" {
-							resp.Text += "\n\n---\n🔬 基线复现已完成。回复「开始迭代」启动自动迭代改进循环。"
+							resp.Text += "\n\n---\n基线复现已完成。回复「开始迭代」启动自动迭代改进循环。"
 						}
 						log.Printf("[workflow-v2] post-loop: next phase %s has ExecMode=remote_subagent, appended trigger hint", nextPhase.ID)
 					} else if h.app != nil && h.app.workflowEngine != nil {
@@ -375,7 +375,7 @@ func resolveWorkflowPhaseDocText(loopCtx *LoopContext, resp *IMAgentResponse) (s
 		docText = strings.TrimSpace(resp.Text)
 	}
 	if docText == "" && resp != nil && resp.Error != "" {
-		docText = "⚠️ 阶段执行出错: " + resp.Error
+		docText = "阶段执行出错: " + resp.Error
 		source = "error"
 	}
 	if docText != "" {

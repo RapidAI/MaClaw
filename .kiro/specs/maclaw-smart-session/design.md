@@ -101,7 +101,7 @@ sequenceDiagram
     A-->>U: "会话已创建，正在启动..."
     A->>S: 轮询状态
     S-->>A: status=running
-    A-->>U: "✅ Claude 会话已就绪，已发送任务指令"
+    A-->>U: "Claude 会话已就绪，已发送任务指令"
 ```
 
 ## 组件与接口

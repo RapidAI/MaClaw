@@ -299,6 +299,10 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 		log.Printf("[PendingUserReply] discarded stale pending reply for user=%s currentLen=%d boundLen=%d answer_len=%d", msg.UserID, len(*entries), len(pending.History), len([]rune(trimmed)))
 		if len(pending.History) > 0 && conversationHistoryHasPrefix(*entries, pending.History) && conversationExtensionHasUserMessage(*entries, len(pending.History)) {
 			currentTaskEntries := cloneConversationEntries((*entries)[len(pending.History):])
+			// ConversationMemory.Save merges linear entries into the existing
+			// branch tree, which would keep the stale bound prefix reachable.
+			// Clear first so the active branch is exactly the current task.
+			h.memory.Clear(msg.UserID)
 			h.memory.Save(msg.UserID, currentTaskEntries)
 			*entries = currentTaskEntries
 			*unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)

@@ -176,7 +176,7 @@ func (d *IMTaskDispatcher) Enqueue(task *IMTask) *GenericResponse {
 	if !ok {
 		return &GenericResponse{
 			StatusCode: 429,
-			StatusIcon: "📋",
+			StatusIcon: "info",
 			Title:      "队列已满",
 			Body:       fmt.Sprintf("当前有 %d 个任务排队中，请稍后再发。", d.capacity),
 		}
@@ -187,7 +187,7 @@ func (d *IMTaskDispatcher) Enqueue(task *IMTask) *GenericResponse {
 		// There's a task currently executing; this one is queued.
 		return &GenericResponse{
 			StatusCode: 202,
-			StatusIcon: "📋",
+			StatusIcon: "info",
 			Title:      "已排队",
 			Body:       fmt.Sprintf("已收到，排在第 %d 位，前面还有 %d 个任务。完成后会推送结果。", pos, pos-1),
 		}
@@ -195,7 +195,7 @@ func (d *IMTaskDispatcher) Enqueue(task *IMTask) *GenericResponse {
 	// Worker is idle, this task will start immediately.
 	return &GenericResponse{
 		StatusCode: 202,
-		StatusIcon: "⏳",
+		StatusIcon: "busy",
 		Title:      "处理中",
 		Body:       "已收到，正在处理…",
 	}
@@ -296,7 +296,7 @@ func (d *IMTaskDispatcher) executeTask(task *IMTask) {
 	if err != nil {
 		resp = &GenericResponse{
 			StatusCode: 500,
-			StatusIcon: "❌",
+			StatusIcon: "error",
 			Title:      "任务失败",
 			Body:       fmt.Sprintf("处理失败: %s", err.Error()),
 		}

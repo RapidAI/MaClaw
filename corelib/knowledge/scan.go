@@ -142,6 +142,10 @@ func ScanDirectory(ctx context.Context, req DirectoryImportRequest, existingHash
 			items = append(items, newSkippedImportItem(root, path, now, ItemStatusSkippedType, "unsupported file type"))
 			return nil
 		}
+		if result.ExtCounts == nil {
+			result.ExtCounts = make(map[string]int)
+		}
+		result.ExtCounts[ext]++
 		if info.Size() > req.MaxFileBytes {
 			result.SkippedFiles++
 			item := newSkippedImportItem(root, path, now, ItemStatusSkippedTooLarge, "file exceeds max_file_bytes")
@@ -291,6 +295,10 @@ func ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []stri
 			items = append(items, newSkippedImportItem(root, path, now, ItemStatusSkippedType, "unsupported file type"))
 			continue
 		}
+		if result.ExtCounts == nil {
+			result.ExtCounts = make(map[string]int)
+		}
+		result.ExtCounts[ext]++
 		if info.Size() > req.MaxFileBytes {
 			result.SkippedFiles++
 			item := newSkippedImportItem(root, path, now, ItemStatusSkippedTooLarge, "file exceeds max_file_bytes")

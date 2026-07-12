@@ -649,7 +649,7 @@ func StartCodeGenSSOCallbackServer(ctx context.Context) (loginURL string, callba
 		if token != "" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>登录成功</title></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>✅ 登录成功</h2><p>已自动返回应用，可以关闭此页面。</p><script>setTimeout(function(){window.close()},2000)</script></body></html>`)
+			fmt.Fprint(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>登录成功</title></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>登录成功</h2><p>已自动返回应用，可以关闭此页面。</p><script>setTimeout(function(){window.close()},2000)</script></body></html>`)
 			select {
 			case resultCh <- codeGenCallbackResult{token: token, email: r.URL.Query().Get("email")}:
 			default:
@@ -657,7 +657,7 @@ func StartCodeGenSSOCallbackServer(ctx context.Context) (loginURL string, callba
 		} else {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>登录失败</title></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>❌ 登录失败</h2><p>未收到 token，请重试。</p></body></html>`)
+			fmt.Fprint(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>登录失败</title></head><body style="font-family:sans-serif;text-align:center;padding:60px"><h2>登录失败</h2><p>未收到 token，请重试。</p></body></html>`)
 		}
 	})
 

@@ -42,6 +42,19 @@ func assertRemoteHubClientInitializedForTest(t *testing.T, app *App, reason stri
 	}
 }
 
+// cleanupAppAfterRemoteTest shuts the app down before t.TempDir RemoveAll so
+// Windows file locks on .maclaw (config writers, hubcenter persisters) are released.
+func cleanupAppAfterRemoteTest(t *testing.T, app *App) {
+	t.Helper()
+	t.Cleanup(func() {
+		if app == nil {
+			return
+		}
+		app.shutdown(context.Background())
+		time.Sleep(50 * time.Millisecond)
+	})
+}
+
 func startImplementationCodingWorkflowForOwner(t *testing.T, app *App, ownerID string) {
 	t.Helper()
 	state, err := app.workflowEngine.StartWorkflow(ownerID, workflow.StructuredIntent{Category: workflow.WorkflowCoding, Summary: "build app"})
@@ -381,7 +394,7 @@ func TestGetRemoteClaudeReadinessDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -439,7 +452,7 @@ func TestListRemoteToolMetadataReturnsKnownTools(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -581,7 +594,7 @@ func TestGetRemoteClaudeLaunchProbeDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -642,7 +655,7 @@ func TestGetRemoteToolReadinessDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -694,7 +707,7 @@ func TestGetRemoteToolLaunchProbeDelegatesToDiagnosticCheck(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -910,7 +923,7 @@ func TestStartRemoteSessionSupportsCodex(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -966,8 +979,26 @@ func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t 
 		t.Fatalf("MkdirAll(projectDir) error = %v", err)
 	}
 
-	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	app := &App{
+		testHomeDir:                        tempHome,
+		remoteActivationBackgroundDisabled: true,
+		disableBackgroundEmbeddingForTest:  true,
+	}
+	t.Cleanup(func() {
+		// Handoff creates a hub client + IM handler (SQLite memory.db under TempDir).
+		// Release handles before testing.T removes the temp directory on Windows.
+		if app.remoteSessions != nil {
+			_ = app.remoteSessions.KillAllActive()
+			if hc := app.remoteSessions.GetHubClient(); hc != nil {
+				_ = hc.Disconnect()
+			}
+		}
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+			app.memoryStore = nil
+		}
+		app.shutdown(context.Background())
+	})
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1053,7 +1084,7 @@ func TestStartRemoteSessionSupportsOpencode(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1141,7 +1172,7 @@ func TestStartRemoteSessionSupportsIFlow(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -1229,7 +1260,7 @@ func TestStartRemoteSessionSupportsKilo(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	cleanupAppAfterRemoteTest(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

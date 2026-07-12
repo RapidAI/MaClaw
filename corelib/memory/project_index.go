@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
 // ProjectRecord represents a single project in the index.
@@ -949,14 +951,8 @@ func cleanTitle(s string) string {
 	s = strings.TrimPrefix(s, "**")
 	s = strings.TrimSuffix(s, "**")
 	s = strings.TrimSpace(s)
-	// Strip leading emoji (common in workflow documents).
-	s = strings.TrimLeftFunc(s, func(r rune) bool {
-		return (r >= 0x1F300 && r <= 0x1FAFF) ||
-			(r >= 0x2600 && r <= 0x27BF) ||
-			(r >= 0xFE00 && r <= 0xFE0F) ||
-			r == 0x200D
-	})
-	s = strings.TrimSpace(s)
+	// Strip leading decorative pictographs (common in workflow documents).
+	s = strings.TrimSpace(textutil.StripLeadingEmojiCluster(s))
 	// Strip phase prefixes that make all tasks look the same.
 	for _, prefix := range []string{
 		"需求文档：", "需求文档:", "需求文档 —", "需求文档—",

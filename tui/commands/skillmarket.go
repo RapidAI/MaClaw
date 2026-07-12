@@ -127,7 +127,7 @@ func smSearch(args []string) error {
 	}
 
 	fmt.Printf("Capability Market 搜索结果 — 共 %d 个\n\n", result.Total)
-	fmt.Printf("%-24s %-6s %-5s %-8s %-12s %s\n", "ID", "PRICE", "★", "DOWNLOADS", "AUTHOR", "NAME")
+	fmt.Printf("%-24s %-6s %-5s %-8s %-12s %s\n", "ID", "PRICE", "RATE", "DOWNLOADS", "AUTHOR", "NAME")
 	fmt.Println(strings.Repeat("-", 90))
 	for _, s := range result.Results {
 		price := "free"
@@ -216,7 +216,7 @@ func smSubmit(args []string) error {
 	if *jsonOut {
 		return PrintJSON(result)
 	}
-	fmt.Printf("✓ 提交成功，submission_id: %s\n", result.SubmissionID)
+	fmt.Printf("提交成功，submission_id: %s\n", result.SubmissionID)
 	fmt.Println("  使用 capabilitymarket status <submission_id> 查看审核状态")
 	return nil
 }

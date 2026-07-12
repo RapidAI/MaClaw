@@ -174,7 +174,10 @@ func TestLoopCycleExecuteToolCancelsContextHandler(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	parent := &guiLoopCommandCallbacks{handler: &IMMessageHandler{registry: registry}}
+	parent := &guiLoopCommandCallbacks{
+		handler:  &IMMessageHandler{registry: registry},
+		cancelCh: make(chan struct{}),
+	}
 	cb := &loopCycleCallbacks{parent: parent}
 	done := make(chan string, 1)
 	go func() {

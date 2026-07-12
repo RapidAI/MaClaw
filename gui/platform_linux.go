@@ -205,7 +205,7 @@ func (a *App) CheckEnvironment(force bool) {
 			a.log(a.tr("Node.js not found. Attempting manual installation..."))
 			if err := a.installNodeJSManually(localNodeDir); err != nil {
 				a.log(a.tr("Manual installation failed: ") + err.Error())
-				wails_runtime.EventsEmit(a.ctx, "env-check-done")
+				wails_a.emitEvent("env-check-done")
 				return
 			}
 			a.log(a.tr("Node.js manually installed to ") + localNodeDir)
@@ -221,7 +221,7 @@ func (a *App) CheckEnvironment(force bool) {
 
 			if nodePath == "" {
 				a.log(a.tr("Node.js installation completed but binary not found."))
-				wails_runtime.EventsEmit(a.ctx, "env-check-done")
+				wails_a.emitEvent("env-check-done")
 				return
 			}
 
@@ -231,18 +231,18 @@ func (a *App) CheckEnvironment(force bool) {
 				a.log(a.tr("Node.js binary exists but failed to run: ") + err.Error())
 				// Remove the broken installation so next launch retries.
 				os.RemoveAll(localNodeDir)
-				wails_runtime.EventsEmit(a.ctx, "env-check-done")
+				wails_a.emitEvent("env-check-done")
 				return
 			} else {
-				a.log(a.tr("✓ Node.js installed: %s (%s)", strings.TrimSpace(string(out)), nodePath))
+				a.log(a.tr("Node.js installed: %s (%s)", strings.TrimSpace(string(out)), nodePath))
 			}
 		} else {
 			// Get Node.js version
 			cmd := exec.Command(nodePath, "--version")
 			if out, err := cmd.Output(); err == nil {
-				a.log(a.tr("✓ Node.js found: %s (%s)", strings.TrimSpace(string(out)), nodePath))
+				a.log(a.tr("Node.js found: %s (%s)", strings.TrimSpace(string(out)), nodePath))
 			} else {
-				a.log(a.tr("✓ Node.js found at: ") + nodePath)
+				a.log(a.tr("Node.js found at: ") + nodePath)
 			}
 		}
 
@@ -257,20 +257,20 @@ func (a *App) CheckEnvironment(force bool) {
 		}
 
 		if npmPath == "" {
-			a.log(a.tr("✗ npm not found. Check Node.js installation."))
-			wails_runtime.EventsEmit(a.ctx, "env-check-done")
+			a.log(a.tr("ERR npm not found. Check Node.js installation."))
+			wails_a.emitEvent("env-check-done")
 			return
 		}
 
 		// Get npm version
 		npmCmd := exec.Command(npmPath, "--version")
 		if out, err := npmCmd.Output(); err == nil {
-			a.log(a.tr("✓ npm found: %s (%s)", strings.TrimSpace(string(out)), npmPath))
+			a.log(a.tr("OK npm found: %s (%s)", strings.TrimSpace(string(out)), npmPath))
 		} else {
-			a.log(a.tr("✓ npm found at: ") + npmPath)
+			a.log(a.tr("OK npm found at: ") + npmPath)
 		}
 
-		a.log(a.tr("✓ Base environment check complete."))
+		a.log(a.tr("OK Base environment check complete."))
 
 		// ===== Check and Install Python =====
 		pySt := a.ensurePythonRuntimeForEnvironmentCheck("Checking Python environment...")
@@ -515,12 +515,12 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		a.log(fmt.Sprintf("Tool %s not found. Attempting automatic installation...", binaryName))
 
 		// Emit event to show installation progress dialog
-		wails_runtime.EventsEmit(a.ctx, "tool-repair-start", binaryName)
+		wails_a.emitEvent("tool-repair-start", binaryName)
 
 		// Check if npm is available first
 		npmPath := tm.getNpmPath()
 		if npmPath == "" {
-			wails_runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("npm not found. Please run environment check first."))
+			wails_a.emitEvent("tool-repair-failed", binaryName, a.tr("npm not found. Please run environment check first."))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("npm not found. Please run environment check first."))
 			return fmt.Errorf("npm not found. Please run environment check first")
 		}
@@ -528,7 +528,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		// Attempt to install the tool
 		err := tm.InstallTool(binaryName)
 		if err != nil {
-			wails_runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, err.Error())
+			wails_a.emitEvent("tool-repair-failed", binaryName, err.Error())
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Failed to install %s: %v", binaryName, err))
 			return fmt.Errorf("failed to install %s: %w", binaryName, err)
 		}
@@ -536,12 +536,12 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		// Re-check tool status after installation
 		status = tm.GetToolStatus(binaryName)
 		if !status.Installed {
-			wails_runtime.EventsEmit(a.ctx, "tool-repair-failed", binaryName, a.tr("Installation completed but tool not found"))
+			wails_a.emitEvent("tool-repair-failed", binaryName, a.tr("Installation completed but tool not found"))
 			a.ShowMessage(a.tr("Installation Error"), a.tr("Installation completed but %s still not found. Please try running environment check.", binaryName))
 			return fmt.Errorf("installation completed but %s still not found", binaryName)
 		}
 
-		wails_runtime.EventsEmit(a.ctx, "tool-repair-success", binaryName, status.Version)
+		wails_a.emitEvent("tool-repair-success", binaryName, status.Version)
 		a.log(fmt.Sprintf("Tool %s installed successfully. Version: %s", binaryName, status.Version))
 	}
 

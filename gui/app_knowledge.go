@@ -25,6 +25,7 @@ import (
 	"golang.org/x/crypto/scrypt"
 
 	corelib "github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -71,6 +72,61 @@ type KnowledgeHubShareImportRequest struct {
 	KnowledgeID string `json:"knowledge_id"`
 	ShareLink   string `json:"share_link"`
 	DryRun      bool   `json:"dry_run"`
+}
+
+// KnowledgeHubShareListRequest loads the current user's Hub knowledge shares.
+type KnowledgeHubShareListRequest struct {
+	HubURL   string `json:"hub_url"`
+	HubToken string `json:"hub_token"`
+	Limit    int    `json:"limit,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+}
+
+// KnowledgeHubShareListItem is a compact row for the export-tab "My shares" panel.
+type KnowledgeHubShareListItem struct {
+	KnowledgeID     string `json:"knowledge_id"`
+	Title           string `json:"title"`
+	Description     string `json:"description,omitempty"`
+	VisibilityScope string `json:"visibility_scope,omitempty"`
+	Status          string `json:"status,omitempty"`
+	ShareURL        string `json:"share_url,omitempty"`
+	AgentImport     string `json:"agent_import,omitempty"`
+	SourceCount     int    `json:"source_count,omitempty"`
+	ViewCount       int64  `json:"view_count,omitempty"`
+	ImportCount     int64  `json:"import_count,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+}
+
+// KnowledgeHubShareListResult is returned by KnowledgeListMyHubShares.
+type KnowledgeHubShareListResult struct {
+	Items  []KnowledgeHubShareListItem `json:"items"`
+	Total  int                         `json:"total"`
+	Offset int                         `json:"offset"`
+	Limit  int                         `json:"limit"`
+	HubURL string                      `json:"hub_url"`
+}
+
+// KnowledgeHubShareDeleteRequest removes one of the current user's Hub shares.
+type KnowledgeHubShareDeleteRequest struct {
+	HubURL      string `json:"hub_url"`
+	HubToken    string `json:"hub_token"`
+	KnowledgeID string `json:"knowledge_id"`
+}
+
+// KnowledgeHubShareUpdateRequest patches metadata of one owned Hub share.
+// Empty fields are left unchanged by the Hub when omitted appropriately;
+// we always send title/description/visibility when provided.
+type KnowledgeHubShareUpdateRequest struct {
+	HubURL          string   `json:"hub_url"`
+	HubToken        string   `json:"hub_token"`
+	KnowledgeID     string   `json:"knowledge_id"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	VisibilityScope string   `json:"visibility_scope"`
+	VisibilityUsers []string `json:"visibility_users,omitempty"`
+	TTL             string   `json:"ttl,omitempty"`
 }
 
 type KnowledgeHubShareImportResult struct {
@@ -184,6 +240,40 @@ const (
 
 var knowledgeImportJobs sync.Map
 
+// knowledgeImportProgressLastEmit tracks last Wails progress emit time per job ID.
+// Used to throttle high-frequency per-file callbacks during large imports.
+var knowledgeImportProgressLastEmit sync.Map // map[string]time.Time
+
+const knowledgeImportProgressMinInterval = 500 * time.Millisecond
+
+// knowledgeImportProgressShouldEmit returns whether a progress event should be
+// pushed to the frontend. force bypasses the interval (final status, failed items).
+func knowledgeImportProgressShouldEmit(jobID string, now time.Time, force bool) bool {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return force
+	}
+	if force {
+		knowledgeImportProgressLastEmit.Store(jobID, now)
+		return true
+	}
+	if last, ok := knowledgeImportProgressLastEmit.Load(jobID); ok {
+		if t, ok := last.(time.Time); ok && now.Sub(t) < knowledgeImportProgressMinInterval {
+			return false
+		}
+	}
+	knowledgeImportProgressLastEmit.Store(jobID, now)
+	return true
+}
+
+func clearKnowledgeImportProgressThrottle(jobID string) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return
+	}
+	knowledgeImportProgressLastEmit.Delete(jobID)
+}
+
 func (a *App) knowledgeDBPath() string {
 	return filepath.Join(a.GetDataDir(), "knowledge.db")
 }
@@ -232,8 +322,41 @@ func (a *App) openKnowledgeStoreWithRetry(ctx context.Context) (*knowledge.SQLit
 		if distiller := a.buildKnowledgeCardDistiller(); distiller != nil {
 			store.SetCardDistiller(distiller)
 		}
+		// Attach the app embedding runtime when available so Search() can hybrid
+		// FTS + vector (auto-recall embedding fallback). Without this, stores opened
+		// after activateEmbedderAsync never receive an embedder.
+		a.attachKnowledgeEmbedder(store)
 		return store, nil
 	}, sleepKnowledgeStoreRetry)
+}
+
+// knowledgeEmbedder returns the best available non-noop embedder for knowledge search.
+func (a *App) knowledgeEmbedder() embedding.Embedder {
+	if a == nil {
+		return nil
+	}
+	if a.memoryStore != nil {
+		if emb := a.memoryStore.Embedder(); emb != nil && !embedding.IsNoop(emb) {
+			return emb
+		}
+	}
+	a.embeddingMu.Lock()
+	emb := a.intentEmbedder
+	a.embeddingMu.Unlock()
+	if emb != nil && !embedding.IsNoop(emb) {
+		return emb
+	}
+	return nil
+}
+
+// attachKnowledgeEmbedder wires the shared embedding model into a knowledge store.
+func (a *App) attachKnowledgeEmbedder(store *knowledge.SQLiteStore) {
+	if a == nil || store == nil {
+		return
+	}
+	if emb := a.knowledgeEmbedder(); emb != nil {
+		store.SetEmbedder(emb)
+	}
 }
 
 func openKnowledgeStoreWithRetry(ctx context.Context, open func() (*knowledge.SQLiteStore, error), wait func(context.Context, time.Duration) bool) (*knowledge.SQLiteStore, error) {
@@ -381,15 +504,29 @@ func (a *App) SelectKnowledgeSnapshotFile() string {
 	return selection
 }
 
-func (a *App) SelectKnowledgeSnapshotExportPath() string {
-	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Export Knowledge Snapshot",
-		DefaultFilename: fmt.Sprintf("maclaw-knowledge-%s.jsonl", time.Now().UTC().Format("20060102-150405")),
+// SelectKnowledgeSnapshotExportPath opens a save dialog for local knowledge export.
+// format is "jsonl" (full snapshot) or "package" (exchange package JSON).
+func (a *App) SelectKnowledgeSnapshotExportPath(format string) string {
+	format = normalizeKnowledgeExportFormat(format, "")
+	stamp := time.Now().UTC().Format("20060102-150405")
+	opts := runtime.SaveDialogOptions{
+		Title: "Export Knowledge Snapshot",
 		Filters: []runtime.FileFilter{
 			{DisplayName: "Knowledge Snapshot (*.jsonl)", Pattern: "*.jsonl"},
 			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
 		},
-	})
+		DefaultFilename: fmt.Sprintf("maclaw-knowledge-%s.jsonl", stamp),
+	}
+	if format == "package" {
+		opts.Title = "Export Knowledge Package"
+		opts.DefaultFilename = fmt.Sprintf("maclaw-knowledge-%s.knowledge.json", stamp)
+		opts.Filters = []runtime.FileFilter{
+			{DisplayName: "Knowledge Package (*.knowledge.json)", Pattern: "*.knowledge.json"},
+			{DisplayName: "JSON (*.json)", Pattern: "*.json"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		}
+	}
+	savePath, err := runtime.SaveFileDialog(a.ctx, opts)
 	if err != nil {
 		return ""
 	}
@@ -398,20 +535,40 @@ func (a *App) SelectKnowledgeSnapshotExportPath() string {
 
 // ExportTextFile shows a save dialog and writes the given text content to the chosen file.
 // Returns the saved file path, or empty string if the user cancelled.
+// Dialog filters are chosen from defaultFilename extension when possible.
 func (a *App) ExportTextFile(content string, defaultFilename string) (string, error) {
+	defaultFilename = strings.TrimSpace(defaultFilename)
+	if defaultFilename == "" {
+		defaultFilename = "export.txt"
+	}
+	ext := strings.ToLower(filepath.Ext(defaultFilename))
+	filters := []runtime.FileFilter{{DisplayName: "All Files (*.*)", Pattern: "*.*"}}
+	switch ext {
+	case ".csv":
+		filters = append([]runtime.FileFilter{{DisplayName: "CSV (*.csv)", Pattern: "*.csv"}}, filters...)
+	case ".json":
+		filters = append([]runtime.FileFilter{{DisplayName: "JSON (*.json)", Pattern: "*.json"}}, filters...)
+	case ".jsonl":
+		filters = append([]runtime.FileFilter{{DisplayName: "JSON Lines (*.jsonl)", Pattern: "*.jsonl"}}, filters...)
+	case ".md", ".markdown":
+		filters = append([]runtime.FileFilter{{DisplayName: "Markdown (*.md)", Pattern: "*.md"}}, filters...)
+	case ".txt":
+		filters = append([]runtime.FileFilter{{DisplayName: "Text (*.txt)", Pattern: "*.txt"}}, filters...)
+	}
 	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Export Report",
+		Title:           "Export",
 		DefaultFilename: defaultFilename,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Markdown (*.md)", Pattern: "*.md"},
-			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
-		},
+		Filters:         filters,
 	})
 	if err != nil {
 		return "", err
 	}
 	if savePath == "" {
 		return "", nil
+	}
+	// If the user omitted an extension, append the default one.
+	if filepath.Ext(savePath) == "" && ext != "" {
+		savePath += ext
 	}
 	if err := os.WriteFile(savePath, []byte(content), 0644); err != nil {
 		return "", err
@@ -517,16 +674,122 @@ func (a *App) KnowledgeExportSnapshot(outputPath string, redactSensitive bool) (
 
 func (a *App) KnowledgeExportSnapshotWithOptions(req knowledge.ExportOptions) (knowledge.ExportResult, error) {
 	outputPath := strings.TrimSpace(req.OutputPath)
+	format := normalizeKnowledgeExportFormat(req.Format, outputPath)
 	if outputPath == "" {
-		outputPath = filepath.Join(a.GetDataDir(), "knowledge-exports", fmt.Sprintf("knowledge-export-%s.jsonl", time.Now().UTC().Format("20060102-150405")))
+		stamp := time.Now().UTC().Format("20060102-150405")
+		if format == "package" {
+			outputPath = filepath.Join(a.GetDataDir(), "knowledge-exports", fmt.Sprintf("knowledge-export-%s.knowledge.json", stamp))
+		} else {
+			outputPath = filepath.Join(a.GetDataDir(), "knowledge-exports", fmt.Sprintf("knowledge-export-%s.jsonl", stamp))
+		}
 	}
 	req.OutputPath = outputPath
+	req.Format = format
+	if format == "package" {
+		return a.exportKnowledgePackageFile(req)
+	}
 	store, err := a.openKnowledgeStore()
 	if err != nil {
 		return knowledge.ExportResult{}, err
 	}
 	defer store.Close()
-	return store.ExportSnapshot(a.knowledgeContext(), req)
+	result, err := store.ExportSnapshot(a.knowledgeContext(), req)
+	if err != nil {
+		return result, err
+	}
+	if result.Format == "" {
+		result.Format = "jsonl"
+	}
+	return result, nil
+}
+
+// exportKnowledgePackageFile writes an editable maclaw.knowledge.package JSON file
+// (same shape used for Hub share), suitable for agent/Hub re-import.
+func (a *App) exportKnowledgePackageFile(req knowledge.ExportOptions) (knowledge.ExportResult, error) {
+	outputPath := strings.TrimSpace(req.OutputPath)
+	if outputPath == "" {
+		return knowledge.ExportResult{}, fmt.Errorf("output path is required")
+	}
+	cfg, _ := a.LoadConfig()
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return knowledge.ExportResult{}, err
+	}
+	defer store.Close()
+
+	opts := knowledge.ListSourcesOptions{
+		SourceIDs: compactKnowledgeSourceIDStrings(req.SourceIDs),
+		Limit:     5000,
+	}
+	sources, err := store.ListSources(a.knowledgeContext(), opts)
+	if err != nil {
+		return knowledge.ExportResult{}, err
+	}
+	if len(sources) == 0 {
+		return knowledge.ExportResult{}, fmt.Errorf("no knowledge sources match the export request")
+	}
+
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		title = fmt.Sprintf("Knowledge export %s", time.Now().UTC().Format("2006-01-02"))
+	}
+	description := strings.TrimSpace(req.Description)
+	if description == "" {
+		description = "Local knowledge package exported from Maclaw."
+	}
+	pkg, warnings, err := buildGUIKnowledgePackage(a.knowledgeContext(), store, cfg, title, description, sources, req.RedactSensitive)
+	if err != nil {
+		return knowledge.ExportResult{}, err
+	}
+	raw, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return knowledge.ExportResult{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return knowledge.ExportResult{}, err
+	}
+	if err := os.WriteFile(outputPath, raw, 0o644); err != nil {
+		return knowledge.ExportResult{}, err
+	}
+	info, _ := os.Stat(outputPath)
+	bytes := int64(len(raw))
+	if info != nil {
+		bytes = info.Size()
+	}
+	var nodes, cards, facts int
+	for _, src := range sources {
+		nodes += src.NodeCount
+		cards += src.CardCount
+		facts += src.FactCount
+	}
+	result := knowledge.ExportResult{
+		OutputPath:      outputPath,
+		Format:          "package",
+		RedactSensitive: req.RedactSensitive,
+		Scoped:          len(req.SourceIDs) > 0,
+		SourceIDs:       knowledgeSourceIDs(sources),
+		Sources:         len(sources),
+		Nodes:           nodes,
+		Cards:           cards,
+		Facts:           facts,
+		Bytes:           bytes,
+		GeneratedAt:     time.Now().UTC(),
+	}
+	_ = warnings // retained for share path; local export success card uses counts/path
+	return result, nil
+}
+
+func normalizeKnowledgeExportFormat(format, outputPath string) string {
+	f := strings.ToLower(strings.TrimSpace(format))
+	switch f {
+	case "package", "knowledge_package", "mckb", "maclaw.knowledge.package", "knowledge.json":
+		return "package"
+	}
+	lowerPath := strings.ToLower(strings.TrimSpace(outputPath))
+	if strings.HasSuffix(lowerPath, ".knowledge.json") || strings.HasSuffix(lowerPath, ".mckb.json") {
+		return "package"
+	}
+	return "jsonl"
 }
 
 func (a *App) KnowledgeImportSnapshot(req knowledge.SnapshotImportOptions) (knowledge.SnapshotImportResult, error) {
@@ -656,6 +919,230 @@ func (a *App) KnowledgeShareToHub(req KnowledgeHubShareRequest) (KnowledgeHubSha
 		result.ShareURL = hubURL + "/hub/knowledge/shares/" + url.PathEscape(result.KnowledgeID)
 	}
 	return result, nil
+}
+
+// KnowledgeListMyHubShares lists knowledge shares owned by the current Hub user.
+// Calls GET /api/knowledge/shares/mine on the configured Hub.
+func (a *App) KnowledgeListMyHubShares(req KnowledgeHubShareListRequest) (KnowledgeHubShareListResult, error) {
+	hubURL, token, err := a.resolveKnowledgeHubAuth(req.HubURL, req.HubToken)
+	if err != nil {
+		return KnowledgeHubShareListResult{}, err
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	offset := req.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	apiURL := fmt.Sprintf("%s/api/knowledge/shares/mine?limit=%d&offset=%d", hubURL, limit, offset)
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 20*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return KnowledgeHubShareListResult{}, err
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeHubShareListResult{}, fmt.Errorf("list hub knowledge shares: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return KnowledgeHubShareListResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeHubShareListResult{}, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var payload struct {
+		Items  []map[string]any `json:"items"`
+		Total  int              `json:"total"`
+		Offset int              `json:"offset"`
+		Limit  int              `json:"limit"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return KnowledgeHubShareListResult{}, fmt.Errorf("decode hub share list: %w", err)
+	}
+	items := make([]KnowledgeHubShareListItem, 0, len(payload.Items))
+	for _, view := range payload.Items {
+		item := knowledgeHubShareListItemFromView(hubURL, view)
+		if item.KnowledgeID == "" {
+			continue
+		}
+		items = append(items, item)
+	}
+	total := payload.Total
+	if total == 0 {
+		total = len(items)
+	}
+	return KnowledgeHubShareListResult{
+		Items:  items,
+		Total:  total,
+		Offset: payload.Offset,
+		Limit:  payload.Limit,
+		HubURL: hubURL,
+	}, nil
+}
+
+// KnowledgeUpdateHubShare patches title/description/visibility of an owned Hub share.
+// Calls PATCH /api/knowledge/shares/{knowledgeID}. Does not re-upload the package.
+func (a *App) KnowledgeUpdateHubShare(req KnowledgeHubShareUpdateRequest) (KnowledgeHubShareListItem, error) {
+	knowledgeID := strings.TrimSpace(req.KnowledgeID)
+	if knowledgeID == "" {
+		return KnowledgeHubShareListItem{}, fmt.Errorf("knowledge_id is required")
+	}
+	description := strings.TrimSpace(req.Description)
+	if description == "" {
+		return KnowledgeHubShareListItem{}, fmt.Errorf("knowledge description is required")
+	}
+	hubURL, token, err := a.resolveKnowledgeHubAuth(req.HubURL, req.HubToken)
+	if err != nil {
+		return KnowledgeHubShareListItem{}, err
+	}
+	bodyMap := map[string]any{
+		"description": description,
+	}
+	if title := strings.TrimSpace(req.Title); title != "" {
+		bodyMap["title"] = title
+	}
+	if scope := strings.TrimSpace(req.VisibilityScope); scope != "" {
+		bodyMap["visibility_scope"] = scope
+	}
+	if req.VisibilityUsers != nil {
+		bodyMap["visibility_users"] = compactKnowledgeShareStrings(req.VisibilityUsers)
+	}
+	if ttl := strings.TrimSpace(req.TTL); ttl != "" {
+		bodyMap["ttl"] = ttl
+	}
+	body, err := json.Marshal(bodyMap)
+	if err != nil {
+		return KnowledgeHubShareListItem{}, err
+	}
+	apiURL := hubURL + "/api/knowledge/shares/" + url.PathEscape(knowledgeID)
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 20*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPatch, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return KnowledgeHubShareListItem{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return KnowledgeHubShareListItem{}, fmt.Errorf("update hub knowledge share: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return KnowledgeHubShareListItem{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return KnowledgeHubShareListItem{}, fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var view map[string]any
+	if err := json.Unmarshal(respBody, &view); err != nil {
+		return KnowledgeHubShareListItem{}, fmt.Errorf("decode hub share update: %w", err)
+	}
+	item := knowledgeHubShareListItemFromView(hubURL, view)
+	if item.KnowledgeID == "" {
+		item.KnowledgeID = knowledgeID
+	}
+	return item, nil
+}
+
+// KnowledgeDeleteHubShare deletes one Hub knowledge share owned by the current user.
+// Calls DELETE /api/knowledge/shares/{knowledgeID}. Does not affect the local knowledge base.
+func (a *App) KnowledgeDeleteHubShare(req KnowledgeHubShareDeleteRequest) error {
+	knowledgeID := strings.TrimSpace(req.KnowledgeID)
+	if knowledgeID == "" {
+		return fmt.Errorf("knowledge_id is required")
+	}
+	hubURL, token, err := a.resolveKnowledgeHubAuth(req.HubURL, req.HubToken)
+	if err != nil {
+		return err
+	}
+	apiURL := hubURL + "/api/knowledge/shares/" + url.PathEscape(knowledgeID)
+	ctx, cancel := context.WithTimeout(a.knowledgeContext(), 20*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Authorization", knowledgeShareBearerToken(token))
+	resp, err := hubHTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("delete hub knowledge share: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+func (a *App) resolveKnowledgeHubAuth(hubURLIn, tokenIn string) (hubURL, token string, err error) {
+	cfg, _ := a.LoadConfig()
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURLIn), "/")
+	if hubURL == "" {
+		hubURL = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	}
+	if hubURL == "" {
+		return "", "", fmt.Errorf("hub_url is required")
+	}
+	if parsed, parseErr := url.Parse(hubURL); parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", fmt.Errorf("hub_url must be an absolute URL")
+	}
+	token = strings.TrimSpace(tokenIn)
+	if token == "" {
+		token = strings.TrimSpace(cfg.RemoteViewerToken)
+	}
+	if token == "" {
+		return "", "", fmt.Errorf("hub token is required")
+	}
+	return hubURL, token, nil
+}
+
+func knowledgeHubShareListItemFromView(hubURL string, view map[string]any) KnowledgeHubShareListItem {
+	item := KnowledgeHubShareListItem{
+		KnowledgeID:     stringFromAny(view["knowledge_id"]),
+		Title:           stringFromAny(view["title"]),
+		Description:     stringFromAny(view["description"]),
+		VisibilityScope: stringFromAny(view["visibility_scope"]),
+		Status:          stringFromAny(view["status"]),
+		ShareURL:        absoluteHubShareField(hubURL, stringFromAny(view["share_url"])),
+		AgentImport:     absoluteHubShareField(hubURL, stringFromAny(view["agent_import"])),
+		ViewCount:       int64(intFromAny(view["view_count"])),
+		ImportCount:     int64(intFromAny(view["import_count"])),
+		CreatedAt:       stringFromAny(view["created_at"]),
+		UpdatedAt:       stringFromAny(view["updated_at"]),
+		ExpiresAt:       stringFromAny(view["expires_at"]),
+	}
+	if summary, ok := view["source_summary"].(map[string]any); ok {
+		if n := intFromAny(summary["source_count"]); n > 0 {
+			item.SourceCount = n
+		} else if ids := knowledgeShareStringSliceFromAny(summary["source_ids"]); len(ids) > 0 {
+			item.SourceCount = len(ids)
+		}
+	}
+	if item.ShareURL == "" && item.KnowledgeID != "" {
+		item.ShareURL = hubURL + "/hub/knowledge/shares/" + url.PathEscape(item.KnowledgeID)
+	}
+	if item.AgentImport == "" && item.KnowledgeID != "" {
+		item.AgentImport = hubURL + "/api/knowledge/shares/" + url.PathEscape(item.KnowledgeID) + "?intent=import"
+	}
+	if item.Title == "" {
+		item.Title = item.KnowledgeID
+	}
+	return item
 }
 
 func validateGUIKnowledgePackageJSONSize(rawPackage []byte) error {
@@ -2787,8 +3274,32 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 	job.UpdatedAt = time.Now().UTC()
 	knowledgeImportJobs.Store(id, job)
 
-	// Emit Wails event for real-time frontend updates
+	// Emit Wails event for real-time frontend updates (throttled for large batches).
+	// Job state above is always updated so polling still sees accurate counters.
 	if a != nil && a.ctx != nil {
+		// Prefer store-provided last-item fields (include skip/fail reason).
+		lastPath := ""
+		lastStatus := ""
+		lastReason := ""
+		if result.LastItemPath != "" && result.LastItemStatus != "" {
+			lastPath = result.LastItemPath
+			lastStatus = result.LastItemStatus
+			lastReason = result.LastItemReason
+		} else if result.ProcessedFiles > prevProcessed && result.CurrentFile != "" {
+			// Fallback: infer status from counter deltas when LastItem* unset.
+			lastPath = result.CurrentFile
+			lastStatus = "imported"
+			if result.FailedFiles > prevFailed {
+				lastStatus = "failed"
+			} else if result.SkippedFiles > prevSkipped {
+				lastStatus = "skipped"
+			}
+		}
+		// Always push failed-item events so the log keeps failure reasons under throttle.
+		forceEmit := lastStatus == "failed"
+		if !knowledgeImportProgressShouldEmit(id, time.Now(), forceEmit) {
+			return
+		}
 		eventData := map[string]interface{}{
 			"job_id":           id,
 			"status":           result.Status,
@@ -2803,18 +3314,14 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 			"total_steps":      result.TotalSteps,
 			"current_step_num": result.CurrentStepNum,
 		}
-		// When a file finishes processing (ProcessedFiles increments), emit item info
-		if result.ProcessedFiles > prevProcessed && result.CurrentFile != "" {
-			itemStatus := "imported"
-			if result.FailedFiles > prevFailed {
-				itemStatus = "failed"
-			} else if result.SkippedFiles > prevSkipped {
-				itemStatus = "skipped"
+		if lastPath != "" && lastStatus != "" {
+			eventData["last_item_path"] = lastPath
+			eventData["last_item_status"] = lastStatus
+			if lastReason != "" {
+				eventData["last_item_reason"] = lastReason
 			}
-			eventData["last_item_path"] = result.CurrentFile
-			eventData["last_item_status"] = itemStatus
 		}
-		runtime.EventsEmit(a.ctx, "knowledge:import-progress", eventData)
+		a.emitEvent("knowledge:import-progress", eventData)
 	}
 }
 
@@ -2840,9 +3347,9 @@ func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImpor
 	}
 	knowledgeImportJobs.Store(id, job)
 
-	// Emit final status event
+	// Emit final status event (always immediate; includes failure details).
 	if a != nil && a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "knowledge:import-progress", map[string]interface{}{
+		eventData := map[string]interface{}{
 			"job_id":          id,
 			"status":          job.Status,
 			"total_files":     result.TotalFiles,
@@ -2850,8 +3357,59 @@ func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImpor
 			"imported_files":  result.ImportedFiles,
 			"skipped_files":   result.SkippedFiles,
 			"failed_files":    result.FailedFiles,
-		})
+		}
+		if job.Error != "" {
+			eventData["error"] = job.Error
+		}
+		if len(result.FailedItems) > 0 {
+			eventData["failed_items"] = result.FailedItems
+		}
+		a.emitEvent("knowledge:import-progress", eventData)
+		// Toast so users who closed the dialog still learn the outcome.
+		emitKnowledgeImportDoneToast(a, result, err)
 	}
+	clearKnowledgeImportProgressThrottle(id)
+}
+
+// knowledgeImportDoneToast builds toast message/type/duration for import completion.
+// Pure helper for unit tests; used by emitKnowledgeImportDoneToast.
+func knowledgeImportDoneToast(result knowledge.DirectoryImportResult, err error) (message, typ string, duration int) {
+	if err != nil {
+		msg := strings.TrimSpace(err.Error())
+		if msg == "" {
+			msg = "unknown error"
+		}
+		if len([]rune(msg)) > 120 {
+			msg = string([]rune(msg)[:117]) + "..."
+		}
+		return fmt.Sprintf("知识库导入失败：%s", msg), "error", 5000
+	}
+	if result.ImportedFiles > 0 && result.FailedFiles > 0 {
+		return fmt.Sprintf("知识库导入完成：%d 个文件已导入，%d 个失败", result.ImportedFiles, result.FailedFiles), "warning", 5000
+	}
+	if result.FailedFiles > 0 || result.Status == knowledge.ImportStatusFailed {
+		if result.FailedFiles > 0 {
+			return fmt.Sprintf("知识库导入失败：%d 个文件失败", result.FailedFiles), "error", 5000
+		}
+		return "知识库导入失败", "error", 5000
+	}
+	msg := fmt.Sprintf("知识库导入完成：%d 个文件已导入", result.ImportedFiles)
+	if result.SkippedFiles > 0 {
+		msg = fmt.Sprintf("知识库导入完成：%d 个文件已导入，%d 个跳过", result.ImportedFiles, result.SkippedFiles)
+	}
+	return msg, "success", 4000
+}
+
+func emitKnowledgeImportDoneToast(a *App, result knowledge.DirectoryImportResult, err error) {
+	if a == nil {
+		return
+	}
+	message, typ, duration := knowledgeImportDoneToast(result, err)
+	a.emitEvent("show-toast", map[string]interface{}{
+		"message":  message,
+		"type":     typ,
+		"duration": duration,
+	})
 }
 
 func (a *App) KnowledgeImportDirectory(req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {
@@ -3240,7 +3798,7 @@ func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.Deep
 			progress.Mode = "crawl"
 		}
 		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", progress)
+			a.emitEvent("knowledge:deep-crawl-progress", progress)
 		}
 	}
 
@@ -3270,7 +3828,7 @@ func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowled
 			progress.Mode = "preview"
 		}
 		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", progress)
+			a.emitEvent("knowledge:deep-crawl-progress", progress)
 		}
 	}
 

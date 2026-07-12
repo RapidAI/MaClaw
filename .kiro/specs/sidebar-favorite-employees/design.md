@@ -125,7 +125,7 @@ interface FavoriteEmployeeSlot {
 **变更**:
 - 新增 prop: `favoriteEmployeeIds: string[]`
 - 新增 prop: `onSetFavorite: (ve: VirtualEmployeeEntry) => void`
-- 右键菜单新增第三项："⭐ 设为常用" / "已是常用"（灰色）
+- 右键菜单新增第三项："设为常用" / "已是常用"（灰色）
 - 判断逻辑：`favoriteEmployeeIds.includes(ve.id)` → 灰色不可点击
 
 ### 6. 设置面板新增"数字员工"Tab

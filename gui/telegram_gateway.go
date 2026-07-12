@@ -436,7 +436,7 @@ func (m *telegramGatewayManager) sendAgentResponse(gw *telegram.Gateway, chatID 
 	if resp.Error != "" && resp.Text == "" {
 		_ = gw.SendText(ctx, telegram.OutgoingText{
 			ChatID: chatID,
-			Text:   "❌ " + textutil.StripMarkdown(resp.Error),
+			Text:   "" + textutil.StripMarkdown(resp.Error),
 		})
 	}
 

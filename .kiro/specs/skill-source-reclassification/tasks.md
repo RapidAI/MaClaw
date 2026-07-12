@@ -23,7 +23,7 @@
 - [x] 5.1 Add `isLearnedSource()` helper function and `LEARNED_SOURCES` set to `SkillsManagementPanel.tsx`
 - [x] 5.2 Update `installedSkills` and `learnedSkills` `useMemo` filters to use `isLearnedSource()`
 - [x] 5.3 Update the `learnedNames` selection cleanup filter on data load to use `isLearnedSource()`
-- [x] 5.4 Add `learnedSourceIcon()` and `learnedSourceTooltip()` helper functions for source-specific icons (🤖 for auto_, 📖 for learned, 🔧 for crafted) and localized tooltips
+- [x] 5.4 Add `learnedSourceIcon()` and `learnedSourceTooltip()` helper functions for source-specific icons (for auto_, for learned, for crafted) and localized tooltips
 - [x] 5.5 Update the source icon `<span>` in the Learned tab table to use the new helper functions
 
 ## Task 6: Verify build and existing tests pass

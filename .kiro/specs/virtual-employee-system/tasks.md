@@ -180,7 +180,7 @@
     - 下载失败时记录错误日志，仍处理消息文本部分
     - _Requirements: 11.6_
   - [x] 17.5 前端附件 UI 组件
-    - 在 `VEConversationView.tsx` 的输入区域添加附件按钮（📎），点击触发文件选择器
+    - 在 `VEConversationView.tsx` 的输入区域添加附件按钮（），点击触发文件选择器
     - 文件选择器过滤支持的类型：`.txt,.md,.csv,.json,.xml,.yaml,.log,.go,.py,.js,.ts,.html,.css,.png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf,.docx`
     - 选择文件后在输入框上方显示附件预览条（文件名 + 大小 + 移除按钮）
     - 发送时调用 `SendVEMessageWithAttachments` Wails binding
@@ -189,7 +189,7 @@
   - [x] 17.6 前端附件显示组件
     - 在 `VEConversationView.tsx` 的消息气泡中实现附件渲染
     - 图片附件：内联缩略图预览（max-width: 300px），点击展开全尺寸查看
-    - 文本/文档附件：显示为文件 chip（📄 图标 + 文件名 + 大小），点击下载
+    - 文本/文档附件：显示为文件 chip（图标 + 文件名 + 大小），点击下载
     - VE 响应中的附件（AI 生成的文件）：同样渲染为 chip 或内联图片
     - _Requirements: 11.7, 11.8_
   - [x] 17.7 群聊附件广播

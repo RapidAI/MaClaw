@@ -29,12 +29,7 @@
   - **Property 2: Preservation** - Sections 0-3 Behavior Unchanged
   - **IMPORTANT**: Follow observation-first methodology
   - **Observe on UNFIXED code** the following non-bug-condition behaviors:
-    - Section 0 (input-waiting): `IsWaitingForInput=true` + non-substantial input → returns reminder text with `RunAgentLoop=false` ✅
-    - Section 1 (skip words): skip word during `CanSkip=true` phase → `advancePhase` called, `Advance=true` ✅
-    - Section 1 (skip words): skip word during `CanSkip=false` phase → rejection text with `RunAgentLoop=false` ✅
-    - Section 2 (confirm words): confirm word during `NeedsConfirm=true` + `hasOutput=true` → `advancePhase` called, `Advance=true` ✅
-    - Section 3 (PendingConfirm): any text during `NeedsConfirm=true` + `hasOutput=true` (non-confirm) → `PendingConfirm=true` ✅
-  - Write property-based tests capturing these observed behaviors:
+    - Section 0 (input-waiting): `IsWaitingForInput=true` + non-substantial input → returns reminder text with `RunAgentLoop=false`     - Section 1 (skip words): skip word during `CanSkip=true` phase → `advancePhase` called, `Advance=true`     - Section 1 (skip words): skip word during `CanSkip=false` phase → rejection text with `RunAgentLoop=false`     - Section 2 (confirm words): confirm word during `NeedsConfirm=true` + `hasOutput=true` → `advancePhase` called, `Advance=true`     - Section 3 (PendingConfirm): any text during `NeedsConfirm=true` + `hasOutput=true` (non-confirm) → `PendingConfirm=true`   - Write property-based tests capturing these observed behaviors:
     - **Sub-property 2a**: For all confirm words during `NeedsConfirm=true` + `hasOutput=true` phases → `Advance=true` (section 2 preservation, from design Preservation Requirements)
     - **Sub-property 2b**: For all skip words during `CanSkip=true` phases → `Advance=true` (section 1 preservation)
     - **Sub-property 2c**: For all skip words during `CanSkip=false` phases → `RunAgentLoop=false` + rejection text (section 1 preservation)

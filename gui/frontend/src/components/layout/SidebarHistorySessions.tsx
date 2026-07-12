@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { GroupDiscussionListLocalHidden, GroupDiscussionListMine, GroupDiscussionSetLocalHidden } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { localizeText } from '../../i18n';
 import { getHistoryDiscussionRelation, isHistoryDiscussionReadOnly } from '../ai/historyDiscussionUtils';
+import { IconArrowDownLeft, IconArrowUpRight, IconCircleDot } from '../ai/WorkbenchIcons';
 
 export type HistoryDiscussionSummary = {
     id?: string;
@@ -53,21 +54,21 @@ const discussionRenameEventInfo = (event: any): { discussionId: string; topic: s
 };
 
 
-const relationMeta = (lang: string, relation: string) => {
+const relationMeta = (lang: string, relation: string): { icon: ReactNode; label: string } => {
     if (relation === 'initiated_by_me') {
         return {
-            icon: '\u2197',
+            icon: <IconArrowUpRight size={13} color="currentColor" />,
             label: textForLang(lang, 'Started by me', '\u6211\u53d1\u8d77\u7684', '\u6211\u767c\u8d77\u7684'),
         };
     }
     if (relation === 'owned_ve_invited') {
         return {
-            icon: '\u2199',
+            icon: <IconArrowDownLeft size={13} color="currentColor" />,
             label: textForLang(lang, 'My digital employee invited', '\u6211\u7684\u6570\u5b57\u5458\u5de5\u53d7\u9080', '\u6211\u7684\u6578\u5b57\u54e1\u5de5\u53d7\u9080'),
         };
     }
     return {
-        icon: '\u25e6',
+        icon: <IconCircleDot size={13} color="currentColor" />,
         label: textForLang(lang, 'History session', '\u5386\u53f2\u4f1a\u8bdd', '\u6b77\u53f2\u6703\u8a71'),
     };
 };

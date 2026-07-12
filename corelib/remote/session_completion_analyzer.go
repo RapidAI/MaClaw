@@ -3,7 +3,7 @@ package remote
 import "strings"
 
 var completionSignals = []string{
-	"✅", "i've completed", "已完成", "all done",
+	"", "i've completed", "已完成", "all done",
 	"changes applied", "task is complete",
 	"all tasks completed", "everything is done",
 }

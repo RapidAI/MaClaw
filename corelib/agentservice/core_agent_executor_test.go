@@ -411,6 +411,9 @@ func (s stubKnowledgeStore) Search(context.Context, knowledge.SearchOptions) ([]
 }
 
 func TestCoreAgentBuildSystemPromptIncludesKnowledgeRulesWhenStoreConfigured(t *testing.T) {
+	// Force full profile so knowledge policy blocks are present (adaptive light
+	// trims enterprise bulk on short questions).
+	t.Setenv(agent.PromptProfileEnvKey, "full")
 	cb := &coreAgentCallbacks{knowledgeStore: noOpKnowledgeStore{}}
 	prompt := cb.BuildSystemPrompt("what is in my docs?", true)
 	if !strings.Contains(prompt, agent.PromptKnowledgeBaseRules) {
@@ -458,6 +461,7 @@ func TestKnowledgeSearchResultsRequireEvidenceCitation(t *testing.T) {
 }
 
 func TestCoreAgentBuildSystemPromptAutoRecallsKnowledgeAfterFirstTurn(t *testing.T) {
+	t.Setenv(agent.PromptProfileEnvKey, "full")
 	store := stubKnowledgeStore{results: []knowledge.SearchResult{{
 		Source:  knowledge.Source{Title: "材料原文"},
 		Snippet: "马勇博士共有 3 项发明专利。",
@@ -472,6 +476,7 @@ func TestCoreAgentBuildSystemPromptAutoRecallsKnowledgeAfterFirstTurn(t *testing
 }
 
 func TestCoreAgentBuildSystemPromptIncludesConfiguredSSHHosts(t *testing.T) {
+	t.Setenv(agent.PromptProfileEnvKey, "full")
 	cb := &coreAgentCallbacks{appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{
 		{Label: "prod-web", Host: "10.0.0.10", User: "deploy", Port: 2222},
 		{Label: "broken", Host: "10.0.0.11"},
@@ -482,6 +487,20 @@ func TestCoreAgentBuildSystemPromptIncludesConfiguredSSHHosts(t *testing.T) {
 	}
 	if strings.Contains(prompt, "broken") {
 		t.Fatalf("expected invalid SSH host to be omitted from prompt, got %q", prompt)
+	}
+}
+
+func TestCoreAgentBuildSystemPrompt_LightSkipsSSHHosts(t *testing.T) {
+	t.Setenv(agent.PromptProfileEnvKey, "light")
+	cb := &coreAgentCallbacks{appCfg: corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{
+		{Label: "prod-web", Host: "10.0.0.10", User: "deploy", Port: 2222},
+	}}}
+	prompt := cb.BuildSystemPrompt("hello", true)
+	if strings.Contains(prompt, "Configured SSH hosts:") {
+		t.Fatalf("light profile should omit SSH host list: %q", prompt)
+	}
+	if !strings.Contains(prompt, "light") && !strings.Contains(prompt, "轻量") {
+		t.Fatalf("expected light profile markers: %q", prompt)
 	}
 }
 
@@ -1480,6 +1499,36 @@ func TestCoreAgentBuildToolsDisablesBashByDefault(t *testing.T) {
 	}
 }
 
+func TestCoreAgentBuildTools_LightFiltersCodingTools(t *testing.T) {
+	t.Setenv(agent.PromptProfileEnvKey, "light")
+	cb := &coreAgentCallbacks{
+		allowLocalBash:             true,
+		localBashTrustedSingleUser: true,
+		localBashTenantID:          "tenant_a",
+		localBashUserID:            "user_a",
+		principal:                  Principal{TenantID: "tenant_a", UserID: "user_a"},
+		// Seed last profile as BuildSystemPrompt would (BuildTools may run first).
+		lastPromptProfile: agent.PromptProfileLight,
+	}
+	// BuildSystemPrompt also sets lastPromptProfile — exercise full path.
+	_ = cb.BuildSystemPrompt("你好", true)
+	tools := cb.BuildTools("你好")
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		seen[name] = true
+	}
+	if seen["bash"] {
+		t.Fatalf("light turn must not expose bash: %#v", seen)
+	}
+	// At least one light-safe tool should remain when present in core specs.
+	// (fail-open would re-include bash — so absence of bash is the key assert.)
+	if len(tools) == 0 {
+		t.Fatal("expected some light tools to remain (or empty if none allowed)")
+	}
+}
+
 func TestCoreAgentBuildToolsIncludesBashWhenEnabled(t *testing.T) {
 	cb := &coreAgentCallbacks{allowLocalBash: true, localBashTrustedSingleUser: true, localBashTenantID: "tenant_a", localBashUserID: "user_a", principal: Principal{TenantID: "tenant_a", UserID: "user_a"}}
 	tools := cb.BuildTools("")
@@ -1588,7 +1637,8 @@ func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
 	for _, tool := range tools {
 		seen[tooldef.Name(tool)] = true
 	}
-	for _, name := range []string{"read_file", "list_directory"} {
+	// Planning phases may write plan docs (write_file) but block bash/edit/task.
+	for _, name := range []string{"read_file", "list_directory", "write_file"} {
 		if !seen[name] {
 			t.Fatalf("expected %s to remain available for planning context, got %#v", name, seen)
 		}
@@ -1596,7 +1646,7 @@ func TestCoreAgentPlanningToolPolicyAllowsInspectionOnly(t *testing.T) {
 			t.Fatalf("expected execution guard to allow %s under planning policy", name)
 		}
 	}
-	for _, name := range []string{"bash", "write_file", "edit_file", "task"} {
+	for _, name := range []string{"bash", "edit_file", "task"} {
 		if seen[name] {
 			t.Fatalf("expected %s to be filtered out by planning policy, got %#v", name, seen)
 		}

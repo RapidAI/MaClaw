@@ -294,7 +294,7 @@
   const NODE_TYPES = {
     trigger: { labelKey: 'trigger', icon: '\u25B6', color: '#e8f5e9', textColor: '#2e7d32' },
     form: { labelKey: 'form', icon: '\u270E', color: '#e3f2fd', textColor: '#1565c0' },
-    approval: { labelKey: 'approval', icon: '\u2713', color: '#fff3e0', textColor: '#e65100' },
+    approval: { labelKey: 'approval', icon: 'OK', color: '#fff3e0', textColor: '#e65100' },
     condition_branch: { labelKey: 'conditionBranch', icon: '\u2666', color: '#f3e5f5', textColor: '#6a1b9a' },
     action: { labelKey: 'action', icon: '\u2699', color: '#e0f2f1', textColor: '#00695c' },
     notification: { labelKey: 'notification', icon: '\u2709', color: '#fce4ec', textColor: '#c62828' },

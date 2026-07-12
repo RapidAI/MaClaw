@@ -7,8 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 func estimateConversationEntryTokens(entries []agent.ConversationEntry) int {
@@ -549,10 +550,7 @@ func truncateAssistantContent(msgs []interface{}, budget int) []interface{} {
 		// to reclaim token budget.
 		//
 		// Verified empirically:
-		//   Full reasoning_content      → 200 ✅
-		//   Truncated reasoning_content → 200 ✅
-		//   Empty string ""             → 200 ✅
-		//   Field missing entirely      → 400 ❌ (when tools present)
+		//   Full reasoning_content      → 200 		//   Truncated reasoning_content → 200 		//   Empty string ""             → 200 		//   Field missing entirely      → 400 (when tools present)
 		if conversationHasToolCalls {
 			// Conversation has tool calls: reasoning_content field must exist.
 			// Truncate long reasoning to reclaim token budget (API accepts
@@ -1150,7 +1148,14 @@ func truncateToolResult(s string) string {
 const webFetchMaxToolResult = 32768
 
 func truncateToolResultForTool(toolName, s string) string {
+	return truncateToolResultForToolWithSession(toolName, "", s)
+}
+
+// truncateToolResultForToolWithSession compresses/truncates for the model and
+// spills the original full result to a tool_result handle when truncated.
+func truncateToolResultForToolWithSession(toolName, sessionKey, original string) string {
 	toolKind := classifyAgentToolKind(toolName)
+	s := original
 
 	// Phase 0: TokenJuice content-type-aware compression — classifies the
 	// content (HTML/JSON/terminal/plain) and applies type-specific rules
@@ -1171,28 +1176,52 @@ func truncateToolResultForTool(toolName, s string) string {
 	if strings.HasPrefix(toolName, "browser") {
 		limit = max(limit, 4096)
 	}
-	if len(s) <= limit {
-		return s
-	}
-	if toolKind == agentToolKindWebFetch {
-		return truncateWebFetchToolResult(s, limit)
-	}
-	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
-	sepLen := len(sep)
-	budget := limit - sepLen
 
-	switch toolName {
-	case "get_session_output", "bash":
-		// Terminal output: tail is more important (recent lines)
-		headLen := budget / 4
-		tailLen := budget - headLen
-		return s[:headLen] + sep + s[len(s)-tailLen:]
-	default:
-		// Default: head-heavy (status/headers at top)
-		headLen := budget * 2 / 3
-		tailLen := budget - headLen
-		return s[:headLen] + sep + s[len(s)-tailLen:]
+	var preview string
+	if len(s) <= limit {
+		preview = s
+	} else if toolKind == agentToolKindWebFetch {
+		preview = truncateWebFetchToolResult(s, limit)
+	} else {
+		sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
+		sepLen := len(sep)
+		budget := limit - sepLen
+		switch toolName {
+		case "get_session_output", "bash":
+			// Terminal output: tail is more important (recent lines)
+			headLen := budget / 4
+			tailLen := budget - headLen
+			preview = s[:headLen] + sep + s[len(s)-tailLen:]
+		default:
+			// Default: head-heavy (status/headers at top)
+			headLen := budget * 2 / 3
+			tailLen := budget - headLen
+			preview = s[:headLen] + sep + s[len(s)-tailLen:]
+		}
 	}
+
+	// Dual-view: keep full original on disk when the model only sees a preview.
+	return projectToolResultHandle(toolName, sessionKey, original, preview, limit)
+}
+
+// projectToolResultHandle spills oversized full results and appends a handle
+// footer so the model can re-read via read_tool_result. Failures fall back to preview.
+func projectToolResultHandle(toolName, sessionKey, original, preview string, limit int) string {
+	proj, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:   toolName,
+		SessionKey: sessionKey,
+		Content:    original,
+		Preview:    preview,
+		Limit:      limit,
+	})
+	if err != nil {
+		log.Printf("[toolresult] spill failed tool=%s: %v", toolName, err)
+		if proj.Preview != "" {
+			return proj.Preview
+		}
+		return preview
+	}
+	return proj.Preview
 }
 
 // compressToolResultSemantic applies content-aware compression to tool
@@ -1203,7 +1232,7 @@ func truncateToolResultForTool(toolName, s string) string {
 //     are collapsed into "... (重复 N 行) ...".
 //
 //  2. Homogeneous block collapse: when >10 consecutive lines match the
-//     same pattern (e.g. all start with "PASS", "ok", "  ✓"), keep the
+//     same pattern (e.g. all start with "PASS", "ok", "  OK"), keep the
 //     first 3 + last 2 and insert a summary.
 //
 // This is inspired by GenericAgent's _clean_content which shrinks code

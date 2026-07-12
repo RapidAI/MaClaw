@@ -235,15 +235,27 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 	}
 	searcher := NewSkillSearcher(NewSkillMarketClient(h.app))
 	results, err := searcher.SearchAll(context.Background(), query)
+	degradedNote := ""
 	if err != nil {
-		return err.Error()
+		if d, ok := AsSearchDegraded(err); ok {
+			degradedNote = d.Error()
+		} else {
+			return err.Error()
+		}
 	}
 	if len(results) == 0 {
+		if degradedNote != "" {
+			return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill（且搜索不完整：%s）", query, degradedNote)
+		}
 		return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill", query)
 	}
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("找到 %d 个 Skill：\n", len(results)))
+	if degradedNote != "" {
+		b.WriteString("⚠️ " + degradedNote + "\n")
+		b.WriteString("（部分源失败，结果可能不完整；空结果不等于「无匹配 skill」）\n")
+	}
 	for _, r := range results {
 		switch r.Source {
 		case "skillhub", "skillmarket":
@@ -300,7 +312,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 	if h.app != nil && !h.app.IsSkillSourceAllowed(effectiveSource) {
 		allowed := h.app.GetAllowedSkillSources()
-		return fmt.Sprintf("❌ 来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, allowed)
+		return fmt.Sprintf("来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, allowed)
 	}
 
 	ctx := context.Background()
@@ -1112,7 +1124,7 @@ func (h *IMMessageHandler) toolUploadSkill(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("上传失败: %s", err.Error())
 	}
-	return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, submissionID)
+	return fmt.Sprintf("Skill「%s」已上传到 SkillMarket，提交 ID: %s", name, submissionID)
 }
 
 // runUploadPortabilityGate runs the shared pre-upload portability preflight on
@@ -1157,9 +1169,18 @@ func (h *IMMessageHandler) runUploadPortabilityGate(name string) string {
 		// Do NOT rollback auto-fixed changes — they are correct and should persist.
 		// Only report the remaining BlockingPaths/MissingFiles for the agent to fix.
 		// (Rollback only happens above when the security scan rejects the auto-fix.)
+		// Drop .bak files left by the fixer so packages stay clean when upload is still blocked.
+		cleanupPortabilityBackupFiles(skillDir)
 		return cskill.FormatUploadPreflight(result)
 	}
+	cleanupPortabilityBackupFiles(skillDir)
 	return ""
+}
+
+func cleanupPortabilityBackupFiles(skillDir string) {
+	for _, name := range []string{"skill.yaml.bak", "skill.yml.bak", "skill.json.bak", "skill.md.bak", "SKILL.md.bak"} {
+		_ = os.Remove(filepath.Join(skillDir, name))
+	}
 }
 
 // resolveManagedSkillDir resolves the on-disk directory of a registered skill
@@ -1996,9 +2017,9 @@ func (h *IMMessageHandler) toolSetMaxIterations(args map[string]interface{}) str
 	}
 
 	if reason != "" {
-		return fmt.Sprintf("✅ 已将当前任务最大轮数调整为 %d（仅本次任务生效，原因: %s）", limit, reason)
+		return fmt.Sprintf("已将当前任务最大轮数调整为 %d（仅本次任务生效，原因: %s）", limit, reason)
 	}
-	return fmt.Sprintf("✅ 已将当前任务最大轮数调整为 %d（仅本次任务生效）", limit)
+	return fmt.Sprintf("已将当前任务最大轮数调整为 %d（仅本次任务生效）", limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -2015,12 +2036,12 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	}
 	nickname := strings.TrimSpace(stringVal(args, "nickname"))
 	if nickname == "" {
-		return "❌ nickname 不能为空"
+		return "nickname 不能为空"
 	}
 	// Persist only nickname so concurrent settings edits are not overwritten.
 	if cfg, err := h.loadConfig(); err == nil {
 		if strings.TrimSpace(cfg.RemoteNickname) == nickname {
-			return fmt.Sprintf("✅ 昵称已经是「%s」，无需重复上报。", nickname)
+			return fmt.Sprintf("昵称已经是「%s」，无需重复上报。", nickname)
 		}
 	}
 	if h.app != nil {
@@ -2032,10 +2053,10 @@ func (h *IMMessageHandler) toolSetNickname(args map[string]interface{}) string {
 	if hc := h.getHubClient(); hc != nil {
 		if err := hc.SendNicknameUpdate(nickname); err != nil {
 			log.Printf("[set_nickname] SendNicknameUpdate error: %v", err)
-			return fmt.Sprintf("⚠️ 昵称已保存到本地（%s），但上报 Hub 失败：%v", nickname, err)
+			return fmt.Sprintf("昵称已保存到本地（%s），但上报 Hub 失败：%v", nickname, err)
 		}
 	}
-	return fmt.Sprintf("✅ 昵称已更新为「%s」，Hub 已同步。", nickname)
+	return fmt.Sprintf("昵称已更新为「%s」，Hub 已同步。", nickname)
 }
 
 func isExplicitNicknameRequest(text string) bool {
@@ -2127,7 +2148,7 @@ func (h *IMMessageHandler) toolSwitchLLMProvider(args map[string]interface{}) st
 	if err := h.saveMaclawLLMProviders(info.Providers, match.Name); err != nil {
 		return fmt.Sprintf("切换失败: %s", err.Error())
 	}
-	return fmt.Sprintf("✅ 已将 LLM 服务商切换为 %s (model=%s)", match.Name, match.Model)
+	return fmt.Sprintf("已将 LLM 服务商切换为 %s (model=%s)", match.Name, match.Model)
 }
 
 // ---------------------------------------------------------------------------
@@ -2200,9 +2221,9 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 
 	// Format next run time for display.
 	if task := h.scheduledTaskManager.Get(id); task != nil && task.NextRunAt != nil {
-		return fmt.Sprintf("✅ 定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"))
+		return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"))
 	}
-	return fmt.Sprintf("✅ 定时任务已创建（ID: %s）", id)
+	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
 }
 
 func (h *IMMessageHandler) toolListScheduledTasks() string {
@@ -2218,7 +2239,7 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("共 %d 个定时任务：\n\n", len(tasks)))
 	for _, t := range tasks {
-		b.WriteString(fmt.Sprintf("📋 [%s] %s\n", t.ID, t.Name))
+		b.WriteString(fmt.Sprintf("[%s] %s\n", t.ID, t.Name))
 		b.WriteString(fmt.Sprintf("   操作: %s\n", t.Action))
 
 		// Schedule description
@@ -2269,7 +2290,7 @@ func (h *IMMessageHandler) toolDeleteScheduledTask(args map[string]interface{}) 
 		return fmt.Sprintf("删除失败: %s", err.Error())
 	}
 	h.emitAppEvent("scheduled-tasks-changed")
-	return "✅ 定时任务已删除"
+	return "定时任务已删除"
 }
 
 func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) string {
@@ -2291,9 +2312,9 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
 		}
-		return fmt.Sprintf("✅ 定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
 	}
-	return "✅ 定时任务已更新"
+	return "定时任务已更新"
 }
 
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {

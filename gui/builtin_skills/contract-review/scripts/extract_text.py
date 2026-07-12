@@ -83,7 +83,7 @@ def main():
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(text)
 
-    print(f"✅ 文本提取完成")
+    print("文本提取完成")
     print(f"   字符数: {len(text)}")
     print(f"   output_path: {output_path}")
 

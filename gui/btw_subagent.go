@@ -114,7 +114,7 @@ func (b *BtwSubAgent) Execute(query string) *BtwResult {
 	log.Printf("[btw-subagent] starting query: %s", truncateRunesForSubAgent(query, 80))
 
 	if b.onProgress != nil {
-		b.onProgress("🔍 /btw 侧查询中...")
+		b.onProgress("/btw 侧查询中...")
 	}
 
 	cb := &btwCallbacks{subagent: b}
@@ -136,7 +136,7 @@ func (b *BtwSubAgent) Execute(query string) *BtwResult {
 	}
 
 	// Prefix with /btw indicator so the user knows this is a side query result.
-	text = "🔍 **/btw 查询结果**\n\n" + text
+	text = "**/btw 查询结果**\n\n" + text
 
 	return &BtwResult{
 		Text:       text,
@@ -168,13 +168,13 @@ func (c *btwCallbacks) GetMaxIterations() int {
 func (c *btwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
 	// Build a focused system prompt for /btw by selectively composing only
 	// the sections relevant to a single-turn read-only query:
-	//   ✅ Identity (role name, self_identity from memory)
-	//   ✅ Proactive memory recall (relevant memories for the query)
-	//   ✅ User fact summary (who the user is)
-	//   ❌ Coding workflow rules (3000+ tokens of noise)
-	//   ❌ Memory management guide (save/replace/delete — /btw is read-only)
-	//   ❌ Session list, MCP servers, skills, security firewall
-	//   ❌ PDF generation rules, file editing strategy
+	//   Identity (role name, self_identity from memory)
+	//   Proactive memory recall (relevant memories for the query)
+	//   User fact summary (who the user is)
+	//   Coding workflow rules (3000+ tokens of noise)
+	//   Memory management guide (save/replace/delete — /btw is read-only)
+	//   Session list, MCP servers, skills, security firewall
+	//   PDF generation rules, file editing strategy
 	//
 	// This avoids two mechanism-level problems with reusing the full prompt:
 	// 1. frozenMemorySnapshots cache pollution (isFirstTurn=true corrupts
@@ -329,7 +329,7 @@ func (c *btwCallbacks) OnProgress(text string) {
 
 func (c *btwCallbacks) OnToolCall(name string) {
 	if c.subagent.onProgress != nil {
-		c.subagent.onProgress(fmt.Sprintf("🔧 %s", name))
+		c.subagent.onProgress(fmt.Sprintf("%s", name))
 	}
 }
 

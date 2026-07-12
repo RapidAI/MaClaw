@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, grantCanContributeExpiry, latestExpiry, numeric } from '../hubCredits';
+import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL, grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from '../hubCredits';
 
 describe('hubCredits URL builders', () => {
     it('builds card store URL from a trimmed Hub URL', () => {
@@ -26,8 +26,8 @@ describe('hubCredits URL builders', () => {
         expect(buildHubCardStoreURL('', 'tenant acme', 'dev@example.com', '', 'https://hubs.example.com/', 'hub_1', 'Acme Hub', 'Acme Tenant')).toBe('https://hubs.example.com/compute-store?hub_id=hub_1&tenant_id=tenant%20acme&hub_name=Acme%20Hub&tenant_name=Acme%20Tenant&account=dev%40example.com&email=dev%40example.com');
     });
 
-    it('prefers stable user ID and carries mobile for card store identity', () => {
-        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'phone:19900001111', 'viewer token', '', '', '', '', 'usr_123', '19900001111')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=usr_123&user_id=usr_123&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
+    it('prefers phone/email account identity and still carries stable user ID', () => {
+        expect(buildHubCardStoreURL('https://hub.example.com/', 'tenant acme', 'phone:19900001111', 'viewer token', '', '', '', '', 'usr_123', '19900001111')).toBe('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=phone%3A19900001111&user_id=usr_123&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
     });
 
     it('falls back to phone account when email and user ID are missing', () => {
@@ -46,8 +46,8 @@ describe('hubCredits URL builders', () => {
         expect(buildHubCreditsURL('https://hub.example.com/', 'viewer token', 'tenant acme', 'dev@example.com')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
     });
 
-    it('prefers stable user ID and carries mobile for credits identity', () => {
-        expect(buildHubCreditsURL('https://hub.example.com/', 'viewer token', 'tenant acme', 'phone:19900001111', 'usr_123', '19900001111')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme&account=usr_123&user_id=usr_123&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
+    it('prefers phone/email account identity and still carries stable user ID for credits', () => {
+        expect(buildHubCreditsURL('https://hub.example.com/', 'viewer token', 'tenant acme', 'phone:19900001111', 'usr_123', '19900001111')).toBe('https://hub.example.com/get-credits?tenant_id=tenant%20acme&account=phone%3A19900001111&user_id=usr_123&email=phone%3A19900001111&mobile=19900001111#token=viewer%20token');
     });
 
     it('opens the credits page even when viewer token is missing', () => {
@@ -59,6 +59,71 @@ describe('hubCredits URL builders', () => {
         expect(buildHubMaclawAppManualURL('https://hub.example.com', 'en')).toBe('https://hub.example.com/maclaw-app-manual?lang=en');
         expect(buildHubMaclawAppManualURL('https://hub.example.com', 'zh-Hans')).toBe('https://hub.example.com/maclaw-app-manual?lang=zh');
         expect(buildHubMaclawAppManualURL('')).toBe('');
+    });
+});
+
+describe('summarizeHubCreditTotals', () => {
+    it('keeps Total ≈ Used + Remaining when queued point cards are present', () => {
+        const totals = summarizeHubCreditTotals({
+            active: true,
+            credits_total: 21000,
+            credits_used: 11015,
+            credits_remaining: 9985,
+            credits_available: 9985,
+            grants: [
+                { status: 'active', credits_total: 21000, credits_used: 11015, credits_remaining: 9985 },
+                { status: 'queued', credits_total: 10000, credits_used: 0, credits_remaining: 10000 },
+            ],
+        });
+        expect(totals.total).toBe(31000);
+        expect(totals.used).toBe(11015);
+        expect(totals.remaining).toBe(19985);
+        expect(totals.used + totals.remaining).toBe(totals.total);
+    });
+
+    it('does not shrink lifetime remaining to a period-available window', () => {
+        const totals = summarizeHubCreditTotals({
+            active: true,
+            credits_remaining: 2293.43,
+            credits_available: 2293.43,
+            grants: [{
+                status: 'active',
+                effective: true,
+                credits_total: 70000,
+                credits_used: 1658.7,
+                credits_remaining: 68341.3,
+                credits_available: 2293.43,
+            }],
+        });
+        expect(totals.remaining).toBe(68341.3);
+        expect(totals.total).toBeGreaterThanOrEqual(70000);
+    });
+
+    it('ignores hubcenter compute grants', () => {
+        const totals = summarizeHubCreditTotals({
+            active: true,
+            grants: [{
+                source: 'hubcenter_compute',
+                status: 'active',
+                credits_total: 999999,
+                credits_remaining: 999999,
+            }],
+        });
+        expect(totals).toEqual({ total: 0, used: 0, remaining: 0, available: 0 });
+    });
+
+    it('counts exhausted grants toward used even when effective is false', () => {
+        const totals = summarizeHubCreditTotals({
+            active: true,
+            grants: [
+                { status: 'active', effective: true, credits_total: 1000, credits_used: 100, credits_remaining: 900 },
+                { status: 'exhausted', effective: false, credits_total: 500, credits_used: 500, credits_remaining: 0 },
+            ],
+        });
+        expect(totals.total).toBe(1500);
+        expect(totals.used).toBe(600);
+        expect(totals.remaining).toBe(900);
+        expect(totals.used + totals.remaining).toBe(totals.total);
     });
 });
 

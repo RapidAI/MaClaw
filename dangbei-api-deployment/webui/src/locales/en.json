@@ -142,7 +142,7 @@
         "modelLabel": "Model",
         "streamMode": "Streaming",
         "accountSelector": "Account",
-        "autoRandom": "🤖 Auto / Random",
+        "autoRandom": "Auto / Random",
         "apiKeyOptional": "API Key (optional)",
         "apiKeyDefault": "Default: ...{suffix}",
         "apiKeyPlaceholder": "Enter a custom key",

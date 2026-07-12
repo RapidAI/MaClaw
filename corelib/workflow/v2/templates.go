@@ -467,6 +467,26 @@ func MaintenanceTemplate() *WorkflowTemplate {
 	}
 }
 
+// OpsMaintenanceTemplate is the server-ops / SRE controlled-change workflow.
+// Early phases produce intake, read-only environment reports, maintenance
+// artifacts, and a risk policy; only controlled_execution may run approved
+// bash/ssh commands from that risk-policy manifest.
+func OpsMaintenanceTemplate() *WorkflowTemplate {
+	return &WorkflowTemplate{
+		Type:        "ops_maintenance",
+		Name:        "运维维护",
+		Description: "运维 intake → 只读采集 → 维护工件 → 风险策略 → 受控执行。适用于服务器运维、巡检、排障、变更、回滚与审批后执行。Ops maintenance workflow for server ops, inspection, incident response, change, rollback, and controlled execution.",
+		Keywords:    []string{"ops", "operations", "maintenance", "server", "ssh", "linux", "sre", "devops", "运维", "服务器", "巡检", "排障", "应急", "变更", "回滚", "风险", "审批", "执行"},
+		Phases: []PhaseTemplate{
+			{ID: "ops_intake", Name: "Ops Intake", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindIntake, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "readonly_collection", Name: "Read-only Collection", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "artifact_plan", Name: "Maintenance Artifacts", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "risk_policy", Name: "Risk Policy Gate", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindOpsRiskPolicy, MutationScope: MutationScopeWorkflowDoc},
+			{ID: "controlled_execution", Name: "Controlled Execution", NeedsConfirm: false, ToolPolicy: ToolPolicyOpsControlled, Kind: PhaseKindOpsExecution, MutationScope: MutationScopeProject},
+		},
+	}
+}
+
 func PresentationTemplate() *WorkflowTemplate {
 	return &WorkflowTemplate{
 		Type:        "presentation_design",
@@ -1280,6 +1300,7 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 	r.Register(CodingSubAgentTemplate())
 	r.Register(RemoteCodingSubAgentTemplate())
 	r.Register(MaintenanceTemplate())
+	r.Register(OpsMaintenanceTemplate())
 	r.Register(PresentationTemplate())
 	r.Register(ProductDesignTemplate())
 	r.Register(InnovationTemplate())

@@ -60,7 +60,7 @@ return h.handleActiveWorkflow(engine, userID, text)
 
 **机制性问题**: `handleNeedsUnderstanding` 中 `StartWorkflow` 创建了工作流状态（phase 0），但直接返回了 `&IMAgentResponse{Text: overview}`。这个非 nil 响应被 `handleWorkflowInterception` 返回给 `handleIMMessageWithLoop`，后者在 line 3948 `return wfResp` 直接返回给前端。`workflowAgentLoopMarker` 从未被设置，agent loop 从未运行。
 
-**影响**: 用户看到"🚀 工作流已启动"后面板就停了，需要手动发送"继续"才能触发需求文档生成。
+**影响**: 用户看到"工作流已启动"后面板就停了，需要手动发送"继续"才能触发需求文档生成。
 
 **修复状态**: 当前源码已修复（`handlePostStartWorkflow` 函数），但运行的二进制文件是旧版本。**需要重新编译**。
 

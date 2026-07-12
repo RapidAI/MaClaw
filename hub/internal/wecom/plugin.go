@@ -318,31 +318,8 @@ func (p *Plugin) SendText(ctx context.Context, target im.UserTarget, text string
 }
 
 func (p *Plugin) SendCard(ctx context.Context, target im.UserTarget, card im.OutgoingMessage) error {
-	// WeCom Bot supports markdown, degrade card to markdown text.
-	text := card.FallbackText
-	if text == "" {
-		var sb strings.Builder
-		if card.Title != "" {
-			sb.WriteString("**")
-			sb.WriteString(card.Title)
-			sb.WriteString("**\n")
-		}
-		if card.StatusIcon != "" {
-			sb.WriteString(card.StatusIcon)
-			sb.WriteString(" ")
-		}
-		if card.Body != "" {
-			sb.WriteString(card.Body)
-		}
-		for _, f := range card.Fields {
-			sb.WriteString("\n")
-			sb.WriteString(f.Label)
-			sb.WriteString(": ")
-			sb.WriteString(f.Value)
-		}
-		text = sb.String()
-	}
-	return p.SendText(ctx, target, text)
+	// WeCom Bot supports markdown, degrade card to plain text with ASCII status marks.
+	return p.SendText(ctx, target, im.FormatCardFallback(card))
 }
 
 func (p *Plugin) SendImage(ctx context.Context, target im.UserTarget, imageKey string, caption string) error {
@@ -388,7 +365,7 @@ func (p *Plugin) SendFile(ctx context.Context, target im.UserTarget, fileData, f
 	}
 	raw, err := base64.StdEncoding.DecodeString(fileData)
 	if err != nil {
-		return p.SendText(ctx, target, fmt.Sprintf("📎 %s", fileName))
+		return p.SendText(ctx, target, fmt.Sprintf("%s", fileName))
 	}
 	mediaType := "file"
 	if strings.HasPrefix(mimeType, "image/") {
@@ -401,7 +378,7 @@ func (p *Plugin) SendFile(ctx context.Context, target im.UserTarget, fileData, f
 	mediaID, err := p.uploadMedia(raw, mediaType, fileName)
 	if err != nil {
 		log.Printf("[wecom] file upload failed, falling back to text: %v", err)
-		return p.SendText(ctx, target, fmt.Sprintf("📎 %s (上传失败)", fileName))
+		return p.SendText(ctx, target, fmt.Sprintf("%s (上传失败)", fileName))
 	}
 	return p.sendMedia(userID, mediaType, mediaID)
 }
@@ -1114,7 +1091,7 @@ func (p *Plugin) handleCallback(frame wsFrame) {
 	if !bound {
 		if !isGroup {
 			_ = p.sendMarkdown(chatID,
-				"👋 欢迎使用 MaClaw 企业微信 Bot！\n\n"+
+				"欢迎使用 MaClaw 企业微信 Bot！\n\n"+
 					"请先绑定您的 Hub 账号，发送您的注册邮箱地址即可开始绑定。")
 		} else {
 			log.Printf("[wecom] unbound user %s in group %s, ignoring", userID, chatID)
@@ -1273,9 +1250,9 @@ func (p *Plugin) handleEventCallback(frame wsFrame) {
 		_, bound := p.bindings[userID]
 		p.bindMu.RUnlock()
 
-		welcome := "👋 您好！我是 MaClaw 智能助手，有什么可以帮您的吗？"
+		welcome := "您好！我是 MaClaw 智能助手，有什么可以帮您的吗？"
 		if !bound {
-			welcome = "👋 欢迎使用 MaClaw 企业微信 Bot！\n\n请发送您的 Hub 注册邮箱地址来绑定账号。"
+			welcome = "欢迎使用 MaClaw 企业微信 Bot！\n\n请发送您的 Hub 注册邮箱地址来绑定账号。"
 		}
 		// Use replyStream for welcome (must be within 5s of event)
 		streamID := generateReqID("welcome")
@@ -1306,7 +1283,7 @@ func (p *Plugin) handleEventCallback(frame wsFrame) {
 			// Replace the card with a text_notice showing the user's choice.
 			updatedCard := map[string]any{
 				"card_type":  "text_notice",
-				"main_title": map[string]string{"title": "✅ " + tce.EventKey},
+				"main_title": map[string]string{"title": tce.EventKey},
 				"task_id":    tce.TaskID,
 			}
 			if err := p.updateTemplateCard(frame.Headers.ReqID, updatedCard); err != nil {
@@ -1520,7 +1497,7 @@ func (p *Plugin) handleEmailSubmit(userID, email string) {
 	}
 	if err != nil || user == nil {
 		_ = p.sendMarkdown(userID,
-			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
+			fmt.Sprintf("未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))
 		return
 	}
 
@@ -1538,14 +1515,14 @@ func (p *Plugin) handleEmailSubmit(userID, email string) {
 		sentTo, err := p.broadcaster.BroadcastVerifyCodeForTenant(ctx, tenantID, email, code, "wecom")
 		if err != nil {
 			log.Printf("[wecom] broadcast verification code for %s failed: %v", email, err)
-			_ = p.sendMarkdown(userID, fmt.Sprintf("❌ 验证码发送失败: %v", err))
+			_ = p.sendMarkdown(userID, fmt.Sprintf("验证码发送失败: %v", err))
 			p.pendingMu.Lock()
 			delete(p.pending, userID)
 			p.pendingMu.Unlock()
 			return
 		}
 		_ = p.sendMarkdown(userID,
-			fmt.Sprintf("📧 验证码已发送到: %s\n\n请查看验证码，回复给我完成绑定（5 分钟内有效）。", sentTo))
+			fmt.Sprintf("验证码已发送到: %s\n\n请查看验证码，回复给我完成绑定（5 分钟内有效）。", sentTo))
 		return
 	}
 
@@ -1558,14 +1535,14 @@ func (p *Plugin) handleEmailSubmit(userID, email string) {
 	if p.mailer != nil {
 		if err := p.mailer.Send(ctx, []string{email}, subject, body); err != nil {
 			log.Printf("[wecom] send verification email to %s failed: %v", email, err)
-			_ = p.sendMarkdown(userID, fmt.Sprintf("❌ 验证邮件发送失败: %v", err))
+			_ = p.sendMarkdown(userID, fmt.Sprintf("验证邮件发送失败: %v", err))
 			p.pendingMu.Lock()
 			delete(p.pending, userID)
 			p.pendingMu.Unlock()
 			return
 		}
 	} else {
-		_ = p.sendMarkdown(userID, "❌ Hub 邮件服务未配置，无法发送验证码。请联系管理员。")
+		_ = p.sendMarkdown(userID, "Hub 邮件服务未配置，无法发送验证码。请联系管理员。")
 		p.pendingMu.Lock()
 		delete(p.pending, userID)
 		p.pendingMu.Unlock()
@@ -1573,7 +1550,7 @@ func (p *Plugin) handleEmailSubmit(userID, email string) {
 	}
 
 	_ = p.sendMarkdown(userID,
-		fmt.Sprintf("📧 验证码已发送到邮箱: %s\n\n请查收邮件，将 6 位验证码回复给我完成绑定（5 分钟内有效）。", email))
+		fmt.Sprintf("验证码已发送到邮箱: %s\n\n请查收邮件，将 6 位验证码回复给我完成绑定（5 分钟内有效）。", email))
 }
 
 func (p *Plugin) handleVerifyCode(userID, code string, pb *pendingBind) bool {
@@ -1581,12 +1558,12 @@ func (p *Plugin) handleVerifyCode(userID, code string, pb *pendingBind) bool {
 		p.pendingMu.Lock()
 		delete(p.pending, userID)
 		p.pendingMu.Unlock()
-		_ = p.sendMarkdown(userID, "⏰ 验证码已过期，请重新发送邮箱地址。")
+		_ = p.sendMarkdown(userID, "验证码已过期，请重新发送邮箱地址。")
 		return true
 	}
 
 	if strings.TrimSpace(code) != pb.Code {
-		_ = p.sendMarkdown(userID, "❌ 验证码不正确，请重新输入。")
+		_ = p.sendMarkdown(userID, "验证码不正确，请重新输入。")
 		return true
 	}
 
@@ -1597,7 +1574,7 @@ func (p *Plugin) handleVerifyCode(userID, code string, pb *pendingBind) bool {
 	p.pendingMu.Unlock()
 
 	_ = p.sendMarkdown(userID,
-		fmt.Sprintf("✅ 绑定成功！\n\n邮箱: %s\n\n现在您可以直接发送消息与 MaClaw Agent 交互了。", pb.Email))
+		fmt.Sprintf("绑定成功！\n\n邮箱: %s\n\n现在您可以直接发送消息与 MaClaw Agent 交互了。", pb.Email))
 	return true
 }
 
@@ -1611,7 +1588,7 @@ func (p *Plugin) handleUnbind(userID string) {
 	}
 	p.RemoveBinding(userID)
 	log.Printf("[wecom] unbound email=%s for userid=%s", email, userID)
-	_ = p.sendMarkdown(userID, fmt.Sprintf("✅ 已解除 %s 的绑定。", email))
+	_ = p.sendMarkdown(userID, fmt.Sprintf("已解除 %s 的绑定。", email))
 }
 
 // RemoveBinding removes a userid→email binding.

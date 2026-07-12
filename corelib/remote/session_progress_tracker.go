@@ -36,15 +36,6 @@ func NewProgressTracker() *ProgressTracker {
 	}
 }
 
-// toolActionIcons maps tool names to display icons.
-var toolActionIcons = map[string]string{
-	"Write": "📝", "Edit": "✏️", "MultiEdit": "✏️",
-	"Read": "📖", "Bash": "⚡", "TodoWrite": "📝",
-	"TodoRead": "📖", "ListDir": "📂", "Grep": "🔍",
-	"Glob": "🔍", "WebSearch": "🌐", "WebFetch": "🌐",
-	"AskUserQuestion": "❓", "Task": "📋",
-}
-
 // knownToolNames is the set of tool names we track as steps.
 var knownToolNames = map[string]bool{
 	"Write": true, "Edit": true, "MultiEdit": true,
@@ -58,8 +49,8 @@ var knownToolNames = map[string]bool{
 // a tool action. The tool name is captured in group 1, the target in group 2.
 // Examples:
 //
-//	✏️  Write src/main.go
-//	⚡ Bash npm run build
+//	 Write src/main.go
+//	Bash npm run build
 //	► Read package.json
 var ptyToolLinePattern = regexp.MustCompile(
 	`(?:^|\s)(Write|Edit|MultiEdit|Read|Bash|TodoWrite|TodoRead|ListDir|Grep|Glob|WebSearch|WebFetch|Task)\s+(.+)$`,
@@ -123,15 +114,11 @@ func (t *ProgressTracker) FormatProgress(sessionID string) string {
 		return ""
 	}
 	step := p.CurrentStep
-	icon := toolActionIcons[step.Action]
-	if icon == "" {
-		icon = "🔧"
-	}
 	target := truncateTarget(step.Target, maxTargetRunes)
 	if target != "" {
-		return fmt.Sprintf("%s 第 %d 步: %s %s", icon, step.StepNumber, step.Action, target)
+		return fmt.Sprintf("第 %d 步: %s %s", step.StepNumber, step.Action, target)
 	}
-	return fmt.Sprintf("%s 第 %d 步: %s", icon, step.StepNumber, step.Action)
+	return fmt.Sprintf("第 %d 步: %s", step.StepNumber, step.Action)
 }
 
 // Reset clears progress for a session. Call when a session exits.

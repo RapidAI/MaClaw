@@ -498,9 +498,8 @@ func extractPendingConfirmItems(item *pendingConfirmation) []string {
 		sources = append(sources, c)
 	}
 
+	// Match "待确认：" with or without a legacy leading warning pictograph.
 	markers := []string{
-		"\u26a0\ufe0f \u5f85\u786e\u8ba4\uff1a",
-		"\u26a0\ufe0f \u5f85\u786e\u8ba4:",
 		"\u5f85\u786e\u8ba4\uff1a",
 		"\u5f85\u786e\u8ba4:",
 	}

@@ -297,7 +297,7 @@ func skillhubSearch(args []string) error {
 			return nil
 		}
 		fmt.Printf("\n在 GitHub 上找到 %d 个候选技能:\n\n", len(candidates))
-		fmt.Printf("%-30s %-6s %-40s %s\n", "REPO", "★", "FILE", "DESCRIPTION")
+		fmt.Printf("%-30s %-6s %-40s %s\n", "REPO", "STARS", "FILE", "DESCRIPTION")
 		fmt.Println(strings.Repeat("-", 100))
 		for _, c := range candidates {
 			fmt.Printf("%-30s %-6d %-40s %s\n",
@@ -311,7 +311,7 @@ func skillhubSearch(args []string) error {
 	}
 
 	fmt.Printf("搜索 \"%s\" — 共 %d 个结果 (第 %d 页)\n\n", query, result.Total, result.Page)
-	fmt.Printf("%-24s %-8s %-6s %-5s %-8s %s\n", "ID", "VERSION", "TRUST", "★", "DOWNLOADS", "NAME")
+	fmt.Printf("%-24s %-8s %-6s %-5s %-8s %s\n", "ID", "VERSION", "TRUST", "RATE", "DOWNLOADS", "NAME")
 	fmt.Println(strings.Repeat("-", 90))
 	for _, s := range result.Skills {
 		rating := fmt.Sprintf("%.1f", s.AvgRating)
@@ -410,7 +410,7 @@ func skillhubInstall(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{"status": "installed", "skill": newSkill})
 	}
-	fmt.Printf("✓ 技能 '%s' (v%s) 已安装\n", full.Name, full.Version)
+	fmt.Printf("技能 '%s' (v%s) 已安装\n", full.Name, full.Version)
 	fmt.Printf("  作者: %s  信任等级: %s\n", full.Author, full.TrustLevel)
 	return nil
 }
@@ -480,7 +480,7 @@ func skillhubInstallGitHub(args []string) error {
 		return PrintJSON(map[string]interface{}{"status": "installed", "count": len(installed), "skills": installed})
 	}
 	for _, sk := range installed {
-		fmt.Printf("✓ 技能 '%s' 已从 GitHub 导入 (%s)\n", sk.Name, sk.SourceProject)
+		fmt.Printf("技能 '%s' 已从 GitHub 导入 (%s)\n", sk.Name, sk.SourceProject)
 	}
 	return nil
 }
@@ -539,7 +539,7 @@ func skillhubRate(args []string) error {
 		return fmt.Errorf("SkillHub 返回 HTTP %d", resp.StatusCode)
 	}
 
-	fmt.Printf("✓ 已为技能 %s 评分 %d 星\n", skillID, *score)
+	fmt.Printf("已为技能 %s 评分 %d 星\n", skillID, *score)
 	return nil
 }
 
@@ -751,7 +751,7 @@ func skillhubUpdate(args []string) error {
 		s.HubVersion = full.Version
 		s.TrustLevel = full.TrustLevel
 		updated++
-		fmt.Printf("✓ '%s' 已更新到 v%s\n", s.Name, full.Version)
+		fmt.Printf("'%s' 已更新到 v%s\n", s.Name, full.Version)
 	}
 
 	if err := store.SaveConfig(cfg); err != nil {

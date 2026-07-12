@@ -13,6 +13,34 @@ import (
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
+// cleanupSkillRunApp waits for async skill-runner post-work (usage stats /
+// saveSkills) before releasing TempDir handles on Windows.
+func cleanupSkillRunApp(t *testing.T, app *App) {
+	t.Helper()
+	if app == nil {
+		return
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		if app.skillRunner != nil {
+			for time.Now().Before(deadline) {
+				if app.skillRunner.activeRuns.Load() == 0 {
+					// Give updateUsageStats/saveSkills a brief chance to finish
+					// after the run is no longer counted as active.
+					time.Sleep(50 * time.Millisecond)
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+			app.memoryStore = nil
+		}
+		app.shutdown(context.Background())
+	})
+}
+
 func TestToolRunSkill_MissingName(t *testing.T) {
 	app := &App{}
 	app.skillRunner = NewSkillRunner(&SkillExecutor{app: app})
@@ -282,7 +310,8 @@ func TestToolRunSkill_ForwardsModeToWhenCondition(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
+	cleanupSkillRunApp(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -314,7 +343,8 @@ func TestToolRunSkill_ForwardsQueryToWhenCondition(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
+	cleanupSkillRunApp(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -346,7 +376,8 @@ func TestToolRunSkill_PipelineRecursionSurfacesInRunStatus(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
+	cleanupSkillRunApp(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -397,7 +428,8 @@ func TestToolRunSkill_ExternalPrivatePipelineStackDoesNotTripRecursion(t *testin
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
+	cleanupSkillRunApp(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -466,8 +498,8 @@ func TestToolRunSkill_ReportsRunMeta(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	app := &App{testHomeDir: tempHome}
-	t.Cleanup(func() { app.shutdown(context.Background()) })
+	app := &App{testHomeDir: tempHome, disableBackgroundEmbeddingForTest: true}
+	cleanupSkillRunApp(t, app)
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -492,7 +524,7 @@ func TestToolRunSkill_ReportsRunMeta(t *testing.T) {
 
 	h := &IMMessageHandler{app: app}
 	got := h.toolRunSkill(context.Background(), map[string]interface{}{"name": "demo-skill", "wait_seconds": float64(0)}, nil)
-	if !strings.Contains(got, "✅ Skill 已启动") {
+	if !strings.Contains(got, "Skill 已启动") {
 		t.Fatalf("expected started message, got %s", got)
 	}
 	if !strings.Contains(got, "## 运行信息") {
@@ -520,7 +552,7 @@ func TestToolRunSkill_EmitsProgressStages(t *testing.T) {
 	if !strings.Contains(got, "Skill 启动失败") {
 		t.Fatalf("expected start failure message, got %s", got)
 	}
-	if len(progress) == 0 || !strings.Contains(progress[0], "🚀 正在启动 Skill") {
+	if len(progress) == 0 || !strings.Contains(progress[0], "正在启动 Skill") {
 		t.Fatalf("progress = %#v, want startup progress", progress)
 	}
 }
@@ -555,7 +587,7 @@ func TestToolGetSkillRun_ReturnsStatusSummary(t *testing.T) {
 		Steps:  []StepResult{{Index: 0, Action: "create_session", Status: skillStepStatusRunning}},
 	}}
 	got := h.toolGetSkillRun(map[string]interface{}{"run_id": "run-123", "wait_seconds": float64(0.01)})
-	if !strings.Contains(got, "🔎 Skill 状态查询结果") {
+	if !strings.Contains(got, "Skill 状态查询结果") {
 		t.Fatalf("expected status title, got %s", got)
 	}
 	if !strings.Contains(got, "- skill: demo-skill") || !strings.Contains(got, "- status: running") {
@@ -638,7 +670,7 @@ func TestToolGetSkillRun_ReportsSessionFallbackFromUnknownExplicitSessionID(t *t
 	}
 
 	status := h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(1)})
-	if !strings.Contains(status, "🔎 Skill 状态查询结果") {
+	if !strings.Contains(status, "Skill 状态查询结果") {
 		t.Fatalf("expected status title, got %s", status)
 	}
 	if strings.Contains(status, "会话 skill-runner 不存在") {
@@ -753,8 +785,8 @@ func TestAppendSkillRunSummary_IncludesStepOutput(t *testing.T) {
 		Skill:  "weather-query",
 		Status: skillRunStatusSuccess,
 		Steps: []StepResult{
-			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 当前天气 ===\n天气：☀️ 晴  气温：26.9℃", DurationMs: 1200},
-			{Index: 1, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 逐小时预报 ===\n14:00 ☀️ 27℃", DurationMs: 800},
+			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 当前天气 ===\n天气：\u2600\uFE0F 晴  气温：26.9℃", DurationMs: 1200},
+			{Index: 1, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 逐小时预报 ===\n14:00 \u2600\uFE0F 27℃", DurationMs: 800},
 			{Index: 2, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 一周预报 ===\n周一 晴 20~28℃", DurationMs: 900},
 		},
 	}, "run-weather-1")
@@ -791,7 +823,8 @@ func TestAppendSkillRunSummary_TruncatesLongOutput(t *testing.T) {
 		},
 	}, "run-trunc-1")
 	got := b.String()
-	if !strings.Contains(got, "... (truncated)") {
+	// Tail truncation uses an explicit "showing last N chars" marker.
+	if !strings.Contains(got, "... (truncated") {
 		t.Fatalf("expected truncation marker for long output, got len=%d", len(got))
 	}
 	// Output should be capped at maxStepOutputLen (2048 runes), not the full 3000.
@@ -838,7 +871,7 @@ func TestAppendSkillRunSummary_UTF8SafeTruncation(t *testing.T) {
 		},
 	}, "run-utf8-1")
 	got := b.String()
-	if !strings.Contains(got, "... (truncated)") {
+	if !strings.Contains(got, "... (truncated") {
 		t.Fatalf("expected truncation for long Chinese output")
 	}
 	// Verify no invalid UTF-8 sequences in output.

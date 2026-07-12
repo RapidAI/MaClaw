@@ -19,43 +19,43 @@ func userFacingToolProgressText(toolName string) string {
 // users see exactly which tool/skill is being executed.
 func userFacingToolProgressTextWithArgs(toolName, argsJSON string) string {
 	if toolName == "bash" {
-		return "🖥️ 正在执行命令处理文件，请稍候..."
+		return "正在执行命令处理文件，请稍候..."
 	}
 	if toolName == "send_file" {
-		return "📤 正在整理并发送文件..."
+		return "正在整理并发送文件..."
 	}
 	switch toolName {
 	case "craft_tool":
-		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."
+		return "正在生成并执行脚本，准备继续完成交付..."
 	case "bash":
-		return "🖥️ 正在执行命令..."
+		return "正在执行命令..."
 	case "run_skill", "manage_skill":
 		if skillName := extractSkillNameFromArgs(argsJSON); skillName != "" {
-			return fmt.Sprintf("🚀 正在执行 Skill「%s」...", skillName)
+			return fmt.Sprintf("正在执行 Skill「%s」...", skillName)
 		}
-		return "🚀 正在执行 Skill..."
+		return "正在执行 Skill..."
 	case "send_file":
-		return "📎 正在整理并发送文件..."
+		return "正在整理并发送文件..."
 	case "generate_pdf":
-		return "📄 正在生成 PDF 文件..."
+		return "正在生成 PDF 文件..."
 	case "web_search", "web_fetch":
-		return "🔍 正在搜索网络..."
+		return "正在搜索网络..."
 	case "read_file", "list_directory":
-		return "📂 正在读取文件..."
+		return "正在读取文件..."
 	case "write_file", "edit_file", "edit_lines":
-		return "✏️ 正在编辑文件..."
+		return "正在编辑文件..."
 	case "memory":
-		return "💾 正在访问记忆..."
+		return "正在访问记忆..."
 	case "ssh":
-		return "🔗 正在执行远程操作..."
+		return "正在执行远程操作..."
 	case "screenshot":
-		return "📸 正在截取屏幕..."
+		return "正在截取屏幕..."
 	case "tts":
-		return "🔊 正在生成语音..."
+		return "正在生成语音..."
 	case "browser":
-		return "🌐 正在操作浏览器..."
+		return "正在操作浏览器..."
 	default:
-		return fmt.Sprintf("⚙️ 正在执行 %s...", toolName)
+		return fmt.Sprintf("正在执行 %s...", toolName)
 	}
 }
 
@@ -102,10 +102,12 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 	if trimmed == "" {
 		return ""
 	}
+	// Never use "" as a prefix — strings.HasPrefix(s, "") is always true and
+	// would leak internal tool chatter to the user-facing progress stream.
 	if shouldExposeToolInternalProgress(toolName) {
 		switch toolName {
 		case "craft_tool":
-			allowedPrefixes := []string{"🧠 ", "💾 ", "🚀 ", "📦 ", "⏳"}
+			allowedPrefixes := []string{"正在生成", "正在执行", "Preparing", "Running", "Generating"}
 			for _, prefix := range allowedPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					return trimmed
@@ -113,12 +115,12 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 			}
 			return ""
 		case "bash":
-			if strings.HasPrefix(trimmed, "⏳") {
+			if strings.HasPrefix(trimmed, "正在执行") || strings.HasPrefix(trimmed, "Running") {
 				return trimmed
 			}
 			return ""
 		case "run_skill":
-			allowedPrefixes := []string{"🚀 ", "⏳", "✅", "❌"}
+			allowedPrefixes := []string{"正在执行", "Running", "Preparing", "Generating"}
 			for _, prefix := range allowedPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					return trimmed

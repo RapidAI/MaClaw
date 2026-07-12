@@ -605,7 +605,7 @@ sequenceDiagram
         VE->>Hub: POST /api/v1/workflows/{id}/initiate {form_data}
         Hub->>Hub: FormValidator.Validate()
         Hub-->>VE: 201 {instance_id, status}
-        VE->>U: "✅ 审批已发起，单号：WF-20250430-001"
+        VE->>U: "审批已发起，单号：WF-20250430-001"
     else User modifies
         VE->>VE: Update extracted fields
         VE->>U: Present updated data for re-confirmation

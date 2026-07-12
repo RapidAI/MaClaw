@@ -2,8 +2,7 @@
 
 ## 已实施的优化
 
-### P0: 搜索与更新检查解耦 + 更新缓存 ✅
-
+### P0: 搜索与更新检查解耦 + 更新缓存 
 **文件**: `gui/hub_update_cache.go`（新文件）, `gui/skill_searcher.go`, `gui/app_wails_bindings.go`
 
 **改动**:
@@ -12,8 +11,7 @@
 3. 缓存过期时，更新检查从串行 N+1 改为并发（最多 3 并发）
 4. Install/Update/Delete 操作后自动 invalidate 缓存
 
-### P1: HubCenter URL 解析结果缓存 ✅
-
+### P1: HubCenter URL 解析结果缓存 
 **文件**: `gui/hub_update_cache.go`, `gui/hubcenter_client_helper.go`
 
 **改动**:
@@ -21,8 +19,7 @@
 2. `resolveHubCenterCandidates()` 改为调用 `resolveHubCenterBaseURLCached()`
 3. 60 秒内的所有 HubCenter API 请求共享同一个已解析的 base URL
 
-### P2: rememberHubCenterSelection 写盘节流 ✅
-
+### P2: rememberHubCenterSelection 写盘节流 
 **文件**: `gui/hub_update_cache.go`, `gui/hubcenter_client_helper.go`
 
 **改动**:
@@ -30,14 +27,12 @@
 2. 只在 base URL 实际变化时写 config.json
 3. nil cache 时（测试场景）回退到始终写盘（向后兼容）
 
-### P2: RefreshRecommendations 启动异步化 ✅
-
+### P2: RefreshRecommendations 启动异步化 
 **文件**: `gui/app.go`
 
 **改动**: `RefreshRecommendations` 改为 goroutine + 8 秒超时，不阻塞 `ensureSkillHubClient()`
 
-### P3: HubClient 连接复用单例 ✅
-
+### P3: HubClient 连接复用单例 
 **文件**: `corelib/skill/hub_search.go`, 所有消费方
 
 **改动**:

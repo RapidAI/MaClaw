@@ -47,6 +47,103 @@ func TestManageSkillHandler_UploadAliases(t *testing.T) {
 	}
 }
 
+func TestManageSkillHandler_EvolutionAliasesAndGuards(t *testing.T) {
+	app := &TUIApp{appConfig: corelib.AppConfig{}}
+	handler := newManageSkillHandler(app)
+
+	// evolution_status alias should be accepted (not "unknown action")
+	for _, action := range []string{"evolution_status", "evolution", "evol_status"} {
+		got := handler(map[string]interface{}{"action": action})
+		if strings.Contains(got, "未知 manage_skill action") {
+			t.Fatalf("action %q should be handled, got %q", action, got)
+		}
+	}
+
+	// evolution_audit is read-only and always handled
+	for _, action := range []string{"evolution_audit", "audit", "evolution_log"} {
+		got := handler(map[string]interface{}{"action": action, "limit": 5})
+		if strings.Contains(got, "未知 manage_skill action") {
+			t.Fatalf("action %q should be handled, got %q", action, got)
+		}
+		if !strings.Contains(got, "non_executing") && !strings.Contains(got, `"ok"`) {
+			t.Fatalf("action %q should return audit payload, got %q", action, got)
+		}
+	}
+
+	// set_evolution_enabled requires enabled
+	got := handler(map[string]interface{}{"action": "set_evolution_enabled"})
+	if strings.Contains(got, "未知 manage_skill action") {
+		t.Fatalf("set_evolution_enabled should be handled, got %q", got)
+	}
+	if !strings.Contains(got, "enabled is required") {
+		t.Fatalf("set_evolution_enabled without enabled should error, got %q", got)
+	}
+	// alias should route
+	got = handler(map[string]interface{}{"action": "enable_evolution"})
+	if strings.Contains(got, "未知 manage_skill action") {
+		t.Fatalf("enable_evolution alias should route, got %q", got)
+	}
+
+	// trigger_repair / trigger_optimize require name
+	for _, action := range []string{"trigger_repair", "repair", "trigger_optimize", "optimize", "optimize_now"} {
+		got := handler(map[string]interface{}{"action": action})
+		if strings.Contains(got, "未知 manage_skill action") {
+			t.Fatalf("action %q should be handled, got %q", action, got)
+		}
+		if !strings.Contains(got, "name is required") {
+			t.Fatalf("action %q without name should error on name, got %q", action, got)
+		}
+	}
+
+	// missing skill name after name present → not found
+	got = handler(map[string]interface{}{"action": "trigger_optimize", "name": "does-not-exist-xyz"})
+	if !strings.Contains(got, "not found") {
+		t.Fatalf("missing skill should report not found, got %q", got)
+	}
+	got = handler(map[string]interface{}{"action": "trigger_repair", "name": "does-not-exist-xyz"})
+	if !strings.Contains(got, "not found") {
+		t.Fatalf("missing skill repair should report not found, got %q", got)
+	}
+}
+
+func TestManageSkillHandler_SetEvolutionEnabledPersist(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	t.Setenv("MACLAW_DISABLE_SKILL_EVOLUTION", "")
+	commands.SetSkillEvolutionSessionDisabled(true)
+	t.Cleanup(func() { commands.SetSkillEvolutionSessionDisabled(false) })
+
+	app := &TUIApp{appConfig: corelib.AppConfig{}}
+	handler := newManageSkillHandler(app)
+
+	got := handler(map[string]interface{}{"action": "set_evolution_enabled", "enabled": true})
+	if !strings.Contains(got, `"ok": true`) && !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("enable failed: %s", got)
+	}
+	if commands.SkillEvolutionSessionDisabled() {
+		t.Fatal("enable should clear session disable")
+	}
+	cfg, err := commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IsSkillEvolutionEnabled() {
+		t.Fatal("config should be enabled")
+	}
+
+	got = handler(map[string]interface{}{"action": "set_evolution_enabled", "enabled": "false"})
+	if !strings.Contains(got, `"ok": true`) && !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("disable failed: %s", got)
+	}
+	cfg, err = commands.NewFileConfigStore(commands.ResolveDataDir()).LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IsSkillEvolutionEnabled() {
+		t.Fatal("config should be disabled")
+	}
+}
+
 func TestManageSkillHandlerMaintenancePlanReturnsReadOnlyPlan(t *testing.T) {
 	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
 		Name:         "fragile-skill",
@@ -1799,9 +1896,9 @@ func TestManageSkillRunHydratesMarkdownMetadata(t *testing.T) {
 	}
 	app := &TUIApp{appConfig: corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{Name: "weather", SkillDir: skillDir, Status: "active"}}}}
 
-	got := skillRun(app, map[string]interface{}{"name": "weather", "input": "鎴愰兘"})
+	got := skillRun(app, map[string]interface{}{"name": "weather", "input": "chengdu"})
 
-	if !strings.Contains(got, "weather") || !strings.Contains(got, "鎴愰兘") {
+	if !strings.Contains(got, "weather") || !strings.Contains(got, "chengdu") {
 		t.Fatalf("skillRun() = %q", got)
 	}
 	if app.appConfig.NLSkills[0].ProducesArtifact {

@@ -126,7 +126,7 @@ func (h *Handler) syncVercel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	_ = h.Store.SetVercelSync(h.computeSyncHash(), time.Now().Unix())
+	h.Store.SetVercelSync(h.computeSyncHash(), time.Now().Unix())
 	result := map[string]any{"success": true, "validated_accounts": validated}
 	if manual {
 		result["message"] = "配置已同步到 Vercel，请手动触发重新部署"

@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestBuildSkillMaintenancePlanPrefersRepairBeforeReview(t *testing.T) {
 	}
 }
 
-func TestBuildSkillMaintenancePlanDoesNotQueueFileBackedRepair(t *testing.T) {
+func TestBuildSkillMaintenancePlanFileBackedRepairableUsesReviewDraftPath(t *testing.T) {
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	formatted := FormatErrorForLLM(ClassifiedError{Class: ErrCommandNotFound, UserMessage: "command missing", Repairable: true})
 	plan := BuildSkillMaintenancePlan([]corelib.NLSkillEntry{
@@ -72,11 +73,17 @@ func TestBuildSkillMaintenancePlanDoesNotQueueFileBackedRepair(t *testing.T) {
 		},
 	}, SkillMaintenancePlanOptions{Now: now})
 
-	if hasMaintenanceAction(plan, MaintenanceActionAttemptRepair, "file-repairable") {
-		t.Fatalf("file-backed skill should not queue background repair: %#v", plan.Actions)
+	// File-backed still surfaces attempt_repair, but only as a review-only patch draft
+	// path (execute never queues SelfRepair / never rewrites YAML automatically).
+	if !hasMaintenanceAction(plan, MaintenanceActionAttemptRepair, "file-repairable") {
+		t.Fatalf("expected file-backed repairable failure to produce attempt_repair draft action: %#v", plan.Actions)
 	}
-	if !hasMaintenanceAction(plan, MaintenanceActionMarkNeedsReview, "file-repairable") {
-		t.Fatalf("expected file-backed repairable failure to enter review flow: %#v", plan.Actions)
+	for _, action := range plan.Actions {
+		if action.Skill == "file-repairable" && action.Action == MaintenanceActionAttemptRepair {
+			if !strings.Contains(action.RecommendedAction, "patch draft") && !strings.Contains(action.RecommendedAction, "file-backed") {
+				t.Fatalf("recommended_action should point at review draft, got %q", action.RecommendedAction)
+			}
+		}
 	}
 }
 

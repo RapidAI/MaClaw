@@ -11,7 +11,8 @@ import {
     Check,
     ChevronLeft,
     ChevronRight,
-    ChevronDown
+    ChevronDown,
+    Loader2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useI18n } from '../i18n'
@@ -360,7 +361,7 @@ export default function AccountManager({ config, onRefresh, onMessage, authFetch
                             disabled={testingAll || totalAccounts === 0}
                             className="flex items-center px-3 py-2 bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/80 transition-colors text-xs font-medium border border-border disabled:opacity-50"
                         >
-                            {testingAll ? <span className="animate-spin mr-2">⟳</span> : <Play className="w-3 h-3 mr-2" />}
+                            {testingAll ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : <Play className="w-3 h-3 mr-2" />}
                             {t('accountManager.testAll')}
                         </button>
                         <button
@@ -393,7 +394,7 @@ export default function AccountManager({ config, onRefresh, onMessage, authFetch
                                         "text-xs px-2 py-1 rounded border truncate",
                                         r.success ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-500" : "bg-destructive/10 border-destructive/20 text-destructive"
                                     )}>
-                                        {r.success ? '✓' : '✗'} {r.id}
+                                        {r.success ? 'OK' : 'ERR'} {r.id}
                                     </div>
                                 ))}
                             </div>

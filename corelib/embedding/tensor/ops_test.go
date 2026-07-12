@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+func TestMatMulWorkersForSmallWideMatrix(t *testing.T) {
+	SetMatMulMaxParallel(12)
+	defer SetMatMulMaxParallel(0)
+
+	base := poolWorkers()
+	got := matMulWorkersFor(7, 512, 512)
+	want := base
+	if want > 8 {
+		want = 8
+	}
+	if got != want {
+		t.Fatalf("small wide matrix workers = %d, want %d", got, want)
+	}
+	if got := matMulWorkersFor(9, 512, 512); got != base {
+		t.Fatalf("larger batch workers = %d, want %d", got, base)
+	}
+}
+
 func TestElemMul_AllowsOutAliasA(t *testing.T) {
 	a := []float32{2, 3, 4}
 	b := []float32{10, 20, 30}

@@ -19,6 +19,16 @@ type tuiSkillRepairer struct {
 	cfg corelib.MaclawLLMConfig
 }
 
+// NewTUISkillRepairer builds an LLMRepairer from a resolved MaclawLLMConfig.
+func NewTUISkillRepairer(cfg corelib.MaclawLLMConfig) skill.LLMRepairer {
+	return &tuiSkillRepairer{cfg: cfg}
+}
+
+// NewTUISkillRepairerFromAppConfig resolves provider credentials then builds a repairer.
+func NewTUISkillRepairerFromAppConfig(cfg corelib.AppConfig) skill.LLMRepairer {
+	return NewTUISkillRepairer(repairLLMConfigFromAppConfig(cfg))
+}
+
 func (r *tuiSkillRepairer) ChatCall(messages []map[string]string) (string, error) {
 	ifaces := make([]interface{}, len(messages))
 	for i, m := range messages {
@@ -50,6 +60,15 @@ func maybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, sto
 // MaybeRepairSkillTUI checks if a skill is eligible for self-repair and
 // attempts an LLM-driven repair in the background.
 func MaybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, store ConfigStore) bool {
+	if !CanStartTUISkillRepair(entry, cfg) {
+		return false
+	}
+	go PerformTUISkillRepair(entry, cfg, store)
+	return true
+}
+
+// CanStartTUISkillRepair reports whether entry is eligible and LLM is configured.
+func CanStartTUISkillRepair(entry *corelib.NLSkillEntry, cfg corelib.AppConfig) bool {
 	if entry == nil {
 		return false
 	}
@@ -60,39 +79,63 @@ func MaybeRepairSkillTUI(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, sto
 	if !skill.ShouldAttemptRepair(entry) {
 		return false
 	}
+	repairer := &tuiSkillRepairer{cfg: repairLLMConfigFromAppConfig(cfg)}
+	return repairer.IsConfigured()
+}
 
+// PerformTUISkillRepair runs LLM self-repair synchronously (caller may be an
+// EvolutionPipeline worker or a background goroutine from MaybeRepairSkillTUI).
+func PerformTUISkillRepair(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, store ConfigStore) {
+	PerformTUISkillRepairWithForce(entry, cfg, store, false)
+}
+
+// PerformTUISkillRepairWithForce is like PerformTUISkillRepair but force=true
+// allows CanForceAttemptRepair when usage-rate thresholds are not met.
+func PerformTUISkillRepairWithForce(entry *corelib.NLSkillEntry, cfg corelib.AppConfig, store ConfigStore, force bool) {
+	if entry == nil {
+		return
+	}
+	if skill.IsFileBackedSkill(*entry) {
+		return
+	}
+	ok := skill.ShouldAttemptRepair(entry)
+	if !ok && force {
+		ok = skill.CanForceAttemptRepair(entry)
+	}
+	if !ok {
+		return
+	}
 	llmCfg := repairLLMConfigFromAppConfig(cfg)
-
 	repairer := &tuiSkillRepairer{cfg: llmCfg}
 	if !repairer.IsConfigured() {
-		return false
+		return
 	}
 
-	go func() {
-		log.Printf("[skill-repair-tui] attempting repair for %q", entry.Name)
-		result, err := skill.AttemptRepair(repairer, entry)
-		if err != nil {
-			log.Printf("[skill-repair-tui] repair failed for %q: %v", entry.Name, err)
+	log.Printf("[skill-repair-tui] attempting repair for %q", entry.Name)
+	// Param contract (DeclaredParams vs actual args) is filled by NewRepairContext.
+	// TUI path may not have recent run args; schema still helps the repair LLM.
+	repairCtx := skill.NewRepairContext(entry, nil)
+	result, err := skill.AttemptRepairWithContext(repairer, entry, repairCtx)
+	if err != nil {
+		log.Printf("[skill-repair-tui] repair failed for %q: %v", entry.Name, err)
+		return
+	}
+	if result == nil {
+		log.Printf("[skill-repair-tui] repair returned nil result for %q", entry.Name)
+		return
+	}
+	applied := skill.ApplyRepair(entry, result)
+	if applied || result.ShouldDisable {
+		if err := persistTUISkillRepairResult(store, entry); err != nil {
+			log.Printf("[skill-repair-tui] persist repair result for %q failed: %v", entry.Name, err)
 			return
 		}
-		if result == nil {
-			log.Printf("[skill-repair-tui] repair returned nil result for %q", entry.Name)
-			return
+		if result.ShouldDisable {
+			log.Printf("[skill-repair-tui] marked skill %q as needs_review", entry.Name)
+		} else {
+			log.Printf("[skill-repair-tui] repaired skill %q", entry.Name)
 		}
-		applied := skill.ApplyRepair(entry, result)
-		if applied || result.ShouldDisable {
-			if err := persistTUISkillRepairResult(store, entry); err != nil {
-				log.Printf("[skill-repair-tui] persist repair result for %q failed: %v", entry.Name, err)
-				return
-			}
-			if result.ShouldDisable {
-				log.Printf("[skill-repair-tui] marked skill %q as needs_review", entry.Name)
-			} else {
-				log.Printf("[skill-repair-tui] repaired skill %q", entry.Name)
-			}
-		}
-	}()
-	return true
+	}
 }
 
 func persistTUISkillRepairResult(store ConfigStore, entry *corelib.NLSkillEntry) error {

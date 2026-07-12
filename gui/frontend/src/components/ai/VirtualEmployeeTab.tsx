@@ -63,11 +63,11 @@ export function truncateText(text: string, maxLen: number): string {
 /** Map access_policy to a short icon/label. */
 export function policyIcon(policy: string): string {
     switch (policy) {
-        case "public": return "\u{1F310}";
-        case "whitelist": return "\u2705";
-        case "blacklist": return "\u{1F6AB}";
-        case "per_request": return "\u{1F512}";
-        default: return "\u2753";
+        case "public": return "[pub]";
+        case "whitelist": return "[allow]";
+        case "blacklist": return "[block]";
+        case "per_request": return "[ask]";
+        default: return "[?]";
     }
 }
 

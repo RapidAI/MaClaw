@@ -7,6 +7,92 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func TestEnrichRepairParamContract_DetectsMissingAndUnknown(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name: "convert",
+		Params: []corelib.NLSkillParam{
+			{Name: "input", Required: true, Aliases: []string{"file", "path"}},
+			{Name: "format", Required: false, Default: "pdf"},
+		},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "convert {{input}} --format {{format}}"},
+		}},
+	}
+	ctx := NewRepairContext(entry, map[string]string{
+		"file":   "a.md", // alias of input
+		"extra":  "x",    // unknown
+		"format": "pdf",
+	})
+	if len(ctx.DeclaredParams) == 0 {
+		t.Fatal("expected declared params")
+	}
+	if len(ctx.MissingRequired) != 0 {
+		t.Fatalf("missing=%v want empty (file aliases to input)", ctx.MissingRequired)
+	}
+	if len(ctx.UnknownArgs) != 1 || ctx.UnknownArgs[0] != "extra" {
+		t.Fatalf("unknown=%v", ctx.UnknownArgs)
+	}
+	if ctx.ResolvedByAlias["file"] != "input" {
+		t.Fatalf("aliasHits=%v", ctx.ResolvedByAlias)
+	}
+	if !strings.Contains(ctx.ParamContractNote, "alias") && !strings.Contains(ctx.ParamContractNote, "schema") {
+		t.Fatalf("note=%q", ctx.ParamContractNote)
+	}
+
+	ctx2 := NewRepairContext(entry, map[string]string{"format": "html"})
+	if len(ctx2.MissingRequired) != 1 || ctx2.MissingRequired[0] != "input" {
+		t.Fatalf("missing=%v want [input]", ctx2.MissingRequired)
+	}
+}
+
+func TestAttemptRepairWithContext_PromptIncludesParamContract(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name:         "x",
+		Description:  "test",
+		UsageCount:   5,
+		SuccessCount: 1,
+		LastError:    FormatErrorForLLM(ClassifiedError{Class: ErrMissingParam, UserMessage: "missing input", Repairable: true}),
+		Params:       []corelib.NLSkillParam{{Name: "input", Required: true}},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo {{input}}"},
+		}},
+	}
+	var captured []map[string]string
+	llm := &stubRepairLLM{respond: `{"repaired":false,"explanation":"param mismatch","should_disable":false}`, onCall: func(msgs []map[string]string) {
+		captured = msgs
+	}}
+	ctx := NewRepairContext(entry, map[string]string{"file": "a.txt"})
+	_, err := AttemptRepairWithContext(llm, entry, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) < 2 {
+		t.Fatalf("expected chat messages, got %d", len(captured))
+	}
+	user := captured[1]["content"]
+	if !strings.Contains(user, "Parameter contract") || !strings.Contains(user, "input") {
+		t.Fatalf("user prompt missing contract:\n%s", user)
+	}
+	if !strings.Contains(captured[0]["content"], "PARAMETER CONTRACT") {
+		t.Fatalf("system prompt missing contract rules:\n%s", captured[0]["content"])
+	}
+}
+
+type stubRepairLLM struct {
+	respond string
+	onCall  func([]map[string]string)
+}
+
+func (s *stubRepairLLM) IsConfigured() bool { return true }
+func (s *stubRepairLLM) ChatCall(messages []map[string]string) (string, error) {
+	if s.onCall != nil {
+		s.onCall(messages)
+	}
+	return s.respond, nil
+}
+
 func TestApplyRepairRecordsSuccessfulAttemptMetadata(t *testing.T) {
 	formatted := FormatErrorForLLM(ClassifiedError{Class: ErrCommandNotFound, UserMessage: "missing cmd", Repairable: true})
 	entry := &corelib.NLSkillEntry{Name: "repairable", LastError: formatted}
@@ -28,6 +114,27 @@ func TestApplyRepairRecordsSuccessfulAttemptMetadata(t *testing.T) {
 	}
 	if !strings.Contains(entry.LastError, "auto-repaired") {
 		t.Fatalf("LastError = %q, want auto-repaired", entry.LastError)
+	}
+}
+
+func TestCanForceAttemptRepair_SkipsUsageThreshold(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name:        "x",
+		Status:      "active",
+		Source:      "manual",
+		UsageCount:  1, // below SelfRepairThreshold
+		SuccessCount: 1,
+		LastError:   "[class: command_not_found] missing foo",
+	}
+	if ShouldAttemptRepair(entry) {
+		t.Fatal("ShouldAttemptRepair should be false with low usage and non-hub source")
+	}
+	if !CanForceAttemptRepair(entry) {
+		t.Fatal("CanForceAttemptRepair should allow when base safety gates pass")
+	}
+	entry.LastError = ""
+	if CanForceAttemptRepair(entry) {
+		t.Fatal("empty LastError should block force repair")
 	}
 }
 

@@ -564,6 +564,15 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "skill package is too large")
 			return
 		}
+		// Parse identity/manifest from the original upload first. HubCenter market
+		// filtering drops runtime-only files (including skill_package_manifest.json)
+		// so a post-filter meta read would lose ManifestJSON for capability versions.
+		meta, err := readEnterpriseSkillPackageMeta(tmp.Name())
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+			writeError(w, http.StatusBadRequest, "INVALID_SKILL_PACKAGE", err.Error())
+			return
+		}
 		// Drop runtime artifacts and enforce HubCenter package limits (size-first)
 		// so enterprise packages remain market-uploadable.
 		storePath, cleanupFiltered, filterErr := prepareSkillZipForHubCenterMarket(tmp.Name())
@@ -592,11 +601,6 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 		}
 		_ = storeFile.Close()
 		checksum := hex.EncodeToString(h.Sum(nil))
-		meta, err := readEnterpriseSkillPackageMeta(storePath)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_SKILL_PACKAGE", err.Error())
-			return
-		}
 		finalName := safeEnterpriseSkillPackageName(meta.SkillID, checksum) + ".zip"
 		finalPath := filepath.Join(root, finalName)
 		if err := moveEnterpriseSkillPackageIntoPlace(storePath, finalPath, checksum); err != nil {
@@ -1053,10 +1057,10 @@ func enterpriseMaclawAppReadyReviewIssues(entries []enterpriseMaclawAppPackageEn
 			}
 		}
 
+		// Readiness requires governance.resultContract explicitly. Binding may
+		// still carry a contract for runtime install metadata, but deleting
+		// governance.resultContract must fail Hub submission review.
 		resultContract := anyMapFromMap(governance, "resultContract", "result_contract")
-		if resultContract == nil {
-			resultContract = anyMapFromMap(enterpriseMaclawAppBindingForEntry(entry), "resultContract", "result_contract")
-		}
 		if resultContract == nil {
 			issues = append(issues, maclawAppReviewIssue{Path: governancePath + ".resultContract", Severity: "error", Message: "result contract is required", Suggestion: "declare whether the app returns approval status, content, business data, documents or artifacts"})
 		} else if primary := enterpriseMaclawAppFirstString(resultContract, "primary", "primaryResult", "primary_result"); primary == "" {
@@ -2044,7 +2048,7 @@ func CapabilityMaclawAppPackageHandler(svc *capability.Service, identity viewerA
 			writeError(w, http.StatusBadRequest, "NOT_MACLAW_APP_CAPABILITY", "capability is not a MaClaw App")
 			return
 		}
-		if !isInstallableMaclawAppStatus(item.Status) {
+		if !isPublishedMaclawAppStatus(item.Status) {
 			writeError(w, http.StatusForbidden, "MACLAW_APP_NOT_INSTALLABLE", "MaClaw App capability is not approved for install")
 			return
 		}
@@ -2087,9 +2091,16 @@ func currentCapabilityVersion(versions []capability.VersionSummary, currentVersi
 	return &versions[0]
 }
 
+// isPublishedMaclawAppStatus is true only for released package downloads.
+func isPublishedMaclawAppStatus(status string) bool {
+	return strings.TrimSpace(strings.ToLower(status)) == "published"
+}
+
+// isInstallableMaclawAppStatus is true for enterprise capabilities that can be
+// reused via install-intent (published releases and approved MCP/skill imports).
 func isInstallableMaclawAppStatus(status string) bool {
 	status = strings.TrimSpace(strings.ToLower(status))
-	return status == "published"
+	return status == "published" || status == "approved"
 }
 
 func applyMaclawAppReviewMetadataToEntry(entry map[string]any, item capability.CapabilitySummary, version capability.VersionSummary, metadata map[string]any) {

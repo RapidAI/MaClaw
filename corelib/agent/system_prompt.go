@@ -17,6 +17,11 @@ type SystemPromptConfig struct {
 	TrialReflect      bool
 	HasCodingSessions bool
 
+	// PromptProfile selects full vs light system prompt bulk.
+	// Empty / unknown defaults to PromptProfileFull.
+	// Use PromptProfileFromUserText / PromptProfileFromTask for adaptive turns.
+	PromptProfile PromptProfile
+
 	// SuppressCodingGateRules suppresses the coding workflow confirmation gate
 	// rules from the system prompt. Used during V2 workflow agent loops where
 	// the phase prompt provides all necessary instructions and the confirmation

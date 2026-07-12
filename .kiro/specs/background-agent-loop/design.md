@@ -93,7 +93,7 @@ sequenceDiagram
     SM->>RS: get status
     RS-->>SM: waiting_input (完成)
     SM->>Chat: StatusEvent{sessionID, completed}
-    Chat->>User: "✅ 编程任务完成。是否需要 RFO？"
+    Chat->>User: "编程任务完成。是否需要 RFO？"
     User->>Chat: "跳过，把音效加上"
     Chat->>Chat: 开始处理"加音效"需求
 ```
@@ -110,7 +110,7 @@ sequenceDiagram
     BL->>Chat: StatusEvent{type: "approaching_limit", remaining: 2}
     BL->>BL: 进入 paused 状态，select 等待
 
-    Chat->>User: "⏳ 后台任务推理轮数即将耗尽（剩余 2 轮），是否继续？（+20 轮）"
+    Chat->>User: "后台任务推理轮数即将耗尽（剩余 2 轮），是否继续？（+20 轮）"
     User->>Chat: "继续"
     Chat->>BL: continueC <- 20
 
@@ -341,7 +341,7 @@ if h.bgManager != nil {
             b.WriteString(fmt.Sprintf("- [%s] 状态=%s 轮次=%d/%d\n", 
                 lctx.ID, lctx.State(), lctx.Iteration, lctx.MaxIterations))
         }
-        b.WriteString("⚠️ 有后台任务正在运行时，如果用户提出新的编程需求，先记录需求，等后台任务完成后再处理。\n")
+        b.WriteString("有后台任务正在运行时，如果用户提出新的编程需求，先记录需求，等后台任务完成后再处理。\n")
     }
 }
 ```
@@ -417,13 +417,13 @@ default:
 ├─────────────────────────────────────────────────────┤
 │                                                     │
 │  ── Agent Loop 任务 ──                              │
-│  🤖 编程 │ 写贪吃蛇游戏  │ 轮次 8/20 │ 运行中 │ [停止] │
+│  编程 │ 写贪吃蛇游戏  │ 轮次 8/20 │ 运行中 │ [停止] │
 │  ⏰ 定时 │ 每日代码审查  │ 轮次 3/50 │ 暂停   │ [续命][停止] │
-│  🌐 自动 │ ClawNet #42   │ 轮次 12/30│ 运行中 │ [停止] │
+│  自动 │ ClawNet #42   │ 轮次 12/30│ 运行中 │ [停止] │
 │                                                     │
 │  ── AI 编程会话 ──                                   │
-│  🤖 AI │ session-abc │ claude │ busy    │ [查看终端] │
-│  🤖 AI │ session-def │ gemini │ exited  │ [隐藏]     │
+│  AI │ session-abc │ claude │ busy    │ [查看终端] │
+│  AI │ session-def │ gemini │ exited  │ [隐藏]     │
 │                                                     │
 └─────────────────────────────────────────────────────┘
 ```

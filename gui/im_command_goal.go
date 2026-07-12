@@ -62,7 +62,7 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 	existing := store.Get(msg.UserID)
 	if existing != nil && !existing.IsTerminal() {
 		return &IMAgentResponse{
-			Text: fmt.Sprintf("⚠️ 已有活跃目标：%s\n状态：%s\n\n如需创建新目标，请先取消当前目标：/goal cancel",
+			Text: fmt.Sprintf("已有活跃目标：%s\n状态：%s\n\n如需创建新目标，请先取消当前目标：/goal cancel",
 				existing.Objective, existing.Status),
 		}
 	}
@@ -79,7 +79,7 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 	}
 
 	var b strings.Builder
-	b.WriteString("🎯 目标已创建，系统将自动开始推进\n\n")
+	b.WriteString("目标已创建，系统将自动开始推进\n\n")
 	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
 	b.WriteString(fmt.Sprintf("最大轮次: %d\n", g.MaxTurns))
 	b.WriteString("\n命令:\n")
@@ -90,7 +90,7 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 }
 
 func goalCommandHelp() string {
-	return `🎯 /goal — 持久化长时间运行目标
+	return `/goal — 持久化长时间运行目标
 
 用法:
   /goal <目标描述>     创建新目标并自动开始推进

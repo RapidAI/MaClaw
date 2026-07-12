@@ -66,6 +66,6 @@ Agent 选择 tool / skill / MCP / MIS action
 - 增加 Wails/浏览器 E2E，验证真实右侧预览区在桌面端渲染、交互和清理行为。
 - 扩展更多企业业务对象模板，例如采购申请、合同审批、客户建档、工单派发、库存调整。
 - 继续扩展 UI schema 缓存策略和审计可观测性，从当前持久化版本签名缓存推进到更细粒度失效策略。
-- 为应用面板补 `AppView` shell：让复杂企业应用在右侧 tab 内长期停留，统一承载 list/detail/form/report/approval/activity，而不是只弹出一次性 AgentView。
-- 增加 AppView revision 过期提交保护：提交必须带 `appId`、`sessionId`、`schemaVersion`、`viewRevision`，后端拒绝旧界面提交并返回可恢复错误。
-- 把 DataSrv BusinessView、Report、Dashboard 映射为 AppView 区域组件，优先覆盖报销、采购入库、客户建档三个企业应用样例。
+- ~~为应用面板补 `AppView` shell~~ **Phase 1 已落地最小 shell**：见 [appview-phase1-shell.md](./appview-phase1-shell.md) — `BuildAppView` + 前端 `AppViewShell`（nav/main/side）；完整企业应用 list/detail/report 组合仍待 DataSrv 映射。
+- ~~增加 AppView revision 过期提交保护~~ **Phase 0+1**：见 [appview-phase0-revision-guard.md](./appview-phase0-revision-guard.md) / Phase 1 严格模式（`appId` 时强制 revision/schema/app 身份）。
+- ~~把 DataSrv / 审批映射为 AppView~~ **Phase 2–7 已冻结**：见 [appview-track-freeze-2026.md](./appview-track-freeze-2026.md)。默认「继续」请换命名目标（如知识库 / Hub / Wails E2E 专项）。

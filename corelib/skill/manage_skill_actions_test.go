@@ -90,3 +90,44 @@ func TestNormalizeManageSkillActionUploadAliases(t *testing.T) {
 		t.Fatalf("NormalizeManageSkillAction unknown = %q, want custom", got)
 	}
 }
+
+func TestNormalizeManageSkillActionInfoAliases(t *testing.T) {
+	for _, action := range []string{"info", "inspect", "show", "describe", "get", "detail", "schema", "params"} {
+		if got := NormalizeManageSkillAction(action); got != "info" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want info", action, got)
+		}
+	}
+}
+
+func TestNormalizeManageSkillActionEvolutionAliases(t *testing.T) {
+	for _, action := range []string{"evolution", "evol_status", "self_repair_status", "optimize_status"} {
+		if got := NormalizeManageSkillAction(action); got != "evolution_status" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want evolution_status", action, got)
+		}
+	}
+	for _, action := range []string{"set_evolution", "evolution_enable", "enable_evolution", "disable_evolution", "set_skill_evolution"} {
+		if got := NormalizeManageSkillAction(action); got != "set_evolution_enabled" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want set_evolution_enabled", action, got)
+		}
+	}
+	for _, action := range []string{"evolution_audit", "evolution_log", "audit", "audit_log", "evolution_history", "skill_evolution_audit"} {
+		if got := NormalizeManageSkillAction(action); got != "evolution_audit" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want evolution_audit", action, got)
+		}
+	}
+	for _, action := range []string{"maintenance_drafts", "list_drafts", "review_drafts", "patch_drafts", "governance_drafts"} {
+		if got := NormalizeManageSkillAction(action); got != "maintenance_drafts" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want maintenance_drafts", action, got)
+		}
+	}
+	for _, action := range []string{"repair", "repair_now", "self_repair", "attempt_repair", "fix_skill"} {
+		if got := NormalizeManageSkillAction(action); got != "trigger_repair" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want trigger_repair", action, got)
+		}
+	}
+	for _, action := range []string{"optimize", "optimize_now", "trigger_opt", "improve_skill"} {
+		if got := NormalizeManageSkillAction(action); got != "trigger_optimize" {
+			t.Fatalf("NormalizeManageSkillAction(%q)=%q, want trigger_optimize", action, got)
+		}
+	}
+}

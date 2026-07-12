@@ -120,7 +120,7 @@ func (r *startupAutoResponder) sendResponse(keys string, delay time.Duration) {
 }
 
 func (r *startupAutoResponder) detectNormalMode(accumulated string) bool {
-	// Claude Code shows a prompt like ">" or "❯" when ready for input.
+	// Claude Code shows a prompt like ">" or "\u276F" when ready for input.
 	// Also look for typical "ready" indicators.
 	normalIndicators := []string{
 		"type a message",

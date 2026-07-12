@@ -101,10 +101,7 @@ VE 要出现在审批角色的可选列表中，需同时满足：
 6. 解析角色 → 张三的 machine_id
 7. Hub 通过 WebSocket 发送 approval_request 给张三桌面端
 8. 桌面端管线处理：
-   - enabled=true ✓
-   - ACL 通过 ✓
-   - 队列未满 ✓
-   - 规则: amount(300) ≤ 500 → auto_approve
+   - enabled=true    - ACL 通过    - 队列未满    - 规则: amount(300) ≤ 500 → auto_approve
 9. 返回 approval_response: approve
 10. Hub 记录审计 → 推进工作流
 ```

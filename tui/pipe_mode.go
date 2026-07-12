@@ -28,8 +28,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
-	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
+	"github.com/RapidAI/CodeClaw/corelib/llm" // RouteTurn ClassifyHints + CostTracker
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -126,6 +127,7 @@ func runPrompt(promptText string) {
 		history:      agent.NewPersistentConversationMemory(filepath.Join(dataSubDir, "pipe_conversation.json")),
 		taskStore:    task.NewStore(),
 		toolRegistry: agent.NewCoreToolRegistry(),
+		costTracker:  llm.NewCostTracker(appCfg.DailyLLMBudgetUSD),
 	}
 
 	// Register tools.
@@ -251,10 +253,11 @@ func stdinHasData() bool {
 // ---------------------------------------------------------------------------
 
 type pipeCallbacks struct {
-	app      *TUIApp
-	cancelCh chan struct{}
-	stopped  bool
-	quiet    bool
+	app       *TUIApp
+	cancelCh  chan struct{}
+	stopped   bool
+	quiet     bool
+	activeLLM tuiActiveLLM
 }
 
 func silencePipeModeDiagnostics() func() {
@@ -291,7 +294,18 @@ func (c *pipeCallbacks) Cancel() {
 }
 
 func (c *pipeCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.app.llmConfig
+	return c.activeLLM.get(c.app.llmConfig)
+}
+
+func (c *pipeCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *pipeCallbacks) GetMaxIterations() int {
@@ -313,7 +327,7 @@ func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {
 		return fmt.Sprintf("tool arg parse failed: %v", err)
 	}
 	if !c.quiet {
-		fmt.Fprintf(os.Stderr, "⚙ %s\n", name)
+		fmt.Fprintf(os.Stderr, "%s\n", name)
 	}
 	ctx, cancel := contextFromCancelCh(c.cancelCh)
 	defer cancel()
@@ -362,6 +376,20 @@ func (c *pipeCallbacks) ShouldStop() bool {
 	default:
 		return c.stopped
 	}
+}
+
+func (c *pipeCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.app == nil {
+		return false, "", ""
+	}
+	return c.app.earlyStopBudget()
+}
+
+func (c *pipeCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.recordLLMCost(model, inputTokens, outputTokens)
 }
 
 // Compile-time interface check.

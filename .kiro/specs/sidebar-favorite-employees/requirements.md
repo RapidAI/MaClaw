@@ -50,7 +50,7 @@
 
 ### 5. 清理 A2A 群聊入口
 
-- 5.1 ✅ 从设置面板 tab 列表中移除"A2A 群组"tab（已完成）
+- 5.1 从设置面板 tab 列表中移除"A2A 群组"tab（已完成）
 - 5.2 从 AI 助手面板标题栏移除 A2A 群聊按钮/下拉菜单（`AssistantGroupDiscussionDropdown`）
 - 5.3 底层 A2A 群组讨论 API 逻辑保留（数字员工群聊依赖）
 

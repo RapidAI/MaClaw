@@ -1,6 +1,6 @@
 # MaClaw User Manual
 
-[❓ FAQ](faq_en.md)
+[FAQ](faq_en.md)
 
 Welcome to **MaClaw** — your **Programming Little Crayfish (编程小龙虾)**. Whether you're a professional software developer or an everyday office worker, it's the most caring AI partner by your side. It doesn't just understand code — it understands *you*: customizable personality, long-term memory of your preferences, spiritual companionship while you work, and autonomous task handling when you're away. It integrates three-state programming, agent orchestration, personality system, memory management, and SSH/browser monitoring — equally at home in software development, office productivity, and daily tasks.
 

@@ -88,6 +88,52 @@ func TestClassifyStepError_RateLimit(t *testing.T) {
 	if !result.Retryable {
 		t.Error("rate_limit should be retryable")
 	}
+	// Provider phrase without numeric 429.
+	noCode := ClassifyStepError(1, "Error: rate_limit_exceeded — please try again later", "exit status 1", "curl")
+	if noCode.Class != ErrRateLimit {
+		t.Fatalf("rate_limit without 429: got %s", noCode.Class)
+	}
+}
+
+func TestClassifyStepError_QuotaExceeded(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		err  string
+	}{
+		{"openai", "You exceeded your current quota, please check your plan", "exit status 1"},
+		{"snake", "", "insufficient_quota: account has no remaining credits"},
+		{"billing", "billing hard limit reached for this project", ""},
+		{"credits", "credits exhausted for tenant", "error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ClassifyStepError(1, tc.out, tc.err, "curl api.example.com")
+			if result.Class != ErrQuotaExceeded {
+				t.Fatalf("Class = %s, want quota_exceeded", result.Class)
+			}
+			if result.Repairable {
+				t.Error("quota_exceeded must not be skill-repairable")
+			}
+			if result.Retryable {
+				t.Error("quota_exceeded should not auto-retry without user action")
+			}
+			if !contains(result.ActionHint, "inform_user") {
+				t.Errorf("ActionHint = %q", result.ActionHint)
+			}
+		})
+	}
+	if got := SkillExecutionFollowUp(false, string(ErrQuotaExceeded)); got != "abandon" {
+		t.Fatalf("FollowUp = %q, want abandon", got)
+	}
+	if IsRepairableError(string(ErrQuotaExceeded)) {
+		t.Fatal("IsRepairableError(quota_exceeded) = true, want false")
+	}
+	// Disk quota must not be misclassified as API quota.
+	disk := ClassifyStepError(1, "write failed: disk quota exceeded", "exit status 1", "dd")
+	if disk.Class == ErrQuotaExceeded {
+		t.Fatalf("disk quota should not be ErrQuotaExceeded, got %s / %s", disk.Class, disk.UserMessage)
+	}
 }
 
 func TestClassifyStepError_FileNotFound(t *testing.T) {
@@ -120,6 +166,43 @@ func TestClassifyStepError_NetworkError(t *testing.T) {
 	}
 	if !result.Retryable {
 		t.Error("network_error should be retryable")
+	}
+}
+
+func TestClassifyStepError_SessionNotFound(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		errMsg string
+	}{
+		{"phrase", "browser session not found: abc", "exit status 1"},
+		{"underscore", "", "session_not_found: remote handle gone"},
+		{"expired", "login session expired or invalid", ""},
+		{"invalid", "invalid session id", "failed"},
+		{"no_such", "no such session", "error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ClassifyStepError(1, tc.output, tc.errMsg, "browser_action")
+			if result.Class != ErrSessionNotFound {
+				t.Fatalf("Class = %s, want session_not_found (output=%q err=%q)", result.Class, tc.output, tc.errMsg)
+			}
+			if result.Repairable {
+				t.Error("session_not_found should not be skill-repairable")
+			}
+			if !result.Retryable {
+				t.Error("session_not_found should be retryable after re-establish")
+			}
+			if !contains(result.ActionHint, "reestablish_session") {
+				t.Errorf("ActionHint = %q, want reestablish_session", result.ActionHint)
+			}
+		})
+	}
+	if got := SkillExecutionFollowUp(false, string(ErrSessionNotFound)); got != "retry" {
+		t.Fatalf("session_not_found FollowUp = %q, want retry", got)
+	}
+	if IsRepairableError(string(ErrSessionNotFound)) {
+		t.Fatal("IsRepairableError(session_not_found) = true, want false")
 	}
 }
 
@@ -566,6 +649,50 @@ func TestClassifyStepError_UnsupportedGUIActionSuggestsPatch(t *testing.T) {
 		t.Errorf("GUI unsupported action should not suggest opening GUI: %s", result.ActionHint)
 	}
 }
+func TestSkillExecutionFollowUp(t *testing.T) {
+	if got := SkillExecutionFollowUp(true, ""); got != "continue" {
+		t.Fatalf("success FollowUp = %q, want continue", got)
+	}
+	if got := SkillExecutionFollowUp(false, string(ErrCommandNotFound)); got != "retry" {
+		t.Fatalf("command_not_found FollowUp = %q, want retry", got)
+	}
+	if got := SkillExecutionFollowUp(false, string(ErrMissingDependency)); got != "retry" {
+		t.Fatalf("missing_dependency FollowUp = %q, want retry", got)
+	}
+	if got := SkillExecutionFollowUp(false, string(ErrMissingEnvVar)); got != "abandon" {
+		t.Fatalf("missing_env_var FollowUp = %q, want abandon", got)
+	}
+	if got := SkillExecutionFollowUp(false, string(ErrAuthError)); got != "abandon" {
+		t.Fatalf("auth_error FollowUp = %q, want abandon", got)
+	}
+}
+
+func TestShouldInvalidateManageSkillOutcomes(t *testing.T) {
+	// Canonical classes produced by ClassifyStepError / FormatErrorForLLM.
+	for _, class := range []string{
+		string(ErrMissingDependency),
+		string(ErrMissingEnvVar),
+		string(ErrCommandNotFound),
+		string(ErrAuthError),
+	} {
+		if !ShouldInvalidateManageSkillOutcomes(class) {
+			t.Fatalf("ShouldInvalidateManageSkillOutcomes(%q) = false, want true", class)
+		}
+	}
+	// Legacy aliases that never matched real classifier output must still work.
+	for _, class := range []string{"dependency_missing", "config_error", "setup_failed", "install_failed"} {
+		if !ShouldInvalidateManageSkillOutcomes(class) {
+			t.Fatalf("legacy alias %q should invalidate", class)
+		}
+	}
+	if ShouldInvalidateManageSkillOutcomes(string(ErrTimeout)) {
+		t.Fatal("timeout should not invalidate manage_skill outcomes")
+	}
+	if ShouldInvalidateManageSkillOutcomes("") {
+		t.Fatal("empty class should not invalidate")
+	}
+}
+
 func TestClassifyStepError_PythonInstallHint(t *testing.T) {
 	result := ClassifyStepError(9009, "", "exit status 9009", "python3 script.py")
 	if result.Class != ErrCommandNotFound {

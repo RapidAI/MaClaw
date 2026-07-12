@@ -3,7 +3,9 @@ package skill
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -33,20 +35,40 @@ type EvolutionPipeline struct {
 	EventEmitter    func(event string, data map[string]string) // notifies frontend of evolution actions
 
 	// Config
-	PostExecDelay       time.Duration // delay after skill exec before running pipeline (default 5s)
-	EnablePromoter      bool
-	EnableOptimizer     bool
-	PromoteCheckInterval int // check nudge promotion every N notifications (default 10)
+	PostExecDelay        time.Duration // delay after skill exec before running pipeline (default 5s)
+	EnablePromoter       bool
+	EnableOptimizer      bool
+	EnableRepair         bool          // schedule self-repair for failed skills (default true)
+	RepairCooldown        time.Duration // min interval between LLM repair attempts per skill (default 1h)
+	PromoteCheckInterval int           // check nudge promotion every N notifications (default 10)
+
+	// RepairHook is the platform-specific repair applier (LLM + gate + security +
+	// persist). When set, processRequest delegates failed-skill repair here so
+	// GUI can enforce security scans. When nil, a core-only repair path runs
+	// (ApplyRepair + SkillSaver) suitable for headless/tests.
+	RepairHook func(entry *corelib.NLSkillEntry, runArgs map[string]string)
 
 	// Internal
-	pendingCh    chan evolutionRequest
-	stopCh       chan struct{}
-	once         sync.Once // protects stopCh close
-	startOnce    sync.Once // protects Start from being called twice
-	requestCount int       // counts processed requests for throttling
+	// pendingBySkill coalesces notifications by skill name: rapid re-runs of the
+	// same skill keep only the latest request instead of dropping when busy.
+	pendingBySkill map[string]evolutionRequest
+	pendingMu      sync.Mutex
+	pendingWake    chan struct{} // buffer 1 — wake the loop without blocking Notify
+	stopCh         chan struct{}
+	once           sync.Once // protects stopCh close
+	startOnce      sync.Once // protects Start from being called twice
+	requestCount   int       // counts processed requests for throttling
+
+	// CoalescedNotifications counts NotifySkillExecution calls that replaced a
+	// still-pending request for the same skill (not lost — superseded).
+	CoalescedNotifications atomic.Uint64
+	// DroppedNotifications is kept for backwards-compatible metrics; with the
+	// coalesce map it stays 0 under normal operation (never hard-drops).
+	DroppedNotifications atomic.Uint64
 
 	// LLM call throttling — prevents repeated expensive calls for the same skill/candidate.
 	optimizeAttempts   map[string]time.Time // skill name → last LLM optimization attempt time
+	repairAttempts     map[string]time.Time // skill name → last self-repair attempt time
 	promoteBlacklist   map[string]time.Time // candidate ContextKey → time blocked (retry after 24h)
 	throttleMu         sync.Mutex
 }
@@ -65,16 +87,36 @@ type evolutionRequest struct {
 	RunArgs   map[string]string
 }
 
+// DefaultRepairCooldown is used when RepairCooldown is unset and when AppConfig
+// SkillEvolutionRepairCooldownHours is 0.
+const DefaultRepairCooldown = time.Hour
+
+// RepairCooldownFromHours converts a config hour count to a duration.
+// hours <= 0 returns DefaultRepairCooldown.
+func RepairCooldownFromHours(hours int) time.Duration {
+	if hours <= 0 {
+		return DefaultRepairCooldown
+	}
+	if hours > 24*30 {
+		hours = 24 * 30 // cap at 30 days
+	}
+	return time.Duration(hours) * time.Hour
+}
+
 // NewEvolutionPipeline creates a pipeline with sensible defaults.
 func NewEvolutionPipeline() *EvolutionPipeline {
 	return &EvolutionPipeline{
 		PostExecDelay:        5 * time.Second,
 		EnablePromoter:       true,
 		EnableOptimizer:      true,
+		EnableRepair:         true,
+		RepairCooldown:        DefaultRepairCooldown,
 		PromoteCheckInterval: 10,
-		pendingCh:            make(chan evolutionRequest, 32),
+		pendingBySkill:       make(map[string]evolutionRequest),
+		pendingWake:          make(chan struct{}, 1),
 		stopCh:               make(chan struct{}),
 		optimizeAttempts:     make(map[string]time.Time),
+		repairAttempts:       make(map[string]time.Time),
 		promoteBlacklist:     make(map[string]time.Time),
 	}
 }
@@ -109,13 +151,22 @@ func (p *EvolutionPipeline) Stop() {
 // NotifySkillExecution is called after a skill execution completes.
 // It enqueues an async evolution check without blocking the caller.
 // The entry is deep-copied to prevent data races with the main agent loop.
+//
+// Multiple notifications for the same skill coalesce: only the latest request
+// is kept until the worker drains the map, so rapid re-runs never hard-drop work.
 func (p *EvolutionPipeline) NotifySkillExecution(skillName string, entry *corelib.NLSkillEntry, result *SkillExecutionResultCompat, runArgs map[string]string) {
 	if p == nil || entry == nil {
 		return
 	}
-	// Deep-copy entry to prevent race with main loop mutations.
-	entryCopy := *entry
-	entryCopy.Steps = append([]corelib.NLSkillStep(nil), entry.Steps...)
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		skillName = strings.TrimSpace(entry.Name)
+	}
+	if skillName == "" {
+		return
+	}
+	// Deep-copy entry (including Params maps) to prevent race with main loop mutations.
+	entryCopy := CloneNLSkillEntry(entry)
 	var argsCopy map[string]string
 	if len(runArgs) > 0 {
 		argsCopy = make(map[string]string, len(runArgs))
@@ -123,16 +174,34 @@ func (p *EvolutionPipeline) NotifySkillExecution(skillName string, entry *coreli
 			argsCopy[k] = v
 		}
 	}
-	select {
-	case p.pendingCh <- evolutionRequest{
+	// Copy result so caller can reuse the pointer.
+	var resultCopy *SkillExecutionResultCompat
+	if result != nil {
+		rc := *result
+		resultCopy = &rc
+	}
+	req := evolutionRequest{
 		SkillName:  skillName,
-		Entry:      &entryCopy,
-		ExecResult: result,
+		Entry:      entryCopy,
+		ExecResult: resultCopy,
 		RunArgs:    argsCopy,
-	}:
+	}
+
+	p.pendingMu.Lock()
+	if _, exists := p.pendingBySkill[skillName]; exists {
+		n := p.CoalescedNotifications.Add(1)
+		log.Printf("[evolution-pipeline] coalesced pending notification skill=%s coalesced_total=%d", skillName, n)
+	}
+	if p.pendingBySkill == nil {
+		p.pendingBySkill = make(map[string]evolutionRequest)
+	}
+	p.pendingBySkill[skillName] = req
+	p.pendingMu.Unlock()
+
+	// Non-blocking wake (buffer 1): if the loop is already scheduled, skip.
+	select {
+	case p.pendingWake <- struct{}{}:
 	default:
-		// Channel full — skip this notification. Non-blocking.
-		log.Printf("[evolution-pipeline] notification queue full, skipping skill=%s", skillName)
 	}
 }
 
@@ -141,15 +210,87 @@ func (p *EvolutionPipeline) loop() {
 		select {
 		case <-p.stopCh:
 			return
-		case req := <-p.pendingCh:
-			// Delay before processing to avoid interfering with user interaction.
+		case <-p.pendingWake:
+			// Delay once per wake batch to avoid interfering with user interaction.
+			// Additional notifies during the delay coalesce into pendingBySkill.
 			select {
 			case <-p.stopCh:
 				return
 			case <-time.After(p.PostExecDelay):
 			}
-			p.processRequest(req)
+			batch := p.takeAllPending()
+			for _, req := range batch {
+				// Re-check stop between skills so shutdown stays responsive.
+				select {
+				case <-p.stopCh:
+					return
+				default:
+				}
+				p.processRequest(req)
+			}
 		}
+	}
+}
+
+// takeAllPending drains the coalesce map into a stable slice (name-sorted for
+// deterministic test/debug order is not required; map iteration order is fine).
+func (p *EvolutionPipeline) takeAllPending() []evolutionRequest {
+	p.pendingMu.Lock()
+	defer p.pendingMu.Unlock()
+	if len(p.pendingBySkill) == 0 {
+		return nil
+	}
+	out := make([]evolutionRequest, 0, len(p.pendingBySkill))
+	for name, req := range p.pendingBySkill {
+		out = append(out, req)
+		delete(p.pendingBySkill, name)
+	}
+	return out
+}
+
+// PendingSkillCount returns how many distinct skills currently await processing.
+// Intended for tests and diagnostics.
+func (p *EvolutionPipeline) PendingSkillCount() int {
+	if p == nil {
+		return 0
+	}
+	p.pendingMu.Lock()
+	defer p.pendingMu.Unlock()
+	return len(p.pendingBySkill)
+}
+
+// EvolutionStatus is a diagnostic snapshot of the pipeline.
+type EvolutionStatus struct {
+	PendingSkills          int           `json:"pending_skills"`
+	CoalescedNotifications uint64        `json:"coalesced_notifications"`
+	DroppedNotifications   uint64        `json:"dropped_notifications"`
+	ProcessedRequests      int           `json:"processed_requests"`
+	EnableRepair           bool          `json:"enable_repair"`
+	EnableOptimizer        bool          `json:"enable_optimizer"`
+	EnablePromoter         bool          `json:"enable_promoter"`
+	RepairCooldown          time.Duration `json:"repair_cooldown"`
+	HasRepairHook          bool          `json:"has_repair_hook"`
+	HasOptimizer           bool          `json:"has_optimizer"`
+	HasPromoter            bool          `json:"has_promoter"`
+}
+
+// Status returns a diagnostic snapshot (safe for concurrent readers).
+func (p *EvolutionPipeline) Status() EvolutionStatus {
+	if p == nil {
+		return EvolutionStatus{}
+	}
+	return EvolutionStatus{
+		PendingSkills:          p.PendingSkillCount(),
+		CoalescedNotifications: p.CoalescedNotifications.Load(),
+		DroppedNotifications:   p.DroppedNotifications.Load(),
+		ProcessedRequests:      p.requestCount,
+		EnableRepair:           p.EnableRepair,
+		EnableOptimizer:        p.EnableOptimizer,
+		EnablePromoter:         p.EnablePromoter,
+		RepairCooldown:          p.RepairCooldown,
+		HasRepairHook:          p.RepairHook != nil,
+		HasOptimizer:           p.Optimizer != nil,
+		HasPromoter:            p.Promoter != nil,
 	}
 }
 
@@ -167,12 +308,27 @@ func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
 
 	p.requestCount++
 
-	// 1. Check if skill should be optimized (working but suboptimal).
+	// 0. Surface failed executions for frontend/audit.
+	failed := req.ExecResult != nil && !req.ExecResult.Success
+	if failed && p.EventEmitter != nil {
+		p.EventEmitter(EventSkillExecutionFailed, map[string]string{
+			"skill": req.SkillName,
+		})
+	}
+
+	// 1. Self-repair for failed skills (unified schedule + throttle).
+	// Platform security/persist is handled by RepairHook when configured.
+	if failed && p.EnableRepair && req.Entry != nil {
+		p.tryRepair(ctx, req)
+	}
+
+	// 2. Check if skill should be optimized (working but suboptimal).
+	// tryOptimize consults ShouldOptimize + 24h throttle; safe on failures too.
 	if p.EnableOptimizer && p.Optimizer != nil && req.Entry != nil {
 		p.tryOptimize(ctx, req)
 	}
 
-	// 2. Check nudge candidates for promotion (throttled — every N requests).
+	// 3. Check nudge candidates for promotion (throttled — every N requests).
 	interval := p.PromoteCheckInterval
 	if interval <= 0 {
 		interval = 10
@@ -182,9 +338,172 @@ func (p *EvolutionPipeline) processRequest(req evolutionRequest) {
 	}
 }
 
-func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionRequest) {
-	if req.Entry == nil || p.UsageTracker == nil {
+// tryRepair schedules/executes self-repair for a failed skill execution.
+func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest) {
+	if req.Entry == nil {
 		return
+	}
+	if !ShouldAttemptRepair(req.Entry) {
+		return
+	}
+	// Prefer freshest entry from SkillLoader (usage stats may have advanced).
+	entry := req.Entry
+	if p.SkillLoader != nil {
+		for _, s := range p.SkillLoader() {
+			if s.Name == req.SkillName {
+				cp := CloneNLSkillEntry(&s)
+				if cp != nil {
+					entry = cp
+				}
+				break
+			}
+		}
+		if !ShouldAttemptRepair(entry) {
+			return
+		}
+	}
+
+	cooldown := p.RepairCooldown
+	if cooldown <= 0 {
+		cooldown = DefaultRepairCooldown
+	}
+	p.throttleMu.Lock()
+	if last, ok := p.repairAttempts[req.SkillName]; ok && time.Since(last) < cooldown {
+		p.throttleMu.Unlock()
+		log.Printf("[evolution-pipeline] repair throttled skill=%s remaining=%s", req.SkillName, (cooldown - time.Since(last)).Round(time.Second))
+		return
+	}
+	p.repairAttempts[req.SkillName] = time.Now()
+	p.throttleMu.Unlock()
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	log.Printf("[evolution-pipeline] scheduling self-repair skill=%s usage=%d success=%d",
+		req.SkillName, entry.UsageCount, entry.SuccessCount)
+
+	if p.RepairHook != nil {
+		p.RepairHook(entry, req.RunArgs)
+		return
+	}
+
+	// Core-only fallback (no platform security scan): useful for tests / headless.
+	if p.LLM == nil || !p.LLM.IsConfigured() {
+		log.Printf("[evolution-pipeline] repair skipped skill=%s: LLM not configured", req.SkillName)
+		return
+	}
+	repairCtx := NewRepairContext(entry, req.RunArgs)
+	result, err := AttemptRepairWithContext(p.LLM, entry, repairCtx)
+	if err != nil {
+		log.Printf("[evolution-pipeline] repair LLM failed skill=%s: %v", req.SkillName, err)
+		return
+	}
+	if result != nil && result.Repaired && len(result.NewSteps) > 0 && p.Gate != nil {
+		nlSteps := make([]corelib.NLSkillStep, len(result.NewSteps))
+		for i, s := range result.NewSteps {
+			nlSteps[i] = corelib.NLSkillStep{Action: s.Action, Params: s.Params, OnError: s.OnError}
+		}
+		var historicalArgs []map[string]string
+		if p.UsageTracker != nil {
+			historicalArgs = p.UsageTracker.RecentRunArgs("skill:"+req.SkillName, 3)
+		}
+		if len(historicalArgs) > 0 {
+			gateResult, gateErr := p.Gate.Verify(ctx, entry, nlSteps, historicalArgs)
+			if gateErr != nil {
+				log.Printf("[evolution-pipeline] repair gate error skill=%s: %v", req.SkillName, gateErr)
+				return
+			}
+			if gateResult == nil || !gateResult.Passed {
+				reason := "nil"
+				if gateResult != nil {
+					reason = gateResult.Reason
+				}
+				log.Printf("[evolution-pipeline] repair gate rejected skill=%s: %s", req.SkillName, reason)
+				return
+			}
+		}
+	}
+	if !ApplyRepair(entry, result) {
+		if result != nil && result.ShouldDisable && p.SkillSaver != nil && p.SkillLoader != nil {
+			skills := p.SkillLoader()
+			for i := range skills {
+				if skills[i].Name == req.SkillName {
+					skills[i] = *entry
+					_ = p.SkillSaver(skills)
+					break
+				}
+			}
+		}
+		return
+	}
+	if p.SkillSaver != nil && p.SkillLoader != nil {
+		skills := p.SkillLoader()
+		for i := range skills {
+			if skills[i].Name == req.SkillName {
+				skills[i] = *entry
+				if err := p.SkillSaver(skills); err != nil {
+					log.Printf("[evolution-pipeline] save repaired skill=%s failed: %v", req.SkillName, err)
+					return
+				}
+				break
+			}
+		}
+	}
+	if entry.SkillDir != "" {
+		if err := WriteBackOptimizedSteps(entry); err != nil {
+			log.Printf("[evolution-pipeline] writeback repaired skill.yaml for %s failed: %v", req.SkillName, err)
+		}
+	}
+	if p.EventEmitter != nil {
+		explanation := ""
+		if result != nil {
+			explanation = result.Explanation
+		}
+		p.EventEmitter(EventSkillRepaired, map[string]string{
+			"skill":       req.SkillName,
+			"explanation": explanation,
+		})
+	}
+	log.Printf("[evolution-pipeline] repair applied skill=%s", req.SkillName)
+}
+
+// OptimizeResult describes the outcome of a one-shot TriggerOptimize call.
+type OptimizeResult struct {
+	Attempted   bool
+	Optimized   bool
+	Explanation string
+	Skipped     bool
+	SkipReason  string
+}
+
+// TriggerOptimize runs a one-shot optimization for entry (used by manage_skill
+// trigger_optimize). force skips ShouldOptimize and the 24h attempt throttle;
+// file-backed skills and missing LLM still hard-block.
+func (p *EvolutionPipeline) TriggerOptimize(ctx context.Context, entry *corelib.NLSkillEntry, force bool) OptimizeResult {
+	if p == nil || entry == nil {
+		return OptimizeResult{SkipReason: "pipeline or entry is nil"}
+	}
+	if p.Optimizer == nil {
+		return OptimizeResult{SkipReason: "optimizer not configured"}
+	}
+	if IsFileBackedSkill(*entry) {
+		return OptimizeResult{SkipReason: "file-backed skills require a reviewed patch flow"}
+	}
+	if p.UsageTracker == nil {
+		return OptimizeResult{SkipReason: "usage tracker not configured"}
+	}
+	req := evolutionRequest{SkillName: entry.Name, Entry: entry}
+	return p.runOptimize(ctx, req, force)
+}
+
+func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionRequest) {
+	_ = p.runOptimize(ctx, req, false)
+}
+
+func (p *EvolutionPipeline) runOptimize(ctx context.Context, req evolutionRequest, force bool) OptimizeResult {
+	if req.Entry == nil || p.UsageTracker == nil || p.Optimizer == nil {
+		return OptimizeResult{SkipReason: "optimizer prerequisites missing"}
 	}
 
 	// UsageTracker records skill executions with "skill:" prefix on ToolName.
@@ -202,34 +521,44 @@ func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionReques
 		}
 	}
 
-	if !p.Optimizer.ShouldOptimize(req.Entry, records) {
-		return
+	if !force && !p.Optimizer.ShouldOptimize(req.Entry, records) {
+		return OptimizeResult{Skipped: true, SkipReason: "skill does not meet automatic optimization thresholds"}
+	}
+	if force && IsFileBackedSkill(*req.Entry) {
+		return OptimizeResult{Skipped: true, SkipReason: "file-backed skills require a reviewed patch flow"}
 	}
 
 	// Throttle: don't call LLM if we already attempted optimization for this
 	// skill within the cooldown period (even if it was rejected/failed).
-	p.throttleMu.Lock()
-	if lastAttempt, ok := p.optimizeAttempts[req.SkillName]; ok {
-		if time.Since(lastAttempt).Hours() < 24 {
-			p.throttleMu.Unlock()
-			return
+	// Manual force bypasses the attempt throttle.
+	if !force {
+		p.throttleMu.Lock()
+		if lastAttempt, ok := p.optimizeAttempts[req.SkillName]; ok {
+			if time.Since(lastAttempt).Hours() < 24 {
+				p.throttleMu.Unlock()
+				return OptimizeResult{Skipped: true, SkipReason: "optimization throttled (24h cooldown); pass force=true to override"}
+			}
 		}
+		p.optimizeAttempts[req.SkillName] = time.Now()
+		p.throttleMu.Unlock()
+	} else {
+		p.throttleMu.Lock()
+		p.optimizeAttempts[req.SkillName] = time.Now()
+		p.throttleMu.Unlock()
 	}
-	p.optimizeAttempts[req.SkillName] = time.Now()
-	p.throttleMu.Unlock()
 
-	log.Printf("[evolution-pipeline] optimizing skill=%s", req.SkillName)
+	log.Printf("[evolution-pipeline] optimizing skill=%s force=%v", req.SkillName, force)
 
 	historicalArgs := p.UsageTracker.RecentRunArgs(trackerName, 3)
 	result, err := p.Optimizer.Optimize(ctx, req.Entry, records, historicalArgs)
 	if err != nil {
 		log.Printf("[evolution-pipeline] optimization failed for skill=%s: %v", req.SkillName, err)
-		return
+		return OptimizeResult{Attempted: true, Explanation: err.Error()}
 	}
 
 	if !result.Optimized {
 		log.Printf("[evolution-pipeline] optimization not applicable for skill=%s: %s", req.SkillName, result.Explanation)
-		return
+		return OptimizeResult{Attempted: true, Optimized: false, Explanation: result.Explanation}
 	}
 
 	// Apply optimization.
@@ -259,7 +588,7 @@ func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionReques
 			if found {
 				if err := p.SkillSaver(skills); err != nil {
 					log.Printf("[evolution-pipeline] save optimized skill=%s failed: %v", req.SkillName, err)
-					return
+					return OptimizeResult{Attempted: true, Explanation: "save failed: " + err.Error()}
 				}
 			}
 		}
@@ -278,7 +607,7 @@ func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionReques
 
 		// Notify frontend that a skill was optimized.
 		if p.EventEmitter != nil {
-			p.EventEmitter("skill:optimized", map[string]string{
+			p.EventEmitter(EventSkillOptimized, map[string]string{
 				"skill":       req.SkillName,
 				"explanation": result.Explanation,
 			})
@@ -291,7 +620,9 @@ func (p *EvolutionPipeline) tryOptimize(ctx context.Context, req evolutionReques
 				OutputQuality: "good",
 			})
 		}
+		return OptimizeResult{Attempted: true, Optimized: true, Explanation: result.Explanation}
 	}
+	return OptimizeResult{Attempted: true, Optimized: false, Explanation: result.Explanation}
 }
 
 func (p *EvolutionPipeline) tryPromoteNudges(ctx context.Context) {
@@ -345,7 +676,7 @@ func (p *EvolutionPipeline) tryPromoteNudges(ctx context.Context) {
 			log.Printf("[evolution-pipeline] promoted new skill: %s", result.SkillName)
 			// Notify frontend about the new auto-discovered skill.
 			if p.EventEmitter != nil {
-				p.EventEmitter("skill:auto_discovered", map[string]string{
+				p.EventEmitter(EventSkillAutoDiscovered, map[string]string{
 					"skill":       result.SkillName,
 					"explanation": result.Explanation,
 				})

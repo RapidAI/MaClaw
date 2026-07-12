@@ -212,36 +212,36 @@ describe("AssistantActiveTabContent", () => {
             <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="en" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
         );
 
-        fireEvent.contextMenu(screen.getByText("Local AI"));
+        fireEvent.contextMenu(screen.getByText("Local"));
         fireEvent.click(screen.getByTestId("context-menu-talk-to"));
 
-        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@Local AI ");
+        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@Local ");
     });
 
-    it("normalizes local AI participant ids for the participant panel", () => {
+    it("normalizes Local participant ids for the participant panel", () => {
         const groupTab: AITab = { id: "group-talk-normalized", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", " LOCAL-MACLAW "], closable: true };
 
         render(
             <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="zh-CN" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
         );
 
-        fireEvent.contextMenu(screen.getByText("\u672c\u673aAI"));
+        fireEvent.contextMenu(screen.getByText("\u672c\u673a"));
         fireEvent.click(screen.getByTestId("context-menu-talk-to"));
 
-        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@\u672c\u673aAI ");
+        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@\u672c\u673a ");
     });
 
-    it("inserts localized local AI mention from the participant context menu", () => {
+    it("inserts localized Local mention from the participant context menu", () => {
         const groupTab: AITab = { id: "group-talk-zh", type: "group", title: "Agent A", veId: "ve-a", participants: ["ve-a", "local-maclaw"], closable: true };
 
         render(
             <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="zh-CN" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
         );
 
-        fireEvent.contextMenu(screen.getByText("本机AI"));
+        fireEvent.contextMenu(screen.getByText("本机"));
         fireEvent.click(screen.getByTestId("context-menu-talk-to"));
 
-        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@本机AI ");
+        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@本机 ");
     });
 
     it("inserts a mention at the current caret position", () => {
@@ -253,10 +253,10 @@ describe("AssistantActiveTabContent", () => {
 
         const input = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
         input.setSelectionRange(5, 5);
-        fireEvent.contextMenu(screen.getByText("Local AI"));
+        fireEvent.contextMenu(screen.getByText("Local"));
         fireEvent.click(screen.getByTestId("context-menu-talk-to"));
 
-        expect(input.value).toBe("hello @Local AI world");
+        expect(input.value).toBe("hello @Local world");
     });
 
     it("hides raw participant ids in live group panel and mention suggestions", () => {
@@ -275,7 +275,7 @@ describe("AssistantActiveTabContent", () => {
 
         const panel = screen.getByTestId("group-participant-panel");
         expect(panel.textContent).toContain("Participant 1");
-        expect(panel.textContent).toContain("Local AI");
+        expect(panel.textContent).toContain("Local");
         expect(panel.textContent).not.toContain("m_b1821505498d817c");
 
         const input = screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement;
@@ -312,12 +312,12 @@ describe("AssistantActiveTabContent", () => {
             <AssistantActiveTabContent activeTab={groupTab} tabs={[LOCAL_TAB, groupTab]} isLocalTabActive={false} isProjectTabActive={false} lang="en" theme={theme} getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })} saveTabState={vi.fn()} />
         );
 
-        fireEvent.contextMenu(screen.getByText("Local AI"));
+        fireEvent.contextMenu(screen.getByText("Local"));
         fireEvent.click(screen.getByTestId("context-menu-talk-to"));
-        fireEvent.contextMenu(screen.getByText("Local AI"));
+        fireEvent.contextMenu(screen.getByText("Local"));
         fireEvent.click(screen.getByTestId("context-menu-talk-to"));
 
-        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@Local AI @Local AI ");
+        expect((screen.getByTestId("ve-input-textarea") as HTMLTextAreaElement).value).toBe("@Local @Local ");
     });
 
     it("persists an explicit VE clear command to tab state immediately", async () => {

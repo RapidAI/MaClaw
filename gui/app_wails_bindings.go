@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/textutil"
 	"log"
 	"net/url"
 	"os"
@@ -42,29 +43,10 @@ func isVisibleAIAssistantProgressText(text string) bool {
 		return false
 	}
 
-	// Allow tool-name progress messages through (e.g. "⚙️ 正在执行 weather-query...")
-	if strings.HasPrefix(trimmed, "⚙️ 正在执行 ") ||
-		strings.HasPrefix(trimmed, "🛠️ ") ||
-		strings.HasPrefix(trimmed, "🖥️ ") ||
-		strings.HasPrefix(trimmed, "🚀 ") ||
-		strings.HasPrefix(trimmed, "📎 ") ||
-		strings.HasPrefix(trimmed, "📄 ") ||
-		strings.HasPrefix(trimmed, "🔍 ") ||
-		strings.HasPrefix(trimmed, "📂 ") ||
-		strings.HasPrefix(trimmed, "✏️ ") ||
-		strings.HasPrefix(trimmed, "💾 ") ||
-		strings.HasPrefix(trimmed, "📸 ") ||
-		strings.HasPrefix(trimmed, "🔊 ") ||
-		strings.HasPrefix(trimmed, "📝 ") ||
-		strings.HasPrefix(trimmed, "📖 ") ||
-		strings.HasPrefix(trimmed, "🔗 ") ||
-		strings.HasPrefix(trimmed, "🌐 ") ||
-		strings.HasPrefix(trimmed, "🧠 ") ||
-		strings.HasPrefix(trimmed, "📦 ") {
-		return true
-	}
+	// Legacy progress rows may start with decorative pictographs; normalize first.
+	body := strings.TrimSpace(textutil.StripLeadingEmojiCluster(trimmed))
 
-	lower := strings.ToLower(trimmed)
+	lower := strings.ToLower(body)
 	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "正在执行工具", "先搜索"}
 
 	for _, marker := range blockedMarkers {
@@ -72,15 +54,20 @@ func isVisibleAIAssistantProgressText(text string) bool {
 			return false
 		}
 	}
-	if strings.HasPrefix(trimmed, "Coding Agent:") {
+	if strings.HasPrefix(body, "Coding Agent:") {
 		return true
 	}
-	if isCodingAgentEventText(trimmed) {
+	if isCodingAgentEventText(body) {
 		return true
 	}
-	visiblePrefixes := []string{"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving", "正在生成", "正在执行", "已接近", "⏳"}
+	// Tool-name progress after optional legacy pictograph: "正在执行 weather-query..."
+	// Also allow early pre-loop acks ("收到，正在处理") so first-token wait is not silent.
+	visiblePrefixes := []string{
+		"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving",
+		"正在生成", "正在执行", "正在处理", "正在准备", "已接近", "收到",
+	}
 	for _, prefix := range visiblePrefixes {
-		if strings.HasPrefix(trimmed, prefix) {
+		if strings.HasPrefix(body, prefix) {
 			return true
 		}
 	}
@@ -2012,7 +1999,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 			log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
 			return
 		}
-		runtime.EventsEmit(a.ctx, name, string(payload))
+		a.emitEvent(name, string(payload))
 	}
 	onProgress := func(progressText string) {
 		if progressText == imHeartbeatMsg {
@@ -2203,7 +2190,7 @@ func (a *App) emitStreamingToken(requestID, sessionKey, text string) {
 	if err != nil {
 		return
 	}
-	runtime.EventsEmit(a.ctx, "ai-assistant-token", string(payload))
+	a.emitEvent("ai-assistant-token", string(payload))
 }
 
 // emitAIAssistantResponse emits the final response for an async agent loop
@@ -2245,7 +2232,7 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 			ok = false
 		}
 	}()
-	runtime.EventsEmit(a.ctx, "ai-assistant-response", string(payload))
+	a.emitEvent("ai-assistant-response", string(payload))
 	return true
 }
 
@@ -2277,7 +2264,7 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 	// don't interfere with the main chat's streaming events.
 	emitEvent := func(name, value string) {
 		payload, _ := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value})
-		runtime.EventsEmit(a.ctx, name, string(payload))
+		a.emitEvent(name, string(payload))
 	}
 	onProgress := func(text string) {
 		emitEvent("ai-btw-progress", text)

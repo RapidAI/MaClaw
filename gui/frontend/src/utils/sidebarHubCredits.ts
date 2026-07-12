@@ -1,96 +1,56 @@
-import type { SidebarHubCredits, SidebarHubPeriodLimits, SidebarHubServiceStatus } from '../types/appShell';
-import { grantCanContributeExpiry, latestExpiry, numeric } from './hubCredits';
-
-function hasPositivePeriodLimits(limits: SidebarHubPeriodLimits): boolean {
-    return numeric(limits.five_hour ?? limits.FiveHour) > 0 ||
-        numeric(limits.daily ?? limits.Daily) > 0 ||
-        numeric(limits.weekly ?? limits.Weekly) > 0 ||
-        numeric(limits.monthly ?? limits.Monthly) > 0;
-}
+import type { SidebarHubCredits, SidebarHubServiceStatus } from '../types/appShell';
+import { grantCanContributeExpiry, latestExpiry, numeric, summarizeHubCreditTotals } from './hubCredits';
 
 export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | null): SidebarHubCredits | null {
     const active = status?.active ?? status?.Active ?? false;
     const creditGrants = status?.credit_grants ?? status?.CreditGrants ?? [];
     const activeGrants = status?.active_grants ?? status?.ActiveGrants ?? [];
+    // summarizeHubCreditTotals also filters hubcenter_compute for wallet math.
     const grants = (creditGrants.length ? creditGrants : activeGrants)
         .filter((grant) => String(grant.source ?? grant.Source ?? '').trim().toLowerCase() !== 'hubcenter_compute');
     const hasGrant = grants.length > 0;
     const grantStatusPriority = ['period_limited', 'queued', 'exhausted', 'expired'];
     const periodLimitedGrant = grants.find((grant) => String(grant.status ?? grant.Status ?? '').toLowerCase() === 'period_limited');
     const activeGrant = grants.find((grant) => {
-        const status = String(grant.status ?? grant.Status ?? '').toLowerCase();
-        return status === 'active' || grant.active === true || grant.Active === true;
+        const grantStatus = String(grant.status ?? grant.Status ?? '').toLowerCase();
+        return grantStatus === 'active' || grant.active === true || grant.Active === true;
     });
     const initialStatusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
     const activeViaFallbackGrant = active && !activeGrant && initialStatusAvailable > 0;
     const statusGrant = active
         ? (activeGrant || (activeViaFallbackGrant ? undefined : periodLimitedGrant) || grants[0])
         : (grantStatusPriority
-            .map((status) => grants.find((grant) => String(grant.status ?? grant.Status ?? '').toLowerCase() === status))
+            .map((statusName) => grants.find((grant) => String(grant.status ?? grant.Status ?? '').toLowerCase() === statusName))
             .find(Boolean) || grants[0]);
     const grantStatus = activeViaFallbackGrant ? 'active' : (String(statusGrant?.status ?? statusGrant?.Status ?? '').toLowerCase() || (active ? 'active' : ''));
     const retryAfterSeconds = activeViaFallbackGrant ? 0 : numeric(statusGrant?.retry_after_seconds ?? statusGrant?.RetryAfterSeconds);
     const retryAfterAt = activeViaFallbackGrant ? '' : String(statusGrant?.retry_after_at ?? statusGrant?.RetryAfterAt ?? '');
     if (!active && !hasGrant) {
-        return { authorized: false, total: 0, used: 0, remaining: 0, tokensPerCredit: 0, expiresAt: '', unlimited: false, status: '', retryAfterSeconds: 0, retryAfterAt: '' };
+        return {
+            authorized: false,
+            total: 0,
+            used: 0,
+            remaining: 0,
+            available: 0,
+            showPeriodAvailable: false,
+            tokensPerCredit: 0,
+            expiresAt: '',
+            unlimited: false,
+            status: '',
+            retryAfterSeconds: 0,
+            retryAfterAt: '',
+        };
     }
 
-    let total = 0;
-    let used = 0;
-    let remaining = 0;
-    let grantRemaining = 0;
-    let grantAvailable = 0;
-    let visibleGrantTotal = 0;
-    let effectiveGrantHasPeriodLimits = false;
-    for (const grant of grants) {
-        const grantStatus = String(grant.status ?? grant.Status ?? '').toLowerCase();
-        if (grantStatus !== 'expired') {
-            const grantTotal = numeric(grant.credits_total ?? grant.CreditsTotal);
-            visibleGrantTotal += grantTotal > 0
-                ? grantTotal
-                : Math.max(
-                    numeric(grant.credits_available ?? grant.CreditsAvailable),
-                    numeric(grant.credits_remaining ?? grant.CreditsRemaining),
-                );
-        }
-        // Use backend's "effective" flag as single source of truth.
-        // Fall back to status string check for old hub versions without the field.
-        const eff = grant.effective ?? grant.Effective;
-        const isEffective = typeof eff === 'boolean'
-            ? eff
-            : String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'queued'
-              && String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'expired';
-        if (!isEffective) {
-            // Queued grants can raise the visible total through visibleGrantTotal,
-            // but they are not currently spendable and must not inflate remaining.
-            continue;
-        }
-        total += numeric(grant.credits_total ?? grant.CreditsTotal);
-        used += numeric(grant.credits_used ?? grant.CreditsUsed);
-        grantRemaining += numeric(grant.credits_remaining ?? grant.CreditsRemaining);
-        remaining = grantRemaining;
-        grantAvailable += numeric(grant.credits_available ?? grant.CreditsAvailable);
-        const limits = grant.period_limits ?? grant.PeriodLimits;
-        if (limits && hasPositivePeriodLimits(limits)) {
-            effectiveGrantHasPeriodLimits = true;
-        }
-    }
-    // Include queued grant totals in the floor value so backend's status.credits_total
-    // (which excludes queued grants) cannot overwrite/reduce the visible total.
-    const effectiveVisibleTotal = Math.max(total, visibleGrantTotal);
-    total = Math.max(numeric(status?.credits_total ?? status?.CreditsTotal ?? effectiveVisibleTotal), effectiveVisibleTotal);
-    used = numeric(status?.credits_used ?? status?.CreditsUsed ?? used);
-    const statusRemaining = numeric(status?.credits_remaining ?? status?.CreditsRemaining);
-    if (statusRemaining > 0) remaining = effectiveGrantHasPeriodLimits
-        ? Math.max(statusRemaining, grantRemaining)
-        : statusRemaining;
-    const statusAvailable = numeric(status?.credits_available ?? status?.CreditsAvailable);
-    const statusGrantAvailable = numeric(statusGrant?.credits_available ?? statusGrant?.CreditsAvailable);
-    const available = statusAvailable > 0 ? statusAvailable : (grantAvailable > 0 ? grantAvailable : statusGrantAvailable);
-    if (!active && grantStatus === 'expired') remaining = Math.max(0, available);
-    if ((active || remaining <= 0) && available > 0 && available > remaining) remaining = available;
-    if (remaining > 0 && total < used + remaining) total = used + remaining;
-    const unlimited = total <= 0;
+    const totals = summarizeHubCreditTotals({
+        active,
+        credits_total: status?.credits_total ?? status?.CreditsTotal,
+        credits_used: status?.credits_used ?? status?.CreditsUsed,
+        credits_remaining: status?.credits_remaining ?? status?.CreditsRemaining,
+        credits_available: status?.credits_available ?? status?.CreditsAvailable,
+        grants,
+    });
+
     const latestGrantExpiry = latestExpiry(grants
         .filter(grantCanContributeExpiry)
         .map((grant) => String(grant.expires_at ?? grant.ExpiresAt ?? '')));
@@ -100,12 +60,21 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     const backendEffectiveExpiry = String(status?.effective_expires_at ?? status?.EffectiveExpiresAt ?? '');
     const backendNearestExpiry = String(status?.nearest_expires_at ?? status?.NearestExpiresAt ?? '');
     const expiresAt = backendEffectiveExpiry || latestGrantExpiry || backendNearestExpiry || latestExpiredGrantExpiry;
+    const unlimited = totals.total <= 0;
+    const available = Math.max(0, totals.available);
+    const remaining = Math.max(0, totals.remaining);
+    // Surface period-available when spendable is below lifetime remaining, or
+    // the official route is currently period-limited (available may be 0).
+    const showPeriodAvailable = !unlimited
+        && (grantStatus === 'period_limited' || available + 0.0005 < remaining);
     return {
         authorized: true,
         serviceActive: active,
-        total,
-        used,
+        total: totals.total,
+        used: totals.used,
         remaining,
+        available,
+        showPeriodAvailable,
         tokensPerCredit: numeric(status?.tokens_per_credit ?? status?.TokensPerCredit),
         expiresAt,
         unlimited,

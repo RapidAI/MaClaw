@@ -86,7 +86,7 @@ export const SidebarToolSelector = ({
                         >
                             {toolIcons[tool.id] && <img src={toolIcons[tool.id]} style={{ width: '16px', height: '16px' }} alt="" />}
                             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
-                            {safeActiveTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>{'\u2713'}</span>}
+                            {safeActiveTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>OK</span>}
                         </button>
                     ))}
                 </div>

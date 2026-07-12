@@ -78,7 +78,7 @@ func buildCriticalRiskPrompt(skillName, source string, factors []string) string
 
 Returns a string like:
 ```
-⚠️ 安全警告: Skill「deploy-helper」来自 https://hub.example.com 被评估为 Critical 风险。
+安全警告: Skill「deploy-helper」来自 https://hub.example.com 被评估为 Critical 风险。
 
 风险因素:
   • dangerous keyword "rm -rf" found in arguments

@@ -155,7 +155,7 @@ func TestLiveSendText(t *testing.T) {
 	// Just need auth, no WS connection needed for sending.
 	err = gw.SendText(context.Background(), OutgoingText{
 		ToUserID: targetUserID,
-		Text:     fmt.Sprintf("🤖 MaClaw 蓝信网关测试消息 — %s", time.Now().Format("15:04:05")),
+		Text:     fmt.Sprintf("MaClaw 蓝信网关测试消息 — %s", time.Now().Format("15:04:05")),
 	})
 	if err != nil {
 		t.Fatalf("SendText failed: %v", err)

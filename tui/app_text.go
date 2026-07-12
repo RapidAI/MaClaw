@@ -36,7 +36,7 @@ func tuiText(lang, key string) string {
 			"llmNotConfigured":         "LLM is not configured: complete Setup, Service Redeem, or Config first.",
 			"llmNotConfiguredChat":     "LLM is not configured yet. I opened the next setup page; finish Setup, Service Redeem, or Config first.",
 			"defaultRoleDescription":   "AI coding assistant",
-			"restoredHistory":          "📜 Restored %d history messages (/new clears them)",
+			"restoredHistory":          "Restored %d history messages (/new clears them)",
 			"serviceRedeemPrompt":      "Use a service code to enable MaClaw Official LLM.",
 			"serviceOpenSetup":         "Open Setup and activate Hub before redeeming service codes.",
 			"configOpenSetup":          "Opened Setup. Enter email and activate Hub.",
@@ -44,12 +44,12 @@ func tuiText(lang, key string) string {
 			"configOpenTools":          "Opened MCP templates. Left/Right choose local; Enter opens; A remote.",
 			"mcpOptionalReady":         "Chat is ready. Optional: press F3 to add MCP capabilities from templates.",
 			"mcpAddedReady":            "%s Chat is ready; press F2 to return.",
-			"cancelled":                "⏹ Cancelled",
+			"cancelled":                "Cancelled",
 			"configSaveFailed":         "Config save failed: %s: %s",
 			"configSaveFailedPlain":    "config save failed: %s",
 			"configLoadFailed":         "config load failed: %s",
 			"configLoadWarning":        "Config load failed; started with defaults. Error: %s",
-			"configSaved":              "✓ Saved %s",
+			"configSaved":              "Saved %s",
 			"onboardingCheckService":   "Checking MaClaw official service; enter a service code if it is not active.",
 			"onboardingNeedConfig":     "Configure an LLM or complete Hub activation first.",
 			"llmKeyMissing":            "LLM provider selected; enter its API key, choose a local provider, or redeem official service.",
@@ -88,9 +88,10 @@ func tuiText(lang, key string) string {
 			"ssoQREmpty":               "SSO QR response is incomplete. Press Enter to try again.",
 			"ssoSessionEmpty":          "SSO session is missing. Press Enter to try again.",
 			"ssoInputEmpty":            "Paste the returned URL or token first.",
-			"chatCleared":              "🗑 Chat cleared.",
-			"modelInfoFull":            "🧠 Current model: %s\n   Provider: %s\n   Protocol: %s\n   Context: %d tokens",
-			"modelInfoBasic":           "🧠 Current model: %s\n   Provider: %s",
+			"ssoWaitingScan":           "Waiting for SSO scan…",
+			"chatCleared":              "Chat cleared.",
+			"modelInfoFull":            "Current model: %s\n   Provider: %s\n   Protocol: %s\n   Context: %d tokens",
+			"modelInfoBasic":           "Current model: %s\n   Provider: %s",
 			"btwUsage":                 "Usage: /btw <quick question>",
 			"btwFailed":                "/btw failed: %s",
 			"btwNoInfo":                "No extra information found.",
@@ -107,8 +108,8 @@ func tuiText(lang, key string) string {
 			"installedFrom":            "Installed %s from %s.",
 			"added":                    "Added: %s",
 			"memoryNotInitialized":     "Memory store is not initialized",
-			"memoryEmpty":              "📭 Memory store is empty",
-			"memoryHeader":             "📚 Memory store (%d entries):\n",
+			"memoryEmpty":              "Memory store is empty",
+			"memoryHeader":             "Memory store (%d entries):\n",
 			"memoryMore":               "  ... %d more\n",
 			"memorySummary":            "Memory is active (%d entries). It is maintained automatically in the simplified TUI.",
 			"memoryTUISimplified":      "Memory runs in the background in the simplified TUI. There is no separate memory page to browse.",
@@ -144,6 +145,9 @@ Navigation:
   /schedule      Open scheduled tasks
   /config [llm|security|proxy|im|advanced] Open settings directly
   /status /doctor /health Show setup status and next action
+  /status [user-id]  Include sticky canary membership for user-id
+  /canary <user-id>  Preview shared-loop canary (IN/OUT · bucket · percent)
+  /prompt-export Write adaptive-prompt stats JSON under ~/.maclaw/stats/exports/
   /llm /security Open the matching Config sub-page
 Info:
   /model         Show current LLM model info
@@ -170,7 +174,7 @@ Shortcuts:
 		"llmNotConfigured":         "LLM 未配置：请先在 初始化/服务兑换/设置 中完成配置",
 		"llmNotConfiguredChat":     "LLM 还未配置。已为你打开下一步页面，请先完成 初始化、服务兑换 或 设置。",
 		"defaultRoleDescription":   "AI 编程助手",
-		"restoredHistory":          "📜 已恢复 %d 条历史消息（/new 清除）",
+		"restoredHistory":          "已恢复 %d 条历史消息（/new 清除）",
 		"serviceRedeemPrompt":      "请使用服务兑换码启用 MaClaw 官方 LLM",
 		"serviceOpenSetup":         "请先打开初始化并激活 Hub，然后再兑换服务码。",
 		"configOpenSetup":          "已打开初始化。请输入邮箱并激活 Hub。",
@@ -178,12 +182,12 @@ Shortcuts:
 		"configOpenTools":          "已打开 MCP 模板。左右键选择本地，Enter 打开，A 打开远程。",
 		"mcpOptionalReady":         "聊天已可用。可选：按 F3 从模板添加 MCP 能力。",
 		"mcpAddedReady":            "%s 聊天已可用；按 F2 返回。",
-		"cancelled":                "⏹ 已取消",
+		"cancelled":                "已取消",
 		"configSaveFailed":         "配置保存失败: %s: %s",
 		"configSaveFailedPlain":    "配置保存失败: %s",
 		"configLoadFailed":         "配置读取失败: %s",
 		"configLoadWarning":        "配置加载失败，已使用默认值启动。错误: %s",
-		"configSaved":              "✓ 已保存 %s",
+		"configSaved":              "已保存 %s",
 		"onboardingCheckService":   "正在检查 MaClaw 官方服务；如未开通请输入服务兑换码",
 		"onboardingNeedConfig":     "请先配置 LLM 或完成 Hub 激活",
 		"llmKeyMissing":            "已选择 LLM 服务商；请填写密钥、切换本地服务商，或兑换官方服务。",
@@ -222,9 +226,10 @@ Shortcuts:
 		"ssoQREmpty":               "SSO 二维码响应不完整，请按 Enter 重试。",
 		"ssoSessionEmpty":          "SSO 会话缺失，请按 Enter 重试。",
 		"ssoInputEmpty":            "请先粘贴返回 URL 或 token。",
-		"chatCleared":              "🗑 对话已清除",
-		"modelInfoFull":            "🧠 当前模型: %s\n   服务商: %s\n   协议: %s\n   上下文: %d tokens",
-		"modelInfoBasic":           "🧠 当前模型: %s\n   服务商: %s",
+		"ssoWaitingScan":           "等待 SSO 扫码…",
+		"chatCleared":              "对话已清除",
+		"modelInfoFull":            "当前模型: %s\n   服务商: %s\n   协议: %s\n   上下文: %d tokens",
+		"modelInfoBasic":           "当前模型: %s\n   服务商: %s",
 		"btwUsage":                 "用法: /btw <快速问题>",
 		"btwFailed":                "/btw 查询失败: %s",
 		"btwNoInfo":                "没有找到额外信息。",
@@ -241,8 +246,8 @@ Shortcuts:
 		"installedFrom":            "已从 %[2]s 安装 %[1]s。",
 		"added":                    "已添加: %s",
 		"memoryNotInitialized":     "记忆存储未初始化",
-		"memoryEmpty":              "📭 记忆库为空",
-		"memoryHeader":             "📚 记忆库（共 %d 条）:\n",
+		"memoryEmpty":              "记忆库为空",
+		"memoryHeader":             "记忆库（共 %d 条）:\n",
 		"memoryMore":               "  ... 还有 %d 条\n",
 		"memorySummary":            "记忆已启用（共 %d 条），简化 TUI 会在后台自动维护。",
 		"memoryTUISimplified":      "简化 TUI 中记忆会在后台自动维护，不再提供单独的记忆浏览页。",
@@ -279,6 +284,9 @@ Shortcuts:
   /schedule      打开定时任务
   /config [llm|security|proxy|im|advanced] 直达设置子页
   /status /doctor /health 显示初始化状态和下一步动作
+  /status [user-id]  附加该用户 sticky canary 归属预览
+  /canary <user-id>  预览 shared-loop canary（IN/OUT · bucket · percent）
+  /prompt-export 导出 adaptive-prompt 统计 JSON 到 ~/.maclaw/stats/exports/
   /llm /security 打开对应设置子页
 信息查看:
   /model         显示当前 LLM 模型信息

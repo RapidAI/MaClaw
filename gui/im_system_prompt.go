@@ -5,11 +5,13 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
@@ -111,20 +113,24 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 }
 
 func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) string {
+	// Shared light PromptBundle (identity + short principles + project paths)
+	// plus a hard capability fence for the GUI light execution layer.
+	prompt := agent.BuildSystemPrompt(agent.SystemPromptDeps{
+		Config: agent.SystemPromptConfig{
+			RoleName:        "MaClaw",
+			RoleDescription: "a careful personal assistant for low-complexity lookup tasks",
+			PromptProfile:   agent.PromptProfileLight,
+		},
+	}, msg.Text, true)
 	now := time.Now()
 	var b strings.Builder
-	b.WriteString("You are MaClaw. Handle this as a low-complexity lookup task.\n")
+	b.WriteString(prompt)
+	b.WriteString("\n")
 	b.WriteString("Use the smallest sufficient action. Prefer one relevant tool call when live data is needed, then answer immediately.\n")
 	b.WriteString("Do not inspect local files, run shell commands, manage projects, start group discussions, change memory, or create tasks for this profile.\n")
 	b.WriteString("If the user request turns out to require code, files, project context, multi-step planning, or missing parameters, say briefly that the full agent path is needed instead of improvising.\n")
-	b.WriteString("Answer in the user's language. Keep the final answer concise and practical.\n")
 	b.WriteString(fmt.Sprintf("Current local time: %s\n", now.Format("2006-01-02 15:04:05 -0700")))
 	b.WriteString(fmt.Sprintf("Execution profile: layer=%s task=%s confidence=%.2f reason=%s\n", profile.Layer, profile.TaskType, profile.Confidence, profile.Reason))
-	if strings.TrimSpace(msg.Text) != "" {
-		b.WriteString("User request:\n")
-		b.WriteString(strings.TrimSpace(msg.Text))
-		b.WriteString("\n")
-	}
 	return b.String()
 }
 
@@ -163,6 +169,40 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// During V2 workflow agent loops, suppress the coding confirmation gate rules
 	// from the stable prompt segment — they conflict with phase-specific instructions.
 	suppressV2CodingRules := loopCtx != nil && loopCtx.WorkflowAgentLoop && h.isWorkflowV2Active(promptUserID)
+	promptProfile := agent.PromptProfileFull
+	promptABSample := false
+	promptSoftFull := false
+	// Light prompt skips the GUI epilogue (user memory + proactive recall). Entry
+	// already routes true light turns through buildLightIMSystemPrompt; do not
+	// re-apply adaptive light here when a memory store is present, or first-turn
+	// / proactive recall sections disappear.
+	if loopCtx != nil && loopCtx.Runtime.Execution.IsLight() && h.memoryStore == nil {
+		promptProfile = agent.PromptProfileLight
+	} else if h.memoryStore == nil && strings.TrimSpace(msg) != "" && !suppressV2CodingRules {
+		// Adaptive: short/simple turns use light prompt when memory is not wired.
+		var classified llm.ClassifyResult
+		promptProfile, classified = agent.ResolvePromptProfile(msg, llm.ClassifyHints{
+			ToolHeavy: loopCtx != nil && loopCtx.WorkflowAgentLoop,
+		})
+		promptABSample = agent.IsQualityABReason(classified.Reason)
+		promptSoftFull = agent.IsSoftFullUpgradeReason(classified.Reason)
+	}
+	// Env override always wins for operator debugging (light|full).
+	if p, ok := agent.EnvPromptProfileOverride(); ok {
+		promptProfile = p
+		promptABSample = false
+		promptSoftFull = false
+	}
+	// Keep Runtime.PromptProfile in sync so tool filtering + Turn meta observe it.
+	if loopCtx != nil {
+		if promptProfile.IsLight() {
+			loopCtx.Runtime.Execution.PromptProfile = string(agent.PromptProfileLight)
+		} else {
+			loopCtx.Runtime.Execution.PromptProfile = string(agent.PromptProfileFull)
+		}
+		loopCtx.Runtime.PromptABSample = promptABSample
+		loopCtx.Runtime.PromptSoftFull = promptSoftFull
+	}
 	deps := agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
 			RoleName:                roleName,
@@ -172,6 +212,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			HasCodingSessions:       true,
 			TrialReflect:            trialReflectEnabled,
 			SuppressCodingGateRules: suppressV2CodingRules,
+			PromptProfile:           promptProfile,
 		},
 		MemoryStore:      h.memoryStore,
 		SkipMemoryRecall: true, // GUI handles memory recall in appendGUIEpilogue (with memory index, derived facts, knowledge auto-recall, frozen snapshot caching)
@@ -257,7 +298,11 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 			}
 			return
 		}
-		h.appendGUIEpilogue(b, includeMemoryGuide, msg, eventContext, promptUserID)
+		var history []agent.ConversationEntry
+		if loopCtx != nil {
+			history = loopCtx.History
+		}
+		h.appendGUIEpilogue(b, includeMemoryGuide, msg, eventContext, promptUserID, history)
 	}
 
 	// User profile
@@ -266,14 +311,26 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	}
 
 	bundle := agent.BuildPromptBundle(deps, msg, includeMemoryGuide)
+	// Shadow estimate: when light is chosen, measure full-vs-light token delta
+	// without a second LLM call (CPU-only dual BuildPromptBundle).
+	if promptProfile.IsLight() && loopCtx != nil {
+		fullTok, lightTok := agent.EstimatePromptProfileTokens(deps, msg, includeMemoryGuide)
+		loopCtx.Runtime.PromptFullTokens = fullTok
+		loopCtx.Runtime.PromptLightTokens = lightTok
+		if os.Getenv("MACLAW_DEBUG_PROMPT_BUNDLE") == "1" {
+			log.Printf("[prompt-bundle] adaptive light savings full=%d light=%d saved=%d",
+				fullTok, lightTok, fullTok-lightTok)
+		}
+	}
 	if os.Getenv("MACLAW_DEBUG_PROMPT_BUNDLE") == "1" {
 		stats := bundle.TokenStats()
-		log.Printf("[prompt-bundle] surface=gui_im stable=%d session=%d retrieved=%d total=%d stable_key=%s",
+		log.Printf("[prompt-bundle] surface=gui_im stable=%d session=%d retrieved=%d total=%d stable_key=%s profile=%s",
 			stats.StableSystemPromptTokens,
 			stats.SessionContextTokens,
 			stats.RetrievedContextTokens,
 			stats.TotalTokens,
 			bundle.StableCacheKey(),
+			promptProfile,
 		)
 	}
 	return bundle.String()
@@ -287,7 +344,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 func desktopWorkflowDocOverride() string {
 	return `
 
-### ⚠️ 文档交付方式覆盖（桌面 AI 助手面板专用）
+### 文档交付方式覆盖（桌面 AI 助手面板专用）
 你当前运行在桌面 AI 助手面板中（非 IM 通道）。以下规则覆盖上述 PDF 生成相关的所有指令：
 
 1. **不要使用 office(action="generate_pdf") 或 generate_pdf 工具**——桌面面板不需要 PDF，直接输出 Markdown 文本即可
@@ -310,12 +367,12 @@ func desktopWorkflowDocOverride() string {
 func imWorkflowDocDeliveryRule() string {
 	return `
 
-### 📄 IM 通道文档交付规则（所有工作流通用）
+### IM 通道文档交付规则（所有工作流通用）
 你当前运行在 IM 通道中（飞书/微信/QQ/Telegram）。所有工作流（编码、PPT 设计、产品设计、商业计划等）的每个阶段产出文档，必须遵守以下规则：
 
 1. **必须**使用 generate_pdf 工具将本阶段产出物生成 PDF 后发送给用户
 2. **严禁**在 IM 聊天窗口中直接输出大段文档文本——IM 中长文本阅读体验极差，用户无法有效审阅
-3. 发送 PDF 后必须附带提示："📄 已生成 [阶段名称] 的 PDF 版本，请查看并确认，或提出修改意见。"
+3. 发送 PDF 后必须附带提示："已生成 [阶段名称] 的 PDF 版本，请查看并确认，或提出修改意见。"
 4. 短回复（确认提示、澄清问题、进度说明等）可以直接文本输出，不需要 PDF
 5. 其他规则不变：仍需等待用户确认后才能进入下一阶段
 `
@@ -348,7 +405,7 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 第七步：完成验收。所有任务结束后运行验证并形成验收报告，明确总任务数、成功/失败数、全量测试结果和剩余风险。
 ## 执行验证与止损契约
 - 每个任务完成后运行对应 TDD 测试；失败时最多 3 次重试，仍失败则记录原因并跳到下一个任务。
-- 进度格式要能区分完成 ✅ 和失败 ❌。
+- 进度格式要能区分完成 和失败 。
 - 所有任务结束后运行全量回归测试，并报告总任务数、成功/失败数、每个任务的执行结果、全量测试运行结果；全部通过时说明全部通过，有失败时列出失败项。
 - 会话失败止损原则：同一会话连续失败或无进展时不要无限重试，切换策略、拆小任务或向用户报告阻塞。
 - 执行验证原则：没有验证结果不要声称完成；验证不可运行时说明原因和剩余风险。
@@ -460,26 +517,15 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	}
 
 	// --- Static part: user_fact summary + memory guide (frozen per session) ---
-	// Only regenerate on first turn or when snapshot is missing.
-	staticCached := false
-	if !isFirstTurn {
-		if initialized, ok := h.snapshotInitialized.Load(userID); ok && initialized.(bool) {
-			if snapshot, ok := h.frozenMemorySnapshots.Load(userID); ok {
-				b.WriteString(snapshot.(string))
-				staticCached = true
-				log.Printf("[frozen_snapshot] reusing cached static memory snapshot for user %q", userID)
-			}
+	// Reuse whenever a snapshot exists — including the first turn — so prewarm
+	// hits the critical path. Content is session-stable for KV prefix stability.
+	if text, built := h.loadOrBuildStaticMemorySnapshot(userID); text != "" {
+		b.WriteString(text)
+		if built {
+			log.Printf("[frozen_snapshot] generated and cached static memory snapshot for user %q (%d bytes)", userID, len(text))
 		}
 	}
-	if !staticCached {
-		var staticBuf strings.Builder
-		h.generateStaticMemorySection(&staticBuf, isFirstTurn)
-		snapshot := staticBuf.String()
-		h.frozenMemorySnapshots.Store(userID, snapshot)
-		h.snapshotInitialized.Store(userID, true)
-		log.Printf("[frozen_snapshot] generated and cached static memory snapshot for user %q (%d bytes)", userID, len(snapshot))
-		b.WriteString(snapshot)
-	}
+	_ = isFirstTurn // guide is always included in the session-stable snapshot
 
 	// --- Dynamic part: proactive recall (executed per message, NOT frozen) ---
 	msg := ""
@@ -507,20 +553,103 @@ func (h *IMMessageHandler) appendStaticMemoryOnly(b *strings.Builder, userID str
 	if userID == "" {
 		userID = desktopUserID
 	}
-	// Reuse the frozen snapshot if available (same caching logic as appendMemorySection).
-	if initialized, ok := h.snapshotInitialized.Load(userID); ok && initialized.(bool) {
-		if snapshot, ok := h.frozenMemorySnapshots.Load(userID); ok {
-			b.WriteString(snapshot.(string))
-			return
-		}
+	if text, _ := h.loadOrBuildStaticMemorySnapshot(userID); text != "" {
+		b.WriteString(text)
 	}
-	// Generate and cache if not yet available.
+}
+
+// loadOrBuildStaticMemorySnapshot returns the session-stable static memory
+// section for userID, generating it once (with memory guide) if missing.
+// built is true when this call performed generation (not a cache hit).
+//
+// Concurrent callers (startup prewarm × N + first chat message) are coalesced
+// with a singleflight channel stored in snapshotWarmInflight: one builder runs
+// generateStaticMemorySection, waiters block on close then read the cache.
+func (h *IMMessageHandler) loadOrBuildStaticMemorySnapshot(userID string) (text string, built bool) {
+	if h == nil || h.memoryStore == nil {
+		return "", false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = desktopUserID
+	}
+	if cached := h.cachedStaticMemorySnapshot(userID); cached != "" {
+		return cached, false
+	}
+
+	// Singleflight: first caller stores a done channel; others wait on it.
+	doneCh := make(chan struct{})
+	if existing, loaded := h.snapshotWarmInflight.LoadOrStore(userID, doneCh); loaded {
+		waitCh, _ := existing.(chan struct{})
+		if waitCh != nil {
+			<-waitCh
+		}
+		return h.cachedStaticMemorySnapshot(userID), false
+	}
+	defer func() {
+		h.snapshotWarmInflight.Delete(userID)
+		close(doneCh)
+	}()
+
+	if cached := h.cachedStaticMemorySnapshot(userID); cached != "" {
+		return cached, false
+	}
+	gen := h.snapshotGeneration(userID)
+	return h.buildAndStoreStaticMemorySnapshot(userID, gen)
+}
+
+func (h *IMMessageHandler) snapshotGeneration(userID string) uint64 {
+	v, _ := h.snapshotEpoch.LoadOrStore(userID, &atomic.Uint64{})
+	return v.(*atomic.Uint64).Load()
+}
+
+func (h *IMMessageHandler) bumpSnapshotGeneration(userID string) uint64 {
+	v, _ := h.snapshotEpoch.LoadOrStore(userID, &atomic.Uint64{})
+	return v.(*atomic.Uint64).Add(1)
+}
+
+func (h *IMMessageHandler) buildAndStoreStaticMemorySnapshot(userID string, gen uint64) (text string, built bool) {
 	var staticBuf strings.Builder
-	h.generateStaticMemorySection(&staticBuf, false)
+	h.generateStaticMemorySection(&staticBuf, true)
 	snapshot := staticBuf.String()
+	if snapshot == "" {
+		return "", false
+	}
+	// Drop stale builds invalidated by RefreshMemorySnapshot while we generated.
+	if h.snapshotGeneration(userID) != gen {
+		return "", false
+	}
+	// Publish snapshot before the initialized flag so readers never observe
+	// initialized=true with a missing body.
 	h.frozenMemorySnapshots.Store(userID, snapshot)
 	h.snapshotInitialized.Store(userID, true)
-	b.WriteString(snapshot)
+	// Re-check after publish: a Refresh may have raced between gen check and store.
+	if h.snapshotGeneration(userID) != gen {
+		h.frozenMemorySnapshots.Delete(userID)
+		h.snapshotInitialized.Delete(userID)
+		return "", false
+	}
+	return snapshot, true
+}
+
+func (h *IMMessageHandler) cachedStaticMemorySnapshot(userID string) string {
+	if h == nil {
+		return ""
+	}
+	// Prefer the snapshot body; initialized is a secondary gate for Refresh clears.
+	snapshot, ok := h.frozenMemorySnapshots.Load(userID)
+	if !ok {
+		return ""
+	}
+	text, _ := snapshot.(string)
+	if text == "" {
+		return ""
+	}
+	if initialized, ok := h.snapshotInitialized.Load(userID); ok && initialized.(bool) {
+		return text
+	}
+	// Snapshot present but flag cleared mid-Refresh — treat as miss.
+	return ""
 }
 
 // generateStaticMemorySection builds the frozen part of the memory section:
@@ -692,9 +821,54 @@ func firstLifecycleEventContext(values []lifecycle.EventContext) lifecycle.Event
 // starts a new topic, or on application restart (first message of new session).
 // (Requirement 5.4, 5.5, 5.7)
 func (h *IMMessageHandler) RefreshMemorySnapshot(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = desktopUserID
+	}
+	// Invalidate first so any in-flight builder discards its result on publish.
+	h.bumpSnapshotGeneration(userID)
+	h.frozenMemorySnapshots.Delete(userID)
+	h.snapshotInitialized.Delete(userID)
+	// Wait for the builder to finish (close done ch) so waiters are not orphaned
+	// and so a late publish-under-old-gen cannot race past the bump above.
+	if v, ok := h.snapshotWarmInflight.Load(userID); ok {
+		if ch, ok := v.(chan struct{}); ok {
+			select {
+			case <-ch:
+			case <-time.After(3 * time.Second):
+				log.Printf("[frozen_snapshot] refresh wait timed out for user %q (build still in flight)", userID)
+			}
+		}
+	}
+	// Clear again after the wait — covers a publish that slipped in before gen check.
 	h.frozenMemorySnapshots.Delete(userID)
 	h.snapshotInitialized.Delete(userID)
 	log.Printf("[frozen_snapshot] refreshed (invalidated) memory snapshot for user %q", userID)
+}
+
+// WarmFrozenMemorySnapshot precomputes the static memory section so the first
+// user message does not pay StaticMemorySectionForPrompt on the critical path.
+// Safe to call from a background goroutine; no-ops when already warm or store is nil.
+// Concurrent warms (and races with first-message build) are coalesced inside
+// loadOrBuildStaticMemorySnapshot.
+func (h *IMMessageHandler) WarmFrozenMemorySnapshot(userID string) {
+	if h == nil || h.memoryStore == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = desktopUserID
+	}
+	started := time.Now()
+	snapshot, built := h.loadOrBuildStaticMemorySnapshot(userID)
+	if snapshot == "" || !built {
+		return
+	}
+	log.Printf("[frozen_snapshot] prewarmed for user %q (%d bytes, took=%s)",
+		userID, len(snapshot), time.Since(started).Round(time.Millisecond))
 }
 
 // ---------------------------------------------------------------------------
@@ -870,6 +1044,24 @@ func (h *IMMessageHandler) appendSkillRepairNotifications(b *strings.Builder) {
 	}
 }
 
+// appendMaintenanceExperienceHints injects high-value curator recommendations
+// so the next dialogue turn can proactively suggest review/draft flows.
+func (h *IMMessageHandler) appendMaintenanceExperienceHints(b *strings.Builder) {
+	if h == nil || b == nil {
+		return
+	}
+	exec := h.getSkillExecutor()
+	if exec == nil {
+		return
+	}
+	exec.mu.RLock()
+	skills := exec.loadSkills()
+	exec.mu.RUnlock()
+	if section := cskill.BuildMaintenanceExperiencePromptSection(skills, 5); section != "" {
+		b.WriteString(section)
+	}
+}
+
 // appendBundleContextBanner injects a bundle context banner into the system
 // prompt when a namespaced skill (one with a Publisher) is currently running.
 // The banner lists sibling skills from the same publisher to provide context.
@@ -1036,9 +1228,20 @@ func sortMatchedKnowledgeSkills(matched []matchedKnowledgeSkill) {
 
 // buildParamSchemaForSkill returns a formatted parameter schema string for
 // a skill, preserving explicit params and completing any template placeholders
-// that the author omitted from the declared schema.
+// that the author omitted from the declared schema. Missing descriptions are
+// filled from SKILL.md when SkillDir is available.
 func buildParamSchemaForSkill(s NLSkillDefinition) string {
-	params := cskill.CompleteParamsForRunner(s.Params, s.Steps, s.RequiredArgs)
+	entry := &corelib.NLSkillEntry{
+		Name:         s.Name,
+		Description:  s.Description,
+		Type:         s.Type,
+		Params:       s.Params,
+		Steps:        s.Steps,
+		RequiredArgs: s.RequiredArgs,
+		SkillDir:     s.SkillDir,
+		Content:      s.Content,
+	}
+	params := cskill.CompleteParamsForSkill(entry)
 	if len(params) == 0 {
 		return ""
 	}

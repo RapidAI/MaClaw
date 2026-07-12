@@ -667,7 +667,7 @@ func (m *weixinGatewayManager) sendAgentResponse(gw *weixin.Gateway, toUserID, c
 	if resp.Error != "" && resp.Text == "" && !voiceSent {
 		_ = gw.SendText(ctx, weixin.OutgoingText{
 			ToUserID:     toUserID,
-			Text:         "❌ " + textutil.StripMarkdown(resp.Error),
+			Text:         "" + textutil.StripMarkdown(resp.Error),
 			ContextToken: contextToken,
 		})
 	}

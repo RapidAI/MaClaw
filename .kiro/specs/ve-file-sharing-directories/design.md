@@ -170,8 +170,7 @@ sequenceDiagram
     LLM->>ET: send_file(path="D:\\Templates\\.env")
     ET->>PV: ValidateVEFilePath(path, allowedDirs)
     PV->>PV: Canonical: D:\Templates\.env
-    PV->>PV: Prefix check: D:\Templates is allowed ✓
-    PV-->>ET: canonicalPath = "D:\\Templates\\.env"
+    PV->>PV: Prefix check: D:\Templates is allowed     PV-->>ET: canonicalPath = "D:\\Templates\\.env"
     ET->>SF: vePathIsSensitive("D:\\Templates\\.env")
     SF-->>ET: true (matches .env pattern)
     ET-->>LLM: "[error] 该文件包含敏感信息，无法发送"

@@ -72,6 +72,12 @@ type NLSkillDefinition struct {
 	LastUsedAt          *time.Time                  `json:"last_used_at,omitempty"`
 	LastError           string                      `json:"last_error,omitempty"`
 	ReviewReason        string                      `json:"review_reason,omitempty"`
+	// Self-repair audit (from NLSkillEntry runtime state).
+	RepairAttemptCount  int                          `json:"repair_attempt_count,omitempty"`
+	LastRepairAt        string                       `json:"last_repair_at,omitempty"`
+	RepairHistory       []corelib.SkillRepairRecord  `json:"repair_history,omitempty"`
+	OptimizationCount   int                          `json:"optimization_count,omitempty"`
+	LastOptimizedAt     string                       `json:"last_optimized_at,omitempty"`
 	IsMaclawApp         bool                        `json:"is_maclaw_app,omitempty"`
 	MaclawAppCount      int                         `json:"maclaw_app_count,omitempty"`
 	MaclawAppEntry      string                      `json:"maclaw_app_entry,omitempty"`
@@ -89,6 +95,28 @@ func (d NLSkillDefinition) QualifiedID() string {
 		return publisher + ":" + name
 	}
 	return name
+}
+
+// asNLSkillEntry projects definition fields used for identity / runtime ref.
+func (d NLSkillDefinition) asNLSkillEntry() corelib.NLSkillEntry {
+	return corelib.NLSkillEntry{
+		Name:       d.Name,
+		DirName:    d.DirName,
+		SkillID:    d.SkillID,
+		HubSkillID: d.HubSkillID,
+		Publisher:  d.Publisher,
+		SkillDir:   d.SkillDir,
+	}
+}
+
+// SkillIdentityKeys returns lookup keys shared with install planning and run resolution.
+func (d NLSkillDefinition) SkillIdentityKeys() []string {
+	return d.asNLSkillEntry().SkillIdentityKeys()
+}
+
+// PreferredRuntimeSkillRef is the preferred RunNLSkillAsync argument for this skill.
+func (d NLSkillDefinition) PreferredRuntimeSkillRef() string {
+	return d.asNLSkillEntry().PreferredRuntimeSkillRef()
 }
 
 // SkillAppManifestEntry is the Wails-facing app extension declared by maclaw.apps.json.
@@ -793,6 +821,14 @@ func (e *SkillExecutor) UpdateStatus(name, status string) error {
 		return fmt.Errorf("skill %q not found", name)
 	}
 	skills[idx].Status = status
+	// When re-enabling, clear maintenance-only markers so the skill leaves the
+	// retired/archived evolution queue. Real runtime errors are preserved.
+	if strings.EqualFold(strings.TrimSpace(status), "active") {
+		le := strings.ToLower(skills[idx].LastError)
+		if strings.Contains(le, "retired_by_maintenance") || strings.Contains(le, "archived_by_maintenance") {
+			skills[idx].LastError = ""
+		}
+	}
 	return e.saveSkills(skills)
 }
 
@@ -1191,11 +1227,16 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			FallbackForTools:    cloneStringSlice(s.FallbackForTools),
 			RequiresToolsets:    cloneStringSlice(s.RequiresToolsets),
 			FallbackForToolsets: cloneStringSlice(s.FallbackForToolsets),
-			UsageCount:          s.UsageCount,
-			SuccessCount:        s.SuccessCount,
-			FailureCount:        s.FailureCount,
-			LastError:           s.LastError,
-			ReviewReason:        skillReviewReason(s),
+			UsageCount:         s.UsageCount,
+			SuccessCount:       s.SuccessCount,
+			FailureCount:       s.FailureCount,
+			LastError:          s.LastError,
+			ReviewReason:       skillReviewReason(s),
+			RepairAttemptCount: s.RepairAttemptCount,
+			LastRepairAt:       s.LastRepairAt,
+			RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+			OptimizationCount:  s.OptimizationCount,
+			LastOptimizedAt:    s.LastOptimizedAt,
 		}
 		d.IsMaclawApp, d.MaclawAppCount, d.MaclawAppEntry = inspectMaclawAppSkillMetadata(s.SkillDir)
 		if s.UsageCount > 0 {
@@ -1733,7 +1774,7 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 
 	// Notify frontend to refresh skill list with updated stats (outside lock).
 	if shouldEmitUsageEvent && e.app != nil {
-		e.app.emitEvent("skill:usage_updated")
+		e.app.emitEvent(EventSkillUsageUpdated)
 	}
 
 	if execErr != nil {
@@ -3867,7 +3908,58 @@ func (a *App) SetNLSkillStatus(name, status string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	return a.skillExecutor.UpdateStatus(name, string(normalizeSkillEntryStatus(status)))
+	normalized := string(normalizeSkillEntryStatus(status))
+	if err := a.skillExecutor.UpdateStatus(name, normalized); err != nil {
+		return err
+	}
+	// Durable audit when operators park a skill for review (e.g. from repair draft UI).
+	if normalizeSkillEntryStatus(status) == skillEntryStatusNeedsReview {
+		skill.RecordEvolutionEvent("skill:mark_needs_review", map[string]string{
+			"skill":       name,
+			"explanation": "status set to needs_review by operator",
+		}, "desktop")
+	}
+	return nil
+}
+
+// BatchSetNLSkillStatus applies the same status to multiple skills.
+// Returns updated names and per-skill errors. Partial success is allowed.
+func (a *App) BatchSetNLSkillStatus(names []string, status string) map[string]interface{} {
+	out := map[string]interface{}{
+		"ok":      false,
+		"status":  strings.TrimSpace(status),
+		"updated": []string{},
+		"errors":  []string{},
+		"count":   0,
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		out["error"] = "status is required"
+		return out
+	}
+	seen := map[string]bool{}
+	updated := make([]string, 0, len(names))
+	errs := make([]string, 0)
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" || seen[strings.ToLower(name)] {
+			continue
+		}
+		seen[strings.ToLower(name)] = true
+		if err := a.SetNLSkillStatus(name, status); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		updated = append(updated, name)
+	}
+	out["updated"] = updated
+	out["errors"] = errs
+	out["count"] = len(updated)
+	out["ok"] = len(errs) == 0 && len(updated) > 0
+	if len(updated) == 0 && len(errs) == 0 {
+		out["error"] = "no skill names provided"
+	}
+	return out
 }
 
 // DeleteNLSkill removes an NL Skill by name (Wails binding).
@@ -4393,7 +4485,7 @@ func importedSkillParams(yamlParams []skill.SkillYAMLParam) []corelib.NLSkillPar
 	}
 	params := make([]corelib.NLSkillParam, 0, len(yamlParams))
 	for _, p := range yamlParams {
-		params = append(params, corelib.NLSkillParam{Name: p.Name, Description: p.Description, Aliases: p.Aliases, CLIFlag: p.CLIFlag, Default: p.Default, Required: p.Required})
+		params = append(params, corelib.NLSkillParam{Name: p.Name, Description: p.Description, Type: p.Type, Aliases: p.Aliases, CLIFlag: p.CLIFlag, Default: p.Default, Required: p.Required})
 	}
 	return params
 }
@@ -4971,6 +5063,7 @@ func skillYAMLParamsFromEntry(params []corelib.NLSkillParam) []skill.SkillYAMLPa
 		out = append(out, skill.SkillYAMLParam{
 			Name:        param.Name,
 			Description: param.Description,
+			Type:        param.Type,
 			Aliases:     append([]string(nil), param.Aliases...),
 			CLIFlag:     param.CLIFlag,
 			Default:     param.Default,

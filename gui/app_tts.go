@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/tts"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const ttsModelFilename = tts.TTSModelFilename
@@ -303,7 +302,7 @@ func fileExistsLocal(path string) bool {
 }
 
 func (a *App) emitTTSProgress(pct int, downloaded, total int64, errMsg string) {
-	runtime.EventsEmit(a.ctx, "tts-download-progress", map[string]interface{}{
+	a.emitEvent("tts-download-progress", map[string]interface{}{
 		"percent":    pct,
 		"downloaded": downloaded,
 		"total":      total,
@@ -407,7 +406,7 @@ func (a *App) speakPlainTextAsync(input string) {
 		fmt.Printf("[tts] synthesize error: %v\n", err)
 		return
 	}
-	runtime.EventsEmit(a.ctx, "tts:audio", base64EncodeWAV(wav))
+	a.emitEvent("tts:audio", base64EncodeWAV(wav))
 }
 
 func (a *App) speakTextAsync(input string) {
@@ -445,7 +444,7 @@ func (a *App) speakTextAsync(input string) {
 	}
 
 	b64 := base64EncodeWAV(wav)
-	runtime.EventsEmit(a.ctx, "tts:audio", b64)
+	a.emitEvent("tts:audio", b64)
 }
 
 func base64EncodeWAV(data []byte) string {

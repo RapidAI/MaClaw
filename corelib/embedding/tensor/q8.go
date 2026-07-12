@@ -96,12 +96,37 @@ func MatMulQ8(out, a []float32, b *Q8Tensor, M, N, K int) {
 
 // argmaxPartials holds per-worker best buffers for MatMulQ8Argmax (pooled).
 type argmaxPartials struct {
-	v [][]float32
-	i [][]int
-	m int
+	v  [][]float32
+	i  [][]int
+	m  int
+	wg sync.WaitGroup
 }
 
 var argmaxPartialPool = sync.Pool{New: func() any { return &argmaxPartials{} }}
+
+// smallArgmaxPartials covers CTC command-length shapes (M<=8) without the
+// slice-of-slices indirection used by the general partial buffer.
+type smallArgmaxPartials struct {
+	v  [12][8]float32
+	i  [12][8]int
+	wg sync.WaitGroup
+}
+
+var smallArgmaxPartialPool = sync.Pool{New: func() any { return new(smallArgmaxPartials) }}
+
+type q8ArgmaxTask struct {
+	bestV   []float32
+	bestI   []int
+	a, bias []float32
+	b       *Q8Tensor
+	M, N, K int
+}
+
+func (t *q8ArgmaxTask) runRange(ns, ne int) {
+	matMulQ8ArgmaxNRange(t.bestV, t.bestI, t.a, t.b, t.bias, t.M, t.N, t.K, ns, ne)
+}
+
+var q8ArgmaxTaskPool = sync.Pool{New: func() any { return new(q8ArgmaxTask) }}
 
 func getArgmaxPartials(nw, M int) *argmaxPartials {
 	p := argmaxPartialPool.Get().(*argmaxPartials)
@@ -137,7 +162,7 @@ func MatMulQ8Argmax(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N
 	if M <= 0 || N <= 0 || K <= 0 {
 		return
 	}
-	nw := poolWorkers()
+	nw := matMulWorkersFor(M, N, K)
 	if nw <= 1 || !shouldParallel(M, N, K) {
 		p := getArgmaxPartials(1, M)
 		matMulQ8ArgmaxNRange(p.v[0], p.i[0], a, b, bias, M, N, K, 0, N)
@@ -149,9 +174,13 @@ func MatMulQ8Argmax(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N
 	if nw > N {
 		nw = N
 	}
+	if M <= 8 && nw <= 12 {
+		matMulQ8ArgmaxSmall(outIDs, a, b, bias, M, N, K, nw)
+		return
+	}
 	p := getArgmaxPartials(nw, M)
 	ensureMatmulPool()
-	var wg sync.WaitGroup
+	var tasks [12]*q8ArgmaxTask
 	chunk := (N + nw - 1) / nw
 	for w := 0; w < nw; w++ {
 		ns := w * chunk
@@ -162,17 +191,22 @@ func MatMulQ8Argmax(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N
 		if ns >= ne {
 			break
 		}
-		wg.Add(1)
-		ww := w
-		jobQueue <- matmulRangeJob{
-			start: ns, end: ne,
-			fn: func(ns, ne int) {
-				matMulQ8ArgmaxNRange(p.v[ww], p.i[ww], a, b, bias, M, N, K, ns, ne)
-			},
-			wg: &wg,
-		}
+		p.wg.Add(1)
+		t := q8ArgmaxTaskPool.Get().(*q8ArgmaxTask)
+		t.bestV, t.bestI, t.a, t.b, t.bias = p.v[w], p.i[w], a, b, bias
+		t.M, t.N, t.K = M, N, K
+		tasks[w] = t
+		jobQueue <- matmulRangeJob{start: ns, end: ne, task: t, wg: &p.wg}
 	}
-	wg.Wait()
+	p.wg.Wait()
+	for w := 0; w < nw; w++ {
+		t := tasks[w]
+		if t == nil {
+			continue
+		}
+		t.bestV, t.bestI, t.a, t.b, t.bias = nil, nil, nil, nil, nil
+		q8ArgmaxTaskPool.Put(t)
+	}
 	// Merge partials
 	for m := 0; m < M; m++ {
 		bestV := p.v[0][m]
@@ -186,6 +220,47 @@ func MatMulQ8Argmax(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N
 		outIDs[m] = bestI
 	}
 	argmaxPartialPool.Put(p)
+}
+
+func matMulQ8ArgmaxSmall(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N, K, nw int) {
+	p := smallArgmaxPartialPool.Get().(*smallArgmaxPartials)
+	neg := float32(-math.MaxFloat32)
+	for w := 0; w < nw; w++ {
+		for m := 0; m < M; m++ {
+			p.v[w][m], p.i[w][m] = neg, 0
+		}
+	}
+	ensureMatmulPool()
+	var tasks [12]*q8ArgmaxTask
+	chunk := (N + nw - 1) / nw
+	for w := 0; w < nw; w++ {
+		ns, ne := w*chunk, (w+1)*chunk
+		if ne > N {
+			ne = N
+		}
+		p.wg.Add(1)
+		t := q8ArgmaxTaskPool.Get().(*q8ArgmaxTask)
+		t.bestV, t.bestI, t.a, t.b, t.bias = p.v[w][:M], p.i[w][:M], a, b, bias
+		t.M, t.N, t.K = M, N, K
+		tasks[w] = t
+		jobQueue <- matmulRangeJob{start: ns, end: ne, task: t, wg: &p.wg}
+	}
+	p.wg.Wait()
+	for w := 0; w < nw; w++ {
+		t := tasks[w]
+		t.bestV, t.bestI, t.a, t.b, t.bias = nil, nil, nil, nil, nil
+		q8ArgmaxTaskPool.Put(t)
+	}
+	for m := 0; m < M; m++ {
+		bestV, bestI := p.v[0][m], p.i[0][m]
+		for w := 1; w < nw; w++ {
+			if p.v[w][m] > bestV {
+				bestV, bestI = p.v[w][m], p.i[w][m]
+			}
+		}
+		outIDs[m] = bestI
+	}
+	smallArgmaxPartialPool.Put(p)
 }
 
 // matMulQ8ArgmaxNRange updates bestV/bestI for all M rows over B columns [ns,ne).
@@ -258,6 +333,7 @@ func matMulQ8ArgmaxFusedScaledBias(bestV []float32, bestI []int, a []float32, b 
 	var dDual0, dDual1 [8]float32
 	var d8 [8]float32
 	var d4 [4]float32
+	var d2 [4]float32
 	m := 0
 	for ; m+7 < M; m += 8 {
 		aPanel := a[m*K : (m+8)*K]
@@ -291,6 +367,42 @@ func matMulQ8ArgmaxFusedScaledBias(bestV []float32, bestI []int, a []float32, b 
 				}
 			}
 		}
+	}
+	for ; m+1 < M; m += 2 {
+		aPanel := a[m*K : (m+2)*K]
+		bv0, bi0 := bestV[m], bestI[m]
+		bv1, bi1 := bestV[m+1], bestI[m+1]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			q8DualMultiDot2T(&d2, aPanel, b, n, n+1, nBlocks, K)
+			v00, v10 := d2[0]+bias[n], d2[1]+bias[n]
+			v01, v11 := d2[2]+bias[n+1], d2[3]+bias[n+1]
+			if v00 > bv0 {
+				bv0, bi0 = v00, n
+			}
+			if v01 > bv0 {
+				bv0, bi0 = v01, n+1
+			}
+			if v10 > bv1 {
+				bv1, bi1 = v10, n
+			}
+			if v11 > bv1 {
+				bv1, bi1 = v11, n+1
+			}
+		}
+		for ; n < ne; n++ {
+			bn := bias[n]
+			v0 := DotQ8RowScaled(aPanel[:K], b, n) + bn
+			v1 := DotQ8RowScaled(aPanel[K:], b, n) + bn
+			if v0 > bv0 {
+				bv0, bi0 = v0, n
+			}
+			if v1 > bv1 {
+				bv1, bi1 = v1, n
+			}
+		}
+		bestV[m], bestI[m] = bv0, bi0
+		bestV[m+1], bestI[m+1] = bv1, bi1
 	}
 	for ; m < M; m++ {
 		aRow := a[m*K : m*K+K]
@@ -2596,10 +2708,47 @@ func matMulQ8SerialMAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K i
 	matMulQ8Range(out, a, b, bias, M, N, K, 0, N, relu, accum)
 }
 
+type q8RangeTask struct {
+	out, a, bias []float32
+	b            *Q8Tensor
+	M, N, K      int
+	relu, accum  bool
+	wg           sync.WaitGroup
+}
+
+func (t *q8RangeTask) runRange(ns, ne int) {
+	matMulQ8Range(t.out, t.a, t.b, t.bias, t.M, t.N, t.K, ns, ne, t.relu, t.accum)
+}
+
+var q8RangeTaskPool = sync.Pool{New: func() any { return new(q8RangeTask) }}
+
 func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu, accum bool) {
-	parallelRanges(N, func(ns, ne int) {
-		matMulQ8Range(out, a, b, bias, M, N, K, ns, ne, relu, accum)
-	})
+	nw := rangeWorkers(N, matMulWorkersFor(M, N, K))
+	if nw <= 1 {
+		matMulQ8Range(out, a, b, bias, M, N, K, 0, N, relu, accum)
+		return
+	}
+	t := q8RangeTaskPool.Get().(*q8RangeTask)
+	t.out, t.a, t.bias, t.b = out, a, bias, b
+	t.M, t.N, t.K, t.relu, t.accum = M, N, K, relu, accum
+	t.wg.Add(nw)
+	chunk := (N + nw - 1) / nw
+	ensureMatmulPool()
+	for w := 0; w < nw; w++ {
+		s := w * chunk
+		e := s + chunk
+		if e > N {
+			e = N
+		}
+		if s >= e {
+			t.wg.Done()
+			continue
+		}
+		jobQueue <- matmulRangeJob{start: s, end: e, task: t, wg: &t.wg}
+	}
+	t.wg.Wait()
+	t.out, t.a, t.bias, t.b = nil, nil, nil, nil
+	q8RangeTaskPool.Put(t)
 }
 
 var q8DequantPool = sync.Pool{

@@ -104,7 +104,7 @@ func TestExtractSSHSessionIDFromConnectResultPrefersExplicitFields(t *testing.T)
 	}{
 		{
 			name:  "chinese connect output",
-			input: "✅ SSH 连接成功\n会话 ID: ssh_root@example.com:22_3\n主机: root@example.com:22",
+			input: "SSH 连接成功\n会话 ID: ssh_root@example.com:22_3\n主机: root@example.com:22",
 			want:  "ssh_root@example.com:22_3",
 		},
 		{

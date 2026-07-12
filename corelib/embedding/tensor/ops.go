@@ -60,9 +60,7 @@ func MatMulBiasAdd(out, a, b, bias []float32, M, N, K int) {
 		return
 	}
 	if shouldParallel(M, N, K) {
-		parallelRanges(N, func(ns, ne int) {
-			matMulRangeDualAdd(out, a, b, bias, M, N, K, ns, ne)
-		})
+		matMulF32ParallelN(out, a, b, bias, M, N, K, true)
 		return
 	}
 	matMulRangeDualAdd(out, a, b, bias, M, N, K, 0, N)
@@ -117,13 +115,57 @@ func matMulSerialM(out, a, b, bias []float32, M, N, K int) {
 
 // matMulParallelN_MTile: partition N via pool; M-tile outer inside each worker.
 func matMulParallelN_MTile(out, a, b, bias []float32, M, N, K int) {
-	parallelRanges(N, func(ns, ne int) {
-		matMulRangeDual(out, a, b, bias, M, N, K, ns, ne)
-	})
+	matMulF32ParallelN(out, a, b, bias, M, N, K, false)
+}
+
+type f32RangeTask struct {
+	out, a, b, bias []float32
+	M, N, K         int
+	add             bool
+	wg              sync.WaitGroup
+}
+
+func (t *f32RangeTask) runRange(ns, ne int) {
+	if t.add {
+		matMulRangeDualAdd(t.out, t.a, t.b, t.bias, t.M, t.N, t.K, ns, ne)
+		return
+	}
+	matMulRangeDual(t.out, t.a, t.b, t.bias, t.M, t.N, t.K, ns, ne)
+}
+
+var f32RangeTaskPool = sync.Pool{New: func() any { return new(f32RangeTask) }}
+
+func matMulF32ParallelN(out, a, b, bias []float32, M, N, K int, add bool) {
+	nw := rangeWorkers(N, matMulWorkersFor(M, N, K))
+	if nw <= 1 {
+		if add {
+			matMulRangeDualAdd(out, a, b, bias, M, N, K, 0, N)
+		} else {
+			matMulRangeDual(out, a, b, bias, M, N, K, 0, N)
+		}
+		return
+	}
+	t := f32RangeTaskPool.Get().(*f32RangeTask)
+	t.out, t.a, t.b, t.bias = out, a, b, bias
+	t.M, t.N, t.K, t.add = M, N, K, add
+	t.wg.Add(nw)
+	chunk := (N + nw - 1) / nw
+	ensureMatmulPool()
+	for w := 0; w < nw; w++ {
+		s, e := w*chunk, (w+1)*chunk
+		if e > N {
+			e = N
+		}
+		jobQueue <- matmulRangeJob{start: s, end: e, task: t, wg: &t.wg}
+	}
+	t.wg.Wait()
+	t.out, t.a, t.b, t.bias = nil, nil, nil, nil
+	f32RangeTaskPool.Put(t)
 }
 
 func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 	var d4 [4]float32
+	var d2 [4]float32
 	var d8 [8]float32
 	var dDual0, dDual1 [8]float32
 	m := 0
@@ -175,6 +217,30 @@ func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 			out[(m+3)*N+n] = d4[3] + bn
 		}
 	}
+	for ; m+1 < M; m += 2 {
+		aPanel := a[m*K : (m+2)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			d2 = [4]float32{}
+			multiDot2DualB(&d2, aPanel, b[n*K:n*K+K], b[(n+1)*K:(n+1)*K+K], K)
+			base := m * N
+			out[base+n], out[base+n+1] = d2[0]+bn0, d2[2]+bn1
+			base += N
+			out[base+n], out[base+n+1] = d2[1]+bn0, d2[3]+bn1
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			out[m*N+n] = vek32.Dot(aPanel[:K], b[n*K:n*K+K]) + bn
+			out[(m+1)*N+n] = vek32.Dot(aPanel[K:], b[n*K:n*K+K]) + bn
+		}
+	}
 	for ; m < M; m++ {
 		aRow := a[m*K : m*K+K]
 		for n := ns; n < ne; n++ {
@@ -221,6 +287,7 @@ func storeF32Dual4Add(out []float32, m, n, N int, d *[8]float32, bn0, bn1 float3
 // matMulRangeDualAdd: out += A@B^T + bias over columns [ns,ne).
 func matMulRangeDualAdd(out, a, b, bias []float32, M, N, K, ns, ne int) {
 	var d4 [4]float32
+	var d2 [4]float32
 	var d8 [8]float32
 	var dDual0, dDual1 [8]float32
 	m := 0
@@ -268,6 +335,30 @@ func matMulRangeDualAdd(out, a, b, bias []float32, M, N, K, ns, ne int) {
 			out[(m+1)*N+n] += d4[1] + bn
 			out[(m+2)*N+n] += d4[2] + bn
 			out[(m+3)*N+n] += d4[3] + bn
+		}
+	}
+	for ; m+1 < M; m += 2 {
+		aPanel := a[m*K : (m+2)*K]
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			bn0, bn1 := float32(0), float32(0)
+			if bias != nil {
+				bn0, bn1 = bias[n], bias[n+1]
+			}
+			d2 = [4]float32{}
+			multiDot2DualB(&d2, aPanel, b[n*K:n*K+K], b[(n+1)*K:(n+1)*K+K], K)
+			base := m * N
+			out[base+n], out[base+n+1] = out[base+n]+d2[0]+bn0, out[base+n+1]+d2[2]+bn1
+			base += N
+			out[base+n], out[base+n+1] = out[base+n]+d2[1]+bn0, out[base+n+1]+d2[3]+bn1
+		}
+		for ; n < ne; n++ {
+			bn := float32(0)
+			if bias != nil {
+				bn = bias[n]
+			}
+			out[m*N+n] += vek32.Dot(aPanel[:K], b[n*K:n*K+K]) + bn
+			out[(m+1)*N+n] += vek32.Dot(aPanel[K:], b[n*K:n*K+K]) + bn
 		}
 	}
 	for ; m < M; m++ {

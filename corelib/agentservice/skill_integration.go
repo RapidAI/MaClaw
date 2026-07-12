@@ -390,6 +390,55 @@ func (c *coreAgentCallbacks) executeManageSkill(args map[string]interface{}) age
 		return agent.ToolExecutionResult{Result: "Error: manage_skill(action=\"upload\") is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
 	case "execute_maintenance_plan":
 		return agent.ToolExecutionResult{Result: "Error: execute_maintenance_plan is not supported by this provider", Outcome: agent.ToolExecutionOutcomeError}
+	case "maintenance_drafts":
+		return agent.ToolExecutionResult{
+			Result:  `{"ok":false,"error":"maintenance_drafts is not supported by this provider; use the desktop or TUI client"}`,
+			Outcome: agent.ToolExecutionOutcomeError,
+		}
+	case "evolution_status":
+		// MaClawSrv does not host the desktop EvolutionPipeline; report capability gap.
+		return agent.ToolExecutionResult{
+			Result:  `{"ok":true,"non_executing":true,"pipeline_started":false,"enable_repair":false,"enable_optimizer":false,"enable_promoter":false,"note":"skill evolution pipeline is a desktop/TUI feature"}`,
+			Outcome: agent.ToolExecutionOutcomeOK,
+		}
+	case "evolution_audit":
+		// Best-effort: if the shared audit file exists on this host, return it.
+		limit := 50
+		if args != nil {
+			switch v := args["limit"].(type) {
+			case float64:
+				limit = int(v)
+			case int:
+				limit = v
+			}
+		}
+		skillFilter := ""
+		if args != nil {
+			if s, ok := args["name"].(string); ok {
+				skillFilter = s
+			} else if s, ok := args["skill"].(string); ok {
+				skillFilter = s
+			}
+		}
+		payload := skill.EvolutionAuditToolPayload("", limit, skillFilter)
+		payload["note"] = "reads local desktop audit JSONL when present on this host"
+		data, _ := json.MarshalIndent(payload, "", "  ")
+		return agent.ToolExecutionResult{Result: string(data), Outcome: agent.ToolExecutionOutcomeOK}
+	case "set_evolution_enabled":
+		return agent.ToolExecutionResult{
+			Result:  `{"ok":false,"error":"set_evolution_enabled is not supported by this provider; use the desktop or TUI client"}`,
+			Outcome: agent.ToolExecutionOutcomeError,
+		}
+	case "trigger_repair":
+		return agent.ToolExecutionResult{
+			Result:  `{"ok":false,"error":"trigger_repair is not supported by this provider; use the desktop or TUI client"}`,
+			Outcome: agent.ToolExecutionOutcomeError,
+		}
+	case "trigger_optimize":
+		return agent.ToolExecutionResult{
+			Result:  `{"ok":false,"error":"trigger_optimize is not supported by this provider; use the desktop or TUI client"}`,
+			Outcome: agent.ToolExecutionOutcomeError,
+		}
 	default:
 		return agent.ToolExecutionResult{
 			Result:  skill.ManageSkillUnknownActionError(action),

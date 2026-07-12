@@ -1,5 +1,9 @@
 # MacLaw Skill 全生命周期机制分析与改进计划
 
+> **OBSOLETE（2026-07）** — 文中「GUI 未接 self-repair / 三套错误分类分裂 / craft 不落盘」等结论已过时。  
+> 当前闭环以代码为准，审查与 backlog 见 **[skill-lifecycle-gap-review-2026.md](./skill-lifecycle-gap-review-2026.md)**。  
+> 本文仅作历史设计参考，**请勿按文中 P0/P1 清单继续实现**。
+
 ## 调查范围
 
 本文从机制层面分析 MacLaw skill 系统的六个生命周期阶段：**发现 → 安装 → 调用 → 错误处理 → 自修复 → 自改进**，识别每个阶段的结构性断裂点，制定机制性修复方案。
@@ -24,13 +28,13 @@
 
 | 生命周期阶段 | 核心模块 | 状态 |
 |-------------|---------|------|
-| 发现/搜索 | `corelib/skill/hub_search.go` HubClient.SearchAll | ✅ 三源统一 + 本地历史重排序 |
-| 安装 | `gui/app_nl_skills.go` + `tui/tool_manage_skill.go` | ✅ 基本完整 |
-| 调用/执行 | `gui/skill_runner.go` SkillRunner + `tui/tool_manage_skill.go` skillRun | ⚠️ 双路径，共享层已提取 |
-| 错误分类 | `corelib/skill/error_classifier.go` ClassifyStepError | ✅ 统一分类器 |
-| 自修复 | `corelib/skill/self_repair.go` | ✅ GUI + TUI 均已接入 |
-| 自改进/学习 | `corelib/tool/usage_tracker.go` + `nudge/nudge.go` | ✅ 闭环（nudge 与 self-repair 协调） |
-| 参数传递 | `corelib/skill/substitute.go` 共享替换引擎 | ⚠️ 共享层已提取，参数契约层待实施 |
+| 发现/搜索 | `corelib/skill/hub_search.go` HubClient.SearchAll | 三源统一 + 本地历史重排序 |
+| 安装 | `gui/app_nl_skills.go` + `tui/tool_manage_skill.go` | 基本完整 |
+| 调用/执行 | `gui/skill_runner.go` SkillRunner + `tui/tool_manage_skill.go` skillRun | 双路径，共享层已提取 |
+| 错误分类 | `corelib/skill/error_classifier.go` ClassifyStepError | 统一分类器 |
+| 自修复 | `corelib/skill/self_repair.go` | GUI + TUI 均已接入 |
+| 自改进/学习 | `corelib/tool/usage_tracker.go` + `nudge/nudge.go` | 闭环（nudge 与 self-repair 协调） |
+| 参数传递 | `corelib/skill/substitute.go` 共享替换引擎 | 共享层已提取，参数契约层待实施 |
 
 ---
 
@@ -50,7 +54,7 @@
 
 **GUI 完全未接入**：在 `gui/` 目录下 grep `maybeRepair|ShouldAttemptRepair|AttemptRepair|self_repair` 返回 **零结果**。`gui/skill_runner.go` 的 `updateUsageStats()` 只更新计数器，不触发自修复。
 
-**影响**：GUI 是主要使用路径（桌面面板 + IM 通道），大量 skill 失败数据被记录但从不触发修复。`memento-skills-inspired-improvements.md` Phase 2 标注"✅ 完成（corelib + GUI Runner 接入）"，但实际 GUI Runner 接入代码不存在。
+**影响**：GUI 是主要使用路径（桌面面板 + IM 通道），大量 skill 失败数据被记录但从不触发修复。`memento-skills-inspired-improvements.md` Phase 2 标注"完成（corelib + GUI Runner 接入）"，但实际 GUI Runner 接入代码不存在。
 
 **修复方案**：
 
@@ -177,7 +181,7 @@ GUI 的 `classifyBashError` 和 TUI 的 `classifySkillStepError` 都委托给 `C
 
 `craft_tool` 步骤类型让 LLM 动态生成脚本并执行。执行成功后，脚本被丢弃。下次遇到相同类型的任务，LLM 需要重新生成。
 
-`memento-skills-inspired-improvements.md` Phase 3 标注"✅ corelib 层完成（PersistCraftedSkill + 去重）"，`corelib/skill/craft_to_skill.go` 已实现 `PersistCraftedSkill()` 函数。但 **GUI 的 craft_tool 调用点未接入**——`buildCraftSuccessResult` 只做内存注册（`registerCraftedSkillEntry`），不调用 `PersistCraftedSkill`。
+`memento-skills-inspired-improvements.md` Phase 3 标注"corelib 层完成（PersistCraftedSkill + 去重）"，`corelib/skill/craft_to_skill.go` 已实现 `PersistCraftedSkill()` 函数。但 **GUI 的 craft_tool 调用点未接入**——`buildCraftSuccessResult` 只做内存注册（`registerCraftedSkillEntry`），不调用 `PersistCraftedSkill`。
 
 **影响**：
 - 每次 craft_tool 成功执行消耗 1 次 LLM 调用（生成脚本）+ 执行时间
@@ -249,19 +253,19 @@ Nudge 系统的定位应该从"提示 LLM 去做"变为"系统自动做，通知
 
 | 能力 | GUI (`skill_runner.go`) | TUI (`tool_manage_skill.go`) |
 |------|------------------------|------------------------------|
-| 异步执行 | ✅ goroutine + runID | ❌ 同步阻塞 |
-| 进度回调 | ✅ onProgress | ❌ 无 |
-| Operations 路由 | ✅ selectedSteps | ✅ |
-| Poll 轮询 | ✅ executeStepWithPoll | ✅ runSkillStepWithPollTUI |
-| When 条件 | ✅ evaluateSimpleCondition | ✅ evaluateSimpleConditionTUI |
-| 变量 Capture | ✅ captureOutputVariables | ✅ captureOutputVariablesTUI |
-| 自修复触发 | ❌ (问题 1) | ✅ maybeRepairSkillTUI |
-| 参数绑定 | ⚠️ substituteSkillVariables | ❌ 不做变量替换 |
-| 安全评估 | ✅ RiskAssessor | ❌ 无 |
-| 审计日志 | ✅ AuditLog | ❌ 无 |
-| 自动上传 | ✅ AutoUploadTrigger | ❌ 无 |
-| 8.3 短路径 | ✅ normalizeWindowsShortPath | ✅ normalizeWindowsShortPathTUI |
-| Bash/CMD 选择 | ✅ needsBashShell | ✅ needsBashShellTUI |
+| 异步执行 | goroutine + runID | 同步阻塞 |
+| 进度回调 | onProgress | 无 |
+| Operations 路由 | selectedSteps | |
+| Poll 轮询 | executeStepWithPoll | runSkillStepWithPollTUI |
+| When 条件 | evaluateSimpleCondition | evaluateSimpleConditionTUI |
+| 变量 Capture | captureOutputVariables | captureOutputVariablesTUI |
+| 自修复触发 | (问题 1) | maybeRepairSkillTUI |
+| 参数绑定 | substituteSkillVariables | 不做变量替换 |
+| 安全评估 | RiskAssessor | 无 |
+| 审计日志 | AuditLog | 无 |
+| 自动上传 | AutoUploadTrigger | 无 |
+| 8.3 短路径 | normalizeWindowsShortPath | normalizeWindowsShortPathTUI |
+| Bash/CMD 选择 | needsBashShell | needsBashShellTUI |
 
 **断裂点**：
 

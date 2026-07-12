@@ -229,7 +229,7 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patchWithLaunchMode as Record<string, any>)', 'remote quick-start augments a locally built patch with default_launch_mode'],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 'PatchConfigFields(patch)).catch((err)', 'general settings helper receives patches from same-file controls only'],
   ['gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'advanced settings helper receives patches from same-file controls only'],
-  ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'programming tools helper receives patches from same-file controls only'],
+  ['gui/frontend/src/components/settings/programmingToolsConfig.ts', 'PatchConfigFields(patch).then((saved)', 'shared programming tools patch helper receives patches from panel controls only'],
   ['gui/remote_activation.go', 'a.PatchConfigFields(patch)', 'remote registration persists a closed patch map containing only normalized remote_email or remote_mobile'],
 ];
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
@@ -412,7 +412,7 @@ requireExcludes('gui/app_project_search.go', 'LoadConfig -> merge -> SaveConfig'
 requireExcludes('gui/app_project_search.go', 'switchCurrentProjectByPath: SaveConfig failed', 'stale SaveConfig project-switch failure log');
 requireExcludes('gui/floating_windows.go', 'SaveConfig triggers floatingSoundChanged', 'stale SaveConfig floating sound comment');
 requireExcludes('docs/project-switch-context-contamination-fix.md', 'LoadConfig -> merge -> SaveConfig', 'stale SaveConfig project-switch docs');
-requireIncludes('gui/frontend/package.json', '--strict-mojibake && npm run check:ui-guards', 'frontend prebuild strict mojibake and UI guard gate');
+requireIncludes('gui/frontend/package.json', '--strict-mojibake && node scripts/check-main-ui-guards.mjs', 'frontend prebuild strict mojibake and UI guard gate');
 requireIncludes('package.json', 'node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs', 'UI guard script runs config persistence self-test before normal guard');
 requireFile('gui/frontend/src/config/providerCatalog.ts');
 requireFile('gui/frontend/src/components/common/MarkdownLink.tsx');
@@ -513,6 +513,8 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/UISettingsPanel.tsx', 240],
   ['gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 480],
+  ['gui/frontend/src/components/settings/CodingKnowledgeSection.tsx', 500],
+  ['gui/frontend/src/components/settings/programmingToolsConfig.ts', 80],
   ['gui/frontend/src/components/settings/SystemSettingsPanel.tsx', 180],
   ['gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 80],
   ['gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 160],
@@ -563,6 +565,8 @@ for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
 const highRiskRemoteFileLineLimits = [
   ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 3000],
+  // Implementation lives here; freeze growth until further extraction (entry is a thin re-export).
+  ['gui/frontend/src/components/remote/SkillsManagementPanelView.tsx', 5700],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1880],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1290],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],

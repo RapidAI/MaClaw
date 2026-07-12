@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -91,8 +92,34 @@ func TestBuildExperienceLearningSnapshotHandlesNilInputs(t *testing.T) {
 	if snapshot.RoutingHintCount != 0 || snapshot.SkillNudgeCount != 0 || snapshot.UsagePatternCount != 0 || snapshot.ProtectedMemoryCount != 0 {
 		t.Fatalf("empty snapshot has counts: %#v", snapshot)
 	}
-	if snapshot.RoutingHints == nil || snapshot.SkillNudgeCandidates == nil || snapshot.RecoveryPatterns == nil || snapshot.UsagePatterns == nil || snapshot.TraceKindCounts == nil || snapshot.TraceSourceCounts == nil || snapshot.ReviewStatusCounts == nil || snapshot.NextActionKindCounts == nil || snapshot.FollowUpStatusCounts == nil || snapshot.ReviewSummaries == nil || snapshot.NextActionSummaries == nil || snapshot.FollowUpSummaries == nil {
+	if snapshot.RoutingHints == nil || snapshot.SkillNudgeCandidates == nil || snapshot.RecoveryPatterns == nil || snapshot.UsagePatterns == nil || snapshot.TraceKindCounts == nil || snapshot.TraceSourceCounts == nil || snapshot.ReviewStatusCounts == nil || snapshot.NextActionKindCounts == nil || snapshot.FollowUpStatusCounts == nil || snapshot.ReviewSummaries == nil || snapshot.NextActionSummaries == nil || snapshot.FollowUpSummaries == nil || snapshot.SkillMaintenanceHints == nil {
 		t.Fatalf("empty snapshot should return non-nil slices: %#v", snapshot)
+	}
+}
+
+func TestBuildExperienceLearningSnapshotIncludesSkillMaintenanceHints(t *testing.T) {
+	skills := []corelib.NLSkillEntry{{
+		Name:         "broken-pdf",
+		UsageCount:   4,
+		FailureCount: 4,
+		SuccessCount: 0,
+		LastError:    "[class: command_not_found] missing pdftotext",
+		Status:       "active",
+		Steps:        []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "pdftotext"}}},
+	}}
+	snapshot := buildExperienceLearningSnapshot(nil, nil, skills)
+	if snapshot.SkillMaintenanceHintCount == 0 || len(snapshot.SkillMaintenanceHints) == 0 {
+		t.Fatalf("expected skill maintenance hints: %#v", snapshot)
+	}
+	found := false
+	for _, h := range snapshot.SkillMaintenanceHints {
+		if h.Skill == "broken-pdf" && h.HighValue {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected broken-pdf high-value hint: %#v", snapshot.SkillMaintenanceHints)
 	}
 }
 

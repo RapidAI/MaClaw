@@ -13,7 +13,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const groupDiscussionHubTimeout = time.Duration(corelib.DefaultAgentTimeoutSec) * time.Second
@@ -2323,8 +2322,8 @@ func (a *App) GroupDiscussionRenameConsultation(consultationID, title string) (a
 				"from_id":       fromID,
 			},
 		}
-		runtime.EventsEmit(a.ctx, "ve:discussion_rename", eventData)
-		runtime.EventsEmit(a.ctx, "ve-event", eventData)
+		a.emitEvent("ve:discussion_rename", eventData)
+		a.emitEvent("ve-event", eventData)
 	}
 	go a.cacheVEA2ADetailAsync(client, strings.TrimSpace(consultationID), fromID)
 	return summary, nil

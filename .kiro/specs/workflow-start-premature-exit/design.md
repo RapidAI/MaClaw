@@ -45,11 +45,9 @@ END FUNCTION
 
 ### Examples
 
-- **"好的，准备开工！我将为您启动开发工作流..."** (42 chars, no structure markers) → `isBugCondition = true` → gate should NOT force-return (current behavior: force-returns ❌)
-- **"OK, let me start the workflow for you!"** (38 chars, no structure markers) → `isBugCondition = true` → gate should NOT force-return (current behavior: force-returns ❌)
-- **"# 需求文档\n\n## 1. 功能需求\n\n1. 用户可以...\n2. 系统应当..."** (200+ chars, has headings + numbered list) → `isBugCondition = false` → gate should force-return ✅
-- **"让我先分析一下需求..."** (contains stall keyword "先分析") → `looksLikeNoToolStallReply = true` → gate condition not entered, continues loop ✅
-
+- **"好的，准备开工！我将为您启动开发工作流..."** (42 chars, no structure markers) → `isBugCondition = true` → gate should NOT force-return (current behavior: force-returns )
+- **"OK, let me start the workflow for you!"** (38 chars, no structure markers) → `isBugCondition = true` → gate should NOT force-return (current behavior: force-returns )
+- **"# 需求文档\n\n## 1. 功能需求\n\n1. 用户可以...\n2. 系统应当..."** (200+ chars, has headings + numbered list) → `isBugCondition = false` → gate should force-return - **"让我先分析一下需求..."** (contains stall keyword "先分析") → `looksLikeNoToolStallReply = true` → gate condition not entered, continues loop 
 ## Expected Behavior
 
 ### Preservation Requirements

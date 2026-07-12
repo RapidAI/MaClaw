@@ -1,0 +1,379 @@
+#include "textflag.h"
+
+// func dotQ4Q8BlockASM(q4, q8 *byte) int32
+// q4 has low nibbles for q[0:16] and high nibbles for q[16:32].
+TEXT ·dotQ4Q8BlockASM(SB), NOSPLIT, $0-24
+	MOVQ q4+0(FP), AX
+	MOVQ q8+8(FP), BX
+	XORQ CX, CX
+	XORQ DX, DX
+q4q8_loop:
+	MOVBQZX (AX)(CX*1), SI
+	MOVQ SI, DI
+	ANDQ $15, SI
+	SUBQ $8, SI
+	MOVBQSX (BX)(CX*1), R8
+	IMULQ R8, SI
+	ADDQ SI, DX
+	SHRQ $4, DI
+	ANDQ $15, DI
+	SUBQ $8, DI
+	MOVBQSX 16(BX)(CX*1), R8
+	IMULQ R8, DI
+	ADDQ DI, DX
+	INCQ CX
+	CMPQ CX, $16
+	JL q4q8_loop
+	MOVL DX, ret+16(FP)
+	RET
+
+// func dotQ4Q8BlocksASM(out *int32, q4, q8 *byte, nBlocks int)
+TEXT ·dotQ4Q8BlocksASM(SB), NOSPLIT, $0-32
+	MOVQ out+0(FP), R11
+	MOVQ q4+8(FP), AX
+	MOVQ q8+16(FP), BX
+	MOVQ nBlocks+24(FP), R10
+	XORQ R9, R9
+q4q8_blocks_outer:
+	XORQ CX, CX
+	XORQ DX, DX
+q4q8_blocks_inner:
+	MOVBQZX (AX)(CX*1), SI
+	MOVQ SI, DI
+	ANDQ $15, SI
+	SUBQ $8, SI
+	MOVBQSX 2(BX)(CX*1), R8
+	IMULQ R8, SI
+	ADDQ SI, DX
+	SHRQ $4, DI
+	ANDQ $15, DI
+	SUBQ $8, DI
+	MOVBQSX 18(BX)(CX*1), R8
+	IMULQ R8, DI
+	ADDQ DI, DX
+	INCQ CX
+	CMPQ CX, $16
+	JL q4q8_blocks_inner
+	MOVL DX, (R11)(R9*4)
+	ADDQ $16, AX
+	ADDQ $34, BX
+	INCQ R9
+	CMPQ R9, R10
+	JL q4q8_blocks_outer
+	RET
+
+// func dotQ4Q8BlocksAVX2ASM(out *int32, q4, q8 *byte, nBlocks int)
+// Vectorized Q4_0 × Q8_0 block dot. Q4's low/high nibbles map to the
+// first/second 16 Q8 values respectively. Output is one int32 sum per block.
+TEXT ·dotQ4Q8BlocksAVX2ASM(SB), NOSPLIT, $32-32
+	MOVQ out+0(FP), R11
+	MOVQ q4+8(FP), AX
+	MOVQ q8+16(FP), BX
+	MOVQ nBlocks+24(FP), R10
+	MOVQ $0x0f0f0f0f0f0f0f0f, SI
+	VMOVQ SI, X0
+	VPBROADCASTB X0, X0
+	MOVQ $0x0808080808080808, SI
+	VMOVQ SI, X1
+	VPBROADCASTB X1, X1
+	VPCMPEQW Y7, Y7, Y7
+	XORQ R9, R9
+q4q8_avx_outer:
+	VMOVDQU (AX), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X4
+	VPAND X0, X4, X4
+	VPSUBB X3, X1, X3
+	VPSUBB X4, X1, X4
+	VPMOVSXBW X3, Y3
+	VPMOVSXBW 2(BX), Y5
+	VPMULLW Y5, Y3, Y3
+	VPMADDWD Y7, Y3, Y3
+	VPMOVSXBW X4, Y4
+	VPMOVSXBW 18(BX), Y5
+	VPMULLW Y5, Y4, Y4
+	VPMADDWD Y7, Y4, Y4
+	VPADDD Y4, Y3, Y3
+	VMOVDQU Y3, 0(SP)
+	MOVL 0(SP), DX
+	ADDL 4(SP), DX
+	ADDL 8(SP), DX
+	ADDL 12(SP), DX
+	ADDL 16(SP), DX
+	ADDL 20(SP), DX
+	ADDL 24(SP), DX
+	ADDL 28(SP), DX
+	MOVL DX, (R11)(R9*4)
+	ADDQ $16, AX
+	ADDQ $34, BX
+	INCQ R9
+	CMPQ R9, R10
+	JL q4q8_avx_outer
+	VZEROUPPER
+	RET
+
+// func q4Q8BlockVNNIASM(out *int32, aQ, q4 *byte)
+// Produces eight VPDPBUSD lanes (four products each).
+TEXT ·q4Q8BlockVNNIASM(SB), NOSPLIT, $0-32
+	MOVQ out+0(FP), AX
+	MOVQ aQ+8(FP), BX
+	MOVQ q4+16(FP), CX
+	MOVQ $0x0f0f0f0f0f0f0f0f, SI
+	VMOVQ SI, X0
+	VPBROADCASTB X0, X0
+	MOVQ $0x0808080808080808, SI
+	VMOVQ SI, X1
+	VPBROADCASTB X1, X1
+	VMOVDQU (CX), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X4
+	VPAND X0, X4, X4
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X4, X4
+	VZEROUPPER
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X4, Y3, Y3
+	VMOVDQU (BX), Y4
+	VPXORD Y5, Y5, Y5
+	VPDPBUSD Y3, Y4, Y5
+	VMOVDQU Y5, (AX)
+	VZEROUPPER
+	RET
+
+// func q4Q8BlocksVNNIASM(out *int32, aQ, q4 *byte, nBlocks int)
+TEXT ·q4Q8BlocksVNNIASM(SB), NOSPLIT, $0-32
+	MOVQ out+0(FP), AX
+	MOVQ aQ+8(FP), BX
+	MOVQ q4+16(FP), CX
+	MOVQ nBlocks+24(FP), R10
+	MOVQ $0x0f0f0f0f0f0f0f0f, SI
+	VMOVQ SI, X0
+	VPBROADCASTB X0, X0
+	MOVQ $0x0808080808080808, SI
+	VMOVQ SI, X1
+	VPBROADCASTB X1, X1
+	XORQ R9, R9
+q4q8_vnni_outer:
+	VMOVDQU (CX), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X4
+	VPAND X0, X4, X4
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X4, X4
+	VZEROUPPER
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X4, Y3, Y3
+	VMOVDQU (BX), Y4
+	VPXORD Y5, Y5, Y5
+	VPDPBUSD Y3, Y4, Y5
+	VMOVDQU Y5, (AX)
+	ADDQ $32, BX
+	ADDQ $16, CX
+	ADDQ $32, AX
+	INCQ R9
+	CMPQ R9, R10
+	JL q4q8_vnni_outer
+	VZEROUPPER
+	RET
+
+// func q4Q8BlocksVNNIStrideASM(out *int32, aQ, q4 *byte, nBlocks, stride int)
+TEXT ·q4Q8BlocksVNNIStrideASM(SB), NOSPLIT, $0-48
+	MOVQ out+0(FP), AX
+	MOVQ aQ+8(FP), BX
+	MOVQ q4+16(FP), CX
+	MOVQ nBlocks+24(FP), R10
+	MOVQ stride+32(FP), R12
+	MOVQ $0x0f0f0f0f0f0f0f0f, SI
+	VMOVQ SI, X0
+	VPBROADCASTB X0, X0
+	MOVQ $0x0808080808080808, SI
+	VMOVQ SI, X1
+	VPBROADCASTB X1, X1
+	XORQ R9, R9
+q4q8_vnni_stride_outer:
+	VMOVDQU (CX), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X4
+	VPAND X0, X4, X4
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X4, X4
+	VZEROUPPER
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X4, Y3, Y3
+	VMOVDQU (BX), Y4
+	VPXORD Y5, Y5, Y5
+	VPDPBUSD Y3, Y4, Y5
+	VMOVDQU Y5, (AX)
+	ADDQ R12, BX
+	ADDQ $16, CX
+	ADDQ $32, AX
+	INCQ R9
+	CMPQ R9, R10
+	JL q4q8_vnni_stride_outer
+	VZEROUPPER
+	RET
+
+// func q4Q8BlocksDualVNNIStrideASM(out0, out1 *int32, aQ, q40, q41 *byte, nBlocks, stride int)
+TEXT ·q4Q8BlocksDualVNNIStrideASM(SB), NOSPLIT, $0-56
+	MOVQ out0+0(FP), AX
+	MOVQ out1+8(FP), R11
+	MOVQ aQ+16(FP), BX
+	MOVQ q40+24(FP), CX
+	MOVQ q41+32(FP), DI
+	MOVQ nBlocks+40(FP), R10
+	MOVQ stride+48(FP), R12
+	MOVQ $0x0f0f0f0f0f0f0f0f, SI
+	VMOVQ SI, X0
+	VPBROADCASTB X0, X0
+	MOVQ $0x0808080808080808, SI
+	VMOVQ SI, X1
+	VPBROADCASTB X1, X1
+	XORQ R9, R9
+q4q8_dual_vnni_stride_outer:
+	VZEROUPPER
+	VMOVDQU (BX), Y4
+	VMOVDQU (CX), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X2
+	VPAND X0, X2, X2
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X2, X2
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X2, Y3, Y3
+	VPXORD Y5, Y5, Y5
+	VPDPBUSD Y3, Y4, Y5
+	VMOVDQU Y5, (AX)
+	VMOVDQU (DI), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X2
+	VPAND X0, X2, X2
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X2, X2
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X2, Y3, Y3
+	VPXORD Y6, Y6, Y6
+	VPDPBUSD Y3, Y4, Y6
+	VMOVDQU Y6, (R11)
+	ADDQ R12, BX
+	ADDQ $16, CX
+	ADDQ $16, DI
+	ADDQ $32, AX
+	ADDQ $32, R11
+	INCQ R9
+	CMPQ R9, R10
+	JL q4q8_dual_vnni_stride_outer
+	VZEROUPPER
+	RET
+
+// func q4Q8Dual8AccumVNNIASM(out *float32, aQ *int8, aS *float32,
+// q40, q41 *byte, s0, s1 *float32, m, n, N int, b0, b1 float32)
+// Fixed K=2048 (64 Q4/Q8 blocks), eight activation rows and two adjacent
+// Q4 rows. Each VNNI result is reduced and dequantized before the next block;
+// bias, residual and stores form the fused epilogue.
+TEXT ·q4Q8Dual8AccumVNNIASM(SB), NOSPLIT, $0-88
+	MOVQ out+0(FP), R11
+	MOVQ aQ+8(FP), R12
+	MOVQ aS+16(FP), R13
+	MOVQ q40+24(FP), R14
+	MOVQ q41+32(FP), R15
+	MOVQ $0x0f0f0f0f0f0f0f0f, SI
+	VMOVQ SI, X0
+	VPBROADCASTB X0, X0
+	MOVQ $0x0808080808080808, SI
+	VMOVQ SI, X1
+	VPBROADCASTB X1, X1
+	XORQ R10, R10
+
+q4q8_dual8_row:
+	// Activation row r starts at q[r*32], with a 256-byte block stride.
+	MOVQ R12, BX
+	MOVQ R10, AX
+	SHLQ $5, AX
+	ADDQ AX, BX
+	MOVQ R13, SI
+	MOVQ R10, AX
+	SHLQ $2, AX
+	ADDQ AX, SI
+	MOVQ R14, DI
+	MOVQ R15, R8
+	MOVQ s0+40(FP), R9
+	MOVQ s1+48(FP), DX
+	VXORPS X12, X12, X12
+	VXORPS X13, X13, X13
+	MOVQ $64, CX
+
+q4q8_dual8_block:
+	VZEROUPPER
+	VMOVDQU (BX), Y4
+	// q4 row 0 -> scalar float accumulation X12.
+	VMOVDQU (DI), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X2
+	VPAND X0, X2, X2
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X2, X2
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X2, Y3, Y3
+	VPXORD Y5, Y5, Y5
+	VPDPBUSD Y3, Y4, Y5
+	VEXTRACTI128 $1, Y5, X6
+	VPADDD X6, X5, X5
+	VPHADDD X5, X5, X5
+	VPHADDD X5, X5, X5
+	VMOVD X5, AX
+	CVTSL2SS AX, X5
+	MOVSS (SI), X6
+	MULSS (R9), X6
+	MULSS X6, X5
+	ADDSS X5, X12
+	// q4 row 1 -> scalar float accumulation X13, reusing loaded activation.
+	VMOVDQU (R8), X2
+	VPAND X0, X2, X3
+	VPSRLW $4, X2, X2
+	VPAND X0, X2, X2
+	VPSUBB X1, X3, X3
+	VPSUBB X1, X2, X2
+	VINSERTI128 $0, X3, Y3, Y3
+	VINSERTI128 $1, X2, Y3, Y3
+	VPXORD Y5, Y5, Y5
+	VPDPBUSD Y3, Y4, Y5
+	VEXTRACTI128 $1, Y5, X6
+	VPADDD X6, X5, X5
+	VPHADDD X5, X5, X5
+	VPHADDD X5, X5, X5
+	VMOVD X5, AX
+	CVTSL2SS AX, X5
+	MOVSS (SI), X6
+	MULSS (DX), X6
+	MULSS X6, X5
+	ADDSS X5, X13
+	ADDQ $256, BX
+	ADDQ $8, SI
+	ADDQ $16, DI
+	ADDQ $16, R8
+	ADDQ $4, R9
+	ADDQ $4, DX
+	DECQ CX
+	JNZ q4q8_dual8_block
+
+	MOVSS b0+80(FP), X5
+	ADDSS X5, X12
+	MOVSS b1+84(FP), X5
+	ADDSS X5, X13
+	// offset = ((m+r)*N+n)*4
+	MOVQ m+56(FP), AX
+	ADDQ R10, AX
+	IMULQ N+72(FP), AX
+	ADDQ n+64(FP), AX
+	SHLQ $2, AX
+	MOVSS (R11)(AX*1), X5
+	ADDSS X12, X5
+	MOVSS X5, (R11)(AX*1)
+	MOVSS 4(R11)(AX*1), X5
+	ADDSS X13, X5
+	MOVSS X5, 4(R11)(AX*1)
+	INCQ R10
+	CMPQ R10, $8
+	JL q4q8_dual8_row
+	VZEROUPPER
+	RET

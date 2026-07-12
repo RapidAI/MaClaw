@@ -129,7 +129,7 @@ export function SessionHistoryTab({ t, lang, onOpenTrace }: SessionHistoryTabPro
         <div>
             <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
                 <input placeholder={t("Full-text search (Enter)", "\u5168\u6587\u68c0\u7d22\uff08\u56de\u8f66\u641c\u7d22\uff09")} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown} aria-label={t("Search sessions", "\u641c\u7d22\u4f1a\u8bdd")} style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={handleSearch} disabled={loading} style={{ ...primaryBtnStyle, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.6 : 1 }}>{"\u{1F50E}"} {t("Search", "\u641c\u7d22")}</button>
+                <button onClick={handleSearch} disabled={loading} style={{ ...primaryBtnStyle, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.6 : 1 }}>{t("Search", "\u641c\u7d22")}</button>
                 {searchResults !== null && <button onClick={() => { setQuery(""); setSearchResults(null); }} style={neutralBtnStyle}>{t("Clear", "\u6e05\u9664")}</button>}
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>

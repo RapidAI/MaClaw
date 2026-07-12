@@ -231,7 +231,7 @@ func (m *FloatingAssistantManager) OnFloatingButtonClicked() {
 
 	// Tell frontend to switch to AI assistant panel. When the pet is configured
 	// for voice conversation, also request the panel to open voice input.
-	runtime.EventsEmit(m.app.ctx, "switch-to-ai-panel", map[string]any{
+	m.app.emitEvent("switch-to-ai-panel", map[string]any{
 		"source": "pet",
 		"voice":  voiceRequested,
 	})

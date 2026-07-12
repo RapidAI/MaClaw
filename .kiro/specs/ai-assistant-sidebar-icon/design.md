@@ -2,7 +2,7 @@
 
 ## 概述
 
-本功能在 MaClaw 桌面应用左侧导航栏（远程 📡 图标下方）新增一个"AI 助手"图标入口。点击后弹出全屏终端风格对话界面（`AIAssistantPanel`），复用后端 `IMMessageHandler` 的 Agent 能力，让用户无需手机/IM 即可直接在桌面端与 maClaw 对话。
+本功能在 MaClaw 桌面应用左侧导航栏（远程 图标下方）新增一个"AI 助手"图标入口。点击后弹出全屏终端风格对话界面（`AIAssistantPanel`），复用后端 `IMMessageHandler` 的 Agent 能力，让用户无需手机/IM 即可直接在桌面端与 maClaw 对话。
 
 核心设计决策：
 - **前端**：新建 `AIAssistantPanel.tsx` 组件，视觉风格复用 `RemoteSessionConsole` 的深色终端主题，但数据流完全独立（不依赖远程会话管理）
@@ -68,7 +68,7 @@ graph TB
     }}
     title={lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
 >
-    <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🦞</span>
+    <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}></span>
     <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>
         {lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
     </span>

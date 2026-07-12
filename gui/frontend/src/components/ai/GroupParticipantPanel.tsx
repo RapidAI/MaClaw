@@ -83,7 +83,7 @@ function participantIconStyle(p: Participant, theme: Theme): CSSProperties {
 
 function ParticipantTypeIcon({ participant, theme }: { participant: Participant; theme: Theme }) {
     const stroke = "currentColor";
-    const title = participant.isLocal ? "Local AI" : "Digital employee";
+    const title = participant.isLocal ? "Local" : "Digital employee";
     const avatarDataURL = !participant.isLocal ? safeAvatarDataURL(participant.avatarDataURL) : "";
     return (
         <span aria-label={title} title={title} style={participantIconStyle(participant, theme)}>

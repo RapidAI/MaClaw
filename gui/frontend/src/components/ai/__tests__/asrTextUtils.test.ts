@@ -35,9 +35,9 @@ describe("isPunctuationOnlyASRText / shouldDispatchASRText", () => {
 
     it("ignores pure symbols with no speech content", () => {
         expect(isPunctuationOnlyASRText("~")).toBe(true);
-        expect(isPunctuationOnlyASRText("★")).toBe(true);
+        expect(isPunctuationOnlyASRText("\u2605")).toBe(true);
         expect(isPunctuationOnlyASRText("※")).toBe(true);
-        expect(shouldDispatchASRText("★")).toBe(false);
+        expect(shouldDispatchASRText("\u2605")).toBe(false);
     });
 
     it("keeps real speech content with trailing punctuation", () => {

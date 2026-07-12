@@ -233,6 +233,56 @@ func TestSkillRunnerFinalizeSuccessDoesNotLogSkillFailure(t *testing.T) {
 	}
 }
 
+func TestResolveLoadedSkillForRunPrefersHubSkillID(t *testing.T) {
+	// PDF翻译工具 requests hub id while config display name differs.
+	skills := []corelib.NLSkillEntry{
+		{
+			Name:       "Paper PDF Translator",
+			HubSkillID: "paper_pdf_translator",
+			Status:     "active",
+			SkillDir:   `C:\tmp\Paper PDF Translator`,
+		},
+		{
+			Name:   "Unrelated Sheet Tool",
+			Status: "active",
+		},
+	}
+	got, err := resolveLoadedSkillForRun("paper_pdf_translator", skills)
+	if err != nil {
+		t.Fatalf("resolveLoadedSkillForRun error = %v", err)
+	}
+	if got == nil || got.HubSkillID != "paper_pdf_translator" || got.Name != "Paper PDF Translator" {
+		t.Fatalf("resolveLoadedSkillForRun = %#v, want Paper PDF Translator by hub id", got)
+	}
+	// Versioned app ref.
+	got, err = resolveLoadedSkillForRun("paper_pdf_translator@1.0.0", skills)
+	if err != nil || got == nil || got.HubSkillID != "paper_pdf_translator" {
+		t.Fatalf("versioned hub id resolve failed: got=%#v err=%v", got, err)
+	}
+	// Loose display name still works when no hub id collision.
+	got, err = resolveLoadedSkillForRun("Paper PDF Translator", skills)
+	if err != nil || got == nil || got.Name != "Paper PDF Translator" {
+		t.Fatalf("display name resolve failed: got=%#v err=%v", got, err)
+	}
+	// Stable ID preferred over loose-only twin.
+	skills = append(skills, corelib.NLSkillEntry{
+		Name:   "paper pdf translator", // loose-equal without HubSkillID
+		Status: "active",
+	})
+	got, err = resolveLoadedSkillForRun("paper_pdf_translator", skills)
+	if err != nil {
+		t.Fatalf("preferred hub id over loose twin: err=%v", err)
+	}
+	if got == nil || got.HubSkillID != "paper_pdf_translator" {
+		t.Fatalf("should prefer HubSkillID hit, got %#v", got)
+	}
+	// Missing.
+	got, err = resolveLoadedSkillForRun("no_such_skill", skills)
+	if err != nil || got != nil {
+		t.Fatalf("missing skill should be (nil,nil), got %#v err=%v", got, err)
+	}
+}
+
 func TestSkillRunnerStartRunFailureLogsSkillAndReason(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

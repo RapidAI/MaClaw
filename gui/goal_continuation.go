@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/goal"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // GoalContinuationEngine manages the auto-continuation loop for active goals.
@@ -255,7 +254,7 @@ func (e *GoalContinuationEngine) emitAssistantStreamEventWithDisplayText(name, r
 		log.Printf("[goal-continuation] marshal %s event failed: %v", name, err)
 		return
 	}
-	runtime.EventsEmit(e.app.ctx, name, string(payload))
+	e.app.emitEvent(name, string(payload))
 }
 
 func (e *GoalContinuationEngine) buildContinuationDisplayText(g *goal.Goal) string {
@@ -279,7 +278,7 @@ func (e *GoalContinuationEngine) buildContinuationPrompt(g *goal.Goal) string {
 	b.WriteString(fmt.Sprintf("[系统续接] 继续推进目标：%s\n\n", g.Objective))
 
 	// Progress report
-	b.WriteString(fmt.Sprintf("📊 进度：第 %d/%d 轮", g.TurnsUsed, g.MaxTurns))
+	b.WriteString(fmt.Sprintf("进度：第 %d/%d 轮", g.TurnsUsed, g.MaxTurns))
 	if g.TokenBudget > 0 {
 		pct := float64(g.TokensUsed) / float64(g.TokenBudget) * 100
 		b.WriteString(fmt.Sprintf(" | Token: %d/%d (%.0f%%)", g.TokensUsed, g.TokenBudget, pct))
@@ -304,7 +303,7 @@ func (e *GoalContinuationEngine) emitGoalStateChanged(userID string, g *goal.Goa
 	if e.app == nil || e.app.ctx == nil {
 		return
 	}
-	runtime.EventsEmit(e.app.ctx, "goal-state-changed", map[string]interface{}{
+	e.app.emitEvent("goal-state-changed", map[string]interface{}{
 		"user_id":      userID,
 		"goal_id":      g.GoalID,
 		"objective":    g.Objective,

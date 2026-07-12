@@ -27,28 +27,48 @@ func ConfigureMobileDocumentQuota(system store.SystemSettingsRepository, securit
 
 // mobileDocumentQuotaUsedBytes sums stored emergency document material for an owner:
 // draft markdown bytes + upload source bytes (raw files still on Hub).
+// Dead blob paths are repaired so missing originals do not inflate used quota.
 func mobileDocumentQuotaUsedBytes(ownerID string) int64 {
+	used, repaired := mobileDocumentQuotaScan(ownerID, true)
+	if repaired {
+		// Persist outside the scan lock (scan already unlocked).
+		mobilePersistState()
+	}
+	return used
+}
+
+// mobileDocumentQuotaScan counts quota while optionally repairing dead original paths.
+// When repair is false, metadata is trusted (fast path for write checks that are under limit).
+// Caller must not hold mobileDocuments.Lock.
+func mobileDocumentQuotaScan(ownerID string, repair bool) (used int64, repaired bool) {
 	ownerID = strings.TrimSpace(ownerID)
 	if ownerID == "" {
-		return 0
+		return 0, false
 	}
-	var used int64
 	mobileDocuments.Lock()
 	defer mobileDocuments.Unlock()
 	draftsWithOriginal := make(map[string]struct{})
-	for _, draft := range mobileDocuments.drafts {
+	for id, draft := range mobileDocuments.drafts {
 		if draft.OwnerID != ownerID {
 			continue
 		}
+		if repair && mobileDraftRepairSourceMeta(&draft) {
+			mobileDocuments.drafts[id] = draft
+			repaired = true
+		}
 		used += int64(len(draft.Markdown))
-		if n := len(draft.SourceBytes); n > 0 {
+		if n := mobileDraftSourceSize(draft); n > 0 {
 			used += int64(n)
 			draftsWithOriginal[draft.ID] = struct{}{}
 		}
 	}
-	for _, upload := range mobileDocuments.uploads {
+	for id, upload := range mobileDocuments.uploads {
 		if upload.OwnerID != ownerID {
 			continue
+		}
+		if repair && mobileUploadRepairSourceMeta(&upload) {
+			mobileDocuments.uploads[id] = upload
+			repaired = true
 		}
 		// Avoid double-counting when the same original bytes already live on the draft.
 		if upload.DraftID != "" {
@@ -56,9 +76,9 @@ func mobileDocumentQuotaUsedBytes(ownerID string) int64 {
 				continue
 			}
 		}
-		used += int64(len(upload.SourceBytes))
+		used += int64(mobileUploadSourceSize(upload))
 	}
-	return used
+	return used, repaired
 }
 
 // mobileDocumentQuotaLimitForPrincipal returns the effective quota bytes for bootstrap parity.
@@ -92,7 +112,16 @@ func mobileCheckDocumentQuota(ownerID string, additionalBytes int64, limit int64
 	if additionalBytes < 0 {
 		additionalBytes = 0
 	}
-	used := mobileDocumentQuotaUsedBytes(ownerID)
+	// Fast path: trust in-memory size metadata (no disk stats).
+	used, _ := mobileDocumentQuotaScan(ownerID, false)
+	if used+additionalBytes <= limit {
+		return nil
+	}
+	// Over limit: re-scan with repair so ghost blobs cannot block uploads.
+	used, repaired := mobileDocumentQuotaScan(ownerID, true)
+	if repaired {
+		mobilePersistState()
+	}
 	if used+additionalBytes > limit {
 		return errString("document storage quota exceeded")
 	}

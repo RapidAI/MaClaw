@@ -45,11 +45,14 @@ func (c *guiLoopCommandCallbacks) RunModifyCycle(ctx context.Context, prompt str
 
 	// RunLoop with clean context — no history, fresh conversation each cycle.
 	result := agent.RunLoop(cb, prompt, nil, c.httpClient)
+	if c.handler != nil {
+		accumulateLoopResultUsage(c.handler.app, c.llmCfg, result)
+	}
 	return result
 }
 
 func (c *guiLoopCommandCallbacks) OnIterationStart(iteration, maxIterations int) {
-	msg := fmt.Sprintf("🔄 Loop 迭代 %d/%d", iteration+1, maxIterations)
+	msg := fmt.Sprintf("Loop 迭代 %d/%d", iteration+1, maxIterations)
 	log.Printf("[loop-command] %s", msg)
 	if c.onProgress != nil {
 		c.onProgress(msg)
@@ -57,7 +60,7 @@ func (c *guiLoopCommandCallbacks) OnIterationStart(iteration, maxIterations int)
 }
 
 func (c *guiLoopCommandCallbacks) OnVerifyStart(cmd string, iteration int) {
-	msg := fmt.Sprintf("🧪 运行验证命令: %s", cmd)
+	msg := fmt.Sprintf("运行验证命令: %s", cmd)
 	if c.onProgress != nil {
 		c.onProgress(msg)
 	}
@@ -66,12 +69,12 @@ func (c *guiLoopCommandCallbacks) OnVerifyStart(cmd string, iteration int) {
 func (c *guiLoopCommandCallbacks) OnVerifyDone(result agent.VerifyCommandResult, iteration int) {
 	if result.Passed() {
 		if c.onProgress != nil {
-			c.onProgress("✅ 验证通过!")
+			c.onProgress("验证通过!")
 		}
 	} else {
-		msg := fmt.Sprintf("❌ 验证失败 (exit %d)", result.ExitCode)
+		msg := fmt.Sprintf("验证失败 (exit %d)", result.ExitCode)
 		if result.TimedOut {
-			msg = "⏱️ 验证命令超时"
+			msg = "验证命令超时"
 		}
 		if c.onProgress != nil {
 			c.onProgress(msg)
@@ -306,7 +309,7 @@ func (c *loopCycleCallbacks) OnProgress(text string) {
 
 func (c *loopCycleCallbacks) OnToolCall(name string) {
 	if c.parent.onProgress != nil {
-		c.parent.onProgress(fmt.Sprintf("🔧 %s", name))
+		c.parent.onProgress(fmt.Sprintf("%s", name))
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 var codingKnowledgeStoreMu sync.Mutex
@@ -186,4 +187,42 @@ func (a *App) CodingKnowledgeSearch(query string, limit int) ([]knowledge.Coding
 		Limit:  limit,
 		Status: []string{knowledge.CodingStatusCandidate, knowledge.CodingStatusActive, knowledge.CodingStatusVerified, knowledge.CodingStatusDeprecated},
 	})
+}
+
+// SelectCodingKnowledgeExportPath opens a save dialog for coding experience packs.
+func (a *App) SelectCodingKnowledgeExportPath() string {
+	if a == nil || a.ctx == nil {
+		return ""
+	}
+	stamp := time.Now().UTC().Format("20060102-150405")
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Export Coding Knowledge Pack",
+		DefaultFilename: fmt.Sprintf("maclaw-coding-knowledge-%s.json", stamp),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Coding Knowledge Pack (*.json)", Pattern: "*.json"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return savePath
+}
+
+// SelectCodingKnowledgeImportFile opens a file picker for coding experience packs.
+func (a *App) SelectCodingKnowledgeImportFile() string {
+	if a == nil || a.ctx == nil {
+		return ""
+	}
+	selection, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Import Coding Knowledge Pack",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Coding Knowledge Pack (*.json)", Pattern: "*.json"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return ""
+	}
+	return selection
 }

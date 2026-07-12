@@ -41,8 +41,8 @@ MaClaw（码卡龙） 的配置文件保存在您的用户主目录下，路径�
 请确保您在切换服务商后点击了主界面的 **“Launch”** 按钮重新启动工具。MaClaw（码卡龙） 会在启动前根据您的最新配置自动同步环境。如果仍有问题，可以尝试在服务商中先切换到 **“Original”** 模式以清除旧配置，然后再切换回目标服务商。
 
 ## 12. Qoder CLI 中“原厂”与“Qoder”服务商的区别是什么？
-*   **原厂 (Original)**：表示使用 Qoder CLI 默认的认证方式，即通过**浏览器登录**进行授权。
-*   **Qoder**：表示使用**个人令牌 (Personal Access Token)** 进行认证。您可以在 Qoder 官网获取令牌并填入 MaClaw（码卡龙），这种方式适合在无法打开浏览器或需要快速部署的环境下使用。
+* **原厂 (Original)**：表示使用 Qoder CLI 默认的认证方式，即通过**浏览器登录**进行授权。
+* **Qoder**：表示使用**个人令牌 (Personal Access Token)** 进行认证。您可以在 Qoder 官网获取令牌并填入 MaClaw（码卡龙），这种方式适合在无法打开浏览器或需要快速部署的环境下使用。
 
 ## 14. 程序支持哪些 Python 环境？
 目前主要支持 **Conda/Anaconda** 环境。在项目设置中开启 “Python 项目” 后，MaClaw（码卡龙） 会扫描系统中的 conda 环境供您选择。启动时会自动执行环境切换。
@@ -72,54 +72,54 @@ Codex 目前仅支持 **Zip 包**格式的技能。如果您尝试安装 Skill I
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:9399;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-  
+ proxy_pass http://127.0.0.1:9399;
+ proxy_http_version 1.1;
+ proxy_set_header Upgrade $http_upgrade;
+ proxy_set_header Connection "upgrade";
+ proxy_read_timeout 3600s;
+ proxy_send_timeout 3600s;
+ 
 }
 ```
 
 **2. HubCenter 的 Nginx 配置（关键！容易遗漏）**：
 
-HubCenter /hub  需要转发 LLM 请求到后端 API（DeepSeek/GLM 等），其中 `/api/llm/` 路径必须有足够大的超时：
+HubCenter /hub 需要转发 LLM 请求到后端 API（DeepSeek/GLM 等），其中 `/api/llm/` 路径必须有足够大的超时：
 
 ```nginx
 server {
-    listen 443 ssl http2;
-    server_name hubs.example.com;
+ listen 443 ssl http2;
+ server_name hubs.example.com;
 
-    # ... SSL 配置 ...
+ # ... SSL 配置 ...
 
-    # LLM 代理路径 - 必须设置大超时
-    location /api/llm/ {
-        proxy_pass http://127.0.0.1:9499;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+ # LLM 代理路径 - 必须设置大超时
+ location /api/llm/ {
+ proxy_pass http://127.0.0.1:9499;
+ proxy_http_version 1.1;
+ proxy_set_header Host $host;
+ proxy_set_header X-Real-IP $remote_addr;
+ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-        # ⚠️ 关键：Thinking 模型 reasoning 阶段可能静默 60-180 秒
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-        proxy_connect_timeout 30s;
+ # 关键：Thinking 模型 reasoning 阶段可能静默 60-180 秒
+ proxy_read_timeout 600s;
+ proxy_send_timeout 600s;
+ proxy_connect_timeout 30s;
 
-        # ⚠️ 关键：SSE 流式响应必须禁用缓冲
-        proxy_buffering off;
-    }
+ # 关键：SSE 流式响应必须禁用缓冲
+ proxy_buffering off;
+ }
 
-    # 其他 API 路径
-    location / {
-        proxy_pass http://127.0.0.1:9499;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
+ # 其他 API 路径
+ location / {
+ proxy_pass http://127.0.0.1:9499;
+ proxy_http_version 1.1;
+ proxy_set_header Upgrade $http_upgrade;
+ proxy_set_header Connection "upgrade";
+ proxy_set_header Host $host;
+ proxy_read_timeout 300s;
+ proxy_send_timeout 300s;
+ }
 }
 ```
 
@@ -139,10 +139,10 @@ server {
 
 ```bash
 curl -X POST https://api.deepseek.com/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Write a 500-line Python script"}],"tools":[{"type":"function","function":{"name":"write_file","description":"Write to file","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}],"max_tokens":65536,"stream":true}' \
-  --max-time 600 -o /dev/null -w "HTTP %{http_code} Time %{time_total}s Size %{size_download}\n"
+ -H "Authorization: Bearer YOUR_KEY" \
+ -H "Content-Type: application/json" \
+ -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Write a 500-line Python script"}],"tools":[{"type":"function","function":{"name":"write_file","description":"Write to file","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}}],"max_tokens":65536,"stream":true}' \
+ --max-time 600 -o /dev/null -w "HTTP %{http_code} Time %{time_total}s Size %{size_download}\n"
 ```
 
 如果直连后端正常但通过 HubCenter Nginx 失败，问题就在 Nginx 超时配置。
@@ -151,10 +151,10 @@ curl -X POST https://api.deepseek.com/v1/chat/completions \
 
 | 模型类型 | 是否有 reasoning 静默期 | 长 tool call 风险 | 建议 |
 |---------|----------------------|-----------------|------|
-| GLM-5.1/5.2 | ❌ 无 | 低（65K output 全给内容） | 直接使用，无需特殊配置 |
-| DeepSeek V4 Flash (thinking) | ✅ 有（60-180s） | 高（reasoning 消耗 output 预算） | 确保 Nginx 超时 ≥ 600s |
-| DeepSeek V4 (非 thinking) | ❌ 无 | 低 | 同 GLM |
-| Kimi K2 / Qwen thinking | ✅ 可能有 | 中 | 确保 Nginx 超时 ≥ 600s |
+| GLM-5.1/5.2 | 无 | 低（65K output 全给内容） | 直接使用，无需特殊配置 |
+| DeepSeek V4 Flash (thinking) | 有（60-180s） | 高（reasoning 消耗 output 预算） | 确保 Nginx 超时 ≥ 600s |
+| DeepSeek V4 (非 thinking) | 无 | 低 | 同 GLM |
+| Kimi K2 / Qwen thinking | 可能有 | 中 | 确保 Nginx 超时 ≥ 600s |
 
 ---
 *更多问题请访问 GitHub Issues：[RapidAI/cceasy/issues](https://github.com/RapidAI/cceasy/issues)*

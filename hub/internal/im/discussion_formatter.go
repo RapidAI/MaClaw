@@ -9,12 +9,12 @@ import (
 // discussion round's results.
 func FormatRoundSummary(round int, results []discussionRoundResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "📝 第 %d 轮小结：\n", round)
+	fmt.Fprintf(&b, "第 %d 轮小结：\n", round)
 	for _, r := range results {
 		if r.Err != nil {
-			fmt.Fprintf(&b, "• %s: ❌ 错误\n", r.Name)
+			fmt.Fprintf(&b, "• %s: 错误\n", r.Name)
 		} else if r.Text == "" {
-			fmt.Fprintf(&b, "• %s: ⏰ 超时\n", r.Name)
+			fmt.Fprintf(&b, "• %s: 超时\n", r.Name)
 		} else {
 			summary := r.Text
 			runes := []rune(summary)

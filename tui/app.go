@@ -33,9 +33,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/needleruntime"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -172,6 +174,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		taskStore:        task.NewStore(),
 		toolRegistry:     agent.NewCoreToolRegistry(),
 		ttsManager:       initTUITTSManager(),
+		costTracker:      llm.NewCostTracker(appCfg.DailyLLMBudgetUSD),
 	}
 
 	// Initialize scheduled task manager with background ticker.
@@ -446,6 +449,9 @@ type TUIApp struct {
 	goalStore        *goal.Store
 	toolRegistry     *agent.CoreToolRegistry
 	ttsManager       *tts.Manager
+	// costTracker tracks daily LLM $ (fleet-persisted) for budget gates.
+	costTracker   *llm.CostTracker
+	costTrackerMu sync.Mutex
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go 鈥?no fields needed here.
 
@@ -474,6 +480,10 @@ type TUIApp struct {
 	workflowAgentLoop    bool   // true when the agent loop runs on behalf of the workflow
 	pendingWorkflowStart *tuiPendingWorkflowStart
 	needleRuntime        *needleruntime.Runtime
+
+	// evolutionPipeline schedules TUI skill self-repair after runs.
+	evolutionPipeline *skill.EvolutionPipeline
+	evolutionOnce     sync.Once
 }
 
 // initKnowledgeStore opens the knowledge DB if it exists.
@@ -517,10 +527,10 @@ func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
 		HasKnowledgeBase: app.knowledgeStore != nil,
 	}
 
-	// Knowledge auto-recall hook
+	// Knowledge auto-recall hook (prior turns supplied by BuildSystemPrompt override when history is set)
 	if app.knowledgeStore != nil {
 		deps.KnowledgeAutoRecall = func(b *strings.Builder, userMsg string) {
-			app.appendKnowledgeAutoRecall(b, userMsg)
+			app.appendKnowledgeAutoRecall(b, userMsg, nil)
 		}
 	}
 
@@ -1116,6 +1126,44 @@ func (m *tuiModel) serviceRedeemRefreshReady() bool {
 	return strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
 }
 
+// runLocalDoctor evaluates shared readiness against the TUI's loaded AppConfig.
+func (m *tuiModel) runLocalDoctor() doctor.Report {
+	cfg := corelib.AppConfig{}
+	cfgPath := ""
+	if m != nil && m.app != nil {
+		cfg = m.app.appConfig
+		cfgPath = filepath.Join(commands.ResolveDataDir(), "config.json")
+	}
+	return doctor.Run(doctor.Input{
+		Config:     cfg,
+		ConfigPath: cfgPath,
+	})
+}
+
+// firstNonFlagArg returns the first slash-command argument that is not a --flag.
+func firstNonFlagArg(args []string) string {
+	for _, a := range args {
+		a = strings.TrimSpace(a)
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a
+	}
+	return ""
+}
+
+// formatCanaryPreviewLine builds a one-line sticky canary membership summary.
+// percent should already be resolved via ResolveSharedLoopEnv (env>config).
+func formatCanaryPreviewLine(userID string, percent int) string {
+	p := doctor.PreviewSharedLoopCanary(userID, percent)
+	inOut := "OUT"
+	if p.Allows {
+		inOut = "IN"
+	}
+	return fmt.Sprintf("canary-preview: user=%q %s canary · percent=%d bucket=%d",
+		p.UserID, inOut, p.Percent, p.Bucket)
+}
+
 // handleSlashCommand processes /commands. Only called when text starts with "/".
 func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 	text = strings.TrimSpace(text)
@@ -1279,10 +1327,81 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenConfig"))
 		return nil
 
-	case cmdName == "/status" || cmdName == "/doctor" || cmdName == "/health":
+	case cmdName == "/doctor":
+		// Print the shared readiness report into chat, then open the setup panel.
+		report := m.runLocalDoctor()
+		m.root.Chat.AppendSystemMessage(doctor.FormatReport(report))
+		m.root.SetTab(views.TabConfig)
+		m.root.Config.FocusSetupStatus()
+		if report.OK {
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenStatus"))
+		} else {
+			m.root.StatusBar.SetMessage(report.Summary)
+		}
+		return nil
+
+	case cmdName == "/status" || cmdName == "/health":
+		// Short summary + setup panel (full detail via /doctor).
+		// Optional: /status <user-id> appends sticky canary membership preview.
+		report := m.runLocalDoctor()
+		msg := fmt.Sprintf("MaClaw doctor: %s (use /doctor for full checks)", report.Summary)
+		cfg := corelib.AppConfig{}
+		if m.app != nil {
+			cfg = m.app.appConfig
+		}
+		env := doctor.ResolveSharedLoopEnv(cfg)
+		if line := doctor.FormatSharedLoopLine(env); line != "" {
+			msg = msg + "\n" + line
+		}
+		if line := agent.FormatPromptProfileLine(); line != "" {
+			msg = msg + "\n" + line
+		}
+		if !agent.LightToolRetryEnabled() {
+			msg = msg + "\nlight_retry=off (" + agent.PromptLightRetryEnvKey + ")"
+		}
+		if uid := firstNonFlagArg(args); uid != "" {
+			msg = msg + "\n" + formatCanaryPreviewLine(uid, env.Percent)
+		}
+		m.root.Chat.AppendSystemMessage(msg)
 		m.root.SetTab(views.TabConfig)
 		m.root.Config.FocusSetupStatus()
 		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenStatus"))
+		return nil
+
+	case cmdName == "/canary":
+		// Sticky shared-loop canary membership preview (same FNV algorithm as runtime).
+		uid := firstNonFlagArg(args)
+		if uid == "" {
+			m.root.Chat.AppendSystemMessage("usage: /canary <user-id>\n  preview sticky canary vs MACLAW_SHARED_AGENT_LOOP_PERCENT")
+			m.root.StatusBar.SetMessage("usage: /canary <user-id>")
+			return nil
+		}
+		cfg := corelib.AppConfig{}
+		if m.app != nil {
+			cfg = m.app.appConfig
+		}
+		env := doctor.ResolveSharedLoopEnv(cfg)
+		line := formatCanaryPreviewLine(uid, env.Percent)
+		m.root.Chat.AppendSystemMessage(line)
+		m.root.StatusBar.SetMessage(line)
+		return nil
+
+	case cmdName == "/prompt-export" || cmdName == "/export-prompt-stats":
+		// Portable adaptive-prompt snapshot (same as maclaw-cli shared-loop export --write).
+		exp := agent.BuildPromptProfileExport()
+		path := agent.DefaultPromptProfileExportPath()
+		if err := agent.WritePromptProfileExport(path, exp); err != nil {
+			m.root.Chat.AppendSystemMessage("prompt-export failed: " + err.Error())
+			m.root.StatusBar.SetMessage(err.Error())
+			return nil
+		}
+		sum := strings.TrimSpace(exp.Summary)
+		if sum == "" {
+			sum = "adaptive-prompt: no turns yet"
+		}
+		msg := fmt.Sprintf("prompt-export written:\n  %s\n  %s\n  merge: maclaw-cli shared-loop merge-exports FILE…", path, sum)
+		m.root.Chat.AppendSystemMessage(msg)
+		m.root.StatusBar.SetMessage("exported " + filepath.Base(path))
 		return nil
 
 	case cmdName == "/llm":
@@ -1501,8 +1620,22 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 		if wasWorkflowLoop && phasePrompt != "" {
 			cb.phasePromptOverride = phasePrompt
 		}
+		cb.history = history
 
 		result := agent.RunLoop(cb, text, history, nil)
+
+		// Budget hard-stop: surface gate message even when assistant text is set.
+		if result.Error == "daily_llm_budget_exceeded" {
+			msg := strings.TrimSpace(result.Text)
+			if msg == "" {
+				if _, _, gateMsg := app.earlyStopBudget(); gateMsg != "" {
+					msg = gateMsg
+				} else {
+					msg = "今日 LLM 预算已用尽。"
+				}
+			}
+			return views.ChatResponseMsg{Text: msg}
+		}
 
 		// Save conversation history (persisted to disk).
 		history = append(history, agent.ConversationEntry{Role: "user", Content: text})
@@ -1549,7 +1682,30 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 		if result.Error != "" {
 			return views.ChatResponseMsg{Error: result.Error}
 		}
-		return views.ChatResponseMsg{Text: result.Text}
+		text := result.Text
+		promptProfile := cb.lastPromptProfile
+		if cb.forceFullPrompt || result.LightUpgraded || cb.lastPromptABSample || cb.lastPromptSoftFull {
+			promptProfile = agent.PromptProfileFull
+		}
+		if promptProfile == "" {
+			promptProfile, _ = cb.resolvePromptProfile(text)
+		}
+		if meta := agent.FormatTurnMetaOpts(agent.TurnMetaOptions{
+			Route:             result.Route,
+			Usage:             result.Usage,
+			PromptProfile:     string(promptProfile),
+			PromptSavedTokens: cb.lastPromptSavedTokens,
+			PromptUpgraded:    result.LightUpgraded || cb.forceFullPrompt,
+			PromptABSample:    cb.lastPromptABSample && !result.LightUpgraded && !cb.forceFullPrompt,
+			PromptSoftFull:    cb.lastPromptSoftFull && !result.LightUpgraded && !cb.forceFullPrompt && !cb.lastPromptABSample,
+		}); meta != "" {
+			if strings.TrimSpace(text) == "" {
+				text = meta
+			} else {
+				text = text + "\n\n" + meta
+			}
+		}
+		return views.ChatResponseMsg{Text: text}
 	}
 }
 
@@ -1624,10 +1780,16 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 		if err != nil {
 			return views.ToolSkillSearchResultMsg{Error: err.Error()}
 		}
-		hubResults := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
+		report := client.SearchAllFilteredReport(ctx, hubURL, query, allowedSources)
+		hubResults := report.Results
+		warn := report.FormatDegradedNote()
 
 		if len(hubResults) == 0 {
-			return views.ToolSkillSearchResultMsg{Error: tuiText(lang, "skillNoMatch")}
+			errMsg := tuiText(lang, "skillNoMatch")
+			if warn != "" {
+				errMsg = errMsg + "\n" + warn
+			}
+			return views.ToolSkillSearchResultMsg{Error: errMsg, Warning: warn}
 		}
 
 		results := make([]views.SkillSearchResult, 0, len(hubResults))
@@ -1643,7 +1805,7 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 				InstallRef: r.InstallRef,
 			})
 		}
-		return views.ToolSkillSearchResultMsg{Results: results}
+		return views.ToolSkillSearchResultMsg{Results: results, Warning: warn}
 	}
 }
 
@@ -2832,10 +2994,54 @@ type tuiCallbacks struct {
 	program  *tea.Program
 	stopped  bool
 	cancelCh chan struct{} // closed by Esc key to cancel the running loop
+	// activeLLM is set by RouteTurn so mid-loop GetLLMConfig keeps cost-route model.
+	activeLLM tuiActiveLLM
 
 	// phasePromptOverride is set when the workflow engine wants the agent
 	// loop to generate a phase document. It's appended to the system prompt.
 	phasePromptOverride string
+	// lastPromptProfile is set during BuildSystemPrompt for Turn meta + tool filter alignment.
+	lastPromptProfile     agent.PromptProfile
+	lastPromptSavedTokens int
+	// lastPromptABSample is set when quality A/B forced full on a light-eligible turn.
+	lastPromptABSample bool
+	// lastPromptSoftFull is set when SoftFullAgentIntent upgraded light→full.
+	lastPromptSoftFull bool
+	// forceFullPrompt is set by UpgradeLightPromptToFull (light tool-deny recovery).
+	forceFullPrompt bool
+	// history is pre-turn conversation for multi-turn knowledge auto-recall.
+	history []agent.ConversationEntry
+}
+
+// CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
+func (c *tuiCallbacks) CurrentPromptProfile() agent.PromptProfile {
+	if c == nil {
+		return agent.PromptProfileFull
+	}
+	if c.forceFullPrompt {
+		return agent.PromptProfileFull
+	}
+	return c.lastPromptProfile
+}
+
+// UpgradeLightPromptToFull implements agent.LightProfileUpgrader.
+func (c *tuiCallbacks) UpgradeLightPromptToFull(reason string) bool {
+	if c == nil {
+		return false
+	}
+	if c.forceFullPrompt || c.lastPromptProfile == agent.PromptProfileFull {
+		// Already full — still true so RunLoop can refresh tools if needed.
+		c.forceFullPrompt = true
+		c.lastPromptProfile = agent.PromptProfileFull
+		return true
+	}
+	if !c.lastPromptProfile.IsLight() {
+		return false
+	}
+	c.forceFullPrompt = true
+	c.lastPromptProfile = agent.PromptProfileFull
+	log.Printf("[tui] light→full prompt upgrade reason=%s", reason)
+	return true
 }
 
 func newTuiCallbacks(app *TUIApp, prog *tea.Program) *tuiCallbacks {
@@ -2856,7 +3062,19 @@ func (c *tuiCallbacks) Cancel() {
 }
 
 func (c *tuiCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.app.llmConfig
+	return c.activeLLM.get(c.app.llmConfig)
+}
+
+// RouteTurn implements agent.TurnRouter — cost-route / model_routes / aux.
+func (c *tuiCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *tuiCallbacks) GetMaxIterations() int {
@@ -2865,6 +3083,38 @@ func (c *tuiCallbacks) GetMaxIterations() int {
 
 func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
 	deps := c.app.buildSystemPromptDeps()
+	// Multi-turn knowledge auto-recall: blend prior user turns when history is available.
+	if c.app != nil && c.app.knowledgeStore != nil {
+		prior := agent.PriorUserMessagesFromHistory(c.history, agent.KnowledgeAutoRecallPriorUserTurns)
+		deps.KnowledgeAutoRecall = func(b *strings.Builder, userMsg string) {
+			c.app.appendKnowledgeAutoRecall(b, userMsg, prior)
+		}
+	}
+	// Adaptive system prompt: light turns skip coding/SSH/MCP bulk.
+	// Workflow phase generation always needs the full policy surface.
+	profile, classified := c.resolvePromptProfile(userText)
+	c.lastPromptProfile = profile
+	c.lastPromptABSample = agent.IsQualityABReason(classified.Reason)
+	c.lastPromptSoftFull = agent.IsSoftFullUpgradeReason(classified.Reason)
+	deps.Config.PromptProfile = c.lastPromptProfile
+	fullTok, lightTok := 0, 0
+	c.lastPromptSavedTokens = 0
+	if c.lastPromptProfile.IsLight() {
+		fullTok, lightTok = agent.EstimatePromptProfileTokens(deps, userText, isFirstTurn)
+		if fullTok > lightTok {
+			c.lastPromptSavedTokens = fullTok - lightTok
+		}
+	}
+	// Skip re-recording when rebuilding after mid-loop light→full upgrade.
+	if !(c.forceFullPrompt && strings.Contains(classified.Reason, "tool-deny upgrade")) {
+		agent.RecordPromptProfileDecision(agent.PromptProfileDecision{
+			Profile:     c.lastPromptProfile,
+			FullTokens:  fullTok,
+			LightTokens: lightTok,
+			Task:        string(classified.Task),
+			Reason:      classified.Reason,
+		})
+	}
 	prompt := agent.BuildSystemPrompt(deps, userText, isFirstTurn)
 
 	// Inject workflow phase prompt when the agent loop runs on behalf of
@@ -2876,8 +3126,30 @@ func (c *tuiCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) stri
 	return prompt
 }
 
+func (c *tuiCallbacks) resolvePromptProfile(userText string) (agent.PromptProfile, llm.ClassifyResult) {
+	if c.forceFullPrompt {
+		return agent.PromptProfileFull, llm.ClassifyResult{
+			Task:   llm.TaskReasoning,
+			Reason: "force full after light tool-deny upgrade",
+		}
+	}
+	if c.phasePromptOverride != "" {
+		return agent.PromptProfileFull, llm.ClassifyResult{
+			Task:   llm.TaskDefault,
+			Reason: "workflow phase override",
+		}
+	}
+	return agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
+}
+
 func (c *tuiCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Align tool surface with light system prompt (no bash/coding/files).
+	profile, _ := c.resolvePromptProfile(userText)
+	if profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
@@ -2925,6 +3197,9 @@ func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
 	if app.isWorkflowPhaseExecutionBlockedTUI() {
 		return false
 	}
+	if phase := app.activeWorkflowPhaseTUI(); v2.IsArtifactPhase(phase) {
+		return v2.IsToolAllowedInArtifactPhase(name)
+	}
 	return v2.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
 }
 
@@ -2941,6 +3216,14 @@ func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, st
 			return false, tuiFormat(tuiConfigLang(app.appConfig), "toolArgParseFailed", err.Error())
 		}
 	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	if phase := app.activeWorkflowPhaseTUI(); v2.IsArtifactPhase(phase) {
+		if err := v2.ValidateArtifactPhaseToolCall(name, args); err != nil {
+			return false, err.Error()
+		}
+	}
 	var approved []v2.OpsApprovedCommand
 	// Read approved commands from V2 state machine's phase outputs.
 	if wf := app.getWorkflowV2TUI(); wf != nil {
@@ -2954,6 +3237,21 @@ func (app *TUIApp) isWorkflowToolCallAllowedTUI(name, argsJSON string) (bool, st
 		return false, err.Error()
 	}
 	return true, ""
+}
+
+func (app *TUIApp) activeWorkflowPhaseTUI() *v2.Phase {
+	if app == nil {
+		return nil
+	}
+	wf := app.getWorkflowV2TUI()
+	if wf == nil || wf.machine == nil {
+		return nil
+	}
+	state := wf.machine.GetActive("tui-user")
+	if state == nil {
+		return nil
+	}
+	return state.ActivePhase()
 }
 
 func (app *TUIApp) isWorkflowPhaseExecutionBlockedTUI() bool {
@@ -3012,6 +3310,74 @@ func (c *tuiCallbacks) ShouldStop() bool {
 	}
 }
 
+// EarlyStop implements agent.EarlyStopper (daily LLM budget).
+func (c *tuiCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.app == nil {
+		return false, "", ""
+	}
+	return c.app.earlyStopBudget()
+}
+
+// OnLLMUsage implements agent.LLMUsageRecorder.
+func (c *tuiCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.recordLLMCost(model, inputTokens, outputTokens)
+}
+
+// ensureCostTracker lazily creates a CostTracker (pipe/rpc may not set it at init).
+func (app *TUIApp) ensureCostTracker() *llm.CostTracker {
+	if app == nil {
+		return nil
+	}
+	app.costTrackerMu.Lock()
+	defer app.costTrackerMu.Unlock()
+	if app.costTracker == nil {
+		app.costTracker = llm.NewCostTracker(app.appConfig.DailyLLMBudgetUSD)
+	}
+	return app.costTracker
+}
+
+// recordLLMCost charges the shared CostTracker (durable fleet slot).
+func (app *TUIApp) recordLLMCost(model string, inputTokens, outputTokens int) {
+	ct := app.ensureCostTracker()
+	if ct == nil {
+		return
+	}
+	if model == "" {
+		model = app.llmConfig.Model
+	}
+	cost := ct.Record(model, inputTokens, outputTokens)
+	if cost > 0.01 {
+		log.Printf("[cost] tui %s: in=%d out=%d cost=$%.4f", model, inputTokens, outputTokens, cost)
+	}
+}
+
+// earlyStopBudget returns stop when daily budget is exceeded (fleet-aware).
+func (app *TUIApp) earlyStopBudget() (bool, string, string) {
+	ct := app.ensureCostTracker()
+	if ct == nil {
+		return false, "", ""
+	}
+	// Keep budget in sync if config was reloaded.
+	if b := app.appConfig.DailyLLMBudgetUSD; b != ct.BudgetLimit() {
+		ct.SetBudget(b)
+	}
+	if ct.BudgetLimit() <= 0 {
+		return false, "", ""
+	}
+	if ct.IsOverBudget() {
+		msg := ct.BudgetGateMessage()
+		log.Printf("[cost] tui budget hard-stop: %s", ct.DailySummary())
+		return true, "daily_llm_budget_exceeded", msg
+	}
+	if ct.ShouldWarn() {
+		log.Printf("[cost] tui budget warning: %s", ct.DailySummary())
+	}
+	return false, "", ""
+}
+
 // ---------------------------------------------------------------------------
 // tuiBtwCallbacks implements agent.LoopCallbacks for /btw side queries.
 // Minimal tool set: web_search, web_fetch, read_file, memory (read-only).
@@ -3027,10 +3393,11 @@ var tuiBtwToolNames = map[string]bool{
 }
 
 type tuiBtwCallbacks struct {
-	app      *TUIApp
-	program  *tea.Program
-	stopped  bool
-	cancelCh chan struct{}
+	app       *TUIApp
+	program   *tea.Program
+	stopped   bool
+	cancelCh  chan struct{}
+	activeLLM tuiActiveLLM
 
 	cachedTools []map[string]interface{}
 }
@@ -3053,7 +3420,18 @@ func (c *tuiBtwCallbacks) Cancel() {
 }
 
 func (c *tuiBtwCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
-	return c.app.llmConfig
+	return c.activeLLM.get(c.app.llmConfig)
+}
+
+func (c *tuiBtwCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil || c.app == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
+	if ok {
+		c.activeLLM.set(cfg)
+	}
+	return cfg, d, ok
 }
 
 func (c *tuiBtwCallbacks) GetMaxIterations() int {
@@ -3188,6 +3566,20 @@ func (c *tuiBtwCallbacks) ShouldStop() bool {
 	default:
 		return c.stopped
 	}
+}
+
+func (c *tuiBtwCallbacks) EarlyStop() (bool, string, string) {
+	if c == nil || c.app == nil {
+		return false, "", ""
+	}
+	return c.app.earlyStopBudget()
+}
+
+func (c *tuiBtwCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.recordLLMCost(model, inputTokens, outputTokens)
 }
 
 func tuiBtwSectionFormat(lang, key string) string {

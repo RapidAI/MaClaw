@@ -3,6 +3,7 @@ import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { IconBell } from "./WorkbenchIcons";
 
 // --- Types ---
 
@@ -735,7 +736,10 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
             }}
             title={isZh ? `${pendingCount} 个授权请求待处理` : `${pendingCount} pending auth request(s)`}
         >
-            🔔 {pendingCount}
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <IconBell size={12} color="currentColor" />
+                {pendingCount}
+            </span>
         </span>
     );
 }

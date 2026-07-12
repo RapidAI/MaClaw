@@ -379,6 +379,17 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolReadFile(args) })
 
+	reg("read_tool_result", "分段回读被截断的工具完整输出（[tool_result_handle] 的 id 或 path）。大日志/网页/bash 输出被投影为预览后，用此工具按 offset/limit 读取细节。",
+		ToolCategoryBuiltin, []string{"file", "read", "tool_result", "handle"},
+		map[string]interface{}{
+			"id":          map[string]string{"type": "string", "description": "handle id（来自 [tool_result_handle] 页脚，优先）"},
+			"path":        map[string]string{"type": "string", "description": "handle 页脚中的绝对路径（必须位于 tool_results 目录）"},
+			"session_key": map[string]string{"type": "string", "description": "可选 session/user key（spill 时使用的会话隔离键）"},
+			"offset":      map[string]string{"type": "integer", "description": "从完整结果的字节偏移（默认 0）"},
+			"limit":       map[string]string{"type": "integer", "description": "返回最大字节数（默认 6000，最大 32768）"},
+		}, nil,
+		func(args map[string]interface{}) string { return h.toolReadToolResult(args) })
+
 	reg("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分）",
 		ToolCategoryBuiltin, []string{"file", "write"},
 		map[string]interface{}{

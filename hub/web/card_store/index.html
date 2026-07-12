@@ -130,7 +130,10 @@
     let checkoutResultPaid = false;
     let productAlignQueued = false;
     let tenantId = urlParams.get('tenant_id') || localStorage.getItem('card_store_tenant_id') || '';
-    let registeredEmail = normalizeBuyerIdentity(urlParams.get('email') || localStorage.getItem('card_store_email') || '');
+    let registeredEmail = normalizeBuyerIdentity(urlParams.get('email') || urlParams.get('account') || urlParams.get('mobile') || localStorage.getItem('card_store_email') || '');
+    if (registeredEmail && registeredEmail.indexOf('phone:') !== 0 && /^\d{6,}$/.test(registeredEmail)) {
+      registeredEmail = 'phone:' + registeredEmail;
+    }
     let secondaryEmail = normalizeEmail(localStorage.getItem('card_store_secondary_email') || '');
     let recoverCaptchaCode = '';
     if (registeredEmail) localStorage.setItem('card_store_email', registeredEmail);
@@ -513,7 +516,7 @@
       panel.id = 'checkoutResultPanel';
       panel.className = 'checkout-result-panel';
       panel.hidden = true;
-      panel.innerHTML = '<div class="checkout-result-card"><div class="checkout-result-main"><div class="success-mark" aria-hidden="true">✓</div><p class="eyebrow" data-result-eyebrow>' + esc(t('returnOrderTitle')) + '</p><h1 data-result-title>' + esc(t('resultPendingTitle')) + '</h1><p class="result-lead" data-result-lead>' + esc(t('resultPendingLead')) + '</p><div class="result-actions"><a class="result-primary" data-credits-center-link href="' + esc(creditsCenterURL()) + '">' + esc(t('viewCredits')) + '</a><button type="button" data-continue-shopping>' + esc(t('continueShopping')) + '</button></div><div class="msg" data-result-msg aria-live="polite"></div></div><div class="result-side"><div class="result-code-box" data-result-code-box hidden><span data-result-code-label>' + esc(t('serviceCode')) + '</span><strong data-result-code></strong><button type="button" data-copy-code>' + esc(t('copyCode')) + '</button></div><dl class="result-details" data-result-details></dl></div></div>';
+      panel.innerHTML = '<div class="checkout-result-card"><div class="checkout-result-main"><div class="success-mark" aria-hidden="true">OK</div><p class="eyebrow" data-result-eyebrow>' + esc(t('returnOrderTitle')) + '</p><h1 data-result-title>' + esc(t('resultPendingTitle')) + '</h1><p class="result-lead" data-result-lead>' + esc(t('resultPendingLead')) + '</p><div class="result-actions"><a class="result-primary" data-credits-center-link href="' + esc(creditsCenterURL()) + '">' + esc(t('viewCredits')) + '</a><button type="button" data-continue-shopping>' + esc(t('continueShopping')) + '</button></div><div class="msg" data-result-msg aria-live="polite"></div></div><div class="result-side"><div class="result-code-box" data-result-code-box hidden><span data-result-code-label>' + esc(t('serviceCode')) + '</span><strong data-result-code></strong><button type="button" data-copy-code>' + esc(t('copyCode')) + '</button></div><dl class="result-details" data-result-details></dl></div></div>';
       document.querySelector('.topbar').insertAdjacentElement('afterend', panel);
       const continueButton = panel.querySelector('[data-continue-shopping]');
       if (continueButton) continueButton.addEventListener('click', () => {
@@ -549,7 +552,7 @@
       const isPaid = !!(paid && body && body.code);
       const mark = panel.querySelector('.success-mark');
       if (mark) {
-        mark.textContent = isPaid ? '✓' : '…';
+        mark.textContent = isPaid ? 'OK' : '…';
         mark.classList.toggle('success-mark--pending', !isPaid);
       }
       panel.querySelector('[data-result-title]').textContent = isPaid ? t('resultSuccessTitle') : t('resultPendingTitle');

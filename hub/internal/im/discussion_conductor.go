@@ -121,7 +121,7 @@ func (dc *DiscussionConductor) StartConductedDiscussion(
 
 	return &GenericResponse{
 		StatusCode: 200,
-		StatusIcon: "🗣️",
+		StatusIcon: "info",
 		Title:      "智能讨论开始",
 		Body: fmt.Sprintf("话题: %s\n参与者: %s\n模式: LLM 智能编排（最多 %d 轮）\n\n讨论进行中，发送 /stop 可提前终止。",
 			topic, strings.Join(names, "、"), state.MaxRounds),
@@ -132,7 +132,7 @@ func (dc *DiscussionConductor) runConductedDiscussion(userID, platformName, plat
 	defer func() {
 		if rv := recover(); rv != nil {
 			dc.router.deliverProgress(context.Background(), userID, platformName, platformUID,
-				fmt.Sprintf("❌ 智能讨论异常终止: %v", rv))
+				fmt.Sprintf("智能讨论异常终止: %v", rv))
 		}
 		state.Running = false
 		dc.router.mu.Lock()
@@ -198,7 +198,7 @@ func (dc *DiscussionConductor) runConductedDiscussion(userID, platformName, plat
 				Summary: summary,
 			})
 			dc.router.deliverProgress(ctx, userID, platformName, platformUID,
-				fmt.Sprintf("📋 %s", summary))
+				fmt.Sprintf("%s", summary))
 			if action.Action == "conclude" {
 				break
 			}
@@ -236,7 +236,7 @@ func (dc *DiscussionConductor) runConductedDiscussion(userID, platformName, plat
 		dc.router.deliverProgress(ctx, userID, platformName, platformUID, "── 生成最终总结 ──")
 		summary := dc.generateFinalSummary(ctx, state)
 		dc.router.deliverProgress(ctx, userID, platformName, platformUID,
-			fmt.Sprintf("📋 最终总结:\n%s\n\n讨论结束。", summary))
+			fmt.Sprintf("最终总结:\n%s\n\n讨论结束。", summary))
 	}
 }
 
@@ -303,11 +303,11 @@ func (dc *DiscussionConductor) deliverRoundReplies(
 	topic string,
 	round int,
 ) {
-	prefix := fmt.Sprintf("🗣️ 会议 | %s | 第%d轮", truncate(topic, 20), round)
+	prefix := fmt.Sprintf("会议 | %s | 第%d轮", truncate(topic, 20), round)
 	for _, d := range devices {
 		text := replies[d.MachineID]
 		if text == "" {
-			text = "⏰ 超时未回复"
+			text = "超时未回复"
 		}
 		dc.router.deliverProgress(ctx, userID, platformName, platformUID,
 			fmt.Sprintf("%s\n[%s] %s", prefix, d.Name, text))
@@ -340,7 +340,7 @@ func (dc *DiscussionConductor) decideNextAction(ctx context.Context, state *Cond
 		}
 	}
 	if len(userInputs) > 0 {
-		fmt.Fprintf(&b, "\n💬 主持人补充: %s\n", strings.Join(userInputs, "\n"))
+		fmt.Fprintf(&b, "\n主持人补充: %s\n", strings.Join(userInputs, "\n"))
 	}
 	fmt.Fprintf(&b, "\n当前轮次: %d/%d\n请决定下一步动作。", len(state.Rounds)+1, state.MaxRounds)
 

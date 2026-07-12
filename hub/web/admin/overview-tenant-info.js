@@ -61,7 +61,7 @@
       computeCredits: '\u7b97\u529b\u4f59\u989d\uff1a{remaining} / {total}',
       computeExpires: '\u6709\u6548\u671f\u81f3 {date}',
       computeCards: '{count} \u4e2a\u6709\u6548\u6388\u6743',
-      computeAllowExternal: '\u2705 \u5141\u8bb8\u6dfb\u52a0\u7b2c\u4e09\u65b9 LLM \u670d\u52a1',
+      computeAllowExternal: '\u5141\u8bb8\u6dfb\u52a0\u7b2c\u4e09\u65b9 LLM \u670d\u52a1',
       computeNoExternal: '\u26d4 \u4ec5\u9650 MaClaw \u5b98\u65b9\u7b97\u529b',
       notAvailable: '\u6682\u65e0\u6570\u636e\uff08\u8bf7\u786e\u8ba4\u8282\u70b9\u4e2d\u5fc3\u5df2\u540c\u6b65\u6388\u6743\uff09',
       noDomains: '\u672a\u914d\u7f6e'
@@ -270,7 +270,7 @@
           fallbackDetail = compute.allow_external ? ott('computeAllowExternal') : ott('computeNoExternal');
         }
         if (compute.error) {
-          fallbackDetail = (fallbackDetail ? fallbackDetail + '\n' : '') + '\u26a0\ufe0f ' + esc(compute.error);
+          fallbackDetail = (fallbackDetail ? fallbackDetail + '\n' : '') + esc(compute.error);
         }
         computeDetail.textContent = fallbackDetail;
       }

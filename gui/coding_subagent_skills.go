@@ -423,10 +423,11 @@ func (c *codingSubAgentCallbacks) executeManageSkill(args map[string]interface{}
 	if isCodingSubAgentDynamicToolFailure(result) ||
 		strings.HasPrefix(result, "manage_skill failed:") ||
 		strings.HasPrefix(result, "Skill Executor") ||
-		strings.HasPrefix(result, "\u274c") ||
 		strings.HasPrefix(result, "skill not found") ||
 		strings.HasPrefix(result, "Skill \u672a\u627e\u5230") ||
-		strings.HasPrefix(result, "\u53c2\u6570\u89e3\u6790\u5931\u8d25") {
+		strings.HasPrefix(result, "\u53c2\u6570\u89e3\u6790\u5931\u8d25") ||
+		// Legacy failure rows may start with U+274C (cross mark).
+		(len(result) > 0 && []rune(result)[0] == 0x274C) {
 		outcome = codingToolOutcomeFailed
 	}
 	c.trackDynamicToolResult("manage_skill", skillName, result, outcome == codingToolOutcomeSuccess)
@@ -445,12 +446,12 @@ func isCodingSubAgentDynamicToolFailure(result string) bool {
 		"错误：",
 		"失败:",
 		"失败：",
-		"❌",
 		"failed:",
 		"failure:",
 		"exception:",
 		"panic:",
 		"tool error:",
+		"skill failed",
 		"mcp call failed:",
 		"mcp tool error",
 		"mcp 调用失败",
@@ -460,7 +461,7 @@ func isCodingSubAgentDynamicToolFailure(result string) bool {
 		"validation failed:",
 		"arguments json ",
 	} {
-		if strings.HasPrefix(lower, prefix) {
+		if prefix != "" && strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}

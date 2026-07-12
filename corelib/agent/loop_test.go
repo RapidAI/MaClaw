@@ -93,6 +93,27 @@ func (m *stopAfterFirstToolCallbacks) ExecuteToolStructured(name, args string) T
 	return result
 }
 
+// budgetStopCallbacks trips EarlyStop after the first LLM usage charge.
+type budgetStopCallbacks struct {
+	*mockCallbacks
+	usageRounds int
+	earlyAfter  int // stop after this many OnLLMUsage calls
+}
+
+func (m *budgetStopCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	_ = model
+	_ = inputTokens
+	_ = outputTokens
+	m.usageRounds++
+}
+
+func (m *budgetStopCallbacks) EarlyStop() (bool, string, string) {
+	if m.usageRounds >= m.earlyAfter && m.earlyAfter > 0 {
+		return true, "daily_llm_budget_exceeded", "budget test stop"
+	}
+	return false, "", ""
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
@@ -543,6 +564,88 @@ func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 	}
 }
 
+func TestRunLoop_EarlyStopBudgetAfterFirstRound(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = map[string]interface{}{
+				"usage": map[string]interface{}{
+					"prompt_tokens":     100,
+					"completion_tokens": 20,
+					"total_tokens":      120,
+				},
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   "call_1",
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "bash",
+										"arguments": `{"command":"echo x"}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			// Should not be reached when EarlyStop fires after first usage.
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "should not run",
+						},
+						"finish_reason": "stop",
+					},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &budgetStopCallbacks{
+		mockCallbacks: &mockCallbacks{
+			config: corelib.MaclawLLMConfig{
+				URL:   server.URL,
+				Model: "test",
+				Key:   "test-key",
+			},
+			maxIter:    10,
+			sysPrompt:  "sys",
+			toolResult: "ok",
+		},
+		earlyAfter: 1,
+	}
+	result := RunLoop(cb, "budget mid-loop", nil, nil)
+	if result.Error != "daily_llm_budget_exceeded" {
+		t.Fatalf("error=%q text=%q", result.Error, result.Text)
+	}
+	if result.Text != "budget test stop" {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if !result.HardExit {
+		t.Fatal("expected HardExit")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", callCount)
+	}
+	if cb.usageRounds != 1 {
+		t.Fatalf("usageRounds=%d", cb.usageRounds)
+	}
+}
+
 func TestRunLoop_UsesResponsesWireAPI(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]interface{}
@@ -718,6 +821,140 @@ func TestRunLoop_ToolAuthorizerBlocksExecution(t *testing.T) {
 	}
 	if result.ToolCalls != 1 {
 		t.Fatalf("expected blocked tool call to be counted, got %d", result.ToolCalls)
+	}
+}
+
+type lightProfileCallbacks struct {
+	*mockCallbacks
+	profile PromptProfile
+}
+
+func (c *lightProfileCallbacks) CurrentPromptProfile() PromptProfile { return c.profile }
+
+func TestAuthorizeLoopTool_LightProfileDeniesBash(t *testing.T) {
+	ResetPromptProfileStatsForTest()
+	cb := &lightProfileCallbacks{
+		mockCallbacks: &mockCallbacks{
+			// Host policy allows everything; light profile still blocks bash.
+			toolResult: "should not run",
+		},
+		profile: PromptProfileLight,
+	}
+	res, denied := authorizeLoopTool(cb, "bash", `{"command":"ls"}`)
+	if !denied {
+		t.Fatal("expected light deny")
+	}
+	if res.Outcome != ToolExecutionOutcomeError {
+		t.Fatalf("outcome=%s", res.Outcome)
+	}
+	if !strings.Contains(res.Result, "light prompt profile") {
+		t.Fatalf("result=%q", res.Result)
+	}
+	st := GetPromptProfileStats()
+	if st.LightToolDenies != 1 || st.LastDeniedTool != "bash" {
+		t.Fatalf("stats=%+v", st)
+	}
+	// Allowlisted light tool should pass light guard (no host authorizer limits).
+	res2, denied2 := authorizeLoopTool(cb, "web_search", `{}`)
+	if denied2 {
+		t.Fatalf("web_search should not be light-denied: %+v", res2)
+	}
+}
+
+type lightUpgradeCallbacks struct {
+	*mockCallbacks
+	profile  PromptProfile
+	upgraded bool
+	sys      string
+	toolDefs []map[string]interface{}
+}
+
+func (c *lightUpgradeCallbacks) CurrentPromptProfile() PromptProfile { return c.profile }
+func (c *lightUpgradeCallbacks) UpgradeLightPromptToFull(reason string) bool {
+	if !c.profile.IsLight() {
+		return false
+	}
+	c.profile = PromptProfileFull
+	c.upgraded = true
+	c.sys = "FULL SYSTEM " + reason
+	c.toolDefs = []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+	}
+	return true
+}
+func (c *lightUpgradeCallbacks) BuildSystemPrompt(string, bool) string { return c.sys }
+func (c *lightUpgradeCallbacks) BuildTools(string) []map[string]interface{} {
+	return c.toolDefs
+}
+
+func TestTryLightProfileToolRetry_UpgradesAndRefreshes(t *testing.T) {
+	t.Setenv(PromptLightRetryEnvKey, "")
+	ResetPromptProfileStatsForTest()
+	cb := &lightUpgradeCallbacks{
+		mockCallbacks: &mockCallbacks{toolResult: "ok"},
+		profile:       PromptProfileLight,
+		sys:           "LIGHT",
+		toolDefs: []map[string]interface{}{
+			{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		},
+	}
+	tools := FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools("x"))
+	conversation := []interface{}{
+		map[string]string{"role": "system", "content": "LIGHT"},
+		map[string]interface{}{"role": "user", "content": "run ls"},
+	}
+	// First authorize denies.
+	res, denied := authorizeLoopTool(cb, "bash", `{}`)
+	if !denied || !isLightToolDenyResult(res) {
+		t.Fatalf("expected light deny: denied=%v res=%+v", denied, res)
+	}
+	ok := tryLightProfileToolRetry(cb, "run ls", true, "bash", &tools, conversation)
+	if !ok || !cb.upgraded {
+		t.Fatalf("upgrade failed ok=%v upgraded=%v", ok, cb.upgraded)
+	}
+	if cb.profile != PromptProfileFull {
+		t.Fatalf("profile=%s", cb.profile)
+	}
+	// Tools refreshed to include bash.
+	names := map[string]bool{}
+	for _, d := range tools {
+		names[toolDefName(d)] = true
+	}
+	if !names["bash"] {
+		t.Fatalf("tools after upgrade missing bash: %v", names)
+	}
+	sys, _ := conversation[0].(map[string]string)
+	if !strings.Contains(sys["content"], "FULL SYSTEM") {
+		t.Fatalf("system not refreshed: %q", sys["content"])
+	}
+	// Re-authorize should pass light guard.
+	_, denied2 := authorizeLoopTool(cb, "bash", `{}`)
+	if denied2 {
+		t.Fatal("bash should be allowed after upgrade")
+	}
+	st := GetPromptProfileStats()
+	if st.LightUpgrades < 1 {
+		t.Fatalf("expected upgrade count: %+v", st)
+	}
+	if st.LastUpgradeReason == "" || !strings.Contains(st.LastUpgradeReason, "tool_deny_retry") {
+		t.Fatalf("upgrade reason=%q", st.LastUpgradeReason)
+	}
+}
+
+func TestTryLightProfileToolRetry_DisabledByEnv(t *testing.T) {
+	t.Setenv(PromptLightRetryEnvKey, "off")
+	cb := &lightUpgradeCallbacks{
+		mockCallbacks: &mockCallbacks{},
+		profile:       PromptProfileLight,
+	}
+	tools := []map[string]interface{}{}
+	conversation := []interface{}{map[string]string{"role": "system", "content": "L"}}
+	if tryLightProfileToolRetry(cb, "x", true, "bash", &tools, conversation) {
+		t.Fatal("expected disabled")
+	}
+	if cb.upgraded {
+		t.Fatal("should not upgrade when disabled")
 	}
 }
 

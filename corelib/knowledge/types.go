@@ -629,25 +629,37 @@ type DirectoryImportRequest struct {
 	DryRun       bool     `json:"dry_run,omitempty"`
 }
 
+// ImportFailedItem is a compact failed-file summary for progress/finish events.
+// Cap list size at the producer (importScannedItems) to avoid large payloads.
+type ImportFailedItem struct {
+	FilePath string `json:"file_path"`
+	Error    string `json:"error"`
+}
+
 type DirectoryImportResult struct {
-	BatchID        string       `json:"batch_id,omitempty"`
-	Status         string       `json:"status"`
-	RootPath       string       `json:"root_path"`
-	TotalFiles     int          `json:"total_files"`
-	QueuedFiles    int          `json:"queued_files"`
-	DuplicateFiles int          `json:"duplicate_files"`
-	SkippedFiles   int          `json:"skipped_files"`
-	ImportedFiles  int          `json:"imported_files"`
-	FailedFiles    int          `json:"failed_files"`
-	ProcessedFiles int          `json:"processed_files,omitempty"`
-	CurrentFile    string       `json:"current_file,omitempty"`
-	CurrentStep    string       `json:"current_step,omitempty"`     // e.g. "parsing", "indexing", "distilling"
-	StepProgress   int          `json:"step_progress,omitempty"`    // 0-100 within current file
-	TotalSteps     int          `json:"total_steps,omitempty"`      // total steps for current file (e.g. 5)
-	CurrentStepNum int          `json:"current_step_num,omitempty"` // which step (1-based)
-	EstimatedBytes int64        `json:"estimated_bytes"`
-	Warnings       []string     `json:"warnings,omitempty"`
-	Items          []ImportItem `json:"items,omitempty"`
+	BatchID        string             `json:"batch_id,omitempty"`
+	Status         string             `json:"status"`
+	RootPath       string             `json:"root_path"`
+	TotalFiles     int                `json:"total_files"`
+	QueuedFiles    int                `json:"queued_files"`
+	DuplicateFiles int                `json:"duplicate_files"`
+	SkippedFiles   int                `json:"skipped_files"`
+	ImportedFiles  int                `json:"imported_files"`
+	FailedFiles    int                `json:"failed_files"`
+	ProcessedFiles int                `json:"processed_files,omitempty"`
+	CurrentFile    string             `json:"current_file,omitempty"`
+	CurrentStep    string             `json:"current_step,omitempty"`     // e.g. "parsing", "indexing", "distilling"
+	StepProgress   int                `json:"step_progress,omitempty"`    // 0-100 within current file
+	TotalSteps     int                `json:"total_steps,omitempty"`      // total steps for current file (e.g. 5)
+	CurrentStepNum int                `json:"current_step_num,omitempty"` // which step (1-based)
+	EstimatedBytes int64              `json:"estimated_bytes"`
+	Warnings       []string           `json:"warnings,omitempty"`
+	Items          []ImportItem       `json:"items,omitempty"`
+	FailedItems    []ImportFailedItem `json:"failed_items,omitempty"`     // up to 20 failure details
+	LastItemPath   string             `json:"last_item_path,omitempty"`   // just-finished file (relative when available)
+	LastItemStatus string             `json:"last_item_status,omitempty"` // "imported" | "skipped" | "failed"
+	LastItemReason string             `json:"last_item_reason,omitempty"` // skip/fail reason
+	ExtCounts      map[string]int     `json:"ext_counts,omitempty"`       // extension histogram from scan/precheck
 }
 
 type ImportRetryRequest struct {
@@ -813,6 +825,11 @@ type TextSaveRequest struct {
 	Labels      []string `json:"labels,omitempty"`
 	AutoLabels  bool     `json:"auto_labels,omitempty"`
 	BatchID     string   `json:"batch_id,omitempty"`
+	// ForceID keeps a stable source id after delete+reindex (e.g. coding experience update).
+	// When set, content-hash dedup remapping to a different id is skipped.
+	ForceID string `json:"force_id,omitempty"`
+	// ForceCreatedAt preserves original created_at when ForceID is used.
+	ForceCreatedAt time.Time `json:"force_created_at,omitempty"`
 }
 
 type SourceUpdateRequest struct {
@@ -884,6 +901,10 @@ type SearchOptions struct {
 	Predicate       string   `json:"predicate,omitempty"`
 	Limit           int      `json:"limit,omitempty"`
 	IncludeDisabled bool     `json:"include_disabled,omitempty"`
+	// PreferEmbedding forces the hybrid embedding path even when FTS already
+	// returned medium-confidence hits. Auto-recall leaves this false so Search
+	// still runs embedding when FTS is empty or best FTS score < 2.0.
+	PreferEmbedding bool `json:"prefer_embedding,omitempty"`
 }
 
 type NumberRange struct {
@@ -1269,11 +1290,17 @@ type MaintenanceResult struct {
 }
 
 type ExportOptions struct {
-	OutputPath      string   `json:"output_path,omitempty"`
+	OutputPath string `json:"output_path,omitempty"`
+	// Format selects the local export encoding: "jsonl" (full snapshot, default)
+	// or "package" (editable maclaw.knowledge.package JSON for exchange/import).
+	Format          string   `json:"format,omitempty"`
 	RedactSensitive bool     `json:"redact_sensitive"`
 	SourceIDs       []string `json:"source_ids,omitempty"`
 	TenantID        string   `json:"tenant_id,omitempty"`
 	OwnerID         string   `json:"owner_id,omitempty"`
+	// Title/Description are used when Format is "package".
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type ExportResult struct {

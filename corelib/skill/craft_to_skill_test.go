@@ -366,10 +366,11 @@ func TestIsRepairableError(t *testing.T) {
 		{"file_not_found", true},
 		{"command_not_found", true},
 		{"timeout", true},
-		{"session_not_found", true},
 		{"unknown", true},
 		{"", true},
 		// External/transient errors — not fixable by modifying skill steps.
+		{"session_not_found", false},
+		{"quota_exceeded", false},
 		{"rate_limit", false},
 		{"network_error", false},
 		{"auth_error", false},

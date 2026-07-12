@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
@@ -1155,6 +1157,8 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 
 	activeSessions := len(sessions)
 	profile := c.app.currentRemoteMachineProfile(heartbeatSec, activeSessions)
+	adaptivePrompt := agent.AdaptivePromptHeartbeatStat()
+	costOps := llm.CostOpsHeartbeatStat()
 
 	msg := HubEnvelope{
 		Type:      "machine.heartbeat",
@@ -1166,6 +1170,8 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 			"app_version":            profile.AppVersion,
 			"llm_configured":         c.app.isMaclawLLMConfigured(),
 			"llm_token_usage":        llmTokenUsage,
+			"adaptive_prompt":        adaptivePrompt,
+			"cost_ops":               costOps,
 			"sessions":               sessions,
 		},
 	}

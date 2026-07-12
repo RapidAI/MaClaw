@@ -34,7 +34,8 @@ describe('WebSearchConfigPanel', () => {
     });
 
     it('tests the selected provider before saving and then resets saved state', async () => {
-        vi.useFakeTimers();
+        // Allow promise microtasks to settle under fake timers (waitFor + setTimeout).
+        vi.useFakeTimers({ shouldAdvanceTime: true });
         render(<WebSearchConfigPanel lang="en" />);
 
         await waitFor(() => {

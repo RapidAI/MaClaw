@@ -124,25 +124,25 @@ func CheckProjectHealthCtx(parent context.Context, projectPath string) string {
 			if ctx.Err() == context.Canceled {
 				results = append(results, "check_health cancelled")
 			} else if ctx.Err() == context.DeadlineExceeded {
-				results = append(results, "⚠️ Go vet 超时（30s），项目可能较大")
+				results = append(results, "Go vet 超时（30s），项目可能较大")
 			} else {
-				results = append(results, fmt.Sprintf("❌ Go vet 发现问题:\n%s", string(out)))
+				results = append(results, fmt.Sprintf("Go vet 发现问题:\n%s", string(out)))
 			}
 		} else {
-			results = append(results, "✅ Go vet 通过")
+			results = append(results, "Go vet 通过")
 		}
 	}
 
 	if _, err := os.Stat(filepath.Join(projectPath, "package.json")); err == nil {
 		if _, err := os.Stat(filepath.Join(projectPath, "node_modules")); os.IsNotExist(err) {
-			results = append(results, "⚠️ Node.js: node_modules 不存在，需要 npm install")
+			results = append(results, "Node.js: node_modules 不存在，需要 npm install")
 		} else {
-			results = append(results, "✅ Node.js: 依赖已安装")
+			results = append(results, "Node.js: 依赖已安装")
 		}
 	}
 
 	if _, err := os.Stat(filepath.Join(projectPath, "requirements.txt")); err == nil {
-		results = append(results, "ℹ️ Python 项目（requirements.txt 存在）")
+		results = append(results, "Python 项目（requirements.txt 存在）")
 	}
 
 	if len(results) == 0 {

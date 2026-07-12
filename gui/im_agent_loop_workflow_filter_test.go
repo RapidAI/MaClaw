@@ -33,14 +33,15 @@ func TestPrepareAgentLoopToolsWorkflowAgentLoopStillAppliesWorkflowFilter(t *tes
 
 	plainSkip := handler.prepareAgentLoopTools(userID, "build a project", &LoopContext{SkipNeedsConfirmGate: true}, agentLoopPhase{})
 	plainNames := toolNameSetForWorkflowFilterTest(plainSkip.Tools)
-	if plainNames["task"] || plainNames["bash"] || !plainNames["read_file"] || !plainNames["list_directory"] || !plainNames["send_file"] {
-		t.Fatalf("active workflow doc-only phase should keep context tools but block implementation tools, got %#v", plainNames)
+	// bash remains available for document parsing helpers; project mutation tools stay blocked.
+	if plainNames["task"] || plainNames["write_file"] || plainNames["edit_file"] || !plainNames["bash"] || !plainNames["read_file"] || !plainNames["list_directory"] || !plainNames["send_file"] {
+		t.Fatalf("active workflow doc-only phase should keep context tools (incl. bash) but block mutation tools, got %#v", plainNames)
 	}
 
 	workflowLoop := handler.prepareAgentLoopTools(userID, "build a project", &LoopContext{SkipNeedsConfirmGate: true, WorkflowAgentLoop: true}, agentLoopPhase{})
 	workflowNames := toolNameSetForWorkflowFilterTest(workflowLoop.Tools)
-	if workflowNames["task"] || workflowNames["bash"] || workflowNames["write_file"] || workflowNames["edit_file"] || !workflowNames["read_file"] || !workflowNames["list_directory"] || !workflowNames["send_file"] {
-		t.Fatalf("doc-only workflow phase should keep context tools but block mutation tools, got %#v", workflowNames)
+	if workflowNames["task"] || workflowNames["write_file"] || workflowNames["edit_file"] || !workflowNames["bash"] || !workflowNames["read_file"] || !workflowNames["list_directory"] || !workflowNames["send_file"] {
+		t.Fatalf("doc-only workflow phase should keep context tools (incl. bash) but block mutation tools, got %#v", workflowNames)
 	}
 	if workflowLoop.WorkflowDecision != workflowToolFilterDecision(workflow.ToolFilterDocOnly) {
 		t.Fatalf("workflow decision = %q, want %q", workflowLoop.WorkflowDecision, workflow.ToolFilterDocOnly)
@@ -359,18 +360,18 @@ func TestDocOnlyWorkflowPhaseBlocksImplementationTools(t *testing.T) {
 
 	filtered := handler.applyWorkflowToolFilter(userID, handler.getTools())
 	names := toolNameSetForWorkflowFilterTest(filtered)
-	for _, blocked := range []string{"bash", "write_file", "edit_file", "task", "delegate_task"} {
+	for _, blocked := range []string{"write_file", "edit_file", "task", "delegate_task"} {
 		if names[blocked] {
 			t.Fatalf("%s must not be exposed in doc-only workflow phase; got %#v", blocked, names)
 		}
 	}
-	for _, allowed := range []string{"read_file", "list_directory"} {
+	for _, allowed := range []string{"bash", "read_file", "list_directory"} {
 		if !names[allowed] {
-			t.Fatalf("%s should remain available in doc-only phase; got %#v", allowed, names)
+			t.Fatalf("%s should remain available in doc-only phase (bash for doc parsing); got %#v", allowed, names)
 		}
 	}
 
-	for _, blocked := range []string{"bash", "write_file", "delegate_task"} {
+	for _, blocked := range []string{"write_file", "delegate_task"} {
 		if handler.isWorkflowToolAllowed(userID, blocked) {
 			t.Fatalf("%s execution must be blocked in doc-only workflow phase", blocked)
 		}
@@ -842,10 +843,12 @@ func TestLoopCommandCycleHonorsWorkflowPolicy(t *testing.T) {
 	}
 	cb := &loopCycleCallbacks{parent: &guiLoopCommandCallbacks{handler: handler, userID: userID}}
 
-	tools := agent.FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools("fix"))
+	tools := agent.FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools("form"))
 	names := toolNameSetForWorkflowFilterTest(tools)
+	// Loop-command cycles keep a tighter bash gate than the main agent loop
+	// (disallowLoopCommandBashForDocOnly), while still blocking mutation tools.
 	if names["write_file"] || names["edit_file"] || names["bash"] {
-		t.Fatalf("loop command cycle must not expose implementation tools during doc-only workflow phase, got %#v", names)
+		t.Fatalf("loop command cycle must not expose mutation/bash tools during doc-only workflow phase, got %#v", names)
 	}
 	if !names["read_file"] || !cb.IsToolAllowed("read_file") {
 		t.Fatalf("loop command cycle should keep read_file available, got %#v", names)

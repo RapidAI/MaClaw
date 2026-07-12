@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { useDialog } from '../CustomDialog';
+import { StatusGlyph } from '../ai/WorkbenchIcons';
 
 export type MobileDocumentDraftSummary = {
   id: string;
@@ -95,6 +96,30 @@ function callImportBytes(filename: string, base64: string): Promise<MobileDocume
     );
   }
   return app.ImportMobileDocumentBytes(filename, base64);
+}
+
+function callOpenOriginal(id: string): Promise<string> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.OpenMobileDocumentOriginal) {
+    return Promise.reject(
+      new Error(
+        'Desktop binding missing OpenMobileDocumentOriginal — rebuild GUI after pull.',
+      ),
+    );
+  }
+  return app.OpenMobileDocumentOriginal(id);
+}
+
+function callSaveOriginal(id: string): Promise<string> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.SaveMobileDocumentOriginal) {
+    return Promise.reject(
+      new Error(
+        'Desktop binding missing SaveMobileDocumentOriginal — rebuild GUI after pull.',
+      ),
+    );
+  }
+  return app.SaveMobileDocumentOriginal(id);
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -496,6 +521,45 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
     );
   };
 
+  const openSelectedOriginal = async () => {
+    if (!selected?.id || !selected.has_original) return;
+    setError('');
+    setBanner('');
+    setUploading(true);
+    try {
+      const path = await callOpenOriginal(selected.id);
+      setBanner(
+        t(
+          `Opened original${path ? `: ${path}` : ''}`,
+          `已打开原件${path ? `：${path}` : ''}`,
+        ),
+      );
+    } catch (e: any) {
+      setError(String(e?.message || e || 'open original failed'));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const saveSelectedOriginal = async () => {
+    if (!selected?.id || !selected.has_original) return;
+    setError('');
+    setBanner('');
+    setUploading(true);
+    try {
+      const path = await callSaveOriginal(selected.id);
+      if (!path) {
+        setBanner(t('Save cancelled.', '已取消保存。'));
+        return;
+      }
+      setBanner(t(`Saved original to ${path}`, `原件已保存到 ${path}`));
+    } catch (e: any) {
+      setError(String(e?.message || e || 'save original failed'));
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const copyBody = async () => {
     const text = selected?.markdown || selected?.preview || '';
     if (!text) return;
@@ -736,8 +800,13 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                 }}
                 title={j.message}
               >
-                {j.status === 'done' ? '✓ ' : j.status === 'error' ? '✗ ' : '… '}
-                {j.name}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <StatusGlyph
+                    kind={j.status === 'done' ? 'ok' : j.status === 'error' ? 'error' : 'pending'}
+                    size={12}
+                  />
+                  {j.name}
+                </span>
               </span>
             ))}
           </div>
@@ -896,6 +965,28 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                   <button type="button" style={styles.btn} onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview}>
                     {t('Copy', '复制')}
                   </button>
+                  {selected.has_original ? (
+                    <>
+                      <button
+                        type="button"
+                        style={styles.btn}
+                        onClick={() => void openSelectedOriginal()}
+                        disabled={uploading}
+                        title={t('Open the original uploaded file', '用系统默认程序打开原件')}
+                      >
+                        {t('Open original', '打开原件')}
+                      </button>
+                      <button
+                        type="button"
+                        style={styles.btn}
+                        onClick={() => void saveSelectedOriginal()}
+                        disabled={uploading}
+                        title={t('Save the original file to disk', '将原件另存到本地')}
+                      >
+                        {t('Save original', '保存原件')}
+                      </button>
+                    </>
+                  ) : null}
                   <button
                     type="button"
                     style={styles.btnPrimary}

@@ -18,6 +18,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -132,13 +133,15 @@ type App struct {
 	agentRegistry           *agent.AgentRegistry
 	agentRegistryOnce       sync.Once
 	ohModules               openhumanModules
-	stopHubTicker           chan struct{} // signals the 24h recommendation refresh goroutine to stop
+	lastModelRouteMu        sync.RWMutex
+	lastModelRoute          modelRouteDecision // last turn routing decision (debug/settings)
+	stopHubTicker           chan struct{}      // signals the 24h recommendation refresh goroutine to stop
 	hubUpdCache             *hubUpdateCache
 	hubCenterCache          *remote.HubCenterSelectionCache // shared cache from corelib/remote
 	hubCenterPersister      *guiHubCenterPersister          // persister for HubCenter URL config
 	oauthMu                 sync.Mutex
 	oauthCancel             context.CancelFunc
-	credentialStore         *oauth.FileCredentialStore // independent OAuth credential storage (credentials.json)
+	credentialStore         *oauth.FileCredentialStore  // independent OAuth credential storage (credentials.json)
 	anthropicOAuthParams    *oauth.AnthropicOAuthParams // in-progress Anthropic OAuth params
 	copilotDeviceCode       string                      // in-progress GitHub Copilot device code
 	copilotPollInterval     int                         // Copilot device code poll interval
@@ -158,6 +161,7 @@ type App struct {
 	aiConversationMemory              *agent.ConversationMemory
 	aiConfirmationStore               *aiConfirmationStore
 	swarmOrchestrator                 *swarm.SwarmOrchestrator
+	swarmInitOnce                     sync.Once // per-App; package-level Once would skip init for later test Apps
 	memoryCompressor                  *MemoryCompressor
 	memoryMaintenance                 *memory.Maintenance
 	memPipeline                       *memory.Pipeline
@@ -230,6 +234,8 @@ type App struct {
 	floatingAssistant                 *FloatingAssistantManager
 	floatingAssistantMu               sync.Mutex
 	agentViewEmissionSeq              atomic.Int64
+	agentViewOpenMu                   sync.Mutex
+	agentViewOpen                     map[string]agentViewOpenRecord // view_id → open revision/schema
 
 	// IM audit store (SQLite-backed IM message audit for review/export).
 	imAuditStore   *IMAuditStore
@@ -566,6 +572,29 @@ func (a *App) markAIAssistantReady() {
 	a.warmupDone.Store(true)
 	a.aiAssistantReadyAt.Store(time.Now().UnixNano())
 	a.aiAssistantFirstChatLogged.Store(false)
+	// Best-effort: imHandler may already be wired with memoryStore.
+	a.scheduleWarmFrozenMemorySnapshot()
+}
+
+// scheduleWarmFrozenMemorySnapshot precomputes the static system-prompt memory
+// section for desktop chat so the first user message avoids a multi-second
+// StaticMemorySectionForPrompt cost on the critical path.
+func (a *App) scheduleWarmFrozenMemorySnapshot() {
+	if a == nil {
+		return
+	}
+	handler := a.imHandler
+	if handler == nil && a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+		handler = a.remoteSessions.hubClient.imHandler
+	}
+	if handler == nil {
+		return
+	}
+	// Wire memory store if handler was created before ensureMemoryStore finished.
+	if handler.memoryStore == nil && a.memoryStore != nil {
+		handler.memoryStore = a.memoryStore
+	}
+	go handler.WarmFrozenMemorySnapshot(desktopUserID)
 }
 
 func (a *App) beginFirstAIAssistantChatTelemetry() (readyAt int64, shouldLog bool) {
@@ -629,7 +658,7 @@ func (a *App) ensureMemoryStore() {
 		if pi := ms.ProjectIndex(); pi != nil {
 			pi.OnChanged = func(_ string) {
 				if a.ctx != nil {
-					runtime.EventsEmit(a.ctx, "task-list-changed")
+					a.emitEvent("task-list-changed")
 				}
 				a.triggerMemoryPipelineSoon(a.projectIndexMemoryDebounce())
 			}
@@ -647,6 +676,9 @@ func (a *App) ensureMemoryStore() {
 		a.memPipeline = maintenance.Pipeline()
 		a.triggerMemoryPipelineSoon(a.memoryPipelineStartupDelay())
 		a.refreshMemoryEvolutionLLM()
+		// Static memory snapshot does not need embeddings — prewarm as soon as
+		// the store is open so first chat message can reuse the cache.
+		a.scheduleWarmFrozenMemorySnapshot()
 		if a.disableBackgroundEmbeddingForTest {
 			a.logMemorySnapshot("ensureMemoryStore:embedding-load-disabled-for-test")
 			a.logMemorySnapshot("ensureMemoryStore:ready")
@@ -772,7 +804,8 @@ func (a *App) runMemoryPipelineWhenIdle(seq uint64) {
 	runSucceeded := false
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[agent-qos] memory_pipeline_panic seq=%d panic=%v", seq, r)
+			// Keep background memory work from killing the process; log stack for diagnosis.
+			log.Printf("[agent-qos] memory_pipeline_panic seq=%d panic=%v\n%s", seq, r, string(debug.Stack()))
 		}
 		a.memoryPipelineScheduleMu.Lock()
 		if a.memoryPipelineRunSeq == seq {
@@ -994,9 +1027,30 @@ func (a *App) ensureSkillRunner() {
 	a.skillRunner.uploadTrigger = a.autoUploadTrigger
 	a.skillRunner.packageFn = a.packageSkillForMarket
 
-	// Wire evolution pipeline (async background self-evolution).
+	// Wire evolution pipeline (async background self-evolution + self-repair).
 	a.ensureEvolutionPipeline()
 	a.skillRunner.evolutionPipeline = a.evolutionPipeline
+	// Route self-repair through the pipeline so it shares delay/coalesce/throttle
+	// with optimize/promote, and so SkillRunner does not spawn a parallel repair.
+	if a.evolutionPipeline != nil && a.skillRunner != nil {
+		runner := a.skillRunner
+		a.evolutionPipeline.EnableRepair = true
+		a.evolutionPipeline.RepairHook = func(entry *corelib.NLSkillEntry, runArgs map[string]string) {
+			// entry is already a deep copy from the pipeline.
+			if entry == nil || runner == nil {
+				return
+			}
+			// Re-check eligibility with latest repairer availability.
+			if !runner.canStartRepairSkill(entry) {
+				runner.repairingSkills.Delete(entry.Name)
+				return
+			}
+			// Ensure pending marker is set (may already be set by updateUsageStats).
+			runner.markSelfRepairPending(entry.Name)
+			// Runs on the evolution worker goroutine — do not spawn another.
+			runner.maybeRepairSkill(entry)
+		}
+	}
 }
 
 func (a *App) ensureEvolutionPipeline() {
@@ -1006,10 +1060,13 @@ func (a *App) ensureEvolutionPipeline() {
 	pipeline := skill.NewEvolutionPipeline()
 	pipeline.UsageTracker = a.usageTracker
 	pipeline.Versioner = &skill.Versioner{}
-	// RepairGate: created without a SandboxExecutor for now (graceful degradation
-	// - gate passes by default when no executor is configured). A real executor
-	// requires wiring into SkillRunner's step execution, which is future work.
-	pipeline.Gate = skill.NewRepairGate(skill.RepairGateConfig{}, nil)
+	if cfg, err := a.LoadConfig(); err == nil {
+		pipeline.RepairCooldown = skill.RepairCooldownFromHours(cfg.SkillEvolutionRepairCooldownHours)
+	}
+	// RepairGate: sandbox-replay historical args before accepting repairs/optimizations.
+	// Bash-only steps run via TempDirSandboxExecutor; non-bash steps soft-pass so
+	// craft_tool-only skills are not false-rejected.
+	pipeline.Gate = skill.NewRepairGate(skill.RepairGateConfig{}, skill.NewDefaultSandboxExecutor())
 	pipeline.SkillLoader = func() []corelib.NLSkillEntry {
 		if a.skillExecutor == nil {
 			return nil
@@ -1031,17 +1088,20 @@ func (a *App) ensureEvolutionPipeline() {
 	pipeline.Optimizer = skill.NewSkillOptimizer(pipeline.LLM, pipeline.Gate, pipeline.Versioner)
 
 	// Wire NudgePromoter: converts high-confidence tool-sequence patterns into real skills.
+	// Auto-promotion uses the critical-only staging validator: candidates already
+	// succeeded as local tool sequences, so community "high" (e.g. bash) is expected.
 	if skillsDir, err := skill.PrimarySkillsDir(); err == nil {
 		pipeline.Promoter = skill.NewNudgePromoter(
 			pipeline.LLM,
-			nil, // StagingValidator  - TODO: wire when security scan adapter is available
+			skill.NewAutoPromotionStagingValidator(),
 			&skillExecutorRegistrar{app: a},
 			skillsDir,
 		)
 	}
 
-	// Wire EventEmitter: notifies frontend when skills are optimized/discovered.
+	// Wire EventEmitter: durable audit + frontend notify when skills evolve.
 	pipeline.EventEmitter = func(event string, data map[string]string) {
+		skill.RecordEvolutionEvent(event, data, "desktop")
 		a.emitEvent(event, data)
 	}
 
@@ -1084,7 +1144,7 @@ func (a *App) ensureEvolutionPipeline() {
 	a.evolutionPipeline = pipeline
 
 	// Wire MaintenanceScheduler: runs BuildSkillMaintenancePlan every 24h,
-	// persists results to long-term memory for proactive recall.
+	// persists high-value results to long-term memory / experience learning.
 	pipeline.Scheduler = skill.NewMaintenanceScheduler(
 		pipeline.SkillLoader,
 		func(content string, tags []string) error {
@@ -1101,6 +1161,12 @@ func (a *App) ensureEvolutionPipeline() {
 			return err
 		},
 	)
+	if a.usageTracker != nil {
+		tracker := a.usageTracker
+		pipeline.Scheduler.UsageIngester = func(skills []corelib.NLSkillEntry, opts skill.SkillMaintenancePlanOptions) int {
+			return skill.IngestHighValueMaintenanceExperience(tracker, skills, opts)
+		}
+	}
 
 	pipeline.Start()
 }
@@ -1543,7 +1609,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		// Emit Wails event when background loop state changes.
 		blm.OnChange = func() {
 			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "background-loops-changed")
+				a.emitEvent("background-loops-changed")
 			}
 		}
 		handler.SetBackgroundLoopManager(blm)
@@ -1801,7 +1867,7 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		// Emit Wails event when background loop state changes.
 		blm.OnChange = func() {
 			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "background-loops-changed")
+				a.emitEvent("background-loops-changed")
 			}
 		}
 		handler.SetBackgroundLoopManager(blm)
@@ -1901,6 +1967,8 @@ func (a *App) startup(ctx context.Context) {
 	a.codeEventEmitter = NewCodeEventEmitter(a)
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
 	a.MigrateDataDir()
+	// One-time enable shared agent loop for pre-default installs.
+	a.migrateSharedAgentLoopOnce()
 	// Initialize independent credential store (OAuth tokens separated from config.json).
 	a.credentialStore = oauth.NewFileCredentialStore(oauth.DefaultCredentialStorePath())
 	// Migrate data to custom data_dir if configured and not yet migrated.
@@ -2946,7 +3014,7 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 				}
 			}
 			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "workflow:workdir_set", map[string]string{
+				a.emitEvent("workflow:workdir_set", map[string]string{
 					"user_id": ownerID,
 					"path":    trimmed,
 				})
@@ -5761,6 +5829,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 		}(config)
 	}
 	if hubClient != nil {
+		if oldConfigLoaded && oldConfig.RemoteHeartbeatSec != config.RemoteHeartbeatSec {
+			hubClient.InvalidateHeartbeatIntervalCache()
+		}
 		go func(client *RemoteHubClient) {
 			if client.IsConnected() {
 				client.SyncLaunchProjects()
@@ -5770,6 +5841,313 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	log.Printf("[config] SaveConfig:done total=%s config_path=%q configured_data_dir=%q configured_working_dir=%q effective_base_dir=%q effective_data_dir=%q ai_conversation=%q",
 		time.Since(start), path, strings.TrimSpace(config.DataDir), strings.TrimSpace(config.WorkingDirectory), a.getMaclawBaseDir(), a.GetDataDir(), filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json"))
 	return nil
+}
+
+// SkillEvolutionStatus is the Wails-facing snapshot of the desktop EvolutionPipeline.
+type SkillEvolutionStatus struct {
+	PipelineStarted        bool   `json:"pipeline_started"`
+	PendingSkills          int    `json:"pending_skills"`
+	CoalescedNotifications uint64 `json:"coalesced_notifications"`
+	DroppedNotifications   uint64 `json:"dropped_notifications"`
+	ProcessedRequests      int    `json:"processed_requests"`
+	EnableRepair           bool   `json:"enable_repair"`
+	EnableOptimizer        bool   `json:"enable_optimizer"`
+	EnablePromoter         bool   `json:"enable_promoter"`
+	RepairCooldown         string `json:"repair_cooldown"`
+	HasRepairHook          bool   `json:"has_repair_hook"`
+	HasOptimizer           bool   `json:"has_optimizer"`
+	HasPromoter            bool   `json:"has_promoter"`
+	RepairCooldownHours    int    `json:"repair_cooldown_hours"`
+	// EnvDisabled is true when MACLAW_DISABLE_SKILL_EVOLUTION is set.
+	EnvDisabled bool `json:"env_disabled"`
+	// ConfigEnabled is the persisted skill_evolution_enabled setting (default true).
+	ConfigEnabled bool `json:"config_enabled"`
+	// ConfigDisabled is true when the user turned off evolution in settings.
+	ConfigDisabled bool `json:"config_disabled"`
+	// Disabled is true when evolution is fully suppressed (env and/or config).
+	Disabled bool `json:"disabled"`
+}
+
+// ListSkillYAMLBackups returns Versioner backup versions for a named skill's SkillDir.
+func (a *App) ListSkillYAMLBackups(skillName string) map[string]interface{} {
+	out := map[string]interface{}{
+		"ok":       true,
+		"skill":    skillName,
+		"versions": []int{},
+		"latest":   0,
+	}
+	entry, err := a.findNLSkillEntry(skillName)
+	if err != nil {
+		out["ok"] = false
+		out["error"] = err.Error()
+		return out
+	}
+	dir := strings.TrimSpace(entry.SkillDir)
+	if dir == "" {
+		out["ok"] = false
+		out["error"] = "skill has no skill_dir (not file-backed)"
+		return out
+	}
+	v := &skill.Versioner{}
+	versions := v.ListVersions(dir)
+	out["skill_dir"] = dir
+	out["versions"] = versions
+	out["latest"] = v.LatestVersion(dir)
+	return out
+}
+
+// RestoreSkillYAMLBackup restores skill.yaml from Versioner backup v{version}.
+// version<=0 means latest. confirm must be true. Always pre-backs up current first.
+func (a *App) RestoreSkillYAMLBackup(skillName string, version int, confirm bool) map[string]interface{} {
+	out := map[string]interface{}{
+		"ok":      false,
+		"skill":   skillName,
+		"version": version,
+	}
+	if !confirm {
+		out["error"] = "confirm=true is required"
+		return out
+	}
+	entry, err := a.findNLSkillEntry(skillName)
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	dir := strings.TrimSpace(entry.SkillDir)
+	if dir == "" {
+		out["error"] = "skill has no skill_dir (not file-backed)"
+		return out
+	}
+	v := &skill.Versioner{}
+	var written string
+	var restored, pre int
+	if version <= 0 {
+		written, restored, pre, err = v.RestoreLatest(dir, true)
+	} else {
+		written, pre, err = v.RestoreVersion(dir, version, true)
+		restored = version
+	}
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	// Best-effort: refresh indexes so loaders pick up YAML.
+	if a.toolRouter != nil {
+		a.toolRouter.RefreshSkillIndex()
+	}
+	skill.RecordEvolutionEvent("skill:yaml_restore", map[string]string{
+		"skill":       skillName,
+		"explanation": fmt.Sprintf("restored v%d path=%s pre_backup=v%d", restored, written, pre),
+	}, "desktop")
+	out["ok"] = true
+	out["version"] = restored
+	out["written_path"] = written
+	out["pre_backup_version"] = pre
+	out["message"] = fmt.Sprintf("restored skill.yaml from v%d (current saved as v%d)", restored, pre)
+	return out
+}
+
+// findNLSkillEntry locates a skill by name in the desktop skill executor list.
+func (a *App) findNLSkillEntry(skillName string) (*corelib.NLSkillEntry, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app not initialized")
+	}
+	skillName = strings.TrimSpace(skillName)
+	if skillName == "" {
+		return nil, fmt.Errorf("skill name is required")
+	}
+	a.ensureSkillRunner()
+	if a.skillExecutor == nil {
+		return nil, fmt.Errorf("skill executor not initialized")
+	}
+	a.skillExecutor.mu.RLock()
+	defer a.skillExecutor.mu.RUnlock()
+	skills := a.skillExecutor.loadSkills()
+	for i := range skills {
+		if skills[i].MatchesName(skillName) || skills[i].Name == skillName {
+			cp := skill.CloneNLSkillEntry(&skills[i])
+			if cp == nil {
+				e := skills[i]
+				return &e, nil
+			}
+			return cp, nil
+		}
+	}
+	return nil, fmt.Errorf("skill %q not found", skillName)
+}
+
+// ApplySkillMaintenanceAction applies one approved maintenance draft action.
+// kind: improve_contract | merge_duplicate
+// skill: primary skill name
+// relatedSkill: required for merge_duplicate (the other skill in the pair)
+// confirm: must be true for real apply (dry_run=false)
+// allowDuplicateRetire: required for merge_duplicate real apply
+func (a *App) ApplySkillMaintenanceAction(kind, skillName, relatedSkill string, confirm, allowDuplicateRetire bool) map[string]interface{} {
+	out := map[string]interface{}{
+		"ok":      false,
+		"action":  kind,
+		"skill":   skillName,
+		"related": relatedSkill,
+	}
+	if a == nil {
+		out["error"] = "app not initialized"
+		return out
+	}
+	a.ensureSkillRunner()
+	if a.skillExecutor == nil {
+		out["error"] = "skill executor not initialized"
+		return out
+	}
+	a.skillExecutor.mu.Lock()
+	skills := a.skillExecutor.loadSkills()
+	updated, res := skill.ApplyTargetedMaintenanceAction(
+		skills,
+		kind,
+		skillName,
+		relatedSkill,
+		false, // dry_run always false for this binding (UI already confirmed)
+		confirm,
+		allowDuplicateRetire,
+	)
+	if res.OK && res.Result.ExecutedCount > 0 {
+		if err := a.skillExecutor.saveSkills(updated); err != nil {
+			a.skillExecutor.mu.Unlock()
+			out["error"] = "save failed: " + err.Error()
+			out["result"] = res
+			return out
+		}
+	}
+	a.skillExecutor.mu.Unlock()
+
+	if res.OK && res.RequiresIndexRefresh && res.Result.ExecutedCount > 0 {
+		if a.toolRouter != nil {
+			a.toolRouter.RefreshSkillIndex()
+		}
+	}
+	// Audit row for apply attempts.
+	skill.RecordEvolutionEvent("skill:maintenance_apply", map[string]string{
+		"skill":       skillName,
+		"explanation": fmt.Sprintf("action=%s related=%s ok=%v msg=%s err=%s", kind, relatedSkill, res.OK, res.Message, res.Error),
+	}, "desktop")
+
+	out["ok"] = res.OK
+	out["error"] = res.Error
+	out["message"] = res.Message
+	out["result"] = res.Result
+	out["requires_index_refresh"] = res.RequiresIndexRefresh
+	if res.BackupVersion > 0 {
+		out["backup_version"] = res.BackupVersion
+	}
+	if res.WrittenPath != "" {
+		out["written_path"] = res.WrittenPath
+	}
+	if res.PatchDraft != nil {
+		out["patch_draft"] = res.PatchDraft
+	}
+	if res.MergeDraft != nil {
+		out["merge_draft"] = res.MergeDraft
+	}
+	return out
+}
+
+// ListSkillMaintenanceDrafts returns read-only patch/merge review drafts from a
+// dry-run of the local skill maintenance plan. Never mutates skills.
+func (a *App) ListSkillMaintenanceDrafts() map[string]interface{} {
+	out := map[string]interface{}{
+		"ok":            true,
+		"non_executing": true,
+		"boundary":      "read-only maintenance review drafts; no skill was modified",
+		"patch_drafts":  []interface{}{},
+		"merge_drafts":  []interface{}{},
+		"queued_repair": []interface{}{},
+	}
+	if a == nil {
+		out["ok"] = false
+		out["error"] = "app not initialized"
+		return out
+	}
+	a.ensureSkillRunner()
+	if a.skillExecutor == nil {
+		out["ok"] = false
+		out["error"] = "skill executor not initialized"
+		return out
+	}
+	a.skillExecutor.mu.RLock()
+	skills := a.skillExecutor.loadSkills()
+	a.skillExecutor.mu.RUnlock()
+	drafts := skill.CollectMaintenanceReviewDrafts(skills, skill.SkillMaintenancePlanOptions{
+		Now:        time.Now(),
+		MaxActions: 40,
+	})
+	out["generated_at"] = drafts.GeneratedAt
+	out["plan_summary"] = drafts.PlanSummary
+	out["plan_actions"] = drafts.PlanActions
+	out["patch_drafts"] = drafts.PatchDrafts
+	out["merge_drafts"] = drafts.MergeDrafts
+	out["queued_repair"] = drafts.QueuedRepair
+	out["patch_count"] = len(drafts.PatchDrafts)
+	out["merge_count"] = len(drafts.MergeDrafts)
+	return out
+}
+
+// ListSkillEvolutionAudit returns the newest durable evolution audit rows
+// (JSONL under ~/.maclaw/skill_evolution/audit.jsonl). limit defaults to 50.
+func (a *App) ListSkillEvolutionAudit(limit int) []map[string]interface{} {
+	events, err := skill.ListEvolutionAudit(skill.DefaultEvolutionAuditPath(), limit)
+	if err != nil || len(events) == 0 {
+		return []map[string]interface{}{}
+	}
+	out := make([]map[string]interface{}, 0, len(events))
+	for _, ev := range events {
+		out = append(out, map[string]interface{}{
+			"timestamp":   ev.Timestamp,
+			"kind":        ev.Kind,
+			"skill":       ev.Skill,
+			"explanation": ev.Explanation,
+			"source":      ev.Source,
+		})
+	}
+	return out
+}
+
+// GetSkillEvolutionStatus returns desktop skill evolution pipeline diagnostics.
+// Wails binding for Skills Management → Evolution settings.
+func (a *App) GetSkillEvolutionStatus() SkillEvolutionStatus {
+	out := SkillEvolutionStatus{}
+	if a == nil {
+		return out
+	}
+	out.EnvDisabled = skill.EvolutionEnvDisabled()
+	out.ConfigEnabled = true
+	if cfg, err := a.LoadConfig(); err == nil {
+		out.RepairCooldownHours = cfg.SkillEvolutionRepairCooldownHours
+		if out.RepairCooldownHours <= 0 {
+			out.RepairCooldownHours = 1
+		}
+		out.ConfigEnabled = cfg.IsSkillEvolutionEnabled()
+	}
+	out.ConfigDisabled = !out.ConfigEnabled
+	out.Disabled = out.EnvDisabled || out.ConfigDisabled
+	// Ensure pipeline exists so status reflects live wiring when skills have run.
+	// Still build status when kill-switched so operators can see the disabled flag.
+	a.ensureEvolutionPipeline()
+	if a.evolutionPipeline == nil {
+		return out
+	}
+	st := a.evolutionPipeline.Status()
+	out.PipelineStarted = true
+	out.PendingSkills = st.PendingSkills
+	out.CoalescedNotifications = st.CoalescedNotifications
+	out.DroppedNotifications = st.DroppedNotifications
+	out.ProcessedRequests = st.ProcessedRequests
+	out.EnableRepair = st.EnableRepair && !out.Disabled
+	out.EnableOptimizer = st.EnableOptimizer && !out.Disabled
+	out.EnablePromoter = st.EnablePromoter && !out.Disabled
+	out.RepairCooldown = st.RepairCooldown.String()
+	out.HasRepairHook = st.HasRepairHook
+	out.HasOptimizer = st.HasOptimizer
+	out.HasPromoter = st.HasPromoter
+	return out
 }
 
 // PatchConfigFields is a frontend-safe atomic config patch endpoint.
@@ -6153,6 +6531,26 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.IMProgressNudgeEnabled = &v
+		case "knowledge_auto_recall_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.KnowledgeAutoRecallEnabled = &v
+		case "knowledge_auto_recall_min_score":
+			v, err := floatField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 10 {
+				v = 10
+			}
+			cfg.KnowledgeAutoRecallMinScore = v
 		case "tool_cache_maintenance":
 			v, err := toolCacheMaintenanceField(key, value, cfg.ToolCacheMaintenance)
 			if err != nil {
@@ -6462,6 +6860,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.RemoteHeartbeatSec = corelib.NormalizeRemoteHeartbeatIntervalSec(v)
+			if hub := a.hubClient(); hub != nil {
+				hub.InvalidateHeartbeatIntervalCache()
+			}
 		case "agent_response_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
@@ -6476,6 +6877,26 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SkillRunnerTimeoutSec = v
+		case "skill_evolution_repair_cooldown_hours":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 24*30 {
+				v = 24 * 30
+			}
+			cfg.SkillEvolutionRepairCooldownHours = v
+		case "skill_evolution_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetSkillEvolutionEnabled(v)
 		case "maclaw_llm_timeout_sec":
 			v, err := intField(key, value)
 			if err != nil {
@@ -6909,7 +7330,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	// When LLM provider is switched, emit the same event that SaveMaclawLLMProviders
 	// uses so the sidebar token usage display refreshes automatically.
 	if _, ok := patch["maclaw_llm_current_provider"]; ok && a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
+		a.emitEvent("llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
 	}
 
 	// Invalidate tool outcome records when SSH host or LLM provider config changes.
@@ -6945,7 +7366,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	// tray support, but may be nil. Emitting directly ensures all UI components
 	// stay in sync (e.g. workflow toggle in the AI assistant title bar).
 	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "config-changed", cfg)
+		a.emitEvent("config-changed", cfg)
 	}
 	if OnConfigChanged != nil {
 		go OnConfigChanged(cfg)
@@ -6975,6 +7396,10 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 	if proxyChanged {
 		a.applyAgentProxy()
+	}
+	// Live-update evolution pipeline cooldown when patched.
+	if _, ok := patch["skill_evolution_repair_cooldown_hours"]; ok && a.evolutionPipeline != nil {
+		a.evolutionPipeline.RepairCooldown = skill.RepairCooldownFromHours(cfg.SkillEvolutionRepairCooldownHours)
 	}
 	log.Printf("[config] PatchConfigFields:done fields=%d keys=%v", len(patch), configPatchKeys(patch))
 	return cfg, nil
@@ -7767,7 +8192,7 @@ func (a *App) emitRecoverLog(msg string) {
 	a.emitEvent("recover-log", msg)
 }
 func (a *App) ShowMessage(title, message string) {
-	runtime.EventsEmit(a.ctx, "show-message", map[string]string{
+	a.emitEvent("show-message", map[string]string{
 		"title":   title,
 		"message": message,
 	})
@@ -7785,8 +8210,24 @@ func (a *App) ShowToast(message, typ string) {
 		"duration": 3500,
 	})
 }
+
+// hasWailsEventsContext reports whether a.ctx is the real Wails lifecycle
+// context that carries the frontend events bus. context.Background() and nil
+// are NOT valid — calling runtime.EventsEmit with them log.Fatals and aborts
+// the whole process (which used to fail go test ./gui/ with package-level FAIL
+// and no --- FAIL: TestXxx after async AI assistant loops finished).
+func (a *App) hasWailsEventsContext() bool {
+	if a == nil || a.ctx == nil {
+		return false
+	}
+	return a.ctx.Value("events") != nil
+}
+
+// emitEvent is the only safe way to push Wails events from App. It never
+// calls runtime.EventsEmit unless the lifecycle context is present, so
+// headless/test code cannot kill the process via log.Fatalf.
 func (a *App) emitEvent(name string, data ...interface{}) {
-	if a.ctx == nil {
+	if !a.hasWailsEventsContext() {
 		return
 	}
 	defer func() {

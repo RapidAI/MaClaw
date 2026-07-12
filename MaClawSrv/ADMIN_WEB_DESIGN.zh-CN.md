@@ -791,7 +791,7 @@ POST /api/v1/admin/runtime/restart
 POST /api/v1/admin/runtime/cleanup
 ```
 
-`shutdown` 鍜?`restart` 榛樿鍙厛鍙璁★紝涓嶅疄鐜帮紱濡傛灉瀹炵幇锛屽簲瑕佹眰浜屾纭鍜?owner 鏉冮檺銆?
+`shutdown` 鍜?`restart` 榛樿鍙厛鍙璁紝涓嶅疄鐜帮紱濡傛灉瀹炵幇锛屽簲瑕佹眰浜屾纭鍜?owner 鏉冮檺銆?
 
 ### 6.7 Security
 

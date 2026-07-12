@@ -2544,13 +2544,21 @@ func opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata map[string
 		return nil
 	}
 	decision := v2.ExtractOpsRiskDecision(policyText)
-	if decision == v2.OpsRiskDecisionApprovalRequired && !opsExecutionApprovalSatisfies(approvalSources, v2.ExtractOpsApprovalRequirement(policyText)) {
+	switch decision {
+	case v2.OpsRiskDecisionAutoExecute:
+		return v2.ExtractOpsApprovedCommands(policyText)
+	case v2.OpsRiskDecisionApprovalRequired:
+		if !opsExecutionApprovalSatisfies(approvalSources, v2.ExtractOpsApprovalRequirement(policyText)) {
+			return nil
+		}
+		if !opsApprovalDigestMatches(approvalSources, policyText) {
+			return nil
+		}
+		return v2.ExtractOpsApprovedCommands(policyText)
+	default:
+		// deny / document_only / propose / unknown — do not propagate executable commands
 		return nil
 	}
-	if decision == v2.OpsRiskDecisionApprovalRequired && !opsApprovalDigestMatches(approvalSources, policyText) {
-		return nil
-	}
-	return v2.ExtractOpsApprovedCommands(policyText)
 }
 
 func opsExecutionApprovalSatisfies(metadataSources []map[string]string, required v2.OpsApprovalRequirement) bool {

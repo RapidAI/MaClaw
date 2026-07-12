@@ -3,8 +3,8 @@ package main
 import "strings"
 
 // completionSignals are phrases that indicate a task has been completed.
+// Do not include "" — strings.Contains(line, "") is always true.
 var completionSignals = []string{
-	"✅",
 	"i've completed",
 	"已完成",
 	"all done",
