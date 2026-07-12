@@ -70,6 +70,8 @@ type mobileTaskPollState struct {
 	lastHitAt    time.Time
 	bulkClaimOK  atomic.Bool // once bulk claim succeeds, skip expensive per-id fallbacks
 	bulkClaimBad atomic.Bool // once bulk claim returns definitive 404, use per-id path
+	// pollInFlight single-flights claim ticks (push + timer + kick can overlap).
+	pollInFlight atomic.Bool
 	// workers bounds concurrent processMobileDigitalEmployeeTask goroutines.
 	// Poll claims only after tryReserveWorker succeeds (no claim-without-capacity).
 	workers chan struct{}
@@ -244,14 +246,34 @@ func (c *RemoteHubClient) handleMobileDigitalEmployeeTaskPush(msg inboundHubEnve
 	}
 	poll := c.ensureMobileTaskPollState()
 	poll.noteHit()
-	poll.requestImmediatePoll()
-	// Also claim once immediately in case the poll loop is mid-tick or not started.
-	go c.pollMobileDigitalEmployeeTasksOnce()
+	// Prefer waking the existing loop (single-flight via pollInFlight). Only
+	// spawn a side claim when the loop is not running yet.
+	if c.mobileTaskActive.Load() {
+		poll.requestImmediatePoll()
+	} else {
+		go c.pollMobileDigitalEmployeeTasksOnce()
+	}
 	log.Printf("[hub-client] mobile digital employee task push received type=%s", msg.Type)
 }
 
 func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
 	poll := c.ensureMobileTaskPollState()
+	// Collapse overlapping push/timer/kick ticks into one claim attempt.
+	if !poll.pollInFlight.CompareAndSwap(false, true) {
+		// Another tick is mid-claim; schedule a follow-up so we do not miss work
+		// that arrives while the in-flight HTTP call is outstanding.
+		if c.mobileTaskActive.Load() {
+			poll.requestImmediatePoll()
+		} else {
+			// No loop owns kick; retry shortly after the in-flight claim returns.
+			time.AfterFunc(100*time.Millisecond, func() {
+				c.pollMobileDigitalEmployeeTasksOnce()
+			})
+		}
+		return
+	}
+	defer poll.pollInFlight.Store(false)
+
 	// Reserve capacity before claim so we never own a Hub task we cannot start.
 	if !poll.tryReserveWorker() {
 		return
@@ -473,9 +495,17 @@ func (c *RemoteHubClient) doMobileDigitalEmployeeTaskRequest(ctx context.Context
 func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmployeeTask) {
 	taskID := strings.TrimSpace(task.TaskID)
 	prompt := strings.TrimSpace(task.Prompt)
-	if taskID == "" || prompt == "" {
+	if taskID == "" {
 		return
 	}
+	if prompt == "" {
+		// Claim already moved Hub status to in_progress; fail closed so mobile
+		// does not sit forever on a task with no executable body.
+		_, _ = c.updateMobileDigitalEmployeeTask(taskID, "failed", "任务内容为空，已取消。")
+		return
+	}
+	// Claim path usually already set in_progress; still stamp a processing note
+	// so phones without claim realtime still leave "queued".
 	_, _ = c.updateMobileDigitalEmployeeTask(taskID, "in_progress", "远程数字员工正在处理手机任务。")
 
 	handler := c.digitalEmployeeMessageHandler()
@@ -492,11 +522,12 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 	// phone realtime channel shows live progress without per-token HTTP spam.
 	// A generation counter drops superseded progress writes once we finalize.
 	var (
-		progressMu    sync.Mutex
-		progressBuf   strings.Builder
-		lastProgress  time.Time
-		progressSeq   atomic.Uint64
-		firstProgress atomic.Bool
+		progressMu   sync.Mutex
+		progressBuf  strings.Builder
+		lastProgress time.Time
+		lastSent     string
+		progressSeq  atomic.Uint64
+		sentFirst    bool
 	)
 	flushProgress := func() {
 		progressMu.Lock()
@@ -508,7 +539,7 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 		}
 		// First visible chunk: push ASAP so the phone leaves a static "processing" state.
 		// Later chunks: require min interval or min size to limit Hub PATCH rate.
-		if firstProgress.Load() {
+		if sentFirst {
 			elapsed := now.Sub(lastProgress)
 			if elapsed < mobileDigitalEmployeeProgressMinInterval &&
 				utf8.RuneCountInString(content) < mobileDigitalEmployeeProgressMinChars {
@@ -516,13 +547,20 @@ func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmp
 				return
 			}
 		}
+		clipped := clipRunesForMobileProgress(content, mobileDigitalEmployeeProgressMaxRunes)
+		if clipped == lastSent {
+			progressMu.Unlock()
+			return
+		}
 		lastProgress = now
+		lastSent = clipped
+		sentFirst = true
 		progressMu.Unlock()
-		firstProgress.Store(true)
 
 		n := progressSeq.Add(1)
-		clipped := clipRunesForMobileProgress(content, mobileDigitalEmployeeProgressMaxRunes)
 		go func(seq uint64, text string) {
+			// Best-effort skip if a newer flush or terminal status supersedes us.
+			// Hub also rejects in_progress after terminal (409).
 			if progressSeq.Load() != seq {
 				return
 			}

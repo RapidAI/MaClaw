@@ -7147,13 +7147,19 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
-		// Already finished — reject stale progress patches that could re-open the task.
+		// Terminal tasks are immutable: reject progress and cross-terminal flips
+		// (e.g. late failed after done) so racing worker PATCHes cannot reopen work.
 		if record.Status == "done" || record.Status == "failed" {
-			if status == "in_progress" {
+			if status != record.Status {
 				mobileDigitalEmployeeTasks.Unlock()
 				writeError(w, http.StatusConflict, "TASK_ALREADY_FINISHED", "task already finished")
 				return
 			}
+			// Idempotent re-report of the same terminal status: return current snapshot.
+			payload := mobileDigitalEmployeeTaskPayload(record)
+			mobileDigitalEmployeeTasks.Unlock()
+			writeJSON(w, http.StatusOK, payload)
+			return
 		}
 		claimedBy := strings.TrimSpace(record.ClaimedBy)
 		authorized := false
@@ -7175,22 +7181,28 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 			writeError(w, http.StatusNotFound, "TASK_NOT_FOUND", "digital employee task not found")
 			return
 		}
-		// Do not demote terminal → in_progress if somehow reached (double-check).
-		if (record.Status == "done" || record.Status == "failed") && status == "in_progress" {
+		nextResult := record.Result
+		if result != "" {
+			nextResult = result
+		}
+		nextMessage := record.Message
+		if message != "" {
+			nextMessage = message
+		} else if status == "in_progress" && result != "" {
+			// Progress patches often only set result; surface a short message for mobile UI.
+			nextMessage = mobileClipRunes(result, 120)
+		}
+		// Skip no-op progress patches (identical status/result/message) to cut
+		// realtime fan-out and disk persist pressure under high token rates.
+		if status == record.Status && nextResult == record.Result && nextMessage == record.Message {
+			payload := mobileDigitalEmployeeTaskPayload(record)
 			mobileDigitalEmployeeTasks.Unlock()
-			writeError(w, http.StatusConflict, "TASK_ALREADY_FINISHED", "task already finished")
+			writeJSON(w, http.StatusOK, payload)
 			return
 		}
 		record.Status = status
-		if result != "" {
-			record.Result = result
-		}
-		if message != "" {
-			record.Message = message
-		} else if status == "in_progress" && result != "" {
-			// Progress patches often only set result; surface a short message for mobile UI.
-			record.Message = mobileClipRunes(result, 120)
-		}
+		record.Result = nextResult
+		record.Message = nextMessage
 		record.ClaimedBy = workerID
 		record.UpdatedAt = now
 		mobileDigitalEmployeeTasks.tasks[taskID] = record

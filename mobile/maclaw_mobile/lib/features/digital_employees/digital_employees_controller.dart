@@ -214,6 +214,15 @@ class DigitalEmployeeTaskController
         !_taskFinished(current)) {
       return;
     }
+    // Drop identical progress snapshots (Hub may re-broadcast; skip disk churn).
+    if (current != null &&
+        current.taskId == task.taskId &&
+        current.status == task.status &&
+        current.result == task.result &&
+        current.message == task.message &&
+        current.claimedBy == task.claimedBy) {
+      return;
+    }
 
     await ref.read(mobileLocalStoreProvider).saveLastDigitalEmployeeTask(task);
     state = AsyncData(task);

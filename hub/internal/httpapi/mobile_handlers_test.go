@@ -2265,9 +2265,96 @@ func TestMobileDigitalEmployeeTaskUpdateHostedWorkerBroadcastsToOwner(t *testing
 		t.Fatalf("stale progress status=%d want %d body=%s", staleRec.Code, http.StatusConflict, staleRec.Body.String())
 	}
 
+	// Cross-terminal flip (done → failed) must also be rejected.
+	flipReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"failed","result":"should not overwrite"}`))
+	flipReq.SetPathValue("taskId", taskID)
+	flipReq.Header.Set("Authorization", "Bearer "+hostEnroll.MachineToken)
+	flipReq.Header.Set("X-Machine-ID", hostEnroll.MachineID)
+	flipRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(flipRec, flipReq)
+	if flipRec.Code != http.StatusConflict {
+		t.Fatalf("terminal flip status=%d want %d body=%s", flipRec.Code, http.StatusConflict, flipRec.Body.String())
+	}
+
+	// Idempotent same terminal re-report returns 200 without changing result.
+	beforeMsgs := len(phoneWriter.messages)
+	idemReq := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(`{"status":"done","result":"主机正常"}`))
+	idemReq.SetPathValue("taskId", taskID)
+	idemReq.Header.Set("Authorization", "Bearer "+hostEnroll.MachineToken)
+	idemReq.Header.Set("X-Machine-ID", hostEnroll.MachineID)
+	idemRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(idemRec, idemReq)
+	if idemRec.Code != http.StatusOK {
+		t.Fatalf("idempotent done status=%d body=%s", idemRec.Code, idemRec.Body.String())
+	}
+	if len(phoneWriter.messages) != beforeMsgs {
+		t.Fatalf("idempotent done should not re-broadcast, msgs %d -> %d", beforeMsgs, len(phoneWriter.messages))
+	}
+
 	last := phoneWriter.messages[len(phoneWriter.messages)-1]
 	if last["type"] != "digital_employee_task" || last["status"] != "done" {
 		t.Fatalf("last realtime event = %#v, want done digital_employee_task", last)
+	}
+}
+
+func TestMobileDigitalEmployeeTaskUpdateSkipsNoopProgressBroadcast(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-noop-progress@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_"+enroll.MachineID+"/tasks", strings.NewReader(`{"prompt":"ping","task_type":"general"}`))
+	createReq.SetPathValue("employeeId", "ve_"+enroll.MachineID)
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	taskID, _ := created["task_id"].(string)
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/tasks/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskClaimAnyHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim = %d %s", claimRec.Code, claimRec.Body.String())
+	}
+
+	mobileDigitalEmployeeTasks.Lock()
+	ownerID := mobileDigitalEmployeeTasks.tasks[taskID].OwnerID
+	mobileDigitalEmployeeTasks.Unlock()
+	tenantID := mobileTestTenantID(t, identity, viewerToken)
+
+	mobileRealtimeClients.Lock()
+	previous := mobileRealtimeClients.clients
+	mobileRealtimeClients.clients = make(map[string]map[*mobileRealtimeClient]struct{})
+	mobileRealtimeClients.Unlock()
+	t.Cleanup(func() {
+		mobileRealtimeClients.Lock()
+		mobileRealtimeClients.clients = previous
+		mobileRealtimeClients.Unlock()
+	})
+	writer := &mobileRealtimeFakeWriter{}
+	_, cleanup := mobileRealtimeRegister(tenantID, ownerID, writer)
+	defer cleanup()
+
+	body := `{"status":"in_progress","result":"partial-1"}`
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPatch, "/api/mobile/digital-employees/tasks/"+taskID, strings.NewReader(body))
+		req.SetPathValue("taskId", taskID)
+		req.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+		req.Header.Set("X-Machine-ID", enroll.MachineID)
+		rec := httptest.NewRecorder()
+		MobileDigitalEmployeeTaskUpdateHandler(identity).ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update[%d] = %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if len(writer.messages) != 1 {
+		t.Fatalf("realtime messages = %d, want 1 (second identical progress is no-op)", len(writer.messages))
 	}
 }
 

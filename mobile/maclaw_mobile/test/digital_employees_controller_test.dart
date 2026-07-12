@@ -123,12 +123,17 @@ void main() {
     await container
         .read(digitalEmployeeTaskProvider.notifier)
         .applyRealtimeEvent(progress);
+    // Identical snapshot must be ignored (no extra store write).
+    store.lastTask = null;
+    await container
+        .read(digitalEmployeeTaskProvider.notifier)
+        .applyRealtimeEvent(progress);
 
     final current = container.read(digitalEmployeeTaskProvider).valueOrNull;
     expect(current?.taskId, 'task-progress-1');
     expect(current?.status, 'in_progress');
     expect(current?.result, contains('磁盘使用率'));
-    expect(store.lastTask?.result, contains('磁盘使用率'));
+    expect(store.lastTask, isNull);
     expect(notifications.shown, isEmpty);
   });
 
