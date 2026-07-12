@@ -91,6 +91,7 @@ func TestUserWebServesEmbeddedShell(t *testing.T) {
 		"const reader = resp.body.getReader()",
 		"Session expired. Open this page again from VE Platform.",
 		"function handleAPIError(e)",
+		"模型服务暂时不可用：上游网关返回 502",
 		"async function refreshInstances()",
 		"state.instances = items(out)",
 		"if (!handleAPIError(e)) toast(e.message)",

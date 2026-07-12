@@ -776,6 +776,12 @@ func TestEmailLoginUsesBoundEmailIdentityWithoutCreatingDuplicateUser(t *testing
 	if err := svc.BindVerifiedEmailToUser(ctx, phoneUser, "znsoft@163.com"); err != nil {
 		t.Fatalf("bind verified email: %v", err)
 	}
+	if user, err := svc.LookupUserByEmail(ctx, "znsoft@163.com"); err != nil || user == nil || user.ID != phoneUser.ID {
+		t.Fatalf("LookupUserByEmail = %+v, err=%v; want bound phone user", user, err)
+	}
+	if user, err := svc.ManualBindForTenant(ctx, store.DefaultTenantID, "znsoft@163.com"); err != nil || user == nil || user.ID != phoneUser.ID {
+		t.Fatalf("ManualBindForTenant = %+v, err=%v; want bound phone user", user, err)
+	}
 	routeSyncer := &testUserRouteSyncOnly{}
 	svc.SetUserRouteSyncer(routeSyncer)
 	if _, err := deps.provider.Write.ExecContext(ctx,
@@ -865,6 +871,39 @@ func TestEmailLoginUsesBoundEmailIdentityWithoutCreatingDuplicateUser(t *testing
 	}
 	if len(users) != 2 {
 		t.Fatalf("bound-email enrollment changed user count: %+v", users)
+	}
+}
+
+func TestAdminConfirmLoginUsesBoundEmailIdentityWithoutCreatingDuplicateUser(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users, deps.store.Enrollments, deps.store.EmailBlocks,
+		deps.store.Machines, deps.store.ViewerTokens, deps.store.LoginTokens,
+		deps.store.System, nil, "open", true, nil, "http://127.0.0.1:9399",
+	)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	phoneUser := &store.User{
+		ID: "user_phone_admin_confirm", TenantID: store.DefaultTenantID,
+		Email: "phone:17090134628", SN: "SN-phone-admin-confirm",
+		Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := deps.store.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	if err := svc.BindVerifiedEmailToUser(ctx, phoneUser, "znsoft@163.com"); err != nil {
+		t.Fatalf("bind verified email: %v", err)
+	}
+
+	user, err := svc.AdminConfirmLoginByEmail(ctx, "znsoft@163.com")
+	if err != nil {
+		t.Fatalf("AdminConfirmLoginByEmail: %v", err)
+	}
+	if user == nil || user.ID != phoneUser.ID {
+		t.Fatalf("admin confirm user = %+v, want bound phone user %q", user, phoneUser.ID)
+	}
+	if duplicate, err := deps.store.Users.GetByTenantEmail(ctx, store.DefaultTenantID, "znsoft@163.com"); err != nil || duplicate != nil {
+		t.Fatalf("duplicate email user = %+v, err=%v", duplicate, err)
 	}
 }
 
@@ -2177,6 +2216,50 @@ func TestApproveEnrollmentGrantsInvitationLLMBenefitForExistingUser(t *testing.T
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 invitation LLM grant, got %d", count)
+	}
+}
+
+func TestApproveEnrollmentUsesBoundEmailIdentityWithoutCreatingDuplicateUser(t *testing.T) {
+	deps := newTestStore(t)
+	svc := NewIdentityService(
+		deps.store.Users, deps.store.Enrollments, deps.store.EmailBlocks,
+		deps.store.Machines, deps.store.ViewerTokens, deps.store.LoginTokens,
+		deps.store.System, nil, "approval", true, nil, "http://127.0.0.1:9399",
+	)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	phoneUser := &store.User{
+		ID:               "u_phone_approval",
+		TenantID:         store.DefaultTenantID,
+		Email:            "phone:17090134628",
+		SN:               "SN-PHONE-APPROVAL",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := deps.store.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("seed phone user: %v", err)
+	}
+	if err := svc.BindVerifiedEmailToUser(ctx, phoneUser, "bound@example.com"); err != nil {
+		t.Fatalf("bind verified email: %v", err)
+	}
+	if err := deps.store.Enrollments.Create(ctx, &store.UserEnrollment{
+		ID: "enroll_bound_email", TenantID: store.DefaultTenantID, Email: "bound@example.com",
+		Status: "pending", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed enrollment: %v", err)
+	}
+
+	user, _, err := svc.ApproveEnrollment(ctx, "enroll_bound_email")
+	if err != nil {
+		t.Fatalf("ApproveEnrollment: %v", err)
+	}
+	if user == nil || user.ID != phoneUser.ID {
+		t.Fatalf("approved user = %+v, want bound phone user %q", user, phoneUser.ID)
+	}
+	if duplicate, err := deps.store.Users.GetByTenantEmail(ctx, store.DefaultTenantID, "bound@example.com"); err != nil || duplicate != nil {
+		t.Fatalf("duplicate email user = %+v, err=%v", duplicate, err)
 	}
 }
 

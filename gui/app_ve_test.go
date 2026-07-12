@@ -1856,6 +1856,16 @@ func TestIsVESessionRecoveryError(t *testing.T) {
 	}
 }
 
+func TestPreferredRemoteVEParticipantIDPrefersVEOverStaleLocalMachine(t *testing.T) {
+	got := preferredRemoteVEParticipantID(
+		[]string{"m_previous_local", "ve_emp_07e98aa8525d9a9d"},
+		"m_current_local",
+	)
+	if got != "ve_emp_07e98aa8525d9a9d" {
+		t.Fatalf("preferred remote VE = %q, want generated VE ID", got)
+	}
+}
+
 func TestSendVEA2AMessageSkipsDetailRefreshForStreamChunk(t *testing.T) {
 	detailCalls := int32(0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

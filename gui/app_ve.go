@@ -1327,11 +1327,8 @@ func (a *App) findRemoteVEParticipantForSession(sessionID string) string {
 				if strings.TrimSpace(summary.ID) != sessionID {
 					continue
 				}
-				for _, pid := range summary.ParticipantIDs {
-					pid = strings.TrimSpace(pid)
-					if pid != "" && !veGroupParticipantIdentityMatches(pid, localID) {
-						return pid
-					}
+				if veID := preferredRemoteVEParticipantID(summary.ParticipantIDs, localID); veID != "" {
+					return veID
 				}
 			}
 		}
@@ -1349,6 +1346,30 @@ func (a *App) findRemoteVEParticipantForSession(sessionID string) string {
 		return true
 	})
 	return foundVEID
+}
+
+// preferredRemoteVEParticipantID selects the VE from a persisted direct-chat
+// membership list. A device can be re-enrolled with a new machine ID, leaving
+// the old local machine ID in history ahead of the actual VE. Generated VE IDs
+// are unambiguous and must therefore win over a generic non-local fallback.
+func preferredRemoteVEParticipantID(participantIDs []string, localID string) string {
+	localVEID := virtualEmployeeIDForMachine(localID)
+	fallback := ""
+	for _, rawID := range participantIDs {
+		participantID := strings.TrimSpace(rawID)
+		if participantID == "" ||
+			veGroupParticipantIdentityMatches(participantID, localID) ||
+			veGroupParticipantIdentityMatches(participantID, localVEID) {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(participantID), "ve_") {
+			return participantID
+		}
+		if fallback == "" {
+			fallback = participantID
+		}
+	}
+	return fallback
 }
 
 // markGroupDiscussionSessionClosed updates the SQLite history store to mark

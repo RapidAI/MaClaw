@@ -77,7 +77,8 @@ type MaClawProviderClient struct {
 	HTTPClient *http.Client
 
 	mu                 sync.RWMutex
-	boundURL           string // persisted bound HubCenter LLM URL
+	boundURL           string   // persisted bound HubCenter LLM URL
+	candidateURLs      []string // ordered HubCenter failover candidates
 	failureCount       int
 	lastFailureAt      time.Time
 	refreshCredentials func() (hubID, hubSecret string) // lazy refresh after registration
@@ -97,9 +98,10 @@ func NewMaClawProviderClient(cfg MaClawProviderConfig) *MaClawProviderClient {
 	}
 	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
 	return &MaClawProviderClient{
-		Config:     cfg,
-		HTTPClient: client,
-		boundURL:   cfg.HubCenterURL,
+		Config:        cfg,
+		HTTPClient:    client,
+		boundURL:      cfg.HubCenterURL,
+		candidateURLs: normalizeHubCenterURLs([]string{cfg.HubCenterURL}),
 	}
 }
 
@@ -159,6 +161,7 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 	c.mu.RLock()
 	targetURL := c.boundURL
 	httpClient := c.HTTPClient
+	candidates := append([]string(nil), c.candidateURLs...)
 	c.mu.RUnlock()
 
 	if targetURL == "" {
@@ -169,8 +172,43 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 		return nil, 0, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
 	}
 
-	endpoint := strings.TrimRight(targetURL, "/") + "/api/llm/v1/chat/completions"
+	// A HubCenter cluster can have a live registration/heartbeat endpoint while
+	// one node's LLM proxy is unavailable. Retry only retryable transport/5xx/HA
+	// failures on the other configured nodes, and pin the first successful node.
+	targets := orderedHubCenterURLs(targetURL, candidates)
+	var lastBody []byte
+	var lastStatus int
+	var lastErr error
+	for _, target := range targets {
+		respBody, status, err := c.forwardTo(ctx, httpClient, target, body, hubID, token, tenantID, serviceGroupIDs...)
+		lastBody, lastStatus, lastErr = respBody, status, err
+		if !shouldFailoverHubCenter(status, respBody, err) {
+			c.SetBoundURL(target)
+			return respBody, status, nil
+		}
+		log.Printf("[maclaw-provider] LLM upstream failed hubcenter=%s status=%d err=%v; trying next candidate", target, status, err)
+	}
+	c.recordFailure()
+	return lastBody, lastStatus, lastErr
+}
 
+// shouldFailoverHubCenter only treats failures before a HubCenter application
+// response as node failures. A JSON 5xx is a real HubCenter/provider error and
+// is returned unchanged: replaying it on another node can duplicate LLM usage
+// or tool side effects. Reverse-proxy HTML/text 5xx responses are safe to try
+// on another configured HubCenter node.
+func shouldFailoverHubCenter(status int, responseBody []byte, err error) bool {
+	if err != nil || status == http.StatusConflict {
+		return true
+	}
+	if status < 500 {
+		return false
+	}
+	return !json.Valid(bytes.TrimSpace(responseBody))
+}
+
+func (c *MaClawProviderClient) forwardTo(ctx context.Context, httpClient *http.Client, targetURL string, body []byte, hubID, token, tenantID string, serviceGroupIDs ...string) ([]byte, int, error) {
+	endpoint := strings.TrimRight(targetURL, "/") + "/api/llm/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, fmt.Errorf("maclaw official: create request: %w", err)
@@ -182,29 +220,48 @@ func (c *MaClawProviderClient) Forward(ctx context.Context, body []byte, tenantI
 	if serviceGroupID := firstNonEmptyServiceGroupID(serviceGroupIDs); serviceGroupID != "" {
 		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
 	}
-
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		c.recordFailure()
 		return nil, 0, fmt.Errorf("maclaw official: forward failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("maclaw official: read response: %w", err)
 	}
-
-	if resp.StatusCode >= 500 {
-		c.recordFailure()
-	} else if resp.StatusCode == http.StatusConflict {
-		// 409 = HA binding conflict, need failover to a different node
-		c.recordFailure()
-	} else {
-		c.resetFailures()
-	}
-
 	return respBody, resp.StatusCode, nil
+}
+
+// SetHubCenterCandidates configures the cluster members used after a retryable
+// upstream failure. The current bound URL is always tried first.
+func (c *MaClawProviderClient) SetHubCenterCandidates(urls []string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.candidateURLs = normalizeHubCenterURLs(urls)
+	c.mu.Unlock()
+}
+
+func normalizeHubCenterURLs(urls []string) []string {
+	seen := make(map[string]struct{}, len(urls))
+	out := make([]string, 0, len(urls))
+	for _, raw := range urls {
+		u := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if u == "" {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	return out
+}
+
+func orderedHubCenterURLs(current string, candidates []string) []string {
+	return normalizeHubCenterURLs(append([]string{current}, candidates...))
 }
 
 // ForwardStream sends an LLM streaming request to HubCenter. The caller must
@@ -213,6 +270,7 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 	c.mu.RLock()
 	targetURL := c.boundURL
 	baseClient := c.HTTPClient
+	candidates := append([]string(nil), c.candidateURLs...)
 	c.mu.RUnlock()
 
 	if targetURL == "" {
@@ -223,6 +281,40 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 		return nil, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
 	}
 
+	httpClient := streamHTTPClientFrom(baseClient)
+	var lastErr error
+	for _, target := range orderedHubCenterURLs(targetURL, candidates) {
+		resp, err := c.forwardStreamTo(ctx, httpClient, target, body, hubID, token, tenantID, serviceGroupIDs...)
+		if err != nil {
+			lastErr = err
+			log.Printf("[maclaw-provider] streaming LLM upstream failed hubcenter=%s err=%v; trying next candidate", target, err)
+			continue
+		}
+		// Retrying is safe only before any stream bytes are returned to the caller.
+		// Preserve an application JSON error for the caller; it may represent a
+		// request that already reached the provider and must not be replayed.
+		var failureBody []byte
+		if resp.StatusCode >= 500 {
+			failureBody, _ = io.ReadAll(resp.Body)
+			resp.Body = io.NopCloser(bytes.NewReader(failureBody))
+		}
+		if shouldFailoverHubCenter(resp.StatusCode, failureBody, nil) {
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("maclaw official: stream upstream HTTP %d", resp.StatusCode)
+			log.Printf("[maclaw-provider] streaming LLM upstream failed hubcenter=%s status=%d; trying next candidate", target, resp.StatusCode)
+			continue
+		}
+		c.SetBoundURL(target)
+		return resp, nil
+	}
+	c.recordFailure()
+	if lastErr == nil {
+		lastErr = fmt.Errorf("maclaw official: no HubCenter candidates available")
+	}
+	return nil, lastErr
+}
+
+func (c *MaClawProviderClient) forwardStreamTo(ctx context.Context, httpClient *http.Client, targetURL string, body []byte, hubID, token, tenantID string, serviceGroupIDs ...string) (*http.Response, error) {
 	endpoint := strings.TrimRight(targetURL, "/") + "/api/llm/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -235,17 +327,9 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 	if serviceGroupID := firstNonEmptyServiceGroupID(serviceGroupIDs); serviceGroupID != "" {
 		req.Header.Set("X-MaClaw-Service-Group-ID", serviceGroupID)
 	}
-
-	httpClient := streamHTTPClientFrom(baseClient)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		c.recordFailure()
 		return nil, fmt.Errorf("maclaw official: stream forward failed: %w", err)
-	}
-	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusConflict {
-		c.recordFailure()
-	} else {
-		c.resetFailures()
 	}
 	return resp, nil
 }

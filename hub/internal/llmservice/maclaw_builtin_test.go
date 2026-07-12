@@ -4,10 +4,90 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMaClawProviderClientForwardFailsOverToNextHubCenter(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusBadGateway)
+	}))
+	defer failed.Close()
+	working := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/v1/chat/completions" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("X-MaClaw-Service-Group-ID") != "redeem" {
+			t.Fatalf("service group missing")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer working.Close()
+
+	client := NewMaClawProviderClient(MaClawProviderConfig{HubCenterURL: failed.URL, HubID: "hub1", MachineToken: "secret"})
+	client.SetHubCenterCandidates([]string{failed.URL, working.URL})
+	body, status, err := client.Forward(context.Background(), []byte(`{"model":"auto","messages":[]}`), "tenant_default", "redeem")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("Forward() status=%d err=%v body=%s", status, err, body)
+	}
+	if got := client.CurrentHubCenterURL(); got != working.URL {
+		t.Fatalf("bound URL=%s want %s", got, working.URL)
+	}
+}
+
+func TestMaClawProviderClientForwardDoesNotReplayJSONProviderError(t *testing.T) {
+	calledFallback := false
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"provider unavailable"}}`))
+	}))
+	defer failed.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calledFallback = true }))
+	defer fallback.Close()
+
+	client := NewMaClawProviderClient(MaClawProviderConfig{HubCenterURL: failed.URL, HubID: "hub1", MachineToken: "secret"})
+	client.SetHubCenterCandidates([]string{failed.URL, fallback.URL})
+	body, status, err := client.Forward(context.Background(), []byte(`{"model":"auto","messages":[]}`), "tenant_default", "redeem")
+	if err != nil || status != http.StatusBadGateway {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if calledFallback {
+		t.Fatal("replayed a JSON HubCenter/provider error on the fallback node")
+	}
+	if !strings.Contains(string(body), "provider unavailable") {
+		t.Fatalf("body=%s", body)
+	}
+}
+
+func TestMaClawProviderClientForwardStreamFailsOverBeforeReturningStream(t *testing.T) {
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusBadGateway)
+	}))
+	defer failed.Close()
+	working := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer working.Close()
+
+	client := NewMaClawProviderClient(MaClawProviderConfig{HubCenterURL: failed.URL, HubID: "hub1", MachineToken: "secret"})
+	client.SetHubCenterCandidates([]string{failed.URL, working.URL})
+	resp, err := client.ForwardStream(context.Background(), []byte(`{"model":"auto","messages":[]}`), "tenant_default", "redeem")
+	if err != nil {
+		t.Fatalf("ForwardStream() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if got := client.CurrentHubCenterURL(); got != working.URL {
+		t.Fatalf("bound URL=%s want %s", got, working.URL)
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

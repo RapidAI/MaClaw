@@ -1191,7 +1191,7 @@ func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, ema
 	if err := s.ensureEmailAllowed(ctx, email); err != nil {
 		return nil, err
 	}
-	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
+	user, err := s.users.GetByTenantIdentity(ctx, tenantID, "email", email)
 	if err != nil {
 		return nil, err
 	}
@@ -1212,7 +1212,8 @@ func (s *IdentityService) LookupUserByEmail(ctx context.Context, email string) (
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
-	return s.users.GetByTenantEmail(ctx, tenantIDFromContext(ctx), email)
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantIDFromContext(ctx), email)
+	return user, err
 }
 
 func (s *IdentityService) LookupUserByPhone(ctx context.Context, phoneNumber string) (*store.User, error) {
@@ -2035,7 +2036,10 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		return nil, nil, err
 	}
 	// Check if user already exists (e.g. re-approval)
-	existing, _ := s.users.GetByTenantEmail(ctx, tenantID, target.Email)
+	existing, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, target.Email)
+	if err != nil {
+		return nil, nil, err
+	}
 	if existing != nil {
 		existing.EnrollmentStatus = "approved"
 		existing.Status = "active"
@@ -2099,7 +2103,10 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 
 	// Ensure the user exists (create if needed).
 	tenantID := tenantIDFromContext(ctx)
-	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
+	// An email can be a verified identity for a phone-first account, whose
+	// primary account value is "phone:<number>". Resolve identities first so
+	// this administrative flow does not attempt to create a duplicate account.
+	user, _, err := s.lookupUserByTenantEmailOrIdentity(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}

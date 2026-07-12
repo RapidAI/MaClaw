@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
@@ -459,6 +461,41 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		return ids
 	})
 	if maclawMod != nil {
+		// Keep every configured or registered remote HubCenter node available to
+		// the LLM path. Hub and HubCenter may be deployed independently.
+		candidates := append([]string{cfg.Center.BaseURL}, cfg.Center.BaseURLs...)
+		if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
+			candidates = append(candidates, regState.ActiveBaseURL)
+			candidates = append(candidates, regState.BaseURLs...)
+		}
+		maclawMod.Client.SetHubCenterCandidates(candidates)
+		refreshHubCenterCandidates := func() {
+			// Probe remote cluster members proactively. This is intentionally
+			// independent of deployment topology: Hub may run on a different host.
+			urls := append([]string{cfg.Center.BaseURL}, cfg.Center.BaseURLs...)
+			if state, err := centerService.Status(context.Background()); err == nil && state != nil {
+				urls = append(urls, state.ActiveBaseURL)
+				urls = append(urls, state.BaseURLs...)
+			}
+			current := maclawMod.Client.CurrentHubCenterURL()
+			ordered := remote.SelectBestCenter(context.Background(), &http.Client{Timeout: 4 * time.Second}, urls, current)
+			if len(ordered) == 0 {
+				return
+			}
+			maclawMod.Client.SetHubCenterCandidates(ordered)
+			if ordered[0] != current {
+				log.Printf("[maclaw-provider] HubCenter health probe selected %s (previous=%s)", ordered[0], current)
+				maclawMod.Client.SetBoundURL(ordered[0])
+			}
+		}
+		refreshHubCenterCandidates()
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				refreshHubCenterCandidates()
+			}
+		}()
 		maclawMod.Client.SetRefreshCredentials(func() (string, string) {
 			hubID := ""
 			if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {

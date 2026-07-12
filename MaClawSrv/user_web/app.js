@@ -564,6 +564,12 @@ function apiErrorMessage(data, fallback) {
   const msg = data.error || data.message || fallback;
   const text = `${msg} ${data.raw || ""}`.toLowerCase();
   if (text.includes("qrcode token is not active")) return t("weixinQRExpired");
+  if (text.includes("llm call failed") && (text.includes("http 502") || text.includes("502 bad gateway"))) {
+    const hint = locale === "zh"
+      ? "模型服务暂时不可用：上游网关返回 502。请稍后重试，或在服务设置中切换到可用的模型提供商。"
+      : "The model service is temporarily unavailable: the upstream gateway returned 502. Retry later or switch to an available model provider in Service Settings.";
+    return `${hint}（技术信息：${msg}）`;
+  }
   return text.includes("managed-by-hub") || text.includes("viewer authentication failed") || text.includes("unauthorized") ? t("llmManagedByHub") : msg;
 }
 async function api(path, opt = {}) {

@@ -1454,3 +1454,52 @@ func TestAdminGenerateLLMProviderTestKey(t *testing.T) {
 		t.Fatalf("expected expires_in_days=30, got %#v", payload["expires_in_days"])
 	}
 }
+
+func TestAdminGenerateLLMProviderTestKeyUsesBoundEmailIdentity(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueTenantAdminTokenForTest(t, services, "key")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	phoneUser := &store.User{
+		ID:               "phone_user_test_key",
+		TenantID:         "tenant_key",
+		Email:            "phone:17090134628",
+		SN:               "SN-phone-test-key",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, phoneUser); err != nil {
+		t.Fatalf("create phone user: %v", err)
+	}
+	if err := services.store.Users.UpsertIdentity(ctx, &store.UserIdentity{
+		TenantID: "tenant_key", UserID: phoneUser.ID, Type: "email", Value: "znsoft@163.com",
+		Verified: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("bind email identity: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-key", strings.NewReader(`{"email":"ZNSOFT@163.COM"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	services.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["email"] != "znsoft@163.com" {
+		t.Fatalf("expected requested email, got %#v", payload["email"])
+	}
+	if accessToken, _ := payload["access_token"].(string); strings.TrimSpace(accessToken) == "" {
+		t.Fatalf("expected access token, got %#v", payload["access_token"])
+	}
+	if duplicate, err := services.store.Users.GetByTenantEmail(ctx, "tenant_key", "znsoft@163.com"); err != nil || duplicate != nil {
+		t.Fatalf("duplicate email user = %+v, err=%v", duplicate, err)
+	}
+}

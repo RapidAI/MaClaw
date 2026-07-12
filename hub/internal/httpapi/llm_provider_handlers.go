@@ -393,6 +393,10 @@ func GenerateLLMProviderTestKeyHandler(identity *auth.IdentityService) http.Hand
 			writeError(w, http.StatusBadRequest, "LLM_PROVIDER_TEST_KEY_EMAIL_REQUIRED", "email is required")
 			return
 		}
+		// Keep the response identity aligned with the mailbox requested by the
+		// administrator. The resolved user can be phone-first, in which case its
+		// primary account value is an internal "phone:<number>" identifier.
+		email = strings.ToLower(strings.TrimSpace(email))
 
 		ctx := auth.WithTenant(r.Context(), RequestTenantID(r))
 		user, err := identity.AdminConfirmLoginByEmail(ctx, email)
@@ -411,7 +415,7 @@ func GenerateLLMProviderTestKeyHandler(identity *auth.IdentityService) http.Hand
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"email":           user.Email,
+			"email":           email,
 			"access_token":    token,
 			"token_type":      "Bearer",
 			"auth_header":     "Bearer " + token,
