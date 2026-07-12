@@ -379,6 +379,26 @@ func TestMobileWorkerAuthCachesIdentity(t *testing.T) {
 	if cachedAt.IsZero() {
 		t.Fatal("expected auth cache timestamp")
 	}
+
+	client.invalidateMobileWorkerAuth()
+	poll.authMu.Lock()
+	cleared := poll.authBase == "" && poll.authToken == "" && poll.authAt.IsZero()
+	poll.authMu.Unlock()
+	if !cleared {
+		t.Fatal("expected auth cache cleared after invalidate")
+	}
+	// Heartbeat invalidation should also clear DE auth cache.
+	_, _, _, err = client.mobileWorkerAuth()
+	if err != nil {
+		t.Fatalf("reauth: %v", err)
+	}
+	client.InvalidateHeartbeatIntervalCache()
+	poll.authMu.Lock()
+	cleared = poll.authBase == "" && poll.authToken == ""
+	poll.authMu.Unlock()
+	if !cleared {
+		t.Fatal("expected auth cache cleared via InvalidateHeartbeatIntervalCache")
+	}
 }
 
 func TestMobileDigitalEmployeeProgressCadenceConstants(t *testing.T) {

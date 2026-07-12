@@ -1950,6 +1950,8 @@ func (c *RemoteHubClient) InvalidateHeartbeatIntervalCache() {
 		return
 	}
 	c.cachedHeartbeatSec.Store(0)
+	// Hub URL / machine token may change with the same settings save path.
+	c.invalidateMobileWorkerAuth()
 }
 
 func (c *RemoteHubClient) IsConnected() bool {

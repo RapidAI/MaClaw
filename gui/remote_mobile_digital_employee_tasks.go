@@ -181,6 +181,15 @@ func (c *RemoteHubClient) runMobileDigitalEmployeeTaskAsync(task mobileDigitalEm
 			poll.workers <- struct{}{}
 			defer poll.releaseWorker()
 		}
+		// Freeing a worker may unblock a queued Hub task; claim ASAP instead of
+		// waiting for the next idle/active poll timer.
+		defer poll.requestImmediatePoll()
+		// If the poll loop is not running, side-claim once after this task ends.
+		defer func() {
+			if !c.mobileTaskActive.Load() {
+				go c.pollMobileDigitalEmployeeTasksOnce()
+			}
+		}()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[hub-client] mobile digital employee task panic task=%s: %v", task.TaskID, r)
@@ -491,6 +500,10 @@ func (c *RemoteHubClient) doMobileDigitalEmployeeTaskRequest(ctx context.Context
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Stale machine token / hub switch: drop auth cache so the next call reloads.
+		if resp.StatusCode == http.StatusUnauthorized {
+			c.invalidateMobileWorkerAuth()
+		}
 		// 409 = late progress after terminal (expected under streaming races).
 		if resp.StatusCode == http.StatusConflict {
 			return fmt.Errorf("hub returned HTTP %d (task finished)", resp.StatusCode)
@@ -536,6 +549,27 @@ func (c *RemoteHubClient) mobileWorkerAuth() (base, machineID, token string, err
 	poll.authAt = time.Now()
 	poll.authMu.Unlock()
 	return base, machineID, token, nil
+}
+
+// invalidateMobileWorkerAuth drops cached hub/machine credentials (config change,
+// 401, or reconnect). Safe on nil client / uninitialized poll state.
+func (c *RemoteHubClient) invalidateMobileWorkerAuth() {
+	if c == nil {
+		return
+	}
+	// Avoid creating poll state solely to clear it.
+	c.veHandlerMu.Lock()
+	poll := c.mobileTaskPollState
+	c.veHandlerMu.Unlock()
+	if poll == nil {
+		return
+	}
+	poll.authMu.Lock()
+	poll.authBase = ""
+	poll.authMachineID = ""
+	poll.authToken = ""
+	poll.authAt = time.Time{}
+	poll.authMu.Unlock()
 }
 
 func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmployeeTask) {
