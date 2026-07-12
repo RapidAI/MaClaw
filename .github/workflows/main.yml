@@ -577,10 +577,18 @@ jobs:
         if: matrix.goos == 'darwin'
         run: |
           mkdir -p dist build/bin
-          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
-            go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_amd64" ./TigerProxy/
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-            go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_arm64" ./TigerProxy/
+          # macos-latest is an ARM runner. Force clang to compile each CGO
+          # object for the target architecture before lipo joins the binaries.
+          export MACOSX_DEPLOYMENT_TARGET=11.0
+          for ARCH in amd64 arm64; do
+            CLANG_ARCH=$([ "$ARCH" = "amd64" ] && echo x86_64 || echo arm64)
+            CC="clang -arch $CLANG_ARCH" \
+            CXX="clang++ -arch $CLANG_ARCH" \
+            CGO_CFLAGS="-arch $CLANG_ARCH" \
+            CGO_LDFLAGS="-arch $CLANG_ARCH" \
+            CGO_ENABLED=1 GOOS=darwin GOARCH="$ARCH" \
+              go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_$ARCH" ./TigerProxy/
+          done
           lipo -create -output "build/bin/TigerProxy" "build/bin/TigerProxy_amd64" "build/bin/TigerProxy_arm64"
 
       - name: Create TigerProxy macOS App Bundle & PKG
