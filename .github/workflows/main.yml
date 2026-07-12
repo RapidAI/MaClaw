@@ -659,11 +659,17 @@ jobs:
                    "dist/TigerProxy-Universal.pkg"
 
       # ---- Linux ----
+      - name: Install TigerProxy Linux GUI build dependencies
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
       - name: Build TigerProxy Linux
         if: matrix.goos == 'linux'
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "dist/TigerProxy_linux_amd64" ./TigerProxy/
 
       - name: Create TigerProxy AppImage (Linux)

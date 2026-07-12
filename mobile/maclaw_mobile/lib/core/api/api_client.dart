@@ -2440,7 +2440,7 @@ class LlmServiceCardRedeemResult {
     final success = json['success'] as bool? ?? status != null;
     return LlmServiceCardRedeemResult(
       success: success,
-      message: success ? '���񿨶һ��ɹ�' : (json['message'] as String? ?? ''),
+      message: success ? '兑换成功' : (json['message'] as String? ?? ''),
       status: status,
     );
   }

@@ -1144,8 +1144,10 @@ type uploadStatusFile struct {
 }
 
 // MarkUploaded records that a skill has been uploaded to SkillMarket.
-// For config-based skills, it writes hub_skill_id into config.
-// For file-based skills, it writes an upload_status.json next to skill.yaml.
+// For config-based skills, it writes a stable hub/package id into config
+// (never a raw dual-upload submission id).
+// For file-based skills, it writes an upload_status.json next to skill.yaml
+// (submission tracking only; scanner maps that to package id on load).
 func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1167,8 +1169,9 @@ func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 			}
 			return os.WriteFile(filepath.Join(s.SkillDir, "upload_status.json"), data, 0644)
 		}
-		// Config-based skill: persist in config.json.
-		skills[i].HubSkillID = submissionID
+		// Config-based skill: persist stable package identity only.
+		// Raw "sub-…;enterprise_hub=…" must not become HubSkillID / runtime ref.
+		skills[i].HubSkillID = corelib.StableSkillIdentityFromRef(submissionID, s.HubSkillID, s.Name)
 		return e.saveSkills(skills)
 	}
 	return fmt.Errorf("skill %q not found", name)
@@ -4596,6 +4599,17 @@ func (a *App) CleanupStaleNLSkills() []string {
 
 // RunNLSkillAsync starts a skill run asynchronously for Wails.
 func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) (string, error) {
+	// Normalize dual-upload / enterprise version-key refs to a stable package id
+	// at the boundary so logs, auto-install, and StartRun share one coordinate.
+	// Matching still accepts the raw form; this is defense-in-depth for old UIs.
+	rawSkillName := strings.TrimSpace(skillName)
+	if stable := corelib.StableSkillIdentityFromRef(rawSkillName); stable != "" && stable != rawSkillName {
+		log.Printf("[skill-app] RunNLSkillAsync normalize skill ref %q → %q", rawSkillName, stable)
+		skillName = stable
+	} else {
+		skillName = rawSkillName
+	}
+
 	// Log incoming args for debugging App → Skill parameter passing
 	argKeys := make([]string, 0, len(runArgs))
 	for k := range runArgs {
@@ -4616,11 +4630,19 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 		// Auto-install fallback: when an app-initiated skill run fails because
 		// the dependency skill was never installed, attempt to install it from
 		// the hub/skillmarket before giving up.
-		if installed := a.tryAutoInstallAppDependencySkill(skillName); installed {
-			log.Printf("[skill-app] RunNLSkillAsync auto-installed dependency %q, retrying", skillName)
+		// Pass the original ref when present — tryAutoInstall normalizes to a
+		// package id and still tries both coordinates for bundle restore.
+		installRef := rawSkillName
+		if installRef == "" {
+			installRef = skillName
+		}
+		if installed := a.tryAutoInstallAppDependencySkill(installRef); installed {
+			log.Printf("[skill-app] RunNLSkillAsync auto-installed dependency %q, retrying as %q", installRef, skillName)
 			runID, err = a.skillRunner.StartRunForOwner(a.skillRunPolicyOwnerID(runArgs), skillName, runArgs)
 		} else {
 			// Replace the cryptic "not found" error with an actionable message.
+			// Prefer the stable package id so the UI is not a multi-hundred-char
+			// submission token.
 			err = fmt.Errorf("应用依赖的 Skill「%s」未安装且自动安装失败。请在应用详情页点击「安装依赖」或检查网络连接后重试", skillName)
 		}
 	}
@@ -4678,32 +4700,52 @@ func (a *App) tryAutoInstallAppDependencySkill(skillName string) bool {
 		return false
 	}
 
+	// Normalize dual-upload / enterprise version-key refs down to the package id
+	// before any recovery path so bundle lookup and remote install share one id.
+	lookupName := corelib.StableSkillIdentityFromRef(skillName)
+	if lookupName == "" {
+		lookupName = strings.TrimSpace(skillName)
+	}
+	if lookupName != strings.TrimSpace(skillName) {
+		log.Printf("[skill-app] auto-install: resolved package id %q from hub/submission ref %q", lookupName, skillName)
+	}
+
 	// Layer 1: Try to restore from bundled_dependencies in install records.
-	// This is the most reliable path — the skill files were captured at publish
-	// time and stored in the local install registry. No network needed.
-	if a.tryRestoreSkillFromInstallRecordBundle(skillName) {
-		log.Printf("[skill-app] auto-install: restored %q from bundled dependencies in install record", skillName)
-		if a.skillExecutor != nil {
-			a.skillExecutor.invalidateSkillCache()
+	// Try both the stable package id and the original ref (deduped).
+	restoreSeen := map[string]struct{}{}
+	for _, candidate := range []string{lookupName, strings.TrimSpace(skillName)} {
+		if candidate == "" {
+			continue
 		}
-		return true
+		key := strings.ToLower(candidate)
+		if _, ok := restoreSeen[key]; ok {
+			continue
+		}
+		restoreSeen[key] = struct{}{}
+		if a.tryRestoreSkillFromInstallRecordBundle(candidate) {
+			log.Printf("[skill-app] auto-install: restored %q from bundled dependencies in install record", candidate)
+			if a.skillExecutor != nil {
+				a.skillExecutor.invalidateSkillCache()
+			}
+			return true
+		}
 	}
 
 	// Layer 2: Try remote sources.
 	// Build a synthetic dependency entry to leverage the existing alias resolution.
 	// Use empty source to match the broadest set of alias registry entries.
 	dep := maclawAppInstallPlanDependency{
-		ID:   skillName,
+		ID:   lookupName,
 		Kind: "runtime_skill",
 	}
 	resolved, ok := maclawAppImplicitHubSkillResolution(dep)
 	if !ok {
-		log.Printf("[skill-app] auto-install: no alias resolution for %q and no bundled fallback available", skillName)
+		log.Printf("[skill-app] auto-install: no alias resolution for %q (lookup=%q) and no bundled fallback available", skillName, lookupName)
 		return false
 	}
 	target := resolved.Target
 	if target == "" {
-		target = skillName
+		target = lookupName
 	}
 	log.Printf("[skill-app] auto-install: attempting remote install %q (resolved target=%q)", skillName, target)
 

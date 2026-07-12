@@ -500,6 +500,12 @@ func (e *NLSkillEntry) QualifiedID() string {
 // NormalizeSkillMatchQuery trims whitespace and strips a trailing @version
 // pin (e.g. "paper_pdf_translator@1.0.0" → "paper_pdf_translator") so app
 // dependency refs and run_skill calls share one lookup key.
+//
+// Both the query and the stored identity (HubSkillID / SkillID) must be
+// normalized before comparison — enterprise hub refs often look like
+// "enterprise_hub:skill:paper_pdf_translator@6c2a9af36010" and upload
+// submission ids embed that form. Stripping only the query side leaves a
+// permanent mismatch against the unstripped HubSkillID.
 func NormalizeSkillMatchQuery(query string) string {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -511,6 +517,145 @@ func NormalizeSkillMatchQuery(query string) string {
 	return query
 }
 
+// ExtractSkillPackageIDFromHubRef pulls the stable package / skill id out of
+// hub version keys and dual-upload submission ids, e.g.:
+//
+//	enterprise_hub:skill:paper_pdf_translator@6c2a9af36010
+//	sub-…;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010
+//
+// Returns "" when no package segment is present.
+func ExtractSkillPackageIDFromHubRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	const marker = ":skill:"
+	lower := strings.ToLower(ref)
+	i := strings.LastIndex(lower, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := ref[i+len(marker):]
+	if at := strings.IndexByte(rest, '@'); at >= 0 {
+		rest = rest[:at]
+	}
+	if semi := strings.IndexByte(rest, ';'); semi >= 0 {
+		rest = rest[:semi]
+	}
+	rest = strings.TrimSpace(rest)
+	// Reject empty / submission-shaped package segments, but keep ordinary
+	// package names that merely start with "sub-" (e.g. sub-process-monitor).
+	if rest == "" || IsUploadSubmissionSkillRef(rest) {
+		return ""
+	}
+	return rest
+}
+
+// IsUploadSubmissionSkillRef reports whether ref is an upload/submission tracking
+// id (not a stable package id suitable as the preferred run_skill argument).
+//
+// Matches:
+//   - dual-upload composites: "sub-…;enterprise_hub=…"
+//   - bare enterprise upload tokens: "enterprise_hub=…"
+//   - lifecycle submission ids: "sub-<digits>…" (timestamp-prefixed)
+//
+// Does NOT match ordinary package names that merely start with "sub-"
+// (e.g. "sub-process-monitor") — those remain valid runtime identities.
+func IsUploadSubmissionSkillRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	lower := strings.ToLower(ref)
+	if strings.Contains(lower, ";enterprise_hub=") || strings.HasPrefix(lower, "enterprise_hub=") {
+		return true
+	}
+	// Lifecycle submission ids: sub-<unix-millis>-… (digit after prefix).
+	if strings.HasPrefix(lower, "sub-") && len(lower) > 4 {
+		c := lower[4]
+		if c >= '0' && c <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// StableSkillIdentityFromRef returns a run-safe skill identity from a hub ref,
+// version key, or upload submission id. Prefer an embedded package id; reject
+// bare upload tracking ids; then try optional fallbacks (Name, prior HubSkillID).
+//
+// Used by PreferredRuntimeSkillRef, file scanner, MarkUploaded, and auto-install.
+func StableSkillIdentityFromRef(ref string, fallbacks ...string) string {
+	try := func(v string) string {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return ""
+		}
+		if pkg := ExtractSkillPackageIDFromHubRef(v); pkg != "" {
+			return pkg
+		}
+		if !IsUploadSubmissionSkillRef(v) {
+			return v
+		}
+		return ""
+	}
+	if out := try(ref); out != "" {
+		return out
+	}
+	for _, fb := range fallbacks {
+		if out := try(fb); out != "" {
+			return out
+		}
+	}
+	return ""
+}
+
+// skillIdentityMatchKeys returns the normalized comparison keys for a skill
+// identity string: the @version-stripped form and, when present, the embedded
+// package id from hub/submission refs.
+func skillIdentityMatchKeys(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	keys := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	add := func(v string) {
+		v = NormalizeSkillMatchQuery(v)
+		if v == "" {
+			return
+		}
+		// Case-fold for EqualFold-style map keys without allocating per compare.
+		v = strings.ToLower(v)
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+		keys = append(keys, v)
+	}
+	add(raw)
+	// Extract from the original string (before @ strip) so version keys still yield package ids.
+	add(ExtractSkillPackageIDFromHubRef(raw))
+	return keys
+}
+
+func skillIdentityKeysOverlap(a, b string) bool {
+	ak := skillIdentityMatchKeys(a)
+	if len(ak) == 0 {
+		return false
+	}
+	bk := skillIdentityMatchKeys(b)
+	// Key sets are tiny (≤2: stripped ref + optional package id).
+	for _, x := range ak {
+		for _, y := range bk {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // MatchesQualifiedID checks if the skill matches the given qualified ID exactly.
 // This is stricter than MatchesName — it only matches against SkillID,
 // publisher-qualified ID (Publisher:Name), and HubSkillID.
@@ -518,23 +663,33 @@ func NormalizeSkillMatchQuery(query string) string {
 // Publisher falls back to Name and must not widen this check).
 // Used for App dependency resolution and collision preference where
 // deterministic identity is required.
+//
+// Both sides are normalized (including @version strip and package extraction
+// from dual-upload / enterprise hub refs) so submission-shaped HubSkillIDs still
+// match package ids and the reverse.
 func (e *NLSkillEntry) MatchesQualifiedID(id string) bool {
-	id = NormalizeSkillMatchQuery(id)
+	id = strings.TrimSpace(id)
 	if id == "" {
 		return false
 	}
-	if sid := strings.TrimSpace(e.SkillID); sid != "" && strings.EqualFold(sid, id) {
-		return true
+	candidates := make([]string, 0, 3)
+	if sid := strings.TrimSpace(e.SkillID); sid != "" {
+		candidates = append(candidates, sid)
 	}
 	// Only treat publisher:name as stable when Publisher is set; otherwise
 	// QualifiedID() returns the bare display Name.
 	if pub := strings.TrimSpace(e.Publisher); pub != "" {
-		if strings.EqualFold(pub+":"+strings.TrimSpace(e.Name), id) {
-			return true
+		if name := strings.TrimSpace(e.Name); name != "" {
+			candidates = append(candidates, pub+":"+name)
 		}
 	}
-	if hubID := strings.TrimSpace(e.HubSkillID); hubID != "" && strings.EqualFold(hubID, id) {
-		return true
+	if hub := strings.TrimSpace(e.HubSkillID); hub != "" {
+		candidates = append(candidates, hub)
+	}
+	for _, c := range candidates {
+		if skillIdentityKeysOverlap(c, id) {
+			return true
+		}
 	}
 	return false
 }
@@ -547,8 +702,10 @@ func (e *NLSkillEntry) MatchesQualifiedID(id string) bool {
 // Hub-installed skills commonly have display Name "Paper PDF Translator" while
 // apps/runtime still request the stable HubSkillID "paper_pdf_translator".
 // That identity is matched via HubSkillID (and loose Name/DirName normalisation).
+// Submission/version-key queries also match when their embedded package id
+// equals Name (HubSkillID may be empty on pure file skills).
 func (e *NLSkillEntry) MatchesName(query string) bool {
-	query = NormalizeSkillMatchQuery(query)
+	query = strings.TrimSpace(query)
 	if query == "" {
 		return false
 	}
@@ -556,18 +713,28 @@ func (e *NLSkillEntry) MatchesName(query string) bool {
 	if e.MatchesQualifiedID(query) {
 		return true
 	}
-	if skillIdentityEqual(e.Name, query) {
-		return true
+	// Loose display keys: raw query and embedded package id (if any).
+	looseQueries := []string{NormalizeSkillMatchQuery(query)}
+	if pkg := ExtractSkillPackageIDFromHubRef(query); pkg != "" {
+		looseQueries = append(looseQueries, NormalizeSkillMatchQuery(pkg))
 	}
-	if e.DirName != "" && skillIdentityEqual(e.DirName, query) {
-		return true
-	}
-	// Fallback: match by directory basename from SkillDir for skills
-	// that were loaded from config without DirName populated.
-	if e.SkillDir != "" && e.DirName == "" {
-		base := filepath.Base(e.SkillDir)
-		if skillIdentityEqual(base, query) {
+	for _, q := range looseQueries {
+		if q == "" {
+			continue
+		}
+		if skillIdentityEqual(e.Name, q) {
 			return true
+		}
+		if e.DirName != "" && skillIdentityEqual(e.DirName, q) {
+			return true
+		}
+		// Fallback: match by directory basename from SkillDir for skills
+		// that were loaded from config without DirName populated.
+		if e.SkillDir != "" && e.DirName == "" {
+			base := filepath.Base(e.SkillDir)
+			if skillIdentityEqual(base, q) {
+				return true
+			}
 		}
 	}
 	return false
@@ -628,6 +795,12 @@ func (e NLSkillEntry) SkillIdentityKeys() []string {
 		e.Name,
 		e.DirName,
 	}
+	if pkg := ExtractSkillPackageIDFromHubRef(e.HubSkillID); pkg != "" {
+		raw = append(raw, pkg)
+	}
+	if pkg := ExtractSkillPackageIDFromHubRef(e.SkillID); pkg != "" {
+		raw = append(raw, pkg)
+	}
 	if pub := strings.TrimSpace(e.Publisher); pub != "" {
 		if name := strings.TrimSpace(e.Name); name != "" {
 			raw = append(raw, pub+":"+name)
@@ -643,17 +816,18 @@ func (e NLSkillEntry) SkillIdentityKeys() []string {
 // RunNLSkillAsync. Stable package identity (HubSkillID, SkillID) is preferred
 // over localized display Name so MaClaw Apps that declare appSkill.id as a hub
 // id keep one coordinate from authoring through execution.
+//
+// Upload submission ids are never returned as run handles — they resolve to the
+// embedded package id (e.g. paper_pdf_translator) or fall back to Name.
 func (e NLSkillEntry) PreferredRuntimeSkillRef() string {
-	if hub := strings.TrimSpace(e.HubSkillID); hub != "" {
-		return hub
-	}
-	if sid := strings.TrimSpace(e.SkillID); sid != "" {
-		return sid
-	}
+	pubName := ""
 	if pub := strings.TrimSpace(e.Publisher); pub != "" {
 		if name := strings.TrimSpace(e.Name); name != "" {
-			return pub + ":" + name
+			pubName = pub + ":" + name
 		}
+	}
+	if ref := StableSkillIdentityFromRef(e.HubSkillID, e.SkillID, pubName, e.Name); ref != "" {
+		return ref
 	}
 	return strings.TrimSpace(e.Name)
 }

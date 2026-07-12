@@ -492,7 +492,7 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                 flexShrink: 0,
             }}>
 
-            {/* Title — restrained product label, not chatbot hero copy */}
+            {/* Title — invite the user to pick a starter task */}
             <h2 style={{
                 margin: 0,
                 fontSize: "13px",
@@ -501,8 +501,13 @@ export function AssistantWelcomeView({ lang, theme: t, themeMode, onPromptSelect
                 textAlign: "center",
                 fontFamily: "system-ui, -apple-system, sans-serif",
                 letterSpacing: "0.01em",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
             }}>
-                {isZh ? "任务入口" : "Task entry"}
+                <WelcomePromptIcon name="checklist" color={t.textMuted} />
+                {isZh ? "选择一个任务开始吧！" : "Pick a task to get started!"}
             </h2>
 
             {/* Centered input composer — workbench field, not chat bubble */}

@@ -199,6 +199,10 @@ func TestMatMulQ4BiasAddPanel(t *testing.T) {
 }
 
 func TestQ4Q8Dual8AccumVNNI(t *testing.T) {
+	if !hasAVX512VNNI {
+		t.Skip("requires AVX-512 VNNI fused epilogue support")
+	}
+
 	const M, N, K = 8, 2, 2048
 	a := make([]float32, M*K)
 	wData := make([]float32, N*K)

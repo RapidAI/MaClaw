@@ -1811,14 +1811,17 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 			continue
 		}
 
-		var hubSkillID string
+		// upload_status.json is upload/review tracking only. Never promote the raw
+		// submission_id into HubSkillID — dual-upload ids poison runtime refs.
+		// StableSkillIdentityFromRef extracts package id or keeps non-submission ids.
+		var fromUpload string
 		if statusData, err := os.ReadFile(filepath.Join(skillDir, "upload_status.json")); err == nil {
 			var us uploadStatusFile
-			if json.Unmarshal(statusData, &us) == nil && us.SubmissionID != "" {
-				hubSkillID = us.SubmissionID
+			if json.Unmarshal(statusData, &us) == nil {
+				fromUpload = strings.TrimSpace(us.SubmissionID)
 			}
 		}
-		parsed.HubSkillID = hubSkillID
+		parsed.HubSkillID = corelib.StableSkillIdentityFromRef(fromUpload, parsed.HubSkillID)
 		if parsed.SkillDir == "" {
 			parsed.SkillDir = skillDir
 		}

@@ -2589,6 +2589,81 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
 }
 
 /**
+ * Extract stable package id from enterprise hub version keys / dual-upload
+ * submission ids (mirrors corelib.ExtractSkillPackageIDFromHubRef).
+ */
+function extractSkillPackageIDFromHubRef(ref: string): string {
+    const raw = String(ref || '').trim();
+    if (!raw) return '';
+    const lower = raw.toLowerCase();
+    const marker = ':skill:';
+    const idx = lower.lastIndexOf(marker);
+    if (idx < 0) return '';
+    let rest = raw.slice(idx + marker.length);
+    const at = rest.indexOf('@');
+    if (at >= 0) rest = rest.slice(0, at);
+    const semi = rest.indexOf(';');
+    if (semi >= 0) rest = rest.slice(0, semi);
+    rest = rest.trim();
+    // Reject empty / submission-shaped segments; keep ordinary "sub-*" package names.
+    if (!rest || isUploadSubmissionSkillRef(rest)) return '';
+    return rest;
+}
+
+/** Mirrors corelib.IsUploadSubmissionSkillRef — do not treat ordinary "sub-*" package names as submissions. */
+function isUploadSubmissionSkillRef(ref: string): boolean {
+    const lower = String(ref || '').trim().toLowerCase();
+    if (!lower) return false;
+    if (lower.includes(';enterprise_hub=') || lower.startsWith('enterprise_hub=')) return true;
+    // Lifecycle ids: sub-<digits>… (not sub-process-monitor style package names).
+    if (lower.startsWith('sub-') && lower.length > 4) {
+        const c = lower.charCodeAt(4);
+        if (c >= 48 && c <= 57) return true; // '0'..'9'
+    }
+    return false;
+}
+
+/** Prefer package id over upload submission ids (mirrors corelib.StableSkillIdentityFromRef). */
+function preferRunnableSkillRef(...candidates: string[]): string {
+    for (const raw of candidates) {
+        const trimmed = String(raw || '').trim();
+        if (!trimmed) continue;
+        const pkg = extractSkillPackageIDFromHubRef(trimmed);
+        if (pkg) return pkg;
+        if (!isUploadSubmissionSkillRef(trimmed)) return trimmed;
+    }
+    return '';
+}
+
+/** Comparison keys for a skill identity (strip @version + optional package extract). */
+function skillIdentityMatchKeys(raw: string): string[] {
+    const stripAt = (value: string) => {
+        const trimmed = String(value || '').trim();
+        const at = trimmed.indexOf('@');
+        return (at > 0 ? trimmed.slice(0, at) : trimmed).trim().toLowerCase();
+    };
+    const identityKey = (value: string) => stripAt(value).replace(/[\s\-_]+/g, '_').replace(/^_+|_+$/g, '');
+    const keys = new Set<string>();
+    const add = (v: string) => {
+        const s = stripAt(v);
+        if (!s) return;
+        keys.add(s);
+        keys.add(identityKey(s));
+    };
+    add(raw);
+    const pkg = extractSkillPackageIDFromHubRef(raw);
+    if (pkg) add(pkg);
+    return Array.from(keys);
+}
+
+function skillIdentityKeysOverlap(a: string, b: string): boolean {
+    const ak = skillIdentityMatchKeys(a);
+    if (!ak.length) return false;
+    const set = new Set(ak);
+    return skillIdentityMatchKeys(b).some((k) => set.has(k));
+}
+
+/**
  * Resolve the skill id used for RunNLSkillAsync.
  *
  * Coordinate model (authoring → plan → run):
@@ -2597,21 +2672,15 @@ function appSkillDependencies(app: AppEntry): AppSkillDependency[] {
  *    installed_name when the local registry display name is the only handle
  * 3. Fall back to declared id so cold start without a plan still works once
  *    backend MatchesName accepts HubSkillID
+ *
+ * Upload submission ids must never be returned as the run handle.
  */
 function appRunnableSkillID(app?: AppEntry | null, plan?: BackendAppInstallPlan | null): string {
-    const declared = String(app?.manifest?.appSkill?.id || app?.manifest?.skill?.id || '').trim();
+    const declaredRaw = String(app?.manifest?.appSkill?.id || app?.manifest?.skill?.id || '').trim();
+    const declared = preferRunnableSkillRef(declaredRaw);
     if (!declared) return '';
     const deps = plan?.dependencies || [];
     if (!deps.length) return declared;
-    // Mirror corelib.NormalizeSkillMatchQuery + NormalizeSkillIdentityKey.
-    const stripAt = (value: string) => {
-        const trimmed = String(value || '').trim();
-        const at = trimmed.indexOf('@');
-        return (at > 0 ? trimmed.slice(0, at) : trimmed).trim().toLowerCase();
-    };
-    const identityKey = (value: string) => stripAt(value).replace(/[\s\-_]+/g, '_').replace(/^_+|_+$/g, '');
-    const declaredKey = stripAt(declared);
-    const declaredIdentity = identityKey(declared);
     const matchesDeclared = (dep: BackendAppInstallDependency) => {
         const candidates = [
             dep.id,
@@ -2626,19 +2695,18 @@ function appRunnableSkillID(app?: AppEntry | null, plan?: BackendAppInstallPlan 
         ];
         return candidates.some((raw) => {
             const v = String(raw || '').trim();
-            if (!v) return false;
-            return stripAt(v) === declaredKey || identityKey(v) === declaredIdentity;
+            return !!v && (skillIdentityKeysOverlap(v, declared) || skillIdentityKeysOverlap(v, declaredRaw));
         });
     };
     // Prefer installed deps so a ready plan binds runtime_skill_ref.
     const dep = deps.find((d) => matchesDeclared(d) && d.installed) || deps.find((d) => matchesDeclared(d));
     if (!dep) return declared;
-    const runtimeRef = String(dep.runtime_skill_ref || dep.runtimeSkillRef || dep.RuntimeSkillRef || '').trim();
-    if (runtimeRef) return runtimeRef;
-    const canonical = String(dep.canonical_id || dep.canonicalID || '').trim();
-    if (canonical) return canonical;
-    // Last resort: local display name (only when no stable package id exists).
-    return String(dep.installed_name || declared).trim() || declared;
+    return preferRunnableSkillRef(
+        String(dep.runtime_skill_ref || dep.runtimeSkillRef || dep.RuntimeSkillRef || '').trim(),
+        String(dep.canonical_id || dep.canonicalID || '').trim(),
+        String(dep.installed_name || '').trim(),
+        declared,
+    );
 }
 
 function makeAutomationManifest(): AppManifestBinding {

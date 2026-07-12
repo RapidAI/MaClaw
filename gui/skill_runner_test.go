@@ -283,6 +283,30 @@ func TestResolveLoadedSkillForRunPrefersHubSkillID(t *testing.T) {
 	}
 }
 
+func TestResolveLoadedSkillForRunSubmissionHubSkillID(t *testing.T) {
+	// File scanner copies upload_status.json submission_id into HubSkillID.
+	// App plan then binds runtime_skill_ref to that submission id; run must still
+	// resolve the on-disk skill (name = paper_pdf_translator).
+	const submission = "sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010"
+	skills := []corelib.NLSkillEntry{
+		{
+			Name:       "paper_pdf_translator",
+			HubSkillID: submission,
+			Status:     "active",
+			SkillDir:   `C:\tmp\Paper PDF Translator`,
+		},
+	}
+	for _, query := range []string{submission, "paper_pdf_translator"} {
+		got, err := resolveLoadedSkillForRun(query, skills)
+		if err != nil {
+			t.Fatalf("resolveLoadedSkillForRun(%q) error = %v", query, err)
+		}
+		if got == nil || got.Name != "paper_pdf_translator" {
+			t.Fatalf("resolveLoadedSkillForRun(%q) = %#v, want paper_pdf_translator", query, got)
+		}
+	}
+}
+
 func TestSkillRunnerStartRunFailureLogsSkillAndReason(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

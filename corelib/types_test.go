@@ -68,6 +68,117 @@ func TestNormalizeSkillMatchQuery(t *testing.T) {
 	}
 }
 
+func TestExtractSkillPackageIDFromHubRef(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"enterprise_hub:skill:paper_pdf_translator@6c2a9af36010", "paper_pdf_translator"},
+		{"sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010", "paper_pdf_translator"},
+		{"skillmarket:skill:foo-bar@1.0.0", "foo-bar"},
+		{"enterprise_hub:skill:sub-process-monitor@1.0.0", "sub-process-monitor"},
+		{"enterprise_hub:skill:sub-1783856848170-bad@1", ""}, // submission-shaped package segment
+		{"paper_pdf_translator", ""},
+		{"sub-only-submission", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := ExtractSkillPackageIDFromHubRef(tc.in); got != tc.want {
+			t.Fatalf("ExtractSkillPackageIDFromHubRef(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMatchesQualifiedIDNormalizesBothSidesAndSubmissionRefs(t *testing.T) {
+	// Regression: upload_status.json submission ids were scanned into HubSkillID.
+	// RunNLSkillAsync passed the same ref; NormalizeSkillMatchQuery stripped @hash
+	// only on the query, so EqualFold against the full HubSkillID always failed.
+	const submission = "sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010"
+	skill := NLSkillEntry{
+		Name:       "paper_pdf_translator",
+		HubSkillID: submission,
+		Status:     "active",
+	}
+	for _, query := range []string{
+		submission,
+		"sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator",
+		"paper_pdf_translator",
+		"enterprise_hub:skill:paper_pdf_translator@6c2a9af36010",
+	} {
+		if !skill.MatchesQualifiedID(query) {
+			t.Fatalf("MatchesQualifiedID(%q) = false, want true for HubSkillID submission ref", query)
+		}
+		if !skill.MatchesName(query) {
+			t.Fatalf("MatchesName(%q) = false, want true", query)
+		}
+	}
+	if skill.PreferredRuntimeSkillRef() != "paper_pdf_translator" {
+		t.Fatalf("PreferredRuntimeSkillRef = %q, want package id not submission id", skill.PreferredRuntimeSkillRef())
+	}
+	keys := skill.SkillIdentityKeys()
+	if !containsSkillKey(keys, "paper_pdf_translator") {
+		t.Fatalf("SkillIdentityKeys missing package id, got %v", keys)
+	}
+}
+
+func TestMatchesNameSubmissionQueryAgainstNameOnlySkill(t *testing.T) {
+	// After scanner fix HubSkillID may be empty while Name is the package id.
+	// Submission-shaped run queries must still resolve via package extract → Name.
+	const submission = "sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010"
+	skill := NLSkillEntry{
+		Name:   "paper_pdf_translator",
+		Status: "active",
+	}
+	if skill.MatchesQualifiedID(submission) {
+		t.Fatal("MatchesQualifiedID should stay strict (no Name match) when HubSkillID empty")
+	}
+	if !skill.MatchesName(submission) {
+		t.Fatal("MatchesName must match submission package segment against Name")
+	}
+	if skill.PreferredRuntimeSkillRef() != "paper_pdf_translator" {
+		t.Fatalf("PreferredRuntimeSkillRef = %q", skill.PreferredRuntimeSkillRef())
+	}
+}
+
+func TestStableSkillIdentityFromRef(t *testing.T) {
+	const submission = "sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010"
+	if got := StableSkillIdentityFromRef(submission); got != "paper_pdf_translator" {
+		t.Fatalf("StableSkillIdentityFromRef(submission) = %q", got)
+	}
+	if got := StableSkillIdentityFromRef("sub-1783856848170-only", "paper_pdf_translator"); got != "paper_pdf_translator" {
+		t.Fatalf("StableSkillIdentityFromRef fallback = %q", got)
+	}
+	if got := StableSkillIdentityFromRef("sub-1783856848170-only"); got != "" {
+		t.Fatalf("bare submission without fallback should be empty, got %q", got)
+	}
+	if got := StableSkillIdentityFromRef("plain_skill"); got != "plain_skill" {
+		t.Fatalf("plain id = %q", got)
+	}
+	// Package names starting with "sub-" must remain valid runtime identities.
+	if got := StableSkillIdentityFromRef("sub-process-monitor"); got != "sub-process-monitor" {
+		t.Fatalf("sub-* package name must not be treated as submission, got %q", got)
+	}
+}
+
+func TestIsUploadSubmissionSkillRef(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"sub-1783856848170-cbee8cd2135b3c8e;enterprise_hub=enterprise_hub:skill:paper_pdf_translator@6c2a9af36010", true},
+		{"sub-1783856848170-cbee8cd2135b3c8e", true},
+		{"enterprise_hub=enterprise-submission", true},
+		{"sub-process-monitor", false},
+		{"paper_pdf_translator", false},
+		{"enterprise_hub:skill:paper_pdf_translator@hash", false}, // version key, not upload token
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := IsUploadSubmissionSkillRef(tc.in); got != tc.want {
+			t.Fatalf("IsUploadSubmissionSkillRef(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestNormalizeSkillIdentityKey(t *testing.T) {
 	cases := []struct {
 		in, want string
