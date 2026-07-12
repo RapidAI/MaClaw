@@ -127,7 +127,7 @@ func TestInferExplicitWorkflowHint_Presentation(t *testing.T) {
 	}
 }
 
-func TestRouteWithWorkflowV2_PresentationCreationUsesPresentationWorkflow(t *testing.T) {
+func TestRouteWithWorkflowV2_PresentationCreationDoesNotStartWorkflowImplicitly(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "test-presentation-explicit-hint"
 
@@ -137,19 +137,11 @@ func TestRouteWithWorkflowV2_PresentationCreationUsesPresentationWorkflow(t *tes
 		Platform: "desktop",
 	}, "生成一份ppt，介绍北京。")
 
-	if result.Response == nil {
-		t.Fatal("expected workflow confirmation response for explicit presentation request")
+	if result.Response != nil || result.WorkflowAgentLoop || result.WorkflowDocPhase || result.SkipNeedsConfirmGate {
+		t.Fatalf("expected normal agent pass-through, got %#v", result)
 	}
-	raw, ok := handler.pendingWorkflowChoice.Load(userID)
-	if !ok {
-		t.Fatal("expected pending workflow choice to be stored")
-	}
-	pending := raw.(*pendingWorkflowChoice)
-	if pending.RouteResult == nil || pending.RouteResult.WorkflowType != "presentation_design" {
-		t.Fatalf("workflow type = %#v, want presentation_design", pending.RouteResult)
-	}
-	if !strings.Contains(result.Response.Text, "PPT") {
-		t.Fatalf("response text should mention presentation workflow, got %q", result.Response.Text)
+	if _, ok := handler.pendingWorkflowChoice.Load(userID); ok {
+		t.Fatal("did not expect an implicit workflow choice")
 	}
 }
 
@@ -427,10 +419,10 @@ func TestRunWorkflowV2PhaseEnsuresProjectPathBeforeAgentLoop(t *testing.T) {
 				Output: strings.Repeat("script content ", 20),
 			},
 			{
-				ID:           "ppt_generation",
-				Name:         "PPT Generation",
-				NeedsConfirm: true,
-				Status:       v2.PhaseRunning,
+				ID:            "ppt_generation",
+				Name:          "PPT Generation",
+				NeedsConfirm:  true,
+				Status:        v2.PhaseRunning,
 				DependsOnFull: []string{"outline", "slide_scripting"},
 			},
 		},

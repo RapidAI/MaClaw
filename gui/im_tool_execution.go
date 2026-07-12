@@ -140,10 +140,9 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		}
 	}
 	if result.Text == "" {
-		// In agent loop context, intercept missing/invalid parameter errors BEFORE
-		// executeToolDetailed. executeToolDetailed would emit an AgentView panel
-		// (designed for user-manual tool invocations), which is wrong inside an
-		// agent loop; the LLM should receive an error message and self-correct.
+		// Return parameter errors before execution so the agent receives focused,
+		// retryable feedback and no handler work is started. The execution-layer
+		// fallback enforces the same no-panel behavior for non-loop callers.
 		if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, opts.Iteration); errResult != nil {
 			result = *errResult
 		}
@@ -786,17 +785,16 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 
 	if h.registry != nil {
 		if tool, ok := h.registry.Get(name); ok {
-			if h.emitRegisteredToolAgentViewIfNeeded(name, args, policyUserID) {
-				return toolExecutionResult{Text: "Tool parameters are incomplete. A task panel form has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureMissingParameters}
+			// Tool calls made by the agent must stay in the agent loop.  Returning the
+			// validation failure gives the model a chance to correct and retry the
+			// call; opening the task-panel form here interrupts that autonomous flow
+			// and leaves the UI showing an empty form even though earlier calls may
+			// already have established (for example) an SSH session.
+			if missing := registeredToolMissingRequired(tool, args); len(missing) > 0 {
+				return registeredToolMissingParametersResult(name, missing)
 			}
 			if validationIssues := registeredToolValidateArgIssues(*tool, args); len(validationIssues) > 0 {
-				if h.app != nil {
-					if view := buildRegisteredToolAgentView(*tool, h.attachRegisteredToolPolicyOwnerForOwner(args, policyUserID), nil); view != nil {
-						applyRegisteredToolFieldIssues(view, validationIssues)
-						h.app.emitAgentView(view)
-					}
-				}
-				return toolExecutionResult{Text: "Tool parameters need correction. A task panel form has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureValidation}
+				return registeredToolValidationFailureResult(name, registeredToolValidationMessages(validationIssues))
 			}
 			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
 			if h.emitRegisteredToolApprovalAgentViewIfNeeded(name, args, securityCtx, policyUserID) {
@@ -1199,33 +1197,41 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 	}
 	// Check missing required parameters.
 	if missing := registeredToolMissingRequired(tool, args); len(missing) > 0 {
-		errMsg := fmt.Sprintf("Tool %s requires parameter(s): %s. Please provide them and retry.", name, strings.Join(missing, ", "))
 		log.Printf("[agent-loop] tool %s missing required params %v, returning error to LLM (iter=%d)", name, missing, iteration)
-		return &toolExecutionResult{
-			Text:        errMsg,
-			ToolName:    name,
-			ToolKind:    classifyAgentToolKind(name),
-			Outcome:     toolOutcomeFailed,
-			FailureKind: toolFailureMissingParameters,
-		}
+		result := registeredToolMissingParametersResult(name, missing)
+		return &result
 	}
 	// Check schema validation (type errors, range violations, etc.).
 	if issues := registeredToolValidateArgIssues(*tool, args); len(issues) > 0 {
 		msgs := registeredToolValidationMessages(issues)
-		errMsg := fmt.Sprintf("Tool %s parameter validation failed: %s. Please correct and retry.", name, strings.Join(msgs, "; "))
 		log.Printf("[agent-loop] tool %s validation issues: %v (iter=%d)", name, msgs, iteration)
-		return &toolExecutionResult{
-			Text:        errMsg,
-			ToolName:    name,
-			ToolKind:    classifyAgentToolKind(name),
-			Outcome:     toolOutcomeFailed,
-			FailureKind: toolFailureValidation,
-		}
+		result := registeredToolValidationFailureResult(name, msgs)
+		return &result
 	}
 	if strings.TrimSpace(name) == "call_mcp_tool" {
 		return h.preCheckMCPToolArgsForAgentLoop(args, iteration)
 	}
 	return nil
+}
+
+func registeredToolMissingParametersResult(name string, missing []string) toolExecutionResult {
+	return toolExecutionResult{
+		Text:        fmt.Sprintf("Tool %s requires parameter(s): %s. Please provide them and retry.", name, strings.Join(missing, ", ")),
+		ToolName:    name,
+		ToolKind:    classifyAgentToolKind(name),
+		Outcome:     toolOutcomeFailed,
+		FailureKind: toolFailureMissingParameters,
+	}
+}
+
+func registeredToolValidationFailureResult(name string, messages []string) toolExecutionResult {
+	return toolExecutionResult{
+		Text:        fmt.Sprintf("Tool %s parameter validation failed: %s. Please correct and retry.", name, strings.Join(messages, "; ")),
+		ToolName:    name,
+		ToolKind:    classifyAgentToolKind(name),
+		Outcome:     toolOutcomeFailed,
+		FailureKind: toolFailureValidation,
+	}
 }
 
 func normalizeMCPToolCallArgsForAgentLoop(args map[string]interface{}) (map[string]interface{}, error) {

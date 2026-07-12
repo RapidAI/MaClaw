@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
@@ -34,7 +34,6 @@ import { InlineChatCard } from "./InlineChatCard";
 import { AssistantWelcomeView } from "./AssistantWelcomeView";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
-import { AssistantPreviewPane } from "./AssistantPreviewPane";
 import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText, formatToolProgressStatus, isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
@@ -67,6 +66,7 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
+const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 
 type ConversationBranchPointLike = {
     index?: number;
@@ -2787,7 +2787,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             )}
             {participantInviteTargetTab && <TabParticipantInviteDialog key={participantInviteTargetTab.id} tab={participantInviteTargetTab} lang={lang} theme={t} onClose={() => setParticipantInviteTargetTabId(null)} onAddParticipantToTab={addParticipantToTab} />}
             </div>
-            <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} lang={lang} selectCodeFile={selectCodeFile} submitAgentView={panelSubmitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
+            {(showWorkflowPreview || showCodePreview || showAgentView) && (
+                <Suspense fallback={null}>
+                    <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} lang={lang} selectCodeFile={selectCodeFile} submitAgentView={panelSubmitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
+                </Suspense>
+            )}
             </div>
         </div>
     );

@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -541,91 +540,19 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		attachments = append(attachments, v2.Attachment{Type: a.Type, Name: a.FileName})
 	}
 
-	// Use UIC full classification (embedding + tree LLM fusion) as a semantic
-	// signal for the router. This replaces the previous embedding-only approach
-	// which was too unreliable for short messages (< 0.70 confidence on messages
-	// like "开发一个hello world").
-	//
-	// The full Classify() runs embedding (~30ms) and tree LLM (~7s) in parallel.
-	// Although the tree channel adds latency, this cost is NOT additional — the
-	// same UIC.Classify() would be called later in classifyTaskIntentForExecution
-	// (confirmation gate). Since UIC has a built-in cache, the second call hits
-	// cache and returns instantly. We're just moving the cost earlier so the
-	// routing decision benefits from it.
-	//
-	// Optimization: skip UIC when user has an active workflow — Step 1 in the
-	// router will handle the message directly (confirm/modify/continue) without
-	// needing a semantic hint. This saves 7s of LLM latency on the common path.
-	//
-	// The hint serves two purposes in the router:
-	// 1. Veto (Step 4.5): when hint doesn't match any template type → skip BM25,
-	//    preventing false positives (e.g. "服务器" matching paper_reproduction).
-	// 2. Fallback (Step 5): when BM25 fails but hint matches a template type →
-	//    activate that template (handles path/framework name dilution).
-	var semanticHint string
-	if wf.router != nil {
-		if explicitHint := inferExplicitWorkflowHint(trimmed); explicitHint != "" && wf.router.HasTemplate(explicitHint) {
-			semanticHint = explicitHint
-		}
-	}
-	hasActiveWorkflow := wf.machine != nil && wf.machine.GetActive(msg.UserID) != nil
-	if semanticHint == "" {
-		if uic := h.getUnifiedClassifier(); uic != nil {
-			if hasActiveWorkflow {
-				// Active workflow: use fast embedding-only (~30ms) to avoid 7s LLM latency.
-				// Step 1 in the router handles most cases directly. The hint is only needed
-				// for ActionPassThrough fall-through (user starting a different workflow).
-				embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
-				if embResult.Confidence >= 0.70 {
-					label := string(embResult.Primary)
-					if !uic.IsWorkflowCandidate(embResult.Primary) {
-						semanticHint = label
-					} else if wf.router != nil && wf.router.HasTemplate(label) {
-						semanticHint = label
-					} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
-						semanticHint = mapped
-					}
-				}
-			} else {
-				// No active workflow: use full fusion classification (embedding + tree LLM).
-				// The tree LLM adds ~7s latency but produces high-quality intent signals.
-				// This cost is NOT additional — the same Classify() would be called later
-				// in the confirmation gate. UIC's built-in cache makes the second call free.
-				fullResult := uic.Classify(intent.MessageContext{Text: trimmed, UserID: msg.UserID})
-				// Confidence threshold depends on classification quality:
-				// - Full fusion (Layer >= 23): 0.60 — high reliability
-				// - Embedding-only fallback (Layer == 2): 0.70 — lower reliability for short text
-				minConf := 0.60
-				if fullResult.Layer == 2 {
-					minConf = 0.70
-				}
-				if fullResult.Confidence >= minConf {
-					label := string(fullResult.Primary)
-					if !uic.IsWorkflowCandidate(fullResult.Primary) {
-						semanticHint = label
-					} else if fullResult.WorkflowType != "" && wf.router != nil && wf.router.HasTemplate(fullResult.WorkflowType) {
-						semanticHint = fullResult.WorkflowType
-					} else if wf.router != nil && wf.router.HasTemplate(label) {
-						semanticHint = label
-					} else if mapped := intentLabelToTemplateType(label); mapped != "" && wf.router != nil && wf.router.HasTemplate(mapped) {
-						semanticHint = mapped
-					}
-				}
-			}
-		}
+	// Workflows are started only from the workflow panel. Ordinary messages must
+	// never be classified or matched as a new workflow; this path only continues
+	// an already active workflow. Panel launches are handled above as explicit
+	// workflow choice commands.
+	if wf.machine == nil || wf.machine.GetActive(msg.UserID) == nil {
+		return workflowIMRouteResult{}
 	}
 
-	if semanticHint != "" || hasActiveWorkflow {
-		log.Printf("[workflow-v2] route_decision: user=%s hint=%q active_workflow=%v uic_path=%s",
-			msg.UserID, semanticHint, hasActiveWorkflow,
-			map[bool]string{true: "embedding-only", false: "full-fusion"}[hasActiveWorkflow])
-	}
-
-	result := wf.router.RouteWithHint(msg.UserID, trimmed, attachments, semanticHint)
+	result := wf.router.Route(msg.UserID, trimmed, attachments)
 
 	switch result.Target {
 	case v2.RouteToAgentLoop:
-		log.Printf("[workflow-v2] route_result: user=%s target=agent_loop hint=%q", msg.UserID, semanticHint)
+		log.Printf("[workflow-v2] route_result: user=%s target=agent_loop", msg.UserID)
 		return workflowIMRouteResult{}
 
 	case v2.RouteToWorkflow:
@@ -633,8 +560,9 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 			// Active workflow handled the message
 			return h.handleWorkflowV2Action(msg, result.HandleResult)
 		}
-		// New workflow creation — ask user to confirm before proceeding.
-		return h.askWorkflowConfirmChoice(msg, result)
+		// A message unrelated to the active workflow may match a template in the
+		// generic router. Do not turn that into an implicit workflow launch.
+		return workflowIMRouteResult{}
 	}
 
 	return workflowIMRouteResult{}

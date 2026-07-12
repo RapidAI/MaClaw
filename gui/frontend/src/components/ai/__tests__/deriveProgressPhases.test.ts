@@ -321,6 +321,39 @@ describe('WorkflowProgressBoard highlighting and progress', () => {
         expect(screen.getByText('当前阶段正在等待确认。请使用输入框上方的操作栏继续。')).toBeTruthy();
     });
 
+    it('renders localized maintenance phase labels from English backend metadata', () => {
+        const maintenancePhases: PhaseInfo[] = [
+            { id: 'ops_intake', name: 'Ops Intake', index: 0, expectsDocument: true },
+            { id: 'readonly_collection', name: 'Read-only Collection', index: 1, expectsDocument: true },
+            { id: 'artifact_plan', name: 'Maintenance Artifacts', index: 2, expectsDocument: true },
+            { id: 'risk_policy', name: 'Risk Policy Gate', index: 3, expectsDocument: true },
+        ];
+        const renderBoard = (lang?: string) => render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map(),
+            currentPhaseID: 'risk_policy',
+            latestDocumentPhaseID: '',
+            phases: maintenancePhases,
+            workflowType: 'ops_maintenance',
+            gateResults: new Map(),
+            theme: testTheme,
+            lang,
+        }));
+
+        const { unmount } = renderBoard();
+        expect(screen.getByRole('button', { name: '运维信息收集，缺文档' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '只读信息采集，缺文档' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '运维产物规划，缺文档' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: '风险策略检查，生成中' })).toBeTruthy();
+        unmount();
+
+        renderBoard('zh-TW');
+        expect(screen.getByRole('button', { name: '運維資訊收集，缺文檔' })).toBeTruthy();
+        cleanup();
+
+        renderBoard('en');
+        expect(screen.getByRole('button', { name: 'Ops Intake, Missing doc' })).toBeTruthy();
+    });
+
     // afterEach cleanup is auto-registered by @testing-library/react under vitest globals;
     // the explicit unmount in the progress loop guards against cross-render query bleed.
     it('cleans up rendered output between cases', () => {

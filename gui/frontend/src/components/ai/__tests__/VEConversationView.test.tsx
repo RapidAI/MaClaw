@@ -13,7 +13,7 @@ import {
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
-import { GroupDiscussionAttachmentPreviewDataURL, GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
+import { GroupDiscussionAttachmentPreviewDataURL, GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, ListVirtualEmployees, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -30,8 +30,11 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     GroupDiscussionDownloadAttachment: vi.fn(async () => ({ local_path: "C:\\tmp\\report.pdf" })),
     GroupDiscussionAttachmentPreviewDataURL: vi.fn(async () => "data:image/png;base64,abc123"),
     GroupDiscussionGetConsultationDetail: vi.fn(async () => null),
+    ListVirtualEmployees: vi.fn(async () => []),
     OpenFileOrShowInFolder: vi.fn(async () => undefined),
 }));
+
+const avatar = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLwNwAAAABJRU5ErkJggg==";
 
 const mockTheme: Theme = {
     bg: "#fff",
@@ -119,6 +122,8 @@ describe("VEConversationView", () => {
         (GroupDiscussionAttachmentPreviewDataURL as any).mockImplementation(async () => "data:image/png;base64,abc123");
         (GroupDiscussionGetConsultationDetail as any).mockReset();
         (GroupDiscussionGetConsultationDetail as any).mockImplementation(async () => null);
+        (ListVirtualEmployees as any).mockReset();
+        (ListVirtualEmployees as any).mockImplementation(async () => []);
         (OpenFileOrShowInFolder as any).mockReset();
         (OpenFileOrShowInFolder as any).mockImplementation(async () => undefined);
         vi.useRealTimers();
@@ -142,6 +147,47 @@ describe("VEConversationView", () => {
         expect(list.textContent).toContain("Digital employee");
         expect(list.textContent).not.toContain("m_b1821505498d817c");
         expect(screen.getByTestId("ve-input-textarea").getAttribute("placeholder")).toBe("Message Digital employee...");
+    });
+
+    it("loads a restored digital employee avatar for message labels", async () => {
+        (ListVirtualEmployees as any).mockResolvedValue([{
+            id: "profile-1",
+            machine_id: "ve-1",
+            avatar_data_url: avatar,
+        }]);
+        renderConversation({
+            existingSessionId: "test-session-1",
+            initialMessages: [{ id: "avatar-message", role: "assistant", content: "hello", timestamp: 1 }],
+        });
+
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        const avatarImage = screen.getByTestId("ve-msg-avatar-avatar-message");
+        expect(avatarImage.getAttribute("src")).toBe(avatar);
+    });
+
+    it("does not attribute a group participant's message to the primary employee", () => {
+        renderConversation({
+            veId: "ve-a",
+            avatarDataURL: avatar,
+            participants: [
+                { id: "ve-a", name: "Agent A", online: true },
+                { id: "ve-b", name: "Agent B", online: true },
+            ],
+            initialMessages: [{
+                id: "agent-b-message",
+                role: "assistant",
+                fromId: "ve-b",
+                fromName: "Agent B",
+                content: "Reply from B",
+                timestamp: 1,
+            }],
+        });
+
+        expect(screen.queryByTestId("ve-msg-avatar-agent-b-message")).toBeNull();
+        expect(screen.getByTestId("ve-msg-label-agent-b-message").textContent).toContain("Agent B");
     });
 
     it("uses the same wrapping rules for direct digital employee replies", () => {
@@ -1687,6 +1733,17 @@ describe("VEConversationView", () => {
     // --- Streaming ---
 
     describe("streaming response", () => {
+        it("keeps the primary employee avatar visible while a reply streams", async () => {
+            renderConversation({ avatarDataURL: avatar });
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            act(() => {
+                eventHandlers.get("ve:stream_chunk")?.({ content: "Hello" });
+            });
+
+            expect(screen.getByTestId("ve-streaming-avatar").getAttribute("src")).toBe(avatar);
+        });
+
         it("shows streaming indicator on stream_chunk event", async () => {
             renderConversation();
             await act(async () => { await vi.runAllTimersAsync(); });

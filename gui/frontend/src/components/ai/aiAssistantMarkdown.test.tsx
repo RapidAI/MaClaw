@@ -801,7 +801,79 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
 
-        expect(screen.getByText(/> \u{1F680} 请部署/u)).toBeTruthy();
+        expect(screen.getByText(/\u{1F680} 请部署/u)).toBeTruthy();
+    });
+
+    it("renders the assistant and user in labelled, opposing chat bubbles", () => {
+        const { rerender } = render(<div>{renderMessage({
+            id: "user-bubble",
+            role: "user",
+            content: "Please review this",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        const userBubble = screen.getByTestId("assistant-chat-user-user-bubble");
+        expect(userBubble.getAttribute("role")).toBe("group");
+        expect(userBubble.getAttribute("aria-label")).toBe("Your message");
+        expect(userBubble.style.alignItems).toBe("flex-end");
+        expect(screen.getByText("You")).toBeTruthy();
+        expect(userBubble.firstElementChild?.nextElementSibling?.getAttribute("style")).toContain("color-mix(in srgb");
+
+        rerender(<div>{renderMessage({
+            id: "ai-bubble",
+            role: "assistant",
+            content: "I have reviewed it.",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
+
+        const assistantBubble = screen.getByTestId("assistant-chat-ai-ai-bubble");
+        expect(assistantBubble.getAttribute("role")).toBe("group");
+        expect(assistantBubble.getAttribute("aria-label")).toBe("AI assistant message");
+        expect(assistantBubble.style.alignItems).toBe("flex-start");
+        expect(screen.getByText("AI Assistant")).toBeTruthy();
+    });
+
+    it("keeps failures compact and announced within the message flow", () => {
+        render(<div>{renderMessage({
+            id: "request-failed",
+            role: "error",
+            content: "Request failed",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        const error = screen.getByTestId("assistant-chat-error-request-failed");
+        expect(error.getAttribute("role")).toBe("alert");
+        expect(error.style.justifyContent).toBe("flex-start");
+        expect(screen.getByText("Request failed")).toBeTruthy();
+    });
+
+    it("renders ordinary progress as a compact status instead of a log line", () => {
+        render(<div>{renderMessage({
+            id: "plain-progress",
+            role: "progress",
+            content: "Fetching details",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        const progress = screen.getByTestId("assistant-chat-progress-plain-progress");
+        expect(progress.getAttribute("role")).toBe("status");
+        expect(progress.getAttribute("aria-live")).toBe("polite");
+        expect(progress.style.justifyContent).toBe("flex-start");
+        expect(screen.getByText("Fetching details")).toBeTruthy();
+    });
+
+    it("keeps ordinary system notices contained in the chat flow", () => {
+        render(<div>{renderMessage({
+            id: "system-notice",
+            role: "system",
+            content: "Task moved to the background",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        const notice = screen.getByTestId("assistant-chat-system-system-notice");
+        expect(notice.getAttribute("role")).toBe("status");
+        expect(notice.style.justifyContent).toBe("flex-start");
+        expect(screen.getByText("Task moved to the background")).toBeTruthy();
     });
 
     it("strips Browser role prefixes from /btw body without dropping the body", () => {

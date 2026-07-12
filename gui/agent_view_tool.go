@@ -48,25 +48,6 @@ type registeredToolSchemaVariant struct {
 	Schema      map[string]interface{}
 }
 
-func (h *IMMessageHandler) emitRegisteredToolAgentViewIfNeeded(name string, args map[string]interface{}, policyOwnerID string) bool {
-	if h == nil || h.app == nil || h.registry == nil {
-		return false
-	}
-	tool, ok := h.registry.Get(strings.TrimSpace(name))
-	if !ok || tool == nil {
-		return false
-	}
-	missing := registeredToolMissingRequired(tool, args)
-	if len(missing) == 0 {
-		return false
-	}
-	view := buildRegisteredToolAgentView(*tool, h.attachRegisteredToolPolicyOwnerForOwner(args, policyOwnerID), missing)
-	if view == nil {
-		return false
-	}
-	return h.app.emitAgentView(view)
-}
-
 func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name string, args map[string]interface{}, ctx *SecurityCallContext, policyOwnerID string) bool {
 	if h == nil || h.app == nil || h.firewall == nil || h.firewall.analyzer == nil {
 		return false

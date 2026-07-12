@@ -1009,10 +1009,22 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
     switch (msg.role) {
         case "user":
             return (
-                <div key={msg.id}>
-                    <div style={{ borderTop: `1px solid ${t.divider}`, margin: "8px 0 4px 0" }} />
-                    <div style={{ color: t.userColor, fontWeight: 600, padding: "3px 0 3px 1.2em", overflowWrap: "break-word", whiteSpace: "pre-wrap", textIndent: "-1.2em" }}>
-                        {">"} {msg.content}
+                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={lang === "en" ? "Your message" : "我的消息"} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "10px 0" }}>
+                    <span style={{ margin: "0 4px 3px", color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "You" : "我"}</span>
+                    <div style={{
+                        maxWidth: "76%",
+                        boxSizing: "border-box",
+                        padding: "8px 12px",
+                        borderRadius: "8px",
+                        background: `color-mix(in srgb, ${t.sendBtnBg} 12%, ${t.fieldBg})`,
+                        border: `1px solid ${t.sendBtnBorder}`,
+                        color: t.text,
+                        fontWeight: 400,
+                        lineHeight: 1.55,
+                        overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
+                    }}>
+                        {msg.content}
                     </div>
                 </div>
             );
@@ -1022,11 +1034,27 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                 : (msg.localFilePath ? [msg.localFilePath] : []);
             const screenshotBase64 = msg.thumbnailBase64 || msg.imageKey;
             return (
-                <div key={msg.id} style={{
-                    padding: "4px 0",
-                    margin: "2px 0",
-                    color: t.text,
+                <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={lang === "en" ? "AI assistant message" : "AI 助手消息"} style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    justifyContent: "flex-start",
+                    margin: "10px 0",
                 }}>
+                    <span style={{ margin: "0 4px 3px", color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "AI Assistant" : "AI 助手"}</span>
+                    <div style={{
+                        width: "fit-content",
+                        maxWidth: "84%",
+                        minWidth: 0,
+                        boxSizing: "border-box",
+                        padding: "9px 12px",
+                        borderRadius: "8px",
+                        background: t.fieldBg,
+                        border: `1px solid ${t.fieldBorder}`,
+                        color: t.text,
+                        lineHeight: 1.55,
+                        overflowWrap: "anywhere",
+                    }}>
                     {/* Streaming: show thinking indicator on the last assistant message placeholder */}
                     {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
                         <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
@@ -1104,6 +1132,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     ))}</div>}
                     {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                     {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
+                    </div>
                 </div>
             );
         }
@@ -1112,20 +1141,54 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                 const codingAgentProgress = renderCodingAgentProgressStatus(msg, t, lang);
                 if (codingAgentProgress) return codingAgentProgress;
             }
-            return <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>{prepareChatBodyForDisplay(msg.content)}</div>;
+            return (
+                <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "8px 0" }}>
+                    <span style={{
+                        maxWidth: "84%",
+                        boxSizing: "border-box",
+                        padding: "4px 8px",
+                        borderRadius: "999px",
+                        background: t.fieldBg,
+                        border: `1px solid ${t.fieldBorder}`,
+                        color: t.textMuted,
+                        fontSize: "11px",
+                        lineHeight: 1.4,
+                        overflowWrap: "anywhere",
+                    }}>
+                        {prepareChatBodyForDisplay(msg.content)}
+                    </span>
+                </div>
+            );
         case "system":
             if (msg.kind === 'guideReceipt') {
                 return renderGuideReceipt(msg, t);
             }
             return (
-                <div key={msg.id} style={{ padding: "8px 12px", margin: "4px 0", borderRadius: "6px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6" }}>
-                    {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
-                    {renderContentWithCodeBlocks(msg.content, t)}
+                <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                    <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "anywhere" }}>
+                        {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
+                        {renderContentWithCodeBlocks(msg.content, t)}
+                    </div>
                 </div>
             );
         case "error":
             return (
-                <div key={msg.id} style={{ color: t.errorText, background: t.errorBg, border: `1px solid ${t.errorBorder}`, padding: "6px 8px", margin: "3px 0", borderRadius: "6px", fontSize: "12px" }}>{prepareChatBodyForDisplay(msg.content)}</div>
+                <div key={msg.id} role="alert" data-testid={`assistant-chat-error-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                    <div style={{
+                        maxWidth: "84%",
+                        boxSizing: "border-box",
+                        color: t.errorText,
+                        background: t.errorBg,
+                        border: `1px solid ${t.errorBorder}`,
+                        padding: "8px 12px",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                        lineHeight: 1.55,
+                        overflowWrap: "anywhere",
+                    }}>
+                        {prepareChatBodyForDisplay(msg.content)}
+                    </div>
+                </div>
             );
         default:
             return null;

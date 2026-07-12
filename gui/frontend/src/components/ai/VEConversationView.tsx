@@ -17,12 +17,24 @@ import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
 
 let wailsAppModulePromise: Promise<WailsAppModule> | null = null;
+let virtualEmployeeDirectoryInFlight: Promise<unknown> | null = null;
 
 function getWailsAppModule(): Promise<WailsAppModule> {
     if (!wailsAppModulePromise) {
         wailsAppModulePromise = loadWailsAppModule();
     }
     return wailsAppModulePromise;
+}
+
+function loadVirtualEmployeeDirectory(listFn: (() => Promise<unknown>) | undefined): Promise<unknown> {
+    if (typeof listFn !== "function") return Promise.resolve([]);
+    if (virtualEmployeeDirectoryInFlight) return virtualEmployeeDirectoryInFlight;
+    virtualEmployeeDirectoryInFlight = Promise.resolve()
+        .then(() => listFn())
+        .finally(() => {
+            virtualEmployeeDirectoryInFlight = null;
+        });
+    return virtualEmployeeDirectoryInFlight;
 }
 
 // --- Types ---
@@ -516,7 +528,41 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const localSpeakerName = isZh ? "\u6211" : "Me";
     const assistantDisplayName = useMemo(() => readableConversationPartnerName(veName, veId, isZh), [isZh, veId, veName]);
     const safeAssistantAvatar = useMemo(() => safeAvatarDataURL(avatarDataURL), [avatarDataURL]);
+    const [loadedAssistantAvatar, setLoadedAssistantAvatar] = useState("");
+    const assistantAvatar = safeAssistantAvatar || loadedAssistantAvatar;
+    const streamingFromPrimaryAssistant = !participants?.length ||
+        !state.streamFromId ||
+        participantIdentityMatches(state.streamFromId, veId);
     const canSend = veOnline && !readOnly && !sending && (!!inputText.trim() || pendingAttachments.length > 0);
+
+    // VE tab metadata deliberately excludes base64 avatars from localStorage.
+    // Restore the image from the current employee directory when a reopened tab
+    // does not already have one, so message labels retain the employee identity.
+    useEffect(() => {
+        if (safeAssistantAvatar) {
+            setLoadedAssistantAvatar("");
+            return;
+        }
+        let cancelled = false;
+        setLoadedAssistantAvatar("");
+        void getWailsAppModule()
+            .then(async (mod) => {
+                const listFn = (mod as any).ListVirtualEmployees;
+                return loadVirtualEmployeeDirectory(listFn);
+            })
+            .then((employees: unknown) => {
+                if (cancelled || !Array.isArray(employees)) return;
+                const employee = employees.find((item: any) =>
+                    participantIdentityMatches(item?.id, veId) ||
+                    participantIdentityMatches(item?.machine_id, veId)
+                );
+                setLoadedAssistantAvatar(safeAvatarDataURL(employee?.avatar_data_url));
+            })
+            .catch(() => {
+                if (!cancelled) setLoadedAssistantAvatar("");
+            });
+        return () => { cancelled = true; };
+    }, [safeAssistantAvatar, veId]);
 
     useEffect(() => {
         const veChanged = lastVEIdRef.current !== veId;
@@ -1646,7 +1692,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         isZh={isZh}
                         assistantName={readableSpeakerName(msg.fromName, msg.fromId, participants, assistantDisplayName)}
                         userName={readableSpeakerName(msg.fromName, msg.fromId, participants, localSpeakerName)}
-                        assistantAvatarDataURL={safeAssistantAvatar}
+                        assistantAvatarDataURL={
+                            !participants?.length ||
+                            !msg.fromId ||
+                            participantIdentityMatches(msg.fromId, veId)
+                                ? assistantAvatar
+                                : undefined
+                        }
                     />
                 ))}
 
@@ -1677,8 +1729,16 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 whiteSpace: "pre-wrap",
                             }}
                         >
-                            <div style={{ fontSize: 11, fontWeight: 600, color: participantColorById(participants, state.streamFromId, theme.responseBorderLeft), marginBottom: 2, whiteSpace: "normal" }}>
-                                {readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}
+                            <div style={{ fontSize: 11, fontWeight: 600, color: participantColorById(participants, state.streamFromId, theme.responseBorderLeft), marginBottom: 2, whiteSpace: "normal", display: "flex", alignItems: "center", gap: 5 }}>
+                                {streamingFromPrimaryAssistant && assistantAvatar && (
+                                    <img
+                                        data-testid="ve-streaming-avatar"
+                                        src={assistantAvatar}
+                                        alt=""
+                                        style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                                    />
+                                )}
+                                <span>{readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}</span>
                             </div>
                             {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} />}
                             {state.streamAttachments.length > 0 && (

@@ -529,7 +529,7 @@ func TestHandleRegisteredToolAgentViewSubmitRejectsSchemaConstraints(t *testing.
 	}
 }
 
-func TestExecuteToolOpensAgentViewForInvalidRegisteredToolArgs(t *testing.T) {
+func TestExecuteToolReturnsInvalidRegisteredToolArgsToAgentWithoutOpeningView(t *testing.T) {
 	registry := NewToolRegistry()
 	called := false
 	if err := registry.Register(RegisteredTool{
@@ -548,15 +548,62 @@ func TestExecuteToolOpensAgentViewForInvalidRegisteredToolArgs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register tool: %v", err)
 	}
-	handler := &IMMessageHandler{registry: registry}
+	app := &App{}
+	handler := &IMMessageHandler{app: app, registry: registry}
 
-	result := handler.executeTool("validated_tool", `{"mode":"delete_all"}`, nil)
+	result := handler.executeToolDetailed("validated_tool", `{"mode":"delete_all"}`, nil)
 
 	if called {
 		t.Fatal("handler should not run when registered tool args fail schema validation")
 	}
-	if !strings.Contains(result, "Tool parameters need correction") {
-		t.Fatalf("expected correction message, got %q", result)
+	if !strings.Contains(result.Text, "Tool validated_tool parameter validation failed") {
+		t.Fatalf("expected correction message, got %q", result.Text)
+	}
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureValidation {
+		t.Fatalf("expected validation failure, got outcome=%s failure=%s", result.Outcome, result.FailureKind)
+	}
+	prechecked := handler.preCheckToolArgsForAgentLoop("validated_tool", `{"mode":"delete_all"}`, 1)
+	if prechecked == nil || prechecked.Text != result.Text || prechecked.Outcome != result.Outcome || prechecked.FailureKind != result.FailureKind {
+		t.Fatalf("agent-loop precheck and execution fallback must agree: precheck=%#v fallback=%#v", prechecked, result)
+	}
+	if got := app.agentViewSeq(); got != 0 {
+		t.Fatalf("agent tool validation must not open a task panel, emitted view sequence = %d", got)
+	}
+}
+
+func TestExecuteToolReturnsMissingRegisteredToolArgsToAgentWithoutOpeningView(t *testing.T) {
+	registry := NewToolRegistry()
+	called := false
+	if err := registry.Register(RegisteredTool{
+		Name:     "required_tool",
+		Required: []string{"target"},
+		Handler: func(args map[string]interface{}) string {
+			called = true
+			return "ran"
+		},
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	app := &App{}
+	handler := &IMMessageHandler{app: app, registry: registry}
+
+	result := handler.executeToolDetailed("required_tool", `{}`, nil)
+
+	if called {
+		t.Fatal("handler should not run when registered tool args are incomplete")
+	}
+	if !strings.Contains(result.Text, "Tool required_tool requires parameter(s): target") {
+		t.Fatalf("expected missing-parameter feedback, got %q", result.Text)
+	}
+	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailureMissingParameters {
+		t.Fatalf("expected missing-parameter failure, got outcome=%s failure=%s", result.Outcome, result.FailureKind)
+	}
+	prechecked := handler.preCheckToolArgsForAgentLoop("required_tool", `{}`, 1)
+	if prechecked == nil || prechecked.Text != result.Text || prechecked.Outcome != result.Outcome || prechecked.FailureKind != result.FailureKind {
+		t.Fatalf("agent-loop precheck and execution fallback must agree: precheck=%#v fallback=%#v", prechecked, result)
+	}
+	if got := app.agentViewSeq(); got != 0 {
+		t.Fatalf("agent tool missing parameters must not open a task panel, emitted view sequence = %d", got)
 	}
 }
 

@@ -95,7 +95,9 @@ describe('Property 1: Bug Condition — Preview State Isolation Per Tab', () => 
                     });
 
                     // Verify Tab A has content
-                    expect(result.current.state.phaseDocuments.get(tabAPhaseId)).toBe(tabAContent);
+                    // Workflow documents normalize leading/trailing whitespace before
+                    // storage, so the property must assert the persisted value.
+                    expect(result.current.state.phaseDocuments.get(tabAPhaseId)).toBe(tabAContent.trim());
                     expect(result.current.state.splitMode).toBe(true);
 
                     // EXPECTED BEHAVIOR: When switching to Tab B, Tab B should have

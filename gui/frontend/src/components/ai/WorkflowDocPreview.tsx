@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PhaseInfo, QualityGateResult } from "./useWorkflowState";
 import { normalizeWorkflowPhaseID, FALLBACK_NON_DOCUMENT_PHASE_IDS } from "./workflowPhase";
-import { localizeText } from "./aiAssistantI18n";
+import { localizeText, normalizeLang } from "../../i18n";
 import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
 
 // ── Mermaid (local npm package, no network required) ──
@@ -398,18 +398,34 @@ const CORE_PHASE_ENGLISH_LABELS: Record<string, string> = {
     tasks: "Tasks",
 };
 
+// Some backend templates intentionally retain English display names. Keep their
+// Chinese UI labels here rather than changing the backend contract, which is also
+// consumed by English clients and generated metadata.
+const PHASE_ZH_OVERRIDES: Record<string, { zhHans: string; zhHant: string }> = {
+    ops_intake: { zhHans: "运维信息收集", zhHant: "運維資訊收集" },
+    readonly_collection: { zhHans: "只读信息采集", zhHant: "唯讀資訊收集" },
+    artifact_plan: { zhHans: "运维产物规划", zhHant: "運維產物規劃" },
+    risk_policy: { zhHans: "风险策略检查", zhHant: "風險策略檢查" },
+};
+
 function workflowPhaseLabel(lang: string | undefined, phaseID: string, phaseLabelMap: Map<string, string>): string {
-    const metadataLabel = phaseLabelMap.get(phaseID);
+    const resolvedLang = normalizeLang(lang);
+    const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
+    const metadataLabel = phaseLabelMap.get(phaseID) || phaseLabelMap.get(canonical);
+    const override = PHASE_ZH_OVERRIDES[canonical];
+    if (resolvedLang.startsWith("zh") && override) {
+        return resolvedLang === "zh-Hant" ? override.zhHant : override.zhHans;
+    }
+
     if (metadataLabel) return metadataLabel;
     // Degraded mode (no emitted metadata): resolve the Chinese label from the
     // single source (phaseLabels), applying canonical aliasing so legacy ids
     // (tech_design/task_breakdown) resolve too. The English variant, where one
     // exists, is layered on top — it is the only label not sourced from the
     // backend templates, so it cannot reintroduce label drift.
-    const canonical = normalizeWorkflowPhaseID(phaseID) || phaseID;
     const chinese = phaseLabels[phaseID] || phaseLabels[canonical] || phaseID;
     const english = CORE_PHASE_ENGLISH_LABELS[canonical];
-    if (english) return localizeText(lang || "zh-Hans", english, chinese, chinese);
+    if (english) return localizeText(resolvedLang, english, chinese, chinese);
     return chinese;
 }
 
