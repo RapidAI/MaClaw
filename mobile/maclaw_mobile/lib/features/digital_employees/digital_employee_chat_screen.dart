@@ -53,10 +53,14 @@ class _DigitalEmployeeChatScreenState
         if (task.status != 'done' && task.status != 'failed') {
           final preview = _taskProgressPreview(task);
           if (preview == null || preview.isEmpty) return;
+          final idx = _messages.lastIndexWhere(
+            (m) => m.taskId == task.taskId && m.streaming,
+          );
+          // Skip rebuild when the visible text has not changed.
+          if (idx >= 0 && _messages[idx].text == preview) {
+            return;
+          }
           setState(() {
-            final idx = _messages.lastIndexWhere(
-              (m) => m.taskId == task.taskId && m.streaming,
-            );
             final bubble = _EmployeeChatMessage.employee(
               preview,
               taskId: task.taskId,

@@ -72,12 +72,24 @@ type mobileTaskPollState struct {
 	bulkClaimBad atomic.Bool // once bulk claim returns definitive 404, use per-id path
 	// pollInFlight single-flights claim ticks (push + timer + kick can overlap).
 	pollInFlight atomic.Bool
+	// pollRetryScheduled coalesces AfterFunc retries when the poll loop is down.
+	pollRetryScheduled atomic.Bool
 	// workers bounds concurrent processMobileDigitalEmployeeTask goroutines.
 	// Poll claims only after tryReserveWorker succeeds (no claim-without-capacity).
 	workers chan struct{}
 	// kick wakes the poll loop immediately (Hub push or reconnect warm-up).
 	kick chan struct{}
+
+	// Cached machine auth for high-frequency progress PATCHes (avoids LoadConfig
+	// on every token flush). Refreshed on miss / empty / TTL expiry.
+	authMu        sync.Mutex
+	authBase      string
+	authMachineID string
+	authToken     string
+	authAt        time.Time
 }
+
+const mobileDigitalEmployeeAuthCacheTTL = 30 * time.Second
 
 func (c *RemoteHubClient) ensureMobileTaskPollState() *mobileTaskPollState {
 	if c == nil {
@@ -264,9 +276,10 @@ func (c *RemoteHubClient) pollMobileDigitalEmployeeTasksOnce() {
 		// that arrives while the in-flight HTTP call is outstanding.
 		if c.mobileTaskActive.Load() {
 			poll.requestImmediatePoll()
-		} else {
-			// No loop owns kick; retry shortly after the in-flight claim returns.
+		} else if poll.pollRetryScheduled.CompareAndSwap(false, true) {
+			// No loop owns kick; one coalesced retry after the in-flight claim.
 			time.AfterFunc(100*time.Millisecond, func() {
+				poll.pollRetryScheduled.Store(false)
 				c.pollMobileDigitalEmployeeTasksOnce()
 			})
 		}
@@ -436,15 +449,9 @@ func (c *RemoteHubClient) doMobileDigitalEmployeeTaskRequest(ctx context.Context
 	if c == nil || c.app == nil {
 		return fmt.Errorf("remote hub client is not initialized")
 	}
-	cfg, err := c.app.LoadConfig()
+	base, machineID, token, err := c.mobileWorkerAuth()
 	if err != nil {
 		return err
-	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
-	machineID := strings.TrimSpace(cfg.RemoteMachineID)
-	token := strings.TrimSpace(cfg.RemoteMachineToken)
-	if base == "" || machineID == "" || token == "" {
-		return fmt.Errorf("remote hub machine identity is incomplete")
 	}
 
 	var body *bytes.Reader
@@ -484,12 +491,51 @@ func (c *RemoteHubClient) doMobileDigitalEmployeeTaskRequest(ctx context.Context
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 409 = late progress after terminal (expected under streaming races).
+		if resp.StatusCode == http.StatusConflict {
+			return fmt.Errorf("hub returned HTTP %d (task finished)", resp.StatusCode)
+		}
 		return fmt.Errorf("hub returned HTTP %d", resp.StatusCode)
 	}
 	if out == nil {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// mobileWorkerAuth returns cached Hub machine identity for DE task HTTP calls.
+func (c *RemoteHubClient) mobileWorkerAuth() (base, machineID, token string, err error) {
+	if c == nil || c.app == nil {
+		return "", "", "", fmt.Errorf("remote hub client is not initialized")
+	}
+	poll := c.ensureMobileTaskPollState()
+	poll.authMu.Lock()
+	if poll.authBase != "" && poll.authMachineID != "" && poll.authToken != "" &&
+		time.Since(poll.authAt) < mobileDigitalEmployeeAuthCacheTTL {
+		base, machineID, token = poll.authBase, poll.authMachineID, poll.authToken
+		poll.authMu.Unlock()
+		return base, machineID, token, nil
+	}
+	poll.authMu.Unlock()
+
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return "", "", "", err
+	}
+	base = strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	machineID = strings.TrimSpace(cfg.RemoteMachineID)
+	token = strings.TrimSpace(cfg.RemoteMachineToken)
+	if base == "" || machineID == "" || token == "" {
+		return "", "", "", fmt.Errorf("remote hub machine identity is incomplete")
+	}
+
+	poll.authMu.Lock()
+	poll.authBase = base
+	poll.authMachineID = machineID
+	poll.authToken = token
+	poll.authAt = time.Now()
+	poll.authMu.Unlock()
+	return base, machineID, token, nil
 }
 
 func (c *RemoteHubClient) processMobileDigitalEmployeeTask(task mobileDigitalEmployeeTask) {

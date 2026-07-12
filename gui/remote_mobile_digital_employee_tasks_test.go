@@ -347,6 +347,40 @@ func TestClipRunesForMobileProgressKeepsTail(t *testing.T) {
 	}
 }
 
+func TestMobileWorkerAuthCachesIdentity(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       "https://hub.example.test",
+		RemoteMachineID:    "machine-cache",
+		RemoteMachineToken: "token-cache",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	client := &RemoteHubClient{app: app}
+	base1, mid1, tok1, err := client.mobileWorkerAuth()
+	if err != nil {
+		t.Fatalf("auth1: %v", err)
+	}
+	base2, mid2, tok2, err := client.mobileWorkerAuth()
+	if err != nil {
+		t.Fatalf("auth2: %v", err)
+	}
+	if base1 != base2 || mid1 != mid2 || tok1 != tok2 {
+		t.Fatalf("cache mismatch %q/%q vs %q/%q", base1, mid1, base2, mid2)
+	}
+	if base1 != "https://hub.example.test" || mid1 != "machine-cache" || tok1 != "token-cache" {
+		t.Fatalf("auth = %s %s %s", base1, mid1, tok1)
+	}
+	// Second call must hit cache (authAt non-zero).
+	poll := client.ensureMobileTaskPollState()
+	poll.authMu.Lock()
+	cachedAt := poll.authAt
+	poll.authMu.Unlock()
+	if cachedAt.IsZero() {
+		t.Fatal("expected auth cache timestamp")
+	}
+}
+
 func TestMobileDigitalEmployeeProgressCadenceConstants(t *testing.T) {
 	if mobileDigitalEmployeeProgressMinInterval < time.Second {
 		t.Fatalf("min interval too aggressive: %s", mobileDigitalEmployeeProgressMinInterval)

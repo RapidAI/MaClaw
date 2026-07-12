@@ -6960,6 +6960,9 @@ func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathE
 		}
 
 		mobileDigitalEmployeeTasks.Lock()
+		// Map iteration order is random; claim the oldest queued task this worker
+		// can host so multi-task mobile queues stay FIFO-fair.
+		var claimID string
 		for taskID, record := range mobileDigitalEmployeeTasks.tasks {
 			if record.Status != "queued" {
 				continue
@@ -6970,14 +6973,19 @@ func mobileDigitalEmployeeTaskClaim(identity *auth.IdentityService, requirePathE
 			if !mobileWorkerCanClaimDigitalEmployeeTask(record, principal, registryEmployees) {
 				continue
 			}
+			if claimID == "" || record.CreatedAt.Before(mobileDigitalEmployeeTasks.tasks[claimID].CreatedAt) {
+				claimID = taskID
+			}
+		}
+		if claimID != "" {
+			record := mobileDigitalEmployeeTasks.tasks[claimID]
 			record.Status = "in_progress"
 			record.Result = "远程数字员工已领取任务，正在处理。"
 			record.Message = "远程数字员工已领取任务，正在处理。"
 			record.ClaimedBy = claimedBy
 			record.UpdatedAt = now
-			mobileDigitalEmployeeTasks.tasks[taskID] = record
+			mobileDigitalEmployeeTasks.tasks[claimID] = record
 			claimed = record
-			break
 		}
 		mobileDigitalEmployeeTasks.Unlock()
 		if claimed.TaskID == "" {
@@ -7209,7 +7217,12 @@ func MobileDigitalEmployeeTaskUpdateHandler(identity *auth.IdentityService) http
 		ownerID := record.OwnerID
 		mobileDigitalEmployeeTasks.Unlock()
 
-		mobilePersistState()
+		// Streaming in_progress patches are high-frequency; keep them in memory +
+		// realtime only. Persist durable snapshots on terminal status (claim already
+		// persisted the in_progress ownership handoff).
+		if status == "done" || status == "failed" {
+			mobilePersistState()
+		}
 		payload := mobileDigitalEmployeeTaskPayload(record)
 		// Phone owner always gets the live event (progress + completion).
 		mobileRealtimeBroadcast(principal.TenantID, ownerID, mobileRealtimeDigitalEmployeeTaskEvent(payload))

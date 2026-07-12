@@ -2297,6 +2297,68 @@ func TestMobileDigitalEmployeeTaskUpdateHostedWorkerBroadcastsToOwner(t *testing
 	}
 }
 
+func TestMobileDigitalEmployeeTaskClaimPrefersOldestQueued(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, enroll := issueViewerToken(t, identity, "mobile-fifo-claim@example.com")
+	clearMobileDigitalEmployeeTasksForTest(t)
+
+	// Create two tasks; older CreatedAt should be claimed first regardless of map order.
+	now := time.Now().UTC()
+	mobileDigitalEmployeeTasks.Lock()
+	// Resolve owner via a real create for principal consistency, then replace store.
+	mobileDigitalEmployeeTasks.Unlock()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/ve_"+enroll.MachineID+"/tasks", strings.NewReader(`{"prompt":"newer","task_type":"general"}`))
+	createReq.SetPathValue("employeeId", "ve_"+enroll.MachineID)
+	createReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusAccepted {
+		t.Fatalf("create = %d %s", createRec.Code, createRec.Body.String())
+	}
+
+	mobileDigitalEmployeeTasks.Lock()
+	var ownerID string
+	for _, rec := range mobileDigitalEmployeeTasks.tasks {
+		ownerID = rec.OwnerID
+		break
+	}
+	mobileDigitalEmployeeTasks.tasks = map[string]mobileDigitalEmployeeTaskRecord{
+		"mobve_new": {
+			TaskID: "mobve_new", EmployeeID: "ve_" + enroll.MachineID, OwnerID: ownerID,
+			Prompt: "newer", TaskType: "general", Status: "queued",
+			CreatedAt: now.Add(2 * time.Minute), UpdatedAt: now.Add(2 * time.Minute),
+		},
+		"mobve_old": {
+			TaskID: "mobve_old", EmployeeID: "ve_" + enroll.MachineID, OwnerID: ownerID,
+			Prompt: "older", TaskType: "general", Status: "queued",
+			CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-2 * time.Minute),
+		},
+	}
+	mobileDigitalEmployeeTasks.Unlock()
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/mobile/digital-employees/tasks/claim", nil)
+	claimReq.Header.Set("Authorization", "Bearer "+enroll.MachineToken)
+	claimReq.Header.Set("X-Machine-ID", enroll.MachineID)
+	claimRec := httptest.NewRecorder()
+	MobileDigitalEmployeeTaskClaimAnyHandler(identity).ServeHTTP(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim = %d %s", claimRec.Code, claimRec.Body.String())
+	}
+	var claimed struct {
+		Status string `json:"status"`
+		Task   struct {
+			TaskID string `json:"task_id"`
+			Prompt string `json:"prompt"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimRec.Body.Bytes(), &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Status != "claimed" || claimed.Task.TaskID != "mobve_old" || claimed.Task.Prompt != "older" {
+		t.Fatalf("claimed=%+v, want oldest mobve_old", claimed)
+	}
+}
+
 func TestMobileDigitalEmployeeTaskUpdateSkipsNoopProgressBroadcast(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, enroll := issueViewerToken(t, identity, "mobile-noop-progress@example.com")
