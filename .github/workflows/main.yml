@@ -577,9 +577,9 @@ jobs:
         if: matrix.goos == 'darwin'
         run: |
           mkdir -p dist build/bin
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
             go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_amd64" ./TigerProxy/
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
             go build -tags "desktop,production,oem_qianxin" -ldflags "-s -w" -o "build/bin/TigerProxy_arm64" ./TigerProxy/
           lipo -create -output "build/bin/TigerProxy" "build/bin/TigerProxy_amd64" "build/bin/TigerProxy_arm64"
 
