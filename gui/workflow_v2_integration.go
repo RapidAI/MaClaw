@@ -592,16 +592,13 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 		log.Printf("[workflow-v2] cancelled previous workflow before starting new one: user=%s", msg.UserID)
 	}
 
-	projectPath := routeResult.ProjectPath
-	if projectPath == "" {
-		// Prefer the project path from the tab-scoped userID over the global
-		// GetCurrentProjectPath(). This ensures the workflow's events carry a path
-		// that matches the frontend tab for event routing.
-		if tabPath := h.executionProjectPathForOwner(msg.UserID); tabPath != "" {
-			projectPath = tabPath
-		} else if h.app != nil {
-			projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
-		}
+	// Resolve working directory with the same chain as ProjectDirBar / tools /
+	// system prompt. Never prefer config.Projects (GetCurrentProjectPath) over
+	// the user-visible top-bar working directory — that mismatch made agents
+	// list home or unrelated trees while the UI showed another path.
+	projectPath := strings.TrimSpace(routeResult.ProjectPath)
+	if projectPath == "" || projectPath == "." {
+		projectPath = h.workflowStartProjectPathForOwner(msg.UserID)
 	}
 	// Ensure project path is ASCII-safe for SubAgent (LLMs struggle with Chinese paths)
 	if projectPath != "" {

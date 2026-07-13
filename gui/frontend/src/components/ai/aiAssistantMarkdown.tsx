@@ -411,6 +411,14 @@ function isTableRow(line: string): boolean {
     return isMarkdownTableRow(line);
 }
 
+// A streamed table can leave its row label as the only cell on a line.  Keep
+// that line in the current table so the table-model repair can join it with the
+// following N-1 cells.
+function isSplitTableRowLabel(line: string): boolean {
+    const cells = parseMarkdownTableCells(line);
+    return line.includes("|") && cells.length === 1 && Boolean(cells[0]);
+}
+
 function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNode {
     const model = buildMarkdownTableModel(tableLines);
     if (!model) return null;
@@ -501,7 +509,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
             }
         } else if (inCodeBlock) {
             codeBlockLines.push(line);
-        } else if (isTableRow(line)) {
+        } else if (isTableRow(line) || (tableLines.length > 0 && isSplitTableRowLabel(line))) {
             tableLines.push(line);
         } else {
             flushTable();

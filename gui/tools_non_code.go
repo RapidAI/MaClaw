@@ -543,7 +543,15 @@ func checkProjectHealthCtx(parent context.Context, projectPath string) string {
 	return strings.Join(results, "\n")
 }
 
-// getCurrentProjectPath is a convenience alias for GetCurrentProjectPath.
+// getCurrentProjectPath returns the default path for non-code tools when the
+// caller omits project_path. Prefer the top-bar working directory so git/etc.
+// operate where the user is working, not an unrelated Projects-list entry.
 func (a *App) getCurrentProjectPath() string {
+	if a == nil {
+		return ""
+	}
+	if dir := strings.TrimSpace(a.EffectiveDesktopWorkingDir()); dir != "" {
+		return dir
+	}
 	return a.GetCurrentProjectPath()
 }

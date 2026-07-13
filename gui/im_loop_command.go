@@ -147,9 +147,9 @@ func (h *IMMessageHandler) handleLoopCommand(
 		return &IMAgentResponse{Text: err.Error()}
 	}
 
-	// Resolve working directory.
+	// Resolve working directory — same chain as top bar / tools / workflows.
 	if cfg.WorkDir == "" {
-		cfg.WorkDir = h.getCurrentProjectPath()
+		cfg.WorkDir = h.effectiveWorkingDirForUser(msg.UserID)
 	}
 
 	// Get LLM config.

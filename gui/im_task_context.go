@@ -74,7 +74,7 @@ func (h *IMMessageHandler) bindSemanticContinuationSlot(userID string, unfinishe
 	if (*unfinishedSlot).Source.IsSessionExit() {
 		return
 	}
-	if !unfinishedSlotProjectMatchesCurrent(*unfinishedSlot, h.getCurrentProjectPath()) {
+	if !unfinishedSlotProjectMatchesCurrent(*unfinishedSlot, h.effectiveWorkingDirForUser(userID)) {
 		log.Printf("[TaskContext] skipped unfinished slot %s for semantic continuation: project mismatch", (*unfinishedSlot).SlotID)
 		return
 	}

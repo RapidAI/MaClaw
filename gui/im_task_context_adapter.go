@@ -139,10 +139,7 @@ func (h *IMMessageHandler) archiveCurrentTask(userID string, history []agent.Con
 		return // too short to be worth archiving
 	}
 
-	projectPath := ""
-	if h.app != nil {
-		projectPath = strings.TrimSpace(h.getCurrentProjectPath())
-	}
+	projectPath := strings.TrimSpace(h.effectiveWorkingDirForUser(userID))
 
 	task := agent.BuildArchivedTask(userID, history, status, projectPath)
 	h.taskArchive.Archive(task)

@@ -548,6 +548,26 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("Notes")).toBeTruthy();
     });
 
+    it("repairs streamed table rows whose leading cell arrives on a separate line", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("日期 | 天气 | 气温 | 风力\n--- | --- | --- | ---\n|今天|\n|- 阴转雷阵雨 | 24~29°C | 东风 1-3级|\n|明天|\n|- 小雨转多云 | 24~32°C | 东北风 1-3级|", lightTheme)}</div>
+        );
+
+        const rows = Array.from(container.querySelectorAll("tbody tr"));
+        expect(rows).toHaveLength(2);
+        expect(Array.from(rows[0].querySelectorAll("td")).map(cell => cell.textContent)).toEqual(["今天", "- 阴转雷阵雨", "24~29°C", "东风 1-3级"]);
+        expect(Array.from(rows[1].querySelectorAll("td")).map(cell => cell.textContent)).toEqual(["明天", "- 小雨转多云", "24~32°C", "东北风 1-3级"]);
+    });
+
+    it("preserves escaped pipes and backslashes while repairing streamed table rows", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("日期 | 天气 | 路径\n--- | --- | ---\n|今天|\n|雷雨\\|大风 | C:\\weather\\today|", lightTheme)}</div>
+        );
+
+        const cells = Array.from(container.querySelectorAll("tbody td")).map(cell => cell.textContent);
+        expect(cells).toEqual(["今天", "雷雨|大风", "C:\\weather\\today"]);
+    });
+
     it("keeps escaped pipes inside table cells", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("Name | Note\n--- | ---\nAlpha | A \\| B", lightTheme)}</div>

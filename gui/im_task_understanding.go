@@ -91,12 +91,9 @@ func (h *IMMessageHandler) understandTaskWithLLM(userID, text string, intent tas
 	}
 
 	// Build user message with context.
-	// Use the current project path (if any) to give the LLM context about
-	// the user's working environment.
-	projectPath := ""
-	if h.app != nil {
-		projectPath = strings.TrimSpace(h.getCurrentProjectPath())
-	}
+	// Use the same working directory tools/system prompt/top bar use so the
+	// LLM does not plan against a different tree than ProjectDirBar shows.
+	projectPath := strings.TrimSpace(h.effectiveWorkingDirForUser(userID))
 
 	userMsg := fmt.Sprintf("用户请求：%s", strings.TrimSpace(text))
 	if projectPath != "" {

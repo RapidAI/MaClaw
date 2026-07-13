@@ -137,6 +137,11 @@ type localOpAppender interface {
 	AppendLocalWithVersion(ctx context.Context, op *store.HASyncOp) (int64, error)
 }
 
+// localOpForceAppender always writes a new local op even when payload is unchanged.
+type localOpForceAppender interface {
+	AppendLocalWithVersionForced(ctx context.Context, op *store.HASyncOp) (int64, error)
+}
+
 type remoteOpRecorder interface {
 	AppendRemoteIfMissing(ctx context.Context, op *store.HASyncOp) error
 }
@@ -1011,15 +1016,28 @@ func (s *Service) PruneHistory(ctx context.Context, retention time.Duration, max
 }
 
 func (s *Service) AppendUpsert(ctx context.Context, entityType, entityID string, payload any, updatedAt time.Time) error {
-	return s.appendOp(ctx, entityType, entityID, OpUpsert, payload, updatedAt)
+	return s.appendOp(ctx, entityType, entityID, OpUpsert, payload, updatedAt, false)
+}
+
+// AppendUpsertForced always creates a new HA op even if payload is unchanged.
+func (s *Service) AppendUpsertForced(ctx context.Context, entityType, entityID string, payload any, updatedAt time.Time) error {
+	return s.appendOp(ctx, entityType, entityID, OpUpsert, payload, updatedAt, true)
 }
 
 func (s *Service) AppendDelete(ctx context.Context, entityType, entityID string, payload any, updatedAt time.Time) error {
-	return s.appendOp(ctx, entityType, entityID, OpDelete, payload, updatedAt)
+	return s.appendOp(ctx, entityType, entityID, OpDelete, payload, updatedAt, false)
 }
 
-func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType string, payload any, updatedAt time.Time) error {
-	if s == nil || s.ops == nil || s.versions == nil {
+func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType string, payload any, updatedAt time.Time, force bool) error {
+	if s == nil {
+		return fmt.Errorf("ha service is nil")
+	}
+	if s.ops == nil || s.versions == nil {
+		// Normal mutate paths may call Append* before HA repos are wired; force
+		// broadcasts must fail loudly so ops do not think catch-up succeeded.
+		if force {
+			return fmt.Errorf("ha sync store not configured")
+		}
 		return nil
 	}
 	if strings.TrimSpace(entityType) == "" || strings.TrimSpace(entityID) == "" {
@@ -1037,18 +1055,34 @@ func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType str
 		return err
 	}
 	if appender, ok := s.ops.(localOpAppender); ok {
-		version, err := appender.AppendLocalWithVersion(ctx, op)
-		if err == nil {
+		var version int64
+		var appendErr error
+		if force {
+			if forcer, ok := s.ops.(localOpForceAppender); ok {
+				version, appendErr = forcer.AppendLocalWithVersionForced(ctx, op)
+			} else {
+				// Backends without force support fall through to non-deduping Append path.
+				return s.appendOpViaPlainAppend(ctx, op, entityType, entityID, updatedAt)
+			}
+		} else {
+			version, appendErr = appender.AppendLocalWithVersion(ctx, op)
+		}
+		if appendErr == nil {
 			if version > 0 {
 				s.broadcastLocalOp(op)
+			} else if force {
+				return fmt.Errorf("forced ha append produced no op for %s/%s", entityType, entityID)
 			}
 		}
-		return err
+		return appendErr
 	}
 
-	// Fallback for tests or alternate store backends that have not implemented
-	// atomic local append yet. The mutex still prevents duplicate local versions
-	// within this process.
+	return s.appendOpViaPlainAppend(ctx, op, entityType, entityID, updatedAt)
+}
+
+// appendOpViaPlainAppend is the non-deduping path used by tests and force
+// broadcasts when AppendLocalWithVersionForced is unavailable.
+func (s *Service) appendOpViaPlainAppend(ctx context.Context, op *store.HASyncOp, entityType, entityID string, updatedAt time.Time) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	version, err := s.nextEntityVersion(ctx, entityType, entityID, updatedAt)
@@ -2330,6 +2364,39 @@ func (s *Service) AppendSkillHubSnapshot(ctx context.Context, snap *skill.Snapsh
 	}
 }
 
+// ForceBroadcastSkillHubSnapshot re-appends the current SkillHub snapshot even when
+// the payload hash is unchanged. This creates a new HA op so lagging peers (cursor
+// past pruned history, or offline longer than history_retention) can pull skills
+// again without requiring a full cluster reseed.
+func (s *Service) ForceBroadcastSkillHubSnapshot(ctx context.Context) (skillCount int, err error) {
+	if s == nil || s.skillStore == nil {
+		return 0, fmt.Errorf("skill store not attached")
+	}
+	if s.ops == nil || s.versions == nil {
+		return 0, fmt.Errorf("ha sync store not configured")
+	}
+	snap, err := s.skillStore.DumpSnapshot()
+	if err != nil {
+		return 0, err
+	}
+	if snap == nil {
+		snap = &skill.Snapshot{}
+	}
+	// LoadSnapshot on peers replaces the entire skill directory. Never push an empty
+	// catch-up snapshot from a cold/broken node or the cluster catalog is wiped.
+	if len(snap.Skills) == 0 {
+		return 0, fmt.Errorf("refusing empty skillhub force broadcast (would wipe peer skill catalogs)")
+	}
+	// Bypass both in-process snapshot hash dedup and SQLite payload-equivalent skip.
+	s.clearSnapshotHash(EntitySkillHubSnapshot, "skillhub")
+	if err := s.AppendUpsertForced(ctx, EntitySkillHubSnapshot, "skillhub", snap, time.Now().UTC()); err != nil {
+		return 0, err
+	}
+	// Re-arm normal-path hash so subsequent unchanged emitSync stays quiet.
+	s.rememberSnapshotHash(EntitySkillHubSnapshot, "skillhub", snap)
+	return len(snap.Skills), nil
+}
+
 func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmarket.Snapshot) {
 	if snap == nil {
 		return
@@ -2337,6 +2404,65 @@ func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmark
 	if err := s.appendSnapshotUpsertIfChanged(ctx, EntitySkillMarketSnapshot, "skillmarket", snap); err != nil {
 		log.Printf("[hubcenter][ha] append skillmarket snapshot: %v", err)
 	}
+}
+
+// ForceBroadcastSkillMarketSnapshot is the Skill Market counterpart of
+// ForceBroadcastSkillHubSnapshot for HA catch-up after history prune/offline gaps.
+func (s *Service) ForceBroadcastSkillMarketSnapshot(ctx context.Context) error {
+	if s == nil || s.skillMarket == nil {
+		return fmt.Errorf("skill market store not attached")
+	}
+	if s.ops == nil || s.versions == nil {
+		return fmt.Errorf("ha sync store not configured")
+	}
+	snap, err := s.skillMarket.DumpSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if snap == nil {
+		snap = &skillmarket.Snapshot{}
+	}
+	// Skill market LoadSnapshot also replaces local market state; refuse empty push.
+	if countSkillMarketSnapshotRecords(snap) == 0 {
+		return fmt.Errorf("refusing empty skillmarket force broadcast (would wipe peer market state)")
+	}
+	s.clearSnapshotHash(EntitySkillMarketSnapshot, "skillmarket")
+	if err := s.AppendUpsertForced(ctx, EntitySkillMarketSnapshot, "skillmarket", snap, time.Now().UTC()); err != nil {
+		return err
+	}
+	s.rememberSnapshotHash(EntitySkillMarketSnapshot, "skillmarket", snap)
+	return nil
+}
+
+func (s *Service) clearSnapshotHash(entityType, entityID string) {
+	if s == nil {
+		return
+	}
+	key := entityType + ":" + entityID
+	s.snapshotMu.Lock()
+	if s.snapshotHashes != nil {
+		delete(s.snapshotHashes, key)
+	}
+	s.snapshotMu.Unlock()
+}
+
+func (s *Service) rememberSnapshotHash(entityType, entityID string, payload any) {
+	if s == nil || payload == nil {
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	key := entityType + ":" + entityID
+	s.snapshotMu.Lock()
+	if s.snapshotHashes == nil {
+		s.snapshotHashes = make(map[string]string)
+	}
+	s.snapshotHashes[key] = hash
+	s.snapshotMu.Unlock()
 }
 
 func (s *Service) SyncHubHeartbeat(ctx context.Context, hubID string) {

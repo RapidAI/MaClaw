@@ -222,6 +222,23 @@ func (h *IMMessageHandler) getCurrentProjectPath() string {
 	return h.app.GetCurrentProjectPath()
 }
 
+// effectiveWorkingDirForUser returns the working directory shared by ProjectDirBar,
+// tools, system prompt, and workflow "项目路径" for the given session owner.
+// Prefer this over getCurrentProjectPath() for agent/runtime context.
+func (h *IMMessageHandler) effectiveWorkingDirForUser(userID string) string {
+	if h != nil && h.app != nil {
+		if dir := strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(userID)); dir != "" {
+			return dir
+		}
+	}
+	if h != nil {
+		if dir := strings.TrimSpace(h.getEffectiveWorkingDir()); dir != "" {
+			return normalizeProjectSessionPath(dir)
+		}
+	}
+	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
+}
+
 // --- OAuth ---
 
 func (h *IMMessageHandler) ensureOAuthToken() error {

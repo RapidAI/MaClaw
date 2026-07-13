@@ -184,14 +184,15 @@ func confirmationRevisionHints(intent taskIntent, lang string) []string {
 
 func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult, understanding *taskUnderstandingResult) *pendingConfirmation {
 	now := time.Now()
-	// The confirmation panel target path must reflect the agent's actual
-	// default working directory, i.e. where bash, craft_tool, and other
-	// general-purpose tools execute by default. This is the user-configured
-	// working directory (AppConfig.WorkingDirectory) if set, otherwise
-	// ~/.maclaw/workspace. Using EffectiveWorkspaceDir() aligns the
-	// confirmation panel with the bash tool description and the actual
-	// execution environment.
-	projectPath := corelib.EffectiveWorkspaceDir()
+	// Confirmation panel target path must match ProjectDirBar / tools / workflow
+	// "项目路径" for this session owner (not the Projects list).
+	projectPath := ""
+	if app != nil {
+		projectPath = strings.TrimSpace(app.EffectiveWorkingDirForOwner(userID))
+	}
+	if projectPath == "" {
+		projectPath = strings.TrimSpace(corelib.EffectiveWorkspaceDir())
+	}
 	targetPaths := make([]string, 0, 1)
 	if projectPath != "" {
 		targetPaths = append(targetPaths, projectPath)

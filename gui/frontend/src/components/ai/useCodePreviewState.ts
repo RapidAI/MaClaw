@@ -244,12 +244,13 @@ export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIS
  *   match the active tab's project path, the update is skipped. Local tab state
  *   only accepts events without project_path for backward compatibility.
  */
-export function useCodePreviewState(activeTabProjectPath?: string) {
+export function useCodePreviewState(activeTabProjectPath?: string, previewEnabled = true) {
     const [state, setState] = useState<CodePreviewUIState>(initialState);
 
     // Listen for code:file_update
     useEffect(() => {
         const unsub = EventsOn("code:file_update", (data: any) => {
+            if (!previewEnabled) return;
             if (!data?.file_path || data?.content === undefined || data?.content === null) return;
 
             const eventProjectPath: string | undefined = data.project_path;
@@ -281,11 +282,12 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
             if (typeof unsub === "function") unsub();
             else EventsOff("code:file_update");
         };
-    }, [activeTabProjectPath]);
+    }, [activeTabProjectPath, previewEnabled]);
 
     // Listen for code:session_start
     useEffect(() => {
         const unsub = EventsOn("code:session_start", (data: any) => {
+            if (!previewEnabled) return;
             const eventProjectPath: string | undefined = data?.project_path;
             if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath)) {
                 return;
@@ -296,11 +298,12 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
             if (typeof unsub === "function") unsub();
             else EventsOff("code:session_start");
         };
-    }, [activeTabProjectPath]);
+    }, [activeTabProjectPath, previewEnabled]);
 
     // Listen for code:session_end
     useEffect(() => {
         const unsub = EventsOn("code:session_end", (data: any) => {
+            if (!previewEnabled) return;
             const eventProjectPath: string | undefined = data?.project_path;
             const sessionID = data?.session_id || "";
             setState(prev => {
@@ -314,7 +317,7 @@ export function useCodePreviewState(activeTabProjectPath?: string) {
             if (typeof unsub === "function") unsub();
             else EventsOff("code:session_end");
         };
-    }, [activeTabProjectPath]);
+    }, [activeTabProjectPath, previewEnabled]);
 
     // Listen for workflow:doc_update — keep source preview available for tabs.
     useEffect(() => {

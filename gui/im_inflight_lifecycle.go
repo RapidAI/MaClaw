@@ -23,8 +23,16 @@ func (l *imInFlightLifecycle) SetOnce() {
 		return
 	}
 	l.markerSet = true
-	projectPath := projectPathFromUserID(l.userID)
-	if projectPath == "" && strings.TrimSpace(l.userID) != desktopUserID {
+	// Prefer session-owner working dir (top bar / tools); fall back to Projects list
+	// only for non-desktop identities without an encoded project path.
+	projectPath := ""
+	if l.handler != nil {
+		projectPath = l.handler.effectiveWorkingDirForUser(l.userID)
+	}
+	if projectPath == "" {
+		projectPath = projectPathFromUserID(l.userID)
+	}
+	if projectPath == "" && strings.TrimSpace(l.userID) != desktopUserID && l.handler != nil {
 		projectPath = l.handler.getCurrentProjectPath()
 	}
 	log.Printf("[InFlightTask] set user=%q project=%q text_len=%d", l.userID, projectPath, len([]rune(l.userText)))

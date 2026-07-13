@@ -332,13 +332,16 @@ func TestHASyncOpRepoAppendLocalSkipsUnchangedNewsUpsert(t *testing.T) {
 	if version, err := repo.AppendLocalWithVersion(ctx, &store.HASyncOp{OpID: "op-news-2", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "upsert", OccurredAt: time.Now().UTC().Add(time.Minute), PayloadJSON: payload, PayloadHash: "hash-news"}); err != nil || version != 0 {
 		t.Fatalf("unchanged upsert version=%d err=%v, want skipped version=0", version, err)
 	}
+	if version, err := repo.AppendLocalWithVersionForced(ctx, &store.HASyncOp{OpID: "op-news-3", SourceNodeID: "hc-1", EntityType: "news_article", EntityID: "news-1", OpType: "upsert", OccurredAt: time.Now().UTC().Add(2 * time.Minute), PayloadJSON: payload, PayloadHash: "hash-news"}); err != nil || version != 2 {
+		t.Fatalf("forced identical upsert version=%d err=%v, want version=2", version, err)
+	}
 
 	items, err := repo.ListAfterSeq(ctx, 0, 0)
 	if err != nil {
 		t.Fatalf("ListAfterSeq() error = %v", err)
 	}
-	if len(items) != 1 || items[0].OpID != "op-news-1" {
-		t.Fatalf("items = %+v, want one unchanged news upsert", items)
+	if len(items) != 2 || items[0].OpID != "op-news-1" || items[1].OpID != "op-news-3" {
+		t.Fatalf("items = %+v, want original + forced re-append", items)
 	}
 }
 

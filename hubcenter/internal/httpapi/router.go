@@ -734,6 +734,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/ha/status", RequireAdmin(adminService, AdminHAStatusHandler(haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/config", RequireAdmin(adminService, GetHAConfigHandler(haConfigSvc, haSvc)))
 	mux.HandleFunc("POST /api/admin/ha/config", RequireAdmin(adminService, UpdateHAConfigHandler(haConfigSvc, haSvc)))
+	mux.HandleFunc("POST /api/admin/ha/skillhub/broadcast", RequireAdmin(adminService, AdminHABroadcastSkillHubHandler(haSvc)))
+	mux.HandleFunc("POST /api/admin/ha/skillmarket/broadcast", RequireAdmin(adminService, AdminHABroadcastSkillMarketHandler(haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/public-key", RequireAdmin(adminService, HAKeyMaterialHandler(haConfigSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/public-keys", RequireAdmin(adminService, HACollectedPublicKeysHandler(haConfigSvc, haSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(adminService, GetMailConfigHandler(mailer)))

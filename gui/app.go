@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	pathpkg "path"
@@ -3003,30 +3004,8 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 		log.Printf("[workflow-v2] invalid workflow working directory %s: %v", strings.TrimSpace(dir), err)
 		return
 	}
-	ownerID := a.workflowOwnerIDForCurrentProject()
-	if a.workflowV2 != nil && a.workflowV2.machine != nil {
-		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
-			state.ProjectPath = trimmed
-			state.UpdatedAt = time.Now()
-			if a.workflowV2.store != nil {
-				if err := a.workflowV2.store.Save(state); err != nil {
-					log.Printf("[workflow-v2] failed to persist workflow project path: %v", err)
-				}
-			}
-			if a.ctx != nil {
-				a.emitEvent("workflow:workdir_set", map[string]string{
-					"user_id": ownerID,
-					"path":    trimmed,
-				})
-			}
-		}
-	}
-	if a.workflowEngine != nil {
-		adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter)
-		if ok && adapter != nil {
-			adapter.SetWorkingDir(ownerID, trimmed)
-		}
-	}
+	// Single path with SetTabWorkingDir: keep phase prompts / adapter / V2 state aligned.
+	a.syncActiveWorkflowWorkingDir(a.workflowOwnerIDForCurrentProject(), trimmed)
 }
 
 func (a *App) workflowOwnerIDForCurrentProject() string {
@@ -7922,6 +7901,7 @@ type DownloadProgress struct {
 	Downloaded int64                  `json:"downloaded"`
 	Total      int64                  `json:"total"`
 	Status     downloadProgressStatus `json:"status"`
+	Source     string                 `json:"source,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 }
 
@@ -7958,6 +7938,7 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 			_ = os.Remove(destPath)
 		}
 		a.log(fmt.Sprintf("DownloadUpdate: Trying source %d/%d: %s", index+1, len(urls), candidateURL))
+		a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusDownloading, Source: downloadSourceHost(candidateURL)})
 		path, err := a.downloadUpdateFromURL(ctx, candidateURL, fileName, destPath)
 		if err == nil {
 			// SHA256 verification (if expected hash is provided from manifest)
@@ -7985,6 +7966,16 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	}
 	a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusError, Error: lastErr.Error()})
 	return "", lastErr
+}
+
+// downloadSourceHost deliberately exposes only the host. Download URLs can contain
+// short-lived signed query parameters and should never be forwarded to the UI.
+func downloadSourceHost(downloadURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(downloadURL))
+	if err == nil && parsed.Host != "" {
+		return parsed.Hostname()
+	}
+	return ""
 }
 
 func splitDownloadURLs(value string) []string {

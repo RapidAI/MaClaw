@@ -79,6 +79,12 @@ type ConversationBranchPointLike = {
 
 export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
 
+/** Source files are only evidence for a programming workflow, including its review state. */
+export function shouldShowSourcePreviewForWorkflow(workflowType: string): boolean {
+    const normalizedType = workflowType.trim().toLowerCase();
+    return normalizedType === "coding" || normalizedType === "coding_subagent" || normalizedType === "remote_coding_subagent";
+}
+
 const ASSISTANT_PREVIEW_STATE_KEY = "ai_assistant_preview_state_v1";
 const ASSISTANT_PREVIEW_STATE_MAX_BYTES = 900_000;
 
@@ -1401,7 +1407,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Code preview events still use project_path for routing (they don't carry event_scope_id yet).
     const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope, codePreviewPathScope);
-    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope);
+    const sourcePreviewAllowed = shouldShowSourcePreviewForWorkflow(workflowState.workflowType);
+    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
         const state = previewStateMapRef.current.get("local");
@@ -1495,7 +1502,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [workflowFormGeneratingPhaseID, setWorkflowFormGeneratingPhaseID] = useState<string | null>(null);
     const workflowAwaitingForm = workflowState.active && workflowState.awaitingForm;
     const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive;
-    const showCodePreview = codingPreviewAllowed && codePreviewState.active;
+    // Source files are neither rendered nor retained outside an active programming
+    // workflow, avoiding unnecessary updates and persisted source content.
+    useEffect(() => {
+        if (!sourcePreviewAllowed && (codePreviewState.active || codePreviewState.files.size > 0)) {
+            resetCodePreviewState();
+        }
+    }, [sourcePreviewAllowed, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
+    const showCodePreview = codingPreviewAllowed && sourcePreviewAllowed && codePreviewState.active;
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     currentPreviewModeRef.current = showCodePreview && !showWorkflowPreview ? "code" : "workflow";
@@ -1541,11 +1555,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } else {
             openDocPreview();
             const cp = codePreviewStateRef.current;
-            if (cp.files.size > 0 && !cp.active) {
+            if (sourcePreviewAllowed && cp.files.size > 0 && !cp.active) {
                 activateCodePreviewPassive();
             }
         }
-    }, [codingPreviewAllowed, workflowState.splitMode, closeDocPreview, closeCodePreview, openDocPreview, activateCodePreviewPassive]);
+    }, [codingPreviewAllowed, sourcePreviewAllowed, workflowState.splitMode, closeDocPreview, closeCodePreview, openDocPreview, activateCodePreviewPassive]);
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();

@@ -575,7 +575,19 @@ func (a *App) currentTaskManagementWorkingDir() string {
 	if workflowDir := normalizeRecentTaskWorkingDir(a.GetWorkflowWorkingDir()); workflowDir != "" {
 		return workflowDir
 	}
-	return normalizeRecentTaskWorkingDir(a.GetCurrentProjectPath())
+	// Prefer an explicit top-bar working_directory when the user customized it.
+	// If still on the system default workspace, fall back to CurrentProject so
+	// Projects-list users keep a meaningful task working dir without having set
+	// working_directory. Agent/workflow "项目路径" still uses EffectiveWorkingDirForOwner.
+	desktopDir := normalizeRecentTaskWorkingDir(a.EffectiveDesktopWorkingDir())
+	defaultWS := normalizeRecentTaskWorkingDir(corelib.WorkspaceDir())
+	if desktopDir != "" && !strings.EqualFold(desktopDir, defaultWS) {
+		return desktopDir
+	}
+	if projectPath := normalizeRecentTaskWorkingDir(a.GetCurrentProjectPath()); projectPath != "" {
+		return projectPath
+	}
+	return desktopDir
 }
 
 // ForkRecentTask returns the independent task/session for a managed task. The
@@ -1969,6 +1981,8 @@ func (a *App) CloseProjectTabSession(tabID string) {
 // cache (no delay waiting for memory flush).
 //
 // For the Local Tab, pass tabID="" and the change updates config.WorkingDirectory.
+// Active workflow state.ProjectPath for the matching session owner is also synced
+// so phase prompts ("项目路径") stay aligned with the top bar.
 // This is a Wails binding method.
 func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	newDir = strings.TrimSpace(newDir)
@@ -1993,6 +2007,7 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	if tabID == "" {
 		corelib.SetWorkspaceDir(newDir)
 		_, _ = a.PatchConfigFields(map[string]interface{}{"working_directory": newDir})
+		a.syncActiveWorkflowWorkingDir(desktopUserID, newDir)
 		log.Printf("[SetTabWorkingDir] local tab working dir updated to %q", newDir)
 		return nil
 	}
@@ -2010,6 +2025,9 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 	// Write to in-memory cache — takes effect immediately on next agent loop.
 	a.tabWorkingDirOverrides.Store(projectPath, newDir)
 
+	// Keep any active workflow for this project tab on the same directory.
+	a.syncActiveWorkflowWorkingDir(projectSessionOwnerID(projectPath), newDir)
+
 	// Persist to task record asynchronously (update workingDir tag).
 	go func() {
 		if err := a.persistTaskWorkingDir(projectPath, newDir); err != nil {
@@ -2019,6 +2037,96 @@ func (a *App) SetTabWorkingDir(tabID, newDir string) error {
 
 	log.Printf("[SetTabWorkingDir] tab=%s project=%q dir=%q (immediate + async persist)", tabID, projectPath, newDir)
 	return nil
+}
+
+// syncActiveWorkflowWorkingDir updates the ProjectPath of an active workflow for
+// ownerID so workflow phase prompts match the top-bar / tool working directory.
+// No-op when there is no active workflow for that owner.
+// Emits at most one workflow:workdir_set event per call.
+func (a *App) syncActiveWorkflowWorkingDir(ownerID, dir string) {
+	if a == nil {
+		return
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	dir = normalizeProjectSessionPath(dir)
+	if ownerID == "" || dir == "" {
+		return
+	}
+
+	updated := false
+	now := time.Now()
+
+	if a.workflowV2 != nil && a.workflowV2.machine != nil {
+		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
+			if normalizeProjectSessionPath(state.ProjectPath) != dir {
+				state.ProjectPath = dir
+				state.UpdatedAt = now
+				updated = true
+				if a.workflowV2.store != nil {
+					if err := a.workflowV2.store.Save(state); err != nil {
+						log.Printf("[syncActiveWorkflowWorkingDir] persist v2 project path owner=%s dir=%q err=%v", ownerID, dir, err)
+					}
+				}
+			}
+		}
+	}
+	if a.workflowEngine != nil {
+		if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
+			if normalizeProjectSessionPath(state.ProjectPath) != dir {
+				state.ProjectPath = dir
+				state.UpdatedAt = now
+				updated = true
+			}
+		}
+		// Keep adapter cache in sync without double-emitting workflow:workdir_set.
+		if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok && adapter != nil {
+			if normalizeProjectSessionPath(adapter.GetWorkingDir()) != dir {
+				if updated {
+					adapter.setWorkingDirCache(dir)
+				} else {
+					adapter.SetWorkingDir(ownerID, dir)
+				}
+			}
+		}
+	}
+
+	if updated && a.ctx != nil {
+		a.emitEvent("workflow:workdir_set", map[string]string{
+			"user_id": ownerID,
+			"path":    dir,
+		})
+	}
+}
+
+// EffectiveWorkingDirForOwner returns the working directory that tools, system
+// prompts, workflow phase headers ("项目路径"), and the ProjectDirBar all share
+// for a given session owner.
+//
+// Resolution order (single source of truth):
+//  1. Project-tab owner (desktop-user:{projectPath}) → recentTaskExecutionProjectPath
+//     (honors SetTabWorkingDir overrides and managed-task workspace/)
+//  2. Local / unknown owner → corelib.EffectiveWorkspaceDir()
+//     (config.working_directory / top-bar local path — NOT config.Projects)
+//
+// GetCurrentProjectPath (Projects list / CurrentProject) is intentionally NOT
+// used here: it is a separate "configured project" concept and diverging from
+// the top-bar working directory is the root cause of agents listing the wrong tree.
+func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	if projectPath := projectPathFromSessionOwnerID(ownerID); projectPath != "" {
+		if a != nil {
+			if dir := strings.TrimSpace(a.recentTaskExecutionProjectPath(projectPath)); dir != "" {
+				return normalizeProjectSessionPath(dir)
+			}
+		}
+		return projectPath
+	}
+	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
+}
+
+// EffectiveDesktopWorkingDir is the local-tab working directory shown in
+// ProjectDirBar and used as tool cwd when the session owner has no project path.
+func (a *App) EffectiveDesktopWorkingDir() string {
+	return a.EffectiveWorkingDirForOwner(desktopUserID)
 }
 
 // GetTabWorkingDir returns the current effective working directory for a tab.
@@ -2032,8 +2140,9 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 
 	if tabID == "" {
 		// Local Tab: use global EffectiveWorkspaceDir.
-		dir = corelib.EffectiveWorkspaceDir()
-		isDefault = (dir == corelib.WorkspaceDir()) // true if user hasn't customized
+		dir = a.EffectiveDesktopWorkingDir()
+		// Normalize both sides so Windows drive-letter casing does not flip the badge.
+		isDefault = normalizeProjectSessionPath(dir) == normalizeProjectSessionPath(corelib.WorkspaceDir())
 	} else {
 		// Project Tab: resolve via the same chain that tools use.
 		projectPath := ""
@@ -2042,7 +2151,7 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 		}
 		if projectPath != "" {
 			projectPath = normalizeProjectSessionPath(projectPath)
-			dir = a.recentTaskExecutionProjectPath(projectPath)
+			dir = a.EffectiveWorkingDirForOwner(projectSessionOwnerID(projectPath))
 			// It's "default" if it's a system-managed workspace path (not user-specified).
 			isDefault = a.isManagedRecentTaskWorkspacePath(dir) ||
 				(a.isManagedRecentTaskWorkspacePath(projectPath) && dir == filepath.Join(projectPath, "workspace"))
@@ -2050,7 +2159,7 @@ func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
 	}
 
 	if dir == "" {
-		dir = corelib.EffectiveWorkspaceDir()
+		dir = a.EffectiveDesktopWorkingDir()
 	}
 
 	return map[string]interface{}{

@@ -269,9 +269,11 @@ func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trim
 		return nil, false
 	}
 
-	currentProjectPath := h.getCurrentProjectPath()
+	// Match against the same working directory used when creating slots
+	// (effectiveWorkingDirForUser), not the Projects-list CurrentProject.
+	currentProjectPath := h.effectiveWorkingDirForUser(msg.UserID)
 	if !unfinishedSlotProjectMatchesCurrent(unfinishedSlot, currentProjectPath) {
-		log.Printf("[UnfinishedSlot] suppressed: slot project=%q != current project=%q",
+		log.Printf("[UnfinishedSlot] suppressed: slot project=%q != current working dir=%q",
 			unfinishedSlot.ProjectPath, currentProjectPath)
 		return nil, false
 	}

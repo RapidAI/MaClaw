@@ -13,6 +13,17 @@ import (
 )
 
 func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HASyncOp) (int64, error) {
+	return r.appendLocalWithVersion(ctx, op, false)
+}
+
+// AppendLocalWithVersionForced always inserts a new op even when the payload is
+// identical to the latest one. Used for admin HA catch-up broadcasts (e.g. skillhub
+// re-emit after history prune) so lagging peers receive a new seq to pull.
+func (r *haSyncOpRepo) AppendLocalWithVersionForced(ctx context.Context, op *store.HASyncOp) (int64, error) {
+	return r.appendLocalWithVersion(ctx, op, true)
+}
+
+func (r *haSyncOpRepo) appendLocalWithVersion(ctx context.Context, op *store.HASyncOp, force bool) (int64, error) {
 	if op == nil {
 		return 0, errors.New("nil ha sync op")
 	}
@@ -20,10 +31,10 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 	// Memory pre-check: if the payload hash matches the cached value for this
 	// entity, skip the SQLite transaction entirely. This eliminates the cost of
 	// BEGIN IMMEDIATE + SELECT + COMMIT for repeated identical payloads (common
-	// during heartbeat cycles).
+	// during heartbeat cycles). Force mode skips this — catch-up needs a new seq.
 	cacheKey := op.EntityType + ":" + op.EntityID
 	payloadHash := strings.TrimSpace(op.PayloadHash)
-	if payloadHash != "" {
+	if !force && payloadHash != "" {
 		if cached, ok := r.lastPayloadHash.Load(cacheKey); ok && cached.(string) == payloadHash {
 			return 0, nil
 		}
@@ -57,7 +68,7 @@ func (r *haSyncOpRepo) AppendLocalWithVersion(ctx context.Context, op *store.HAS
 		LIMIT 1
 	`, op.EntityType, op.EntityID).Scan(&latestOpType, &latestPayloadJSON, &latestPayloadHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
-	} else if err == nil && latestOpType == op.OpType && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, payloadHash, latestPayloadJSON, latestPayloadHash) {
+	} else if !force && err == nil && latestOpType == op.OpType && haPayloadEquivalent(op.EntityType, op.OpType, op.PayloadJSON, payloadHash, latestPayloadJSON, latestPayloadHash) {
 		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 			return 0, err
 		}

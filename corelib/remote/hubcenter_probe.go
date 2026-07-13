@@ -104,6 +104,18 @@ func failurePenalty(url string) int {
 	return penalty
 }
 
+// RecentFailurePenalty is the exported form of failurePenalty for callers that
+// need to avoid sticky-preferring a recently dead HubCenter host (e.g. absolute
+// package_download_url rewrite during skill install).
+func RecentFailurePenalty(url string) int {
+	return failurePenalty(url)
+}
+
+// HasRecentFailures reports whether url has any recent probe failures in memory.
+func HasRecentFailures(url string) bool {
+	return failurePenalty(url) > 0
+}
+
 // ResetFailureMemory clears all failure history. Useful for tests.
 func ResetFailureMemory() {
 	failureMemory.mu.Lock()

@@ -979,6 +979,7 @@ function App() {
     const [appUpdateAvailable, setAppUpdateAvailable] = useState<AssistantUpdatePayload | null>(null);
     const [isDownloading, setIsDownloading] = useState(false);
     const [downloadProgress, setDownloadProgress] = useState(0);
+    const [activeDownloadSource, setActiveDownloadSource] = useState("");
     const [downloadError, setDownloadError] = useState("");
     const [installerPath, setInstallerPath] = useState("");
     const isWindows = /window/i.test(navigator.userAgent);
@@ -1183,6 +1184,7 @@ function App() {
 
         setIsDownloading(true);
         setDownloadProgress(0);
+        setActiveDownloadSource("");
         setDownloadError("");
         setInstallerPath("");
 
@@ -1192,9 +1194,16 @@ function App() {
         try {
             const path = await DownloadUpdateWithSHA256(downloadUrl, fileName, expectedSHA256);
             setInstallerPath(path);
+            // The promise result is authoritative; progress events are auxiliary
+            // and may be unavailable in browser-based development sessions.
+            setDownloadProgress(100);
+            setIsDownloading(false);
         } catch (err: any) {
             console.error("Download error:", err);
-            // Error is handled by the event listener
+            // Some failures (for example, an unavailable Downloads folder) happen
+            // before the backend can emit a download-progress error event.
+            setDownloadError(err instanceof Error ? err.message : String(err));
+            setIsDownloading(false);
         }
     };
 
@@ -1374,6 +1383,7 @@ function App() {
             console.log("Download progress event:", data);
             if (data.status === "downloading") {
                 setDownloadProgress(Math.floor(data.percentage));
+                if (data.source) setActiveDownloadSource(String(data.source));
             } else if (data.status === "verifying") {
                 // SHA256 verification in progress — keep showing progress at 100%
                 setDownloadProgress(100);
@@ -4118,6 +4128,7 @@ ${instruction}`;
                     appVersion={APP_VERSION}
                     isDownloading={isDownloading}
                     downloadProgress={downloadProgress}
+                    activeDownloadSource={activeDownloadSource}
                     installerPath={installerPath}
                     downloadError={downloadError}
                     preferBetaChannel={config?.prefer_beta_channel}

@@ -137,10 +137,8 @@ func (h *IMMessageHandler) forceStartWorkflow(msg IMUserMessage, workflowType, l
 	// Cancel any active workflow for this user before starting a new one.
 	h.cancelWorkflowForUser(userID)
 
-	projectPath := ""
-	if h.app != nil {
-		projectPath = strings.TrimSpace(h.app.GetCurrentProjectPath())
-	}
+	// Same resolution as workflowStart / top bar / tools.
+	projectPath := strings.TrimSpace(h.workflowStartProjectPathForOwner(userID))
 	if projectPath == "" {
 		projectPath = "."
 	}

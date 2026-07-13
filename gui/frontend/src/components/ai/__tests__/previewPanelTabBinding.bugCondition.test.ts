@@ -51,6 +51,27 @@ function emitCodeFileUpdate(data: any) {
     eventHandlers.get('code:file_update')?.(data);
 }
 
+describe('Code preview authorization', () => {
+    beforeEach(() => {
+        eventHandlers.clear();
+    });
+
+    it('does not retain source content while preview is disabled', () => {
+        const { result } = renderHook(() => useCodePreviewState(undefined, false));
+        act(() => emitCodeFileUpdate({
+            file_path: '/tmp/private-script.ts',
+            file_name: 'private-script.ts',
+            content: 'export const privateValue = true;',
+            op_type: 'create',
+            language: 'typescript',
+            session_id: 'ordinary-chat',
+            force_open: true,
+        }));
+        expect(result.current.state.active).toBe(false);
+        expect(result.current.state.files.size).toBe(0);
+    });
+});
+
 // ── Property Test: Bug Condition — Preview State Isolation Per Tab ──
 
 describe('Property 1: Bug Condition — Preview State Isolation Per Tab', () => {

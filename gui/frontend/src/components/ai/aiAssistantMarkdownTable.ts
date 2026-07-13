@@ -72,14 +72,15 @@ export function parseMarkdownTableAlignments(separatorLine: string, columnCount:
 }
 
 export function repairMixedNarrativeTable(model: MarkdownTableModel): MarkdownTableRenderModel {
-    const fallback: MarkdownTableRenderModel = { ...model, prefix: "", notes: [] };
-    if (model.headerCells.length < 3) return fallback;
-    const [firstHeader, ...restHeaders] = model.headerCells;
+    const normalized = repairSplitTableRows(model);
+    const fallback: MarkdownTableRenderModel = { ...normalized, prefix: "", notes: [] };
+    if (normalized.headerCells.length < 3) return fallback;
+    const [firstHeader, ...restHeaders] = normalized.headerCells;
     if (!looksLikeNarrativeTablePrefix(firstHeader, restHeaders)) return fallback;
 
     const visibleColumnCount = restHeaders.length;
     const notes: string[] = [];
-    const bodyRows = model.bodyRows.map((row) => {
+    const bodyRows = normalized.bodyRows.map((row) => {
         const cells = parseMarkdownTableCells(row);
         const visible = cells.slice(0, visibleColumnCount);
         const extra = cells.slice(visibleColumnCount).map(cell => cell.trim()).filter(Boolean).join(" ");
@@ -90,15 +91,44 @@ export function repairMixedNarrativeTable(model: MarkdownTableModel): MarkdownTa
     return {
         headerCells: restHeaders,
         bodyRows,
-        columnAlignments: model.columnAlignments.slice(1, 1 + visibleColumnCount),
+        columnAlignments: normalized.columnAlignments.slice(1, 1 + visibleColumnCount),
         minTableWidth: Math.max(280, visibleColumnCount * 120),
         prefix: firstHeader,
         notes,
     };
 }
 
+/**
+ * Some streamed answers put a row label (such as a weekday) on its own line,
+ * then emit the remaining cells on the next line.  That is not valid Markdown,
+ * but it is unambiguous for tables with three or more columns: 1 cell followed
+ * by exactly N-1 cells belongs to one N-cell row.
+ */
+function repairSplitTableRows(model: MarkdownTableModel): MarkdownTableModel {
+    const columnCount = model.headerCells.length;
+    if (columnCount < 3) return model;
+
+    let repairedRows: string[] | null = null;
+    for (let index = 0; index < model.bodyRows.length; index++) {
+        const cells = parseMarkdownTableCells(model.bodyRows[index]);
+        const nextRow = cells.length === 1 && cells[0] ? model.bodyRows[index + 1] : undefined;
+        const nextCells = nextRow ? parseMarkdownTableCells(nextRow) : [];
+        if (nextCells.length === columnCount - 1) {
+            repairedRows ??= model.bodyRows.slice(0, index);
+            repairedRows.push(`| ${[...cells, ...nextCells].map(escapeMarkdownTableCell).join(" | ")} |`);
+            index++;
+        } else if (repairedRows) {
+            repairedRows.push(model.bodyRows[index]);
+        }
+    }
+    return repairedRows ? { ...model, bodyRows: repairedRows } : model;
+}
+
 function escapeMarkdownTableCell(cell: string): string {
-    return cell.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+    // parseMarkdownTableCells preserves ordinary backslashes, so re-escaping
+    // them here would make paths display with doubled separators. Only escape
+    // a pipe because it would otherwise become a column delimiter.
+    return cell.replace(/\|/g, "\\|");
 }
 
 function looksLikeNarrativeTablePrefix(firstHeader: string, restHeaders: string[]): boolean {

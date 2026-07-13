@@ -182,11 +182,13 @@ type maclawAppInstallPlanDependency struct {
 	PackageSHA256      string   `json:"package_sha256,omitempty"`
 	PackageChecksum    string   `json:"package_checksum,omitempty"`
 	PackageSignature   string   `json:"package_signature,omitempty"`
-	PackageDownloadURL string   `json:"package_download_url,omitempty"`
-	IntegrityStatus    string   `json:"integrity_status,omitempty"`
-	IntegrityCode      string   `json:"integrity_code,omitempty"`
-	IntegrityStage     string   `json:"integrity_stage,omitempty"`
-	IntegrityMessage   string   `json:"integrity_message,omitempty"`
+	PackageDownloadURL  string   `json:"package_download_url,omitempty"`
+	DownloadNode        string   `json:"download_node,omitempty"`         // HubCenter base that served the package (after failover)
+	ResolvedDownloadURL string   `json:"resolved_download_url,omitempty"` // full URL actually used
+	IntegrityStatus     string   `json:"integrity_status,omitempty"`
+	IntegrityCode       string   `json:"integrity_code,omitempty"`
+	IntegrityStage      string   `json:"integrity_stage,omitempty"`
+	IntegrityMessage    string   `json:"integrity_message,omitempty"`
 	AppIDs             []string `json:"app_ids,omitempty"`
 	Installed          bool     `json:"installed"`
 	InstalledName      string   `json:"installed_name,omitempty"`
@@ -893,11 +895,15 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 			dep.Message = firstNonEmpty(dep.InstallErrorDetail, fmt.Sprintf("required skill dependency source %q cannot be installed automatically", dep.Source))
 			continue
 		}
+		var downloadTrace skillHubDownloadTrace
 		installMixedSkill := func(source, id, installRef string) error {
-			return a.installMixedSkillWithIntegrityAndLocator(source, id, installRef, dep.PackageDownloadURL, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
-		}
-		if a.maclawAppInstallMixedSkill != nil {
-			installMixedSkill = a.maclawAppInstallMixedSkill
+			if a.maclawAppInstallMixedSkill != nil {
+				return a.maclawAppInstallMixedSkill(source, id, installRef)
+			}
+			trace, err := a.installMixedSkillWithIntegrityAndLocatorTrace(source, id, installRef, dep.PackageDownloadURL, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
+			downloadTrace = trace
+			applySkillHubDownloadTraceToDependency(dep, trace)
+			return err
 		}
 		installRef := maclawAppDependencyInstallerRef(*dep)
 		if dep.InstallRefStatus == "invalid" || dep.InstallRefStatus == "missing" {
@@ -909,6 +915,7 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 			continue
 		}
 		if err := installMixedSkill(source, dep.ID, installRef); err != nil {
+			applySkillHubDownloadTraceToDependency(dep, downloadTrace)
 			if installedFromBundle, bundleErr := a.installBundledMaclawAppDependency(packageJSON, *dep); installedFromBundle {
 				if bundleErr != nil {
 					dep.InstallErrorCode = "bundled_dependency_failed"
@@ -938,9 +945,14 @@ func (a *App) InstallMaclawAppDependencies(packageJSON string) (maclawAppInstall
 			dep.Message = dep.InstallErrorDetail
 			continue
 		}
+		applySkillHubDownloadTraceToDependency(dep, downloadTrace)
 		dep.Installed = true
 		dep.Action = "installed"
-		dep.Message = "installed dependency skill"
+		if downloadTrace.UsedBase != "" {
+			dep.Message = fmt.Sprintf("installed dependency skill (download_node=%s)", downloadTrace.UsedBase)
+		} else {
+			dep.Message = "installed dependency skill"
+		}
 	}
 	installed := a.installedMaclawAppSkillIndex()
 	for i := range plan.Dependencies {
@@ -5573,6 +5585,12 @@ func maclawAppMergedDependencyVerificationItems(existing []any, appDependencies 
 		if dep.PackageDownloadURL != "" {
 			item["package_download_url"] = dep.PackageDownloadURL
 		}
+		if dep.DownloadNode != "" {
+			item["download_node"] = dep.DownloadNode
+		}
+		if dep.ResolvedDownloadURL != "" {
+			item["resolved_download_url"] = dep.ResolvedDownloadURL
+		}
 		if dep.IntegrityStatus != "" {
 			item["integrity_status"] = dep.IntegrityStatus
 		}
@@ -8192,6 +8210,12 @@ func maclawAppSerializableResolvedDeps(deps []maclawAppInstallPlanDependency) []
 		if dep.PackageDownloadURL != "" {
 			entry["package_download_url"] = dep.PackageDownloadURL
 		}
+		if dep.DownloadNode != "" {
+			entry["download_node"] = dep.DownloadNode
+		}
+		if dep.ResolvedDownloadURL != "" {
+			entry["resolved_download_url"] = dep.ResolvedDownloadURL
+		}
 		out = append(out, entry)
 	}
 	return out
@@ -8204,6 +8228,20 @@ func maclawAppSerializableResolvedDeps(deps []maclawAppInstallPlanDependency) []
 // Reads from two locations (both written by enrichDependenciesWithHubSkillID):
 //   - Package-level: installDoc["resolved_dependencies"] (local queue / direct install)
 //   - Entry-level: installDoc["apps"][N]["resolved_dependencies"] (survives Hub round-trip)
+func applySkillHubDownloadTraceToDependency(dep *maclawAppInstallPlanDependency, trace skillHubDownloadTrace) {
+	if dep == nil {
+		return
+	}
+	// download_node is only the node that actually served package bytes.
+	// Preferred/sticky locators stay on package_download_url (and error preferred_node=).
+	if node := strings.TrimSpace(trace.UsedBase); node != "" {
+		dep.DownloadNode = node
+	}
+	if resolved := strings.TrimSpace(trace.ResolvedDownloadURL); resolved != "" {
+		dep.ResolvedDownloadURL = resolved
+	}
+}
+
 func maclawAppClassifyDependencyInstallError(dep maclawAppInstallPlanDependency, source string, err error) (code, stage, detail string) {
 	detail = strings.TrimSpace(fmt.Sprint(err))
 	if detail == "" {
@@ -9727,9 +9765,10 @@ func (a *App) updateInstalledMaclawAppDependency(dep *maclawAppInstallPlanDepend
 			_ = os.RemoveAll(stagingDir)
 		}
 	}()
-	updated, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrity(context.Background(), a, dep.PackageDownloadURL, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
+	updated, downloadTrace, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrityTrace(context.Background(), a, dep.PackageDownloadURL, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, firstNonEmpty(dep.PackageSHA256, dep.PackageChecksum), dep.PackageSignature)
+	applySkillHubDownloadTraceToDependency(dep, downloadTrace)
 	if err != nil {
-		return true, err
+		return true, annotateSkillHubDownloadError(err, downloadTrace)
 	}
 	if !strings.EqualFold(strings.TrimSpace(updated.Name), name) {
 		return true, fmt.Errorf("downloaded dependency name %q does not match installed skill %q", updated.Name, name)

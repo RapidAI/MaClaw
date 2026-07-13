@@ -147,6 +147,10 @@ type BackendAppInstallDependency = {
     package_checksum?: string;
     package_signature?: string;
     package_download_url?: string;
+    /** HubCenter base that actually served the package (after cluster failover). */
+    download_node?: string;
+    /** Full URL used for the successful (or last) download attempt. */
+    resolved_download_url?: string;
     integrity_status?: string;
     integrity_code?: string;
     integrity_stage?: string;
@@ -5526,6 +5530,8 @@ function parseBackendAppInstallDependencies(value: unknown): BackendAppInstallDe
             package_checksum: String(dep.package_checksum || dep.packageChecksum || dep.PackageChecksum || '').trim() || undefined,
             package_signature: String(dep.package_signature || dep.packageSignature || dep.PackageSignature || '').trim() || undefined,
             package_download_url: String(dep.package_download_url || dep.packageDownloadURL || dep.PackageDownloadURL || '').trim() || undefined,
+            download_node: String(dep.download_node || dep.downloadNode || dep.DownloadNode || '').trim() || undefined,
+            resolved_download_url: String(dep.resolved_download_url || dep.resolvedDownloadURL || dep.ResolvedDownloadURL || '').trim() || undefined,
             integrity_status: String(dep.integrity_status || dep.integrityStatus || dep.IntegrityStatus || '').trim() || undefined,
             integrity_code: String(dep.integrity_code || dep.integrityCode || dep.IntegrityCode || '').trim() || undefined,
             integrity_stage: String(dep.integrity_stage || dep.integrityStage || dep.IntegrityStage || '').trim() || undefined,
@@ -11748,6 +11754,8 @@ function backendDependencyDiagnosticItems(dep: BackendAppInstallDependency) {
         dep.package_sha256 || dep.package_checksum ? `sha:${dep.package_sha256 || dep.package_checksum}` : '',
         dep.package_signature ? 'signature:available' : '',
         dep.package_download_url ? 'download:available' : '',
+        dep.download_node ? `download_node:${dep.download_node}` : '',
+        dep.resolved_download_url ? `resolved:${dep.resolved_download_url}` : '',
         dep.install_error_code ? `code:${dep.install_error_code}` : '',
         dep.install_error_stage ? `stage:${dep.install_error_stage}` : '',
         dep.install_error_detail || (showPreflight ? dep.preflight_message : '') || dep.integrity_message || dep.install_ref_message || '',
@@ -11809,10 +11817,14 @@ function backendDependencyTraceItems(dep: BackendAppInstallDependency, text: typ
         dep.preflight_message || '',
     ].filter(Boolean).join(' · '), dependencyTraceState(String(dep.preflight_status || '').trim()));
     add(text.dependencyDownloadStage, [
-        dep.package_download_url ? 'available' : '',
+        dep.download_node ? `node:${dep.download_node}` : '',
+        dep.resolved_download_url ? `resolved:${dep.resolved_download_url}` : '',
+        dep.package_download_url ? (dep.download_node ? `preferred:${dep.package_download_url}` : 'available') : '',
         dep.package_sha256 || dep.package_checksum ? `sha:${dep.package_sha256 || dep.package_checksum}` : '',
         dep.package_signature ? 'signature:available' : '',
-    ].filter(Boolean).join(' · '), dep.package_download_url || dep.package_sha256 || dep.package_checksum || dep.package_signature ? 'ready' : undefined);
+    ].filter(Boolean).join(' · '), dep.download_node || dep.resolved_download_url || dep.package_download_url || dep.package_sha256 || dep.package_checksum || dep.package_signature
+        ? (dep.install_error_code === 'download_failed' ? 'blocked' : 'ready')
+        : undefined);
     add(text.dependencyIntegrityStage, [
         dep.integrity_status || '',
         dep.integrity_code ? `code:${dep.integrity_code}` : '',

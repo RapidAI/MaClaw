@@ -118,7 +118,8 @@ export function normalizeInlineListMarkers(content: string): string {
                 .replace(/([^#\n\s])\s*(#{2,6})(?=[\p{Emoji_Presentation}\p{So}])/gu, "$1\n$2 ")
                 .replace(/(^|\n)(#{2,6})(?=[^#\s])/g, "$1$2 ")
                 .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
-                .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
+                // A dash after a table-cell delimiter is cell content, not an inline list.
+                .replace(/([^\n\s|])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
                 .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")
                 // Rewrite capability pictograph markers to plain list dashes (no emoji in UI).
                 .replace(capabilityIconAfterPunctuationPattern, "$1\n- ");

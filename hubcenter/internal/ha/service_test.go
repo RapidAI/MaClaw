@@ -18,6 +18,7 @@ import (
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -44,6 +45,76 @@ func TestNewServiceSkipsSelfPeer(t *testing.T) {
 	if peers[0].NodeID != "hc-2" {
 		t.Fatalf("peer NodeID = %q, want hc-2", peers[0].NodeID)
 	}
+}
+
+func TestForceBroadcastSkillHubSnapshotBypassesHashDedup(t *testing.T) {
+	skillStore := skill.NewSkillStore(t.TempDir())
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: map[string]*store.HAEntityVersion{}}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	svc.AttachSkillStore(skillStore)
+
+	if err := skillStore.Publish(skill.HubSkillFull{
+		HubSkillMeta: skill.HubSkillMeta{
+			ID:          "codex-restore",
+			Name:        "CodexRestore",
+			Description: "restore codex sessions",
+			Version:     "1.0.0",
+			TrustLevel:  "trusted",
+			Visible:     true,
+		},
+	}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	// Drain any async emitSync from Publish so force-broadcast counts are stable.
+	time.Sleep(50 * time.Millisecond)
+	before := countEntityOps(opsRepo, EntitySkillHubSnapshot)
+
+	n1, err := svc.ForceBroadcastSkillHubSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("ForceBroadcastSkillHubSnapshot #1: %v", err)
+	}
+	if n1 != 1 {
+		t.Fatalf("skillCount = %d, want 1", n1)
+	}
+	n2, err := svc.ForceBroadcastSkillHubSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("ForceBroadcastSkillHubSnapshot #2: %v", err)
+	}
+	if n2 != 1 {
+		t.Fatalf("skillCount = %d, want 1", n2)
+	}
+	after := countEntityOps(opsRepo, EntitySkillHubSnapshot)
+	if after-before < 2 {
+		t.Fatalf("skillhub ops delta = %d, want >= 2 (force broadcast must bypass hash dedup)", after-before)
+	}
+}
+
+func TestForceBroadcastSkillHubSnapshotRefusesEmptyCatalog(t *testing.T) {
+	skillStore := skill.NewSkillStore(t.TempDir())
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: map[string]*store.HAEntityVersion{}}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	svc.AttachSkillStore(skillStore)
+
+	if _, err := svc.ForceBroadcastSkillHubSnapshot(context.Background()); err == nil {
+		t.Fatal("expected error refusing empty skillhub force broadcast")
+	}
+	if countEntityOps(opsRepo, EntitySkillHubSnapshot) != 0 {
+		t.Fatalf("empty force broadcast must not append ops")
+	}
+}
+
+func countEntityOps(repo *fakeHASyncOpRepo, entityType string) int {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	n := 0
+	for _, op := range repo.ops {
+		if op.EntityType == entityType {
+			n++
+		}
+	}
+	return n
 }
 
 type fakeNotificationStore struct {

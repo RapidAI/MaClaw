@@ -238,14 +238,15 @@ func projectPathFromUserID(userID string) string {
 }
 
 func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {
-	projectPath := projectPathFromUserID(ownerID)
-	if projectPath == "" {
+	// Only project-tab owners have an execution project path. Local sessions
+	// return "" here so callers do not confuse desktop workspace with a project.
+	if projectPathFromUserID(ownerID) == "" {
 		return ""
 	}
 	if h != nil && h.app != nil {
-		return h.app.recentTaskExecutionProjectPath(projectPath)
+		return h.app.EffectiveWorkingDirForOwner(ownerID)
 	}
-	return projectPath
+	return projectPathFromUserID(ownerID)
 }
 
 // projectTabWorkDir returns the validated projectPath from the current session's

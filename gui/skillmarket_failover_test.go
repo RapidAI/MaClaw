@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -133,6 +134,136 @@ func TestDownloadSkillJSONFromHubCenter_FailsOver(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(skill.SkillDir, "assets", "logo.png")); err != nil {
 		t.Fatalf("expected failover download to extract bundled file: %v", err)
+	}
+}
+
+// TestDownloadSkillJSONFromHubCenterLocator_AbsoluteDeadHostFailsOver ensures a
+// sticky package_download_url host (e.g. hubs2.maclaw.top) is not required when
+// other live HubCenter cluster nodes can serve the same skill path.
+func TestDownloadSkillJSONFromHubCenterLocator_AbsoluteDeadHostFailsOver(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	var liveHits atomic.Int32
+	var live *httptest.Server
+	live = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(struct {
+				OK   bool     `json:"ok"`
+				URLs []string `json:"urls"`
+			}{OK: true, URLs: []string{live.URL, "http://127.0.0.1:1"}})
+		case "/api/v1/skills/CodexRestore/download":
+			liveHits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "CodexRestore",
+				"name":        "CodexRestore",
+				"description": "restored via live cluster node",
+				"version":     "1.0.0",
+				"steps":       []map[string]any{{"action": "craft_tool", "params": map[string]any{"instructions": "restore"}}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer live.Close()
+
+	app := &App{testHomeDir: tmpHome}
+	// Prefer a dead node first (simulates sticky remembered hubs2), but keep live node in the pool.
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubCenterURL:  "http://127.0.0.1:1",
+		RemoteHubCenterURLs: []string{"http://127.0.0.1:1", live.URL},
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	deadLocator := "http://127.0.0.1:1/api/v1/skills/CodexRestore/download"
+	skill, trace, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrityTrace(
+		context.Background(),
+		app,
+		deadLocator,
+		"/api/v1/skills/CodexRestore/download",
+		"",
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("download with dead absolute locator should fail over: %v", err)
+	}
+	if skill == nil || skill.Name != "CodexRestore" {
+		t.Fatalf("skill = %+v", skill)
+	}
+	if liveHits.Load() < 1 {
+		t.Fatalf("expected live cluster node to serve download, hits=%d", liveHits.Load())
+	}
+	if trace.UsedBase != live.URL {
+		t.Fatalf("UsedBase = %q, want live node %q", trace.UsedBase, live.URL)
+	}
+	if !strings.HasPrefix(trace.ResolvedDownloadURL, live.URL+"/api/v1/skills/CodexRestore/download") {
+		t.Fatalf("ResolvedDownloadURL = %q, want live skill download URL", trace.ResolvedDownloadURL)
+	}
+
+	var dep maclawAppInstallPlanDependency
+	applySkillHubDownloadTraceToDependency(&dep, trace)
+	if dep.DownloadNode != live.URL {
+		t.Fatalf("DownloadNode = %q, want %q", dep.DownloadNode, live.URL)
+	}
+	if dep.ResolvedDownloadURL == "" {
+		t.Fatal("ResolvedDownloadURL should be populated on dependency")
+	}
+
+	// Failure path must not claim the preferred dead host as the serving download_node.
+	var failedDep maclawAppInstallPlanDependency
+	applySkillHubDownloadTraceToDependency(&failedDep, skillHubDownloadTrace{
+		PreferredLocator: deadLocator,
+		Candidates:       []string{"http://127.0.0.1:1", live.URL},
+	})
+	if failedDep.DownloadNode != "" {
+		t.Fatalf("failed download must leave DownloadNode empty, got %q", failedDep.DownloadNode)
+	}
+}
+
+func TestHubCenterCandidateRequestTimeout(t *testing.T) {
+	if got := hubCenterCandidateRequestTimeout(nil, 1); got != 0 {
+		t.Fatalf("single candidate timeout = %v, want 0 (use client timeout)", got)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	got := hubCenterCandidateRequestTimeout(client, 3)
+	if got < 3*time.Second || got > 8*time.Second {
+		t.Fatalf("multi-candidate timeout = %v, want between 3s and 8s", got)
+	}
+}
+
+func TestOrderHubCenterBasesPreferringHostSkipsRecentlyFailedSticky(t *testing.T) {
+	remote.ResetFailureMemory()
+	t.Cleanup(remote.ResetFailureMemory)
+
+	live := "https://hubs.maclaw.top"
+	dead := "https://hubs2.maclaw.top"
+	bases := []string{live, dead}
+
+	// Healthy sticky host is preferred first.
+	ordered := orderHubCenterBasesPreferringHost(bases, "https", "hubs2.maclaw.top")
+	if len(ordered) != 2 || ordered[0] != dead {
+		t.Fatalf("healthy sticky prefer = %#v, want %q first", ordered, dead)
+	}
+
+	// After connectivity failures, sticky absolute locator must not re-pin dead host.
+	remote.RecordProbeResult(dead, false)
+	remote.RecordProbeResult(dead, false)
+	ordered = orderHubCenterBasesPreferringHost(bases, "https", "hubs2.maclaw.top")
+	if len(ordered) != 2 || ordered[0] != live {
+		t.Fatalf("failed sticky prefer = %#v, want discovery order with live first", ordered)
 	}
 }
 

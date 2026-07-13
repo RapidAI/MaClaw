@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
-import { AIAssistantPanel, canShowAssistantCodingPreviewForTab } from '../AIAssistantPanel';
+import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, shouldShowSourcePreviewForWorkflow } from '../AIAssistantPanel';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
@@ -33,6 +33,19 @@ const scrollIntoViewMock = vi.fn();
 const scrollToMock = vi.fn();
 const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
 const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+
+describe('shouldShowSourcePreviewForWorkflow', () => {
+    it('keeps source previews closed while a non-programming workflow is active', () => {
+        expect(shouldShowSourcePreviewForWorkflow('office')).toBe(false);
+        expect(shouldShowSourcePreviewForWorkflow('product_design')).toBe(false);
+    });
+
+    it('allows source previews only for programming workflows, including review', () => {
+        expect(shouldShowSourcePreviewForWorkflow('coding')).toBe(true);
+        expect(shouldShowSourcePreviewForWorkflow('remote_coding_subagent')).toBe(true);
+        expect(shouldShowSourcePreviewForWorkflow('')).toBe(false);
+    });
+});
 
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
     configurable: true,
@@ -739,7 +752,37 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('workflow-form-inline-prompt').textContent || '').not.toContain('Generating workflow document');
     });
 
-    it('keeps local coding preview off digital employee tabs and restores it on local tab', async () => {
+    it('shows source preview after an active programming workflow starts', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const { getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'coding-preview-workflow',
+            type: 'coding',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'implementation',
+        }));
+
+        await waitFor(() => expect(runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').length).toBeGreaterThan(1));
+        const codeFileHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').at(-1)?.[1];
+        act(() => codeFileHandler({
+            file_path: '/tmp/workflow/main.ts',
+            file_name: 'main.ts',
+            content: 'export const workflowPreview = true;',
+            op_type: 'create',
+            language: 'typescript',
+            session_id: 'coding-preview-session',
+            auto_open_preview: true,
+        }));
+
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+    });
+
+    it('keeps ordinary-chat source previews closed across tab changes', async () => {
         const props = defaultPanelProps();
         props.window = { inline: true };
         const { getByRole, getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
@@ -756,7 +799,7 @@ describe('AIAssistantPanel property tests', () => {
             auto_open_preview: true,
         }));
 
-        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
 
         rerender(<AIAssistantPanel
             {...props}
@@ -803,12 +846,12 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(getByRole('tab', { name: 'Next project' })).toBeTruthy());
 
         fireEvent.click(getByTestId('ai-tab-local'));
-        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
-        expect(document.body.textContent || '').toContain('Hello from hidden local');
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('Hello from hidden local');
         expect(document.body.textContent || '').not.toContain('polluted_project_preview');
     });
 
-    it('falls back to local preview ownership after closing the project owner tab', async () => {
+    it('keeps ordinary-chat source previews closed after a project tab closes', async () => {
         const props = defaultPanelProps();
         props.window = { inline: true };
         const { getByRole, getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
@@ -835,8 +878,8 @@ describe('AIAssistantPanel property tests', () => {
             project_path: 'D:/owner-project',
             auto_open_preview: true,
         }));
-        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
-        expect(document.body.textContent || '').toContain('project_owner_preview');
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('project_owner_preview');
 
         fireEvent.click(getByTestId(`ai-tab-close-${projectTabId}`));
         await waitFor(() => expect(queryByTestId(`ai-tab-${projectTabId}`)).toBeNull());
@@ -863,8 +906,8 @@ describe('AIAssistantPanel property tests', () => {
             session_id: 'local-after-close-session',
             auto_open_preview: true,
         }));
-        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
-        expect(document.body.textContent || '').toContain('local_after_project_close');
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('local_after_project_close');
     });
 
     it('keeps inline root as a flex item with clipped overflow', () => {

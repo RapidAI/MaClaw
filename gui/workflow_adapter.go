@@ -299,6 +299,22 @@ func (a *GUIWorkflowAdapter) GetWorkingDir() string {
 	return a.workingDir
 }
 
+// setWorkingDirCache updates the adapter cache without emitting events or
+// writing through the engine. Used when the caller already persisted workflow
+// ProjectPath and will emit a single workflow:workdir_set.
+func (a *GUIWorkflowAdapter) setWorkingDirCache(dir string) {
+	if a == nil {
+		return
+	}
+	dir = normalizeProjectSessionPath(dir)
+	a.mu.Lock()
+	if a.workingDir != dir {
+		a.projectStorageDir = ""
+	}
+	a.workingDir = dir
+	a.mu.Unlock()
+}
+
 // ResetWorkingDir clears the working directory when the workflow ends.
 func (a *GUIWorkflowAdapter) ResetWorkingDir() {
 	a.mu.Lock()

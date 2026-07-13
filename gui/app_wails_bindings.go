@@ -292,12 +292,18 @@ func (a *App) installMixedSkillWithIntegrity(source, id, installRef, expectedPac
 }
 
 func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, downloadLocator, expectedPackageSHA256, expectedPackageSignature string) error {
+	_, err := a.installMixedSkillWithIntegrityAndLocatorTrace(source, id, installRef, downloadLocator, expectedPackageSHA256, expectedPackageSignature)
+	return err
+}
+
+func (a *App) installMixedSkillWithIntegrityAndLocatorTrace(source, id, installRef, downloadLocator, expectedPackageSHA256, expectedPackageSignature string) (skillHubDownloadTrace, error) {
+	var trace skillHubDownloadTrace
 	if err := a.ensureWorkflowAllowsRemoteToolCall("manage_skill", map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}); err != nil {
-		return err
+		return trace, err
 	}
 	a.ensureInteractionInfra()
 	if a.skillExecutor == nil {
-		return fmt.Errorf("skill executor not initialized")
+		return trace, fmt.Errorf("skill executor not initialized")
 	}
 	guardArgs := map[string]interface{}{"action": "install", "source": source, "skill_id": id, "install_ref": installRef}
 	switch skillSearchSourceFromStatus(source) {
@@ -313,7 +319,7 @@ func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, d
 		}
 	}
 	if ok, reason := a.enforceHubSecurityAppPolicy("manage_skill", guardArgs); !ok {
-		return fmt.Errorf("%s", reason)
+		return trace, fmt.Errorf("%s", reason)
 	}
 	// Invalidate update cache - installed skill set changed.
 	defer func() {
@@ -325,20 +331,20 @@ func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, d
 	kind := skillSearchSourceFromStatus(source)
 	if cfg, err := a.LoadConfig(); err == nil {
 		if reason, blocked := cfg.CapabilityMarketPolicy.RejectNonEnterpriseInstall(string(kind), cfg.RemoteHubURL); blocked {
-			return fmt.Errorf("%s", reason)
+			return trace, fmt.Errorf("%s", reason)
 		}
 	}
 	switch kind {
 	case skillSearchSourceEnterpriseHub:
 		ref := strings.TrimSpace(firstNonEmpty(installRef, id))
 		if ref == "" {
-			return fmt.Errorf("enterprise capability id is required")
+			return trace, fmt.Errorf("enterprise capability id is required")
 		}
 		status := a.InstallHubCapability(ref)
 		if len(status.Errors) > 0 {
-			return fmt.Errorf("%s", strings.Join(status.Errors, "; "))
+			return trace, fmt.Errorf("%s", strings.Join(status.Errors, "; "))
 		}
-		return nil
+		return trace, nil
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		// Prefer installRef (HubSkillID from enriched App packages) for
 		// deterministic download. Fall back to bare id (name-based) for
@@ -346,39 +352,40 @@ func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, d
 		downloadID := strings.TrimSpace(firstNonEmpty(installRef, id))
 		stagingRoot, err := a.skillStagingDir()
 		if err != nil {
-			return err
+			return trace, err
 		}
 		stagingDir, err := cskill.PrepareStagingDirInRoot(stagingRoot, firstNonEmpty(id, "mixed-skill"))
 		if err != nil {
-			return err
+			return trace, err
 		}
-		skill, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrity(ctx, a, downloadLocator, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, expectedPackageSHA256, expectedPackageSignature)
+		skill, downloadTrace, err := downloadSkillJSONFromHubCenterLocatorToDirWithIntegrityTrace(ctx, a, downloadLocator, "/api/v1/skills/"+url.PathEscape(downloadID)+"/download", stagingDir, expectedPackageSHA256, expectedPackageSignature)
+		trace = downloadTrace
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
-			return err
+			return trace, annotateSkillHubDownloadError(err, trace)
 		}
 		if a.skillNameAlreadyRegistered(skill.Name) {
 			cskill.CleanupStaging(stagingDir)
-			return fmt.Errorf("skill %q already exists", skill.Name)
+			return trace, fmt.Errorf("skill %q already exists", skill.Name)
 		}
 		skill.Source = maclawAppRegisteredDependencySource(string(kind))
 		skill.HubSkillID = firstNonEmpty(downloadID, skill.HubSkillID)
 		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, string(kind))
 		if err != nil {
 			cskill.CleanupStaging(stagingDir)
-			return err
+			return trace, err
 		}
 		committedDir := ""
 		if strings.TrimSpace(skill.SkillDir) != "" {
 			finalRoot, err := a.primarySkillsDir()
 			if err != nil {
 				cskill.CleanupStaging(stagingDir)
-				return err
+				return trace, err
 			}
 			finalDir, err := cskill.CommitStagingToDir(stagingDir, skill.Name, finalRoot)
 			if err != nil {
 				cskill.CleanupStaging(stagingDir)
-				return err
+				return trace, err
 			}
 			skill.SkillDir = finalDir
 			committedDir = finalDir
@@ -389,73 +396,115 @@ func (a *App) installMixedSkillWithIntegrityAndLocator(source, id, installRef, d
 			if committedDir != "" {
 				_ = os.RemoveAll(committedDir)
 			}
-			return fmt.Errorf("write skill scan cache: %w", err)
+			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
 		if err := a.skillExecutor.Register(*skill); err != nil {
 			if committedDir != "" {
 				_ = os.RemoveAll(committedDir)
 			}
-			return err
+			return trace, err
 		}
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
-		return nil
+		return trace, nil
 
 	case skillSearchSourceClawHub:
 		skill, err := downloadClawHubSkill(ctx, id)
 		if err != nil {
-			return err
+			return trace, err
 		}
 		if a.skillNameAlreadyRegistered(skill.Name) {
-			return fmt.Errorf("skill %q already exists", skill.Name)
+			return trace, fmt.Errorf("skill %q already exists", skill.Name)
 		}
 		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed clawhub search")
 		if err != nil {
-			return err
+			return trace, err
 		}
 		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
-			return fmt.Errorf("write skill scan cache: %w", err)
+			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
 		if err := a.skillExecutor.Register(*skill); err != nil {
-			return err
+			return trace, err
 		}
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
-		return nil
+		return trace, nil
 	case skillSearchSourceGitHub:
 		var candidate cskill.GitHubSkillCandidate
 		if strings.TrimSpace(installRef) == "" {
-			return fmt.Errorf("missing github install ref")
+			return trace, fmt.Errorf("missing github install ref")
 		}
 		if err := json.Unmarshal([]byte(installRef), &candidate); err != nil {
-			return fmt.Errorf("invalid github install ref: %w", err)
+			return trace, fmt.Errorf("invalid github install ref: %w", err)
 		}
 		if strings.TrimSpace(candidate.RawURL) == "" {
-			return fmt.Errorf("invalid github install ref: missing raw_url")
+			return trace, fmt.Errorf("invalid github install ref: missing raw_url")
 		}
 		if strings.TrimSpace(candidate.RepoFullName) == "" {
 			candidate.RepoFullName = id
 		}
 		skill, err := cskill.NewGitHubSearcher("").ImportFromCandidate(candidate)
 		if err != nil {
-			return err
+			return trace, err
 		}
 		if a.skillNameAlreadyRegistered(skill.Name) {
-			return fmt.Errorf("skill %q already exists", skill.Name)
+			return trace, fmt.Errorf("skill %q already exists", skill.Name)
 		}
 		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed github search")
 		if err != nil {
-			return err
+			return trace, err
 		}
 		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
-			return fmt.Errorf("write skill scan cache: %w", err)
+			return trace, fmt.Errorf("write skill scan cache: %w", err)
 		}
 		if err := a.skillExecutor.Register(*skill); err != nil {
-			return err
+			return trace, err
 		}
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
-		return nil
+		return trace, nil
 	default:
-		return fmt.Errorf("unsupported skill source %q", source)
+		return trace, fmt.Errorf("unsupported skill source %q", source)
 	}
+}
+
+func annotateSkillHubDownloadError(err error, trace skillHubDownloadTrace) error {
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(err.Error())
+	if strings.Contains(detail, "download_node=") || strings.Contains(detail, "preferred_node=") {
+		return err
+	}
+	var parts []string
+	if node := strings.TrimSpace(trace.UsedBase); node != "" {
+		parts = append(parts, "download_node="+node)
+	} else if preferred := skillHubPreferredNodeFromLocator(trace.PreferredLocator); preferred != "" {
+		parts = append(parts, "preferred_node="+preferred)
+	}
+	if resolved := strings.TrimSpace(trace.ResolvedDownloadURL); resolved != "" {
+		parts = append(parts, "resolved_url="+resolved)
+	}
+	if len(trace.Candidates) > 0 {
+		cands := trace.Candidates
+		if len(cands) > 6 {
+			cands = cands[:6]
+		}
+		parts = append(parts, "candidates="+strings.Join(cands, ","))
+	}
+	if len(parts) == 0 {
+		return err
+	}
+	return fmt.Errorf("%v; %s", err, strings.Join(parts, " "))
+}
+
+func skillHubPreferredNodeFromLocator(locator string) string {
+	locator = strings.TrimSpace(locator)
+	if locator == "" {
+		return ""
+	}
+	parsed, err := url.Parse(locator)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.TrimRight(parsed.Scheme+"://"+parsed.Host, "/")
 }
 
 // InstallHubSkill downloads a Skill from the specified Hub and registers it locally (Wails binding).
@@ -1779,7 +1828,8 @@ func (a *App) StartWorkflowTemplate(workflowType string, projectPath string) (st
 
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
-		projectPath = strings.TrimSpace(a.GetCurrentProjectPath())
+		// Align with ProjectDirBar / tool cwd (working_directory), not Projects list.
+		projectPath = strings.TrimSpace(a.EffectiveDesktopWorkingDir())
 	}
 	if projectPath == "" {
 		projectPath = "."
@@ -1801,10 +1851,10 @@ func (a *App) StartWorkflowTemplate(workflowType string, projectPath string) (st
 	}
 
 	// For workflow panel starts, always use the default desktop session (empty
-	// project path). The workflow engine will determine the actual project path
-	// during startNewWorkflowV2 based on the current project setting. Using empty
-	// here ensures the message is routed to the same session that the AI assistant
-	// panel's default tab is listening on.
+	// project path). The workflow engine binds the actual working directory via
+	// RouteResult.ProjectPath / EffectiveDesktopWorkingDir. Using empty
+	// sendProjectPath ensures the message is routed to the same session that the
+	// AI assistant panel's default tab is listening on.
 	sendProjectPath := ""
 	if projectPath == "." {
 		projectPath = "" // normalize for RouteResult too

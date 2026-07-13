@@ -8,6 +8,7 @@ type UpdateModalProps = {
     appVersion: string;
     isDownloading: boolean;
     downloadProgress: number;
+    activeDownloadSource?: string;
     installerPath: string;
     downloadError: string;
     preferBetaChannel?: boolean;
@@ -19,11 +20,30 @@ type UpdateModalProps = {
     onUpdateResultChange?: (result: any) => void;
 };
 
+export function downloadSourceName(value: unknown): string {
+    // Keep this in sync with the backend's splitDownloadURLs. A URL may contain
+    // commas in signed query parameters, while candidates use line breaks or |.
+    const firstValue = String(value || '').trim().split(/[|\r\n]/).map(item => item.trim()).find(Boolean);
+    if (!firstValue) return '';
+    let host = firstValue;
+    try {
+        host = new URL(firstValue).hostname;
+    } catch {
+        // The backend sends a hostname only during an active download.
+    }
+    const normalizedHost = host.toLowerCase();
+    if (normalizedHost === 'github.com' || normalizedHost.endsWith('.github.com')) return 'GitHub Releases';
+    if (normalizedHost.includes('myqcloud.com') || normalizedHost.includes('cos.')) return '腾讯云 COS';
+    if (normalizedHost.includes('cloudflare') || normalizedHost.includes('r2.')) return 'Cloudflare R2';
+    return host;
+}
+
 export const UpdateModal = ({
     updateResult,
     appVersion,
     isDownloading,
     downloadProgress,
+    activeDownloadSource,
     installerPath,
     downloadError,
     preferBetaChannel,
@@ -38,6 +58,7 @@ export const UpdateModal = ({
     const [betaLoading, setBetaLoading] = useState(false);
     // Cache the stable result so we can restore it when user unchecks beta
     const stableResultRef = useRef(updateResult);
+    const downloadSource = downloadSourceName(activeDownloadSource || updateResult?.download_url || updateResult?.release_url);
 
     // When modal opens with beta preference already enabled, immediately fetch beta info
     // so the user sees beta results instead of stale stable results.
@@ -95,9 +116,12 @@ export const UpdateModal = ({
 
     return (
         <div className="modal-overlay">
-            <div className="modal-content update-modal">
+            <div className="modal-content update-modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
                 <div className="update-modal__header">
-                    <h3>{t("foundNewVersion")}</h3>
+                    <div>
+                        <p className="update-modal__eyebrow">{t("onlineUpdate")}</p>
+                        <h3 id="update-modal-title">{t("foundNewVersion")}</h3>
+                    </div>
                     <label className="update-modal__beta-toggle">
                         <input
                             type="checkbox"
@@ -116,10 +140,23 @@ export const UpdateModal = ({
                 ) : updateResult.has_update ? (
                     <>
                         <div className="update-modal__info update-modal__info--version">
-                            <div className="update-modal__label">{t("currentVersion")}</div>
-                            <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
-                            <div className="update-modal__label">{t("latestVersion")}</div>
-                            <div className="update-modal__version update-modal__version--latest">{updateResult.latest_version}</div>
+                            <div className="update-modal__version-row">
+                                <div>
+                                    <div className="update-modal__label">{t("currentVersion")}</div>
+                                    <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
+                                </div>
+                                <span className="update-modal__version-arrow" aria-hidden="true">→</span>
+                                <div>
+                                    <div className="update-modal__label">{t("latestVersion")}</div>
+                                    <div className="update-modal__version update-modal__version--latest">{updateResult.latest_version}</div>
+                                </div>
+                            </div>
+                            {downloadSource && (
+                                <div className="update-modal__source" aria-live="polite">
+                                    <span className="update-modal__source-label">{isDownloading ? t("downloadingFrom") : t("downloadSource")}</span>
+                                    <strong>{downloadSource}</strong>
+                                </div>
+                            )}
                         </div>
 
                         <div className="update-modal__workflow">

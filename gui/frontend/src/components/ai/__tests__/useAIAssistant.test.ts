@@ -4080,6 +4080,36 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.progressMessages).toHaveLength(0);
     });
 
+    it('hides the generic task acknowledgement', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('prepare the report');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '收到，正在处理' });
+        });
+
+        expect(result.current.sending).toBe(true);
+        expect(result.current.progressMessages).toEqual([]);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '正在生成报告' });
+        });
+
+        expect(result.current.progressMessages.map(message => message.content)).toEqual(['正在生成报告']);
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id });
+            await pending.promise;
+        });
+    });
+
     it('ignores progress without the active request id', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);

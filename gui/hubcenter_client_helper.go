@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -69,7 +70,32 @@ func (a *App) resolveHubCenterCandidates(ctx context.Context, client *http.Clien
 	if len(bases) == 0 {
 		return nil, fmt.Errorf("hubcenter URL not configured")
 	}
-	return bases, nil
+	// Cached preferred may still be a node that just failed connectivity. Keep it in
+	// the pool for recovery, but try clean nodes first so skill download / search
+	// do not burn a per-node timeout on a known-dead host every request.
+	return deprioritizeRecentlyFailedHubCenters(bases), nil
+}
+
+// deprioritizeRecentlyFailedHubCenters stable-partitions bases so hosts with recent
+// probe failures are tried after clean hosts, without dropping any candidate.
+func deprioritizeRecentlyFailedHubCenters(bases []string) []string {
+	bases = remote.NormalizeHubCenterURLs(bases)
+	if len(bases) <= 1 {
+		return bases
+	}
+	healthy := make([]string, 0, len(bases))
+	failed := make([]string, 0, len(bases))
+	for _, base := range bases {
+		if remote.HasRecentFailures(base) {
+			failed = append(failed, base)
+			continue
+		}
+		healthy = append(healthy, base)
+	}
+	if len(failed) == 0 || len(healthy) == 0 {
+		return bases
+	}
+	return append(healthy, failed...)
 }
 
 func (a *App) rememberHubCenterSelection(base string, discovered []string) {
@@ -98,17 +124,25 @@ func (a *App) getHubCenterJSONFromCandidates(ctx context.Context, client *http.C
 	var lastErr error
 	for _, base := range bases {
 		for attempt := 0; attempt < 2; attempt++ {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+			reqCtx, cancel := withHubCenterCandidateContext(ctx, client, len(bases))
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+path, nil)
 			if err != nil {
+				cancel()
 				return "", nil, err
 			}
 			resp, err := client.Do(req)
 			if err != nil {
+				cancel()
 				lastErr = fmt.Errorf("request hubcenter JSON %s%s failed: %w", base, path, err)
-				continue
+				if shouldDemoteHubCenterCandidate(ctx, err, 0) {
+					remote.RecordProbeResult(base, false)
+				}
+				// Connectivity errors are not "unexpected EOF" retries.
+				break
 			}
 			ok := false
-			truncated := false
+			retryable := false
+			statusCode := resp.StatusCode
 			func() {
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
@@ -119,21 +153,26 @@ func (a *App) getHubCenterJSONFromCandidates(ctx context.Context, client *http.C
 				data, err := readHubCenterJSONBody(resp.Body, limit)
 				if err != nil {
 					lastErr = fmt.Errorf("read hubcenter JSON %s%s failed: %w", base, path, err)
-					truncated = isUnexpectedEOFError(err)
+					retryable = isUnexpectedEOFError(err)
 					return
 				}
 				if err := json.Unmarshal(data, dest); err != nil {
 					lastErr = fmt.Errorf("decode hubcenter JSON %s%s failed after %d bytes: %w", base, path, len(data), err)
-					truncated = isUnexpectedEOFError(err)
+					retryable = isUnexpectedEOFError(err)
 					return
 				}
 				ok = true
 			}()
+			cancel()
 			if ok {
+				remote.RecordProbeResult(base, true)
 				a.rememberHubCenterSelection(base, bases)
 				return base, bases, nil
 			}
-			if !truncated || attempt == 1 {
+			if shouldDemoteHubCenterCandidate(ctx, lastErr, statusCode) {
+				remote.RecordProbeResult(base, false)
+			}
+			if !retryable || attempt == 1 {
 				break
 			}
 		}
@@ -163,31 +202,46 @@ func (a *App) getHubCenterBytesFromCandidates(ctx context.Context, client *http.
 		return "", nil, nil, fmt.Errorf("hubcenter URL not configured")
 	}
 	var lastErr error
+	// Bound per-node wait so a hung preferred node (e.g. dead hubs2) does not burn the
+	// full client timeout before cluster failover can try the next live base.
 	for _, base := range bases {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+		reqCtx, cancel := withHubCenterCandidateContext(ctx, client, len(bases))
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base+path, nil)
 		if err != nil {
+			cancel()
 			return "", nil, nil, err
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			cancel()
 			lastErr = err
+			if shouldDemoteHubCenterCandidate(ctx, err, 0) {
+				remote.RecordProbeResult(base, false)
+			}
 			continue
 		}
-		data, readErr := func() ([]byte, error) {
+		data, statusCode, readErr := func() ([]byte, int, error) {
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-				return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+				return nil, resp.StatusCode, fmt.Errorf("request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 			}
 			if limit > 0 {
-				return readLimitedHubCenterBodyWithLength(resp.Body, resp.ContentLength, limit)
+				payload, err := readLimitedHubCenterBodyWithLength(resp.Body, resp.ContentLength, limit)
+				return payload, resp.StatusCode, err
 			}
-			return io.ReadAll(resp.Body)
+			payload, err := io.ReadAll(resp.Body)
+			return payload, resp.StatusCode, err
 		}()
+		cancel()
 		if readErr != nil {
 			lastErr = readErr
+			if shouldDemoteHubCenterCandidate(ctx, readErr, statusCode) {
+				remote.RecordProbeResult(base, false)
+			}
 			continue
 		}
+		remote.RecordProbeResult(base, true)
 		a.rememberHubCenterSelection(base, bases)
 		return base, bases, data, nil
 	}
@@ -200,6 +254,78 @@ func (a *App) getHubCenterBytesFromCandidates(ctx context.Context, client *http.
 		return "", bases, nil, lastErr
 	}
 	return "", bases, nil, fmt.Errorf("no reachable hubcenter")
+}
+
+// hubCenterCandidateRequestTimeout returns a per-node deadline for multi-candidate
+// downloads. Single-candidate requests keep the caller's full client timeout.
+func hubCenterCandidateRequestTimeout(client *http.Client, candidateCount int) time.Duration {
+	if candidateCount <= 1 {
+		return 0
+	}
+	const perNode = 8 * time.Second
+	if client == nil || client.Timeout <= 0 {
+		return perNode
+	}
+	// Leave headroom for later candidates; never exceed the shared client budget.
+	budget := client.Timeout / time.Duration(candidateCount)
+	if budget < 3*time.Second {
+		budget = 3 * time.Second
+	}
+	if budget > perNode {
+		return perNode
+	}
+	return budget
+}
+
+// shouldDemoteHubCenterCandidate reports whether a failed request should lower the
+// node's SelectBestCenter ranking. Parent-context cancellation and client 4xx
+// (especially 404 skill-missing) must not poison an otherwise healthy node.
+func shouldDemoteHubCenterCandidate(parentCtx context.Context, err error, statusCode int) bool {
+	if parentCtx != nil && parentCtx.Err() != nil {
+		return false
+	}
+	if statusCode > 0 {
+		// 5xx / 408 / 429: node or gateway is unhealthy / overloaded.
+		if statusCode >= 500 || statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests {
+			return true
+		}
+		// Truncated 2xx bodies are transport-class failures, not content-missing.
+		if statusCode >= 200 && statusCode < 300 && err != nil && isUnexpectedEOFError(err) {
+			return true
+		}
+		// Other 2xx/3xx/4xx outcomes are request or content specific (e.g. 404 skill missing).
+		return false
+	}
+	if err == nil {
+		return false
+	}
+	// Per-node deadline exceeded with healthy parent → treat as node hang/dead.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// Canceled here is from the per-node child context (parent already checked).
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "tls handshake timeout") ||
+		isUnexpectedEOFError(err) {
+		return true
+	}
+	return false
+}
+
+// withHubCenterCandidateContext applies the shared per-node timeout used by multi-candidate
+// HubCenter requests. Caller must invoke the returned cancel func.
+func withHubCenterCandidateContext(parent context.Context, client *http.Client, candidateCount int) (context.Context, context.CancelFunc) {
+	timeout := hubCenterCandidateRequestTimeout(client, candidateCount)
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func readLimitedHubCenterBody(body io.Reader, limit int64) ([]byte, error) {

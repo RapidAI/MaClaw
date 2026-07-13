@@ -468,6 +468,7 @@ const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_LIVE_PROGRESS_MESSAGES = 30;
 const HEARTBEAT_PROGRESS_TEXT = "__heartbeat__";
+const GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT = "收到，正在处理";
 
 function isHeartbeatProgressText(progressText: unknown): boolean {
     return String(progressText || '').trim() === HEARTBEAT_PROGRESS_TEXT;
@@ -476,6 +477,8 @@ function isHeartbeatProgressText(progressText: unknown): boolean {
 function shouldHideProgressText(progressText: string): boolean {
     const trimmed = progressText.trim();
     if (!trimmed) return true;
+    // A bare acknowledgement adds no task detail; retain meaningful milestones instead.
+    if (trimmed === GENERIC_ACKNOWLEDGEMENT_PROGRESS_TEXT) return true;
     if (trimmed.includes("命令仍在执行中")) return true;
     return isHeartbeatProgressText(trimmed);
 }

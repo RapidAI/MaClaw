@@ -647,21 +647,211 @@ func TestGetWorkflowWorkingDirHandlesWorkflowV2WithoutMachine(t *testing.T) {
 func TestWorkflowStartProjectPathPrefersProjectScopedOwner(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	ownerProject := filepath.Join(t.TempDir(), "owner-project")
+	if err := os.MkdirAll(ownerProject, 0o755); err != nil {
+		t.Fatalf("MkdirAll ownerProject: %v", err)
+	}
 	currentProject := filepath.Join(t.TempDir(), "current-project")
+	workingDir := filepath.Join(t.TempDir(), "top-bar-working-dir")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workingDir: %v", err)
+	}
 	ownerID := projectSessionOwnerID(ownerProject)
 
 	if err := handler.app.SaveConfig(corelib.AppConfig{
-		Projects:       []corelib.ProjectConfig{{Id: "current", Name: "Current", Path: currentProject}},
-		CurrentProject: "current",
+		Projects:         []corelib.ProjectConfig{{Id: "current", Name: "Current", Path: currentProject}},
+		CurrentProject:   "current",
+		WorkingDirectory: workingDir,
 	}); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
+	corelib.SetWorkspaceDir(workingDir)
 
 	if got := handler.workflowStartProjectPathForOwner(ownerID); got != normalizeProjectSessionPath(ownerProject) {
 		t.Fatalf("workflowStartProjectPathForOwner(%q) = %q, want %q", ownerID, got, normalizeProjectSessionPath(ownerProject))
 	}
-	if got := handler.workflowStartProjectPathForOwner(desktopUserID); got != currentProject {
-		t.Fatalf("desktop workflowStartProjectPathForOwner = %q, want current project %q", got, currentProject)
+	// Local/desktop session must follow top-bar working_directory, not Projects list.
+	if got := handler.workflowStartProjectPathForOwner(desktopUserID); got != filepath.Clean(workingDir) {
+		t.Fatalf("desktop workflowStartProjectPathForOwner = %q, want working dir %q (not current project %q)", got, workingDir, currentProject)
+	}
+}
+
+func TestWorkflowStartProjectPathMatchesTopBarNotProjectsList(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	projectsPath := filepath.Join(t.TempDir(), "configured-project")
+	topBarDir := filepath.Join(t.TempDir(), "agent_self_evo")
+	if err := os.MkdirAll(topBarDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll topBarDir: %v", err)
+	}
+
+	if err := handler.app.SaveConfig(corelib.AppConfig{
+		Projects:         []corelib.ProjectConfig{{Id: "p1", Name: "Configured", Path: projectsPath}},
+		CurrentProject:   "p1",
+		WorkingDirectory: topBarDir,
+	}); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+	corelib.SetWorkspaceDir(topBarDir)
+
+	// UI top bar (local tab) and workflow/system-prompt path must agree.
+	uiPath, _ := handler.app.GetTabWorkingDir("")["path"].(string)
+	if uiPath != filepath.Clean(topBarDir) {
+		t.Fatalf("GetTabWorkingDir = %q, want %q", uiPath, topBarDir)
+	}
+	if got := handler.workflowStartProjectPathForOwner(desktopUserID); got != filepath.Clean(topBarDir) {
+		t.Fatalf("workflowStartProjectPathForOwner = %q, want top-bar dir %q", got, topBarDir)
+	}
+	if got := handler.app.EffectiveDesktopWorkingDir(); got != filepath.Clean(topBarDir) {
+		t.Fatalf("EffectiveDesktopWorkingDir = %q, want %q", got, topBarDir)
+	}
+	// GetCurrentProjectPath still returns Projects list entry (legacy), but must
+	// not drive agent/workflow working directory.
+	if got := handler.app.GetCurrentProjectPath(); got != projectsPath {
+		t.Fatalf("GetCurrentProjectPath = %q, want %q", got, projectsPath)
+	}
+}
+
+func TestSetTabWorkingDirSyncsActiveWorkflowProjectPath(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := handler.app
+	oldDir := filepath.Join(t.TempDir(), "old-workdir")
+	newDir := filepath.Join(t.TempDir(), "new-workdir")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll oldDir: %v", err)
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll newDir: %v", err)
+	}
+
+	if _, err := app.workflowV2.machine.Create(desktopUserID, "coding", oldDir, "build something"); err != nil {
+		t.Fatalf("Create workflow: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", newDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	state := app.workflowV2.machine.GetActive(desktopUserID)
+	if state == nil {
+		t.Fatal("expected active workflow")
+	}
+	if state.ProjectPath != filepath.Clean(newDir) {
+		t.Fatalf("workflow ProjectPath after SetTabWorkingDir = %q, want %q", state.ProjectPath, newDir)
+	}
+	if got := corelib.EffectiveWorkspaceDir(); got != filepath.Clean(newDir) {
+		t.Fatalf("EffectiveWorkspaceDir = %q, want %q", got, newDir)
+	}
+}
+
+func TestStartNewWorkflowV2UsesTopBarWorkingDirNotProjectsList(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	projectsPath := filepath.Join(t.TempDir(), "projects-list-path")
+	topBarDir := filepath.Join(t.TempDir(), "desktop-agent-dir")
+	if err := os.MkdirAll(topBarDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := handler.app.SaveConfig(corelib.AppConfig{
+		Projects:         []corelib.ProjectConfig{{Id: "p1", Name: "P", Path: projectsPath}},
+		CurrentProject:   "p1",
+		WorkingDirectory: topBarDir,
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	corelib.SetWorkspaceDir(topBarDir)
+
+	result := handler.startNewWorkflowV2(IMUserMessage{
+		UserID:   desktopUserID,
+		Platform: desktopPlatform,
+		Text:     "start literature review",
+	}, &v2.RouteResult{
+		Target:       v2.RouteToWorkflow,
+		WorkflowType: "coding",
+		// Empty ProjectPath forces resolution through EffectiveWorkingDirForOwner.
+		ProjectPath: "",
+	})
+	_ = result
+	state := handler.app.workflowV2.machine.GetActive(desktopUserID)
+	if state == nil {
+		t.Fatal("expected active workflow after startNewWorkflowV2")
+	}
+	if state.ProjectPath != filepath.Clean(topBarDir) {
+		t.Fatalf("started workflow ProjectPath = %q, want top-bar dir %q (not projects list %q)", state.ProjectPath, topBarDir, projectsPath)
+	}
+}
+
+func TestWorkflowStartProjectPathHonorsProjectTabWorkingDirOverride(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	taskPath := filepath.Join(t.TempDir(), "managed-task")
+	overrideDir := filepath.Join(t.TempDir(), "agent_self_evo")
+	if err := os.MkdirAll(taskPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll taskPath: %v", err)
+	}
+	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll overrideDir: %v", err)
+	}
+	ownerID := projectSessionOwnerID(taskPath)
+	handler.app.tabWorkingDirOverrides.Store(normalizeProjectSessionPath(taskPath), filepath.Clean(overrideDir))
+
+	if got := handler.app.EffectiveWorkingDirForOwner(ownerID); got != filepath.Clean(overrideDir) {
+		t.Fatalf("EffectiveWorkingDirForOwner = %q, want override %q", got, overrideDir)
+	}
+	if got := handler.workflowStartProjectPathForOwner(ownerID); got != filepath.Clean(overrideDir) {
+		t.Fatalf("workflowStartProjectPathForOwner = %q, want override %q", got, overrideDir)
+	}
+	if got := handler.executionProjectPathForOwner(ownerID); got != filepath.Clean(overrideDir) {
+		t.Fatalf("executionProjectPathForOwner = %q, want override %q", got, overrideDir)
+	}
+}
+
+func TestEffectiveWorkingDirForOwnerNormalizesAndIgnoresProjectsList(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	projectsPath := filepath.Join(t.TempDir(), "projects-entry")
+	workDir := filepath.Join(t.TempDir(), "WorkDir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := handler.app.SaveConfig(corelib.AppConfig{
+		Projects:         []corelib.ProjectConfig{{Id: "p1", Name: "P", Path: projectsPath}},
+		CurrentProject:   "p1",
+		WorkingDirectory: workDir,
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	corelib.SetWorkspaceDir(workDir)
+
+	got := handler.app.EffectiveWorkingDirForOwner(desktopUserID)
+	want := normalizeProjectSessionPath(workDir)
+	if got != want {
+		t.Fatalf("EffectiveWorkingDirForOwner(desktop) = %q, want normalized %q", got, want)
+	}
+	if handler.effectiveWorkingDirForUser(desktopUserID) != want {
+		t.Fatalf("effectiveWorkingDirForUser(desktop) = %q, want %q", handler.effectiveWorkingDirForUser(desktopUserID), want)
+	}
+}
+
+func TestSetWorkflowWorkingDirDelegatesToSync(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	app := handler.app
+	engine := app.workflowEngine
+	adapter := NewGUIWorkflowAdapter(app, engine)
+	engine.SetCallbacks(adapter)
+	oldDir := filepath.Join(t.TempDir(), "wf-old")
+	newDir := filepath.Join(t.TempDir(), "wf-new")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll old: %v", err)
+	}
+
+	if _, err := app.workflowV2.machine.Create(desktopUserID, "coding", oldDir, "task"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Seed adapter with old path so sync must update the cache.
+	adapter.setWorkingDirCache(oldDir)
+
+	app.SetWorkflowWorkingDir(newDir)
+
+	state := app.workflowV2.machine.GetActive(desktopUserID)
+	if state == nil || normalizeProjectSessionPath(state.ProjectPath) != normalizeProjectSessionPath(newDir) {
+		t.Fatalf("v2 ProjectPath = %#v, want %q", state, newDir)
+	}
+	if got := adapter.GetWorkingDir(); normalizeProjectSessionPath(got) != normalizeProjectSessionPath(newDir) {
+		t.Fatalf("adapter working dir = %q, want %q", got, newDir)
 	}
 }
 

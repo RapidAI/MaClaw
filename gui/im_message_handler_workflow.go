@@ -160,18 +160,21 @@ func (h *IMMessageHandler) workflowStartProjectPath() string {
 }
 
 func (h *IMMessageHandler) workflowStartProjectPathForOwner(ownerID string) string {
+	// Must match ProjectDirBar / tool cwd / system-prompt "Project directory".
+	// EffectiveWorkingDirForOwner is the single source of truth (not Projects list).
+	if h != nil && h.app != nil {
+		if dir := strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(ownerID)); dir != "" {
+			return dir
+		}
+	}
+	// Handler without App (tests / early boot): fall back to owner path or default workspace.
 	if projectPath := projectPathFromSessionOwnerID(ownerID); projectPath != "" {
 		return projectPath
 	}
-	if h != nil && h.app != nil {
-		if projectPath := strings.TrimSpace(h.app.GetCurrentProjectPath()); projectPath != "" {
-			return projectPath
-		}
-	}
 	if projectPath := h.traceProjectPath(); projectPath != "" {
-		return projectPath
+		return normalizeProjectSessionPath(projectPath)
 	}
-	return strings.TrimSpace(corelib.EffectiveWorkspaceDir())
+	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
 }
 
 func (h *IMMessageHandler) workflowStartProjectPathForIntent(ownerID, text string, intent v2.StructuredIntent) string {

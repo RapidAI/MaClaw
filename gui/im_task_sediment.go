@@ -517,7 +517,8 @@ func (h *IMMessageHandler) resolveTaskProjectPath(title string) (standalone stri
 		maclawDataDir = h.app.GetDataDir()
 	}
 	standalone = buildStandaloneTaskPath(maclawDataDir, title)
-	projectTag = h.getCurrentProjectPath()
+	// Tag with top-bar / tool working directory for search affinity.
+	projectTag = h.effectiveWorkingDirForUser(desktopUserID)
 	return
 }
 

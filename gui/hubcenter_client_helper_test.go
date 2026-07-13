@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,6 +114,9 @@ func TestGetHubCenterBytesReturnsExactLimitedBody(t *testing.T) {
 }
 
 func TestResolveHubCenterCandidatesKeepsDefaultFailoverWithCachedSingleNode(t *testing.T) {
+	remote.ResetFailureMemory()
+	t.Cleanup(remote.ResetFailureMemory)
+
 	origDefaults := remote.DefaultRemoteHubCenterURLs
 	remote.DefaultRemoteHubCenterURLs = []string{
 		"https://hubs.mypapers.top",
@@ -134,6 +139,99 @@ func TestResolveHubCenterCandidatesKeepsDefaultFailoverWithCachedSingleNode(t *t
 	}
 	if !remote.StringSliceEqual(got, want) {
 		t.Fatalf("candidates = %#v, want %#v", got, want)
+	}
+}
+
+func TestResolveHubCenterCandidatesDeprioritizesRecentlyFailedPreferred(t *testing.T) {
+	remote.ResetFailureMemory()
+	t.Cleanup(remote.ResetFailureMemory)
+
+	origDefaults := remote.DefaultRemoteHubCenterURLs
+	remote.DefaultRemoteHubCenterURLs = []string{
+		"https://hubs.mypapers.top",
+		"https://hubs.maclaw.top",
+		"https://hubs2.maclaw.top",
+	}
+	defer func() { remote.DefaultRemoteHubCenterURLs = origDefaults }()
+
+	app := &App{hubCenterCache: remote.NewHubCenterSelectionCache(time.Minute)}
+	app.hubCenterCache.Set("https://hubs2.maclaw.top", []string{"https://hubs2.maclaw.top"})
+	remote.RecordProbeResult("https://hubs2.maclaw.top", false)
+
+	got, err := app.resolveHubCenterCandidates(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveHubCenterCandidates: %v", err)
+	}
+	if len(got) < 3 {
+		t.Fatalf("candidates = %#v", got)
+	}
+	if got[0] == "https://hubs2.maclaw.top" {
+		t.Fatalf("recently failed preferred must not stay first: %#v", got)
+	}
+	if got[len(got)-1] != "https://hubs2.maclaw.top" {
+		t.Fatalf("recently failed preferred should be last for recovery: %#v", got)
+	}
+}
+
+func TestShouldDemoteHubCenterCandidate(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	if shouldDemoteHubCenterCandidate(parent, context.Canceled, 0) {
+		t.Fatal("parent cancellation must not demote nodes")
+	}
+	if shouldDemoteHubCenterCandidate(context.Background(), nil, http.StatusNotFound) {
+		t.Fatal("404 must not demote healthy nodes")
+	}
+	if shouldDemoteHubCenterCandidate(context.Background(), nil, http.StatusForbidden) {
+		t.Fatal("403 must not demote healthy nodes")
+	}
+	if !shouldDemoteHubCenterCandidate(context.Background(), nil, http.StatusBadGateway) {
+		t.Fatal("5xx should demote")
+	}
+	if !shouldDemoteHubCenterCandidate(context.Background(), context.DeadlineExceeded, 0) {
+		t.Fatal("per-node deadline should demote")
+	}
+	if !shouldDemoteHubCenterCandidate(context.Background(), errors.New("dial tcp: connection refused"), 0) {
+		t.Fatal("connection refused should demote")
+	}
+	if !shouldDemoteHubCenterCandidate(context.Background(), io.ErrUnexpectedEOF, http.StatusOK) {
+		t.Fatal("truncated 2xx body should demote")
+	}
+	if shouldDemoteHubCenterCandidate(context.Background(), errors.New("checksum mismatch"), http.StatusOK) {
+		t.Fatal("content/integrity errors on 2xx must not demote")
+	}
+}
+
+func TestGetHubCenterBytesFromCandidatesFailsOverDeadPreferred(t *testing.T) {
+	liveHits := 0
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		liveHits++
+		_, _ = w.Write([]byte(`{"ok":true,"id":"demo"}`))
+	}))
+	defer live.Close()
+
+	app := &App{}
+	client := &http.Client{Timeout: 5 * time.Second}
+	bases := []string{"http://127.0.0.1:1", live.URL}
+	used, gotBases, data, err := app.getHubCenterBytesFromCandidates(context.Background(), client, bases, "/api/v1/skills/demo/download", 0)
+	if err != nil {
+		t.Fatalf("getHubCenterBytesFromCandidates: %v", err)
+	}
+	if used != live.URL {
+		t.Fatalf("used = %q, want live %q", used, live.URL)
+	}
+	if liveHits != 1 {
+		t.Fatalf("liveHits = %d, want 1", liveHits)
+	}
+	if !strings.Contains(string(data), `"demo"`) {
+		t.Fatalf("data = %s", data)
+	}
+	if len(gotBases) < 2 {
+		t.Fatalf("bases = %#v", gotBases)
 	}
 }
 

@@ -46,7 +46,7 @@ func (h *IMMessageHandler) createMaxRoundsUnfinishedSlot(userID string, history 
 	h.memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
 		SlotID:       slotID,
 		UserID:       userID,
-		ProjectPath:  h.getCurrentProjectPath(),
+		ProjectPath:  h.effectiveWorkingDirForUser(userID),
 		Status:       agent.UnfinishedTaskSlotStatusMaxRoundsReached,
 		LastTask:     originalTask,
 		Summary:      extractProgressSummary(history),
