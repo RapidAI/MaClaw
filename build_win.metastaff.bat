@@ -139,6 +139,11 @@ if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI amd64 failed.
     goto :error
 )
+node "%~dp0scripts\verify-frontend-welcome.mjs" --binary "%OUTPUT_DIR%\%APP_NAME%_amd64.exe"
+if !errorlevel! neq 0 (
+    echo [ERROR] GUI amd64 welcome embed verification failed.
+    goto :error
+)
 del "%~dp0gui\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=0"
@@ -151,6 +156,11 @@ if !errorlevel! neq 0 (
 call :go_build -p 1 -tags %GUI_BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI arm64 failed.
+    goto :error
+)
+node "%~dp0scripts\verify-frontend-welcome.mjs" --binary "%OUTPUT_DIR%\%APP_NAME%_arm64.exe"
+if !errorlevel! neq 0 (
+    echo [ERROR] GUI arm64 welcome embed verification failed.
     goto :error
 )
 del "%~dp0gui\resource_windows_arm64.syso"

@@ -243,8 +243,9 @@ const { dist, binary, checkSource, distSpecified } = parseArgs(process.argv.slic
 const checkDist = binary
   ? fs.existsSync(dist)
   : distSpecified || !checkSource;
-// Source contract is cheap and catches copy drift before/with embed checks.
-const shouldCheckSource = checkSource || checkDist || !!binary;
+// Source contract is cheap and catches copy drift with dist checks.
+// Binary-only audits must not require the current tree (binary may be older).
+const shouldCheckSource = checkSource || checkDist;
 const failures = [
   ...(shouldCheckSource ? verifySource() : []),
   ...(checkDist ? verifyDist(dist) : []),

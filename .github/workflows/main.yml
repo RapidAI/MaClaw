@@ -102,45 +102,17 @@ jobs:
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         shell: pwsh
         run: |
-          # Prefer git tag as the authoritative version source for releases.
-          # workflow_dispatch builds should follow the committed version.ts /
-          # build_number rather than a stale wails.json productVersion.
-          $tag = "${{ github.ref_name }}"
-          $version = $null
-          $source = $null
-          if ($tag -match '^[Vv](\d+\.\d+\.\d+(\.\d+)?)') {
-            $version = $Matches[1]
-            $source = "git tag"
-          } elseif (Test-Path 'gui/frontend/src/version.ts') {
-            $vt = Get-Content 'gui/frontend/src/version.ts' -Raw
-            if ($vt -match "appVersion\s*=\s*'([^']+)'") {
-              $version = $Matches[1]
-              $source = "version.ts"
+          # Shared resolver: tag > version.ts > wails.json(+build_number).
+          # Avoids stale wails.json productVersion on workflow_dispatch builds.
+          $lines = & node scripts/resolve-release-version.mjs "${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) { throw "resolve-release-version.mjs failed with exit $LASTEXITCODE" }
+          foreach ($line in $lines) {
+            if ($line -match '^(VERSION|VERSION_SOURCE)=') {
+              # ASCII append keeps GITHUB_ENV free of UTF-16/BOM surprises.
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value $line -Encoding ascii
+              Write-Host $line
             }
           }
-          if (-not $version) {
-            $cfg = Get-Content wails.json -Raw | ConvertFrom-Json
-            $version = [string]$cfg.info.productVersion
-            $source = "wails.json"
-            if ((Test-Path 'build_number') -and ($version -match '^\d+\.\d+\.\d+')) {
-              $bn = (Get-Content 'build_number' -Raw).Trim()
-              if ($bn -match '^\d+$') {
-                $parts = $version.Split('.')
-                if ($parts.Length -ge 4) { $parts[3] = $bn; $version = $parts -join '.' }
-                else { $version = "$version.$bn" }
-                $source = "wails.json+build_number"
-              }
-            }
-          }
-          echo "VERSION=$version" >> $env:GITHUB_ENV
-          echo "Version from ${source}: $version"
-          # Sync version.ts so frontend version matches backend
-          $parts = $version.Split('.')
-          $buildNum = if ($parts.Length -ge 4) { $parts[3] } else { '0' }
-          $content = "export const buildNumber = '${buildNum}';`nexport const appVersion = '${version}';"
-          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'gui/frontend/src/version.ts'), $content, $utf8NoBom)
-
       - name: Build frontend
         shell: pwsh
         run: |
@@ -836,24 +808,10 @@ jobs:
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         run: |
-          TAG="${{ github.ref_name }}"
-          SOURCE=""
-          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-            SOURCE="git tag"
-          elif [[ -f gui/frontend/src/version.ts ]]; then
-            VERSION=$(python3 -c "import re, pathlib; t=pathlib.Path('gui/frontend/src/version.ts').read_text(encoding='utf-8'); m=re.search(r\"appVersion\\s*=\\s*'([^']+)'\", t); print(m.group(1) if m else '')")
-            SOURCE="version.ts"
-          fi
-          if [[ -z "${VERSION:-}" ]]; then
-            VERSION=$(python3 -c "import json, pathlib; v=json.load(open('wails.json', encoding='utf-8'))['info']['productVersion']; bn=pathlib.Path('build_number').read_text(encoding='utf-8').strip() if pathlib.Path('build_number').exists() else ''; parts=str(v).split('.'); print('.'.join(parts[:3]+[bn]) if bn.isdigit() and len(parts)>=3 else v)")
-            SOURCE="wails.json+build_number"
-          fi
-          echo "Version from ${SOURCE}: $VERSION"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          # Sync version.ts so frontend version matches backend
-          BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
-          printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
+          # Shared resolver: tag > version.ts > wails.json(+build_number).
+          node scripts/resolve-release-version.mjs "${{ github.ref_name }}" >> "$GITHUB_ENV"
+          # shellcheck: VERSION is loaded for subsequent steps via GITHUB_ENV
+          grep -E '^(VERSION|VERSION_SOURCE)=' "$GITHUB_ENV" || true
 
       - name: Build frontend
         run: |
@@ -1316,24 +1274,10 @@ jobs:
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         run: |
-          TAG="${{ github.ref_name }}"
-          SOURCE=""
-          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-            SOURCE="git tag"
-          elif [[ -f gui/frontend/src/version.ts ]]; then
-            VERSION=$(python3 -c "import re, pathlib; t=pathlib.Path('gui/frontend/src/version.ts').read_text(encoding='utf-8'); m=re.search(r\"appVersion\\s*=\\s*'([^']+)'\", t); print(m.group(1) if m else '')")
-            SOURCE="version.ts"
-          fi
-          if [[ -z "${VERSION:-}" ]]; then
-            VERSION=$(python3 -c "import json, pathlib; v=json.load(open('wails.json', encoding='utf-8'))['info']['productVersion']; bn=pathlib.Path('build_number').read_text(encoding='utf-8').strip() if pathlib.Path('build_number').exists() else ''; parts=str(v).split('.'); print('.'.join(parts[:3]+[bn]) if bn.isdigit() and len(parts)>=3 else v)")
-            SOURCE="wails.json+build_number"
-          fi
-          echo "Version from ${SOURCE}: $VERSION"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          # Sync version.ts so frontend version matches backend
-          BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
-          printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
+          # Shared resolver: tag > version.ts > wails.json(+build_number).
+          node scripts/resolve-release-version.mjs "${{ github.ref_name }}" >> "$GITHUB_ENV"
+          # shellcheck: VERSION is loaded for subsequent steps via GITHUB_ENV
+          grep -E '^(VERSION|VERSION_SOURCE)=' "$GITHUB_ENV" || true
 
       - name: Build frontend
         run: |
@@ -1594,23 +1538,9 @@ jobs:
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         run: |
-          TAG="${{ github.ref_name }}"
-          SOURCE=""
-          if [[ "$TAG" =~ ^[Vv]([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-            SOURCE="git tag"
-          elif [[ -f gui/frontend/src/version.ts ]]; then
-            VERSION=$(python3 -c "import re, pathlib; t=pathlib.Path('gui/frontend/src/version.ts').read_text(encoding='utf-8'); m=re.search(r\"appVersion\\s*=\\s*'([^']+)'\", t); print(m.group(1) if m else '')")
-            SOURCE="version.ts"
-          fi
-          if [[ -z "${VERSION:-}" ]]; then
-            VERSION=$(python3 -c "import json, pathlib; v=json.load(open('wails.json', encoding='utf-8'))['info']['productVersion']; bn=pathlib.Path('build_number').read_text(encoding='utf-8').strip() if pathlib.Path('build_number').exists() else ''; parts=str(v).split('.'); print('.'.join(parts[:3]+[bn]) if bn.isdigit() and len(parts)>=3 else v)")
-            SOURCE="wails.json+build_number"
-          fi
-          echo "Version from ${SOURCE}: $VERSION"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          BUILD_NUM=$(echo "$VERSION" | awk -F. '{print ($4 != "" ? $4 : "0")}')
-          printf "export const buildNumber = '%s';\nexport const appVersion = '%s';\n" "$BUILD_NUM" "$VERSION" > gui/frontend/src/version.ts
+          # Shared resolver: tag > version.ts > wails.json(+build_number).
+          node scripts/resolve-release-version.mjs "${{ github.ref_name }}" >> "$GITHUB_ENV"
+          grep -E '^(VERSION|VERSION_SOURCE)=' "$GITHUB_ENV" || true
 
       - name: Build frontend
         run: |

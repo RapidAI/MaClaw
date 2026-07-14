@@ -5,6 +5,9 @@
     "audit:encoding:strict": "node scripts/check-encoding.mjs . --strict-mojibake",
     "check:ui-guards": "node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs",
     "check:ui-guards:selftest": "node scripts/check-main-ui-guards.mjs --self-test-config-persistence",
+    "verify:welcome": "node scripts/verify-frontend-welcome.mjs --source",
+    "verify:welcome:dist": "node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist",
+    "resolve:version": "node scripts/resolve-release-version.mjs --print",
     "test:approval-workflow": "node hub/web/approval_workflow/i18n.test.js && node hub/web/approval_workflow/terminal-node-config.test.js && node hub/web/approval_workflow/workflow-editor.test.js",
     "test:hub-admin": "node hub/web/admin/security-tab.test.js && node hub/web/admin/ve-tab.test.js && node hub/web/admin/validate-admin-modules.js"
   },

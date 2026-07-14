@@ -150,6 +150,11 @@ if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI amd64 failed.
     goto :error
 )
+node "%~dp0scripts\verify-frontend-welcome.mjs" --binary "%OUTPUT_DIR%\%APP_NAME%_amd64.exe"
+if !errorlevel! neq 0 (
+    echo [ERROR] TigerClaw GUI amd64 welcome embed verification failed.
+    goto :error
+)
 del "%~dp0gui\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=%GUI_ARM64_CGO%"
@@ -161,6 +166,11 @@ if !errorlevel! neq 0 (
 "%GO_EXE%" build -tags %GUI_ARM64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI arm64 failed.
+    goto :error
+)
+node "%~dp0scripts\verify-frontend-welcome.mjs" --binary "%OUTPUT_DIR%\%APP_NAME%_arm64.exe"
+if !errorlevel! neq 0 (
+    echo [ERROR] TigerClaw GUI arm64 welcome embed verification failed.
     goto :error
 )
 del "%~dp0gui\resource_windows_arm64.syso"
