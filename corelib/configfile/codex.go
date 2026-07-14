@@ -19,6 +19,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const (
+	defaultCodexModelContextWindow    = 199000
+	defaultCodexAutoCompactTokenLimit = 180000
+	tigerProxyCodexProviderName       = "tigerproxy"
+	tigerProxyCodexWireAPI            = "responses"
+)
+
 // CodexAuthPath returns ~/.codex/auth.json
 func CodexAuthPath() string {
 	home, _ := os.UserHomeDir()
@@ -46,6 +53,12 @@ func WriteCodexConfigWithClientName(apiKey, baseURL, modelID, providerName, wire
 	return WriteCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, providerName, wireApi, clientName)
 }
 
+// WriteTigerProxyCodexConfig writes the TigerProxy-specific Codex settings.
+// Unlike the generic writer, it configures the CodeGen context window defaults.
+func WriteTigerProxyCodexConfig(apiKey, baseURL, modelID string) error {
+	return writeCodexConfigAtWithClientName(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, tigerProxyCodexProviderName, tigerProxyCodexWireAPI, corelib.CodeGenClientName, true)
+}
+
 // WriteCodexConfigAt writes auth.json and config.toml under codexDir using the
 // same conservative switching path as WriteCodexConfig. It exists for
 // project-scoped Codex config directories.
@@ -54,6 +67,10 @@ func WriteCodexConfigAt(codexDir, apiKey, baseURL, modelID, providerName, wireAp
 }
 
 func WriteCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName string) error {
+	return writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName, false)
+}
+
+func writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool) error {
 	if err := ensureCodexProcessesStopped(); err != nil {
 		return err
 	}
@@ -82,7 +99,7 @@ func WriteCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, provid
 	}
 
 	// Step 2: Build config.toml with incremental editing
-	configToml, err := buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, clientName)
+	configToml, err := buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, configureTigerProxyContext)
 	if err != nil {
 		// Rollback auth.json
 		rollbackFile(authPath, oldAuth)
@@ -110,6 +127,10 @@ func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi st
 }
 
 func buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, clientName string) (string, error) {
+	return buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, false)
+}
+
+func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool) (string, error) {
 	providerName = CodexProviderKey(providerName)
 	if providerName == "" {
 		providerName = "custom"
@@ -127,13 +148,13 @@ func buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerNa
 
 	if strings.TrimSpace(existingStr) == "" {
 		// No existing config, generate fresh
-		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName)), nil
+		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext), nil
 	}
 
 	// Incremental edit: update only provider-related fields
 	// We use line-based editing to preserve comments and formatting
 	lines := strings.Split(existingStr, "\n")
-	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName))
+	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext)
 	return result, nil
 }
 
@@ -156,7 +177,7 @@ func BuildCodexConfigTomlContentWithClientName(baseURL, modelID, providerName, w
 	if wireApi == "" {
 		wireApi = "responses"
 	}
-	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName))
+	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), false)
 }
 
 func codexProviderHTTPHeaders(baseURL, clientName string) map[string]string {
@@ -168,11 +189,12 @@ func codexProviderHTTPHeaders(baseURL, clientName string) map[string]string {
 
 // incrementalUpdateCodexToml updates provider fields in existing TOML while
 // preserving MCP servers, profiles, comments, and other user config.
-func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string) string {
+func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string, configureTigerProxyContext bool) string {
 	var result []string
 	updatedModelProvider := false
 	updatedModel := false
-	providerSectionKey := fmt.Sprintf("[model_providers.%s]", providerName)
+	updatedModelContextWindow := !configureTigerProxyContext
+	updatedAutoCompactTokenLimit := !configureTigerProxyContext
 	foundProviderSection := false
 	currentSection := ""
 	targetKeys := map[string]bool{}
@@ -209,7 +231,8 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 				appendMissingTargetFields()
 			}
 			currentSection = section
-			if trimmed == providerSectionKey {
+			if section == fmt.Sprintf("model_providers.%s", providerName) || section == fmt.Sprintf("model_providers.%q", providerName) || section == fmt.Sprintf("model_providers.'%s'", providerName) {
+				currentSection = fmt.Sprintf("model_providers.%s", providerName)
 				foundProviderSection = true
 			}
 			result = append(result, line)
@@ -227,6 +250,18 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 		if currentSection == "" && codexTomlKey(trimmed) == "model" {
 			result = append(result, fmt.Sprintf("model = %s", tomlString(modelID)))
 			updatedModel = true
+			continue
+		}
+
+		if configureTigerProxyContext && currentSection == "" && codexTomlKey(trimmed) == "model_context_window" {
+			result = append(result, fmt.Sprintf("model_context_window = %d", defaultCodexModelContextWindow))
+			updatedModelContextWindow = true
+			continue
+		}
+
+		if configureTigerProxyContext && currentSection == "" && codexTomlKey(trimmed) == "model_auto_compact_token_limit" {
+			result = append(result, fmt.Sprintf("model_auto_compact_token_limit = %d", defaultCodexAutoCompactTokenLimit))
+			updatedAutoCompactTokenLimit = true
 			continue
 		}
 
@@ -300,7 +335,7 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 	if !updatedModel {
 		// Insert after model_provider line
 		for i, l := range result {
-			if strings.HasPrefix(strings.TrimSpace(l), "model_provider") {
+			if codexTomlKey(strings.TrimSpace(l)) == "model_provider" {
 				modelLine := fmt.Sprintf("model = %s", tomlString(modelID))
 				// Safe insert: copy tail to avoid mutating underlying array
 				tail := make([]string, len(result[i+1:]))
@@ -310,11 +345,28 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 			}
 		}
 	}
+	if !updatedModelContextWindow || !updatedAutoCompactTokenLimit {
+		for i, l := range result {
+			if codexTomlKey(strings.TrimSpace(l)) == "model" {
+				missing := make([]string, 0, 2)
+				if !updatedModelContextWindow {
+					missing = append(missing, fmt.Sprintf("model_context_window = %d", defaultCodexModelContextWindow))
+				}
+				if !updatedAutoCompactTokenLimit {
+					missing = append(missing, fmt.Sprintf("model_auto_compact_token_limit = %d", defaultCodexAutoCompactTokenLimit))
+				}
+				tail := make([]string, len(result[i+1:]))
+				copy(tail, result[i+1:])
+				result = append(result[:i+1], append(missing, tail...)...)
+				break
+			}
+		}
+	}
 
 	// If provider section doesn't exist, append it
 	if !foundProviderSection {
 		result = append(result, "")
-		result = append(result, providerSectionKey)
+		result = append(result, fmt.Sprintf("[model_providers.%s]", providerName))
 		result = append(result, fmt.Sprintf("name = %s", tomlString(providerName)))
 		if baseURL != "" {
 			result = append(result, fmt.Sprintf("base_url = %s", tomlString(baseURL)))
@@ -342,10 +394,14 @@ func isInsideSection(lines []string) bool {
 	return false
 }
 
-func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string) string {
+func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string, httpHeaders map[string]string, configureTigerProxyContext bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "model_provider = %s\n", tomlString(providerName))
 	fmt.Fprintf(&sb, "model = %s\n", tomlString(modelID))
+	if configureTigerProxyContext {
+		fmt.Fprintf(&sb, "model_context_window = %d\n", defaultCodexModelContextWindow)
+		fmt.Fprintf(&sb, "model_auto_compact_token_limit = %d\n", defaultCodexAutoCompactTokenLimit)
+	}
 	sb.WriteString("model_reasoning_effort = \"xhigh\"\n")
 	sb.WriteString("disable_response_storage = true\n")
 	fmt.Fprintf(&sb, "\n[model_providers.%s]\n", providerName)
@@ -590,10 +646,11 @@ func tomlString(value string) string {
 }
 
 func codexTomlSectionName(trimmed string) string {
-	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, "[[") {
+	section, _ := splitTomlValueComment(trimmed)
+	if !strings.HasPrefix(section, "[") || !strings.HasSuffix(section, "]") || strings.HasPrefix(section, "[[") {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(section, "["), "]"))
 }
 
 func codexTomlKey(trimmed string) string {

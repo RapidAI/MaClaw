@@ -461,8 +461,11 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 		return err
 	}
 	log.Printf("[LLM] SaveMaclawLLMProviders:save_config=%s", time.Since(persistStart))
+	// Provider switch ends sticky multi-model council for this session.
+	a.clearMoAStickyForAllUsers()
 	if a.ctx != nil {
 		a.emitEvent("llm-token-usage-changed", current)
+		a.emitEvent("moa-session-changed", nil)
 	}
 	// Invalidate LLM-dependent tool outcome records when the provider changes.
 	// PatchConfig (used above) does not go through PatchConfigFields, so the
@@ -497,6 +500,49 @@ func (a *App) notifyHubLLMConfigChanged() {
 }
 
 // GetMaclawLLMConfig returns the current MaClaw LLM configuration.
+// MaterializeProviderByName returns a full MaclawLLMConfig for a named provider
+// using the same OAuth/CredentialStore path as GetMaclawLLMConfig (K19).
+func (a *App) MaterializeProviderByName(providerName string) (corelib.MaclawLLMConfig, error) {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return corelib.MaclawLLMConfig{}, fmt.Errorf("provider name required")
+	}
+	data := a.GetMaclawLLMProviders()
+	for _, p := range data.Providers {
+		if !strings.EqualFold(strings.TrimSpace(p.Name), providerName) {
+			continue
+		}
+		authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
+		wireAPI := p.WireAPI
+		if wireAPI == "" && authKind.IsOAuth() {
+			wireAPI = "responses-ws"
+		}
+		key := p.Key
+		if authKind.IsOAuth() {
+			if storeKey := a.resolveProviderKeyFromStore(p); storeKey != "" {
+				key = storeKey
+			} else if p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
+				key = p.OAuthAccessToken
+			}
+		}
+		return corelib.MaclawLLMConfig{
+			URL:             p.URL,
+			Key:             key,
+			Model:           p.Model,
+			Protocol:        p.Protocol,
+			ContextLength:   p.ContextLength,
+			TimeoutSec:      normalizeLLMTimeoutSec(p.TimeoutSec),
+			MaxOutputTokens: p.MaxOutputTokens,
+			SupportsVision:  p.SupportsVision,
+			AgentType:       p.AgentType,
+			WireAPI:         wireAPI,
+			ProviderName:    p.Name,
+			AuthType:        p.AuthType,
+		}, nil
+	}
+	return corelib.MaclawLLMConfig{}, fmt.Errorf("provider %q not found", providerName)
+}
+
 func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 	// Use GetMaclawLLMProviders which applies URL sync for preset providers
 	// (e.g. port changes), instead of reading legacy fields directly.

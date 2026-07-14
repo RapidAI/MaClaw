@@ -8,39 +8,62 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
-// toolGoal handles the goal management tool.
+// toolGoal handles the goal management tool using the handler's lastUserID
+// (set by the agent loop for the active session).
 // Model-facing actions: create, complete, get, fail
-// System-only transitions: pause, resume (not exposed to model but handled here
-// for internal /goal slash command dispatch).
+// System-only transitions: pause, resume (also used by /goal slash commands).
 func (h *IMMessageHandler) toolGoal(args map[string]interface{}) string {
+	return h.toolGoalForUser(h.lastUserID, args)
+}
+
+// toolGoalForUser is the session-scoped goal tool entry point (pure coding tabs
+// use desktop-user:<projectPath> as the store key).
+func (h *IMMessageHandler) toolGoalForUser(userID string, args map[string]interface{}) string {
+	userID = h.resolveGoalUserID(userID)
 	action, _ := args["action"].(string)
 	action = strings.TrimSpace(strings.ToLower(action))
 
 	switch action {
 	case "create":
-		return h.goalCreate(args)
+		return h.goalCreateForUser(userID, args)
 	case "complete":
-		return h.goalComplete(args)
+		return h.goalCompleteForUser(userID, args)
 	case "fail":
-		return h.goalFail(args)
+		return h.goalFailForUser(userID, args)
 	case "get":
-		return h.goalGet()
+		return h.goalGetForUser(userID)
 	case "pause":
-		return h.goalPause()
+		return h.goalPauseForUser(userID)
 	case "resume":
-		return h.goalResume()
+		return h.goalResumeForUser(userID)
 	case "cancel", "clear":
-		return h.goalClear()
+		return h.goalClearForUser(userID)
 	default:
 		return fmt.Sprintf("未知 goal action: %s（模型可用: create/complete/fail/get）", action)
 	}
 }
 
+func (h *IMMessageHandler) resolveGoalUserID(userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID != "" {
+		return userID
+	}
+	if h != nil {
+		return strings.TrimSpace(h.lastUserID)
+	}
+	return ""
+}
+
 func (h *IMMessageHandler) goalCreate(args map[string]interface{}) string {
+	return h.goalCreateForUser(h.lastUserID, args)
+}
+
+func (h *IMMessageHandler) goalCreateForUser(userID string, args map[string]interface{}) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
 
 	// Check for existing active goal
-	existing := store.Get(h.lastUserID)
+	existing := store.Get(userID)
 	if existing != nil && !existing.IsTerminal() {
 		return fmt.Sprintf("已有活跃目标（%s）：%s\n如需替换请先取消当前目标（goal action=cancel），或等待当前目标完成。",
 			existing.Status, existing.Objective)
@@ -66,10 +89,14 @@ func (h *IMMessageHandler) goalCreate(args map[string]interface{}) string {
 		opts = append(opts, goal.WithProjectPath(projPath))
 	}
 
-	g, err := store.Set(h.lastUserID, objective, opts...)
+	g, err := store.Set(userID, objective, opts...)
 	if err != nil {
 		return fmt.Sprintf("创建目标失败: %v", err)
 	}
+
+	// Pure coding workbench: mirror objective into durable session plan so the
+	// multi-turn coding banner stays aligned with /goal.
+	h.syncCodingWorkbenchSessionPlanFromGoal(userID, objective)
 
 	// Schedule first continuation turn
 	if h.app != nil && h.app.goalContinuation != nil {
@@ -77,7 +104,7 @@ func (h *IMMessageHandler) goalCreate(args map[string]interface{}) string {
 		// (maybeScheduleGoalContinuation) will handle it after this agent loop
 		// finishes. Scheduling here would create a timer that gets immediately
 		// replaced by the post-loop schedule anyway.
-		h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, g)
+		h.app.goalContinuation.emitGoalStateChanged(userID, g)
 	}
 
 	var b strings.Builder
@@ -99,8 +126,13 @@ func (h *IMMessageHandler) goalCreate(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) goalComplete(args map[string]interface{}) string {
+	return h.goalCompleteForUser(h.lastUserID, args)
+}
+
+func (h *IMMessageHandler) goalCompleteForUser(userID string, args map[string]interface{}) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
-	g := store.Get(h.lastUserID)
+	g := store.Get(userID)
 	if g == nil {
 		return "当前没有活跃目标。"
 	}
@@ -113,13 +145,13 @@ func (h *IMMessageHandler) goalComplete(args map[string]interface{}) string {
 		summary = "目标已完成"
 	}
 
-	store.UpdateStatus(h.lastUserID, g.GoalID, goal.StatusComplete, summary)
+	store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, summary)
 
 	// Notify frontend of terminal state
 	if h.app != nil && h.app.goalContinuation != nil {
-		updated := store.Get(h.lastUserID)
+		updated := store.Get(userID)
 		if updated != nil {
-			h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, updated)
+			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
 		}
 	}
 
@@ -135,8 +167,13 @@ func (h *IMMessageHandler) goalComplete(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) goalFail(args map[string]interface{}) string {
+	return h.goalFailForUser(h.lastUserID, args)
+}
+
+func (h *IMMessageHandler) goalFailForUser(userID string, args map[string]interface{}) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
-	g := store.Get(h.lastUserID)
+	g := store.Get(userID)
 	if g == nil {
 		return "当前没有活跃目标。"
 	}
@@ -149,13 +186,13 @@ func (h *IMMessageHandler) goalFail(args map[string]interface{}) string {
 		reason = "目标无法完成"
 	}
 
-	store.UpdateStatus(h.lastUserID, g.GoalID, goal.StatusFailed, reason)
+	store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, reason)
 
 	// Notify frontend of terminal state
 	if h.app != nil && h.app.goalContinuation != nil {
-		updated := store.Get(h.lastUserID)
+		updated := store.Get(userID)
 		if updated != nil {
-			h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, updated)
+			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
 		}
 	}
 
@@ -164,8 +201,13 @@ func (h *IMMessageHandler) goalFail(args map[string]interface{}) string {
 }
 
 func (h *IMMessageHandler) goalGet() string {
+	return h.goalGetForUser(h.lastUserID)
+}
+
+func (h *IMMessageHandler) goalGetForUser(userID string) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
-	g := store.Get(h.lastUserID)
+	g := store.Get(userID)
 	if g == nil {
 		return "当前没有目标。使用 goal(action=\"create\", objective=\"...\") 创建目标。"
 	}
@@ -206,48 +248,63 @@ func (h *IMMessageHandler) goalGet() string {
 }
 
 func (h *IMMessageHandler) goalPause() string {
+	return h.goalPauseForUser(h.lastUserID)
+}
+
+func (h *IMMessageHandler) goalPauseForUser(userID string) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
-	g := store.Get(h.lastUserID)
+	g := store.Get(userID)
 	if g == nil {
 		return "当前没有活跃目标。"
 	}
 	if g.Status != goal.StatusActive {
 		return fmt.Sprintf("目标不在活跃状态（当前: %s），无法暂停。", g.Status)
 	}
-	store.Pause(h.lastUserID, g.GoalID)
+	store.Pause(userID, g.GoalID)
 	// Notify frontend
 	if h.app != nil && h.app.goalContinuation != nil {
-		updated := store.Get(h.lastUserID)
+		updated := store.Get(userID)
 		if updated != nil {
-			h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, updated)
+			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
 		}
 	}
 	return fmt.Sprintf("目标已暂停: %s\n使用 goal(action=\"resume\") 或发送 /goal resume 恢复。", g.Objective)
 }
 
 func (h *IMMessageHandler) goalResume() string {
+	return h.goalResumeForUser(h.lastUserID)
+}
+
+func (h *IMMessageHandler) goalResumeForUser(userID string) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
-	g := store.Get(h.lastUserID)
+	g := store.Get(userID)
 	if g == nil {
 		return "当前没有目标。"
 	}
 	if g.Status != goal.StatusPaused {
 		return fmt.Sprintf("目标不在暂停状态（当前: %s），无法恢复。", g.Status)
 	}
-	store.Resume(h.lastUserID, g.GoalID)
+	store.Resume(userID, g.GoalID)
 	// Notify frontend
 	if h.app != nil && h.app.goalContinuation != nil {
-		updated := store.Get(h.lastUserID)
+		updated := store.Get(userID)
 		if updated != nil {
-			h.app.goalContinuation.emitGoalStateChanged(h.lastUserID, updated)
+			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
 		}
 	}
 	return fmt.Sprintf("目标已恢复: %s\n系统将继续自动推进。", g.Objective)
 }
 
 func (h *IMMessageHandler) goalClear() string {
+	return h.goalClearForUser(h.lastUserID)
+}
+
+func (h *IMMessageHandler) goalClearForUser(userID string) string {
+	userID = h.resolveGoalUserID(userID)
 	store := h.getGoalStore()
-	if store.Clear(h.lastUserID) {
+	if store.Clear(userID) {
 		return "目标已清除。"
 	}
 	return "当前没有目标。"
@@ -316,9 +373,9 @@ func getStringSliceArg(args map[string]interface{}, key string) []string {
 		if json.Unmarshal([]byte(v), &parsed) == nil {
 			return parsed
 		}
-		// Single value
-		if v != "" {
-			return []string{v}
+		// Single value as one criterion.
+		if strings.TrimSpace(v) != "" {
+			return []string{strings.TrimSpace(v)}
 		}
 	}
 	return nil

@@ -215,8 +215,6 @@ export const UpdateModal = ({
                     <div className="update-modal__info">
                         <div className="update-modal__label">{t("currentVersion")}</div>
                         <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
-                        <div className="update-modal__label">{t("latestVersion")}</div>
-                        <div className="update-modal__version update-modal__version--latest update-modal__version--spaced">{updateResult.latest_version}</div>
                         <p className="update-modal__latest-ok">
                             <span className="update-modal__latest-ok-icon" aria-hidden="true">{"\u2714\uFE0F"}</span>
                             {t("isLatestVersion")}

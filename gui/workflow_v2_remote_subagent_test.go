@@ -159,60 +159,11 @@ func TestInferRemoteProjectDirFromSSHSessionHandlesCommonLaunchCommands(t *testi
 	}
 }
 
-func TestCodingWorkflowChoiceCommandsUseTemplateTypes(t *testing.T) {
-	choiceID := "wc_test"
-	simple := buildWorkflowChoiceCommand(workflowChoiceCodingSubAgent, choiceID)
-	choice, gotChoiceID, ok := parseWorkflowChoiceCommand(simple)
-	if !ok {
-		t.Fatalf("coding_subagent choice command should parse")
-	}
-	if gotChoiceID != choiceID || choice != "coding_subagent" {
-		t.Fatalf("coding_subagent choice = (%q,%q), want (coding_subagent,%s)", choice, gotChoiceID, choiceID)
-	}
-
-	remote := buildWorkflowChoiceCommand(workflowChoiceRemoteCoding, choiceID)
-	choice, gotChoiceID, ok = parseWorkflowChoiceCommand(remote)
-	if !ok {
-		t.Fatalf("remote coding choice command should parse")
-	}
-	if gotChoiceID != choiceID || choice != "remote_coding_subagent" {
-		t.Fatalf("remote coding choice = (%q,%q), want (remote_coding_subagent,%s)", choice, gotChoiceID, choiceID)
-	}
-}
-
-func TestCodingWorkflowChoicePanelIncludesRemoteTemplateOption(t *testing.T) {
-	h := &IMMessageHandler{}
-	result := h.askWorkflowConfirmChoice(IMUserMessage{UserID: "u", Text: "修复远程项目登录接口"}, &v2.RouteResult{
-		Target:       v2.RouteToWorkflow,
-		WorkflowType: "coding",
-	})
-	if result.Response == nil {
-		t.Fatalf("expected choice response")
-	}
-	if !strings.Contains(result.Response.Text, "远程编程") || !strings.Contains(result.Response.Text, "主机、端口、用户名、密码、默认工作目录和项目描述") {
-		t.Fatalf("choice panel text should explain remote coding template, got %q", result.Response.Text)
-	}
-
-	foundRemoteAction := false
-	for _, action := range result.Response.Actions {
-		choice, _, ok := parseWorkflowChoiceCommand(action.Command)
-		if ok && choice == workflowChoiceRemoteCoding {
-			foundRemoteAction = true
-			if !strings.Contains(action.Label, "远程编程") {
-				t.Fatalf("remote action label = %q, want 远程编程", action.Label)
-			}
-		}
-	}
-	if !foundRemoteAction {
-		t.Fatalf("expected remote_coding_subagent action, got %#v", result.Response.Actions)
-	}
-}
-
 func TestScrubActivePhaseSensitiveFormDataRemovesSecretsOnly(t *testing.T) {
 	state := &v2.WorkflowState{
 		Phases: []v2.Phase{
 			{
-				ID: "remote_coding_subagent_execution",
+				ID: "ssh_form_phase",
 				InputSchema: &v2.PhaseInputSchema{
 					Fields: []v2.PhaseInputField{
 						{Name: "ssh_host", Label: "主机", Type: "text"},
@@ -250,6 +201,55 @@ func TestScrubActivePhaseSensitiveFormDataRemovesSecretsOnly(t *testing.T) {
 	}
 }
 
+func TestCodingWorkflowChoicePanelHasNoSimplifiedOrRemoteTemplates(t *testing.T) {
+	h := &IMMessageHandler{}
+	result := h.askWorkflowConfirmChoice(IMUserMessage{UserID: "u", Text: "写一个 hello world"}, &v2.RouteResult{
+		Target:       v2.RouteToWorkflow,
+		WorkflowType: "coding",
+	})
+	if result.Response == nil {
+		t.Fatal("expected choice response")
+	}
+	if strings.Contains(result.Response.Text, "简化编程") || strings.Contains(result.Response.Text, "远程编程（推荐") {
+		t.Fatalf("choice panel should not advertise removed templates, got %q", result.Response.Text)
+	}
+	choices := map[string]bool{}
+	for _, action := range result.Response.Actions {
+		choice, _, ok := parseWorkflowChoiceCommand(action.Command)
+		if ok {
+			choices[choice] = true
+		}
+	}
+	if !choices[workflowChoiceComplex] || !choices[workflowChoiceSkip] {
+		t.Fatalf("expected complex+skip actions, got %#v", result.Response.Actions)
+	}
+	if choices["coding_subagent"] || choices["remote_coding_subagent"] || choices["simple"] {
+		t.Fatalf("removed template choices still present: %#v", result.Response.Actions)
+	}
+}
+
+func TestRetiredWorkflowChoiceCommandsGuideToSupportedPaths(t *testing.T) {
+	h := &IMMessageHandler{}
+	pending := &pendingWorkflowChoice{
+		Msg:         IMUserMessage{UserID: "u", Text: "写 hello"},
+		RouteResult: &v2.RouteResult{Target: v2.RouteToWorkflow, WorkflowType: "coding"},
+		ChoiceID:    "wc_retired",
+	}
+	for _, choice := range []string{"coding_subagent", "remote_coding_subagent", "simple"} {
+		h.pendingWorkflowChoice.Store("u", pending)
+		got := h.handleCodingComplexityCommand(IMUserMessage{UserID: "u", Text: buildWorkflowChoiceCommand(choice, "wc_retired")}, buildWorkflowChoiceCommand(choice, "wc_retired"))
+		if got == nil || got.Response == nil {
+			t.Fatalf("choice %q: expected response", choice)
+		}
+		if !strings.Contains(got.Response.Text, "该入口已下线") {
+			t.Fatalf("choice %q: expected retired guidance, got %q", choice, got.Response.Text)
+		}
+		if got.ReplayText != "" {
+			t.Fatalf("choice %q: should not replay original text", choice)
+		}
+	}
+}
+
 func TestHasPendingTemplateSubAgentExecutionRequiresTemplateExecutionContext(t *testing.T) {
 	h := &IMMessageHandler{}
 	if h.hasPendingTemplateSubAgentExecution("u") {
@@ -263,52 +263,16 @@ func TestHasPendingTemplateSubAgentExecutionRequiresTemplateExecutionContext(t *
 
 	h.pendingTemplateCodingProjectPath.Store("u", "D:/repo")
 	if !h.hasPendingTemplateSubAgentExecution("u") {
-		t.Fatalf("coding_subagent context should be pending template execution")
+		t.Fatalf("pure coding pending context should be pending template execution")
 	}
 	h.pendingTemplateCodingProjectPath.Delete("u")
 
 	h.pendingTemplateRemoteCoding.Store("u", remoteCodingTemplateContext{SessionID: "ssh-1", ProjectDir: "/repo", WorkDir: "/repo"})
 	if !h.hasPendingTemplateSubAgentExecution("u") {
-		t.Fatalf("remote_coding_subagent context should be pending template execution")
+		t.Fatalf("pure remote coding pending context should be pending template execution")
 	}
 }
 
-func TestPrepareCodingTemplateSubAgentExecutionUsesFormDescriptionForContinue(t *testing.T) {
-	h := &IMMessageHandler{}
-	userID := "u"
-	state := &v2.WorkflowState{
-		Type:        "coding_subagent",
-		ProjectPath: ".",
-		Summary:     "original summary",
-		Phases: []v2.Phase{
-			{
-				ID:       "coding_subagent_execution",
-				ExecMode: v2.ExecModeSubAgent,
-				FormData: map[string]interface{}{
-					"work_dir":            "D:/test",
-					"project_description": "使用c++编写一个hello world1",
-				},
-			},
-		},
-		CurrentPhase: 0,
-	}
-
-	requestText := h.prepareCodingTemplateSubAgentExecution(userID, state)
-	if requestText != "使用c++编写一个hello world1" {
-		t.Fatalf("requestText = %q, want form project description", requestText)
-	}
-	if state.ProjectPath != "D:/test" {
-		t.Fatalf("state.ProjectPath = %q, want form work_dir", state.ProjectPath)
-	}
-	if !h.hasPendingTemplateSubAgentExecution(userID) {
-		t.Fatalf("template execution should be pending after form submit preparation")
-	}
-
-	got := h.agentLoopUserTextForWorkflow(IMUserMessage{UserID: userID, Text: "继续"}, true)
-	if got != "使用c++编写一个hello world1" {
-		t.Fatalf("agent loop user text = %q, want form project description instead of continue", got)
-	}
-}
 
 func TestClearPerUserSessionStateClearsTemplateSubAgentPendingState(t *testing.T) {
 	h := &IMMessageHandler{}

@@ -64,11 +64,27 @@ func (a *App) ListRemoteLaunchProjects() ([]RemoteLaunchProject, error) {
 }
 
 func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (RemoteSessionView, error) {
+	// Keep the normalized source consistent throughout validation, policy
+	// checks, and session creation. An omitted source retains the established
+	// desktop default instead of being checked as desktop then launched mobile.
+	launchSource := normalizeRemoteLaunchSource(req.LaunchSource)
+	req.LaunchSource = launchSource
+
+	tool := normalizeRemoteToolName(req.Tool)
+	if !remoteToolSupported(tool) {
+		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", tool)
+	}
+	// Reject agent-originated external CLI launches before reading config,
+	// applying workflow policy, or initializing remote infrastructure.
+	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: tool, LaunchSource: launchSource}); err != nil {
+		return RemoteSessionView{}, err
+	}
+
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	if !cfg.RemoteEnabled && normalizeRemoteLaunchSource(req.LaunchSource) == RemoteLaunchSourceDesktop {
+	if !cfg.RemoteEnabled && launchSource == RemoteLaunchSourceDesktop {
 		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
 	}
 
@@ -76,19 +92,11 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(req.LaunchSource, project.Path), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": project.Path, "provider": req.Provider, "launch_source": string(req.LaunchSource)}); err != nil {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(launchSource, project.Path), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": req.Tool, "project_id": req.ProjectID, "project_path": project.Path, "provider": req.Provider, "launch_source": string(launchSource)}); err != nil {
 		return RemoteSessionView{}, err
 	}
 
-	tool := normalizeRemoteToolName(req.Tool)
-	if !remoteToolSupported(tool) {
-		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", tool)
-	}
-	// Early reject: agent must never spawn external coding CLIs.
-	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: tool, LaunchSource: req.LaunchSource}); err != nil {
-		return RemoteSessionView{}, err
-	}
-	if err := a.ensureRemoteLaunchToolInstalled(tool, req.LaunchSource); err != nil {
+	if err := a.ensureRemoteLaunchToolInstalled(tool, launchSource); err != nil {
 		return RemoteSessionView{}, err
 	}
 	if a.remoteSessions == nil {
@@ -126,17 +134,14 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
-	spec.LaunchSource = RemoteLaunchSourceMobile
-	if req.LaunchSource != "" {
-		spec.LaunchSource = req.LaunchSource
-	}
+	spec.LaunchSource = launchSource
 	// Pass through resume session ID for --resume support.
 	if req.ResumeSessionID != "" {
 		spec.ResumeSessionID = req.ResumeSessionID
 	}
 	spec.InjectResumePrompt = req.InjectResumePrompt
 
-	session, err := a.remoteSessions.Create(spec)
+	session, err := a.remoteSessions.CreateUserSession(spec)
 	if err != nil && session == nil {
 		return RemoteSessionView{}, err
 	}

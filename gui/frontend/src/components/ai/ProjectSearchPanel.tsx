@@ -6,6 +6,7 @@ import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
+import { agentModeFromTaskTags, isPureCodingTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
 
 interface ProjectSearchItem {
     id: string;
@@ -94,7 +95,12 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     theme: Theme;
     inline: boolean;
     onProjectSwitch: (displayMsg: string) => Promise<void> | void;
-    onCreateProjectTab?: (projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => void;
+    onCreateProjectTab?: (projectPath: string, taskTitle: string, options?: {
+        autoSend?: boolean;
+        agentMode?: "coding_dev" | "remote_coding_dev";
+        remoteHost?: string;
+        tags?: string[];
+    }) => void;
     /** Close an open project tab by its project path (e.g. after archiving). */
     onCloseProjectTab?: (projectPath: string) => void;
     /** Fork current local tab conversation into a new project tab. */
@@ -164,8 +170,13 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
         try {
             const title = item.name || item.project_path;
             const autoSend = false;
-            console.info("[ProjectSearch] opened task", { taskPath: item.project_path, name: title, autoSend });
-            if (onCreateProjectTab) { onCreateProjectTab(item.project_path, title, { autoSend }); return; }
+            const agentMode = agentModeFromTaskTags(item.tags);
+            const remoteHost = remoteHostFromTaskTags(item.tags);
+            console.info("[ProjectSearch] opened task", { taskPath: item.project_path, name: title, autoSend, agentMode: agentMode || null });
+            if (onCreateProjectTab) {
+                onCreateProjectTab(item.project_path, title, { autoSend, agentMode, remoteHost, tags: item.tags });
+                return;
+            }
             const msg = await ResumeTask(item.project_path);
             if (msg) await onProjectSwitch(msg);
         } catch (error) { console.error("[ProjectSearch] open task failed:", error); }
@@ -209,10 +220,23 @@ function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVa
     const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
     const artifactSummary = formatArtifactSummary(item, lang);
     const artifactTooltip = formatArtifactSummary(item, lang, true);
-    return <div onClick={() => void onSelect(item)} onContextMenu={event => { event.preventDefault(); setCtxMenu({ x: event.clientX, y: event.clientY, item }); }} style={{ padding: "8px 10px", cursor: "pointer", borderRadius: "6px", transition: "background 0.15s" }} onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}>
+    const pureCoding = isPureCodingTaskTags(item.tags);
+    const remoteCoding = agentModeFromTaskTags(item.tags) === "remote_coding_dev";
+    const remoteHost = remoteHostFromTaskTags(item.tags);
+    const kindLabel = item.archived
+        ? "ARC"
+        : remoteCoding
+            ? "SSH"
+            : pureCoding
+                ? "CODE"
+                : item.pinned
+                    ? "PIN"
+                    : "TASK";
+    return <div data-pure-coding={pureCoding ? "true" : "false"} onClick={() => void onSelect(item)} onContextMenu={event => { event.preventDefault(); setCtxMenu({ x: event.clientX, y: event.clientY, item }); }} style={{ padding: "8px 10px", cursor: "pointer", borderRadius: "6px", transition: "background 0.15s" }} onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
-            <span style={{ minWidth: "26px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: t.textMuted, border: `1px solid ${t.titleBarBorder}`, borderRadius: "4px", padding: "1px 4px", flexShrink: 0 }}>{item.archived ? "ARC" : item.pinned ? "PIN" : "TASK"}</span>
+            <span style={{ minWidth: "26px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: pureCoding ? (remoteCoding ? "#0284c7" : "#15803d") : t.textMuted, border: pureCoding ? `1px solid ${remoteCoding ? "color-mix(in srgb, #0ea5e9 48%, transparent)" : "color-mix(in srgb, #22c55e 48%, transparent)"}` : `1px solid ${t.titleBarBorder}`, borderRadius: "4px", padding: "1px 4px", flexShrink: 0 }} title={pureCoding ? (remoteCoding ? localizeText(lang, "Remote pure coding", "远程纯编程") : localizeText(lang, "Local pure coding", "本地纯编程")) : undefined}>{kindLabel}</span>
             {renamingPath === item.project_path ? <input autoFocus value={renameVal} onChange={event => setRenameVal(event.target.value)} onBlur={async () => { const trimmed = renameVal.trim(); if (trimmed && trimmed !== item.name) { await RenameTask(item.project_path, trimmed); refreshResults(); } setRenamingPath(null); }} onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenamingPath(null); }} onClick={event => event.stopPropagation()} style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: t.text, background: t.codeBlockBg, border: `1px solid ${t.headingColor}`, borderRadius: "3px", padding: "2px 6px", outline: "none", minWidth: 0, fontFamily: "inherit" }} /> : <span style={{ fontSize: "13px", fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.name || item.project_path}</span>}
+            {pureCoding && <span data-testid={remoteCoding ? "search-remote-coding-badge" : "search-coding-badge"} style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: remoteCoding ? "color-mix(in srgb, #0ea5e9 12%, transparent)" : "color-mix(in srgb, #22c55e 12%, transparent)", color: remoteCoding ? "#0284c7" : "#15803d", border: remoteCoding ? "1px solid color-mix(in srgb, #0ea5e9 48%, transparent)" : "1px solid color-mix(in srgb, #22c55e 48%, transparent)", flexShrink: 0, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{remoteCoding ? (remoteHost ? `${localizeText(lang, "Remote coding", "远程编程")} · ${remoteHost}` : localizeText(lang, "Remote coding", "远程编程")) : localizeText(lang, "Pure coding", "纯编程")}</span>}
             {item.workflow_type && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(47,95,152,0.10)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{formatWorkflowType(item.workflow_type, lang)}</span>}
             {item.archived && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(100,116,139,0.10)", color: t.textMuted, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{localizeText(lang, "Archived", "\u5df2\u5f52\u6863")}</span>}
             <button type="button" onClick={event => { event.stopPropagation(); void onShowSceneDetail(item); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: sceneLoading ? 0.35 : 0.7, width: "20px", height: "20px", cursor: sceneLoading ? "default" : "pointer", flexShrink: 0, fontSize: "12px" }} disabled={sceneLoading} title={localizeText(lang, "Scene details", "任务证据详情")}>{sceneLoading ? "..." : <ProjectSearchIcon name="info" />}</button>

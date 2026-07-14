@@ -33,6 +33,7 @@ interface AssistantInputActionsProps {
     inputLocked: boolean;
     inputValue: string;
     permissionMode?: AssistantPermissionMode;
+    showWorkspacePermissionOption?: boolean;
     isBusy: boolean;
     lang: string;
     onComposeActionChange?: (action: ComposeAction | null) => void;
@@ -109,6 +110,7 @@ export function AssistantInputActionsLeft({
     themeMode,
     voiceInput,
     permissionMode = "request",
+    showWorkspacePermissionOption = false,
     showVoiceInput = true,
     handleVoiceClick,
     handleVoicePointerDown,
@@ -136,6 +138,7 @@ export function AssistantInputActionsLeft({
     | "handleVoicePointerLeave"
     | "finishVoicePointer"
     | "permissionMode"
+    | "showWorkspacePermissionOption"
 >) {
     const voiceDisabled = !ready || voiceInput.state === "transcribing" || !voiceInput.asrReady;
     const [plusMenuOpen, setPlusMenuOpen] = useState(false);
@@ -441,7 +444,7 @@ export function AssistantInputActionsLeft({
                 )}
             </button>}
             {showVoiceInput && voiceInput.error && <span style={{ color: t.errorText, fontSize: "11px", alignSelf: "center", maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={voiceInput.error}>{voiceInput.error}</span>}
-            <AssistantPermissionModeMenu lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} />
+            <AssistantPermissionModeMenu lang={lang} mode={permissionMode} onChange={onPermissionModeChange} theme={t} themeMode={themeMode} showWorkspaceOption={showWorkspacePermissionOption} />
         </>
     );
 }

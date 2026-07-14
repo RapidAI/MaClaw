@@ -629,8 +629,8 @@ func (a *App) ensureMemoryStore() {
 		return
 	}
 	a.memoryStoreMu.Lock()
-	defer a.memoryStoreMu.Unlock()
 	if a.memoryStore != nil {
+		a.memoryStoreMu.Unlock()
 		return
 	}
 	a.ensureAITrace()
@@ -648,6 +648,7 @@ func (a *App) ensureMemoryStore() {
 			fmt.Printf("[ensureMemoryStore] ERROR: memory store still failed after retry: %v\n", err)
 		}
 	}
+	var compressorToConfigure *MemoryCompressor
 	if ms != nil {
 		a.memoryStore = ms
 		a.ensureExperienceLifecycleSink()
@@ -670,7 +671,10 @@ func (a *App) ensureMemoryStore() {
 		maintenance.InstallRuntime()
 		a.memoryMaintenance = maintenance
 		compressor := maintenance.Compressor()
-		a.configureMemoryCompressor(compressor)
+		// Defer configureMemoryCompressor until after memoryStoreMu is released:
+		// configure → LoadConfig → applyDataDirFromConfig may call
+		// resetPathBoundStateForDataDirChange, which re-locks memoryStoreMu (deadlock).
+		compressorToConfigure = compressor
 		a.compressorMu.Lock()
 		a.memoryCompressor = compressor
 		a.compressorMu.Unlock()
@@ -683,38 +687,43 @@ func (a *App) ensureMemoryStore() {
 		if a.disableBackgroundEmbeddingForTest {
 			a.logMemorySnapshot("ensureMemoryStore:embedding-load-disabled-for-test")
 			a.logMemorySnapshot("ensureMemoryStore:ready")
-			return
+		} else {
+			// Load embedding model asynchronously so it doesn't block the first
+			// AI assistant message. Vector search will become available once
+			// the model finishes loading in the background. Tool embedding
+			// cache is also pre-warmed so the first routeTools() call is fast.
+			go func() {
+				cfg, err := a.LoadConfig()
+				if err != nil {
+					return
+				}
+				a.logMemorySnapshot("ensureMemoryStore:embedding-load")
+				modelPath := embedding.DefaultModelPath()
+				emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
+					return embedding.NewDefaultEmbedder(path), nil
+				})
+				if err != nil {
+					log.Printf("[ensureMemoryStore] embedding model load failed: %v", err)
+					return
+				}
+				if embedding.IsNoop(emb) {
+					return // model not found, skip
+				}
+				if cfg.VectorSearchEnabled {
+					a.activateEmbedderAsync(emb)
+					log.Println("[ensureMemoryStore] embedding model loaded in background")
+					return
+				}
+				a.activateIntentClassifierEmbedderAsync(emb)
+				log.Println("[ensureMemoryStore] intent embedding model loaded in background")
+			}()
+			a.logMemorySnapshot("ensureMemoryStore:ready")
 		}
-		// Load embedding model asynchronously so it doesn't block the first
-		// AI assistant message. Vector search will become available once
-		// the model finishes loading in the background. Tool embedding
-		// cache is also pre-warmed so the first routeTools() call is fast.
-		go func() {
-			cfg, err := a.LoadConfig()
-			if err != nil {
-				return
-			}
-			a.logMemorySnapshot("ensureMemoryStore:embedding-load")
-			modelPath := embedding.DefaultModelPath()
-			emb, err := a.sharedEmbeddingEmbedder(modelPath, func(path string) (embedding.Embedder, error) {
-				return embedding.NewDefaultEmbedder(path), nil
-			})
-			if err != nil {
-				log.Printf("[ensureMemoryStore] embedding model load failed: %v", err)
-				return
-			}
-			if embedding.IsNoop(emb) {
-				return // model not found, skip
-			}
-			if cfg.VectorSearchEnabled {
-				a.activateEmbedderAsync(emb)
-				log.Println("[ensureMemoryStore] embedding model loaded in background")
-				return
-			}
-			a.activateIntentClassifierEmbedderAsync(emb)
-			log.Println("[ensureMemoryStore] intent embedding model loaded in background")
-		}()
-		a.logMemorySnapshot("ensureMemoryStore:ready")
+	}
+	// Unlock before configure: LoadConfig may re-enter path-bound state resets.
+	a.memoryStoreMu.Unlock()
+	if compressorToConfigure != nil {
+		a.configureMemoryCompressor(compressorToConfigure)
 	}
 }
 
@@ -2249,6 +2258,14 @@ func (a *App) shutdown(ctx context.Context) {
 			log.Printf("[shutdown] conversation memory flush failed: %v", err)
 		}
 		a.aiConversationMemory.Stop()
+	}
+	// Pure-coding sticky (.coding_workbench.json): step-status updates use a
+	// debounced disk write; flush all pending + in-memory sessions now.
+	// Use existing hubClient only — do not ensure/create infrastructure at exit.
+	if hub := a.hubClient(); hub != nil && hub.imHandler != nil {
+		hub.imHandler.FlushAllStickyCodingWorkbenchMemory()
+	} else {
+		flushAllStickyCodingDebouncedPersist()
 	}
 	if a.aiConfirmationStore != nil {
 		a.aiConfirmationStore.stop()
@@ -4508,6 +4525,13 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	launchMode := normalizeLaunchModeKind(config.DefaultLaunchMode)
 	toolKind := launchToolKind
 	remoteCapableTool := toolKind.IsDesktopRemoteLaunchCapableBuiltin() || findExtraTool(toolKind.String()) != nil
+	if launchToolKind.IsClaude() {
+		// Keep a durable, non-sensitive audit record for diagnosing unexpected
+		// Claude Code windows.  Do not log env (it can contain credentials) or
+		// prompt text here.
+		log.Printf("[claude-launch] requested source=desktop-ui mode=%s remote_enabled=%v project=%q yolo=%v admin=%v",
+			launchMode.String(), config.RemoteEnabled, projectDir, yoloMode, adminMode)
+	}
 	if launchMode.IsRemote() && config.RemoteEnabled && remoteCapableTool {
 		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
 		if err != nil {
@@ -4519,10 +4543,14 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			a.createAndWireHubClient()
 		}
 
-		_, err = a.remoteSessions.Create(spec)
+		session, err := a.remoteSessions.CreateUserSession(spec)
 		if err != nil {
 			a.log("create remote session failed: " + err.Error())
 			return err
+		}
+		if launchToolKind.IsClaude() && session != nil {
+			log.Printf("[claude-launch] dispatched mode=remote session=%s pid=%d source=%s project=%q",
+				session.ID, session.PID, session.LaunchSource, session.ProjectPath)
 		}
 		return nil
 	}
@@ -4533,6 +4561,9 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 
 	// Enforce Hub YOLO mode override for local launches (Req 7.8).
 	yoloMode = a.enforceYoloModeQuiet(yoloMode)
+	if launchToolKind.IsClaude() {
+		log.Printf("[claude-launch] local-launch-requested project=%q yolo=%v admin=%v", projectDir, yoloMode, adminMode)
+	}
 
 	// Platform specific launch
 	return a.platformLaunch(binaryName, yoloMode, adminMode, pythonEnv, projectDir, env, selectedModel.ModelId)
@@ -6186,6 +6217,38 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		}
 		return cache.WithDefaults(), nil
 	}
+	modelRoutesField := func(key string, value interface{}) (map[string]corelib.ModelRouteConfig, error) {
+		if value == nil {
+			return nil, nil
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		// Empty object clears routes.
+		if string(data) == "null" || string(data) == "{}" {
+			return map[string]corelib.ModelRouteConfig{}, nil
+		}
+		var routes map[string]corelib.ModelRouteConfig
+		if err := json.Unmarshal(data, &routes); err != nil {
+			return nil, fmt.Errorf("config field %q must be model_routes object: %w", key, err)
+		}
+		// Normalize keys; drop empty model entries.
+		out := make(map[string]corelib.ModelRouteConfig, len(routes))
+		for k, v := range routes {
+			k = strings.ToLower(strings.TrimSpace(k))
+			v.Model = strings.TrimSpace(v.Model)
+			if k == "" || v.Model == "" {
+				continue
+			}
+			v.URL = strings.TrimSpace(v.URL)
+			v.Key = strings.TrimSpace(v.Key)
+			v.Protocol = strings.TrimSpace(v.Protocol)
+			v.Provider = strings.TrimSpace(v.Provider)
+			out[k] = v
+		}
+		return out, nil
+	}
 	toolCacheMaintenanceField := func(key string, value interface{}, base corelib.ToolCacheMaintenanceConfig) (corelib.ToolCacheMaintenanceConfig, error) {
 		data, err := json.Marshal(value)
 		if err != nil {
@@ -6925,6 +6988,40 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.LLMPromptCache = v
+		case "model_routes":
+			v, err := modelRoutesField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ModelRoutes = v
+		case "coding_route_pref":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.CodingRoutePref = normalizeCodingRoutePref(v)
+		case "coding_route_pref_mirror":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.CodingRoutePrefMirror = v
+		case "coding_checkpoint_sidecar_max_mb":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 8192 {
+				v = 8192
+			}
+			cfg.CodingCheckpointSidecarMaxMB = v
 		case "gossip_auto_publish":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7308,8 +7405,22 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 
 	// When LLM provider is switched, emit the same event that SaveMaclawLLMProviders
 	// uses so the sidebar token usage display refreshes automatically.
-	if _, ok := patch["maclaw_llm_current_provider"]; ok && a.ctx != nil {
-		a.emitEvent("llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
+	if _, ok := patch["maclaw_llm_current_provider"]; ok {
+		a.clearMoAStickyForAllUsers()
+		if a.ctx != nil {
+			a.emitEvent("llm-token-usage-changed", cfg.MaclawLLMCurrentProvider)
+			a.emitEvent("moa-session-changed", nil)
+		}
+	}
+	// Hot-reload ModelRouter when pure-coding / task routes change.
+	if _, ok := patch["model_routes"]; ok {
+		a.reloadModelRouterFromConfig(cfg)
+		if a.ctx != nil {
+			a.emitEvent("model-routes-changed", nil)
+		}
+	}
+	if _, ok := patch["coding_checkpoint_sidecar_max_mb"]; ok {
+		setCodingCheckpointSidecarMaxMB(cfg.CodingCheckpointSidecarMaxMB)
 	}
 
 	// Invalidate tool outcome records when SSH host or LLM provider config changes.

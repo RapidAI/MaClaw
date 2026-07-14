@@ -4582,6 +4582,40 @@
     border-radius: var(--radius-md);
     background: var(--theme-surface);
     box-shadow: 0 1px 3px color-mix(in srgb, #0f172a 5%, transparent);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.apps-publish-card.is-focus-target {
+    border-color: color-mix(in srgb, var(--theme-primary) 72%, var(--theme-border));
+    box-shadow:
+        0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent),
+        0 1px 3px color-mix(in srgb, #0f172a 5%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .apps-publish-card {
+        transition: none;
+    }
+
+    .apps-publish-card.is-focus-target {
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent);
+    }
+}
+
+.apps-publish-package-preview {
+    display: grid;
+    gap: 8px;
+    margin-top: 4px;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--theme-surface);
+}
+
+.apps-publish-package-preview .apps-manage-manifest {
+    max-height: 280px;
+    margin: 0;
+    overflow: auto;
 }
 
 .apps-publish-card__head {
@@ -5615,10 +5649,13 @@
 }
 
 .apps-manage-row {
+    --apps-manage-name-col: minmax(10rem, 16rem);
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    /* icon | name | meta/desc | actions — fixed name column so rows align */
+    grid-template-columns: auto var(--apps-manage-name-col) minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
+    column-gap: 12px;
+    row-gap: 8px;
     padding: 8px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-lg);
@@ -5636,14 +5673,26 @@
 }
 
 .apps-manage-row__name {
+    min-width: 0;
     font-size: 0.84rem;
     font-weight: 800;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
 }
 
 .apps-manage-row__desc {
-    margin-top: 2px;
+    min-width: 0;
+    margin-top: 0;
     color: var(--theme-text-secondary);
     font-size: 0.74rem;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
 }
 
 .apps-manage-actions {
@@ -7047,11 +7096,18 @@
 .apps-preview--studio .apps-manage-toolbar,
 .apps-preview--studio .apps-manage-row,
 .apps-preview--studio .apps-publish-card,
+.apps-preview--studio .apps-publish-package-preview,
 .apps-preview--studio .apps-publish-queue,
 .apps-preview--studio .apps-publish-checks {
     border-color: var(--studio-border);
     background: var(--studio-panel-muted);
     box-shadow: none;
+}
+
+.apps-preview--studio .apps-publish-card.is-focus-target {
+    border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--studio-border));
+    background: color-mix(in srgb, var(--theme-surface) 72%, var(--theme-primary-soft));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-primary) 24%, transparent);
 }
 
 .apps-preview--studio .apps-manage-toolbar {
@@ -7069,8 +7125,10 @@
 }
 
 .apps-preview--studio .apps-manage-row {
-    grid-template-columns: auto minmax(0, 1fr) minmax(220px, auto);
-    gap: 12px;
+    --apps-manage-name-col: minmax(10rem, 18rem);
+    grid-template-columns: auto var(--apps-manage-name-col) minmax(0, 1fr) minmax(220px, auto);
+    column-gap: 14px;
+    row-gap: 8px;
     padding: 10px;
     transition: background var(--transition-fast), border-color var(--transition-fast);
 }
@@ -7097,7 +7155,7 @@
 }
 
 .apps-preview--studio .apps-manage-row__desc {
-    max-width: 72ch;
+    max-width: none;
     line-height: 1.35;
 }
 
@@ -7270,6 +7328,10 @@
 
     .apps-preview--studio .apps-manage-row {
         grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .apps-preview--studio .apps-manage-row__desc {
+        grid-column: 2;
     }
 
     .apps-preview--studio .apps-manage-actions {
@@ -7491,15 +7553,24 @@
     }
 
     .apps-preview--studio .apps-manage-row {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: auto minmax(0, 1fr);
     }
 
     .apps-preview--studio .apps-manage-row .apps-app-icon {
         justify-self: start;
     }
 
+    .apps-preview--studio .apps-manage-row__name {
+        white-space: normal;
+    }
+
+    .apps-preview--studio .apps-manage-row__desc {
+        grid-column: 2;
+        white-space: normal;
+    }
+
     .apps-preview--studio .apps-manage-actions {
-        grid-column: auto;
+        grid-column: 1 / -1;
         width: 100%;
     }
 

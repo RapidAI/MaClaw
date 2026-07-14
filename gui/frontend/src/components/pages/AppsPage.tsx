@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import {
     clearWorkspaceLaunchIssue,
@@ -56,7 +56,7 @@ type AppEntry = {
     installEvidence?: BackendAppInstallRecord;
     workflowContract?: AppWorkflowContract;
     marketCapabilityID?: string;
-    marketInstallSource?: 'enterprise_hub';
+    marketInstallSource?: 'enterprise_hub' | 'skillmarket' | 'hubcenter';
     marketSourceLabel?: string;
     marketReviewEvidence?: Record<string, unknown>;
     studioOrigin?: 'app_studio';
@@ -971,10 +971,10 @@ const labels = {
         publishTab: '\u5ba1\u6838/\u53d1\u5e03',
         publishSubtitle: '\u68c0\u67e5\u672c\u5730\u5e94\u7528\u662f\u5426\u53ef\u4e0a\u4f20\u5230\u4f01\u4e1a\u80fd\u529b\u5e02\u573a\u3002',
         publishChecklist: '\u53d1\u5e03\u68c0\u67e5',
+        packagePreview: '\u63d0\u4ea4\u5305\u9884\u89c8',
+        packagePreviewHint: '\u4ec5\u5305\u542b\u68c0\u67e5\u5168\u90e8\u901a\u8fc7\u7684\u5e94\u7528\uff1b\u672a\u901a\u8fc7\u8005\u4e0d\u4f1a\u5199\u5165\u63d0\u4ea4\u5305\u3002',
         readyToSubmit: '\u53ef\u63d0\u4ea4',
         needsWork: '\u9700\u8865\u9f50',
-        submitPackage: '\u63d0\u4ea4\u5305\u9884\u89c8',
-        copySubmitPackage: '\u590d\u5236\u63d0\u4ea4\u5305',
         noPublishApps: '\u6682\u65e0\u672c\u5730\u5e94\u7528\u53ef\u53d1\u5e03',
         submitReview: '\u63d0\u4ea4\u5ba1\u6838',
         submittedReview: '\u5df2\u63d0\u4ea4',
@@ -998,10 +998,14 @@ const labels = {
         refreshQueue: '\u5237\u65b0',
         refreshingQueue: '\u5237\u65b0\u4e2d',
         syncQueueToHub: '\u540c\u6b65\u5230 Hub',
+        oneClickPublish: '\u4e00\u952e\u53d1\u5e03',
+        oneClickPublishBusy: '\u53d1\u5e03\u4e2d\u2026',
+        oneClickPublishHint: '\u672c\u5730\u5165\u961f + \u4f01\u4e1a Hub + SkillMarket/HubCenter\uff08\u6309\u914d\u7f6e\uff09',
         syncingQueueToHub: '\u540c\u6b65\u4e2d',
         refreshQueueFromHub: '\u5237\u65b0 Hub \u72b6\u6001',
         refreshingQueueFromHub: '\u5237\u65b0\u4e2d',
         queueHubSyncFailed: 'Hub \u540c\u6b65\u5931\u8d25',
+        queueOneClickPartial: '\u4e00\u952e\u53d1\u5e03\u90e8\u5206\u5931\u8d25',
         installApprovedHubApp: '\u5b89\u88c5\u5df2\u5ba1\u6838\u5e94\u7528',
         installingApprovedHubApp: '\u5b89\u88c5\u4e2d',
         approvedHubAppInstalled: '\u5df2\u5b89\u88c5',
@@ -1383,10 +1387,10 @@ const labels = {
         publishTab: 'Review / publish',
         publishSubtitle: 'Check whether local apps are ready for upload to the enterprise capability market.',
         publishChecklist: 'Publish checklist',
+        packagePreview: 'Submission package preview',
+        packagePreviewHint: 'Only apps that pass every checklist item are included; incomplete apps stay out of the package.',
         readyToSubmit: 'Ready to submit',
         needsWork: 'Needs work',
-        submitPackage: 'Submission package preview',
-        copySubmitPackage: 'Copy submission package',
         noPublishApps: 'No local apps ready for publishing yet',
         submitReview: 'Submit for review',
         submittedReview: 'Submitted',
@@ -1410,10 +1414,14 @@ const labels = {
         refreshQueue: 'Refresh',
         refreshingQueue: 'Refreshing',
         syncQueueToHub: 'Sync to Hub',
+        oneClickPublish: 'One-click publish',
+        oneClickPublishBusy: 'Publishing…',
+        oneClickPublishHint: 'Local queue + Enterprise Hub + SkillMarket/HubCenter (per config)',
         syncingQueueToHub: 'Syncing',
         refreshQueueFromHub: 'Refresh Hub Status',
         refreshingQueueFromHub: 'Refreshing',
         queueHubSyncFailed: 'Hub sync failed',
+        queueOneClickPartial: 'One-click publish partially failed',
         installApprovedHubApp: 'Install approved app',
         installingApprovedHubApp: 'Installing',
         approvedHubAppInstalled: 'Installed',
@@ -2772,6 +2780,7 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
     const installEvidence = (app as any).installEvidence && typeof (app as any).installEvidence === 'object'
         ? (app as any).installEvidence as BackendAppInstallRecord
         : undefined;
+    const studioOrigin = app.studioOrigin === 'app_studio' ? 'app_studio' as const : undefined;
     return {
         ...app,
         id: String(app.id),
@@ -2784,6 +2793,7 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
         accent: String(app.accent || defaultAccentForKind(kind)),
         version: normalizeAppVersion(app.version),
         source: migratedSource,
+        studioOrigin,
         importedRunEvidence: normalizeImportedRunEvidence((app as any).importedRunEvidence),
         versionSnapshot: normalizeVersionSnapshot((app as any).versionSnapshot),
         installEvidence,
@@ -2794,6 +2804,12 @@ function normalizeStoredAppEntry(app: Partial<AppEntry> | undefined, custom = fa
 function normalizeAppVersion(value: unknown) {
     const version = Number(value);
     return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
+}
+
+/** Panel apps eligible for the 审核/发布 surface (not market/DataSrv/disabled installs). */
+function isAppPublishCandidate(app: AppEntry): boolean {
+    if (app.disabled) return false;
+    return app.source === 'local' || app.source === 'skill' || app.studioOrigin === 'app_studio';
 }
 
 function nextAppVersion(app: AppEntry) {
@@ -5457,11 +5473,22 @@ function normalizeFreshPublishSubmission(submission: AppPublishSubmission): AppP
     };
 }
 
-async function submitAppPackageToEnterpriseMarket(app: AppEntry, packageManifest: Record<string, unknown>): Promise<AppPublishSubmission | null> {
-    const bridge = (globalThis as any)?.window?.go?.main?.App?.SubmitMaclawAppPackage;
-    if (typeof bridge !== 'function') return null;
-    const response = await bridge(JSON.stringify(packageManifest));
-    const payload = response && typeof response === 'object' ? response : {};
+function hasPublishMaclawAppOneClickBridge() {
+    return typeof (globalThis as any)?.window?.go?.main?.App?.PublishMaclawAppOneClick === 'function';
+}
+
+function hasPublishMaclawAppSubmissionOneClickBridge() {
+    return typeof (globalThis as any)?.window?.go?.main?.App?.PublishMaclawAppSubmissionOneClick === 'function';
+}
+
+function normalizePublishChannel(value: unknown): 'local' | 'hub' {
+    const channel = String(value || '').trim().toLowerCase();
+    // Empty defaults to local (queue-first publish); only explicit non-local is hub.
+    if (!channel || channel === 'local') return 'local';
+    return 'hub';
+}
+
+function parseAppPublishSubmissionFromPayload(app: AppEntry, payload: Record<string, unknown>): AppPublishSubmission {
     const now = new Date().toISOString();
     const approvedScopes = parseStringList(payload.approved_scopes || payload.approvedScopes);
     const reviewIssues = parseReviewIssues(payload.review_issues || payload.reviewIssues);
@@ -5470,16 +5497,103 @@ async function submitAppPackageToEnterpriseMarket(app: AppEntry, packageManifest
         appID: app.id,
         submittedAt: String(payload.submitted_at || payload.submittedAt || now),
         status: normalizePublishStatus(payload.status) || 'submitted',
-        channel: payload.channel === 'local' ? 'local' : 'hub',
-        reviewedAt: payload.reviewed_at || payload.reviewedAt,
-        publishedAt: payload.published_at || payload.publishedAt,
-        reviewer: payload.reviewer,
+        channel: normalizePublishChannel(payload.channel),
+        reviewedAt: payload.reviewed_at || payload.reviewedAt ? String(payload.reviewed_at || payload.reviewedAt) : undefined,
+        publishedAt: payload.published_at || payload.publishedAt ? String(payload.published_at || payload.publishedAt) : undefined,
+        reviewer: payload.reviewer != null ? String(payload.reviewer) : undefined,
         riskLevel: normalizeRiskLevel(payload.risk_level || payload.riskLevel),
         approvedScopes: approvedScopes.length > 0 ? approvedScopes : undefined,
         reviewIssues: reviewIssues.length > 0 ? reviewIssues : undefined,
         version: normalizeAppVersion(payload.version || payload.app_version || payload.appVersion || app.version),
-        message: payload.message,
+        message: payload.message != null ? String(payload.message) : undefined,
     };
+}
+
+function isOneClickPartialFailureMessage(message?: string): boolean {
+    return /failed:|\bpartial\b/i.test(String(message || ''));
+}
+
+/** True when we should re-drive an existing queue row instead of creating a new submission. */
+function shouldRetryExistingPublishSubmission(submission?: AppPublishSubmission | null): boolean {
+    if (!submission?.id) return false;
+    // Content changed: must re-queue a fresh package.
+    if (submission.modifiedAt) return false;
+    // Terminal market outcomes should not re-drive the same durable row.
+    if (submission.status === 'published' || submission.status === 'revoked' || submission.status === 'deprecated') {
+        return false;
+    }
+    if (submission.status === 'review_failed') return true;
+    return isOneClickPartialFailureMessage(submission.message);
+}
+
+function parseOneClickPublishSubmission(app: AppEntry, response: unknown): AppPublishSubmission {
+    const root = response && typeof response === 'object' ? response as Record<string, unknown> : {};
+    const local = root.local_submission && typeof root.local_submission === 'object'
+        ? root.local_submission as Record<string, unknown>
+        : root;
+    const message = String(root.message || local.message || '').trim();
+    // Backend summarize uses "failed:"; if partial lacks that token, stamp a stable marker for canResubmit.
+    const markedMessage = root.partial === true && message && !isOneClickPartialFailureMessage(message)
+        ? `${message}; partial failed`
+        : message;
+    return parseAppPublishSubmissionFromPayload(app, {
+        ...local,
+        submission_id: local.submission_id || local.submissionID || root.local_submission_id || root.submission_id,
+        // One-click summary is the best user-facing message; local message may be older hub text.
+        message: markedMessage || undefined,
+        published_at: root.published_at || local.published_at || local.publishedAt,
+        channel: local.channel || root.channel,
+    });
+}
+
+function isMissingPublishSubmissionError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return /not found|no package payload|empty package payload/i.test(message);
+}
+
+async function submitAppPackageToEnterpriseMarket(
+    app: AppEntry,
+    packageManifest: Record<string, unknown>,
+    options?: { existingSubmissionID?: string },
+): Promise<AppPublishSubmission | null> {
+    const existingID = String(options?.existingSubmissionID || '').trim();
+    // Partial / review_failed retry: re-drive the durable queue row (no duplicate submit).
+    if (existingID && hasPublishMaclawAppSubmissionOneClickBridge()) {
+        try {
+            const bridge = (globalThis as any).window.go.main.App.PublishMaclawAppSubmissionOneClick;
+            const response = await bridge(existingID);
+            return parseOneClickPublishSubmission(app, response);
+        } catch (error) {
+            // Stale card id after hub rename / queue prune → fall through to a fresh one-click.
+            if (!isMissingPublishSubmissionError(error)) throw error;
+        }
+    }
+    // Prefer one-click: local queue + enterprise Hub pack + SkillMarket/HubCenter.
+    if (hasPublishMaclawAppOneClickBridge()) {
+        const bridge = (globalThis as any).window.go.main.App.PublishMaclawAppOneClick;
+        const response = await bridge(JSON.stringify(packageManifest));
+        return parseOneClickPublishSubmission(app, response);
+    }
+    const bridge = (globalThis as any)?.window?.go?.main?.App?.SubmitMaclawAppPackage;
+    if (typeof bridge !== 'function') return null;
+    const response = await bridge(JSON.stringify(packageManifest));
+    const payload = response && typeof response === 'object' ? response as Record<string, unknown> : {};
+    return parseAppPublishSubmissionFromPayload(app, payload);
+}
+
+async function publishMaclawAppSubmissionOneClick(submissionID: string): Promise<Record<string, unknown>> {
+    const bridge = (globalThis as any)?.window?.go?.main?.App?.PublishMaclawAppSubmissionOneClick;
+    if (typeof bridge !== 'function') {
+        throw new Error('PublishMaclawAppSubmissionOneClick is not available');
+    }
+    if (!submissionID) {
+        throw new Error('submission id is required');
+    }
+    const response = await bridge(submissionID);
+    if (!response || typeof response !== 'object') {
+        throw new Error('one-click publish returned an empty response');
+    }
+    return response as Record<string, unknown>;
 }
 
 function parseStringList(value: unknown): string[] {
@@ -5825,11 +5939,14 @@ function formatPackageBytes(bytes: number) {
 function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubmission>, summaries: AppPackageSubmissionSummary[], appIds: Set<string>) {
     let changed = false;
     const next = { ...current };
-    summaries.forEach((summary) => {
+    // Queue is newest-first; apply only the first match per app so older rows cannot overwrite.
+    const appliedAppIDs = new Set<string>();
+    for (const summary of summaries) {
         const status = normalizePublishStatus(summary.status);
-        if (!status) return;
-        summary.appIDs.forEach((appID) => {
-            if (!appIds.has(appID)) return;
+        if (!status) continue;
+        for (const appID of summary.appIDs) {
+            if (!appIds.has(appID) || appliedAppIDs.has(appID)) continue;
+            appliedAppIDs.add(appID);
             const existing = next[appID];
             const merged: AppPublishSubmission = {
                 id: summary.submissionID,
@@ -5838,7 +5955,7 @@ function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubm
                 status,
                 channel: summary.channel === 'hub' ? 'hub' : 'local',
                 message: summary.message || existing?.message,
-            reviewedAt: summary.reviewedAt || existing?.reviewedAt,
+                reviewedAt: summary.reviewedAt || existing?.reviewedAt,
                 publishedAt: summary.publishedAt || existing?.publishedAt,
                 reviewer: summary.reviewer || existing?.reviewer,
                 riskLevel: summary.riskLevel || existing?.riskLevel,
@@ -5851,8 +5968,8 @@ function mergePublishSubmissionsFromQueue(current: Record<string, AppPublishSubm
                 next[appID] = merged;
                 changed = true;
             }
-        });
-    });
+        }
+    }
     return changed ? next : current;
 }
 
@@ -12670,19 +12787,31 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 	onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
 }) => {
 	const text = isZh(lang) ? labels.zh : labels.en;
+    const [focusPublishAppId, setFocusPublishAppId] = useState('');
+    /** Bumps on every post-edit navigation so re-saving the same app re-triggers highlight. */
+    const [focusPublishNonce, setFocusPublishNonce] = useState(0);
 	const studioTabs: Array<{ id: StudioTab; label: string }> = [
 		{ id: 'create', label: text.createTab },
 		{ id: 'manage', label: text.manageTab },
 		{ id: 'publish', label: text.publishTab },
 	];
     const activeStudioTabIndex = Math.max(0, studioTabs.findIndex((item) => item.id === tab));
-    const activateStudioTab = (nextTab: StudioTab, shouldFocus = false) => {
+    const activateStudioTab = useCallback((nextTab: StudioTab, shouldFocus = false) => {
         setTab(nextTab);
-        if (!shouldFocus) return;
+        if (!shouldFocus || typeof window === 'undefined') return;
         const focusTab = () => document.getElementById(getStudioTabId(nextTab))?.focus();
         if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(focusTab);
         else window.setTimeout(focusTab, 0);
-    };
+    }, [setTab]);
+    const clearFocusPublishAppId = useCallback(() => setFocusPublishAppId(''), []);
+    const openPublishAfterEdit = useCallback((appId: string) => {
+        const cleanId = String(appId || '').trim();
+        if (cleanId) {
+            setFocusPublishAppId(cleanId);
+            setFocusPublishNonce((token) => token + 1);
+        }
+        activateStudioTab('publish', true);
+    }, [activateStudioTab]);
     const handleStudioTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
         const nextIndex = event.key === 'ArrowRight'
             ? (index + 1) % studioTabs.length
@@ -12764,8 +12893,8 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
                         aria-labelledby={getStudioTabId(tab)}
                     >
 	                        {tab === 'create' && <CreateAppPane lang={lang} onCreateApp={onCreateApp} />}
-	                        {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} skillDiscovery={skillDiscovery} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onToggleDisableApp={onToggleDisableApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} onAddDiscoveredApp={onAddDiscoveredApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} />}
-	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} />}
+	                        {tab === 'manage' && <ManageAppsPane apps={apps} hiddenApps={hiddenApps} skillDiscovery={skillDiscovery} lang={lang} onTogglePin={onTogglePin} onUpdateApp={onUpdateApp} onDuplicateApp={onDuplicateApp} onMoveApp={onMoveApp} onToggleDisableApp={onToggleDisableApp} onRemoveApp={onRemoveApp} onRestoreApp={onRestoreApp} onAddDiscoveredApp={onAddDiscoveredApp} pendingEditAppId={pendingEditAppId} onPendingEditConsumed={onPendingEditConsumed} onAfterEditSave={openPublishAfterEdit} />}
+	                        {tab === 'publish' && <PublishPane apps={apps} lang={lang} onFixApp={onEditApp} onInstallDependencies={onInstallDependencies} onInstallApprovedHubApp={installApprovedHubApp} onSyncHubAppGovernance={onSyncHubAppGovernance} focusAppId={focusPublishAppId} focusNonce={focusPublishNonce} onFocusAppConsumed={clearFocusPublishAppId} />}
                     </div>
                 </div>
             </div>
@@ -12973,6 +13102,17 @@ function marketReviewEvidenceFromMixedSkillResult(result: any, appID: string, ap
     return evidence && Object.keys(evidence).length > 0 ? evidence : undefined;
 }
 
+function marketInstallSourceFromMixedSkillResult(result: any): 'enterprise_hub' | 'skillmarket' | 'hubcenter' {
+    const source = String(result?.source || result?.Source || '').trim().toLowerCase();
+    if (source === 'hubcenter') return 'hubcenter';
+    if (source === 'skillmarket' || source === 'skillhub' || source === 'market') return 'skillmarket';
+    if (source === 'enterprise_hub' || source === 'enterprise' || source === 'hub' || source === 'skill') return 'enterprise_hub';
+    // HubCenter hits often carry source_label only; prefer skillmarket when not clearly enterprise.
+    const label = String(result?.source_label || result?.sourceLabel || '').trim().toLowerCase();
+    if (label.includes('hubcenter') || label.includes('skill market') || label.includes('skillmarket')) return 'skillmarket';
+    return 'enterprise_hub';
+}
+
 function marketAppEntryFromMixedSkillResult(result: any, lang?: string): AppEntry | null {
     if (!isMaclawAppSkillLike(result || {})) return null;
     const capabilityID = String(result?.install_ref || result?.id || '').trim();
@@ -12980,7 +13120,11 @@ function marketAppEntryFromMixedSkillResult(result: any, lang?: string): AppEntr
     const name = String(result?.maclaw_app_name || result?.maclawAppName || result?.name || appID).trim();
     if (!capabilityID || !appID || !name) return null;
     const kind = normalizeAppKind(result?.maclaw_app_kind || result?.maclawAppKind || result?.app_kind || result?.kind);
-    const sourceLabel = String(result?.source_label || result?.source || 'Enterprise Hub').trim();
+    const marketInstallSource = marketInstallSourceFromMixedSkillResult(result);
+    const defaultLabel = marketInstallSource === 'enterprise_hub'
+        ? 'Enterprise Hub'
+        : (marketInstallSource === 'hubcenter' ? 'HubCenter' : 'HubCenter Skill Market');
+    const sourceLabel = String(result?.source_label || result?.source || defaultLabel).trim();
     const marketReviewEvidence = marketReviewEvidenceFromMixedSkillResult(result, appID, name);
     return {
         id: appID.startsWith('market-') ? appID : `market-${appID}`,
@@ -12993,7 +13137,7 @@ function marketAppEntryFromMixedSkillResult(result: any, lang?: string): AppEntr
         version: normalizeAppVersion(result?.version || 1),
         source: 'market',
         marketCapabilityID: capabilityID,
-        marketInstallSource: 'enterprise_hub',
+        marketInstallSource,
         marketSourceLabel: sourceLabel,
         marketReviewEvidence,
     };
@@ -13458,11 +13602,11 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [skillFields, setSkillFields] = useState<SkillAppField[]>([]);
     const [description, setDescription] = useState('');
     const [draftPrompt, setDraftPrompt] = useState('');
-    const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
     const [aboutAuthor, setAboutAuthor] = useState('');
     const [aboutCopyright, setAboutCopyright] = useState('');
     const [aboutWebsite, setAboutWebsite] = useState('');
     const [aboutEmail, setAboutEmail] = useState('');
+    const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
     const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
     const [selectedSkill, setSelectedSkill] = useState('');
     const [selectedSkillSource, setSelectedSkillSource] = useState<StudioSkillChoice['source']>('installed');
@@ -14269,10 +14413,21 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     ];
 }
 
-const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApprovedHubApp, onSyncHubAppGovernance }: { apps: AppEntry[]; lang?: string; onFixApp: (appId: string) => void; onInstallDependencies: (appId: string) => void; onInstallApprovedHubApp: (capabilityID: string, name: string) => Promise<ApprovedHubAppInstallResult>; onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void }) => {
+const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApprovedHubApp, onSyncHubAppGovernance, focusAppId, focusNonce, onFocusAppConsumed }: {
+    apps: AppEntry[];
+    lang?: string;
+    onFixApp: (appId: string) => void;
+    onInstallDependencies: (appId: string) => void;
+    onInstallApprovedHubApp: (capabilityID: string, name: string) => Promise<ApprovedHubAppInstallResult>;
+    onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
+    /** After an edit save, scroll/highlight this app card once. */
+    focusAppId?: string;
+    /** Changes on every post-edit open so the same app can re-highlight. */
+    focusNonce?: number;
+    onFocusAppConsumed?: () => void;
+}) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const zh = isZh(lang);
-    const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
     const [submissions, setSubmissions] = useState<Record<string, AppPublishSubmission>>(() => readPublishSubmissions());
     const [submittingAppId, setSubmittingAppId] = useState('');
     const [submitErrors, setSubmitErrors] = useState<Record<string, string>>({});
@@ -14280,12 +14435,17 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
     const [queueRefreshing, setQueueRefreshing] = useState(false);
     const [queueRefreshedAt, setQueueRefreshedAt] = useState('');
     const [queueSummaries, setQueueSummaries] = useState<AppPackageSubmissionSummary[]>([]);
+    const [highlightAppId, setHighlightAppId] = useState('');
+    const focusedCardRef = useRef<HTMLElement | null>(null);
+    const onFocusAppConsumedRef = useRef(onFocusAppConsumed);
+    onFocusAppConsumedRef.current = onFocusAppConsumed;
     const [queuePackageCopyingId, setQueuePackageCopyingId] = useState('');
     const [queuePackageCopiedId, setQueuePackageCopiedId] = useState('');
     const [queueAuditCopiedId, setQueueAuditCopiedId] = useState('');
     const [queuePackageErrorId, setQueuePackageErrorId] = useState('');
     const [queueSyncingId, setQueueSyncingId] = useState('');
     const [queueSyncErrorId, setQueueSyncErrorId] = useState('');
+    const [queueOneClickMessage, setQueueOneClickMessage] = useState<Record<string, string>>({});
     const [queueInstallingId, setQueueInstallingId] = useState('');
     const [queueInstalledId, setQueueInstalledId] = useState('');
     const [queueInstallErrorId, setQueueInstallErrorId] = useState('');
@@ -14294,15 +14454,23 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
     const [queueDetailOpenId, setQueueDetailOpenId] = useState('');
     const [queueDetailLoadingId, setQueueDetailLoadingId] = useState('');
     const [queueDetailRecords, setQueueDetailRecords] = useState<Record<string, Record<string, unknown>>>({});
-    const publishApps = apps.filter((app) => app.source === 'local' || app.studioOrigin === 'app_studio');
-    const publishChecksById = new Map(publishApps.map((app) => [app.id, buildPublishChecks(app, lang)] as const));
-    const readyPublishApps = publishApps.filter((app) => (publishChecksById.get(app.id) || []).every((item) => item.ok));
-    const packageGovernanceOverrides = Object.fromEntries(
-        readyPublishApps
-            .map((app) => [app.id, { dependencyVerification: appInstallEvidenceDependencyVerificationPlan(app) }] as const)
-            .filter(([, override]) => !!override.dependencyVerification),
+    const publishApps = useMemo(() => apps.filter(isAppPublishCandidate), [apps]);
+    const publishChecksById = useMemo(
+        () => new Map(publishApps.map((app) => [app.id, buildPublishChecks(app, lang)] as const)),
+        [publishApps, lang],
     );
-    const packageText = JSON.stringify(appsToPackManifest(readyPublishApps, submissions, packageGovernanceOverrides), null, 2);
+    const readyPublishApps = useMemo(
+        () => publishApps.filter((app) => (publishChecksById.get(app.id) || []).every((item) => item.ok)),
+        [publishApps, publishChecksById],
+    );
+    const packagePreviewText = useMemo(() => {
+        const governanceOverrides: Record<string, AppGovernanceOverrides> = {};
+        for (const app of readyPublishApps) {
+            const plan = appInstallEvidenceDependencyVerificationPlan(app);
+            if (plan) governanceOverrides[app.id] = { dependencyVerification: plan };
+        }
+        return JSON.stringify(appsToPackManifest(readyPublishApps, submissions, governanceOverrides), null, 2);
+    }, [readyPublishApps, submissions]);
     const refreshSubmissionQueue = async () => {
         setQueueRefreshing(true);
         try {
@@ -14332,6 +14500,49 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
     useEffect(() => {
         void refreshSubmissionQueue();
     }, []);
+    useEffect(() => {
+        const targetId = String(focusAppId || '').trim();
+        if (!targetId || typeof window === 'undefined') return;
+        setHighlightAppId(targetId);
+        let cancelled = false;
+        let attempts = 0;
+        let frame = 0;
+        const reduceMotion = typeof window.matchMedia === 'function'
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const scrollToCard = () => {
+            if (cancelled) return;
+            // Prefer the React ref (attached when the focused card mounts), then fall back to DOM.
+            const card = focusedCardRef.current
+                || (Array.from(document.querySelectorAll('[data-publish-app-id]')).find(
+                    (el) => el.getAttribute('data-publish-app-id') === targetId,
+                ) as HTMLElement | undefined)
+                || null;
+            if (!card) {
+                if (attempts < 10 && typeof window.requestAnimationFrame === 'function') {
+                    attempts += 1;
+                    frame = window.requestAnimationFrame(scrollToCard);
+                }
+                return;
+            }
+            card.scrollIntoView({ block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth' });
+        };
+        if (typeof window.requestAnimationFrame === 'function') {
+            frame = window.requestAnimationFrame(scrollToCard);
+        } else {
+            scrollToCard();
+        }
+        // Keep parent focus id until highlight ends so re-renders do not cancel the flash.
+        const clearTimer = window.setTimeout(() => {
+            if (cancelled) return;
+            setHighlightAppId((current) => (current === targetId ? '' : current));
+            onFocusAppConsumedRef.current?.();
+        }, 1800);
+        return () => {
+            cancelled = true;
+            if (frame) window.cancelAnimationFrame(frame);
+            window.clearTimeout(clearTimer);
+        };
+    }, [focusAppId, focusNonce]);
     const submitApp = async (app: AppEntry) => {
         const submittedAt = new Date().toISOString();
         setSubmittingAppId(app.id);
@@ -14383,19 +14594,24 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
             const publishDependencyPlan = dependencyPlan?.dependencies?.length
                 ? dependencyPlan
                 : appInstallEvidenceDependencyVerificationPlan(app) || dependencyPlan;
-            submission = await submitAppPackageToEnterpriseMarket(app, appsToPackManifest([app], {}, publishDependencyPlan ? { [app.id]: { dependencyVerification: publishDependencyPlan } } : {}));
+            const prior = submissions[app.id];
+            const retryExistingID = shouldRetryExistingPublishSubmission(prior) ? prior.id : '';
+            submission = await submitAppPackageToEnterpriseMarket(
+                app,
+                appsToPackManifest([app], {}, publishDependencyPlan ? { [app.id]: { dependencyVerification: publishDependencyPlan } } : {}),
+                retryExistingID ? { existingSubmissionID: retryExistingID } : undefined,
+            );
         } catch (error) {
-            submission = {
-                id: `local-review-${app.id}-${Date.now().toString(36)}`,
-                appID: app.id,
-                submittedAt,
-                status: 'submitted',
-                channel: 'local',
-                version: normalizeAppVersion(app.version),
-                message: `${text.submitReviewLocalFallback} ${error instanceof Error ? error.message : String(error || '')}`.trim(),
-            };
+            // Hard failure (package gate / bridge error): do not invent a fake queue id.
+            setSubmitErrors((current) => ({
+                ...current,
+                [app.id]: error instanceof Error ? error.message : String(error || text.dependencyPlanError),
+            }));
+            setSubmittingAppId('');
+            return;
         }
         if (!submission) {
+            // No Go bridge available (browser-only tests / offline UI): keep local-only card state.
             submission = {
                 id: `local-review-${app.id}-${Date.now().toString(36)}`,
                 appID: app.id,
@@ -14416,7 +14632,6 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
             delete next[app.id];
             return next;
         });
-        setCopyState('idle');
         setSubmittingAppId('');
         void refreshSubmissionQueue();
     };
@@ -14433,18 +14648,64 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
             writePublishSubmissions(next);
             return next;
         });
-        setCopyState('idle');
         void refreshSubmissionQueue();
     };
     const syncQueuedSubmission = async (submissionID: string) => {
         setQueueSyncingId(submissionID);
         setQueueSyncErrorId('');
         setQueuePackageErrorId('');
+        setQueueOneClickMessage((current) => {
+            const next = { ...current };
+            delete next[submissionID];
+            return next;
+        });
         try {
             await syncMaclawAppPackageSubmissionToHub(submissionID);
             await refreshSubmissionQueue();
         } catch {
             setQueueSyncErrorId(submissionID);
+        } finally {
+            setQueueSyncingId('');
+        }
+    };
+    const oneClickPublishQueuedSubmission = async (submissionID: string) => {
+        setQueueSyncingId(submissionID);
+        setQueueSyncErrorId('');
+        setQueuePackageErrorId('');
+        setQueueOneClickMessage((current) => {
+            const next = { ...current };
+            delete next[submissionID];
+            return next;
+        });
+        try {
+            const result = await publishMaclawAppSubmissionOneClick(submissionID);
+            // Hub sync may rewrite durable submission_id; key UI state to the final id.
+            const localSub = result.local_submission && typeof result.local_submission === 'object'
+                ? result.local_submission as Record<string, unknown>
+                : {};
+            const resultID = String(
+                result.local_submission_id
+                || localSub.submission_id
+                || localSub.submissionID
+                || submissionID,
+            ).trim() || submissionID;
+            await refreshSubmissionQueue();
+            const message = String(result.message || '').trim();
+            // Success text is stamped onto durable queue message and shown after refresh.
+            // Only keep ephemeral state for partial/failed outcomes.
+            if (result.partial === true) {
+                setQueueSyncErrorId(resultID);
+                setQueueOneClickMessage((current) => ({
+                    ...current,
+                    [resultID]: message || text.queueOneClickPartial,
+                }));
+            }
+        } catch {
+            setQueueSyncErrorId(submissionID);
+            setQueueOneClickMessage((current) => ({
+                ...current,
+                [submissionID]: text.queueOneClickPartial,
+            }));
         } finally {
             setQueueSyncingId('');
         }
@@ -14544,6 +14805,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
     };
     const canCopyQueuedPackage = hasMaclawAppPackageSubmissionDetailBridge();
     const canSyncQueuedPackage = hasSyncMaclawAppPackageSubmissionBridge();
+    const canOneClickQueuedPackage = hasPublishMaclawAppSubmissionOneClickBridge();
     const canRefreshQueuedPackageFromHub = hasRefreshMaclawAppPackageSubmissionBridge();
     return (
         <section className="apps-publish">
@@ -14552,17 +14814,6 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                     <div className="apps-definition__title">{text.publishChecklist}</div>
                     <p className="apps-publish__subtitle">{text.publishSubtitle}</p>
                 </div>
-                <button
-                    className="apps-secondary-button"
-                    type="button"
-                    disabled={readyPublishApps.length === 0}
-                    onClick={async () => {
-                        await copyTextToClipboard(packageText);
-                        setCopyState('copied');
-                    }}
-                >
-                    {copyState === 'copied' ? text.copied : text.copySubmitPackage}
-                </button>
             </div>
             {publishApps.length === 0 ? (
                 <div className="apps-empty">{text.noPublishApps}</div>
@@ -14573,14 +14824,31 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                         const ready = checks.every((item) => item.ok);
                         const submission = submissions[app.id];
                         const submissionStatus = submission ? publishSubmissionStatusLabel(submission, text) : '';
-                        const canResubmit = submission?.status === 'review_failed' || !!submission?.modifiedAt;
+                        // Allow re-publish when content changed, review failed, or remote targets partially failed.
+                        const terminalPublish = submission?.status === 'published'
+                            || submission?.status === 'revoked'
+                            || submission?.status === 'deprecated';
+                        const canResubmit = !terminalPublish && (
+                            submission?.status === 'review_failed'
+                            || !!submission?.modifiedAt
+                            || isOneClickPartialFailureMessage(submission?.message)
+                        );
                         const canWithdraw = !!submission && ['submitted', 'review_failed', 'approved'].includes(submission.status);
                         const isSubmitting = submittingAppId === app.id;
                         const submitError = submitErrors[app.id] || '';
                         const hasDependencyReviewIssue = reviewIssuesIncludeDependency(submission?.reviewIssues);
                         const hasDependencyCheckIssue = checks.some((check) => check.label === text.skillDependencies && !check.ok);
                         return (
-                            <article className="apps-publish-card" key={app.id} data-ready={ready ? 'true' : 'false'}>
+                            <article
+                                className={`apps-publish-card${highlightAppId === app.id ? ' is-focus-target' : ''}`}
+                                key={app.id}
+                                data-ready={ready ? 'true' : 'false'}
+                                data-publish-app-id={app.id}
+                                ref={(node) => {
+                                    if (highlightAppId === app.id) focusedCardRef.current = node;
+                                    else if (focusedCardRef.current === node) focusedCardRef.current = null;
+                                }}
+                            >
                                 <div className="apps-publish-card__head">
                                     <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                                     <div>
@@ -14627,8 +14895,14 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     ))}
                                 </div>
                                 <div className="apps-actions">
-                                    <button className="apps-primary-button" type="button" disabled={isSubmitting || !ready || (!!submission && !canResubmit)} onClick={() => void submitApp(app)}>
-                                        {isSubmitting ? text.submitReviewBusy : submission && !canResubmit ? text.submittedReview : text.submitReview}
+                                    <button
+                                        className="apps-primary-button"
+                                        type="button"
+                                        disabled={isSubmitting || !ready || (!!submission && !canResubmit)}
+                                        title={text.oneClickPublishHint}
+                                        onClick={() => void submitApp(app)}
+                                    >
+                                        {isSubmitting ? text.oneClickPublishBusy : submission && !canResubmit ? text.submittedReview : text.oneClickPublish}
                                     </button>
                                     {canWithdraw && (
                                         <button className="apps-secondary-button" type="button" onClick={() => void withdrawApp(app.id)}>
@@ -14654,6 +14928,18 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                             </article>
                         );
                     })}
+                </div>
+            )}
+            {publishApps.length > 0 && (
+                <div className="apps-publish-package-preview" data-testid="apps-publish-package-preview">
+                    <div className="apps-preview-title-row">
+                        <div>
+                            <div className="apps-definition__title">{text.packagePreview}</div>
+                            <p className="apps-publish__subtitle">{text.packagePreviewHint}</p>
+                        </div>
+                        <span className="apps-count">{readyPublishApps.length}/{publishApps.length}</span>
+                    </div>
+                    <pre className="apps-manage-manifest">{packagePreviewText}</pre>
                 </div>
             )}
             {queueStatus !== 'unsupported' && (
@@ -14683,9 +14969,15 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                 const detailOpen = queueDetailOpenId === item.submissionID;
                                 const dependencyCount = item.dependencies.length;
                                 const missingDependencyCount = item.dependencies.filter(isBlockingBackendDependency).length;
-                                const canSyncItemToHub = item.channel === 'local' && ['submitted', 'review_failed'].includes(String(item.status || 'submitted'));
-                                const canRefreshItemFromHub = item.channel === 'hub' && ['pending_review', 'review_failed', 'approved'].includes(String(item.status || 'pending_review'));
-                                const canInstallApprovedHubApp = item.channel === 'hub' && !!item.hubCapabilityID && ['approved', 'published'].includes(String(item.status || ''));
+                                const itemStatus = String(item.status || 'submitted');
+                                const canSyncItemToHub = item.channel === 'local' && ['submitted', 'review_failed'].includes(itemStatus);
+                                // One-click can retry skill-market even after hub pack is already synced.
+                                // Skip terminal published/revoked rows to avoid accidental re-uploads.
+                                const canOneClickItem = canOneClickQueuedPackage
+                                    && !['revoked', 'deprecated', 'published'].includes(itemStatus)
+                                    && (item.channel === 'local' || item.channel === 'hub' || !item.channel);
+                                const canRefreshItemFromHub = item.channel === 'hub' && ['pending_review', 'review_failed', 'approved'].includes(itemStatus);
+                                const canInstallApprovedHubApp = item.channel === 'hub' && !!item.hubCapabilityID && ['approved', 'published'].includes(itemStatus);
                                 const queueInstallResult = queueInstallResults[item.submissionID];
                                 return (
                                     <div className="apps-publish-queue__row" key={item.submissionID}>
@@ -14701,7 +14993,14 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                                 {item.message ? ` · ${item.message}` : ''}
                                             </small>
                                             {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
-                                            {queueSyncErrorId === item.submissionID && <small>{text.queueHubSyncFailed}</small>}
+                                            {queueSyncErrorId === item.submissionID && (
+                                                <small>
+                                                    {queueOneClickMessage[item.submissionID] || text.queueHubSyncFailed}
+                                                </small>
+                                            )}
+                                            {queueSyncErrorId !== item.submissionID && queueOneClickMessage[item.submissionID] && (
+                                                <small>{queueOneClickMessage[item.submissionID]}</small>
+                                            )}
                                             {queueInstalledId === item.submissionID && <small>{text.approvedHubAppInstalled}</small>}
                                             {queueInstallErrorId === item.submissionID && <small>{queueInstallErrorMessages[item.submissionID] || text.approvedHubAppInstallFailed}</small>}
                                             {queueInstallResult?.plan && <DependencyVerificationPanel plan={queueInstallResult.plan} state="ready" selectedAppIDs={queueInstallResult.appIDs} text={text} />}
@@ -14711,6 +15010,17 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                             <PublishReviewEvidenceStrip evidence={item.reviewEvidence} text={text} />
                                         </div>
                                         <div className="apps-publish-queue__tools">
+                                            {canOneClickItem && (
+                                                <button
+                                                    className="apps-primary-button apps-publish-queue__copy"
+                                                    type="button"
+                                                    disabled={queueSyncingId === item.submissionID}
+                                                    title={text.oneClickPublishHint}
+                                                    onClick={() => void oneClickPublishQueuedSubmission(item.submissionID)}
+                                                >
+                                                    {queueSyncingId === item.submissionID ? text.oneClickPublishBusy : text.oneClickPublish}
+                                                </button>
+                                            )}
                                             {canSyncItemToHub && (
                                                 <button
                                                     className="apps-secondary-button apps-publish-queue__copy"
@@ -14803,10 +15113,6 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                     )}
                 </div>
             )}
-            <div className="apps-manage-manifest-wrap">
-                <div className="apps-definition__title">{text.submitPackage}</div>
-                <pre className="apps-manage-manifest">{packageText}</pre>
-            </div>
         </section>
     );
 };
@@ -14942,7 +15248,7 @@ type AppEditDraft = Pick<AppEntry, 'name' | 'description' | 'category' | 'icon' 
     uiColumns: string[];
 };
 
-const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, onAddDiscoveredApp, pendingEditAppId, onPendingEditConsumed }: {
+const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, onUpdateApp, onDuplicateApp, onMoveApp, onToggleDisableApp, onRemoveApp, onRestoreApp, onAddDiscoveredApp, pendingEditAppId, onPendingEditConsumed, onAfterEditSave }: {
     apps: AppEntry[];
     hiddenApps: AppEntry[];
     skillDiscovery: SkillAppDiscovery;
@@ -14957,6 +15263,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
     onAddDiscoveredApp: (app: AppEntry) => void;
     pendingEditAppId: string;
     onPendingEditConsumed: () => void;
+    /** After a successful edit save, jump to 审核/发布 so the user can submit. */
+    onAfterEditSave?: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
@@ -15218,6 +15526,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             manifest = applyAppTestProtocol(applyAppResultContract(applyEnterpriseUIConfig(applyAppWorkflowMapping(applyStudioWorkspaceLayout(manifest, app.kind, editDraft.layout), app.kind, editDraft.workflowMapping), app.kind, editDraft.uiNavigation, editDraft.uiColumns), app.kind, editDraft.resultContract), app.kind, editDraft.testProtocol);
         }
         const aboutInfo = normalizeAppAboutInfo(editDraft.aboutInfo);
+        const studioOrigin = app.studioOrigin || 'app_studio';
         const updatedApp: AppEntry = {
             ...app,
             name,
@@ -15228,6 +15537,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             accent: editDraft.accent,
             aboutInfo,
             version: nextAppVersion(app),
+            studioOrigin,
             manifest,
         };
         const patch: Partial<AppEntry> = {
@@ -15240,6 +15550,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             aboutInfo: updatedApp.aboutInfo,
             version: updatedApp.version,
             manifest: updatedApp.manifest,
+            // Editing in App Studio marks the app as studio-managed so it can enter 审核/发布.
+            studioOrigin,
             importedRunEvidence: undefined,
             versionSnapshot: undefined,
             installEvidence: undefined,
@@ -15258,7 +15570,11 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                 await SaveMaclawAppDefinitionForSkill(skillID, JSON.stringify(appToSkillDefinitionManifest(updatedApp), null, 2));
             }
             onUpdateApp(app.id, patch);
+            setEditSaveState('idle');
+            setEditSaveMessage('');
             cancelEdit();
+            // Enter 审核/发布 with this app focused so the user can submit immediately.
+            onAfterEditSave?.(app.id);
         } catch (error) {
             setEditSaveState('error');
             setEditSaveMessage(error instanceof Error ? error.message : String(error || 'Save failed'));
@@ -15331,9 +15647,9 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                 <div key={app.id} className="apps-manage-item">
                     <div className="apps-manage-row">
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
-                        <div>
-                            <div className="apps-manage-row__name">{app.name}</div>
-	                            <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']} · {isZh(lang) ? '已加入面板' : 'In panel'}</div>
+                        <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
+                        <div className="apps-manage-row__desc" title={`${app.category} · ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} · ${isZh(lang) ? '已加入面板' : 'In panel'}`}>
+                            {app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} · {isZh(lang) ? '已加入面板' : 'In panel'}
                         </div>
                         <div className="apps-manage-actions">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>{text.moveTopShort}</button>
@@ -15371,9 +15687,9 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     {filteredHiddenApps.map((app) => (
                         <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
-                            <div>
-                                <div className="apps-manage-row__name">{app.name}</div>
-                                <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</div>
+                            <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
+                            <div className="apps-manage-row__desc" title={`${app.category} · ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}`}>
+                                {app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
@@ -15391,9 +15707,9 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     {filteredNotInPanelApps.map((app) => (
                         <div key={app.id} className="apps-manage-row apps-manage-row--not-in-panel">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
-                            <div>
-                                <div className="apps-manage-row__name">{app.name}</div>
-                                <div className="apps-manage-row__desc">{app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}</div>
+                            <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
+                            <div className="apps-manage-row__desc" title={`${app.category} · ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}`}>
+                                {app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.addToPanel} onClick={() => onAddDiscoveredApp(app)}>{text.addToPanel}</button>
@@ -15854,7 +16170,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
         }
     };
     const installSingleMarketApp = async (app: AppEntry) => {
-        const manifestText = JSON.stringify(appToManifest(app));
+        let installTarget = app;
         setMarketInstallAppId(app.id);
         setMarketInstallFeedback({ appId: app.id, state: 'running', message: text.dependencyPlanLoading, appIDs: [app.id] });
         try {
@@ -15898,9 +16214,47 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 });
                 return;
             }
-            const dependencyInstallPlan = await InstallMaclawAppDependencies(manifestText);
-            const dependencyDetails = backendDependenciesForApp(dependencyInstallPlan, app.id);
-            const installAppIDs = [app.id];
+            if ((app.marketInstallSource === 'skillmarket' || app.marketInstallSource === 'hubcenter') && app.marketCapabilityID) {
+                const mixedSource = app.marketInstallSource === 'hubcenter' ? 'skillmarket' : app.marketInstallSource;
+                const marketCapID = String(app.marketCapabilityID || '').trim();
+                await InstallMixedSkill(mixedSource, marketCapID, marketCapID);
+                const discovery = await discoverSkillAppManifests();
+                const bareAppID = String(app.id || '').replace(/^market-/, '').trim();
+                const discovered = (discovery.candidates || []).find((candidate) => {
+                    const candidateID = String(candidate.id || '').trim();
+                    const bareCandidate = candidateID.replace(/^skill-app:/, '').replace(/^market-/, '');
+                    const skillID = String(
+                        (candidate as any).skill_id
+                        || (candidate as any).skillId
+                        || candidate.manifest?.skill?.id
+                        || candidate.manifest?.appSkill?.id
+                        || '',
+                    ).trim();
+                    return candidateID === bareAppID
+                        || candidateID === app.id
+                        || bareCandidate === bareAppID
+                        || bareCandidate.endsWith(`:${bareAppID}`)
+                        || (!!skillID && (skillID === marketCapID || skillIdentityKeysOverlap(skillID, marketCapID)))
+                        || String(candidate.name || '').trim() === String(app.name || '').trim();
+                });
+                if (!discovered) {
+                    throw new Error(
+                        isZh(lang)
+                            ? '技能已下载，但未发现可安装的 MaClaw App 定义（缺少 maclaw.app.json）。'
+                            : 'Skill installed, but no installable MaClaw App definition was found (missing maclaw.app.json).',
+                    );
+                }
+                installTarget = {
+                    ...discovered,
+                    marketCapabilityID: marketCapID,
+                    marketInstallSource: app.marketInstallSource,
+                    marketSourceLabel: app.marketSourceLabel || 'HubCenter Skill Market',
+                };
+            }
+            const installManifestText = JSON.stringify(appToManifest(installTarget));
+            const dependencyInstallPlan = await InstallMaclawAppDependencies(installManifestText);
+            const dependencyDetails = backendDependenciesForApp(dependencyInstallPlan, installTarget.id);
+            const installAppIDs = [installTarget.id];
             if (governanceReviewHasIssueForAppIDs(dependencyInstallPlan, installAppIDs)) {
                 setMarketInstallFeedback({
                     appId: app.id,
@@ -15923,41 +16277,49 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 });
                 return;
             }
-            if (runtimeInstallPlanBlocked(dependencyInstallPlan, app)) {
+            if (runtimeInstallPlanBlocked(dependencyInstallPlan, installTarget)) {
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'error',
-                    message: runtimeInstallPlanBlockMessage(app, dependencyInstallPlan, text, lang),
+                    message: runtimeInstallPlanBlockMessage(installTarget, dependencyInstallPlan, text, lang),
                     plan: dependencyInstallPlan || null,
-                    appIDs: [app.id],
+                    appIDs: installAppIDs,
                     dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
                 });
                 return;
             }
             let installFeedbackMessage = text.alreadyInstalled;
             let installAudit: BackendAppInstallRecord | null = null;
+            const auditSource = (app.marketInstallSource === 'skillmarket' || app.marketInstallSource === 'hubcenter')
+                ? 'skillmarket'
+                : 'market';
             try {
-                installAudit = await RecordMaclawAppInstall(manifestText, 'market') as BackendAppInstallRecord;
-                const dataSrvSummary = appHasDataSrvRegistrationCandidate(app) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
+                installAudit = await RecordMaclawAppInstall(installManifestText, auditSource) as BackendAppInstallRecord;
+                const dataSrvSummary = appHasDataSrvRegistrationCandidate(installTarget) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
                 if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} · ${dataSrvSummary}`;
                 await refreshInstallRecords();
             } catch (error: any) {
-                if (isEnterpriseAppKind(app.kind)) {
+                if (isEnterpriseAppKind(installTarget.kind)) {
                     throw new Error(error?.message || text.installAuditRequired);
                 }
                 // Dependency health is the install gate; audit refresh failures should not discard an otherwise valid local install.
             }
-            onInstallApp(installedAppWithInstallEvidence(app, installAudit));
+            onInstallApp(installedAppWithInstallEvidence({
+                ...installTarget,
+                marketCapabilityID: app.marketCapabilityID,
+                marketInstallSource: app.marketInstallSource,
+                marketSourceLabel: app.marketSourceLabel,
+            }, installAudit));
             setMarketInstallFeedback({
                 appId: app.id,
                 state: 'done',
                 message: installFeedbackMessage,
                 plan: dependencyInstallPlan || null,
-				appIDs: [app.id],
-				dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
-				versionSnapshot: installRecordVersionSnapshotForApp(installAudit, app.id),
-				installEvidence: installEvidenceRecordForApp(installAudit, app.id),
-			});
+                appIDs: installAppIDs,
+                dependencies: dependencyDetails.length > 0 ? dependencyDetails : dependencyInstallPlan?.dependencies || [],
+                versionSnapshot: installRecordVersionSnapshotForApp(installAudit, installTarget.id),
+                installEvidence: installEvidenceRecordForApp(installAudit, installTarget.id),
+            });
         } catch (error: any) {
             setMarketInstallFeedback({ appId: app.id, state: 'error', message: error?.message || text.installError, appIDs: [app.id] });
         } finally {

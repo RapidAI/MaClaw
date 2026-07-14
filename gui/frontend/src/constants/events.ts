@@ -52,3 +52,34 @@ export const EVENT_CONFIG_UPDATED = "config-updated";
 
 /** Same-window optimistic config patch (CustomEvent on window). */
 export const EVENT_MACLAW_CONFIG_CHANGED = "maclaw-config-changed";
+
+/**
+ * Same-window request to open/create a pure coding task
+ * (local coding_dev or remote remote_coding_dev).
+ * Dispatched from AI welcome cards; handled by SidebarTaskManagement.
+ *
+ * detail: {
+ *   mode: 'coding_dev' | 'remote_coding_dev';
+ *   name?: string;
+ *   workingDir?: string;           // local coding workdir
+ *   remote?: { host, port, user, password, workDir };
+ *   autoCreate?: boolean;          // when true + valid env, create without dialog
+ * }
+ */
+export const EVENT_OPEN_CREATE_CODING_TASK = "ai-open-create-coding-task";
+
+/** Payload shape for EVENT_OPEN_CREATE_CODING_TASK. */
+export type OpenCreateCodingTaskDetail = {
+    mode?: "coding_dev" | "remote_coding_dev";
+    name?: string;
+    workingDir?: string;
+    remote?: {
+        host: string;
+        port: number;
+        user: string;
+        password: string;
+        workDir: string;
+    };
+    /** When true and required env is present, create the task immediately. */
+    autoCreate?: boolean;
+};

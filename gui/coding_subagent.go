@@ -73,9 +73,25 @@ type CodingSubAgent struct {
 	// out-of-scope access is hard-rejected (legacy behavior).
 	scopeApproval *scopeApprovalState
 
+	// fullEnvironment enables Claude Code / Codex–aligned posture: broader
+	// skill/MCP surface, project workspace probe, and full-workbench prompts.
+	// Used by create-task pure coding mode (coding_dev / remote_coding_dev).
+	fullEnvironment bool
+
+	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
+	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
+	nestDepth int
+	// role specializes the tool surface for nested agents (explorer/worker/reviewer).
+	// Empty means worker (full coding surface).
+	role codingSubAgentRole
+
 	// Knowledge stores (both optional, nil = gracefully skipped)
 	codingKB  *knowledge.CodingKnowledgeStore // coding experiences (coding_knowledge.db)
 	generalKB *knowledge.SQLiteStore          // project docs (knowledge.db)
+
+	// attachments are optional user images/files for the first user turn
+	// (pure-coding vision / screenshot-to-code). Nested spawn children inherit none.
+	attachments []agent.MessageAttachment
 }
 
 // CodingSubAgentResult is the outcome of a single task execution.
@@ -85,6 +101,17 @@ type CodingSubAgentResult struct {
 	Error      string         // error message if failed
 	Iterations int
 	ToolCalls  int
+
+	// Token / cost accounting for this SubAgent loop (when provider reports usage).
+	InputTokens  int
+	OutputTokens int
+	EstCostRMB   float64
+
+	// RouteModel / RouteSource / RouteTask describe model routing for this loop.
+	RouteModel  string
+	RouteSource string
+	RouteTask   string
+	RouteReason string
 
 	// FilesModified lists files that were written/edited during execution.
 	// Extracted from tool call history for context preservation.
@@ -215,6 +242,49 @@ func (s *CodingSubAgent) SetCallbacks(onToken func(string), onProgress func(stri
 	s.onProgress = onProgress
 }
 
+// SetFullEnvironment enables the full coding workbench posture (skill/MCP
+// breadth, workspace probe, Claude Code–aligned prompt). Safe to call on nil.
+func (s *CodingSubAgent) SetFullEnvironment(enabled bool) {
+	if s != nil {
+		s.fullEnvironment = enabled
+	}
+}
+
+// SetAttachments attaches user media (images) for multimodal pure-coding turns.
+func (s *CodingSubAgent) SetAttachments(atts []agent.MessageAttachment) {
+	if s == nil {
+		return
+	}
+	if len(atts) == 0 {
+		s.attachments = nil
+		return
+	}
+	s.attachments = append([]agent.MessageAttachment(nil), atts...)
+}
+
+func (s *CodingSubAgent) isFullEnvironment() bool {
+	return s != nil && s.fullEnvironment
+}
+
+// seedFullEnvironmentWorkspaceApprovals pre-approves the bound project root
+// and its parent directory for full-env sessions so monorepo/sibling reads
+// do not stop the agent on the first out-of-boundary path (Claude Code–style
+// workspace trust for the chosen coding directory).
+func (s *CodingSubAgent) seedFullEnvironmentWorkspaceApprovals() {
+	if s == nil || !s.fullEnvironment || s.scopeApproval == nil {
+		return
+	}
+	root := strings.TrimSpace(s.projectPath)
+	if root == "" {
+		return
+	}
+	s.scopeApproval.approveDir(root)
+	parent := filepath.Dir(root)
+	if parent != "" && parent != root && parent != "." && parent != string(filepath.Separator) {
+		s.scopeApproval.approveDir(parent)
+	}
+}
+
 // SetScopeApprovalCallback configures interactive user confirmation for
 // out-of-scope file access. When set, the SubAgent will pause and ask the
 // user before rejecting operations on paths outside projectPath.
@@ -268,9 +338,22 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		prevOutputs: prevOutputs,
 	}
 
-	result := agent.RunLoop(cb, cb.buildTaskUserMessage(), nil, s.httpClient, s.buildLoopHooks(cb))
+	userText := cb.buildTaskUserMessage()
+	userContent := codingSubAgentUserContent(s, userText)
+	var result agent.LoopResult
+	if userContent != nil && userContent != userText {
+		result = agent.RunLoopWithUserContent(cb, userText, userContent, nil, s.httpClient, s.buildLoopHooks(cb))
+	} else {
+		result = agent.RunLoop(cb, userText, nil, s.httpClient, s.buildLoopHooks(cb))
+	}
 	if s.handler != nil {
 		accumulateLoopResultUsage(s.handler.app, s.cfg, result)
+	}
+
+	// Nested explorer/reviewer are inspection-only — do not run write-oriented
+	// post-loop verify/fix cycles or the full implementation quality matrix.
+	if s.nestDepth > 0 && (s.role == codingRoleExplorer || s.role == codingRoleReviewer) {
+		return s.finishInspectionRoleTask(cb, task, taskTitle, result)
 	}
 
 	// Codex-inspired post-loop verification: if the model completed without
@@ -380,12 +463,20 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		emitCodingAgentEvent(s.onProgress, event)
 	}
 
+	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
 	return &CodingSubAgentResult{
 		Status:              status,
 		Summary:             summary,
 		Error:               errMsg,
 		Iterations:          result.Iterations,
 		ToolCalls:           result.ToolCalls,
+		InputTokens:         inTok,
+		OutputTokens:        outTok,
+		EstCostRMB:          cost,
+		RouteModel:          result.Route.Model,
+		RouteSource:         result.Route.Source,
+		RouteTask:           result.Route.TaskType,
+		RouteReason:         result.Route.Reason,
 		FilesModified:       filesModified,
 		FilesCreated:        filesCreated,
 		FilesRead:           filesRead,
@@ -592,6 +683,16 @@ func (c *codingSubAgentCallbacks) GetMaxIterations() int {
 		if c.subagent.loopCtx != nil && c.subagent.loopCtx.MaxIterations() > 0 {
 			return config.EffectiveMaxIterations(c.subagent.loopCtx.MaxIterations())
 		}
+		// Nested spawn roles use tighter budgets than the pure-coding root turn.
+		if c.subagent.nestDepth > 0 && c.subagent.role != "" && c.subagent.role != codingRoleWorker {
+			return codingSpawnRoleMaxIterations(c.subagent.role)
+		}
+		if c.subagent.nestDepth > 0 {
+			return codingSpawnRoleMaxIterations(codingRoleWorker)
+		}
+		if c.subagent.isFullEnvironment() {
+			return codingSubAgentFullEnvMaxIterations
+		}
 	}
 	// Per-task hard cap: SubAgent executes a single focused task, not an
 	// open-ended conversation. 80 iterations is generous for any single task
@@ -608,30 +709,64 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 		c.logCacheEvent("system_prompt", "hit", "prompt_chars", len(c.cachedSystemPrompt))
 		return c.cachedSystemPrompt
 	}
+	fullEnv := c != nil && c.subagent != nil && c.subagent.isFullEnvironment()
 	prompt := buildCodingSubAgentSystemPrompt(c.task, c.subagent.projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
+	inspectionRole := c != nil && c.subagent != nil && c.subagent.nestDepth > 0 &&
+		(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
+	if c != nil && c.subagent != nil && c.subagent.nestDepth > 0 {
+		role := c.subagent.role
+		if role == "" {
+			role = codingRoleWorker
+		}
+		prompt = "## Nested coding subagent\n" + codingSpawnRolePromptHint(role) + "\n\n" + prompt
+		if inspectionRole {
+			// Replace write-oriented base prompt with a lean inspection brief.
+			prompt = "## Nested coding subagent\n" + codingSpawnRolePromptHint(role) + "\n\n" +
+				buildLocalInspectionRoleSystemPrompt(c.subagent.projectPath, role, c.reqCtx)
+		}
+	}
+	if fullEnv && !inspectionRole {
+		// Nested workers get full-env tools/skills but must not be told to spawn again.
+		if c.subagent != nil && c.subagent.nestDepth > 0 {
+			prompt = buildNestedFullCodingEnvironmentPromptPreamble() + prompt
+		} else {
+			prompt = buildFullCodingEnvironmentPromptPreamble() + prompt
+		}
+		if probe := probeCodingWorkspace(c.subagent.projectPath); probe != "" {
+			prompt += "\n## 工作区概览（进门自动探查）\n" + probe + "\n"
+		}
+	}
+	if inspectionRole && c.subagent != nil {
+		if probe := probeCodingWorkspace(c.subagent.projectPath); probe != "" {
+			prompt += "\n## 工作区概览（进门自动探查）\n" + probe + "\n"
+		}
+	}
 
 	// Inject knowledge from coding experience store + general knowledge store.
 	if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
 		prompt += knowledgeSections
 	}
 
-	// Eagerly select relevant skills so both BuildSystemPrompt and BuildTools
-	// have access to the same matchedSkills list.
-	c.ensureMatchedSkillsSelected()
+	// Skills/MCP for root + nested workers only (inspection roles stay lean).
+	if !inspectionRole {
+		// Eagerly select relevant skills so both BuildSystemPrompt and BuildTools
+		// have access to the same matchedSkills list.
+		c.ensureMatchedSkillsSelected()
 
-	if section := buildCodingSubAgentSkillSection(c.matchedSkills); section != "" {
-		prompt += section
-	}
+		if section := buildCodingSubAgentSkillSection(c.matchedSkills); section != "" {
+			prompt += section
+		}
 
-	// Select relevant MCP tools for this task.
-	c.ensureMatchedMCPToolsSelected()
+		// Select relevant MCP tools for this task.
+		c.ensureMatchedMCPToolsSelected()
 
-	if section := buildCodingSubAgentMCPSection(c.matchedMCPTools); section != "" {
-		prompt += section
+		if section := buildCodingSubAgentMCPSection(c.matchedMCPTools); section != "" {
+			prompt += section
+		}
 	}
 
 	c.cachedSystemPrompt = prompt
-	c.logCacheEvent("system_prompt", "build", "prompt_chars", len(prompt))
+	c.logCacheEvent("system_prompt", "build", "prompt_chars", len(prompt), "full_env", fullEnv)
 	return prompt
 }
 
@@ -675,17 +810,36 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	if c.cachedTools == nil {
 		tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
 
-		// Append manage_skill if relevant skills were found for this task.
-		// matchedSkills may already be populated by BuildSystemPrompt.
-		c.ensureMatchedSkillsSelected()
-		if len(c.matchedSkills) > 0 {
-			tools = append(tools, buildManageSkillToolDefinition())
+		// Full workbench extras (web research / clock) — always on for full env.
+		if c.subagent != nil && c.subagent.isFullEnvironment() {
+			tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+		}
+		// Nested explorer/reviewer still need research helpers even without full env.
+		if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth > 0 {
+			tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
 		}
 
-		// Append call_mcp_tool if relevant MCP tools were found for this task.
-		c.ensureMatchedMCPToolsSelected()
-		if len(c.matchedMCPTools) > 0 {
-			tools = append(tools, buildCallMCPToolDefinition())
+		inspectionRole := c.subagent != nil && c.subagent.nestDepth > 0 &&
+			(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
+		// /goal long-running objective tool — root pure-coding workbench only.
+		// Nested explorers/reviewers stay lean; workers inherit via root continuation.
+		if c.subagent != nil && c.subagent.isFullEnvironment() && c.subagent.nestDepth == 0 {
+			tools = append(tools, buildCodingGoalToolDefinition())
+		}
+		// Skills/MCP are for root + nested workers; keep inspection agents lean.
+		if !inspectionRole {
+			// Append manage_skill if relevant skills were found for this task.
+			// matchedSkills may already be populated by BuildSystemPrompt.
+			c.ensureMatchedSkillsSelected()
+			if len(c.matchedSkills) > 0 {
+				tools = append(tools, buildManageSkillToolDefinition())
+			}
+
+			// Append call_mcp_tool if relevant MCP tools were found for this task.
+			c.ensureMatchedMCPToolsSelected()
+			if len(c.matchedMCPTools) > 0 {
+				tools = append(tools, buildCallMCPToolDefinition())
+			}
 		}
 
 		// Append knowledge search tools (read-only) when stores are available.
@@ -696,12 +850,53 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 			tools = append(tools, knowledgeSearchToolDef())
 		}
 
+		// Codex-style nested subagents (pure coding workbench root only).
+		if c.subagent != nil && c.subagent.canSpawnCodingAgent() {
+			tools = append(tools, buildSpawnCodingAgentToolDefinition())
+		}
+
+		// Role-based tool surface for nested explorer/reviewer agents.
+		if c.subagent != nil {
+			tools = filterCodingToolsForRole(tools, c.subagent)
+		}
+
 		c.cachedTools = tools
 		c.logCacheEvent("tools", "build", "tool_count", len(tools))
 	} else {
 		c.logCacheEvent("tools", "hit", "tool_count", len(c.cachedTools))
 	}
 	return cloneCodingSubAgentToolDefinitions(c.cachedTools)
+}
+
+func filterCodingToolsForRole(tools []map[string]interface{}, sa *CodingSubAgent) []map[string]interface{} {
+	if sa == nil || len(tools) == 0 {
+		return tools
+	}
+	role := sa.role
+	if role == "" || role == codingRoleWorker {
+		if sa.canSpawnCodingAgent() {
+			return tools
+		}
+		out := make([]map[string]interface{}, 0, len(tools))
+		for _, t := range tools {
+			fn, _ := t["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			if name == codingSubAgentSpawnToolName {
+				continue
+			}
+			out = append(out, t)
+		}
+		return out
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		fn, _ := t["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if sa.toolAllowedForRole(name) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func cloneCodingSubAgentToolDefinitions(tools []map[string]interface{}) []map[string]interface{} {
@@ -863,6 +1058,13 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 	if c == nil || c.subagent == nil {
 		return codingToolExecutionResult{Text: "coding subagent is unavailable", Outcome: codingToolOutcomeFailed}
 	}
+	// Nested role policy (explorer/reviewer) is enforced at execution time too.
+	if !c.subagent.toolAllowedForRole(name) {
+		return codingToolExecutionResult{
+			Text:    fmt.Sprintf("tool %s is not available for nested role %q", name, c.subagent.role),
+			Outcome: codingToolOutcomeBlocked,
+		}
+	}
 
 	h := c.subagent.handler
 	switch name {
@@ -932,7 +1134,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				// Surface successful file changes immediately. Waiting until the whole
 				// subagent task completes leaves the source preview blank while the
 				// agent is still running its remaining checks.
-				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), p, created, true)
+				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), p, created, true)
 			}
 			return result
 		}
@@ -953,7 +1155,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
-				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), p, false, true)
+				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), p, false, true)
 			}
 			return result
 		}
@@ -974,7 +1176,7 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
-				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), p, false, true)
+				emitCodeFilePreviewForPath(h.app, c.codeSessionID(), c.projectPath(), c.previewRouteProjectPath(), p, false, true)
 			}
 			return result
 		}
@@ -1039,9 +1241,47 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		return c.executeCodingKnowledgeSearch(argsJSON)
 	case "knowledge_search":
 		return c.executeKnowledgeSearch(argsJSON)
+	case "web_search":
+		if h == nil {
+			return codingToolExecutionResult{Text: "web_search unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+		}
+		return codingToolExecutionResult{Text: h.toolWebSearch(args), Outcome: codingToolOutcomeSuccess}
+	case "web_fetch":
+		if h == nil {
+			return codingToolExecutionResult{Text: "web_fetch unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+		}
+		return codingToolExecutionResult{Text: h.toolWebFetch(args), Outcome: codingToolOutcomeSuccess}
+	case "current_datetime":
+		return codingToolExecutionResult{Text: formatBtwCurrentDateTime(), Outcome: codingToolOutcomeSuccess}
+	case "goal":
+		return c.executeGoalTool(args)
+	case codingSubAgentSpawnToolName:
+		return c.executeSpawnCodingAgent(args)
 	default:
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s", name), Outcome: codingToolOutcomeFailed}
 	}
+}
+
+// executeGoalTool routes goal(action=...) through the host goal store using the
+// pure-coding session owner (loopCtx.UserID / project tab key).
+func (c *codingSubAgentCallbacks) executeGoalTool(args map[string]interface{}) codingToolExecutionResult {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return codingToolExecutionResult{Text: "goal unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+	}
+	userID := ""
+	if c.subagent.loopCtx != nil {
+		userID = strings.TrimSpace(c.subagent.loopCtx.UserID)
+	}
+	if userID == "" {
+		// Refuse silent fallback to lastUserID — multi-tab pure coding would
+		// otherwise attach goals to the wrong project session.
+		return codingToolExecutionResult{
+			Text:    "goal unavailable: coding session owner is missing (loopCtx.UserID empty)",
+			Outcome: codingToolOutcomeFailed,
+		}
+	}
+	text := c.subagent.handler.toolGoalForUser(userID, args)
+	return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeSuccess}
 }
 
 func rejectInvalidCodingSubAgentToolArgumentTypes(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
@@ -9566,15 +9806,21 @@ func (c *codingSubAgentCallbacks) emitReadFilePreview(filePath string) {
 		return
 	}
 	fileName := filepath.Base(normalized.displayPath)
+	// Pure-coding full environment: force-open so exploration populates the
+	// right-hand panel even when the agent only reads existing sources.
+	forceOpen := c.subagent != nil && c.subagent.isFullEnvironment()
 	app.codeEventEmitter.EmitCodeFileEvent(CodeFileEvent{
-		SessionID:   c.codeSessionID(),
-		FilePath:    normalized.displayPath,
-		FileName:    fileName,
-		AbsPath:     normalized.absPath,
-		Content:     string(data),
-		OpType:      "read",
-		Language:    detectLanguageFromExt(fileName),
-		ProjectPath: projectPath,
+		SessionID:       c.codeSessionID(),
+		FilePath:        normalized.displayPath,
+		FileName:        fileName,
+		AbsPath:         normalized.absPath,
+		Content:         string(data),
+		OpType:          "read",
+		Language:        detectLanguageFromExt(fileName),
+		ForceOpen:       forceOpen,
+		AutoOpenPreview: forceOpen,
+		// Route with tab project path (managed task dir), not exec/working_dir.
+		ProjectPath: c.previewRouteProjectPath(),
 	})
 }
 
@@ -9586,6 +9832,18 @@ func (c *codingSubAgentCallbacks) codeSessionID() string {
 		}
 	}
 	return "subagent-workflow"
+}
+
+// previewRouteProjectPath is the frontend tab project path for code events.
+// Pure-coding tabs use a managed task dir as identity while tools run under
+// working_dir; routing with execDir causes shouldAcceptCodeEventForProject to drop events.
+func (c *codingSubAgentCallbacks) previewRouteProjectPath() string {
+	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
+		if tab := projectPathFromSessionOwnerID(c.subagent.loopCtx.UserID); tab != "" {
+			return tab
+		}
+	}
+	return c.projectPath()
 }
 
 func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result string, outcome codingToolOutcome, duration time.Duration) {
@@ -10136,9 +10394,261 @@ func codingSubAgentDynamicSelectionTextWithContext(task *TaskItem, reqCtx, desig
 	return truncateRunesForSubAgent(strings.TrimSpace(b.String()), codingSubAgentDynamicSelectionTextMaxRunes)
 }
 
+// finishInspectionRoleTask finalizes nested explorer/reviewer results without
+// write-oriented quality gates (post-edit verify, git diff, acceptance matrix).
+func (s *CodingSubAgent) finishInspectionRoleTask(
+	cb *codingSubAgentCallbacks,
+	task *TaskItem,
+	taskTitle string,
+	result agent.LoopResult,
+) *CodingSubAgentResult {
+	status := TaskExecPassed
+	errMsg := ""
+	if result.Error != "" {
+		status = TaskExecFailed
+		errMsg = compactSubAgentErrorSummary(result.Error)
+	}
+	if result.HardExit {
+		status = TaskExecFailed
+		errMsg = "模型连续返回空响应，任务中断"
+	}
+	summary := compactSubAgentModelSummary(result.Text)
+	if summary == "" {
+		summary = fallbackSubAgentTaskSummary(status, task, result.Iterations, result.ToolCalls)
+	}
+	audit := collectSubAgentAudit(cb)
+	filesRead := audit.FilesRead
+	searchesRun := audit.SearchesRun
+	commandsRun := audit.CommandsRun
+	hasInspection := len(uniqueSortedSubAgentStrings(filesRead)) > 0 ||
+		countSuccessfulSubAgentSearches(searchesRun) > 0 ||
+		len(commandsRun) > 0
+	if status == TaskExecPassed {
+		if result.ToolCalls == 0 || !hasInspection {
+			status = TaskExecFailed
+			errMsg = fmt.Sprintf("nested %s subagent completed without inspection evidence (read/search/bash)", s.role)
+		} else if strings.TrimSpace(summary) == "" {
+			status = TaskExecFailed
+			errMsg = fmt.Sprintf("nested %s subagent returned empty summary", s.role)
+		}
+	}
+	if status == TaskExecPassed {
+		note := fmt.Sprintf("\n[%s] inspection-only role: skipped write-oriented verification gates", s.role)
+		if !strings.Contains(summary, note) {
+			summary = strings.TrimSpace(summary) + note
+		}
+	}
+	log.Printf("[coding-subagent] inspection task T%d finished: role=%s status=%s iterations=%d tools=%d err=%q",
+		taskDisplayNumber(task), s.role, status, result.Iterations, result.ToolCalls, errMsg)
+	if s.onProgress != nil {
+		event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, task, taskTitle, "")
+		event.Detail = string(status)
+		emitCodingAgentEvent(s.onProgress, event)
+	}
+	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
+	return &CodingSubAgentResult{
+		Status:         status,
+		Summary:        summary,
+		Error:          errMsg,
+		Iterations:     result.Iterations,
+		ToolCalls:      result.ToolCalls,
+		InputTokens:    inTok,
+		OutputTokens:   outTok,
+		EstCostRMB:     cost,
+		RouteModel:     result.Route.Model,
+		RouteSource:    result.Route.Source,
+		RouteTask:      result.Route.TaskType,
+		RouteReason:    result.Route.Reason,
+		FilesModified:  nil,
+		FilesCreated:   nil,
+		FilesRead:      filesRead,
+		CommandsRun:    commandsRun,
+		SearchesRun:    searchesRun,
+		QualityStatus:  codingSubAgentQualityPassed,
+		QualitySummary: "inspection-only nested role",
+	}
+}
+
+// codingSubAgentUserContent builds multimodal user content when attachments exist.
+func codingSubAgentUserContent(s *CodingSubAgent, userText string) interface{} {
+	if s == nil || len(s.attachments) == 0 {
+		return userText
+	}
+	// Prefer vision route when images are present and a vision model is configured.
+	cfg := s.cfg
+	if hasCodingImageAttachment(s.attachments) {
+		if s.handler != nil {
+			if routed := s.handler.routeLLMConfigForCodingVision(cfg); routed.Model != "" {
+				s.cfg = routed
+				cfg = routed
+			}
+		}
+	}
+	protocol := strings.TrimSpace(cfg.Protocol)
+	if protocol == "" {
+		protocol = "openai"
+	}
+	return agent.BuildUserContent(userText, s.attachments, protocol, cfg.SupportsVision, nil)
+}
+
+func hasCodingImageAttachment(atts []agent.MessageAttachment) bool {
+	for _, a := range atts {
+		if a.Type == "image" || agent.IsImageMime(a.MimeType) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildLocalInspectionRoleSystemPrompt is the lean brief for nested explorer/reviewer.
+func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgentRole, reqCtx string) string {
+	var b strings.Builder
+	b.WriteString("# Local Inspection SubAgent\n\n")
+	if role == codingRoleReviewer {
+		b.WriteString("你是审查/验证子代理：可读代码、跑 shell 与 git_diff，禁止写文件。\n\n")
+	} else {
+		b.WriteString("你是探索子代理：只读探查代码库，禁止写文件。\n\n")
+	}
+	if strings.TrimSpace(projectPath) != "" {
+		b.WriteString(fmt.Sprintf("## 项目路径\n%s\n\n", projectPath))
+	}
+	b.WriteString(`## 可用工具
+- Glob / ripgrep / list_directory / read_file：定位与阅读
+- git_diff：只读 diff/status（如可用）
+`)
+	if role == codingRoleReviewer {
+		b.WriteString("- bash：诊断与验证命令（不要用 shell 改写文件或 Git 工作区）\n")
+	}
+	b.WriteString(`
+## 工作规范
+1. 先搜索再阅读关键文件
+2. 完成后给出结构化发现：关键路径、结论、风险/建议
+3. 禁止 write/edit 改文件；不要改仓库状态
+`)
+	if strings.TrimSpace(reqCtx) != "" {
+		b.WriteString("\n## 任务上下文\n\n")
+		b.WriteString(reqCtx)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // ---------------------------------------------------------------------------
 // System prompt — minimal, coding-only. ~1500-2000 tokens.
 // ---------------------------------------------------------------------------
+
+func buildFullCodingEnvironmentPromptPreamble() string {
+	return `## 全功能编程环境（Full Coding Workbench）
+你运行在与 Claude Code / Codex 同级目标的完整编程工作台中（同一模型下追求同等工程能力）：
+- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime、goal（长时目标 complete/fail/get），以及任务相关的 Skill（manage_skill）与 MCP（call_mcp_tool）。
+- 工作区根目录已绑定；下方「工作区概览」是进门自动探查结果，请先消化再深入探索。
+- 默认自主探索与实现：不要等待用户再发「去了解项目」；需要时主动 list/Glob/ripgrep/read。
+- 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
+- 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
+- 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
+- 查阅最新文档/报错时可 web_search / web_fetch；需要精确时间时用 current_datetime。
+- 子代理（Codex 风格）：复杂/可并行工作时用 spawn_coding_agent 派生子代理。
+  - explorer：只读探查（搜索/阅读），返回结构化发现
+  - worker：干净上下文实现/修复（不可再嵌套 spawn）
+  - reviewer：只读+shell+git_diff 审查验证，不写文件
+  - 可 agents[] 最多 3 路：仅全部为 explorer 时并行；含 worker/reviewer 时顺序执行（避免并发写冲突）
+- 保持工程师纪律：最小必要改动、验证优先、完成后 diff 与风险说明。
+
+`
+}
+
+// buildNestedFullCodingEnvironmentPromptPreamble is for nested worker agents:
+// same tool posture as full env, but no spawn guidance (depth capped).
+func buildNestedFullCodingEnvironmentPromptPreamble() string {
+	return `## 嵌套实现子代理（Nested Worker）
+你是全功能编程工作台派发的实现子代理（干净上下文）：
+- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime，以及任务相关的 Skill / MCP。
+- 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
+- 最小必要改动；工具失败时换策略；完成后说明改动与验证结果。
+
+`
+}
+
+// probeCodingWorkspace builds a compact on-disk overview of the project root
+// so the first turn already has structure context (Claude Code–style entry).
+func probeCodingWorkspace(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	info, err := os.Stat(projectPath)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
+		return ""
+	}
+
+	const maxEntries = 48
+	var dirs, files []string
+	stackHints := make([]string, 0, 8)
+	stackFiles := map[string]string{
+		"go.mod": "Go", "package.json": "Node/JS", "pnpm-lock.yaml": "pnpm",
+		"yarn.lock": "Yarn", "package-lock.json": "npm", "pyproject.toml": "Python",
+		"requirements.txt": "Python", "Cargo.toml": "Rust", "pom.xml": "Java/Maven",
+		"build.gradle": "Java/Gradle", "build.gradle.kts": "Java/Gradle",
+		"CMakeLists.txt": "C/C++", "Makefile": "Make", "Dockerfile": "Docker",
+		".codegraph": "CodeGraph index", "README.md": "README", "README.MD": "README",
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		if name == "." || name == ".." {
+			continue
+		}
+		if e.IsDir() {
+			if len(dirs) < maxEntries {
+				dirs = append(dirs, name+"/")
+			}
+			if name == ".codegraph" {
+				stackHints = append(stackHints, "CodeGraph index")
+			}
+			continue
+		}
+		if len(files) < maxEntries {
+			files = append(files, name)
+		}
+		if hint, ok := stackFiles[name]; ok {
+			stackHints = append(stackHints, hint)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("- 根路径: %s\n", projectPath))
+	if len(stackHints) > 0 {
+		// de-dup hints
+		seen := map[string]bool{}
+		var uniq []string
+		for _, h := range stackHints {
+			if !seen[h] {
+				seen[h] = true
+				uniq = append(uniq, h)
+			}
+		}
+		b.WriteString("- 技术栈线索: " + strings.Join(uniq, ", ") + "\n")
+	}
+	if len(dirs) > 0 {
+		b.WriteString("- 顶层目录: " + strings.Join(dirs, " ") + "\n")
+	}
+	if len(files) > 0 {
+		shown := files
+		if len(shown) > 24 {
+			shown = shown[:24]
+		}
+		b.WriteString("- 顶层文件: " + strings.Join(shown, " ") + "\n")
+	}
+	if len(dirs)+len(files) >= maxEntries {
+		b.WriteString("- （条目已截断；需要时用 list_directory / Glob 继续探查）\n")
+	}
+	return strings.TrimSpace(b.String())
+}
 
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
 	var b strings.Builder
@@ -10151,6 +10661,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
 - write_file 只用于创建新文件，或在用户/仓库流程明确要求时追加 TEST_REPORT.md。
 - bash 用于测试、构建、lint、typecheck、调试命令；长命令必须设置 timeout，working_dir 必须在项目路径内。
+- 需要辅助能力时使用 manage_skill / call_mcp_tool（若已提供）；不要假设用户会手动再安装工具。
 
 ## 验证优先流程
 1. 能自动化覆盖的行为变更，应添加或更新聚焦测试；无法合理自动化时，在总结中说明原因。
@@ -10194,8 +10705,11 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	// Platform hint so the LLM generates correct shell commands.
 	b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
 	if normalizedRemotePlatform() == "windows" {
-		b.WriteString("Windows shell contract: bash 工具通过 PowerShell 执行；使用 `;` 分隔命令，避免 bash-only 语法如 `mkdir -p` 或 `&&`，并用 working_dir 指定目录；不要在既有 build 目录中切换 CMake generators。\n")
-		b.WriteString("C/C++: cl.exe 通常不在 PATH；需要 MSVC 时用项目已有 build 脚本或先调用 vcvars64.bat，并为 cl.exe 添加 `/utf-8`。\n")
+		b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；普通命令用 `;` 分隔，避免 bash-only 语法如 `mkdir -p`；需要 cmd 语义（vcvars+cl、`||`、`2>nul`）时用 `cmd /c \"...\"`，并用 working_dir 指定目录；不要在既有 build 目录中切换 CMake generators。\n")
+		// Host-side vswhere detection — stop the agent from claiming VS is missing
+		// when only cl.exe is absent from the default PATH (normal for MSVC).
+		b.WriteString(formatWindowsMSVCToolchainHint(detectWindowsMSVCToolchain()))
+		b.WriteString("\n")
 	}
 
 	if reqCtx != "" {
@@ -10321,6 +10835,10 @@ const (
 	// tasks complete in 10-30 iterations). Beyond 80, the task is almost
 	// certainly stuck and should be reported as failed.
 	codingSubAgentPerTaskMaxIterations = 80
+
+	// Full coding workbench (create-task pure coding) allows longer multi-step
+	// exploration + implement + verify cycles, closer to Claude Code sessions.
+	codingSubAgentFullEnvMaxIterations = 120
 )
 
 var codingSubAgentToolOrder = []string{
@@ -10335,6 +10853,14 @@ var codingSubAgentToolOrder = []string{
 	"git_diff",
 }
 
+// codingSubAgentFullEnvExtraToolOrder is always available in fullEnvironment
+// mode (Claude Code / Codex–aligned research helpers).
+var codingSubAgentFullEnvExtraToolOrder = []string{
+	"web_search",
+	"web_fetch",
+	"current_datetime",
+}
+
 var codingSubAgentToolNames = makeCodingSubAgentToolNameSet(codingSubAgentToolOrder)
 
 var (
@@ -10346,10 +10872,15 @@ var (
 // in the SubAgent (injected based on task context, not always present).
 // These bypass the static tool name check in executeToolWithOutcome.
 var codingSubAgentDynamicToolNames = map[string]bool{
-	"manage_skill":            true,
-	"call_mcp_tool":           true,
-	"coding_knowledge_search": true,
-	"knowledge_search":        true,
+	"manage_skill":              true,
+	"call_mcp_tool":             true,
+	"coding_knowledge_search":   true,
+	"knowledge_search":          true,
+	"web_search":                true,
+	"web_fetch":                 true,
+	"current_datetime":          true,
+	"goal":                      true,
+	codingSubAgentSpawnToolName: true,
 }
 
 func makeCodingSubAgentToolNameSet(names []string) map[string]bool {
@@ -10417,6 +10948,82 @@ func buildCodingToolDefinitionsFromRegistry(handler *IMMessageHandler) []map[str
 		return fallbacks
 	}
 	return ordered
+}
+
+// buildCodingFullEnvExtraToolDefinitions returns research helpers for full
+// coding workbench mode (always appended when fullEnvironment is on).
+func buildCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
+	return []map[string]interface{}{
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "web_search",
+				"description": "Search the web for documentation, APIs, error messages, and current library usage.",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query":       map[string]interface{}{"type": "string", "description": "Search query"},
+						"max_results": map[string]interface{}{"type": "integer", "description": "Max results (optional)"},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "web_fetch",
+				"description": "Fetch and extract text content from a URL (docs, GitHub, RFCs).",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"url":       map[string]interface{}{"type": "string", "description": "URL to fetch"},
+						"max_chars": map[string]interface{}{"type": "integer", "description": "Max characters (optional)"},
+					},
+					"required": []string{"url"},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "current_datetime",
+				"description": "Get current local date and time. Prefer this over guessing the clock.",
+				"parameters": map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				},
+			},
+		},
+	}
+}
+
+// buildCodingGoalToolDefinition exposes persistent /goal lifecycle actions to
+// the pure coding workbench so continuation turns can complete/fail/get status.
+func buildCodingGoalToolDefinition() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "goal",
+			"description": "Manage the persistent long-running goal for this coding workbench " +
+				"(action: create/complete/fail/get). Use complete when acceptance criteria are met; " +
+				"use fail when the goal cannot continue. Prefer get before create.",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":              map[string]interface{}{"type": "string", "description": "create | complete | fail | get"},
+					"objective":           map[string]interface{}{"type": "string", "description": "Goal description (create)"},
+					"summary":             map[string]interface{}{"type": "string", "description": "Completion summary (complete)"},
+					"reason":              map[string]interface{}{"type": "string", "description": "Failure reason (fail)"},
+					"token_budget":        map[string]interface{}{"type": "integer", "description": "Optional token budget (create)"},
+					"max_turns":           map[string]interface{}{"type": "integer", "description": "Optional max continuation turns (create)"},
+					"acceptance_criteria": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional acceptance criteria (create)"},
+					"project_path":        map[string]interface{}{"type": "string", "description": "Optional project path metadata (create)"},
+				},
+				"required": []string{"action"},
+			},
+		},
+	}
 }
 
 // buildCodingToolDefinitionsFallback provides minimal inline definitions
@@ -10663,25 +11270,65 @@ func RunTaskWithSubAgent(
 	onToken func(string),
 	onProgress func(string),
 ) *CodingSubAgentResult {
-	// OpenHuman-inspired: route to reasoning model for coding tasks
-	if handler != nil && handler.app != nil && handler.app.ohModules.modelRouter != nil {
-		if handler.app.ohModules.modelRouter.HasRoute("reasoning") {
-			cfg = handler.routeLLMConfig("reasoning")
-		}
+	// OpenHuman-inspired + sticky RoutePref (auto/primary/reasoning/vision).
+	userID := ""
+	if loopCtx != nil {
+		userID = loopCtx.UserID
+	}
+	hasImages := loopCtx != nil && hasCodingImageAttachment(loopCtx.CodingAttachments)
+	if handler != nil {
+		cfg = handler.applyCodingRoutePreference(userID, cfg, hasImages)
 	}
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
 	sa.SetCallbacks(onToken, onProgress)
+	if loopCtx != nil && len(loopCtx.CodingAttachments) > 0 {
+		// Only the first root step of a turn should consume attachments (avoid
+		// re-sending images on every multi-step plan task). Caller clears after turn.
+		sa.SetAttachments(loopCtx.CodingAttachments)
+	}
+	// Create-task pure coding: full workbench posture
+	// (broader skill/MCP, workspace probe) aligned with Claude Code / Codex intent.
+	sa.SetFullEnvironment(true)
 
 	// Wire interactive scope approval: when the SubAgent tries to access paths
 	// outside projectPath, pause and ask the user instead of hard-rejecting.
 	// The approval callback uses onProgress to send the prompt and blocks on
 	// loopCtx's approval channel.
+	// Input-box "完全控制" (full) → skip all path and high-risk prompts.
 	if handler != nil && handler.app != nil {
-		fullAccess := handler.app.isSubAgentFullAccessGranted()
+		globalFull := handler.app.isSubAgentFullAccessGranted()
+		userID := ""
+		if loopCtx != nil {
+			userID = loopCtx.UserID
+		}
+		fullAccess := handler.stickyCodingEffectiveFullAccess(userID, globalFull)
 		sa.SetScopeApprovalCallback(buildSubAgentScopeApprovalCallback(handler, loopCtx, onProgress), fullAccess)
 		sa.scopeApproval.setAuditCallback(func(req ScopeApprovalRequest, decision ScopeApprovalDecision, source string) {
 			recordScopeApprovalAudit(handler, "", req, decision, source)
+			// Multi-turn continuity: remember allow_dir / path trust / high-risk trust
+			// without requiring a global config write when the user already chose session trust.
+			if loopCtx != nil {
+				switch decision {
+				case ScopeApprovalAllowDir:
+					handler.rememberStickyApprovedDir(loopCtx.UserID, req.Directory)
+				case ScopeApprovalFullAccess:
+					if req.Kind == localHighRiskApprovalKind {
+						handler.markStickyCodingSessionHighRiskAccess(loopCtx.UserID)
+					} else {
+						handler.markStickyCodingSessionFullAccess(loopCtx.UserID, "", sa.projectPath)
+					}
+					// Path + high-risk both granted → upgrade UI mode to full.
+					handler.maybeUpgradeStickyPermissionModeToFull(loopCtx.UserID)
+				}
+			}
 		})
+		// Trust the user-selected coding workspace + parent (monorepo common case).
+		sa.seedFullEnvironmentWorkspaceApprovals()
+		// Create-task pure coding: apply session-scoped full-access + prior allow_dir grants.
+		// When already fullAccess, sticky overlay is redundant but harmless.
+		if loopCtx != nil {
+			handler.applyStickyCodingPermissions(loopCtx.UserID, sa)
+		}
 	}
 
 	// Wire knowledge stores for experience recall and project doc lookup.

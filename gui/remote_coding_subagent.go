@@ -67,17 +67,33 @@ type RemoteCodingSubAgent struct {
 	// execution paths that are not the user-facing remote coding workflow.
 	sourcePreviewEnabled   bool
 	sourcePreviewSessionID string
+
+	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
+	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
+	nestDepth int
+	// role specializes the SSH tool surface for nested agents (explorer/worker/reviewer).
+	// Empty means worker (full remote coding surface).
+	role codingSubAgentRole
 }
 
 var remoteSourcePreviewSessionSeq atomic.Uint64
 
 // RemoteCodingSubAgentResult is the outcome of a remote task execution.
 type RemoteCodingSubAgentResult struct {
-	Status     string // "success", "failed", "cancelled"
-	Summary    string
-	Error      string
-	Iterations int
-	ToolCalls  int
+	Status        string // "success", "failed", "cancelled"
+	Summary       string
+	Error         string
+	Iterations    int
+	ToolCalls     int
+	InputTokens   int
+	OutputTokens  int
+	EstCostRMB    float64
+	RouteModel    string
+	RouteSource   string
+	RouteTask     string
+	RouteReason   string
+	FilesModified []string
+	FilesCreated  []string
 }
 
 // NewRemoteCodingSubAgent creates a SubAgent bound to an existing SSH session.
@@ -187,97 +203,112 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if r == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding subagent is nil"}
 	}
-	// A remote coding run owns one source-preview session.  Do not attach the
-	// remote project path: it is not a local tab path and must not be used for
-	// frontend routing.
-	if r != nil && r.sourcePreviewEnabled && r.handler != nil && r.handler.app != nil && r.handler.app.codeEventEmitter != nil {
+	// Root remote coding run owns one source-preview session. Nested spawn
+	// children reuse the parent session ID and must not open/close sessions.
+	// Do not attach the remote project path: it is not a local tab path.
+	if r != nil && r.sourcePreviewEnabled && r.nestDepth == 0 && r.handler != nil && r.handler.app != nil && r.handler.app.codeEventEmitter != nil {
 		previewSessionID := r.sourcePreviewSessionID
 		r.handler.app.codeEventEmitter.EmitPreviewSessionStart(previewSessionID)
 		defer r.handler.app.codeEventEmitter.EmitSessionEnd(previewSessionID)
 	}
 	// A new project directory cannot be created through ssh_bash alone because
-	// that tool first changes into workDir. Bootstrap it before the agent loop.
+	// that tool first changes into workDir. Bootstrap it before the agent loop
+	// (root only — nested agents inherit an already-bootstrapped project).
 	if r.handler == nil || strings.TrimSpace(r.sessionID) == "" || strings.TrimSpace(r.projectDir) == "" {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding project context is incomplete"}
 	}
-	bootstrapResult := r.handler.sshExec(map[string]interface{}{
-		"session_id":   r.sessionID,
-		"command":      "mkdir -p -- " + remoteShellQuote(r.projectDir),
-		"wait_seconds": float64(15),
-	})
-	if remoteCodingToolOutcome(bootstrapResult) != "success" {
-		log.Printf("[remote-source-preview] project bootstrap failed session=%q project=%q result=%q", r.sessionID, r.projectDir, truncateRunesV2(bootstrapResult, 300))
-		return &RemoteCodingSubAgentResult{Status: "failed", Error: "无法创建或访问远程项目目录", Summary: bootstrapResult}
+	if r.nestDepth == 0 {
+		bootstrapResult := r.handler.sshExec(map[string]interface{}{
+			"session_id":   r.sessionID,
+			"command":      "mkdir -p -- " + remoteShellQuote(r.projectDir),
+			"wait_seconds": float64(15),
+		})
+		if remoteCodingToolOutcome(bootstrapResult) != "success" {
+			log.Printf("[remote-source-preview] project bootstrap failed session=%q project=%q result=%q", r.sessionID, r.projectDir, truncateRunesV2(bootstrapResult, 300))
+			return &RemoteCodingSubAgentResult{Status: "failed", Error: "无法创建或访问远程项目目录", Summary: bootstrapResult}
+		}
+		log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	}
-	log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	cb := &remoteCodingCallbacks{
 		agent:       r,
 		task:        taskDescription,
 		taskContext: taskContext,
 	}
 
-	result := agent.RunLoop(cb, taskDescription, nil, r.httpClient)
-	cb.completeRemotePostEditAudit()
+	userText := taskDescription
+	userContent := remoteCodingUserContent(r, userText)
+	var result agent.LoopResult
+	if userContent != nil && userContent != userText {
+		result = agent.RunLoopWithUserContent(cb, userText, userContent, nil, r.httpClient)
+	} else {
+		result = agent.RunLoop(cb, userText, nil, r.httpClient)
+	}
+	if r.handler != nil {
+		accumulateLoopResultUsage(r.handler.app, r.cfg, result)
+	}
+	// Explorer/reviewer nested agents do not mutate files — skip write-oriented
+	// post-edit audits (diff re-read / git stat) that would only add noise.
+	if r.role == "" || r.role == codingRoleWorker {
+		cb.completeRemotePostEditAudit()
+	}
 	return cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
 }
 
+func remoteCodingUserContent(r *RemoteCodingSubAgent, userText string) interface{} {
+	if r == nil || r.loopCtx == nil || len(r.loopCtx.CodingAttachments) == 0 {
+		return userText
+	}
+	cfg := r.cfg
+	if hasCodingImageAttachment(r.loopCtx.CodingAttachments) && r.handler != nil {
+		cfg = r.handler.routeLLMConfigForCodingVision(cfg)
+		r.cfg = cfg
+	}
+	protocol := strings.TrimSpace(cfg.Protocol)
+	if protocol == "" {
+		protocol = "openai"
+	}
+	return agent.BuildUserContent(userText, r.loopCtx.CodingAttachments, protocol, cfg.SupportsVision, nil)
+}
+
 func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCodingSubAgentResult {
+	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
+	base := func(status, errText string) *RemoteCodingSubAgentResult {
+		return &RemoteCodingSubAgentResult{
+			Status:       status,
+			Error:        errText,
+			Summary:      result.Text,
+			Iterations:   result.Iterations,
+			ToolCalls:    result.ToolCalls,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			EstCostRMB:   cost,
+			RouteModel:   result.Route.Model,
+			RouteSource:  result.Route.Source,
+			RouteTask:    result.Route.TaskType,
+			RouteReason:  result.Route.Reason,
+		}
+	}
 	if result.Error != "" {
 		status := "failed"
 		if remoteCodingSubAgentLoopErrorIsCancelled(result.Error) {
 			status = "cancelled"
 		}
-		return &RemoteCodingSubAgentResult{
-			Status:     status,
-			Error:      result.Error,
-			Summary:    result.Text,
-			Iterations: result.Iterations,
-			ToolCalls:  result.ToolCalls,
-		}
+		return base(status, result.Error)
 	}
 	if result.HardExit {
-		return &RemoteCodingSubAgentResult{
-			Status:     "failed",
-			Error:      "remote coding subagent hard exit",
-			Summary:    result.Text,
-			Iterations: result.Iterations,
-			ToolCalls:  result.ToolCalls,
-		}
+		return base("failed", "remote coding subagent hard exit")
 	}
 	if result.AskUser != nil {
-		return &RemoteCodingSubAgentResult{
-			Status:     "failed",
-			Error:      "remote coding subagent requires user input",
-			Summary:    result.Text,
-			Iterations: result.Iterations,
-			ToolCalls:  result.ToolCalls,
-		}
+		return base("failed", "remote coding subagent requires user input")
 	}
 	if strings.TrimSpace(result.Text) == "" {
-		return &RemoteCodingSubAgentResult{
-			Status:     "failed",
-			Error:      "remote coding subagent returned empty summary",
-			Summary:    result.Text,
-			Iterations: result.Iterations,
-			ToolCalls:  result.ToolCalls,
-		}
+		return base("failed", "remote coding subagent returned empty summary")
 	}
 	if result.ToolCalls == 0 {
-		return &RemoteCodingSubAgentResult{
-			Status:     "failed",
-			Error:      "remote coding subagent completed without using tools",
-			Summary:    result.Text,
-			Iterations: result.Iterations,
-			ToolCalls:  result.ToolCalls,
-		}
+		return base("failed", "remote coding subagent completed without using tools")
 	}
 
-	return &RemoteCodingSubAgentResult{
-		Status:     "success",
-		Summary:    result.Text,
-		Iterations: result.Iterations,
-		ToolCalls:  result.ToolCalls,
-	}
+	return base("success", "")
 }
 
 func remoteCodingSubAgentLoopErrorIsCancelled(errText string) bool {
@@ -290,6 +321,20 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		return result
 	}
 	filesModified, filesCreated, filesRead, searchesRun, exploredBeforeFirstEdit, commandsRun, lastEditSeq := c.remoteAuditSnapshot()
+	// Surface audit paths for sticky multi-turn memory / UI continuity.
+	result.FilesModified = uniqueSortedSubAgentStrings(filesModified)
+	result.FilesCreated = uniqueSortedSubAgentStrings(filesCreated)
+
+	// Nested explorer/reviewer are inspection-only by tool policy. Do not fail them
+	// for missing post-edit confirmation / git diff / implementation "no change".
+	role := codingRoleWorker
+	if c != nil && c.agent != nil && c.agent.role != "" {
+		role = c.agent.role
+	}
+	if role == codingRoleExplorer || role == codingRoleReviewer {
+		return c.applyRemoteInspectionRoleOutcome(result, filesRead, searchesRun, commandsRun, role)
+	}
+
 	existingModified := existingSubAgentModifiedFiles(filesModified, filesCreated)
 	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingModified, filesRead, searchesRun, exploredBeforeFirstEdit)
 	confirmationStatus, confirmationSummary := c.summarizeRemotePostEditConfirmation(filesModified)
@@ -369,6 +414,42 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	if strings.TrimSpace(commandSummary) != "" {
 		result.Status = "failed"
 		result.Error = compactSubAgentErrorSummary(commandSummary)
+	}
+	return result
+}
+
+// applyRemoteInspectionRoleOutcome evaluates nested explorer/reviewer results:
+// require tool use + a non-empty report; do not require file mutations.
+func (c *remoteCodingCallbacks) applyRemoteInspectionRoleOutcome(
+	result *RemoteCodingSubAgentResult,
+	filesRead []string,
+	searchesRun []CodingSubAgentSearchResult,
+	commandsRun []CodingSubAgentCommandResult,
+	role codingSubAgentRole,
+) *RemoteCodingSubAgentResult {
+	if result == nil {
+		return result
+	}
+	if result.Status != "success" {
+		return result
+	}
+	hasInspection := len(uniqueSortedSubAgentStrings(filesRead)) > 0 ||
+		countSuccessfulSubAgentSearches(searchesRun) > 0 ||
+		len(commandsRun) > 0
+	if result.ToolCalls == 0 || !hasInspection {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("remote %s subagent completed without inspection evidence (ssh_read_file/ssh_bash/ssh_list_dir)", role)
+		return result
+	}
+	if strings.TrimSpace(result.Summary) == "" {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("remote %s subagent returned empty summary", role)
+		return result
+	}
+	// Soft-append a note so the parent spawn aggregator knows this was inspection-only.
+	note := fmt.Sprintf("\n[%s] inspection-only role: skipped write-oriented verification gates", role)
+	if !strings.Contains(result.Summary, note) {
+		result.Summary = strings.TrimSpace(result.Summary) + note
 	}
 	return result
 }
@@ -913,6 +994,11 @@ type remoteCodingCallbacks struct {
 	fileReads      []remoteCodingFileAuditEvent
 	commandsRun    []CodingSubAgentCommandResult
 	searchesRun    []CodingSubAgentSearchResult
+
+	// Local workbench extensions (skills / MCP) for full remote coding env.
+	localExtSelected bool
+	localExtSkills   []codingSubAgentSkillMatch
+	localExtMCP      []codingSubAgentMCPToolMatch
 }
 
 type remoteCodingFileAuditEvent struct {
@@ -928,25 +1014,93 @@ func (c *remoteCodingCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 }
 
 func (c *remoteCodingCallbacks) GetMaxIterations() int {
+	if c != nil && c.agent != nil && c.agent.nestDepth > 0 {
+		role := c.agent.role
+		if role == "" {
+			role = codingRoleWorker
+		}
+		return config.EffectiveMaxIterations(codingSpawnRoleMaxIterations(role))
+	}
 	return config.EffectiveMaxIterations(50)
 }
 
 func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
 	projectDir, workDir, taskContext := "", "", ""
+	nestDepth := 0
+	role := codingRoleWorker
 	if c != nil {
 		taskContext = c.taskContext
 		if c.agent != nil {
 			projectDir = c.agent.projectDir
 			workDir = c.agent.workDir
+			nestDepth = c.agent.nestDepth
+			if c.agent.role != "" {
+				role = c.agent.role
+			}
 		}
 	}
-	prompt := buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
+	var prompt string
+	inspectionRole := nestDepth > 0 && (role == codingRoleExplorer || role == codingRoleReviewer)
+	if nestDepth > 0 {
+		prompt = "## Nested remote coding subagent\n" + codingSpawnRolePromptHint(role) + "\n\n"
+		if inspectionRole {
+			prompt += buildRemoteInspectionRoleSystemPrompt(projectDir, workDir, role, taskContext)
+		} else {
+			prompt += buildNestedFullCodingEnvironmentPromptPreamble()
+			prompt += buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
+		}
+	} else {
+		prompt = buildFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
+	}
 
 	// Inject knowledge from coding experience store + general knowledge store.
 	if sections := c.buildRemoteKnowledgePromptSections(); sections != "" {
 		prompt += sections
 	}
+	// Skills/MCP for root + nested workers only (inspection roles stay lean).
+	if !inspectionRole {
+		prompt += "\n## 本地扩展能力\n远程改码通过 SSH 工具完成；本机 Skill / MCP 仍可调用（manage_skill / call_mcp_tool），用于文档、浏览器自动化等辅助能力。\n"
+		c.ensureLocalWorkbenchExtensions()
+		if section := buildCodingSubAgentSkillSection(c.localExtSkills); section != "" {
+			prompt += section
+		}
+		if section := buildCodingSubAgentMCPSection(c.localExtMCP); section != "" {
+			prompt += section
+		}
+	}
 	return prompt
+}
+
+func (c *remoteCodingCallbacks) ensureLocalWorkbenchExtensions() {
+	if c == nil || c.localExtSelected {
+		return
+	}
+	c.localExtSelected = true
+	if c.agent == nil || c.agent.handler == nil {
+		return
+	}
+	// Reuse local CodingSubAgent skill/MCP selection in full-environment mode.
+	sa := &CodingSubAgent{handler: c.agent.handler, fullEnvironment: true}
+	cb := &codingSubAgentCallbacks{
+		subagent: sa,
+		task:     &TaskItem{Index: 1, Title: c.task, Description: c.task},
+	}
+	c.localExtSkills = cb.selectRelevantSkillsForTask(c.task)
+	c.localExtMCP = cb.selectRelevantMCPToolsForTask(c.task)
+}
+
+func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbacks {
+	if c == nil || c.agent == nil {
+		return nil
+	}
+	c.ensureLocalWorkbenchExtensions()
+	sa := &CodingSubAgent{handler: c.agent.handler, fullEnvironment: true}
+	return &codingSubAgentCallbacks{
+		subagent:        sa,
+		task:            &TaskItem{Index: 1, Title: c.task, Description: c.task},
+		matchedSkills:   c.localExtSkills,
+		matchedMCPTools: c.localExtMCP,
+	}
 }
 
 func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interface{} {
@@ -958,6 +1112,35 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	}
 	if c != nil && c.agent != nil && c.agent.generalKB != nil {
 		tools = append(tools, knowledgeSearchToolDef())
+	}
+	// Full workbench extras (local research helpers) available during remote coding too.
+	tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+	// /goal lifecycle on pure remote coding root (not nested inspection agents).
+	if c != nil && c.agent != nil && c.agent.nestDepth == 0 {
+		tools = append(tools, buildCodingGoalToolDefinition())
+	}
+
+	role := codingRoleWorker
+	if c != nil && c.agent != nil && c.agent.role != "" {
+		role = c.agent.role
+	}
+	inspectionRole := c != nil && c.agent != nil && c.agent.nestDepth > 0 &&
+		(role == codingRoleExplorer || role == codingRoleReviewer)
+	if !inspectionRole {
+		c.ensureLocalWorkbenchExtensions()
+		if len(c.localExtSkills) > 0 {
+			tools = append(tools, buildManageSkillToolDefinition())
+		}
+		if len(c.localExtMCP) > 0 {
+			tools = append(tools, buildCallMCPToolDefinition())
+		}
+	}
+	// Codex-style nested subagents on pure remote coding workbench root.
+	if c != nil && c.agent != nil && c.agent.canSpawnRemoteCodingAgent() {
+		tools = append(tools, buildSpawnCodingAgentToolDefinition())
+	}
+	if c != nil && c.agent != nil {
+		tools = filterRemoteCodingToolsForRole(tools, c.agent)
 	}
 	return tools
 }
@@ -1066,6 +1249,15 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		result = "remote coding subagent: agent unavailable"
 		return result
 	}
+	// Nested role policy (explorer/reviewer) enforced at execution time too.
+	toolCheckName := canonicalName
+	if toolCheckName == "" {
+		toolCheckName = name
+	}
+	if !c.agent.remoteToolAllowedForRole(toolCheckName) {
+		result = fmt.Sprintf("tool %s is not available for nested role %q", name, c.agent.role)
+		return result
+	}
 
 	switch canonicalName {
 	case "coding_knowledge_search":
@@ -1074,10 +1266,59 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	case "knowledge_search":
 		result = c.executeRemoteKnowledgeSearch(normalizedArgsJSON)
 		return result
+	case "manage_skill":
+		if local := c.localWorkbenchCallbacks(); local != nil {
+			result = local.executeManageSkill(args).Text
+			return result
+		}
+		result = "manage_skill unavailable"
+		return result
+	case "call_mcp_tool":
+		if local := c.localWorkbenchCallbacks(); local != nil {
+			result = local.executeCallMCPTool(args).Text
+			return result
+		}
+		result = "call_mcp_tool unavailable"
+		return result
+	case "web_search":
+		if c.agent.handler != nil {
+			result = c.agent.handler.toolWebSearch(args)
+			return result
+		}
+		result = "web_search unavailable"
+		return result
+	case "web_fetch":
+		if c.agent.handler != nil {
+			result = c.agent.handler.toolWebFetch(args)
+			return result
+		}
+		result = "web_fetch unavailable"
+		return result
+	case "current_datetime":
+		result = formatBtwCurrentDateTime()
+		return result
+	case "goal":
+		if c.agent != nil && c.agent.handler != nil {
+			userID := ""
+			if c.agent.loopCtx != nil {
+				userID = strings.TrimSpace(c.agent.loopCtx.UserID)
+			}
+			if userID == "" {
+				result = "goal unavailable: remote coding session owner is missing (loopCtx.UserID empty)"
+				return result
+			}
+			result = c.agent.handler.toolGoalForUser(userID, args)
+			return result
+		}
+		result = "goal unavailable"
+		return result
+	case codingSubAgentSpawnToolName:
+		result = c.executeSpawnRemoteCodingAgent(args)
+		return result
 	}
 
 	if !remoteCodingToolRequiresSSHHandler(canonicalName) {
-		result = fmt.Sprintf("unknown tool: %s (supports: ssh_read_file, ssh_write_file, ssh_edit_file, ssh_bash, ssh_list_dir, ssh_check_task, coding_knowledge_search, knowledge_search)", name)
+		result = fmt.Sprintf("unknown tool: %s (supports: ssh_*, spawn_coding_agent, goal, manage_skill, call_mcp_tool, knowledge search)", name)
 		return result
 	}
 	if c.agent.handler == nil {
@@ -1434,6 +1675,52 @@ func (s *remoteHighRiskApprovalState) configure(callback ScopeApprovalCallback, 
 	s.pathFullAccess = fullAccess
 }
 
+// grantHighRiskFullAccess enables high-risk bash auto-allow without changing path trust.
+func (s *remoteHighRiskApprovalState) grantHighRiskFullAccess() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.highRiskFullAccess = true
+	s.mu.Unlock()
+}
+
+// grantPathFullAccess enables path auto-allow (no out-of-scope prompts).
+func (s *remoteHighRiskApprovalState) grantPathFullAccess() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.pathFullAccess = true
+	s.mu.Unlock()
+}
+
+func rememberRemoteScopeStickyDecision(handler *IMMessageHandler, loopCtx *LoopContext, req ScopeApprovalRequest, decision ScopeApprovalDecision) {
+	if handler == nil || decision != ScopeApprovalFullAccess {
+		return
+	}
+	userID := ""
+	if loopCtx != nil {
+		userID = strings.TrimSpace(loopCtx.UserID)
+	}
+	if userID == "" {
+		return
+	}
+	switch req.Kind {
+	case remoteHighRiskApprovalKind, localHighRiskApprovalKind:
+		// Session-scoped high-risk trust for pure coding multi-turn continuity.
+		handler.markStickyCodingSessionHighRiskAccess(userID)
+	default:
+		// Path/dir full access for remote path prompts → session path trust.
+		handler.markStickyCodingSessionFullAccess(userID, "remote", req.ProjectPath)
+		if dir := strings.TrimSpace(req.Directory); dir != "" {
+			handler.rememberStickyApprovedDir(userID, dir)
+		}
+	}
+	// If path + high-risk are both set, upgrade sticky mode so UI shows 完全控制.
+	handler.maybeUpgradeStickyPermissionModeToFull(userID)
+}
+
 func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *LoopContext, onProgress func(string)) ScopeApprovalCallback {
 	return func(req ScopeApprovalRequest) ScopeApprovalDecision {
 		if loopCtx != nil && loopCtx.IsCancelled() {
@@ -1454,6 +1741,7 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 			select {
 			case decision := <-responseCh:
 				recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
+				rememberRemoteScopeStickyDecision(handler, loopCtx, req, decision)
 				if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 					handler.app.persistSubAgentFullAccess()
 				}
@@ -1475,6 +1763,7 @@ func buildRemoteHighRiskApprovalCallback(handler *IMMessageHandler, loopCtx *Loo
 		select {
 		case decision := <-responseCh:
 			recordScopeApprovalAudit(handler, approvalID, req, decision, "user")
+			rememberRemoteScopeStickyDecision(handler, loopCtx, req, decision)
 			if shouldPersistRemoteScopeFullAccess(req, decision) && handler != nil && handler.app != nil {
 				handler.app.persistSubAgentFullAccess()
 			}
@@ -2350,6 +2639,39 @@ func remoteScopeRejection(toolName, path, projectPath string) string {
 }
 
 // --- System Prompt ---
+
+// buildRemoteInspectionRoleSystemPrompt is for nested explorer/reviewer agents:
+// read/diagnose only — no write-oriented quality workflow.
+func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codingSubAgentRole, taskContext string) string {
+	var sb strings.Builder
+	sb.WriteString("# Remote Inspection SubAgent\n\n")
+	if role == codingRoleReviewer {
+		sb.WriteString("你是远程审查/验证子代理：只读探查 + shell 检查，禁止写文件。\n\n")
+	} else {
+		sb.WriteString("你是远程探索子代理：只读探查远程代码与环境，禁止写文件。\n\n")
+	}
+	sb.WriteString(fmt.Sprintf("## 环境信息\n- 远程项目目录: %s\n- 工作目录: %s\n\n", projectDir, workDir))
+	sb.WriteString(`## 可用工具
+- ssh_read_file / ssh_list_dir：读取与列目录
+- ssh_bash：探索/诊断/验证命令（不要用 shell 改写文件或 Git 工作区）
+`)
+	if role == codingRoleReviewer {
+		sb.WriteString("- ssh_check_task：跟进后台长任务\n")
+	}
+	sb.WriteString(`
+## 工作规范
+1. 先定位相关路径与符号，再深入阅读关键文件
+2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）
+3. 完成后给出结构化发现：关键路径、结论、风险/建议
+4. 禁止写文件或改仓库状态；只输出发现与建议
+`)
+	if strings.TrimSpace(taskContext) != "" {
+		sb.WriteString("\n## 任务上下文\n\n")
+		sb.WriteString(taskContext)
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
 
 func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) string {
 	var sb strings.Builder

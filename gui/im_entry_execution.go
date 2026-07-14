@@ -230,16 +230,92 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 	if remoteRaw, isRemoteCodingTemplate := h.pendingTemplateRemoteCoding.LoadAndDelete(msg.UserID); isRemoteCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
 		remoteCtx, _ := remoteRaw.(remoteCodingTemplateContext)
-		log.Printf("[workflow-v2] remote_coding_subagent execution: user=%s session=%s project=%s request_id=%s", msg.UserID, remoteCtx.SessionID, remoteCtx.ProjectDir, requestID)
-		return h.runRemoteCodingTemplateSubAgent(msg.UserID, agentLoopUserText, remoteCtx, loopCtx, onProgress, onToken), true
+		// Attach images/files for this pure-coding turn (vision-capable models).
+		if loopCtx != nil && len(msg.Attachments) > 0 {
+			loopCtx.CodingAttachments = append([]MessageAttachment(nil), msg.Attachments...)
+		}
+		log.Printf("[workflow-v2] pure remote coding execution: user=%s session=%s project=%s request_id=%s attachments=%d", msg.UserID, remoteCtx.SessionID, remoteCtx.ProjectDir, requestID, len(msg.Attachments))
+		resp := h.runRemoteCodingTemplateSubAgent(msg.UserID, agentLoopUserText, remoteCtx, loopCtx, onProgress, onToken)
+		if loopCtx != nil {
+			loopCtx.CodingAttachments = nil
+		}
+		// Multi-turn full workbench: re-arm so follow-up messages stay in RemoteCodingSubAgent.
+		h.rearmStickyRemoteCodingEnvironment(msg.UserID, remoteCtx)
+		return resp, true
 	}
 	if projectPathRaw, isCodingTemplate := h.pendingTemplateCodingProjectPath.LoadAndDelete(msg.UserID); isCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
 		projectPath, _ := projectPathRaw.(string)
-		log.Printf("[workflow-v2] coding_subagent execution: user=%s project=%s request_id=%s", msg.UserID, projectPath, requestID)
-		return h.runCodingTemplateSubAgent(msg.UserID, agentLoopUserText, projectPath, loopCtx, onProgress, onToken), true
+		if loopCtx != nil && len(msg.Attachments) > 0 {
+			loopCtx.CodingAttachments = append([]MessageAttachment(nil), msg.Attachments...)
+		}
+		log.Printf("[workflow-v2] pure coding execution: user=%s project=%s request_id=%s attachments=%d", msg.UserID, projectPath, requestID, len(msg.Attachments))
+		resp := h.runCodingTemplateSubAgent(msg.UserID, agentLoopUserText, projectPath, loopCtx, onProgress, onToken)
+		if loopCtx != nil {
+			loopCtx.CodingAttachments = nil
+		}
+		// Multi-turn full workbench: re-arm so follow-up messages stay in CodingSubAgent.
+		h.rearmStickyLocalCodingEnvironment(msg.UserID, projectPath)
+		return resp, true
 	}
 	return nil, false
+}
+
+// rearmStickyLocalCodingEnvironment keeps pure local coding sessions multi-turn
+// (Claude Code–style continuous coding chat) after each SubAgent completion.
+func (h *IMMessageHandler) rearmStickyLocalCodingEnvironment(userID, projectPath string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if userID == "" || projectPath == "" {
+		return
+	}
+	h.pendingTemplateRemoteCoding.Delete(userID)
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingTemplateCodingProjectPath.Store(userID, projectPath)
+	h.workflowAgentLoopMarker.Store(userID, true)
+	// Keep durable memory in sync for reopen-after-restart (skip disk when hot-path unchanged).
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.Kind != "local" || normalizeProjectSessionPath(mem.ProjectPath) != projectPath {
+		mem.Kind = "local"
+		mem.ProjectPath = projectPath
+		h.storeStickyCodingWorkbenchMemory(userID, mem)
+	}
+	log.Printf("[coding-env] re-armed sticky local coding session user=%s project=%s", userID, projectPath)
+}
+
+// rearmStickyRemoteCodingEnvironment keeps pure remote coding sessions multi-turn.
+func (h *IMMessageHandler) rearmStickyRemoteCodingEnvironment(userID string, remoteCtx remoteCodingTemplateContext) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" || strings.TrimSpace(remoteCtx.SessionID) == "" {
+		return
+	}
+	h.pendingTemplateCodingProjectPath.Delete(userID)
+	h.pendingV2SubAgentExecution.Store(userID, true)
+	h.pendingTemplateRemoteCoding.Store(userID, remoteCtx)
+	h.workflowAgentLoopMarker.Store(userID, true)
+	h.bindStickyRemoteCodingContext(userID, remoteCtx, "", "", 0)
+	log.Printf("[coding-env] re-armed sticky remote coding session user=%s session=%s project=%s", userID, remoteCtx.SessionID, remoteCtx.ProjectDir)
+}
+
+// clearStickyCodingEnvironment drops multi-turn coding bindings for a user session.
+func (h *IMMessageHandler) clearStickyCodingEnvironment(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	h.pendingV2SubAgentExecution.Delete(userID)
+	h.pendingTemplateCodingProjectPath.Delete(userID)
+	h.pendingTemplateRemoteCoding.Delete(userID)
+	h.clearStickyCodingWorkbenchMemory(userID)
 }
 
 func sanitizeWorkflowDocPhaseResponseText(resp *IMAgentResponse, loopCtx *LoopContext, phaseID string) bool {

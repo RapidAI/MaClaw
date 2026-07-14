@@ -103,6 +103,7 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(screen.getByTestId("ai-plus-menu-new-conversation")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-goal")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-btw")).toBeTruthy();
+        expect(screen.getByTestId("ai-plus-menu-moa")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-loop")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-memory")).toBeTruthy();
         expect(screen.getByTestId("ai-plus-menu-compress")).toBeTruthy();
@@ -128,7 +129,7 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(onPlusMenuAction).not.toHaveBeenCalled();
     });
 
-    it("selects goal and btw compose modes", () => {
+    it("selects goal, btw, and moa compose modes", () => {
         const onComposeActionChange = vi.fn();
         renderLeft({ onComposeActionChange });
 
@@ -139,6 +140,10 @@ describe("AssistantInputActionsLeft plus menu", () => {
         fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
         fireEvent.click(screen.getByTestId("ai-plus-menu-btw"));
         expect(onComposeActionChange).toHaveBeenCalledWith("btw");
+
+        fireEvent.click(screen.getByTestId("ai-plus-menu-button"));
+        fireEvent.click(screen.getByTestId("ai-plus-menu-moa"));
+        expect(onComposeActionChange).toHaveBeenCalledWith("moa");
     });
 
     it("inserts the loop template", () => {

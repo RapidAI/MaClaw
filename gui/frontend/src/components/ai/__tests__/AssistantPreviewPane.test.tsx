@@ -64,6 +64,8 @@ const emptyCodePreviewState = {
     sessionID: 'session-1',
     sessionActive: true,
     userClosed: false,
+    pinnedPaths: [] as string[],
+    mruOrder: [] as string[],
 };
 
 const activeEmptyCodePreviewState = {
@@ -78,6 +80,8 @@ const activeCodePreviewState = {
     sessionID: 'session-1',
     sessionActive: true,
     userClosed: false,
+    pinnedPaths: [] as string[],
+    mruOrder: [file.filePath],
 };
 
 const agentView = {
@@ -273,11 +277,175 @@ describe('AssistantPreviewPane', () => {
 
         expect(screen.getByRole('tab', { name: 'Agent Task' })).toBeTruthy();
         expect(screen.getByRole('tab', { name: 'Source' })).toBeTruthy();
+        // Agent form wins initial focus so the submit UI is visible.
+        expect(screen.getByRole('tab', { name: 'Agent Task' }).getAttribute('aria-selected')).toBe('true');
 
         fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
 
         expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('aria-selected')).toBe('true');
         expect(screen.getByText('answer')).toBeTruthy();
+    });
+
+    it('does not steal focus from an open agent form when source preview becomes active', () => {
+        const { rerender } = render(
+            <AssistantPreviewPane
+                agentView={agentView}
+                codePreviewState={emptyCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                dismissAgentView={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={true}
+                showCodePreview={false}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                submitAgentView={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByTestId('agent-task-panel')).toBeTruthy();
+
+        rerender(
+            <AssistantPreviewPane
+                agentView={agentView}
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                dismissAgentView={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={true}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                submitAgentView={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByRole('tab', { name: 'Agent Task' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('agent-task-panel')).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Source' })).toBeTruthy();
+    });
+
+    it('switches to agent form when it opens over an active source preview', () => {
+        const { rerender } = render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        // Single-mode code preview has no mode tab rail — content is enough.
+        expect(screen.getByText('answer')).toBeTruthy();
+        expect(screen.queryByRole('tab', { name: 'Agent Task' })).toBeNull();
+
+        rerender(
+            <AssistantPreviewPane
+                agentView={agentView}
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                dismissAgentView={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={true}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                submitAgentView={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByRole('tab', { name: 'Agent Task' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('agent-task-panel')).toBeTruthy();
+        // Source remains available as a secondary mode tab.
+        expect(screen.getByRole('tab', { name: 'Source' })).toBeTruthy();
+    });
+
+    it('tabs Conflicts with Source and prefers Conflicts when newly opened', () => {
+        const onCloseConflict = vi.fn();
+        const { rerender } = render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                showConflict={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.queryByRole('tab', { name: 'Conflicts' })).toBeNull();
+        expect(screen.getByText('answer')).toBeTruthy();
+
+        rerender(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                showConflict={true}
+                conflictCount={2}
+                conflictContent={<div data-testid="coding-conflict-side-panel">conflict body</div>}
+                onCloseConflict={onCloseConflict}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                themeMode="light"
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByRole('tab', { name: /Conflicts/ }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByTestId('coding-conflict-side-panel')).toBeTruthy();
+        expect(screen.getByTestId('assistant-preview-conflict-badge').textContent).toBe('2');
+
+        fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
+        expect(screen.getByRole('tab', { name: 'Source' }).getAttribute('aria-selected')).toBe('true');
+        expect(screen.getByText('answer')).toBeTruthy();
+        // Conflict panel stays mounted (hidden) when switching tabs.
+        expect(screen.getByTestId('assistant-preview-conflict-slot').getAttribute('aria-hidden')).toBe('true');
+
+        fireEvent.click(screen.getByRole('tab', { name: /Conflicts/ }));
+        expect(screen.getByRole('tab', { name: /Conflicts/ }).getAttribute('aria-selected')).toBe('true');
+        // Attribute omitted when CF is the active tab.
+        expect(screen.getByTestId('assistant-preview-conflict-slot').getAttribute('aria-hidden')).toBeNull();
     });
 
     it('supports keyboard switching between preview tabs', () => {

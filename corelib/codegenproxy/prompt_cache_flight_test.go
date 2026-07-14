@@ -182,3 +182,13 @@ func TestStorePromptCacheChatPayloadAllowsToolCalls(t *testing.T) {
 		t.Fatalf("get after store: err=%v entry=%v", err, entry)
 	}
 }
+
+func TestResolvePromptCacheKeyIgnoresCodexTracingFields(t *testing.T) {
+	first := []byte(`{"model":"m","messages":[{"role":"user","content":"same"}],"user":"request-a","metadata":{"trace_id":"a"}}`)
+	second := []byte(`{"model":"m","messages":[{"role":"user","content":"same"}],"user":"request-b","metadata":{"trace_id":"b"}}`)
+	firstKey, firstReason := resolvePromptCacheKey(first, "m", "m")
+	secondKey, secondReason := resolvePromptCacheKey(second, "m", "m")
+	if firstReason != "" || secondReason != "" || firstKey == "" || firstKey != secondKey {
+		t.Fatalf("keys = %q (%s), %q (%s)", firstKey, firstReason, secondKey, secondReason)
+	}
+}

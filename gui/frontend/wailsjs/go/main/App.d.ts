@@ -212,6 +212,93 @@ export function CreateRecentTaskWithWorkingDir(arg1:string,arg2:string):Promise<
 
 export function CreateTask(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
 
+export function CreateTaskWithMode(arg1:string,arg2:string,arg3:string):Promise<main.ProjectSearchResult>;
+
+export function CreateRemoteCodingTask(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<main.ProjectSearchResult>;
+export function GetRemoteCodingTaskMeta(arg1:string):Promise<{host?:string;user?:string;port?:number;work_dir?:string}>;
+export function UpdateRemoteCodingTaskMeta(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
+export function TestRemoteSSHConnection(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<string>;
+
+export function PrepareLocalCodingEnvironment(arg1:string,arg2:string):Promise<void>;
+
+export function PrepareRemoteCodingEnvironment(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
+
+export function EnsureCodingWorkbenchArmed(arg1:string):Promise<main.CodingWorkbenchStatus>;
+
+export function GetCodingWorkbenchStatus(arg1:string):Promise<main.CodingWorkbenchStatus>;
+
+export function GetCodingWorkbenchPermission(arg1:string):Promise<string>;
+
+export function SetCodingWorkbenchPermission(arg1:string,arg2:string):Promise<void>;
+
+export function SetCodingWorkbenchSessionPlan(arg1:string,arg2:string):Promise<void>;
+
+export function GetCodingWorkbenchPlanMode(arg1:string):Promise<string>;
+
+export function SetCodingWorkbenchPlanMode(arg1:string,arg2:string):Promise<void>;
+
+export function ApproveCodingWorkbenchPlan(arg1:string):Promise<void>;
+
+export function RejectCodingWorkbenchPlan(arg1:string):Promise<void>;
+export function GetCodingWorkbenchPendingPlan(arg1:string):Promise<any>;
+export function UpdateCodingWorkbenchPendingPlan(arg1:string,arg2:string):Promise<any>;
+
+export function SaveCodingWorkbenchCheckpoint(arg1:string,arg2:string):Promise<string>;
+
+export function RestoreCodingWorkbenchCheckpoint(arg1:string):Promise<string>;
+
+export function RestoreCodingWorkbenchCheckpointEx(arg1:string,arg2:boolean):Promise<string>;
+export function RestoreCodingWorkbenchCheckpointByLabel(arg1:string,arg2:string,arg3:boolean):Promise<string>;
+export function ListCodingWorkbenchCheckpoints(arg1:string):Promise<Array<any>>;
+
+export function KeepMainCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function AdoptBaseCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function ResolveCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
+export function ApplyCodingWorkbenchConflictPreviewSide(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
+export function WriteCodingWorkbenchConflictFileContent(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
+export function OpenCodingWorkbenchConflictFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function SetCodingWorkbenchConflictUIState(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function GetCodingWorkbenchConflictFilePreview(arg1:string,arg2:string,arg3:string,arg4:string):Promise<any>;
+
+export function GetCodingWorkbenchConflictFileTriple(arg1:string,arg2:string,arg3:string):Promise<any>;
+
+export function ClearCodingWorkbenchConflictLog(arg1:string):Promise<void>;
+
+export function ExportCodingWorkbenchConflictLog(arg1:string):Promise<string>;
+
+export function GetCodingWorkbenchRouteMap(arg1:string):Promise<Array<any>>;
+
+export function PruneCodingWorkbenchCheckpoints(arg1:string):Promise<string>;
+
+export function GetCodingWorkbenchCheckpointSidecarStats(arg1:string):Promise<any>;
+
+export function RunCodingWorkbenchBackgroundVerify(arg1:string):Promise<string>;
+
+export function GetCodingWorkbenchWorktreeMode(arg1:string):Promise<string>;
+
+export function SetCodingWorkbenchWorktreeMode(arg1:string,arg2:string):Promise<void>;
+
+export function GetCodingWorkbenchRoutePref(arg1:string):Promise<string>;
+
+export function SetCodingWorkbenchRoutePref(arg1:string,arg2:string):Promise<void>;
+
+export function ListCodingWorkbenchConflicts(arg1:string):Promise<Array<any>>;
+
+export function GetCodingWorkbenchConflictDiffs(arg1:string,arg2:string):Promise<Array<any>>;
+
+export function AdoptCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function DiscardCodingWorkbenchConflict(arg1:string,arg2:string):Promise<string>;
+
+export function DiscardAllCodingWorkbenchConflicts(arg1:string):Promise<string>;
+
 export function ForkRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
 
 export function ForkConversationToProject(arg1:string):Promise<void>;
@@ -570,6 +657,18 @@ export function GetOpenAIUsage():Promise<any>;
 export function GetMaclawAgentMaxIterations():Promise<number>;
 
 export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;
+
+export function GetMoAConfig():Promise<any>;
+
+export function SaveMoAConfig(arg1:any):Promise<void>;
+
+export function GetMoASessionState():Promise<any>;
+
+export function SetMoASticky(arg1:boolean):Promise<void>;
+
+export function SetMoAStickyPreset(arg1:string):Promise<void>;
+
+export function GetMoAStats():Promise<any>;
 
 export function GetSubAgentConcurrency():Promise<number>;
 
@@ -1054,6 +1153,14 @@ export function KnowledgeSyncUpload(arg1:any):Promise<any>;
 
 export function KnowledgeSyncVerifyPassword(arg1:any):Promise<any>;
 
+export function WelcomeSyncStatus(arg1:any):Promise<any>;
+
+export function WelcomeSyncPush(arg1:any):Promise<any>;
+
+export function WelcomeSyncPull(arg1:any):Promise<any>;
+
+export function WelcomeSyncDelete(arg1:any):Promise<any>;
+
 export function KnowledgeListSources(arg1:any):Promise<Array<any>>;
 
 export function KnowledgeListSourceLabels(arg1:any):Promise<Array<any>>;
@@ -1245,6 +1352,8 @@ export function DownloadMaclawAppPackageFromHub(arg1:string):Promise<any>;
 export function InstallMaclawAppPackageFromHub(arg1:string):Promise<any>;
 export function InstallSelectedMaclawAppPackageFromHub(arg1:string,arg2:Array<string>):Promise<any>;
 export function SubmitMaclawAppPackage(arg1:string):Promise<any>;
+export function PublishMaclawAppOneClick(arg1:string):Promise<any>;
+export function PublishMaclawAppSubmissionOneClick(arg1:string):Promise<any>;
 export function ListMaclawAppPackageSubmissions(arg1:number):Promise<Array<any>>;
 export function GetMaclawAppPackageSubmission(arg1:string):Promise<any>;
 export function SyncMaclawAppPackageSubmissionToHub(arg1:string):Promise<any>;

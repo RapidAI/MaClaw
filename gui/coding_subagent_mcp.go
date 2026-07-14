@@ -24,9 +24,14 @@ const (
 	// into the SubAgent's context per task.
 	codingSubAgentMaxMCPTools = 5
 
+	// Full coding environment allows a broader MCP tool surface.
+	codingSubAgentFullEnvMaxMCPTools = 16
+
 	// codingSubAgentMCPScoreThreshold is the minimum relevance score for an
 	// MCP tool to be considered relevant to the current task.
 	codingSubAgentMCPScoreThreshold = 0.15
+
+	codingSubAgentFullEnvMCPScoreThreshold = 0.05
 )
 
 // codingSubAgentMCPToolMatch is an MCP tool that matched the current task.
@@ -56,8 +61,20 @@ func (c *codingSubAgentCallbacks) selectRelevantMCPToolsForTask(taskDescription 
 		return nil
 	}
 
-	if len(strings.TrimSpace(taskDescription)) == 0 {
-		return nil
+	fullEnv := c.subagent.isFullEnvironment()
+	maxK := codingSubAgentMaxMCPTools
+	threshold := codingSubAgentMCPScoreThreshold
+	if fullEnv {
+		maxK = codingSubAgentFullEnvMaxMCPTools
+		threshold = codingSubAgentFullEnvMCPScoreThreshold
+	}
+
+	taskForScore := strings.TrimSpace(taskDescription)
+	if taskForScore == "" {
+		if !fullEnv {
+			return nil
+		}
+		taskForScore = "software development coding testing browser automation tools"
 	}
 
 	// Flatten all MCP tools into candidates.
@@ -95,7 +112,24 @@ func (c *codingSubAgentCallbacks) selectRelevantMCPToolsForTask(taskDescription 
 
 	// Three-signal scoring via shared infrastructure.
 	emb := getSubAgentEmbedder(c.subagent.handler)
-	scored := scoreAndSelectTopK(taskDescription, docs, emb, codingSubAgentMaxMCPTools, codingSubAgentMCPScoreThreshold)
+	scored := scoreAndSelectTopK(taskForScore, docs, emb, maxK, threshold)
+
+	if fullEnv && len(scored) < maxK {
+		picked := make(map[int]bool, len(scored))
+		for _, s := range scored {
+			picked[s.Idx] = true
+		}
+		for i := range candidates {
+			if len(scored) >= maxK {
+				break
+			}
+			if picked[i] {
+				continue
+			}
+			scored = append(scored, scoredCandidate{Idx: i, Score: 0})
+			picked[i] = true
+		}
+	}
 
 	if len(scored) == 0 {
 		return nil
@@ -122,8 +156,8 @@ func (c *codingSubAgentCallbacks) selectRelevantMCPToolsForTask(taskDescription 
 	for i, r := range results {
 		names[i] = fmt.Sprintf("%s/%s(%.2f)", r.ServerName, r.ToolName, r.Score)
 	}
-	log.Printf("[coding-subagent] MCP tool selection: task=%q candidates=%d matched=%s",
-		truncateLogText(taskDescription, 60), len(candidates), strings.Join(names, ", "))
+	log.Printf("[coding-subagent] MCP tool selection: task=%q full_env=%v candidates=%d matched=%s",
+		truncateLogText(taskDescription, 60), fullEnv, len(candidates), strings.Join(names, ", "))
 
 	return results
 }

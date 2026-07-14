@@ -9,19 +9,59 @@
  *   5. DiffView for files with original content (using computeDiff)
  *   6. Scroll position preservation on content update
  *
+ * Split modules:
+ *   - codePreviewFindHelpers.ts  pure find / prefs / language helpers
+ *   - CodePreviewMarkdown.tsx    markdown renderer
+ *   - CodePreviewPanel.tsx       this file (shell + code/diff views)
+ *
  * Uses inline styles based on theme props (no CSS modules).
  */
-import React, { useLayoutEffect, useMemo, useRef } from 'react';
-import { FileTabBar } from './FileTabBar';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { FileTabBar, cycleFilePath } from './FileTabBar';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
+import { getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
 import { computeDiff } from './diffCompute';
 import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
+import { MarkdownPreview } from './CodePreviewMarkdown';
+import {
+    CODE_PREVIEW_FONT_DEFAULT,
+    CODE_PREVIEW_FONT_MAX,
+    CODE_PREVIEW_FONT_MIN,
+    clampCodePreviewFontSize,
+    codePreviewLineHeight,
+    compileFindMatcher,
+    cycleMatchIndex,
+    formatCodeLanguageLabel,
+    loadCodePreviewViewPrefs,
+    parseGoToLineInput,
+    saveCodePreviewViewPrefs,
+    type CodePreviewViewPrefs,
+    type FindMatchOptions,
+} from './codePreviewFindHelpers';
 
-// ── Re-export theme type for convenience ──
+// Re-export public helpers / types so existing imports from CodePreviewPanel keep working.
 export type { CodePreviewTheme } from './FileTabBar';
+export type { CodePreviewViewPrefs, FindMatchOptions } from './codePreviewFindHelpers';
+export {
+    CODE_PREVIEW_FONT_DEFAULT,
+    CODE_PREVIEW_FONT_MAX,
+    CODE_PREVIEW_FONT_MIN,
+    CODE_PREVIEW_VIEW_PREFS_KEY,
+    clampCodePreviewFontSize,
+    codePreviewLineHeight,
+    compileFindMatcher,
+    cycleMatchIndex,
+    defaultCodePreviewViewPrefs,
+    escapeRegExp,
+    findMatchLineIndexes,
+    formatCodeLanguageLabel,
+    loadCodePreviewViewPrefs,
+    parseGoToLineInput,
+    saveCodePreviewViewPrefs,
+} from './codePreviewFindHelpers';
 
 // ── Theme Constants ──
 
@@ -74,17 +114,39 @@ export const lightCodePreviewTheme: CodePreviewTheme = {
     syntaxType: '#2f5f98',
     syntaxOperator: '#334155',
 };
-
 // ── Props ──
 
 export interface CodePreviewPanelProps {
     files: Map<string, CodeFile>;
     activeFilePath: string;
+    pinnedPaths?: string[];
+    mruOrder?: string[];
     onSelectFile: (filePath: string) => void;
+    /** Close a single file tab (VS Code-style). */
+    onCloseFile?: (filePath: string) => void;
+    onCloseOtherFiles?: (keepPath: string) => void;
+    onCloseFilesToTheRight?: (fromPath: string) => void;
+    onCloseAllFiles?: () => void;
+    onMoveFile?: (fromPath: string, toIndex: number) => void;
+    onTogglePinFile?: (filePath: string) => void;
     onClose: () => void;
     onResizeStart?: () => void;
+    /** Double-click header (outside interactive targets) toggles window maximize. */
+    onToggleMaximize?: () => void;
     theme: CodePreviewTheme;
     lang?: string;
+}
+
+/** Skip maximize when double-clicking interactive header controls / tab bar. */
+function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTarget: HTMLElement): boolean {
+    if (!(target instanceof HTMLElement) || target === currentTarget) return false;
+    return !!target.closest('button, a, input, select, textarea, [role="button"], [role="tab"], [data-preview-no-maximize="true"]');
+}
+
+/** True when the file should render with the markdown preview (case-insensitive). */
+function isMarkdownLanguage(language: string | undefined | null): boolean {
+    const key = (language || '').trim().toLowerCase();
+    return key === 'markdown' || key === 'md';
 }
 
 // ── Syntax color mapping ──
@@ -106,7 +168,10 @@ function tokenColor(type: HighlightToken['type'], theme: CodePreviewTheme): stri
 
 // ── Highlighted Line Renderer ──
 
-function HighlightedLine({ line, language, theme }: {
+/** Stable empty match list — avoids child re-renders when find is closed. */
+const EMPTY_MATCH_LINE_INDEXES: number[] = [];
+
+const HighlightedLine = React.memo(function HighlightedLine({ line, language, theme }: {
     line: string;
     language: string;
     theme: CodePreviewTheme;
@@ -124,433 +189,331 @@ function HighlightedLine({ line, language, theme }: {
             ))}
         </>
     );
-}
-
-// ── Markdown Preview ──
-
-/** Detect a pipe-delimited table row */
-function isMdPreviewTableRow(line: string): boolean {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('|') && trimmed.length > 1) return true;
-    if (!trimmed.includes('|')) return false;
-    // At least 2 cells when split by unescaped pipes
-    return parseMdPreviewTableCells(trimmed).length >= 2;
-}
-
-/** Detect a separator row like |---|---| or |:---:|---:| */
-function isMdPreviewSeparatorRow(line: string): boolean {
-    const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-    return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes('-');
-}
-
-/** Parse cells from a pipe-delimited row */
-function parseMdPreviewTableCells(line: string): string[] {
-    let trimmed = line.trim();
-    if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-    if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-    return trimmed.split('|').map(c => c.trim());
-}
-
-/** Render a markdown table as an HTML <table> */
-function renderMdPreviewTable(tableLines: string[], key: number, theme: CodePreviewTheme): React.ReactNode | null {
-    const dataRows = tableLines.filter(l => !isMdPreviewSeparatorRow(l));
-    if (dataRows.length === 0 || tableLines.length < 2) return null;
-    // Need a separator or all rows must start with |
-    const hasSeparator = tableLines.some(isMdPreviewSeparatorRow);
-    const allOuterPipes = tableLines.every(l => l.trim().startsWith('|'));
-    if (!hasSeparator && !allOuterPipes) return null;
-
-    const headerCells = parseMdPreviewTableCells(dataRows[0]);
-    if (headerCells.length < 2) return null;
-    const bodyRows = dataRows.slice(1);
-
-    // Parse column alignments from separator row
-    const separatorLine = tableLines.find(isMdPreviewSeparatorRow) || '';
-    const alignments = parseMdPreviewTableCells(separatorLine).map(cell => {
-        const m = cell.trim();
-        const left = m.startsWith(':');
-        const right = m.endsWith(':');
-        if (left && right) return 'center' as const;
-        if (right) return 'right' as const;
-        return 'left' as const;
-    });
-
-    const cellStyle: React.CSSProperties = {
-        border: `1px solid ${theme.border}`,
-        padding: '6px 10px',
-        fontSize: 13,
-        lineHeight: 1.5,
-        verticalAlign: 'top',
-    };
-
-    return (
-        <div key={key} style={{ overflowX: 'auto', margin: '8px 0' }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%', color: theme.text }}>
-                <thead>
-                    <tr>
-                        {headerCells.map((cell, ci) => (
-                            <th key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left', fontWeight: 600, background: theme.lineNumBg }}>
-                                {renderMdInline(cell, theme)}
-                            </th>
-                        ))}
-                    </tr>
-                </thead>
-                {bodyRows.length > 0 && (
-                    <tbody>
-                        {bodyRows.map((row, ri) => {
-                            const cells = parseMdPreviewTableCells(row);
-                            return (
-                                <tr key={ri} style={{ background: ri % 2 === 1 ? theme.lineNumBg : undefined }}>
-                                    {headerCells.map((_, ci) => (
-                                        <td key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left' }}>
-                                            {renderMdInline(cells[ci] || '', theme)}
-                                        </td>
-                                    ))}
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                )}
-            </table>
-        </div>
-    );
-}
-
-function MarkdownPreview({ content, theme }: { content: string; theme: CodePreviewTheme }) {
-    const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    const elements: React.ReactNode[] = [];
-    let i = 0;
-    let tableLines: string[] = [];
-
-    const flushTable = () => {
-        if (tableLines.length === 0) return;
-        const rendered = renderMdPreviewTable(tableLines, elements.length, theme);
-        if (rendered) {
-            elements.push(rendered);
-        } else {
-            for (const tl of tableLines) {
-                elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(tl, theme)}</p>);
-            }
-        }
-        tableLines = [];
-    };
-
-    while (i < lines.length) {
-        const line = lines[i];
-
-        // Code blocks - detect ``` or ~~~ fences (with optional leading whitespace)
-        const fenceMatch = line.match(/^(\s*)(```|~~~)/);
-        if (fenceMatch) {
-            flushTable();
-            const fence = fenceMatch[2];
-            const lang = line.slice(fenceMatch[0].length).trim();
-            const codeLines: string[] = [];
-            i++;
-            while (i < lines.length) {
-                if (lines[i].trimStart().startsWith(fence) && lines[i].trim() === fence) {
-                    break;
-                }
-                codeLines.push(lines[i]);
-                i++;
-            }
-            if (i < lines.length) i++; // skip closing fence (only if found)
-            elements.push(
-                <pre key={elements.length} style={{ background: theme.lineNumBg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
-                    <code style={{ color: theme.text, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
-                        {lang && <span style={{ color: theme.textMuted, fontSize: 11, display: 'block', marginBottom: 4 }}>{lang}</span>}
-                        {codeLines.join('\n')}
-                    </code>
-                </pre>
-            );
-            continue;
-        }
-
-        // Table rows: collect consecutive pipe-delimited lines
-        if (isMdPreviewTableRow(line)) {
-            tableLines.push(line);
-            i++;
-            continue;
-        }
-
-        // Non-table line - flush any pending table
-        flushTable();
-
-        // Headings (# through ######)
-        const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
-        if (headingMatch) {
-            const level = headingMatch[1].length;
-            const sizes: Record<number, number> = { 1: 22, 2: 18, 3: 15, 4: 14, 5: 13, 6: 12 };
-            const margins: Record<number, string> = { 1: '16px 0 8px', 2: '14px 0 6px', 3: '12px 0 4px', 4: '10px 0 4px', 5: '8px 0 3px', 6: '8px 0 3px' };
-            elements.push(
-                <div key={elements.length} style={{ fontSize: sizes[level], fontWeight: level <= 2 ? 700 : 600, margin: margins[level], color: theme.tabActiveText, borderBottom: level <= 2 ? `1px solid ${theme.border}` : undefined, paddingBottom: level <= 2 ? 4 : undefined }}>
-                    {renderMdInline(headingMatch[2], theme)}
-                </div>
-            );
-            i++;
-            continue;
-        }
-
-        // Multi-line blockquote - collect consecutive > lines
-        if (line.startsWith('>') || line.startsWith('> ')) {
-            const quoteLines: string[] = [];
-            while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>' || lines[i].startsWith('>'))) {
-                quoteLines.push(lines[i].replace(/^>\s?/, ''));
-                i++;
-            }
-            elements.push(
-                <blockquote key={elements.length} style={{ borderLeft: `1px solid ${theme.border}`, paddingLeft: 12, margin: '6px 0', color: theme.textMuted, fontStyle: 'italic', lineHeight: 1.6 }}>
-                    {quoteLines.map((ql, qi) => (
-                        <div key={qi}>{ql.trim() === '' ? <br /> : renderMdInline(ql, theme)}</div>
-                    ))}
-                </blockquote>
-            );
-            continue;
-        }
-
-        // Task list: - [ ] or - [x] or * [ ] or * [x] - collect consecutive items
-        const taskMatch = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
-        if (taskMatch) {
-            const taskItems: { checked: boolean; text: string }[] = [];
-            while (i < lines.length) {
-                const tm = lines[i].match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)/);
-                if (!tm) break;
-                taskItems.push({ checked: tm[1].toLowerCase() === 'x', text: tm[2] });
-                i++;
-            }
-            elements.push(
-                <div key={elements.length} style={{ margin: '4px 0', paddingLeft: 4 }}>
-                    {taskItems.map((item, ti) => (
-                        <div key={ti} style={{ paddingLeft: 12, margin: '2px 0', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                            <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: theme.textMuted }}>{item.checked ? "DONE" : "TODO"}</span>
-                            <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1 }}>{renderMdInline(item.text, theme)}</span>
-                        </div>
-                    ))}
-                </div>
-            );
-            continue;
-        }
-
-        // Unordered list - collect consecutive items (supports indentation for nesting)
-        if (/^\s*[-*+]\s/.test(line)) {
-            const listItems: { indent: number; text: string }[] = [];
-            while (i < lines.length && /^\s*[-*+]\s/.test(lines[i])) {
-                const m = lines[i].match(/^(\s*)[-*+]\s+(.*)/);
-                if (m) {
-                    listItems.push({ indent: m[1].length, text: m[2] });
-                }
-                i++;
-            }
-            const baseIndent = Math.min(...listItems.map(it => it.indent));
-            elements.push(
-                <ul key={elements.length} style={{ margin: '4px 0', paddingLeft: 20, listStyleType: 'disc' }}>
-                    {listItems.map((item, li) => (
-                        <li key={li} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
-                            {renderMdInline(item.text, theme)}
-                        </li>
-                    ))}
-                </ul>
-            );
-            continue;
-        }
-
-        // Ordered list - collect consecutive numbered items
-        if (/^\s*\d+[.)]\s/.test(line)) {
-            const olItems: { indent: number; num: string; text: string }[] = [];
-            while (i < lines.length && /^\s*\d+[.)]\s/.test(lines[i])) {
-                const m = lines[i].match(/^(\s*)(\d+)[.)]\s+(.*)/);
-                if (m) {
-                    olItems.push({ indent: m[1].length, num: m[2], text: m[3] });
-                }
-                i++;
-            }
-            const baseIndent = Math.min(...olItems.map(it => it.indent));
-            elements.push(
-                <ol key={elements.length} style={{ margin: '4px 0', paddingLeft: 20 }}>
-                    {olItems.map((item, li) => (
-                        <li key={li} value={parseInt(item.num, 10)} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
-                            {renderMdInline(item.text, theme)}
-                        </li>
-                    ))}
-                </ol>
-            );
-            continue;
-        }
-
-        // Horizontal rule
-        if (/^[-*_]{3,}\s*$/.test(line.trim()) && !line.trim().startsWith('|')) {
-            elements.push(<hr key={elements.length} style={{ border: 'none', borderTop: `1px solid ${theme.border}`, margin: '12px 0' }} />);
-            i++;
-            continue;
-        }
-
-        // Image on its own line: ![alt](url)
-        const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-        if (imgMatch) {
-            elements.push(
-                <div key={elements.length} style={{ margin: '8px 0', textAlign: 'center' }}>
-                    <img src={imgMatch[2]} alt={imgMatch[1]} style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${theme.border}` }} />
-                    {imgMatch[1] && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 4 }}>{imgMatch[1]}</div>}
-                </div>
-            );
-            i++;
-            continue;
-        }
-
-        // Definition list: term followed by : definition
-        if (i + 1 < lines.length && line.trim() !== '' && /^\s*:\s+/.test(lines[i + 1])) {
-            const term = line.trim();
-            const defs: string[] = [];
-            i++;
-            while (i < lines.length && /^\s*:\s+/.test(lines[i])) {
-                defs.push(lines[i].replace(/^\s*:\s+/, ''));
-                i++;
-            }
-            elements.push(
-                <dl key={elements.length} style={{ margin: '6px 0' }}>
-                    <dt style={{ fontWeight: 600 }}>{renderMdInline(term, theme)}</dt>
-                    {defs.map((d, di) => (
-                        <dd key={di} style={{ marginLeft: 20, margin: '2px 0 2px 20px', color: theme.text }}>{renderMdInline(d, theme)}</dd>
-                    ))}
-                </dl>
-            );
-            continue;
-        }
-
-        // Empty line
-        if (line.trim() === '') {
-            elements.push(<div key={elements.length} style={{ height: 8 }} />);
-            i++;
-            continue;
-        }
-
-        // Default: paragraph
-        elements.push(<p key={elements.length} style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
-        i++;
-    }
-    flushTable();
-    return (
-        <div style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: theme.text, fontFamily: 'inherit', wordBreak: 'break-word' }}>
-            {elements}
-        </div>
-    );
-}
-
-function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode {
-    const parts: React.ReactNode[] = [];
-    // Order matters: longer/more specific patterns first.
-    // Patterns: inline code, bold+italic (***), bold (**), strikethrough (~~),
-    //           highlight (==), image (![]()), link ([]()), italic (*)
-    // NOTE: italic(*) requires non-space after opening * and before closing * to avoid
-    //       matching multiplication like "2 * 3 * 4".
-    //       Underscore italic (_) is NOT supported to avoid false positives in identifiers.
-    const re = /(`[^`]+`|\*\*\*(?!\s)(?:[^*]|\*(?!\*\*))+\*\*\*|\*\*(?!\*)(?:[^*]|\*(?!\*))+\*\*|~~[^~]+~~|==[^=]+==|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|\*(?!\s|\*)[^*]+(?<!\s)\*)/g;
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-    let key = 0;
-    while ((match = re.exec(text)) !== null) {
-        if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
-        const m = match[0];
-        if (m.startsWith('`')) {
-            // Inline code
-            parts.push(<code key={key++} style={{ background: theme.lineNumBg, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: theme.syntaxString }}>{m.slice(1, -1)}</code>);
-        } else if (m.startsWith('***') && m.endsWith('***')) {
-            // Bold + italic — recurse into inner content for nested formatting
-            parts.push(<strong key={key++}><em>{renderMdInline(m.slice(3, -3), theme)}</em></strong>);
-        } else if (m.startsWith('**')) {
-            // Bold — recurse into inner content for nested formatting
-            parts.push(<strong key={key++}>{renderMdInline(m.slice(2, -2), theme)}</strong>);
-        } else if (m.startsWith('~~')) {
-            // Strikethrough — recurse into inner content
-            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{renderMdInline(m.slice(2, -2), theme)}</del>);
-        } else if (m.startsWith('==')) {
-            // Highlight — recurse into inner content
-            parts.push(<mark key={key++} style={{ background: theme.tabHoverBg, color: theme.tabActiveText, padding: '0 2px', borderRadius: 2 }}>{renderMdInline(m.slice(2, -2), theme)}</mark>);
-        } else if (m.startsWith('![')) {
-            // Inline image
-            const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-            if (imgM) parts.push(<img key={key++} src={imgM[2]} alt={imgM[1]} style={{ maxHeight: 200, verticalAlign: 'middle', borderRadius: 3 }} />);
-            else parts.push(m);
-        } else if (m.startsWith('[')) {
-            // Link
-            const linkMatch = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-            if (linkMatch) parts.push(<span key={key++} style={{ color: theme.syntaxFunction, textDecoration: 'underline', cursor: 'pointer' }}>{linkMatch[1]}</span>);
-            else parts.push(m);
-        } else if (m.startsWith('*') && m.endsWith('*')) {
-            // Italic
-            parts.push(<em key={key++}>{m.slice(1, -1)}</em>);
-        } else {
-            parts.push(m);
-        }
-        lastIndex = match.index + m.length;
-    }
-    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-    return <>{parts}</>;
-}
-
+});
 // ── Plain Code View ──
 
-function PlainCodeView({ content, language, theme }: {
+const PlainCodeView = React.memo(function PlainCodeView({
+    content,
+    language,
+    theme,
+    matchLineIndexes = EMPTY_MATCH_LINE_INDEXES,
+    activeMatchLine = -1,
+    wordWrap = false,
+    fontSize = CODE_PREVIEW_FONT_DEFAULT,
+}: {
     content: string;
     language: string;
     theme: CodePreviewTheme;
+    matchLineIndexes?: number[];
+    activeMatchLine?: number;
+    wordWrap?: boolean;
+    fontSize?: number;
 }) {
-    const lines = content.split('\n');
+    // Same split semantics as the panel's contentLines ('' → one empty visual line).
+    const lines = useMemo(() => content.split('\n'), [content]);
+    const matchSet = useMemo(() => new Set(matchLineIndexes), [matchLineIndexes]);
+    const size = clampCodePreviewFontSize(fontSize);
+    const lineHeight = codePreviewLineHeight(size);
 
     return (
-        <table style={{
-            borderCollapse: 'collapse',
-            width: '100%',
-            fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
-            fontSize: 13,
-            lineHeight: '20px',
-        }}>
+        <table
+            data-testid="code-preview-plain-view"
+            data-word-wrap={wordWrap ? 'true' : 'false'}
+            data-font-size={String(size)}
+            style={{
+                borderCollapse: 'collapse',
+                width: '100%',
+                fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+                fontSize: size,
+                lineHeight: `${lineHeight}px`,
+            }}
+        >
             <tbody>
-                {lines.map((line, idx) => (
-                    <tr key={idx}>
-                        <td style={{
-                            width: 50,
-                            minWidth: 50,
-                            textAlign: 'right',
-                            paddingRight: 12,
-                            paddingLeft: 8,
-                            color: theme.lineNumText,
-                            backgroundColor: theme.lineNumBg,
-                            userSelect: 'none',
-                            verticalAlign: 'top',
-                            borderRight: `1px solid ${theme.border}`,
-                        }}>
-                            {idx + 1}
-                        </td>
-                        <td style={{
-                            paddingLeft: 12,
-                            paddingRight: 8,
-                            whiteSpace: 'pre',
-                            color: theme.text,
-                            textAlign: 'left',
-                        }}>
-                            <HighlightedLine line={line} language={language} theme={theme} />
-                        </td>
-                    </tr>
-                ))}
+                {lines.map((line, idx) => {
+                    const isMatch = matchSet.has(idx);
+                    const isActiveMatch = idx === activeMatchLine;
+                    const rowBg = isActiveMatch
+                        ? 'rgba(234, 179, 8, 0.28)'
+                        : isMatch
+                            ? 'rgba(234, 179, 8, 0.12)'
+                            : undefined;
+                    return (
+                        <tr
+                            key={idx}
+                            data-line={idx + 1}
+                            data-find-match={isMatch ? 'true' : undefined}
+                            data-find-active={isActiveMatch ? 'true' : undefined}
+                            style={{ backgroundColor: rowBg }}
+                        >
+                            <td style={{
+                                width: 50,
+                                minWidth: 50,
+                                textAlign: 'right',
+                                paddingRight: 12,
+                                paddingLeft: 8,
+                                color: theme.lineNumText,
+                                backgroundColor: rowBg ?? theme.lineNumBg,
+                                userSelect: 'none',
+                                verticalAlign: 'top',
+                                borderRight: `1px solid ${theme.border}`,
+                            }}>
+                                {idx + 1}
+                            </td>
+                            <td style={{
+                                paddingLeft: 12,
+                                paddingRight: 8,
+                                whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                                wordBreak: wordWrap ? 'break-word' : undefined,
+                                overflowWrap: wordWrap ? 'anywhere' : undefined,
+                                color: theme.text,
+                                textAlign: 'left',
+                            }}>
+                                <HighlightedLine line={line} language={language} theme={theme} />
+                            </td>
+                        </tr>
+                    );
+                })}
             </tbody>
         </table>
+    );
+});
+
+// ── Find bar ──
+
+function CodePreviewFindBar({
+    query,
+    matchCount,
+    activeIndex,
+    theme,
+    lang,
+    caseSensitive,
+    wholeWord,
+    useRegex,
+    regexError,
+    onQueryChange,
+    onToggleCase,
+    onToggleWord,
+    onToggleRegex,
+    onNext,
+    onPrev,
+    onClose,
+    inputRef,
+}: {
+    query: string;
+    matchCount: number;
+    activeIndex: number;
+    theme: CodePreviewTheme;
+    lang: string;
+    caseSensitive: boolean;
+    wholeWord: boolean;
+    useRegex: boolean;
+    regexError: string | null;
+    onQueryChange: (q: string) => void;
+    onToggleCase: () => void;
+    onToggleWord: () => void;
+    onToggleRegex: () => void;
+    onNext: () => void;
+    onPrev: () => void;
+    onClose: () => void;
+    inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+    const isZh = lang.startsWith('zh');
+    const isZhHant = lang === 'zh-Hant';
+    const counter = regexError
+        ? (isZh ? '正则无效' : 'Invalid regex')
+        : matchCount === 0
+            ? (isZh ? '无结果' : 'No results')
+            : `${Math.min(activeIndex + 1, matchCount)} / ${matchCount}`;
+
+    const optBtn = (active: boolean): React.CSSProperties => ({
+        border: `1px solid ${active ? theme.tabActiveText : theme.border}`,
+        background: active ? theme.tabActiveBg : theme.bg,
+        color: active ? theme.tabActiveText : theme.textMuted,
+        borderRadius: 4,
+        padding: '2px 6px',
+        cursor: 'pointer',
+        fontSize: 11,
+        fontWeight: active ? 700 : 500,
+        fontFamily: 'inherit',
+        lineHeight: '18px',
+        flexShrink: 0,
+    });
+
+    return (
+        <div
+            data-testid="code-preview-find-bar"
+            style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                padding: '4px 10px 6px',
+                borderBottom: `1px solid ${theme.border}`,
+                background: theme.tabBg,
+                flexShrink: 0,
+            }}
+        >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                    ref={inputRef as React.RefObject<HTMLInputElement>}
+                    data-testid="code-preview-find-input"
+                    type="text"
+                    value={query}
+                    onChange={(e) => onQueryChange(e.target.value)}
+                    placeholder={isZhHant ? '在檔案中尋找…' : isZh ? '在文件中查找…' : 'Find in file…'}
+                    style={{
+                        flex: 1,
+                        minWidth: 0,
+                        border: `1px solid ${regexError ? theme.diffDeleteText : theme.border}`,
+                        borderRadius: 4,
+                        padding: '4px 8px',
+                        fontSize: 12,
+                        background: theme.bg,
+                        color: theme.text,
+                        outline: 'none',
+                        fontFamily: 'inherit',
+                    }}
+                />
+                <span
+                    data-testid="code-preview-find-count"
+                    style={{
+                        fontSize: 11,
+                        color: regexError ? theme.diffDeleteText : theme.textMuted,
+                        whiteSpace: 'nowrap',
+                        minWidth: 64,
+                        textAlign: 'right',
+                    }}
+                >
+                    {counter}
+                </span>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-case"
+                    data-active={caseSensitive ? 'true' : 'false'}
+                    onClick={onToggleCase}
+                    title={isZh ? '区分大小写' : 'Match Case'}
+                    style={optBtn(caseSensitive)}
+                >
+                    Aa
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-word"
+                    data-active={wholeWord ? 'true' : 'false'}
+                    onClick={onToggleWord}
+                    title={isZh ? '全词匹配' : 'Match Whole Word'}
+                    style={optBtn(wholeWord)}
+                >
+                    W
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-regex"
+                    data-active={useRegex ? 'true' : 'false'}
+                    onClick={onToggleRegex}
+                    title={isZh ? '使用正则表达式' : 'Use Regular Expression'}
+                    style={optBtn(useRegex)}
+                >
+                    {'.*'}
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-prev"
+                    onClick={onPrev}
+                    title={isZh ? '上一个 (Shift+Enter)' : 'Previous (Shift+Enter)'}
+                    style={{
+                        border: `1px solid ${theme.border}`,
+                        background: theme.bg,
+                        color: theme.text,
+                        borderRadius: 4,
+                        padding: '2px 8px',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                    }}
+                >
+                    ↑
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-next"
+                    onClick={onNext}
+                    title={isZh ? '下一个 (Enter)' : 'Next (Enter)'}
+                    style={{
+                        border: `1px solid ${theme.border}`,
+                        background: theme.bg,
+                        color: theme.text,
+                        borderRadius: 4,
+                        padding: '2px 8px',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                    }}
+                >
+                    ↓
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-close"
+                    onClick={onClose}
+                    title="Esc"
+                    style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: theme.textMuted,
+                        borderRadius: 4,
+                        padding: '2px 6px',
+                        cursor: 'pointer',
+                        fontSize: 14,
+                    }}
+                >
+                    {'\u00d7'}
+                </button>
+            </div>
+            {regexError && (
+                <div
+                    data-testid="code-preview-find-regex-error"
+                    style={{ fontSize: 11, color: theme.diffDeleteText, lineHeight: 1.3 }}
+                >
+                    {regexError}
+                </div>
+            )}
+        </div>
     );
 }
 
 // ── Diff View ──
 
-function DiffView({ diffLines, theme }: {
+const DiffView = React.memo(function DiffView({
+    diffLines,
+    theme,
+    matchLineIndexes = EMPTY_MATCH_LINE_INDEXES,
+    activeMatchLine = -1,
+    wordWrap = false,
+    fontSize = CODE_PREVIEW_FONT_DEFAULT,
+}: {
     diffLines: DiffLine[];
     theme: CodePreviewTheme;
+    /** 0-based line indexes in the *new* file content. */
+    matchLineIndexes?: number[];
+    activeMatchLine?: number;
+    wordWrap?: boolean;
+    fontSize?: number;
 }) {
+    const matchSet = useMemo(() => new Set(matchLineIndexes), [matchLineIndexes]);
+    const size = clampCodePreviewFontSize(fontSize);
+    const lineHeight = codePreviewLineHeight(size);
+
     return (
-        <table style={{
-            borderCollapse: 'collapse',
-            width: '100%',
-            fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
-            fontSize: 13,
-            lineHeight: '20px',
-        }}>
+        <table
+            data-testid="code-preview-diff-view"
+            data-word-wrap={wordWrap ? 'true' : 'false'}
+            data-font-size={String(size)}
+            style={{
+                borderCollapse: 'collapse',
+                width: '100%',
+                fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+                fontSize: size,
+                lineHeight: `${lineHeight}px`,
+            }}
+        >
             <tbody>
                 {diffLines.map((dl, idx) => {
                     let rowBg: string | undefined;
@@ -567,8 +530,25 @@ function DiffView({ diffLines, theme }: {
                         prefix = '-';
                     }
 
+                    // Find highlights target new-file lines (add / unchanged).
+                    const contentLineIdx = dl.newLineNum != null ? dl.newLineNum - 1 : -1;
+                    const isMatch = contentLineIdx >= 0 && matchSet.has(contentLineIdx);
+                    const isActiveMatch = contentLineIdx >= 0 && contentLineIdx === activeMatchLine;
+                    if (isActiveMatch) {
+                        rowBg = 'rgba(234, 179, 8, 0.28)';
+                    } else if (isMatch) {
+                        rowBg = 'rgba(234, 179, 8, 0.12)';
+                    }
+
                     return (
-                        <tr key={idx} style={{ backgroundColor: rowBg }}>
+                        <tr
+                            key={idx}
+                            data-line={dl.newLineNum ?? undefined}
+                            data-diff-idx={idx}
+                            data-find-match={isMatch ? 'true' : undefined}
+                            data-find-active={isActiveMatch ? 'true' : undefined}
+                            style={{ backgroundColor: rowBg }}
+                        >
                             {/* Old line number */}
                             <td style={{
                                 width: 40,
@@ -613,7 +593,9 @@ function DiffView({ diffLines, theme }: {
                             <td style={{
                                 paddingLeft: 4,
                                 paddingRight: 8,
-                                whiteSpace: 'pre',
+                                whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                                wordBreak: wordWrap ? 'break-word' : undefined,
+                                overflowWrap: wordWrap ? 'anywhere' : undefined,
                                 color: rowColor,
                                 textAlign: 'left',
                             }}>
@@ -625,6 +607,213 @@ function DiffView({ diffLines, theme }: {
             </tbody>
         </table>
     );
+});
+
+/** Compact view toolbar: wrap + font zoom. */
+function CodePreviewViewToolbar({
+    wordWrap,
+    fontSize,
+    theme,
+    lang,
+    onToggleWrap,
+    onZoomIn,
+    onZoomOut,
+    onZoomReset,
+}: {
+    wordWrap: boolean;
+    fontSize: number;
+    theme: CodePreviewTheme;
+    lang: string;
+    onToggleWrap: () => void;
+    onZoomIn: () => void;
+    onZoomOut: () => void;
+    onZoomReset: () => void;
+}) {
+    const isZh = lang.startsWith('zh');
+    const isZhHant = lang === 'zh-Hant';
+    const btnStyle: React.CSSProperties = {
+        border: `1px solid ${theme.border}`,
+        background: theme.bg,
+        color: theme.textMuted,
+        borderRadius: 4,
+        padding: '1px 6px',
+        cursor: 'pointer',
+        fontSize: 11,
+        lineHeight: '18px',
+        fontFamily: 'inherit',
+        flexShrink: 0,
+    };
+    return (
+        <div
+            data-testid="code-preview-view-toolbar"
+            data-preview-no-maximize="true"
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                marginLeft: 4,
+                flexShrink: 0,
+            }}
+        >
+            <button
+                type="button"
+                data-testid="code-preview-wrap-toggle"
+                data-active={wordWrap ? 'true' : 'false'}
+                onClick={onToggleWrap}
+                title={isZhHant ? '自動換行 (Alt+Z)' : isZh ? '自动换行 (Alt+Z)' : 'Toggle Word Wrap (Alt+Z)'}
+                style={{
+                    ...btnStyle,
+                    background: wordWrap ? theme.tabActiveBg : theme.bg,
+                    color: wordWrap ? theme.tabActiveText : theme.textMuted,
+                    fontWeight: wordWrap ? 600 : 400,
+                }}
+            >
+                {isZh ? '换行' : 'Wrap'}
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-zoom-out"
+                onClick={onZoomOut}
+                disabled={fontSize <= CODE_PREVIEW_FONT_MIN}
+                title={isZh ? '缩小 (Ctrl+-)' : 'Zoom Out (Ctrl+-)'}
+                style={{
+                    ...btnStyle,
+                    opacity: fontSize <= CODE_PREVIEW_FONT_MIN ? 0.45 : 1,
+                    cursor: fontSize <= CODE_PREVIEW_FONT_MIN ? 'default' : 'pointer',
+                }}
+            >
+                A-
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-zoom-reset"
+                onClick={onZoomReset}
+                title={isZh ? '重置字号 (Ctrl+0)' : 'Reset Zoom (Ctrl+0)'}
+                style={{ ...btnStyle, minWidth: 36 }}
+            >
+                {fontSize}
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-zoom-in"
+                onClick={onZoomIn}
+                disabled={fontSize >= CODE_PREVIEW_FONT_MAX}
+                title={isZh ? '放大 (Ctrl+=)' : 'Zoom In (Ctrl+=)'}
+                style={{
+                    ...btnStyle,
+                    opacity: fontSize >= CODE_PREVIEW_FONT_MAX ? 0.45 : 1,
+                    cursor: fontSize >= CODE_PREVIEW_FONT_MAX ? 'default' : 'pointer',
+                }}
+            >
+                A+
+            </button>
+        </div>
+    );
+}
+
+// ── Go to line bar ──
+
+function CodePreviewGoToLineBar({
+    value,
+    maxLines,
+    theme,
+    lang,
+    onChange,
+    onSubmit,
+    onClose,
+    inputRef,
+}: {
+    value: string;
+    maxLines: number;
+    theme: CodePreviewTheme;
+    lang: string;
+    onChange: (v: string) => void;
+    onSubmit: () => void;
+    onClose: () => void;
+    inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+    const isZh = lang.startsWith('zh');
+    const isZhHant = lang === 'zh-Hant';
+    return (
+        <div
+            data-testid="code-preview-goto-bar"
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 10px',
+                borderBottom: `1px solid ${theme.border}`,
+                background: theme.tabBg,
+                flexShrink: 0,
+            }}
+        >
+            <span style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
+                {isZhHant ? '前往行' : isZh ? '转到行' : 'Go to Line'}
+            </span>
+            <input
+                ref={inputRef as React.RefObject<HTMLInputElement>}
+                data-testid="code-preview-goto-input"
+                type="text"
+                inputMode="numeric"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        onSubmit();
+                    }
+                }}
+                placeholder={isZh ? `1–${maxLines}` : `1–${maxLines}`}
+                style={{
+                    width: 96,
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: 4,
+                    padding: '4px 8px',
+                    fontSize: 12,
+                    background: theme.bg,
+                    color: theme.text,
+                    outline: 'none',
+                    fontFamily: 'inherit',
+                }}
+            />
+            <span style={{ fontSize: 11, color: theme.textMuted, flex: 1 }}>
+                {isZhHant ? `共 ${maxLines} 行` : isZh ? `共 ${maxLines} 行` : `${maxLines} lines`}
+            </span>
+            <button
+                type="button"
+                data-testid="code-preview-goto-go"
+                onClick={onSubmit}
+                style={{
+                    border: `1px solid ${theme.border}`,
+                    background: theme.bg,
+                    color: theme.text,
+                    borderRadius: 4,
+                    padding: '2px 10px',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                }}
+            >
+                {isZh ? '跳转' : 'Go'}
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-goto-close"
+                onClick={onClose}
+                title="Esc"
+                style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: theme.textMuted,
+                    borderRadius: 4,
+                    padding: '2px 6px',
+                    cursor: 'pointer',
+                    fontSize: 14,
+                }}
+            >
+                {'\u00d7'}
+            </button>
+        </div>
+    );
 }
 
 // ── Main Component ──
@@ -632,15 +821,73 @@ function DiffView({ diffLines, theme }: {
 export function CodePreviewPanel({
     files,
     activeFilePath,
+    pinnedPaths,
+    mruOrder,
     onSelectFile,
+    onCloseFile,
+    onCloseOtherFiles,
+    onCloseFilesToTheRight,
+    onCloseAllFiles,
+    onMoveFile,
+    onTogglePinFile,
     onClose,
     onResizeStart,
+    onToggleMaximize,
     theme,
     lang = 'en',
 }: CodePreviewPanelProps) {
+    const handleHeaderDoubleClick = (event: React.MouseEvent<HTMLElement>) => {
+        if (isPreviewHeaderInteractiveTarget(event.target, event.currentTarget)) return;
+        onToggleMaximize?.();
+    };
     const scrollRef = useRef<HTMLDivElement>(null);
+    const findInputRef = useRef<HTMLInputElement>(null);
+    const gotoInputRef = useRef<HTMLInputElement>(null);
     const savedScrollTop = useRef<number>(0);
     const prevContentRef = useRef<string>('');
+    const scrollFlashTimerRef = useRef<number | null>(null);
+    const scrollFlashElRef = useRef<HTMLElement | null>(null);
+    const scrollFlashPrevOutlineRef = useRef({ outline: '', offset: '' });
+    const gotoRafRef = useRef<number | null>(null);
+    const focusRafRef = useRef<number | null>(null);
+    /** Bumps to invalidate in-flight double-rAF focus chains (cancel only kills one id). */
+    const focusGenRef = useRef(0);
+    const lastScrolledLineRef = useRef<number | null>(null);
+
+    const [findOpen, setFindOpen] = useState(false);
+    const [findQuery, setFindQuery] = useState('');
+    const [findIndex, setFindIndex] = useState(0);
+    const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+    const [findWholeWord, setFindWholeWord] = useState(false);
+    const [findUseRegex, setFindUseRegex] = useState(false);
+    const [gotoOpen, setGotoOpen] = useState(false);
+    const [gotoValue, setGotoValue] = useState('');
+    // Track which file the find/goto UI state belongs to so a tab switch can
+    // reset during render (avoids one paint with the previous file's find index).
+    const [findUiFilePath, setFindUiFilePath] = useState(activeFilePath);
+    if (findUiFilePath !== activeFilePath) {
+        setFindUiFilePath(activeFilePath);
+        setFindIndex(0);
+        setGotoOpen(false);
+        setGotoValue('');
+    }
+    // Single localStorage read for both fields (shared across the two useState inits).
+    const initialViewPrefsRef = useRef<CodePreviewViewPrefs | null>(null);
+    if (initialViewPrefsRef.current === null) {
+        initialViewPrefsRef.current = loadCodePreviewViewPrefs();
+    }
+    const [wordWrap, setWordWrap] = useState(() => initialViewPrefsRef.current!.wordWrap);
+    const [fontSize, setFontSize] = useState(() => initialViewPrefsRef.current!.fontSize);
+    const skipNextPrefsSaveRef = useRef(true);
+
+    // Persist view prefs when wrap/font change; skip the mount effect write-back.
+    useEffect(() => {
+        if (skipNextPrefsSaveRef.current) {
+            skipNextPrefsSaveRef.current = false;
+            return;
+        }
+        saveCodePreviewViewPrefs({ wordWrap, fontSize });
+    }, [wordWrap, fontSize]);
 
     const activeFile = files.get(activeFilePath);
 
@@ -650,26 +897,358 @@ export function CodePreviewPanel({
         // diff against it would imply changes across the unseen remainder.
         if (activeFile?.original === undefined || activeFile.previewTruncated) return null;
         return computeDiff(activeFile.original, activeFile.content);
-    }, [activeFile?.original, activeFile?.content]);
+    }, [activeFile?.original, activeFile?.content, activeFile?.previewTruncated]);
 
     const currentContent = activeFile?.content ?? '';
+    // Split once; shared by line count, find scan, and go-to-line bounds.
+    // Keep editor semantics: '' is still one empty visual line (matches PlainCodeView).
+    const contentLines = useMemo(() => currentContent.split('\n'), [currentContent]);
+    const totalLines = activeFile ? contentLines.length : 0;
 
-    // Save scroll position before DOM update, restore after re-render
+    const findOptions = useMemo<FindMatchOptions>(() => ({
+        caseSensitive: findCaseSensitive,
+        wholeWord: findWholeWord,
+        useRegex: findUseRegex,
+    }), [findCaseSensitive, findUseRegex, findWholeWord]);
+
+    // Compile once per query/options change; reuse for error display + line scan.
+    const findCompiled = useMemo(
+        () => (findOpen ? compileFindMatcher(findQuery, findOptions) : null),
+        [findOpen, findOptions, findQuery],
+    );
+
+    const findRegexError = findCompiled && !findCompiled.ok ? findCompiled.error : null;
+
+    const matchLineIndexes = useMemo(() => {
+        if (!findOpen || !findCompiled || !findCompiled.ok) return EMPTY_MATCH_LINE_INDEXES;
+        // Skip full-file scan when the query is effectively empty.
+        const hasQuery = findUseRegex ? findQuery.length > 0 : findQuery.trim().length > 0;
+        if (!hasQuery) return EMPTY_MATCH_LINE_INDEXES;
+        const matches: number[] = [];
+        for (let i = 0; i < contentLines.length; i++) {
+            if (findCompiled.test(contentLines[i])) matches.push(i);
+        }
+        return matches.length === 0 ? EMPTY_MATCH_LINE_INDEXES : matches;
+    }, [contentLines, findCompiled, findOpen, findQuery, findUseRegex]);
+
+    const activeMatchLine = matchLineIndexes.length > 0
+        ? matchLineIndexes[Math.min(Math.max(findIndex, 0), matchLineIndexes.length - 1)]
+        : -1;
+
+    // Keep find index in range when matches change (clamp to last, not jump to first).
+    useEffect(() => {
+        if (matchLineIndexes.length === 0) {
+            if (findIndex !== 0) setFindIndex(0);
+            return;
+        }
+        if (findIndex >= matchLineIndexes.length) {
+            setFindIndex(matchLineIndexes.length - 1);
+        }
+    }, [findIndex, matchLineIndexes.length]);
+
+    const clearScrollFlash = useCallback(() => {
+        if (scrollFlashTimerRef.current != null) {
+            window.clearTimeout(scrollFlashTimerRef.current);
+            scrollFlashTimerRef.current = null;
+        }
+        const prevEl = scrollFlashElRef.current;
+        if (prevEl) {
+            prevEl.style.outline = scrollFlashPrevOutlineRef.current.outline;
+            prevEl.style.outlineOffset = scrollFlashPrevOutlineRef.current.offset;
+            scrollFlashElRef.current = null;
+        }
+    }, []);
+
+    const scrollToLine = useCallback((line1Based: number, opts?: { force?: boolean; flash?: boolean }) => {
+        if (!scrollRef.current || line1Based < 1) return;
+        // Prefer exact data-line (code/diff). Fall back to markdown blocks spanning the line.
+        let row: Element | null = scrollRef.current.querySelector(`[data-line="${line1Based}"]`);
+        if (!row) {
+            const blocks = scrollRef.current.querySelectorAll('[data-line-start]');
+            for (const el of blocks) {
+                const start = Number(el.getAttribute('data-line-start'));
+                const end = Number(el.getAttribute('data-line-end') || start);
+                if (Number.isFinite(start) && Number.isFinite(end) && line1Based >= start && line1Based <= end) {
+                    row = el;
+                    break;
+                }
+            }
+        }
+        if (row instanceof HTMLElement) {
+            // Skip redundant scroll when already on this line (e.g. re-render with same match).
+            if (!opts?.force && lastScrolledLineRef.current === line1Based) {
+                return;
+            }
+            lastScrolledLineRef.current = line1Based;
+            // 'auto' avoids stacked smooth-scroll animations when hopping matches quickly.
+            row.scrollIntoView({ block: 'center', behavior: 'auto' });
+            if (opts?.flash === false) return;
+            // Restore any previous flash before applying a new one.
+            clearScrollFlash();
+            scrollFlashPrevOutlineRef.current = {
+                outline: row.style.outline,
+                offset: row.style.outlineOffset,
+            };
+            scrollFlashElRef.current = row;
+            row.style.outline = '2px solid rgba(234, 179, 8, 0.85)';
+            row.style.outlineOffset = '-2px';
+            scrollFlashTimerRef.current = window.setTimeout(() => {
+                clearScrollFlash();
+            }, 900);
+        }
+    }, [clearScrollFlash]);
+
+    // Clear scroll flash / rAF on unmount.
+    useEffect(() => {
+        return () => {
+            clearScrollFlash();
+            focusGenRef.current += 1;
+            if (gotoRafRef.current != null) {
+                window.cancelAnimationFrame(gotoRafRef.current);
+                gotoRafRef.current = null;
+            }
+            if (focusRafRef.current != null) {
+                window.cancelAnimationFrame(focusRafRef.current);
+                focusRafRef.current = null;
+            }
+        };
+    }, [clearScrollFlash]);
+
+    // Scroll active find match into view.
+    useEffect(() => {
+        if (!findOpen || activeMatchLine < 0) return;
+        scrollToLine(activeMatchLine + 1, { flash: false });
+    }, [activeMatchLine, findOpen, activeFilePath, scrollToLine]);
+
+    // Side effects on tab switch (state already reset during render above).
+    useEffect(() => {
+        lastScrolledLineRef.current = null;
+        clearScrollFlash();
+        if (gotoRafRef.current != null) {
+            window.cancelAnimationFrame(gotoRafRef.current);
+            gotoRafRef.current = null;
+        }
+    }, [activeFilePath, clearScrollFlash]);
+
+    const scheduleFocus = useCallback((
+        getEl: () => HTMLElement | null | undefined,
+        opts?: { select?: boolean },
+    ) => {
+        // Invalidate any prior double-rAF chain (cancelAnimationFrame only cancels one id).
+        const gen = ++focusGenRef.current;
+        if (focusRafRef.current != null) {
+            window.cancelAnimationFrame(focusRafRef.current);
+            focusRafRef.current = null;
+        }
+        // Double rAF: first after setState schedule, second after the find/goto bar paints.
+        focusRafRef.current = window.requestAnimationFrame(() => {
+            if (gen !== focusGenRef.current) return;
+            focusRafRef.current = window.requestAnimationFrame(() => {
+                if (gen !== focusGenRef.current) return;
+                focusRafRef.current = null;
+                const el = getEl();
+                el?.focus();
+                if (opts?.select && el instanceof HTMLInputElement) {
+                    el.select();
+                }
+            });
+        });
+    }, []);
+
+    const openFind = useCallback(() => {
+        setGotoOpen(false);
+        setFindOpen(true);
+        // Select existing query so the next keystroke can replace it (VS Code-like).
+        scheduleFocus(() => findInputRef.current, { select: true });
+    }, [scheduleFocus]);
+
+    const closeFind = useCallback(() => {
+        setFindOpen(false);
+    }, []);
+
+    const openGoto = useCallback(() => {
+        setFindOpen(false);
+        setGotoOpen(true);
+        setGotoValue('');
+        scheduleFocus(() => gotoInputRef.current);
+    }, [scheduleFocus]);
+
+    const closeGoto = useCallback(() => {
+        setGotoOpen(false);
+        setGotoValue('');
+    }, []);
+
+    const submitGoto = useCallback(() => {
+        const line = parseGoToLineInput(gotoValue, totalLines);
+        if (line == null) return;
+        closeGoto();
+        // Deferred jump after the goto bar unmounts so layout is stable.
+        if (gotoRafRef.current != null) {
+            window.cancelAnimationFrame(gotoRafRef.current);
+        }
+        gotoRafRef.current = window.requestAnimationFrame(() => {
+            gotoRafRef.current = null;
+            scrollToLine(line, { force: true, flash: true });
+        });
+    }, [closeGoto, gotoValue, scrollToLine, totalLines]);
+
+    const goNextMatch = useCallback(() => {
+        if (matchLineIndexes.length === 0) return;
+        setFindIndex((i) => cycleMatchIndex(matchLineIndexes.length, i, 1));
+    }, [matchLineIndexes.length]);
+
+    const goPrevMatch = useCallback(() => {
+        if (matchLineIndexes.length === 0) return;
+        setFindIndex((i) => cycleMatchIndex(matchLineIndexes.length, i, -1));
+    }, [matchLineIndexes.length]);
+
+    const toggleWordWrap = useCallback(() => {
+        setWordWrap((v) => !v);
+    }, []);
+
+    const zoomIn = useCallback(() => {
+        setFontSize((s) => clampCodePreviewFontSize(s + 1));
+    }, []);
+
+    const zoomOut = useCallback(() => {
+        setFontSize((s) => clampCodePreviewFontSize(s - 1));
+    }, []);
+
+    const zoomReset = useCallback(() => {
+        setFontSize(CODE_PREVIEW_FONT_DEFAULT);
+    }, []);
+
+    const handlePanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+        // Alt+Z — toggle word wrap (VS Code)
+        if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleWordWrap();
+            return;
+        }
+        // Ctrl/Cmd + = / + — zoom in; - — zoom out; 0 — reset
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+            if (e.key === '=' || e.key === '+') {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomIn();
+                return;
+            }
+            if (e.key === '-' || e.key === '_') {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomOut();
+                return;
+            }
+            if (e.key === '0') {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomReset();
+                return;
+            }
+            // Ctrl/Cmd+Tab — MRU cycle even when focus is in the content/find area
+            // (FileTabBar handles the same shortcut when the tab bar itself is focused).
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (files.size > 0) {
+                    const order = getMruCycleOrder(files, mruOrder ?? []);
+                    const next = cycleFilePath(order, activeFilePath, e.shiftKey ? -1 : 1);
+                    if (next) onSelectFile(next);
+                }
+                return;
+            }
+            // Ctrl/Cmd+W — close active tab
+            if ((e.key === 'w' || e.key === 'W') && onCloseFile && activeFilePath) {
+                e.preventDefault();
+                e.stopPropagation();
+                onCloseFile(activeFilePath);
+                return;
+            }
+        }
+        // Ctrl/Cmd+F — open find bar
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+            e.preventDefault();
+            e.stopPropagation();
+            openFind();
+            return;
+        }
+        // Ctrl/Cmd+G — go to line
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'g' || e.key === 'G')) {
+            e.preventDefault();
+            e.stopPropagation();
+            openGoto();
+            return;
+        }
+        if (e.key === 'Escape') {
+            if (findOpen) {
+                e.preventDefault();
+                closeFind();
+                return;
+            }
+            if (gotoOpen) {
+                e.preventDefault();
+                closeGoto();
+                return;
+            }
+        }
+        if (!findOpen) return;
+        if (e.key === 'Enter' && (e.target as HTMLElement)?.closest?.('[data-testid="code-preview-find-bar"]')) {
+            e.preventDefault();
+            if (e.shiftKey) goPrevMatch();
+            else goNextMatch();
+            return;
+        }
+        if (e.key === 'F3') {
+            e.preventDefault();
+            if (e.shiftKey) goPrevMatch();
+            else goNextMatch();
+        }
+    }, [
+        activeFilePath,
+        closeFind,
+        closeGoto,
+        files,
+        findOpen,
+        goNextMatch,
+        goPrevMatch,
+        gotoOpen,
+        mruOrder,
+        onCloseFile,
+        onSelectFile,
+        openFind,
+        openGoto,
+        toggleWordWrap,
+        zoomIn,
+        zoomOut,
+        zoomReset,
+    ]);
+
+    // Preserve scroll across same-file content updates (streaming); reset on tab switch.
+    const prevActiveFilePathRef = useRef(activeFilePath);
     useLayoutEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
-        if (currentContent !== prevContentRef.current) {
-            // Content changed - restore the saved position
+
+        const fileSwitched = prevActiveFilePathRef.current !== activeFilePath;
+        if (fileSwitched) {
+            prevActiveFilePathRef.current = activeFilePath;
+            prevContentRef.current = currentContent;
+            savedScrollTop.current = 0;
+            el.scrollTop = 0;
+        } else if (currentContent !== prevContentRef.current) {
+            // Same file content changed — restore the pre-update position.
             el.scrollTop = savedScrollTop.current;
             prevContentRef.current = currentContent;
         }
-        // Save current scroll position for next update
+
+        // Always install cleanup so post-switch streaming still preserves user scroll.
         return () => {
             if (scrollRef.current) {
                 savedScrollTop.current = scrollRef.current.scrollTop;
             }
         };
-    }, [currentContent]);
+    }, [activeFilePath, currentContent]);
 
     // Empty state: no files
     if (files.size === 0) {
@@ -705,6 +1284,8 @@ export function CodePreviewPanel({
                     {/* Header */}
                     <div
                         data-testid="code-preview-header"
+                        onDoubleClick={handleHeaderDoubleClick}
+                        title={onToggleMaximize ? (lang.startsWith('zh') ? '双击最大化/还原' : 'Double-click to maximize/restore') : undefined}
                         style={{
                             display: 'flex',
                             alignItems: 'center',
@@ -750,12 +1331,18 @@ export function CodePreviewPanel({
     }
 
     return (
-        <div style={{
-            display: 'flex',
-            flexDirection: 'row',
-            height: '100%',
-            minWidth: 0,
-        }}>
+        <div
+            data-testid="code-preview-panel"
+            tabIndex={0}
+            onKeyDown={handlePanelKeyDown}
+            style={{
+                display: 'flex',
+                flexDirection: 'row',
+                height: '100%',
+                minWidth: 0,
+                outline: 'none',
+            }}
+        >
             {/* Drag handle for resizing */}
             <div
                 onMouseDown={(e) => { e.preventDefault(); onResizeStart?.(); }}
@@ -778,9 +1365,11 @@ export function CodePreviewPanel({
                 background: theme.bg,
                 color: theme.text,
             }}>
-            {/* Header with close button - double-click to toggle maximize */}
+            {/* Header with close button - double-click empty area to toggle maximize */}
             <div
                 data-testid="code-preview-header"
+                onDoubleClick={handleHeaderDoubleClick}
+                title={onToggleMaximize ? (lang.startsWith('zh') ? '双击空白处最大化/还原' : 'Double-click empty area to maximize/restore') : undefined}
                 style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -795,10 +1384,29 @@ export function CodePreviewPanel({
                     <FileTabBar
                         files={files}
                         activeFilePath={activeFilePath}
+                        pinnedPaths={pinnedPaths}
+                        mruOrder={mruOrder}
                         onSelectFile={onSelectFile}
+                        onCloseFile={onCloseFile}
+                        onCloseOtherFiles={onCloseOtherFiles}
+                        onCloseFilesToTheRight={onCloseFilesToTheRight}
+                        onCloseAllFiles={onCloseAllFiles}
+                        onMoveFile={onMoveFile}
+                        onTogglePinFile={onTogglePinFile}
                         theme={theme}
+                        lang={lang}
                     />
                 </div>
+                <CodePreviewViewToolbar
+                    wordWrap={wordWrap}
+                    fontSize={fontSize}
+                    theme={theme}
+                    lang={lang}
+                    onToggleWrap={toggleWordWrap}
+                    onZoomIn={zoomIn}
+                    onZoomOut={zoomOut}
+                    onZoomReset={zoomReset}
+                />
                 <button
                     onClick={onClose}
                     style={{
@@ -819,6 +1427,125 @@ export function CodePreviewPanel({
                     X
                 </button>
             </div>
+
+            {/* Active file path breadcrumb (VS Code-style status under tabs) */}
+            {activeFile && (
+                <div
+                    data-testid="code-preview-active-path"
+                    title={activeFile.absPath || activeFile.filePath}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '3px 12px',
+                        borderBottom: `1px solid ${theme.border}`,
+                        background: theme.lineNumBg,
+                        color: theme.textMuted,
+                        fontSize: 11,
+                        lineHeight: 1.4,
+                        flexShrink: 0,
+                        minWidth: 0,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                    }}
+                >
+                    <span style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        minWidth: 0,
+                        flex: 1,
+                    }}>
+                        {activeFile.absPath || activeFile.filePath}
+                    </span>
+                    <span
+                        data-testid="code-preview-lang-badge"
+                        style={{
+                            flexShrink: 0,
+                            padding: '0 6px',
+                            borderRadius: 3,
+                            border: `1px solid ${theme.border}`,
+                            lineHeight: '16px',
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: 0.2,
+                            color: theme.textMuted,
+                            background: theme.tabBg,
+                        }}
+                    >
+                        {formatCodeLanguageLabel(activeFile.language)}
+                    </span>
+                    {activeFile.opType === 'read' && (
+                        <span
+                            data-testid="code-preview-readonly-badge"
+                            style={{ flexShrink: 0, opacity: 0.9 }}
+                        >
+                            {lang.startsWith('zh') ? '只读' : 'read-only'}
+                        </span>
+                    )}
+                    {activeFile.opType && activeFile.opType !== 'read' ? (
+                        <span style={{ flexShrink: 0, opacity: 0.8 }}>
+                            {activeFile.opType === 'create' ? 'NEW' : 'MOD'}
+                        </span>
+                    ) : null}
+                    {totalLines > 0 && (
+                        <span data-testid="code-preview-line-count" style={{ flexShrink: 0, opacity: 0.8 }}>
+                            {totalLines} {lang.startsWith('zh') ? '行' : 'lines'}
+                        </span>
+                    )}
+                    {isCodeFileDirty(activeFile) ? (
+                        <span data-testid="code-preview-dirty-badge" style={{ flexShrink: 0, opacity: 0.9 }}>
+                            {lang.startsWith('zh') ? '已修改' : 'changed'}
+                        </span>
+                    ) : null}
+                </div>
+            )}
+
+            {findOpen && (
+                <CodePreviewFindBar
+                    query={findQuery}
+                    matchCount={matchLineIndexes.length}
+                    activeIndex={findIndex}
+                    theme={theme}
+                    lang={lang}
+                    caseSensitive={findCaseSensitive}
+                    wholeWord={findWholeWord}
+                    useRegex={findUseRegex}
+                    regexError={findRegexError}
+                    onQueryChange={(q) => {
+                        setFindQuery(q);
+                        setFindIndex(0);
+                    }}
+                    onToggleCase={() => {
+                        setFindCaseSensitive((v) => !v);
+                        setFindIndex(0);
+                    }}
+                    onToggleWord={() => {
+                        setFindWholeWord((v) => !v);
+                        setFindIndex(0);
+                    }}
+                    onToggleRegex={() => {
+                        setFindUseRegex((v) => !v);
+                        setFindIndex(0);
+                    }}
+                    onNext={goNextMatch}
+                    onPrev={goPrevMatch}
+                    onClose={closeFind}
+                    inputRef={findInputRef}
+                />
+            )}
+
+            {gotoOpen && (
+                <CodePreviewGoToLineBar
+                    value={gotoValue}
+                    maxLines={Math.max(1, totalLines)}
+                    theme={theme}
+                    lang={lang}
+                    onChange={setGotoValue}
+                    onSubmit={submitGoto}
+                    onClose={closeGoto}
+                    inputRef={gotoInputRef}
+                />
+            )}
 
             {/* Code content area */}
             {activeFile?.previewTruncated && (
@@ -842,14 +1569,32 @@ export function CodePreviewPanel({
             >
                 {activeFile ? (
                     diffLines ? (
-                        <DiffView diffLines={diffLines} theme={theme} />
-                    ) : activeFile.language === 'markdown' ? (
-                        <MarkdownPreview content={activeFile.content} theme={theme} />
+                        <DiffView
+                            diffLines={diffLines}
+                            theme={theme}
+                            matchLineIndexes={matchLineIndexes}
+                            activeMatchLine={activeMatchLine}
+                            wordWrap={wordWrap}
+                            fontSize={fontSize}
+                        />
+                    ) : isMarkdownLanguage(activeFile.language) ? (
+                        <div style={{ fontSize: clampCodePreviewFontSize(fontSize) }}>
+                            <MarkdownPreview
+                                content={activeFile.content}
+                                theme={theme}
+                                matchLineIndexes={matchLineIndexes}
+                                activeMatchLine={activeMatchLine}
+                            />
+                        </div>
                     ) : (
                         <PlainCodeView
                             content={activeFile.content}
                             language={activeFile.language}
                             theme={theme}
+                            matchLineIndexes={matchLineIndexes}
+                            activeMatchLine={activeMatchLine}
+                            wordWrap={wordWrap}
+                            fontSize={fontSize}
                         />
                     )
                 ) : (
@@ -867,3 +1612,4 @@ export function CodePreviewPanel({
         </div>
     );
 }
+

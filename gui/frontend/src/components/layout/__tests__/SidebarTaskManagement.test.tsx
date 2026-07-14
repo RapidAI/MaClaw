@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { SidebarTaskManagement } from '../SidebarTaskManagement';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { isProjectTabOpen, SidebarTaskManagement } from '../SidebarTaskManagement';
 import type { ComponentProps } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -17,6 +17,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     SelectWorkingDir: selectWorkingDirMock,
+    GetRemoteCodingTaskMeta: vi.fn().mockResolvedValue({ host: '10.0.0.8', user: 'ubuntu', port: 22, work_dir: '/app' }),
+    UpdateRemoteCodingTaskMeta: vi.fn().mockResolvedValue(undefined),
+    TestRemoteSSHConnection: vi.fn().mockResolvedValue('SSH ok'),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -53,11 +56,26 @@ function renderTaskManagement(overrides: Partial<ComponentProps<typeof SidebarTa
     return { ...props, container: view.container };
 }
 
-afterEach(() => {
-    vi.restoreAllMocks();
+afterEach(async () => {
+    // Flush pending openEditRemoteDialog / save / test microtasks so unmount is quiet.
+    await act(async () => {
+        await Promise.resolve();
+    });
     eventsEmitMock.mockClear();
     selectWorkingDirMock.mockReset();
+    getProjectSceneMock.mockReset();
+    openFileOrShowInFolderMock.mockReset();
     document.getElementById('App')?.remove();
+});
+
+describe('isProjectTabOpen', () => {
+    it('matches normalized path separators and drive case', () => {
+        expect(isProjectTabOpen('D:/work/tasks/a', ['D:\\work\\tasks\\a'])).toBe(true);
+        expect(isProjectTabOpen('d:/work/tasks/a', ['D:/work/tasks/a'])).toBe(true);
+        expect(isProjectTabOpen('D:/work/tasks/a', ['D:/work/tasks/b'])).toBe(false);
+        expect(isProjectTabOpen('D:/work/tasks/a', undefined)).toBe(false);
+        expect(isProjectTabOpen('', ['D:/work/tasks/a'])).toBe(false);
+    });
 });
 
 describe('SidebarTaskManagement', () => {
@@ -197,6 +215,31 @@ describe('SidebarTaskManagement', () => {
         expect(setTaskContextMenu).toHaveBeenCalledWith(null);
     });
 
+    it('blocks remove when the task tab is already open', async () => {
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        const refreshTasks = vi.fn();
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({
+            hideTask,
+            refreshTasks,
+            setTaskContextMenu,
+            openProjectTabPaths: [baseProject.project_path.replace(/\//g, '\\')],
+            taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+        });
+
+        const removeItem = screen.getByTestId('task-context-remove');
+        expect(removeItem.getAttribute('data-disabled')).toBe('true');
+        expect(removeItem.getAttribute('aria-disabled')).toBe('true');
+        fireEvent.click(removeItem);
+
+        await act(async () => { await Promise.resolve(); });
+        expect(hideTask).not.toHaveBeenCalled();
+        expect(EventsEmit).not.toHaveBeenCalledWith('project-task:closed', expect.anything());
+        expect(refreshTasks).not.toHaveBeenCalled();
+        // Menu stays open so the user can see the disabled state / tooltip.
+        expect(setTaskContextMenu).not.toHaveBeenCalledWith(null);
+    });
+
 
     it('opens source-backed evidence from the sidebar task row', async () => {
         getProjectSceneMock.mockResolvedValue({
@@ -255,6 +298,290 @@ describe('SidebarTaskManagement', () => {
         expect(createTask).toHaveBeenCalledWith('New research task');
     });
 
+    it('exposes local and remote coding modes in the create dialog footer', () => {
+        renderTaskManagement();
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        const codingToggle = screen.getByRole('button', { name: 'Coding' });
+        const remoteToggle = screen.getByRole('button', { name: 'Remote' });
+        expect(codingToggle).toBeTruthy();
+        expect(remoteToggle).toBeTruthy();
+        expect(codingToggle.getAttribute('aria-pressed')).toBe('false');
+        expect(remoteToggle.getAttribute('aria-pressed')).toBe('false');
+        expect(codingToggle.closest('.modal-footer')).toBeTruthy();
+    });
+
+    it('creates a coding development task when the coding option is selected', () => {
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Implement login page' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Coding' }));
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
+        expect(createTask).toHaveBeenCalledWith('Implement login page', undefined, 'coding_dev');
+    });
+
+    it('opens create dialog prefilled from welcome coding-task event (local)', async () => {
+        const createTask = vi.fn();
+        renderTaskManagement({
+            createTask,
+            tasks: [{
+                ...baseProject,
+                tags: ['coding_dev'],
+                working_dir: 'D:/work/coding-project',
+            }],
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: '按需求实现功能\n需求描述：[审核流程]' },
+            }));
+        });
+
+        const commandInput = await screen.findByLabelText('Task command') as HTMLTextAreaElement;
+        expect(commandInput.value).toContain('按需求实现功能');
+        expect(screen.getByRole('heading', { name: 'Create local coding task' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Coding' }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByRole('button', { name: 'Remote' }).getAttribute('aria-pressed')).toBe('false');
+        // Prefers last coding task workdir
+        expect(screen.getByTitle('D:/work/coding-project')).toBeTruthy();
+
+        await waitFor(() => {
+            expect(commandInput.selectionStart).toBe(commandInput.value.indexOf('['));
+            expect(commandInput.selectionEnd).toBe(commandInput.value.indexOf(']') + 1);
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+        await waitFor(() => {
+            expect(createTask).toHaveBeenCalledWith(
+                '按需求实现功能\n需求描述：[审核流程]',
+                'D:/work/coding-project',
+                'coding_dev',
+            );
+        });
+    });
+
+    it('auto-creates a local coding task from welcome event without opening dialog', async () => {
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: {
+                    mode: 'coding_dev',
+                    name: 'Implement feature\nRequirement: login',
+                    workingDir: 'D:/work/app',
+                    autoCreate: true,
+                },
+            }));
+        });
+
+        await waitFor(() => {
+            expect(createTask).toHaveBeenCalledWith(
+                'Implement feature\nRequirement: login',
+                'D:/work/app',
+                'coding_dev',
+            );
+        });
+        expect(screen.queryByRole('heading', { name: /Create local coding task/i })).toBeNull();
+    });
+
+    it('auto-creates a remote coding task from welcome event', async () => {
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: {
+                    mode: 'remote_coding_dev',
+                    name: 'Fix production 5xx',
+                    autoCreate: true,
+                    remote: {
+                        host: '10.0.0.8',
+                        port: 22,
+                        user: 'ubuntu',
+                        password: 'secret',
+                        workDir: '/app',
+                    },
+                },
+            }));
+        });
+
+        await waitFor(() => {
+            expect(createTask).toHaveBeenCalledWith(
+                'Fix production 5xx',
+                undefined,
+                'remote_coding_dev',
+                {
+                    host: '10.0.0.8',
+                    port: 22,
+                    user: 'ubuntu',
+                    password: 'secret',
+                    workDir: '/app',
+                },
+            );
+        });
+    });
+
+    it('opens create dialog prefilled from welcome coding-task event (remote)', async () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                id: 'remote-1',
+                name: 'Remote coding',
+                project_path: 'D:/work/tasks/remote-1',
+                tags: [
+                    'remote_coding_dev',
+                    'remote_host:10.0.0.8',
+                    'remote_user:ubuntu',
+                    'remote_port:2222',
+                    'remote_workdir:/home/ubuntu/app',
+                ],
+            }],
+        });
+
+        // After param dialog, filled commands usually have no [placeholders] left.
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'remote_coding_dev', name: '排查修复线上故障\n现象：5xx 增多' },
+            }));
+        });
+
+        const commandInput = await screen.findByLabelText('Task command') as HTMLTextAreaElement;
+        expect(commandInput.value).toContain('排查修复线上故障');
+        expect(screen.getByRole('heading', { name: 'Create remote coding task' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Remote' }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('remote-coding-fields')).toBeTruthy();
+        // Non-secret SSH meta reused from last remote coding task; password stays empty.
+        expect((screen.getByLabelText('Host / domain') as HTMLInputElement).value).toBe('10.0.0.8');
+        expect((screen.getByLabelText('Port') as HTMLInputElement).value).toBe('2222');
+        expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('ubuntu');
+        expect((screen.getByLabelText('Remote work directory') as HTMLInputElement).value).toBe('/home/ubuntu/app');
+        expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
+
+        // Host/user/workdir prefilled → first empty env field is password.
+        await waitFor(() => {
+            expect(document.activeElement).toBe(screen.getByLabelText('Password'));
+        });
+    });
+
+    it('focuses remote host when SSH meta is empty', async () => {
+        renderTaskManagement({ tasks: [baseProject] });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'remote_coding_dev', name: '热修代码' },
+            }));
+        });
+
+        await screen.findByLabelText('Task command');
+        await waitFor(() => {
+            expect(document.activeElement).toBe(screen.getByLabelText('Host / domain'));
+        });
+    });
+
+    it('shows remote SSH fields and creates a remote coding task', () => {
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
+        expect(screen.getByTestId('remote-coding-fields')).toBeTruthy();
+        expect(screen.queryByLabelText('Choose working folder')).toBeNull();
+
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Fix remote auth bug' } });
+        fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
+        fireEvent.change(screen.getByLabelText('Port'), { target: { value: '22' } });
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } });
+        fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/home/ubuntu/app' } });
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
+        expect(createTask).toHaveBeenCalledWith('Fix remote auth bug', undefined, 'remote_coding_dev', {
+            host: '10.0.0.8',
+            port: 22,
+            user: 'ubuntu',
+            password: 's3cret',
+            workDir: '/home/ubuntu/app',
+        });
+    });
+
+    it('prefills remote SSH blanks when switching to remote mode in the create dialog', () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                id: 'remote-1',
+                tags: [
+                    'remote_coding_dev',
+                    'remote_host:10.1.1.1',
+                    'remote_user:deploy',
+                    'remote_port:2200',
+                    'remote_workdir:/srv/app',
+                ],
+            }],
+        });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
+
+        expect((screen.getByLabelText('Host / domain') as HTMLInputElement).value).toBe('10.1.1.1');
+        expect((screen.getByLabelText('Port') as HTMLInputElement).value).toBe('2200');
+        expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('deploy');
+        expect((screen.getByLabelText('Remote work directory') as HTMLInputElement).value).toBe('/srv/app');
+        expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
+    });
+
+    it('requires remote SSH fields before allowing submit', () => {
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Incomplete remote' } });
+
+        const ok = screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement;
+        expect(ok.disabled).toBe(true);
+        fireEvent.click(ok);
+        expect(createTask).not.toHaveBeenCalled();
+    });
+
+    it('surfaces createTask failures for remote coding', async () => {
+        const createTask = vi.fn().mockRejectedValue(new Error('无法连接到远程服务器'));
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Remote fail' } });
+        fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.1' } });
+        fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'root' } });
+        fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'bad' } });
+        fireEvent.change(screen.getByLabelText('Remote work directory'), { target: { value: '/tmp' } });
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
+        await waitFor(() => expect(screen.getByTestId('create-task-error').textContent).toContain('无法连接到远程服务器'));
+        // Dialog stays open on failure; title reflects remote coding mode.
+        expect(screen.getByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+    });
+
+    it('passes coding mode together with the selected working folder', async () => {
+        selectWorkingDirMock.mockResolvedValue('D:/work/selected-folder');
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
+        await waitFor(() => expect(screen.getByText('D:/work/selected-folder')).toBeTruthy());
+
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'Build feature' } });
+        fireEvent.click(screen.getByLabelText('Coding'));
+        fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+
+        expect(createTask).toHaveBeenCalledWith('Build feature', 'D:/work/selected-folder', 'coding_dev');
+    });
+
     it('passes the selected working folder when creating a task', async () => {
         selectWorkingDirMock.mockResolvedValue('D:/work/selected-folder');
         const createTask = vi.fn();
@@ -270,6 +597,155 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(screen.getByRole('button', { name: 'OK' }));
 
         expect(createTask).toHaveBeenCalledWith('Run local task', 'D:/work/selected-folder');
+    });
+
+    it('shows a coding task icon and pure-coding badge for coding_dev tags', () => {
+        renderTaskManagement({
+            tasks: [
+                { ...baseProject, id: 'coding-1', name: 'Coding feature', project_path: 'D:/work/tasks/coding-feature', tags: ['coding_dev'] },
+            ],
+        });
+
+        expect(screen.getByLabelText('Local pure coding environment')).toBeTruthy();
+        expect(screen.getByTestId('task-coding-badge').textContent || '').toMatch(/Pure coding|纯编程|純程式/i);
+    });
+
+    it('shows Edit remote SSH in context menu for remote coding tasks', () => {
+        const setTaskContextMenu = vi.fn();
+        renderTaskManagement({
+            setTaskContextMenu,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: baseProject.name,
+                pinned: false,
+                isRemoteCoding: true,
+                tags: ['remote_coding_dev', 'remote_host:10.0.0.8', 'remote_user:ubuntu', 'remote_port:22', 'remote_workdir:/app'],
+            },
+        });
+        expect(screen.getByTestId('task-context-edit-remote-ssh')).toBeTruthy();
+        expect(screen.getByText(/Edit remote SSH|编辑远程 SSH|編輯遠端 SSH/i)).toBeTruthy();
+    });
+
+    it('hides Edit remote SSH for ordinary tasks', () => {
+        renderTaskManagement({
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: baseProject.name,
+                pinned: false,
+                isRemoteCoding: false,
+            },
+        });
+        expect(screen.queryByTestId('task-context-edit-remote-ssh')).toBeNull();
+    });
+
+    it('opens edit remote SSH dialog with host/user/port/workdir and test button', async () => {
+        const { GetRemoteCodingTaskMeta, UpdateRemoteCodingTaskMeta, TestRemoteSSHConnection } = await import('../../../../wailsjs/go/main/App');
+        renderTaskManagement({
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: 'Remote fix',
+                pinned: false,
+                isRemoteCoding: true,
+                tags: ['remote_coding_dev', 'remote_host:10.0.0.8', 'remote_user:ubuntu', 'remote_port:22', 'remote_workdir:/app'],
+            },
+        });
+        fireEvent.click(screen.getByTestId('task-context-edit-remote-ssh'));
+        await waitFor(() => {
+            expect(screen.getByTestId('edit-remote-ssh-dialog')).toBeTruthy();
+        });
+        await waitFor(() => {
+            expect(GetRemoteCodingTaskMeta).toHaveBeenCalled();
+            expect((screen.getByTestId('edit-remote-host') as HTMLInputElement).value).toBe('10.0.0.8');
+        });
+        expect((screen.getByTestId('edit-remote-user') as HTMLInputElement).value).toBe('ubuntu');
+        expect((screen.getByTestId('edit-remote-port') as HTMLInputElement).value).toBe('22');
+        expect((screen.getByTestId('edit-remote-workdir') as HTMLInputElement).value).toBe('/app');
+        expect(screen.getByTestId('edit-remote-password')).toBeTruthy();
+        expect(screen.getByTestId('edit-remote-test-ssh')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('edit-remote-host'), { target: { value: '10.0.0.9' } });
+        fireEvent.change(screen.getByTestId('edit-remote-workdir'), { target: { value: '/new/app' } });
+        fireEvent.click(screen.getByTestId('edit-remote-save'));
+        await waitFor(() => {
+            expect(UpdateRemoteCodingTaskMeta).toHaveBeenCalledWith(
+                baseProject.project_path,
+                '10.0.0.9',
+                'ubuntu',
+                '/new/app',
+                22,
+            );
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('edit-remote-info')).toBeTruthy();
+        });
+
+        fireEvent.change(screen.getByTestId('edit-remote-password'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByTestId('edit-remote-test-ssh'));
+        await waitFor(() => {
+            expect(TestRemoteSSHConnection).toHaveBeenCalledWith(
+                '10.0.0.9',
+                'ubuntu',
+                'secret',
+                '/new/app',
+                22,
+            );
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('edit-remote-info').textContent || '').toMatch(/SSH|ok|连接|連線/i);
+        });
+        // Wait until testing flag clears so Close is allowed.
+        await waitFor(() => {
+            expect((screen.getByTestId('edit-remote-test-ssh') as HTMLButtonElement).disabled).toBe(false);
+        });
+        fireEvent.click(within(screen.getByTestId('edit-remote-ssh-dialog')).getByRole('button', { name: /Close|关闭|關閉/i }));
+        await waitFor(() => {
+            expect(screen.queryByTestId('edit-remote-ssh-dialog')).toBeNull();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+    });
+
+    it('shows a remote pure-coding badge for remote_coding_dev tags', () => {
+        renderTaskManagement({
+            tasks: [
+                {
+                    ...baseProject,
+                    id: 'remote-1',
+                    name: 'Remote fix',
+                    project_path: 'D:/work/tasks/remote-fix',
+                    tags: ['remote_coding_dev', 'remote_host:10.0.0.8'],
+                },
+            ],
+        });
+
+        expect(screen.getByLabelText('Remote pure coding environment')).toBeTruthy();
+        expect(screen.getByTestId('task-remote-coding-badge').textContent || '').toMatch(/Remote coding|远程编程|遠端程式/i);
+        expect(screen.getByTestId('task-remote-coding-badge').textContent || '').toContain('10.0.0.8');
+    });
+
+    it('keeps pure-coding badge visible when the coding task is also pinned', () => {
+        renderTaskManagement({
+            tasks: [
+                {
+                    ...baseProject,
+                    id: 'coding-pinned',
+                    name: 'Pinned coding',
+                    project_path: 'D:/work/tasks/pinned-coding',
+                    pinned: true,
+                    tags: ['coding_dev'],
+                },
+            ],
+        });
+
+        expect(screen.getByLabelText('Local pure coding environment')).toBeTruthy();
+        expect(screen.getByTestId('task-coding-badge')).toBeTruthy();
     });
 
     it('marks the create dialog with the current theme', () => {

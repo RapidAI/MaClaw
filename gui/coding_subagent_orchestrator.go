@@ -139,7 +139,11 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 	r.orchestrator.RecordTaskResultSummaryForRun(task, runID, resultSummary)
 	artifactsRecorded := r.orchestrator.RecordTaskActualArtifactsForRun(task, runID, result.FilesModified, result.FilesCreated)
 	if artifactsRecorded && r.handler != nil {
-		emitCodingSubAgentCodeFileEvents(r.handler.app, r.activeCodeSessionID(), r.orchestrator.ProjectPath, result.FilesModified, result.FilesCreated)
+		routePath := r.orchestrator.ProjectPath
+		if r.loopCtx != nil {
+			routePath = codePreviewRouteProjectPath(r.loopCtx.UserID, r.orchestrator.ProjectPath)
+		}
+		emitCodingSubAgentCodeFileEvents(r.handler.app, r.activeCodeSessionID(), r.orchestrator.ProjectPath, result.FilesModified, result.FilesCreated, routePath)
 	}
 	switch resultStatus {
 	case TaskExecPassed:

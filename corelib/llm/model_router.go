@@ -123,6 +123,34 @@ func (r *ModelRouter) HasRoute(task TaskType) bool {
 	return ok
 }
 
+// ListRoutes returns a copy of configured task→route mappings (for UI/status).
+func (r *ModelRouter) ListRoutes() map[string]ModelRoute {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.routes) == 0 {
+		return nil
+	}
+	out := make(map[string]ModelRoute, len(r.routes))
+	for k, v := range r.routes {
+		out[string(k)] = v
+	}
+	return out
+}
+
+// GetRoute returns the route for task if configured.
+func (r *ModelRouter) GetRoute(task TaskType) (ModelRoute, bool) {
+	if r == nil {
+		return ModelRoute{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	route, ok := r.routes[task]
+	return route, ok
+}
+
 // applyRoute overlays route overrides onto the primary config.
 func applyRoute(primary corelib.MaclawLLMConfig, route ModelRoute) corelib.MaclawLLMConfig {
 	cfg := primary

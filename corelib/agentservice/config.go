@@ -110,6 +110,7 @@ var sharedClientConfigKeys = map[string]bool{
 	"auxiliary_llm":                    true,
 	"model_routes":                     true,
 	"daily_llm_budget_usd":             true,
+	"moa":                              true,
 }
 
 func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDefinition {

@@ -35,6 +35,16 @@ export interface AITab {
     role?: string;
     /** Bound project path (required when type="project") */
     projectPath?: string;
+    /**
+     * Agent execution mode for project tabs.
+     * "coding_dev" — local pure coding environment.
+     * "remote_coding_dev" — SSH remote pure coding with right-hand source preview.
+     */
+    agentMode?: "coding_dev" | "remote_coding_dev";
+    /** Optional remote host label for remote_coding_dev tabs (display only). */
+    remoteHost?: string;
+    /** Remote coding: SSH session missing/expired; show reconnect form. */
+    remoteNeedsReconnect?: boolean;
     /** Whether this tab is archived (read-only mode) */
     archived?: boolean;
     /** Online status of the VE (only for type="ve"). Updated via ve:status_change events. */

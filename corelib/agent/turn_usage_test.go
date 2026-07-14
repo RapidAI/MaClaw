@@ -202,6 +202,46 @@ func TestFormatTurnMeta(t *testing.T) {
 	if !strings.Contains(shadowThink, "think=off(shadow)") {
 		t.Fatalf("shadow think: %q", shadowThink)
 	}
+	// MoA chip: ok/total on fan-out iteration; (agg) after; bare name when armed only.
+	moaFan := FormatTurnMetaOpts(TurnMetaOptions{
+		Route: RouteDecision{
+			TaskType:      "reasoning",
+			Source:        "moa",
+			Model:         "primary-m",
+			MoAPreset:     "review",
+			MoAFanOut:     true,
+			MoAReferences: 3,
+			MoARefOK:      2,
+			MoAFanouts:    1,
+		},
+		Usage: TurnUsage{InputTokens: 100, OutputTokens: 50},
+	})
+	if !strings.Contains(moaFan, "moa=review 2/3") {
+		t.Fatalf("fan-out chip: %q", moaFan)
+	}
+	if strings.Contains(moaFan, "0/0") {
+		t.Fatalf("must not show 0/0: %q", moaFan)
+	}
+	moaAgg := FormatTurnMetaOpts(TurnMetaOptions{
+		Route: RouteDecision{
+			Source:        "moa",
+			Model:         "primary-m",
+			MoAPreset:     "review",
+			MoAFanOut:     false,
+			MoAReferences: 3,
+			MoARefOK:      2,
+			MoAFanouts:    1,
+		},
+	})
+	if !strings.Contains(moaAgg, "moa=review 2/3(agg)") {
+		t.Fatalf("agg-only chip: %q", moaAgg)
+	}
+	moaArmed := FormatTurnMetaOpts(TurnMetaOptions{
+		Route: RouteDecision{Source: "moa", MoAPreset: "review"},
+	})
+	if !strings.Contains(moaArmed, "moa=review") || strings.Contains(moaArmed, "/") {
+		t.Fatalf("armed-only chip: %q", moaArmed)
+	}
 }
 
 func TestFilterToolDefsForLightTurn(t *testing.T) {

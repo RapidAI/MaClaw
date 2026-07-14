@@ -2,6 +2,7 @@ import { useState, type Dispatch, type ReactNode, type SetStateAction } from 're
 import { PatchConfigFields } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { ModelRoutesSettingsSection } from './ModelRoutesSettingsSection';
 
 type LLMCacheSettingsPanelProps = {
     config: main.AppConfig | null;
@@ -173,6 +174,14 @@ export const LLMCacheSettingsPanel = ({ config, setConfig, lang, showToastMessag
                 </button>
             </div>
             {saveError && <div style={{ color: 'var(--error-color, #c43d34)', fontSize: 13 }}>{saveError}</div>}
+
+            <hr style={{ border: 'none', borderTop: '1px solid var(--border-color, rgba(127,127,127,0.25))', margin: '8px 0' }} />
+            <ModelRoutesSettingsSection
+                config={config}
+                setConfig={setConfig}
+                lang={lang}
+                showToastMessage={showToastMessage}
+            />
         </div>
     );
 };

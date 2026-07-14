@@ -113,6 +113,11 @@ export interface AIAssistantPanelProps {
     appUpdateAvailable?: AssistantUpdatePayload | null;
     onOpenAppUpdate?: () => void;
     onDismissAppUpdate?: (latestVersion: string) => void;
+    /**
+     * Notifies the shell when project tabs open/close so the task list can block
+     * removing tasks that still have an open tab.
+     */
+    onOpenProjectTabsChange?: (projectPaths: string[]) => void;
 }
 
 export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

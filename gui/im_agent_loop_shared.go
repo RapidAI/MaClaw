@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -506,10 +507,88 @@ type sharedAgentLoopCallbacks struct {
 	httpClient   *http.Client
 	escalated    bool
 	toolCalls    int
+	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
+	moaPreset *moa.ResolvedPreset
+	moaAuto   bool
 }
 
 func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.llmCfg
+}
+
+// AllowMoAFanOut implements agent.MoABudgetGate when the app tracks daily LLM budget.
+func (c *sharedAgentLoopCallbacks) AllowMoAFanOut(nRefs int) (ok bool, reason string) {
+	if c == nil || c.handler == nil || c.handler.app == nil {
+		return true, ""
+	}
+	ct := c.handler.app.ohModules.costTracker
+	if ct == nil || ct.BudgetLimit() <= 0 {
+		return true, ""
+	}
+	need := moa.EstimateWaveMinUSD(nRefs)
+	if ct.CanAfford(need) {
+		return true, ""
+	}
+	lang := c.handler.imCommandResponseLang("")
+	if normalizeAppLanguageKind(lang).IsChinese() {
+		return false, fmt.Sprintf("今日预算不足，已跳过其他模型会诊（约需 $%.4f；%s）", need, ct.DailySummary())
+	}
+	return false, fmt.Sprintf("moa advisors skipped (daily budget low; need ~$%.4f, %s)", need, ct.DailySummary())
+}
+
+// PrepareMoA implements agent.MoAHost for one-shot / sticky / allow_auto council turns.
+func (c *sharedAgentLoopCallbacks) PrepareMoA(iteration int, toolsSeen bool, fanoutsRan int) (active bool, preset moa.ResolvedPreset, progress string) {
+	if c == nil || c.handler == nil {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// K9: kill switch must disable even if sticky was armed earlier in-session.
+	if !moa.EnvAllows() {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// First prepare of this loop: resolve arming source once and pin on callbacks.
+	if c.moaPreset == nil {
+		if c.handler.moaSessions != nil {
+			if sess := c.handler.moaSessions.peek(c.userID); sess != nil && (sess.OneShot || sess.Sticky) {
+				p := sess.Resolved
+				c.moaPreset = &p
+				if sess.OneShot && !sess.Sticky {
+					c.handler.moaSessions.clearOneShot(c.userID)
+				}
+			}
+		}
+		// allow_auto: hard turns only (K13), when not already armed.
+		if c.moaPreset == nil {
+			if auto, ok := c.handler.tryPrepareMoAAuto(c.userText, c.route); ok {
+				c.moaPreset = &auto
+				c.moaAuto = true
+			}
+		}
+	}
+	if c.moaPreset == nil || !c.moaPreset.Enabled {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// K16: MoA implies full prompt profile (no light).
+	if c.CurrentPromptProfile().IsLight() {
+		c.UpgradeLightPromptToFull("moa council")
+	}
+	n := len(c.moaPreset.References)
+	progress = fmt.Sprintf("consulting %d models…", n)
+	lang := ""
+	if c.handler != nil {
+		lang = c.handler.imCommandResponseLang("")
+	}
+	if normalizeAppLanguageKind(lang).IsChinese() {
+		progress = fmt.Sprintf("正在征询 %d 个其他模型…", n)
+	}
+	if c.moaAuto && iteration == 0 && fanoutsRan == 0 {
+		if normalizeAppLanguageKind(lang).IsChinese() {
+			progress = "难题自动多模型会诊：" + progress
+		} else {
+			progress = "auto multi-model: " + progress
+		}
+	}
+	_ = toolsSeen
+	return true, *c.moaPreset, progress
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.

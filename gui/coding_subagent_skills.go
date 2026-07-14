@@ -32,9 +32,16 @@ const (
 	// for the list + ~400 for manage_skill definition = ~500 total).
 	codingSubAgentMaxSkills = 3
 
+	// Full coding environment (create-task / Claude Code–aligned) allows a
+	// broader skill surface so capability is not gated too aggressively.
+	codingSubAgentFullEnvMaxSkills = 12
+
 	// codingSubAgentSkillScoreThreshold is the minimum relevance score for a
 	// skill to be considered relevant to the current task.
 	codingSubAgentSkillScoreThreshold = 0.15
+
+	// Full-env threshold is lower so more installed skills remain callable.
+	codingSubAgentFullEnvSkillScoreThreshold = 0.05
 
 	// codingSubAgentEmbeddingBaseline is subtracted from raw embedding cosine
 	// before comparing with other signals. Short texts produce non-zero cosine
@@ -72,6 +79,14 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		return nil
 	}
 
+	fullEnv := c.subagent.isFullEnvironment()
+	maxK := codingSubAgentMaxSkills
+	threshold := codingSubAgentSkillScoreThreshold
+	if fullEnv {
+		maxK = codingSubAgentFullEnvMaxSkills
+		threshold = codingSubAgentFullEnvSkillScoreThreshold
+	}
+
 	// Filter to active, executable skills only.
 	type candidate struct {
 		name         string
@@ -104,8 +119,13 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		return nil
 	}
 
-	if len(strings.TrimSpace(taskDescription)) == 0 {
-		return nil
+	taskForScore := strings.TrimSpace(taskDescription)
+	if taskForScore == "" {
+		if !fullEnv {
+			return nil
+		}
+		// Full workbench: still surface skills when task text is thin.
+		taskForScore = "software development coding implementation testing debugging refactor"
 	}
 
 	// Build document strings for scoring.
@@ -116,7 +136,26 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 
 	// Three-signal scoring via shared infrastructure.
 	emb := getSubAgentEmbedder(c.subagent.handler)
-	scored := scoreAndSelectTopK(taskDescription, docs, emb, codingSubAgentMaxSkills, codingSubAgentSkillScoreThreshold)
+	scored := scoreAndSelectTopK(taskForScore, docs, emb, maxK, threshold)
+
+	// Full env: if still thin, fill remaining slots with any leftover candidates
+	// (score 0) so installed skills stay reachable like Claude Code extensions.
+	if fullEnv && len(scored) < maxK {
+		picked := make(map[int]bool, len(scored))
+		for _, s := range scored {
+			picked[s.Idx] = true
+		}
+		for i := range candidates {
+			if len(scored) >= maxK {
+				break
+			}
+			if picked[i] {
+				continue
+			}
+			scored = append(scored, scoredCandidate{Idx: i, Score: 0})
+			picked[i] = true
+		}
+	}
 
 	if len(scored) == 0 {
 		return nil
@@ -142,8 +181,8 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 	for i, r := range results {
 		names[i] = fmt.Sprintf("%s(%.2f)", r.Name, r.Score)
 	}
-	log.Printf("[coding-subagent] skill selection: task=%q candidates=%d skipped_task_fit=%d matched=%s",
-		truncateLogText(taskDescription, 60), len(candidates), skippedByTaskFit, strings.Join(names, ", "))
+	log.Printf("[coding-subagent] skill selection: task=%q full_env=%v candidates=%d skipped_task_fit=%d matched=%s",
+		truncateLogText(taskDescription, 60), fullEnv, len(candidates), skippedByTaskFit, strings.Join(names, ", "))
 
 	return results
 }

@@ -1,7 +1,7 @@
 import type { AssistantInputIconName } from "./aiAssistantPanelTheme";
 
 /** Compose-mode actions: free-form input is wrapped as a slash command on send. */
-export type ComposeAction = "goal" | "btw";
+export type ComposeAction = "goal" | "btw" | "moa";
 
 /** One-shot slash commands fired immediately from the + menu (no input needed). */
 export type FireSlashCommand = "/memory" | "/compress" | "/help";
@@ -40,6 +40,7 @@ export interface PlusMenuItemDef {
 const COMPOSE_PREFIX: Record<ComposeAction, string> = {
     goal: "/goal",
     btw: "/btw",
+    moa: "/moa",
 };
 
 /** Ordered + menu entries (actions first, then compose/template, then fire-and-forget). */
@@ -77,6 +78,17 @@ export const PLUS_MENU_ITEMS: PlusMenuItemDef[] = [
         hintZh: "/btw 不打断主任务",
         hintEn: "/btw without interrupting",
         composeAction: "btw",
+    },
+    {
+        id: "moa",
+        kind: "compose",
+        icon: "layers",
+        testId: "ai-plus-menu-moa",
+        labelZh: "多模型会诊",
+        labelEn: "MoA council",
+        hintZh: "/moa 多视角综合（单次）",
+        hintEn: "/moa multi-model synthesis (one-shot)",
+        composeAction: "moa",
     },
     {
         id: "loop",
@@ -181,6 +193,10 @@ const COMPOSE_PLACEHOLDER: Record<ComposeAction, { zh: string; en: string }> = {
     btw: {
         zh: "输入旁路查询问题（不打断当前任务）...",
         en: "Ask a side question (won't interrupt the main task)...",
+    },
+    moa: {
+        zh: "描述需要多模型会诊的问题或方案...",
+        en: "Describe a hard problem for multi-model council review...",
     },
 };
 

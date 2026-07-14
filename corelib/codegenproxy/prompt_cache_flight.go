@@ -356,6 +356,10 @@ func promptCacheOptions() corelib.LLMPromptCacheOptions {
 		Enabled:                      true,
 		NormalizeDeterministicParams: true,
 		IgnoreModelField:             false,
+		// Codex attaches per-request tracing metadata and user IDs. They do not
+		// affect generation, but would otherwise make every cache key unique.
+		IgnoreUserField:     true,
+		IgnoreMetadataField: true,
 	}
 }
 

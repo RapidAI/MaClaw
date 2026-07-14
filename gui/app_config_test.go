@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	cllm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -671,6 +672,133 @@ func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
 	}
 	if !patched.LogDetailEnabled {
 		t.Fatal("LogDetailEnabled = false, want preserved true")
+	}
+}
+
+func TestPatchConfigFieldsCodingRoutePref(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"coding_route_pref":                 "vision",
+		"coding_route_pref_mirror":          true,
+		"coding_checkpoint_sidecar_max_mb":  64,
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields: %v", err)
+	}
+	if patched.CodingRoutePref != "vision" {
+		t.Fatalf("got %q", patched.CodingRoutePref)
+	}
+	if !patched.CodingRoutePrefMirror {
+		t.Fatal("mirror want true")
+	}
+	if patched.CodingCheckpointSidecarMaxMB != 64 {
+		t.Fatalf("sidecar mb=%d", patched.CodingCheckpointSidecarMaxMB)
+	}
+	if codingCheckpointSidecarMaxBytes() != 64*1024*1024 {
+		t.Fatalf("live budget=%d", codingCheckpointSidecarMaxBytes())
+	}
+	// Reload
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CodingRoutePref != "vision" || !cfg.CodingRoutePrefMirror || cfg.CodingCheckpointSidecarMaxMB != 64 {
+		t.Fatalf("persist %+v", cfg)
+	}
+	setCodingCheckpointSidecarMaxMB(0)
+}
+
+func TestResolveCodingWorkbenchConflictActions(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "desktop-user:resolve-batch"
+	h.storeStickyCodingConflict(userID, codingWorkbenchConflict{
+		StepIndex: 1,
+		Path:      filepath.Join(t.TempDir(), "missing-wt"),
+		Kind:      "local_worktree",
+		Files:     []string{"a.go", "b.go"},
+	})
+	id := h.listStickyCodingConflicts(userID)[0].ID
+	// keep one file
+	msg, err := h.keepMainCodingConflictFiles(userID, id, []string{"a.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "1") {
+		t.Fatalf("%s", msg)
+	}
+	list := h.listStickyCodingConflicts(userID)
+	if len(list) != 1 || len(list[0].Files) != 1 {
+		t.Fatalf("%+v", list)
+	}
+	// keep rest (empty onlyFiles on keep with remaining = full discard when all selected via empty?)
+	// empty onlyFiles = discard whole conflict
+	_, err = h.keepMainCodingConflictFiles(userID, id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.listStickyCodingConflicts(userID)) != 0 {
+		t.Fatal("expected cleared")
+	}
+	h.clearStickyCodingWorkbenchMemory(userID)
+}
+
+func TestPatchConfigFieldsModelRoutes(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// Ensure router exists so reload path runs.
+	app.ohModules.modelRouter = cllm.NewModelRouter(nil)
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"model_routes": map[string]interface{}{
+			"reasoning": map[string]interface{}{"model": "reason-model"},
+			"vision":    map[string]interface{}{"model": "vision-model"},
+			"empty":     map[string]interface{}{"model": ""}, // dropped
+		},
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields: %v", err)
+	}
+	if patched.ModelRoutes["reasoning"].Model != "reason-model" {
+		t.Fatalf("%+v", patched.ModelRoutes)
+	}
+	if patched.ModelRoutes["vision"].Model != "vision-model" {
+		t.Fatalf("%+v", patched.ModelRoutes)
+	}
+	if _, ok := patched.ModelRoutes["empty"]; ok {
+		t.Fatal("empty model should be dropped")
+	}
+	if !app.ohModules.modelRouter.HasRoute(cllm.TaskReasoning) {
+		t.Fatal("router should have reasoning after reload")
+	}
+	if !app.ohModules.modelRouter.HasRoute(cllm.TaskVision) {
+		t.Fatal("router should have vision after reload")
+	}
+
+	// Clear routes
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"model_routes": map[string]interface{}{},
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if len(patched.ModelRoutes) != 0 {
+		t.Fatalf("want empty, got %+v", patched.ModelRoutes)
+	}
+	if app.ohModules.modelRouter.HasRoute(cllm.TaskReasoning) {
+		t.Fatal("router should be cleared")
 	}
 }
 

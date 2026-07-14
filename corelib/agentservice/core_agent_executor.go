@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -96,6 +97,11 @@ type coreAgentCallbacks struct {
 	forceFullPrompt bool
 	// history is pre-turn conversation for multi-turn knowledge auto-recall.
 	history []agent.ConversationEntry
+	// MoA (request-level preset / allow_auto).
+	moaRequestPreset string // raw request preset name (may be empty)
+	moaPreset        *moa.ResolvedPreset
+	moaSource        string // request | auto
+	moaActive        bool
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -178,9 +184,24 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		opsApprovedCommands: append([]v2.OpsApprovedCommand(nil),
 			req.OpsApprovedCommands...),
 		history: convertHistoryToEntries(req.History, req.Message.ID),
+		moaRequestPreset: firstNonEmptyString(
+			strings.TrimSpace(req.MoAPreset),
+			moaPresetFromMetadata(req.Message.Metadata, req.Session.Metadata),
+		),
+	}
+	// Explicit moa_preset must resolve or fail closed (K17: no silent single-model).
+	if name := strings.TrimSpace(cb.moaRequestPreset); name != "" {
+		resolved, detail, ok := resolveMoAPresetForRequest(req.Config, llmCfg, name)
+		if !ok {
+			return nil, fmt.Errorf("multi-model council unavailable: %s", detail)
+		}
+		cp := resolved
+		cb.moaPreset = &cp
+		cb.moaSource = "request"
+		cb.moaActive = true
 	}
 	userContent := agent.BuildUserContent(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil)
-	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v", req.Session.ID, req.OnToken != nil)
+	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v moa_preset=%q", req.Session.ID, req.OnToken != nil, cb.moaRequestPreset)
 	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	if result.Error != "" {
@@ -193,6 +214,16 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		"model":    llmCfg.Model,
 		"protocol": llmCfg.Protocol,
 		"wire_api": llmCfg.WireAPI,
+	}
+	if cb.moaActive && cb.moaPreset != nil {
+		metadata["moa_preset"] = cb.moaPreset.Name
+		if cb.moaSource != "" {
+			metadata["moa_source"] = cb.moaSource
+		}
+		if result.Route.MoAReferences > 0 {
+			metadata["moa_ref_ok"] = fmt.Sprint(result.Route.MoARefOK)
+			metadata["moa_references"] = fmt.Sprint(result.Route.MoAReferences)
+		}
 	}
 	if cb.promptStats.TotalTokens > 0 {
 		metadata["prompt_tokens_stable"] = fmt.Sprint(cb.promptStats.StableSystemPromptTokens)
@@ -337,6 +368,67 @@ func convertHistoryToEntries(history []Message, currentID string) []agent.Conver
 }
 
 func (c *coreAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.llmCfg }
+
+// AllowMoAFanOut implements agent.MoABudgetGate using AppConfig.DailyLLMBudgetUSD
+// and the durable fleet daily cost snapshot (same source as interactive clients).
+func (c *coreAgentCallbacks) AllowMoAFanOut(nRefs int) (ok bool, reason string) {
+	if c == nil {
+		return true, ""
+	}
+	limit := c.appCfg.DailyLLMBudgetUSD
+	if limit <= 0 {
+		return true, ""
+	}
+	need := moa.EstimateWaveMinUSD(nRefs)
+	spent := llm.LoadCostDailyFleet().CostUSD
+	if spent+need <= limit {
+		return true, ""
+	}
+	return false, fmt.Sprintf("moa advisors skipped (daily budget low; need ~$%.4f, fleet today=$%.4f/$%.2f)",
+		need, spent, limit)
+}
+
+// PrepareMoA implements agent.MoAHost for request-level / allow_auto multi-model council.
+func (c *coreAgentCallbacks) PrepareMoA(iteration int, toolsSeen bool, fanoutsRan int) (active bool, preset moa.ResolvedPreset, progress string) {
+	if c == nil {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	if !moa.EnvAllows() {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// Explicit request is resolved eagerly in Execute (fail-closed). Here only allow_auto.
+	if c.moaPreset == nil && strings.TrimSpace(c.moaRequestPreset) == "" {
+		moaCfg := corelib.NormalizeMoAConfig(c.appCfg.MoA)
+		if moa.EffectiveEnabled(moaCfg.Enabled) && moaCfg.AllowAuto && moa.EnvAllows() {
+			cr := llm.ClassifyTurn(c.userText, llm.ClassifyHints{})
+			// Cost tier not fully applied here; empty tier still allows TaskReasoning (K13).
+			if moa.ShouldActivateAuto(true, cr.Task, "") {
+				if resolved, detail, ok := resolveMoAPresetForRequest(c.appCfg, c.llmCfg, ""); ok {
+					cp := resolved
+					c.moaPreset = &cp
+					c.moaSource = "auto"
+					c.moaActive = true
+				} else {
+					log.Printf("[agentservice] moa allow_auto skipped: %s", detail)
+				}
+			}
+		}
+	}
+	if c.moaPreset == nil || !c.moaPreset.Enabled {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// K16: force full prompt under MoA.
+	if c.CurrentPromptProfile().IsLight() {
+		c.UpgradeLightPromptToFull("moa council")
+	}
+	n := len(c.moaPreset.References)
+	progress = fmt.Sprintf("consulting %d models…", n)
+	if c.moaSource == "auto" && iteration == 0 && fanoutsRan == 0 {
+		progress = "auto multi-model: " + progress
+	}
+	_ = toolsSeen
+	return true, *c.moaPreset, progress
+}
 
 func (c *coreAgentCallbacks) GetMaxIterations() int {
 	return config.EffectiveMaxIterations(c.appCfg.MaclawAgentMaxIterations)

@@ -156,6 +156,7 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 .mp-cap-card-meta .badge-inline{font-size:10px;font-weight:600}
 .mp-cap-card-meta .badge-inline.ok{color:#059669}
 .mp-cap-card-meta .badge-inline.warn{color:#d97706}
+.mp-cap-card-meta .badge-inline.danger{color:#b42318}
 .mp-cap-card-meta .badge-inline.info{color:var(--primary)}
 .mp-cap-card-desc{font-size:11px;line-height:1.5;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:6px}
 .mp-category-tabs{display:flex;align-items:center}.mp-category-tabs button{box-shadow:none}.mp-category-tabs .mp-category-tab-active,.mp-category-tabs button[aria-pressed="true"]{background:#2563eb;color:#fff;border-color:#2563eb;font-weight:700}.mp-category-tabs .mp-category-tab-active:hover,.mp-category-tabs button[aria-pressed="true"]:hover{background:#1d4ed8;border-color:#1d4ed8}

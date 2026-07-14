@@ -576,6 +576,10 @@ func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (Remote
 }
 
 func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
+	if normalizeRemoteLaunchSource(launchSource) != RemoteLaunchSourceDesktop {
+		return RemoteSessionView{}, fmt.Errorf("StartRemoteSession only accepts desktop launch source")
+	}
+	launchSource = RemoteLaunchSourceDesktop
 	toolName = normalizeRemoteToolName(toolName)
 	if !remoteToolSupported(toolName) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
@@ -620,7 +624,7 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 	}
 	spec.LaunchSource = launchSource
 
-	session, err := a.remoteSessions.Create(spec)
+	session, err := a.remoteSessions.CreateUserSession(spec)
 	if err != nil && session == nil {
 		return RemoteSessionView{}, err
 	}
@@ -633,6 +637,10 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 }
 
 func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
+	if normalizeRemoteLaunchSource(launchSource) != RemoteLaunchSourceHandoff {
+		return RemoteSessionView{}, fmt.Errorf("StartRemoteHandoffSession only accepts handoff launch source")
+	}
+	launchSource = RemoteLaunchSourceHandoff
 	toolName = normalizeRemoteToolName(toolName)
 	if !remoteToolSupported(toolName) {
 		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
@@ -677,7 +685,7 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 	}
 	spec.LaunchSource = launchSource
 
-	session, err := a.remoteSessions.Create(spec)
+	session, err := a.remoteSessions.CreateUserSession(spec)
 	if err != nil && session == nil {
 		return RemoteSessionView{}, err
 	}

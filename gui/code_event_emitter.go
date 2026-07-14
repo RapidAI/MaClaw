@@ -41,6 +41,14 @@ func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
 		return
 	}
 	log.Printf("[code-event] emit file_update session=%q op=%s force_open=%v project=%q file=%q content_len=%d original_len=%d", evt.SessionID, evt.OpType, evt.ForceOpen, evt.ProjectPath, evt.FilePath, len(evt.Content), len(evt.Original))
+	e.emitCodeFileEventQuiet(evt)
+}
+
+// emitCodeFileEventQuiet sends the event without a per-file log line (batch emit).
+func (e *CodeEventEmitter) emitCodeFileEventQuiet(evt CodeFileEvent) {
+	if e == nil || e.app == nil {
+		return
+	}
 	if e.app.ctx == nil {
 		log.Printf("[code-event] skip file_update session=%q file=%q: app context is nil", evt.SessionID, evt.FilePath)
 		return
@@ -51,6 +59,17 @@ func (e *CodeEventEmitter) EmitCodeFileEvent(evt CodeFileEvent) {
 // EmitSessionStart emits a code:session_start event when a coding session begins.
 // If app.ctx is nil, the call is silently skipped.
 func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...string) {
+	e.emitSessionStart(sessionID, false, projectPath...)
+}
+
+// EmitSessionStartAutoOpen is used by pure-coding / CodingSubAgent turns so the
+// right-hand source panel stays open across multi-turn session_start events.
+// Frontend auto_open keeps existing file tabs (does not clear the map).
+func (e *CodeEventEmitter) EmitSessionStartAutoOpen(sessionID string, projectPath ...string) {
+	e.emitSessionStart(sessionID, true, projectPath...)
+}
+
+func (e *CodeEventEmitter) emitSessionStart(sessionID string, autoOpenPreview bool, projectPath ...string) {
 	if e == nil || e.app == nil {
 		return
 	}
@@ -58,25 +77,26 @@ func (e *CodeEventEmitter) EmitSessionStart(sessionID string, projectPath ...str
 		log.Printf("[code-event] skip session_start session=%q: app context is nil", sessionID)
 		return
 	}
-	payload := map[string]string{
+	payload := map[string]interface{}{
 		"session_id": sessionID,
+	}
+	if autoOpenPreview {
+		payload["auto_open_preview"] = true
 	}
 	if len(projectPath) > 0 && projectPath[0] != "" {
 		payload["project_path"] = projectPath[0]
 	}
-	log.Printf("[code-event] emit session_start session=%q project=%q", sessionID, payload["project_path"])
+	project := ""
+	if len(projectPath) > 0 {
+		project = projectPath[0]
+	}
+	log.Printf("[code-event] emit session_start session=%q project=%q auto_open=%v", sessionID, project, autoOpenPreview)
 	e.app.emitEvent("code:session_start", payload)
 }
 
 // EmitPreviewSessionStart starts a workflow-authorized source preview session.
 func (e *CodeEventEmitter) EmitPreviewSessionStart(sessionID string) {
-	if e == nil || e.app == nil || e.app.ctx == nil {
-		return
-	}
-	e.app.emitEvent("code:session_start", map[string]interface{}{
-		"session_id":        sessionID,
-		"auto_open_preview": true,
-	})
+	e.EmitSessionStartAutoOpen(sessionID)
 }
 
 // EmitSessionEnd emits a code:session_end event when a coding session completes.

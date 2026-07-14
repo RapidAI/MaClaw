@@ -38,6 +38,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/needleruntime"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -452,6 +453,8 @@ type TUIApp struct {
 	// costTracker tracks daily LLM $ (fleet-persisted) for budget gates.
 	costTracker   *llm.CostTracker
 	costTrackerMu sync.Mutex
+	// moa holds one-shot / sticky multi-model council state for TUI chat.
+	moa *tuiMoAState
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go 鈥?no fields needed here.
 
@@ -781,6 +784,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// /btw and /loop require an async agent loop 鈥?route through handleChatSend.
 			trimmedCmd := strings.TrimSpace(msg.Text)
 			if trimmedCmd == "/btw" || strings.HasPrefix(trimmedCmd, "/btw ") {
+				if m.llmMissing() {
+					return m, m.routeMissingLLMFromChat()
+				}
+				return m, m.handleChatSend(msg.Text, msg.AgentMode)
+			}
+			if trimmedCmd == "/moa" || strings.HasPrefix(trimmedCmd, "/moa ") ||
+				strings.EqualFold(trimmedCmd, "/moa") || strings.HasPrefix(strings.ToLower(trimmedCmd), "/moa ") {
 				if m.llmMissing() {
 					return m, m.routeMissingLLMFromChat()
 				}
@@ -1581,11 +1591,104 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 		}
 	}
 
+	// /moa — shared parser (corelib/llm/moa.ParseSlash): one-shot, @preset, sticky, stats.
+	if moa.IsMoASlash(trimmedText) {
+		cmd := moa.ParseSlash(trimmedText)
+		switch cmd.Kind {
+		case moa.SlashHelp:
+			return func() tea.Msg {
+				return views.ChatResponseMsg{Text: tuiText(lang, "moaUsage")}
+			}
+		case moa.SlashUsage:
+			return func() tea.Msg {
+				return views.ChatResponseMsg{Text: tuiText(lang, "moaAtPresetUsage")}
+			}
+		case moa.SlashStats:
+			line := moa.FormatStatsLine()
+			if line == "" {
+				line = tuiText(lang, "moaStatsEmpty")
+			}
+			return func() tea.Msg {
+				return views.ChatResponseMsg{Text: line}
+			}
+		case moa.SlashSticky:
+			arg := cmd.StickyArg
+			switch arg {
+			case "on", "1", "true", "enable":
+				presetName := cmd.StickyPreset
+				var resolved moa.ResolvedPreset
+				var err error
+				if presetName != "" {
+					resolved, err = app.resolveMoAPresetNamed(presetName)
+				} else {
+					resolved, err = app.resolveMoADefaultPreset()
+				}
+				if err != nil {
+					return func() tea.Msg {
+						return views.ChatResponseMsg{Error: tuiFormat(lang, "moaUnavailable", err.Error())}
+					}
+				}
+				app.moaState().armSticky(resolved)
+				return func() tea.Msg {
+					return views.ChatResponseMsg{Text: tuiFormat(lang, "moaStickyOnNamed", resolved.Name)}
+				}
+			case "off", "0", "false", "disable", "clear":
+				app.moaState().clear()
+				return func() tea.Msg {
+					return views.ChatResponseMsg{Text: tuiText(lang, "moaStickyOff")}
+				}
+			case "status", "":
+				st := app.moaState()
+				st.mu.Lock()
+				sticky := st.sticky != nil
+				oneshot := st.oneShot != nil
+				name := ""
+				if st.sticky != nil {
+					name = st.sticky.Name
+				}
+				st.mu.Unlock()
+				return func() tea.Msg {
+					return views.ChatResponseMsg{Text: tuiFormat(lang, "moaStickyStatus", sticky, oneshot, name)}
+				}
+			default:
+				return func() tea.Msg {
+					return views.ChatResponseMsg{Text: tuiText(lang, "moaStickyUsage")}
+				}
+			}
+		case moa.SlashOneShot:
+			if strings.TrimSpace(cmd.Prompt) == "" {
+				return func() tea.Msg {
+					return views.ChatResponseMsg{Text: tuiText(lang, "moaUsage")}
+				}
+			}
+			var resolved moa.ResolvedPreset
+			var err error
+			if cmd.Preset != "" {
+				resolved, err = app.resolveMoAPresetNamed(cmd.Preset)
+			} else {
+				resolved, err = app.resolveMoADefaultPreset()
+			}
+			if err != nil {
+				return func() tea.Msg {
+					return views.ChatResponseMsg{Error: tuiFormat(lang, "moaUnavailable", err.Error())}
+				}
+			}
+			app.moaState().armOneShot(resolved)
+			text = cmd.Prompt
+			trimmedText = cmd.Prompt
+		default:
+			return func() tea.Msg {
+				return views.ChatResponseMsg{Text: tuiText(lang, "moaUsage")}
+			}
+		}
+	}
+
 	if !agentMode {
 		return m.handleSimpleChatSend(text)
 	}
 
 	cb := newTuiCallbacks(app, prog)
+	cb.lastUserText = text
 	m.activeCb = cb
 
 	return func() tea.Msg {
@@ -3011,6 +3114,11 @@ type tuiCallbacks struct {
 	forceFullPrompt bool
 	// history is pre-turn conversation for multi-turn knowledge auto-recall.
 	history []agent.ConversationEntry
+	// MoA council pin for this loop.
+	moaPreset     *moa.ResolvedPreset
+	moaAuto       bool
+	lastUserText  string
+	lastRoute     agent.RouteDecision
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -3070,9 +3178,11 @@ func (c *tuiCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agen
 	if c == nil || c.app == nil {
 		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
 	}
+	c.lastUserText = userText
 	cfg, d, ok := c.app.routeTurn(userText, llm.ClassifyHints{})
 	if ok {
 		c.activeLLM.set(cfg)
+		c.lastRoute = d
 	}
 	return cfg, d, ok
 }

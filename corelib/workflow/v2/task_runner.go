@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,14 @@ type TaskRunnerConfig struct {
 	DesignCtx       string // truncated design summary
 	MaxRetries      int    // per-task retry limit (default 2)
 	TDDMode         bool   // if true, each task runs in two phases: test-first → implement
+	// MaxParallel is the max concurrent tasks in a ready wave (default 1 = sequential).
+	// Only tasks that are simultaneously dependency-ready run together; writers should
+	// keep MaxParallel low (2–3). SubAgentFunc must be concurrency-safe when > 1.
+	MaxParallel int
+	// WaveSize is set by the runner for each SubAgent invocation: how many tasks
+	// are running in the current ready wave (1 for sequential). SubAgent hosts
+	// may use this to decide isolation (e.g. git worktree only when WaveSize>1).
+	WaveSize int
 }
 
 // SubAgentFunc is the function signature for running a single task with a SubAgent.
@@ -61,16 +70,26 @@ func NewTaskRunner(config TaskRunnerConfig, subAgentFunc SubAgentFunc) *TaskRunn
 	}
 }
 
-// RunAll executes all tasks sequentially, respecting dependencies.
-// Returns results for each task.
+// RunAll executes all tasks respecting dependencies.
+// When MaxParallel <= 1, tasks run sequentially (original behavior).
+// When MaxParallel > 1, each wave of dependency-ready unfinished tasks runs
+// concurrently (up to MaxParallel), then the next wave is scheduled.
 func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func(string), onProgress func(string)) []TaskRunResult {
 	r.results = make([]TaskRunResult, len(tasks))
+	if r.config.MaxParallel <= 1 {
+		return r.runAllSequential(ctx, tasks, onToken, onProgress)
+	}
+	return r.runAllWaves(ctx, tasks, onToken, onProgress)
+}
 
+func (r *TaskRunner) runAllSequential(ctx context.Context, tasks []*TaskItem, onToken func(string), onProgress func(string)) []TaskRunResult {
 	for i, task := range tasks {
 		select {
 		case <-ctx.Done():
-			// Mark remaining as skipped
 			for j := i; j < len(tasks); j++ {
+				if r.results[j].Status != "" {
+					continue
+				}
 				r.results[j] = TaskRunResult{
 					TaskIndex: tasks[j].Index,
 					Title:     tasks[j].Title,
@@ -82,7 +101,6 @@ func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func
 		default:
 		}
 
-		// Check dependencies
 		if !r.dependenciesMet(task, tasks) {
 			r.results[i] = TaskRunResult{
 				TaskIndex: task.Index,
@@ -99,11 +117,11 @@ func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func
 		if onProgress != nil {
 			onProgress(fmt.Sprintf("T%d/%d: %s", task.Index, len(tasks), task.Title))
 		}
-		// Send task separator via onToken so the streaming UI shows clear task boundaries
 		if onToken != nil {
 			onToken(fmt.Sprintf("\n\n---\n### T%d: %s\n\n", task.Index, task.Title))
 		}
 
+		r.config.WaveSize = 1
 		result := r.runWithRetry(ctx, task, onToken, onProgress)
 		r.results[i] = result
 
@@ -115,8 +133,188 @@ func (r *TaskRunner) RunAll(ctx context.Context, tasks []*TaskItem, onToken func
 			onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
 		}
 	}
-
 	return r.results
+}
+
+func (r *TaskRunner) runAllWaves(ctx context.Context, tasks []*TaskItem, onToken func(string), onProgress func(string)) []TaskRunResult {
+	maxP := r.config.MaxParallel
+	if maxP < 1 {
+		maxP = 1
+	}
+	done := make([]bool, len(tasks))
+	remaining := len(tasks)
+
+	for remaining > 0 {
+		select {
+		case <-ctx.Done():
+			for i := range tasks {
+				if !done[i] {
+					r.results[i] = TaskRunResult{
+						TaskIndex: tasks[i].Index,
+						Title:     tasks[i].Title,
+						Status:    TaskSkipped,
+						Error:     "cancelled",
+					}
+					done[i] = true
+				}
+			}
+			return r.results
+		default:
+		}
+
+		// Collect ready indices (deps met, not done). Skip permanently if deps failed.
+		var ready []int
+		for i, task := range tasks {
+			if done[i] {
+				continue
+			}
+			if r.dependenciesFailed(task, tasks) {
+				r.results[i] = TaskRunResult{
+					TaskIndex: task.Index,
+					Title:     task.Title,
+					Status:    TaskSkipped,
+					Error:     "dependency not met",
+				}
+				done[i] = true
+				remaining--
+				if onProgress != nil {
+					onProgress(fmt.Sprintf("T%d: %s — 跳过（依赖未满足）", task.Index, task.Title))
+				}
+				continue
+			}
+			if r.dependenciesMet(task, tasks) {
+				ready = append(ready, i)
+			}
+		}
+		if remaining <= 0 {
+			break
+		}
+		if len(ready) == 0 {
+			// Deadlock / circular deps — mark leftover skipped.
+			for i := range tasks {
+				if !done[i] {
+					r.results[i] = TaskRunResult{
+						TaskIndex: tasks[i].Index,
+						Title:     tasks[i].Title,
+						Status:    TaskSkipped,
+						Error:     "dependency not met",
+					}
+					done[i] = true
+					remaining--
+				}
+			}
+			break
+		}
+		if len(ready) > maxP {
+			ready = ready[:maxP]
+		}
+
+		waveSize := len(ready)
+		r.config.WaveSize = waveSize
+
+		if waveSize == 1 {
+			i := ready[0]
+			task := tasks[i]
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("T%d/%d: %s", task.Index, len(tasks), task.Title))
+			}
+			if onToken != nil {
+				onToken(fmt.Sprintf("\n\n---\n### T%d: %s\n\n", task.Index, task.Title))
+			}
+			result := r.runWithRetry(ctx, task, onToken, onProgress)
+			r.results[i] = result
+			done[i] = true
+			remaining--
+			if onProgress != nil {
+				mark := "[OK]"
+				if result.Status == TaskFailed {
+					mark = "[ERR]"
+				}
+				onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
+			}
+			continue
+		}
+
+		// Parallel wave (WaveSize already set for SubAgent isolation decisions).
+		if onProgress != nil {
+			names := make([]string, 0, len(ready))
+			for _, i := range ready {
+				names = append(names, fmt.Sprintf("T%d", tasks[i].Index))
+			}
+			onProgress(fmt.Sprintf("并行执行: %s", strings.Join(names, ", ")))
+		}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		// Serialize onToken/onProgress for UI safety.
+		safeToken := onToken
+		safeProgress := onProgress
+		if onToken != nil {
+			safeToken = func(delta string) {
+				mu.Lock()
+				defer mu.Unlock()
+				onToken(delta)
+			}
+		}
+		if onProgress != nil {
+			safeProgress = func(msg string) {
+				mu.Lock()
+				defer mu.Unlock()
+				onProgress(msg)
+			}
+		}
+		for _, idx := range ready {
+			i := idx
+			task := tasks[i]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if safeToken != nil {
+					safeToken(fmt.Sprintf("\n\n---\n### T%d: %s\n\n", task.Index, task.Title))
+				}
+				if safeProgress != nil {
+					safeProgress(fmt.Sprintf("T%d/%d: %s (parallel)", task.Index, len(tasks), task.Title))
+				}
+				result := r.runWithRetry(ctx, task, safeToken, safeProgress)
+				mu.Lock()
+				r.results[i] = result
+				done[i] = true
+				remaining--
+				if onProgress != nil {
+					mark := "[OK]"
+					if result.Status == TaskFailed {
+						mark = "[ERR]"
+					}
+					onProgress(fmt.Sprintf("%s T%d: %s — %s", mark, task.Index, task.Title, result.Status))
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+	}
+	return r.results
+}
+
+// dependenciesFailed is true when any declared dependency finished as failed/skipped.
+func (r *TaskRunner) dependenciesFailed(task *TaskItem, allTasks []*TaskItem) bool {
+	if len(task.DependsOn) == 0 {
+		return false
+	}
+	for _, depIdx := range task.DependsOn {
+		for i, t := range allTasks {
+			if t.Index != depIdx {
+				continue
+			}
+			if i >= len(r.results) {
+				return false
+			}
+			st := r.results[i].Status
+			if st == TaskFailed || st == TaskSkipped {
+				return true
+			}
+			break
+		}
+	}
+	return false
 }
 
 // runWithRetry runs a task with retries on failure.

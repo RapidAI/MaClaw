@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type React from 'react';
 import { SidebarAiPane, isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeMiddleTabs } from '../SidebarAiPane';
@@ -154,5 +154,31 @@ describe('SidebarAiPane digital employee tabs', () => {
         expect(middlePane.style.paddingLeft).toBe('6px');
         expect(middlePane.style.paddingRight).toBe('6px');
         expect(middlePane.style.boxSizing).toBe('border-box');
+    });
+
+    it('keeps task management mounted while other middle tabs are active', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('Digital Employees'));
+        // Hidden but still mounted so welcome coding-task events can open create dialog.
+        expect(screen.getByTestId('task-management')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).toBe('none');
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+    });
+
+    it('switches back to tasks when a welcome coding-task event fires', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: 'Implement a feature' },
+            }));
+        });
+
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
+        expect(screen.queryByTestId('history-sessions')).toBeNull();
     });
 });

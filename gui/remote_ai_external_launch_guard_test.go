@@ -50,17 +50,17 @@ func TestRejectAIExternalCodingSessionLaunch(t *testing.T) {
 	}
 }
 
-func TestRemoteSessionManagerCreateRejectsAIExternalClaude(t *testing.T) {
+func TestRemoteSessionManagerCreateUserSessionRejectsAI(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	mgr := NewRemoteSessionManager(app)
-	for _, tool := range []string{"claude", "codex", ""} {
-		session, err := mgr.Create(LaunchSpec{
+	for _, tool := range []string{"claude", "codex", "", "browser", "ai-assistant"} {
+		session, err := mgr.CreateUserSession(LaunchSpec{
 			Tool:         tool,
 			ProjectPath:  t.TempDir(),
 			LaunchSource: RemoteLaunchSourceAI,
 		})
 		if err == nil {
-			t.Fatalf("expected Create to reject AI external launch for tool %q", tool)
+			t.Fatalf("expected CreateUserSession to reject AI launch for tool %q", tool)
 		}
 		if session != nil {
 			t.Fatalf("expected nil session on reject for tool %q, got %#v", tool, session)
@@ -73,13 +73,43 @@ func TestRemoteSessionManagerCreateRejectsAIExternalClaude(t *testing.T) {
 		t.Fatalf("sessions stored = %d, want 0", got)
 	}
 
-	// Non-CLI AI background marker tool is not rejected by this guard
-	// (CreateAIBackgroundSession is the dedicated path; Create with
-	// ai-assistant would still need a provider — only assert guard allows).
+	// The narrower external-CLI guard remains useful at App API boundaries;
+	// CreateUserSession applies the stricter user-only boundary above.
 	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{
 		Tool:         "ai-assistant",
 		LaunchSource: RemoteLaunchSourceAI,
 	}); err != nil {
 		t.Fatalf("ai-assistant AI launch should not hit external-CLI guard: %v", err)
+	}
+}
+
+func TestRemoteSessionAppEntrypointsRejectAIExternalLaunchBeforeSetup(t *testing.T) {
+	app := &App{}
+	for _, start := range []struct {
+		name string
+		fn   func() error
+	}{
+		{
+			name: "remote",
+			fn: func() error {
+				_, err := app.StartRemoteSession("claude", "", false, "", RemoteLaunchSourceAI)
+				return err
+			},
+		},
+		{
+			name: "handoff",
+			fn: func() error {
+				_, err := app.StartRemoteHandoffSession("claude", "", false, "", RemoteLaunchSourceAI)
+				return err
+			},
+		},
+	} {
+		err := start.fn()
+		if err == nil {
+			t.Fatalf("%s entrypoint unexpectedly accepted an AI launch source", start.name)
+		}
+		if app.remoteSessions != nil {
+			t.Fatalf("%s entrypoint initialized RemoteSessionManager before rejecting AI launch", start.name)
+		}
 	}
 }

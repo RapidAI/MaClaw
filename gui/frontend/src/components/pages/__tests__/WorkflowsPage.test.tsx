@@ -30,43 +30,29 @@ describe('WorkflowsPage', () => {
         sessionStorage.clear();
     });
 
-    it('starts workflow tiles through the template API', async () => {
+    it('starts coding workflow tile through the template API', async () => {
         const switchToAI = vi.fn();
         render(<WorkflowsPage lang="en" switchToAI={switchToAI} />);
 
-        fireEvent.click(screen.getByRole('button', { name: /quick coding/i }));
+        fireEvent.click(screen.getByRole('button', { name: /coding/i }));
         expect(switchToAI).toHaveBeenCalledTimes(1);
 
         await act(async () => {
             vi.advanceTimersByTime(60);
             await Promise.resolve();
         });
-        expect(startWorkflowTemplateMock).toHaveBeenCalledWith('coding_subagent', '');
+        expect(startWorkflowTemplateMock).toHaveBeenCalledWith('coding', '');
         expect(startWorkflowTemplateMock).toHaveBeenCalledTimes(1);
         expect(startWorkflowDirectMock).not.toHaveBeenCalled();
 
         const starting = JSON.parse(sessionStorage.getItem('maclaw:workflow-starting') || '{}');
-        expect(starting.workflowType).toBe('coding_subagent');
+        expect(starting.workflowType).toBe('coding');
         expect(starting.activateLocal).toBe(true);
     });
 
-    it('starts remote coding through the template API', async () => {
-        const switchToAI = vi.fn();
-        render(<WorkflowsPage lang="en" switchToAI={switchToAI} />);
-
-        fireEvent.click(screen.getByRole('button', { name: /remote coding/i }));
-        expect(switchToAI).toHaveBeenCalledTimes(1);
-
-        await act(async () => {
-            vi.advanceTimersByTime(60);
-            await Promise.resolve();
-        });
-        expect(startWorkflowTemplateMock).toHaveBeenCalledWith('remote_coding_subagent', '');
-        expect(startWorkflowTemplateMock).toHaveBeenCalledTimes(1);
-        expect(startWorkflowDirectMock).not.toHaveBeenCalled();
-
-        const starting = JSON.parse(sessionStorage.getItem('maclaw:workflow-starting') || '{}');
-        expect(starting.workflowType).toBe('remote_coding_subagent');
-        expect(starting.activateLocal).toBe(true);
+    it('does not expose removed simplified or remote coding workflow tiles', () => {
+        render(<WorkflowsPage lang="en" switchToAI={vi.fn()} />);
+        expect(screen.queryByRole('button', { name: /quick coding/i })).toBeNull();
+        expect(screen.queryByRole('button', { name: /remote coding/i })).toBeNull();
     });
 });

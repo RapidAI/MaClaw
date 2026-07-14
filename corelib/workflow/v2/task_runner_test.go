@@ -3,7 +3,9 @@ package v2
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func mockSubAgent(status TaskRunStatus) SubAgentFunc {
@@ -14,6 +16,37 @@ func mockSubAgent(status TaskRunStatus) SubAgentFunc {
 			Status:    status,
 			Summary:   "done",
 		}
+	}
+}
+
+func TestTaskRunner_WaveSizePropagated(t *testing.T) {
+	var maxWave int32
+	var sawParallel int32
+	sub := func(ctx context.Context, task *TaskItem, config TaskRunnerConfig, onToken func(string), onProgress func(string)) *TaskRunResult {
+		if config.WaveSize > int(atomic.LoadInt32(&maxWave)) {
+			atomic.StoreInt32(&maxWave, int32(config.WaveSize))
+		}
+		if config.WaveSize > 1 {
+			atomic.StoreInt32(&sawParallel, 1)
+		}
+		time.Sleep(20 * time.Millisecond)
+		return &TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: TaskPassed}
+	}
+	tasks := []*TaskItem{
+		{Index: 1, Title: "A"},
+		{Index: 2, Title: "B"},
+		{Index: 3, Title: "C", DependsOn: []int{1, 2}},
+	}
+	runner := NewTaskRunner(TaskRunnerConfig{ProjectPath: t.TempDir(), MaxRetries: 0, MaxParallel: 2}, sub)
+	results := runner.RunAll(context.Background(), tasks, nil, nil)
+	if len(results) != 3 {
+		t.Fatalf("results=%d", len(results))
+	}
+	if atomic.LoadInt32(&sawParallel) != 1 {
+		t.Fatal("expected WaveSize>1 for independent A/B wave")
+	}
+	if atomic.LoadInt32(&maxWave) < 2 {
+		t.Fatalf("maxWave=%d", maxWave)
 	}
 }
 

@@ -20,16 +20,48 @@ export type CodingAgentExplorationStatus = "explored" | "read_only" | "missing" 
 export type CodingAgentVerificationStatus = "passed" | "failed" | "missing" | "not_needed" | "unknown";
 export type CodingAgentDiffCheckStatus = "checked" | "skipped" | "failed" | "unknown";
 
-const neutralAttentionTone: CodingAgentStatusTone = {
+/** Shared palette — keep coding-agent chrome calm and consistent. */
+const successTone: CodingAgentStatusTone = {
+    accent: "#4f7f6f",
+    bg: "rgba(79, 127, 111, 0.08)",
+    border: "rgba(79, 127, 111, 0.22)",
+};
+const runningTone: CodingAgentStatusTone = {
+    accent: "#2f5f98",
+    bg: "rgba(47, 95, 152, 0.08)",
+    border: "rgba(47, 95, 152, 0.22)",
+};
+const slateTone: CodingAgentStatusTone = {
     accent: "#64748b",
     bg: "rgba(100, 116, 139, 0.08)",
     border: "rgba(100, 116, 139, 0.20)",
 };
 
+const neutralAttentionTone: CodingAgentStatusTone = slateTone;
+
 const neutralAttentionToneDark: CodingAgentStatusTone = {
     accent: "#8a9ab0",
     bg: "rgba(138, 154, 176, 0.10)",
     border: "rgba(138, 154, 176, 0.22)",
+};
+
+/**
+ * Soft amber for coding-agent failures / hard checks.
+ * Prefer this over alarmist red so tool trail and status prompts stay calm
+ * during normal exploratory / compile-fail loops.
+ */
+export const CODING_AGENT_FAILURE_ACCENT = "#a16207";
+/** Lighter gold for dark UI — #a16207 is too dim on dark panels. */
+export const CODING_AGENT_FAILURE_ACCENT_DARK = "#e0b253";
+const codingAgentFailureTone: CodingAgentStatusTone = {
+    accent: CODING_AGENT_FAILURE_ACCENT,
+    bg: "rgba(161, 98, 7, 0.09)",
+    border: "rgba(161, 98, 7, 0.22)",
+};
+const codingAgentFailureToneDark: CodingAgentStatusTone = {
+    accent: CODING_AGENT_FAILURE_ACCENT_DARK,
+    bg: "rgba(224, 178, 83, 0.12)",
+    border: "rgba(224, 178, 83, 0.28)",
 };
 
 export interface CodingAgentProgress {
@@ -108,14 +140,14 @@ const CODING_AGENT_PHASE_LABELS: Record<CodingAgentStatusPhase, { en: string; zh
 };
 
 const CODING_AGENT_PHASE_TONES: Record<CodingAgentStatusPhase, CodingAgentStatusTone> = {
-    starting: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
-    running: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
-    completed: { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" },
-    failed: { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" },
+    starting: runningTone,
+    running: runningTone,
+    completed: successTone,
+    failed: codingAgentFailureTone,
     retrying: neutralAttentionTone,
-    skipped: { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" },
-    result: { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" },
-    unknown: { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" },
+    skipped: slateTone,
+    result: successTone,
+    unknown: runningTone,
 };
 
 export function isCodingAgentKnownPhase(phase: string): phase is CodingAgentKnownPhase {
@@ -206,6 +238,68 @@ export function codingAgentStatusSelector(variant?: CodingAgentStatusVariant, ph
     ].join("");
 }
 
+/**
+ * Cheap content check for grouping (avoids full JSON parse on every progress line).
+ * Intentionally stricter than a bare prefix so garbage lines don't enter a feed shell.
+ */
+export function isCodingAgentProgressContent(content: string): boolean {
+    const trimmed = content.trimStart();
+    if (trimmed.startsWith("Coding Agent Event:")) {
+        // Require the coding agent marker near the start of the payload.
+        const head = trimmed.slice(0, 240);
+        return /"agent"\s*:\s*"coding"/i.test(head);
+    }
+    // Legacy: "Coding Agent: running T2 - title"
+    return /^Coding Agent:\s*[a-z]+(?:\s+T\d+)?(?:\s+-|\s*$)/i.test(trimmed);
+}
+
+/**
+ * Stable React key for a coding feed panel across streaming tool events.
+ * Prefers turn_id / task_id so the shell does not remount on every new line.
+ */
+export function codingAgentFeedStableKey(messages: { id: string; content?: string }[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const content = messages[i]?.content || "";
+        const turn = content.match(/"turn_id"\s*:\s*"([^"]+)"/i);
+        if (turn?.[1]) return `feed-turn-${turn[1]}`;
+        const task = content.match(/"task_id"\s*:\s*"([^"]+)"/i);
+        if (task?.[1]) return `feed-task-${task[1]}`;
+        // Legacy plain status: "... T2 - title"
+        const legacy = content.match(/^Coding Agent:\s*[a-z]+\s+(T\d+)/i);
+        if (legacy?.[1]) return `feed-task-${legacy[1]}`;
+    }
+    const lastId = messages[messages.length - 1]?.id || "coding";
+    return `feed-${lastId}`;
+}
+
+/** Whether a progress row is a user-visible critical failure (for feed chrome). */
+export function codingAgentProgressLooksCritical(progress: CodingAgentProgress): boolean {
+    const outcome = (progress.outcome || "").trim().toLowerCase();
+    if (outcome !== "failed" && outcome !== "blocked" && outcome !== "missing") return false;
+    // Diagnostic / exploratory tool failures stay neutral in the trail.
+    if ((progress.event || "").trim().toLowerCase() === "tool_finished") {
+        if (codingAgentToolFailureLooksDiagnostic(progress) || codingAgentToolFailureLooksExpectedOrRecoverable(progress)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Visual tone for the whole feed: prefer header phase, but elevate to failed
+ * when the trail has real failures while the task is still marked running.
+ */
+export function resolveCodingAgentFeedTone(
+    header: CodingAgentProgress,
+    lineProgress: CodingAgentProgress[],
+    isDark?: boolean,
+): CodingAgentStatusTone {
+    const base = resolveCodingAgentStatusTone(header, isDark);
+    if (!isCodingAgentActivePhase(header.phase)) return base;
+    if (!lineProgress.some(codingAgentProgressLooksCritical)) return base;
+    return resolveCodingAgentStatusTone({ phase: "failed", title: header.title || "" }, isDark);
+}
+
 export function parseCodingAgentProgress(content: string): CodingAgentProgress | null {
     const event = parseCodingAgentEventProgress(content);
     if (event) return event;
@@ -216,6 +310,23 @@ export function parseCodingAgentProgress(content: string): CodingAgentProgress |
         taskID: match[2],
         title: match[3] || "",
     });
+}
+
+export function isCodingAgentTaskStatusOnly(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    return event === "" || event === "task_status";
+}
+
+export function isCodingAgentActivityEvent(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    return (
+        event === "tool_started" ||
+        event === "tool_finished" ||
+        event.endsWith("_summary") ||
+        event === "diff_check" ||
+        event === "diff_summary" ||
+        event === "diff_updated"
+    );
 }
 
 export function parseCodingAgentEventProgress(content: string): CodingAgentProgress | null {
@@ -352,73 +463,432 @@ export function codingAgentProgressStatusText(progress: CodingAgentProgress, lan
     }
 }
 
-export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgentProgressTheme, lang: string): React.ReactNode {
-    const progress = parseCodingAgentProgress(msg.content);
-    if (!progress) return null;
-    let tone = codingAgentProgressTone(progress);
-    // In dark mode, the neutral accent #64748b has insufficient contrast on dark surfaces.
-    // Swap to the brighter dark-mode variant when rendering on dark backgrounds.
-    if (t.isDark && tone.accent === neutralAttentionTone.accent) {
-        tone = neutralAttentionToneDark;
+const monoFont = "ui-monospace, SFMono-Regular, Menlo, Consolas, \"Cascadia Mono\", monospace";
+
+/** Glyph + color for a progress line (Codex / Claude Code style trail). */
+export function codingAgentOutcomeMark(progress: CodingAgentProgress, isDark?: boolean): { glyph: string; color: string } {
+    // Resolve through the same dark/light adapter as row chrome so glyphs stay in sync.
+    const tone = resolveCodingAgentStatusTone(progress, isDark);
+    const event = (progress.event || "").trim().toLowerCase();
+    const rawOutcome = (progress.outcome || "").trim().toLowerCase();
+    if (
+        event === "tool_started"
+        || ((event === "" || event === "task_status") && isCodingAgentActivePhase(progress.phase) && !rawOutcome)
+    ) {
+        return { glyph: "\u00b7", color: tone.accent }; // · running
     }
-    const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    const statusText = codingAgentProgressStatusText(progress, lang);
-    const metaText = codingAgentProgressMetaText(progress, lang);
-    const commandPreview = codingAgentCommandPreviewText(progress, lang);
-    const commandAriaText = commandPreview ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${(progress.command || "").trim()}` : undefined;
-    const displayText = codingAgentDisplayText(progress, lang);
+    if (event === "tool_finished" || event.endsWith("_summary") || event === "diff_check") {
+        if (codingAgentToolFailureLooksDiagnostic(progress) || codingAgentToolFailureLooksExpectedOrRecoverable(progress)) {
+            return { glyph: "\u00b7", color: tone.accent };
+        }
+        if (rawOutcome === "success" || rawOutcome === "passed" || rawOutcome === "checked" || rawOutcome === "explored" || rawOutcome === "changed") {
+            return { glyph: "\u2713", color: successTone.accent }; // ✓
+        }
+        if (rawOutcome === "failed" || rawOutcome === "missing") {
+            return { glyph: "\u2717", color: tone.accent }; // ✗ soft amber (not red)
+        }
+        if (rawOutcome === "blocked" || rawOutcome === "skipped" || rawOutcome === "none" || rawOutcome === "not_needed") {
+            return { glyph: "\u2013", color: tone.accent }; // –
+        }
+    }
+    if (progress.phase === "completed" || progress.phase === "result") {
+        return { glyph: "\u2713", color: successTone.accent };
+    }
+    if (progress.phase === "failed") {
+        return { glyph: "\u2717", color: tone.accent };
+    }
+    return { glyph: "\u00b7", color: tone.accent };
+}
+
+/** Primary tool/event name column (monospace, restrained). */
+export function codingAgentToolNameText(progress: CodingAgentProgress): string {
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event === "tool_finished" || event === "tool_started") {
+        return (progress.detail || "tool").trim() || "tool";
+    }
+    if (event === "quality_summary") return "quality";
+    if (event === "command_summary") return "commands";
+    if (event === "file_activity_summary") return "files";
+    if (event === "exploration_summary") return "explore";
+    if (event === "verification_summary") return "verify";
+    if (event === "guardrail_summary") return "guard";
+    if (event === "diff_check") return "diff";
+    if (event === "diff_summary") return "diff";
+    if (event === "task_status" || !event) return progress.taskID || "task";
+    return event.replace(/_summary$/, "").replace(/_/g, " ") || "task";
+}
+
+/** Secondary detail: command, path hint, or short summary — not label soup. */
+export function codingAgentToolDetailText(progress: CodingAgentProgress, lang: string, maxRunes = 88): string | undefined {
+    const event = (progress.event || "").trim().toLowerCase();
+    if ((event === "tool_finished" || event === "tool_started") && progress.command) {
+        return truncateCodingAgentInlineText(progress.command, maxRunes);
+    }
+    if (event === "tool_finished" || event === "tool_started") {
+        // Prefer human status for diagnostics; else title.
+        if (codingAgentToolFailureLooksDiagnostic(progress)) {
+            return codingAgentToolDiagnosticStatusText(progress, lang);
+        }
+        if (progress.summary) return truncateCodingAgentInlineText(progress.summary, maxRunes);
+        if (progress.title) return truncateCodingAgentInlineText(progress.title, maxRunes);
+        return undefined;
+    }
+    if (progress.summary) return truncateCodingAgentInlineText(progress.summary, maxRunes);
+    if (progress.title) return truncateCodingAgentInlineText(progress.title, maxRunes);
+    return codingAgentProgressMetaText(progress, lang);
+}
+
+/**
+ * Remap shared palette accents for dark surfaces (failure amber brightens;
+ * neutral slate lightens). Success / running stay as-is.
+ * Prefer object identity (shared palette constants), with accent fallback for
+ * any ad-hoc tone objects that still use the same hex.
+ */
+export function adaptCodingAgentStatusTone(tone: CodingAgentStatusTone, isDark?: boolean): CodingAgentStatusTone {
+    if (!isDark) return tone;
+    if (
+        tone === neutralAttentionTone
+        || tone === slateTone
+        || tone.accent === neutralAttentionTone.accent
+    ) {
+        return neutralAttentionToneDark;
+    }
+    if (
+        tone === codingAgentFailureTone
+        || tone.accent === codingAgentFailureTone.accent
+    ) {
+        return codingAgentFailureToneDark;
+    }
+    return tone;
+}
+
+/** Progress → base tone, then dark-adapt when needed. */
+export function resolveCodingAgentStatusTone(progress: CodingAgentProgress, isDark?: boolean): CodingAgentStatusTone {
+    return adaptCodingAgentStatusTone(codingAgentProgressTone(progress), isDark);
+}
+
+/** Prefer explicit flag; else read app shell `data-ai-theme` (no prop drilling). */
+export function codingAgentUiIsDark(isDark?: boolean): boolean {
+    if (typeof isDark === "boolean") return isDark;
+    if (typeof document === "undefined") return false;
+    const theme =
+        document.getElementById("App")?.getAttribute("data-ai-theme")
+        || document.documentElement.getAttribute("data-ai-theme");
+    return theme === "dark";
+}
+
+/** True while a tool (or pure task status) is still in-flight — not finished outcomes. */
+function codingAgentLineIsRunning(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event === "tool_started") return true;
+    if (event === "tool_finished" || event.endsWith("_summary") || event === "diff_check" || event === "diff_summary") {
+        return false;
+    }
+    // Pure task_status / legacy lines: active phase and no outcome yet.
+    return isCodingAgentActivePhase(progress.phase) && !(progress.outcome || "").trim();
+}
+
+/**
+ * Header snapshot for a feed:
+ * - title/task from the best available row
+ * - phase from the last terminal task_status only if no activity follows it
+ *   (stale "completed" must not win over tools that ran afterward)
+ */
+export function pickCodingAgentFeedHeader(rows: CodingAgentProgress[]): CodingAgentProgress {
+    if (rows.length === 0) {
+        return { phase: "unknown", title: "" };
+    }
+    const latest = rows[rows.length - 1];
+    let phase = latest.phase;
+    let title = latest.title;
+    let taskID = latest.taskID;
+    let event = latest.event;
+    let outcome = latest.outcome;
+
+    let terminalIdx = -1;
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const p = rows[i];
+        if (isCodingAgentTaskStatusOnly(p) && isCodingAgentTerminalPhase(p.phase)) {
+            terminalIdx = i;
+            break;
+        }
+    }
+    if (terminalIdx >= 0) {
+        let activityAfter = false;
+        for (let i = terminalIdx + 1; i < rows.length; i++) {
+            if (isCodingAgentActivityEvent(rows[i])) {
+                activityAfter = true;
+                break;
+            }
+        }
+        if (!activityAfter) {
+            const terminal = rows[terminalIdx];
+            phase = terminal.phase;
+            event = terminal.event;
+            outcome = terminal.outcome;
+            if (terminal.title) title = terminal.title;
+            if (terminal.taskID) taskID = terminal.taskID;
+        }
+    }
+    if (!title || !taskID) {
+        for (let i = rows.length - 1; i >= 0; i--) {
+            if (!title && rows[i].title) title = rows[i].title;
+            if (!taskID && rows[i].taskID) taskID = rows[i].taskID;
+            if (title && taskID) break;
+        }
+    }
+    return normalizeCodingAgentProgress({
+        ...latest,
+        phase,
+        title,
+        taskID,
+        event,
+        outcome,
+    });
+}
+
+/** One terminal-style tool/activity line (used inside the feed panel). */
+function renderCodingAgentToolLine(
+    progress: CodingAgentProgress,
+    t: CodingAgentProgressTheme,
+    lang: string,
+    opts?: { key?: string; showCommandTestId?: boolean; hideDetailIfEquals?: string },
+): React.ReactNode {
+    const tone = resolveCodingAgentStatusTone(progress, t.isDark);
+    const mark = codingAgentOutcomeMark(progress, t.isDark);
+    const toolName = codingAgentToolNameText(progress);
+    let detail = codingAgentToolDetailText(progress, lang);
+    // Avoid repeating the feed header title on every tool row.
+    if (detail && opts?.hideDetailIfEquals && detail === opts.hideDetailIfEquals) {
+        detail = undefined;
+    }
+    const duration = formatCodingAgentDuration(progress.durationMs);
+    const command = (progress.command || "").trim();
+    const showCmdPreview = !!codingAgentCommandPreviewText(progress, lang);
+    const running = codingAgentLineIsRunning(progress);
     return (
         <div
-            key={msg.id}
-            className={codingAgentStatusClassName(progress, "chat-progress")}
-            data-testid="coding-agent-progress"
-            {...codingAgentStatusDataAttrs(progress, "chat-progress")}
-            role="status"
-            aria-live="polite"
-            aria-label={displayText}
+            key={opts?.key}
+            data-testid="coding-agent-tool-line"
+            data-tool-running={running ? "true" : "false"}
             style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                minHeight: "28px",
-                margin: "4px 0",
-                padding: "5px 8px",
-                border: `1px solid ${tone.border}`,
-                borderRadius: "6px",
-                background: tone.bg,
+                display: "grid",
+                gridTemplateColumns: "12px minmax(52px, 72px) minmax(0, 1fr) auto",
+                alignItems: "baseline",
+                columnGap: 6,
+                padding: "0",
+                fontSize: 11,
+                lineHeight: 1.4,
                 color: t.text,
-                fontSize: "12px",
-                lineHeight: 1.35,
-                whiteSpace: "normal",
-                wordBreak: "break-word",
+                opacity: running ? 0.9 : 1,
             }}
         >
-            <span style={{ color: tone.accent, fontWeight: 700, flexShrink: 0 }}>{agentLabel}</span>
-            <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0 }}>{statusText}</span>
-            {progress.taskID && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{progress.taskID}</span>}
-            {metaText && <span style={{ color: t.fieldLabel, flexShrink: 0 }}>{metaText}</span>}
-            {progress.title && <span style={{ color: t.text, minWidth: 0, overflowWrap: "anywhere" }}>{progress.title}</span>}
-            {commandPreview && (
-                <span
-                    data-testid="coding-agent-command-preview"
-                    role="note"
-                    aria-label={commandAriaText}
-                    title={progress.command}
-                    style={{
-                        color: t.fieldLabel,
-                        minWidth: 0,
-                        marginLeft: "auto",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-                        fontSize: "11px",
-                        maxWidth: "min(44ch, 42%)",
-                    }}
-                >
-                    {commandPreview}
+            <span
+                aria-hidden="true"
+                style={{
+                    color: mark.color,
+                    fontWeight: 700,
+                    fontFamily: monoFont,
+                    textAlign: "center",
+                    fontSize: 11,
+                    width: 12,
+                }}
+            >
+                {mark.glyph}
+            </span>
+            <span
+                style={{
+                    color: tone.accent,
+                    fontFamily: monoFont,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                }}
+                title={toolName}
+            >
+                {toolName}
+            </span>
+            <span
+                data-testid={showCmdPreview || opts?.showCommandTestId ? "coding-agent-command-preview" : undefined}
+                role={showCmdPreview ? "note" : undefined}
+                aria-label={showCmdPreview ? `${lang.startsWith("zh") ? "\u547d\u4ee4" : "Command"}: ${command}` : undefined}
+                title={command || detail || undefined}
+                style={{
+                    color: t.fieldLabel,
+                    fontFamily: monoFont,
+                    fontSize: 11,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                }}
+            >
+                {detail || ""}
+            </span>
+            <span
+                style={{
+                    color: t.fieldLabel,
+                    fontFamily: monoFont,
+                    fontSize: 10,
+                    flexShrink: 0,
+                    opacity: 0.85,
+                    fontVariantNumeric: "tabular-nums",
+                }}
+            >
+                {duration || ""}
+            </span>
+        </div>
+    );
+}
+
+/**
+ * Chat surface for one coding-agent progress event.
+ * Always uses the same terminal-style feed shell (never a separate badge card).
+ */
+export function renderCodingAgentProgressStatus(msg: ChatMessage, t: CodingAgentProgressTheme, lang: string): React.ReactNode {
+    return renderCodingAgentActivityFeed([msg], t, lang);
+}
+
+/**
+ * Programming-tool activity log: one panel, many mono lines
+ * (Claude Code / Codex trail — not N stacked status chips).
+ */
+export function renderCodingAgentActivityFeed(
+    messages: ChatMessage[],
+    t: CodingAgentProgressTheme,
+    lang: string,
+): React.ReactNode {
+    const rows = messages
+        .map((msg) => ({ msg, progress: parseCodingAgentProgress(msg.content) }))
+        .filter((row): row is { msg: ChatMessage; progress: CodingAgentProgress } => !!row.progress);
+    if (rows.length === 0) return null;
+
+    const header = pickCodingAgentFeedHeader(rows.map((r) => r.progress));
+    // When tools/summaries exist, omit pure task_status lines — header already shows phase.
+    const activityRows = rows.filter(({ progress }) => !isCodingAgentTaskStatusOnly(progress));
+    const lineRows = activityRows.length > 0 ? activityRows : rows;
+    const lineProgress = lineRows.map((r) => r.progress);
+    const tone = resolveCodingAgentFeedTone(header, lineProgress, t.isDark);
+    const headerTask = header.taskID;
+    const headerTitle = header.title;
+    const phaseLabel = codingAgentStatusLabel(header.phase, lang);
+    const statusText = codingAgentProgressStatusText(header, lang);
+    const isMulti = lineRows.length > 1;
+    const criticalCount = lineProgress.reduce(
+        (n, p) => n + (codingAgentProgressLooksCritical(p) ? 1 : 0),
+        0,
+    );
+    // Multi: short phase, but surface failure count when chrome is elevated while still running.
+    // Single: full status (e.g. "Quality Not Passed", not just "Result").
+    const headerStatus = isMulti
+        ? (
+            criticalCount > 0 && isCodingAgentActivePhase(header.phase)
+                ? (lang.startsWith("zh") ? `${criticalCount} \u9879\u5931\u8d25` : `${criticalCount} failed`)
+                : phaseLabel
+        )
+        : statusText;
+    // Single visible line keeps the established a11y string (via header snapshot).
+    const feedLabel = isMulti
+        ? joinCodingAgentStatusParts(
+            codingAgentBrandLabel(lang),
+            headerTask,
+            headerStatus,
+            headerTitle,
+            `${lineRows.length} ${lang.startsWith("zh") ? "\u6b65" : "steps"}`,
+        )
+        : codingAgentDisplayText(header, lang);
+    const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "rgba(47, 95, 152, 0.14)";
+    const bg = t.isDark ? "rgba(15, 23, 42, 0.42)" : "rgba(246, 248, 251, 0.98)";
+    const hairline = t.isDark ? "rgba(148,163,184,0.12)" : "rgba(47, 95, 152, 0.09)";
+    const showHeaderRule = isMulti;
+    // Parent Fragment owns the React list key; avoid remount-churning key on the shell.
+
+    return (
+        <div
+            className={codingAgentStatusClassName(header, "chat-progress")}
+            data-testid="coding-agent-progress"
+            data-coding-feed={isMulti ? "true" : activityRows.length > 0 ? "activity" : "single"}
+            data-tone-accent={tone.accent}
+            {...codingAgentStatusDataAttrs(header, "chat-progress")}
+            role="status"
+            aria-live="polite"
+            // Only announce meaningful header changes, not every mono line rewrite.
+            aria-atomic="false"
+            aria-label={feedLabel}
+            style={{
+                margin: "4px 0",
+                padding: "5px 9px 5px",
+                borderRadius: 5,
+                border: `1px solid ${borderColor}`,
+                background: bg,
+                color: t.text,
+                // Soft top accent instead of a left stripe (tool-log chrome, not alert card).
+                boxShadow: t.isDark
+                    ? `inset 0 1.5px 0 0 ${tone.accent}`
+                    : `inset 0 1.5px 0 0 ${tone.accent}, 0 1px 1px rgba(15,23,42,0.03)`,
+            }}
+        >
+            <div
+                data-testid="coding-agent-feed-header"
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    marginBottom: lineRows.length > 0 ? 3 : 0,
+                    paddingBottom: showHeaderRule ? 4 : 0,
+                    borderBottom: showHeaderRule ? `1px solid ${hairline}` : "none",
+                    fontSize: 11,
+                    lineHeight: 1.25,
+                    fontFamily: monoFont,
+                }}
+            >
+                <span style={{ fontWeight: 700, color: tone.accent, letterSpacing: "0.01em" }}>
+                    {codingAgentBrandLabel(lang)}
                 </span>
-            )}
+                {headerTask && (
+                    <span style={{ fontWeight: 600, color: t.fieldLabel }}>{headerTask}</span>
+                )}
+                {headerTitle && (
+                    <span
+                        style={{
+                            flex: 1,
+                            minWidth: 0,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            color: t.text,
+                            fontWeight: 500,
+                            fontFamily: "inherit",
+                        }}
+                        title={headerTitle}
+                    >
+                        {headerTitle}
+                    </span>
+                )}
+                {!headerTitle && <span style={{ flex: 1 }} />}
+                <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0, fontSize: 10 }}>
+                    {headerStatus}
+                </span>
+            </div>
+            <div
+                data-testid="coding-agent-feed-lines"
+                style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 0,
+                    paddingLeft: 2,
+                }}
+            >
+                {lineRows.map(({ msg, progress }) =>
+                    renderCodingAgentToolLine(progress, t, lang, {
+                        key: msg.id,
+                        showCommandTestId: lineRows.length === 1,
+                        hideDetailIfEquals: headerTitle || undefined,
+                    }),
+                )}
+            </div>
         </div>
     );
 }
@@ -545,28 +1015,60 @@ function findLatestCodingAgentEventDetail(events: CodingAgentProgress[], eventNa
     return findLatestCodingAgentEvent(events, eventName)?.detail;
 }
 
+/** Short brand label shared by chat feed, sidebar, and status bar. */
+export function codingAgentBrandLabel(lang: string): string {
+    return lang.startsWith("zh") ? "\u7f16\u7a0b" : "Coding";
+}
+
+/** Professional thin-space separator for compact status copy. */
+export const CODING_AGENT_STATUS_SEP = " \u00b7 ";
+
+function joinCodingAgentStatusParts(...parts: Array<string | undefined | null | false>): string {
+    return parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(CODING_AGENT_STATUS_SEP);
+}
+
 export function codingAgentDisplayText(progress: CodingAgentProgress, lang: string): string {
     const normalized = normalizeCodingAgentProgress(progress);
-    const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    return [agentLabel, codingAgentProgressStatusText(normalized, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang), normalized.title].filter(Boolean).join(" | ");
+    return joinCodingAgentStatusParts(
+        codingAgentBrandLabel(lang),
+        codingAgentProgressStatusText(normalized, lang),
+        normalized.taskID,
+        codingAgentProgressMetaText(normalized, lang),
+        normalized.title,
+    );
 }
 
 export function codingAgentVariantDisplayText(progress: CodingAgentProgress, lang: string, variant: CodingAgentStatusVariant): string {
+    // Sidebar keeps the same short line, but appends file preview for a11y/title
+    // when files are present on the progress object itself (body may hide them).
     if (variant !== "sidebar") return codingAgentDisplayText(progress, lang);
     const normalized = normalizeCodingAgentProgress(progress);
-    const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    const taskStatusLabel = lang.startsWith("zh") ? "\u4efb\u52a1\u72b6\u6001" : "Task status";
-    return [agentLabel, taskStatusLabel, codingAgentProgressStatusText(normalized, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang), normalized.title, codingAgentFilePreviewText(normalized, lang)].filter(Boolean).join(" | ");
+    return joinCodingAgentStatusParts(
+        codingAgentDisplayText(normalized, lang),
+        codingAgentFilePreviewText(normalized, lang),
+    );
 }
 
 export function codingAgentCompactText(progress: CodingAgentProgress, lang: string): string {
     const normalized = normalizeCodingAgentProgress(progress);
-    const agentLabel = lang.startsWith("zh") ? "\u7f16\u7a0b\u667a\u80fd\u4f53" : "Coding Agent";
-    return [agentLabel, codingAgentProgressStatusText(normalized, lang), normalized.taskID, codingAgentProgressMetaText(normalized, lang)].filter(Boolean).join(" | ");
+    // Processing strip: brand · status · task · optional meta (no long title).
+    return joinCodingAgentStatusParts(
+        codingAgentBrandLabel(lang),
+        codingAgentProgressStatusText(normalized, lang),
+        normalized.taskID,
+        codingAgentProgressMetaText(normalized, lang),
+    );
 }
 
 export function codingAgentProgressMetaText(progress: CodingAgentProgress, lang: string): string | undefined {
     const normalized = normalizeCodingAgentProgress(progress);
+    const event = (normalized.event || "").trim().toLowerCase();
+    // tool_finished: detail is the tool name (already clear from status/trail).
+    // Prefer count meta only — keeps compact strips denser.
+    if (event === "tool_finished") {
+        if (normalized.count !== undefined) return codingAgentCountMetaText(normalized, lang);
+        return undefined;
+    }
     if (normalized.detail) return normalized.detail;
     if (normalized.count !== undefined) return codingAgentCountMetaText(normalized, lang);
     return undefined;
@@ -647,20 +1149,22 @@ export function codingAgentTurnSnapshotText(snapshot: CodingAgentTurnSnapshot, l
     const toolLabel = lang.startsWith("zh") ? "\u5de5\u5177" : "Tool";
     const outcomeLabel = lang.startsWith("zh") ? "\u7ed3\u679c" : "Result";
     const durationLabel = lang.startsWith("zh") ? "\u8017\u65f6" : "Duration";
-    const filesLabel = lang.startsWith("zh") ? "\u53d8\u66f4\u6587\u4ef6" : "Files";
+    const filesLabel = lang.startsWith("zh") ? "\u6587\u4ef6" : "Files";
     const traceLabel = lang.startsWith("zh") ? "\u8f68\u8ff9" : "Trace";
     const guardLabel = lang.startsWith("zh") ? "\u8fb9\u754c" : "Guard";
     const commandLabel = lang.startsWith("zh") ? "\u547d\u4ee4" : "Commands";
-    const fileActivityLabel = lang.startsWith("zh") ? "\u6587\u4ef6\u52a8\u4f5c" : "Activity";
+    const fileActivityLabel = lang.startsWith("zh") ? "\u52a8\u4f5c" : "Activity";
     const qualityLabel = lang.startsWith("zh") ? "\u8d28\u91cf" : "Quality";
     const exploreLabel = lang.startsWith("zh") ? "\u63a2\u7d22" : "Explore";
     const verifyLabel = lang.startsWith("zh") ? "\u9a8c\u8bc1" : "Verify";
-    const diffCheckLabel = lang.startsWith("zh") ? "Diff \u81ea\u68c0" : "Diff check";
+    const diffCheckLabel = lang.startsWith("zh") ? "Diff" : "Diff check";
     const diffLabel = "Diff";
     const files = snapshot.files?.length ? codingAgentFilePreviewText({ ...latest, files: snapshot.files }, lang) : undefined;
     const trace = codingAgentToolTraceText(snapshot, lang);
-    return [
-        codingAgentVariantDisplayText(latest, lang, "sidebar"),
+    // Accessibility copy stays complete; visual UI is denser chips.
+    // Use display text (not sidebar variant) so files are only listed once below.
+    return joinCodingAgentStatusParts(
+        codingAgentDisplayText(latest, lang),
         trace ? `${traceLabel}: ${trace}` : undefined,
         snapshot.tool ? `${toolLabel}: ${snapshot.tool}` : undefined,
         snapshot.toolOutcome ? `${outcomeLabel}: ${snapshot.toolOutcome}` : undefined,
@@ -674,7 +1178,7 @@ export function codingAgentTurnSnapshotText(snapshot: CodingAgentTurnSnapshot, l
         snapshot.diffCheckStatus ? `${diffCheckLabel}: ${codingAgentDiffCheckStatusLabel(snapshot.diffCheckStatus, lang)}${snapshot.diffCheckSummary ? ` (${snapshot.diffCheckSummary})` : ""}` : undefined,
         files ? `${filesLabel}: ${files}` : undefined,
         snapshot.diffSummary ? `${diffLabel}: ${snapshot.diffSummary}` : undefined,
-    ].filter(Boolean).join(" | ");
+    );
 }
 
 export function codingAgentToolTraceText(snapshot: CodingAgentTurnSnapshot, lang: string): string | undefined {
@@ -727,18 +1231,23 @@ export function codingAgentToolOutcomeLabel(outcome: string | undefined, lang: s
 export function codingAgentToolOutcomeTone(outcome: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentToolOutcome(outcome)) {
         case "success":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "failed":
-            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
+            return codingAgentFailureTone;
         case "blocked":
             return neutralAttentionTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
 function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): boolean {
     if (normalizeCodingAgentToolOutcome(progress.outcome) !== "failed") return false;
+    // Real MSVC compile/link failures must keep the hard-failure tone even when the command
+    // embeds full Visual Studio paths or PowerShell wrappers (those used to match probe markers).
+    if (codingAgentCommandLooksLikeMSVCCompile(progress.command || "")) {
+        return false;
+    }
     const text = [progress.detail, progress.command, progress.summary].filter(Boolean).join("\n").toLowerCase();
     const hardFailureMarkers = [
         "assert",
@@ -746,6 +1255,7 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
         "build stopped",
         "check(",
         "check (",
+        "error c", // MSVC compiler errors (C2065, …)
         "fatal error",
         "fail at",
         "failed test",
@@ -758,6 +1268,7 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
         "test failed",
         "traceback",
         "undefined reference",
+        "undeclared identifier",
     ];
     if (hardFailureMarkers.some((marker) => text.includes(marker))) return false;
     if ((progress.severity || "").trim().toLowerCase() === "diagnostic") return true;
@@ -766,7 +1277,7 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
     if (codingAgentCommandLooksLikeExploratoryTest(progress.command, progress.summary)) return true;
     const toolName = (progress.detail || "").trim().toLowerCase();
     // Local CodingSubAgent + remote coding tools share the same progress surface.
-    // Exploratory existence probes should stay neutral (gray), not red failures.
+    // Exploratory existence probes should stay neutral (gray), not hard-failure amber.
     if ([
         "read_file",
         "list_directory",
@@ -799,7 +1310,6 @@ function codingAgentToolFailureLooksDiagnostic(progress: CodingAgentProgress): b
         "powershell exception",
         "get-command",
         "not recognized as",
-        "probe",
         "version check",
         "where.exe",
         "authorizationmanager",
@@ -874,17 +1384,54 @@ function codingAgentToolDiagnosticStatusText(progress: CodingAgentProgress, lang
     const commandUnavailable = ["command not found", "not recognized as", "\u65e0\u6cd5\u5c06", "\u8bc6\u522b\u4e3a cmdlet"].some((marker) => summary.includes(marker));
     if (command.includes("clang++") && (commandUnavailable || command.includes("--version"))) return label("clang++ not found", "clang++ \u4e0d\u5b58\u5728");
     if (command.includes("choco") && commandUnavailable) return label("choco not found", "choco \u4e0d\u5b58\u5728");
-    if (command.includes("visualstudio") || command.includes("microsoft visual studio") || command.includes("get-itemproperty")) {
-        return label("Visual Studio path not found", "Visual Studio \u8def\u5f84\u4e0d\u5b58\u5728");
+    // Real compile failures are not labeled as PATH probes (see probe classifier).
+    if (codingAgentCommandLooksLikeMSVCCompile(command)) {
+        return label("MSVC build did not succeed", "MSVC \u7f16\u8bd1\u672a\u6210\u529f");
     }
-    if (command.includes("where cl.exe")) return label("cl.exe not found", "cl.exe \u4e0d\u5b58\u5728");
+    // MSVC: cl is almost never on PATH even when Visual Studio is installed.
+    // Prefer "need vcvars" over "VS missing" so the UI matches host reality.
+    if (
+        command.includes("where cl.exe")
+        || command.includes("where.exe cl")
+        || (/\bcl(\.exe)?\b/.test(command) && (commandUnavailable || command.includes("get-command")) && !codingAgentCommandLooksLikeMSVCCompile(command))
+    ) {
+        return label("cl.exe not on PATH (use vcvars)", "cl.exe \u4e0d\u5728 PATH\uff08\u9700\u5148 vcvars\uff09");
+    }
+    if (
+        !codingAgentCommandLooksLikeMSVCCompile(command)
+        && (command.includes("visualstudio") || command.includes("microsoft visual studio") || command.includes("get-itemproperty") || command.includes("vswhere"))
+    ) {
+        return label("VS path probe miss (cl needs vcvars)", "VS \u8def\u5f84\u63a2\u6d4b\u672a\u547d\u4e2d\uff08cl \u9700 vcvars\uff09");
+    }
     return label("Environment probe did not succeed", "\u73af\u5883\u63a2\u6d4b\u672a\u6210\u529f");
+}
+
+/** True when a command looks like a real MSVC compile/link, not a path probe. */
+function codingAgentCommandLooksLikeMSVCCompile(command: string): boolean {
+    const normalized = command.toLowerCase();
+    // Recipe: vcvars / VS install path + cl with sources or output flags.
+    const hasVCEnv =
+        normalized.includes("vcvars")
+        || normalized.includes("vc\\auxiliary\\build")
+        || normalized.includes("vc/auxiliary/build");
+    const hasCl = /\bcl(\.exe)?\b/.test(normalized);
+    if (!hasCl && !hasVCEnv) return false;
+    if (/\.(c|cc|cpp|cxx|hpp|hh)\b/.test(normalized)) return true;
+    if (normalized.includes("/fe:") || normalized.includes("/fo:") || normalized.includes("-o ")) return true;
+    if (normalized.includes("link ") || normalized.includes("link.exe")) return true;
+    // "call ...vcvars64.bat && cl ..." without explicit sources still real work.
+    if (hasVCEnv && hasCl) return true;
+    return false;
 }
 
 function codingAgentCommandLooksLikeEnvironmentProbe(command: string | undefined): boolean {
     const normalized = (command || "").trim().toLowerCase();
     if (!normalized) return false;
-    return [
+    // Real compile recipes often embed full VS paths — never treat as probe.
+    if (codingAgentCommandLooksLikeMSVCCompile(normalized)) {
+        return false;
+    }
+    if ([
         "--version",
         "where cl.exe",
         "where msbuild.exe",
@@ -893,7 +1440,31 @@ function codingAgentCommandLooksLikeEnvironmentProbe(command: string | undefined
         "choco list",
         "get-itemproperty",
         "visualstudio\\sxs\\vs7",
-    ].some((marker) => normalized.includes(marker));
+        "vswhere",
+        "launch-vsdevshell",
+    ].some((marker) => normalized.includes(marker))) {
+        return true;
+    }
+    // Install-root / VS directory probes only (never bare "Microsoft Visual Studio"
+    // substring — that also appears in real vcvars compile recipes).
+    if (
+        normalized.includes("get-childitem")
+        || normalized.includes("test-path")
+        || normalized.startsWith("dir ")
+    ) {
+        if (
+            normalized.includes("program files")
+            || normalized.includes("programfiles")
+            || normalized.includes("visual studio")
+            || normalized.includes("mingw")
+            || normalized.includes("msys64")
+            || normalized.includes("chocolatey")
+            || normalized.includes("vcvars")
+        ) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function codingAgentToolFailureLooksExpectedOrRecoverable(progress: CodingAgentProgress): boolean {
@@ -946,8 +1517,8 @@ function codingAgentRemoteCommandLooksExploratory(progress: CodingAgentProgress)
 
     // Remote agents frequently probe or prepare a workspace before deciding how
     // to proceed. A non-zero result here is useful evidence, not a task failure.
-    // Keep build, test, permission, and other operational failures in the red
-    // error state by only accepting narrowly scoped inspection/setup commands.
+    // Keep build, test, permission, and other operational failures in the hard-failure
+    // amber state by only accepting narrowly scoped inspection/setup commands.
     return [
         /^mkdir\s+-p\s+/,
         /^(?:pwd|ls|find|which|where|id|uname|whoami)(?:\s|$)/,
@@ -981,7 +1552,7 @@ export function codingAgentGuardrailStatusTone(status: string | undefined): Codi
         case "blocked":
             return neutralAttentionTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
@@ -1011,13 +1582,13 @@ export function codingAgentCommandStatusLabel(status: string | undefined, lang: 
 export function codingAgentCommandStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentCommandStatus(status)) {
         case "passed":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "failed":
-            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
+            return codingAgentFailureTone;
         case "none":
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
@@ -1143,13 +1714,13 @@ export function codingAgentFileActivityStatusLabel(status: string | undefined, l
 export function codingAgentFileActivityStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentFileActivityStatus(status)) {
         case "changed":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "read_only":
-            return { accent: "#2f5f98", bg: "rgba(47, 95, 152, 0.08)", border: "rgba(47, 95, 152, 0.22)" };
+            return runningTone;
         case "none":
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
@@ -1179,13 +1750,13 @@ export function codingAgentQualityStatusLabel(status: string | undefined, lang: 
 export function codingAgentQualityStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentQualityStatus(status)) {
         case "passed":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "warning":
             return neutralAttentionTone;
         case "failed":
-            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
+            return codingAgentFailureTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
@@ -1219,11 +1790,11 @@ export function codingAgentExplorationStatusTone(status: string | undefined): Co
         case "explored":
         case "read_only":
         case "not_needed":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "missing":
             return neutralAttentionTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
@@ -1256,13 +1827,13 @@ export function codingAgentVerificationStatusTone(status: string | undefined): C
     switch (normalizeCodingAgentVerificationStatus(status)) {
         case "passed":
         case "not_needed":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "failed":
-            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
+            return codingAgentFailureTone;
         case "missing":
             return neutralAttentionTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }
 
@@ -1292,12 +1863,12 @@ export function codingAgentDiffCheckStatusLabel(status: string | undefined, lang
 export function codingAgentDiffCheckStatusTone(status: string | undefined): CodingAgentStatusTone {
     switch (normalizeCodingAgentDiffCheckStatus(status)) {
         case "checked":
-            return { accent: "#4f7f6f", bg: "rgba(79, 127, 111, 0.08)", border: "rgba(79, 127, 111, 0.22)" };
+            return successTone;
         case "failed":
-            return { accent: "#c43d34", bg: "rgba(196, 61, 52, 0.08)", border: "rgba(196, 61, 52, 0.22)" };
+            return codingAgentFailureTone;
         case "skipped":
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
         default:
-            return { accent: "#64748b", bg: "rgba(100, 116, 139, 0.08)", border: "rgba(100, 116, 139, 0.20)" };
+            return slateTone;
     }
 }

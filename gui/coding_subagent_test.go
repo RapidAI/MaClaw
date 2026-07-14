@@ -163,6 +163,110 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	}
 }
 
+func TestBuildFullCodingEnvironmentPromptPreamble(t *testing.T) {
+	preamble := buildFullCodingEnvironmentPromptPreamble()
+	if !strings.Contains(preamble, "全功能编程环境") {
+		t.Fatal("preamble should declare full coding environment")
+	}
+	if !strings.Contains(preamble, "manage_skill") || !strings.Contains(preamble, "call_mcp_tool") {
+		t.Fatal("preamble should mention skill/MCP tools")
+	}
+	if !strings.Contains(preamble, "web_search") || !strings.Contains(preamble, "web_fetch") {
+		t.Fatal("preamble should mention web research tools")
+	}
+	if !strings.Contains(preamble, "多轮") {
+		t.Fatal("preamble should mention multi-turn continuation")
+	}
+	if !strings.Contains(preamble, "Claude Code") && !strings.Contains(preamble, "Codex") {
+		t.Fatal("preamble should state Claude Code / Codex alignment intent")
+	}
+}
+
+func TestBuildCodingFullEnvExtraToolDefinitions(t *testing.T) {
+	defs := buildCodingFullEnvExtraToolDefinitions()
+	names := map[string]bool{}
+	for _, d := range defs {
+		fn, _ := d["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		names[name] = true
+	}
+	for _, want := range []string{"web_search", "web_fetch", "current_datetime"} {
+		if !names[want] {
+			t.Fatalf("missing full-env tool %q in %#v", want, names)
+		}
+	}
+}
+
+func TestCodingSubAgentFullEnvIncludesExtraToolsInBuildTools(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir(), fullEnvironment: true},
+		task:     &TaskItem{Index: 1, Title: "Add feature", Description: "implement"},
+	}
+	tools := cb.BuildTools("implement feature")
+	names := map[string]bool{}
+	for _, d := range tools {
+		fn, _ := d["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		names[name] = true
+	}
+	for _, want := range []string{"web_search", "web_fetch", "current_datetime", "read_file", "bash", codingSubAgentSpawnToolName} {
+		if !names[want] {
+			t.Fatalf("full-env BuildTools missing %q; got %#v", want, names)
+		}
+	}
+}
+
+func TestRearmStickyLocalCodingEnvironment(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := "desktop-user:D:/tasks/x"
+	projectPath := "D:/repo/app"
+	wantPath := normalizeProjectSessionPath(projectPath)
+	h.rearmStickyLocalCodingEnvironment(userID, projectPath)
+	if !h.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("expected sticky local coding session to be pending")
+	}
+	raw, ok := h.pendingTemplateCodingProjectPath.Load(userID)
+	if !ok || raw.(string) != wantPath {
+		t.Fatalf("sticky project path = %#v want %q", raw, wantPath)
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if mem.Kind != "local" || normalizeProjectSessionPath(mem.ProjectPath) != wantPath {
+		t.Fatalf("sticky mem = %+v want path %q", mem, wantPath)
+	}
+	// Second re-arm with slash/case variants should not panic and stay normalized.
+	h.rearmStickyLocalCodingEnvironment(userID, `D:\repo\app`)
+	if raw2, ok := h.pendingTemplateCodingProjectPath.Load(userID); !ok || raw2.(string) != wantPath {
+		t.Fatalf("re-arm path should stay normalized: %#v", raw2)
+	}
+	if _, ok := h.pendingV2SubAgentExecution.Load(userID); !ok {
+		t.Fatal("pendingV2SubAgentExecution should be set")
+	}
+	h.clearStickyCodingEnvironment(userID)
+	if h.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("clearStickyCodingEnvironment should drop sticky session")
+	}
+}
+
+func TestProbeCodingWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := probeCodingWorkspace(dir)
+	if !strings.Contains(probe, "Go") {
+		t.Fatalf("probe should detect Go stack: %q", probe)
+	}
+	if !strings.Contains(probe, "src/") {
+		t.Fatalf("probe should list src/: %q", probe)
+	}
+	if !strings.Contains(probe, "go.mod") {
+		t.Fatalf("probe should list go.mod: %q", probe)
+	}
+}
+
 func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 	task := &TaskItem{Index: 2, Title: "实现关卡加载"}
 

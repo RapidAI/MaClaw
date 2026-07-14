@@ -7,6 +7,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -88,6 +89,12 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		return h.handleGoalCommand(msg, trimmed), true
 	case imCommandBranch:
 		return h.handleBranchCommand(msg, trimmed), true
+	case imCommandMoA:
+		// Normally rewritten in handleIMMessageWithLoop before this switch.
+		// Keep as safety net for direct callers.
+		return h.handleMoACommand(msg, trimmed, responseLang), true
+	case imCommandCodingWorkbench:
+		return h.handleCodingWorkbenchIMCommand(msg, trimmed, onProgress, onToken), true
 	}
 	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)
@@ -243,6 +250,7 @@ func localizedIMSlashHelpText(lang string) string {
 		return "Available commands:\n" +
 			"/new /reset /clear - reset conversation\n" +
 			"/btw <query> - side query\n" +
+			"/moa [@preset] <prompt> - multi-model council (one-shot MoA)\n" +
 			"/loop <verify_cmd> <goal> - goal-driven verification loop\n" +
 			"    e.g. /loop \"go test ./...\" make all tests pass\n" +
 			"    options: --max N (iterations), --timeout N (seconds), --dir path\n" +
@@ -260,6 +268,7 @@ func localizedIMSlashHelpText(lang string) string {
 		return "可用命令：\n" +
 			"/new /reset /clear - 重置對話\n" +
 			"/btw <query> - 臨時旁路查詢\n" +
+			"/moa [@方案] <提示> - 多模型會診（單次 MoA）\n" +
 			"/loop <verify_cmd> <goal> - 目標驅動的驗證循環\n" +
 			"    例：/loop \"go test ./...\" 讓所有測試通過\n" +
 			"    選項：--max N（迭代次數），--timeout N（秒），--dir 路徑\n" +
@@ -277,6 +286,7 @@ func localizedIMSlashHelpText(lang string) string {
 		return "可用命令：\n" +
 			"/new /reset /clear - 重置对话\n" +
 			"/btw <query> - 临时旁路查询\n" +
+			"/moa [@方案] <提示> - 多模型会诊（单次 MoA）\n" +
 			"/loop <verify_cmd> <goal> - 目标驱动的验证循环\n" +
 			"    例：/loop \"go test ./...\" 让所有测试通过\n" +
 			"    选项：--max N（迭代次数），--timeout N（秒），--dir 路径\n" +
@@ -290,6 +300,165 @@ func localizedIMSlashHelpText(lang string) string {
 			"/exit /quit - 停止会话\n" +
 			"/sessions /status - 查看当前会话\n" +
 			"/help - 显示此帮助"
+	}
+}
+
+// moaPromptFromText strips the /moa prefix for one-shot prompts (shared parser).
+// Empty for bare /moa, stats, sticky, or usage errors.
+func moaPromptFromText(trimmed string) string {
+	cmd := moa.ParseSlash(trimmed)
+	if cmd.Kind == moa.SlashOneShot {
+		return cmd.Prompt
+	}
+	return ""
+}
+
+func (h *IMMessageHandler) handleMoACommand(msg IMUserMessage, trimmed, lang string) *IMAgentResponse {
+	cmd := moa.ParseSlash(trimmed)
+	switch cmd.Kind {
+	case moa.SlashHelp:
+		return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
+	case moa.SlashUsage:
+		return &IMAgentResponse{Text: localizedIMMoAAtPresetUsage(lang, cmd.Hint)}
+	case moa.SlashStats:
+		line := moa.FormatStatsLine()
+		if line == "" {
+			line = localizedIMMoAStatsEmpty(lang)
+		}
+		return &IMAgentResponse{Text: line}
+	case moa.SlashSticky:
+		return &IMAgentResponse{Text: localizedIMMoAStickyHint(lang)}
+	case moa.SlashOneShot:
+		if strings.TrimSpace(cmd.Prompt) == "" {
+			return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
+		}
+		if errText := h.tryArmMoAOneShotPreset(msg.UserID, lang, cmd.Preset); errText != "" {
+			return &IMAgentResponse{Text: errText}
+		}
+		return &IMAgentResponse{Text: localizedIMMoAArmedHint(lang, cmd.Prompt)}
+	default:
+		return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
+	}
+}
+
+func localizedIMMoAArmedHint(lang, prompt string) string {
+	display := prompt
+	if r := []rune(display); len(r) > 120 {
+		display = string(r[:120]) + "…"
+	}
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "MoA is ready. Please send your question without the `/moa` prefix (or use + → multi-model council):\n" + display
+	case appLanguageZhHant:
+		return "多模型會診已就緒。請直接發送問題（不要帶 `/moa` 前綴），或使用輸入框 +「多模型會診」：\n" + display
+	default:
+		return "多模型会诊已就绪。请直接发送问题（不要带 `/moa` 前缀），或使用输入框 +「多模型会诊」：\n" + display
+	}
+}
+
+func localizedIMMoAUsageText(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "Usage:\n" +
+			"  /moa <prompt>              one-shot multi-model (default preset)\n" +
+			"  /moa @preset <prompt>      one-shot with a named preset\n" +
+			"  /moa stats                 runtime counters\n\n" +
+			"Examples:\n" +
+			"  /moa review this migration plan for risks\n" +
+			"  /moa @review compare approach A vs B for auth\n\n" +
+			"Tip: + menu → multi-model, or sidebar sticky for this session."
+	case appLanguageZhHant:
+		return "用法：\n" +
+			"  /moa <提示>                單次多模型會診（預設方案）\n" +
+			"  /moa @方案名 <提示>        指定方案的單次會診\n" +
+			"  /moa stats                 運行計數\n\n" +
+			"示例：\n" +
+			"  /moa 評估這份遷移方案的風險\n" +
+			"  /moa @review 對比認證方案 A 與 B\n\n" +
+			"提示：輸入框 + →「多模型會診」，或側欄開啟本會話常開。"
+	default:
+		return "用法：\n" +
+			"  /moa <提示>                单次多模型会诊（默认方案）\n" +
+			"  /moa @方案名 <提示>        指定方案的单次会诊\n" +
+			"  /moa stats                 运行计数\n\n" +
+			"示例：\n" +
+			"  /moa 评估这份迁移方案的风险\n" +
+			"  /moa @review 对比认证方案 A 与 B\n\n" +
+			"提示：输入框 + →「多模型会诊」，或侧栏开启本会话常开。"
+	}
+}
+
+func localizedIMMoAAtPresetUsage(lang, hint string) string {
+	hint = strings.TrimSpace(hint)
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		msg := "Usage: /moa @preset <prompt>\nExample: /moa @review compare two auth designs"
+		if hint != "" {
+			msg = hint + "\n\n" + msg
+		}
+		return msg
+	case appLanguageZhHant:
+		msg := "用法：/moa @方案名 <提示>\n示例：/moa @review 對比兩種認證設計"
+		if hint != "" {
+			msg = hint + "\n\n" + msg
+		}
+		return msg
+	default:
+		msg := "用法：/moa @方案名 <提示>\n示例：/moa @review 对比两种认证设计"
+		if hint != "" {
+			msg = hint + "\n\n" + msg
+		}
+		return msg
+	}
+}
+
+func localizedIMMoAStatsEmpty(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "No multi-model fan-outs recorded yet today."
+	case appLanguageZhHant:
+		return "今日尚無多模型會診計數。"
+	default:
+		return "今日尚无多模型会诊计数。"
+	}
+}
+
+func localizedIMMoAStickyHint(lang string) string {
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "Session sticky multi-model: use the sidebar provider menu or LLM settings toggle.\n" +
+			"One-shot: /moa <prompt> or /moa @preset <prompt>."
+	case appLanguageZhHant:
+		return "本會話常開多模型：請用側欄服務商選單或 LLM 設定中的開關。\n" +
+			"單次會診：/moa <提示> 或 /moa @方案名 <提示>。"
+	default:
+		return "本会话常开多模型：请用侧栏服务商菜单或 LLM 设置中的开关。\n" +
+			"单次会诊：/moa <提示> 或 /moa @方案名 <提示>。"
+	}
+}
+
+func localizedIMMoANotReadyText(lang, prompt string) string {
+	// Truncate long prompts in the status reply to keep the bubble readable.
+	display := prompt
+	if r := []rune(display); len(r) > 200 {
+		display = string(r[:200]) + "…"
+	}
+	switch normalizeAppLanguageKind(lang) {
+	case appLanguageEnglish:
+		return "MoA multi-model council entry is ready (composer / `/moa`), " +
+			"but the MoA engine is not enabled yet (coming with the MoA PR plan).\n\n" +
+			"Your prompt was:\n" + display + "\n\n" +
+			"Resend without `/moa` to use the normal single-model agent for now."
+	case appLanguageZhHant:
+		return "多模型會診入口已就緒（輸入框 + 選單 / `/moa`），" +
+			"但 MoA 引擎尚未接入（見設計文檔 PR 計劃）。\n\n" +
+			"你提交的問題：\n" + display + "\n\n" +
+			"目前可去掉 `/moa` 前綴，用普通單模型助手繼續。"
+	default:
+		return "多模型会诊入口已就绪（输入框 + 菜单 / `/moa`），" +
+			"但 MoA 引擎尚未接入（见设计文档 PR 计划）。\n\n" +
+			"你提交的问题：\n" + display + "\n\n" +
+			"目前可去掉 `/moa` 前缀，用普通单模型助手继续。"
 	}
 }
 

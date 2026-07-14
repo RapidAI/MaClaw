@@ -44,9 +44,28 @@ func TestBuildCodexConfigTomlMatchesConfigfileSwitchDefaults(t *testing.T) {
 	for _, forbidden := range []string{
 		`requires_openai_auth = true`,
 		`responses_websockets_v2 = true`,
+		`model_context_window`,
+		`model_auto_compact_token_limit`,
 	} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("config should not contain %q:\n%s", forbidden, content)
+		}
+	}
+}
+
+func TestBuildCodexConfigTomlDoesNotAddTigerProxyContextSettings(t *testing.T) {
+	content := BuildCodexConfigToml(&corelib.ModelConfig{
+		ModelName: "tigerproxy",
+		ModelId:   "gpt-5.5",
+		ModelUrl:  "http://127.0.0.1:18086/v1",
+		WireApi:   "responses",
+	})
+	for _, want := range []string{
+		`model_context_window = 199000`,
+		`model_auto_compact_token_limit = 180000`,
+	} {
+		if strings.Contains(content, want) {
+			t.Fatalf("generic config unexpectedly contains %q:\n%s", want, content)
 		}
 	}
 }

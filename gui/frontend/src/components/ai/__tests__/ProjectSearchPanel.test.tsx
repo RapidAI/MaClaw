@@ -84,8 +84,36 @@ describe("ProjectSearchPanel", () => {
         fireEvent.click(screen.getByText("Active task"));
 
         expect(search.close).toHaveBeenCalled();
-        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith("D:/p/live", "Active task", { autoSend: false }));
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/p/live",
+            "Active task",
+            expect.objectContaining({ autoSend: false }),
+        ));
         expect(ResumeTask).not.toHaveBeenCalled();
+    });
+
+    it("opens pure coding tasks with coding agentMode from tags", async () => {
+        const search = makeSearch([{
+            id: "p-coding",
+            name: "Coding task",
+            project_path: "D:/p/coding",
+            tags: ["coding_dev", "task_management"],
+        }]);
+        const onCreateProjectTab = vi.fn();
+
+        renderPanel(search, { onCreateProjectTab });
+        fireEvent.click(screen.getByText("Coding task"));
+
+        await waitFor(() => expect(onCreateProjectTab).toHaveBeenCalledWith(
+            "D:/p/coding",
+            "Coding task",
+            expect.objectContaining({
+                autoSend: false,
+                agentMode: "coding_dev",
+                tags: expect.arrayContaining(["coding_dev"]),
+            }),
+        ));
+        expect(screen.getByTestId("search-coding-badge")).toBeTruthy();
     });
 
     it("loads scene evidence and opens artifact sources", async () => {

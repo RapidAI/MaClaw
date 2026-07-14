@@ -394,60 +394,6 @@ func CodingTemplate() *WorkflowTemplate {
 	}
 }
 
-// CodingSubAgentTemplate is the single-phase "简化编程" workflow. It uses the
-// same workflow form pipeline as other templates, then runs CodingSubAgent
-// without requirements/design/task phases.
-func CodingSubAgentTemplate() *WorkflowTemplate {
-	return &WorkflowTemplate{
-		Type:         "coding_subagent",
-		Name:         "简化编程",
-		Description:  "通过工作流表单收集工作目录和项目描述，提交后执行 CodingSubAgent。Quick coding workflow that collects a working directory and code request in the standard form panel, then runs CodingSubAgent.",
-		Keywords:     []string{"简化编程", "快速编程", "快速编码", "quick coding", "coding subagent"},
-		SemanticOnly: true,
-		Phases: []PhaseTemplate{
-			{ID: "coding_subagent_execution", Name: "简化编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeSubAgent,
-				InputSchema: &PhaseInputSchema{
-					Title:       "简化编程",
-					Description: "填写工作目录和要修改的代码需求，提交后启动编程智能体。",
-					Fields: []PhaseInputField{
-						{Name: "work_dir", Label: "工作目录", Type: "directory", Required: true, Placeholder: "选择或输入项目工作目录"},
-						{Name: "project_description", Label: "项目描述 / 代码需求", Type: "textarea", Required: true, Placeholder: "例如：修改用户列表页面的筛选逻辑，并补充单元测试"},
-					},
-				},
-			},
-		},
-	}
-}
-
-// RemoteCodingSubAgentTemplate is the single-phase "远程编程" workflow. It
-// collects SSH connection details in the standard workflow form and dispatches
-// to RemoteCodingSubAgent.
-func RemoteCodingSubAgentTemplate() *WorkflowTemplate {
-	return &WorkflowTemplate{
-		Type:         "remote_coding_subagent",
-		Name:         "远程编程",
-		Description:  "通过工作流表单收集 SSH 主机信息和远程项目描述，连接后执行 RemoteCodingSubAgent。Remote coding workflow that collects SSH details in the standard form panel, connects, then runs RemoteCodingSubAgent.",
-		Keywords:     []string{"远程编程", "远程编码", "ssh 编程", "remote coding", "remote subagent"},
-		SemanticOnly: true,
-		Phases: []PhaseTemplate{
-			{ID: "remote_coding_subagent_execution", Name: "远程编程", NeedsConfirm: false, ToolPolicy: ToolPolicyFull, Kind: PhaseKindExecution, MutationScope: MutationScopeProject, ExecMode: ExecModeRemoteSubAgent,
-				InputSchema: &PhaseInputSchema{
-					Title:       "远程编程",
-					Description: "填写 SSH 连接信息、默认工作目录和要修改的代码需求，提交后启动远程编程智能体。",
-					Fields: []PhaseInputField{
-						{Name: "ssh_host", Label: "主机 IP / 域名", Type: "text", Required: true, Placeholder: "例如：192.168.1.10 或 example.com"},
-						{Name: "ssh_port", Label: "端口", Type: "number", Required: true, Default: 22, Placeholder: "22"},
-						{Name: "ssh_user", Label: "用户名", Type: "text", Required: true, Placeholder: "例如：root"},
-						{Name: "ssh_password", Label: "密码", Type: "text", Required: true, Sensitive: true, Placeholder: "SSH 登录密码"},
-						{Name: "work_dir", Label: "默认工作目录", Type: "text", Required: true, Placeholder: "例如：/home/user/project"},
-						{Name: "project_description", Label: "项目描述 / 代码需求", Type: "textarea", Required: true, Placeholder: "例如：在远程项目中修复登录接口的超时处理，并补充测试"},
-					},
-				},
-			},
-		},
-	}
-}
-
 // MaintenanceTemplate is a lightweight coding workflow for maintenance,
 // refactoring, and incremental feature changes on existing projects.
 // It has only 3 phases (vs coding's 5): a combined analysis+plan phase,
@@ -1297,8 +1243,9 @@ func RegisterBuiltinTemplates(r *TemplateRegistry) {
 		return
 	}
 	r.Register(CodingTemplate())
-	r.Register(CodingSubAgentTemplate())
-	r.Register(RemoteCodingSubAgentTemplate())
+	// Note: coding_subagent / remote_coding_subagent one-shot workflow templates
+	// were removed. Use create-task pure coding (coding_dev / remote_coding_dev)
+	// or the full multi-phase "coding" workflow instead.
 	r.Register(MaintenanceTemplate())
 	r.Register(OpsMaintenanceTemplate())
 	r.Register(PresentationTemplate())

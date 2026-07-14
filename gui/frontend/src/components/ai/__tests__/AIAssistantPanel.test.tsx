@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
-import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, shouldShowSourcePreviewForWorkflow } from '../AIAssistantPanel';
+import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow } from '../AIAssistantPanel';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock, loadProjectConversationHistoryMock, createProjectTabSessionMock, cancelSessionForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, setCodingWorkbenchSessionPlanMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
@@ -25,6 +25,9 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, loadProjectContextMock
     renameGroupDiscussionMock: vi.fn().mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' }),
     getConversationBranchPointsMock: vi.fn().mockResolvedValue([]),
     patchConfigFieldsMock: vi.fn().mockResolvedValue({}),
+    getCodingWorkbenchStatusMock: vi.fn().mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' }),
+    prepareRemoteCodingEnvironmentMock: vi.fn().mockResolvedValue(undefined),
+    setCodingWorkbenchSessionPlanMock: vi.fn().mockResolvedValue(undefined),
     runtimeEventsOnMock: vi.fn(),
     runtimeEventsOffMock: vi.fn(),
 }));
@@ -42,8 +45,18 @@ describe('shouldShowSourcePreviewForWorkflow', () => {
 
     it('allows source previews only for programming workflows, including review', () => {
         expect(shouldShowSourcePreviewForWorkflow('coding')).toBe(true);
-        expect(shouldShowSourcePreviewForWorkflow('remote_coding_subagent')).toBe(true);
+        expect(shouldShowSourcePreviewForWorkflow('coding_subagent')).toBe(false);
+        expect(shouldShowSourcePreviewForWorkflow('remote_coding_subagent')).toBe(false);
         expect(shouldShowSourcePreviewForWorkflow('')).toBe(false);
+    });
+});
+
+describe('shouldShowSourcePreviewForAgentMode', () => {
+    it('allows pure local and remote coding environments', () => {
+        expect(shouldShowSourcePreviewForAgentMode('coding_dev')).toBe(true);
+        expect(shouldShowSourcePreviewForAgentMode('remote_coding_dev')).toBe(true);
+        expect(shouldShowSourcePreviewForAgentMode(undefined)).toBe(false);
+        expect(shouldShowSourcePreviewForAgentMode('')).toBe(false);
     });
 });
 
@@ -99,6 +112,24 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
     SpeakText: vi.fn().mockResolvedValue(undefined),
     LoadConfig: vi.fn().mockResolvedValue({}),
+    GetCodingWorkbenchPermission: vi.fn().mockResolvedValue("workspace"),
+    SetCodingWorkbenchPermission: vi.fn().mockResolvedValue(undefined),
+    GetCodingWorkbenchStatus: getCodingWorkbenchStatusMock,
+    GetCodingWorkbenchCheckpointSidecarStats: vi.fn().mockResolvedValue({ total_bytes: 0, max_bytes: 0, usage_ratio: 0, dir_count: 0, user_bytes: 0 }),
+    GetCodingWorkbenchConflictDiffs: vi.fn().mockResolvedValue([]),
+    GetCodingWorkbenchConflictFilePreview: vi.fn().mockResolvedValue(null),
+    GetCodingWorkbenchConflictFileTriple: vi.fn().mockResolvedValue(null),
+    GetCodingWorkbenchPlanMode: vi.fn().mockResolvedValue("auto"),
+    GetCodingWorkbenchWorktreeMode: vi.fn().mockResolvedValue("auto"),
+    GetCodingWorkbenchRoutePref: vi.fn().mockResolvedValue({ pref: "auto", capabilities: [] }),
+    ListCodingWorkbenchCheckpoints: vi.fn().mockResolvedValue([]),
+    ListCodingWorkbenchConflicts: vi.fn().mockResolvedValue([]),
+    PrepareRemoteCodingEnvironment: prepareRemoteCodingEnvironmentMock,
+    SetCodingWorkbenchSessionPlan: setCodingWorkbenchSessionPlanMock,
+    SetCodingWorkbenchPlanMode: vi.fn().mockResolvedValue(undefined),
+    SetCodingWorkbenchWorktreeMode: vi.fn().mockResolvedValue(undefined),
+    SetCodingWorkbenchRoutePref: vi.fn().mockResolvedValue(undefined),
+    EnsureCodingWorkbenchArmed: vi.fn().mockResolvedValue({ kind: "local", armed: true, needs_reconnect: false, turn_count: 0 }),
     IsASRReady: vi.fn().mockResolvedValue(false),
     TranscribeAudioBase64: vi.fn().mockResolvedValue(""),
     NormalizeVoiceCommand: vi.fn(async (text: string) => ({ is_command: true, corrected_text: text, confidence: 1 })),
@@ -151,6 +182,16 @@ function defaultPanelProps(): React.ComponentProps<typeof AIAssistantPanel> {
             refreshNews: () => {},
         },
     };
+}
+
+/** Wait for the lazy-loaded AgentTaskPanel form submit button, then click it. */
+async function clickWorkflowFormSubmit() {
+    const submitButton = await waitFor(() => {
+        const button = document.querySelector('button[type="submit"]');
+        expect(button).toBeTruthy();
+        return button as HTMLButtonElement;
+    });
+    fireEvent.click(submitButton);
 }
 
 function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantPanel>> = {}) {
@@ -541,7 +582,7 @@ describe('AIAssistantPanel property tests', () => {
         }));
 
         await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
-        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await clickWorkflowFormSubmit();
         await waitFor(() => expect(submitAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
             _workflow_phase: 'audience_goal',
         })));
@@ -593,7 +634,7 @@ describe('AIAssistantPanel property tests', () => {
             ],
         }));
 
-        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await clickWorkflowFormSubmit();
         await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
 
         rerender(<AIAssistantPanel
@@ -626,11 +667,12 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('does not show workflow document generation chrome for non-document execution forms', async () => {
+        // coding.implementation is a non-document execution phase (expects_document: false).
         const workflowForm: AgentView = {
-            id: 'workflow:form:coding_subagent_execution',
+            id: 'workflow:form:implementation',
             type: 'form',
-            title: 'Quick coding',
-            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'coding_subagent_execution' }],
+            title: 'Implementation',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'implementation' }],
             submitLabel: 'Submit workflow form',
         };
         const submitAgentView = vi.fn().mockResolvedValue(undefined);
@@ -647,17 +689,17 @@ describe('AIAssistantPanel property tests', () => {
 
         act(() => phaseUpdateHandler({
             id: 'workflow-non-document-form-submit-test',
-            type: 'coding_subagent',
+            type: 'coding',
             status: 'active',
             event_scope_id: 'local',
-            current_phase: 'coding_subagent_execution',
+            current_phase: 'implementation',
             awaiting_form: true,
             phases: [
-                { id: 'coding_subagent_execution', name: 'Quick coding', index: 0, status: 'pending', expects_document: false },
+                { id: 'implementation', name: 'Implementation', index: 3, status: 'pending', expects_document: false },
             ],
         }));
 
-        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await clickWorkflowFormSubmit();
         await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
 
         rerender(<AIAssistantPanel
@@ -671,13 +713,13 @@ describe('AIAssistantPanel property tests', () => {
         />);
         act(() => phaseUpdateHandler({
             id: 'workflow-non-document-form-submit-test',
-            type: 'coding_subagent',
+            type: 'coding',
             status: 'active',
             event_scope_id: 'local',
-            current_phase: 'coding_subagent_execution',
+            current_phase: 'implementation',
             awaiting_form: false,
             phases: [
-                { id: 'coding_subagent_execution', name: 'Quick coding', index: 0, status: 'running', expects_document: false },
+                { id: 'implementation', name: 'Implementation', index: 3, status: 'running', expects_document: false },
             ],
         }));
 
@@ -721,7 +763,7 @@ describe('AIAssistantPanel property tests', () => {
             ],
         }));
 
-        fireEvent.click(document.querySelector('button[type="submit"]') as HTMLButtonElement);
+        await clickWorkflowFormSubmit();
         await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
 
         rerender(<AIAssistantPanel
@@ -1021,7 +1063,8 @@ describe('AIAssistantPanel property tests', () => {
             },
         });
 
-        expect(getByText('Expense reimbursement')).toBeTruthy();
+        // AgentTaskPanel lives in the lazy-loaded AssistantPreviewPane.
+        await waitFor(() => expect(getByText('Expense reimbursement')).toBeTruthy());
         expect(getByText('Amount')).toBeTruthy();
         expect(getByText('Reason')).toBeTruthy();
         expect(getByDisplayValue('86')).toBeTruthy();
@@ -1896,6 +1939,248 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while creating', expect.objectContaining({ project_path: 'D:/tasks/new-agent-prepare' })));
+    });
+
+    it('shows a coding environment banner for coding_dev project tabs', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/coding-env-banner',
+                taskTitle: 'Pure coding task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('coding-env-banner')).toBeTruthy());
+        // Collapsed chip keeps full-name in accessible text + short visible label.
+        expect(getByTestId('coding-env-banner').textContent || '').toMatch(/Full coding environment|全功能编程环境|Coding|编程/i);
+        expect(getByTestId('coding-control-float-root')).toBeTruthy();
+        expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating coding environment');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toContain('Creating coding environment');
+
+        await act(async () => {
+            resolveSession();
+        });
+
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        // Floating chip remains after session is ready so the user still knows they are in coding mode.
+        const readyChip = getByTestId('coding-env-banner');
+        const readyText = readyChip.textContent || '';
+        const readyTitle = readyChip.getAttribute('title') || '';
+        expect(readyText).toMatch(/Full coding|full coding|全功能编程|Coding|编程/i);
+        // Long workbench description lives on the chip title (tooltip), not document-flow copy.
+        expect(readyTitle.toLowerCase()).toMatch(/multi-turn|session memory|多轮|續寫|续写/i);
+        expect(readyTitle.toLowerCase()).toMatch(/skill\/mcp|skill|mcp/i);
+
+        // Expanding the chip reveals session controls without a permanent top banner.
+        fireEvent.click(readyChip);
+        await waitFor(() => expect(getByTestId('coding-control-popover')).toBeTruthy());
+        expect(getByTestId('coding-session-plan')).toBeTruthy();
+    });
+
+    it('shows a remote coding environment banner with host for remote_coding_dev tabs', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-env-banner',
+                taskTitle: 'Remote coding task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.8',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        // Wait until prepare finishes so ready-state chip status is no longer "Starting…".
+        // new-agent tabs stay in "preparing" for at least ~120ms after session ready.
+        await waitFor(() => {
+            const ready = (getByTestId('remote-coding-env-banner').textContent || '').toLowerCase();
+            expect(ready).not.toMatch(/starting|启动|啟動|connecting|preparing|正在连接|正在連線/);
+        }, { timeout: 3000 });
+        const chip = getByTestId('remote-coding-env-banner');
+        const text = chip.textContent || '';
+        expect(text).toMatch(/Remote coding environment|Remote ·|远程/i);
+        expect(text).toContain('10.0.0.8');
+        // Full remote workbench description is on the chip title / data attribute (not document-flow).
+        await waitFor(() => {
+            const desc = `${chip.getAttribute('title') || ''}\n${chip.getAttribute('data-env-description') || ''}`.toLowerCase();
+            expect(desc).toMatch(/full remote workbench|全功能远程工作台|全功能遠端工作台|source preview|源码预览|原始碼預覽/i);
+            expect(desc).toMatch(/ssh/i);
+            expect(desc).toMatch(/skill|mcp/i);
+            expect(desc).toMatch(/multi-turn|多轮|多輪|续写|續寫/i);
+        }, { timeout: 3000 });
+    });
+
+    it('shows remote SSH reconnect form when coding workbench needs reconnect', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 2,
+            remote_host: '10.0.0.9',
+            remote_user: 'deploy',
+            remote_port: 22,
+            remote_work_dir: '/var/app',
+            session_plan: 'Ship payment fix',
+            message: 'SSH session expired; reconnect required',
+        });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-reconnect',
+                taskTitle: 'Reconnect remote coding',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.9',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        await waitFor(() => {
+            expect((getByTestId('remote-reconnect-host') as HTMLInputElement).value).toBe('10.0.0.9');
+            expect((getByTestId('remote-reconnect-user') as HTMLInputElement).value).toBe('deploy');
+            expect((getByTestId('remote-reconnect-workdir') as HTMLInputElement).value).toBe('/var/app');
+        });
+        expect(getByTestId('remote-coding-reconnect-form').textContent || '').toMatch(/Ship payment fix|payment fix/i);
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('shows reconnect success and allows editing session plan after remote rearm', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 1,
+            remote_host: '10.1.1.1',
+            remote_user: 'ops',
+            remote_port: 22,
+            remote_work_dir: '/srv/app',
+            session_plan: 'Keep deploying',
+        });
+        // After rearm, keep returning armed so a later status poll cannot clear the success toast.
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => {
+            if (rearmed) {
+                return {
+                    kind: 'remote',
+                    armed: true,
+                    needs_reconnect: false,
+                    turn_count: 1,
+                    remote_host: '10.1.1.1',
+                    remote_user: 'ops',
+                    remote_port: 22,
+                    remote_work_dir: '/srv/app',
+                    session_plan: 'Keep deploying',
+                };
+            }
+            return {
+                kind: 'remote',
+                armed: false,
+                needs_reconnect: true,
+                turn_count: 1,
+                remote_host: '10.1.1.1',
+                remote_user: 'ops',
+                remote_port: 22,
+                remote_work_dir: '/srv/app',
+                session_plan: 'Keep deploying',
+            };
+        });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => {
+            rearmed = true;
+        });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-reconnect-success',
+                taskTitle: 'Reconnect success',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.1.1.1',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        await waitFor(() => expect((getByTestId('remote-reconnect-user') as HTMLInputElement).value).toBe('ops'));
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
+        fireEvent.click(getByTestId('remote-reconnect-submit'));
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy());
+        expect(getByTestId('remote-coding-reconnect-success').textContent || '').toMatch(/Reconnected|已重新连接|已重新連線/i);
+        // Expand floating controls if collapsed, then edit session plan.
+        if (!document.querySelector('[data-testid="coding-session-plan"]')) {
+            fireEvent.click(getByTestId('remote-coding-env-banner'));
+        }
+        await waitFor(() => expect(getByTestId('coding-session-plan')).toBeTruthy());
+        fireEvent.click(getByTestId('coding-session-plan-edit'));
+        fireEvent.change(getByTestId('coding-session-plan-input'), { target: { value: 'Ship hotfix v2' } });
+        fireEvent.click(getByTestId('coding-session-plan-save'));
+        await waitFor(() => expect(setCodingWorkbenchSessionPlanMock).toHaveBeenCalledWith('D:/tasks/remote-coding-reconnect-success', 'Ship hotfix v2'));
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('opens the right-hand source preview panel for local coding_dev tasks', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/coding-open-preview',
+                taskTitle: 'Local coding opens source panel',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('coding-env-banner')).toBeTruthy());
+        // Empty-state source panel still exposes the code preview header.
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+    });
+
+    it('opens the right-hand source preview panel for remote_coding_dev tasks', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-open-preview',
+                taskTitle: 'Remote coding opens source panel',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '192.168.1.10',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
     });
 
     it('keeps new task input queued until the project tab session is registered', async () => {
@@ -3300,13 +3585,11 @@ describe('AIAssistantPanel property tests', () => {
         expect(status.className).toContain('coding-agent-status--running');
         expect(status.getAttribute('aria-label')).toContain('Fix stale edit guard');
         expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toContain('T2');
-        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toContain('T2');
-        expect(getByText('T2')).toBeTruthy();
-        expect(getByText('Fix stale edit guard')).toBeTruthy();
+        expect(status.querySelector('[data-testid="coding-agent-tool-line"]')).toBeTruthy();
     });
 
     it('compacts multiple coding agent progress messages to the latest row', () => {
-        const { getByText, queryByText } = renderPanel({
+        const { getByTestId, queryByText } = renderPanel({
             lang: 'zh-Hans',
             state: {
                 messages: [makeMsg({ role: 'user', content: 'fix these tasks' })],
@@ -3321,9 +3604,11 @@ describe('AIAssistantPanel property tests', () => {
             },
         });
 
-        expect(getByText('preflight checks done')).toBeTruthy();
+        expect(queryByText('preflight checks done')).toBeTruthy();
         expect(queryByText('First task')).toBeNull();
-        expect(getByText('Second task')).toBeTruthy();
+        const status = getByTestId('coding-agent-progress');
+        expect(status.textContent).toContain('Second task');
+        expect(status.textContent).toContain('T2');
     });
 
     it('hides completed coding agent progress once idle', () => {

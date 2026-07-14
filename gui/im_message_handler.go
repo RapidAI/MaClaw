@@ -2,9 +2,11 @@ package main
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -47,6 +49,39 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// the no-tool counter. Skip for goal-continuation self-messages.
 	if msg.Platform != "goal-continuation" && h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.OnUserMessage(msg.UserID)
+	}
+
+	// /moa one-shot: arm multi-model council and rewrite to plain user text.
+	// Shared parser: corelib/llm/moa.ParseSlash (supports @preset Phase 2).
+	if classifyImmediateIMCommand(trimmed) == imCommandMoA {
+		lang := h.imCommandResponseLang(msg.Lang)
+		cmd := moa.ParseSlash(trimmed)
+		switch cmd.Kind {
+		case moa.SlashHelp:
+			return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
+		case moa.SlashUsage:
+			return &IMAgentResponse{Text: localizedIMMoAAtPresetUsage(lang, cmd.Hint)}
+		case moa.SlashStats:
+			line := moa.FormatStatsLine()
+			if line == "" {
+				line = localizedIMMoAStatsEmpty(lang)
+			}
+			return &IMAgentResponse{Text: line}
+		case moa.SlashSticky:
+			// Desktop sticky is controlled via sidebar/settings; surface TUI-style hint.
+			return &IMAgentResponse{Text: localizedIMMoAStickyHint(lang)}
+		case moa.SlashOneShot:
+			if strings.TrimSpace(cmd.Prompt) == "" {
+				return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
+			}
+			if errText := h.tryArmMoAOneShotPreset(msg.UserID, lang, cmd.Preset); errText != "" {
+				return &IMAgentResponse{Text: errText}
+			}
+			trimmed = cmd.Prompt
+			msg.Text = cmd.Prompt
+		default:
+			return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
+		}
 	}
 
 	if resp, handled := h.handleImmediateIMCommand(msg, trimmed, onProgress, onToken); handled {

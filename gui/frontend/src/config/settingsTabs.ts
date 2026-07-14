@@ -2,6 +2,48 @@ import { localizeText } from '../i18n';
 
 export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system';
 
+/**
+ * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
+ * Note: `skills` / `mcp` remain on SettingsTabId for legacy typing but are not content tabs.
+ */
+export const SETTINGS_CONTENT_TAB_IDS = [
+    'general',
+    'proxy',
+    'ui',
+    'display',
+    'pet',
+    'searchEngine',
+    'redeem',
+    'llm',
+    'llmCache',
+    'memory',
+    'knowledge',
+    'misData',
+    'embedding',
+    'virtualEmployee',
+    'im',
+    'security',
+    'migration',
+    'system',
+] as const satisfies readonly SettingsTabId[];
+
+const settingsContentTabIdSet: ReadonlySet<string> = new Set(SETTINGS_CONTENT_TAB_IDS);
+
+export function isSettingsContentTabId(id: string): id is SettingsTabId {
+    return settingsContentTabIdSet.has(id);
+}
+
+/** Normalize an arbitrary tab id to a renderable settings tab. */
+export function resolveSettingsTabId(
+    id: string | undefined | null,
+    options: { hideVirtualEmployee?: boolean } = {},
+): SettingsTabId {
+    const raw = String(id || 'general').trim();
+    if (!isSettingsContentTabId(raw)) return 'general';
+    if (options.hideVirtualEmployee && raw === 'virtualEmployee') return 'general';
+    return raw;
+}
+
 export interface SettingsTabOption {
     id: SettingsTabId;
     label: string;

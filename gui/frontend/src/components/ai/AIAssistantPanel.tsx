@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
@@ -31,7 +31,13 @@ import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
-import { AssistantWelcomeView } from "./AssistantWelcomeView";
+import { AssistantWelcomeView, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
+import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
+import {
+    saveWelcomeCustomTemplate,
+    shouldOfferWelcomeTemplateSave,
+    type WelcomeTemplateSaveOffer,
+} from "./welcomeTaskMemory";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
@@ -52,12 +58,17 @@ import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
-import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgressMessages";
+import { compactCodingAgentProgressMessages, groupCodingAgentProgressForRender } from "./compactCodingAgentProgressMessages";
+import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { CancelAIAssistantSessionForSession, GetConversationBranchPoints, GroupDiscussionRenameConsultation, LoadConfig, PatchConfigFields, RefreshWorkflowV2StateForTab } from "../../../wailsjs/go/main/App";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
+import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
+import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
+import { agentModeFromTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
@@ -82,7 +93,12 @@ export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | n
 /** Source files are only evidence for a programming workflow, including its review state. */
 export function shouldShowSourcePreviewForWorkflow(workflowType: string): boolean {
     const normalizedType = workflowType.trim().toLowerCase();
-    return normalizedType === "coding" || normalizedType === "coding_subagent" || normalizedType === "remote_coding_subagent";
+    return normalizedType === "coding";
+}
+
+/** Pure coding environments (local/remote agentMode) always allow the right-hand source panel. */
+export function shouldShowSourcePreviewForAgentMode(agentMode?: string | null): boolean {
+    return agentMode === "coding_dev" || agentMode === "remote_coding_dev";
 }
 
 const ASSISTANT_PREVIEW_STATE_KEY = "ai_assistant_preview_state_v1";
@@ -143,6 +159,8 @@ function decodeCodeStateFromStorage(raw: any): CodePreviewUIState | null {
         sessionID: typeof raw.sessionID === "string" ? raw.sessionID : "",
         sessionActive: raw.sessionActive === true,
         userClosed: raw.userClosed === true,
+        pinnedPaths: Array.isArray(raw.pinnedPaths) ? raw.pinnedPaths.map(String) : [],
+        mruOrder: Array.isArray(raw.mruOrder) ? raw.mruOrder.map(String) : [],
     };
 }
 
@@ -197,6 +215,8 @@ function writeStoredAssistantPreviewState(state: StoredAssistantPreviewState) {
                     sessionID: "",
                     sessionActive: false,
                     userClosed: false,
+                    pinnedPaths: [],
+                    mruOrder: [],
                 }),
             };
             serialized = JSON.stringify(codeDroppedPayload);
@@ -219,6 +239,8 @@ function writeStoredAssistantPreviewState(state: StoredAssistantPreviewState) {
                     sessionID: "",
                     sessionActive: false,
                     userClosed: false,
+                    pinnedPaths: [],
+                    mruOrder: [],
                 }),
             };
             serialized = JSON.stringify(workflowWithoutDocsPayload);
@@ -328,6 +350,75 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [savingTask, setSavingTask] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
     const [permissionMode, setPermissionMode] = useState<AssistantPermissionMode>("request");
+    /** Remote coding SSH reconnect form (password never persisted). */
+    const [remoteReconnect, setRemoteReconnect] = useState<{
+        needsReconnect: boolean;
+        host: string;
+        user: string;
+        port: number;
+        workDir: string;
+        password: string;
+        connecting: boolean;
+        error: string;
+        success: string;
+        sessionPlan: string;
+    }>({ needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" });
+    /** Pure coding session plan editor (local + remote). */
+    const [codingSessionPlan, setCodingSessionPlan] = useState("");
+    const [codingExecutionPlan, setCodingExecutionPlan] = useState("");
+    const [codingPlanMode, setCodingPlanMode] = useState<"auto" | "approve" | "off">("auto");
+    const [codingPendingApproval, setCodingPendingApproval] = useState(false);
+    const [codingPendingPlanEditing, setCodingPendingPlanEditing] = useState(false);
+    const [codingPendingPlanDraft, setCodingPendingPlanDraft] = useState("");
+    const [codingPendingPlanSaving, setCodingPendingPlanSaving] = useState(false);
+    const [codingStepStatuses, setCodingStepStatuses] = useState<Array<{ index: number; title?: string; status: string; summary?: string; verify_cmd?: string; verify_ok?: boolean }>>([]);
+    const [codingSessionCost, setCodingSessionCost] = useState("");
+    const [codingWorktreeMode, setCodingWorktreeMode] = useState<"auto" | "always" | "off">("auto");
+    const [codingRouteInfo, setCodingRouteInfo] = useState("");
+    const [codingConflictCount, setCodingConflictCount] = useState(0);
+    const [codingConflicts, setCodingConflicts] = useState<Array<{ id: string; step_index?: number; path?: string; kind?: string; files?: string[] }>>([]);
+    const [codingConflictOpen, setCodingConflictOpen] = useState(false);
+    /** Peak isolation-conflict count in the current wave (for side-panel progress). */
+    const [codingConflictPeak, setCodingConflictPeak] = useState(0);
+    const [codingConflictDiffs, setCodingConflictDiffs] = useState<Array<{ path: string; status: string; unified?: string; three_way?: string; base_head?: string }>>([]);
+    const [codingConflictActiveId, setCodingConflictActiveId] = useState("");
+    const [codingConflictSelected, setCodingConflictSelected] = useState<string[]>([]);
+    const [codingConflictFocusFile, setCodingConflictFocusFile] = useState("");
+    const [codingConflictPreview, setCodingConflictPreview] = useState<{ side: string; path: string; content: string; truncated?: boolean; missing?: boolean } | null>(null);
+    const [codingConflictPreviewSide, setCodingConflictPreviewSide] = useState<"main" | "theirs" | "base">("main");
+    const [codingConflictEditDraft, setCodingConflictEditDraft] = useState("");
+    const [codingConflictTriple, setCodingConflictTriple] = useState<{
+        main?: { content?: string; missing?: boolean };
+        theirs?: { content?: string; missing?: boolean };
+        base?: { content?: string; missing?: boolean };
+    } | null>(null);
+    const [codingConflictLog, setCodingConflictLog] = useState<string[]>([]);
+    const [codingConflictBusy, setCodingConflictBusy] = useState(false);
+    const codingConflictUIPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const codingConflictSelectedRef = useRef<string[]>([]);
+    const codingConflictFocusFileRef = useRef("");
+    /** Triple-column preview scroll sync (base/main/theirs). */
+    const codingConflictTripleScrollRefs = useRef<Record<"base" | "main" | "theirs", HTMLDivElement | null>>({
+        base: null,
+        main: null,
+        theirs: null,
+    });
+    const codingConflictTripleScrollLock = useRef(false);
+    const [codingSidecarStats, setCodingSidecarStats] = useState<{ total_bytes?: number; max_bytes?: number; usage_ratio?: number; dir_count?: number; user_bytes?: number } | null>(null);
+    const [codingHooksInfo, setCodingHooksInfo] = useState<{ active: boolean; phases: string[]; count: number; failOnError: boolean } | null>(null);
+    const [codingRoutePref, setCodingRoutePref] = useState<"auto" | "primary" | "reasoning" | "vision">("auto");
+    const [codingRouteCaps, setCodingRouteCaps] = useState<Array<{ pref: string; available?: boolean; model?: string; source?: string; note?: string }>>([]);
+    const [codingCheckpointLabel, setCodingCheckpointLabel] = useState("");
+    const [codingCheckpointFiles, setCodingCheckpointFiles] = useState<string[]>([]);
+    const [codingCheckpointSnapshots, setCodingCheckpointSnapshots] = useState(0);
+    const [codingCheckpointHistory, setCodingCheckpointHistory] = useState<Array<{ label: string; summary?: string; snapshot_count?: number; current?: boolean; created_at?: number }>>([]);
+    const [codingBackgroundVerify, setCodingBackgroundVerify] = useState("");
+    const [codingCheckpointBusy, setCodingCheckpointBusy] = useState(false);
+    const [codingBgVerifyBusy, setCodingBgVerifyBusy] = useState(false);
+    const [codingSessionPlanDraft, setCodingSessionPlanDraft] = useState("");
+    const [codingSessionPlanEditing, setCodingSessionPlanEditing] = useState(false);
+    const [codingSessionPlanSaving, setCodingSessionPlanSaving] = useState(false);
+    const [codingControlExpanded, setCodingControlExpanded] = useState(false);
     const [workflowStartingLabel, setWorkflowStartingLabel] = useState<string | null>(null);
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
@@ -346,11 +437,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return Object.assign({}, base, { isDark: themeMode === 'dark' });
     }, [themeMode, darkSchemeId, lightSchemeId, inline]);
     const showMaximizeToggle = inline && !!onToggleMaximize;
-    // Workflow toggle: load initial state from config, sync on config-changed event
+    // Tracks pure-coding tab so config-changed does not stomp per-task request/workspace mode.
+    const pureCodingTabRef = useRef(false);
+    // Active pure-coding session key (desktop-user:<path>) for scoping goal-state-changed.
+    const pureCodingSessionKeyRef = useRef("");
+    // Workflow toggle: load initial state from config, sync on config-changed event.
+    // Permission mode for pure coding tabs is loaded after activeTab is available.
     useEffect(() => {
         LoadConfig().then((cfg) => {
             setWorkflowEnabled(cfg?.workflow_enabled === true);
-            setPermissionMode(cfg?.subagent_full_access === true ? "full" : "request");
+            // Pure coding tabs load tier from sticky; do not overwrite with global.
+            if (!pureCodingTabRef.current) {
+                setPermissionMode(cfg?.subagent_full_access === true ? "full" : "request");
+            }
         }).catch(() => { /* ignore */ });
         const off = EventsOn("config-changed", (cfg: any) => {
             if (cfg && typeof cfg.workflow_enabled === "boolean") {
@@ -358,22 +457,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             } else if (cfg && cfg.workflow_enabled === undefined) {
                 setWorkflowEnabled(false);
             }
-            if (cfg && typeof cfg.subagent_full_access === "boolean") {
-                setPermissionMode(cfg.subagent_full_access ? "full" : "request");
+            // Global full-access only drives non-coding tabs. Pure coding uses
+            // GetCodingWorkbenchPermission (request can win over global).
+            if (cfg && typeof cfg.subagent_full_access === "boolean" && cfg.subagent_full_access && !pureCodingTabRef.current) {
+                setPermissionMode("full");
             }
         });
         return () => { if (typeof off === "function") off(); };
     }, []);
-    const handlePermissionModeChange = useCallback((mode: AssistantPermissionMode) => {
-        const next = mode === "full" ? "full" : "request";
-        const previous = permissionMode;
-        setPermissionMode(next);
-        void PatchConfigFields({ subagent_full_access: next === "full" }).then((saved) => {
-            setPermissionMode(saved?.subagent_full_access === true ? "full" : "request");
-        }).catch(() => {
-            setPermissionMode(previous);
-        });
-    }, [permissionMode]);
     const handleToggleWorkflow = useCallback(() => {
         setWorkflowEnabled(prev => {
             const next = !prev;
@@ -571,6 +662,1027 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, []);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    // Publish open project-tab paths so the sidebar can block deleting active tasks.
+    useEffect(() => {
+        const onChange = props.onOpenProjectTabsChange as ((paths: string[]) => void) | undefined;
+        if (typeof onChange !== "function") return;
+        const paths = tabState.tabs
+            .filter(t => t.type === "project" && t.projectPath)
+            .map(t => normalizeProjectSessionPath(t.projectPath))
+            .filter((p): p is string => !!p);
+        // Stable order so set-equality in App does not depend on tab UI order.
+        paths.sort();
+        onChange(paths);
+    }, [tabState.tabs, props.onOpenProjectTabsChange]);
+    // Pure coding workbench: load per-task permission tier (request|workspace|full).
+    useEffect(() => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        const pureCoding = activeTab?.agentMode === "coding_dev" || activeTab?.agentMode === "remote_coding_dev";
+        pureCodingTabRef.current = !!(pureCoding && projectPath);
+        pureCodingSessionKeyRef.current = pureCoding && projectPath ? projectSessionKey(projectPath) : "";
+        let cancelled = false;
+        if (!pureCoding || !projectPath) {
+            // Leaving pure coding: restore global config-driven request|full (no workspace).
+            void LoadConfig().then((cfg) => {
+                if (cancelled || pureCodingTabRef.current) return;
+                setPermissionMode(cfg?.subagent_full_access === true ? "full" : "request");
+            }).catch(() => { /* ignore */ });
+            return () => { cancelled = true; };
+        }
+        void GetCodingWorkbenchPermission(projectPath).then((mode) => {
+            if (cancelled) return;
+            if (mode === "full" || mode === "workspace" || mode === "request") {
+                setPermissionMode(mode);
+            }
+        }).catch(() => { /* ignore */ });
+        return () => { cancelled = true; };
+    }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
+    // Pure coding: when /goal creates/updates an objective, mirror it into the session-plan banner.
+    useEffect(() => {
+        const off = EventsOn("goal-state-changed", (payload: any) => {
+            if (!pureCodingTabRef.current) return;
+            // Normalize path separators (Go may emit Windows `\`, FE uses `/`).
+            const goalUser = normalizeAssistantSessionKey(String(payload?.user_id || ""));
+            const activeSession = normalizeAssistantSessionKey(pureCodingSessionKeyRef.current);
+            // Only apply goals belonging to the active pure-coding tab.
+            if (activeSession && goalUser && goalUser !== activeSession) return;
+            const objective = String(payload?.objective || "").trim();
+            if (!objective) return;
+            const status = String(payload?.status || "").toLowerCase();
+            // Active (or newly created) goals refresh the session plan; terminal states leave the plan.
+            if (status && status !== "active" && status !== "paused") return;
+            setCodingSessionPlan(objective);
+            setCodingSessionPlanDraft(objective);
+            setRemoteReconnect(prev => ({ ...prev, sessionPlan: objective }));
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, []);
+    // Pure coding: load session plan + remote reconnect status.
+    useEffect(() => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        const pureCoding = activeTab?.agentMode === "coding_dev" || activeTab?.agentMode === "remote_coding_dev";
+        const isRemote = activeTab?.agentMode === "remote_coding_dev";
+        if (!pureCoding || !projectPath) {
+            setCodingSessionPlan("");
+            setCodingExecutionPlan("");
+            setCodingPlanMode("auto");
+            setCodingPendingApproval(false);
+            setCodingStepStatuses([]);
+            setCodingSessionCost("");
+            setCodingWorktreeMode("auto");
+            setCodingRouteInfo("");
+            setCodingConflictCount(0);
+            setCodingConflicts([]);
+            setCodingConflictOpen(false);
+            setCodingConflictDiffs([]);
+            setCodingConflictActiveId("");
+            setCodingConflictSelected([]);
+            setCodingConflictFocusFile("");
+            setCodingConflictPreview(null);
+            setCodingConflictEditDraft("");
+            setCodingConflictTriple(null);
+            setCodingConflictLog([]);
+            setCodingRoutePref("auto");
+            setCodingRouteCaps([]);
+            setCodingCheckpointLabel("");
+            setCodingCheckpointFiles([]);
+            setCodingCheckpointSnapshots(0);
+            setCodingCheckpointHistory([]);
+            setCodingSidecarStats(null);
+            setCodingHooksInfo(null);
+            setCodingBackgroundVerify("");
+            setCodingSessionPlanDraft("");
+            setCodingSessionPlanEditing(false);
+            setCodingPendingPlanEditing(false);
+            setCodingPendingPlanDraft("");
+            setRemoteReconnect(prev => (prev.needsReconnect || prev.host || prev.password || prev.success
+                ? { needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" }
+                : prev));
+            return;
+        }
+        let cancelled = false;
+        void GetCodingWorkbenchStatus(projectPath).then((st) => {
+            if (cancelled || !st) return;
+            const plan = String(st.session_plan || "").trim();
+            const execPlan = String(st.execution_plan || "").trim();
+            setCodingSessionPlan(plan);
+            setCodingExecutionPlan(execPlan);
+            const mode = String(st.plan_mode || "auto").toLowerCase();
+            setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
+            {
+                const pending = !!st.pending_approval;
+                setCodingPendingApproval(pending);
+                if (!pending) {
+                    setCodingPendingPlanEditing(false);
+                }
+            }
+            setCodingStepStatuses(Array.isArray(st.step_statuses) ? st.step_statuses.map((s: any) => ({
+                index: Number(s.index) || 0,
+                title: String(s.title || ""),
+                status: String(s.status || "pending"),
+                summary: String(s.summary || ""),
+                verify_cmd: String(s.verify_cmd || ""),
+                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
+            })) : []);
+            {
+                const inTok = Number(st.session_input_tokens) || 0;
+                const outTok = Number(st.session_output_tokens) || 0;
+                const cost = Number(st.session_est_cost_rmb) || 0;
+                if (inTok > 0 || outTok > 0 || cost > 0) {
+                    let line = `in=${inTok} out=${outTok}`;
+                    if (cost > 0) line += ` · ~¥${cost.toFixed(4)}`;
+                    setCodingSessionCost(line);
+                } else {
+                    setCodingSessionCost("");
+                }
+            }
+            {
+                const wm = String(st.worktree_mode || "auto").toLowerCase();
+                setCodingWorktreeMode(wm === "always" || wm === "off" ? wm : "auto");
+            }
+            {
+                const model = String(st.route_model || "").trim();
+                const src = String(st.route_source || "").trim();
+                if (model) {
+                    setCodingRouteInfo(src ? `${model} (${src})` : model);
+                } else {
+                    setCodingRouteInfo("");
+                }
+            }
+            setCodingConflictCount(Number(st.conflict_count) || (Array.isArray(st.conflicts) ? st.conflicts.length : 0) || 0);
+            setCodingConflictLog(Array.isArray(st.conflict_log) ? st.conflict_log.map(String).slice(-8) : []);
+            const mappedConflicts = Array.isArray(st.conflicts) ? st.conflicts.map((c: any) => ({
+                id: String(c.id || ""),
+                step_index: Number(c.step_index) || 0,
+                path: String(c.path || ""),
+                kind: String(c.kind || ""),
+                files: Array.isArray(c.files) ? c.files.map(String) : [],
+            })) : [];
+            setCodingConflicts(mappedConflicts);
+            const restoredActive = String(st.conflict_active_id || "").trim();
+            const restoredSelected = Array.isArray(st.conflict_selected) ? st.conflict_selected.map(String).filter(Boolean) : [];
+            const restoredFocus = String(st.conflict_focus_file || "").trim();
+            if (restoredActive && mappedConflicts.some((c) => c.id === restoredActive)) {
+                setCodingConflictActiveId(restoredActive);
+                setCodingConflictSelected(restoredSelected);
+                codingConflictSelectedRef.current = restoredSelected;
+                setCodingConflictFocusFile(restoredFocus);
+                codingConflictFocusFileRef.current = restoredFocus;
+                setCodingConflictOpen(true);
+                // Load diffs for restored active conflict (keep multi-select).
+                void GetCodingWorkbenchConflictDiffs(projectPath, restoredActive).then((diffs) => {
+                    setCodingConflictDiffs(Array.isArray(diffs) ? diffs.map((d: any) => ({
+                        path: String(d.path || ""),
+                        status: String(d.status || ""),
+                        unified: String(d.unified || ""),
+                        three_way: String(d.three_way || ""),
+                        base_head: String(d.base_head || ""),
+                    })) : []);
+                    if (restoredFocus) {
+                        void GetCodingWorkbenchConflictFilePreview(projectPath, restoredActive, restoredFocus, "main").then((prev) => {
+                            setCodingConflictPreview({
+                                side: String(prev?.side || "main"),
+                                path: String(prev?.path || restoredFocus),
+                                content: String(prev?.content || ""),
+                                truncated: !!prev?.truncated,
+                                missing: !!prev?.missing,
+                            });
+                            setCodingConflictPreviewSide("main");
+                        }).catch(() => { /* ignore */ });
+                    }
+                }).catch(() => setCodingConflictDiffs([]));
+            }
+            {
+                const rp = String(st.route_pref || "auto").toLowerCase();
+                setCodingRoutePref(rp === "primary" || rp === "reasoning" || rp === "vision" ? rp : "auto");
+            }
+            setCodingRouteCaps(Array.isArray(st.route_capabilities) ? st.route_capabilities.map((c: any) => ({
+                pref: String(c.pref || ""),
+                available: c.available !== false,
+                model: String(c.model || ""),
+                source: String(c.source || ""),
+                note: String(c.note || ""),
+            })) : []);
+            setCodingCheckpointLabel(String(st.checkpoint_label || "").trim());
+            setCodingCheckpointFiles(Array.isArray(st.checkpoint_files) ? st.checkpoint_files.map(String) : []);
+            setCodingCheckpointSnapshots(Number(st.checkpoint_snapshots) || 0);
+            setCodingCheckpointHistory(Array.isArray(st.checkpoint_history) ? st.checkpoint_history.map((e: any) => ({
+                label: String(e.label || ""),
+                summary: String(e.summary || ""),
+                snapshot_count: Number(e.snapshot_count) || 0,
+                current: !!e.current,
+                created_at: Number(e.created_at) || 0,
+            })).filter((e: { label: string }) => !!e.label) : []);
+            setCodingBackgroundVerify(String(st.background_verify || "").trim());
+            if (st.hooks_active) {
+                setCodingHooksInfo({
+                    active: true,
+                    phases: Array.isArray(st.hooks_phases) ? st.hooks_phases.map(String) : [],
+                    count: Number(st.hooks_command_count) || 0,
+                    failOnError: !!st.hooks_fail_on_error,
+                });
+            } else {
+                setCodingHooksInfo(null);
+            }
+            if (!codingSessionPlanEditing) {
+                setCodingSessionPlanDraft(plan);
+            }
+            // Apply remote reconnect fields before optional follow-up RPCs so a
+            // missing/throwing sidecar binding cannot skip SSH form hydration.
+            if (!isRemote) {
+                setRemoteReconnect(prev => (prev.needsReconnect || prev.host || prev.password
+                    ? { needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" }
+                    : prev));
+            } else {
+                const needs = !!st.needs_reconnect;
+                setRemoteReconnect(prev => ({
+                    ...prev,
+                    needsReconnect: needs,
+                    host: String(st.remote_host || activeTab.remoteHost || prev.host || "").trim(),
+                    user: String(st.remote_user || prev.user || "").trim(),
+                    port: Number(st.remote_port) > 0 ? Number(st.remote_port) : (prev.port || 22),
+                    workDir: String(st.remote_work_dir || prev.workDir || "").trim(),
+                    sessionPlan: plan || prev.sessionPlan,
+                    error: needs ? (prev.error || "") : "",
+                    success: needs ? "" : prev.success,
+                    connecting: false,
+                }));
+            }
+            try {
+                void GetCodingWorkbenchCheckpointSidecarStats(projectPath).then((ss) => {
+                    if (!ss) {
+                        setCodingSidecarStats(null);
+                        return;
+                    }
+                    setCodingSidecarStats({
+                        total_bytes: Number(ss.total_bytes) || 0,
+                        max_bytes: Number(ss.max_bytes) || 0,
+                        usage_ratio: Number(ss.usage_ratio) || 0,
+                        dir_count: Number(ss.dir_count) || 0,
+                        user_bytes: Number(ss.user_bytes) || 0,
+                    });
+                }).catch(() => { /* ignore */ });
+            } catch {
+                /* optional binding may be absent in tests */
+            }
+        }).catch(() => {
+            if (!cancelled && isRemote) {
+                setRemoteReconnect(prev => ({
+                    ...prev,
+                    needsReconnect: true,
+                    host: activeTab.remoteHost || prev.host,
+                    success: "",
+                }));
+            }
+        });
+        return () => { cancelled = true; };
+        // codingSessionPlanEditing intentionally omitted to avoid refetch loops while typing.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type, activeTab?.remoteHost]);
+    // After a pure-coding turn finishes, refresh session/execution plan (auto-plan is written mid-turn).
+    useEffect(() => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        const pureCoding = activeTab?.agentMode === "coding_dev" || activeTab?.agentMode === "remote_coding_dev";
+        if (!pureCoding || !projectPath) return;
+        const expectedSession = projectSessionKey(projectPath);
+        const off = EventsOn("ai-assistant-response", (payload: any) => {
+            if (!pureCodingTabRef.current) return;
+            const sk = normalizeAssistantSessionKey(String(payload?.session_key || payload?.SessionKey || ""));
+            if (sk && expectedSession && sk !== normalizeAssistantSessionKey(expectedSession)) return;
+            void GetCodingWorkbenchStatus(projectPath).then((st) => {
+                if (!st) return;
+                setCodingSessionPlan(String(st.session_plan || "").trim());
+                setCodingExecutionPlan(String(st.execution_plan || "").trim());
+                const mode = String(st.plan_mode || "auto").toLowerCase();
+                setCodingPlanMode(mode === "approve" || mode === "off" ? mode : "auto");
+                {
+                    const pending = !!st.pending_approval;
+                    setCodingPendingApproval(pending);
+                    if (!pending) {
+                        setCodingPendingPlanEditing(false);
+                    }
+                }
+                setCodingStepStatuses(Array.isArray(st.step_statuses) ? st.step_statuses.map((s: any) => ({
+                    index: Number(s.index) || 0,
+                    title: String(s.title || ""),
+                    status: String(s.status || "pending"),
+                    summary: String(s.summary || ""),
+                    verify_cmd: String(s.verify_cmd || ""),
+                    verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
+                })) : []);
+                {
+                    const inTok = Number(st.session_input_tokens) || 0;
+                    const outTok = Number(st.session_output_tokens) || 0;
+                    const cost = Number(st.session_est_cost_rmb) || 0;
+                    if (inTok > 0 || outTok > 0 || cost > 0) {
+                        let line = `in=${inTok} out=${outTok}`;
+                        if (cost > 0) line += ` · ~¥${cost.toFixed(4)}`;
+                        setCodingSessionCost(line);
+                    } else {
+                        setCodingSessionCost("");
+                    }
+                }
+                {
+                    const model = String(st.route_model || "").trim();
+                    const src = String(st.route_source || "").trim();
+                    if (model) {
+                        setCodingRouteInfo(src ? `${model} (${src})` : model);
+                    }
+                }
+                setCodingConflictCount(Number(st.conflict_count) || (Array.isArray(st.conflicts) ? st.conflicts.length : 0) || 0);
+                setCodingCheckpointLabel(String(st.checkpoint_label || "").trim());
+                setCodingBackgroundVerify(String(st.background_verify || "").trim());
+            }).catch(() => { /* ignore */ });
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
+    const handleRemoteCodingReconnect = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const host = remoteReconnect.host.trim();
+        const user = remoteReconnect.user.trim();
+        const workDir = remoteReconnect.workDir.trim();
+        const password = remoteReconnect.password;
+        const port = remoteReconnect.port > 0 ? remoteReconnect.port : 22;
+        if (!host || !user || !workDir || !password) {
+            setRemoteReconnect(prev => ({
+                ...prev,
+                error: localizeText(lang, "Host, user, password and remote work directory are required", "主机、用户名、密码和远程工作目录均为必填", "主機、使用者名稱、密碼和遠端工作目錄均為必填"),
+                success: "",
+            }));
+            return;
+        }
+        setRemoteReconnect(prev => ({ ...prev, connecting: true, error: "", success: "" }));
+        try {
+            await PrepareRemoteCodingEnvironment(projectPath, host, user, password, workDir, port);
+            const st = await GetCodingWorkbenchStatus(projectPath);
+            const ok = !st?.needs_reconnect && !!st?.armed;
+            setRemoteReconnect(prev => ({
+                ...prev,
+                connecting: false,
+                password: "", // never keep password in React state after success
+                needsReconnect: !ok,
+                error: ok ? "" : (st?.message || localizeText(lang, "Reconnect incomplete", "重连未完成", "重連未完成")),
+                success: ok
+                    ? localizeText(lang, "Reconnected. You can continue sending messages in this remote coding session.", "已重新连接。可以继续在本远程编程会话中发送消息。", "已重新連線。可以繼續在本遠端程式工作階段中傳送訊息。")
+                    : "",
+                sessionPlan: String(st?.session_plan || prev.sessionPlan || ""),
+            }));
+            if (ok && st?.session_plan) {
+                setCodingSessionPlan(String(st.session_plan));
+                setCodingSessionPlanDraft(String(st.session_plan));
+            }
+            if (ok) {
+                // Drop user back into the composer for continuous multi-turn coding.
+                requestAnimationFrame(() => {
+                    inputRef.current?.focus();
+                });
+            }
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err || "reconnect failed");
+            setRemoteReconnect(prev => ({ ...prev, connecting: false, error: msg, success: "" }));
+        }
+    }, [activeTab?.projectPath, activeTab?.type, remoteReconnect.host, remoteReconnect.user, remoteReconnect.workDir, remoteReconnect.password, remoteReconnect.port, lang]);
+    const handleSaveCodingSessionPlan = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const next = codingSessionPlanDraft.trim();
+        setCodingSessionPlanSaving(true);
+        try {
+            await SetCodingWorkbenchSessionPlan(projectPath, next);
+            setCodingSessionPlan(next);
+            setCodingSessionPlanEditing(false);
+            setRemoteReconnect(prev => ({ ...prev, sessionPlan: next }));
+        } catch {
+            // keep draft open on failure
+        } finally {
+            setCodingSessionPlanSaving(false);
+        }
+    }, [activeTab?.projectPath, activeTab?.type, codingSessionPlanDraft]);
+    const handleCodingPlanModeChange = useCallback(async (mode: "auto" | "approve" | "off") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const previous = codingPlanMode;
+        setCodingPlanMode(mode);
+        try {
+            await SetCodingWorkbenchPlanMode(projectPath, mode);
+            const saved = await GetCodingWorkbenchPlanMode(projectPath);
+            const next = String(saved || "auto").toLowerCase();
+            setCodingPlanMode(next === "approve" || next === "off" ? next : "auto");
+        } catch {
+            setCodingPlanMode(previous);
+        }
+    }, [activeTab?.projectPath, activeTab?.type, codingPlanMode]);
+    /** Approve / skip / reject pending multi-step plan via workbench slash (runs immediately). */
+    const handleCodingPlanGate = useCallback(async (action: "approve" | "skip" | "reject") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const cmd = action === "approve" ? "/plan approve" : action === "skip" ? "/plan skip" : "/plan reject";
+        // Optimistic clear for reject; approve/skip keep pending until runner starts.
+        if (action === "reject") {
+            setCodingPendingApproval(false);
+            setCodingPendingPlanEditing(false);
+        }
+        try {
+            // Persist in-progress edits before approve so runner uses latest plan.
+            // Skip discards multi-step plan — no need to rewrite pending steps.
+            if (action === "approve" && codingPendingPlanEditing && codingPendingPlanDraft.trim()) {
+                try {
+                    const updated = await UpdateCodingWorkbenchPendingPlan(projectPath, codingPendingPlanDraft.trim());
+                    if (updated?.markdown) {
+                        setCodingExecutionPlan(String(updated.markdown));
+                    }
+                    setCodingPendingPlanEditing(false);
+                } catch { /* keep draft; still attempt gate action */ }
+            }
+            if (typeof executeAction === "function") {
+                await Promise.resolve(executeAction(cmd));
+            } else if (typeof sendMessage === "function") {
+                await Promise.resolve(sendMessage(cmd));
+            }
+            // Refresh sticky status (pending flag + steps).
+            const st = await GetCodingWorkbenchStatus(projectPath);
+            setCodingPendingApproval(!!st?.pending_approval);
+            setCodingStepStatuses(Array.isArray(st?.step_statuses) ? st.step_statuses.map((s: any) => ({
+                index: Number(s.index) || 0,
+                title: String(s.title || ""),
+                status: String(s.status || "pending"),
+                summary: String(s.summary || ""),
+                verify_cmd: String(s.verify_cmd || ""),
+                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
+            })) : []);
+            setCodingExecutionPlan(String(st?.execution_plan || "").trim());
+        } catch {
+            // Re-sync pending if reject optimistic clear failed
+            try {
+                const st = await GetCodingWorkbenchStatus(projectPath);
+                setCodingPendingApproval(!!st?.pending_approval);
+            } catch { /* ignore */ }
+        }
+    }, [activeTab?.projectPath, activeTab?.type, executeAction, sendMessage, codingPendingPlanEditing, codingPendingPlanDraft]);
+    const handleSavePendingPlanEdit = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const md = codingPendingPlanDraft.trim();
+        if (!md) return;
+        setCodingPendingPlanSaving(true);
+        try {
+            const updated = await UpdateCodingWorkbenchPendingPlan(projectPath, md);
+            setCodingExecutionPlan(String(updated?.markdown || md));
+            setCodingPendingPlanDraft(String(updated?.markdown || md));
+            setCodingPendingPlanEditing(false);
+            const st = await GetCodingWorkbenchStatus(projectPath);
+            setCodingStepStatuses(Array.isArray(st?.step_statuses) ? st.step_statuses.map((s: any) => ({
+                index: Number(s.index) || 0,
+                title: String(s.title || ""),
+                status: String(s.status || "pending"),
+                summary: String(s.summary || ""),
+                verify_cmd: String(s.verify_cmd || ""),
+                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
+            })) : []);
+            setCodingPendingApproval(!!st?.pending_approval);
+        } catch { /* keep editor open */ }
+        finally { setCodingPendingPlanSaving(false); }
+    }, [activeTab?.projectPath, activeTab?.type, codingPendingPlanDraft]);
+    const handleCodingWorktreeModeChange = useCallback(async (mode: "auto" | "always" | "off") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const previous = codingWorktreeMode;
+        setCodingWorktreeMode(mode);
+        try {
+            await SetCodingWorkbenchWorktreeMode(projectPath, mode);
+            const saved = await GetCodingWorkbenchWorktreeMode(projectPath);
+            const next = String(saved || "auto").toLowerCase();
+            setCodingWorktreeMode(next === "always" || next === "off" ? next : "auto");
+        } catch {
+            setCodingWorktreeMode(previous);
+        }
+    }, [activeTab?.projectPath, activeTab?.type, codingWorktreeMode]);
+    const handleCodingRoutePrefChange = useCallback(async (pref: "auto" | "primary" | "reasoning" | "vision") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const previous = codingRoutePref;
+        setCodingRoutePref(pref);
+        try {
+            await SetCodingWorkbenchRoutePref(projectPath, pref);
+            const saved = await GetCodingWorkbenchRoutePref(projectPath);
+            const next = String(saved || "auto").toLowerCase();
+            setCodingRoutePref(next === "primary" || next === "reasoning" || next === "vision" ? next : "auto");
+        } catch {
+            setCodingRoutePref(previous);
+        }
+    }, [activeTab?.projectPath, activeTab?.type, codingRoutePref]);
+    const refreshCodingConflicts = useCallback(async (): Promise<Array<{ id: string; step_index?: number; path?: string; kind?: string; files?: string[] }>> => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return [];
+        try {
+            const list = await ListCodingWorkbenchConflicts(projectPath);
+            const mapped = Array.isArray(list) ? list.map((c: any) => ({
+                id: String(c.id || ""),
+                step_index: Number(c.step_index) || 0,
+                path: String(c.path || ""),
+                kind: String(c.kind || ""),
+                files: Array.isArray(c.files) ? c.files.map(String) : [],
+            })) : [];
+            setCodingConflicts(mapped);
+            setCodingConflictCount(mapped.length);
+            return mapped;
+        } catch {
+            return [];
+        }
+    }, [activeTab?.projectPath, activeTab?.type]);
+    const persistCodingConflictUIState = useCallback((activeId: string, selected: string[], focusFile: string) => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        codingConflictSelectedRef.current = selected;
+        codingConflictFocusFileRef.current = focusFile;
+        if (codingConflictUIPersistTimer.current) {
+            clearTimeout(codingConflictUIPersistTimer.current);
+        }
+        codingConflictUIPersistTimer.current = setTimeout(() => {
+            void SetCodingWorkbenchConflictUIState(projectPath, activeId, focusFile, selected.join(",")).catch(() => { /* ignore */ });
+        }, 300);
+    }, [activeTab?.projectPath, activeTab?.type]);
+    const openCodingConflict = useCallback(async (id: string, opts?: { keepSelection?: boolean; focusFile?: string }) => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id) return;
+        setCodingConflictActiveId(id);
+        setCodingConflictOpen(true);
+        const selected = opts?.keepSelection ? codingConflictSelectedRef.current : [];
+        if (!opts?.keepSelection) {
+            setCodingConflictSelected([]);
+            codingConflictSelectedRef.current = [];
+        }
+        const focus = String(opts?.focusFile || codingConflictFocusFileRef.current || "").trim();
+        if (focus) {
+            setCodingConflictFocusFile(focus);
+            codingConflictFocusFileRef.current = focus;
+        }
+        try {
+            const diffs = await GetCodingWorkbenchConflictDiffs(projectPath, id);
+            setCodingConflictDiffs(Array.isArray(diffs) ? diffs.map((d: any) => ({
+                path: String(d.path || ""),
+                status: String(d.status || ""),
+                unified: String(d.unified || ""),
+                three_way: String(d.three_way || ""),
+                base_head: String(d.base_head || ""),
+            })) : []);
+        } catch {
+            setCodingConflictDiffs([]);
+        }
+        persistCodingConflictUIState(id, selected, focus);
+    }, [activeTab?.projectPath, activeTab?.type, persistCodingConflictUIState]);
+    const toggleCodingConflictFile = useCallback((path: string) => {
+        setCodingConflictSelected((prev) => {
+            const next = prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path];
+            codingConflictSelectedRef.current = next;
+            persistCodingConflictUIState(codingConflictActiveId, next, codingConflictFocusFileRef.current);
+            return next;
+        });
+    }, [codingConflictActiveId, persistCodingConflictUIState]);
+    const loadCodingConflictPreview = useCallback(async (filePath: string, side: "main" | "theirs" | "base") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !codingConflictActiveId || !filePath) return;
+        setCodingConflictFocusFile(filePath);
+        codingConflictFocusFileRef.current = filePath;
+        setCodingConflictPreviewSide(side);
+        persistCodingConflictUIState(codingConflictActiveId, codingConflictSelectedRef.current, filePath);
+        try {
+            const prev = await GetCodingWorkbenchConflictFilePreview(projectPath, codingConflictActiveId, filePath, side);
+            const content = String(prev?.content || "");
+            setCodingConflictPreview({
+                side: String(prev?.side || side),
+                path: String(prev?.path || filePath),
+                content,
+                truncated: !!prev?.truncated,
+                missing: !!prev?.missing,
+            });
+            setCodingConflictEditDraft(prev?.missing ? "" : content);
+            try {
+                const triple = await GetCodingWorkbenchConflictFileTriple(projectPath, codingConflictActiveId, filePath);
+                setCodingConflictTriple({
+                    main: { content: String(triple?.main?.content || ""), missing: !!triple?.main?.missing },
+                    theirs: { content: String(triple?.theirs?.content || ""), missing: !!triple?.theirs?.missing },
+                    base: { content: String(triple?.base?.content || ""), missing: !!triple?.base?.missing },
+                });
+                codingConflictTripleScrollLock.current = false;
+            } catch {
+                setCodingConflictTriple(null);
+            }
+        } catch {
+            setCodingConflictPreview({ side, path: filePath, content: "", missing: true });
+            setCodingConflictEditDraft("");
+            setCodingConflictTriple(null);
+        }
+    }, [activeTab?.projectPath, activeTab?.type, codingConflictActiveId, persistCodingConflictUIState]);
+    const syncCodingConflictTripleScroll = useCallback((source: "base" | "main" | "theirs", scrollTop: number, scrollLeft: number) => {
+        if (codingConflictTripleScrollLock.current) return;
+        codingConflictTripleScrollLock.current = true;
+        const refs = codingConflictTripleScrollRefs.current;
+        (["base", "main", "theirs"] as const).forEach((key) => {
+            if (key === source) return;
+            const el = refs[key];
+            if (!el) return;
+            if (el.scrollTop !== scrollTop) el.scrollTop = scrollTop;
+            if (el.scrollLeft !== scrollLeft) el.scrollLeft = scrollLeft;
+        });
+        requestAnimationFrame(() => {
+            codingConflictTripleScrollLock.current = false;
+        });
+    }, []);
+    const handleExportConflictLog = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        try {
+            await ExportCodingWorkbenchConflictLog(projectPath);
+            const st = await GetCodingWorkbenchStatus(projectPath);
+            setCodingConflictLog(Array.isArray(st?.conflict_log) ? st.conflict_log.map(String).slice(-8) : []);
+        } catch {
+            /* empty log or backend error */
+        }
+    }, [activeTab?.projectPath, activeTab?.type]);
+    const clearLocalConflictPanelState = useCallback((opts?: { close?: boolean; keepActiveId?: string }) => {
+        setCodingConflictSelected([]);
+        codingConflictSelectedRef.current = [];
+        setCodingConflictPreview(null);
+        setCodingConflictEditDraft("");
+        setCodingConflictTriple(null);
+        setCodingConflictFocusFile("");
+        codingConflictFocusFileRef.current = "";
+        setCodingConflictDiffs([]);
+        if (opts?.close) {
+            setCodingConflictActiveId("");
+            setCodingConflictOpen(false);
+        } else if (opts?.keepActiveId) {
+            setCodingConflictActiveId(opts.keepActiveId);
+        }
+    }, []);
+    const closeCodingConflictSidePanel = useCallback(() => {
+        // Keep list/log; only hide the side pane so reopening is instant.
+        setCodingConflictOpen(false);
+    }, []);
+    const handleWriteConflictEdit = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !codingConflictActiveId || !codingConflictFocusFile) return;
+        const activeId = codingConflictActiveId;
+        setCodingConflictBusy(true);
+        try {
+            await WriteCodingWorkbenchConflictFileContent(projectPath, activeId, codingConflictFocusFile, codingConflictEditDraft);
+            clearLocalConflictPanelState();
+            await refreshCodingConflicts();
+            const list = await ListCodingWorkbenchConflicts(projectPath);
+            const stillThere = Array.isArray(list) && list.some((c: any) => String(c.id || "") === activeId);
+            if (stillThere) {
+                await openCodingConflict(activeId, { keepSelection: false });
+            } else {
+                clearLocalConflictPanelState({ close: true });
+            }
+            // Refresh status for conflict log strip.
+            try {
+                const st = await GetCodingWorkbenchStatus(projectPath);
+                setCodingConflictLog(Array.isArray(st?.conflict_log) ? st.conflict_log.map(String).slice(-8) : []);
+            } catch { /* ignore */ }
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, codingConflictActiveId, codingConflictFocusFile, codingConflictEditDraft, refreshCodingConflicts, openCodingConflict, clearLocalConflictPanelState]);
+    const handleResolveSelectedConflictFiles = useCallback(async (action: "adopt" | "keep" | "base") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !codingConflictActiveId || codingConflictSelected.length === 0) return;
+        const activeId = codingConflictActiveId;
+        setCodingConflictBusy(true);
+        try {
+            await ResolveCodingWorkbenchConflict(projectPath, activeId, action, codingConflictSelected.join(","));
+            clearLocalConflictPanelState();
+            await refreshCodingConflicts();
+            const list = await ListCodingWorkbenchConflicts(projectPath);
+            const stillThere = Array.isArray(list) && list.some((c: any) => String(c.id || "") === activeId);
+            if (stillThere) {
+                await openCodingConflict(activeId, { keepSelection: false });
+            } else {
+                clearLocalConflictPanelState({ close: true });
+            }
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, codingConflictActiveId, codingConflictSelected, refreshCodingConflicts, openCodingConflict, clearLocalConflictPanelState]);
+    const handleApplyPreviewSide = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !codingConflictActiveId || !codingConflictFocusFile) return;
+        const activeId = codingConflictActiveId;
+        setCodingConflictBusy(true);
+        try {
+            await ApplyCodingWorkbenchConflictPreviewSide(projectPath, activeId, codingConflictFocusFile, codingConflictPreviewSide);
+            clearLocalConflictPanelState();
+            await refreshCodingConflicts();
+            const list = await ListCodingWorkbenchConflicts(projectPath);
+            const stillThere = Array.isArray(list) && list.some((c: any) => String(c.id || "") === activeId);
+            if (stillThere) {
+                await openCodingConflict(activeId, { keepSelection: false });
+            } else {
+                clearLocalConflictPanelState({ close: true });
+            }
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, codingConflictActiveId, codingConflictFocusFile, codingConflictPreviewSide, refreshCodingConflicts, openCodingConflict, clearLocalConflictPanelState]);
+    const handleOpenConflictFile = useCallback(async (filePath: string, side: "main" | "theirs") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !codingConflictActiveId || !filePath) return;
+        try {
+            await OpenCodingWorkbenchConflictFile(projectPath, codingConflictActiveId, filePath, side);
+        } catch { /* ignore */ }
+    }, [activeTab?.projectPath, activeTab?.type, codingConflictActiveId]);
+    const handleAdoptConflict = useCallback(async (id: string, filesCSV = "") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id) return;
+        setCodingConflictBusy(true);
+        try {
+            await AdoptCodingWorkbenchConflict(projectPath, id, filesCSV);
+            await refreshCodingConflicts();
+            if (!filesCSV) {
+                clearLocalConflictPanelState({ close: true });
+            } else {
+                clearLocalConflictPanelState();
+                const list = await ListCodingWorkbenchConflicts(projectPath);
+                const stillThere = Array.isArray(list) && list.some((c: any) => String(c.id || "") === id);
+                if (stillThere) {
+                    await openCodingConflict(id, { keepSelection: false });
+                } else {
+                    clearLocalConflictPanelState({ close: true });
+                }
+            }
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingConflicts, clearLocalConflictPanelState, openCodingConflict]);
+    const handleDiscardConflict = useCallback(async (id: string) => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id) return;
+        setCodingConflictBusy(true);
+        try {
+            await DiscardCodingWorkbenchConflict(projectPath, id);
+            await refreshCodingConflicts();
+            if (codingConflictActiveId === id) {
+                clearLocalConflictPanelState({ close: true });
+            }
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingConflicts, codingConflictActiveId, clearLocalConflictPanelState]);
+    const handleDiscardAllConflicts = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        setCodingConflictBusy(true);
+        try {
+            await DiscardAllCodingWorkbenchConflicts(projectPath);
+            await refreshCodingConflicts();
+            clearLocalConflictPanelState({ close: true });
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingConflicts, clearLocalConflictPanelState]);
+    const refreshCodingWorkbenchStatusFields = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        try {
+            const st = await GetCodingWorkbenchStatus(projectPath);
+            if (!st) return;
+            setCodingSessionPlan(String(st.session_plan || "").trim());
+            setCodingExecutionPlan(String(st.execution_plan || "").trim());
+            setCodingCheckpointLabel(String(st.checkpoint_label || "").trim());
+            setCodingCheckpointFiles(Array.isArray(st.checkpoint_files) ? st.checkpoint_files.map(String) : []);
+            setCodingCheckpointSnapshots(Number(st.checkpoint_snapshots) || 0);
+            setCodingCheckpointHistory(Array.isArray(st.checkpoint_history) ? st.checkpoint_history.map((e: any) => ({
+                label: String(e.label || ""),
+                summary: String(e.summary || ""),
+                snapshot_count: Number(e.snapshot_count) || 0,
+                current: !!e.current,
+                created_at: Number(e.created_at) || 0,
+            })).filter((e: { label: string }) => !!e.label) : []);
+            setCodingBackgroundVerify(String(st.background_verify || "").trim());
+            if (st.hooks_active) {
+                setCodingHooksInfo({
+                    active: true,
+                    phases: Array.isArray(st.hooks_phases) ? st.hooks_phases.map(String) : [],
+                    count: Number(st.hooks_command_count) || 0,
+                    failOnError: !!st.hooks_fail_on_error,
+                });
+            } else {
+                setCodingHooksInfo(null);
+            }
+            {
+                const pending = !!st.pending_approval;
+                setCodingPendingApproval(pending);
+                if (!pending) {
+                    setCodingPendingPlanEditing(false);
+                }
+            }
+            setCodingStepStatuses(Array.isArray(st.step_statuses) ? st.step_statuses.map((s: any) => ({
+                index: Number(s.index) || 0,
+                title: String(s.title || ""),
+                status: String(s.status || "pending"),
+                summary: String(s.summary || ""),
+                verify_cmd: String(s.verify_cmd || ""),
+                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
+            })) : []);
+        } catch { /* ignore */ }
+    }, [activeTab?.projectPath, activeTab?.type]);
+    const handleSaveCodingCheckpoint = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        setCodingCheckpointBusy(true);
+        try {
+            const label = await SaveCodingWorkbenchCheckpoint(projectPath, "");
+            setCodingCheckpointLabel(String(label || "").trim());
+            await refreshCodingWorkbenchStatusFields();
+        } catch { /* ignore */ }
+        finally { setCodingCheckpointBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingWorkbenchStatusFields]);
+    const handleRestoreCodingCheckpoint = useCallback(async (withFiles = false, label = "") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        setCodingCheckpointBusy(true);
+        try {
+            if (label) {
+                await RestoreCodingWorkbenchCheckpointByLabel(projectPath, label, withFiles);
+            } else {
+                await RestoreCodingWorkbenchCheckpointEx(projectPath, withFiles);
+            }
+            await refreshCodingWorkbenchStatusFields();
+            // Refresh list if history present.
+            try {
+                const list = await ListCodingWorkbenchCheckpoints(projectPath);
+                setCodingCheckpointHistory(Array.isArray(list) ? list.map((e: any) => ({
+                    label: String(e.label || ""),
+                    summary: String(e.summary || ""),
+                    snapshot_count: Number(e.snapshot_count) || 0,
+                    current: !!e.current,
+                    created_at: Number(e.created_at) || 0,
+                })).filter((e: { label: string }) => !!e.label) : []);
+            } catch { /* ignore */ }
+        } catch { /* ignore */ }
+        finally { setCodingCheckpointBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingWorkbenchStatusFields]);
+    const handleKeepMainConflictFile = useCallback(async (id: string, filePath: string) => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id || !filePath) return;
+        setCodingConflictBusy(true);
+        try {
+            await KeepMainCodingWorkbenchConflict(projectPath, id, filePath);
+            await refreshCodingConflicts();
+            await openCodingConflict(id);
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingConflicts, openCodingConflict]);
+    const handleAdoptBaseConflictFile = useCallback(async (id: string, filePath: string) => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id || !filePath) return;
+        setCodingConflictBusy(true);
+        try {
+            await AdoptBaseCodingWorkbenchConflict(projectPath, id, filePath);
+            await refreshCodingConflicts();
+            await openCodingConflict(id);
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingConflicts, openCodingConflict]);
+    /** After a whole-conflict resolve: refresh list, clear active diffs, close side panel if none left. */
+    const finalizeWholeConflictResolve = useCallback(async () => {
+        const remaining = await refreshCodingConflicts();
+        setCodingConflictDiffs([]);
+        setCodingConflictActiveId("");
+        setCodingConflictSelected([]);
+        codingConflictSelectedRef.current = [];
+        setCodingConflictPreview(null);
+        setCodingConflictEditDraft("");
+        setCodingConflictTriple(null);
+        setCodingConflictFocusFile("");
+        codingConflictFocusFileRef.current = "";
+        if (remaining.length === 0) {
+            clearLocalConflictPanelState({ close: true });
+        }
+        // remaining > 0: auto-open effect loads the next conflict when activeId is empty.
+    }, [refreshCodingConflicts, clearLocalConflictPanelState]);
+    const handleKeepMainConflictAll = useCallback(async (id: string) => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id) return;
+        setCodingConflictBusy(true);
+        try {
+            // Empty filesCSV = keep main for all remaining files (discard isolation).
+            await KeepMainCodingWorkbenchConflict(projectPath, id, "");
+            await finalizeWholeConflictResolve();
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, finalizeWholeConflictResolve]);
+    const handleResolveConflictBatch = useCallback(async (id: string, action: "adopt" | "keep" | "base") => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath || !id) return;
+        setCodingConflictBusy(true);
+        try {
+            await ResolveCodingWorkbenchConflict(projectPath, id, action, "");
+            await finalizeWholeConflictResolve();
+        } catch { /* ignore */ }
+        finally { setCodingConflictBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, finalizeWholeConflictResolve]);
+    const refreshCodingSidecarStats = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        try {
+            const st = await GetCodingWorkbenchCheckpointSidecarStats(projectPath);
+            if (st && (Number(st.total_bytes) > 0 || Number(st.max_bytes) > 0 || Number(st.dir_count) > 0)) {
+                setCodingSidecarStats({
+                    total_bytes: Number(st.total_bytes) || 0,
+                    max_bytes: Number(st.max_bytes) || 0,
+                    usage_ratio: Number(st.usage_ratio) || 0,
+                    dir_count: Number(st.dir_count) || 0,
+                    user_bytes: Number(st.user_bytes) || 0,
+                });
+            } else {
+                setCodingSidecarStats(st ? {
+                    total_bytes: Number(st.total_bytes) || 0,
+                    max_bytes: Number(st.max_bytes) || 0,
+                    usage_ratio: Number(st.usage_ratio) || 0,
+                    dir_count: Number(st.dir_count) || 0,
+                    user_bytes: Number(st.user_bytes) || 0,
+                } : null);
+            }
+        } catch { /* ignore */ }
+    }, [activeTab?.projectPath, activeTab?.type]);
+    const handlePruneCheckpoints = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        setCodingCheckpointBusy(true);
+        try {
+            await PruneCodingWorkbenchCheckpoints(projectPath);
+            await refreshCodingWorkbenchStatusFields();
+            await refreshCodingSidecarStats();
+        } catch { /* ignore */ }
+        finally { setCodingCheckpointBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type, refreshCodingWorkbenchStatusFields, refreshCodingSidecarStats]);
+    const handleRunCodingBgVerify = useCallback(async () => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        setCodingBgVerifyBusy(true);
+        try {
+            await RunCodingWorkbenchBackgroundVerify(projectPath);
+            setCodingBackgroundVerify("后台验证运行中…");
+            // Poll a few times for completion.
+            for (let i = 0; i < 8; i++) {
+                await new Promise((r) => setTimeout(r, 1500));
+                const st = await GetCodingWorkbenchStatus(projectPath);
+                const sum = String(st?.background_verify || "").trim();
+                if (sum && sum !== "后台验证运行中…") {
+                    setCodingBackgroundVerify(sum);
+                    break;
+                }
+                if (sum) setCodingBackgroundVerify(sum);
+            }
+        } catch { /* ignore */ }
+        finally { setCodingBgVerifyBusy(false); }
+    }, [activeTab?.projectPath, activeTab?.type]);
+    // Filled after displayMessages is computed; used by "extract plan from chat".
+    const displayMessagesForPlanRef = useRef<Array<{ role?: string; content?: string }>>([]);
+    const handleExtractCodingSessionPlan = useCallback(() => {
+        const suggested = suggestSessionPlanFromMessages(displayMessagesForPlanRef.current);
+        if (!suggested) {
+            setCodingSessionPlanEditing(true);
+            setCodingSessionPlanDraft(codingSessionPlan || "");
+            return;
+        }
+        setCodingSessionPlanDraft(suggested);
+        setCodingSessionPlanEditing(true);
+    }, [codingSessionPlan]);
+    const handlePermissionModeChange = useCallback(async (mode: AssistantPermissionMode) => {
+        const previous = permissionMode;
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        const pureCoding = activeTab?.agentMode === "coding_dev" || activeTab?.agentMode === "remote_coding_dev";
+        if (pureCoding && projectPath) {
+            const next = mode === "full" || mode === "workspace" ? mode : "request";
+            setPermissionMode(next);
+            try {
+                // Await sticky/global write so the next pure-coding turn sees full
+                // control immediately (no race with rapid send after mode change).
+                await SetCodingWorkbenchPermission(projectPath, next);
+                const saved = await GetCodingWorkbenchPermission(projectPath);
+                // Skip UI update if user left pure-coding mid-flight.
+                if (!pureCodingTabRef.current) return;
+                if (saved === "full" || saved === "workspace" || saved === "request") {
+                    setPermissionMode(saved);
+                }
+            } catch {
+                if (pureCodingTabRef.current) {
+                    setPermissionMode(previous);
+                }
+            }
+            return;
+        }
+        const next = mode === "full" ? "full" : "request";
+        setPermissionMode(next);
+        try {
+            const saved = await PatchConfigFields({ subagent_full_access: next === "full" });
+            if (!pureCodingTabRef.current) {
+                setPermissionMode(saved?.subagent_full_access === true ? "full" : "request");
+            }
+        } catch {
+            if (!pureCodingTabRef.current) {
+                setPermissionMode(previous);
+            }
+        }
+    }, [permissionMode, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
     activeTabIdForRecRef.current = activeTab?.id || "local";
     const activateTabRef = useRef(activateTab);
     activateTabRef.current = activateTab;
@@ -680,6 +1792,64 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeTab.id, activeTab.type, activeTab.projectPath, clearHistory, clearTabConversation]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
+    const isCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "coding_dev";
+    const isRemoteCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "remote_coding_dev";
+    const isPureCodingEnvironment = isCodingDevEnvironment || isRemoteCodingDevEnvironment;
+    // Float control chrome: see buildCodingBannerChrome (dark local = muted sage, not neon green).
+    const codingBannerChrome = useMemo(
+        () => buildCodingBannerChrome({
+            isDark: !!t.isDark,
+            remote: isRemoteCodingDevEnvironment,
+            theme: t,
+        }),
+        [isRemoteCodingDevEnvironment, t],
+    );
+    // Auto-expand floating coding controls on interrupts.
+    // Keyed by project tab so switching pure-coding tasks does not skip / re-use the previous edge state.
+    const codingInterruptScopeKey = isProjectTabActive
+        ? `project:${activeTab.projectPath || activeTab.id}`
+        : (isPureCodingEnvironment ? `tab:${activeTab.id}` : "");
+    const prevCodingInterruptRef = useRef({ key: "", pending: false, conflicts: false, reconnect: false });
+    useEffect(() => {
+        if (!isPureCodingEnvironment || !codingInterruptScopeKey) {
+            setCodingControlExpanded(false);
+            setCodingConflictOpen(false);
+            prevCodingInterruptRef.current = { key: "", pending: false, conflicts: false, reconnect: false };
+            return;
+        }
+        const pending = !!codingPendingApproval;
+        const conflicts = codingConflictCount > 0;
+        const reconnect = !!remoteReconnect.needsReconnect;
+        const prev = prevCodingInterruptRef.current;
+        if (prev.key !== codingInterruptScopeKey) {
+            // New coding tab/session: open float only for plan/SSH; conflicts use the side panel.
+            setCodingControlExpanded(pending || reconnect);
+            setCodingConflictOpen(conflicts);
+            // Drop previous tab's active conflict UI until the new session status loads.
+            setCodingConflictActiveId("");
+            setCodingConflictDiffs([]);
+            setCodingConflictSelected([]);
+            codingConflictSelectedRef.current = [];
+            setCodingConflictPreview(null);
+            setCodingConflictEditDraft("");
+            setCodingConflictTriple(null);
+            setCodingConflictFocusFile("");
+            codingConflictFocusFileRef.current = "";
+            setCodingConflictPeak(conflicts ? codingConflictCount : 0);
+            prevCodingInterruptRef.current = { key: codingInterruptScopeKey, pending, conflicts, reconnect };
+            return;
+        }
+        // Rising edge only so the user can re-collapse without being forced open again.
+        // Conflicts open the side panel (not the float) — see below.
+        if ((pending && !prev.pending) || (reconnect && !prev.reconnect)) {
+            setCodingControlExpanded(true);
+        }
+        // New isolation conflicts open the dedicated side panel (three-way lives there).
+        if (conflicts && !prev.conflicts) {
+            setCodingConflictOpen(true);
+        }
+        prevCodingInterruptRef.current = { key: codingInterruptScopeKey, pending, conflicts, reconnect };
+    }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteReconnect.needsReconnect]);
     const showChatUI = isLocalTabActive || isProjectTabActive;
     const activeSessionKey = isProjectTabActive && activeTab.projectPath ? `desktop-user:${activeTab.projectPath}` : 'desktop-user';
     const { handlePaste, handleDragOver, handleDrop, pendingAttachments, setPendingAttachments } = usePastedImageAttachments(activeSessionKey, { disabled: !ready || cancelPending });
@@ -985,6 +2155,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return mergeChatMessages(mergedProjectMessages, roundMessages);
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, findProjectRoundForTab, isProjectTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
     latestDisplayMessagesRef.current = displayMessages;
+    displayMessagesForPlanRef.current = displayMessages as Array<{ role?: string; content?: string }>;
     const prevSendingRef = useRef(sending);
     useEffect(() => {
         const wasSending = prevSendingRef.current;
@@ -1084,9 +2255,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             void sendMessageForTabRef.current?.(text, { tabId, project_path: projectPath });
         }
     }, [setProjectTabPreparing]);
-    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"] } | boolean) => {
+    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteNeedsReconnect?: boolean } | boolean) => {
         const tabExisted = hasProjectTab(projectPath);
         const prepareMode = typeof options === "object" ? options.prepareMode : "restore-context";
+        const agentMode = typeof options === "object" ? options.agentMode : undefined;
+        const remoteHost = typeof options === "object" ? options.remoteHost : undefined;
+        const remoteNeedsReconnect = typeof options === "object" ? options.remoteNeedsReconnect : undefined;
         const startedAt = performance.now();
         const scheduleNewAgentReady = (readyTab: { id: string; projectPath?: string }, delayMs: number, reason: string, options?: { skipInitialOpenCheck?: boolean }) => {
             const isStillOpen = () => getTabs().some(openTab => openTab.id === readyTab.id && openTab.type === "project" && openTab.projectPath === readyTab.projectPath);
@@ -1097,16 +2271,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 projectPrepareTimersRef.current.delete(readyTab.id);
                 if (!isStillOpen()) return;
                 finishProjectTabPreparing(readyTab.id, readyTab.projectPath);
-                console.info("[AIAssistantPanel] project tab prepared", { tabId: readyTab.id, projectPath: readyTab.projectPath, prepareMode, reason, elapsedMs: Math.round(performance.now() - startedAt) });
+                console.info("[AIAssistantPanel] project tab prepared", { tabId: readyTab.id, projectPath: readyTab.projectPath, prepareMode, agentMode: agentMode || null, reason, elapsedMs: Math.round(performance.now() - startedAt) });
             }, Math.max(0, delayMs));
             projectPrepareTimersRef.current.set(readyTab.id, timer);
         };
-        const tab = createProjectTab(projectPath, taskTitle, prepareMode === "new-agent" ? {
-            onSessionReady: (readyTab) => {
-                const minimumVisibleMs = Math.max(0, 120 - (performance.now() - startedAt));
-                scheduleNewAgentReady(readyTab, minimumVisibleMs, "session-ready");
-            },
-        } : undefined);
+        const tab = createProjectTab(projectPath, taskTitle, {
+            agentMode,
+            remoteHost,
+            remoteNeedsReconnect,
+            ...(prepareMode === "new-agent" ? {
+                onSessionReady: (readyTab: { id: string; projectPath?: string }) => {
+                    const minimumVisibleMs = Math.max(0, 120 - (performance.now() - startedAt));
+                    scheduleNewAgentReady(readyTab, minimumVisibleMs, "session-ready");
+                },
+            } : {}),
+        });
         if (tab && tab.projectPath && !tabExisted) {
             const projectPathForTab = tab.projectPath;
             setProjectTabPreparing(tab.id, true, prepareMode || "restore-context");
@@ -1342,16 +2521,57 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         closeTab(tabId);
     }, [clearProjectRoundTrackingForTab, closeTab, getTabState, getTabs, saveTabState, skillRecordingTabId]);
-    const createProjectTabFromSearch = useCallback((projectPath: string, taskTitle: string, options?: { autoSend?: boolean }) => {
-        const tabExistedInList = hasProjectTab(projectPath);
-        const tab = createProjectTabWithContext(projectPath, taskTitle);
-        if (!tab || !options?.autoSend || tabExistedInList) return tab;
-        const existingState = getTabState(tab.id);
-        const hasExistingConversation = existingState?.history?.some((m: any) => m && (m.role === "user" || m.role === "assistant"));
-        if (!hasExistingConversation) {
-            void sendProjectMessageAfterPrepare(taskTitle, { tabId: tab.id, project_path: tab.projectPath });
-        }
-        return tab;
+    const createProjectTabFromSearch = useCallback((
+        projectPath: string,
+        taskTitle: string,
+        options?: {
+            autoSend?: boolean;
+            agentMode?: "coding_dev" | "remote_coding_dev";
+            remoteHost?: string;
+            tags?: string[];
+        },
+    ) => {
+        const agentMode = options?.agentMode || agentModeFromTaskTags(options?.tags);
+        const remoteHost = options?.remoteHost || remoteHostFromTaskTags(options?.tags);
+        // Await Ensure before opening the tab so the first user message cannot
+        // race past sticky re-arm (history/search restore of pure coding).
+        // Also re-arm when tags are missing but sticky/index still classifies
+        // the path as pure coding (Ensure returns kind).
+        void (async () => {
+            const tabExistedInList = hasProjectTab(projectPath);
+            let resolvedMode = agentMode;
+            let resolvedHost = remoteHost;
+            let remoteNeedsReconnect = false;
+            try {
+                const arm = await EnsureCodingWorkbenchArmed(projectPath);
+                if (!resolvedMode) {
+                    if (arm?.kind === "remote") resolvedMode = "remote_coding_dev";
+                    else if (arm?.kind === "local") resolvedMode = "coding_dev";
+                }
+                if (resolvedMode === "remote_coding_dev") {
+                    remoteNeedsReconnect = !!(arm?.needs_reconnect);
+                    if (!resolvedHost && arm?.remote_host) {
+                        resolvedHost = arm.remote_host;
+                    }
+                }
+            } catch (err) {
+                console.warn("[AIAssistantPanel] EnsureCodingWorkbenchArmed from search failed", err);
+                if (resolvedMode === "remote_coding_dev") remoteNeedsReconnect = true;
+            }
+            const tab = createProjectTabWithContext(projectPath, taskTitle, {
+                prepareMode: "restore-context",
+                agentMode: resolvedMode,
+                remoteHost: resolvedHost,
+                remoteNeedsReconnect: resolvedMode === "remote_coding_dev" ? remoteNeedsReconnect : undefined,
+            });
+            if (!tab || !options?.autoSend || tabExistedInList) return;
+            const existingState = getTabState(tab.id);
+            const hasExistingConversation = existingState?.history?.some((m: any) => m && (m.role === "user" || m.role === "assistant"));
+            if (!hasExistingConversation) {
+                void sendProjectMessageAfterPrepare(taskTitle, { tabId: tab.id, project_path: tab.projectPath });
+            }
+        })();
+        return null;
     }, [createProjectTabWithContext, getTabState, hasProjectTab, sendProjectMessageAfterPrepare]);
     const closeProjectTabByPath = useCallback((projectPath: string) => {
         const tab = getTabs().find(t => t.type === "project" && t.projectPath === projectPath);
@@ -1407,8 +2627,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Code preview events still use project_path for routing (they don't carry event_scope_id yet).
     const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope, codePreviewPathScope);
-    const sourcePreviewAllowed = shouldShowSourcePreviewForWorkflow(workflowState.workflowType);
-    const { state: codePreviewState, closePanel: closeCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
+    const sourcePreviewAllowed = shouldShowSourcePreviewForWorkflow(workflowState.workflowType)
+        || shouldShowSourcePreviewForAgentMode(activeTab.agentMode);
+    const { state: codePreviewState, closePanel: closeCodePreview, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, closeFile: closeCodeFile, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFiles, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
     useEffect(() => {
         if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
         const state = previewStateMapRef.current.get("local");
@@ -1509,8 +2730,51 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             resetCodePreviewState();
         }
     }, [sourcePreviewAllowed, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
+    // Local / remote pure coding environments always open the right-hand source
+    // preview panel (empty until files arrive). Track auto-open per tab so a
+    // deliberate user close is not immediately reopened on re-render; re-open
+    // only when the tab first enters pure coding mode.
+    const autoOpenedCodePreviewTabRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!isPureCodingEnvironment || !codingPreviewAllowed || !sourcePreviewAllowed) {
+            // Leaving coding mode for this tab allows a future re-entry to open again.
+            if (autoOpenedCodePreviewTabRef.current === activeTab.id) {
+                autoOpenedCodePreviewTabRef.current = null;
+            }
+            return;
+        }
+        if (autoOpenedCodePreviewTabRef.current === activeTab.id) {
+            return;
+        }
+        autoOpenedCodePreviewTabRef.current = activeTab.id;
+        reopenCodePreview();
+    }, [isPureCodingEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, reopenCodePreview]);
     const showCodePreview = codingPreviewAllowed && sourcePreviewAllowed && codePreviewState.active;
-    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
+    // Isolation conflicts open a dedicated right-hand side panel (not the float popover).
+    const showCodingConflictPanel = isPureCodingEnvironment && codingConflictOpen && codingConflictCount > 0;
+    // When the side panel is open without an active conflict, load the first one for diffs/3-way.
+    useEffect(() => {
+        if (!showCodingConflictPanel) return;
+        if (codingConflictActiveId) return;
+        const firstId = codingConflicts[0]?.id;
+        if (!firstId) return;
+        void openCodingConflict(firstId);
+    }, [showCodingConflictPanel, codingConflictActiveId, codingConflicts, openCodingConflict]);
+    // Drop stale "open" flag once the last conflict is gone so a later conflict can rising-edge open again.
+    useEffect(() => {
+        if (codingConflictCount === 0 && codingConflictOpen) {
+            setCodingConflictOpen(false);
+        }
+    }, [codingConflictCount, codingConflictOpen]);
+    // Track peak conflict count for resolution progress (resets when wave clears).
+    useEffect(() => {
+        if (codingConflictCount === 0) {
+            setCodingConflictPeak(0);
+            return;
+        }
+        setCodingConflictPeak((prev) => Math.max(prev, codingConflictCount));
+    }, [codingConflictCount]);
+    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView || showCodingConflictPanel;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     currentPreviewModeRef.current = showCodePreview && !showWorkflowPreview ? "code" : "workflow";
     const workflowCurrentPhaseMeta = useMemo(
@@ -1546,12 +2810,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
     }, [activeSessionKey, agentView, workflowCurrentPhaseID, workflowFormActive, workflowState.active, workflowState.workflowID]);
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
-    // Toggle the entire right-side area (workflow doc preview + code preview) open/closed
+    // Toggle the entire right-side area (workflow / code / conflict) open/closed
     const handleTogglePreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
-        if (workflowState.splitMode || codePreviewStateRef.current.active) {
+        if (workflowState.splitMode || codePreviewStateRef.current.active || codingConflictOpen) {
             closeDocPreview();
             closeCodePreview();
+            closeCodingConflictSidePanel();
         } else {
             openDocPreview();
             const cp = codePreviewStateRef.current;
@@ -1559,11 +2824,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activateCodePreviewPassive();
             }
         }
-    }, [codingPreviewAllowed, sourcePreviewAllowed, workflowState.splitMode, closeDocPreview, closeCodePreview, openDocPreview, activateCodePreviewPassive]);
+    }, [codingPreviewAllowed, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, closeDocPreview, closeCodePreview, closeCodingConflictSidePanel, openDocPreview, activateCodePreviewPassive]);
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();
         closeCodePreview();
+        closeCodingConflictSidePanel();
         resetWorkflowState();
         if (agentView) dismissAgentView(agentView.id, undefined, { force: true });
     };
@@ -1572,7 +2838,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const thinkingText = lang === "en" ? "Working... (you can keep typing)" : "\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Running tools... (you can keep typing)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
-        || (lang === "en" ? "Enter a task or command..." : "\u8f93\u5165\u4efb\u52a1\u6216\u6307\u4ee4\u2026");
+        || (isRemoteCodingDevEnvironment
+            ? localizeText(lang, "Describe coding work on the remote host...", "描述远程主机上的开发任务…", "描述遠端主機上的開發任務…")
+            : isCodingDevEnvironment
+            ? localizeText(lang, "Describe coding work in this programming environment...", "在编程环境中描述你的开发任务…", "在程式開發環境中描述你的開發任務…")
+            : (lang === "en" ? "Enter a task or command..." : "\u8f93\u5165\u4efb\u52a1\u6216\u6307\u4ee4\u2026"));
     const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
     const hasActiveDetachedProjectRound = useMemo(() => (
         isProjectTabActive && Array.from(detachedProjectRoundsRef.current.values()).some(detached => detached.tabId === activeTab.id)
@@ -1680,6 +2950,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.type, busySessionKeys, isBusy, panelSessionIsSending, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys]);
     const activeProjectPreparing = isProjectTabActive && preparingProjectTabIds.has(activeTab.id);
     const activeProjectPrepareMode = activeProjectPreparing ? (preparingProjectTabModes.get(activeTab.id) || "restore-context") : "restore-context";
+    const codingEnvDescription = useMemo(() => {
+        if (!isPureCodingEnvironment) return "";
+        if (isRemoteCodingDevEnvironment) {
+            if (remoteReconnect.needsReconnect) {
+                return localizeText(lang, "SSH session is not connected. Enter password below to reconnect and continue multi-turn remote coding.", "SSH 未连接或已断开。请在下方输入密码重连，以继续多轮远程编程。", "SSH 未連線或已中斷。請在下方輸入密碼重連，以繼續多輪遠端程式開發。");
+            }
+            if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
+                return localizeText(lang, "Connecting SSH and preparing full remote coding workbench (source preview + local Skill/MCP)…", "正在连接 SSH 并建立全功能远程编程工作台（源码预览 + 本机 Skill/MCP）…", "正在連線 SSH 並建立全功能遠端程式工作台（原始碼預覽 + 本機 Skill/MCP）…");
+            }
+            return localizeText(lang, "Full remote workbench: code runs on the remote host via SSH; Skill/MCP/web_search run on this machine. Multi-turn continues until you leave the tab. Source preview is on the right.", "全功能远程工作台：改码/命令在远端 SSH 执行；Skill、MCP、联网检索在本机。同一 Tab 可多轮续写。右侧为源码预览。", "全功能遠端工作台：改碼/命令在遠端 SSH 執行；Skill、MCP、聯網檢索在本機。同一 Tab 可多輪續寫。右側為原始碼預覽。");
+        }
+        if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
+            return localizeText(lang, "Starting full coding workbench (tools, Skill/MCP, source preview)…", "正在启动全功能编程工作台（工具 / Skill / MCP / 源码预览）…", "正在啟動全功能程式工作台（工具 / Skill / MCP / 原始碼預覽）…");
+        }
+        return localizeText(lang, "Full coding workbench (Claude Code / Codex–level intent). Tools, Skill/MCP, web research, multi-turn session memory, and source preview are active. Follow-up messages continue in this coding environment.", "全功能编程工作台（对齐 Claude Code / Codex）。工具、Skill/MCP、联网检索、多轮会话记忆与源码预览已启用；后续消息仍在本编程环境中续写。", "全功能程式工作台（對齊 Claude Code / Codex）。工具、Skill/MCP、聯網檢索、多輪工作階段記憶與原始碼預覽已啟用；後續訊息仍在本程式環境中續寫。");
+    }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, remoteReconnect.needsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
     const inputLocked = isBusy || cancelPending || activeProjectPreparing;
     const submitLocked = inputLocked;
     const prevSubmitLockedRef = useRef(submitLocked);
@@ -1859,7 +3145,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [createProjectTab, deriveTaskNameFromMessages, messages, onTaskPrefsChanged, saveTabState]);
     const initLabel = getAssistantInitLabel(initStatus, lang);
     const preparingPlaceholderText = activeProjectPrepareMode === "new-agent"
-        ? (lang === "en" ? "Creating project session... type ahead, Enter will wait" : "正在创建项目会话… 可预输入，Enter 会等待")
+        ? (isRemoteCodingDevEnvironment
+            ? localizeText(lang, "Creating remote coding environment... type ahead, Enter will wait", "正在创建远程编程环境… 可预输入，Enter 会等待", "正在建立遠端程式開發環境… 可預輸入，Enter 會等待")
+            : isCodingDevEnvironment
+            ? localizeText(lang, "Creating coding environment... type ahead, Enter will wait", "正在创建编程环境… 可预输入，Enter 会等待", "正在建立程式開發環境… 可預輸入，Enter 會等待")
+            : (lang === "en" ? "Creating project session... type ahead, Enter will wait" : "正在创建项目会话… 可预输入，Enter 会等待"))
         : (lang === "en" ? "Restoring task context... type ahead, Enter will wait" : "正在恢复任务上下文… 可预输入，Enter 会等待");
     const placeholderText = !ready
         ? initLabel
@@ -1888,9 +3178,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setDraftInputValue?.(nextValue);
     }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
     const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
-    const handleWelcomePromptSelect = useCallback((text: string) => {
+    const [welcomeTemplateOffer, setWelcomeTemplateOffer] = useState<WelcomeTemplateSaveOffer | null>(null);
+    // Drop the save-offer when switching tabs.
+    useEffect(() => {
+        setWelcomeTemplateOffer(null);
+    }, [activeTab.id]);
+    const handleWelcomePromptSelect = useCallback((text: string, _meta?: WelcomePromptSubmitMeta) => {
         // Scenario templates are free-form prompts, not slash-command arguments.
         setComposeAction(null);
+        setWelcomeTemplateOffer(null);
         updateInputValue(text);
         requestAnimationFrame(() => {
             if (inputRef.current) {
@@ -1956,6 +3252,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
     const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || isProjectTabActive);
+    // Returning to an empty welcome state should clear any leftover save offer.
+    useEffect(() => {
+        if (showWelcomeView) setWelcomeTemplateOffer(null);
+    }, [showWelcomeView]);
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
 
     // Clear the workflow-starting indicator only when a definitive workflow UI takes over.
@@ -2106,6 +3406,67 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         clearComposerDraft({ clearAttachments: false });
     }, [clearComposerDraft]);
     const sendInFlightRef = useRef(false);
+    /** Welcome param dialog "Send now": dispatch without requiring a second click. */
+    const handleWelcomePromptSend = useCallback(async (text: string, meta?: WelcomePromptSubmitMeta) => {
+        const trimmed = (text || "").trim();
+        if (!trimmed) return;
+        setComposeAction(null);
+        if (!ready) {
+            handleWelcomePromptSelect(trimmed, meta);
+            return;
+        }
+        // Busy: queue like voice input so the message is not dropped.
+        if (inputLocked || submitLocked) {
+            addEntry(trimmed, [], { autoDrain: true });
+            // Still offer save after queueing a scenario prompt.
+            if (meta && shouldOfferWelcomeTemplateSave({ body: trimmed, title: meta.title })) {
+                setWelcomeTemplateOffer({ title: meta.title, body: trimmed });
+            }
+            return;
+        }
+        if (sendInFlightRef.current) {
+            handleWelcomePromptSelect(trimmed, meta);
+            return;
+        }
+        sendInFlightRef.current = true;
+        clearComposerDraft({ clearAttachments: true });
+        userScrolledUpRef.current = false;
+        try {
+            const sent = await sendMessageForTab(trimmed);
+            if (sent !== false) {
+                recordSubmittedPrompt?.(trimmed);
+                if (meta && shouldOfferWelcomeTemplateSave({ body: trimmed, title: meta.title })) {
+                    setWelcomeTemplateOffer({ title: meta.title, body: trimmed });
+                }
+            }
+        } catch (err: unknown) {
+            console.warn("[AIAssistantPanel] Welcome prompt send failed", err);
+            updateInputValue(trimmed);
+        } finally {
+            sendInFlightRef.current = false;
+        }
+    }, [
+        ready,
+        inputLocked,
+        submitLocked,
+        addEntry,
+        clearComposerDraft,
+        sendMessageForTab,
+        recordSubmittedPrompt,
+        handleWelcomePromptSelect,
+        updateInputValue,
+    ]);
+    const handleWelcomeTemplateOfferSave = useCallback(() => {
+        if (!welcomeTemplateOffer) return;
+        saveWelcomeCustomTemplate({
+            title: welcomeTemplateOffer.title,
+            body: welcomeTemplateOffer.body,
+        });
+        setWelcomeTemplateOffer(null);
+    }, [welcomeTemplateOffer]);
+    const handleWelcomeTemplateOfferDismiss = useCallback(() => {
+        setWelcomeTemplateOffer(null);
+    }, []);
     const submitRecognizedVoiceText = useCallback(async (text: string, _source?: VoiceInputSource) => {
         // Defense-in-depth: never send/queue empty or punctuation-only ASR noise.
         if (!ready || !shouldDispatchASRText(text)) return;
@@ -2160,6 +3521,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // Prevent duplicate submits before the session reports busy, but keep
         // the type-ahead queue usable while an existing session is running.
         if (sendInFlightRef.current && !submitLocked && !queueEditDraftActive) return;
+        // Clear reconnect success once the user continues coding.
+        if (remoteReconnect.success) {
+            setRemoteReconnect(prev => (prev.success ? { ...prev, success: "" } : prev));
+        }
         const rawInputValue = inputRef.current?.value ?? inputValue;
         const text = applyComposeActionToText(rawInputValue, composeAction);
         if (isBtwCommandText(text) && sendBtwMessage) {
@@ -2237,7 +3602,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainRef.current = false;
@@ -2610,7 +3975,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         [activeSessionHasWork, displayProgressMessages],
     );
     const compactProgressMessages = useMemo(() => compactCodingAgentProgressMessages(chatProgressMessages), [chatProgressMessages]);
-    const renderedProgressMessages = useMemo(() => compactProgressMessages.map((msg: ChatMessage) => renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, false, savedFileLabel, lang)), [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
+    // Group consecutive coding-agent tool rows into one activity feed (Codex-style trail).
+    const renderedProgressMessages = useMemo(() => {
+        const items = groupCodingAgentProgressForRender(compactProgressMessages);
+        return items.map((item) => {
+            if (item.kind === "coding-feed") {
+                return (
+                    <Fragment key={item.key}>
+                        {renderCodingAgentActivityFeed(item.messages, t, lang)}
+                    </Fragment>
+                );
+            }
+            return (
+                <Fragment key={item.message.id}>
+                    {renderMessage(suppressWorkflowReviewActions(item.message), panelExecuteAction, t, false, savedFileLabel, lang)}
+                </Fragment>
+            );
+        });
+    }, [compactProgressMessages, panelExecuteAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline ? (maximized ? { ...maximizedInlineStyle, background: t.bg } : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" }) : overlayStyle;
     const scopeApprovalIsHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND || scopeApprovalPending?.kind === LOCAL_HIGH_RISK_APPROVAL_KIND;
     const scopeApprovalIsRemoteHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
@@ -2618,7 +4000,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         <div data-testid="ai-panel-root" style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
             {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
+            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} onToggleWorkflow={handleToggleWorkflow} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} workflowEnabled={workflowEnabled} />
             <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }} onDragOver={handleDragOver} onDrop={handleDrop}>
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
@@ -2682,7 +4064,678 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {(activeTab?.type === "local" || activeTab?.type === "project") && (
                 <ProjectDirBar key={activeTab?.type === "local" ? "local" : activeTab?.id || "local"} tabId={activeTab?.type === "local" ? "" : (activeTab?.id || "")} theme={t} lang={lang} />
             )}
-            {showChatUI && <>
+            {showChatUI && (
+            <div data-testid="ai-chat-column" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
+                {isPureCodingEnvironment && (
+                    <CodingWorkbenchControlPanel
+                        lang={lang}
+                        theme={t}
+                        chrome={codingBannerChrome}
+                        remote={isRemoteCodingDevEnvironment}
+                        remoteHost={activeTab?.remoteHost}
+                        preparing={activeProjectPreparing}
+                        prepareMode={activeProjectPrepareMode || undefined}
+                        stepStatuses={codingStepStatuses}
+                        pendingApproval={codingPendingApproval}
+                        conflictCount={codingConflictCount}
+                        lockExpanded={!!remoteReconnect.needsReconnect}
+                        expanded={codingControlExpanded}
+                        onExpandedChange={setCodingControlExpanded}
+                        envDescription={codingEnvDescription}
+                    >
+                        {/* Defer heavy control tree until expanded — parent would otherwise rebuild it every chat render. */}
+                        {!codingControlExpanded ? null : isRemoteCodingDevEnvironment && remoteReconnect.needsReconnect ? (
+                            <div data-testid="remote-coding-reconnect-form" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: t.headingColor || t.text }}>
+                                    {localizeText(lang, "Reconnect remote SSH", "重新连接远程 SSH", "重新連線遠端 SSH")}
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                        {localizeText(lang, "Host", "主机", "主機")}
+                                        <input
+                                            data-testid="remote-reconnect-host"
+                                            value={remoteReconnect.host}
+                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, host: e.target.value }))}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                        />
+                                    </label>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                        {localizeText(lang, "User", "用户名", "使用者")}
+                                        <input
+                                            data-testid="remote-reconnect-user"
+                                            value={remoteReconnect.user}
+                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, user: e.target.value }))}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                        />
+                                    </label>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                        {localizeText(lang, "Port", "端口", "連接埠")}
+                                        <input
+                                            data-testid="remote-reconnect-port"
+                                            type="number"
+                                            value={remoteReconnect.port || 22}
+                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, port: Number(e.target.value) || 22 }))}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                        />
+                                    </label>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                        {localizeText(lang, "Password", "密码", "密碼")}
+                                        <input
+                                            data-testid="remote-reconnect-password"
+                                            type="password"
+                                            autoComplete="new-password"
+                                            value={remoteReconnect.password}
+                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, password: e.target.value }))}
+                                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleRemoteCodingReconnect(); } }}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                        />
+                                    </label>
+                                </div>
+                                <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                    {localizeText(lang, "Remote work directory", "远程工作目录", "遠端工作目錄")}
+                                    <input
+                                        data-testid="remote-reconnect-workdir"
+                                        value={remoteReconnect.workDir}
+                                        onChange={(e) => setRemoteReconnect(prev => ({ ...prev, workDir: e.target.value }))}
+                                        style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                    />
+                                </label>
+                                {remoteReconnect.sessionPlan && (
+                                    <div style={{ fontSize: 11, color: t.textMuted, opacity: 0.9 }}>
+                                        {localizeText(lang, "Continuing session plan: ", "将延续会话目标：", "將延續工作階段目標：")}
+                                        {remoteReconnect.sessionPlan.length > 160 ? `${remoteReconnect.sessionPlan.slice(0, 160)}…` : remoteReconnect.sessionPlan}
+                                    </div>
+                                )}
+                                {remoteReconnect.error && (
+                                    <div data-testid="remote-reconnect-error" style={{ fontSize: 11, color: t.errorText || "#c43d34" }}>{remoteReconnect.error}</div>
+                                )}
+                                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                                    <button
+                                        type="button"
+                                        data-testid="remote-reconnect-submit"
+                                        disabled={remoteReconnect.connecting}
+                                        onClick={() => { void handleRemoteCodingReconnect(); }}
+                                        style={{
+                                            height: 28,
+                                            padding: "0 14px",
+                                            borderRadius: 4,
+                                            border: "none",
+                                            background: t.btnColor || "#2f5f98",
+                                            color: "#fff",
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            cursor: remoteReconnect.connecting ? "wait" : "pointer",
+                                            opacity: remoteReconnect.connecting ? 0.7 : 1,
+                                        }}
+                                    >
+                                        {remoteReconnect.connecting
+                                            ? localizeText(lang, "Connecting…", "连接中…", "連線中…")
+                                            : localizeText(lang, "Reconnect", "重新连接", "重新連線")}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                <CodingControlSection title={localizeText(lang, "Status & controls", "状态与控制", "狀態與控制")} chrome={codingBannerChrome}>
+                                <div data-testid="coding-session-plan" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: codingBannerChrome.muted }}>
+                                        {localizeText(lang, "Session plan", "会话目标", "工作階段目標")}
+                                    </span>
+                                    {!codingSessionPlanEditing && (
+                                        <>
+                                            <button
+                                                type="button"
+                                                data-testid="coding-session-plan-edit"
+                                                onClick={() => {
+                                                    setCodingSessionPlanDraft(codingSessionPlan);
+                                                    setCodingSessionPlanEditing(true);
+                                                }}
+                                                style={{ border: "none", background: "transparent", color: codingBannerChrome.accentStrong, fontSize: 11, cursor: "pointer", padding: 0, fontWeight: 600 }}
+                                            >
+                                                {codingSessionPlan
+                                                    ? localizeText(lang, "Edit", "编辑", "編輯")
+                                                    : localizeText(lang, "Set goal", "设置目标", "設定目標")}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                data-testid="coding-session-plan-extract"
+                                                onClick={handleExtractCodingSessionPlan}
+                                                style={{ border: "none", background: "transparent", color: codingBannerChrome.accentStrong, fontSize: 11, cursor: "pointer", padding: 0, fontWeight: 600 }}
+                                                title={localizeText(lang, "Fill from the earliest user message in this chat", "用本对话最早的用户消息填充目标", "用本對話最早的使用者訊息填入目標")}
+                                            >
+                                                {localizeText(lang, "From chat", "从对话提取", "從對話擷取")}
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                                {codingSessionPlanEditing ? (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                        <textarea
+                                            data-testid="coding-session-plan-input"
+                                            value={codingSessionPlanDraft}
+                                            onChange={(e) => setCodingSessionPlanDraft(e.target.value)}
+                                            rows={2}
+                                            placeholder={localizeText(lang, "Overall coding goal for this multi-turn session…", "本多轮编程会话的总体目标…", "本多輪程式工作階段的總體目標…")}
+                                            style={{ width: "100%", resize: "vertical", minHeight: 44, padding: "6px 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12, lineHeight: 1.4, boxSizing: "border-box" }}
+                                        />
+                                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                                            <button type="button" data-testid="coding-session-plan-cancel" onClick={() => { setCodingSessionPlanEditing(false); setCodingSessionPlanDraft(codingSessionPlan); }} style={{ height: 24, padding: "0 10px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: "pointer" }}>
+                                                {localizeText(lang, "Cancel", "取消", "取消")}
+                                            </button>
+                                            <button type="button" data-testid="coding-session-plan-extract-edit" onClick={handleExtractCodingSessionPlan} style={{ height: 24, padding: "0 10px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: t.text, fontSize: 11, cursor: "pointer" }}>
+                                                {localizeText(lang, "From chat", "从对话提取", "從對話擷取")}
+                                            </button>
+                                            <button type="button" data-testid="coding-session-plan-save" disabled={codingSessionPlanSaving} onClick={() => { void handleSaveCodingSessionPlan(); }} style={{ height: 24, padding: "0 10px", borderRadius: 4, border: "none", background: codingBannerChrome.btnPrimaryBg, color: codingBannerChrome.btnPrimaryFg, fontSize: 11, fontWeight: 600, cursor: codingSessionPlanSaving ? "wait" : "pointer", opacity: codingSessionPlanSaving ? 0.7 : 1 }}>
+                                                {localizeText(lang, "Save", "保存", "儲存")}
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div data-testid="coding-session-plan-text" style={{ fontSize: 11, opacity: 0.95, color: codingBannerChrome.muted, whiteSpace: "pre-wrap" }}>
+                                            {codingSessionPlan
+                                                ? (codingSessionPlan.length > 160 ? `${codingSessionPlan.slice(0, 160)}…` : codingSessionPlan)
+                                                : localizeText(lang, "No session plan yet — set one to keep multi-turn focus.", "尚未设置会话目标 — 设置后多轮续写会始终对齐目标。", "尚未設定工作階段目標 — 設定後多輪續寫會始終對齊目標。")}
+                                        </div>
+                                        <div data-testid="coding-plan-mode" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                            <span style={{ fontWeight: 600, color: codingBannerChrome.muted }}>
+                                                {localizeText(lang, "Plan mode", "规划模式", "規劃模式")}
+                                            </span>
+                                            {(["auto", "approve", "off"] as const).map((mode) => (
+                                                <button
+                                                    key={mode}
+                                                    type="button"
+                                                    data-testid={`coding-plan-mode-${mode}`}
+                                                    onClick={() => { void handleCodingPlanModeChange(mode); }}
+                                                    style={{
+                                                        height: 22,
+                                                        padding: "0 8px",
+                                                        borderRadius: 4,
+                                                        border: `1px solid ${codingPlanMode === mode ? codingBannerChrome.accent : codingBannerChrome.chipIdleBorder}`,
+                                                        background: codingPlanMode === mode ? codingBannerChrome.chipActiveBg : codingBannerChrome.chipIdleBg,
+                                                        color: codingPlanMode === mode ? codingBannerChrome.accentStrong : codingBannerChrome.muted,
+                                                        fontSize: 11,
+                                                        fontWeight: codingPlanMode === mode ? 600 : 400,
+                                                        cursor: "pointer",
+                                                    }}
+                                                >
+                                                    {mode === "auto"
+                                                        ? localizeText(lang, "Auto", "自动", "自動")
+                                                        : mode === "approve"
+                                                            ? localizeText(lang, "Approve", "需批准", "需批准")
+                                                            : localizeText(lang, "Off", "关闭", "關閉")}
+                                                </button>
+                                            ))}
+                                            <span style={{ fontWeight: 600, color: codingBannerChrome.muted, marginLeft: 4 }}>
+                                                {localizeText(lang, "Worktree", "Worktree", "Worktree")}
+                                            </span>
+                                            {(["auto", "always", "off"] as const).map((mode) => (
+                                                <button
+                                                    key={`wt-${mode}`}
+                                                    type="button"
+                                                    data-testid={`coding-worktree-mode-${mode}`}
+                                                    onClick={() => { void handleCodingWorktreeModeChange(mode); }}
+                                                    title={mode === "auto"
+                                                        ? localizeText(lang, "Isolate write steps only when parallel", "仅在并行写改时隔离", "僅在並行寫改時隔離")
+                                                        : mode === "always"
+                                                            ? localizeText(lang, "Every write step in a git worktree", "每个写步骤使用 worktree", "每個寫步驟使用 worktree")
+                                                            : localizeText(lang, "Never use worktrees", "不使用 worktree", "不使用 worktree")}
+                                                    style={{
+                                                        height: 22,
+                                                        padding: "0 8px",
+                                                        borderRadius: 4,
+                                                        border: `1px solid ${codingWorktreeMode === mode ? codingBannerChrome.accent : codingBannerChrome.chipIdleBorder}`,
+                                                        background: codingWorktreeMode === mode ? codingBannerChrome.chipActiveBg : codingBannerChrome.chipIdleBg,
+                                                        color: codingWorktreeMode === mode ? codingBannerChrome.accentStrong : codingBannerChrome.muted,
+                                                        fontSize: 11,
+                                                        fontWeight: codingWorktreeMode === mode ? 600 : 400,
+                                                        cursor: "pointer",
+                                                    }}
+                                                >
+                                                    {mode === "auto"
+                                                        ? localizeText(lang, "Auto", "自动", "自動")
+                                                        : mode === "always"
+                                                            ? localizeText(lang, "Always", "总是", "總是")
+                                                            : localizeText(lang, "Off", "关闭", "關閉")}
+                                                </button>
+                                            ))}
+                                            {codingPendingApproval && (
+                                                <span data-testid="coding-pending-approval" style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                                    <span style={{ color: codingBannerChrome.accentStrong, fontWeight: 600 }}>
+                                                        {localizeText(lang, "Plan awaiting approval", "计划待批准", "計畫待批准")}
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        data-testid="coding-plan-edit"
+                                                        onClick={() => {
+                                                            setCodingPendingPlanDraft(codingExecutionPlan || codingPendingPlanDraft);
+                                                            setCodingPendingPlanEditing((v) => !v);
+                                                        }}
+                                                        title={localizeText(lang, "Edit pending plan steps before approve", "批准前编辑待批步骤", "批准前編輯待批步驟")}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingPendingPlanEditing ? codingBannerChrome.chipActiveBg : codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: "pointer" }}
+                                                    >
+                                                        {codingPendingPlanEditing
+                                                            ? localizeText(lang, "Hide editor", "收起编辑", "收起編輯")
+                                                            : localizeText(lang, "Edit plan", "编辑计划", "編輯計畫")}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        data-testid="coding-plan-approve"
+                                                        onClick={() => { void handleCodingPlanGate("approve"); }}
+                                                        title={localizeText(lang, "Approve and execute multi-step plan", "批准并执行多步计划", "批准並執行多步計畫")}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: "none", background: codingBannerChrome.btnPrimaryBg, color: codingBannerChrome.btnPrimaryFg, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                                                    >
+                                                        {localizeText(lang, "Approve", "批准执行", "批准執行")}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        data-testid="coding-plan-skip"
+                                                        onClick={() => { void handleCodingPlanGate("skip"); }}
+                                                        title={localizeText(lang, "Skip multi-step plan; run original request as one step", "跳过多步规划，按原请求单步执行", "跳過多步規劃，按原請求單步執行")}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: "pointer" }}
+                                                    >
+                                                        {localizeText(lang, "Skip plan", "跳过规划", "跳過規劃")}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        data-testid="coding-plan-reject"
+                                                        onClick={() => { void handleCodingPlanGate("reject"); }}
+                                                        title={localizeText(lang, "Reject and clear pending plan", "拒绝并清除待批计划", "拒絕並清除待批計畫")}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid #dc262655`, background: codingBannerChrome.chipIdleBg, color: "#dc2626", fontSize: 11, cursor: "pointer" }}
+                                                    >
+                                                        {localizeText(lang, "Reject", "拒绝", "拒絕")}
+                                                    </button>
+                                                </span>
+                                            )}
+                                        </div>
+                                        {codingStepStatuses.length > 0 && (
+                                            <div data-testid="coding-step-statuses" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingBannerChrome.border}`, background: codingBannerChrome.insetBg, fontSize: 11, color: codingBannerChrome.muted, maxHeight: 100, overflow: "auto" }}>
+                                                <div style={{ fontWeight: 600, marginBottom: 4, color: codingBannerChrome.accentStrong }}>
+                                                    {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
+                                                </div>
+                                                {codingStepStatuses.map((st) => {
+                                                    const icon = st.status === "passed"
+                                                        ? "✓"
+                                                        : (st.status === "failed" || st.status === "verify_failed")
+                                                            ? "✗"
+                                                            : st.status === "running"
+                                                                ? "…"
+                                                                : st.status === "skipped"
+                                                                    ? "–"
+                                                                    : "○";
+                                                    const color = codingStepStatusColor(st.status, !!t.isDark, codingBannerChrome);
+                                                    return (
+                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color }}>
+                                                            <span style={{ width: 12, flexShrink: 0 }}>{icon}</span>
+                                                            <span style={{ fontWeight: 600 }}>T{st.index}</span>
+                                                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{st.title || st.status}</span>
+                                                            <span style={{ opacity: 0.8, flexShrink: 0 }}>{st.status}</span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                        {(codingSessionCost || codingRouteInfo || codingConflictCount > 0 || codingCheckpointLabel || codingBackgroundVerify) ? (
+                                            <div data-testid="coding-session-cost" style={{ marginTop: 4, fontSize: 11, color: codingBannerChrome.muted, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                                                {codingSessionCost ? (
+                                                    <span>{localizeText(lang, "Session usage", "会话用量", "工作階段用量")}: {codingSessionCost}</span>
+                                                ) : null}
+                                                {codingRouteInfo ? (
+                                                    <span data-testid="coding-route-info">{localizeText(lang, "Route", "路由", "路由")}: {codingRouteInfo}</span>
+                                                ) : null}
+                                                {codingCheckpointLabel ? (
+                                                    <span
+                                                        data-testid="coding-checkpoint-label"
+                                                        title={codingCheckpointFiles.length > 0
+                                                            ? codingCheckpointFiles.slice(0, 12).join("\n") + (codingCheckpointFiles.length > 12 ? `\n…(+${codingCheckpointFiles.length - 12})` : "")
+                                                            : undefined}
+                                                    >
+                                                        {localizeText(lang, "Checkpoint", "检查点", "檢查點")}: {codingCheckpointLabel}
+                                                        {codingCheckpointFiles.length > 0 ? ` · ${codingCheckpointFiles.length} files` : ""}
+                                                        {codingCheckpointSnapshots > 0 ? ` · ${codingCheckpointSnapshots} snaps` : ""}
+                                                    </span>
+                                                ) : null}
+                                                {codingBackgroundVerify ? (
+                                                    <span data-testid="coding-bg-verify" title={codingBackgroundVerify} style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                        {localizeText(lang, "BG verify", "后台验证", "背景驗證")}: {codingBackgroundVerify.length > 48 ? `${codingBackgroundVerify.slice(0, 48)}…` : codingBackgroundVerify}
+                                                    </span>
+                                                ) : null}
+                                                {codingConflictCount > 0 ? (
+                                                    <button
+                                                        type="button"
+                                                        data-testid="coding-conflicts"
+                                                        onClick={() => {
+                                                            // Open dedicated right-hand conflict side panel (three-way lives there).
+                                                            setCodingConflictOpen(true);
+                                                            if (codingConflicts[0]?.id) {
+                                                                void openCodingConflict(codingConflicts[0].id);
+                                                            }
+                                                        }}
+                                                        style={{ border: "none", background: "transparent", color: "#dc2626", fontWeight: 600, fontSize: 11, cursor: "pointer", padding: 0 }}
+                                                        title={localizeText(lang, "Open conflict side panel", "打开冲突侧栏", "開啟衝突側欄")}
+                                                    >
+                                                        {codingConflictOpen
+                                                            ? localizeText(lang, `Conflicts: ${codingConflictCount} (side panel)`, `冲突: ${codingConflictCount}（侧栏）`, `衝突: ${codingConflictCount}（側欄）`)
+                                                            : localizeText(lang, `Conflicts: ${codingConflictCount} →`, `冲突: ${codingConflictCount} →`, `衝突: ${codingConflictCount} →`)}
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
+                                        <div data-testid="coding-checkpoint-bg" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                            <button
+                                                type="button"
+                                                data-testid="coding-checkpoint-save"
+                                                disabled={codingCheckpointBusy}
+                                                onClick={() => { void handleSaveCodingCheckpoint(); }}
+                                                style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: codingCheckpointBusy ? "wait" : "pointer" }}
+                                            >
+                                                {localizeText(lang, "Save checkpoint", "保存检查点", "儲存檢查點")}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                data-testid="coding-checkpoint-restore"
+                                                disabled={codingCheckpointBusy || !codingCheckpointLabel}
+                                                onClick={() => { void handleRestoreCodingCheckpoint(false); }}
+                                                title={codingCheckpointLabel
+                                                    ? localizeText(lang, `Restore plan: ${codingCheckpointLabel}`, `恢复计划: ${codingCheckpointLabel}`, `還原計畫: ${codingCheckpointLabel}`)
+                                                    : localizeText(lang, "No checkpoint yet", "尚无检查点", "尚無檢查點")}
+                                                style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: (codingCheckpointBusy || !codingCheckpointLabel) ? "not-allowed" : "pointer", opacity: codingCheckpointLabel ? 1 : 0.5 }}
+                                            >
+                                                {localizeText(lang, "Restore plan", "恢复计划", "還原計畫")}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                data-testid="coding-checkpoint-restore-files"
+                                                disabled={codingCheckpointBusy || !codingCheckpointLabel || codingCheckpointSnapshots <= 0}
+                                                onClick={() => { void handleRestoreCodingCheckpoint(true); }}
+                                                title={codingCheckpointSnapshots > 0
+                                                    ? localizeText(lang, `Restore plan + ${codingCheckpointSnapshots} file snapshots`, `恢复计划 + ${codingCheckpointSnapshots} 个文件快照`, `還原計畫 + ${codingCheckpointSnapshots} 個檔案快照`)
+                                                    : localizeText(lang, "No file snapshots in checkpoint", "检查点无文件内容快照", "檢查點無檔案內容快照")}
+                                                style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: (codingCheckpointBusy || !codingCheckpointLabel || codingCheckpointSnapshots <= 0) ? "not-allowed" : "pointer", opacity: codingCheckpointSnapshots > 0 ? 1 : 0.5 }}
+                                            >
+                                                {localizeText(lang, "Restore files", "恢复文件", "還原檔案")}
+                                            </button>
+                                            {codingCheckpointHistory.length > 1 ? (
+                                                <select
+                                                    data-testid="coding-checkpoint-history"
+                                                    disabled={codingCheckpointBusy}
+                                                    defaultValue=""
+                                                    onChange={(e) => {
+                                                        const raw = e.target.value;
+                                                        e.target.value = "";
+                                                        if (!raw) return;
+                                                        // Values: "plan:<label>" | "files:<label>"
+                                                        const colon = raw.indexOf(":");
+                                                        const mode = colon > 0 ? raw.slice(0, colon) : "plan";
+                                                        const lab = colon > 0 ? raw.slice(colon + 1) : raw;
+                                                        if (!lab) return;
+                                                        void handleRestoreCodingCheckpoint(mode === "files", lab);
+                                                    }}
+                                                    title={localizeText(lang, "Restore plan or files from a checkpoint", "从检查点恢复计划或文件", "從檢查點還原計畫或檔案")}
+                                                    style={{
+                                                        height: 22,
+                                                        maxWidth: 200,
+                                                        fontSize: 11,
+                                                        borderRadius: 4,
+                                                        border: `1px solid ${codingBannerChrome.chipIdleBorder}`,
+                                                        background: codingBannerChrome.chipIdleBg,
+                                                        color: codingBannerChrome.muted,
+                                                        cursor: codingCheckpointBusy ? "wait" : "pointer",
+                                                    }}
+                                                >
+                                                    <option value="">
+                                                        {localizeText(lang, `History (${codingCheckpointHistory.length})`, `历史 (${codingCheckpointHistory.length})`, `歷史 (${codingCheckpointHistory.length})`)}
+                                                    </option>
+                                                    <optgroup label={localizeText(lang, "Restore plan", "恢复计划", "還原計畫")}>
+                                                        {codingCheckpointHistory.map((e) => (
+                                                            <option key={`plan-${e.label}`} value={`plan:${e.label}`} title={e.summary || e.label}>
+                                                                {e.current ? "★ " : ""}{e.label}
+                                                            </option>
+                                                        ))}
+                                                    </optgroup>
+                                                    <optgroup label={localizeText(lang, "Restore plan + files", "恢复计划+文件", "還原計畫+檔案")}>
+                                                        {codingCheckpointHistory.map((e) => (
+                                                            <option
+                                                                key={`files-${e.label}`}
+                                                                value={`files:${e.label}`}
+                                                                title={e.summary || e.label}
+                                                                disabled={!e.snapshot_count}
+                                                            >
+                                                                {e.current ? "★ " : ""}{e.label}{e.snapshot_count ? ` · ${e.snapshot_count}s` : " · no snaps"}
+                                                            </option>
+                                                        ))}
+                                                    </optgroup>
+                                                </select>
+                                            ) : null}
+                                            <button
+                                                type="button"
+                                                data-testid="coding-bg-verify-run"
+                                                disabled={codingBgVerifyBusy}
+                                                onClick={() => { void handleRunCodingBgVerify(); }}
+                                                style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: codingBgVerifyBusy ? "wait" : "pointer" }}
+                                            >
+                                                {codingBgVerifyBusy
+                                                    ? localizeText(lang, "Verifying…", "验证中…", "驗證中…")
+                                                    : localizeText(lang, "BG verify", "后台验证", "背景驗證")}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                data-testid="coding-checkpoint-prune"
+                                                disabled={codingCheckpointBusy}
+                                                onClick={() => { void handlePruneCheckpoints(); }}
+                                                title={localizeText(lang, "Prune old checkpoint sidecar files", "清理非当前检查点侧车文件", "清理非目前檢查點側車檔案")}
+                                                style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: codingCheckpointBusy ? "wait" : "pointer" }}
+                                            >
+                                                {localizeText(lang, "Prune snaps", "清理快照", "清理快照")}
+                                            </button>
+                                            {codingSidecarStats && (Number(codingSidecarStats.max_bytes) > 0) ? (
+                                                <span
+                                                    data-testid="coding-sidecar-stats"
+                                                    title={localizeText(lang, "Checkpoint sidecar disk usage", "检查点侧车磁盘用量", "檢查點側車磁碟用量")}
+                                                    style={{
+                                                        fontSize: 11,
+                                                        color: (Number(codingSidecarStats.usage_ratio) >= 0.85) ? "#dc2626" : codingBannerChrome.muted,
+                                                        fontWeight: (Number(codingSidecarStats.usage_ratio) >= 0.85) ? 600 : 400,
+                                                    }}
+                                                >
+                                                    {`sidecar ${(Number(codingSidecarStats.total_bytes) / (1024 * 1024)).toFixed(1)}/${(Number(codingSidecarStats.max_bytes) / (1024 * 1024)).toFixed(0)}MB`}
+                                                    {Number(codingSidecarStats.dir_count) > 0 ? ` · ${codingSidecarStats.dir_count}` : ""}
+                                                </span>
+                                            ) : null}
+                                            {codingHooksInfo?.active ? (
+                                                <span
+                                                    data-testid="coding-hooks-info"
+                                                    title={[
+                                                        localizeText(lang, "Project hooks from .maclaw/hooks.json", "项目钩子来自 .maclaw/hooks.json", "專案鉤子來自 .maclaw/hooks.json"),
+                                                        codingHooksInfo.phases.join(", "),
+                                                        codingHooksInfo.failOnError ? "fail_on_error" : "",
+                                                    ].filter(Boolean).join(" · ")}
+                                                    style={{
+                                                        fontSize: 11,
+                                                        color: codingHooksInfo.failOnError ? "#dc2626" : codingBannerChrome.accentStrong,
+                                                        fontWeight: codingHooksInfo.failOnError ? 600 : 400,
+                                                    }}
+                                                >
+                                                    {`hooks ${codingHooksInfo.count}`}
+                                                    {codingHooksInfo.phases.length > 0
+                                                        ? ` · ${codingHooksInfo.phases.slice(0, 4).join(",")}${codingHooksInfo.phases.length > 4 ? "…" : ""}`
+                                                        : ""}
+                                                    {codingHooksInfo.failOnError ? " · fail" : ""}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <div data-testid="coding-route-pref" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                            <span style={{ fontWeight: 600, color: codingBannerChrome.muted }}>
+                                                {localizeText(lang, "Model", "选模", "選模")}
+                                            </span>
+                                            {(["auto", "primary", "reasoning", "vision"] as const).map((pref) => {
+                                                const cap = codingRouteCaps.find((c) => c.pref === pref);
+                                                const isFallback = !!cap?.source && (cap.source === "fallback" || cap.source === "primary") && (pref === "reasoning" || pref === "vision") && !!cap?.note;
+                                                const title = [
+                                                    cap?.model ? `model: ${cap.model}` : "",
+                                                    cap?.source ? `source: ${cap.source}` : "",
+                                                    cap?.note || "",
+                                                    (pref === "reasoning" || pref === "vision")
+                                                        ? localizeText(lang, "Configure in Settings → LLM Cache → Model routes", "在 设置 → LLM 缓存 → 模型路由 配置", "在 設定 → LLM 快取 → 模型路由 配置")
+                                                        : "",
+                                                ].filter(Boolean).join(" · ") || pref;
+                                                return (
+                                                <button
+                                                    key={pref}
+                                                    type="button"
+                                                    data-testid={`coding-route-pref-${pref}`}
+                                                    title={title}
+                                                    onClick={() => { void handleCodingRoutePrefChange(pref); }}
+                                                    style={{
+                                                        height: 22,
+                                                        padding: "0 8px",
+                                                        borderRadius: 4,
+                                                        border: `1px solid ${codingRoutePref === pref ? codingBannerChrome.accent : codingBannerChrome.chipIdleBorder}`,
+                                                        background: codingRoutePref === pref ? codingBannerChrome.chipActiveBg : codingBannerChrome.chipIdleBg,
+                                                        color: codingRoutePref === pref ? codingBannerChrome.accentStrong : codingBannerChrome.muted,
+                                                        fontSize: 11,
+                                                        fontWeight: codingRoutePref === pref ? 600 : 400,
+                                                        cursor: "pointer",
+                                                        opacity: isFallback && codingRoutePref !== pref ? 0.72 : 1,
+                                                    }}
+                                                >
+                                                    {pref}{cap?.model && pref !== "auto" ? ` · ${cap.model.length > 18 ? `${cap.model.slice(0, 16)}…` : cap.model}` : ""}
+                                                </button>
+                                                );
+                                            })}
+                                        </div>
+                                        {/* Full conflict log + three-way live in the side panel; keep a mini strip only when side is closed. */}
+                                        {codingConflictLog.length > 0 && !showCodingConflictPanel ? (
+                                            <div data-testid="coding-conflict-log" style={{ marginTop: 4, fontSize: 10, color: t.textMuted || t.promptColor, maxHeight: 56, overflow: "auto", opacity: 0.9 }}>
+                                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 2, alignItems: "center" }}>
+                                                    <span style={{ fontWeight: 600 }}>{localizeText(lang, "Conflict log", "冲突日志", "衝突日誌")}</span>
+                                                    <span style={{ display: "flex", gap: 8 }}>
+                                                        <button
+                                                            type="button"
+                                                            data-testid="coding-conflict-log-export"
+                                                            onClick={() => { void handleExportConflictLog(); }}
+                                                            title={localizeText(lang, "Export log into worktree notes", "导出日志到 worktree notes", "匯出日誌到 worktree notes")}
+                                                            style={{ border: "none", background: "transparent", color: t.headingColor || t.btnColor || t.textMuted, fontSize: 10, cursor: "pointer", padding: 0 }}
+                                                        >
+                                                            {localizeText(lang, "Export", "导出", "匯出")}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            data-testid="coding-conflict-log-clear"
+                                                            onClick={() => {
+                                                                const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+                                                                if (!projectPath) return;
+                                                                void ClearCodingWorkbenchConflictLog(projectPath).then(() => setCodingConflictLog([])).catch(() => { /* ignore */ });
+                                                            }}
+                                                            style={{ border: "none", background: "transparent", color: t.textMuted, fontSize: 10, cursor: "pointer", padding: 0 }}
+                                                        >
+                                                            {localizeText(lang, "Clear", "清空", "清空")}
+                                                        </button>
+                                                    </span>
+                                                </div>
+                                                {codingConflictLog.slice().reverse().slice(0, 4).map((line, i) => (
+                                                    <div key={`${i}-${line.slice(0, 24)}`} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{line}</div>
+                                                ))}
+                                            </div>
+                                        ) : null}
+                                        {codingExecutionPlan || (codingPendingApproval && codingPendingPlanEditing) ? (
+                                            <div data-testid="coding-execution-plan" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingPendingApproval ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.25)")}`, background: t.fieldBg || "transparent", fontSize: 11, color: t.textMuted || t.promptColor, lineHeight: 1.35 }}>
+                                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                                                    <div style={{ fontWeight: 600, color: t.headingColor || t.btnColor || t.text }}>
+                                                        {localizeText(lang, "Execution plan", "执行计划", "執行計畫")}
+                                                        {codingPendingApproval ? ` · ${localizeText(lang, "pending", "待批准", "待批准")}` : ""}
+                                                    </div>
+                                                    {codingPendingApproval && codingPendingPlanEditing ? (
+                                                        <button
+                                                            type="button"
+                                                            data-testid="coding-plan-edit-save"
+                                                            disabled={codingPendingPlanSaving || !codingPendingPlanDraft.trim()}
+                                                            onClick={() => { void handleSavePendingPlanEdit(); }}
+                                                            style={{ height: 20, padding: "0 8px", borderRadius: 4, border: "none", background: t.btnColor || "#2f5f98", color: "#fff", fontSize: 10, cursor: (codingPendingPlanSaving || !codingPendingPlanDraft.trim()) ? "not-allowed" : "pointer", opacity: codingPendingPlanDraft.trim() ? 1 : 0.5 }}
+                                                        >
+                                                            {codingPendingPlanSaving
+                                                                ? localizeText(lang, "Saving…", "保存中…", "儲存中…")
+                                                                : localizeText(lang, "Save plan", "保存计划", "儲存計畫")}
+                                                        </button>
+                                                    ) : null}
+                                                </div>
+                                                {codingPendingApproval && codingPendingPlanEditing ? (
+                                                    <textarea
+                                                        data-testid="coding-pending-plan-draft"
+                                                        value={codingPendingPlanDraft}
+                                                        onChange={(e) => setCodingPendingPlanDraft(e.target.value)}
+                                                        rows={8}
+                                                        spellCheck={false}
+                                                        placeholder={localizeText(lang, "T1: …\nT2: …", "T1: …\nT2: …", "T1: …\nT2: …")}
+                                                        style={{
+                                                            width: "100%",
+                                                            boxSizing: "border-box",
+                                                            margin: 0,
+                                                            fontSize: 11,
+                                                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                                                            lineHeight: 1.35,
+                                                            resize: "vertical",
+                                                            minHeight: 100,
+                                                            maxHeight: 220,
+                                                            border: `1px solid ${t.fieldBorder || "rgba(127,127,127,0.3)"}`,
+                                                            borderRadius: 4,
+                                                            padding: 6,
+                                                            background: "transparent",
+                                                            color: t.text || t.promptColor,
+                                                        }}
+                                                    />
+                                                ) : (
+                                                    <div style={{ whiteSpace: "pre-wrap", maxHeight: 120, overflow: "auto" }}>{codingExecutionPlan}</div>
+                                                )}
+                                            </div>
+                                        ) : null}
+                                    </>
+                                )}
+                            </div>
+                                </CodingControlSection>
+                            </>
+                        )}
+                    </CodingWorkbenchControlPanel>
+                )}
+                {isRemoteCodingDevEnvironment && remoteReconnect.success && !remoteReconnect.needsReconnect && (
+                    <div
+                        data-testid="remote-coding-reconnect-success"
+                        data-coding-float-ignore-outside=""
+                        role="status"
+                        style={{
+                            position: "absolute",
+                            top: 44,
+                            right: 10,
+                            // Above coding float root (zIndex 40) so dismiss stays clickable.
+                            zIndex: 45,
+                            maxWidth: "min(320px, calc(100% - 20px))",
+                            padding: "8px 12px",
+                            borderRadius: 8,
+                            border: `1px solid ${t.titleBarBorder}`,
+                            background: `color-mix(in srgb, #22c55e 12%, ${t.bg || "#fff"})`,
+                            color: t.text,
+                            fontSize: 12,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            boxShadow: "0 8px 20px rgba(15,23,42,0.12)",
+                            pointerEvents: "auto",
+                        }}
+                    >
+                        <span>{remoteReconnect.success}</span>
+                        <button
+                            type="button"
+                            data-testid="remote-coding-reconnect-success-dismiss"
+                            onClick={() => setRemoteReconnect(prev => ({ ...prev, success: "" }))}
+                            style={{ border: "none", background: "transparent", color: t.textMuted, cursor: "pointer", fontSize: 11 }}
+                        >
+                            {localizeText(lang, "Dismiss", "关闭", "關閉")}
+                        </button>
+                    </div>
+                )}
+
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
                 <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabFromSearch} onCloseProjectTab={closeProjectTabByPath} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />
                 {workflowStartingLabel && !hasConversation && !showThinkingState && !showProcessingState && (
@@ -2697,12 +4750,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </div>
                 )}
                 {showWelcomeView ? (
-                    <div data-testid="ai-welcome-container" style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg }}>
+                    <div data-testid="ai-welcome-container" style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg, paddingTop: isPureCodingEnvironment ? 40 : 0, boxSizing: "border-box" }}>
                         <AssistantWelcomeView
                             lang={lang}
                             theme={t}
                             themeMode={themeMode}
                             onPromptSelect={handleWelcomePromptSelect}
+                            onPromptSend={handleWelcomePromptSend}
                             pinnedNews={pinnedNews}
                             composer={{
                                 browseFile,
@@ -2734,6 +4788,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 onPermissionModeChange: handlePermissionModeChange,
                                 pendingAttachments,
                                 permissionMode,
+                                showWorkspacePermissionOption: isPureCodingEnvironment,
                                 ready,
                                 recallHistory,
                                 rememberHistoryEdit,
@@ -2749,14 +4804,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         />
                     </div>
                 ) : (
-                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll}>
+                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll}>
                     <AssistantConversationBody initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
                     <div ref={outputEndRef} />
                 </div>
                 )}
                 {activeProjectPreparing && <div data-testid="project-tab-restore-progress" style={{ flexShrink: 0, padding: "7px 10px 8px", borderTop: `1px solid ${t.inputBarBorder}`, background: t.inputBarBg, color: t.textMuted, fontSize: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
-                        <span>{activeProjectPrepareMode === "new-agent" ? (lang === "en" ? "Creating project session" : "正在创建项目会话") : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
+                        <span>{activeProjectPrepareMode === "new-agent"
+                            ? (isRemoteCodingDevEnvironment
+                                ? localizeText(lang, "Creating remote coding environment", "正在创建远程编程环境", "正在建立遠端程式開發環境")
+                                : isCodingDevEnvironment
+                                ? localizeText(lang, "Creating coding environment", "正在创建编程环境", "正在建立程式開發環境")
+                                : (lang === "en" ? "Creating project session" : "正在创建项目会话"))
+                            : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
                         <span style={{ opacity: 0.82 }}>{lang === "en" ? "Input will wait" : "输入会先等待"}</span>
                     </div>
                     <div style={{ height: 3, overflow: "hidden", borderRadius: 999, background: `color-mix(in srgb, ${t.headingColor} 16%, transparent)` }}>
@@ -2784,8 +4845,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         theme={t}
                     />
                 )}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
-            </>}
+                {!showWelcomeView && welcomeTemplateOffer && (
+                    <WelcomeTemplateSaveOfferBanner
+                        lang={lang}
+                        theme={t}
+                        title={welcomeTemplateOffer.title}
+                        onSave={handleWelcomeTemplateOfferSave}
+                        onDismiss={handleWelcomeTemplateOfferDismiss}
+                    />
+                )}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+            </div>
+            )}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
             {renameGroupTargetTab && (
                 <AIAssistantRenameGroupDialog
@@ -2801,11 +4872,91 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             )}
             {participantInviteTargetTab && <TabParticipantInviteDialog key={participantInviteTargetTab.id} tab={participantInviteTargetTab} lang={lang} theme={t} onClose={() => setParticipantInviteTargetTabId(null)} onAddParticipantToTab={addParticipantToTab} />}
             </div>
-            {(showWorkflowPreview || showCodePreview || showAgentView) && (
+            {(showCodingConflictPanel || showWorkflowPreview || showCodePreview || showAgentView) ? (
                 <Suspense fallback={null}>
-                    <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} lang={lang} selectCodeFile={selectCodeFile} submitAgentView={panelSubmitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
+                    <AssistantPreviewPane
+                        agentView={agentView}
+                        codePreviewState={codePreviewState}
+                        closeCodePreview={closeCodePreview}
+                        closeCodeFile={closeCodeFile}
+                        closeOtherCodeFiles={closeOtherCodeFiles}
+                        closeCodeFilesToTheRight={closeCodeFilesToTheRight}
+                        closeAllCodeFiles={closeAllCodeFiles}
+                        moveCodeFile={moveCodeFile}
+                        toggleCodeFilePinned={toggleCodeFilePinned}
+                        closeDocPreview={closeDocPreview}
+                        dismissAgentView={dismissAgentView}
+                        lang={lang}
+                        selectCodeFile={selectCodeFile}
+                        submitAgentView={panelSubmitAgentView}
+                        showCodePreview={showCodePreview}
+                        showAgentView={showAgentView}
+                        showWorkflowPreview={showWorkflowPreview}
+                        showConflict={showCodingConflictPanel}
+                        conflictCount={codingConflictCount}
+                        onCloseConflict={closeCodingConflictSidePanel}
+                        conflictContent={showCodingConflictPanel ? (
+                            <CodingConflictSidePanel
+                                lang={lang}
+                                theme={t}
+                                themeMode={themeMode}
+                                embedded
+                                busy={codingConflictBusy}
+                                progressTotal={codingConflictPeak}
+                                conflicts={codingConflicts}
+                                activeId={codingConflictActiveId}
+                                diffs={codingConflictDiffs}
+                                selected={codingConflictSelected}
+                                focusFile={codingConflictFocusFile}
+                                preview={codingConflictPreview}
+                                previewSide={codingConflictPreviewSide}
+                                editDraft={codingConflictEditDraft}
+                                triple={codingConflictTriple}
+                                conflictLog={codingConflictLog}
+                                onClose={closeCodingConflictSidePanel}
+                                onOpenConflict={(id) => { void openCodingConflict(id); }}
+                                onDiscardAll={() => { void handleDiscardAllConflicts(); }}
+                                onDiscard={(id) => { void handleDiscardConflict(id); }}
+                                onResolveBatch={(id, action) => { void handleResolveConflictBatch(id, action); }}
+                                onToggleFile={toggleCodingConflictFile}
+                                onSelectAll={(paths) => {
+                                    setCodingConflictSelected(paths);
+                                    codingConflictSelectedRef.current = paths;
+                                    persistCodingConflictUIState(codingConflictActiveId, paths, codingConflictFocusFileRef.current);
+                                }}
+                                onClearSelection={() => {
+                                    setCodingConflictSelected([]);
+                                    codingConflictSelectedRef.current = [];
+                                    persistCodingConflictUIState(codingConflictActiveId, [], codingConflictFocusFileRef.current);
+                                }}
+                                onResolveSelected={(action) => { void handleResolveSelectedConflictFiles(action); }}
+                                onAdoptFile={(id, path) => { void handleAdoptConflict(id, path); }}
+                                onKeepMainFile={(id, path) => { void handleKeepMainConflictFile(id, path); }}
+                                onAdoptBaseFile={(id, path) => { void handleAdoptBaseConflictFile(id, path); }}
+                                onOpenFile={(path, side) => { void handleOpenConflictFile(path, side); }}
+                                onLoadPreview={(path, side) => { void loadCodingConflictPreview(path, side); }}
+                                onApplyPreviewSide={() => { void handleApplyPreviewSide(); }}
+                                onWriteEdit={() => { void handleWriteConflictEdit(); }}
+                                onEditDraftChange={setCodingConflictEditDraft}
+                                onExportLog={() => { void handleExportConflictLog(); }}
+                                onClearLog={() => {
+                                    const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+                                    if (!projectPath) return;
+                                    void ClearCodingWorkbenchConflictLog(projectPath).then(() => setCodingConflictLog([])).catch(() => { /* ignore */ });
+                                }}
+                                syncTripleScroll={syncCodingConflictTripleScroll}
+                                tripleScrollRefs={codingConflictTripleScrollRefs}
+                            />
+                        ) : null}
+                        splitRatio={splitRatio}
+                        startPreviewResize={startPreviewResize}
+                        onToggleMaximize={onToggleMaximize}
+                        theme={t}
+                        themeMode={themeMode}
+                        workflowState={workflowState}
+                    />
                 </Suspense>
-            )}
+            ) : null}
             </div>
         </div>
     );

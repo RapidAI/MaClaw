@@ -116,16 +116,15 @@ func TestPreservation_DesktopRemoteEnabledFalse_ReturnsDisabledError(t *testing.
 		})
 	}
 
-	// Property: For all requests with RemoteEnabled=false,
-	// StartRemoteHandoffSession SHALL return "remote mode is disabled".
-	// (On unfixed code, this function has no LaunchSource param and always checks RemoteEnabled.)
+	// Handoff is a non-desktop user flow and must not inherit the desktop-only
+	// RemoteEnabled gate.
 	for _, tool := range tools {
 		name := "StartRemoteHandoffSession/" + tool
 		t.Run(name, func(t *testing.T) {
 			resetSessionManager()
-			_, err := app.StartRemoteHandoffSession(tool, projectDir, false, "", RemoteLaunchSourceDesktop)
-			if err == nil || !strings.Contains(err.Error(), "remote mode is disabled") {
-				t.Errorf("expected 'remote mode is disabled' error for StartRemoteHandoffSession(tool=%q); got: %v",
+			_, err := app.StartRemoteHandoffSession(tool, projectDir, false, "", RemoteLaunchSourceHandoff)
+			if err != nil && strings.Contains(err.Error(), "remote mode is disabled") {
+				t.Errorf("handoff launch must bypass the desktop RemoteEnabled gate for tool %q; got: %v",
 					tool, err)
 			}
 		})
@@ -248,7 +247,7 @@ func TestPreservation_RemoteEnabledTrue_NoDisabledError(t *testing.T) {
 		name := "StartRemoteHandoffSession/" + tool
 		t.Run(name, func(t *testing.T) {
 			resetSessionManager()
-			_, err := app.StartRemoteHandoffSession(tool, projectDir, false, "", RemoteLaunchSourceDesktop)
+			_, err := app.StartRemoteHandoffSession(tool, projectDir, false, "", RemoteLaunchSourceHandoff)
 			if err != nil && strings.Contains(err.Error(), "remote mode is disabled") {
 				t.Errorf("RemoteEnabled=true should never return 'remote mode is disabled'; "+
 					"tool=%q, err=%v", tool, err)

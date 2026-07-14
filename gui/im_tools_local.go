@@ -589,11 +589,13 @@ func (h *IMMessageHandler) emitLocalToolCodeFilePreview(ownerID, absPath string,
 	}
 	projectPath := h.executionProjectPathForOwner(ownerID)
 	sessionID := localToolCodePreviewSessionID(ownerID)
+	// Route with the tab/session project path when owner is a project session.
+	routePath := codePreviewRouteProjectPath(ownerID, projectPath)
 	if hasOriginal {
-		emitCodeFilePreviewForPath(h.app, sessionID, projectPath, absPath, created, true, original)
+		emitCodeFilePreviewForPath(h.app, sessionID, projectPath, routePath, absPath, created, true, original)
 		return
 	}
-	emitCodeFilePreviewForPath(h.app, sessionID, projectPath, absPath, created, true)
+	emitCodeFilePreviewForPath(h.app, sessionID, projectPath, routePath, absPath, created, true)
 }
 
 func localToolCodePreviewSessionID(ownerID string) string {

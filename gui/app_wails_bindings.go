@@ -1906,14 +1906,7 @@ func prepareWorkflowTemplatePanelLaunch(handler *IMMessageHandler, workflowType,
 	userID := desktopAIAssistantUserIDForProjectPath(sendProjectPath)
 	requestID := fmt.Sprintf("desktop-ai-%d-%s", now.UnixNano(), workflowType)
 	choiceID := fmt.Sprintf("template-%d", now.UnixNano())
-	choice := workflowChoiceComplex
-	switch workflowType {
-	case workflowChoiceCodingSubAgent:
-		choice = workflowChoiceCodingSubAgent
-	case workflowChoiceRemoteCoding:
-		choice = workflowChoiceRemoteCoding
-	}
-	choiceCommand := buildWorkflowChoiceCommand(choice, choiceID)
+	choiceCommand := buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID)
 	handler.pendingWorkflowChoice.Store(userID, &pendingWorkflowChoice{
 		Msg: IMUserMessage{
 			UserID:    userID,

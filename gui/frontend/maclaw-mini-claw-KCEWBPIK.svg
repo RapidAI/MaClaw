@@ -1,0 +1,32 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .pet-eye, .pet-eye-line { transform-box: fill-box; transform-origin: center; animation: pet-eye-blink 4.6s ease-in-out infinite; }
+    .pet-mouth { transform-box: fill-box; transform-origin: center; animation: pet-mouth-live 2.4s ease-in-out infinite; }
+    .pet-antenna { transform-box: fill-box; transform-origin: 50% 100%; animation: pet-antenna-live 3.8s ease-in-out infinite; }
+    @keyframes pet-eye-blink { 0%, 88%, 100% { transform: scaleY(1); } 92%, 95% { transform: scaleY(.18); } }
+    @keyframes pet-mouth-live { 0%, 100% { transform: scaleY(.86) translateY(0); } 45% { transform: scaleY(1.18) translateY(1px); } }
+    @keyframes pet-antenna-live { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(2.5deg); } }
+  </style>
+  <rect width="240" height="240" rx="42" fill="#F5F8FF"/>
+  <path d="M58 169c-11-4-23-1-28 8-4 7 1 15 9 16 10 2 21-7 27-18" fill="#DCEBFF" stroke="#9BBDF6" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="120" cy="122" r="76" fill="#EAF2FF" stroke="#B9D1FF" stroke-width="6"/>
+  <circle cx="120" cy="118" r="54" fill="#FFFFFF" stroke="#9BBDF6" stroke-width="5"/>
+  <path d="M96 84c9-5 39-5 48 0" stroke="#CFE0FF" stroke-width="5" stroke-linecap="round"/>
+  <path d="M86 86 70 62c-3-5 2-10 7-7l26 17" fill="#FFFFFF" stroke="#9BBDF6" stroke-width="5" stroke-linejoin="round"/>
+  <path d="m154 86 16-24c3-5-2-10-7-7l-26 17" fill="#FFFFFF" stroke="#9BBDF6" stroke-width="5" stroke-linejoin="round"/>
+  <circle class="pet-eye" cx="100" cy="116" r="8" fill="#1F2937"/>
+  <circle class="pet-eye" cx="140" cy="116" r="8" fill="#1F2937"/>
+  <circle class="pet-eye" cx="103" cy="113" r="3" fill="#FFFFFF"/>
+  <circle class="pet-eye" cx="143" cy="113" r="3" fill="#FFFFFF"/>
+  <path class="pet-mouth" d="M106 140c8 8 20 8 28 0" stroke="#1F2937" stroke-width="5" stroke-linecap="round"/>
+  <path d="M76 166c17 20 71 20 88 0" stroke="#2563EB" stroke-width="8" stroke-linecap="round"/>
+  <rect x="95" y="157" width="50" height="24" rx="9" fill="#DBEAFE" stroke="#93C5FD" stroke-width="4"/>
+  <path d="M108 169h18" stroke="#2563EB" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="134" cy="169" r="3" fill="#2563EB"/>
+  <path d="M69 124c-16 9-24 23-24 41" stroke="#2563EB" stroke-width="8" stroke-linecap="round"/>
+  <path d="M171 124c16 9 24 23 24 41" stroke="#2563EB" stroke-width="8" stroke-linecap="round"/>
+  <path d="M92 184h24" stroke="#1F2937" stroke-width="8" stroke-linecap="round"/>
+  <path d="M124 184h24" stroke="#1F2937" stroke-width="8" stroke-linecap="round"/>
+  <path d="M87 197h31" stroke="#93C5FD" stroke-width="5" stroke-linecap="round"/>
+  <path d="M122 197h31" stroke="#93C5FD" stroke-width="5" stroke-linecap="round"/>
+</svg>

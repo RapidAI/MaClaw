@@ -21,6 +21,8 @@ type AppStatusMessageBarProps = {
     onOpenIMSettings: () => void;
     onOpenLLMSettings: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
+    /** Prefer explicit theme so coding-agent failure chrome remaps on dark. */
+    isDark?: boolean;
 };
 
 export const AppStatusMessageBar = ({
@@ -43,6 +45,7 @@ export const AppStatusMessageBar = ({
     onOpenIMSettings,
     onOpenLLMSettings,
     codingAgentProgress = null,
+    isDark,
 }: AppStatusMessageBarProps) => {
     const lansengerConnected = showLansenger && lansengerStatus === 'connected';
     const lansengerConfigured = showLansenger && !!config?.lansenger_enabled;
@@ -81,7 +84,13 @@ export const AppStatusMessageBar = ({
                     </span>
                 )}
                 {codingAgentProgress && (
-                    <CodingAgentCompactStatus progress={codingAgentProgress} lang={lang} testId="app-status-coding-agent" variant="status-bar" />
+                    <CodingAgentCompactStatus
+                        progress={codingAgentProgress}
+                        lang={lang}
+                        testId="app-status-coding-agent"
+                        variant="status-bar"
+                        isDark={isDark}
+                    />
                 )}
                 {backgroundInstallStatus && (
                     <span style={{

@@ -25,7 +25,8 @@
       marketplaceShowingFirst: '{total} items total, showing first {count}',
       marketplaceDelete: 'Delete', marketplaceDeleteConfirm: 'Are you sure you want to delete this capability? Already installed clients will not be affected.', marketplaceDeleteDone: 'Capability deleted.', marketplaceDeleteFailed: 'Delete failed: {error}',
       marketplaceBackfillNames: 'Backfill Skill Names', marketplaceBackfillNamesConfirm: 'Rewrite skill card titles from stored packages / humanized slugs? Only technical IDs are updated.', marketplaceBackfillNamesDone: 'Backfill done: updated {updated}, skipped {skipped}, failed {failed}.', marketplaceBackfillNamesFailed: 'Backfill failed: {error}',
-      marketplaceUploadToMarket: 'Upload to Market', marketplaceUploadConfirm: 'Upload this skill to HubCenter global market? Processing runs on HubCenter; trial skills appear in the market after validation.', marketplaceUploadDone: 'Skill submitted to HubCenter (ID: {submission_id}). Awaiting processing/approval.', marketplaceUploadPublished: 'Skill is live on HubCenter (submission: {submission_id}, skill: {skill_id}).', marketplaceUploadAlreadySubmitted: 'This Skill already has an in-flight upload to HubCenter.', marketplaceUploadFailed: 'Upload to HubCenter failed: {error}'
+      marketplaceUploadToMarket: 'Upload to Market', marketplaceUploadConfirm: 'Upload this skill to HubCenter global market? Processing runs on HubCenter; trial skills appear in the market after validation.', marketplaceUploadDone: 'Skill submitted to HubCenter (ID: {submission_id}). Awaiting processing/approval.', marketplaceUploadPublished: 'Skill is live on HubCenter (submission: {submission_id}, skill: {skill_id}).', marketplaceUploadAlreadySubmitted: 'This Skill already has an in-flight upload to HubCenter.', marketplaceUploadFailed: 'Upload to HubCenter failed: {error}',
+      marketplaceUploadAppToMarket: 'Upload App to HubCenter', marketplaceUploadAppConfirm: 'Upload this published MaClaw App to HubCenter global market? It will appear as a maclaw_app_skill package after HubCenter validation.', marketplaceUploadAppNotPublished: 'Publish the MaClaw App on this Hub first, then upload to HubCenter.', maclawAppPublish: 'Publish App', maclawAppPublished: 'MaClaw App published on enterprise Hub.', maclawAppPublishAndPush: 'Publish & Push HubCenter', maclawAppPublishAndPushConfirm: 'Publish this MaClaw App on enterprise Hub, then upload it to HubCenter global market?', maclawAppPublishThenPush: 'Published on enterprise Hub. Upload to HubCenter now?'
     });
     I18N.zh = Object.assign({}, I18N.zh, {
       navMarketplace: '\u80fd\u529b\u5e02\u573a', navMarketplaceDesc: 'Skill\u3001MCP\u3001\u8d2d\u4e70\u548c\u4e0b\u53d1', marketplaceTabTitle: '\u80fd\u529b\u5e02\u573a', marketplaceTabSubtitle: '\u7ba1\u7406\u4f01\u4e1a Skill/MCP \u7b56\u7565\u3001\u4ed8\u8d39\u5ba1\u6279\u3001\u5bfc\u5165\u548c MCP \u5b9a\u4e49\u3002',
@@ -41,7 +42,8 @@
       marketplaceShowingFirst: '\u5171 {total} \u9879\uff0c\u663e\u793a\u524d {count} \u9879',
       marketplaceDelete: '\u5220\u9664', marketplaceDeleteConfirm: '\u786e\u5b9a\u5220\u9664\u6b64\u80fd\u529b\uff1f\u5df2\u5b89\u88c5\u7684\u5ba2\u6237\u7aef\u4e0d\u53d7\u5f71\u54cd\u3002', marketplaceDeleteDone: '\u80fd\u529b\u5df2\u5220\u9664\u3002', marketplaceDeleteFailed: '\u5220\u9664\u5931\u8d25\uff1a{error}',
       marketplaceBackfillNames: '\u56de\u586b Skill \u540d\u79f0', marketplaceBackfillNamesConfirm: '\u4ece\u5df2\u5b58\u5305/\u4eba\u6027\u5316 slug \u91cd\u5199 skill \u5361\u7247\u6807\u9898\uff1f\u4ec5\u4f1a\u66f4\u65b0\u6280\u672f ID \u6837\u5f0f\u7684\u540d\u79f0\u3002', marketplaceBackfillNamesDone: '\u56de\u586b\u5b8c\u6210\uff1a\u66f4\u65b0 {updated}\uff0c\u8df3\u8fc7 {skipped}\uff0c\u5931\u8d25 {failed}\u3002', marketplaceBackfillNamesFailed: '\u56de\u586b\u5931\u8d25\uff1a{error}',
-      marketplaceUploadToMarket: '\u4e0a\u4f20\u5230\u5e02\u573a', marketplaceUploadConfirm: '\u5c06\u6b64 Skill \u4e0a\u4f20\u5230 HubCenter \u5168\u5c40\u80fd\u529b\u5e02\u573a\uff1fHubCenter \u6821\u9a8c\u901a\u8fc7\u540e\u4f1a\u8fdb\u5165 trial/\u5e02\u573a\u5217\u8868\u3002', marketplaceUploadDone: 'Skill \u5df2\u63d0\u4ea4\u5230 HubCenter\uff08ID: {submission_id}\uff09\u3002\u7b49\u5f85\u5904\u7406/\u5ba1\u6279\u3002', marketplaceUploadPublished: 'Skill \u5df2\u5728 HubCenter \u4e0a\u67b6\uff08\u63d0\u4ea4: {submission_id}\uff0cskill: {skill_id}\uff09\u3002', marketplaceUploadAlreadySubmitted: '\u8be5 Skill \u5728 HubCenter \u4ecd\u6709\u8fdb\u884c\u4e2d\u7684\u63d0\u4ea4\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002', marketplaceUploadFailed: '\u4e0a\u4f20\u5230 HubCenter \u5931\u8d25\uff1a{error}'
+      marketplaceUploadToMarket: '\u4e0a\u4f20\u5230\u5e02\u573a', marketplaceUploadConfirm: '\u5c06\u6b64 Skill \u4e0a\u4f20\u5230 HubCenter \u5168\u5c40\u80fd\u529b\u5e02\u573a\uff1fHubCenter \u6821\u9a8c\u901a\u8fc7\u540e\u4f1a\u8fdb\u5165 trial/\u5e02\u573a\u5217\u8868\u3002', marketplaceUploadDone: 'Skill \u5df2\u63d0\u4ea4\u5230 HubCenter\uff08ID: {submission_id}\uff09\u3002\u7b49\u5f85\u5904\u7406/\u5ba1\u6279\u3002', marketplaceUploadPublished: 'Skill \u5df2\u5728 HubCenter \u4e0a\u67b6\uff08\u63d0\u4ea4: {submission_id}\uff0cskill: {skill_id}\uff09\u3002', marketplaceUploadAlreadySubmitted: '\u8be5 Skill \u5728 HubCenter \u4ecd\u6709\u8fdb\u884c\u4e2d\u7684\u63d0\u4ea4\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002', marketplaceUploadFailed: '\u4e0a\u4f20\u5230 HubCenter \u5931\u8d25\uff1a{error}',
+      marketplaceUploadAppToMarket: '\u4e0a\u4f20 App \u5230 HubCenter', marketplaceUploadAppConfirm: '\u5c06\u6b64\u5df2\u53d1\u5e03\u7684 MaClaw App \u4e0a\u4f20\u5230 HubCenter \u5168\u5c40\u5e02\u573a\uff1f\u6821\u9a8c\u901a\u8fc7\u540e\u4ee5 maclaw_app_skill \u5f62\u6001\u4e0a\u67b6\u3002', marketplaceUploadAppNotPublished: '\u8bf7\u5148\u5728\u4f01\u4e1a Hub \u4e0a\u53d1\u5e03\u8be5 App\uff0c\u518d\u4e0a\u4f20\u5230 HubCenter\u3002', maclawAppPublish: '\u53d1\u5e03\u5e94\u7528', maclawAppPublished: 'MaClaw App \u5df2\u5728\u4f01\u4e1a Hub \u53d1\u5e03\u3002', maclawAppPublishAndPush: '\u53d1\u5e03\u5e76\u63a8\u9001 HubCenter', maclawAppPublishAndPushConfirm: '\u5728\u4f01\u4e1a Hub \u53d1\u5e03\u8be5 MaClaw App\uff0c\u7136\u540e\u4e0a\u4f20\u5230 HubCenter \u5168\u5c40\u5e02\u573a\uff1f', maclawAppPublishThenPush: '\u5df2\u5728\u4f01\u4e1a Hub \u53d1\u5e03\u3002\u73b0\u5728\u4e0a\u4f20\u5230 HubCenter\uff1f'
     });
   }
   const state = { policy: null, capabilities: [], requests: [], externalResults: [], billing: null, workflowReviews: [], workflowReviewDetail: null, rejectingWorkflowReviewId: '', workflowReviewBusy: {} };
@@ -54,6 +56,20 @@
   function pretty(v) { return JSON.stringify(v, null, 2); }
   function metadataOf(item) { if (!item) return {}; if (item.metadata && typeof item.metadata === 'object') return item.metadata; try { return item.metadata_json ? JSON.parse(item.metadata_json) : {}; } catch (_) { return {}; } }
   function isMaclawAppCapability(item, metadata) { metadata = metadata || metadataOf(item); return !!(metadata.is_maclaw_app || item.is_maclaw_app || metadata.product_kind === 'maclaw_app_skill' || item.product_kind === 'maclaw_app_skill' || metadata.maclaw_app_id || metadata.maclaw_app_name || metadata.x_maclaw_apps_preview); }
+  function hubCenterStampMeta(metadata) {
+    metadata = metadata || {};
+    var submissionID = String(metadata.hubcenter_submission_id || '').trim();
+    var skillID = String(metadata.hubcenter_skill_id || '').trim();
+    var status = String(metadata.hubcenter_upload_status || '').trim().toLowerCase();
+    if (!submissionID && !skillID && !status) return '';
+    var parts = ['HubCenter'];
+    if (status) parts.push(status);
+    if (skillID) parts.push('skill ' + skillID);
+    else if (submissionID) parts.push('sub ' + submissionID);
+    var badgeClass = status === 'failed' ? 'danger' : (status === 'pending' || status === 'processing' || status === 'uploading' ? 'warn' : 'ok');
+    var label = parts.join(' · ');
+    return ' | <span class="badge-inline ' + badgeClass + '" title="' + esc(label) + '">' + esc(label) + '</span>';
+  }
   function maclawAppEvidenceValue(metadata, keys) { for (var i = 0; i < keys.length; i += 1) { var value = metadata && metadata[keys[i]]; if (value !== undefined && value !== null && value !== '') return value; } return ''; }
   function maclawAppEvidenceObject(metadata, keys) { var value = maclawAppEvidenceValue(metadata, keys); return value && typeof value === 'object' ? value : {}; }
   function maclawAppEvidenceList(value) { return Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : []); }
@@ -251,13 +267,19 @@
       else if (item.capability_type === 'mcp') { typeBadgeClass = 'info'; typeLabel = 'MCP'; }
       else { typeLabel = 'SKILL'; }
       // Status badge
-      var statusBadgeClass = item.status === 'approved' ? 'ok' : item.status === 'pending_review' ? 'warn' : 'info';
+      var statusBadgeClass = item.status === 'published' ? 'ok' : item.status === 'approved' ? 'ok' : item.status === 'pending_review' ? 'warn' : item.status === 'review_failed' ? 'danger' : 'info';
       // Build 2x2 button grid
       var btns = [];
       var mcpAction = item.capability_type === 'mcp';
       btns.push('<button class="mp-card-btn mp-card-btn-secondary" type="button" onclick="createMarketplaceDeployment(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRequired')) + '</button>');
       btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" onclick="createMarketplaceRecommendation(\'' + itemId + '\',\'' + versionKey + '\')">' + esc(mp('marketplaceMakeRecommended')) + '</button>');
-      if (item.capability_type === 'skill' || isApp) {
+      if (isApp) {
+        if (String(item.status || '') === 'published') {
+          btns.push('<button class="mp-card-btn mp-card-btn-link" type="button" onclick="uploadCapabilityToMarket(\'' + itemId + '\', true)">' + esc(mp('marketplaceUploadAppToMarket')) + '</button>');
+        } else {
+          btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" disabled title="' + esc(mp('marketplaceUploadAppNotPublished')) + '">' + esc(mp('marketplaceUploadAppToMarket')) + '</button>');
+        }
+      } else if (item.capability_type === 'skill') {
         btns.push('<button class="mp-card-btn mp-card-btn-link" type="button" onclick="uploadCapabilityToMarket(\'' + itemId + '\')">' + esc(mp('marketplaceUploadToMarket')) + '</button>');
       } else if (mcpAction) {
         btns.push('<button class="mp-card-btn mp-card-btn-ghost" type="button" onclick="useCapabilityForMCP(\'' + itemId + '\')">' + esc(mp('marketplaceUseSelected')) + '</button>');
@@ -272,6 +294,11 @@
       var reviewActions = '';
       if (isApp && (item.status === 'pending_review' || item.status === 'review_failed')) {
         reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px"><button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="approveMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppApprove')) + '</button><button class="btn-danger" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="rejectMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppReject')) + '</button></div>';
+      } else if (isApp && item.status === 'approved') {
+        reviewActions = '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">' +
+          '<button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1" type="button" onclick="publishMaclawAppCapability(\'' + itemId + '\')">' + esc(mp('maclawAppPublish')) + '</button>' +
+          '<button class="btn-primary" style="height:26px;padding:0 8px;font-size:11px;border-radius:8px;flex:1.4" type="button" onclick="publishMaclawAppCapability(\'' + itemId + '\', true)">' + esc(mp('maclawAppPublishAndPush')) + '</button>' +
+          '</div>';
       }
       var cardName = firstName(item);
       var capabilityRef = skillIdForCard(item);
@@ -296,7 +323,7 @@
           '<span class="badge mp-cap-type-badge ' + typeBadgeClass + '">' + esc(typeLabel) + '</span>' +
         '</div>' +
         (item.description ? '<div class="mp-cap-card-desc">' + esc(item.description) + '</div>' : '') +
-        '<div class="mp-cap-card-meta">' + esc(item.source || '-') + ' | <span class="badge-inline ' + statusBadgeClass + '">' + esc(item.status || '-') + '</span></div>' +
+        '<div class="mp-cap-card-meta">' + esc(item.source || '-') + ' | <span class="badge-inline ' + statusBadgeClass + '">' + esc(item.status || '-') + '</span>' + hubCenterStampMeta(metadata) + '</div>' +
         maclawEvidence + reviewActions + btnGrid +
       '</div>';
     }).join('') + (hasMore ? '<div class="hint" style="grid-column:1/-1;text-align:center;font-size:12px">' + esc(mp('marketplaceShowingFirst', {total: activeCapabilities.length, count: maxShow})) + '</div>' : '');
@@ -375,6 +402,36 @@
   global.rejectMarketplaceRequest = async function(id) { try { await api('/api/admin/capability-market/acquisition-requests/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ approval: { mode: 'admin_rejected' } }) }); await loadRequests(); showToast(mp('marketplaceActionDone'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.approveMaclawAppCapability = async function(id) { try { await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ reviewer: 'hub-admin' }) }); await loadCapabilities(); showToast(mp('maclawAppApproved'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.rejectMaclawAppCapability = async function(id) { try { var reason = 'Rejected by Hub admin. Please revise the MaClaw App package and resubmit.'; await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reviewer: 'hub-admin', reason: reason, review_issues: [{ path: 'app.governance', severity: 'error', message: reason, suggestion: 'Revise the package and submit it again from App Studio.' }] }) }); await loadCapabilities(); showToast(mp('maclawAppRejected'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
+  global.publishMaclawAppCapability = async function(id, pushToHubCenter) {
+    id = String(id || '');
+    if (!id) return;
+    pushToHubCenter = !!pushToHubCenter;
+    if (pushToHubCenter && !confirm(mp('maclawAppPublishAndPushConfirm'))) return;
+    try {
+      await api('/api/admin/capabilities/maclaw-apps/' + encodeURIComponent(id) + '/publish', {
+        method: 'POST',
+        body: JSON.stringify({ publisher: 'hub-admin', release_channel: 'stable' })
+      });
+      await loadCapabilities();
+      showToast(mp('maclawAppPublished'), 'success');
+      if (pushToHubCenter) {
+        await global.uploadCapabilityToMarket(id, true, { skipConfirm: true });
+        return;
+      }
+      // Soft prompt after plain publish — skip if already successfully linked.
+      var cap = (state.capabilities || []).find(function(item) { return String(item && item.id || '') === id; });
+      var meta = metadataOf(cap);
+      var hcStatus = String(meta.hubcenter_upload_status || '').trim().toLowerCase();
+      if (meta.hubcenter_skill_id || (meta.hubcenter_submission_id && hcStatus !== 'failed')) return;
+      if (confirm(mp('maclawAppPublishThenPush'))) {
+        await global.uploadCapabilityToMarket(id, true, { skipConfirm: true });
+      }
+    } catch (err) {
+      const msg = mp('marketplaceSaveFailed', { error: err.message });
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
   global.openWorkflowReviewDetail = async function(id) { try { const data = await api('/api/v1/admin/reviews/' + encodeURIComponent(id)); state.workflowReviewDetail = data; renderWorkflowReviewDetail(); } catch (err) { const msg = mp('workflowReviewLoadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } };
   global.approveWorkflowReview = async function(id) { if (state.workflowReviewBusy[id]) return; state.workflowReviewBusy[id] = true; renderWorkflowReviews(); try { await api('/api/v1/admin/reviews/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({}) }); state.workflowReviewDetail = null; await Promise.all([loadWorkflowReviewsInternal(), loadCapabilities()]); renderWorkflowReviewDetail(); showToast(mp('workflowReviewPublished'), 'success'); } catch (err) { const msg = mp('marketplaceSaveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } finally { delete state.workflowReviewBusy[id]; renderWorkflowReviews(); } };
   global.rejectWorkflowReview = function(id) { global.openWorkflowRejectDialog(id); };
@@ -402,24 +459,25 @@
     }
   };
   var uploadToMarketInflight = Object.create(null);
-  global.uploadCapabilityToMarket = async function(id) {
+  global.uploadCapabilityToMarket = async function(id, isApp, opts) {
     id = String(id || '');
-    if (!id) return;
+    opts = opts || {};
+    if (!id) return false;
     if (uploadToMarketInflight[id]) {
       showToast(mp('marketplaceUploadAlreadySubmitted'), 'info');
-      return;
+      return false;
     }
     // Claim before confirm so double-clicks cannot open two dialogs / two uploads.
     uploadToMarketInflight[id] = true;
-    if (!confirm(mp('marketplaceUploadConfirm'))) {
+    if (!opts.skipConfirm && !confirm(mp(isApp ? 'marketplaceUploadAppConfirm' : 'marketplaceUploadConfirm'))) {
       delete uploadToMarketInflight[id];
-      return;
+      return false;
     }
     try {
       const data = await api('/api/admin/capabilities/' + encodeURIComponent(id) + '/upload-to-market', { method: 'POST' });
       if (data.already_submitted) {
         showToast(mp('marketplaceUploadAlreadySubmitted'), 'info');
-        return;
+        return false;
       }
       const status = String(data.status || 'pending').toLowerCase();
       if (status === 'published' || status === 'success') {
@@ -430,15 +488,28 @@
       } else {
         showToast(mp('marketplaceUploadDone', { submission_id: data.submission_id || '' }), 'success');
       }
+      if (isApp) {
+        await loadCapabilities();
+      }
+      return true;
     } catch (err) {
       var em = String(err && err.message || '');
+      // Refresh app cards even on failure so hubcenter_upload_status=failed stamp appears.
+      if (isApp) {
+        try { await loadCapabilities(); } catch (_) {}
+      }
       if (/in-flight submission|pending or (processing|approved) submission|ALREADY_SUBMITTED/i.test(em)) {
         showToast(mp('marketplaceUploadAlreadySubmitted'), 'info');
-        return;
+        return false;
+      }
+      if (/MACLAW_APP_NOT_PUBLISHED/i.test(em)) {
+        showToast(mp('marketplaceUploadAppNotPublished'), 'error');
+        return false;
       }
       const msg = mp('marketplaceUploadFailed', { error: err.message });
       setOutput(msg);
       showToast(msg, 'error');
+      return false;
     } finally {
       delete uploadToMarketInflight[id];
     }

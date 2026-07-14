@@ -509,3 +509,14 @@ func (a *App) persistSubAgentFullAccess() {
 		"subagent_full_access": true,
 	})
 }
+
+// clearSubAgentFullAccess removes the permanent full-access grant from config.
+func (a *App) clearSubAgentFullAccess() error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	_, err := a.PatchConfigFields(map[string]interface{}{
+		"subagent_full_access": false,
+	})
+	return err
+}

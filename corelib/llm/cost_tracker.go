@@ -228,6 +228,35 @@ func (t *CostTracker) IsOverBudget() bool {
 	return t.EffectiveDailyCost() >= limit
 }
 
+// RemainingBudgetUSD is budgetLimit − EffectiveDailyCost (0 if unlimited or already over).
+func (t *CostTracker) RemainingBudgetUSD() float64 {
+	if t == nil {
+		return 0
+	}
+	limit := t.BudgetLimit()
+	if limit <= 0 {
+		return 0 // unlimited — callers should treat 0-with-no-limit as "no gate"
+	}
+	rem := limit - t.EffectiveDailyCost()
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
+// CanAfford returns false when a daily budget is set and remaining room is less than addUSD.
+// Unlimited budget (limit<=0) always returns true.
+func (t *CostTracker) CanAfford(addUSD float64) bool {
+	if t == nil || addUSD <= 0 {
+		return true
+	}
+	limit := t.BudgetLimit()
+	if limit <= 0 {
+		return true
+	}
+	return t.RemainingBudgetUSD() >= addUSD
+}
+
 // ShouldWarn returns true if effective daily cost exceeds the warning threshold.
 func (t *CostTracker) ShouldWarn() bool {
 	if t == nil {

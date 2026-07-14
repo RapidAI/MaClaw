@@ -1460,11 +1460,12 @@ func TestConsumePendingTemplateCodingSubAgentExecutionClearsState(t *testing.T) 
 	if !strings.Contains(capturedTask, "build from form") || capturedProject != projectPath {
 		t.Fatalf("coding template runner received task=%q project=%q", capturedTask, capturedProject)
 	}
-	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); pending {
-		t.Fatal("pendingV2SubAgentExecution should be cleared after coding template consumption")
+	// Multi-turn pure coding re-arms sticky pending after each turn.
+	if _, pending := handler.pendingTemplateCodingProjectPath.Load(userID); !pending {
+		t.Fatal("pendingTemplateCodingProjectPath should be re-armed for multi-turn pure coding")
 	}
-	if _, pending := handler.pendingTemplateCodingProjectPath.Load(userID); pending {
-		t.Fatal("pendingTemplateCodingProjectPath should be cleared after coding template consumption")
+	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); !pending {
+		t.Fatal("pendingV2SubAgentExecution should be re-armed for multi-turn pure coding")
 	}
 }
 
@@ -1497,14 +1498,16 @@ func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 	if !handled || resp == nil {
 		t.Fatalf("pending remote template should be consumed, handled=%v resp=%#v", handled, resp)
 	}
-	if capturedTask != "deploy from form" || capturedRemote != remoteCtx {
+	if !strings.Contains(capturedTask, "deploy from form") || capturedRemote != remoteCtx {
 		t.Fatalf("remote template runner received task=%q remote=%#v", capturedTask, capturedRemote)
 	}
-	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); pending {
-		t.Fatal("pendingV2SubAgentExecution should be cleared after remote template consumption")
+	// Multi-turn pure remote coding re-arms sticky pending after each turn so
+	// follow-ups stay in RemoteCodingSubAgent (not cleared permanently).
+	if _, pending := handler.pendingTemplateRemoteCoding.Load(userID); !pending {
+		t.Fatal("pendingTemplateRemoteCoding should be re-armed for multi-turn pure coding")
 	}
-	if _, pending := handler.pendingTemplateRemoteCoding.Load(userID); pending {
-		t.Fatal("pendingTemplateRemoteCoding should be cleared after remote template consumption")
+	if _, pending := handler.pendingV2SubAgentExecution.Load(userID); !pending {
+		t.Fatal("pendingV2SubAgentExecution should be re-armed for multi-turn pure coding")
 	}
 }
 

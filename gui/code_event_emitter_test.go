@@ -98,6 +98,14 @@ func TestCodeEventEmitter_NilContext_EmitCodeFileEvent(t *testing.T) {
 	})
 }
 
+func TestCodeEventEmitter_NilContext_EmitSessionStartAutoOpen(t *testing.T) {
+	app := &App{} // ctx nil
+	emitter := NewCodeEventEmitter(app)
+	// Must not panic.
+	emitter.EmitSessionStartAutoOpen("test-session", `D:\proj`)
+	emitter.EmitPreviewSessionStart("preview-session")
+}
+
 func TestCodeEventEmitter_NilContext_EmitSessionStart(t *testing.T) {
 	app := &App{} // ctx is nil by default
 	emitter := NewCodeEventEmitter(app)

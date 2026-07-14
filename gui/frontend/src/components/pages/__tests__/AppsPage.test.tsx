@@ -14,6 +14,7 @@ const syncMaclawAppApprovalInstanceToDataSrvMock = vi.hoisted(() => vi.fn());
 const installMaclawAppDependenciesMock = vi.hoisted(() => vi.fn());
 const installMaclawAppPackageFromHubMock = vi.hoisted(() => vi.fn());
 const installSelectedMaclawAppPackageFromHubMock = vi.hoisted(() => vi.fn());
+const installMixedSkillMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppInstallMock = vi.hoisted(() => vi.fn());
 const planMaclawAppInstallMock = vi.hoisted(() => vi.fn());
 const saveMaclawAppDefinitionForSkillMock = vi.hoisted(() => vi.fn());
@@ -54,6 +55,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InstallMaclawAppDependencies: (...args: unknown[]) => installMaclawAppDependenciesMock(...args),
     InstallMaclawAppPackageFromHub: (...args: unknown[]) => installMaclawAppPackageFromHubMock(...args),
     InstallSelectedMaclawAppPackageFromHub: (...args: unknown[]) => installSelectedMaclawAppPackageFromHubMock(...args),
+    InstallMixedSkill: (...args: unknown[]) => installMixedSkillMock(...args),
     PlanMaclawAppInstall: (...args: unknown[]) => planMaclawAppInstallMock(...args),
     RecordMaclawAppInstall: (...args: unknown[]) => recordMaclawAppInstallMock(...args),
     // Keep approval/business workspace openers undefined so runtime falls back to
@@ -893,6 +895,7 @@ describe('AppsPage', () => {
         installMaclawAppDependenciesMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.install_plan.v1', apps: [], dependencies: [], has_missing_required: false });
         installMaclawAppPackageFromHubMock.mockReset().mockResolvedValue({});
         installSelectedMaclawAppPackageFromHubMock.mockReset().mockResolvedValue({});
+        installMixedSkillMock.mockReset().mockResolvedValue(undefined);
         recordMaclawAppInstallMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.installs.v1', app_count: 1 });
         planMaclawAppInstallMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.install_plan.v1', apps: [], dependencies: [], has_missing_required: false });
         saveMaclawAppDefinitionForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
@@ -1752,7 +1755,7 @@ describe('AppsPage', () => {
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Created Approval Flow')) as HTMLElement;
         expect(card).toBeTruthy();
         await waitFor(() => expect(within(card).getByText('Ready to submit')).not.toBeNull());
-        fireEvent.click(within(card).getByText('Submit for review'));
+        fireEvent.click(within(card).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const packagePayload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -2139,7 +2142,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('审核/发布'));
 
         expect(screen.getByText('\u53ef\u63d0\u4ea4')).not.toBeNull();
-        fireEvent.click(screen.getByText('提交审核'));
+        fireEvent.click(screen.getByText('一键发布'));
 
         await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
         expect(screen.getAllByText('已提交').length).toBeGreaterThan(0);
@@ -2237,7 +2240,7 @@ describe('AppsPage', () => {
         expect(screen.getByText('先运行一次应用')).not.toBeNull();
         expect(screen.getByText(/"status": "review_failed"/)).not.toBeNull();
 
-        fireEvent.click(screen.getByText('提交审核'));
+        fireEvent.click(screen.getByText('一键发布'));
         await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
     });
@@ -2342,7 +2345,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(screen.getByText('暂无本机待同步提交')).not.toBeNull());
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('依赖阻断应用')) as HTMLElement;
         expect(card).toBeTruthy();
-        fireEvent.click(within(card).getByText('提交审核'));
+        fireEvent.click(within(card).getByText('一键发布'));
 
         await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalledTimes(1));
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
@@ -2419,7 +2422,7 @@ describe('AppsPage', () => {
         const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('合同归档')) as HTMLElement;
         expect(publishCard).toBeTruthy();
         expect(publishCard.getAttribute('data-ready')).toBe('true');
-        fireEvent.click(within(publishCard).getByText('\u63d0\u4ea4\u5ba1\u6838'));
+        fireEvent.click(within(publishCard).getByText('\u4e00\u952e\u53d1\u5e03'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -2465,10 +2468,145 @@ describe('AppsPage', () => {
             hasBlockingDependency: false,
         });
         expect(screen.getAllByText(/market-review-123/).length).toBeGreaterThan(0);
-        expect(screen.getAllByText(/market-review-123/).length).toBeGreaterThan(0);
-        expect(screen.getByText(/"channel": "hub"/)).not.toBeNull();
+        // SubmitMaclawAppPackage / local queue channel is local when not synced to Hub yet.
+        expect(screen.getByText(/"channel": "local"/)).not.toBeNull();
     });
 
+    it('prefers one-click publish bridge over plain package submit', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-one-click-1',
+            status: 'success',
+            summary: { last_output_snippet: 'ok' },
+            outputs: [{ id: 'doc-block', kind: 'document', title: 'Doc', text: 'doc.docx', artifact_id: 'artifact-1', status: 'ready' }],
+            artifacts: [{ id: 'artifact-1', uri: 'artifact://skill-run/run-one-click-1/artifact-1', name: 'doc.docx', path: '/tmp/doc.docx', status: 'ready' }],
+        });
+        const submitMaclawAppPackage = vi.fn().mockResolvedValue({ submission_id: 'should-not-use-plain-submit' });
+        const publishMaclawAppOneClick = vi.fn().mockResolvedValue({
+            schema: 'maclaw.app.one_click_publish.v1',
+            ok: true,
+            local_submission_id: 'one-click-sub-1',
+            local_submission: {
+                submission_id: 'one-click-sub-1',
+                submitted_at: '2026-06-17T02:00:00.000Z',
+                status: 'submitted',
+                channel: 'local',
+                message: 'queued',
+            },
+            targets: {
+                enterprise_hub_pack: { ok: true },
+                skill_market: { ok: true, submission_id: 'sm-1' },
+            },
+            message: 'queued locally; enterprise hub pack submitted; skill market upload ok (sm-1)',
+        });
+        const publishMaclawAppSubmissionOneClick = vi.fn().mockResolvedValue({
+            schema: 'maclaw.app.one_click_publish.v1',
+            ok: true,
+            partial: false,
+            local_submission_id: 'one-click-sub-1',
+            local_submission: {
+                submission_id: 'one-click-sub-1',
+                submitted_at: '2026-06-17T02:00:00.000Z',
+                status: 'submitted',
+                channel: 'hub',
+                message: 'retry ok',
+            },
+            message: 'queued locally; enterprise hub pack submitted; skill market upload ok (sm-retry)',
+        });
+        (window as any).go = {
+            main: {
+                App: {
+                    SubmitMaclawAppPackage: submitMaclawAppPackage,
+                    PublishMaclawAppOneClick: publishMaclawAppOneClick,
+                    PublishMaclawAppSubmissionOneClick: publishMaclawAppSubmissionOneClick,
+                },
+            },
+        };
+
+        window.localStorage.clear();
+        render(<AppsPage lang="zh-Hans" />);
+
+        await createAndRunLocalToolApp('一键发布应用');
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
+        fireEvent.click(screen.getByRole('tab', { name: /\u5ba1\u6838\/\u53d1\u5e03/ }));
+        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('一键发布应用')) as HTMLElement;
+        expect(publishCard).toBeTruthy();
+        fireEvent.click(within(publishCard).getByText('\u4e00\u952e\u53d1\u5e03'));
+
+        await waitFor(() => expect(publishMaclawAppOneClick).toHaveBeenCalledTimes(1));
+        expect(submitMaclawAppPackage).not.toHaveBeenCalled();
+        const payload = JSON.parse(publishMaclawAppOneClick.mock.calls[0][0]);
+        expect(payload.schema).toBe('maclaw.app.pack.v1');
+        expect(payload.apps[0].app.name).toBe('一键发布应用');
+        expect(screen.getAllByText(/one-click-sub-1/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/queued locally; enterprise hub pack submitted; skill market upload ok \(sm-1\)/).length).toBeGreaterThan(0);
+    });
+
+    it('retries partial one-click via existing submission id instead of re-queuing', async () => {
+        getNLSkillRunStatusMock.mockResolvedValue({
+            run_id: 'run-one-click-retry',
+            status: 'success',
+            summary: { last_output_snippet: 'ok' },
+            outputs: [{ id: 'doc-block', kind: 'document', title: 'Doc', text: 'doc.docx', artifact_id: 'artifact-1', status: 'ready' }],
+            artifacts: [{ id: 'artifact-1', uri: 'artifact://skill-run/run-one-click-retry/artifact-1', name: 'doc.docx', path: '/tmp/doc.docx', status: 'ready' }],
+        });
+        const publishMaclawAppOneClick = vi.fn().mockResolvedValue({
+            schema: 'maclaw.app.one_click_publish.v1',
+            ok: true,
+            partial: true,
+            local_submission_id: 'partial-sub-1',
+            local_submission: {
+                submission_id: 'partial-sub-1',
+                submitted_at: '2026-06-17T02:00:00.000Z',
+                status: 'submitted',
+                channel: 'local',
+                message: 'queued locally; enterprise hub pack failed: offline; skill market failed: no remote_email',
+            },
+            message: 'queued locally; enterprise hub pack failed: offline; skill market failed: no remote_email',
+        });
+        const publishMaclawAppSubmissionOneClick = vi.fn().mockResolvedValue({
+            schema: 'maclaw.app.one_click_publish.v1',
+            ok: true,
+            partial: false,
+            local_submission_id: 'partial-sub-1',
+            local_submission: {
+                submission_id: 'partial-sub-1',
+                submitted_at: '2026-06-17T02:00:00.000Z',
+                status: 'submitted',
+                channel: 'hub',
+                message: 'queued locally; enterprise hub pack submitted; skill market upload ok (sm-2)',
+            },
+            message: 'queued locally; enterprise hub pack submitted; skill market upload ok (sm-2)',
+        });
+        (window as any).go = {
+            main: {
+                App: {
+                    PublishMaclawAppOneClick: publishMaclawAppOneClick,
+                    PublishMaclawAppSubmissionOneClick: publishMaclawAppSubmissionOneClick,
+                },
+            },
+        };
+
+        window.localStorage.clear();
+        render(<AppsPage lang="zh-Hans" />);
+        await createAndRunLocalToolApp('局部重试应用');
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('局部重试应用')) as HTMLElement;
+        expect(card).toBeTruthy();
+
+        fireEvent.click(within(card).getByText('\u4e00\u952e\u53d1\u5e03'));
+        await waitFor(() => expect(publishMaclawAppOneClick).toHaveBeenCalledTimes(1));
+        expect(publishMaclawAppSubmissionOneClick).not.toHaveBeenCalled();
+        await waitFor(() => expect(screen.getAllByText(/enterprise hub pack failed: offline/).length).toBeGreaterThan(0));
+
+        // Partial failure keeps the button enabled and retries the durable row.
+        const retryButton = within(card).getByText('\u4e00\u952e\u53d1\u5e03') as HTMLButtonElement;
+        expect(retryButton.disabled).toBe(false);
+        fireEvent.click(retryButton);
+        await waitFor(() => expect(publishMaclawAppSubmissionOneClick).toHaveBeenCalledWith('partial-sub-1'));
+        expect(publishMaclawAppOneClick).toHaveBeenCalledTimes(1);
+        expect(screen.getAllByText(/skill market upload ok \(sm-2\)/).length).toBeGreaterThan(0);
+    });
 
     it('requires run evidence to cover the declared primary result contract', async () => {
         const app = {
@@ -2520,7 +2658,7 @@ describe('AppsPage', () => {
         expect(blockedCard).toBeTruthy();
         expect(within(blockedCard).getByText('Needs work')).not.toBeNull();
         expect(within(blockedCard).getByText(/Run evidence does not cover result contract: business_status/)).not.toBeNull();
-        expect((within(blockedCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(blockedCard).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
 
         cleanup();
         window.localStorage.clear();
@@ -2541,7 +2679,7 @@ describe('AppsPage', () => {
         expect(explicitMissingCard).toBeTruthy();
         expect(within(explicitMissingCard).getByText('Needs work')).not.toBeNull();
         expect(within(explicitMissingCard).getByText(/Run evidence does not cover result contract: business_record/)).not.toBeNull();
-        expect((within(explicitMissingCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(explicitMissingCard).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
 
         cleanup();
         window.localStorage.clear();
@@ -2564,7 +2702,7 @@ describe('AppsPage', () => {
         expect(readyCard).toBeTruthy();
         expect(within(readyCard).getByText('Ready to submit')).not.toBeNull();
         expect(within(readyCard).getByText(/primary: business_status/)).not.toBeNull();
-        fireEvent.click(within(readyCard).getByText('Submit for review'));
+        fireEvent.click(within(readyCard).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -2642,7 +2780,7 @@ describe('AppsPage', () => {
         expect(card).toBeTruthy();
         expect(within(card).getByText('Needs work')).not.toBeNull();
         expect(within(card).getByText(/Dependency verification is missing declared Skill: declared-business-skill/)).not.toBeNull();
-        expect((within(card).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(card).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
 
         cleanup();
         window.localStorage.clear();
@@ -2694,7 +2832,7 @@ describe('AppsPage', () => {
                 dependencies: [expect.objectContaining({ id: 'declared-business-skill', install_ref: 'cap-hub-declared-business-skill', installed: true, health: 'ready' })],
             }),
         });
-        fireEvent.click(within(readyCard).getByText('Submit for review'));
+        fireEvent.click(within(readyCard).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -2753,7 +2891,7 @@ describe('AppsPage', () => {
         expect(within(blockedCard).getByText('Approval instance evidence')).not.toBeNull();
         expect(within(blockedCard).getByText('Needs work')).not.toBeNull();
         expect(within(blockedCard).getByText(/Missing instanceId, status, or approval instance view verification/)).not.toBeNull();
-        expect((within(blockedCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(blockedCard).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
 
         cleanup();
         window.localStorage.clear();
@@ -2783,7 +2921,7 @@ describe('AppsPage', () => {
         expect(incompleteCard).toBeTruthy();
         expect(within(incompleteCard).getByText('Needs work')).not.toBeNull();
         expect(within(incompleteCard).getByText(/missing resultPayload, outputs, or artifacts/)).not.toBeNull();
-        expect((within(incompleteCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(incompleteCard).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
 
         cleanup();
         window.localStorage.clear();
@@ -2824,8 +2962,8 @@ describe('AppsPage', () => {
         expect(readyCard).toBeTruthy();
         expect(within(readyCard).getByText('Ready to submit')).not.toBeNull();
         expect(within(readyCard).getByText(/appr-publish-evidence-1 \/ approved \/ expense_report.result_feedback/)).not.toBeNull();
-        expect((within(readyCard).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(false);
-        fireEvent.click(within(readyCard).getByText('Submit for review'));
+        expect((within(readyCard).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(within(readyCard).getByText('One-click publish'));
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
         expect(payload.apps[0].app.governance.testEvidence.approvalInstance).toMatchObject({
@@ -2909,7 +3047,7 @@ describe('AppsPage', () => {
         expect(within(card).getByText('Runtime contract')).not.toBeNull();
         expect(within(card).getByText(/expense-workflow@v1.0.0/)).not.toBeNull();
         expect(within(card).getByText('Ready to submit')).not.toBeNull();
-        fireEvent.click(within(card).getByText('Submit for review'));
+        fireEvent.click(within(card).getByText('One-click publish'));
 
         await waitFor(() => expect(within(card).getByText(/Runtime contract needs attention: approval workflow contract does not match approval binding/)).not.toBeNull());
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
@@ -2999,7 +3137,7 @@ describe('AppsPage', () => {
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作')) as HTMLElement;
         expect(card).toBeTruthy();
         expect(within(card).getByText('customer-renewal-skill@1.0.0 (app_skill, ready)')).not.toBeNull();
-        fireEvent.click(within(card).getByText('\u63d0\u4ea4\u5ba1\u6838'));
+        fireEvent.click(within(card).getByText('\u4e00\u952e\u53d1\u5e03'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -3130,7 +3268,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('Review / publish'));
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Installed Evidence Republish App')) as HTMLElement;
         expect(card).toBeTruthy();
-        fireEvent.click(within(card).getByText('Submit for review'));
+        fireEvent.click(within(card).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -3246,8 +3384,8 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('Review / publish'));
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Install Evidence Only Republish App')) as HTMLElement;
         expect(card).toBeTruthy();
-        expect((within(card).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(false);
-        fireEvent.click(within(card).getByText('Submit for review'));
+        expect((within(card).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(within(card).getByText('One-click publish'));
 
 	        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
 	        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -3437,7 +3575,7 @@ describe('AppsPage', () => {
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Install Evidence Approval Republish App')) as HTMLElement;
         expect(card).toBeTruthy();
         expect(within(card).getByText('Ready to submit')).not.toBeNull();
-        fireEvent.click(within(card).getByText('Submit for review'));
+        fireEvent.click(within(card).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
 	        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -3567,7 +3705,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('Review / publish'));
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Installed Stale Layout App')) as HTMLElement;
         expect(card).toBeTruthy();
-        const submitButton = within(card).getByText('Submit for review') as HTMLButtonElement;
+        const submitButton = within(card).getByText('One-click publish') as HTMLButtonElement;
         expect(submitButton.disabled).toBe(true);
         expect(within(card).getByText('Run evidence is stale for the current app definition; rerun the test')).not.toBeNull();
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
@@ -3669,7 +3807,7 @@ describe('AppsPage', () => {
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes(app.name)) as HTMLElement;
         expect(card).toBeTruthy();
         expect(within(card).getByText('Run evidence is stale for the current app definition; rerun the test')).not.toBeNull();
-        expect((within(card).getByText('Submit for review') as HTMLButtonElement).disabled).toBe(true);
+        expect((within(card).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
     });
 
@@ -3689,7 +3827,7 @@ describe('AppsPage', () => {
         await createAndRunLocalToolApp('合同归档');
         fireEvent.click(getStudioButton());
         fireEvent.click(getPublishTab());
-        fireEvent.click(screen.getByText('提交审核'));
+        fireEvent.click(screen.getByText('一键发布'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0);
@@ -3718,7 +3856,7 @@ describe('AppsPage', () => {
         await createAndRunLocalToolApp('合同归档');
         fireEvent.click(getStudioButton());
         fireEvent.click(getPublishTab());
-        fireEvent.click(screen.getByText('提交审核'));
+        fireEvent.click(screen.getByText('一键发布'));
 
         await waitFor(() => expect(screen.getAllByText('本地待同步').length).toBeGreaterThan(0));
         fireEvent.click(screen.getByText('撤回提交'));
@@ -4472,6 +4610,82 @@ describe('AppsPage', () => {
             currentNode: 'flow.result_feedback',
         });
     });
+
+    it('installs HubCenter skillmarket maclaw apps via InstallMixedSkill instead of enterprise package API', async () => {
+        searchMixedSkillsMock.mockResolvedValueOnce([{
+            id: 'skill-hc-invoice-app',
+            install_ref: 'skill-hc-invoice-app',
+            name: 'HubCenter Invoice App',
+            description: 'Published from HubCenter skill market',
+            source: 'skillmarket',
+            source_label: 'Hub / HubCenter',
+            product_kind: 'maclaw_app_skill',
+            is_maclaw_app: true,
+            maclaw_app_id: 'hc-invoice-app',
+            maclaw_app_name: 'HubCenter Invoice App',
+            maclaw_app_description: 'Published from HubCenter skill market',
+            maclaw_app_kind: 'tool_app',
+            maclaw_app_category: 'Finance',
+            maclaw_app_icon: 'receipt',
+        }]);
+        installMixedSkillMock.mockResolvedValue(undefined);
+        // Page mount also calls ListSkillAppManifests — use sticky mock, not Once.
+        listSkillAppManifestsMock.mockResolvedValue([{
+            id: 'hc-invoice-app',
+            name: 'HubCenter Invoice App',
+            description: 'Published from HubCenter skill market',
+            category: 'Finance',
+            icon: 'receipt',
+            skill_id: 'skill-hc-invoice-app',
+            app_definition_file: 'maclaw.app.json',
+            input_mode: 'file',
+            app_definition: {
+                schema: 'maclaw.app.v1',
+                privateMarker: 'x_maclaw_apps',
+                app: {
+                    id: 'hc-invoice-app',
+                    name: 'HubCenter Invoice App',
+                    description: 'Published from HubCenter skill market',
+                    category: 'Finance',
+                    kind: 'tool_app',
+                    icon: 'receipt',
+                    binding: {
+                        skill: { id: 'skill-hc-invoice-app', appDefinitionFile: 'maclaw.app.json', inputMode: 'file' },
+                    },
+                },
+            },
+        }]);
+        installMaclawAppDependenciesMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: 'hc-invoice-app', name: 'HubCenter Invoice App', kind: 'tool_app' }],
+            dependencies: [],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+        recordMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_record.v1',
+            app_id: 'hc-invoice-app',
+            source: 'skillmarket',
+        });
+
+        render(<AppsPage lang="en" />);
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText('Search enterprise Hub apps'), { target: { value: 'hubcenter invoice' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Search Hub' }));
+
+        const marketRow = (await screen.findByText('HubCenter Invoice App')).closest('.apps-market-row') as HTMLElement;
+        expect(marketRow).toBeTruthy();
+        fireEvent.click(within(marketRow).getByRole('button', { name: 'Add: HubCenter Invoice App' }));
+
+        await waitFor(() => expect(installMixedSkillMock).toHaveBeenCalledWith('skillmarket', 'skill-hc-invoice-app', 'skill-hc-invoice-app'));
+        expect(installSelectedMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
+        expect(installMaclawAppPackageFromHubMock).not.toHaveBeenCalled();
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
+        await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalled());
+        const recordArgs = recordMaclawAppInstallMock.mock.calls[0];
+        expect(recordArgs[1]).toBe('skillmarket');
+    });
+
     it('copies full queued app package details from the durable queue', async () => {
         const listMaclawAppPackageSubmissions = vi.fn().mockResolvedValue([{
             submission_id: 'local-review-detail',
@@ -4667,7 +4881,7 @@ describe('AppsPage', () => {
 	        const modifiedSubmission = JSON.parse(window.localStorage.getItem('maclaw:apps-publish-submissions:v1') || '{}')[reviewedApp.id];
 	        expect(modifiedSubmission.modifiedAt).toBeTruthy();
 	        expect(modifiedSubmission.version).toBe(2);
-	        const resubmitButton = screen.getByRole('button', { name: '提交审核' }) as HTMLButtonElement;
+	        const resubmitButton = screen.getByRole('button', { name: '一键发布' }) as HTMLButtonElement;
 	        expect(resubmitButton.disabled).toBe(true);
 	        expect(submitMaclawAppPackage).not.toHaveBeenCalled();
     });
@@ -5690,7 +5904,7 @@ describe('AppsPage', () => {
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('Approval Run Publish')) as HTMLElement;
         expect(card).toBeTruthy();
         expect(within(card).getByText('Ready to submit')).not.toBeNull();
-        fireEvent.click(within(card).getByText('Submit for review'));
+        fireEvent.click(within(card).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -7753,7 +7967,7 @@ describe('AppsPage', () => {
         const readyCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('客户续约工作')) as HTMLElement;
         expect(readyCard).toBeTruthy();
         expect(within(readyCard).getByText('\u53ef\u63d0\u4ea4')).not.toBeNull();
-        fireEvent.click(within(readyCard).getByText('提交审核'));
+        fireEvent.click(within(readyCard).getByText('一键发布'));
 
 	        await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
 	        const payload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);
@@ -8296,6 +8510,9 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByTitle('琥珀 #b45309'));
         fireEvent.click(within(editPanel).getByText('保存'));
 
+        // Save jumps to 审核/发布; return to manage for manifest assertions.
+        await waitFor(() => expect(screen.getByRole('tab', { name: '审核/发布' }).getAttribute('aria-selected')).toBe('true'));
+        fireEvent.click(getManageTab());
         await waitFor(() => expect(screen.getAllByText('费用报销').length).toBeGreaterThan(0));
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('费用报销')) as HTMLElement;
@@ -8326,7 +8543,7 @@ describe('AppsPage', () => {
         expect(reloadedManifest).toContain('"email": "support@maclaw.example.com"');
     });
 
-    it('duplicates an app from app studio management and keeps the source skill binding', () => {
+    it('duplicates an app from app studio management and keeps the source skill binding', async () => {
         const { unmount } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(getStudioButton());
@@ -8345,6 +8562,8 @@ describe('AppsPage', () => {
         expect(screen.getByDisplayValue('PDF 转 Word 副本 2')).not.toBeNull();
         fireEvent.change(screen.getByDisplayValue('PDF 转 Word 副本 2'), { target: { value: 'PDF 转 Word 快速版' } });
         fireEvent.click(screen.getByText('保存'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        fireEvent.click(getManageTab());
 
         const renamedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 快速版')) as HTMLElement;
         fireEvent.click(within(renamedRow).getByTitle(manageManifestTitle));
@@ -8399,6 +8618,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(editPane).getByText('Excel / XLSX'));
         fireEvent.click(within(editPane).getByText('保存'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        fireEvent.click(getManageTab());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
@@ -8426,6 +8646,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(dialog).getByTestId('edit-layout-output-bottom'));
         fireEvent.click(within(dialog).getByText('保存'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        fireEvent.click(getManageTab());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
@@ -8545,6 +8766,7 @@ describe('AppsPage', () => {
         fireEvent.change(within(dialog).getByTestId('edit-workflow-status-rejected'), { target: { value: 'finance_rejected' } });
         fireEvent.click(within(dialog).getByText('Save'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        fireEvent.click(getManageTab());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Editable Approval Nodes')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
@@ -8572,6 +8794,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(dialog).getByRole('option', { name: /pdf-word-v2/ }) as HTMLButtonElement);
         fireEvent.click(within(dialog).getByText('Save'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        fireEvent.click(getManageTab());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
@@ -8776,6 +8999,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(fieldEditor).getByText('必填'));
         fireEvent.click(within(editPane).getByText('保存'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        fireEvent.click(getManageTab());
 
         const editedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
         fireEvent.click(within(editedRow).getByTitle(manageManifestTitle));
@@ -8783,6 +9007,32 @@ describe('AppsPage', () => {
         expect(manifest).toContain('"fields"');
         expect(manifest).toContain('"review_level"');
         expect(manifest).toContain('"options"');
+    });
+
+    it('navigates to review/publish after saving an app edit', async () => {
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getManageTab());
+
+        const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word')) as HTMLElement;
+        fireEvent.click(within(pdfWordRow).getByTitle('编辑'));
+        const editPane = document.querySelector('.apps-manage-edit') as HTMLElement;
+        fireEvent.change(within(editPane).getByTestId('edit-app-name'), { target: { value: 'PDF 转 Word 发布版' } });
+        fireEvent.click(within(editPane).getByText('保存'));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+        await waitFor(() => expect(screen.getByRole('tab', { name: '审核/发布' }).getAttribute('aria-selected')).toBe('true'));
+        expect(screen.getAllByText('PDF 转 Word 发布版').length).toBeGreaterThan(0);
+        expect(document.querySelector('.apps-publish')).not.toBeNull();
+        const focusedCard = document.querySelector('.apps-publish-card.is-focus-target') as HTMLElement | null;
+        expect(focusedCard).not.toBeNull();
+        expect(focusedCard?.textContent).toContain('PDF 转 Word 发布版');
+        // Manage rows keep name/desc as sibling grid columns for horizontal alignment.
+        fireEvent.click(getManageTab());
+        const alignedRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF 转 Word 发布版')) as HTMLElement;
+        expect(alignedRow.querySelector(':scope > .apps-manage-row__name')?.textContent).toContain('PDF 转 Word 发布版');
+        expect(alignedRow.querySelector(':scope > .apps-manage-row__desc')?.textContent).toMatch(/Skill|本地|已加入面板/);
     });
 
     it('copies the installed apps as an app pack manifest', async () => {
@@ -12484,7 +12734,7 @@ describe('AppsPage', () => {
         const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('报销申请')) as HTMLElement;
         expect(publishCard).toBeTruthy();
         expect(within(publishCard).getByText('Ready to submit')).not.toBeNull();
-        fireEvent.click(within(publishCard).getByText('Submit for review'));
+        fireEvent.click(within(publishCard).getByText('One-click publish'));
 
         await waitFor(() => expect(submitMaclawAppPackage).toHaveBeenCalledTimes(1));
         const publishPayload = JSON.parse(submitMaclawAppPackage.mock.calls[0][0]);

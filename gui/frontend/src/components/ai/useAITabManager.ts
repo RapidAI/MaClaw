@@ -47,6 +47,11 @@ export interface CreateGroupTabOptions {
 export interface CreateProjectTabOptions {
     onSessionReady?: (tab: AITab) => void;
     prepareMode?: "restore-context" | "new-agent";
+    /** When set, stamp the project tab as a coding-development agent session. */
+    agentMode?: "coding_dev" | "remote_coding_dev";
+    remoteHost?: string;
+    /** Remote pure-coding: SSH session expired / not yet connected. */
+    remoteNeedsReconnect?: boolean;
 }
 
 export interface CreateVETabOptions {
@@ -294,6 +299,8 @@ function persistProjectTabs(tabs: AITab[]) {
             id: t.id,
             title: t.title,
             projectPath: t.projectPath,
+            agentMode: t.agentMode,
+            remoteHost: t.remoteHost,
         }));
         if (serialized.length === 0) {
             localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
@@ -313,17 +320,23 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; title: string; projectPath: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string }>;
         if (!Array.isArray(parsed)) return [];
         return parsed
             .filter(t => t.id && t.projectPath)
             .map(t => {
                 const projectPath = normalizeProjectSessionPath(t.projectPath);
+                const agentMode = t.agentMode === "remote_coding_dev"
+                    ? "remote_coding_dev" as const
+                    : (t.agentMode === "coding_dev" ? "coding_dev" as const : undefined);
+                const remoteHost = String(t.remoteHost || "").trim() || undefined;
                 return {
                     id: t.id,
                     type: "project" as AITabType,
                     title: sanitizeProjectTabTitle(t.title || projectPath, projectPath),
                     projectPath,
+                    agentMode,
+                    remoteHost,
                     closable: true,
                 };
             })
@@ -896,9 +909,26 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         if (!projectPath) return null;
         const prev = tabStateRef.current;
 
-        // Check for duplicate: if a tab with same projectPath exists, activate it
+        // Check for duplicate: if a tab with same projectPath exists, activate it.
+        // When resuming a pure coding task, always re-apply agentMode/remoteHost from
+        // the open request so a stale tab without coding mode is restored correctly.
         const existing = prev.tabs.find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === projectPath);
         if (existing) {
+            const nextAgentMode = options?.agentMode ?? existing.agentMode;
+            const nextRemoteHost = options?.remoteHost ?? existing.remoteHost;
+            const nextNeedsReconnect = options?.remoteNeedsReconnect ?? existing.remoteNeedsReconnect;
+            const modeChanged = nextAgentMode !== existing.agentMode;
+            const hostChanged = nextRemoteHost !== existing.remoteHost;
+            const reconnectChanged = nextNeedsReconnect !== existing.remoteNeedsReconnect;
+            if (modeChanged || hostChanged || reconnectChanged) {
+                const patched = { ...existing, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteNeedsReconnect: nextNeedsReconnect };
+                updateTabState(() => ({
+                    ...prev,
+                    activeTabId: existing.id,
+                    tabs: prev.tabs.map(t => t.id === existing.id ? patched : t),
+                }));
+                return patched;
+            }
             updateTabState(() => ({ ...prev, activeTabId: existing.id }));
             return existing;
         }
@@ -919,6 +949,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             type: "project",
             title: sanitizeProjectTabTitle(taskTitle, projectPath),
             projectPath,
+            agentMode: options?.agentMode,
+            remoteHost: options?.remoteHost,
+            remoteNeedsReconnect: options?.remoteNeedsReconnect,
             closable: true,
         };
         restoredProjectPathsRef.current.delete(projectPath);

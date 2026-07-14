@@ -260,8 +260,9 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 		runner = RunTaskWithSubAgent
 	}
 	codeSessionID := newCodingSubAgentCodeSessionID("delegate-task-coding-workflow", opts.UserID)
-	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, projectPath)
-	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, projectPath)
+	previewRoutePath := codePreviewRouteProjectPath(opts.UserID, projectPath)
+	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, previewRoutePath)
+	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
 	if opts.Context != nil {
 		opts.Context.codeSessionID = codeSessionID
 	}
@@ -285,7 +286,7 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	if result == nil {
 		return toolExecutionResult{Text: "CodingSubAgent did not return a result.", ToolName: "delegate_task", ToolKind: classifyAgentToolKind("delegate_task"), Outcome: toolOutcomeFailed, FailureKind: toolFailureExecutionPanic}, true
 	}
-	emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, result.FilesModified, result.FilesCreated)
+	emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, result.FilesModified, result.FilesCreated, previewRoutePath)
 	text := strings.TrimSpace(result.Summary)
 	if text == "" {
 		text = strings.TrimSpace(result.Error)

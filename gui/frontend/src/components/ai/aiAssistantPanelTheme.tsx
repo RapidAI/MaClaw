@@ -257,8 +257,10 @@ export type AssistantInputIconName =
     | "compress"
     | "helpCircle"
     | "messagePlus"
+    | "layers"
     | "shieldCheck"
-    | "alertTriangle";
+    | "alertTriangle"
+    | "folder";
 
 export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
     const common = {
@@ -373,6 +375,14 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="M9 10h6" />
                 </>
             )}
+            {/* 多模型会诊 /moa — 层叠（多视角合成） */}
+            {name === "layers" && (
+                <>
+                    <path {...common} d="M12 2 2 7l10 5 10-5-10-5Z" />
+                    <path {...common} d="m2 12 10 5 10-5" />
+                    <path {...common} d="m2 17 10 5 10-5" />
+                </>
+            )}
             {name === "shieldCheck" && (
                 <>
                     <path {...common} d="M12 3 20 6v5c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6l8-3Z" />
@@ -384,6 +394,11 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="m12 3 9 17H3L12 3Z" />
                     <path {...common} d="M12 9v4" />
                     <path {...common} d="M12 17h.01" />
+                </>
+            )}
+            {name === "folder" && (
+                <>
+                    <path {...common} d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
                 </>
             )}
         </svg>

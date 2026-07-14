@@ -964,6 +964,9 @@ type SendMessageInput struct {
 	SessionMetadata  map[string]string         `json:"session_metadata,omitempty"`
 	ClientSessionKey string                    `json:"client_session_key,omitempty"`
 	ClientMessageID  string                    `json:"client_message_id,omitempty"`
+	// MoAPreset optionally selects a multi-model council preset for this message
+	// (also accepted as metadata["moa_preset"]).
+	MoAPreset string `json:"moa_preset,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
 }
@@ -1021,6 +1024,12 @@ type ExecuteRequest struct {
 	// OnToolResult is invoked after a tool finishes (optional UI/SSE progress).
 	// result may be truncated by the caller for display.
 	OnToolResult func(name, result string)
+
+	// MoAPreset optionally arms multi-model council for this request only
+	// (Phase 6). Empty uses default_preset when metadata/session also empty and
+	// allow_auto matches; explicit value selects a named AppConfig.moa preset.
+	// Also accepted via Message.Metadata["moa_preset"].
+	MoAPreset string
 }
 
 type ExecuteResult struct {

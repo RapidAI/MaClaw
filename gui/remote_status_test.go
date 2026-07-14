@@ -310,7 +310,7 @@ func TestDesktopRemoteHandoffUsesProjectWorkflowPolicy(t *testing.T) {
 	}
 	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
 
-	_, err := app.StartRemoteHandoffSession("codex", projectPath, false, "", RemoteLaunchSourceDesktop)
+	_, err := app.StartRemoteHandoffSession("codex", projectPath, false, "", RemoteLaunchSourceHandoff)
 	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
 		t.Fatalf("desktop project handoff should be blocked by project workflow policy, err=%v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestStartRemoteHandoffSessionInitializesAIAssistantWhenCreatingHubClient(t 
 		return &fakeExecutionStrategy{handle: newFakeExecutionHandle(103)}, nil
 	}
 
-	session, err := app.StartRemoteHandoffSession("codex", projectDir, false, "", RemoteLaunchSourceDesktop)
+	session, err := app.StartRemoteHandoffSession("codex", projectDir, false, "", RemoteLaunchSourceHandoff)
 	if err != nil {
 		t.Fatalf("StartRemoteHandoffSession(codex) error = %v", err)
 	}

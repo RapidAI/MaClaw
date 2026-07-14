@@ -16,6 +16,12 @@ export interface PendingProjectTabOpen {
     autoSend?: boolean;
     /** Changes the preparation copy shown while the new project-backed agent session is being created. */
     prepareMode?: "restore-context" | "new-agent";
+    /** When set, open the project tab in coding-agent mode (tool-using programming agent). */
+    agentMode?: "coding_dev" | "remote_coding_dev";
+    /** Display-only remote host for remote coding banners. */
+    remoteHost?: string;
+    /** When true, remote coding SSH needs reconnect (password) before SubAgent runs. */
+    remoteNeedsReconnect?: boolean;
 }
 
 export interface PendingHistoryDiscussionOpen {
@@ -216,7 +222,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data and clear pending state synchronously.
         // The guard above prevents re-entry when pending becomes null.
-        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode } = pendingProjectTabOpen;
+        const { projectPath, taskTitle, initialMessage, autoSend, prepareMode, agentMode, remoteHost, remoteNeedsReconnect } = pendingProjectTabOpen;
         onProjectTabHandledRef.current?.();
 
         // Check if the tab already exists in the tab list BEFORE creating it.
@@ -227,13 +233,16 @@ export function usePendingAssistantTabOpen({
         // protection against duplicate autoSend.
         const tabExistedInList = hasProjectTabRef.current?.(projectPath) ?? false;
 
-        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode });
+        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, agentMode, remoteHost, remoteNeedsReconnect });
         if (!tab) return;
         console.info("[usePendingAssistantTabOpen] project tab opened", {
             projectPath,
             tabId: tab.id,
             taskTitle,
             autoSend: !!autoSend,
+            agentMode: agentMode || null,
+            remoteHost: remoteHost || null,
+            remoteNeedsReconnect: !!remoteNeedsReconnect,
             tabExistedInList,
         });
 

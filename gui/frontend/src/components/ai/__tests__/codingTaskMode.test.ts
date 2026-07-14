@@ -1,0 +1,39 @@
+import { describe, expect, it } from "vitest";
+import {
+    agentModeFromTaskTags,
+    isPureCodingTaskTags,
+    remoteCodingMetaFromTaskTags,
+    remoteHostFromTaskTags,
+} from "../codingTaskMode";
+
+describe("codingTaskMode", () => {
+    it("detects local and remote pure coding tags", () => {
+        expect(agentModeFromTaskTags(["coding_dev"])).toBe("coding_dev");
+        expect(agentModeFromTaskTags(["remote_coding_dev", "remote_host:10.0.0.1"])).toBe("remote_coding_dev");
+        expect(agentModeFromTaskTags(["task_management"])).toBeUndefined();
+        expect(isPureCodingTaskTags(["coding_dev"])).toBe(true);
+        expect(isPureCodingTaskTags([])).toBe(false);
+    });
+
+    it("extracts remote host from tags", () => {
+        expect(remoteHostFromTaskTags(["remote_host:10.0.0.8", "coding_dev"])).toBe("10.0.0.8");
+        expect(remoteHostFromTaskTags(["coding_dev"])).toBeUndefined();
+        expect(remoteHostFromTaskTags(["remote_host:2001:db8::1"])).toBe("2001:db8::1");
+    });
+
+    it("parses full remote meta including IPv6 host", () => {
+        const meta = remoteCodingMetaFromTaskTags([
+            "remote_coding_dev",
+            "remote_host:2001:db8::1",
+            "remote_user:ubuntu",
+            "remote_port:2222",
+            "remote_workdir:/home/ubuntu/app",
+        ]);
+        expect(meta).toEqual({
+            host: "2001:db8::1",
+            user: "ubuntu",
+            port: 2222,
+            workDir: "/home/ubuntu/app",
+        });
+    });
+});

@@ -94,6 +94,15 @@ func tuiText(lang, key string) string {
 			"modelInfoBasic":           "Current model: %s\n   Provider: %s",
 			"btwUsage":                 "Usage: /btw <quick question>",
 			"btwFailed":                "/btw failed: %s",
+			"moaUsage":                 "Usage:\n  /moa <question>              one-shot multi-model (default preset)\n  /moa @preset <question>      one-shot with named preset\n  /moa sticky on [preset]|off|status\n  /moa stats",
+			"moaAtPresetUsage":         "Usage: /moa @preset <question>\nExample: /moa @review compare two designs",
+			"moaUnavailable":           "Multi-model council unavailable: %s",
+			"moaStickyOn":              "Multi-model council sticky ON for this session. Use /moa sticky off to disable.",
+			"moaStickyOnNamed":         "Multi-model council sticky ON (preset=%s). Use /moa sticky off to disable.",
+			"moaStickyOff":             "Multi-model council sticky OFF.",
+			"moaStickyUsage":           "Usage: /moa sticky on [preset]|off|status",
+			"moaStickyStatus":          "MoA sticky=%v one_shot_pending=%v preset=%s",
+			"moaStatsEmpty":            "No MoA fan-outs recorded yet this day.",
 			"btwNoInfo":                "No extra information found.",
 			"btwHeader":                "Side query result:\n\n%s",
 			"btwMemoryReadOnly":        "/btw can only use read-only memory actions (recall/themes/scenes/trace/candidates/derived); it cannot write memory.",
@@ -128,6 +137,7 @@ func tuiText(lang, key string) string {
 Chat:
   /new /clear    Clear chat history and start fresh
   /btw <query>   Side query without interrupting the current task context
+  /moa [@preset] <q> multi-model one-shot; /moa sticky|stats
   /loop <cmd> <goal>  Goal-driven verification loop (like Claude Code /loop)
                       e.g. /loop "go test ./..." make all tests pass
                       Options: --max N, --timeout N, --dir path
@@ -232,6 +242,15 @@ Shortcuts:
 		"modelInfoBasic":           "当前模型: %s\n   服务商: %s",
 		"btwUsage":                 "用法: /btw <快速问题>",
 		"btwFailed":                "/btw 查询失败: %s",
+		"moaUsage":                 "用法:\n  /moa <问题>                 单次多模型会诊（默认方案）\n  /moa @方案名 <问题>         指定方案单次会诊\n  /moa sticky on [方案]|off|status\n  /moa stats",
+		"moaAtPresetUsage":         "用法: /moa @方案名 <问题>\n示例: /moa @review 对比两种设计",
+		"moaUnavailable":           "多模型会诊不可用: %s",
+		"moaStickyOn":              "已开启本会话多模型会诊。使用 /moa sticky off 关闭。",
+		"moaStickyOnNamed":         "已开启本会话多模型会诊（预设=%s）。使用 /moa sticky off 关闭。",
+		"moaStickyOff":             "已关闭本会话多模型会诊。",
+		"moaStickyUsage":           "用法: /moa sticky on [预设名]|off|status",
+		"moaStickyStatus":          "多模型会诊 sticky=%v 待单次=%v 预设=%s",
+		"moaStatsEmpty":            "今日尚未记录多模型会诊 fan-out。",
 		"btwNoInfo":                "没有找到额外信息。",
 		"btwHeader":                "侧查询结果:\n\n%s",
 		"btwMemoryReadOnly":        "/btw 只能使用只读记忆操作（recall/themes/scenes/trace/candidates/derived），不能写入记忆。",
@@ -269,6 +288,7 @@ Shortcuts:
 对话管理:
   /new /clear    清除对话历史，开始新对话
   /btw <查询>    侧查询（不打断当前任务上下文）
+  /moa [@方案] <问题> 多模型会诊；/moa sticky|stats
   /loop <命令> <目标> 目标驱动验证循环；选项: --max 轮数, --timeout 秒, --dir 路径
   /goal <目标描述> 持久化长时间自主目标（跨轮次自动跟踪）
                     例: /goal 实现用户登录功能，包含JWT认证

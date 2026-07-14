@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,29 @@ const (
 	taskLegacyRecentTag      = "recent_task"
 	taskSourceTagPrefix      = "source:"
 	taskSavedConversationTag = "saved_conversation"
+	// taskCodingDevTag marks tasks created with the "programming / coding" option.
+	// Used by the GUI to open the task in coding-agent mode.
+	taskCodingDevTag = "coding_dev"
+	// taskRemoteCodingDevTag marks pure remote (SSH) coding environments.
+	taskRemoteCodingDevTag = "remote_coding_dev"
+	taskRemoteHostTagPrefix = "remote_host:"
+	taskRemoteUserTagPrefix = "remote_user:"
+	taskRemotePortTagPrefix = "remote_port:"
+	taskRemoteWorkDirTagPrefix = "remote_workdir:"
 )
+
+// NormalizeCreateTaskMode maps free-form mode strings from the UI/API to a
+// canonical create-task mode. Empty / unknown values mean ordinary chat task.
+func NormalizeCreateTaskMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "coding_dev", "coding", "programming", "code":
+		return taskCodingDevTag
+	case "remote_coding_dev", "remote_coding", "remote_programming", "remote_code":
+		return taskRemoteCodingDevTag
+	default:
+		return ""
+	}
+}
 
 func normalizeProjectSessionPath(projectPath string) string {
 	projectPath = strings.TrimSpace(projectPath)
@@ -479,17 +502,1798 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 
 // CreateTask creates a user-visible task-management record.
 func (a *App) CreateTask(name, workingDir string) ProjectSearchResult {
-	return a.CreateRecentTaskWithWorkingDir(name, workingDir)
+	return a.CreateTaskWithMode(name, workingDir, "")
+}
+
+// CreateTaskWithMode creates a user-visible task-management record with an
+// optional execution mode. mode="coding_dev" / "remote_coding_dev" (or aliases)
+// tags the task for coding-agent routing when the GUI reopens it.
+func (a *App) CreateTaskWithMode(name, workingDir, mode string) ProjectSearchResult {
+	taskName := normalizeRecentTaskName(name)
+	if taskName == "" {
+		return ProjectSearchResult{}
+	}
+	tags := []string{taskManagementTag, taskUserCreatedTag}
+	if normalized := NormalizeCreateTaskMode(mode); normalized != "" {
+		tags = append(tags, normalized)
+	}
+	return a.createTaskRecordWithWorkingDir(taskName, "", tags, normalizeRecentTaskWorkingDir(workingDir), false)
+}
+
+// sanitizeTaskMetadataTagValue strips characters that break multi-line or
+// control-bearing tag values. Colons are kept: remote_* tags are parsed via
+// fixed prefixes (TrimPrefix), so IPv6 hosts and Windows-style paths remain valid.
+func sanitizeTaskMetadataTagValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.Map(func(r rune) rune {
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, value)
+	return strings.TrimSpace(value)
+}
+
+// normalizeSSHHostInput trims/sanitizes host and unwraps [IPv6] bracket form
+// so tags and SSH connect share the same host string.
+func normalizeSSHHostInput(host string) string {
+	host = sanitizeTaskMetadataTagValue(host)
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		return strings.TrimSpace(host[1 : len(host)-1])
+	}
+	return host
+}
+
+// looksLikeAbsoluteProjectPathTag reports local absolute paths used as task-dir
+// identity tags (not remote_host:/remote_workdir: meta).
+func looksLikeAbsoluteProjectPathTag(tag string) bool {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || isRemoteCodingMetaTag(tag) {
+		return false
+	}
+	if strings.HasPrefix(tag, "/") {
+		return true
+	}
+	// Windows drive path: D:\… or D:/…
+	if len(tag) >= 3 && tag[1] == ':' && (tag[2] == '\\' || tag[2] == '/') {
+		return true
+	}
+	return false
+}
+
+// shouldKeepTaskTagOnRemoteMetaUpdate limits which project-index tags are copied
+// onto the task artifact during SSH meta edit. Index tags are a union across
+// entries; copying everything would pollute the task row with sediment/output tags.
+func shouldKeepTaskTagOnRemoteMetaUpdate(tag string) bool {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || isRemoteCodingMetaTag(tag) {
+		return false
+	}
+	switch tag {
+	case taskLegacyManualTag, taskLegacyRecentTag,
+		taskManagementTag, taskUserCreatedTag, taskUserSavedTag,
+		taskRemoteCodingDevTag, taskCodingDevTag, taskSavedConversationTag:
+		return true
+	}
+	if strings.HasPrefix(tag, recentTaskWorkingDirTagPrefix) ||
+		strings.HasPrefix(tag, taskSourceTagPrefix) {
+		return true
+	}
+	return looksLikeAbsoluteProjectPathTag(tag)
+}
+
+// RemoteCodingTaskMeta is non-sensitive SSH metadata for a remote pure-coding task.
+// Password is never stored or returned.
+type RemoteCodingTaskMeta struct {
+	Host    string `json:"host"`
+	User    string `json:"user"`
+	Port    int    `json:"port"`
+	WorkDir string `json:"work_dir"`
+}
+
+// GetRemoteCodingTaskMeta returns host/user/port/workdir tags for a remote coding task.
+func (a *App) GetRemoteCodingTaskMeta(projectPath string) (RemoteCodingTaskMeta, error) {
+	meta := RemoteCodingTaskMeta{Port: 22}
+	if a == nil {
+		return meta, fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return meta, fmt.Errorf("project path is required")
+	}
+	a.ensureMemoryStore()
+	host, user, workDir, port := a.remoteCodingMetaFromTaskTags(projectPath)
+	// Sticky fallback only when index tags are entirely missing (e.g. race before
+	// index rebuild). Use existing hub only — do not cold-init for a read.
+	if host == "" && user == "" && workDir == "" {
+		if hub := a.hubClient(); hub != nil {
+			if handler := hub.ensureIMHandler(); handler != nil {
+				mem := handler.getStickyCodingWorkbenchMemory(projectSessionOwnerID(projectPath))
+				host = strings.TrimSpace(mem.RemoteHost)
+				user = strings.TrimSpace(mem.RemoteUser)
+				workDir = strings.TrimSpace(mem.RemoteWorkDir)
+				if workDir == "" {
+					workDir = strings.TrimSpace(mem.RemoteProjectDir)
+				}
+				if port <= 0 && mem.RemotePort > 0 {
+					port = mem.RemotePort
+				}
+			}
+		}
+	}
+	if port <= 0 {
+		port = 22
+	}
+	meta.Host = host
+	meta.User = user
+	meta.Port = port
+	meta.WorkDir = workDir
+	return meta, nil
+}
+
+// remoteCodingMetaTagPrefixes are SSH metadata tags that must be replaced (not
+// unioned) when updating a remote coding task.
+var remoteCodingMetaTagPrefixes = []string{
+	taskRemoteHostTagPrefix,
+	taskRemoteUserTagPrefix,
+	taskRemotePortTagPrefix,
+	taskRemoteWorkDirTagPrefix,
+}
+
+func isRemoteCodingMetaTag(tag string) bool {
+	for _, p := range remoteCodingMetaTagPrefixes {
+		if p != "" && strings.HasPrefix(tag, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildRemoteCodingMetaTags(host, user, workDir string, port int) []string {
+	if port <= 0 || port >= 65536 {
+		port = 22
+	}
+	return []string{
+		taskRemoteHostTagPrefix + host,
+		taskRemoteUserTagPrefix + user,
+		fmt.Sprintf("%s%d", taskRemotePortTagPrefix, port),
+		taskRemoteWorkDirTagPrefix + workDir,
+	}
+}
+
+// taskArtifactIdentityPath picks the exact path tag form stored on the record
+// so Upsert identity tags match the original createTaskRecord tags even when
+// callers pass a slash-normalized project path.
+func taskArtifactIdentityPath(projectPath string, tags []string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return projectPath
+	}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !looksLikeAbsoluteProjectPathTag(tag) {
+			continue
+		}
+		if normalizeProjectSessionPath(tag) == projectPath {
+			return tag
+		}
+	}
+	return projectPath
+}
+
+// mergeTagsReplacePrefixed returns desired tags first, then any existing tags
+// that are not already present and do not match dropPrefixes. Used so remote
+// meta keys (remote_host:/remote_workdir:…) are replaced instead of unioned —
+// default mergeTags would keep both and alphabetical order can surface stale values.
+func mergeTagsReplacePrefixed(existing, desired []string, dropPrefixes []string) []string {
+	isDropped := func(tag string) bool {
+		for _, p := range dropPrefixes {
+			if p != "" && strings.HasPrefix(tag, p) {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]string, 0, len(desired)+len(existing))
+	seen := make(map[string]struct{}, len(desired)+len(existing))
+	for _, t := range desired {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	for _, t := range existing {
+		t = strings.TrimSpace(t)
+		if t == "" || isDropped(t) {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+// upsertRemoteWorkDirContentLine updates or appends "Remote work directory: …"
+// without wiping the rest of task.md / artifact content.
+func upsertRemoteWorkDirContentLine(content, workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	const prefix = "Remote work directory:"
+	if content == "" {
+		if workDir == "" {
+			return ""
+		}
+		return prefix + " " + workDir + "\n"
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			lines[i] = prefix + " " + workDir
+			return strings.Join(lines, "\n")
+		}
+	}
+	trimmed := strings.TrimRight(content, "\n")
+	return trimmed + "\n\n" + prefix + " " + workDir + "\n"
+}
+
+// UpdateRemoteCodingTaskMeta updates non-sensitive SSH metadata tags on a remote
+// coding task. Password is never persisted; use TestRemoteSSHConnection / PrepareRemoteCodingEnvironment.
+func (a *App) UpdateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	// Workdir keeps path separators and colons; strip control/newlines only.
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || remoteWorkDir == "" {
+		return fmt.Errorf("主机、用户名和远程工作目录均为必填")
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return fmt.Errorf("project index unavailable")
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return fmt.Errorf("task not found: %s", projectPath)
+	}
+	if !projectRecordHasTag(*rec, taskRemoteCodingDevTag) {
+		return fmt.Errorf("not a remote coding task")
+	}
+
+	// Identity must match createTaskRecordWithWorkingDir: manual + recent + taskDir.
+	// Prefer the exact path tag form already on the record (slash variants).
+	identityPath := taskArtifactIdentityPath(projectPath, rec.Tags)
+	identity := []string{taskLegacyManualTag, taskLegacyRecentTag, identityPath}
+	newRemoteTags := buildRemoteCodingMetaTags(host, user, remoteWorkDir, sshPort)
+	updatedTags := append([]string(nil), identity...)
+	seen := map[string]struct{}{identity[0]: {}, identity[1]: {}, identity[2]: {}}
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		if !shouldKeepTaskTagOnRemoteMetaUpdate(tag) {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		updatedTags = append(updatedTags, tag)
+	}
+	if _, ok := seen[taskRemoteCodingDevTag]; !ok {
+		updatedTags = append(updatedTags, taskRemoteCodingDevTag)
+		seen[taskRemoteCodingDevTag] = struct{}{}
+	}
+	for _, t := range newRemoteTags {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		updatedTags = append(updatedTags, t)
+	}
+
+	// Preserve existing task.md body; only refresh the remote workdir line.
+	taskFile := filepath.Join(projectPath, "task.md")
+	content := ""
+	if data, err := os.ReadFile(taskFile); err == nil {
+		content = string(data)
+	}
+	if strings.TrimSpace(content) == "" {
+		title := strings.TrimSpace(rec.Name)
+		if title == "" {
+			title = "remote coding task"
+		}
+		content = fmt.Sprintf("# %s\n\nCreated from task management.\n", title)
+	}
+	content = upsertRemoteWorkDirContentLine(content, remoteWorkDir)
+	sourceURL := taskFile
+	if _, err := os.Stat(sourceURL); err != nil {
+		sourceURL = projectPath
+	}
+	title := strings.TrimSpace(rec.Name)
+	if title == "" {
+		title = "remote coding task"
+	}
+	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          content,
+		Tags:             updatedTags,
+		IdentityTagCount: 3,
+		SourceURL:        sourceURL,
+		SourceType:       "manual",
+		MergeExistingTags: func(existing, desired []string) []string {
+			return mergeTagsReplacePrefixed(existing, desired, remoteCodingMetaTagPrefixes)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	// Persist task.md only after the memory index accepted the update, so a
+	// failed Upsert cannot leave disk ahead of the task record.
+	if err := os.WriteFile(taskFile, []byte(content), 0o644); err != nil {
+		log.Printf("[project_search] UpdateRemoteCodingTaskMeta write task.md failed: %v", err)
+	}
+	flushErr := a.memoryStore.Flush()
+	// ProjectIndex.IndexEntry only merge-appends tags; force-replace remote meta
+	// even if flush failed so GetRemoteCodingTaskMeta / sidebar stay coherent.
+	pi.ReplacePrefixedTags(projectPath, remoteCodingMetaTagPrefixes, newRemoteTags)
+	a.emitProjectIndexChanged(projectPath)
+	// Best-effort sticky mirror for open sessions — do not cold-init hub for a
+	// metadata edit when no assistant session is loaded. Drop RemoteSessionID
+	// when coordinates change so reconnect uses the new host/user/port/workdir.
+	if hubClient := a.hubClient(); hubClient != nil {
+		if handler := hubClient.ensureIMHandler(); handler != nil {
+			userID := projectSessionOwnerID(projectPath)
+			handler.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+				if mem.Kind != "" && mem.Kind != "remote" {
+					return
+				}
+				// Invalidate live SSH session only when known sticky coords change.
+				if sid := strings.TrimSpace(mem.RemoteSessionID); sid != "" {
+					if (mem.RemoteHost != "" && mem.RemoteHost != host) ||
+						(mem.RemoteUser != "" && mem.RemoteUser != user) ||
+						(mem.RemotePort > 0 && mem.RemotePort != sshPort) ||
+						(mem.RemoteWorkDir != "" && mem.RemoteWorkDir != remoteWorkDir) {
+						mem.RemoteSessionID = ""
+					}
+				}
+				mem.Kind = "remote"
+				mem.RemoteHost = host
+				mem.RemoteUser = user
+				mem.RemotePort = sshPort
+				mem.RemoteWorkDir = remoteWorkDir
+				mem.RemoteProjectDir = remoteWorkDir
+			})
+		}
+	}
+	return flushErr
+}
+
+// TestRemoteSSHConnection verifies SSH credentials and that workDir exists on the host.
+// Password is used only for this call and is not persisted.
+// Returns a short success message or an error.
+func (a *App) TestRemoteSSHConnection(sshHost, sshUser, sshPassword, workDir string, sshPort int) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app unavailable")
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	password := strings.TrimSpace(sshPassword)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || password == "" {
+		return "", fmt.Errorf("主机、用户名和密码均为必填")
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return "", fmt.Errorf("message handler unavailable")
+	}
+	if handler.ensureSSHManager() == nil {
+		return "", fmt.Errorf("SSH 会话管理器不可用")
+	}
+	sessionID := handler.findOrCreateSSHSession(user, host, sshPort, password)
+	if sessionID == "" {
+		return "", fmt.Errorf("无法连接到 %s@%s:%d，请检查网络和凭据", user, host, sshPort)
+	}
+	// Optional workdir existence check (non-fatal for empty workDir).
+	if remoteWorkDir != "" {
+		cmd := fmt.Sprintf(
+			`if [ -d %s ]; then echo __MACLAW_DIR_OK__; elif [ -e %s ]; then echo __MACLAW_NOT_DIR__; else echo __MACLAW_DIR_MISS__; fi`,
+			remoteShellQuote(remoteWorkDir), remoteShellQuote(remoteWorkDir),
+		)
+		out := strings.TrimSpace(handler.sshExec(map[string]interface{}{
+			"session_id":   sessionID,
+			"command":      cmd,
+			"wait_seconds": float64(15),
+		}))
+		if strings.Contains(out, "__MACLAW_DIR_MISS__") {
+			return "", fmt.Errorf("SSH 已连通，但工作目录不存在: %s", remoteWorkDir)
+		}
+		if strings.Contains(out, "__MACLAW_NOT_DIR__") {
+			return "", fmt.Errorf("SSH 已连通，但路径不是目录: %s", remoteWorkDir)
+		}
+		if !strings.Contains(out, "__MACLAW_DIR_OK__") {
+			// Soft-warn: connection works but dir check inconclusive.
+			return fmt.Sprintf("SSH 已连通 %s@%s:%d（工作目录检查未确认）", user, host, sshPort), nil
+		}
+	}
+	return fmt.Sprintf("SSH 连接成功：%s@%s:%d", user, host, sshPort), nil
+}
+
+// CreateRemoteCodingTask creates a remote-coding task record with non-sensitive
+// SSH metadata tags (host/user/port/workdir). The password is never persisted;
+// call PrepareRemoteCodingEnvironment to connect and arm one-shot execution.
+func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int) ProjectSearchResult {
+	taskName := normalizeRecentTaskName(name)
+	if taskName == "" {
+		return ProjectSearchResult{}
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || remoteWorkDir == "" {
+		return ProjectSearchResult{}
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+	tags := []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		taskRemoteCodingDevTag,
+	}
+	tags = append(tags, buildRemoteCodingMetaTags(host, user, remoteWorkDir, sshPort)...)
+	return a.createTaskRecordWithWorkingDir(taskName, "", tags, "", false)
 }
 
 // CreateRecentTaskWithWorkingDir creates a standalone task record with an
 // optional execution working directory.
 func (a *App) CreateRecentTaskWithWorkingDir(name, workingDir string) ProjectSearchResult {
-	taskName := normalizeRecentTaskName(name)
-	if taskName == "" {
-		return ProjectSearchResult{}
+	return a.CreateTaskWithMode(name, workingDir, "")
+}
+
+// PrepareLocalCodingEnvironment arms a one-shot local CodingSubAgent execution
+// for the task project session. The next AI message on that project session
+// runs pure-coding SubAgent execution (with source preview file events).
+// executionDir is the directory tools should operate in; when empty, the task
+// project path is used.
+func (a *App) PrepareLocalCodingEnvironment(projectPath, executionDir string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
 	}
-	return a.createTaskRecordWithWorkingDir(taskName, "", []string{taskManagementTag, taskUserCreatedTag}, normalizeRecentTaskWorkingDir(workingDir), false)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	execDir := normalizeRecentTaskWorkingDir(executionDir)
+	if execDir == "" {
+		execDir = a.recentTaskExecutionProjectPath(projectPath)
+	}
+	if execDir == "" {
+		execDir = projectPath
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+
+	userID := projectSessionOwnerID(projectPath)
+	handler.pendingTemplateRemoteCoding.Delete(userID)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, execDir)
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	// Create-task pure coding: default workspace trust (path auto-allow; high-risk still prompts).
+	// Does not persist subagent_full_access to config.
+	handler.setStickyCodingSessionPermissionMode(userID, "workspace", "local", execDir)
+	// If input-box already has global full control, upgrade sticky to full.
+	handler.syncStickyCodingFullAccessFromGlobal(userID, "local", execDir, a.isSubAgentFullAccessGranted())
+	log.Printf("[local-coding-env] prepared project=%s execDir=%s session_full_access=true", projectPath, execDir)
+	return nil
+}
+
+// PrepareRemoteCodingEnvironment connects to the remote host over SSH and arms
+// a one-shot RemoteCodingSubAgent execution for the given task project path.
+// The next AI assistant message on that project session will run remote coding
+// with the right-hand source preview enabled (pure remote coding workbench).
+// Password is used only for this connect call and is not persisted.
+func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	password := strings.TrimSpace(sshPassword)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || password == "" || remoteWorkDir == "" {
+		return fmt.Errorf("主机、用户名、密码和远程工作目录均为必填")
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+	if handler.ensureSSHManager() == nil {
+		return fmt.Errorf("SSH 会话管理器不可用")
+	}
+
+	sessionID := handler.findOrCreateSSHSession(user, host, sshPort, password)
+	if sessionID == "" {
+		return fmt.Errorf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据", user, host, sshPort)
+	}
+
+	userID := projectSessionOwnerID(projectPath)
+	handler.pendingTemplateCodingProjectPath.Delete(userID)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
+		SessionID:  sessionID,
+		WorkDir:    remoteWorkDir,
+		ProjectDir: remoteWorkDir,
+	})
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	// Same default workspace posture as local pure coding.
+	handler.setStickyCodingSessionPermissionMode(userID, "workspace", "remote", remoteWorkDir)
+	handler.syncStickyCodingFullAccessFromGlobal(userID, "remote", remoteWorkDir, a.isSubAgentFullAccessGranted())
+	handler.bindStickyRemoteCodingContext(userID, remoteCodingTemplateContext{
+		SessionID:  sessionID,
+		WorkDir:    remoteWorkDir,
+		ProjectDir: remoteWorkDir,
+	}, host, user, sshPort)
+	log.Printf("[remote-coding-env] prepared project=%s session=%s host=%s@%s:%d workdir=%s session_full_access=true", projectPath, sessionID, user, host, sshPort, remoteWorkDir)
+	return nil
+}
+
+// CodingWorkbenchStatus describes pure-coding workbench arm/reconnect state for a task tab.
+type CodingWorkbenchStatus struct {
+	Kind                  string `json:"kind"` // "local" | "remote" | ""
+	Armed                 bool   `json:"armed"`
+	NeedsReconnect        bool   `json:"needs_reconnect"`
+	TurnCount             int    `json:"turn_count"`
+	SessionFullAccess     bool   `json:"session_full_access"`
+	SessionHighRiskAccess bool   `json:"session_high_risk_access"`
+	SessionPlan           string `json:"session_plan,omitempty"`
+	// ExecutionPlan is the latest multi-step auto plan (markdown T1/T2…).
+	ExecutionPlan string `json:"execution_plan,omitempty"`
+	// PlanMode: auto | approve | off
+	PlanMode string `json:"plan_mode,omitempty"`
+	// PendingApproval is true when a multi-step plan awaits /plan approve.
+	PendingApproval bool `json:"pending_approval,omitempty"`
+	// StepStatuses is live Todo status for the active plan.
+	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// ProjectInstructions sources (AGENTS.md etc.).
+	ProjectInstructionSources []string `json:"project_instruction_sources,omitempty"`
+	// CheckpointLabel is the last saved checkpoint name.
+	CheckpointLabel string `json:"checkpoint_label,omitempty"`
+	// Session token/cost observability.
+	SessionInputTokens  int     `json:"session_input_tokens,omitempty"`
+	SessionOutputTokens int     `json:"session_output_tokens,omitempty"`
+	SessionEstCostRMB   float64 `json:"session_est_cost_rmb,omitempty"`
+	LastTurnInputTokens  int     `json:"last_turn_input_tokens,omitempty"`
+	LastTurnOutputTokens int     `json:"last_turn_output_tokens,omitempty"`
+	LastTurnEstCostRMB   float64 `json:"last_turn_est_cost_rmb,omitempty"`
+	// BackgroundVerify holds last async /bg test result summary.
+	BackgroundVerify string `json:"background_verify,omitempty"`
+	// WorktreeMode: auto | always | off
+	WorktreeMode string `json:"worktree_mode,omitempty"`
+	// WorktreeNotes recent isolation/merge lines.
+	WorktreeNotes []string `json:"worktree_notes,omitempty"`
+	// ConflictCount is number of kept isolation trees after failed merges.
+	ConflictCount int `json:"conflict_count,omitempty"`
+	// Conflicts brief list for UI (id + step + path).
+	Conflicts []codingWorkbenchConflict `json:"conflicts,omitempty"`
+	// ConflictActiveID / ConflictSelected / ConflictFocusFile restore conflict panel UI.
+	ConflictActiveID  string   `json:"conflict_active_id,omitempty"`
+	ConflictSelected  []string `json:"conflict_selected,omitempty"`
+	ConflictFocusFile string   `json:"conflict_focus_file,omitempty"`
+	// ConflictLog recent adopt/keep/base/discard lines for UI/slash.
+	ConflictLog []string `json:"conflict_log,omitempty"`
+	// Last model route for pure-coding observability.
+	RouteModel  string `json:"route_model,omitempty"`
+	RouteSource string `json:"route_source,omitempty"`
+	RouteTask   string `json:"route_task,omitempty"`
+	RouteReason string `json:"route_reason,omitempty"`
+	// RoutePref: auto | primary | reasoning | vision
+	RoutePref   string `json:"route_pref,omitempty"`
+	// RouteCapabilities maps each route pref to ModelRouter availability / model.
+	RouteCapabilities []codingRouteCapability `json:"route_capabilities,omitempty"`
+	// CheckpointFiles are paths recorded at the last checkpoint (for UI).
+	CheckpointFiles []string `json:"checkpoint_files,omitempty"`
+	// CheckpointSnapshots is count of restorable file content snapshots.
+	CheckpointSnapshots int `json:"checkpoint_snapshots,omitempty"`
+	// CheckpointHistory is current + prior checkpoints (current first).
+	CheckpointHistory []codingCheckpointListEntry `json:"checkpoint_history,omitempty"`
+	// HooksActive is true when .maclaw/hooks.json defines at least one command.
+	HooksActive bool `json:"hooks_active,omitempty"`
+	// HooksPhases lists lifecycle phases that have commands (pre_step, post_turn, …).
+	HooksPhases []string `json:"hooks_phases,omitempty"`
+	// HooksCommandCount is total non-empty hook commands across phases.
+	HooksCommandCount int `json:"hooks_command_count,omitempty"`
+	// HooksFailOnError mirrors hooks.json fail_on_error.
+	HooksFailOnError bool `json:"hooks_fail_on_error,omitempty"`
+	LastSummary string `json:"last_summary,omitempty"`
+	RemoteHost      string `json:"remote_host,omitempty"`
+	RemoteUser      string `json:"remote_user,omitempty"`
+	RemotePort      int    `json:"remote_port,omitempty"`
+	RemoteWorkDir   string `json:"remote_work_dir,omitempty"`
+	RemoteSessionID string `json:"remote_session_id,omitempty"`
+	Message         string `json:"message,omitempty"`
+}
+
+func (a *App) remoteCodingMetaFromTaskTags(projectPath string) (host, user, workDir string, port int) {
+	// Do not cold-init the memory store here: status/reconnect prefill can call
+	// this on every tab focus. Callers that need index tags (Ensure) already
+	// ensure the store before classification.
+	if a == nil || a.memoryStore == nil {
+		return "", "", "", 0
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return "", "", "", 0
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return "", "", "", 0
+	}
+	port = 22
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		switch {
+		case strings.HasPrefix(tag, taskRemoteHostTagPrefix):
+			host = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteHostTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteUserTagPrefix):
+			user = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteUserTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteWorkDirTagPrefix):
+			// workdir tags are sanitized (colons→_); store best-effort display value.
+			workDir = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteWorkDirTagPrefix))
+		case strings.HasPrefix(tag, taskRemotePortTagPrefix):
+			if p, err := strconv.Atoi(strings.TrimPrefix(tag, taskRemotePortTagPrefix)); err == nil && p > 0 && p < 65536 {
+				port = p
+			}
+		}
+	}
+	return host, user, workDir, port
+}
+
+func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMessageHandler) CodingWorkbenchStatus {
+	st := CodingWorkbenchStatus{}
+	if handler == nil {
+		st.Message = "message handler unavailable"
+		return st
+	}
+	userID := projectSessionOwnerID(projectPath)
+	// Read live in-memory sticky only. Do NOT force-flush debounced step-status
+	// writes on every status poll — that defeats coalescing during multi-step runs.
+	// Durability is covered by the 450ms debounce timer and shutdown flush.
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+	st.Kind = strings.TrimSpace(mem.Kind)
+	st.TurnCount = mem.TurnCount
+	st.SessionFullAccess = mem.SessionFullAccess
+	st.SessionHighRiskAccess = mem.SessionHighRiskAccess
+	st.SessionPlan = strings.TrimSpace(mem.SessionPlan)
+	st.ExecutionPlan = strings.TrimSpace(mem.ExecutionPlan)
+	st.PlanMode = normalizeCodingPlanMode(mem.PlanMode)
+	st.PendingApproval = strings.TrimSpace(mem.PendingPlanJSON) != ""
+	if len(mem.StepStatuses) > 0 {
+		st.StepStatuses = append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+	}
+	if len(mem.ProjectInstructionSources) > 0 {
+		st.ProjectInstructionSources = append([]string(nil), mem.ProjectInstructionSources...)
+	}
+	st.CheckpointLabel = strings.TrimSpace(mem.CheckpointLabel)
+	st.SessionInputTokens = mem.SessionInputTokens
+	st.SessionOutputTokens = mem.SessionOutputTokens
+	st.SessionEstCostRMB = mem.SessionEstCostRMB
+	st.LastTurnInputTokens = mem.LastTurnInputTokens
+	st.LastTurnOutputTokens = mem.LastTurnOutputTokens
+	st.LastTurnEstCostRMB = mem.LastTurnEstCostRMB
+	st.BackgroundVerify = strings.TrimSpace(mem.BackgroundVerifySummary)
+	st.WorktreeMode = normalizeCodingWorktreeMode(mem.WorktreeMode)
+	if len(mem.WorktreeNotes) > 0 {
+		st.WorktreeNotes = append([]string(nil), mem.WorktreeNotes...)
+	}
+	// Drop local conflict records whose worktree dirs vanished (cheap Stat).
+	// Throttled: status polls often; Ensure/List still force full prune.
+	// Remote isolate probe is deferred to Ensure / List (needs live SSH).
+	if len(mem.WorktreeConflicts) > 0 {
+		if n := handler.pruneDeadStickyCodingConflictsThrottled(userID, false, stickyConflictPruneStatusInterval); n > 0 {
+			mem = handler.getStickyCodingWorkbenchMemory(userID)
+		}
+	}
+	if n := len(mem.WorktreeConflicts); n > 0 {
+		st.ConflictCount = n
+		st.Conflicts = append([]codingWorkbenchConflict(nil), mem.WorktreeConflicts...)
+	}
+	st.ConflictActiveID = strings.TrimSpace(mem.ConflictActiveID)
+	if len(mem.ConflictSelected) > 0 {
+		st.ConflictSelected = append([]string(nil), mem.ConflictSelected...)
+	}
+	st.ConflictFocusFile = strings.TrimSpace(mem.ConflictFocusFile)
+	if len(mem.ConflictLog) > 0 {
+		st.ConflictLog = append([]string(nil), mem.ConflictLog...)
+	}
+	// Drop stale active id if conflict list no longer contains it (response + sticky).
+	if st.ConflictActiveID != "" {
+		found := false
+		for _, c := range st.Conflicts {
+			if c.ID == st.ConflictActiveID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			st.ConflictActiveID = ""
+			st.ConflictSelected = nil
+			st.ConflictFocusFile = ""
+			handler.setStickyCodingConflictUIState(userID, "", "", nil)
+		} else if len(st.ConflictSelected) > 0 {
+			// Filter multi-select to paths still present on the active conflict.
+			var remain []string
+			for _, c := range st.Conflicts {
+				if c.ID == st.ConflictActiveID {
+					remain = c.Files
+					break
+				}
+			}
+			if len(remain) > 0 {
+				keep := map[string]struct{}{}
+				for _, f := range remain {
+					keep[filepath.ToSlash(strings.TrimSpace(f))] = struct{}{}
+				}
+				filtered := st.ConflictSelected[:0]
+				for _, s := range st.ConflictSelected {
+					if _, ok := keep[s]; ok {
+						filtered = append(filtered, s)
+					}
+				}
+				if len(filtered) != len(st.ConflictSelected) {
+					st.ConflictSelected = append([]string(nil), filtered...)
+					handler.setStickyCodingConflictUIState(userID, st.ConflictActiveID, st.ConflictFocusFile, st.ConflictSelected)
+				}
+			}
+		}
+	}
+	st.RouteModel = strings.TrimSpace(mem.LastRouteModel)
+	st.RouteSource = strings.TrimSpace(mem.LastRouteSource)
+	st.RouteTask = strings.TrimSpace(mem.LastRouteTask)
+	st.RouteReason = strings.TrimSpace(mem.LastRouteReason)
+	st.RoutePref = normalizeCodingRoutePref(mem.RoutePref)
+	if caps := handler.codingRouteCapabilities(); len(caps) > 0 {
+		st.RouteCapabilities = caps
+	}
+	// Checkpoint list from the same sticky snapshot already loaded (one parse).
+	if cur, hasCur, histRaw := stickyCodingCheckpointsFromMem(mem); hasCur || len(histRaw) > 0 {
+		var hist []codingCheckpointListEntry
+		if hasCur {
+			hist = append(hist, codingCheckpointToListEntry(cur, true))
+			if st.CheckpointLabel == "" {
+				st.CheckpointLabel = cur.Label
+			}
+			if len(cur.Files) > 0 {
+				st.CheckpointFiles = append([]string(nil), cur.Files...)
+			}
+			st.CheckpointSnapshots = codingCheckpointSnapshotCount(cur)
+		}
+		for i := len(histRaw) - 1; i >= 0; i-- {
+			hist = append(hist, codingCheckpointToListEntry(histRaw[i], false))
+		}
+		st.CheckpointHistory = hist
+	}
+	// Project-local lifecycle hooks (.maclaw/hooks.json) — single load + one summary pass.
+	hooks := loadCodingWorkbenchHooks(projectPath)
+	if phases, n := codingWorkbenchHooksSummary(hooks); n > 0 {
+		st.HooksActive = true
+		st.HooksPhases = phases
+		st.HooksCommandCount = n
+		st.HooksFailOnError = hooks.FailOnError
+	}
+	st.LastSummary = strings.TrimSpace(mem.LastSummary)
+	st.RemoteHost = strings.TrimSpace(mem.RemoteHost)
+	st.RemoteUser = strings.TrimSpace(mem.RemoteUser)
+	st.RemotePort = mem.RemotePort
+	st.RemoteWorkDir = strings.TrimSpace(mem.RemoteWorkDir)
+	if st.RemoteWorkDir == "" {
+		st.RemoteWorkDir = strings.TrimSpace(mem.RemoteProjectDir)
+	}
+	st.RemoteSessionID = strings.TrimSpace(mem.RemoteSessionID)
+
+	// Task tags are the durable pure-coding marker (history list restore).
+	// When a record exists without coding tags, force Kind empty even if sticky
+	// still claims local/remote (sticky pollution guard).
+	// Use an already-open store only; status polls must not cold-init memory
+	// (ensureMemoryStore -> LoadConfig can re-enter path-bound locks).
+	if a != nil && a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(projectPath); rec != nil {
+				if projectRecordHasTag(*rec, taskRemoteCodingDevTag) {
+					st.Kind = "remote"
+				} else if projectRecordHasTag(*rec, taskCodingDevTag) {
+					st.Kind = "local"
+				} else {
+					st.Kind = ""
+				}
+			}
+		}
+	}
+
+	// Fill non-secret remote meta from task tags when sticky is incomplete.
+	if st.Kind == "remote" || st.Kind == "" {
+		th, tu, tw, tp := a.remoteCodingMetaFromTaskTags(projectPath)
+		if st.RemoteHost == "" {
+			st.RemoteHost = th
+		}
+		if st.RemoteUser == "" {
+			st.RemoteUser = tu
+		}
+		if st.RemoteWorkDir == "" {
+			st.RemoteWorkDir = tw
+		}
+		if st.RemotePort <= 0 {
+			st.RemotePort = tp
+		}
+	}
+
+	switch st.Kind {
+	case "remote":
+		st.Armed = handler.hasPendingTemplateSubAgentExecution(userID)
+		if _, ok := handler.pendingTemplateRemoteCoding.Load(userID); ok {
+			st.Armed = true
+		}
+		sessionID := st.RemoteSessionID
+		alive := sessionID != "" && handler.sshSessionAlive(sessionID)
+		if !alive {
+			st.Armed = false
+			st.NeedsReconnect = true
+			if sessionID == "" {
+				st.Message = "SSH session not connected; reconnect required"
+			} else {
+				st.Message = "SSH session expired; reconnect required"
+			}
+		}
+	case "local":
+		st.Armed = handler.hasPendingTemplateSubAgentExecution(userID)
+		if _, ok := handler.pendingTemplateCodingProjectPath.Load(userID); ok {
+			st.Armed = true
+		}
+	}
+	return st
+}
+
+// GetCodingWorkbenchStatus returns arm/reconnect state for a pure coding task without changing it.
+func (a *App) GetCodingWorkbenchStatus(projectPath string) CodingWorkbenchStatus {
+	st := CodingWorkbenchStatus{}
+	if a == nil {
+		st.Message = "app unavailable"
+		return st
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		st.Message = "project path is required"
+		return st
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		st.Message = "AI assistant not initialized"
+		return st
+	}
+	handler := hubClient.ensureIMHandler()
+	return a.codingWorkbenchStatusFromHandler(projectPath, handler)
+}
+
+// EnsureCodingWorkbenchArmed reloads sticky coding memory and re-arms local/remote
+// SubAgent routing when the user reopens a pure coding task (after restart or
+// tab close). For remote tasks, SSH session must still be alive; otherwise the
+// status reports NeedsReconnect so the UI can collect a password and call
+// PrepareRemoteCodingEnvironment.
+func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchStatus, error) {
+	st := CodingWorkbenchStatus{}
+	if a == nil {
+		return st, fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return st, fmt.Errorf("project path is required")
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return st, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return st, fmt.Errorf("message handler unavailable")
+	}
+
+	userID := projectSessionOwnerID(projectPath)
+	// Force disk cold-load into the in-memory map.
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+
+	// Classification policy for history restore:
+	// 1) When a project index record exists, task tags are authoritative
+	//    (prevents sticky kind pollution from arming ordinary chat tasks).
+	// 2) When the index misses (async flush lag), sticky kind is a soft fallback.
+	kind := ""
+	taskTitle := ""
+	foundRecord := false
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(projectPath); rec != nil {
+				foundRecord = true
+				taskTitle = strings.TrimSpace(rec.Name)
+				if projectRecordHasTag(*rec, taskRemoteCodingDevTag) {
+					kind = "remote"
+				} else if projectRecordHasTag(*rec, taskCodingDevTag) {
+					kind = "local"
+				}
+			}
+		}
+	}
+	if !foundRecord {
+		kind = strings.TrimSpace(mem.Kind)
+	}
+
+	// Not a pure coding workbench: do not arm CodingSubAgent (avoids hijacking
+	// ordinary chat tasks opened from the history list). Clear any leftover
+	// sticky/pending coding bindings from prior pollution or mis-classification.
+	if kind != "local" && kind != "remote" {
+		handler.clearStickyCodingEnvironment(userID)
+		st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+		st.Kind = ""
+		st.Armed = false
+		st.NeedsReconnect = false
+		st.Message = "not a pure coding workbench task"
+		return st, nil
+	}
+
+	// Compaction/restart recovery: seed session plan from last request or task
+	// title when empty so multi-turn continuity still has an overall goal.
+	if strings.TrimSpace(mem.SessionPlan) == "" {
+		seed := strings.TrimSpace(mem.LastUserText)
+		if seed == "" {
+			seed = taskTitle
+		}
+		if seed != "" {
+			handler.setStickyCodingSessionPlan(userID, seed)
+			mem = handler.getStickyCodingWorkbenchMemory(userID)
+		}
+	}
+
+	// Persist kind + remote meta into sticky so later cold-loads stay classified.
+	// Skip the disk write when nothing material changed (hot resume path).
+	// Important: do not interleave setSticky* helpers then storeSticky(mem) with a
+	// stale mem snapshot — that can clobber fields (e.g. Kind after RoutePref seed).
+	stickyDirty := mem.Kind != kind
+	mem.Kind = kind
+	if kind == "remote" {
+		th, tu, tw, tp := a.remoteCodingMetaFromTaskTags(projectPath)
+		if strings.TrimSpace(mem.RemoteHost) == "" && th != "" {
+			mem.RemoteHost = th
+			stickyDirty = true
+		}
+		if strings.TrimSpace(mem.RemoteUser) == "" && tu != "" {
+			mem.RemoteUser = tu
+			stickyDirty = true
+		}
+		if strings.TrimSpace(mem.RemoteWorkDir) == "" && tw != "" {
+			mem.RemoteWorkDir = tw
+			mem.RemoteProjectDir = tw
+			stickyDirty = true
+		}
+		if mem.RemotePort <= 0 && tp > 0 {
+			mem.RemotePort = tp
+			stickyDirty = true
+		}
+	}
+	// Seed sticky route pref from global config when session never set one.
+	// Apply onto the local mem snapshot only (single store below).
+	if strings.TrimSpace(mem.RoutePref) == "" {
+		if cfg, err := a.LoadConfig(); err == nil {
+			if raw := strings.TrimSpace(cfg.CodingRoutePref); raw != "" {
+				mem.RoutePref = normalizeCodingRoutePref(raw)
+				stickyDirty = true
+			}
+		}
+	}
+	if stickyDirty {
+		handler.storeStickyCodingWorkbenchMemory(userID, mem)
+	}
+
+	switch kind {
+	case "remote":
+		sessionID := strings.TrimSpace(mem.RemoteSessionID)
+		workDir := strings.TrimSpace(mem.RemoteWorkDir)
+		projectDir := strings.TrimSpace(mem.RemoteProjectDir)
+		if workDir == "" {
+			workDir = projectDir
+		}
+		if projectDir == "" {
+			projectDir = workDir
+		}
+		if sessionID == "" || (handler.ensureSSHManager() != nil && !handler.sshSessionAlive(sessionID)) {
+			log.Printf("[coding-env] ensure armed: remote reconnect required project=%s session=%q", projectPath, sessionID)
+			st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+			st.Kind = "remote"
+			st.Armed = false
+			st.NeedsReconnect = true
+			if st.Message == "" {
+				st.Message = "SSH session not connected; reconnect required"
+			}
+			return st, nil
+		}
+		if workDir == "" {
+			st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+			st.Kind = "remote"
+			st.NeedsReconnect = true
+			st.Message = "remote work directory missing; reconnect required"
+			return st, nil
+		}
+		handler.rearmStickyRemoteCodingEnvironment(userID, remoteCodingTemplateContext{
+			SessionID:  sessionID,
+			WorkDir:    workDir,
+			ProjectDir: projectDir,
+		})
+		// Do not re-seed path trust when the user explicitly chose "请求授权".
+		if !mem.SessionFullAccess && !stickyCodingPermissionIsRequest(mem.SessionPermissionMode) {
+			handler.setStickyCodingSessionPermissionMode(userID, "workspace", "remote", projectDir)
+		}
+		// Align sticky with input-box global full control when already granted
+		// (no-op when session mode is explicit request).
+		handler.syncStickyCodingFullAccessFromGlobal(userID, "remote", projectDir, a.isSubAgentFullAccessGranted())
+		// Drop remote isolate records whose dirs no longer exist on the host.
+		if n := handler.pruneDeadStickyCodingConflicts(userID, true); n > 0 {
+			log.Printf("[coding-env] ensure armed: pruned %d dead isolation conflicts project=%s", n, projectPath)
+		}
+		log.Printf("[coding-env] ensure armed remote project=%s session=%s turns=%d plan=%q",
+			projectPath, sessionID, mem.TurnCount, truncateRunesV2(mem.SessionPlan, 60))
+		st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+		st.Kind = "remote"
+		st.Armed = true
+		st.NeedsReconnect = false
+		return st, nil
+	case "local":
+		execDir := strings.TrimSpace(mem.ProjectPath)
+		if execDir == "" {
+			execDir = a.recentTaskExecutionProjectPath(projectPath)
+		}
+		if execDir == "" {
+			execDir = projectPath
+		}
+		handler.rearmStickyLocalCodingEnvironment(userID, execDir)
+		if !mem.SessionFullAccess && !stickyCodingPermissionIsRequest(mem.SessionPermissionMode) {
+			handler.setStickyCodingSessionPermissionMode(userID, "workspace", "local", execDir)
+		}
+		handler.syncStickyCodingFullAccessFromGlobal(userID, "local", execDir, a.isSubAgentFullAccessGranted())
+		if n := handler.pruneDeadStickyCodingConflicts(userID, false); n > 0 {
+			log.Printf("[coding-env] ensure armed: pruned %d dead isolation conflicts project=%s", n, projectPath)
+		}
+		// Re-open an existing pure-coding task: push known/on-disk sources into
+		// the right-hand preview so the panel is not blank after generation.
+		// Only bootstrap after at least one turn (or sticky files exist) to avoid
+		// scanning empty new projects on every tab focus.
+		mem = handler.getStickyCodingWorkbenchMemory(userID)
+		stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, mem.FilesModified...), mem.FilesCreated...))
+		// Sticky-only on arm (no directory scan): tab focus must stay cheap.
+		// End-of-turn emit allows scan when sticky is empty.
+		if len(stickyFiles) > 0 {
+			// Route with tab projectPath (managed task dir), read files from execDir.
+			emitCodingWorkbenchSourcePreview(
+				a,
+				codingWorkbenchPreviewRestoreSessionID(userID),
+				execDir,
+				nil,
+				nil,
+				stickyFiles,
+				false, // allowScan: never walk the tree on tab focus
+				false, // forceOpen: do not hijack an active coding-workbench session
+				projectPath,
+			)
+		}
+		log.Printf("[coding-env] ensure armed local project=%s execDir=%s turns=%d plan=%q",
+			projectPath, execDir, mem.TurnCount, truncateRunesV2(mem.SessionPlan, 60))
+		st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+		st.Kind = "local"
+		st.Armed = true
+		st.NeedsReconnect = false
+		return st, nil
+	default:
+		return a.codingWorkbenchStatusFromHandler(projectPath, handler), nil
+	}
+}
+
+// GetCodingWorkbenchPermission returns the effective permission tier for a pure
+// coding task tab: "request" | "workspace" | "full".
+func (a *App) GetCodingWorkbenchPermission(projectPath string) string {
+	if a == nil {
+		return "request"
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return "request"
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return "request"
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return "request"
+	}
+	return handler.codingWorkbenchPermissionMode(projectSessionOwnerID(projectPath), a.isSubAgentFullAccessGranted())
+}
+
+// SetCodingWorkbenchPermission sets the pure-coding permission tier for a task.
+// Modes: "request" (interactive), "workspace" (session path trust), "full" (global full access).
+func (a *App) SetCodingWorkbenchPermission(projectPath, mode string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "request", "workspace", "full", "ask":
+	default:
+		return fmt.Errorf("unknown permission mode %q (want request|workspace|full)", mode)
+	}
+	if mode == "ask" {
+		mode = "request"
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+	userID := projectSessionOwnerID(projectPath)
+
+	// Permission UI must not overwrite sticky ProjectPath (often the execution
+	// workspace dir for local pure coding). Empty projectPath keeps existing value.
+	switch mode {
+	case "full":
+		// Path + high-risk session trust (one sticky write), and persist global full-access.
+		handler.setStickyCodingSessionPermissionMode(userID, "full", "", "")
+		a.persistSubAgentFullAccess()
+	case "workspace":
+		// Path trust only: clear global full-access and high-risk session grant.
+		if a.isSubAgentFullAccessGranted() {
+			if err := a.clearSubAgentFullAccess(); err != nil {
+				log.Printf("[coding-env] clear global full access failed: %v", err)
+			}
+		}
+		handler.setStickyCodingSessionPermissionMode(userID, "workspace", "", "")
+	case "request":
+		if a.isSubAgentFullAccessGranted() {
+			if err := a.clearSubAgentFullAccess(); err != nil {
+				log.Printf("[coding-env] clear global full access failed: %v", err)
+			}
+		}
+		// Explicit request mode so Ensure does not re-seed workspace path trust.
+		handler.setStickyCodingSessionPermissionMode(userID, "request", "", "")
+	}
+	return nil
+}
+
+// SetCodingWorkbenchSessionPlan updates the durable multi-turn plan/goal for a
+// pure coding task. Empty plan clears the stored goal.
+func (a *App) SetCodingWorkbenchSessionPlan(projectPath, plan string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+	userID := projectSessionOwnerID(projectPath)
+	handler.setStickyCodingSessionPlan(userID, plan)
+	return nil
+}
+
+// GetCodingWorkbenchPlanMode returns auto | approve | off for a pure-coding task.
+func (a *App) GetCodingWorkbenchPlanMode(projectPath string) string {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return codingPlanModeAuto
+	}
+	return handler.getStickyCodingPlanMode(userID)
+}
+
+// SetCodingWorkbenchPlanMode sets multi-step plan policy: auto | approve | off.
+func (a *App) SetCodingWorkbenchPlanMode(projectPath, mode string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.setStickyCodingPlanMode(userID, mode)
+	return nil
+}
+
+// ApproveCodingWorkbenchPlan promotes a pending multi-step plan for the next
+// coding turn. Prefer sending `/plan approve` in the chat (executes immediately).
+// This binding only marks the plan approved so the next message can pick it up.
+func (a *App) ApproveCodingWorkbenchPlan(projectPath string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	if _, ok := handler.promotePendingToApprovedCodingPlan(userID); !ok {
+		return fmt.Errorf("no pending plan to approve")
+	}
+	return nil
+}
+
+// RejectCodingWorkbenchPlan clears a pending multi-step plan.
+func (a *App) RejectCodingWorkbenchPlan(projectPath string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.clearStickyPendingCodingPlan(userID)
+	handler.clearStickyCodingExecutionPlan(userID)
+	handler.clearStickyCodingStepStatuses(userID)
+	return nil
+}
+
+// codingWorkbenchPendingPlanDTO is UI-safe pending plan payload.
+type codingWorkbenchPendingPlanDTO struct {
+	UserText  string `json:"user_text,omitempty"`
+	Markdown  string `json:"markdown,omitempty"`
+	StepCount int    `json:"step_count,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+}
+
+// GetCodingWorkbenchPendingPlan returns the awaiting-approval multi-step plan.
+func (a *App) GetCodingWorkbenchPendingPlan(projectPath string) (codingWorkbenchPendingPlanDTO, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingWorkbenchPendingPlanDTO{}, err
+	}
+	pending, ok := handler.loadStickyPendingCodingPlan(userID)
+	if !ok {
+		return codingWorkbenchPendingPlanDTO{}, fmt.Errorf("no pending plan")
+	}
+	return codingWorkbenchPendingPlanDTO{
+		UserText:  pending.UserText,
+		Markdown:  pending.Markdown,
+		StepCount: len(pending.Tasks),
+		CreatedAt: pending.CreatedAt,
+	}, nil
+}
+
+// UpdateCodingWorkbenchPendingPlan rewrites the pending plan from edited markdown.
+// Does not execute; user still needs /plan approve (or UI Approve).
+func (a *App) UpdateCodingWorkbenchPendingPlan(projectPath, markdown string) (codingWorkbenchPendingPlanDTO, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingWorkbenchPendingPlanDTO{}, err
+	}
+	updated, err := handler.replaceStickyPendingCodingPlanMarkdown(userID, markdown)
+	if err != nil {
+		return codingWorkbenchPendingPlanDTO{}, err
+	}
+	return codingWorkbenchPendingPlanDTO{
+		UserText:  updated.UserText,
+		Markdown:  updated.Markdown,
+		StepCount: len(updated.Tasks),
+		CreatedAt: updated.CreatedAt,
+	}, nil
+}
+
+// SaveCodingWorkbenchCheckpoint stores a pure-coding session checkpoint.
+func (a *App) SaveCodingWorkbenchCheckpoint(projectPath, label string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	cp := handler.saveStickyCodingCheckpoint(userID, label)
+	return cp.Label, nil
+}
+
+// RestoreCodingWorkbenchCheckpoint restores session/execution plan from the last checkpoint.
+// When restoreFiles is true, also writes back snapshotted text file content.
+func (a *App) RestoreCodingWorkbenchCheckpoint(projectPath string) (string, error) {
+	return a.RestoreCodingWorkbenchCheckpointEx(projectPath, false)
+}
+
+// RestoreCodingWorkbenchCheckpointEx restores plan, and optionally file snapshots.
+func (a *App) RestoreCodingWorkbenchCheckpointEx(projectPath string, restoreFiles bool) (string, error) {
+	return a.RestoreCodingWorkbenchCheckpointByLabel(projectPath, "", restoreFiles)
+}
+
+// RestoreCodingWorkbenchCheckpointByLabel restores a named checkpoint (or current when label empty).
+func (a *App) RestoreCodingWorkbenchCheckpointByLabel(projectPath, label string, restoreFiles bool) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	cp, ok := handler.restoreStickyCodingCheckpointByLabel(userID, label, false)
+	if !ok {
+		if strings.TrimSpace(label) != "" {
+			return "", fmt.Errorf("checkpoint not found: %s", label)
+		}
+		return "", fmt.Errorf("no checkpoint to restore")
+	}
+	if !restoreFiles {
+		return cp.Label, nil
+	}
+	restored, skipped, ferr := handler.applyCodingCheckpointFileSnapshots(userID, cp, nil)
+	if ferr != nil {
+		return "", fmt.Errorf("plan restored (%s); files: %w", cp.Label, ferr)
+	}
+	return fmt.Sprintf("%s (files restored=%d skipped=%d)", cp.Label, restored, skipped), nil
+}
+
+// ListCodingWorkbenchCheckpoints returns current + history checkpoint summaries.
+func (a *App) ListCodingWorkbenchCheckpoints(projectPath string) []codingCheckpointListEntry {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return nil
+	}
+	return handler.listStickyCodingCheckpoints(userID)
+}
+
+// KeepMainCodingWorkbenchConflict keeps main-tree versions for selected conflict files.
+// filesCSV empty means keep main for all (discard isolation).
+func (a *App) KeepMainCodingWorkbenchConflict(projectPath, conflictID, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return handler.keepMainCodingConflictFiles(userID, conflictID, files)
+}
+
+// AdoptBaseCodingWorkbenchConflict writes merge-base content for selected files onto main.
+// filesCSV empty means all remaining conflict files.
+func (a *App) AdoptBaseCodingWorkbenchConflict(projectPath, conflictID, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return handler.adoptBaseCodingConflictFiles(userID, conflictID, files)
+}
+
+// codingConflictResolveCSV splits optional comma-separated paths.
+func codingConflictResolveCSV(filesCSV string) []string {
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files
+}
+
+// ResolveCodingWorkbenchConflict applies a batch resolve action to a conflict.
+// action: "adopt" | "keep" | "base" — filesCSV empty means all remaining files.
+func (a *App) ResolveCodingWorkbenchConflict(projectPath, conflictID, action, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	files := codingConflictResolveCSV(filesCSV)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "adopt", "theirs":
+		if len(files) == 0 {
+			return handler.adoptCodingWorkbenchConflict(userID, conflictID)
+		}
+		return handler.adoptCodingWorkbenchConflictFiles(userID, conflictID, files)
+	case "keep", "main", "ours":
+		return handler.keepMainCodingConflictFiles(userID, conflictID, files)
+	case "base", "adopt-base", "take-base":
+		return handler.adoptBaseCodingConflictFiles(userID, conflictID, files)
+	default:
+		return "", fmt.Errorf("unknown resolve action %q (use adopt|keep|base)", action)
+	}
+}
+
+// mapConflictPreviewSideToAction maps preview pane side → resolve action.
+func mapConflictPreviewSideToAction(side string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "main", "ours", "keep":
+		return "keep", nil
+	case "theirs", "isolate", "worktree", "wt", "adopt":
+		return "adopt", nil
+	case "base", "adopt-base", "take-base":
+		return "base", nil
+	default:
+		return "", fmt.Errorf("unknown preview side %q (use main|theirs|base)", side)
+	}
+}
+
+// ApplyCodingWorkbenchConflictPreviewSide writes the previewed side for one file
+// onto the main tree: main→keep, theirs→adopt, base→adopt-base.
+func (a *App) ApplyCodingWorkbenchConflictPreviewSide(projectPath, conflictID, relPath, side string) (string, error) {
+	relPath = strings.TrimSpace(relPath)
+	if relPath == "" {
+		return "", fmt.Errorf("file path required")
+	}
+	action, err := mapConflictPreviewSideToAction(side)
+	if err != nil {
+		return "", err
+	}
+	return a.ResolveCodingWorkbenchConflict(projectPath, conflictID, action, relPath)
+}
+
+// WriteCodingWorkbenchConflictFileContent writes edited text to the main tree for one
+// conflict path and removes it from remaining conflict files (manual merge).
+func (a *App) WriteCodingWorkbenchConflictFileContent(projectPath, conflictID, relPath, content string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.writeCodingConflictFileContent(userID, conflictID, relPath, content)
+}
+
+// GetCodingWorkbenchRouteMap returns ModelRouter capability table for pure-coding UI/settings.
+// projectPath may be empty — then capabilities come from the global App ModelRouter.
+func (a *App) GetCodingWorkbenchRouteMap(projectPath string) []codingRouteCapability {
+	if strings.TrimSpace(projectPath) != "" {
+		handler, _, err := a.codingWorkbenchHandlerForProject(projectPath)
+		if err == nil && handler != nil {
+			return handler.codingRouteCapabilities()
+		}
+	}
+	// Settings panel / no active task: still resolve against live App router.
+	h := &IMMessageHandler{app: a}
+	return h.codingRouteCapabilities()
+}
+
+// PruneCodingWorkbenchCheckpoints drops non-current checkpoint sidecars for the task user.
+func (a *App) PruneCodingWorkbenchCheckpoints(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	userN, orphanN := handler.pruneStickyCodingCheckpointSidecars(userID)
+	st := collectCodingCheckpointSidecarStats(userID, "")
+	if cp, ok := handler.loadStickyCodingCheckpoint(userID); ok {
+		st = collectCodingCheckpointSidecarStats(userID, cp.Label)
+	}
+	return fmt.Sprintf("pruned user=%d orphan=%d · %s", userN, orphanN, formatCodingCheckpointSidecarStatsLine(st)), nil
+}
+
+// GetCodingWorkbenchCheckpointSidecarStats returns disk usage of checkpoint sidecars.
+// projectPath may be empty for global-only stats.
+func (a *App) GetCodingWorkbenchCheckpointSidecarStats(projectPath string) codingCheckpointSidecarStats {
+	userID := ""
+	keep := ""
+	if strings.TrimSpace(projectPath) != "" {
+		if handler, uid, err := a.codingWorkbenchHandlerForProject(projectPath); err == nil && handler != nil {
+			userID = uid
+			if cp, ok := handler.loadStickyCodingCheckpoint(userID); ok {
+				keep = cp.Label
+			}
+		}
+	}
+	return collectCodingCheckpointSidecarStats(userID, keep)
+}
+
+// SetCodingWorkbenchConflictUIState remembers active conflict + multi-select for the task tab.
+func (a *App) SetCodingWorkbenchConflictUIState(projectPath, activeID, focusFile, selectedCSV string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.setStickyCodingConflictUIState(userID, activeID, focusFile, codingConflictResolveCSV(selectedCSV))
+	return nil
+}
+
+// GetCodingWorkbenchConflictFilePreview returns a longer content peek for one conflict file side.
+// side: main | theirs | base
+func (a *App) GetCodingWorkbenchConflictFilePreview(projectPath, conflictID, relPath, side string) (codingConflictFilePreview, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingConflictFilePreview{}, err
+	}
+	return handler.getCodingConflictFilePreview(userID, conflictID, relPath, side, codingConflictPreviewMaxBytes)
+}
+
+// GetCodingWorkbenchConflictFileTriple returns main/theirs/base peeks for side-by-side UI.
+func (a *App) GetCodingWorkbenchConflictFileTriple(projectPath, conflictID, relPath string) (codingConflictFileTriple, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingConflictFileTriple{}, err
+	}
+	return handler.getCodingConflictFileTriple(userID, conflictID, relPath, codingConflictPreviewMaxBytes)
+}
+
+// ClearCodingWorkbenchConflictLog clears the conflict resolve audit trail.
+func (a *App) ClearCodingWorkbenchConflictLog(projectPath string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.clearStickyCodingConflictLog(userID)
+	return nil
+}
+
+// ExportCodingWorkbenchConflictLog exports the audit trail as markdown and folds
+// a summary into worktree notes. Returns the markdown body.
+func (a *App) ExportCodingWorkbenchConflictLog(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	md, n := handler.exportStickyCodingConflictLog(userID)
+	if n == 0 {
+		return "", fmt.Errorf("no conflict log entries")
+	}
+	return md, nil
+}
+
+// OpenCodingWorkbenchConflictFile opens main or isolate-side file in the OS default app / explorer.
+// side: "main" | "theirs" (default main).
+func (a *App) OpenCodingWorkbenchConflictFile(projectPath, conflictID, relPath, side string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	c, ok := handler.findStickyCodingConflict(userID, conflictID)
+	if !ok {
+		return fmt.Errorf("conflict not found: %s", conflictID)
+	}
+	relPath = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(relPath, "./")))
+	if relPath == "" || strings.Contains(relPath, "..") {
+		return fmt.Errorf("invalid file path")
+	}
+	side = strings.ToLower(strings.TrimSpace(side))
+	var root string
+	switch side {
+	case "theirs", "isolate", "worktree", "wt":
+		root = strings.TrimSpace(c.Path)
+	default:
+		root = resolveConflictGitRoot(c, userID, handler)
+		if root == "" {
+			root = strings.TrimSpace(c.MainProject)
+		}
+		if root == "" {
+			root = strings.TrimSpace(handler.getStickyCodingWorkbenchMemory(userID).ProjectPath)
+		}
+	}
+	if root == "" {
+		return fmt.Errorf("cannot resolve root for side %q", side)
+	}
+	abs := filepath.Clean(filepath.Join(root, filepath.FromSlash(relPath)))
+	if !isPathInsideRoot(root, abs) {
+		return fmt.Errorf("path escapes conflict root")
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("file not found: %s", relPath)
+	}
+	return a.OpenFileOrShowInFolder(abs)
+}
+
+// RunCodingWorkbenchBackgroundVerify starts async /bg test for the pure-coding task.
+func (a *App) RunCodingWorkbenchBackgroundVerify(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	// Prefer sticky ProjectPath (workspace exec dir) over task folder.
+	execDir := ""
+	if mem := handler.getStickyCodingWorkbenchMemory(userID); strings.TrimSpace(mem.ProjectPath) != "" {
+		execDir = strings.TrimSpace(mem.ProjectPath)
+	}
+	if execDir == "" {
+		execDir = a.recentTaskExecutionProjectPath(projectPath)
+	}
+	if execDir == "" {
+		execDir = projectPath
+	}
+	return handler.startCodingWorkbenchBackgroundVerify(userID, execDir)
+}
+
+// GetCodingWorkbenchWorktreeMode returns auto | always | off.
+func (a *App) GetCodingWorkbenchWorktreeMode(projectPath string) string {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return codingWorktreeModeAuto
+	}
+	return handler.getStickyCodingWorktreeMode(userID)
+}
+
+// SetCodingWorkbenchWorktreeMode sets git worktree isolation policy.
+func (a *App) SetCodingWorkbenchWorktreeMode(projectPath, mode string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.setStickyCodingWorktreeMode(userID, mode)
+	return nil
+}
+
+// GetCodingWorkbenchRoutePref returns auto | primary | reasoning | vision.
+func (a *App) GetCodingWorkbenchRoutePref(projectPath string) string {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return codingRoutePrefAuto
+	}
+	return handler.getStickyCodingRoutePref(userID)
+}
+
+// SetCodingWorkbenchRoutePref sets pure-coding model preference.
+// When CodingRoutePrefMirror is enabled in AppConfig, also updates the global
+// default so new sessions inherit the last session choice.
+func (a *App) SetCodingWorkbenchRoutePref(projectPath, pref string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	pref = normalizeCodingRoutePref(pref)
+	handler.setStickyCodingRoutePref(userID, pref)
+	// Optional reverse sync: session → global default.
+	// Avoid PatchConfigFields when unchanged (prevents extra disk + router churn).
+	if cfg, lerr := a.LoadConfig(); lerr == nil && cfg.CodingRoutePrefMirror {
+		if normalizeCodingRoutePref(cfg.CodingRoutePref) != pref {
+			if _, perr := a.PatchConfigFields(map[string]interface{}{
+				"coding_route_pref": pref,
+			}); perr != nil {
+				log.Printf("[coding-env] mirror route pref to config: %v", perr)
+			}
+		}
+	}
+	return nil
+}
+
+// ListCodingWorkbenchConflicts returns kept isolation conflicts for UI.
+// Prunes dead local worktrees and (when SSH is live) dead remote isolates.
+func (a *App) ListCodingWorkbenchConflicts(projectPath string) []codingWorkbenchConflict {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return nil
+	}
+	// probeRemote=true: drop vanished remote isolate dirs when session alive.
+	_ = handler.pruneDeadStickyCodingConflicts(userID, true)
+	return handler.listStickyCodingConflicts(userID)
+}
+
+// GetCodingWorkbenchConflictDiffs returns per-file main vs isolate previews.
+func (a *App) GetCodingWorkbenchConflictDiffs(projectPath, conflictID string) []codingConflictFileDiff {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return nil
+	}
+	diffs, _, derr := handler.getCodingConflictFileDiffs(userID, conflictID, 30)
+	if derr != nil {
+		return nil
+	}
+	return diffs
+}
+
+// AdoptCodingWorkbenchConflict adopts all or selected files from a conflict.
+// filesCSV is comma-separated relative paths; empty means all files.
+func (a *App) AdoptCodingWorkbenchConflict(projectPath, conflictID, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return handler.adoptCodingWorkbenchConflict(userID, conflictID)
+	}
+	return handler.adoptCodingWorkbenchConflictFiles(userID, conflictID, files)
+}
+
+// DiscardCodingWorkbenchConflict drops a kept isolation conflict.
+func (a *App) DiscardCodingWorkbenchConflict(projectPath, conflictID string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.discardCodingWorkbenchConflict(userID, conflictID)
+}
+
+// DiscardAllCodingWorkbenchConflicts drops every kept isolation conflict for the task.
+func (a *App) DiscardAllCodingWorkbenchConflicts(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.discardAllStickyCodingConflicts(userID)
+}
+
+// codingWorkbenchHandlerForProject returns the IM handler + session owner for a task path.
+func (a *App) codingWorkbenchHandlerForProject(projectPath string) (*IMMessageHandler, string, error) {
+	if a == nil {
+		return nil, "", fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return nil, "", fmt.Errorf("project path is required")
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return nil, "", fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return nil, "", fmt.Errorf("message handler unavailable")
+	}
+	return handler, projectSessionOwnerID(projectPath), nil
 }
 
 // SaveCurrentChatAsTask saves the current main assistant conversation as a

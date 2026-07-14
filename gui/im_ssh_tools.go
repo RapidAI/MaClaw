@@ -20,6 +20,26 @@ import (
 // can monitor them in the GUI "任务后台" panel without direct interaction.
 // ---------------------------------------------------------------------------
 
+// sshSessionAlive reports whether the given SSH session is still usable.
+func (h *IMMessageHandler) sshSessionAlive(sessionID string) bool {
+	if h == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	mgr := h.ensureSSHManager()
+	if mgr == nil {
+		return false
+	}
+	status, ok := mgr.GetSessionStatus(sessionID)
+	if !ok {
+		return false
+	}
+	return status != remote.SessionExited && status != remote.SessionError
+}
+
 // ensureSSHManager lazily initialises the SSH session manager (thread-safe).
 func (h *IMMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
 	if h == nil {

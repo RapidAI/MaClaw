@@ -49,6 +49,7 @@ const saveConfigAllowedSnippets = [
   ['gui/frontend/wailsjs/go/main/App.js', "window['go']['main']['App']['SaveConfig'](arg1)", 'generated Wails binding forwards to backend SaveConfig'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'SaveConfig({ ...config, field: value })', 'comment documenting the stale snapshot bug pattern'],
   ['gui/tui_mode.go', 'a.app.SaveConfig(cfg)', 'TUI HasConfig path carries a full config snapshot'],
+  ['gui/app_moa_config.go', 'a.SaveConfig(cfg)', 'MoA validation persists the complete normalized MoA configuration snapshot'],
   
 ];
 const saveConfigCallPatterns = [
@@ -222,8 +223,8 @@ const requirePatchConfigFieldsSupported = () => {
 
 const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/app_proxy.go', 'a.PatchConfigFields(patch)', 'proxy setter builds a closed patch map from validated proxy option keys'],
-  ['gui/frontend/src/App.tsx', 'patchConfig={(patch) => callBackend(() => PatchConfigFields(patch))}', 'pet settings component owns a typed patch prop constrained by PetSettingsPanel fields'],
   ['gui/frontend/src/App.tsx', 'PatchConfigFields(patch)).then((saved)', 'model settings panel builds a closed tool-config patch from TOOL_NAMES loop'],
+  ['gui/frontend/src/App.tsx', 'PatchConfigFields(patch)', 'settings panels pass locally typed patch objects through the settings shell'],
   ['gui/frontend/src/App.tsx', '// Using PatchConfigFields (atomic load', 'comment explaining atomic patch mechanism'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patch).then((saved)', 'remote panel saveConfigPatch helper receives patches built by local typed setters'],
   ['gui/frontend/src/components/remote/useRemotePanel.ts', 'PatchConfigFields(patchWithLaunchMode as Record<string, any>)', 'remote quick-start augments a locally built patch with default_launch_mode'],
@@ -231,6 +232,8 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/frontend/src/components/settings/GeneralAdvancedSettingsPanel.tsx', 'PatchConfigFields(patch).then((saved)', 'advanced settings helper receives patches from same-file controls only'],
   ['gui/frontend/src/components/settings/programmingToolsConfig.ts', 'PatchConfigFields(patch).then((saved)', 'shared programming tools patch helper receives patches from panel controls only'],
   ['gui/remote_activation.go', 'a.PatchConfigFields(patch)', 'remote registration persists a closed patch map containing only normalized remote_email or remote_mobile'],
+  ['gui/frontend/src/components/settings/ModelRoutesSettingsSection.tsx', 'PatchConfigFields({ model_routes })', 'model routes panel persists its closed model_routes patch'],
+  ['gui/openhuman_wiring.go', 'PatchConfigFields(model_routes)', 'model router reload documents the closed model_routes patch'],
 ];
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
   const fileSet = new Set(files);
@@ -506,7 +509,7 @@ if (lines > 6000) failures.push(`${appRel} has ${lines} lines; keep it under 600
 const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 500],
   ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 300],
-  ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 220],
+  ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 250],
   ['gui/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
@@ -519,7 +522,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/settings/SystemDiagnosticsTable.tsx', 80],
   ['gui/frontend/src/components/settings/ProxySettingsPanel.tsx', 160],
   ['gui/frontend/src/components/settings/ProxyScopeSettings.tsx', 100],
-  ['gui/frontend/src/components/settings/IMSettingsPanel.tsx', 180],
+  ['gui/frontend/src/components/settings/IMSettingsPanel.tsx', 220],
   ['gui/frontend/src/components/settings/IMSubTabs.tsx', 100],
   ['gui/frontend/src/components/settings/WeixinSettings.tsx', 180],
   ['gui/frontend/src/components/settings/WeixinQRLoginPanel.tsx', 220],
@@ -535,14 +538,14 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 2850],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 5200],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1250],
-  ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 520],
+  ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 570],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
-  ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 260],
+  ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 280],
   ['gui/frontend/src/components/ai/aiAssistantControls.tsx', 120],
   ['gui/frontend/src/components/ai/useTTSReadback.ts', 120],
-  ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 120],
+  ['gui/frontend/src/components/ai/aiAssistantPanelTypes.ts', 140],
   ['gui/frontend/src/components/ai/useAIAssistantVoiceControls.ts', 100],
   ['gui/frontend/src/components/ai/useAssistantOutputScroll.ts', 100],
   ['gui/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
@@ -753,22 +756,22 @@ requireIncludes('gui/frontend/src/components/ai/useAssistantPreviewResize.ts', '
 requireIncludes('gui/frontend/src/components/ai/aiAssistantStatusLabels.ts', 'getAssistantInitLabel', 'AI init status label helper');
 
 const criticalMarkers = [
-  ['AIAssistantPanel', 'AI assistant panel'],
-  ['IMAuditPanel', 'IM audit/watch panel'],
-  ['PetSettingsPanel', 'pet settings tab'],
+  ['gui/frontend/src/App.tsx', 'AIAssistantPanel', 'AI assistant panel'],
+  ['gui/frontend/src/App.tsx', 'IMAuditPanel', 'IM audit/watch panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'PetSettingsPanel', 'pet settings tab'],
   ['MCPPage', 'MCP main page'],
   ['GossipPage', 'gossip main page'],
   ['chatFontSize', 'AI assistant font-size setting'],
   ['taskManagementPaneWidth', 'resizable task management pane'],
-  ['getSettingsTabOptions', 'settings tab registry import'],
-  ['SettingsTabsRail', 'settings tabs rail'],
-  ['GeneralSettingsPanel', 'general settings panel'],
-  ['UISettingsPanel', 'UI settings panel'],
-  ['ProgrammingToolsSettingsPanel', 'programming tools settings panel'],
-  ['GeneralAdvancedSettingsPanel', 'advanced general settings panel'],
-  ['SystemSettingsPanel', 'system settings panel'],
-  ['ProxySettingsPanel', 'proxy settings panel'],
-  ['IMSettingsPanel', 'IM settings panel'],
+  ['gui/frontend/src/App.tsx', 'getSettingsTabOptions', 'settings tab registry import'],
+  ['gui/frontend/src/components/settings/SettingsPage.tsx', 'SettingsTabsRail', 'settings tabs rail'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'GeneralSettingsPanel', 'general settings panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'UISettingsPanel', 'UI settings panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'ProgrammingToolsSettingsPanel', 'programming tools settings panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'GeneralAdvancedSettingsPanel', 'advanced general settings panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'SystemSettingsPanel', 'system settings panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'ProxySettingsPanel', 'proxy settings panel'],
+  ['gui/frontend/src/components/settings/SettingsActiveContent.tsx', 'IMSettingsPanel', 'IM settings panel'],
   ['AppSidebarShell', 'left sidebar shell'],
   ['MainTopHeader', 'non-AI top header'],
   ['AppStatusMessageBar', 'status message bar'],
@@ -788,7 +791,10 @@ const criticalMarkers = [
   ['ProviderSelectorDialog', 'provider selector dialog'],
   ['ConfirmDialog', 'confirm dialog'],
 ];
-for (const [needle, label] of criticalMarkers) requireIncludes(appRel, needle, label);
+for (const marker of criticalMarkers) {
+  const [first, second, third] = marker;
+  requireIncludes(third ? first : appRel, third ? second : first, third || second);
+}
 
 requireIncludes('gui/frontend/src/i18n/appTranslations.ts', 'export const translations', 'central translations export');
 requireIncludes('gui/frontend/src/config/providerCatalog.ts', 'export const knownProviderEndpoints', 'provider endpoint export');

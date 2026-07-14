@@ -297,6 +297,19 @@ type AppConfig struct {
 	// route, falls back to AuxiliaryLLM (for lightweight tasks) or primary.
 	// Example: {"intent": {"model": "glm-4-flash"}, "reasoning": {"model": "deepseek-coder"}}
 	ModelRoutes map[string]ModelRouteConfig `json:"model_routes,omitempty"`
+	// CodingRoutePref is the default pure-coding workbench model preference
+	// (auto|primary|reasoning|vision). Seeded into sticky memory when a session
+	// has not set an explicit preference yet.
+	CodingRoutePref string `json:"coding_route_pref,omitempty"`
+	// CodingCheckpointSidecarMaxMB is the soft global cap for pure-coding
+	// checkpoint sidecar files (disk). 0 = default 256 MiB. Min effective 32.
+	CodingCheckpointSidecarMaxMB int `json:"coding_checkpoint_sidecar_max_mb,omitempty"`
+	// CodingRoutePrefMirror, when true, writing a session route pref also
+	// updates CodingRoutePref so new sessions inherit the last choice.
+	// Default false (only explicit settings write the default).
+	CodingRoutePrefMirror bool `json:"coding_route_pref_mirror,omitempty"`
+	// MoA — Mixture of Agents (multi-model council) presets. See docs/moa-mixture-of-agents-design-zh.md.
+	MoA MoAConfig `json:"moa,omitempty"`
 	// SharedAgentLoopEnabled routes eligible chat/background turns through
 	// corelib/agent.RunLoop. Can also be forced via env MACLAW_SHARED_AGENT_LOOP.
 	// Workflow doc phases stay on the legacy IM loop unless the workflow pilot

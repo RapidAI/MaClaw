@@ -251,6 +251,7 @@ func Run(in Input) Report {
 	add(AdaptivePromptCheck())
 	// --- cost-route tier stats + fleet daily $ ---
 	add(CostRouteCheck())
+	add(MoACheck(cfg))
 
 	// --- remote hub ---
 	if cfg.RemoteEnabled {

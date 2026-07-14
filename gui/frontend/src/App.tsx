@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -22,9 +22,9 @@ import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureT
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
+import { agentModeFromTaskTags, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
-import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } from './utils/hubCredits';
@@ -36,13 +36,12 @@ import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
-import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
-import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
-import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
+import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId } from './config/settingsTabs';
+import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
+import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
-import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmployeeSettingsPanel';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
@@ -58,7 +57,7 @@ import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDial
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
-import { AIAssistantPanel, WebSearchConfigPanel, SecurityPolicyPanel, LLMConfigPanel, HubServiceRedeemPanel, EmbeddingConfigPanel, ASRConfigPanel, TTSConfigPanel, MemoryManagementPanel, GeneralSettingsPanel, KnowledgeSettingsPanel, MISDataSettingsPanel, UISettingsPanel, ProgrammingToolsSettingsPanel, GeneralAdvancedSettingsPanel, SystemSettingsPanel, MigrationSettingsPanel, ProxySettingsPanel, LLMCacheSettingsPanel, VirtualEmployeeSettingsPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage } from './appLazyComponents';
+import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage } from './appLazyComponents';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
@@ -402,7 +401,28 @@ function App() {
     const taskManagementResizeStartX = useRef(0);
     const taskManagementResizeStartWidth = useRef(380);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
-    const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
+    const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean; isRemoteCoding?: boolean; tags?: string[] } | null>(null);
+    /** Project paths with an open AI assistant tab — used to block task-list remove. */
+    const [openProjectTabPaths, setOpenProjectTabPaths] = useState<string[]>([]);
+    const handleOpenProjectTabsChange = useCallback((paths: string[]) => {
+        setOpenProjectTabPaths(prev => {
+            // Order-independent equality: tab reorder should not thrash sidebar props.
+            if (prev.length === paths.length) {
+                const prevSet = new Set(prev);
+                if (paths.every((p) => prevSet.has(p))) {
+                    return prev;
+                }
+            }
+            return paths;
+        });
+    }, []);
+    const hideTaskGuarded = useCallback(async (projectPath: string) => {
+        // Belt-and-suspenders: never soft-delete a task that still has an open tab.
+        if (isProjectTabOpen(projectPath, openProjectTabPaths)) {
+            return;
+        }
+        await HideTask(projectPath);
+    }, [openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
@@ -412,20 +432,6 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
-    useEffect(() => {
-        const openSettings = (e: Event) => {
-            const detail = (e as CustomEvent<{ tab?: string }>).detail;
-            const tab = (detail?.tab || 'general') as SettingsTabId;
-            setNavTabNow('settings');
-            setSettingsTab(tab);
-        };
-        window.addEventListener('maclaw:open-settings', openSettings);
-        return () => window.removeEventListener('maclaw:open-settings', openSettings);
-    }, [setNavTabNow]);
-    const openMISDataSettings = useCallback(() => {
-        setNavTabNow('settings');
-        setSettingsTab('misData');
-    }, [setNavTabNow]);
     const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
@@ -449,6 +455,11 @@ function App() {
     const [isMarketplaceInstalling, setIsMarketplaceInstalling] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [isManualCheck, setIsManualCheck] = useState(false);
+    /** Allows loading-shell UI (Hide) to finish the same session that env-check uses. */
+    const loadingShellCtlRef = useRef<{
+        finish: (reason: string) => void;
+        begin: (reason: string) => number;
+    } | null>(null);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [hubAuthRejectedPrompt, setHubAuthRejectedPrompt] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
@@ -457,7 +468,16 @@ function App() {
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
-    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<{ projectPath: string; taskTitle: string; initialMessage?: string; autoSend?: boolean; prepareMode?: 'restore-context' | 'new-agent' } | null>(null);
+    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<{
+        projectPath: string;
+        taskTitle: string;
+        initialMessage?: string;
+        autoSend?: boolean;
+        prepareMode?: 'restore-context' | 'new-agent';
+        agentMode?: 'coding_dev' | 'remote_coding_dev';
+        remoteHost?: string;
+        remoteNeedsReconnect?: boolean;
+    } | null>(null);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -674,9 +694,32 @@ function App() {
         || favoriteEmployeeIds.length > 0;
     const veAuthorized = veNavigationAvailable;
     const veSettingsAuthorized = digitalEmployeeAuthorizationUsable;
+    // Sync setState only — startTransition deferred paint and caused intermittent blank settings.
+    const selectSettingsTab = useCallback((tab: SettingsTabId) => {
+        setSettingsTab(resolveSettingsTabId(tab, { hideVirtualEmployee: !veNavigationAvailable }));
+    }, [veNavigationAvailable]);
+    const patchConfigFieldsForSettings = useCallback(
+        (patch: Record<string, any>) => callBackend(() => PatchConfigFields(patch)),
+        [],
+    );
+    const handleSettingsLLMStatusChange = useCallback((online: boolean, configured: boolean) => {
+        setMaclawLLMOnline(online);
+        setMaclawLLMConfigured(configured);
+    }, []);
     useEffect(() => {
-        if (!veNavigationAvailable && settingsTab === 'virtualEmployee') setSettingsTab('general');
-    }, [settingsTab, veNavigationAvailable]);
+        const openSettings = (e: Event) => {
+            const detail = (e as CustomEvent<{ tab?: string }>).detail;
+            const tab = resolveSettingsTabId(detail?.tab, { hideVirtualEmployee: !veNavigationAvailable });
+            setNavTabNow('settings');
+            selectSettingsTab(tab);
+        };
+        window.addEventListener('maclaw:open-settings', openSettings);
+        return () => window.removeEventListener('maclaw:open-settings', openSettings);
+    }, [setNavTabNow, selectSettingsTab, veNavigationAvailable]);
+    const openMISDataSettings = useCallback(() => {
+        setNavTabNow('settings');
+        selectSettingsTab('misData');
+    }, [setNavTabNow, selectSettingsTab]);
     useEffect(() => {
         if (veAuthorized) return;
         setPendingVEOpen(null);
@@ -775,6 +818,18 @@ function App() {
             setShowFavReplacePicker({ ve });
         }
     }, [favoriteEmployeeIds, updateFavoriteEmployees, userFavoriteEmployeeIds]);
+
+    const handleAddFavoriteEmployeeFromSettings = useCallback((veId: string) => {
+        const existing = veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId));
+        handleSetFavoriteEmployee(existing || {
+            id: veId,
+            name: veId,
+            skill_description: '',
+            access_policy: 'public',
+            status: 'active',
+            online_status: 'online',
+        });
+    }, [handleSetFavoriteEmployee, veList]);
 
     const handleReplaceFavorite = useCallback((index: number) => {
         if (!showFavReplacePicker) return;
@@ -892,6 +947,13 @@ function App() {
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<SidebarCurrentProviderTokenUsage>({ provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0, localCacheRequests: 0, localCacheHits: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
+    const [moaSession, setMoaSession] = useState<{
+        available: boolean;
+        active: boolean;
+        label?: string;
+        preset?: string;
+        presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
+    }>({ available: false, active: false });
     const [sidebarProviderSummaries, setSidebarProviderSummaries] = useState<SidebarLLMProviderSummary[]>([]);
     const sidebarTokenUsageSeqRef = useRef(0);
     const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
@@ -1342,18 +1404,83 @@ function App() {
                 setShowLogs(true);
             }
         };
-        const doneHandler = async () => {
-            logStartupTrace('env-check-done-received');
-            try {
-                const size: any = await callBackend(() => GetAdaptiveWindowSize());
-                const w = size?.width || 1360;
-                const h = size?.height || 850;
-                await callBackend(() => ResizeWindow(w, h));
-            } catch {
-                await callBackend(() => ResizeWindow(1360, 850));
+        // loadingShellSeq increments when a new loading session starts (startup or
+        // manual env re-check). finishLoadingShell only applies to the active seq so
+        // a late timeout from the first boot cannot close a later manual check early,
+        // and a permanent "finished" flag cannot block manual re-checks.
+        let loadingShellSeq = 0;
+        let loadingSafetyTimer: number | null = null;
+        const clearLoadingSafetyTimer = () => {
+            if (loadingSafetyTimer != null) {
+                window.clearTimeout(loadingSafetyTimer);
+                loadingSafetyTimer = null;
             }
+        };
+        const finishLoadingShell = (reason: string, seq: number = loadingShellSeq) => {
+            // Ignore stale completions from a previous loading session.
+            if (seq !== loadingShellSeq) return;
+            clearLoadingSafetyTimer();
+            logStartupTrace('finish-loading-shell', { reason, seq });
             setIsLoading(false);
             setIsManualCheck(false);
+            // Avoid a second blank gate: isLoading=false with config still null
+            // renders only "loadingConfig" (looks like a white screen).
+            // Use an explicit empty projects array so later config.projects.* access is safe.
+            setConfig((prev) => {
+                if (prev) return prev;
+                logStartupTrace('config-placeholder-applied', { reason, seq });
+                return new main.AppConfig({ projects: [] });
+            });
+        };
+        const armLoadingSafetyTimer = (seq: number) => {
+            clearLoadingSafetyTimer();
+            // Safety net: if env-check-done is missed (event race) or never emitted,
+            // leave the loading shell so the UI is not a permanent white screen.
+            loadingSafetyTimer = window.setTimeout(() => {
+                if (seq === loadingShellSeq) {
+                    logStartupTrace('env-check-done-timeout', { seq });
+                    finishLoadingShell('timeout', seq);
+                }
+            }, 15000);
+        };
+        const beginLoadingShell = (reason: string) => {
+            loadingShellSeq += 1;
+            const seq = loadingShellSeq;
+            logStartupTrace('begin-loading-shell', { reason, seq });
+            setIsLoading(true);
+            armLoadingSafetyTimer(seq);
+            return seq;
+        };
+        loadingShellCtlRef.current = {
+            finish: (reason: string) => finishLoadingShell(reason),
+            begin: beginLoadingShell,
+        };
+        // Startup already mounts with isLoading=true — arm the first safety timer.
+        armLoadingSafetyTimer(loadingShellSeq);
+        const doneHandler = async () => {
+            const seq = loadingShellSeq;
+            logStartupTrace('env-check-done-received', { seq });
+            // Never leave the UI stuck if ResizeWindow hangs (e.g. webview race).
+            try {
+                const resizePromise = (async () => {
+                    try {
+                        const size: any = await callBackend(() => GetAdaptiveWindowSize());
+                        const w = size?.width || 1360;
+                        const h = size?.height || 850;
+                        await callBackend(() => ResizeWindow(w, h));
+                    } catch {
+                        try {
+                            await callBackend(() => ResizeWindow(1360, 850));
+                        } catch {
+                            /* best-effort */
+                        }
+                    }
+                })();
+                const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2500));
+                await Promise.race([resizePromise, timeout]);
+            } finally {
+                finishLoadingShell('env-check-done', seq);
+            }
         };
 
         safeEventsOn("env-log", logHandler);
@@ -1435,8 +1562,8 @@ function App() {
                             void callBackend(() => UpdateLastEnvCheckTime());
                             setEnvLogs([]);
                             setShowLogs(true);
-                            setIsLoading(true);
                             setIsManualCheck(true);
+                            loadingShellCtlRef.current?.begin('manual-env-check');
                             void callBackend(() => CheckEnvironment(true));
                         },
                         onCancel: () => {
@@ -1528,11 +1655,21 @@ function App() {
                         setLang(cfg.language);
                         void callBackend(() => SetLanguage(cfg.language));
                     }
+                    // Config recovered late — leave loading shell (and clear safety timer).
+                    if (loadingShellCtlRef.current) {
+                        loadingShellCtlRef.current.finish('config-retry-ok');
+                    } else {
+                        setIsLoading(false);
+                    }
                 }).catch(err2 => {
                     console.error("Retry load config also failed:", err2);
-                    // Last resort: set a minimal default config so the UI is not stuck
-                    // Avoid leaving the UI stuck on loading config forever.
-                    setConfig(new main.AppConfig({}));
+                    // Placeholder config is applied inside finishLoadingShell when prev is null.
+                    if (loadingShellCtlRef.current) {
+                        loadingShellCtlRef.current.finish('config-retry-failed');
+                    } else {
+                        setConfig(new main.AppConfig({ projects: [] }));
+                        setIsLoading(false);
+                    }
                 });
             }, 1500);
         });
@@ -1660,8 +1797,14 @@ function App() {
         });
 
         return () => {
+            clearLoadingSafetyTimer();
+            loadingShellCtlRef.current = null;
             safeEventsOff("env-log");
             safeEventsOff("env-check-done");
+            safeEventsOff("show-env-logs");
+            safeEventsOff("tool-repair-start");
+            safeEventsOff("tool-repair-success");
+            safeEventsOff("tool-repair-failed");
             safeEventsOff("download-progress");
             safeEventsOff(EVENT_APP_UPDATE_AVAILABLE);
             safeEventsOff("config-changed");
@@ -1815,11 +1958,11 @@ function App() {
     };
 
     useEffect(() => {
-                const visibleSettingsTabs = getSettingsTabOptions(lang, {});
-        if (!visibleSettingsTabs.some((tab) => tab.id === settingsTab)) {
-            setSettingsTab('general');
-        }
-    }, [isTigerClawBrand, lang, navTab, settingsTab]);
+        // Keep settingsTab aligned with the tabs actually shown in the rail
+        // (e.g. virtualEmployee may be hidden when DE navigation is unavailable).
+        const next = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable });
+        if (next !== settingsTab) setSettingsTab(next);
+    }, [settingsTab, veNavigationAvailable]);
 
     useEffect(() => {
         if (!isTigerClawBrand && imSubTab === 'lansenger') {
@@ -2056,17 +2199,17 @@ function App() {
     const handleOpenExperienceTrace = useCallback((focus?: string) => {
         setMemoryTraceFocus((prev) => ({ value: String(focus || "").trim(), seq: prev.seq + 1 }));
         setNavTabNow('settings');
-        setSettingsTab('memory');
-    }, []);
+        selectSettingsTab('memory');
+    }, [selectSettingsTab]);
 
     useEffect(() => {
         const openPetSettings = () => {
             setNavTabNow('settings');
-            setSettingsTab('pet');
+            selectSettingsTab('pet');
         };
         const unsubscribe = safeEventsOn('open-pet-settings', openPetSettings);
         return unsubscribe;
-    }, []);
+    }, [selectSettingsTab]);
 
     useEffect(() => {
         if (!config) return;
@@ -2119,15 +2262,55 @@ function App() {
         const startedAt = performance.now();
         try {
             switchTool('ai');
-            const proj = taskItemsRef.current.find(p => p.project_path === projectPath);
-            console.info("[task_management] open requested", { taskPath: projectPath });
+            // Normalize separators so Windows path variants still match list tags.
+            const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+            const want = norm(projectPath);
+            const proj = taskItemsRef.current.find(p => norm(p.project_path || '') === want);
+            console.info("[task_management] open requested", { taskPath: projectPath, foundInList: !!proj });
             await ResumeTask(projectPath);
             const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
-            console.info("[task_management] task ready", { taskPath: projectPath, title, autoSend: false, elapsedMs: Math.round(performance.now() - startedAt) });
+            // Tags from the task list are the source of truth for pure coding restore.
+            // Prefer durable tags from the history list; Ensure can also recover
+            // kind from sticky/disk when the list cache is briefly stale.
+            let agentMode: 'coding_dev' | 'remote_coding_dev' | undefined = agentModeFromTaskTags(proj?.tags);
+            let remoteHost = remoteHostFromTaskTags(proj?.tags);
+            // Re-arm pure coding workbench from sticky/disk memory so multi-turn
+            // SubAgent routing continues after tab reopen or process restart.
+            // Even when tags are briefly missing from the list cache, Ensure can
+            // recover kind from sticky/disk + project index.
+            let remoteNeedsReconnect = false;
+            try {
+                const armStatus = await EnsureCodingWorkbenchArmed(projectPath);
+                if (!agentMode) {
+                    if (armStatus?.kind === 'remote') agentMode = 'remote_coding_dev';
+                    else if (armStatus?.kind === 'local') agentMode = 'coding_dev';
+                }
+                if (agentMode === 'remote_coding_dev') {
+                    remoteNeedsReconnect = !!(armStatus?.needs_reconnect);
+                    if (!remoteHost && armStatus?.remote_host) {
+                        remoteHost = armStatus.remote_host;
+                    }
+                }
+                console.info("[task_management] coding workbench arm", {
+                    taskPath: projectPath,
+                    agentMode: agentMode || null,
+                    kind: armStatus?.kind || null,
+                    armed: !!armStatus?.armed,
+                    needsReconnect: remoteNeedsReconnect,
+                    turns: armStatus?.turn_count ?? 0,
+                });
+            } catch (armErr) {
+                console.warn("[task_management] EnsureCodingWorkbenchArmed failed", armErr);
+                if (agentMode === 'remote_coding_dev') remoteNeedsReconnect = true;
+            }
+            console.info("[task_management] task ready", { taskPath: projectPath, title, autoSend: false, agentMode, elapsedMs: Math.round(performance.now() - startedAt) });
             setPendingProjectTabOpen({
                 projectPath,
                 taskTitle: title,
                 autoSend: false,
+                agentMode,
+                remoteHost,
+                remoteNeedsReconnect: agentMode === 'remote_coding_dev' ? remoteNeedsReconnect : undefined,
             });
             refreshTasks();
         } catch (error) {
@@ -2152,13 +2335,61 @@ function App() {
         }
     }, [switchTool]);
 
-    const createTask = useCallback(async (name: string, workingDir?: string) => {
+    const createTask = useCallback(async (
+        name: string,
+        workingDir?: string,
+        mode?: 'coding_dev' | 'remote_coding_dev',
+        remote?: { host: string; port: number; user: string; password: string; workDir: string },
+    ) => {
         const taskName = name.trim();
         if (!taskName) return;
         try {
-            const created = await CreateTask(taskName, (workingDir || '').trim());
+            let created: Awaited<ReturnType<typeof CreateTask>> | null = null;
+            let agentMode: 'coding_dev' | 'remote_coding_dev' | undefined;
+            let remoteHost: string | undefined;
+            const localWorkDir = (workingDir || '').trim();
+
+            if (mode === 'remote_coding_dev') {
+                if (!remote?.host?.trim() || !remote?.user?.trim() || !remote?.password || !remote?.workDir?.trim()) {
+                    throw new Error('远程编程需要填写主机、用户名、密码和远程工作目录');
+                }
+                agentMode = 'remote_coding_dev';
+                remoteHost = remote.host.trim();
+                created = await CreateRemoteCodingTask(
+                    taskName,
+                    remoteHost,
+                    remote.user.trim(),
+                    remote.workDir.trim(),
+                    remote.port || 22,
+                );
+                if (!created?.project_path) {
+                    throw new Error('创建远程编程任务失败');
+                }
+                // Connect SSH and arm RemoteCodingSubAgent before opening the tab so
+                // autoSend runs pure remote coding (with source preview events).
+                await PrepareRemoteCodingEnvironment(
+                    created.project_path,
+                    remoteHost,
+                    remote.user.trim(),
+                    remote.password,
+                    remote.workDir.trim(),
+                    remote.port || 22,
+                );
+            } else if (mode === 'coding_dev') {
+                agentMode = 'coding_dev';
+                created = await CreateTaskWithMode(taskName, localWorkDir, agentMode);
+                if (!created?.project_path) {
+                    throw new Error('创建编程开发任务失败');
+                }
+                // Arm local CodingSubAgent so the first auto-sent message executes
+                // with tool-using coding path and source preview file events.
+                await PrepareLocalCodingEnvironment(created.project_path, localWorkDir);
+            } else {
+                created = await CreateTask(taskName, localWorkDir);
+            }
+
             if (created?.project_path) {
-                setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
+                setTaskItems(prev => [created!, ...prev.filter(item => item.project_path !== created!.project_path)].slice(0, 10));
             } else {
                 refreshTasks();
                 return;
@@ -2170,10 +2401,14 @@ function App() {
                 initialMessage: taskName,
                 prepareMode: 'new-agent',
                 autoSend: true,
+                agentMode,
+                remoteHost,
             });
             refreshTasks();
         } catch (error) {
             console.error("CreateTask failed:", error);
+            // Re-throw so the create dialog can surface the error (e.g. SSH connect failed).
+            throw error;
         }
     }, [refreshTasks, switchTool]);
 
@@ -2297,13 +2532,13 @@ function App() {
 
     const openServiceRedeemPage = useCallback(() => {
         setNavTabNow('settings');
-        setSettingsTab('redeem');
-    }, []);
+        selectSettingsTab('redeem');
+    }, [selectSettingsTab]);
 
     const openLLMSettingsPage = useCallback(() => {
         setNavTabNow('settings');
-        setSettingsTab('llm');
-    }, []);
+        selectSettingsTab('llm');
+    }, [selectSettingsTab]);
 
     // ── Provider quick-switch: compute available list + handler ──
     const availableProvidersForSwitch = useMemo((): SidebarLLMProviderSummary[] => {
@@ -2338,6 +2573,8 @@ function App() {
     const handleQuickSwitchProvider = useCallback((providerName: string) => {
         // Optimistic update: immediately show new provider name in sidebar
         setSidebarCurrentProviderTokenUsage(prev => ({ ...prev, provider: providerName }));
+        // Switching main provider clears sticky multi-model council on backend.
+        setMoaSession(prev => ({ ...prev, active: false }));
         callBackend(() => PatchConfigFields({ maclaw_llm_current_provider: providerName })).then((saved) => {
             setConfig(new main.AppConfig(saved));
             // Refresh sidebar display with authoritative data from backend
@@ -2361,6 +2598,62 @@ function App() {
             showAlert(errMsg);
         });
     }, [lang, refreshSidebarTokenUsage, showAlert]);
+
+    const refreshMoASession = useCallback(() => {
+        callBackend(() => GetMoASessionState()).then((raw: any) => {
+            const presets = Array.isArray(raw?.presets)
+                ? raw.presets.filter((p: any) => p && typeof p === 'object')
+                : [];
+            setMoaSession({
+                available: !!raw?.available,
+                active: !!raw?.sticky,
+                label: String(raw?.display_name || raw?.preset || '').trim() || undefined,
+                preset: String(raw?.preset || '').trim() || undefined,
+                presets,
+            });
+        }).catch(() => {
+            setMoaSession({ available: false, active: false });
+        });
+    }, []);
+
+    useEffect(() => {
+        refreshMoASession();
+        const off = safeEventsOn('moa-session-changed', () => refreshMoASession());
+        return () => {
+            if (typeof off === 'function') off();
+            else safeEventsOff('moa-session-changed');
+        };
+    }, [refreshMoASession]);
+
+    const handleToggleMoASticky = useCallback((on: boolean, presetId?: string) => {
+        const op = on
+            ? () => SetMoAStickyPreset(presetId && presetId !== '_default_' ? presetId : '_default_')
+            : () => SetMoASticky(false);
+        callBackend(op).then(() => {
+            setMoaSession(prev => ({ ...prev, active: on, preset: on ? (presetId || prev.preset) : undefined }));
+            const toastMsg = on
+                ? (lang === 'en'
+                    ? 'Multi-model council kept on for this session.'
+                    : lang === 'zh-Hant'
+                        ? '\u5df2\u958b\u555f\u672c\u6703\u8a71\u591a\u6a21\u578b\u6703\u8a3a'
+                        : '\u5df2\u5f00\u542f\u672c\u4f1a\u8bdd\u591a\u6a21\u578b\u4f1a\u8bca')
+                : (lang === 'en'
+                    ? 'Multi-model council session mode turned off.'
+                    : lang === 'zh-Hant'
+                        ? '\u5df2\u95dc\u9589\u672c\u6703\u8a71\u591a\u6a21\u578b\u6703\u8a3a'
+                        : '\u5df2\u5173\u95ed\u672c\u4f1a\u8bdd\u591a\u6a21\u578b\u4f1a\u8bca');
+            showToastMessage?.(toastMsg);
+            refreshMoASession();
+        }).catch((err) => {
+            const errMsg = lang === 'en'
+                ? `Failed to toggle multi-model council: ${err}`
+                : lang === 'zh-Hant'
+                    ? `\u5207\u63db\u591a\u6a21\u578b\u6703\u8a3a\u5931\u6557\uff1a${err}`
+                    : `\u5207\u6362\u591a\u6a21\u578b\u4f1a\u8bca\u5931\u8d25\uff1a${err}`;
+            showAlert(errMsg);
+            refreshMoASession();
+        });
+    }, [lang, refreshMoASession, showAlert]);
 
     const openHubCardStorePage = useCallback(async () => {
         try {
@@ -2863,8 +3156,9 @@ function App() {
             if (dir && dir.length > 0) {
                 const currentProj = getCurrentProject();
                 if (!currentProj) return;
+                const projects = config.projects || [];
 
-                const newProjects = config.projects.map((p: any) =>
+                const newProjects = projects.map((p: any) =>
                     p.id === currentProj.id ? { ...p, path: dir } : p
                 );
 
@@ -2881,8 +3175,9 @@ function App() {
         if (!config) return;
         const currentProj = getCurrentProject();
         if (!currentProj) return;
+        const projects = config.projects || [];
 
-        const newProjects = config.projects.map((p: any) =>
+        const newProjects = projects.map((p: any) =>
             p.id === currentProj.id ? { ...p, yolo_mode: checked } : p
         );
 
@@ -3110,6 +3405,18 @@ ${instruction}`;
         }
     };
 
+    // Hooks must run on every render before any early return (isLoading / !config).
+    // Placing these after the loading gate caused: "Rendered more hooks than during
+    // the previous render" → full black screen when env-check finished.
+    const settingsTabOptions = useMemo(
+        () => getSettingsTabOptions(lang, { hideVirtualEmployee: !veNavigationAvailable }),
+        [lang, veNavigationAvailable],
+    );
+    const resolvedSettingsTab = useMemo(
+        () => resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable }),
+        [settingsTab, veNavigationAvailable],
+    );
+
     if (isLoading) {
         logStartupTrace('render-gate-isLoading', { envLogsCount: envLogs.length, isManualCheck });
         return (
@@ -3144,8 +3451,12 @@ ${instruction}`;
                     {showLogs && (
                         isManualCheck ? (
                             <button onClick={() => {
-                                setIsLoading(false);
-                                setIsManualCheck(false);
+                                if (loadingShellCtlRef.current) {
+                                    loadingShellCtlRef.current.finish('user-dismiss');
+                                } else {
+                                    setIsLoading(false);
+                                    setIsManualCheck(false);
+                                }
                             }} className="btn-hide app-loading-action app-loading-action--primary">
                                 {lang === 'zh-Hans' ? '\u6536\u8d77' : lang === 'zh-Hant' ? '\u6536\u8d77' : 'Hide'}
                             </button>
@@ -3163,7 +3474,16 @@ ${instruction}`;
 
     if (!config) {
         logStartupTrace('render-gate-no-config');
-        return <div className="main-content app-config-loading">{t("loadingConfig")}</div>;
+        return (
+            <div
+                className="main-content app-config-loading"
+                data-ai-theme={aiThemeMode}
+                role="status"
+                aria-live="polite"
+            >
+                {t("loadingConfig")}
+            </div>
+        );
     }
 
     const toolCfg = isToolTab(navTab)
@@ -3171,7 +3491,6 @@ ${instruction}`;
         : null;
 
     const currentProject = getCurrentProject();
-    const settingsTabOptions = getSettingsTabOptions(lang, { hideVirtualEmployee: !veNavigationAvailable });
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
@@ -3253,7 +3572,8 @@ ${instruction}`;
                 setTaskContextMenu={setTaskContextMenu}
                 renameTask={RenameTask}
                 pinTask={PinTask}
-                hideTask={HideTask}
+                hideTask={hideTaskGuarded}
+                openProjectTabPaths={openProjectTabPaths}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                 sidebarHubCredits={sidebarHubCredits}
                 formatSidebarTokens={formatSidebarTokens}
@@ -3291,11 +3611,18 @@ ${instruction}`;
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
                 availableProviders={availableProvidersForSwitch}
                 onSwitchProvider={handleQuickSwitchProvider}
+                moaSticky={moaSession}
+                onToggleMoASticky={handleToggleMoASticky}
             />
             <div className="main-container" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}>
-                <Suspense fallback={null}>
-                {/* AI assistant as main content (both lite and pro modes) */}
+                {/* AI and non-AI panes use separate Suspense roots so a page chunk load
+                    never blanks the shared header/status chrome (fallback={null} used to). */}
                 {navTab === 'ai' ? (
+                    <Suspense fallback={
+                        <div className="app-main-content-loading" role="status" aria-live="polite">
+                            {lang === 'zh-Hans' ? '加载助手…' : lang === 'zh-Hant' ? '載入助手…' : 'Loading assistant…'}
+                        </div>
+                    }>
                     <div className="ai-main-panel-shell">
                         <AIAssistantPanel
                             onClose={() => { switchTool('settings'); }}
@@ -3313,6 +3640,7 @@ ${instruction}`;
                             onPendingHistoryDiscussionOpenHandled={() => setPendingHistoryDiscussionOpen(null)}
                             pendingProjectTabOpen={pendingProjectTabOpen}
                             onPendingProjectTabOpenHandled={() => setPendingProjectTabOpen(null)}
+                            onOpenProjectTabsChange={handleOpenProjectTabsChange}
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
@@ -3335,6 +3663,7 @@ ${instruction}`;
                             }}
                         />
                     </div>
+                    </Suspense>
                 ) : (
                 <>
                 <MainTopHeader
@@ -3356,6 +3685,88 @@ ${instruction}`;
                 />
 
                 <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
+                {/* Settings is outside page Suspense. General panels are eager so the default
+                    open path never depends on a lazy chunk (OEM intermittent blank fix). */}
+                {navTab === 'settings' ? (
+                        <SettingsPage
+                            tabs={settingsTabOptions}
+                            activeTab={resolvedSettingsTab}
+                            onChangeTab={selectSettingsTab}
+                            lang={lang}
+                            t={t}
+                            localizeText={localizeText}
+                            config={config}
+                            setConfig={setConfig}
+                            onLanguageChange={handleLangChange}
+                            hasWindowsTerminal={hasWindowsTerminal}
+                            envCheckInterval={envCheckInterval}
+                            setEnvCheckInterval={setEnvCheckInterval}
+                            isWindows={isWindows}
+                            patchConfigFields={patchConfigFieldsForSettings}
+                            onLLMStatusChange={handleSettingsLLMStatusChange}
+                            onProviderChanged={handleLLMProviderChanged}
+                            showToastMessage={showToastMessage}
+                            memoryTraceFocus={memoryTraceFocus}
+                            imSubTab={imSubTab}
+                            setImSubTab={setImSubTab}
+                            imAuditPlatform={imAuditPlatform}
+                            setIMAuditPlatform={setIMAuditPlatform}
+                            saveRemoteConfigField={saveRemoteConfigField}
+                            qqBotStatus={qqBotStatus}
+                            setQQBotStatus={setQQBotStatus}
+                            qqBotLocalMode={qqBotLocalMode}
+                            setQQBotLocalModeState={setQQBotLocalModeState}
+                            telegramStatus={telegramStatus}
+                            setTelegramStatus={setTelegramStatus}
+                            telegramLocalMode={telegramLocalMode}
+                            setTelegramLocalModeState={setTelegramLocalModeState}
+                            weixinStatus={weixinStatus}
+                            setWeixinStatus={setWeixinStatus}
+                            weixinLocalMode={weixinLocalMode}
+                            setWeixinLocalModeState={setWeixinLocalModeState}
+                            thirdPartyGatewayStatus={thirdPartyGatewayStatus}
+                            setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
+                            thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
+                            setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
+                            showLansenger={isTigerClawBrand}
+                            lansengerStatus={lansengerStatus}
+                            setLansengerStatus={setLansengerStatus}
+                            lansengerLocalMode={lansengerLocalMode}
+                            setLansengerLocalModeState={setLansengerLocalModeState}
+                            weixinQRCode={weixinQRCode}
+                            setWeixinQRCode={setWeixinQRCode}
+                            weixinQRLoading={weixinQRLoading}
+                            setWeixinQRLoading={setWeixinQRLoading}
+                            weixinQRWaiting={weixinQRWaiting}
+                            setWeixinQRWaiting={setWeixinQRWaiting}
+                            weixinQRError={weixinQRError}
+                            setWeixinQRError={setWeixinQRError}
+                            veNavigationAvailable={veNavigationAvailable}
+                            veSettingsAuthorized={veSettingsAuthorized}
+                            virtualEmployeeLayoutClassName={virtualEmployeeLayoutClassName}
+                            userFavoriteEmployeeIds={userFavoriteEmployeeIds}
+                            veList={veList}
+                            onAddFavoriteEmployee={handleAddFavoriteEmployeeFromSettings}
+                            onRemoveFavoriteEmployee={handleRemoveFavoriteEmployee}
+                            onReorderFavorites={handleReorderFavorites}
+                            audioDevices={audioDevices}
+                            uiZoom={uiZoom}
+                            setUiZoom={setUiZoom}
+                            chatFontSize={chatFontSize}
+                            setChatFontSize={setChatFontSize}
+                            darkSchemeId={aiDarkSchemeId}
+                            setDarkSchemeId={handleAIDarkSchemeChange}
+                            lightSchemeId={aiLightSchemeId}
+                            setLightSchemeId={handleAILightSchemeChange}
+                        />
+                ) : (
+                <Suspense
+                    fallback={
+                        <div className="app-main-content-loading" role="status" aria-live="polite">
+                            {localizeText('Loading…', '\u52a0\u8f7d\u4e2d\u2026', '\u8f09\u5165\u4e2d\u2026')}
+                        </div>
+                    }
+                >
                     {navTab === 'tutorial' && (
                         <TutorialPage
                             lang={lang}
@@ -3443,197 +3854,6 @@ ${instruction}`;
                         <MCPPage translate={translate} />
                     )}
 
-                    {navTab === 'settings' && (
-                        <div className="settings-shell settings-shell--padded">
-                            <SettingsTabsRail
-                                tabs={settingsTabOptions}
-                                activeTab={settingsTab}
-                                onChange={setSettingsTab}
-                            />
-                            <div className="settings-content settings-content--stacked" hidden={settingsTab !== 'general'}>
-                                <GeneralSettingsPanel
-                                    config={config}
-                                    setConfig={setConfig}
-                                    lang={lang}
-                                    t={t}
-                                    onLanguageChange={handleLangChange}
-                                />
-                                <GeneralAdvancedSettingsPanel
-                                    config={config}
-                                    setConfig={setConfig}
-                                    lang={lang}
-                                    t={t}
-                                    hasWindowsTerminal={hasWindowsTerminal}
-                                    envCheckInterval={envCheckInterval}
-                                    setEnvCheckInterval={setEnvCheckInterval}
-                                />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'searchEngine'}>
-                                <WebSearchConfigPanel lang={lang} />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'pet'}>
-                                <PetSettingsPanel
-                                    config={config}
-                                    lang={lang}
-                                    setConfig={setConfig}
-                                    patchConfig={(patch) => callBackend(() => PatchConfigFields(patch))}
-                                />
-                            </div>
-
-                            <div className="settings-content" hidden={settingsTab !== 'proxy'}>
-                                <ProxySettingsPanel
-                                    config={config}
-                                    setConfig={setConfig}
-                                    isWindows={isWindows}
-                                    lang={lang}
-                                    t={t}
-                                />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'llm'}>
-                                <LLMConfigPanel
-                                    lang={lang}
-                                    codexModels={config?.codex?.models}
-                                    onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }}
-                                    onProviderChanged={handleLLMProviderChanged}
-                                />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'llmCache'}>
-                                <LLMCacheSettingsPanel config={config} setConfig={setConfig} lang={lang} showToastMessage={showToastMessage} />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'redeem'}>
-                                <HubServiceRedeemPanel lang={lang} />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'memory'}>
-                                <MemoryManagementPanel lang={lang} traceFocus={memoryTraceFocus} />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'knowledge'}>
-                                <KnowledgeSettingsPanel lang={lang} showToastMessage={showToastMessage} />
-                            </div>
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'misData'}>
-                                <MISDataSettingsPanel lang={lang} />
-                            </div>
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'embedding'}>
-                                <EmbeddingConfigPanel lang={lang} />
-                                <ASRConfigPanel lang={lang} />
-                                <TTSConfigPanel lang={lang} />
-                            </div>
-
-
-                            <IMSettingsPanel
-                                settingsTab={settingsTab}
-                                config={config}
-                                setConfig={setConfig}
-                                lang={lang}
-                                imSubTab={imSubTab}
-                                setImSubTab={setImSubTab}
-                                imAuditPlatform={imAuditPlatform}
-                                setIMAuditPlatform={setIMAuditPlatform}
-                                saveRemoteConfigField={saveRemoteConfigField}
-                                showToastMessage={showToastMessage}
-                                qqBotStatus={qqBotStatus}
-                                setQQBotStatus={setQQBotStatus}
-                                qqBotLocalMode={qqBotLocalMode}
-                                setQQBotLocalModeState={setQQBotLocalModeState}
-                                telegramStatus={telegramStatus}
-                                setTelegramStatus={setTelegramStatus}
-                                telegramLocalMode={telegramLocalMode}
-                                setTelegramLocalModeState={setTelegramLocalModeState}
-                                weixinStatus={weixinStatus}
-                                setWeixinStatus={setWeixinStatus}
-                                weixinLocalMode={weixinLocalMode}
-                                setWeixinLocalModeState={setWeixinLocalModeState}
-                                thirdPartyGatewayStatus={thirdPartyGatewayStatus}
-                                setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
-                                thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
-                                setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
-                                showLansenger={isTigerClawBrand}
-                                lansengerStatus={lansengerStatus}
-                                setLansengerStatus={setLansengerStatus}
-                                lansengerLocalMode={lansengerLocalMode}
-                                setLansengerLocalModeState={setLansengerLocalModeState}
-                                weixinQRCode={weixinQRCode}
-                                setWeixinQRCode={setWeixinQRCode}
-                                weixinQRLoading={weixinQRLoading}
-                                setWeixinQRLoading={setWeixinQRLoading}
-                                weixinQRWaiting={weixinQRWaiting}
-                                setWeixinQRWaiting={setWeixinQRWaiting}
-                                weixinQRError={weixinQRError}
-                                setWeixinQRError={setWeixinQRError}
-                            />
-
-                            <div className="settings-content settings-panel" hidden={settingsTab !== 'security'}>
-                                <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
-                            </div>
-                            <div className="settings-content" hidden={settingsTab !== 'migration'}>
-                                <MigrationSettingsPanel lang={lang} showToastMessage={showToastMessage} />
-                            </div>
-                            {veNavigationAvailable && (
-                                <div className="settings-content settings-panel settings-content--virtual-employee" hidden={settingsTab !== 'virtualEmployee'}>
-                                    <div className={virtualEmployeeLayoutClassName}>
-                                        {veSettingsAuthorized && (
-                                            <div className="settings-ve-section settings-ve-section--primary">
-                                                <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
-                                            </div>
-                                        )}
-                                        <div className="settings-ve-section settings-ve-section--side">
-                                            <FavoriteEmployeeSettingsPanel
-                                                favoriteEmployeeIds={userFavoriteEmployeeIds}
-                                                veList={veList}
-                                                onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => participantIdentityMatches(v.id, veId) || participantIdentityMatches(v.machine_id, veId)) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'online' })}
-                                                onRemove={handleRemoveFavoriteEmployee}
-                                                onReorder={handleReorderFavorites}
-                                                lang={lang}
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="settings-content" hidden={settingsTab !== 'system'}>
-                                <SystemSettingsPanel
-                                    config={config}
-                                    setConfig={setConfig}
-                                    lang={lang}
-                                    audioDevices={audioDevices}
-                                    saveRemoteConfigField={saveRemoteConfigField}
-                                    showToastMessage={showToastMessage}
-                                />
-                            </div>
-
-                            <div className="settings-content" hidden={settingsTab !== 'ui'}>
-                                <UISettingsPanel
-                                    config={config}
-                                    lang={lang}
-                                    t={t}
-                                    uiZoom={uiZoom}
-                                    setUiZoom={setUiZoom}
-                                    chatFontSize={chatFontSize}
-                                    setChatFontSize={setChatFontSize}
-                                    darkSchemeId={aiDarkSchemeId}
-                                    setDarkSchemeId={handleAIDarkSchemeChange}
-                                    lightSchemeId={aiLightSchemeId}
-                                    setLightSchemeId={handleAILightSchemeChange}
-                                />
-                            </div>
-
-                            <div className="settings-content" hidden={settingsTab !== 'display'}>
-                                <ProgrammingToolsSettingsPanel
-                                    config={config}
-                                    setConfig={setConfig}
-                                    lang={lang}
-                                />
-                            </div>
-                        </div>
-                    )}
-
                     {navTab === 'about' && (
                         <AboutPanel
                             currentIcon={currentIcon}
@@ -3683,6 +3903,8 @@ ${instruction}`;
                             }}
                         />
                     )}
+                </Suspense>
+                )}
                 </div>
 
                 {/* Global Action Bar (Footer) */}
@@ -4062,16 +4284,16 @@ ${instruction}`;
                     remoteActivated={!!remoteActivationStatus?.activated}
                     showLansenger={isTigerClawBrand}
                     navTab={navTab}
-                    settingsTab={settingsTab}
+                    settingsTab={resolvedSettingsTab}
                     backgroundInstallStatus={backgroundInstallStatus}
                     lobsterOffline={lobsterOffline}
                     lobsterHalf={lobsterHalf}
-                    onOpenIMSettings={() => { setNavTabNow('settings'); setSettingsTab('im'); }}
-                    onOpenLLMSettings={() => { setNavTabNow('settings'); setSettingsTab('llm'); }}
+                    onOpenIMSettings={() => { setNavTabNow('settings'); selectSettingsTab('im'); }}
+                    onOpenLLMSettings={() => { setNavTabNow('settings'); selectSettingsTab('llm'); }}
                     codingAgentProgress={codingAgentProgress}
+                    isDark={aiThemeMode === 'dark'}
                 />
             </>)}
-                </Suspense>
         </div>
 
             {/* Modals */}

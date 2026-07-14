@@ -1646,6 +1646,16 @@ body {
     --wails-draggable: no-drag;
 }
 
+.app-main-content-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    color: var(--theme-text-secondary);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
 .app-main-content[data-nav-tab='projects'] {
     overflow-y: hidden;
 }
@@ -1667,6 +1677,19 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    min-height: 100vh;
+    box-sizing: border-box;
+    padding: 24px;
+    background: var(--theme-page-bg, #f3f5f8);
+    color: var(--theme-text-secondary, #5a6577);
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.app-config-loading[data-ai-theme='dark'] {
+    --theme-page-bg: #0b1220;
+    --theme-text-secondary: #cbd5e1;
 }
 
 .app-loading-shell {
@@ -1694,6 +1717,10 @@ body {
     --theme-text-secondary: #cbd5e1;
     --theme-text-muted: #a8b8c8;
     --theme-border: #334155;
+    /* Title used --theme-primary-strong with a dark-blue fallback that is nearly
+       invisible on dark page bg; make loading chrome readable in dark mode. */
+    --theme-primary: #7eb6ff;
+    --theme-primary-strong: #cfe4ff;
 }
 
 /* macOS / Windows 11: native rounded corners from the OS — remove CSS rounding */
@@ -2416,6 +2443,18 @@ body {
     padding: 10px;
 }
 
+/* Stable content slot: always occupies the grid "content" area even when the
+   active panel is wrapped in Suspense / ErrorBoundary (no DOM nodes of their own
+   when idle — but intermediate wrappers still made auto-placement flaky). */
+.settings-shell__body {
+    grid-area: content;
+    min-width: 0;
+    max-width: min(1180px, 100%);
+    width: 100%;
+    min-height: 160px;
+    align-self: stretch;
+}
+
 .settings-top-tabs {
     grid-area: nav;
     position: sticky;
@@ -2566,6 +2605,27 @@ body {
 .settings-content--stacked {
     display: grid;
     gap: 14px;
+}
+
+.settings-content--loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 160px;
+    color: var(--theme-text-secondary);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.settings-content-loading-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-content-loading-retry {
+    min-width: 88px;
 }
 
 .settings-content[hidden],

@@ -739,6 +739,237 @@ command = "npx"
 	}
 }
 
+func TestWriteTigerProxyCodexConfigAddsContextSettings(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`model_context_window = 199000`,
+		`model_auto_compact_token_limit = 180000`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("TigerProxy config missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteTigerProxyCodexConfigUpdatesExistingContextSettings(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatalf("create Codex config directory: %v", err)
+	}
+	seed := "model_provider = \"tigerproxy\"\nmodel = \"old-model\"\nmodel_context_window = 128000\nmodel_auto_compact_token_limit = 115000\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "model_context_window = 128000") || strings.Contains(content, "model_auto_compact_token_limit = 115000") {
+		t.Fatalf("TigerProxy context settings were not updated:\n%s", content)
+	}
+	for _, want := range []string{
+		`model_context_window = 199000`,
+		`model_auto_compact_token_limit = 180000`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("TigerProxy config missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteTigerProxyCodexConfigAddsContextSettingsToCompactToml(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatalf("create Codex config directory: %v", err)
+	}
+	seed := "model_provider=\"tigerproxy\"\nmodel=\"old-model\"\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`model_context_window = 199000`,
+		`model_auto_compact_token_limit = 180000`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("TigerProxy config missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteTigerProxyCodexConfigIgnoresSimilarTopLevelKeys(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatalf("create Codex config directory: %v", err)
+	}
+	seed := "model_provider_alias=\"legacy\"\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "model_provider_alias=\"legacy\"") {
+		t.Fatalf("similar user key was not preserved:\n%s", content)
+	}
+	if !strings.Contains(content, `model_provider = "tigerproxy"`) || !strings.Contains(content, `model = "gpt-5.5"`) {
+		t.Fatalf("TigerProxy model settings were not inserted:\n%s", content)
+	}
+}
+
+func TestWriteTigerProxyCodexConfigPreservesProviderSectionComment(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatalf("create Codex config directory: %v", err)
+	}
+	seed := "model_provider = \"tigerproxy\"\nmodel = \"old-model\"\n\n[model_providers.tigerproxy] # keep this comment\nname = \"old\"\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	if strings.Count(content, "[model_providers.tigerproxy]") != 1 {
+		t.Fatalf("TigerProxy provider section was duplicated:\n%s", content)
+	}
+	if !strings.Contains(content, "[model_providers.tigerproxy] # keep this comment") {
+		t.Fatalf("provider section comment was not preserved:\n%s", content)
+	}
+}
+
+func TestWriteTigerProxyCodexConfigRecognizesQuotedProviderSection(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "model_provider = \"tigerproxy\"\nmodel = \"old\"\n\n[model_providers.\"tigerproxy\"]\nname = \"old\"\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "model_providers.") != 1 {
+		t.Fatalf("provider section duplicated:\n%s", data)
+	}
+}
+
+func TestWriteTigerProxyCodexConfigRecognizesSingleQuotedProviderSection(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "model_provider = \"tigerproxy\"\nmodel = \"old\"\n\n[model_providers.'tigerproxy']\nname = \"old\"\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteTigerProxyCodexConfig("sk-test", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "model_providers.") != 1 {
+		t.Fatalf("provider section duplicated:\n%s", data)
+	}
+}
+
+func TestWriteCodexConfigPreservesTigerProxyContextSettings(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o755); err != nil {
+		t.Fatalf("create Codex config directory: %v", err)
+	}
+	seed := "model_provider = \"custom\"\nmodel = \"old-model\"\nmodel_context_window = 199000\nmodel_auto_compact_token_limit = 180000\n"
+	if err := AtomicWrite(CodexConfigPath(), []byte(seed)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://api.example.com/v1", "gpt-5.5", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`model_context_window = 199000`,
+		`model_auto_compact_token_limit = 180000`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("generic writer unexpectedly modified %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestWriteCodexConfigAtUsesScopedDirAndRemovesStaleAuthWhenKeyEmpty(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

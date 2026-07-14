@@ -13,6 +13,8 @@ const CreateMobileLLMDesktopQRSessionMock = vi.fn();
 const LoadConfigMock = vi.fn();
 const BrowserOpenURLMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
+const GetMoAConfigMock = vi.fn();
+const SaveMoAConfigMock = vi.fn();
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetMaclawLLMProviders: (...args: unknown[]) => GetMaclawLLMProvidersMock(...args),
@@ -31,6 +33,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
     CreateMobileLLMDesktopQRSession: (...args: unknown[]) => CreateMobileLLMDesktopQRSessionMock(...args),
     SaveCodeGenModelChoice: vi.fn(),
+    GetMoAConfig: (...args: unknown[]) => GetMoAConfigMock(...args),
+    SaveMoAConfig: (...args: unknown[]) => SaveMoAConfigMock(...args),
+    GetMoASessionState: vi.fn().mockResolvedValue({ sticky: false }),
+    SetMoASticky: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -66,6 +72,8 @@ describe('LLMConfigPanel test-and-save flow', () => {
         GetMaclawAgentMaxIterationsMock.mockResolvedValue(12);
         GetSubAgentConcurrencyMock.mockResolvedValue(2);
         GetHubLLMServiceStatusMock.mockResolvedValue({ active: false });
+        GetMoAConfigMock.mockResolvedValue({ enabled: false, presets: {} });
+        SaveMoAConfigMock.mockResolvedValue(undefined);
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
             status: 'created',

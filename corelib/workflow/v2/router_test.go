@@ -95,8 +95,7 @@ func TestRoute_LLMConfirmationCanRejectStructuredTemplateMatch(t *testing.T) {
 
 func TestRoute_CodingTaskRoutesToWorkflowChoice(t *testing.T) {
 	// Coding tasks always route to RouteToWorkflow; the GUI layer presents a
-	// choice panel for the user to select full SDD, simplified coding, remote
-	// coding, or skip.
+	// choice panel for the user to select full SDD workflow or skip.
 	r := setupTestRouter()
 
 	result := r.Route("user1", "d:\\service build backend service with APIs and database migrations", nil)

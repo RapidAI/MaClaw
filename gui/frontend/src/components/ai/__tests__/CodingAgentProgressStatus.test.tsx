@@ -28,8 +28,14 @@ import {
     codingAgentStatusLabel,
     codingAgentStatusSelector,
     codingAgentStatusTone,
+    CODING_AGENT_FAILURE_ACCENT,
+    CODING_AGENT_FAILURE_ACCENT_DARK,
+    adaptCodingAgentStatusTone,
+    codingAgentUiIsDark,
+    resolveCodingAgentStatusTone,
     codingAgentToolOutcomeLabel,
     codingAgentToolOutcomeTone,
+    codingAgentOutcomeMark,
     codingAgentToolTraceText,
     codingAgentTurnSnapshotText,
     codingAgentVerificationStatusLabel,
@@ -46,7 +52,12 @@ import {
     normalizeCodingAgentTitle,
     parseCodingAgentEventProgress,
     parseCodingAgentProgress,
+    codingAgentFeedStableKey,
+    isCodingAgentProgressContent,
+    pickCodingAgentFeedHeader,
+    renderCodingAgentActivityFeed,
     renderCodingAgentProgressStatus,
+    resolveCodingAgentFeedTone,
 } from '../CodingAgentProgressStatus';
 
 const makeProgressMsg = (content: string, id = content): ChatMessage => ({
@@ -68,7 +79,7 @@ describe('CodingAgentProgressStatus', () => {
             summary: 'file not found: C:\\testdriver\\missing.cpp',
         })}`);
         expect(progress).toBeTruthy();
-        expect(codingAgentProgressTone(progress!).accent).not.toBe('#c43d34');
+        expect(codingAgentProgressTone(progress!).accent).not.toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentProgressStatusText(progress!, 'zh-Hans')).toContain('文件或路径不存在');
     });
 
@@ -99,7 +110,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentProgressTone(missingDir!).accent).toBe('#64748b');
         expect(codingAgentProgressStatusText(missingDir!, 'zh-Hans')).toContain('文件或路径不存在');
 
-        // Real remote errors stay red.
+        // Real remote hard failures keep the soft amber failure tone (not neutral).
         const hardFail = parseCodingAgentProgress(`Coding Agent Event: ${JSON.stringify({
             version: 1,
             agent: 'coding',
@@ -110,7 +121,7 @@ describe('CodingAgentProgressStatus', () => {
             summary: 'fatal error LNK1120: unresolved externals',
         })}`);
         expect(hardFail).toBeTruthy();
-        expect(codingAgentProgressTone(hardFail!).accent).toBe('#c43d34');
+        expect(codingAgentProgressTone(hardFail!).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
     });
 
     it('treats remote workspace setup probes as neutral checks', () => {
@@ -141,7 +152,7 @@ describe('CodingAgentProgressStatus', () => {
             summary: 'test process returned a non-zero result',
         })}`);
         expect(progress).toBeTruthy();
-        expect(codingAgentProgressTone(progress!).accent).not.toBe('#c43d34');
+        expect(codingAgentProgressTone(progress!).accent).not.toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentProgressStatusText(progress!, 'zh-Hans')).toContain('探索性测试未通过');
     });
     it('parses coding agent progress with phase, task id, and title', () => {
@@ -203,7 +214,8 @@ describe('CodingAgentProgressStatus', () => {
         );
 
         const preview = screen.getByTestId('coding-agent-command-preview');
-        expect(preview.textContent).toContain('cmd: Remove-Item');
+        // Tool-trail shows the raw command (no "cmd:" chip label).
+        expect(preview.textContent).toContain('Remove-Item');
         expect(preview.getAttribute('title')).toBe(command);
         expect(preview.getAttribute('role')).toBe('note');
         expect(preview.getAttribute('aria-label')).toBe(`Command: ${command}`);
@@ -427,7 +439,7 @@ describe('CodingAgentProgressStatus', () => {
             makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"diff_summary","phase":"result","task_id":"T1","title":"First task","turn_id":"turn-1","detail":"2 files","count":2,"files":["a.go","b.go"]}'),
         ]);
 
-        expect(snapshot && codingAgentTurnSnapshotText(snapshot, 'en')).toBe('Coding Agent | Task status | Result | T1 | 2 files | First task | a.go, b.go | Trace: read_file Blocked 1.3s | Tool: read_file | Result: blocked | Duration: 1.3s | Guard: Blocked (blocked | bash | category:git) | Commands: None (no bash commands run) | Activity: None (read 0 / modified 0 / created 0) | Quality: Passed (no file changes; quality gates not needed) | Explore: Missing (no reads before editing) | Verify: Not run (no verification command detected) | Diff check: Skipped (no modified files) | Files: a.go, b.go | Diff: 2 files');
+        expect(snapshot && codingAgentTurnSnapshotText(snapshot, 'en')).toBe('Coding \u00b7 Result \u00b7 T1 \u00b7 2 files \u00b7 First task \u00b7 Trace: read_file Blocked 1.3s \u00b7 Tool: read_file \u00b7 Result: blocked \u00b7 Duration: 1.3s \u00b7 Guard: Blocked (blocked | bash | category:git) \u00b7 Commands: None (no bash commands run) \u00b7 Activity: None (read 0 / modified 0 / created 0) \u00b7 Quality: Passed (no file changes; quality gates not needed) \u00b7 Explore: Missing (no reads before editing) \u00b7 Verify: Not run (no verification command detected) \u00b7 Diff check: Skipped (no modified files) \u00b7 Files: a.go, b.go \u00b7 Diff: 2 files');
     });
 
     it('keeps zero-duration coding-agent timing visible in trace and accessibility text', () => {
@@ -451,7 +463,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentCommandStatusLabel('none', 'en')).toBe('None');
         expect(codingAgentCommandStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
         expect(codingAgentCommandStatusTone('passed').accent).toBe('#4f7f6f');
-        expect(codingAgentCommandStatusTone('failed').accent).toBe('#c43d34');
+        expect(codingAgentCommandStatusTone('failed').accent).toBe(CODING_AGENT_FAILURE_ACCENT);
     });
 
     it('normalizes coding-agent file activity labels and tones', () => {
@@ -468,7 +480,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentQualityStatusLabel('failed', 'zh-Hans')).toBe('\u672a\u901a\u8fc7');
         expect(codingAgentQualityStatusTone('passed').accent).toBe('#4f7f6f');
         expect(codingAgentQualityStatusTone('warning').accent).toBe('#64748b');
-        expect(codingAgentQualityStatusTone('failed').accent).toBe('#c43d34');
+        expect(codingAgentQualityStatusTone('failed').accent).toBe(CODING_AGENT_FAILURE_ACCENT);
     });
 
     it('normalizes coding-agent exploration labels and tones', () => {
@@ -483,7 +495,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentVerificationStatusLabel('passed', 'en')).toBe('Passed');
         expect(codingAgentVerificationStatusLabel('missing', 'en')).toBe('Not run');
         expect(codingAgentVerificationStatusLabel('failed', 'zh-Hans')).toBe('\u672a\u901a\u8fc7');
-        expect(codingAgentVerificationStatusTone('failed').accent).toBe('#c43d34');
+        expect(codingAgentVerificationStatusTone('failed').accent).toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentVerificationStatusTone('missing').accent).toBe('#64748b');
     });
 
@@ -501,7 +513,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentToolOutcomeLabel('blocked', 'zh-Hans')).toBe('\u5df2\u963b\u65ad');
         expect(codingAgentToolOutcomeLabel('other', 'en')).toBe('Unknown');
         expect(codingAgentToolOutcomeTone('success').accent).toBe('#4f7f6f');
-        expect(codingAgentToolOutcomeTone('failed').accent).toBe('#c43d34');
+        expect(codingAgentToolOutcomeTone('failed').accent).toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentToolOutcomeTone('blocked').accent).toBe('#64748b');
         expect(formatCodingAgentDuration(0)).toBe('0ms');
         expect(formatCodingAgentDuration(250)).toBe('250ms');
@@ -509,7 +521,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(formatCodingAgentDuration(65000)).toBe('1m 5s');
     });
 
-    it('renders diagnostic tool failures with a neutral tone while keeping real failures red', () => {
+    it('renders diagnostic tool failures with a neutral tone while keeping real failures as soft amber', () => {
         expect(codingAgentProgressTone({
             phase: 'running',
             title: 'Probe compiler',
@@ -536,7 +548,17 @@ describe('CodingAgentProgressStatus', () => {
             outcome: 'failed',
             command: 'where cl.exe 2>&1; Get-ItemProperty "HKLM:\\SOFTWARE\\Microsoft\\VisualStudio\\SxS\\VS7" 2>&1',
             summary: 'PowerShell error: cannot find the requested registry path',
-        }, 'zh-Hans')).toBe('Visual Studio \u8def\u5f84\u4e0d\u5b58\u5728');
+        }, 'zh-Hans')).toBe('cl.exe \u4e0d\u5728 PATH\uff08\u9700\u5148 vcvars\uff09');
+
+        expect(codingAgentProgressStatusText({
+            phase: 'running',
+            title: 'Locate Visual Studio',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'Get-ChildItem "C:\\Program Files\\Microsoft Visual Studio\\2019" -ErrorAction SilentlyContinue',
+            summary: 'PowerShell error: 找不到路径',
+        }, 'zh-Hans')).toBe('VS \u8def\u5f84\u63a2\u6d4b\u672a\u547d\u4e2d\uff08cl \u9700 vcvars\uff09');
 
         expect(codingAgentProgressStatusText({
             phase: 'running',
@@ -556,6 +578,31 @@ describe('CodingAgentProgressStatus', () => {
             outcome: 'failed',
             summary: 'g++: command not found',
         }).accent).toBe('#64748b');
+
+        // Real MSVC compile via full VS path must stay a hard failure tone, not a neutral "probe".
+        const msvcCompileFail = {
+            phase: 'running' as const,
+            title: 'Build',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'cmd /c "call \\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\\" && cl /utf-8 /EHsc /Fe:test.exe hello.cpp"',
+            summary: 'error C2065: undeclared identifier',
+        };
+        expect(codingAgentProgressTone(msvcCompileFail).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
+        expect(codingAgentProgressStatusText(msvcCompileFail, 'zh-Hans')).not.toMatch(/vcvars|PATH|探测/);
+
+        // PowerShell-wrapped MSVC failure must also stay hard-failure tone (not "powershell exception" probe).
+        const msvcPSFail = {
+            phase: 'running' as const,
+            title: 'Build',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'cmd /c "call \\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\\" && cl /utf-8 hello.cpp"',
+            summary: 'PowerShell exception: error C2143: syntax error',
+        };
+        expect(codingAgentProgressTone(msvcPSFail).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
 
         expect(codingAgentProgressTone({
             phase: 'running',
@@ -593,7 +640,7 @@ describe('CodingAgentProgressStatus', () => {
             detail: 'bash',
             outcome: 'failed',
             summary: 'ninja: build stopped: subcommand failed.',
-        }).accent).toBe('#c43d34');
+        }).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
 
         expect(codingAgentProgressTone({
             phase: 'running',
@@ -602,7 +649,7 @@ describe('CodingAgentProgressStatus', () => {
             detail: 'bash',
             outcome: 'failed',
             summary: 'FAIL at D:\\test\\test_hello.cpp:11: CHECK(result == "Hello, World!")',
-        }).accent).toBe('#c43d34');
+        }).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
 
         expect(codingAgentProgressTone({
             phase: 'running',
@@ -612,7 +659,7 @@ describe('CodingAgentProgressStatus', () => {
             outcome: 'failed',
             severity: 'diagnostic',
             summary: 'FAIL at D:\\test\\test_hello.cpp:11: CHECK (result == "Hello, World!")',
-        }).accent).toBe('#c43d34');
+        }).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
 
         expect(codingAgentProgressTone({
             phase: 'running',
@@ -622,7 +669,7 @@ describe('CodingAgentProgressStatus', () => {
             outcome: 'failed',
             severity: 'diagnostic',
             summary: 'permission denied while opening /srv/app/config.yml',
-        }).accent).toBe('#c43d34');
+        }).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
     });
 
     it('keeps older coding-agent turns out of the latest turn snapshot', () => {
@@ -784,27 +831,52 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentStatusLabel('failed', 'en')).toBe('Failed');
         expect(codingAgentStatusLabel('failed', 'zh-Hans')).toBe('\u5931\u8d25');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'en'))
-            .toBe('Coding Agent | Running | T2 | Fix stale edit guard');
+            .toBe('Coding \u00b7 Running \u00b7 T2 \u00b7 Fix stale edit guard');
         expect(codingAgentDisplayText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans'))
-            .toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u6267\u884c\u4e2d | T2 | Fix stale edit guard');
+            .toBe('\u7f16\u7a0b \u00b7 \u6267\u884c\u4e2d \u00b7 T2 \u00b7 Fix stale edit guard');
         expect(codingAgentCompactText({ phase: 'running', taskID: 'T2', title: 'Fix stale edit guard' }, 'zh-Hans'))
-            .toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u6267\u884c\u4e2d | T2');
+            .toBe('\u7f16\u7a0b \u00b7 \u6267\u884c\u4e2d \u00b7 T2');
         expect(codingAgentCompactText({ phase: 'running', taskID: ' t2 ', title: 'Fix stale edit guard' }, 'en'))
-            .toBe('Coding Agent | Running | T2');
+            .toBe('Coding \u00b7 Running \u00b7 T2');
+        // tool_finished detail is the tool name — omit from compact meta to avoid "Tool Success · bash" noise.
+        expect(codingAgentCompactText({
+            phase: 'running',
+            taskID: 'T1',
+            title: 'Edit',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'success',
+        }, 'en')).toBe('Coding \u00b7 Tool Success \u00b7 T1');
+        // tool_started still surfaces the tool name as live activity meta.
+        expect(codingAgentCompactText({
+            phase: 'running',
+            taskID: 'T1',
+            title: 'Edit',
+            event: 'tool_started',
+            detail: 'bash',
+        }, 'en')).toBe('Coding \u00b7 Running \u00b7 T1 \u00b7 bash');
         expect(codingAgentCompactText({ phase: 'result', taskID: ' t2 ', title: 'Fix stale edit guard', event: 'diff_summary', detail: '3 files' }, 'en'))
-            .toBe('Coding Agent | Result | T2 | 3 files');
+            .toBe('Coding \u00b7 Result \u00b7 T2 \u00b7 3 files');
         expect(codingAgentCompactText({ phase: 'result', taskID: 'T2', title: 'No commands', event: 'command_summary', count: 0 }, 'en'))
-            .toBe('Coding Agent | Result | T2 | 0 commands');
+            .toBe('Coding \u00b7 Result \u00b7 T2 \u00b7 0 commands');
         expect(codingAgentCompactText({ phase: 'result', taskID: 'T2', title: 'Clean quality', event: 'quality_summary', count: 0 }, 'en'))
-            .toBe('Coding Agent | Result | T2 | 0 issues');
+            .toBe('Coding \u00b7 Result \u00b7 T2 \u00b7 0 issues');
         expect(codingAgentCompactText({ phase: 'result', taskID: 'T2', title: 'No diff', event: 'diff_check', count: 0 }, 'zh-Hans'))
-            .toBe('\u7f16\u7a0b\u667a\u80fd\u4f53 | \u7ed3\u679c | T2 | 0 \u4e2a\u53d8\u66f4');
+            .toBe('\u7f16\u7a0b \u00b7 \u7ed3\u679c \u00b7 T2 \u00b7 0 \u4e2a\u53d8\u66f4');
         expect(codingAgentDisplayText({ phase: 'running', taskID: ' t2 ', title: '  Fix stale edit guard  ' }, 'en'))
-            .toBe('Coding Agent | Running | T2 | Fix stale edit guard');
+            .toBe('Coding \u00b7 Running \u00b7 T2 \u00b7 Fix stale edit guard');
         expect(codingAgentVariantDisplayText({ phase: 'running', taskID: ' t2 ', title: '  Fix stale edit guard  ' }, 'en', 'sidebar'))
-            .toBe('Coding Agent | Task status | Running | T2 | Fix stale edit guard');
+            .toBe('Coding \u00b7 Running \u00b7 T2 \u00b7 Fix stale edit guard');
+        expect(codingAgentVariantDisplayText({
+            phase: 'result',
+            taskID: 'T6',
+            title: 'Update parser',
+            event: 'diff_summary',
+            count: 4,
+            files: ['a.go', 'b.go', 'c.go', 'd.go'],
+        }, 'en', 'sidebar')).toBe('Coding \u00b7 Result \u00b7 T6 \u00b7 4 changes \u00b7 Update parser \u00b7 a.go, b.go, c.go +1 more');
         expect(codingAgentVariantDisplayText({ phase: 'running', taskID: ' t2 ', title: '  Fix stale edit guard  ' }, 'en', 'status-bar'))
-            .toBe('Coding Agent | Running | T2 | Fix stale edit guard');
+            .toBe('Coding \u00b7 Running \u00b7 T2 \u00b7 Fix stale edit guard');
         expect(codingAgentFilePreviewText({ phase: 'result', taskID: 'T2', title: 'Done', files: ['a.go', 'b.go', 'c.go', 'd.go'] }, 'en'))
             .toBe('a.go, b.go, c.go +1 more');
         expect(codingAgentFilePreviewText({ phase: 'result', taskID: 'T2', title: 'Done', files: ['a.go', 'b.go', 'c.go', 'd.go'] }, 'zh-Hans'))
@@ -814,7 +886,7 @@ describe('CodingAgentProgressStatus', () => {
     it('maps status phases to distinct semantic tones', () => {
         expect(codingAgentStatusTone('running').accent).toBe('#2f5f98');
         expect(codingAgentStatusTone('retrying').accent).toBe('#64748b');
-        expect(codingAgentStatusTone('failed').accent).toBe('#c43d34');
+        expect(codingAgentStatusTone('failed').accent).toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentStatusTone('completed').accent).toBe('#4f7f6f');
         expect(codingAgentStatusTone('result').accent).toBe('#4f7f6f');
         expect(codingAgentStatusTone('skipped').accent).toBe('#64748b');
@@ -824,10 +896,10 @@ describe('CodingAgentProgressStatus', () => {
     });
 
     it('uses event outcome tones for coding-agent summary progress rows', () => {
-        expect(codingAgentProgressTone({ phase: 'result', title: 'Quality summary', event: 'quality_summary', outcome: 'failed' }).accent).toBe('#c43d34');
+        expect(codingAgentProgressTone({ phase: 'result', title: 'Quality summary', event: 'quality_summary', outcome: 'failed' }).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
         expect(codingAgentProgressTone({ phase: 'result', title: 'Verification summary', event: 'verification_summary', outcome: 'missing' }).accent).toBe('#64748b');
         expect(codingAgentProgressTone({ phase: 'result', title: 'Diff check', event: 'diff_check', outcome: 'checked' }).accent).toBe('#4f7f6f');
-        expect(codingAgentProgressTone({ phase: 'failed', title: 'Failed' }).accent).toBe('#c43d34');
+        expect(codingAgentProgressTone({ phase: 'failed', title: 'Failed' }).accent).toBe(CODING_AGENT_FAILURE_ACCENT);
     });
 
     it('classifies active and terminal phases for monitor diagnostics', () => {
@@ -876,13 +948,14 @@ describe('CodingAgentProgressStatus', () => {
         );
 
         const status = screen.getByTestId('coding-agent-progress');
-        expect(status.textContent).toContain('Coding Agent');
+        // Tool-trail layout: header (Coding · T4 · Failed · title) + mono tool line.
+        expect(status.textContent).toMatch(/Coding/);
         expect(status.textContent).toContain('Failed');
         expect(status.textContent).toContain('T4');
         expect(status.textContent).toContain('Apply patch');
         expect(status.getAttribute('role')).toBe('status');
         expect(status.getAttribute('aria-live')).toBe('polite');
-        expect(status.getAttribute('aria-label')).toBe('Coding Agent | Failed | T4 | Apply patch');
+        expect(status.getAttribute('aria-label')).toBe('Coding \u00b7 Failed \u00b7 T4 \u00b7 Apply patch');
         expect(status.getAttribute('data-agent')).toBe('coding');
         expect(status.getAttribute('data-active')).toBe('false');
         expect(status.getAttribute('data-change-count')).toBe('');
@@ -894,6 +967,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(status.className).toContain('coding-agent-status');
         expect(status.className).toContain('coding-agent-status--chat-progress');
         expect(status.className).toContain('coding-agent-status--failed');
+        expect(status.querySelector('[data-testid="coding-agent-tool-line"]')).toBeTruthy();
     });
 
     it('renders quality summary failures as failed chat progress instead of generic result rows', () => {
@@ -908,10 +982,228 @@ describe('CodingAgentProgressStatus', () => {
         );
 
         const status = screen.getByTestId('coding-agent-progress');
-        expect(status.textContent).toContain('Quality Not Passed');
-        expect(status.textContent).toContain('1 issues');
-        expect(status.textContent).toContain('T4');
-        expect(status.getAttribute('aria-label')).toBe('Coding Agent | Quality Not Passed | T4 | 1 issues | Apply patch');
-        expect(status.style.border).toContain('rgba(196, 61, 52, 0.22)');
+        expect(status.textContent).toMatch(/quality/i);
+        expect(status.textContent).toMatch(/verification not run|Quality Not Passed|1 issues/i);
+        expect(status.getAttribute('aria-label')).toBe('Coding \u00b7 Quality Not Passed \u00b7 T4 \u00b7 1 issues \u00b7 Apply patch');
+        // Terminal-style feed uses top accent (box-shadow) + data-tone-accent, not a left stripe.
+        expect(status.getAttribute('data-tone-accent')).toBe(CODING_AGENT_FAILURE_ACCENT);
+        expect(status.style.boxShadow || '').toContain(CODING_AGENT_FAILURE_ACCENT);
+        // Soft amber — never alarmist red.
+        expect(status.getAttribute('data-tone-accent')).not.toMatch(/#c43d34|rgb\(196/i);
+    });
+
+    it('detects coding progress content without false positives', () => {
+        expect(isCodingAgentProgressContent('Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"running"}')).toBe(true);
+        expect(isCodingAgentProgressContent('Coding Agent: running T2 - Fix stale edit guard')).toBe(true);
+        expect(isCodingAgentProgressContent('Coding Agent Event: {"version":1,"agent":"other","phase":"running"}')).toBe(false);
+        expect(isCodingAgentProgressContent('Coding Agent: not a real status line here')).toBe(false);
+        expect(isCodingAgentProgressContent('plain progress')).toBe(false);
+    });
+
+    it('builds a stable feed key from turn_id without remounting on each line', () => {
+        expect(codingAgentFeedStableKey([
+            { id: '1', content: 'Coding Agent Event: {"version":1,"agent":"coding","turn_id":"t-a","task_id":"T1"}' },
+            { id: '2', content: 'Coding Agent Event: {"version":1,"agent":"coding","turn_id":"t-a","task_id":"T1"}' },
+        ])).toBe('feed-turn-t-a');
+        expect(codingAgentFeedStableKey([
+            { id: 'only', content: 'Coding Agent: running T9 - Hello' },
+        ])).toBe('feed-task-T9');
+    });
+
+    it('elevates feed chrome to failed when trail has critical failures while phase is running', () => {
+        const tone = resolveCodingAgentFeedTone(
+            normalizeCodingAgentProgress({ phase: 'running', taskID: 'T1', title: 'Fix', event: 'task_status' }),
+            [
+                normalizeCodingAgentProgress({
+                    phase: 'running',
+                    taskID: 'T1',
+                    title: 'Fix',
+                    event: 'tool_finished',
+                    detail: 'bash',
+                    outcome: 'failed',
+                    command: 'cl',
+                }),
+            ],
+            false,
+        );
+        expect(tone.accent).toBe(CODING_AGENT_FAILURE_ACCENT);
+
+        const darkTone = resolveCodingAgentFeedTone(
+            normalizeCodingAgentProgress({ phase: 'running', taskID: 'T1', title: 'Fix', event: 'task_status' }),
+            [
+                normalizeCodingAgentProgress({
+                    phase: 'running',
+                    taskID: 'T1',
+                    title: 'Fix',
+                    event: 'tool_finished',
+                    detail: 'bash',
+                    outcome: 'failed',
+                    command: 'cl',
+                }),
+            ],
+            true,
+        );
+        expect(darkTone.accent).toBe(CODING_AGENT_FAILURE_ACCENT_DARK);
+        expect(darkTone.accent).not.toBe(CODING_AGENT_FAILURE_ACCENT);
+
+        const okTone = resolveCodingAgentFeedTone(
+            normalizeCodingAgentProgress({ phase: 'running', taskID: 'T1', title: 'Fix', event: 'task_status' }),
+            [
+                normalizeCodingAgentProgress({
+                    phase: 'running',
+                    taskID: 'T1',
+                    title: 'Fix',
+                    event: 'tool_finished',
+                    detail: 'bash',
+                    outcome: 'success',
+                }),
+            ],
+            false,
+        );
+        expect(okTone.accent).not.toBe(CODING_AGENT_FAILURE_ACCENT);
+        expect(okTone.accent).not.toMatch(/#c43d34/i);
+    });
+
+    it('uses soft amber (never red) for hard-failure outcome marks; dark mode brightens', () => {
+        const failed = normalizeCodingAgentProgress({
+            phase: 'failed',
+            title: 'Build failed',
+            event: 'tool_finished',
+            detail: 'bash',
+            outcome: 'failed',
+            command: 'cl /c main.cpp',
+            summary: 'error C2065: undeclared identifier',
+        });
+        const lightMark = codingAgentOutcomeMark(failed, false);
+        const darkMark = codingAgentOutcomeMark(failed, true);
+        expect(lightMark.glyph).toBe('\u2717');
+        expect(lightMark.color).toBe(CODING_AGENT_FAILURE_ACCENT);
+        expect(lightMark.color).not.toMatch(/#c43d34/i);
+        expect(darkMark.color).toBe(CODING_AGENT_FAILURE_ACCENT_DARK);
+    });
+
+    it('adapts failure/neutral tones for dark UI and reads data-ai-theme', () => {
+        const failed = resolveCodingAgentStatusTone(
+            normalizeCodingAgentProgress({ phase: 'failed', title: 'X' }),
+            true,
+        );
+        expect(failed.accent).toBe(CODING_AGENT_FAILURE_ACCENT_DARK);
+        const lightFailed = resolveCodingAgentStatusTone(
+            normalizeCodingAgentProgress({ phase: 'failed', title: 'X' }),
+            false,
+        );
+        expect(adaptCodingAgentStatusTone(lightFailed, true).accent).toBe(CODING_AGENT_FAILURE_ACCENT_DARK);
+
+        const neutral = codingAgentToolOutcomeTone('blocked');
+        expect(adaptCodingAgentStatusTone(neutral, true).accent).toBe('#8a9ab0');
+        expect(adaptCodingAgentStatusTone(neutral, false).accent).toBe('#64748b');
+
+        expect(codingAgentUiIsDark(true)).toBe(true);
+        expect(codingAgentUiIsDark(false)).toBe(false);
+        let app = document.getElementById('App');
+        if (!app) {
+            app = document.createElement('div');
+            app.id = 'App';
+            document.body.appendChild(app);
+        }
+        app.setAttribute('data-ai-theme', 'dark');
+        expect(codingAgentUiIsDark()).toBe(true);
+        app.setAttribute('data-ai-theme', 'light');
+        expect(codingAgentUiIsDark()).toBe(false);
+        app.removeAttribute('data-ai-theme');
+    });
+
+    it('picks feed header phase from terminal task_status when it is not followed by activity', () => {
+        const header = pickCodingAgentFeedHeader([
+            normalizeCodingAgentProgress({
+                phase: 'running',
+                taskID: 'T1',
+                title: 'Fix bug',
+                event: 'tool_finished',
+                detail: 'bash',
+                outcome: 'success',
+            }),
+            normalizeCodingAgentProgress({
+                phase: 'completed',
+                taskID: 'T1',
+                title: 'Fix bug',
+                event: 'task_status',
+            }),
+        ]);
+        expect(header.phase).toBe('completed');
+        expect(header.taskID).toBe('T1');
+        expect(header.title).toBe('Fix bug');
+
+        // Stale completed before later tools must not win — header follows latest activity.
+        const header2 = pickCodingAgentFeedHeader([
+            normalizeCodingAgentProgress({
+                phase: 'completed',
+                taskID: 'T2',
+                title: 'Done',
+                event: 'task_status',
+            }),
+            normalizeCodingAgentProgress({
+                phase: 'running',
+                taskID: 'T2',
+                title: 'Done',
+                event: 'tool_finished',
+                detail: 'bash',
+                outcome: 'success',
+            }),
+        ]);
+        expect(header2.phase).toBe('running');
+    });
+
+    it('hides pure task_status lines when tool activity is present (header carries phase)', () => {
+        const { container } = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [
+                        makeProgressMsg(
+                            'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"success","command":"go test"}',
+                            'tool',
+                        ),
+                        makeProgressMsg(
+                            'Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"completed","task_id":"T1","title":"Fix","turn_id":"turn-1"}',
+                            'done',
+                        ),
+                    ],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+        const status = screen.getByTestId('coding-agent-progress');
+        expect(status.getAttribute('data-phase')).toBe('completed');
+        expect(status.textContent).toMatch(/Completed|completed/i);
+        expect(status.textContent).toContain('bash');
+        expect(status.textContent).toContain('go test');
+        // Only one tool line — terminal status is folded into the header.
+        expect(container.querySelectorAll('[data-testid="coding-agent-tool-line"]').length).toBe(1);
+    });
+
+    it('shows failure count in multi-line header while phase is still running', () => {
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [
+                        makeProgressMsg(
+                            'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"bash","outcome":"failed","command":"go test ./pkg"}',
+                            't1',
+                        ),
+                        makeProgressMsg(
+                            'Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix","turn_id":"turn-1","detail":"write_file","outcome":"success"}',
+                            't2',
+                        ),
+                    ],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'en',
+                )}
+            </>,
+        );
+        const status = screen.getByTestId('coding-agent-progress');
+        expect(status.getAttribute('data-phase')).toBe('running');
+        expect(status.getAttribute('data-tone-accent')).toBe(CODING_AGENT_FAILURE_ACCENT);
+        expect(status.textContent).toMatch(/1 failed/);
     });
 });

@@ -350,14 +350,77 @@ describe('SidebarSystemStatus Hub credits', () => {
         );
 
         const status = screen.getByTestId('sidebar-coding-agent-status');
-        expect(status.textContent).toContain('Coding Agent');
-        expect(status.textContent).toContain('Task status');
+        expect(status.textContent).toContain('Coding');
+        expect(status.textContent).not.toContain('Task status');
         expect(status.textContent).toContain('Running');
         expect(status.textContent).toContain('T2');
         expect(status.textContent).toContain('Fix stale edit guard');
         expect(status.getAttribute('role')).toBe('status');
         expect(status.getAttribute('aria-live')).toBe('polite');
         expect(status.getAttribute('aria-label')).toContain('Fix stale edit guard');
+        expect(status.getAttribute('aria-label')).toMatch(/Coding\s*\u00b7\s*Running/);
+        // No snapshot: compact header alone, no empty detail body.
+        const card = screen.getByTestId('sidebar-coding-agent-card');
+        expect(card.querySelector('[data-testid="sidebar-coding-agent-tool-trace"]')).toBeNull();
+        // Group still has an accessible name from the compact header line.
+        expect(card.getAttribute('aria-label')).toMatch(/Coding\s*\u00b7\s*Running/);
+        expect(card.getAttribute('aria-label')).toContain('Fix stale edit guard');
+    });
+
+    it('uses soft amber (not red) for failed coding-agent sidebar status; dark brightens', () => {
+        const { rerender } = render(
+            <SidebarSystemStatus
+                lang="en"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="unlimited"
+                noHubAuthorizationText="none"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+                codingAgentProgress={{ phase: 'failed', taskID: 'T1', title: 'Compile check' }}
+            />,
+        );
+        let status = screen.getByTestId('sidebar-coding-agent-status');
+        expect(status.getAttribute('data-tone-accent')).toBe('#a16207');
+        expect(status.getAttribute('data-tone-accent')).not.toMatch(/#c43d34/i);
+
+        rerender(
+            <SidebarSystemStatus
+                lang="en"
+                maclawLLMOnline
+                remoteActivationStatus={{ activated: true }}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
+                sidebarHubCredits={baseCredits}
+                formatSidebarTokens={(value) => String(value)}
+                formatSidebarHubExpiry={() => '05/06/26'}
+                formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
+                formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
+                formatSidebarCredit={(value) => String(value)}
+                unlimitedHubCreditText="unlimited"
+                noHubAuthorizationText="none"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+                codingAgentProgress={{ phase: 'failed', taskID: 'T1', title: 'Compile check' }}
+                isDark
+            />,
+        );
+        status = screen.getByTestId('sidebar-coding-agent-status');
+        expect(status.getAttribute('data-tone-accent')).toBe('#e0b253');
     });
 
     it('shows coding agent turn details in the sidebar monitor card', () => {
@@ -456,24 +519,20 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(card.getAttribute('data-diff-check-state')).toBe('checked');
         expect(card.getAttribute('data-change-count')).toBe('2');
         expect(card.getAttribute('data-file-count')).toBe('2');
+        // Dense layout: files + tool trail chips + metric chips (no stacked Tool/Result/Duration rows).
         expect(card.textContent).toContain('Files');
         expect(card.textContent).toContain('a.go, b.go');
-        expect(card.textContent).toContain('Trace');
-        expect(card.textContent).toContain('read_file Success 80ms -> git_diff Success 1.3s');
+        expect(card.textContent).toContain('git_diff');
+        expect(card.textContent).toContain('Success');
+        expect(card.textContent).toContain('1.3s');
         const trace = screen.getByTestId('sidebar-coding-agent-tool-trace');
         expect(trace.getAttribute('aria-label')).toBe('read_file Success 80ms -> git_diff Success 1.3s');
         expect(trace.querySelector('[data-tool-trace-name="read_file"]')?.getAttribute('data-tool-trace-outcome-state')).toBe('success');
         expect(trace.querySelector('[data-tool-trace-name="git_diff"]')?.getAttribute('data-tool-trace-outcome-state')).toBe('success');
-        expect(card.textContent).toContain('Tool');
-        expect(card.textContent).toContain('git_diff');
-        expect(card.textContent).toContain('Result');
-        expect(card.textContent).toContain('Success');
-        expect(card.textContent).toContain('Duration');
-        expect(card.textContent).toContain('1.3s');
         expect(card.textContent).toContain('Guard');
         expect(card.textContent).toContain('Blocked (1)');
         expect(screen.getByTestId('sidebar-coding-agent-guardrail').getAttribute('data-guardrail-summary')).toBe('blocked | bash | category:git');
-        expect(card.textContent).toContain('Commands');
+        expect(card.textContent).toMatch(/Cmds|Commands/);
         expect(card.textContent).toContain('Failed (2)');
         expect(screen.getByTestId('sidebar-coding-agent-commands').getAttribute('data-command-summary')).toBe('2 bash commands run, 1 failed: npm test');
         expect(card.textContent).toContain('Activity');

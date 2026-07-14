@@ -547,26 +547,6 @@ func phaseInstruction(workflowType WorkflowType, phaseID string) string {
 	}
 
 	switch phaseID {
-	case "coding_subagent_execution":
-		return `## 阶段指令
-
-这是简化编程执行阶段。根据用户在表单中提交的工作目录和项目描述，直接完成代码修改、补充必要测试，并给出执行摘要。
-
-要求：
-- 只在用户指定的工作目录内操作。
-- 优先做最小必要修改，避免无关重构。
-- 完成后给出完整执行摘要，包含修改文件、验证结果和剩余风险。
-`
-	case "remote_coding_subagent_execution":
-		return `## 阶段指令
-
-这是远程编程执行阶段。根据用户在表单中提交的 SSH 信息、默认工作目录和项目描述，在远程项目中完成代码修改和验证。
-
-要求：
-- 只在用户指定的远程默认工作目录内操作。
-- SSH 密码仅用于建立连接，不得写入输出、日志摘要或任务描述。
-- 完成后给出完整执行摘要，包含远程项目目录、修改内容、验证命令与结果。
-`
 	case "requirements":
 		return `## 阶段指令
 

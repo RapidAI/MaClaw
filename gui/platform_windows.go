@@ -1953,6 +1953,12 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 			a.ShowMessage("Launch Error", "Failed to launch with admin privileges.")
 			return fmt.Errorf("failed to launch with admin privileges: ShellExecute returned %d", ret)
 		}
+		if binaryName == "claude" {
+			// ShellExecute does not return the child PID, but recording this
+			// success still distinguishes an elevated user launch from a retry.
+			log.Printf("[claude-launch] local-wrapper-started elevated=true pid=unknown project=%q batch=%q terminal=%v",
+				projectDir, tempBatchPath, useWT)
+		}
 	} else {
 		if binaryName == "codex" || binaryName == "openai" {
 			codexBatchContent := "@echo off\r\n"
@@ -2053,6 +2059,10 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 				a.log("Error launching tool: " + err.Error())
 				a.ShowMessage("Launch Error", "Failed to start process: "+err.Error())
 				return fmt.Errorf("failed to start process: %w", err)
+			}
+			if binaryName == "claude" {
+				log.Printf("[claude-launch] local-wrapper-started pid=%d cmd=%q project=%q batch=%q terminal=%v",
+					cmd.Process.Pid, resolveCmdExe(), projectDir, tempBatchPath, useWT)
 			}
 		}
 	}

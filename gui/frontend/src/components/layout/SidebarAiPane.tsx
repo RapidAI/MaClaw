@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
+import { EVENT_OPEN_CREATE_CODING_TASK } from '../../constants/events';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
 import { SidebarTaskManagement, type TaskManagementItem, type TaskContextMenu } from './SidebarTaskManagement';
@@ -63,13 +64,20 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;
-    createTask: (name: string, workingDir?: string) => Promise<void> | void;
+    createTask: (
+        name: string,
+        workingDir?: string,
+        mode?: 'coding_dev' | 'remote_coding_dev',
+        remote?: { host: string; port: number; user: string; password: string; workDir: string },
+    ) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
     hideTask: (projectPath: string) => Promise<unknown>;
+    /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
+    openProjectTabPaths?: string[];
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -99,6 +107,14 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean }>;
     /** Called when user picks a different provider from the dropdown. */
     onSwitchProvider?: (providerName: string) => void;
+    moaSticky?: {
+        available: boolean;
+        active: boolean;
+        label?: string;
+        preset?: string;
+        presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
+    };
+    onToggleMoASticky?: (on: boolean, presetId?: string) => void;
 };
 
 export const SidebarAiPane = ({
@@ -133,6 +149,7 @@ export const SidebarAiPane = ({
     renameTask,
     pinTask,
     hideTask,
+    openProjectTabPaths,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -164,6 +181,8 @@ export const SidebarAiPane = ({
     showDigitalEmployeeNavigation,
     availableProviders = [],
     onSwitchProvider,
+    moaSticky,
+    onToggleMoASticky,
 }: SidebarAiPaneProps) => {
     const [middleTab, setMiddleTab] = useState<MiddleTab>('tasks');
     const veTheme = useMemo(() => (aiThemeMode === 'dark' ? darkTheme : lightTheme), [aiThemeMode]);
@@ -172,6 +191,15 @@ export const SidebarAiPane = ({
     useEffect(() => {
         if (!showDigitalEmployeeTabs && middleTab !== 'tasks') setMiddleTab('tasks');
     }, [middleTab, showDigitalEmployeeTabs]);
+
+    // Welcome software-dev cards open the create-task dialog in TaskManagement. Keep the
+    // tasks pane mounted (hidden) so the listener stays alive on employees/history tabs,
+    // and jump back to "tasks" so the dialog context is clear.
+    useEffect(() => {
+        const handler = () => setMiddleTab('tasks');
+        window.addEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
+        return () => window.removeEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
+    }, []);
 
     // Favorite employees - use authoritative IDs from parent (includes optimistic updates)
     const tabLabels: Record<MiddleTab, string> = {
@@ -185,11 +213,23 @@ export const SidebarAiPane = ({
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
-                    {middleTab === 'tasks' && <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} />}
+                    <div
+                        data-testid="sidebar-middle-pane-tasks"
+                        // Keep mounted (hidden) on other middle tabs so welcome coding events still open create dialog.
+                        style={{
+                            display: middleTab === 'tasks' ? 'flex' : 'none',
+                            flex: 1,
+                            minHeight: 0,
+                            overflow: 'hidden',
+                            flexDirection: 'column',
+                        }}
+                    >
+                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} openProjectTabPaths={openProjectTabPaths} />
+                    </div>
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
-                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} />
+                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} isDark={aiThemeMode === 'dark'} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} moaSticky={moaSticky} onToggleMoASticky={onToggleMoASticky} />
             </div>
             <div onMouseDown={handleTaskManagementResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isTaskManagementResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
         </>

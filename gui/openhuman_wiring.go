@@ -68,22 +68,10 @@ func (a *App) initOpenHumanModules() {
 	a.ohModules.cachedAuxLLM = cfg.AuxiliaryLLM
 
 	// A3: Model Router
-	if len(cfg.ModelRoutes) > 0 {
-		routes := make(map[string]cllm.ModelRoute, len(cfg.ModelRoutes))
-		for k, v := range cfg.ModelRoutes {
-			routes[k] = cllm.ModelRoute{
-				Model:    v.Model,
-				URL:      v.URL,
-				Key:      v.Key,
-				Protocol: v.Protocol,
-				Provider: v.Provider,
-			}
-		}
-		a.ohModules.modelRouter = cllm.NewModelRouter(routes)
-		log.Printf("[openhuman] model router initialized with %d routes", len(routes))
-	} else {
-		a.ohModules.modelRouter = cllm.NewModelRouter(nil)
-	}
+	a.reloadModelRouterFromConfig(cfg)
+
+	// Pure-coding checkpoint sidecar budget from config.
+	setCodingCheckpointSidecarMaxMB(cfg.CodingCheckpointSidecarMaxMB)
 
 	// A4: Tool Memory
 	toolMemPath := filepath.Join(corelib.MaclawDataDir(), "tool_rules.json")
@@ -131,6 +119,42 @@ func (h *IMMessageHandler) routeLLMConfig(task cllm.TaskType) corelib.MaclawLLMC
 		return primary
 	}
 	return h.app.ohModules.modelRouter.RouteWithAux(task, primary, h.app.ohModules.cachedAuxLLM)
+}
+
+// reloadModelRouterFromConfig rebuilds the in-process ModelRouter from AppConfig.
+// Safe to call after PatchConfigFields(model_routes) so pure-coding route prefs
+// pick up settings without restart.
+func (a *App) reloadModelRouterFromConfig(cfg corelib.AppConfig) {
+	if a == nil {
+		return
+	}
+	if len(cfg.ModelRoutes) > 0 {
+		routes := make(map[string]cllm.ModelRoute, len(cfg.ModelRoutes))
+		for k, v := range cfg.ModelRoutes {
+			routes[k] = cllm.ModelRoute{
+				Model:    v.Model,
+				URL:      v.URL,
+				Key:      v.Key,
+				Protocol: v.Protocol,
+				Provider: v.Provider,
+			}
+		}
+		if a.ohModules.modelRouter == nil {
+			a.ohModules.modelRouter = cllm.NewModelRouter(routes)
+		} else {
+			a.ohModules.modelRouter.SetRoutes(routes)
+		}
+		invalidateCodingRouteCapabilitiesCache()
+		log.Printf("[openhuman] model router reloaded with %d routes", len(routes))
+		return
+	}
+	if a.ohModules.modelRouter == nil {
+		a.ohModules.modelRouter = cllm.NewModelRouter(nil)
+	} else {
+		a.ohModules.modelRouter.SetRoutes(nil)
+	}
+	invalidateCodingRouteCapabilitiesCache()
+	log.Printf("[openhuman] model router cleared (no model_routes)")
 }
 
 // modelRouteDecision is the observable outcome of turn/model routing for one

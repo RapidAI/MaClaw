@@ -9,12 +9,12 @@ export const EmbeddingConfigPanel = lazy(() => import('./components/remote/Embed
 export const ASRConfigPanel = lazy(() => import('./components/remote/ASRConfigPanel').then((module) => ({ default: module.ASRConfigPanel })));
 export const TTSConfigPanel = lazy(() => import('./components/remote/TTSConfigPanel').then((module) => ({ default: module.TTSConfigPanel })));
 export const MemoryManagementPanel = lazy(() => import('./components/remote/MemoryManagementPanel').then((module) => ({ default: module.MemoryManagementPanel })));
-export const GeneralSettingsPanel = lazy(() => import('./components/settings/GeneralSettingsPanel').then((module) => ({ default: module.GeneralSettingsPanel })));
 export const KnowledgeSettingsPanel = lazy(() => import('./components/settings/KnowledgeSettingsPanel').then((module) => ({ default: module.KnowledgeSettingsPanel })));
 export const MISDataSettingsPanel = lazy(() => import('./components/settings/MISDataSettingsPanel').then((module) => ({ default: module.MISDataSettingsPanel })));
 export const UISettingsPanel = lazy(() => import('./components/settings/UISettingsPanel').then((module) => ({ default: module.UISettingsPanel })));
 export const ProgrammingToolsSettingsPanel = lazy(() => import('./components/settings/ProgrammingToolsSettingsPanel').then((module) => ({ default: module.ProgrammingToolsSettingsPanel })));
-export const GeneralAdvancedSettingsPanel = lazy(() => import('./components/settings/GeneralAdvancedSettingsPanel').then((module) => ({ default: module.GeneralAdvancedSettingsPanel })));
+// GeneralSettingsPanel / GeneralAdvancedSettingsPanel are eager in SettingsActiveContent
+// so the default settings tab never suspends (OEM intermittent blank fix).
 export const SystemSettingsPanel = lazy(() => import('./components/settings/SystemSettingsPanel').then((module) => ({ default: module.SystemSettingsPanel })));
 export const MigrationSettingsPanel = lazy(() => import('./components/settings/MigrationSettingsPanel').then((module) => ({ default: module.MigrationSettingsPanel })));
 export const ProxySettingsPanel = lazy(() => import('./components/settings/ProxySettingsPanel').then((module) => ({ default: module.ProxySettingsPanel })));

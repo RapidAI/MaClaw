@@ -4,7 +4,8 @@ import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./compos
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
 
-export type AssistantPermissionMode = "request" | "full";
+/** request=interactive; workspace=session path trust (pure coding); full=global full access */
+export type AssistantPermissionMode = "request" | "workspace" | "full";
 
 export interface AssistantInputComposerProps {
     browseFile: () => void;
@@ -45,6 +46,7 @@ export interface AssistantInputComposerProps {
     lang: string;
     pendingAttachments: AttachmentInfo[];
     permissionMode?: AssistantPermissionMode;
+    showWorkspacePermissionOption?: boolean;
     onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
     pendingAttachmentsTestId?: string;
     placeholderText: string;

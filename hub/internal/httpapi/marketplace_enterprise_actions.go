@@ -53,9 +53,10 @@ func AdminCapabilityDeleteHandler(svc *capability.Service) http.HandlerFunc {
 // --- Upload Skill to HubCenter Market ---
 
 // AdminCapabilityUploadToMarketHandler uploads an enterprise skill's package
-// to HubCenter's skill market for global distribution. After accept, Hub polls
-// briefly so package validation failures surface to the admin instead of a
-// false "uploaded" toast.
+// (or a published MaClaw App, materialised as a skill-market zip) to HubCenter's
+// skill market for global distribution. After accept, Hub polls briefly so
+// package validation failures surface to the admin instead of a false
+// "uploaded" toast.
 //
 // Idempotency: rejects only while an in-flight submission exists
 // (uploading/pending/processing). Published/failed records do not block
@@ -84,7 +85,11 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			return
 		}
 
-		// 2. Only skill type can be uploaded.
+		metadata := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+		isMaclawApp := isEnterpriseMaclawAppCapability(*item, metadata)
+
+		// 2. Only skill-typed capabilities (including MaClaw Apps stored as skill)
+		// can be uploaded to HubCenter skill market.
 		if !strings.EqualFold(item.CapabilityType, "skill") {
 			writeError(w, http.StatusBadRequest, "NOT_A_SKILL", "only skill capabilities can be uploaded to HubCenter market")
 			return
@@ -125,19 +130,44 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			return
 		}
 
-		// 5. Find and sanitize the package only after confirming this is a new
-		// submission. Local package errors therefore cannot block future retries.
-		zipPath, err := resolveSkillPackagePath(item, dataDir, tenantID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "PACKAGE_NOT_FOUND", err.Error())
-			return
+		// 5. Resolve package bytes. MaClaw Apps are DB JSON — materialize a
+		// HubCenter skill zip. Ordinary skills read the on-disk package file.
+		var uploadZip string
+		var cleanupUploadZip func()
+		if isMaclawApp {
+			var prepErr error
+			uploadZip, cleanupUploadZip, _, prepErr = prepareMaclawAppZipForHubCenterUpload(ctx, svc, item)
+			if prepErr != nil {
+				var appErr *maclawAppHubCenterUploadError
+				if errors.As(prepErr, &appErr) {
+					writeError(w, http.StatusBadRequest, appErr.Code, appErr.Message)
+					return
+				}
+				if code := skillMarketPackageErrorCode(prepErr); code != "" && code != "PACKAGE_INVALID" {
+					writeError(w, http.StatusBadRequest, code, prepErr.Error())
+					return
+				}
+				writeError(w, http.StatusBadRequest, "MACLAW_APP_PACKAGE_BUILD_FAILED", prepErr.Error())
+				return
+			}
+		} else {
+			zipPath, pathErr := resolveSkillPackagePath(item, dataDir, tenantID)
+			if pathErr != nil {
+				writeError(w, http.StatusInternalServerError, "PACKAGE_NOT_FOUND", pathErr.Error())
+				return
+			}
+			var prepErr error
+			uploadZip, cleanupUploadZip, prepErr = prepareSkillZipForHubCenterMarket(zipPath)
+			if prepErr != nil {
+				writeError(w, http.StatusBadRequest, skillMarketPackageErrorCode(prepErr), prepErr.Error())
+				return
+			}
 		}
-		uploadZip, cleanupUploadZip, err := prepareSkillZipForHubCenterMarket(zipPath)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, skillMarketPackageErrorCode(err), err.Error())
-			return
-		}
-		defer cleanupUploadZip()
+		defer func() {
+			if cleanupUploadZip != nil {
+				cleanupUploadZip()
+			}
+		}()
 
 		// 6. Atomically reserve an in-flight row BEFORE the network upload so
 		// concurrent admin clicks cannot both pass a check-then-insert window.
@@ -165,6 +195,10 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 		submissionID, err := uploadSkillToHubCenter(ctx, uploadOpts)
 		if err != nil {
 			_ = svc.UpdateMarketSubmissionStatus(ctx, sub.ID, "failed", err.Error())
+			if isMaclawApp {
+				// No remote submission id yet; still stamp local failure for admin UI.
+				stampCapabilityHubCenterUpload(ctx, svc, item, "", "", "failed")
+			}
 			writeError(w, http.StatusBadGateway, "HUBCENTER_UPLOAD_FAILED", err.Error())
 			return
 		}
@@ -194,8 +228,17 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			if msg == "" {
 				msg = "HubCenter rejected the skill package during processing"
 			}
+			// Persist failure linkage for apps so admin UI can show last push attempt.
+			if isMaclawApp {
+				stampCapabilityHubCenterUpload(ctx, svc, item, submissionID, skillID, "failed")
+			}
 			writeError(w, http.StatusBadGateway, "HUBCENTER_PROCESSING_FAILED", humanizeHubCenterPackageError(msg))
 			return
+		}
+
+		// Stamp HubCenter linkage onto the capability for admin visibility.
+		if isMaclawApp {
+			stampCapabilityHubCenterUpload(ctx, svc, item, submissionID, skillID, localStatus)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -203,6 +246,7 @@ func AdminCapabilityUploadToMarketHandler(svc *capability.Service, centerStatus 
 			"local_submission_id": sub.ID,
 			"status":              localStatus,
 			"skill_id":            skillID,
+			"product":             map[string]any{"is_maclaw_app": isMaclawApp},
 		})
 	}
 }

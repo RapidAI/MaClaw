@@ -485,10 +485,7 @@ func (a *App) ConfigureCodex() (string, error) {
 	// Use the local OpenAI-compatible endpoint as base URL for Codex
 	baseURL := publicBaseURL(s.ListenAddress, "127.0.0.1") + "/v1"
 	apiKey := s.APIKey
-	providerName := "tigerproxy"
-	wireApi := "responses"
-
-	if err := configfile.WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi); err != nil {
+	if err := configfile.WriteTigerProxyCodexConfig(apiKey, baseURL, modelID); err != nil {
 		return "", err
 	}
 
@@ -595,10 +592,10 @@ func findCodexInDir(baseDir, prefix string) bool {
 		pkgDir := filepath.Join(baseDir, e.Name())
 		// Check common locations within the package
 		codexPaths := []string{
-			filepath.Join(pkgDir, "codex.exe"),                          // root
-			filepath.Join(pkgDir, "app", "resources", "codex.exe"),      // Store MSIX layout
-			filepath.Join(pkgDir, "app", "codex.exe"),                   // alternative layout
-			filepath.Join(pkgDir, "resources", "codex.exe"),             // another variant
+			filepath.Join(pkgDir, "codex.exe"),                     // root
+			filepath.Join(pkgDir, "app", "resources", "codex.exe"), // Store MSIX layout
+			filepath.Join(pkgDir, "app", "codex.exe"),              // alternative layout
+			filepath.Join(pkgDir, "resources", "codex.exe"),        // another variant
 		}
 		for _, p := range codexPaths {
 			if _, err := os.Stat(p); err == nil {

@@ -207,7 +207,16 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 			resp.TraceSummary = h.traceService.TraceSummary(ctx.RunID)
 		}
 	}
-	resp.TraceEventCount, resp.EvidenceCount = h.traceService.TraceCounts(ctx.RunID)
+	traceCount, evidenceCount := h.traceService.TraceCounts(ctx.RunID)
+	// Preserve pre-populated activity counts (e.g. pure coding SubAgent ToolCalls
+	// mapped into TraceEventCount for /goal continuation no-tool suppression).
+	// Main-loop traces often stay empty for pure-coding SubAgent turns.
+	if traceCount > resp.TraceEventCount {
+		resp.TraceEventCount = traceCount
+	}
+	if evidenceCount > resp.EvidenceCount {
+		resp.EvidenceCount = evidenceCount
+	}
 	if !hasVisibleIMResult(resp) {
 		if resp.ConfirmedResume {
 			resp.Text = buildConfirmedResumeEmptyResultFallback(status, resp.TraceSummary)

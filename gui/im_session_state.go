@@ -59,6 +59,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.pendingWorkflowChoice.Delete(userID)
 	h.pendingTemplateCodingProjectPath.Delete(userID)
 	h.pendingTemplateRemoteCoding.Delete(userID)
+	h.clearStickyCodingWorkbenchMemory(userID)
 	if h.confirmationStore != nil {
 		h.confirmationStore.clear(userID)
 	}

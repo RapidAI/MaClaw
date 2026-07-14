@@ -78,7 +78,12 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
     const isOnline = (isVE || isGroup) && tab.onlineStatus !== "offline";
     const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
     const displayTitle = getAITabDisplayTitle(tab, lang);
-    const accessibleTitle = readOnlyLabel ? `${displayTitle} - ${readOnlyLabel}` : displayTitle;
+    const codingEnvLabel = tab.type === "project" && tab.agentMode === "remote_coding_dev"
+        ? textForTabLang(lang, "Remote coding environment", "远程编程环境", "遠端程式開發環境")
+        : (tab.type === "project" && tab.agentMode === "coding_dev"
+            ? textForTabLang(lang, "Coding environment", "编程环境", "程式開發環境")
+            : "");
+    const accessibleTitle = [displayTitle, codingEnvLabel, readOnlyLabel].filter(Boolean).join(" - ");
     const avatarDataURL = safeAvatarDataURL(tab.avatarDataURL);
 
     // Tab icon by type — inline SVG for consistent cross-platform rendering
@@ -118,6 +123,20 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         // Sparkle/star — AI assistant main session
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
             <path d="M8 1l1.5 4.5L14 7l-4.5 1.5L8 13l-1.5-4.5L2 7l4.5-1.5L8 1z" fill={iconColor} />
+        </svg>
+    ) : isProject && tab.agentMode === "remote_coding_dev" ? (
+        // Terminal / remote host — pure remote coding environment
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} data-testid={`ai-tab-remote-coding-icon-${tab.id}`}>
+            <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" stroke={iconColor} strokeWidth="1.3" />
+            <path d="M5 7h3M5 9.5h5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
+            <path d="m10.5 6.5 1.5 1.2-1.5 1.2" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    ) : isProject && tab.agentMode === "coding_dev" ? (
+        // Code brackets — pure coding environment
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} data-testid={`ai-tab-coding-icon-${tab.id}`}>
+            <path d="M5.5 4.5 2.5 8l3 3.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="m10.5 4.5 3 3.5-3 3.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="m9 3.5-2 9" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" />
         </svg>
     ) : isProject ? (
         // Document with lines — task/project session

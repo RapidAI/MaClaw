@@ -32,6 +32,7 @@ import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, 
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
+import { MoAConfigSection } from "./MoAConfigSection";
 
 interface Props {
     lang?: string;
@@ -688,6 +689,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                     </span>
                 </div>
             </div>
+
+            {/* Multi-model council (MoA) presets — aggregator + reference models */}
+            <MoAConfigSection lang={lang} providers={providers} />
 
             {isNone && !hasHubEntitlement && (
                 <div className="llm-config-alert llm-config-alert--danger" style={{

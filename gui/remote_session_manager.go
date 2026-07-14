@@ -330,18 +330,20 @@ func executionStrategyForMode(mode ExecutionMode) ExecutionStrategy {
 	}
 }
 
-func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
+// CreateUserSession starts an external coding CLI only for an explicit
+// user-originated session (desktop, mobile, or handoff). Agent work must use
+// CodingSubAgent or CreateAIBackgroundSession instead.
+func (m *RemoteSessionManager) CreateUserSession(spec LaunchSpec) (*RemoteSession, error) {
 	now := time.Now()
 	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
 	originalProjectPath := spec.ProjectPath
 	spec.SessionID = sessionID
 	spec.LaunchSource = normalizeRemoteLaunchSource(spec.LaunchSource)
 
-	// Agents no longer drive external coding CLIs (Claude Code, Codex, ...).
-	// Those tools are managed only as user-launched external sessions
-	// (desktop / mobile / handoff). Block AI launch sources so leftover
-	// agent/skill/resume paths cannot spawn a batch of Claude processes.
-	if err := rejectAIExternalCodingSessionLaunch(spec); err != nil {
+	// Do not expose external-session creation to agent paths at all.  Agents
+	// have a separate in-memory background session and CodingSubAgent workflow.
+	if spec.LaunchSource == RemoteLaunchSourceAI {
+		err := fmt.Errorf("agent-originated external session creation is disabled; use CodingSubAgent")
 		log.Printf("[session-lifecycle] ERR Session %s rejected: tool=%s source=%s err=%v",
 			sessionID, spec.Tool, spec.LaunchSource, err)
 		return nil, err

@@ -2274,6 +2274,14 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, instanceID strin
 		}
 		metadata["client_message_id"] = clientMessageID
 	}
+	if preset := strings.TrimSpace(in.MoAPreset); preset != "" {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		if strings.TrimSpace(metadata["moa_preset"]) == "" {
+			metadata["moa_preset"] = preset
+		}
+	}
 	run, msg, err := s.PostMessage(ctx, p, instanceID, sess.ID, PostMessageInput{Content: in.Content, InputType: in.InputType, Attachments: in.Attachments, Metadata: metadata, OnToken: in.OnToken})
 	if err != nil {
 		return sess, run, msg, err
@@ -2440,7 +2448,8 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 			userMsg.Metadata,
 			sess.Metadata,
 		),
-		OnToken: in.OnToken,
+		OnToken:   in.OnToken,
+		MoAPreset: moaPresetFromMetadata(userMsg.Metadata, sess.Metadata),
 	})
 	s.clearRunCancel(run.ID)
 	cancelExec()

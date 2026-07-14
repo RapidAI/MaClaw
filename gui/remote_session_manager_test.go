@@ -885,7 +885,7 @@ func TestRemoteSessionManagerCreateUsesFactoriesAndStoresSession(t *testing.T) {
 		return &fakeExecutionStrategy{handle: execHandle}, nil
 	}
 
-	session, err := manager.Create(LaunchSpec{Tool: "claude", Title: "demo", ProjectPath: `D:\workprj\demo`, ModelID: "m1"})
+	session, err := manager.CreateUserSession(LaunchSpec{Tool: "claude", Title: "demo", ProjectPath: `D:\workprj\demo`, ModelID: "m1"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -1425,7 +1425,7 @@ func TestRemoteSessionManagerCreateStoresFailedSessionWhenBuildCommandFails(t *t
 		return provider, nil
 	}
 
-	session, err := manager.Create(LaunchSpec{Tool: "claude", ProjectPath: `D:\workprj\demo`})
+	session, err := manager.CreateUserSession(LaunchSpec{Tool: "claude", ProjectPath: `D:\workprj\demo`})
 	if err == nil {
 		t.Fatal("Create() error = nil, want build command error")
 	}
@@ -1467,7 +1467,7 @@ func TestRemoteSessionManagerCreateStoresFailedSessionWhenPTYStartFails(t *testi
 		return &fakeExecutionStrategy{startErr: fmt.Errorf("conpty unavailable")}, nil
 	}
 
-	session, err := manager.Create(LaunchSpec{Tool: "claude", ProjectPath: `D:\workprj\demo`, Title: "demo"})
+	session, err := manager.CreateUserSession(LaunchSpec{Tool: "claude", ProjectPath: `D:\workprj\demo`, Title: "demo"})
 	if err == nil {
 		t.Fatal("Create() error = nil, want start error")
 	}
@@ -1490,7 +1490,7 @@ func TestRemoteSessionManagerCreateStoresFailedSessionWhenWorkspacePrepareFails(
 	manager := NewRemoteSessionManager(app)
 	manager.workspacePreparer = &fakeWorkspacePreparer{prepareErr: fmt.Errorf("workspace locked")}
 
-	session, err := manager.Create(LaunchSpec{Tool: "claude", ProjectPath: `D:\workprj\demo`})
+	session, err := manager.CreateUserSession(LaunchSpec{Tool: "claude", ProjectPath: `D:\workprj\demo`})
 	if err == nil {
 		t.Fatal("Create() error = nil, want workspace prepare error")
 	}

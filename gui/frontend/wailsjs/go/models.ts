@@ -85,6 +85,133 @@ export namespace main {
 	    }
 	}
 
+	export class CodingWorkbenchStepStatus {
+	    index: number;
+	    title?: string;
+	    status: string;
+	    summary?: string;
+	    verify_cmd?: string;
+	    verify_ok?: boolean;
+	    updated_unix?: number;
+
+	    static createFrom(source: any = {}) {
+	        return new CodingWorkbenchStepStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.summary = source["summary"];
+	        this.verify_cmd = source["verify_cmd"];
+	        this.verify_ok = source["verify_ok"];
+	        this.updated_unix = source["updated_unix"];
+	    }
+	}
+
+	export class CodingWorkbenchStatus {
+	    kind: string;
+	    armed: boolean;
+	    needs_reconnect: boolean;
+	    turn_count: number;
+	    session_full_access: boolean;
+	    session_high_risk_access: boolean;
+	    session_plan?: string;
+	    execution_plan?: string;
+	    plan_mode?: string;
+	    pending_approval?: boolean;
+	    step_statuses?: CodingWorkbenchStepStatus[];
+	    project_instruction_sources?: string[];
+	    checkpoint_label?: string;
+	    session_input_tokens?: number;
+	    session_output_tokens?: number;
+	    session_est_cost_rmb?: number;
+	    last_turn_input_tokens?: number;
+	    last_turn_output_tokens?: number;
+	    last_turn_est_cost_rmb?: number;
+	    background_verify?: string;
+	    worktree_mode?: string;
+	    worktree_notes?: string[];
+	    conflict_count?: number;
+	    conflicts?: any[];
+	    conflict_active_id?: string;
+	    conflict_selected?: string[];
+	    conflict_focus_file?: string;
+	    conflict_log?: string[];
+	    route_model?: string;
+	    route_source?: string;
+	    route_task?: string;
+	    route_reason?: string;
+	    route_pref?: string;
+	    route_capabilities?: any[];
+	    checkpoint_files?: string[];
+	    checkpoint_history?: any[];
+	    checkpoint_snapshots?: number;
+	    hooks_active?: boolean;
+	    hooks_phases?: string[];
+	    hooks_command_count?: number;
+	    hooks_fail_on_error?: boolean;
+	    last_summary?: string;
+	    remote_host?: string;
+	    remote_user?: string;
+	    remote_port?: number;
+	    remote_work_dir?: string;
+	    remote_session_id?: string;
+	    message?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CodingWorkbenchStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.armed = source["armed"];
+	        this.needs_reconnect = source["needs_reconnect"];
+	        this.turn_count = source["turn_count"];
+	        this.session_full_access = source["session_full_access"];
+	        this.session_high_risk_access = source["session_high_risk_access"];
+	        this.session_plan = source["session_plan"];
+	        this.execution_plan = source["execution_plan"];
+	        this.plan_mode = source["plan_mode"];
+	        this.pending_approval = source["pending_approval"];
+	        this.step_statuses = source["step_statuses"] ? source["step_statuses"].map((x: any) => new CodingWorkbenchStepStatus(x)) : undefined;
+	        this.project_instruction_sources = source["project_instruction_sources"];
+	        this.checkpoint_label = source["checkpoint_label"];
+	        this.session_input_tokens = source["session_input_tokens"];
+	        this.session_output_tokens = source["session_output_tokens"];
+	        this.session_est_cost_rmb = source["session_est_cost_rmb"];
+	        this.last_turn_input_tokens = source["last_turn_input_tokens"];
+	        this.last_turn_output_tokens = source["last_turn_output_tokens"];
+	        this.last_turn_est_cost_rmb = source["last_turn_est_cost_rmb"];
+	        this.background_verify = source["background_verify"];
+	        this.worktree_mode = source["worktree_mode"];
+	        this.worktree_notes = source["worktree_notes"];
+	        this.conflict_count = source["conflict_count"];
+	        this.conflicts = source["conflicts"];
+	        this.conflict_active_id = source["conflict_active_id"];
+	        this.conflict_selected = source["conflict_selected"];
+	        this.conflict_focus_file = source["conflict_focus_file"];
+	        this.conflict_log = source["conflict_log"];
+	        this.route_model = source["route_model"];
+	        this.route_source = source["route_source"];
+	        this.route_task = source["route_task"];
+	        this.route_reason = source["route_reason"];
+	        this.route_pref = source["route_pref"];
+	        this.route_capabilities = source["route_capabilities"];
+	        this.checkpoint_files = source["checkpoint_files"];
+	        this.checkpoint_snapshots = source["checkpoint_snapshots"];
+	        this.last_summary = source["last_summary"];
+	        this.remote_host = source["remote_host"];
+	        this.remote_user = source["remote_user"];
+	        this.remote_port = source["remote_port"];
+	        this.remote_work_dir = source["remote_work_dir"];
+	        this.remote_session_id = source["remote_session_id"];
+	        this.message = source["message"];
+	    }
+	}
+
 	export class ProjectSearchResult {
 	    id: string;
 	    name: string;

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8" />
+  <title>先问多个模型 — 简版配置</title>
+  <style>
+    body { margin: 0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: #f4f6f9; color: #0f172a; padding: 28px 20px; }
+    .wrap { max-width: 480px; margin: 0 auto; }
+    h1 { font-size: 1rem; margin: 0 0 4px; }
+    .path { font-size: 0.75rem; color: #64748b; margin-bottom: 14px; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 16px; }
+    .row { display: flex; justify-content: space-between; gap: 12px; }
+    .title { font-size: 0.82rem; font-weight: 600; }
+    .hint { font-size: 0.68rem; color: #64748b; line-height: 1.5; margin-top: 4px; }
+    .note { font-size: 0.72rem; color: #64748b; margin: 12px 0 8px; }
+    .line { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 0.75rem; }
+    .line span { min-width: 72px; color: #475569; }
+    select { flex: 1; border: 1px solid #e2e8f0; border-radius: 4px; padding: 7px 10px; font-size: 0.8rem; }
+    .btn { margin-top: 12px; font-size: 0.75rem; border: none; border-radius: 6px; padding: 7px 16px; background: #2f5f98; color: #fff; }
+    .adv { font-size: 0.72rem; color: #94a3b8; margin-top: 12px; }
+    .compare { margin-top: 18px; font-size: 0.78rem; line-height: 1.55; color: #475569; }
+    .bad { text-decoration: line-through; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>现在界面（简版）</h1>
+    <div class="path">设置 → 大模型配置</div>
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="title">先问多个模型再回答</div>
+          <div class="hint">遇到难题时，可先让其他模型各说一遍看法，再由你现在用的主模型综合并写最终答案。聊天输入框点 + →「多模型会诊」即可使用。</div>
+        </div>
+        <label style="font-size:0.78rem;white-space:nowrap"><input type="checkbox" checked disabled /> 开启</label>
+      </div>
+      <div class="note">最终答案始终用你在上方配置的「当前主模型」。</div>
+      <div class="line"><span>其他模型 1</span><select disabled><option>OpenAI</option></select></div>
+      <div class="line"><span>其他模型 2</span><select disabled><option>DeepSeek</option></select></div>
+      <div style="font-size:0.72rem;color:#64748b">+ 再加一个模型</div>
+      <div class="adv">▸ 更多选项（一般不用改）</div>
+      <button class="btn" type="button">保存</button>
+    </div>
+    <div class="compare">
+      <b>相对你截图里的旧版，已去掉：</b><br/>
+      <span class="bad">默认预设 / 参谋轮次 / 允许自动 / 预设 ID / 聚合三选一 / 任务路由 / 多套预设 CRUD</span><br/><br/>
+      普通人只需：<b>开启 → 选 1～2 个其他模型 → 保存</b>。
+    </div>
+  </div>
+</body>
+</html>

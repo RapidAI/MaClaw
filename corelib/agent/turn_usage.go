@@ -216,6 +216,21 @@ func FormatTurnMetaOpts(opts TurnMetaOptions) string {
 			parts = append(parts, "escalated")
 		}
 	}
+	if p := strings.TrimSpace(route.MoAPreset); p != "" {
+		// Prefer ok/total (design §9); never emit moa=name 0/0.
+		switch {
+		case route.MoAFanOut && route.MoAReferences > 0:
+			parts = append(parts, fmt.Sprintf("moa=%s %d/%d", p, route.MoARefOK, route.MoAReferences))
+		case route.MoAReferences > 0:
+			// Sticky/session MoA on aggregator-only iteration after a prior fan-out.
+			parts = append(parts, fmt.Sprintf("moa=%s %d/%d(agg)", p, route.MoARefOK, route.MoAReferences))
+		case route.MoAFanouts > 0:
+			// Legacy fallback when only wave count is known.
+			parts = append(parts, fmt.Sprintf("moa=%s/%d", p, route.MoAFanouts))
+		default:
+			parts = append(parts, "moa="+p)
+		}
+	}
 	return strings.Join(parts, " · ")
 }
 
@@ -257,6 +272,20 @@ type RouteDecision struct {
 	CostRouteApplied bool `json:"cost_route_applied,omitempty"`
 	// ThinkingPolicy is off|low|high (cost-route Phase 3).
 	ThinkingPolicy string `json:"thinking_policy,omitempty"`
+	// MoAPreset is the active MoA preset name when multi-model council ran.
+	MoAPreset string `json:"moa_preset,omitempty"`
+	// MoAFanouts is how many reference fan-out waves completed this turn (0 if none).
+	MoAFanouts int `json:"moa_fanouts,omitempty"`
+	// MoAReferences is the number of advisors in the last fan-out (or preset size).
+	MoAReferences int `json:"moa_references,omitempty"`
+	// MoARefOK is how many advisors returned content on the last fan-out.
+	MoARefOK int `json:"moa_ref_ok,omitempty"`
+	// MoARefFailed is how many advisors failed on the last fan-out.
+	MoARefFailed int `json:"moa_ref_failed,omitempty"`
+	// MoAFanOut is true when this iteration ran reference models (false = aggregator-only under MoA).
+	MoAFanOut bool `json:"moa_fanout,omitempty"`
+	// MoASource is how MoA was armed: sticky | one_shot | auto | picker (optional).
+	MoASource string `json:"moa_source,omitempty"`
 }
 
 // TurnUsageFromLLM maps a provider usage payload into TurnUsage.

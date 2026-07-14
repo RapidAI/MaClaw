@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { SettingsTabId, SettingsTabOption } from '../../config/settingsTabs';
 
 interface SettingsTabsRailProps {
@@ -55,6 +56,23 @@ export const SettingsTabsRail = ({ tabs, activeTab, onChange }: SettingsTabsRail
 
     const tooltipId = tooltip ? `settings-tab-tooltip-${tooltip.id}` : undefined;
 
+    // Portal tooltips to document.body so they never become a third grid item
+    // inside .settings-shell (hovering tabs could otherwise distort the nav/content layout).
+    const tooltipNode = tooltip && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+                id={tooltipId}
+                role="tooltip"
+                className="settings-tab-tooltip"
+                style={{ left: tooltip.left, top: tooltip.top }}
+            >
+                <strong>{tooltip.label}</strong>
+                <span>{tooltip.desc}</span>
+            </div>,
+            document.body,
+        )
+        : null;
+
     return (
         <>
             <nav className="settings-top-tabs" aria-label="Settings sections">
@@ -88,17 +106,7 @@ export const SettingsTabsRail = ({ tabs, activeTab, onChange }: SettingsTabsRail
                     </button>
                 ))}
             </nav>
-            {tooltip && (
-                <div
-                    id={tooltipId}
-                    role="tooltip"
-                    className="settings-tab-tooltip"
-                    style={{ left: tooltip.left, top: tooltip.top }}
-                >
-                    <strong>{tooltip.label}</strong>
-                    <span>{tooltip.desc}</span>
-                </div>
-            )}
+            {tooltipNode}
         </>
     );
 };

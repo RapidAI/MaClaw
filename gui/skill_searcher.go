@@ -488,7 +488,12 @@ func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query str
 	return results, nil
 }
 func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
+	// SkillMarket search always originates from HubCenter; empty status still maps
+	// to skillmarket via skillSearchSourceFromStatus default.
 	source := string(r.SourceKind())
+	if source == "" {
+		source = string(skillSearchSourceSkillMarket)
+	}
 	trustLevel := r.TrustLevel
 	if trustLevel == "" {
 		trustLevel = mixedTrustLevel(source)
@@ -500,6 +505,7 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 		Tags:               r.Tags,
 		Source:             source,
 		SourceLabel:        mixedSourceLabel(source),
+		InstallRef:         firstNonEmpty(r.InstallRef, r.ID),
 		TrustLevel:         trustLevel,
 		AvgRating:          r.AvgRating,
 		Downloads:          r.DownloadCount,
@@ -521,6 +527,7 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 		MaclawAppID:                  r.MaclawAppID,
 		MaclawAppName:                r.MaclawAppName,
 		MaclawAppDescription:         r.MaclawAppDescription,
+		MaclawAppKind:                r.MaclawAppKind,
 		MaclawAppCategory:            r.MaclawAppCategory,
 		MaclawAppIcon:                r.MaclawAppIcon,
 		MaclawAppInputMode:           r.MaclawAppInputMode,

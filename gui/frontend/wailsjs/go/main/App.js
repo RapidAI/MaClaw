@@ -431,6 +431,194 @@ export function CreateTask(arg1, arg2) {
   return window['go']['main']['App']['CreateTask'](arg1, arg2);
 }
 
+export function CreateTaskWithMode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateTaskWithMode'](arg1, arg2, arg3);
+}
+
+export function CreateRemoteCodingTask(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreateRemoteCodingTask'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function GetRemoteCodingTaskMeta(arg1) {
+  return window['go']['main']['App']['GetRemoteCodingTaskMeta'](arg1);
+}
+
+export function UpdateRemoteCodingTaskMeta(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['UpdateRemoteCodingTaskMeta'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function TestRemoteSSHConnection(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TestRemoteSSHConnection'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function PrepareLocalCodingEnvironment(arg1, arg2) {
+  return window['go']['main']['App']['PrepareLocalCodingEnvironment'](arg1, arg2);
+}
+
+export function PrepareRemoteCodingEnvironment(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['PrepareRemoteCodingEnvironment'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function EnsureCodingWorkbenchArmed(arg1) {
+  return window['go']['main']['App']['EnsureCodingWorkbenchArmed'](arg1);
+}
+
+export function GetCodingWorkbenchStatus(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchStatus'](arg1);
+}
+
+export function GetCodingWorkbenchPermission(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchPermission'](arg1);
+}
+
+export function SetCodingWorkbenchPermission(arg1, arg2) {
+  return window['go']['main']['App']['SetCodingWorkbenchPermission'](arg1, arg2);
+}
+
+export function SetCodingWorkbenchSessionPlan(arg1, arg2) {
+  return window['go']['main']['App']['SetCodingWorkbenchSessionPlan'](arg1, arg2);
+}
+
+export function GetCodingWorkbenchPlanMode(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchPlanMode'](arg1);
+}
+
+export function SetCodingWorkbenchPlanMode(arg1, arg2) {
+  return window['go']['main']['App']['SetCodingWorkbenchPlanMode'](arg1, arg2);
+}
+
+export function ApproveCodingWorkbenchPlan(arg1) {
+  return window['go']['main']['App']['ApproveCodingWorkbenchPlan'](arg1);
+}
+
+export function RejectCodingWorkbenchPlan(arg1) {
+  return window['go']['main']['App']['RejectCodingWorkbenchPlan'](arg1);
+}
+
+export function GetCodingWorkbenchPendingPlan(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchPendingPlan'](arg1);
+}
+
+export function UpdateCodingWorkbenchPendingPlan(arg1, arg2) {
+  return window['go']['main']['App']['UpdateCodingWorkbenchPendingPlan'](arg1, arg2);
+}
+
+export function SaveCodingWorkbenchCheckpoint(arg1, arg2) {
+  return window['go']['main']['App']['SaveCodingWorkbenchCheckpoint'](arg1, arg2);
+}
+
+export function RestoreCodingWorkbenchCheckpoint(arg1) {
+  return window['go']['main']['App']['RestoreCodingWorkbenchCheckpoint'](arg1);
+}
+
+export function RestoreCodingWorkbenchCheckpointEx(arg1, arg2) {
+  return window['go']['main']['App']['RestoreCodingWorkbenchCheckpointEx'](arg1, arg2);
+}
+
+export function RestoreCodingWorkbenchCheckpointByLabel(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RestoreCodingWorkbenchCheckpointByLabel'](arg1, arg2, arg3);
+}
+
+export function ListCodingWorkbenchCheckpoints(arg1) {
+  return window['go']['main']['App']['ListCodingWorkbenchCheckpoints'](arg1);
+}
+
+export function KeepMainCodingWorkbenchConflict(arg1, arg2, arg3) {
+  return window['go']['main']['App']['KeepMainCodingWorkbenchConflict'](arg1, arg2, arg3);
+}
+
+export function AdoptBaseCodingWorkbenchConflict(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AdoptBaseCodingWorkbenchConflict'](arg1, arg2, arg3);
+}
+
+export function ResolveCodingWorkbenchConflict(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ResolveCodingWorkbenchConflict'](arg1, arg2, arg3, arg4);
+}
+
+export function ApplyCodingWorkbenchConflictPreviewSide(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ApplyCodingWorkbenchConflictPreviewSide'](arg1, arg2, arg3, arg4);
+}
+
+export function WriteCodingWorkbenchConflictFileContent(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['WriteCodingWorkbenchConflictFileContent'](arg1, arg2, arg3, arg4);
+}
+
+export function OpenCodingWorkbenchConflictFile(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['OpenCodingWorkbenchConflictFile'](arg1, arg2, arg3, arg4);
+}
+
+export function SetCodingWorkbenchConflictUIState(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetCodingWorkbenchConflictUIState'](arg1, arg2, arg3, arg4);
+}
+
+export function GetCodingWorkbenchConflictFilePreview(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetCodingWorkbenchConflictFilePreview'](arg1, arg2, arg3, arg4);
+}
+
+export function GetCodingWorkbenchConflictFileTriple(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetCodingWorkbenchConflictFileTriple'](arg1, arg2, arg3);
+}
+
+export function ClearCodingWorkbenchConflictLog(arg1) {
+  return window['go']['main']['App']['ClearCodingWorkbenchConflictLog'](arg1);
+}
+
+export function ExportCodingWorkbenchConflictLog(arg1) {
+  return window['go']['main']['App']['ExportCodingWorkbenchConflictLog'](arg1);
+}
+
+export function GetCodingWorkbenchRouteMap(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchRouteMap'](arg1);
+}
+
+export function PruneCodingWorkbenchCheckpoints(arg1) {
+  return window['go']['main']['App']['PruneCodingWorkbenchCheckpoints'](arg1);
+}
+
+export function GetCodingWorkbenchCheckpointSidecarStats(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchCheckpointSidecarStats'](arg1);
+}
+
+export function RunCodingWorkbenchBackgroundVerify(arg1) {
+  return window['go']['main']['App']['RunCodingWorkbenchBackgroundVerify'](arg1);
+}
+
+export function GetCodingWorkbenchWorktreeMode(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchWorktreeMode'](arg1);
+}
+
+export function SetCodingWorkbenchWorktreeMode(arg1, arg2) {
+  return window['go']['main']['App']['SetCodingWorkbenchWorktreeMode'](arg1, arg2);
+}
+
+export function GetCodingWorkbenchRoutePref(arg1) {
+  return window['go']['main']['App']['GetCodingWorkbenchRoutePref'](arg1);
+}
+
+export function SetCodingWorkbenchRoutePref(arg1, arg2) {
+  return window['go']['main']['App']['SetCodingWorkbenchRoutePref'](arg1, arg2);
+}
+
+export function ListCodingWorkbenchConflicts(arg1) {
+  return window['go']['main']['App']['ListCodingWorkbenchConflicts'](arg1);
+}
+
+export function GetCodingWorkbenchConflictDiffs(arg1, arg2) {
+  return window['go']['main']['App']['GetCodingWorkbenchConflictDiffs'](arg1, arg2);
+}
+
+export function AdoptCodingWorkbenchConflict(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AdoptCodingWorkbenchConflict'](arg1, arg2, arg3);
+}
+
+export function DiscardCodingWorkbenchConflict(arg1, arg2) {
+  return window['go']['main']['App']['DiscardCodingWorkbenchConflict'](arg1, arg2);
+}
+
+export function DiscardAllCodingWorkbenchConflicts(arg1) {
+  return window['go']['main']['App']['DiscardAllCodingWorkbenchConflicts'](arg1);
+}
+
 export function ForkRecentTask(arg1) {
   return window['go']['main']['App']['ForkRecentTask'](arg1);
 }
@@ -1141,6 +1329,30 @@ export function GetMaclawAgentMaxIterations() {
 
 export function SetMaclawAgentMaxIterations(arg1) {
   return window['go']['main']['App']['SetMaclawAgentMaxIterations'](arg1);
+}
+
+export function GetMoAConfig() {
+  return window['go']['main']['App']['GetMoAConfig']();
+}
+
+export function SaveMoAConfig(arg1) {
+  return window['go']['main']['App']['SaveMoAConfig'](arg1);
+}
+
+export function GetMoASessionState() {
+  return window['go']['main']['App']['GetMoASessionState']();
+}
+
+export function SetMoASticky(arg1) {
+  return window['go']['main']['App']['SetMoASticky'](arg1);
+}
+
+export function SetMoAStickyPreset(arg1) {
+  return window['go']['main']['App']['SetMoAStickyPreset'](arg1);
+}
+
+export function GetMoAStats() {
+  return window['go']['main']['App']['GetMoAStats']();
 }
 
 export function GetSubAgentConcurrency() {
@@ -2067,6 +2279,22 @@ export function KnowledgeSyncVerifyPassword(arg1) {
   return window['go']['main']['App']['KnowledgeSyncVerifyPassword'](arg1);
 }
 
+export function WelcomeSyncStatus(arg1) {
+  return window['go']['main']['App']['WelcomeSyncStatus'](arg1);
+}
+
+export function WelcomeSyncPush(arg1) {
+  return window['go']['main']['App']['WelcomeSyncPush'](arg1);
+}
+
+export function WelcomeSyncPull(arg1) {
+  return window['go']['main']['App']['WelcomeSyncPull'](arg1);
+}
+
+export function WelcomeSyncDelete(arg1) {
+  return window['go']['main']['App']['WelcomeSyncDelete'](arg1);
+}
+
 export function KnowledgeListSources(arg1) {
   return window['go']['main']['App']['KnowledgeListSources'](arg1);
 }
@@ -2480,6 +2708,14 @@ export function InstallSelectedMaclawAppPackageFromHub(arg1, arg2) {
 
 export function SubmitMaclawAppPackage(arg1) {
   return window['go']['main']['App']['SubmitMaclawAppPackage'](arg1);
+}
+
+export function PublishMaclawAppOneClick(arg1) {
+  return window['go']['main']['App']['PublishMaclawAppOneClick'](arg1);
+}
+
+export function PublishMaclawAppSubmissionOneClick(arg1) {
+  return window['go']['main']['App']['PublishMaclawAppSubmissionOneClick'](arg1);
 }
 
 export function ListMaclawAppPackageSubmissions(arg1) {

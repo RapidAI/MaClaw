@@ -156,6 +156,7 @@ func NewRouter(
 	}
 	knowledgeSharePackageDir := filepath.Join(runtimeDataDir, "knowledge-packages")
 	knowledgeSyncPackageDir := filepath.Join(runtimeDataDir, "knowledge-sync")
+	welcomeSyncPackageDir := filepath.Join(runtimeDataDir, "welcome-sync")
 	StartKnowledgeSyncCleanup(knowledgeSyncPackageDir)
 	if hubDB != nil && identity != nil {
 		NewMigrationAPI(hubDB, runtimeDataDir, identity, identity.MachinesRepo(), system).RegisterRoutes(mux, requireTenantAdmin)
@@ -297,6 +298,11 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/knowledge/sync/package", UploadKnowledgeSyncPackageHandler(identity, knowledgeSyncPackageDir, centerSvc))
 	mux.HandleFunc("GET /api/knowledge/sync/package", DownloadKnowledgeSyncPackageHandler(identity, knowledgeSyncPackageDir, centerSvc))
 	mux.HandleFunc("DELETE /api/knowledge/sync/package", DeleteKnowledgeSyncPackageHandler(identity, knowledgeSyncPackageDir))
+	// Welcome templates / role / recent — small JSON blob per signed-in Hub user.
+	mux.HandleFunc("GET /api/welcome/sync/status", WelcomeSyncStatusHandler(identity, welcomeSyncPackageDir))
+	mux.HandleFunc("PUT /api/welcome/sync", UploadWelcomeSyncHandler(identity, welcomeSyncPackageDir))
+	mux.HandleFunc("GET /api/welcome/sync", DownloadWelcomeSyncHandler(identity, welcomeSyncPackageDir))
+	mux.HandleFunc("DELETE /api/welcome/sync", DeleteWelcomeSyncHandler(identity, welcomeSyncPackageDir))
 	mux.HandleFunc("GET /api/admin/sessions/all", requireAdmin(AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", requireAdmin(ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", requireAdmin(ListUsersHandler(identity, system, securitySvc)))

@@ -11,6 +11,12 @@ interface AssistantPreviewPaneProps {
     agentView?: AgentView | null;
     codePreviewState: CodePreviewUIState;
     closeCodePreview: () => void;
+    closeCodeFile?: (filePath: string) => void;
+    closeOtherCodeFiles?: (keepPath: string) => void;
+    closeCodeFilesToTheRight?: (fromPath: string) => void;
+    closeAllCodeFiles?: () => void;
+    moveCodeFile?: (fromPath: string, toIndex: number) => void;
+    toggleCodeFilePinned?: (filePath: string) => void;
     closeDocPreview: () => void;
     dismissAgentView?: (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => void | Promise<void>;
     lang: string;
@@ -19,17 +25,25 @@ interface AssistantPreviewPaneProps {
     showCodePreview: boolean;
     showAgentView: boolean;
     showWorkflowPreview: boolean;
+    /** Isolation conflict side panel (tabs with source when both active). */
+    showConflict?: boolean;
+    conflictContent?: React.ReactNode;
+    /** Remaining conflict count — shown as CF tab badge. */
+    conflictCount?: number;
+    onCloseConflict?: () => void;
     splitRatio: number;
     startPreviewResize: () => void;
+    onToggleMaximize?: () => void;
     theme: Theme;
     themeMode: "dark" | "light";
     workflowState: WorkflowUIState;
 }
 
-type PreviewPaneMode = "workflow" | "code" | "agent";
+type PreviewPaneMode = "workflow" | "code" | "agent" | "conflict";
 
 function previewTabIcon(mode: PreviewPaneMode): string {
     if (mode === "agent") return "AG";
+    if (mode === "conflict") return "CF";
     return mode === "workflow" ? "WF" : "SRC";
 }
 
@@ -39,6 +53,9 @@ function previewTabTooltip(mode: PreviewPaneMode, lang: string): string {
     }
     if (mode === "agent") {
         return lang === "en" ? "Agent Task" : "\u667a\u80fd\u4f53\u4efb\u52a1";
+    }
+    if (mode === "conflict") {
+        return lang === "en" ? "Conflicts" : "\u51b2\u7a81";
     }
     return lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b";
 }
@@ -54,6 +71,7 @@ function PreviewTabRail({
     onClose,
     onSelectMode,
     theme,
+    conflictCount = 0,
 }: {
     activeMode: PreviewPaneMode;
     availableModes: PreviewPaneMode[];
@@ -61,6 +79,7 @@ function PreviewTabRail({
     onClose: () => void;
     onSelectMode: (mode: PreviewPaneMode) => void;
     theme: Theme;
+    conflictCount?: number;
 }) {
     const tabRefs = useRef<Partial<Record<PreviewPaneMode, HTMLButtonElement>>>({});
     const selectMode = (mode: PreviewPaneMode, focusTab = false) => {
@@ -136,12 +155,17 @@ function PreviewTabRail({
             >
             {availableModes.map((mode) => {
                 const active = activeMode === mode;
+                const badge = mode === "conflict" && conflictCount > 0 ? (conflictCount > 9 ? "9+" : String(conflictCount)) : "";
+                const label = badge
+                    ? `${previewTabTooltip(mode, lang)} (${conflictCount})`
+                    : previewTabTooltip(mode, lang);
                 return (
                     <button
                         key={mode}
                         type="button"
                         role="tab"
                         id={`assistant-preview-tab-${mode}`}
+                        data-testid={mode === "conflict" ? "assistant-preview-tab-conflict" : undefined}
                         ref={(node) => {
                             if (node) tabRefs.current[mode] = node;
                             else delete tabRefs.current[mode];
@@ -151,14 +175,15 @@ function PreviewTabRail({
                         tabIndex={active ? 0 : -1}
                         onClick={() => selectMode(mode)}
                         style={{
+                            position: "relative",
                             width: "26px",
                             height: "26px",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
-                            border: `1px solid ${active ? theme.headingColor : "transparent"}`,
+                            border: `1px solid ${active ? (mode === "conflict" ? "#dc2626" : theme.headingColor) : "transparent"}`,
                             background: active ? theme.codeBg : "transparent",
-                            color: active ? theme.headingColor : theme.textMuted,
+                            color: active ? (mode === "conflict" ? "#dc2626" : theme.headingColor) : theme.textMuted,
                             borderRadius: "6px",
                             cursor: "pointer",
                             fontSize: "9px",
@@ -167,10 +192,32 @@ function PreviewTabRail({
                             lineHeight: 1,
                             padding: 0,
                         }}
-                        title={previewTabTooltip(mode, lang)}
-                        aria-label={previewTabTooltip(mode, lang)}
+                        title={label}
+                        aria-label={label}
                     >
                         {previewTabIcon(mode)}
+                        {badge ? (
+                            <span
+                                data-testid="assistant-preview-conflict-badge"
+                                style={{
+                                    position: "absolute",
+                                    top: -3,
+                                    right: -3,
+                                    minWidth: 12,
+                                    height: 12,
+                                    padding: "0 3px",
+                                    borderRadius: 999,
+                                    background: "#dc2626",
+                                    color: "#fff",
+                                    fontSize: 8,
+                                    lineHeight: "12px",
+                                    textAlign: "center",
+                                    fontWeight: 700,
+                                }}
+                            >
+                                {badge}
+                            </span>
+                        ) : null}
                     </button>
                 );
             })}
@@ -183,6 +230,12 @@ export function AssistantPreviewPane({
     agentView,
     codePreviewState,
     closeCodePreview,
+    closeCodeFile,
+    closeOtherCodeFiles,
+    closeCodeFilesToTheRight,
+    closeAllCodeFiles,
+    moveCodeFile,
+    toggleCodeFilePinned,
     closeDocPreview,
     dismissAgentView,
     lang,
@@ -191,8 +244,13 @@ export function AssistantPreviewPane({
     showCodePreview,
     showAgentView,
     showWorkflowPreview,
+    showConflict = false,
+    conflictContent = null,
+    conflictCount = 0,
+    onCloseConflict,
     splitRatio,
     startPreviewResize,
+    onToggleMaximize,
     theme,
     themeMode,
     workflowState,
@@ -201,39 +259,57 @@ export function AssistantPreviewPane({
     const previousShowCodeRef = useRef(showCodePreview);
     const previousShowWorkflowRef = useRef(showWorkflowPreview);
     const previousShowAgentRef = useRef(showAgentView);
+    const previousShowConflictRef = useRef(showConflict);
 
     useEffect(() => {
         const codeOpened = showCodePreview && !previousShowCodeRef.current;
         const workflowOpened = showWorkflowPreview && !previousShowWorkflowRef.current;
         const agentOpened = showAgentView && !previousShowAgentRef.current;
+        const conflictOpened = showConflict && !previousShowConflictRef.current;
         previousShowCodeRef.current = showCodePreview;
         previousShowWorkflowRef.current = showWorkflowPreview;
         previousShowAgentRef.current = showAgentView;
+        previousShowConflictRef.current = showConflict;
 
-        if (!showWorkflowPreview && !showAgentView && showCodePreview) {
-            setActiveMode("code");
+        // Prefer newly opened conflict tab so three-way is immediately visible.
+        if (conflictOpened) {
+            setActiveMode("conflict");
             return;
         }
-        if (showWorkflowPreview && !showCodePreview && !showAgentView) {
-            setActiveMode("workflow");
-            return;
-        }
-        if (showAgentView && !showWorkflowPreview && !showCodePreview) {
+        // Prefer a newly opened agent form over code/workflow: forms need user input
+        // and were previously skipped whenever source/workflow tabs were already active
+        // (common on coding workflows where source preview is allowed).
+        if (agentOpened) {
             setActiveMode("agent");
             return;
         }
-        if (codeOpened) {
+        if (!showWorkflowPreview && !showAgentView && !showConflict && showCodePreview) {
             setActiveMode("code");
             return;
         }
-        if (workflowOpened) {
+        if (showWorkflowPreview && !showCodePreview && !showAgentView && !showConflict) {
             setActiveMode("workflow");
             return;
         }
-        if (agentOpened && activeMode !== "workflow" && activeMode !== "code") {
+        if (showAgentView && !showWorkflowPreview && !showCodePreview && !showConflict) {
             setActiveMode("agent");
+            return;
         }
-    }, [activeMode, showAgentView, showCodePreview, showWorkflowPreview]);
+        if (showConflict && !showWorkflowPreview && !showCodePreview && !showAgentView) {
+            setActiveMode("conflict");
+            return;
+        }
+        // Keep an open agent form in front while source files stream in; user can
+        // still switch to SRC manually. Without this, codeOpened steals focus mid-form.
+        if (codeOpened && !showAgentView) {
+            setActiveMode("code");
+            return;
+        }
+        if (workflowOpened && !showAgentView) {
+            setActiveMode("workflow");
+            return;
+        }
+    }, [showAgentView, showCodePreview, showWorkflowPreview, showConflict]);
 
     const docPreviewTheme = useMemo(() => ({
         bg: theme.bg,
@@ -271,6 +347,7 @@ export function AssistantPreviewPane({
     // AgentTaskPanel is now integrated into the tab system (no longer exclusive)
     // Determine which modes are available
     const availableModes: PreviewPaneMode[] = [];
+    if (showConflict && conflictContent) availableModes.push("conflict");
     if (showAgentView && agentView) availableModes.push("agent");
     if (showWorkflowPreview) availableModes.push("workflow");
     if (showCodePreview) availableModes.push("code");
@@ -280,15 +357,23 @@ export function AssistantPreviewPane({
     const effectiveMode = availableModes.includes(activeMode) ? activeMode : availableModes[0];
 
     const handleClose = () => {
-        // Close all non-agent preview modes. Agent is closed via its own
-        // dismiss mechanism; closing the preview pane should hide workflow
-        // and code previews so the pane collapses when agent also goes away.
+        // Close the active tab's surface first when multiple modes are open.
+        if (effectiveMode === "conflict") {
+            onCloseConflict?.();
+            return;
+        }
+        if (effectiveMode === "code") {
+            closeCodePreview();
+            return;
+        }
+        if (effectiveMode === "workflow") {
+            closeDocPreview();
+            return;
+        }
+        // Close all non-agent preview modes. Agent is closed via its own dismiss.
         if (showWorkflowPreview) closeDocPreview();
         if (showCodePreview) closeCodePreview();
-        // If agent is the only remaining mode after closing workflow/code,
-        // it will continue to render standalone (agent-only fallback above
-        // catches that case on next render). If user wants to close agent,
-        // they use the agent panel's own close/dismiss button.
+        if (showConflict) onCloseConflict?.();
     };
 
     // Agent-only: no tab rail needed, render standalone
@@ -299,6 +384,7 @@ export function AssistantPreviewPane({
                     view={agentView!}
                     onDismiss={dismissAgentView}
                     onResizeStart={startPreviewResize}
+                    onToggleMaximize={onToggleMaximize}
                     onSubmit={submitAgentView}
                     theme={theme}
                     lang={lang}
@@ -326,17 +412,35 @@ export function AssistantPreviewPane({
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.headingColor; }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.divider; }}
             />
-            {/* ── Content area ── */}
+            {/* ── Content area ──
+                Conflict panel stays mounted (hidden) when switching to SRC so scroll / draft state
+                and Esc-focus scoping survive tab switches. */}
             <div
                 id={`assistant-preview-panel-${effectiveMode}`}
                 role="tabpanel"
                 aria-labelledby={`assistant-preview-tab-${effectiveMode}`}
-                style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", marginLeft: "6px" }}
+                style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", marginLeft: "6px", position: "relative" }}
             >
+                {showConflict && conflictContent ? (
+                    <div
+                        data-testid="assistant-preview-conflict-slot"
+                        style={{
+                            display: effectiveMode === "conflict" ? "flex" : "none",
+                            flexDirection: "column",
+                            height: "100%",
+                            minHeight: 0,
+                        }}
+                        // Keep mounted for scroll/draft; hide from a11y + Esc ownership when not active.
+                        aria-hidden={effectiveMode === "conflict" ? undefined : true}
+                    >
+                        {conflictContent}
+                    </div>
+                ) : null}
                 {effectiveMode === "agent" && agentView ? (
                     <AgentTaskPanel
                         view={agentView}
                         onDismiss={dismissAgentView}
+                        onToggleMaximize={onToggleMaximize}
                         onSubmit={submitAgentView}
                         theme={theme}
                         lang={lang}
@@ -352,17 +456,26 @@ export function AssistantPreviewPane({
                         lang={lang}
                         theme={docPreviewTheme}
                     />
-                ) : (
+                ) : effectiveMode === "code" || (effectiveMode !== "conflict" && showCodePreview) ? (
                     <CodePreviewPanel
                         files={codePreviewState.files}
                         activeFilePath={codePreviewState.activeFilePath}
+                        pinnedPaths={codePreviewState.pinnedPaths}
+                        mruOrder={codePreviewState.mruOrder}
                         onSelectFile={selectCodeFile}
+                        onCloseFile={closeCodeFile}
+                        onCloseOtherFiles={closeOtherCodeFiles}
+                        onCloseFilesToTheRight={closeCodeFilesToTheRight}
+                        onCloseAllFiles={closeAllCodeFiles}
+                        onMoveFile={moveCodeFile}
+                        onTogglePinFile={toggleCodeFilePinned}
                         onClose={closeCodePreview}
                         onResizeStart={startPreviewResize}
+                        onToggleMaximize={onToggleMaximize}
                         theme={codeTheme}
                         lang={lang}
                     />
-                )}
+                ) : null}
             </div>
             {/* ── Vertical tab rail on right edge ── */}
             {availableModes.length > 1 && (
@@ -373,6 +486,7 @@ export function AssistantPreviewPane({
                     onClose={handleClose}
                     onSelectMode={setActiveMode}
                     theme={theme}
+                    conflictCount={conflictCount}
                 />
             )}
             {/* ── Close button when only one mode (no tab rail) ── */}

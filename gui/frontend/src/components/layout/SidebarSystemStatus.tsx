@@ -27,10 +27,22 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
+    /** Prefer explicit theme so coding-agent chrome remaps failure amber on dark. */
+    isDark?: boolean;
     /** List of providers that are confirmed available (configured + tested online, or official with valid credits). */
     availableProviders?: SidebarLLMProviderSummary[];
     /** Called when user selects a different provider from the dropdown. */
     onSwitchProvider?: (providerName: string) => void;
+    /** Multi-model council (MoA) session sticky state for the quick menu. */
+    moaSticky?: {
+        available: boolean;
+        active: boolean;
+        label?: string;
+        preset?: string;
+        presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
+    };
+    /** Toggle sticky multi-model council for this session (optional preset id). */
+    onToggleMoASticky?: (on: boolean, presetId?: string) => void;
 };
 
 const STATUS_DOT = String.fromCharCode(0x25cf);
@@ -101,10 +113,17 @@ export const SidebarSystemStatus = ({
     openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
+    isDark,
     availableProviders = [],
     onSwitchProvider,
+    moaSticky,
+    onToggleMoASticky,
 }: SidebarSystemStatusProps) => {
-    const providerLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
+    const baseProviderLabel = sidebarCurrentProviderTokenUsage.provider || textForLang(lang, 'Provider', '\u667a\u8c31\u7f16\u7a0b', '\u667a\u8b5c\u7de8\u7a0b');
+    const moaBadge = moaSticky?.active
+        ? textForLang(lang, 'council', '\u4f1a\u8bca', '\u6703\u8a3a')
+        : '';
+    const providerLabel = moaBadge ? `${baseProviderLabel} · ${moaBadge}` : baseProviderLabel;
     const isOfficialProvider = !!sidebarCurrentProviderTokenUsage.isHubService;
 
     // ── Provider switch dropdown state ──
@@ -126,7 +145,7 @@ export const SidebarSystemStatus = ({
     // Exclude current provider from switchable list; only show others.
     const switchableProviders = dropdownOpen
         ? snapshotRef.current
-        : availableProviders.filter(p => p.name !== providerLabel);
+        : availableProviders.filter(p => p.name !== baseProviderLabel);
 
     // Close dropdown on outside click or Escape key; reposition on window resize.
     useEffect(() => {
@@ -294,7 +313,12 @@ export const SidebarSystemStatus = ({
                 </div>
 
                 {codingAgentProgress && (
-                    <CodingAgentSidebarStatus progress={codingAgentProgress} snapshot={codingAgentTurnSnapshot} lang={lang} />
+                    <CodingAgentSidebarStatus
+                        progress={codingAgentProgress}
+                        snapshot={codingAgentTurnSnapshot}
+                        lang={lang}
+                        isDark={isDark}
+                    />
                 )}
 
                 <div className="sidebar-system-status__usage">
@@ -335,11 +359,12 @@ export const SidebarSystemStatus = ({
                             onClick={() => {
                                 if (!dropdownOpen) {
                                     // Snapshot the switchable list at open time
-                                    snapshotRef.current = availableProviders.filter(p => p.name !== providerLabel);
+                                    snapshotRef.current = availableProviders.filter(p => p.name !== baseProviderLabel);
                                     // Don't open if dropdown would be empty (no alternatives + no settings action)
                                     const hasAlternatives = snapshotRef.current.length > 0;
+                                    const hasMoA = !!moaSticky?.available && !!onToggleMoASticky;
                                     const hasSettingsAction = !!(openLLMSettingsPage || openProviderTarget);
-                                    if (!hasAlternatives && !hasSettingsAction) return;
+                                    if (!hasAlternatives && !hasSettingsAction && !hasMoA) return;
                                     // Calculate fixed position from chevron button
                                     if (chevronBtnRef.current) {
                                         const rect = chevronBtnRef.current.getBoundingClientRect();
@@ -389,8 +414,54 @@ export const SidebarSystemStatus = ({
                                         <span>{p.name}</span>
                                     </button>
                                 ))}
-                                {/* Separator + settings link — separator only when there are items above */}
-                                {switchableProviders.length > 0 && <div className="sidebar-system-status__provider-dropdown-sep" />}
+                                {/* Multi-model council sticky: one row per preset, or single toggle */}
+                                {moaSticky?.available && onToggleMoASticky && (
+                                    <>
+                                        {switchableProviders.length > 0 && (
+                                            <div className="sidebar-system-status__provider-dropdown-sep" />
+                                        )}
+                                        {(moaSticky.presets && moaSticky.presets.length > 1
+                                            ? moaSticky.presets.filter((p) => !!p && p.enabled !== false && ((p.ref_count || 0) > 0 || !('ref_count' in p)))
+                                            : [{ id: moaSticky.preset || '_default_', display_name: moaSticky.label }]
+                                        ).map((p) => {
+                                            if (!p) return null;
+                                            const active = !!moaSticky.active && (!!p.id && (p.id === moaSticky.preset || p.id === '_default_'));
+                                            const label = p.display_name || p.id || 'council';
+                                            return (
+                                                <button
+                                                    key={p.id || 'default'}
+                                                    type="button"
+                                                    className="sidebar-system-status__provider-dropdown-item"
+                                                    role="option"
+                                                    aria-selected={active}
+                                                    data-testid={p.id === (moaSticky.preset || '_default_') || (!moaSticky.presets || moaSticky.presets.length <= 1) ? 'sidebar-moa-sticky-toggle' : `sidebar-moa-preset-${p.id}`}
+                                                    onClick={() => {
+                                                        setDropdownOpen(false);
+                                                        if (active) onToggleMoASticky(false);
+                                                        else onToggleMoASticky(true, p.id === '_default_' ? undefined : p.id);
+                                                    }}
+                                                >
+                                                    <span
+                                                        className="sidebar-system-status__provider-dropdown-check"
+                                                        aria-hidden="true"
+                                                        style={{ visibility: active ? 'visible' : 'hidden' }}
+                                                    >
+                                                        OK
+                                                    </span>
+                                                    <span>
+                                                        {active
+                                                            ? textForLang(lang, `Council ON: ${label} (off)`, `\u4f1a\u8bca\u5df2\u5f00\uff1a${label}\uff08\u5173\u95ed\uff09`, `\u6703\u8a3a\u5df2\u958b\uff1a${label}\uff08\u95dc\u9589\uff09`)
+                                                            : textForLang(lang, `Council: ${label}`, `\u4f1a\u8bca\uff1a${label}`, `\u6703\u8a3a\uff1a${label}`)}
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </>
+                                )}
+                                {/* Separator before settings */}
+                                {(openLLMSettingsPage || openProviderTarget) && (
+                                    <div className="sidebar-system-status__provider-dropdown-sep" />
+                                )}
                                 {(openLLMSettingsPage || openProviderTarget) && (
                                     <button
                                         type="button"

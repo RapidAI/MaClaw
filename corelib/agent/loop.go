@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
@@ -257,21 +258,6 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		return r
 	}
-	recordUsage := func(resp *llm.Response) {
-		if resp == nil || resp.Usage == nil {
-			return
-		}
-		round := TurnUsageFromLLM(cfg, resp.Usage)
-		usage.Add(round)
-		if rec, ok := cb.(LLMUsageRecorder); ok && (round.InputTokens > 0 || round.OutputTokens > 0) {
-			model := cfg.Model
-			if model == "" {
-				model = usage.Model
-			}
-			rec.OnLLMUsage(model, round.InputTokens, round.OutputTokens)
-		}
-	}
-
 	maxIter := cb.GetMaxIterations()
 	if maxIter <= 0 {
 		// This should never happen if GetMaxIterations() is implemented correctly
@@ -352,6 +338,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	const maxConsecutiveSameToolFailures = 8
 	const hardStopSameToolFailures = 12
 
+	// MoA fan-out budget for this loop (K11).
+	moaFanoutsRan := 0
+	moaLastRefOK, moaLastRefFail, moaLastRefTotal := 0, 0, 0
+	moaRunner := &moa.Runner{
+		CallRef: func(ctx context.Context, refCFG corelib.MaclawLLMConfig, messages []interface{}) (*llm.Response, error) {
+			return doLLMRequestWithTools(ctx, refCFG, messages, nil, httpClient)
+		},
+		MaxParallel: 3,
+	}
+
 	for iteration := 0; iteration < maxIter; iteration++ {
 		if cb.ShouldStop() {
 			return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
@@ -381,7 +377,101 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if ctxErr != nil {
 			return finish(LoopResult{Error: fmt.Sprintf("LLM request context failed: %v", ctxErr), Iterations: iteration, ToolCalls: totalToolCalls})
 		}
-		resp, err := doLLMRequestWithToolsStream(ctx, cfg, conversation, tools, httpClient, cb.OnToken)
+
+		// Optional MoA: reference fan-out on a request-only clone, then aggregator stream.
+		// K9: loop re-checks env kill switch so a host cannot bypass MACLAW_MOA=off.
+		reqConversation := conversation
+		aggCFG := cfg
+		if host, ok := cb.(MoAHost); ok && moa.EnvAllows() {
+			toolsSeen := moa.ConversationHasToolResults(conversation)
+			if active, preset, progress := host.PrepareMoA(iteration, toolsSeen, moaFanoutsRan); active {
+				onlyBefore := preset.OnlyBeforeFirstTool
+				dec := moa.ShouldFanOut(corelib.MoAConfig{
+					FanoutMaxIterations: preset.FanoutMaxIterations,
+					OnlyBeforeFirstTool: &onlyBefore,
+				}, corelib.MoAPresetConfig{Enabled: preset.Enabled}, iteration, moaFanoutsRan, toolsSeen)
+				thisFanOut := false
+				usableRefs := moa.CountUsableRefs(preset.References)
+				if dec.Allow && usableRefs > 0 {
+					// Optional daily-budget precheck (PR3): estimate against usable advisors only.
+					if gate, ok := cb.(MoABudgetGate); ok {
+						if allow, reason := gate.AllowMoAFanOut(usableRefs); !allow {
+							log.Printf("[agent-loop] moa fan-out skipped by budget gate: %s", reason)
+							if reason != "" {
+								cb.OnProgress(reason)
+							}
+							dec.Allow = false
+						}
+					}
+				}
+				// Fan-out only when at least one usable advisor is configured.
+				// Error placeholders among a mixed set still appear in private advice.
+				if dec.Allow && usableRefs > 0 {
+					if progress != "" {
+						cb.OnProgress(progress)
+					} else {
+						cb.OnProgress(fmt.Sprintf("consulting %d models…", usableRefs))
+					}
+					fan := moaRunner.RunReferences(ctx, preset, conversation)
+					// Account reference usage before aggregator (even if aggregator fails later).
+					for _, call := range fan.Calls {
+						if call.Usage == nil {
+							continue
+						}
+						round := TurnUsageFromLLM(call.Config, call.Usage)
+						usage.Add(round)
+						if rec, ok := cb.(LLMUsageRecorder); ok && (round.InputTokens > 0 || round.OutputTokens > 0) {
+							model := call.Config.Model
+							if model == "" {
+								model = usage.Model
+							}
+							rec.OnLLMUsage(model, round.InputTokens, round.OutputTokens)
+						}
+					}
+					if fan.Advice != "" {
+						reqConversation = moa.InjectAdviceDeepCopy(conversation, fan.Advice)
+					}
+					moaFanoutsRan++
+					thisFanOut = true
+					moaLastRefOK = fan.RefOK
+					moaLastRefFail = fan.RefFail
+					moaLastRefTotal = len(preset.References)
+					moa.RecordFanOut(preset.Name, fan.RefOK, fan.RefFail, fan.Duration)
+					if fan.Progress != "" {
+						cb.OnProgress(fan.Progress)
+					}
+					log.Printf("[agent-loop] moa fan-out preset=%s refs=%d ok=%d fail=%d ms=%d fanouts=%d reason=%s",
+						preset.Name, len(preset.References), fan.RefOK, fan.RefFail, fan.Duration.Milliseconds(), moaFanoutsRan, dec.Reason)
+				}
+				// Aggregator config: use_primary follows GetLLMConfig (already in cfg); else fixed preset aggregator.
+				if !preset.AggregatorUsePrimary {
+					if strings.TrimSpace(preset.Aggregator.URL) != "" && strings.TrimSpace(preset.Aggregator.Model) != "" {
+						aggCFG = preset.Aggregator
+					}
+				} else if preset.Raw.AggregatorMaxTokens > 0 {
+					aggCFG.MaxOutputTokens = preset.Raw.AggregatorMaxTokens
+				}
+				route.Source = "moa"
+				route.MoAPreset = preset.Name
+				route.MoAFanouts = moaFanoutsRan
+				route.MoAFanOut = thisFanOut
+				// Prefer last completed fan-out counts for chip (ok/total); bare name when none yet.
+				if moaLastRefTotal > 0 {
+					route.MoAReferences = moaLastRefTotal
+					route.MoARefOK = moaLastRefOK
+					route.MoARefFailed = moaLastRefFail
+				}
+				if route.Reason == "" {
+					route.Reason = "moa preset " + preset.Name
+				} else if !strings.Contains(route.Reason, "moa=") {
+					route.Reason = route.Reason + "; moa=" + preset.Name
+				}
+				route.Model = aggCFG.Model
+				route.Provider = aggCFG.ProviderName
+			}
+		}
+
+		resp, err := doLLMRequestWithToolsStream(ctx, aggCFG, reqConversation, tools, httpClient, cb.OnToken)
 		if err != nil {
 			// Retry with exponential backoff for transient errors (503, timeout, network).
 			// SubAgent tasks should be resilient to brief API outages.
@@ -394,7 +484,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					finishLLMRequest(err)
 					return finish(LoopResult{Error: "cancelled during LLM retry", Iterations: iteration, ToolCalls: totalToolCalls})
 				}
-				resp, err = doLLMRequestWithTools(ctx, cfg, conversation, tools, httpClient)
+				resp, err = doLLMRequestWithTools(ctx, aggCFG, reqConversation, tools, httpClient)
 			}
 			finishLLMRequest(err)
 			if err != nil {
@@ -403,7 +493,28 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		} else {
 			finishLLMRequest(nil)
 		}
-		recordUsage(resp)
+		// Account aggregator usage with aggregator config (sticky model → force after).
+		if resp != nil && resp.Usage != nil {
+			round := TurnUsageFromLLM(aggCFG, resp.Usage)
+			usage.Add(round)
+			// Prefer aggregator as the turn's primary model label (sticky first-write).
+			if usage.Model == "" || usage.Requests == 1 || strings.TrimSpace(aggCFG.Model) != "" {
+				// After first Add, Model may be a reference model — overwrite to aggregator for chip.
+				if strings.TrimSpace(aggCFG.Model) != "" {
+					usage.Model = aggCFG.Model
+				}
+				if strings.TrimSpace(aggCFG.ProviderName) != "" {
+					usage.Provider = aggCFG.ProviderName
+				}
+			}
+			if rec, ok := cb.(LLMUsageRecorder); ok && (round.InputTokens > 0 || round.OutputTokens > 0) {
+				model := aggCFG.Model
+				if model == "" {
+					model = usage.Model
+				}
+				rec.OnLLMUsage(model, round.InputTokens, round.OutputTokens)
+			}
+		}
 
 		if len(resp.Choices) == 0 {
 			if h.OnEmptyResponse(iteration) {

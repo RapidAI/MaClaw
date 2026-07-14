@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -653,25 +652,18 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 			switch hr.Phase.ExecMode {
 			case v2.ExecModeSubAgent:
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=subagent for phase=%s", hr.Phase.ID)
-				if hr.State != nil && hr.State.Type == "coding_subagent" {
-					h.prepareCodingTemplateSubAgentExecution(msg.UserID, hr.State)
-				} else {
-					if wf := h.getWorkflowV2(); wf != nil && hr.State != nil {
-						if phase := hr.State.ActivePhase(); phase != nil {
-							phase.Status = v2.PhaseExecuting
-							_ = wf.store.Save(hr.State)
-						}
+				if wf := h.getWorkflowV2(); wf != nil && hr.State != nil {
+					if phase := hr.State.ActivePhase(); phase != nil {
+						phase.Status = v2.PhaseExecuting
+						_ = wf.store.Save(hr.State)
 					}
-					h.emitWorkflowV2Progress(msg.UserID, hr.State)
-					h.pendingV2SubAgentExecution.Store(msg.UserID, true)
-					h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
 				}
+				h.emitWorkflowV2Progress(msg.UserID, hr.State)
+				h.pendingV2SubAgentExecution.Store(msg.UserID, true)
+				h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
 				h.workflowAgentLoopMarker.Store(msg.UserID, true)
 				return workflowIMRouteResult{WorkflowAgentLoop: true, WorkflowDocPhase: false}
 			case v2.ExecModeRemoteSubAgent:
-				if hr.State != nil && hr.State.Type == "remote_coding_subagent" {
-					return h.setupRemoteCodingTemplateFromWorkflowForm(msg.UserID, hr.State)
-				}
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=remote_subagent for phase=%s", hr.Phase.ID)
 				if resp := h.launchRemoteExperimentOrchestrator(msg.UserID, hr.State); resp != nil {
 					return workflowIMRouteResult{Response: resp}
@@ -1354,20 +1346,6 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 		phase := state.ActivePhase()
 		if phase != nil && phase.FormData != nil {
 			autoContinueText := "继续"
-			if phase.ExecMode == v2.ExecModeSubAgent && state.Type == "coding_subagent" {
-				autoContinueText = h.prepareCodingTemplateSubAgentExecution(userID, state)
-			} else if phase.ExecMode == v2.ExecModeRemoteSubAgent && state.Type == "remote_coding_subagent" {
-				remoteResult := h.setupRemoteCodingTemplateFromWorkflowForm(userID, state)
-				if remoteResult.Response != nil {
-					return remoteResult.Response
-				}
-				if _, requestText := remoteCodingTemplateFormExecutionInputs(state); requestText != "" {
-					autoContinueText = requestText
-				}
-			}
-			if strings.TrimSpace(autoContinueText) == "" {
-				autoContinueText = "继续"
-			}
 
 			// Emit echo as an immediate streaming token so the frontend shows it
 			// while the async agent loop starts. In deferred mode, response.Text
@@ -1906,30 +1884,204 @@ func workflowEventProjectPath(state *v2.WorkflowState) string {
 	return state.ProjectPath
 }
 
-// runCodingTemplateSubAgent executes the single-phase coding_subagent workflow
-// after the standard workflow form has collected its inputs.
+// runCodingTemplateSubAgent executes the pure-coding workbench turn.
+// Complex requests may be auto-planned into multiple ordered TaskItems and
+// executed sequentially via TaskRunner; simple requests stay single-task.
+// Plan mode "approve" pauses after planning until /plan approve.
 func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	ensureLoopCtxUserID(loopCtx, userID)
 	if err := v2.EnsureProjectDir(projectPath); err != nil {
-		log.Printf("[workflow-v2] coding_subagent: failed to ensure project dir %s: %v", projectPath, err)
+		log.Printf("[workflow-v2] pure coding: failed to ensure project dir %s: %v", projectPath, err)
 	}
 
-	// Create a single task from the user's request
-	task := &v2.TaskItem{
-		Index:       1,
-		Title:       userText,
-		Description: userText,
-	}
-	tasks := []*v2.TaskItem{task}
+	// Load AGENTS.md / CLAUDE.md into sticky for this turn.
+	h.ensureStickyProjectInstructions(userID, projectPath)
 
-	log.Printf("[workflow-v2] coding_subagent: user=%s project=%s task=%q", userID, projectPath, truncateRunesV2(userText, 80))
+	// Multi-turn session memory: carry prior summaries/files into this turn.
+	sessionMem := h.getStickyCodingWorkbenchMemory(userID)
+	prevOutputs := sessionMem.prevOutputs()
+	reqCtx := ""
+	if sessionMem.TurnCount > 0 {
+		reqCtx = fmt.Sprintf("Continue full coding workbench session (turn %d). Prefer incremental changes on prior work.", sessionMem.TurnCount+1)
+	}
+
+	if loopCtx != nil && loopCtx.IsCancelled() {
+		return &IMAgentResponse{Text: "编码任务已取消", TraceEventCount: 0}
+	}
+
+	// One-shot approved plan from /plan approve.
+	var tasks []*v2.TaskItem
+	var planMarkdown string
+	var planned bool
+	recordUserText := userText
+	if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
+		tasks = approved.Tasks
+		planMarkdown = approved.Markdown
+		planned = len(tasks) >= codingWorkbenchPlanMinTasks
+		if s := strings.TrimSpace(approved.UserText); s != "" {
+			recordUserText = s
+		}
+		// Strip approve marker from display text.
+		userText = recordUserText
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("执行已批准计划（%d 步）…", len(tasks)))
+		}
+		if onToken != nil && planMarkdown != "" {
+			onToken("\n\n## 按已批准计划执行\n\n" + planMarkdown + "\n\n---\n\n")
+		}
+		h.persistCodingWorkbenchPlans(userID, planMarkdown, "")
+		h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(tasks, codingStepPending))
+	} else {
+		// Strip accidental approve marker if present without sticky plan.
+		if strings.HasPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker) {
+			userText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker))
+			recordUserText = userText
+		}
+		hooks := loadCodingWorkbenchHooks(projectPath)
+		if prePlan := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_plan"); prePlan.Report != "" {
+			log.Printf("[coding-hooks] pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
+		}
+		// Note: pre_plan fail_on_error does not abort planning (user still needs a plan);
+		// step-level fail_on_error is enforced on pre_step / pre_verify.
+		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasks(userID, userText, projectPath, sessionMem, onProgress, onToken)
+		// Approve mode: resolve already stored pending; return without executing.
+		if planned && normalizeCodingPlanMode(sessionMem.PlanMode) == codingPlanModeApprove {
+			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
+				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
+				if onToken != nil {
+					onToken("\n\n" + text)
+				}
+				return &IMAgentResponse{
+					Text:    text,
+					Actions: codingPlanApproveActions(),
+				}
+			}
+		}
+	}
+	if planned && planMarkdown != "" {
+		// Refresh prevOutputs after plan was persisted so steps see the plan.
+		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+		prevOutputs = sessionMem.prevOutputs()
+		reqCtx = strings.TrimSpace(reqCtx + "\n\nA multi-step execution plan was generated for this request. Complete the CURRENT step fully, then stop; later steps run as separate tasks.")
+	}
+	if len(tasks) == 0 {
+		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
+		planned = false
+	}
+
+	log.Printf("[workflow-v2] pure coding: user=%s project=%s task=%q sticky_turn=%d prev_outputs=%d planned=%v steps=%d",
+		userID, projectPath, truncateRunesV2(userText, 80), sessionMem.TurnCount, len(prevOutputs), planned, len(tasks))
 
 	if onProgress != nil {
-		onProgress("模板编程模式：开始执行")
+		if planned {
+			onProgress(fmt.Sprintf("全功能编程工作台：按计划执行 %d 步", len(tasks)))
+		} else if sessionMem.TurnCount > 0 {
+			onProgress(fmt.Sprintf("全功能编程工作台：继续第 %d 轮执行", sessionMem.TurnCount+1))
+		} else {
+			onProgress("全功能编程工作台：开始执行")
+		}
 	}
 
+	hooks := loadCodingWorkbenchHooks(projectPath)
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
+	worktreeMode := h.getStickyCodingWorktreeMode(userID)
+	// One preview session for the whole pure-coding turn so multi-step writes
+	// accumulate in the right-hand source panel.
+	// Frontend auto_open session_start keeps existing tabs (does not wipe the map).
+	// Preview content is filled by: arm restore (sticky), mid-turn write_file events,
+	// and end-of-turn emitCodingWorkbenchSourcePreview — no turn-start full re-read
+	// (avoids double disk I/O and forceOpen race with session_start ordering).
+	codeSessionID := newCodingSubAgentCodeSessionID("coding-workbench", userID)
+	if loopCtx != nil {
+		loopCtx.codeSessionID = codeSessionID
+	}
+	// Route with tab project path (managed task dir), not exec/working_dir.
+	// Frontend shouldAcceptCodeEventForProject filters on activeTab.projectPath.
+	previewRoutePath := codePreviewRouteProjectPath(userID, projectPath)
+	emitCodingSubAgentCodeSessionStart(h.app, codeSessionID, previewRoutePath)
+	defer emitCodingSubAgentCodeSessionEnd(h.app, codeSessionID, previewRoutePath)
+	// Multi-step plans already encode explore→implement→verify; TDD doubling is too heavy.
+	// Parallel waves: explore-only steps with softened deps can fan out (MaxParallel=3).
+	// Write steps may isolate into git worktrees when mode is auto/always.
+	maxParallel := 1
+	if planned && len(tasks) >= 2 {
+		maxParallel = 3
+	}
+	var lastCodingResult *CodingSubAgentResult
+	totalToolCalls, totalIters := 0, 0
+	totalInTok, totalOutTok := 0, 0
+	totalCost := 0.0
+	var usageMu sync.Mutex
+	var mergeMu sync.Mutex // serialize worktree cherry-picks into main tree
+	var attachOnce sync.Once
+	var mergedModified, mergedCreated []string
 	subAgentFn := func(ctx context.Context, t *v2.TaskItem, config v2.TaskRunnerConfig, onTk func(string), onPr func(string)) *v2.TaskRunResult {
+		if t == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		if loopCtx != nil && loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+			default:
+			}
+		}
+		h.updateStickyCodingStepStatus(userID, t.Index, codingStepRunning, "")
+		if preStepRes := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_step"); preStepRes.Report != "" || preStepRes.Failed {
+			if preStepRes.Report != "" {
+				log.Printf("[coding-hooks] pre_step T%d: %s", t.Index, truncateRunesV2(preStepRes.Report, 160))
+			}
+			if codingHookShouldAbort(hooks, preStepRes) {
+				sum := "pre_step hook failed (fail_on_error)\n" + preStepRes.Report
+				h.updateStickyCodingStepStatus(userID, t.Index, codingStepFailed, sum)
+				return &v2.TaskRunResult{
+					TaskIndex: t.Index,
+					Title:     t.Title,
+					Status:    v2.TaskFailed,
+					Summary:   sum,
+					Error:     "pre_step hook failed",
+				}
+			}
+		}
+		stepReqCtx := reqCtx
+		if planned {
+			stepReqCtx = strings.TrimSpace(reqCtx + fmt.Sprintf(
+				"\n\nYou are executing plan step T%d/%d: %s\nFocus on this step only; do not skip ahead.",
+				t.Index, len(tasks), strings.TrimSpace(t.Title),
+			))
+		}
+
+		// Optional git worktree isolation for write-capable steps.
+		stepProject := config.ProjectPath
+		if stepProject == "" {
+			stepProject = projectPath
+		}
+		var wt *codingWorkbenchWorktree
+		waveSize := config.WaveSize
+		useWT := shouldUseCodingWorktree(worktreeMode, planned, t.Title, t.Description, maxParallel, waveSize, t.DependsOn)
+		if useWT {
+			created, wtErr := createCodingWorkbenchWorktree(projectPath, t.Index, t.Title)
+			if wtErr != nil {
+				log.Printf("[coding-worktree] create failed T%d: %v — falling back to main tree", t.Index, wtErr)
+				if onPr != nil {
+					onPr(fmt.Sprintf("T%d worktree 创建失败，回退主目录: %v", t.Index, wtErr))
+				}
+			} else if created != nil {
+				wt = created
+				stepProject = wt.ProjectPath
+				h.rememberCodingWorktree(userID, wt, "created")
+				if onPr != nil {
+					onPr(fmt.Sprintf("T%d 在 git worktree 中执行: %s", t.Index, wt.Branch))
+				}
+				stepReqCtx = strings.TrimSpace(stepReqCtx +
+					"\n\nYou are in an isolated git worktree. Edit only under this project path. Changes will be cherry-picked back to the main tree after the step.")
+			}
+		}
+
 		v1Task := &TaskItem{
 			Index:       t.Index,
 			Title:       t.Title,
@@ -1943,22 +2095,186 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		} else {
 			fn = RunTaskWithSubAgent
 		}
-		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, "", "", nil, loopCtx, onTk, onPr)
+		// Snapshot prevOutputs under lock so parallel waves don't race the slice.
+		usageMu.Lock()
+		stepPrev := append([]string(nil), prevOutputs...)
+		usageMu.Unlock()
+		v1Result := fn(h, cfg, httpClient, v1Task, stepProject, stepReqCtx, "", stepPrev, loopCtx, onTk, onPr)
+
+		// Merge worktree back (or cleanup on failure).
+		if wt != nil {
+			if v1Result != nil && v1Result.Status == TaskExecPassed {
+				mergeMu.Lock()
+				mergedOK, mergeSum, mergeErr := wt.mergeBack(projectPath)
+				mergeMu.Unlock()
+				if mergeErr != nil {
+					log.Printf("[coding-worktree] merge failed T%d: %v", t.Index, mergeErr)
+					h.rememberCodingWorktree(userID, wt, "merge-failed")
+					h.recordLocalWorktreeConflict(userID, wt, projectPath, mergeErr.Error())
+					// Keep worktree for inspection + /worktree adopt.
+					wt.cleanup(true)
+					hint := mergeErr.Error() + "\n\n可用 `/worktree conflicts` 查看，`/worktree adopt <id>` 强制合并。"
+					if v1Result.Summary != "" {
+						v1Result.Summary = v1Result.Summary + "\n\nworktree merge failed: " + hint
+					} else {
+						v1Result.Summary = "worktree merge failed: " + hint
+					}
+					v1Result.Status = TaskExecFailed
+					v1Result.Error = mergeErr.Error()
+				} else {
+					if mergeSum != "" {
+						h.rememberCodingWorktree(userID, wt, mergeSum)
+						if onPr != nil {
+							onPr(fmt.Sprintf("T%d %s", t.Index, mergeSum))
+						}
+						if mergedOK {
+							if v1Result.Summary != "" {
+								v1Result.Summary = v1Result.Summary + "\n\n" + mergeSum
+							} else {
+								v1Result.Summary = mergeSum
+							}
+						}
+					}
+					// Remap file paths from worktree → main before sticky merge.
+					v1Result.FilesModified = remapWorktreePaths(v1Result.FilesModified, wt.ProjectPath, projectPath)
+					v1Result.FilesCreated = remapWorktreePaths(v1Result.FilesCreated, wt.ProjectPath, projectPath)
+					wt.cleanup(false)
+				}
+			} else {
+				// Failed/skipped step: drop worktree branch.
+				wt.cleanup(false)
+			}
+		}
+
+		if v1Result != nil {
+			// Push step file changes into the right-hand preview immediately
+			// (after worktree path remap so events target the main project).
+			emitCodingSubAgentCodeFileEvents(h.app, codeSessionID, projectPath, v1Result.FilesModified, v1Result.FilesCreated, previewRoutePath)
+			usageMu.Lock()
+			lastCodingResult = v1Result
+			totalToolCalls += v1Result.ToolCalls
+			totalIters += v1Result.Iterations
+			totalInTok += v1Result.InputTokens
+			totalOutTok += v1Result.OutputTokens
+			totalCost += v1Result.EstCostRMB
+			if v1Result.RouteModel != "" || v1Result.RouteSource != "" {
+				h.recordStickyCodingRoute(userID, v1Result.RouteModel, v1Result.RouteSource, v1Result.RouteTask, v1Result.RouteReason)
+			}
+			mergedModified = append(mergedModified, v1Result.FilesModified...)
+			mergedCreated = append(mergedCreated, v1Result.FilesCreated...)
+			// Later steps see earlier step summaries in continuity context.
+			if sum := strings.TrimSpace(v1Result.Summary); sum != "" {
+				prevOutputs = append(prevOutputs, fmt.Sprintf("Completed T%d (%s):\n%s", t.Index, t.Title, truncateRunesV2(sum, 600)))
+				if len(prevOutputs) > stickyCodingMemoryPrevOutputsMax {
+					prevOutputs = prevOutputs[len(prevOutputs)-stickyCodingMemoryPrevOutputsMax:]
+				}
+			}
+			usageMu.Unlock()
+			// Attachments only needed on the first step of a multi-step plan.
+			attachOnce.Do(func() {
+				if loopCtx != nil {
+					loopCtx.CodingAttachments = nil
+				}
+			})
+		}
 		if v1Result == nil {
+			h.updateStickyCodingStepStatus(userID, t.Index, codingStepFailed, "SubAgent returned nil")
 			return &v2.TaskRunResult{TaskIndex: t.Index, Title: t.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
 		status := v2.TaskFailed
+		stepStatus := codingStepFailed
 		switch v1Result.Status {
 		case TaskExecPassed:
 			status = v2.TaskPassed
+			stepStatus = codingStepPassed
 		case TaskExecSkipped:
 			status = v2.TaskSkipped
+			stepStatus = codingStepSkipped
 		}
+		summary := v1Result.Summary
+		// Step verification gate after successful implement/verify-style steps.
+		// Always verify on the main project path (post-merge).
+		if status == v2.TaskPassed && planned && stepNeedsVerifyGate(t.Title, t.Description, t.Index, len(tasks)) {
+			preV := runCodingWorkbenchHookPhase(projectPath, hooks, "pre_verify")
+			if preV.Report != "" {
+				log.Printf("[coding-hooks] pre_verify T%d: %s", t.Index, truncateRunesV2(preV.Report, 160))
+			}
+			if codingHookShouldAbort(hooks, preV) {
+				status = v2.TaskFailed
+				stepStatus = codingStepVerifyFail
+				gateSum := "pre_verify hook failed (fail_on_error)\n" + preV.Report
+				if summary != "" {
+					summary = summary + "\n\n" + gateSum
+				} else {
+					summary = gateSum
+				}
+				h.updateStickyCodingStepStatus(userID, t.Index, stepStatus, summary)
+				_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
+				return &v2.TaskRunResult{
+					TaskIndex:     t.Index,
+					Title:         t.Title,
+					Status:        status,
+					Summary:       summary,
+					FilesCreated:  v1Result.FilesCreated,
+					FilesModified: v1Result.FilesModified,
+					Error:         "pre_verify hook failed",
+				}
+			}
+			ok, vcmd, vout, skipped := runCodingWorkbenchStepVerify(ctx, projectPath)
+			gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
+			if !skipped {
+				if onProgress != nil {
+					if ok {
+						onProgress(fmt.Sprintf("T%d 步级验证通过: %s", t.Index, vcmd))
+					} else {
+						onProgress(fmt.Sprintf("T%d 步级验证失败: %s", t.Index, vcmd))
+					}
+				}
+				if onTk != nil {
+					onTk("\n\n" + gateSum + "\n")
+				}
+				postV := runCodingWorkbenchHookPhase(projectPath, hooks, "post_verify")
+				if postV.Report != "" {
+					log.Printf("[coding-hooks] post_verify T%d: %s", t.Index, truncateRunesV2(postV.Report, 160))
+				}
+				if !ok {
+					status = v2.TaskFailed
+					stepStatus = codingStepVerifyFail
+					if summary != "" {
+						summary = summary + "\n\n" + gateSum
+					} else {
+						summary = gateSum
+					}
+					h.updateStickyCodingStepVerify(userID, t.Index, vcmd, false, gateSum)
+					_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
+					return &v2.TaskRunResult{
+						TaskIndex:     t.Index,
+						Title:         t.Title,
+						Status:        status,
+						Summary:       summary,
+						FilesCreated:  v1Result.FilesCreated,
+						FilesModified: v1Result.FilesModified,
+						Error:         "step verification failed: " + vcmd,
+					}
+				}
+				h.updateStickyCodingStepVerify(userID, t.Index, vcmd, true, gateSum)
+				if summary != "" {
+					summary = summary + "\n\n" + gateSum
+				} else {
+					summary = gateSum
+				}
+			} else {
+				h.updateStickyCodingStepStatus(userID, t.Index, stepStatus, summary)
+			}
+		} else {
+			h.updateStickyCodingStepStatus(userID, t.Index, stepStatus, summary)
+		}
+		_ = runCodingWorkbenchHookPhase(projectPath, hooks, "post_step")
 		return &v2.TaskRunResult{
 			TaskIndex:     t.Index,
 			Title:         t.Title,
 			Status:        status,
-			Summary:       v1Result.Summary,
+			Summary:       summary,
 			FilesCreated:  v1Result.FilesCreated,
 			FilesModified: v1Result.FilesModified,
 			Error:         v1Result.Error,
@@ -1968,7 +2284,8 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	config := v2.TaskRunnerConfig{
 		ProjectPath: projectPath,
 		MaxRetries:  2,
-		TDDMode:     true,
+		TDDMode:     !planned && len(tasks) == 1,
+		MaxParallel: maxParallel,
 	}
 
 	// Route SubAgent thinking to reasoning panel (collapsed)
@@ -1984,28 +2301,105 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 	}
 
+	runCtx := context.Background()
+	var cancelRun context.CancelFunc
+	if loopCtx != nil {
+		runCtx, cancelRun = loopCtx.Context()
+		if cancelRun != nil {
+			defer cancelRun()
+		}
+	}
 	runner := v2.NewTaskRunner(config, subAgentFn)
-	runner.RunAll(context.Background(), tasks, reasoningToken, func(progress string) {
+	runResults := runner.RunAll(runCtx, tasks, reasoningToken, func(progress string) {
 		log.Printf("[workflow-v2-template] %s", progress)
 		if onProgress != nil {
 			onProgress(progress)
 		}
 	})
 	report := runner.FinalReport()
+	if lastCodingResult != nil {
+		// Aggregate file audit across multi-step runs for sticky memory.
+		lastCodingResult.FilesModified = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesModified, mergedModified...))
+		lastCodingResult.FilesCreated = uniqueSortedSubAgentStrings(append(lastCodingResult.FilesCreated, mergedCreated...))
+		lastCodingResult.ToolCalls = totalToolCalls
+		lastCodingResult.Iterations = totalIters
+	}
+	// Always refresh source preview after the turn: write_file mid-run events
+	// can be missed when the agent only uses bash, or when a later step runs
+	// against already-generated code without further edits.
+	// lastCodingResult already aggregates multi-step file lists above.
+	previewModified := mergedModified
+	previewCreated := mergedCreated
+	if lastCodingResult != nil {
+		previewModified = lastCodingResult.FilesModified
+		previewCreated = lastCodingResult.FilesCreated
+	}
+	stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, sessionMem.FilesModified...), sessionMem.FilesCreated...))
+	emittedPreview := emitCodingWorkbenchSourcePreview(h.app, codeSessionID, projectPath, previewModified, previewCreated, stickyFiles, true, true, previewRoutePath)
+	h.recordStickyLocalCodingTurn(userID, projectPath, recordUserText, lastCodingResult)
+	// Bash-only turns: no tool audit and no prior sticky → end-of-turn used a
+	// project scan. Persist those paths so re-arm can restore the preview.
+	// Skip when write_file already audited files or sticky already had history
+	// (avoids a second RMW that only re-writes the same sticky fill).
+	if shouldStickyMergePreviewScan(previewModified, previewCreated, stickyFiles, emittedPreview) {
+		h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+			if mem == nil {
+				return
+			}
+			mem.FilesModified = uniqueSortedSubAgentStrings(append(mem.FilesModified, emittedPreview...))
+			if len(mem.FilesModified) > 40 {
+				mem.FilesModified = mem.FilesModified[len(mem.FilesModified)-40:]
+			}
+		})
+	}
+	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)
+	if postTurn := runCodingWorkbenchHookPhase(projectPath, hooks, "post_turn"); postTurn.Report != "" {
+		log.Printf("[coding-hooks] post_turn: %s", truncateRunesV2(postTurn.Report, 200))
+	}
 
 	// Push final report as visible content
 	if onToken != nil {
 		onToken("\n\n" + report)
 	}
 
-	log.Printf("[workflow-v2] coding_subagent complete: user=%s\n%s", userID, report)
+	log.Printf("[workflow-v2] pure coding complete: user=%s planned=%v steps=%d tokens_in=%d out=%d\n%s",
+		userID, planned, len(tasks), totalInTok, totalOutTok, report)
 
-	return &IMAgentResponse{
-		Text: fmt.Sprintf("编码完成\n项目路径：%s\n\n%s", projectPath, report),
+	// Populate TraceEventCount so /goal continuation does not false-pause after
+	// two pure-coding turns (no-tool suppression uses TraceEventCount as proxy).
+	header := codingWorkbenchRunHeader(planned, len(tasks), runResults)
+	memAfter := h.getStickyCodingWorkbenchMemory(userID)
+	costLine := formatCodingSessionCostLine(memAfter)
+	body := fmt.Sprintf("%s\n项目路径：%s\n\n%s", header, projectPath, report)
+	if costLine != "" {
+		body = body + "\n\n" + costLine
 	}
+	if m := strings.TrimSpace(memAfter.LastRouteModel); m != "" {
+		body = body + fmt.Sprintf("\n路由: %s", m)
+		if s := strings.TrimSpace(memAfter.LastRouteSource); s != "" {
+			body = body + fmt.Sprintf(" (%s)", s)
+		}
+	}
+	resp := &IMAgentResponse{Text: body}
+	h.applyCodingUsageToResponse(userID, resp, totalInTok, totalOutTok, totalCost)
+	if memAfter.LastRouteModel != "" {
+		resp.RouteModel = memAfter.LastRouteModel
+		resp.RouteSource = memAfter.LastRouteSource
+		resp.RouteTask = memAfter.LastRouteTask
+		resp.RouteReason = memAfter.LastRouteReason
+	}
+	if totalToolCalls > 0 || totalIters > 0 {
+		resp.TraceEventCount = codingSubAgentActivityTraceCount(totalToolCalls, totalIters)
+	} else if lastCodingResult != nil {
+		resp.TraceEventCount = codingSubAgentActivityTraceCount(lastCodingResult.ToolCalls, lastCodingResult.Iterations)
+	} else if strings.TrimSpace(report) != "" {
+		resp.TraceEventCount = 1
+	}
+	return resp
 }
 
 func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText string, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
+	ensureLoopCtxUserID(loopCtx, userID)
 	userText = strings.TrimSpace(userText)
 	if userText == "" {
 		userText = "执行远程编程任务"
@@ -2020,9 +2414,110 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		remoteCtx.WorkDir = remoteCtx.ProjectDir
 	}
 
-	log.Printf("[workflow-v2] remote_coding_subagent: user=%s session=%s project=%s task=%q", userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80))
+	if loopCtx != nil && loopCtx.IsCancelled() {
+		return &IMAgentResponse{Text: "远程编程任务已取消"}
+	}
+	sessionMem := h.getStickyCodingWorkbenchMemory(userID)
+	// Remote may not have local AGENTS.md; still try project dir if mirrored locally.
+	// Hooks also load from the local task project path (.maclaw/hooks.json), not the SSH tree.
+	localHooksPath := strings.TrimSpace(sessionMem.ProjectPath)
+	if p := localHooksPath; p != "" {
+		h.ensureStickyProjectInstructions(userID, p)
+		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+	}
+	hooks := loadCodingWorkbenchHooks(localHooksPath)
+
+	var tasks []*v2.TaskItem
+	var planMarkdown string
+	var planned bool
+	recordUserText := userText
+	if approved, ok := h.takeStickyApprovedCodingPlan(userID); ok {
+		tasks = approved.Tasks
+		planMarkdown = approved.Markdown
+		planned = len(tasks) >= codingWorkbenchPlanMinTasks
+		if s := strings.TrimSpace(approved.UserText); s != "" {
+			recordUserText = s
+			userText = s
+		}
+		h.persistCodingWorkbenchPlans(userID, planMarkdown, "")
+		h.setStickyCodingStepStatuses(userID, codingWorkbenchStepsFromTasks(tasks, codingStepPending))
+	} else {
+		if strings.HasPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker) {
+			userText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(userText), codingPlanApproveExecuteMarker))
+			recordUserText = userText
+		}
+		if prePlan := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_plan"); prePlan.Report != "" {
+			log.Printf("[coding-hooks] remote pre_plan: %s", truncateRunesV2(prePlan.Report, 200))
+		}
+		tasks, planMarkdown, planned = h.resolveCodingWorkbenchTasks(userID, userText, remoteCtx.ProjectDir, sessionMem, onProgress, onToken)
+		if planned && normalizeCodingPlanMode(sessionMem.PlanMode) == codingPlanModeApprove {
+			if _, hasPending := h.loadStickyPendingCodingPlan(userID); hasPending {
+				text := formatPendingPlanApprovalText(planMarkdown, len(tasks))
+				return &IMAgentResponse{Text: text, Actions: codingPlanApproveActions()}
+			}
+		}
+	}
+	if planned {
+		sessionMem = h.getStickyCodingWorkbenchMemory(userID)
+	}
+	if len(tasks) == 0 {
+		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
+		planned = false
+	}
+
+	buildRemoteTaskText := func(step *v2.TaskItem, stepIdx, stepTotal int) string {
+		var cont strings.Builder
+		if step != nil && planned {
+			cont.WriteString(fmt.Sprintf("[Plan step T%d/%d] %s\n\n", stepIdx, stepTotal, strings.TrimSpace(step.Title)))
+			cont.WriteString(strings.TrimSpace(step.Description))
+			cont.WriteString("\n\n## Overall user request\n")
+			cont.WriteString(userText)
+		} else {
+			cont.WriteString(userText)
+		}
+		if sessionMem.TurnCount > 0 || planned {
+			cont.WriteString("\n\n[Session continuity")
+			if sessionMem.TurnCount > 0 {
+				cont.WriteString(fmt.Sprintf(" turn %d", sessionMem.TurnCount+1))
+			}
+			cont.WriteString("]")
+		}
+		if plan := strings.TrimSpace(sessionMem.SessionPlan); plan != "" {
+			cont.WriteString("\nSession plan / overall goal:\n")
+			cont.WriteString(truncateRunesV2(plan, 800))
+		}
+		if planMarkdown != "" {
+			cont.WriteString("\nActive multi-step execution plan:\n")
+			cont.WriteString(truncateRunesV2(planMarkdown, 1200))
+		} else if ep := strings.TrimSpace(sessionMem.ExecutionPlan); ep != "" {
+			cont.WriteString("\nActive multi-step execution plan:\n")
+			cont.WriteString(truncateRunesV2(ep, 1200))
+		}
+		if sum := strings.TrimSpace(sessionMem.LastSummary); sum != "" {
+			cont.WriteString("\nPrevious turn summary:\n")
+			cont.WriteString(truncateRunesV2(sum, 800))
+		}
+		if len(sessionMem.FilesModified) > 0 {
+			files := uniqueSortedSubAgentStrings(sessionMem.FilesModified)
+			if len(files) > 12 {
+				files = files[:12]
+			}
+			cont.WriteString("\nFiles modified earlier: ")
+			cont.WriteString(strings.Join(files, ", "))
+		}
+		return cont.String()
+	}
+
+	log.Printf("[workflow-v2] pure remote coding: user=%s session=%s project=%s task=%q sticky_turn=%d planned=%v steps=%d",
+		userID, remoteCtx.SessionID, remoteCtx.ProjectDir, truncateRunesV2(userText, 80), sessionMem.TurnCount, planned, len(tasks))
 	if onProgress != nil {
-		onProgress(fmt.Sprintf("远程编程模式：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
+		if planned {
+			onProgress(fmt.Sprintf("全功能远程编程：按计划执行 %d 步（SSH %s）", len(tasks), remoteCtx.SessionID))
+		} else if sessionMem.TurnCount > 0 {
+			onProgress(fmt.Sprintf("全功能远程编程：继续第 %d 轮（SSH %s）", sessionMem.TurnCount+1, remoteCtx.SessionID))
+		} else {
+			onProgress(fmt.Sprintf("全功能远程编程：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
+		}
 	}
 
 	cfg := h.getMaclawLLMConfig()
@@ -2038,16 +2533,236 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if runner == nil {
 		runner = defaultRemoteCodingTemplateRunner
 	}
-	result := runner(h, cfg, httpClient, remoteCtx, loopCtx, userText, onProgress, onToken)
+
+	var result *RemoteCodingSubAgentResult
+	totalTools, totalIters := 0, 0
+	totalInTok, totalOutTok := 0, 0
+	totalCost := 0.0
+	var reportParts []string
+	for i, step := range tasks {
+		if step == nil {
+			continue
+		}
+		if loopCtx != nil && loopCtx.IsCancelled() {
+			break
+		}
+		if planned && onProgress != nil {
+			onProgress(fmt.Sprintf("T%d/%d: %s", step.Index, len(tasks), step.Title))
+		}
+		if planned && onToken != nil {
+			onToken(fmt.Sprintf("\n\n---\n### T%d: %s\n\n", step.Index, step.Title))
+		}
+		h.updateStickyCodingStepStatus(userID, step.Index, codingStepRunning, "")
+		if preStepRes := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_step"); preStepRes.Report != "" || preStepRes.Failed {
+			if preStepRes.Report != "" {
+				log.Printf("[coding-hooks] remote pre_step T%d: %s", step.Index, truncateRunesV2(preStepRes.Report, 160))
+			}
+			if codingHookShouldAbort(hooks, preStepRes) {
+				sum := "pre_step hook failed (fail_on_error)\n" + preStepRes.Report
+				h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, sum)
+				reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
+				result = &RemoteCodingSubAgentResult{Status: "failed", Error: "pre_step hook failed", Summary: sum}
+				break
+			}
+		}
+		taskText := buildRemoteTaskText(step, i+1, len(tasks))
+
+		// Remote write isolation (temp dir copy) when worktree mode allows.
+		stepRemoteCtx := remoteCtx
+		var isolate *remoteCodingIsolate
+		wtMode := h.getStickyCodingWorktreeMode(userID)
+		if shouldUseRemoteCodingIsolate(wtMode, planned, step.Title, step.Description, step.DependsOn) {
+			allowCopy := normalizeCodingWorktreeMode(wtMode) == codingWorktreeModeAlways
+			iso, isoErr := createRemoteCodingIsolate(h, remoteCtx.SessionID, remoteCtx.ProjectDir, step.Index, allowCopy)
+			if isoErr != nil {
+				log.Printf("[remote-isolate] T%d create failed: %v — using main remote dir", step.Index, isoErr)
+				if onProgress != nil && allowCopy {
+					onProgress(fmt.Sprintf("T%d 远程隔离目录创建失败，使用主目录: %v", step.Index, isoErr))
+				}
+			} else if iso != nil {
+				isolate = iso
+				stepRemoteCtx.ProjectDir = iso.IsolateDir
+				stepRemoteCtx.WorkDir = iso.IsolateDir
+				if onProgress != nil {
+					onProgress(fmt.Sprintf("T%d 在远程隔离目录执行: %s", step.Index, iso.IsolateDir))
+				}
+			}
+		}
+
+		stepResult := runner(h, cfg, httpClient, stepRemoteCtx, loopCtx, taskText, onProgress, onToken)
+		if isolate != nil {
+			if stepResult != nil && stepResult.Status == "success" {
+				if mergeSum, mergeErr := isolate.mergeBack(h); mergeErr != nil {
+					log.Printf("[remote-isolate] T%d merge failed: %v", step.Index, mergeErr)
+					h.storeStickyCodingConflict(userID, codingWorkbenchConflict{
+						StepIndex:   step.Index,
+						Path:        isolate.IsolateDir,
+						MainProject: remoteCtx.ProjectDir,
+						Error:       mergeErr.Error(),
+						Kind:        "remote_isolate",
+					})
+					// Local project path (task root) for hooks.json — not remote isolate dir.
+					h.fireCodingOnConflictHook(userID, "")
+					hint := mergeErr.Error() + "\n\n可用 `/worktree conflicts` 查看，`/worktree discard <id>` 丢弃远程隔离目录。"
+					if stepResult.Summary != "" {
+						stepResult.Summary += "\n\nremote isolate merge failed: " + hint
+					} else {
+						stepResult.Summary = "remote isolate merge failed: " + hint
+					}
+					stepResult.Status = "failed"
+					stepResult.Error = mergeErr.Error()
+					// keep isolate for inspection
+				} else {
+					if onProgress != nil && mergeSum != "" {
+						onProgress(mergeSum)
+					}
+					if mergeSum != "" {
+						if stepResult.Summary != "" {
+							stepResult.Summary += "\n\n" + mergeSum
+						} else {
+							stepResult.Summary = mergeSum
+						}
+					}
+					isolate.cleanup(h)
+				}
+			} else {
+				isolate.cleanup(h)
+			}
+		}
+		// Attachments only on first remote step.
+		if loopCtx != nil && len(loopCtx.CodingAttachments) > 0 {
+			loopCtx.CodingAttachments = nil
+		}
+
+		if stepResult != nil {
+			result = stepResult
+			totalTools += stepResult.ToolCalls
+			totalIters += stepResult.Iterations
+			totalInTok += stepResult.InputTokens
+			totalOutTok += stepResult.OutputTokens
+			totalCost += stepResult.EstCostRMB
+			if stepResult.RouteModel != "" || stepResult.RouteSource != "" {
+				h.recordStickyCodingRoute(userID, stepResult.RouteModel, stepResult.RouteSource, stepResult.RouteTask, stepResult.RouteReason)
+			}
+			sum := strings.TrimSpace(stepResult.Summary)
+			if sum == "" {
+				sum = strings.TrimSpace(stepResult.Error)
+			}
+			stepStatus := codingStepFailed
+			if stepResult.Status == "success" {
+				stepStatus = codingStepPassed
+			}
+			// Remote step verification gate (parity with local pure-coding).
+			if stepResult.Status == "success" && planned &&
+				stepNeedsVerifyGate(step.Title, step.Description, step.Index, len(tasks)) {
+				preV := runCodingWorkbenchHookPhase(localHooksPath, hooks, "pre_verify")
+				if preV.Report != "" {
+					log.Printf("[coding-hooks] remote pre_verify T%d: %s", step.Index, truncateRunesV2(preV.Report, 160))
+				}
+				if codingHookShouldAbort(hooks, preV) {
+					stepStatus = codingStepVerifyFail
+					stepResult.Status = "failed"
+					gateSum := "pre_verify hook failed (fail_on_error)\n" + preV.Report
+					if sum != "" {
+						sum = sum + "\n\n" + gateSum
+					} else {
+						sum = gateSum
+					}
+					h.updateStickyCodingStepStatus(userID, step.Index, stepStatus, sum)
+					reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
+					sessionMem.LastSummary = truncateRunesV2(sum, 800)
+					_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+					break
+				}
+				ok, vcmd, vout, skipped := runCodingWorkbenchRemoteStepVerify(h, remoteCtx.SessionID, remoteCtx.ProjectDir)
+				gateSum := codingWorkbenchStepGateSummary(ok, vcmd, vout, skipped)
+				if !skipped {
+					if onProgress != nil {
+						if ok {
+							onProgress(fmt.Sprintf("T%d 远程步级验证通过: %s", step.Index, vcmd))
+						} else {
+							onProgress(fmt.Sprintf("T%d 远程步级验证失败: %s", step.Index, vcmd))
+						}
+					}
+					if onToken != nil {
+						onToken("\n\n" + gateSum + "\n")
+					}
+					if postV := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_verify"); postV.Report != "" {
+						log.Printf("[coding-hooks] remote post_verify T%d: %s", step.Index, truncateRunesV2(postV.Report, 160))
+					}
+					if !ok {
+						stepStatus = codingStepVerifyFail
+						stepResult.Status = "failed"
+						if sum != "" {
+							sum = sum + "\n\n" + gateSum
+						} else {
+							sum = gateSum
+						}
+						h.updateStickyCodingStepVerify(userID, step.Index, vcmd, false, gateSum)
+						if sum != "" {
+							reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
+							sessionMem.LastSummary = truncateRunesV2(sum, 800)
+						}
+						_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+						break
+					}
+					h.updateStickyCodingStepVerify(userID, step.Index, vcmd, true, gateSum)
+					if sum != "" {
+						sum = sum + "\n\n" + gateSum
+					} else {
+						sum = gateSum
+					}
+				} else {
+					h.updateStickyCodingStepStatus(userID, step.Index, stepStatus, sum)
+				}
+			} else {
+				h.updateStickyCodingStepStatus(userID, step.Index, stepStatus, sum)
+			}
+			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+			if sum != "" {
+				reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: %s\n%s", step.Index, step.Title, stepResult.Status, truncateRunesV2(sum, 800)))
+				// Feed prior step outcome into subsequent steps.
+				sessionMem.LastSummary = truncateRunesV2(sum, 800)
+			}
+			// Sequential plans: stop on first hard failure (matches TaskRunner depends_on skip).
+			if stepResult.Status != "success" {
+				break
+			}
+		} else {
+			h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, "nil result")
+			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+			break
+		}
+	}
+
+	h.recordStickyRemoteCodingTurn(userID, recordUserText, result)
+	h.accumulateStickyCodingUsage(userID, totalInTok, totalOutTok, totalCost)
+	if postTurn := runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_turn"); postTurn.Report != "" {
+		log.Printf("[coding-hooks] remote post_turn: %s", truncateRunesV2(postTurn.Report, 200))
+	}
 	if result == nil {
 		return &IMAgentResponse{Text: "远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
 	}
 
 	statusText := "远程编程完成"
-	if result.Status != "success" {
+	if planned {
+		completedSteps := len(reportParts)
+		if result.Status == "success" && completedSteps >= len(tasks) {
+			statusText = fmt.Sprintf("远程编程完成（已按 %d 步计划执行）", len(tasks))
+		} else if completedSteps > 0 && result.Status == "success" {
+			statusText = fmt.Sprintf("远程编程部分完成（%d/%d 步）", completedSteps, len(tasks))
+		} else if completedSteps > 0 {
+			statusText = fmt.Sprintf("远程编程未完成（已执行 %d/%d 步）", completedSteps, len(tasks))
+		} else {
+			statusText = "远程编程未完成"
+		}
+	} else if result.Status != "success" {
 		statusText = "远程编程未完成"
 	}
 	summary := strings.TrimSpace(result.Summary)
+	if planned && len(reportParts) > 0 {
+		summary = strings.Join(reportParts, "\n\n")
+	}
 	if summary == "" {
 		summary = strings.TrimSpace(result.Error)
 	}
@@ -2057,9 +2772,42 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if summary == "" {
 		summary = fmt.Sprintf("状态：%s", result.Status)
 	}
-	return &IMAgentResponse{
-		Text: fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary),
+	memAfter := h.getStickyCodingWorkbenchMemory(userID)
+	costLine := formatCodingSessionCostLine(memAfter)
+	text := fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary)
+	if costLine != "" {
+		text = text + "\n\n" + costLine
 	}
+	if m := strings.TrimSpace(memAfter.LastRouteModel); m != "" {
+		text = text + fmt.Sprintf("\n路由: %s", m)
+		if s := strings.TrimSpace(memAfter.LastRouteSource); s != "" {
+			text = text + fmt.Sprintf(" (%s)", s)
+		}
+	}
+	resp := &IMAgentResponse{
+		Text:            text,
+		TraceEventCount: codingSubAgentActivityTraceCount(totalTools, totalIters),
+	}
+	h.applyCodingUsageToResponse(userID, resp, totalInTok, totalOutTok, totalCost)
+	if memAfter.LastRouteModel != "" {
+		resp.RouteModel = memAfter.LastRouteModel
+		resp.RouteSource = memAfter.LastRouteSource
+		resp.RouteTask = memAfter.LastRouteTask
+		resp.RouteReason = memAfter.LastRouteReason
+	}
+	return resp
+}
+
+// codingSubAgentActivityTraceCount maps SubAgent work into IMAgentResponse.TraceEventCount
+// so goal-continuation no-tool suppression treats pure coding turns as active work.
+func codingSubAgentActivityTraceCount(toolCalls, iterations int) int {
+	if toolCalls > 0 {
+		return toolCalls
+	}
+	if iterations > 0 {
+		return iterations
+	}
+	return 0
 }
 
 type remoteCodingTemplateRunnerFunc func(*IMMessageHandler, corelib.MaclawLLMConfig, *http.Client, remoteCodingTemplateContext, *LoopContext, string, func(string), func(string)) *RemoteCodingSubAgentResult
@@ -2069,10 +2817,25 @@ var remoteCodingTemplateRunner remoteCodingTemplateRunnerFunc
 func defaultRemoteCodingTemplateRunner(h *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, userText string, onProgress func(string), onToken func(string)) *RemoteCodingSubAgentResult {
 	subAgent := NewRemoteCodingSubAgent(h, cfg, httpClient, remoteCtx.SessionID, remoteCtx.WorkDir, remoteCtx.ProjectDir, loopCtx)
 	subAgent.SetSourcePreviewEnabled(true)
-	subAgent.SetCallbacks(onToken, onProgress)
+	// Wire approval BEFORE SetCallbacks so we never briefly install a
+	// prompt-everything state that could race with the first tool call.
+	// Input-box "完全控制" (full) skips path + high-risk prompts.
 	if h != nil && h.app != nil {
+		globalFull := h.app.isSubAgentFullAccessGranted()
+		userID := ""
+		if loopCtx != nil {
+			userID = loopCtx.UserID
+		}
+		fullAccess := h.stickyCodingEffectiveFullAccess(userID, globalFull)
+		subAgent.SetHighRiskApprovalCallback(buildRemoteHighRiskApprovalCallback(h, loopCtx, onProgress), fullAccess)
+		// When not already full, overlay sticky path trust / high-risk / allow_dir.
+		if !fullAccess && subAgent.highRiskApproval != nil && userID != "" {
+			h.applyStickyRemoteCodingPermissions(userID, subAgent.highRiskApproval)
+		}
 		subAgent.SetKnowledgeStores(h.app.ensureCodingKnowledgeStore(), getAutoRecallStoreForApp(h.app, false))
 	}
+	// SetCallbacks after approval config: highRiskApprovalExplicit blocks overwrite.
+	subAgent.SetCallbacks(onToken, onProgress)
 	return subAgent.ExecuteTask(userText, "")
 }
 
@@ -2120,12 +2883,10 @@ func (h *IMMessageHandler) callLightweightLLM(cfg corelib.MaclawLLMConfig, syste
 // --- Workflow Confirm Choice (user decides whether to enter workflow) ---
 
 const (
-	workflowChoiceCommandPrefix  = "__workflow_choice__"
-	workflowChoiceComplex        = "complex"                // Full SDD workflow
-	workflowChoiceCodingSubAgent = "coding_subagent"        // Simplified coding template
-	workflowChoiceRemoteCoding   = "remote_coding_subagent" // Remote coding template
-	workflowChoiceSkip           = "skip"                   // Not a workflow task, use normal agent loop
-	workflowChoiceDirect         = "direct"                 // Non-coding direct handling, use normal agent loop
+	workflowChoiceCommandPrefix = "__workflow_choice__"
+	workflowChoiceComplex       = "complex" // Full SDD / structured workflow
+	workflowChoiceSkip          = "skip"    // Not a workflow task, use normal agent loop
+	workflowChoiceDirect        = "direct"  // Non-coding direct handling, use normal agent loop
 )
 
 // pendingWorkflowChoice stores the original route result while waiting for user choice.
@@ -2139,58 +2900,6 @@ type remoteCodingTemplateContext struct {
 	SessionID  string
 	WorkDir    string
 	ProjectDir string
-}
-
-func workflowFormString(data map[string]interface{}, key string) string {
-	if data == nil {
-		return ""
-	}
-	switch v := data[key].(type) {
-	case string:
-		return strings.TrimSpace(v)
-	case fmt.Stringer:
-		return strings.TrimSpace(v.String())
-	default:
-		if v == nil {
-			return ""
-		}
-		return strings.TrimSpace(fmt.Sprint(v))
-	}
-}
-
-func workflowFormInt(data map[string]interface{}, key string, defaultValue int) int {
-	if data == nil {
-		return defaultValue
-	}
-	switch v := data[key].(type) {
-	case int:
-		if v > 0 {
-			return v
-		}
-	case int64:
-		if v > 0 {
-			return int(v)
-		}
-	case float64:
-		if v > 0 {
-			return int(v)
-		}
-	case string:
-		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && parsed > 0 {
-			return parsed
-		}
-	}
-	return defaultValue
-}
-
-func activePhaseFormData(state *v2.WorkflowState) map[string]interface{} {
-	if state == nil {
-		return nil
-	}
-	if phase := state.ActivePhase(); phase != nil {
-		return phase.FormData
-	}
-	return nil
 }
 
 func scrubActivePhaseSensitiveFormData(state *v2.WorkflowState) bool {
@@ -2226,51 +2935,6 @@ func scrubActivePhaseSensitiveFormData(state *v2.WorkflowState) bool {
 	return changed
 }
 
-func codingTemplateFormExecutionInputs(state *v2.WorkflowState) (projectPath, requestText string) {
-	formData := activePhaseFormData(state)
-	projectPath = workflowFormString(formData, "work_dir")
-	requestText = workflowFormString(formData, "project_description")
-	if requestText == "" && state != nil {
-		requestText = strings.TrimSpace(state.Summary)
-	}
-	return projectPath, requestText
-}
-
-func remoteCodingTemplateFormExecutionInputs(state *v2.WorkflowState) (workDir, requestText string) {
-	formData := activePhaseFormData(state)
-	workDir = workflowFormString(formData, "work_dir")
-	requestText = workflowFormString(formData, "project_description")
-	if requestText == "" && state != nil {
-		requestText = strings.TrimSpace(state.Summary)
-	}
-	return workDir, requestText
-}
-
-func (h *IMMessageHandler) prepareCodingTemplateSubAgentExecution(userID string, state *v2.WorkflowState) string {
-	projectPath, requestText := codingTemplateFormExecutionInputs(state)
-	if requestText == "" {
-		requestText = "执行简化编程任务"
-	}
-	if state != nil {
-		if projectPath != "" {
-			state.ProjectPath = projectPath
-		}
-		if wf := h.getWorkflowV2(); wf != nil {
-			if phase := state.ActivePhase(); phase != nil {
-				phase.Status = v2.PhaseExecuting
-			}
-			_ = wf.store.Save(state)
-		}
-	}
-	h.emitWorkflowV2Progress(userID, state)
-	h.pendingV2SubAgentExecution.Store(userID, true)
-	h.pendingTemplateRemoteCoding.Delete(userID)
-	h.pendingTemplateCodingProjectPath.Store(userID, projectPath)
-	h.workflowOriginalRequest.Store(userID, requestText)
-	h.workflowAgentLoopMarker.Store(userID, true)
-	return requestText
-}
-
 func (h *IMMessageHandler) hasPendingTemplateSubAgentExecution(userID string) bool {
 	if h == nil {
 		return false
@@ -2297,61 +2961,6 @@ func parseWorkflowChoiceCommand(text string) (choice, choiceID string, ok bool) 
 		return "", "", false
 	}
 	return fields[1], fields[2], true
-}
-
-func (h *IMMessageHandler) setupRemoteCodingTemplateFromWorkflowForm(userID string, state *v2.WorkflowState) workflowIMRouteResult {
-	formData := activePhaseFormData(state)
-	sshHost := workflowFormString(formData, "ssh_host")
-	sshUser := workflowFormString(formData, "ssh_user")
-	sshPassword := workflowFormString(formData, "ssh_password")
-	workDir := workflowFormString(formData, "work_dir")
-	requestText := workflowFormString(formData, "project_description")
-	sshPort := workflowFormInt(formData, "ssh_port", 22)
-	if scrubActivePhaseSensitiveFormData(state) {
-		if wf := h.getWorkflowV2(); wf != nil {
-			_ = wf.store.Save(state)
-		}
-	}
-
-	if sshHost == "" || sshUser == "" || sshPassword == "" || workDir == "" || requestText == "" {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "远程编程表单信息不完整，请重新填写主机、用户名、密码、默认工作目录和项目描述。"}}
-	}
-	if sshPort <= 0 || sshPort >= 65536 {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "SSH 端口无效，请填写 1-65535 之间的端口。"}}
-	}
-	if h.ensureSSHManager() == nil {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "SSH 会话管理器不可用，无法启动远程编程。"}}
-	}
-
-	sessionID := h.findOrCreateSSHSession(sshUser, sshHost, sshPort, sshPassword)
-	if sessionID == "" {
-		return workflowIMRouteResult{Response: &IMAgentResponse{Text: fmt.Sprintf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHost, sshPort)}}
-	}
-
-	if state != nil {
-		state.ProjectPath = workDir
-		if wf := h.getWorkflowV2(); wf != nil {
-			if phase := state.ActivePhase(); phase != nil {
-				phase.Status = v2.PhaseExecuting
-			}
-			_ = wf.store.Save(state)
-		}
-	}
-	h.emitWorkflowV2Progress(userID, state)
-	h.pendingV2SubAgentExecution.Store(userID, true)
-	h.pendingTemplateCodingProjectPath.Delete(userID)
-	h.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
-		SessionID:  sessionID,
-		WorkDir:    workDir,
-		ProjectDir: workDir,
-	})
-	h.workflowAgentLoopMarker.Store(userID, true)
-	h.workflowOriginalRequest.Store(userID, requestText)
-
-	return workflowIMRouteResult{
-		WorkflowAgentLoop: true,
-		WorkflowDocPhase:  false,
-	}
 }
 
 func inferRemoteProjectDirFromSSHSession(initialCommand string) string {
@@ -2410,8 +3019,8 @@ parseTarget:
 }
 
 // askWorkflowConfirmChoice presents the user with a choice before entering a workflow.
-// For coding: workflow-template options (full SDD / simplified coding / remote coding / not coding).
-// For other templates: 2 options (enter workflow / handle directly).
+// For coding: full SDD workflow vs skip (pure coding is created via task management).
+// For other templates: enter workflow / handle directly.
 func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v2.RouteResult) workflowIMRouteResult {
 	choiceID := fmt.Sprintf("wc_%d", time.Now().UnixMilli())
 
@@ -2434,20 +3043,12 @@ func (h *IMMessageHandler) askWorkflowConfirmChoice(msg IMUserMessage, result *v
 			"• 架构设计确保模块解耦、接口清晰\n" +
 			"• 任务拆分让每个子任务可独立验证，降低集成风险\n" +
 			"适合：多模块系统、游戏、完整应用、需要多人协作或长期维护的项目\n\n" +
-			"**2. 简化编程（推荐用于小任务）**\n" +
-			"先填写工作目录和项目描述，再启动编程智能体快速完成\n" +
-			"适合：修 bug、写脚本、加个函数、hello world、单文件小工具\n\n" +
-			"**3. 远程编程（推荐用于 SSH 服务器项目）**\n" +
-			"先填写主机、端口、用户名、密码、默认工作目录和项目描述，再启动远程编程智能体\n" +
-			"适合：代码在远程服务器、GPU 机器或部署环境中的任务\n\n" +
-			"**4. 这不是编程任务**\n" +
-			"不走编程流程，当作普通任务由 AI 自由发挥\n" +
-			"适合：翻译、整理文档、搜索资料、格式转换、内容生成等"
+			"**2. 这不是编程工作流任务**\n" +
+			"不走编程工作流；小改动/快速编码请用任务管理中的「纯编程」环境\n" +
+			"适合：翻译、整理文档、搜索资料，或已通过任务管理进入纯编程工作台的场景"
 		actions = []IMResponseAction{
 			{Label: "完整开发流程", Command: buildWorkflowChoiceCommand(workflowChoiceComplex, choiceID), Style: "primary"},
-			{Label: "简化编程", Command: buildWorkflowChoiceCommand(workflowChoiceCodingSubAgent, choiceID), Style: "secondary"},
-			{Label: "远程编程", Command: buildWorkflowChoiceCommand(workflowChoiceRemoteCoding, choiceID), Style: "secondary"},
-			{Label: "不是编程任务", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
+			{Label: "不是编程工作流", Command: buildWorkflowChoiceCommand(workflowChoiceSkip, choiceID), Style: "secondary"},
 		}
 	} else {
 		templateName := result.WorkflowType
@@ -2558,40 +3159,6 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 		result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
 		return &result
 
-	case workflowChoiceCodingSubAgent:
-		if pending.RouteResult.WorkflowType == workflowChoiceCodingSubAgent {
-			log.Printf("[workflow-v2] user chose: coding_subagent template")
-			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
-			return &result
-		}
-		if pending.RouteResult.WorkflowType != "coding" {
-			log.Printf("[workflow-v2] user sent coding_subagent for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
-			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
-			return &result
-		}
-		log.Printf("[workflow-v2] user chose: coding_subagent template")
-		routeResult := *pending.RouteResult
-		routeResult.WorkflowType = workflowChoiceCodingSubAgent
-		result := h.startNewWorkflowV2(pending.Msg, &routeResult)
-		return &result
-
-	case workflowChoiceRemoteCoding:
-		if pending.RouteResult.WorkflowType == workflowChoiceRemoteCoding {
-			log.Printf("[workflow-v2] user chose: remote_coding_subagent template")
-			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
-			return &result
-		}
-		if pending.RouteResult.WorkflowType != "coding" {
-			log.Printf("[workflow-v2] user sent remote_coding_subagent for non-coding type=%s, treating as complex", pending.RouteResult.WorkflowType)
-			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
-			return &result
-		}
-		log.Printf("[workflow-v2] user chose: remote_coding_subagent template")
-		routeResult := *pending.RouteResult
-		routeResult.WorkflowType = workflowChoiceRemoteCoding
-		result := h.startNewWorkflowV2(pending.Msg, &routeResult)
-		return &result
-
 	case workflowChoiceSkip:
 		// Not a workflow task — route to normal agent loop with original message.
 		// ReplayText tells the entry layer to substitute the button command with
@@ -2617,6 +3184,15 @@ func (h *IMMessageHandler) handleCodingComplexityCommand(msg IMUserMessage, trim
 			// Override the route result with the user's chosen template
 			pending.RouteResult.WorkflowType = altType
 			result := h.startNewWorkflowV2(pending.Msg, pending.RouteResult)
+			return &result
+		}
+		// Retired one-shot workflow buttons (coding_subagent / remote_coding_subagent / simple)
+		// may still appear in older chat history. Point users at the supported paths.
+		if choice == "coding_subagent" || choice == "remote_coding_subagent" || choice == "simple" {
+			log.Printf("[workflow-v2] user chose retired template choice %q", choice)
+			result := workflowIMRouteResult{
+				Response: &IMAgentResponse{Text: "该入口已下线。请用任务管理创建「纯编程」环境，或重新发送任务并选择「完整开发流程」。"},
+			}
 			return &result
 		}
 		result := workflowIMRouteResult{

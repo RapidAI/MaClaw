@@ -17,7 +17,19 @@ import {
     applyFileUpdate,
     applyClosePanel,
     applyReopenPanel,
+    applyActivatePassive,
     applySelectFile,
+    applyCloseFile,
+    applyCloseOtherFiles,
+    applyCloseFilesToTheRight,
+    applyCloseAllFiles,
+    applyMoveFile,
+    applySetFilePinned,
+    applyToggleFilePinned,
+    getDisplayFilePaths,
+    getMruCycleOrder,
+    isCodeFileDirty,
+    prunePathList,
     applySessionStart,
     applySessionEnd,
     applyResetSession,
@@ -300,6 +312,233 @@ describe('useCodePreviewState — Property Tests', () => {
 
     // ── Additional unit tests for session lifecycle ──
 
+    it('applyCloseFile removes a tab and selects a neighbor when active', () => {
+        let state = initialState();
+        for (const path of ['/src/a.ts', '/src/b.ts', '/src/c.ts']) {
+            state = applyFileUpdate(state, {
+                filePath: path,
+                fileName: path.split('/').pop()!,
+                content: path,
+                opType: 'modify',
+                language: 'typescript',
+                updatedAt: 1,
+                forceOpen: true,
+            });
+        }
+        expect(state.activeFilePath).toBe('/src/c.ts');
+
+        state = applyCloseFile(state, '/src/c.ts');
+        expect(state.files.has('/src/c.ts')).toBe(false);
+        expect(state.files.size).toBe(2);
+        // Prefer previous neighbor.
+        expect(state.activeFilePath).toBe('/src/b.ts');
+
+        state = applyCloseFile(state, '/src/a.ts');
+        expect(state.files.has('/src/a.ts')).toBe(false);
+        // Active was b, closing non-active keeps b.
+        expect(state.activeFilePath).toBe('/src/b.ts');
+
+        state = applyCloseFile(state, '/src/b.ts');
+        expect(state.files.size).toBe(0);
+        expect(state.activeFilePath).toBe('');
+    });
+
+    it('applyCloseFile is a no-op for unknown paths', () => {
+        let state = applyFileUpdate(initialState(), {
+            filePath: '/src/a.ts', fileName: 'a.ts', content: 'a',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        const before = state;
+        state = applyCloseFile(state, '/src/missing.ts');
+        expect(state).toBe(before);
+    });
+
+    it('applyCloseOtherFiles / to-the-right / all match VS Code semantics', () => {
+        let state = initialState();
+        for (const path of ['/src/a.ts', '/src/b.ts', '/src/c.ts', '/src/d.ts']) {
+            state = applyFileUpdate(state, {
+                filePath: path,
+                fileName: path.split('/').pop()!,
+                content: path,
+                opType: 'modify',
+                language: 'typescript',
+                updatedAt: 1,
+                forceOpen: true,
+            });
+        }
+
+        state = applySelectFile(state, '/src/b.ts');
+        state = applyCloseOtherFiles(state, '/src/b.ts');
+        expect(Array.from(state.files.keys())).toEqual(['/src/b.ts']);
+        expect(state.activeFilePath).toBe('/src/b.ts');
+
+        // Rebuild four files in a clean open order (Map insertion order).
+        state = applyCloseAllFiles(state);
+        for (const path of ['/src/a.ts', '/src/b.ts', '/src/c.ts', '/src/d.ts']) {
+            state = applyFileUpdate(state, {
+                filePath: path,
+                fileName: path.split('/').pop()!,
+                content: path,
+                opType: 'modify',
+                language: 'typescript',
+                updatedAt: 1,
+                forceOpen: true,
+            });
+        }
+        state = applySelectFile(state, '/src/d.ts');
+        state = applyCloseFilesToTheRight(state, '/src/b.ts');
+        expect(Array.from(state.files.keys())).toEqual(['/src/a.ts', '/src/b.ts']);
+        expect(state.activeFilePath).toBe('/src/b.ts');
+
+        state = applyCloseAllFiles(state);
+        expect(state.files.size).toBe(0);
+        expect(state.activeFilePath).toBe('');
+    });
+
+    it('pin + MRU: pin sorts left, close others/all keep pinned, select updates MRU', () => {
+        let state = initialState();
+        for (const path of ['/src/a.ts', '/src/b.ts', '/src/c.ts', '/src/d.ts']) {
+            state = applyFileUpdate(state, {
+                filePath: path,
+                fileName: path.split('/').pop()!,
+                content: path,
+                opType: 'modify',
+                language: 'typescript',
+                updatedAt: 1,
+                forceOpen: true,
+            });
+        }
+        // Last auto-selected is d
+        expect(state.mruOrder[0]).toBe('/src/d.ts');
+
+        state = applySelectFile(state, '/src/b.ts');
+        expect(state.mruOrder[0]).toBe('/src/b.ts');
+        expect(getMruCycleOrder(state.files, state.mruOrder)[0]).toBe('/src/b.ts');
+
+        state = applySetFilePinned(state, '/src/c.ts', true);
+        expect(state.pinnedPaths).toEqual(['/src/c.ts']);
+        expect(getDisplayFilePaths(state.files, state.pinnedPaths)[0]).toBe('/src/c.ts');
+
+        // Close others keeps keepPath + pinned c
+        state = applyCloseOtherFiles(state, '/src/b.ts');
+        expect(new Set(state.files.keys())).toEqual(new Set(['/src/b.ts', '/src/c.ts']));
+
+        // Close all keeps pinned
+        state = applyFileUpdate(state, {
+            filePath: '/src/e.ts', fileName: 'e.ts', content: 'e',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        state = applyCloseAllFiles(state);
+        expect(Array.from(state.files.keys())).toEqual(['/src/c.ts']);
+        expect(state.pinnedPaths).toEqual(['/src/c.ts']);
+
+        state = applyToggleFilePinned(state, '/src/c.ts');
+        expect(state.pinnedPaths).toEqual([]);
+        state = applyCloseAllFiles(state);
+        expect(state.files.size).toBe(0);
+    });
+
+    it('isCodeFileDirty reflects create/modify/read semantics', () => {
+        expect(isCodeFileDirty({ opType: 'read', content: 'a' })).toBe(false);
+        expect(isCodeFileDirty({ opType: 'create', content: 'a' })).toBe(true);
+        expect(isCodeFileDirty({ opType: 'modify', content: 'a', original: 'a' })).toBe(false);
+        expect(isCodeFileDirty({ opType: 'modify', content: 'b', original: 'a' })).toBe(true);
+        expect(isCodeFileDirty({ opType: 'modify', content: 'a' })).toBe(true);
+    });
+
+    it('prunePathList keeps the same array reference when nothing is removed', () => {
+        const paths = ['/a.ts', '/b.ts'];
+        expect(prunePathList(paths, paths)).toBe(paths);
+        expect(prunePathList(paths, new Set(paths))).toBe(paths);
+        expect(prunePathList(paths, ['/a.ts'])).toEqual(['/a.ts']);
+        expect(prunePathList(paths, ['/a.ts'])).not.toBe(paths);
+    });
+
+    it('applyFileUpdate no-ops on identical redelivery of the same file', () => {
+        const file = {
+            filePath: '/src/a.ts',
+            fileName: 'a.ts',
+            content: 'hello',
+            opType: 'modify' as const,
+            language: 'typescript',
+            updatedAt: 1,
+            original: 'hi',
+            forceOpen: true,
+            sessionID: 's1',
+        };
+        let state = applySessionStart(initialState(), 's1');
+        state = applyFileUpdate(state, file);
+        const afterFirst = state;
+        state = applyFileUpdate(state, { ...file, updatedAt: 99 });
+        // Same content/metadata — should reuse state object (no Map churn).
+        expect(state).toBe(afterFirst);
+        expect(state.files.get('/src/a.ts')?.updatedAt).toBe(1);
+    });
+
+    it('applySelectFile ignores unknown paths and no-ops when already active', () => {
+        let state = applyFileUpdate(initialState(), {
+            filePath: '/src/a.ts', fileName: 'a.ts', content: 'a',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        state = applyFileUpdate(state, {
+            filePath: '/src/b.ts', fileName: 'b.ts', content: 'b',
+            opType: 'create', language: 'typescript', updatedAt: 2, forceOpen: true,
+        });
+        state = applySelectFile(state, '/src/a.ts');
+        expect(state.activeFilePath).toBe('/src/a.ts');
+        expect(state.mruOrder[0]).toBe('/src/a.ts');
+
+        const same = applySelectFile(state, '/src/a.ts');
+        expect(same).toBe(state);
+
+        const unknown = applySelectFile(state, '/src/missing.ts');
+        expect(unknown).toBe(state);
+        expect(unknown.activeFilePath).toBe('/src/a.ts');
+
+        const cleared = applySelectFile(state, '');
+        expect(cleared.activeFilePath).toBe('');
+    });
+
+    it('applyMoveFile reorders open tabs without changing active selection', () => {
+        let state = initialState();
+        for (const path of ['/src/a.ts', '/src/b.ts', '/src/c.ts']) {
+            state = applyFileUpdate(state, {
+                filePath: path,
+                fileName: path.split('/').pop()!,
+                content: path,
+                opType: 'modify',
+                language: 'typescript',
+                updatedAt: 1,
+                forceOpen: true,
+            });
+        }
+        state = applySelectFile(state, '/src/b.ts');
+        state = applyMoveFile(state, '/src/a.ts', 2);
+        expect(Array.from(state.files.keys())).toEqual(['/src/b.ts', '/src/c.ts', '/src/a.ts']);
+        expect(state.activeFilePath).toBe('/src/b.ts');
+
+        // No-op same index / unknown path
+        const before = state;
+        expect(applyMoveFile(state, '/src/missing.ts', 0)).toBe(before);
+        expect(applyMoveFile(state, '/src/b.ts', 0)).toBe(before);
+    });
+
+    it('close/reopen/activate are identity no-ops when already in target state', () => {
+        let state = applyFileUpdate(initialState(), {
+            filePath: '/src/a.ts', fileName: 'a.ts', content: 'hello',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        expect(state.active).toBe(true);
+        // Already active + not userClosed
+        expect(applyReopenPanel(state)).toBe(state);
+        expect(applyActivatePassive(state)).toBe(state);
+
+        const closed = applyClosePanel(state);
+        expect(closed.active).toBe(false);
+        expect(closed.userClosed).toBe(true);
+        expect(applyClosePanel(closed)).toBe(closed);
+    });
+
     it('session_start resets files and userClosed', () => {
         let state = initialState();
         state = applyFileUpdate(state, {
@@ -317,6 +556,26 @@ describe('useCodePreviewState — Property Tests', () => {
         expect(state.sessionID).toBe('');
         expect(state.sessionActive).toBe(true);
         expect(state.userClosed).toBe(false);
+    });
+
+    it('session_start with autoOpenPreview keeps open tabs for pure-coding continuity', () => {
+        let state = initialState();
+        state = applyFileUpdate(state, {
+            sessionID: 'turn-1', filePath: '/src/a.ts', fileName: 'a.ts', content: 'hello',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        expect(state.files.size).toBe(1);
+        expect(state.active).toBe(true);
+
+        state = applySessionStart(state, 'turn-2', true);
+        expect(state.active).toBe(true);
+        expect(state.sessionID).toBe('turn-2');
+        expect(state.sessionActive).toBe(true);
+        expect(state.userClosed).toBe(false);
+        // Tabs from the previous turn remain visible.
+        expect(state.files.size).toBe(1);
+        expect(state.files.has('/src/a.ts')).toBe(true);
+        expect(state.activeFilePath).toBe('/src/a.ts');
     });
 
     it('session scoped events ignore stale file updates and stale session_end', () => {
@@ -354,6 +613,8 @@ describe('useCodePreviewState — Property Tests', () => {
 
         const afterMatchingEnd = applySessionEnd(state, 'session-a');
         expect(afterMatchingEnd.sessionActive).toBe(false);
+        // Already-ended sessions are a no-op (stable identity).
+        expect(applySessionEnd(afterMatchingEnd, 'session-a')).toBe(afterMatchingEnd);
 
         const afterEndedUnscopedStart = applySessionStart(afterMatchingEnd);
         expect(afterEndedUnscopedStart).not.toBe(afterMatchingEnd);

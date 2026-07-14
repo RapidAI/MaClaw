@@ -107,6 +107,9 @@ type IMMessageHandler struct {
 	// Configuration manager (lazily initialized via setter).
 	configManager *ConfigManager
 
+	// moaSessions arms one-shot multi-model council (/moa) per user.
+	moaSessions *moaSessionStore
+
 	// --- Per-session loop state ---
 	// Each userID (desktop-user, desktop-user:{path}, IM users) gets its own
 	// mutex and loop context. This allows project tabs to run agent loops
@@ -237,17 +240,22 @@ type IMMessageHandler struct {
 	pendingV2SubAgentExecution sync.Map
 
 	// pendingTemplateCodingProjectPath stores the project path after the
-	// coding_subagent workflow form is submitted; the next agent loop runs
+	// pure coding (coding_dev) is armed; the next agent loop runs
 	// CodingSubAgent instead of the normal chat loop.
 	pendingTemplateCodingProjectPath sync.Map
 
-	// pendingTemplateRemoteCoding stores context after the remote_coding_subagent
-	// workflow form connects SSH; the next agent loop runs RemoteCodingSubAgent.
+	// pendingTemplateRemoteCoding stores context after pure remote coding
+	// (remote_coding_dev) arms SSH; the next agent loop runs RemoteCodingSubAgent.
 	pendingTemplateRemoteCoding sync.Map
+
+	// stickyCodingWorkbenchMemory holds multi-turn plan/result context for pure
+	// coding environments (create-task local/remote) so follow-up messages share
+	// prior summaries and touched files.
+	stickyCodingWorkbenchMemory sync.Map
 
 	// pendingWorkflowChoice stores the original message and route result while
 	// waiting for the user to choose how to handle a detected workflow task
-	// (full workflow / simplified coding template / remote coding template / skip). Keyed by userID.
+	// (enter full workflow / skip to normal agent). Keyed by userID.
 	pendingWorkflowChoice sync.Map
 
 	// workflowReviewExperienceContext carries the trace/task context of the

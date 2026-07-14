@@ -345,6 +345,17 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 		return
 	}
 
+	// Keep pure-coding sticky routing armed across multi-turn /goal loops.
+	h.ensurePureCodingArmedForGoalContinuation(userID)
+	// Remote pure coding with dead SSH: do not schedule into the general agent.
+	if h.isPureCodingWorkbenchSession(userID) && !h.hasPendingTemplateSubAgentExecution(userID) {
+		mem := h.getStickyCodingWorkbenchMemory(userID)
+		if strings.TrimSpace(mem.Kind) == "remote" {
+			log.Printf("[goal-continuation] skip schedule: remote pure coding not armed (SSH reconnect required) user=%s", userID)
+			return
+		}
+	}
+
 	if platform == "goal-continuation" {
 		// Goal-continuation turn: account usage and schedule next
 		turnTokens := 0
@@ -352,6 +363,12 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 			turnTokens = resp.InputTokens + resp.OutputTokens
 		}
 		hadToolCalls := resp != nil && resp.TraceEventCount > 0
+		// Defense-in-depth: pure coding reports often carry activity only via
+		// TraceEventCount after finalize; if still zero but response has body,
+		// do not auto-pause an otherwise healthy coding workbench loop.
+		if !hadToolCalls && resp != nil && strings.TrimSpace(resp.Text) != "" && h.isPureCodingWorkbenchSession(userID) {
+			hadToolCalls = true
+		}
 
 		// Estimate turn time from token count as proxy
 		turnSeconds := 30

@@ -321,6 +321,265 @@ func TestBuildCodingSubAgentCodeFileEventsForPathsUsesOriginalOverride(t *testin
 	}
 }
 
+func TestListCodingWorkbenchPreviewSourcesFindsTextSources(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hello.cpp"), []byte("#include \"hello.h\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "hello.h"), []byte("#pragma once\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "test_hello.exe"), []byte{0x00, 0x01, 0x02}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "node_modules", "pkg"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "node_modules", "pkg", "index.js"), []byte("module.exports=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := listCodingWorkbenchPreviewSources(tmpDir, 10)
+	if len(got) != 2 {
+		t.Fatalf("sources = %#v, want hello.cpp + hello.h", got)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "hello.cpp") || !strings.Contains(joined, "hello.h") {
+		t.Fatalf("sources = %#v, missing expected files", got)
+	}
+}
+
+func TestEmitCodingWorkbenchSourcePreviewFallsBackToProjectScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Config/docs should rank below implementation sources.
+	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("# hi\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Sticky / scan fallback is emitted as modify (not create) for honest dirty state.
+	events := buildCodingSubAgentCodeFileEvents(
+		"coding-workbench-test",
+		tmpDir,
+		listCodingWorkbenchPreviewSources(tmpDir, 8),
+		nil,
+	)
+	if len(events) < 1 {
+		t.Fatalf("events = %#v, want at least main.go", events)
+	}
+	if events[0].FilePath != "main.go" || events[0].OpType != "modify" || !events[0].ForceOpen {
+		t.Fatalf("event = %#v, want modify main.go forceOpen", events[0])
+	}
+}
+
+func TestFilterExistingProjectRelPathsDropsMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "keep.cpp"), []byte("int x;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := filterExistingProjectRelPaths(tmpDir, []string{"keep.cpp", "gone.cpp", ""})
+	if len(got) != 1 || got[0] != "keep.cpp" {
+		t.Fatalf("got %#v, want [keep.cpp]", got)
+	}
+
+	// Absolute path under project should normalize to relative (dedupe tabs).
+	abs := filepath.Join(tmpDir, "keep.cpp")
+	gotAbs := filterExistingProjectRelPaths(tmpDir, []string{abs, "keep.cpp"})
+	if len(gotAbs) != 1 || gotAbs[0] != "keep.cpp" {
+		t.Fatalf("abs normalize = %#v, want [keep.cpp]", gotAbs)
+	}
+}
+
+func TestEmitCodingWorkbenchSourcePreviewMergesStickyWithTurnFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "old.cpp"), []byte("int old;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "new.cpp"), []byte("int neu;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate end-of-turn selection: turn only wrote new.cpp; sticky still has old.cpp.
+	// Both must appear so multi-turn panel survives session_start wipe.
+	merged := mergePreviewPathsPreferFirst([]string{"new.cpp"}, []string{"old.cpp", "gone.cpp"}, 40)
+	if len(merged) != 3 || merged[0] != "new.cpp" {
+		t.Fatalf("merge = %#v, want primary-first with sticky fill", merged)
+	}
+	existing := filterExistingProjectRelPaths(tmpDir, merged)
+	if len(existing) != 2 {
+		t.Fatalf("existing = %#v, want new.cpp + old.cpp (gone dropped)", existing)
+	}
+	events := buildCodingSubAgentCodeFileEvents(
+		"coding-workbench-test",
+		tmpDir,
+		existing,
+		nil,
+	)
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want old.cpp + new.cpp", events)
+	}
+	paths := map[string]bool{}
+	for _, e := range events {
+		paths[e.FilePath] = true
+		if e.OpType != "modify" || !e.ForceOpen {
+			t.Fatalf("event = %#v, want modify forceOpen", e)
+		}
+	}
+	if !paths["old.cpp"] || !paths["new.cpp"] {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
+
+func TestMergePreviewPathsPreferFirstCapsAndDedupes(t *testing.T) {
+	got := mergePreviewPathsPreferFirst(
+		[]string{"a.go", "b.go", "a.go"},
+		[]string{"b.go", "c.go", "d.go"},
+		3,
+	)
+	if len(got) != 3 || got[0] != "a.go" || got[1] != "b.go" || got[2] != "c.go" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestCodePreviewRouteProjectPathUsesTabPathFromOwner(t *testing.T) {
+	tabPath := `D:\data\tasks\hello-123`
+	execDir := `D:\testprj6`
+	owner := projectSessionOwnerID(tabPath)
+	got := codePreviewRouteProjectPath(owner, execDir)
+	if got != normalizeProjectSessionPath(tabPath) {
+		t.Fatalf("route = %q, want tab path %q (not execDir %q)", got, tabPath, execDir)
+	}
+	// Unbound desktop-user falls back to disk path.
+	if got := codePreviewRouteProjectPath(desktopUserID, execDir); got != execDir {
+		t.Fatalf("unbound route = %q, want execDir %q", got, execDir)
+	}
+	// Empty owner falls back to disk path.
+	if got := codePreviewRouteProjectPath("", execDir); got != execDir {
+		t.Fatalf("empty owner route = %q, want execDir", got)
+	}
+}
+
+func TestFirstNonEmptyRoutePath(t *testing.T) {
+	if got := firstNonEmptyRoutePath(`D:\exec`, `D:\tab`); got != `D:\tab` {
+		t.Fatalf("explicit route = %q", got)
+	}
+	if got := firstNonEmptyRoutePath(`D:\exec`, ""); got != `D:\exec` {
+		t.Fatalf("empty override = %q", got)
+	}
+	if got := firstNonEmptyRoutePath(`D:\exec`); got != `D:\exec` {
+		t.Fatalf("no override = %q", got)
+	}
+	if got := firstNonEmptyRoutePath(`D:\exec`, "  "); got != `D:\exec` {
+		t.Fatalf("whitespace override = %q", got)
+	}
+}
+
+func TestShouldStickyMergePreviewScan(t *testing.T) {
+	// Scan recovery: no turn audit, no sticky, emit has paths.
+	if !shouldStickyMergePreviewScan(nil, nil, nil, []string{"hello.cpp"}) {
+		t.Fatal("want merge for pure scan recovery")
+	}
+	// write_file audit already owns sticky via recordStickyLocalCodingTurn.
+	if shouldStickyMergePreviewScan([]string{"a.go"}, nil, nil, []string{"a.go"}) {
+		t.Fatal("must not merge when turn audit non-empty")
+	}
+	if shouldStickyMergePreviewScan(nil, []string{"new.go"}, nil, []string{"new.go"}) {
+		t.Fatal("must not merge when turn created non-empty")
+	}
+	// Sticky fill re-emit — already in sticky, no scan.
+	if shouldStickyMergePreviewScan(nil, nil, []string{"old.go"}, []string{"old.go"}) {
+		t.Fatal("must not merge when sticky already had history")
+	}
+	if shouldStickyMergePreviewScan(nil, nil, nil, nil) {
+		t.Fatal("empty emit must not merge")
+	}
+	// Whitespace-only turn paths are ignored → still treated as scan recovery.
+	if !shouldStickyMergePreviewScan([]string{"  ", ""}, nil, nil, []string{"hello.cpp"}) {
+		t.Fatal("whitespace-only turn audit should not block scan sticky merge")
+	}
+}
+
+func TestEmitCodingWorkbenchSourcePreviewRoutesToManagedTaskTab(t *testing.T) {
+	// End-of-turn scan + route path: files under execDir, ProjectPath must be tab path.
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hello.cpp"), []byte("int main(){return 0;}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tabPath := normalizeProjectSessionPath(`D:\data\tasks\cpp-hello-managed`)
+	// Exercise the same selection path emitCodingWorkbenchSourcePreview uses when
+	// turn audit is empty (allowScan + route override).
+	scanned := listCodingWorkbenchPreviewSources(tmpDir, 8)
+	if len(scanned) == 0 || scanned[0] != "hello.cpp" {
+		t.Fatalf("scan = %#v, want hello.cpp", scanned)
+	}
+	events := buildCodingSubAgentCodeFileEvents("coding-workbench-eot", tmpDir, scanned, nil)
+	events = applyCodeEventRouteProjectPath(events, tabPath)
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].ProjectPath != tabPath {
+		t.Fatalf("ProjectPath = %q, want managed tab %q", events[0].ProjectPath, tabPath)
+	}
+	if events[0].OpType != "modify" || !events[0].ForceOpen {
+		t.Fatalf("want force-open modify for scan restore, got %#v", events[0])
+	}
+	// Frontend filter would accept when active tab is the managed task path.
+	// (Mirrors shouldAcceptCodeEventForProject: exact path match after normalize.)
+	if normalizeProjectSessionPath(events[0].ProjectPath) != tabPath {
+		t.Fatal("route path not normalized consistently")
+	}
+}
+
+func TestApplyCodeEventRouteProjectPathRewritesRoutingField(t *testing.T) {
+	events := []CodeFileEvent{{
+		FilePath:    "hello.cpp",
+		ProjectPath: `D:\testprj6`,
+		Content:     "int main(){}",
+		OpType:      "create",
+	}}
+	tabPath := `D:\data\tasks\hello-123`
+	out := applyCodeEventRouteProjectPath(events, tabPath)
+	if len(out) != 1 || out[0].ProjectPath != tabPath {
+		t.Fatalf("events = %#v, want ProjectPath=%q", out, tabPath)
+	}
+	// Content/path for disk must stay intact.
+	if out[0].FilePath != "hello.cpp" || out[0].Content != "int main(){}" {
+		t.Fatalf("rewrote non-routing fields: %#v", out[0])
+	}
+}
+
+func TestBuildCodingSubAgentCodeFileEventsThenRouteForManagedTaskTab(t *testing.T) {
+	// Simulates pure-coding: files live under execDir; frontend tab filters on task dir.
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hello.cpp"), []byte("#include <iostream>\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tabPath := `C:\Users\ma139\.maclaw\data\tasks\cpp-hello-1`
+	events := buildCodingSubAgentCodeFileEvents("coding-workbench-test", tmpDir, []string{"hello.cpp"}, []string{"hello.cpp"})
+	events = applyCodeEventRouteProjectPath(events, tabPath)
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].ProjectPath != tabPath {
+		t.Fatalf("ProjectPath = %q, want tab path %q so frontend accepts the event", events[0].ProjectPath, tabPath)
+	}
+	if events[0].FilePath != "hello.cpp" || !strings.Contains(events[0].Content, "iostream") {
+		t.Fatalf("event content/path wrong: %#v", events[0])
+	}
+	if events[0].AbsPath == "" || !strings.Contains(events[0].AbsPath, "hello.cpp") {
+		t.Fatalf("AbsPath should still point at disk file: %q", events[0].AbsPath)
+	}
+}
+
+func TestCodingWorkbenchPreviewRestoreSessionIDStable(t *testing.T) {
+	if a, b := codingWorkbenchPreviewRestoreSessionID("u1"), codingWorkbenchPreviewRestoreSessionID("u1"); a != b {
+		t.Fatalf("session ids differ: %q vs %q", a, b)
+	}
+	if codingWorkbenchPreviewRestoreSessionID("u1") == codingWorkbenchPreviewRestoreSessionID("u2") {
+		t.Fatal("different users should not share restore session id")
+	}
+}
+
 func TestLocalToolCodePreviewOriginalGuardsSizeAndBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 	textPath := filepath.Join(tmpDir, "preview.txt")

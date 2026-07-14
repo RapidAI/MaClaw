@@ -324,6 +324,403 @@ func TestCreateRecentTaskUsesTaskNamePreview(t *testing.T) {
 	}
 }
 
+func TestNormalizeCreateTaskMode(t *testing.T) {
+	cases := map[string]string{
+		"":                 "",
+		"chat":             "",
+		"coding_dev":       taskCodingDevTag,
+		"CODING":           taskCodingDevTag,
+		"programming":      taskCodingDevTag,
+		"code":             taskCodingDevTag,
+		"remote_coding_dev": taskRemoteCodingDevTag,
+		"remote_coding":    taskRemoteCodingDevTag,
+		"remote_code":      taskRemoteCodingDevTag,
+	}
+	for input, want := range cases {
+		if got := NormalizeCreateTaskMode(input); got != want {
+			t.Fatalf("NormalizeCreateTaskMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCreateRemoteCodingTaskTagsMetadata(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	hasTag := func(tags []string, target string) bool {
+		for _, tag := range tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+
+	created := app.CreateRemoteCodingTask("Fix remote API", "10.0.0.8", "ubuntu", "/home/ubuntu/app", 22)
+	if created.ProjectPath == "" {
+		t.Fatal("CreateRemoteCodingTask returned empty project path")
+	}
+	if !hasTag(created.Tags, taskRemoteCodingDevTag) {
+		t.Fatalf("tags = %#v, want remote_coding_dev", created.Tags)
+	}
+	if !hasTag(created.Tags, taskRemoteHostTagPrefix+"10.0.0.8") {
+		t.Fatalf("tags = %#v, want remote_host", created.Tags)
+	}
+	if !hasTag(created.Tags, taskRemoteUserTagPrefix+"ubuntu") {
+		t.Fatalf("tags = %#v, want remote_user", created.Tags)
+	}
+	if !hasTag(created.Tags, taskRemoteWorkDirTagPrefix+"/home/ubuntu/app") {
+		t.Fatalf("tags = %#v, want remote_workdir", created.Tags)
+	}
+	// Password must never appear in tags.
+	for _, tag := range created.Tags {
+		if strings.Contains(strings.ToLower(tag), "password") || strings.Contains(tag, "secret") {
+			t.Fatalf("tags must not contain password material: %#v", created.Tags)
+		}
+	}
+
+	if empty := app.CreateRemoteCodingTask("x", "", "u", "/tmp", 22); empty.ProjectPath != "" {
+		t.Fatal("missing host should fail")
+	}
+
+	// Host values that contain ":" (e.g. IPv6) must remain connectable.
+	ipv6 := app.CreateRemoteCodingTask("ipv6", "2001:db8::1", "root", "/tmp/app", 22)
+	if !hasTag(ipv6.Tags, taskRemoteHostTagPrefix+"2001:db8::1") {
+		t.Fatalf("ipv6 host tags = %#v", ipv6.Tags)
+	}
+	meta, err := app.GetRemoteCodingTaskMeta(ipv6.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Host != "2001:db8::1" {
+		t.Fatalf("GetRemoteCodingTaskMeta host=%q", meta.Host)
+	}
+}
+
+func TestSanitizeTaskMetadataTagValue(t *testing.T) {
+	if got := sanitizeTaskMetadataTagValue(" a:b\nc "); got != "a:b c" {
+		t.Fatalf("sanitize = %q want %q", got, "a:b c")
+	}
+	if got := sanitizeTaskMetadataTagValue("2001:db8::1"); got != "2001:db8::1" {
+		t.Fatalf("ipv6 sanitize = %q", got)
+	}
+	if got := sanitizeTaskMetadataTagValue("x\x00y"); got != "xy" {
+		t.Fatalf("control strip = %q", got)
+	}
+	if got := normalizeSSHHostInput("[2001:db8::1]"); got != "2001:db8::1" {
+		t.Fatalf("bracket ipv6 = %q", got)
+	}
+	if !looksLikeAbsoluteProjectPathTag(`D:\work\tasks\x`) || looksLikeAbsoluteProjectPathTag("remote_host:10.0.0.1") {
+		t.Fatal("looksLikeAbsoluteProjectPathTag")
+	}
+	if shouldKeepTaskTagOnRemoteMetaUpdate("task_sediment") || !shouldKeepTaskTagOnRemoteMetaUpdate(taskRemoteCodingDevTag) {
+		t.Fatal("shouldKeepTaskTagOnRemoteMetaUpdate")
+	}
+}
+
+func TestTestRemoteSSHConnectionValidation(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	if _, err := app.TestRemoteSSHConnection("", "u", "p", "/tmp", 22); err == nil {
+		t.Fatal("expected missing host error")
+	}
+	if _, err := app.TestRemoteSSHConnection("h", "", "p", "/tmp", 22); err == nil {
+		t.Fatal("expected missing user error")
+	}
+	if _, err := app.TestRemoteSSHConnection("h", "u", "", "/tmp", 22); err == nil {
+		t.Fatal("expected missing password error")
+	}
+}
+
+func TestUpdateRemoteCodingTaskMeta(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	hasTag := func(tags []string, target string) bool {
+		for _, tag := range tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+	created := app.CreateRemoteCodingTask("Edit remote meta", "10.0.0.1", "dev", "/old/path", 22)
+	if created.ProjectPath == "" {
+		t.Fatal("create failed")
+	}
+	taskFile := filepath.Join(created.ProjectPath, "task.md")
+	before, err := os.ReadFile(taskFile)
+	if err != nil {
+		t.Fatalf("read task.md: %v", err)
+	}
+	if !strings.Contains(string(before), "Edit remote meta") && !strings.Contains(string(before), "Created from task management") {
+		t.Fatalf("unexpected initial task.md body: %q", before)
+	}
+	if err := app.UpdateRemoteCodingTaskMeta(created.ProjectPath, "10.0.0.9", "ops", "/new/app", 2222); err != nil {
+		t.Fatalf("UpdateRemoteCodingTaskMeta: %v", err)
+	}
+	meta, err := app.GetRemoteCodingTaskMeta(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Host != "10.0.0.9" || meta.User != "ops" || meta.Port != 2222 {
+		t.Fatalf("meta=%+v", meta)
+	}
+	if meta.WorkDir != "/new/app" {
+		t.Fatalf("workdir=%q want /new/app", meta.WorkDir)
+	}
+	// Re-read from index tags after update.
+	pi := app.memoryStore.ProjectIndex()
+	rec := pi.Get(created.ProjectPath)
+	if rec == nil {
+		t.Fatal("record missing")
+	}
+	if !hasTag(rec.Tags, taskRemoteHostTagPrefix+"10.0.0.9") {
+		t.Fatalf("tags=%#v", rec.Tags)
+	}
+	if hasTag(rec.Tags, taskRemoteHostTagPrefix+"10.0.0.1") {
+		t.Fatalf("old host should be replaced: %#v", rec.Tags)
+	}
+	if hasTag(rec.Tags, taskRemoteWorkDirTagPrefix+"/old/path") {
+		t.Fatalf("old workdir should be replaced: %#v", rec.Tags)
+	}
+	if !hasTag(rec.Tags, taskRemoteWorkDirTagPrefix+"/new/app") {
+		t.Fatalf("new workdir missing: %#v", rec.Tags)
+	}
+	after, err := os.ReadFile(taskFile)
+	if err != nil {
+		t.Fatalf("read task.md after update: %v", err)
+	}
+	// Body must not be wiped to bare title — original create content kept.
+	if !strings.Contains(string(after), "Created from task management") {
+		t.Fatalf("task.md content wiped: %q", after)
+	}
+	if !strings.Contains(string(after), "Remote work directory: /new/app") {
+		t.Fatalf("task.md missing workdir line: %q", after)
+	}
+	// Second update should rewrite the workdir line, not stack duplicates.
+	if err := app.UpdateRemoteCodingTaskMeta(created.ProjectPath, "10.0.0.9", "ops", "/newer", 2222); err != nil {
+		t.Fatalf("second update: %v", err)
+	}
+	after2, _ := os.ReadFile(taskFile)
+	if c := strings.Count(string(after2), "Remote work directory:"); c != 1 {
+		t.Fatalf("expected 1 workdir line, got %d in %q", c, after2)
+	}
+	// Non-remote task should reject.
+	chat := app.CreateTask("plain", "")
+	if err := app.UpdateRemoteCodingTaskMeta(chat.ProjectPath, "h", "u", "/w", 22); err == nil {
+		t.Fatal("expected reject for non-remote task")
+	}
+}
+
+func TestMergeTagsReplacePrefixed(t *testing.T) {
+	existing := []string{
+		"manual_task", "recent_task", "/task",
+		taskRemoteHostTagPrefix + "old",
+		taskRemoteWorkDirTagPrefix + "/old/path",
+		"coding_extra",
+	}
+	desired := []string{
+		"manual_task", "recent_task", "/task",
+		taskRemoteHostTagPrefix + "new",
+		taskRemoteWorkDirTagPrefix + "/new/app",
+	}
+	got := mergeTagsReplacePrefixed(existing, desired, remoteCodingMetaTagPrefixes)
+	has := func(s string) bool {
+		for _, t := range got {
+			if t == s {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(taskRemoteHostTagPrefix+"new") || has(taskRemoteHostTagPrefix+"old") {
+		t.Fatalf("host replace failed: %#v", got)
+	}
+	if !has(taskRemoteWorkDirTagPrefix+"/new/app") || has(taskRemoteWorkDirTagPrefix+"/old/path") {
+		t.Fatalf("workdir replace failed: %#v", got)
+	}
+	if !has("coding_extra") {
+		t.Fatalf("should keep non-meta existing tag: %#v", got)
+	}
+}
+
+func TestUpsertRemoteWorkDirContentLine(t *testing.T) {
+	base := "# Title\n\nCreated from task management.\n"
+	once := upsertRemoteWorkDirContentLine(base, "/a")
+	if !strings.Contains(once, "Remote work directory: /a") {
+		t.Fatalf("append failed: %q", once)
+	}
+	twice := upsertRemoteWorkDirContentLine(once, "/b")
+	if strings.Count(twice, "Remote work directory:") != 1 {
+		t.Fatalf("duplicate lines: %q", twice)
+	}
+	if !strings.Contains(twice, "Remote work directory: /b") {
+		t.Fatalf("replace failed: %q", twice)
+	}
+	if !strings.Contains(twice, "Created from task management") {
+		t.Fatalf("body wiped: %q", twice)
+	}
+}
+
+func TestUpdateRemoteCodingTaskMetaSlashPathVariant(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateRemoteCodingTask("Path identity", "10.0.0.1", "dev", "/old", 22)
+	if created.ProjectPath == "" {
+		t.Fatal("create failed")
+	}
+	// UI may send forward-slash paths on Windows; update must still hit the same artifact.
+	alt := strings.ReplaceAll(created.ProjectPath, `\`, `/`)
+	if err := app.UpdateRemoteCodingTaskMeta(alt, "10.0.0.2", "ops", "/new", 22); err != nil {
+		t.Fatalf("update via slash variant: %v", err)
+	}
+	meta, err := app.GetRemoteCodingTaskMeta(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Host != "10.0.0.2" || meta.WorkDir != "/new" {
+		t.Fatalf("meta=%+v", meta)
+	}
+	rec := app.memoryStore.ProjectIndex().Get(created.ProjectPath)
+	if rec == nil {
+		t.Fatal("record missing")
+	}
+	hostTags := 0
+	for _, tag := range rec.Tags {
+		if strings.HasPrefix(tag, taskRemoteHostTagPrefix) {
+			hostTags++
+		}
+	}
+	if hostTags != 1 {
+		t.Fatalf("want single remote_host tag, got %#v", rec.Tags)
+	}
+}
+
+func TestBuildRemoteCodingMetaTags(t *testing.T) {
+	tags := buildRemoteCodingMetaTags("h", "u", "/w", 0)
+	if len(tags) != 4 || tags[2] != taskRemotePortTagPrefix+"22" {
+		t.Fatalf("default port tags=%#v", tags)
+	}
+	if !isRemoteCodingMetaTag(taskRemoteHostTagPrefix + "x") {
+		t.Fatal("isRemoteCodingMetaTag host")
+	}
+	if isRemoteCodingMetaTag(taskRemoteCodingDevTag) {
+		t.Fatal("mode tag is not meta host/user/port/workdir")
+	}
+}
+
+func TestCreateTaskWithModeTagsCodingDev(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	hasTag := func(tags []string, target string) bool {
+		for _, tag := range tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+
+	ordinary := app.CreateTask("Ordinary chat task", "")
+	if ordinary.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty project path")
+	}
+	if hasTag(ordinary.Tags, taskCodingDevTag) {
+		t.Fatalf("ordinary CreateTask tags = %#v, did not expect coding_dev", ordinary.Tags)
+	}
+
+	coding := app.CreateTaskWithMode("Implement auth module", "", "coding_dev")
+	if coding.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	if !hasTag(coding.Tags, taskCodingDevTag) {
+		t.Fatalf("coding CreateTaskWithMode tags = %#v, want coding_dev", coding.Tags)
+	}
+	if !hasTag(coding.Tags, taskManagementTag) || !hasTag(coding.Tags, taskUserCreatedTag) {
+		t.Fatalf("coding CreateTaskWithMode tags = %#v, want management + user_created", coding.Tags)
+	}
+
+	// Alias modes should also stamp coding_dev.
+	aliased := app.CreateTaskWithMode("Fix bug with tools", "", "programming")
+	if !hasTag(aliased.Tags, taskCodingDevTag) {
+		t.Fatalf("alias CreateTaskWithMode tags = %#v, want coding_dev", aliased.Tags)
+	}
+
+	// History list must surface coding tags so the sidebar can show pure-coding badges.
+	listed := app.ListTasks(50)
+	foundCoding := false
+	for _, item := range listed {
+		if item.ProjectPath == coding.ProjectPath {
+			foundCoding = true
+			if !hasTag(item.Tags, taskCodingDevTag) {
+				t.Fatalf("ListTasks coding tags = %#v, want coding_dev", item.Tags)
+			}
+		}
+	}
+	if !foundCoding {
+		t.Fatal("ListTasks missing coding task")
+	}
+}
+
+func TestEnsureCodingWorkbenchArmedRestoresPureCodingOnly(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.interactionInfraDone.Store(true)
+	app.warmupDone.Store(true)
+	app.disableBackgroundEmbeddingForTest = true
+	// Wire a hub/IM handler so Ensure can re-arm sticky coding sessions.
+	manager := NewRemoteSessionManager(app)
+	app.remoteSessions = manager
+	client := NewRemoteHubClient(app, manager)
+	manager.SetHubClient(client)
+	handler := client.ensureIMHandler()
+	if handler == nil {
+		t.Fatal("expected IM handler")
+	}
+
+	ordinary := app.CreateTask("Chat only task", "")
+	coding := app.CreateTaskWithMode("Pure coding restore", "", "coding_dev")
+	if ordinary.ProjectPath == "" || coding.ProjectPath == "" {
+		t.Fatal("failed to create tasks")
+	}
+
+	// Simulate sticky pollution (legacy bug left kind=local on a chat task).
+	ordinaryUser := projectSessionOwnerID(ordinary.ProjectPath)
+	handler.markStickyCodingSessionFullAccess(ordinaryUser, "local", ordinary.ProjectPath)
+	handler.rearmStickyLocalCodingEnvironment(ordinaryUser, ordinary.ProjectPath)
+	if !handler.hasPendingTemplateSubAgentExecution(ordinaryUser) {
+		t.Fatal("setup: expected polluted sticky pending for ordinary task")
+	}
+
+	// Ordinary tasks must NOT arm CodingSubAgent routing, even with sticky pollution.
+	stOrdinary, err := app.EnsureCodingWorkbenchArmed(ordinary.ProjectPath)
+	if err != nil {
+		t.Fatalf("Ensure ordinary: %v", err)
+	}
+	if stOrdinary.Armed || stOrdinary.Kind == "local" || stOrdinary.Kind == "remote" {
+		t.Fatalf("ordinary task should not arm pure coding, status=%+v", stOrdinary)
+	}
+	if handler.hasPendingTemplateSubAgentExecution(ordinaryUser) {
+		t.Fatal("ordinary task should clear polluted sticky coding pending")
+	}
+	if mem := handler.getStickyCodingWorkbenchMemory(ordinaryUser); mem.Kind == "local" || mem.Kind == "remote" {
+		t.Fatalf("ordinary task should clear polluted sticky kind, got %+v", mem)
+	}
+
+	// Pure coding tasks re-arm local CodingSubAgent and seed plan for compaction recovery.
+	stCoding, err := app.EnsureCodingWorkbenchArmed(coding.ProjectPath)
+	if err != nil {
+		t.Fatalf("Ensure coding: %v", err)
+	}
+	if !stCoding.Armed || stCoding.Kind != "local" {
+		t.Fatalf("coding task should arm local workbench, status=%+v", stCoding)
+	}
+	userID := projectSessionOwnerID(coding.ProjectPath)
+	if !handler.hasPendingTemplateSubAgentExecution(userID) {
+		t.Fatal("coding restore should re-arm sticky local coding pending")
+	}
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+	if mem.Kind != "local" {
+		t.Fatalf("sticky kind = %q, want local", mem.Kind)
+	}
+	if strings.TrimSpace(mem.SessionPlan) == "" {
+		t.Fatal("expected session plan seeded from task title for compaction recovery")
+	}
+}
+
 func TestCreateRecentTaskWithWorkingDirPersistsDirectory(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	workingDir := filepath.Join(t.TempDir(), "project")

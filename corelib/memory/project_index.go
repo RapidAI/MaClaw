@@ -361,6 +361,49 @@ func (pi *ProjectIndex) Get(projectPath string) *ProjectRecord {
 	return nil
 }
 
+// ReplacePrefixedTags drops tags matching any of dropPrefixes on the project
+// record, then appends addTags. Used when meta tags (e.g. remote_host:) must
+// be replaced rather than unioned — IndexEntry only merge-appends tags.
+func (pi *ProjectIndex) ReplacePrefixedTags(projectPath string, dropPrefixes []string, addTags []string) {
+	if pi == nil || strings.TrimSpace(projectPath) == "" {
+		return
+	}
+	pi.mu.Lock()
+	defer pi.mu.Unlock()
+	key := normalizeProjectPath(toForwardSlash(projectPath))
+	rec, ok := pi.records[key]
+	if !ok || rec == nil {
+		return
+	}
+	shouldDrop := func(tag string) bool {
+		for _, p := range dropPrefixes {
+			if p != "" && strings.HasPrefix(tag, p) {
+				return true
+			}
+		}
+		return false
+	}
+	kept := make([]string, 0, len(rec.Tags)+len(addTags))
+	seen := make(map[string]bool, len(rec.Tags)+len(addTags))
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || shouldDrop(tag) || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		kept = append(kept, tag)
+	}
+	for _, tag := range addTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		kept = append(kept, tag)
+	}
+	rec.Tags = kept
+}
+
 // --- Task preferences (rename / pin / hide) ---
 
 // SetCustomName sets a user-defined display name for a task.

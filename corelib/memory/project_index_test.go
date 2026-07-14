@@ -7,6 +7,44 @@ import (
 	"time"
 )
 
+func TestProjectIndex_ReplacePrefixedTags(t *testing.T) {
+	pi := NewProjectIndex()
+	path := `D:\work\tasks\remote-1`
+	pi.IndexEntry(&Entry{
+		ID:        "e1",
+		Content:   "# remote task",
+		Category:  CategoryTaskArtifact,
+		Tags:      []string{"manual_task", "recent_task", path, "remote_coding_dev", "remote_host:10.0.0.1", "remote_workdir:/old"},
+		SourceURL: filepath.Join(path, "task.md"),
+		UpdatedAt: time.Now(),
+	})
+	pi.ReplacePrefixedTags(path, []string{"remote_host:", "remote_workdir:"}, []string{
+		"remote_host:10.0.0.9",
+		"remote_workdir:/new",
+	})
+	rec := pi.Get(path)
+	if rec == nil {
+		t.Fatal("record missing")
+	}
+	has := func(target string) bool {
+		for _, tag := range rec.Tags {
+			if tag == target {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("remote_host:10.0.0.9") || has("remote_host:10.0.0.1") {
+		t.Fatalf("host tags: %#v", rec.Tags)
+	}
+	if !has("remote_workdir:/new") || has("remote_workdir:/old") {
+		t.Fatalf("workdir tags: %#v", rec.Tags)
+	}
+	if !has("remote_coding_dev") {
+		t.Fatalf("non-prefixed tags should remain: %#v", rec.Tags)
+	}
+}
+
 func TestProjectIndex_Rebuild(t *testing.T) {
 	pi := NewProjectIndex()
 

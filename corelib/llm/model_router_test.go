@@ -133,6 +133,27 @@ func TestHasRoute(t *testing.T) {
 	}
 }
 
+func TestListRoutesAndGetRoute(t *testing.T) {
+	r := NewModelRouter(map[string]ModelRoute{
+		"reasoning": {Model: "r1"},
+		"vision":    {Model: "v1"},
+	})
+	list := r.ListRoutes()
+	if len(list) != 2 || list["reasoning"].Model != "r1" {
+		t.Fatalf("%+v", list)
+	}
+	route, ok := r.GetRoute(TaskVision)
+	if !ok || route.Model != "v1" {
+		t.Fatalf("%+v %v", route, ok)
+	}
+	if _, ok := r.GetRoute(TaskFast); ok {
+		t.Fatal("fast should be missing")
+	}
+	if NewModelRouter(nil).ListRoutes() != nil {
+		t.Fatal("empty router list")
+	}
+}
+
 func TestSetRoutes_ReplacesAll(t *testing.T) {
 	r := NewModelRouter(map[string]ModelRoute{
 		"intent": {Model: "old"},

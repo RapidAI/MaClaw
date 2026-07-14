@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
-import { getOpTypeIndicator, extractFileName } from './FileTabBar';
+import { getOpTypeIndicator, extractFileName, computeVisibleFilePaths, cycleFilePath, computeDropIndex, filterOpenFilePaths } from './FileTabBar';
 
 // ── Generators ──
 
@@ -172,5 +172,76 @@ describe('FileTabBar — Property Tests', () => {
             ),
             { numRuns: 100 },
         );
+    });
+
+    /**
+     * Overflow visibility: active file stays visible; visible set size ≤ maxVisible;
+     * relative order matches the original list.
+     */
+    it('computeVisibleFilePaths keeps active file and original order', () => {
+        fc.assert(
+            fc.property(
+                fc.array(arbFilePath, { minLength: 1, maxLength: 20 }),
+                fc.integer({ min: 1, max: 20 }),
+                (rawPaths, maxVisible) => {
+                    // Deduplicate while preserving first-seen order.
+                    const filePaths = Array.from(new Set(rawPaths));
+                    if (filePaths.length === 0) return true;
+
+                    const activeIndex = Math.min(maxVisible, filePaths.length) - 1;
+                    const activeFilePath = filePaths[Math.max(0, activeIndex % filePaths.length)];
+                    const visible = computeVisibleFilePaths(filePaths, activeFilePath, maxVisible);
+
+                    expect(visible.length).toBeLessThanOrEqual(Math.min(maxVisible, filePaths.length));
+                    expect(visible.length).toBeGreaterThan(0);
+                    expect(visible).toContain(activeFilePath);
+
+                    // Relative order preserved.
+                    let lastIndex = -1;
+                    for (const path of visible) {
+                        const idx = filePaths.indexOf(path);
+                        expect(idx).toBeGreaterThan(lastIndex);
+                        lastIndex = idx;
+                    }
+                    return true;
+                },
+            ),
+            { numRuns: 100 },
+        );
+    });
+
+    it('computeVisibleFilePaths returns full list when capacity is enough', () => {
+        const paths = ['/a.ts', '/b.ts', '/c.ts'];
+        expect(computeVisibleFilePaths(paths, '/b.ts', 10)).toEqual(paths);
+        expect(computeVisibleFilePaths(paths, '/missing.ts', 2)).toEqual(['/a.ts', '/b.ts']);
+    });
+
+    it('cycleFilePath wraps around and handles empty lists', () => {
+        expect(cycleFilePath([], '', 1)).toBeNull();
+        expect(cycleFilePath(['/a.ts'], '/a.ts', 1)).toBe('/a.ts');
+        expect(cycleFilePath(['/a.ts', '/b.ts', '/c.ts'], '/a.ts', 1)).toBe('/b.ts');
+        expect(cycleFilePath(['/a.ts', '/b.ts', '/c.ts'], '/c.ts', 1)).toBe('/a.ts');
+        expect(cycleFilePath(['/a.ts', '/b.ts', '/c.ts'], '/a.ts', -1)).toBe('/c.ts');
+        expect(cycleFilePath(['/a.ts', '/b.ts', '/c.ts'], '/missing.ts', 1)).toBe('/b.ts');
+    });
+
+    it('computeDropIndex places the dragged tab before/after the target', () => {
+        const paths = ['/a.ts', '/b.ts', '/c.ts', '/d.ts'];
+        // Move a after c → index of c after removal is 1, after → 2 → [b,c,a,d]
+        expect(computeDropIndex(paths, '/a.ts', '/c.ts', true)).toBe(2);
+        // Move d before a → 0
+        expect(computeDropIndex(paths, '/d.ts', '/a.ts', false)).toBe(0);
+        // No-op same path
+        expect(computeDropIndex(paths, '/b.ts', '/b.ts', true)).toBe(1);
+    });
+
+    it('filterOpenFilePaths matches file name and full path, empty query keeps all', () => {
+        const paths = ['/src/components/App.tsx', '/src/utils/helpers.ts', 'D:\\work\\main.go'];
+        expect(filterOpenFilePaths(paths, '')).toEqual(paths);
+        expect(filterOpenFilePaths(paths, '  ')).toEqual(paths);
+        expect(filterOpenFilePaths(paths, 'app')).toEqual(['/src/components/App.tsx']);
+        expect(filterOpenFilePaths(paths, 'helpers')).toEqual(['/src/utils/helpers.ts']);
+        expect(filterOpenFilePaths(paths, 'work')).toEqual(['D:\\work\\main.go']);
+        expect(filterOpenFilePaths(paths, 'nope')).toEqual([]);
     });
 });

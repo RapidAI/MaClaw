@@ -156,6 +156,30 @@ func TestCostTracker_DailySummary_WithBudget(t *testing.T) {
 	}
 }
 
+func TestCostTracker_CanAffordAndRemaining(t *testing.T) {
+	// Unlimited: always afford.
+	unlimited := newTestCostTracker(t, 0)
+	if !unlimited.CanAfford(1.0) {
+		t.Fatal("unlimited should afford")
+	}
+	if unlimited.RemainingBudgetUSD() != 0 {
+		t.Fatalf("unlimited remaining should be 0 sentinel, got %v", unlimited.RemainingBudgetUSD())
+	}
+
+	ct := newTestCostTracker(t, 1.0)
+	// Spend almost all budget.
+	ct.Record("gpt-4o", 200_000, 50_000) // ~$1.00 at gpt-4o prices
+	if ct.RemainingBudgetUSD() > 1.0 {
+		t.Fatalf("remaining should be under limit, got %v", ct.RemainingBudgetUSD())
+	}
+	// Large wave estimate should fail once nearly spent.
+	if ct.CanAfford(5.0) {
+		t.Fatal("should not afford $5 when budget is $1")
+	}
+	// Tiny remainder may still afford a small amount if not fully spent.
+	_ = ct.CanAfford(0.0001)
+}
+
 func TestCostTracker_NilSafe(t *testing.T) {
 	var ct *CostTracker
 	cost := ct.Record("gpt-4o", 1000, 500)

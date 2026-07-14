@@ -91,7 +91,7 @@ type LoopContext struct {
 
 	// SkipWorkflowDocCapture is set for workflow-launched execution paths whose
 	// response is already a terminal execution report rather than a reviewable
-	// phase document, such as coding_subagent/remote_coding_subagent templates.
+	// phase document (e.g. pure-coding workbench turns that already emit a final report).
 	SkipWorkflowDocCapture bool
 
 	// WorkflowWrittenFiles tracks files produced during a workflow agent loop,
@@ -110,6 +110,11 @@ type LoopContext struct {
 	// task (e.g. Skill preference evaluation), because the task context is
 	// already established from the previous turn.
 	IsAskUserResponse bool
+
+	// CodingAttachments carries user image/file attachments into pure-coding
+	// SubAgent turns (create-task coding_dev / remote_coding_dev). Cleared when
+	// the template path finishes so follow-up re-arms do not re-send stale media.
+	CodingAttachments []agent.MessageAttachment
 }
 
 type loopReplannableOperation struct {

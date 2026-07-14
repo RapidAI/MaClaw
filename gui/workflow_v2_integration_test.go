@@ -14,22 +14,22 @@ func TestPrepareWorkflowTemplatePanelLaunchStoresTemplateChoice(t *testing.T) {
 	handler := &IMMessageHandler{}
 	now := time.Unix(0, 123456789)
 
-	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "remote_coding_subagent", "/srv/app", "", now)
+	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "coding", "/srv/app", "", now)
 	if err != nil {
 		t.Fatalf("prepareWorkflowTemplatePanelLaunch failed: %v", err)
 	}
 	if launch.UserID != desktopAIAssistantUserIDForProjectPath("") {
 		t.Fatalf("user ID = %q, want desktop AI assistant user", launch.UserID)
 	}
-	if launch.RequestID != "desktop-ai-123456789-remote_coding_subagent" {
+	if launch.RequestID != "desktop-ai-123456789-coding" {
 		t.Fatalf("request ID = %q", launch.RequestID)
 	}
 	if launch.ChoiceID != "template-123456789" {
 		t.Fatalf("choice ID = %q, want template prefix", launch.ChoiceID)
 	}
 	choice, choiceID, ok := parseWorkflowChoiceCommand(launch.ChoiceCommand)
-	if !ok || choice != workflowChoiceRemoteCoding || choiceID != launch.ChoiceID {
-		t.Fatalf("choice command = %q parsed as (%q,%q,%v)", launch.ChoiceCommand, choice, choiceID, ok)
+	if !ok || choice != workflowChoiceComplex || choiceID != launch.ChoiceID {
+		t.Fatalf("choice command = %q parsed as (%q,%q,%v), want complex", launch.ChoiceCommand, choice, choiceID, ok)
 	}
 
 	raw, ok := handler.pendingWorkflowChoice.Load(launch.UserID)
@@ -40,8 +40,8 @@ func TestPrepareWorkflowTemplatePanelLaunchStoresTemplateChoice(t *testing.T) {
 	if !ok || pending == nil {
 		t.Fatalf("pending workflow choice type = %T", raw)
 	}
-	if pending.RouteResult == nil || pending.RouteResult.Target != v2.RouteToWorkflow || pending.RouteResult.WorkflowType != "remote_coding_subagent" {
-		t.Fatalf("pending route = %#v, want remote_coding_subagent workflow route", pending.RouteResult)
+	if pending.RouteResult == nil || pending.RouteResult.Target != v2.RouteToWorkflow || pending.RouteResult.WorkflowType != "coding" {
+		t.Fatalf("pending route = %#v, want coding workflow route", pending.RouteResult)
 	}
 	if pending.RouteResult.ProjectPath != "/srv/app" {
 		t.Fatalf("project path = %q", pending.RouteResult.ProjectPath)
@@ -49,51 +49,40 @@ func TestPrepareWorkflowTemplatePanelLaunchStoresTemplateChoice(t *testing.T) {
 	if pending.ChoiceID != launch.ChoiceID {
 		t.Fatalf("pending choice ID = %q, want %q", pending.ChoiceID, launch.ChoiceID)
 	}
-	if !strings.Contains(pending.Msg.Text, "remote_coding_subagent") {
+	if !strings.Contains(pending.Msg.Text, "coding") {
 		t.Fatalf("synthetic text should mention workflow type, got %q", pending.Msg.Text)
 	}
 }
 
-func TestWorkflowTemplatePanelLaunchCodingSubAgentStartsSinglePhaseTemplate(t *testing.T) {
-	wf := buildWorkflowV2State(v2.NewMemoryStore())
-	handler := &IMMessageHandler{app: &App{workflowV2: wf}}
+func TestWorkflowTemplatePanelLaunchCodingUsesComplexChoice(t *testing.T) {
+	handler := &IMMessageHandler{}
 	now := time.Unix(0, 223456789)
-	projectPath := t.TempDir()
+	// Use a non-temp project path so workflow Create validation is not under test here.
+	projectPath := `D:\workprj\sample-coding-workflow`
 
-	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "coding_subagent", projectPath, "", now)
+	launch, err := prepareWorkflowTemplatePanelLaunch(handler, "coding", projectPath, "", now)
 	if err != nil {
 		t.Fatalf("prepareWorkflowTemplatePanelLaunch failed: %v", err)
 	}
 	choice, choiceID, ok := parseWorkflowChoiceCommand(launch.ChoiceCommand)
-	if !ok || choice != workflowChoiceCodingSubAgent || choiceID != launch.ChoiceID {
-		t.Fatalf("choice command = %q parsed as (%q,%q,%v), want coding_subagent", launch.ChoiceCommand, choice, choiceID, ok)
+	if !ok || choice != workflowChoiceComplex || choiceID != launch.ChoiceID {
+		t.Fatalf("choice command = %q parsed as (%q,%q,%v), want complex", launch.ChoiceCommand, choice, choiceID, ok)
 	}
-
-	result := handler.handleCodingComplexityCommand(IMUserMessage{
-		UserID: launch.UserID,
-		Text:   launch.ChoiceCommand,
-	}, launch.ChoiceCommand)
-	if result == nil {
-		t.Fatal("expected workflow choice to be handled")
+	raw, ok := handler.pendingWorkflowChoice.Load(launch.UserID)
+	if !ok {
+		t.Fatal("expected pending workflow choice")
 	}
-
-	active := wf.machine.GetActive(launch.UserID)
-	if active == nil {
-		t.Fatal("expected active workflow")
+	pending := raw.(*pendingWorkflowChoice)
+	if pending.RouteResult == nil || pending.RouteResult.WorkflowType != "coding" {
+		t.Fatalf("pending route = %#v, want coding", pending.RouteResult)
 	}
-	if active.Type != "coding_subagent" {
-		t.Fatalf("active workflow type = %q, want coding_subagent", active.Type)
-	}
-	if len(active.Phases) != 1 {
-		t.Fatalf("coding_subagent phase count = %d, want 1; phases=%#v", len(active.Phases), active.Phases)
-	}
-	if active.Phases[0].ID != "coding_subagent_execution" || active.Phases[0].ExecMode != v2.ExecModeSubAgent {
-		t.Fatalf("phase = %#v, want coding_subagent_execution subagent phase", active.Phases[0])
+	if pending.RouteResult.ProjectPath != projectPath {
+		t.Fatalf("project path = %q", pending.RouteResult.ProjectPath)
 	}
 }
 
 func TestPrepareWorkflowTemplatePanelLaunchRejectsNilHandler(t *testing.T) {
-	if _, err := prepareWorkflowTemplatePanelLaunch(nil, "coding_subagent", "", "", time.Unix(0, 1)); err == nil {
+	if _, err := prepareWorkflowTemplatePanelLaunch(nil, "coding", "", "", time.Unix(0, 1)); err == nil {
 		t.Fatal("expected nil handler error")
 	}
 }

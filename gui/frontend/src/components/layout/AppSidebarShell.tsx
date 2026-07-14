@@ -47,13 +47,20 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;
-    createTask: (name: string, workingDir?: string) => Promise<void> | void;
+    createTask: (
+        name: string,
+        workingDir?: string,
+        mode?: 'coding_dev' | 'remote_coding_dev',
+        remote?: { host: string; port: number; user: string; password: string; workDir: string },
+    ) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     renameTask: (projectPath: string, name: string) => Promise<unknown>;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
     hideTask: (projectPath: string) => Promise<unknown>;
+    /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
+    openProjectTabPaths?: string[];
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -85,6 +92,14 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showWorkflowEntry?: boolean;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean }>;
     onSwitchProvider?: (providerName: string) => void;
+    moaSticky?: {
+        available: boolean;
+        active: boolean;
+        label?: string;
+        preset?: string;
+        presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
+    };
+    onToggleMoASticky?: (on: boolean, presetId?: string) => void;
 }
 export const AppSidebarShell = ({
     navTab,
@@ -130,6 +145,7 @@ export const AppSidebarShell = ({
     renameTask,
     pinTask,
     hideTask,
+    openProjectTabPaths,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -166,6 +182,8 @@ export const AppSidebarShell = ({
     showWorkflowEntry = true,
     availableProviders = [],
     onSwitchProvider,
+    moaSticky,
+    onToggleMoASticky,
 }: AppSidebarShellProps) => (
 <>
             <div style={{
@@ -233,6 +251,7 @@ export const AppSidebarShell = ({
                         renameTask={renameTask}
                         pinTask={pinTask}
                         hideTask={hideTask}
+                        openProjectTabPaths={openProjectTabPaths}
                         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                         sidebarHubCredits={sidebarHubCredits}
                         formatSidebarTokens={formatSidebarTokens}
@@ -260,6 +279,8 @@ export const AppSidebarShell = ({
                         onOpenHistoryDiscussion={onOpenHistoryDiscussion}
                         availableProviders={availableProviders}
                         onSwitchProvider={onSwitchProvider}
+                        moaSticky={moaSticky}
+                        onToggleMoASticky={onToggleMoASticky}
                     />
                 )}
             </div>
