@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -172,7 +173,89 @@ func TestParseToolPayloadResultNoForwardMessageIsHonest(t *testing.T) {
 	if obs2.File == nil || !obs2.File.forwardIM {
 		t.Fatalf("expected forwardIM file payload, got %#v", obs2.File)
 	}
-	if !strings.Contains(obs2.ToolContent, "IM") {
-		t.Fatalf("forward tool content should mention IM, got %q", obs2.ToolContent)
+	if !strings.Contains(obs2.ToolContent, "forward_to_im") && !strings.Contains(obs2.ToolContent, "IM") {
+		t.Fatalf("forward tool content should mention IM delivery, got %q", obs2.ToolContent)
+	}
+}
+
+func TestMaterializeToolFilePayloadForwardsOnSharedPath(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var calls int
+	var gotName string
+	h := &IMMessageHandler{}
+	h.imFileSender = func(b64Data, fileName, mimeType, message string) error {
+		calls++
+		gotName = fileName
+		if b64Data == "" || mimeType == "" {
+			t.Fatalf("expected payload mime, got mime=%q b64_len=%d", mimeType, len(b64Data))
+		}
+		return nil
+	}
+	// Minimal valid-looking PNG base64 header (same style as tool payloads).
+	// Leading whitespace must still be recognized (models/tool wrappers).
+	raw := "\n[file_base64|shot.png|image/png|im]iVBORw0KGgo="
+	got := h.materializeToolFilePayloadIfNeeded(raw)
+	if !got.Handled || !got.Forwarded {
+		t.Fatalf("expected handled+forwarded, got %#v", got)
+	}
+	if calls != 1 {
+		t.Fatalf("imFileSender calls=%d, want 1 (shared path must forward)", calls)
+	}
+	if gotName != "shot.png" {
+		t.Fatalf("name=%q", gotName)
+	}
+	if !strings.Contains(got.Text, "已向微信/IM 转发") {
+		t.Fatalf("materialize text should report success, got %q", got.Text)
+	}
+	if len(got.LocalPaths) != 1 {
+		t.Fatalf("expected local path, got %v", got.LocalPaths)
+	}
+	// Non-file payload passes through.
+	plain := h.materializeToolFilePayloadIfNeeded("ok done")
+	if plain.Handled || plain.Text != "ok done" {
+		t.Fatalf("non-file should pass through, got %#v", plain)
+	}
+}
+
+func TestMaterializeToolFilePayloadReportsForwardFailure(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h := &IMMessageHandler{}
+	h.imFileSender = func(b64Data, fileName, mimeType, message string) error {
+		return fmt.Errorf("没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件")
+	}
+	got := h.materializeToolFilePayloadIfNeeded("[file_base64|shot.png|image/png|im]iVBORw0KGgo=")
+	if !got.Handled || got.Forwarded {
+		t.Fatalf("expected handled but not forwarded, got %#v", got)
+	}
+	if !strings.Contains(got.Text, "无法转发") || !strings.Contains(got.Text, "微信会话") {
+		t.Fatalf("failure should surface honestly, got %q", got.Text)
+	}
+}
+
+func TestMaterializeToolFilePayloadEmptyData(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.imFileSender = func(b64Data, fileName, mimeType, message string) error {
+		t.Fatal("should not forward empty payload")
+		return nil
+	}
+	got := h.materializeToolFilePayloadIfNeeded("[file_base64|empty.png|image/png|im]")
+	if !got.Handled || got.Forwarded {
+		t.Fatalf("expected handled without forward, got %#v", got)
+	}
+	if !strings.Contains(got.Text, "为空") {
+		t.Fatalf("empty payload text = %q", got.Text)
+	}
+}
+
+func TestAppendUniqueStrings(t *testing.T) {
+	got := appendUniqueStrings(nil, "a", "b", "a", " ", "b", "c")
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("got %v", got)
 	}
 }

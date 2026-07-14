@@ -439,6 +439,16 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		SessionKey:     userID,
 		ResponseSource: "shared_agent_loop",
 	}
+	// Attach files materialized during send_file/send_to_im so the desktop UI
+	// can show the local path and diagnostics report file_materialize > 0.
+	if len(cb.deliveredPaths) > 0 {
+		resp.LocalFilePaths = append([]string(nil), cb.deliveredPaths...)
+		resp.LocalFilePath = cb.deliveredPaths[0]
+		resp.FileMaterializeNanos = cb.fileMaterializeNanos
+		if cb.filesForwarded > 0 {
+			resp.ResponseSource = imResponseSourceFileDelivery.String()
+		}
+	}
 	if loopResult.AskUser != nil {
 		resp.Text = loopResult.Text
 		// Ask-user is returned as text for now; AG-UI paths stay on legacy loop.
@@ -515,6 +525,10 @@ type sharedAgentLoopCallbacks struct {
 	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
 	moaPreset *moa.ResolvedPreset
 	moaAuto   bool
+	// File delivery from send_file / send_to_im materialize (shared path only).
+	deliveredPaths       []string
+	fileMaterializeNanos int64
+	filesForwarded       int
 }
 
 func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
@@ -685,15 +699,47 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	// unstyled bash/skill logs never leak into WeChat/QQ as normal chat bubbles.
 	toolProgress := filteredToolProgressCallback(lang, name, c.onProgress, false)
 	exec := c.handler.executeToolDetailedWithUserText(name, argsJSON, c.userText, toolProgress)
-	return truncateToolResultForToolWithSession(name, c.userID, exec.Text)
+	// Materialize [file_base64|…|im] before truncating: shared RunLoop has no
+	// post-tool artifact branch, so this is the only place desktop→WeChat runs.
+	mat := c.handler.materializeToolFilePayloadIfNeeded(exec.Text)
+	if mat.Handled {
+		c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, mat.LocalPaths...)
+		c.fileMaterializeNanos += mat.MaterializeNanos
+		if mat.Forwarded {
+			c.filesForwarded++
+		}
+		// Status is short; skip spill of the original multi-MB base64 blob.
+		return mat.Text
+	}
+	return truncateToolResultForToolWithSession(name, c.userID, mat.Text)
+}
+
+// appendUniqueStrings appends values not already present (order-preserving).
+func appendUniqueStrings(dst []string, values ...string) []string {
+	seen := make(map[string]bool, len(dst)+len(values))
+	for _, s := range dst {
+		seen[s] = true
+	}
+	for _, s := range values {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		dst = append(dst, s)
+	}
+	return dst
 }
 
 func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
 	text := c.ExecuteTool(name, argsJSON)
 	outcome := agent.ToolExecutionOutcomeOK
-	if strings.HasPrefix(strings.TrimSpace(text), "[错误]") ||
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "[错误]") ||
 		strings.Contains(text, "工具执行异常") ||
-		strings.Contains(text, "未知工具") {
+		strings.Contains(text, "未知工具") ||
+		strings.Contains(text, "无法转发") ||
+		(strings.Contains(text, "保存") && strings.Contains(text, "失败")) {
 		outcome = agent.ToolExecutionOutcomeError
 	}
 	if strings.Contains(text, "命令超时") {

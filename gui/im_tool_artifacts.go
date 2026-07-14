@@ -137,13 +137,78 @@ func (h *IMMessageHandler) handleAgentLoopFileArtifacts(
 	return result
 }
 
-func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResponse, pendingFiles []pendingFile) {
+// toolFileMaterializeResult is the outcome of turning a [file_base64|...] tool
+// payload into a local file (+ optional IM forward).
+type toolFileMaterializeResult struct {
+	// Text is a short, honest status for the model (never the raw base64 body).
+	Text string
+	// Handled is true when raw was a file payload and materialize ran.
+	Handled bool
+	// Forwarded is true when at least one file was sent via imFileSender.
+	Forwarded bool
+	// LocalPaths are absolute paths written under ~/.maclaw/data/files.
+	LocalPaths []string
+	// MaterializeNanos is time spent saving (+ forwarding when requested).
+	MaterializeNanos int64
+}
+
+// materializeToolFilePayloadIfNeeded handles [file_base64|...] tool results on
+// the shared agent loop. Shared RunLoop only returns tool text and never runs
+// the legacy post-tool file branch, so without this, send_to_im stages the
+// payload but never calls imFileSender → WeChat never receives the file.
+//
+// Non-file payloads return Handled=false with Text=raw.
+func (h *IMMessageHandler) materializeToolFilePayloadIfNeeded(raw string) toolFileMaterializeResult {
+	trimmed := strings.TrimSpace(raw)
+	if h == nil || !strings.HasPrefix(trimmed, toolPayloadFilePrefix) {
+		return toolFileMaterializeResult{Text: raw}
+	}
+	obs := parseToolPayloadResult(trimmed)
+	if obs.File == nil {
+		return toolFileMaterializeResult{Text: raw}
+	}
+	if strings.TrimSpace(obs.File.data) == "" {
+		msg := fmt.Sprintf("文件 %s 数据为空，无法保存或转发到微信/IM。", obs.File.name)
+		log.Printf("[file-delivery] shared/materialize empty payload name=%q", obs.File.name)
+		return toolFileMaterializeResult{Text: msg, Handled: true}
+	}
+	resp := &IMAgentResponse{}
+	forwardedCount := h.populateDesktopFileArtifactResponse(resp, []pendingFile{*obs.File})
+	text := strings.TrimSpace(resp.Text)
+	if text == "" {
+		text = strings.TrimSpace(obs.ToolContent)
+	}
+	if text == "" {
+		text = "文件交付完成。"
+	}
+	forwarded := forwardedCount > 0
+	log.Printf("[file-delivery] shared/materialize name=%q forwardIM=%v forwarded=%v paths=%d text=%q",
+		obs.File.name, obs.File.forwardIM, forwarded, len(resp.LocalFilePaths), truncateRunes(text, 120))
+	return toolFileMaterializeResult{
+		Text:             text,
+		Handled:          true,
+		Forwarded:        forwarded,
+		LocalPaths:       append([]string(nil), resp.LocalFilePaths...),
+		MaterializeNanos: resp.FileMaterializeNanos,
+	}
+}
+
+// populateDesktopFileArtifactResponse saves pending files locally and optionally
+// forwards them via imFileSender. Returns how many files were successfully forwarded.
+func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResponse, pendingFiles []pendingFile) int {
+	if resp == nil {
+		return 0
+	}
 	fileMaterializeStartedAt := time.Now()
 	var savedPaths []string
 	var failLines []string
 	var imForwardedCount int
 	var deliveryMessage string
 	for _, pf := range pendingFiles {
+		if strings.TrimSpace(pf.data) == "" {
+			failLines = append(failLines, fmt.Sprintf("保存 %s 失败：文件数据为空", pf.name))
+			continue
+		}
 		filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 		if err != nil {
 			failLines = append(failLines, fmt.Sprintf("保存 %s 失败：%s", pf.name, err.Error()))
@@ -194,6 +259,7 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 	if len(savedPaths) > 0 {
 		resp.LocalFilePath = savedPaths[0]
 	}
+	return imForwardedCount
 }
 
 func attachVoiceArtifact(resp *IMAgentResponse, voiceData, voiceFileName, voiceMimeType string) {
