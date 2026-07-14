@@ -4,8 +4,203 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
+
+func TestShouldEnableCodingTDD_SkipsOperationalRunRequests(t *testing.T) {
+	// Pure ops in a sticky coding session must not enter TDD red/green.
+	ops := []string{
+		"运行下生成的游戏",
+		"运行一下游戏",
+		"跑一下",
+		"再跑一次",
+		"run the game",
+		"run it",
+		"build and run",
+	}
+	for _, text := range ops {
+		if !looksLikeCodingOperationalRequest(text) {
+			t.Fatalf("expected operational: %q", text)
+		}
+		if shouldEnableCodingTDD(text, false, 1) {
+			t.Fatalf("TDD must stay off for operational request: %q", text)
+		}
+	}
+	// Real implement/fix single tasks still get TDD.
+	impl := []string{
+		"修复蛇撞墙不结束的 bug",
+		"实现暂停功能",
+		"fix the collision detection",
+		"add a score multiplier",
+	}
+	for _, text := range impl {
+		if looksLikeCodingOperationalRequest(text) {
+			t.Fatalf("implement request should not be operational: %q", text)
+		}
+		if !shouldEnableCodingTDD(text, false, 1) {
+			t.Fatalf("TDD should stay on for implement request: %q", text)
+		}
+	}
+	// Multi-step planned turns never use TDD (already explore→implement→verify).
+	if shouldEnableCodingTDD("运行下生成的游戏", true, 1) {
+		t.Fatal("planned turns must not enable TDD")
+	}
+	if shouldEnableCodingTDD("实现登录", false, 3) {
+		t.Fatal("multi-task turns must not enable TDD")
+	}
+	// Implement + run still counts as implementation (needs code work).
+	if looksLikeCodingOperationalRequest("实现暂停功能并运行验证") {
+		t.Fatal("implement+run should not be treated as pure operational")
+	}
+	if !shouldEnableCodingTDD("实现暂停功能并运行验证", false, 1) {
+		t.Fatal("implement+run should still enable TDD")
+	}
+}
+
+func TestCodingTaskLooksOperational(t *testing.T) {
+	if !codingTaskLooksOperational(&TaskItem{Title: "运行下生成的游戏", Description: "运行下生成的游戏"}) {
+		t.Fatal("run-game task should be operational")
+	}
+	if !looksLikeCodingOperationalRequest("帮我运行一下") {
+		t.Fatal("帮我运行一下 should be operational")
+	}
+	if codingTaskLooksOperational(&TaskItem{Title: "修复碰撞检测", Description: "蛇撞墙应 game over"}) {
+		t.Fatal("fix task should not be operational")
+	}
+	// Must not treat implement phrasing as operational via bare English "start"/"run".
+	if looksLikeCodingOperationalRequest("start coding") {
+		t.Fatal("start coding must not be operational")
+	}
+	if looksLikeCodingOperationalRequest("实现暂停功能") {
+		t.Fatal("implement request must not be operational")
+	}
+}
+
+func TestSummarizeOperationalSubAgentQuality(t *testing.T) {
+	// Empty no-tool operational run fails with a clear ops diagnostic (not implement no-change matrix).
+	st, sum, n := summarizeOperationalSubAgentQuality(codingSubAgentAudit{}, agent.LoopResult{ToolCalls: 0})
+	if st != codingSubAgentQualityFailed || n != 1 || !strings.Contains(sum, "ran no tools") {
+		t.Fatalf("empty ops quality = %q %q %d", st, sum, n)
+	}
+	// Successful launch is enough — no file edits required.
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{{Command: ".\\snake.exe", Succeeded: true, Summary: "started"}},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityPassed || n != 0 || !strings.Contains(sum, "launch/build command evidence") {
+		t.Fatalf("bash ops quality = %q %q %d", st, sum, n)
+	}
+	// dir/ls alone must NOT pass.
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{{Command: "dir", Succeeded: true, Summary: "files..."}},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "no launch/build command") {
+		t.Fatalf("dir-only ops quality should fail, got %q %q %d", st, sum, n)
+	}
+	// mkdir alone must NOT pass (not launch/build evidence).
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{{Command: "mkdir tmpout", Succeeded: true, Summary: "ok"}},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityFailed || n != 1 {
+		t.Fatalf("mkdir-only ops quality should fail, got %q %q %d", st, sum, n)
+	}
+	// Unknown non-launch shell (e.g. hostname) must NOT pass either.
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{{Command: "hostname", Succeeded: true, Summary: "pc"}},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "none looked like launch/build") {
+		t.Fatalf("hostname-only ops quality should fail as non-launch, got %q %q %d", st, sum, n)
+	}
+	// Get-ChildItem then real launch: launch evidence wins.
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{
+			{Command: "Get-ChildItem", Succeeded: true, Summary: "list"},
+			{Command: "cmd /c .\\build_and_run.bat", Succeeded: true, Summary: "ok"},
+		},
+	}, agent.LoopResult{ToolCalls: 2})
+	if st != codingSubAgentQualityPassed || n != 0 {
+		t.Fatalf("list+launch should pass, got %q %q %d", st, sum, n)
+	}
+	// Compound dir && launch in one shell line should count as launch.
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{
+			{Command: "dir ; .\\snake.exe", Succeeded: true, Summary: "started"},
+		},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityPassed || n != 0 {
+		t.Fatalf("compound dir;launch should pass, got %q %q %d", st, sum, n)
+	}
+	// Read-only inspection without launch must NOT pass (would fake "已运行").
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllFilesRead: []string{"README.md"},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityFailed || n != 1 || !strings.Contains(sum, "no launch/build command") {
+		t.Fatalf("inspection-only ops quality should fail, got %q %q %d", st, sum, n)
+	}
+	// Failed launch commands fail clearly.
+	st, sum, n = summarizeOperationalSubAgentQuality(codingSubAgentAudit{
+		AllCommandsRun: []CodingSubAgentCommandResult{{Command: ".\\snake.exe", Succeeded: false, Summary: "not found"}},
+	}, agent.LoopResult{ToolCalls: 1})
+	if st != codingSubAgentQualityFailed || !strings.Contains(sum, "failed") {
+		t.Fatalf("failed launch ops quality = %q %q %d", st, sum, n)
+	}
+}
+
+func TestClassifyOperationalShellCommand(t *testing.T) {
+	if classifyOperationalShellCommand("dir") != operationalShellInspection {
+		t.Fatal("dir should be inspection")
+	}
+	if classifyOperationalShellCommand(".\\snake.exe") != operationalShellLaunchBuild {
+		t.Fatal("exe should be launch/build")
+	}
+	if classifyOperationalShellCommand("dir ; .\\snake.exe") != operationalShellLaunchBuild {
+		t.Fatal("compound dir;exe should be launch/build")
+	}
+	if classifyOperationalShellCommand("cmd /c .\\build_and_run.bat") != operationalShellLaunchBuild {
+		t.Fatal("cmd /c bat should be launch/build")
+	}
+	if classifyOperationalShellCommand("go run .") != operationalShellLaunchBuild {
+		t.Fatal("go run should be launch/build")
+	}
+	if classifyOperationalShellCommand("mkdir x") == operationalShellLaunchBuild {
+		t.Fatal("mkdir must not count as launch/build")
+	}
+	// Bare "." / ".." must not count as launch (path-token edge case).
+	if classifyOperationalShellCommand(".") == operationalShellLaunchBuild ||
+		classifyOperationalShellCommand("..") == operationalShellLaunchBuild {
+		t.Fatal("bare . / .. must not count as launch/build")
+	}
+	// Bare python/node without a script is not launch evidence.
+	if classifyOperationalShellCommand("python") == operationalShellLaunchBuild ||
+		classifyOperationalShellCommand("node") == operationalShellLaunchBuild {
+		t.Fatal("bare interpreter must not count as launch/build")
+	}
+	if classifyOperationalShellCommand("python main.py") != operationalShellLaunchBuild {
+		t.Fatal("python script should count as launch/build")
+	}
+	if classifyOperationalShellCommand("hostname") != operationalShellUnknown {
+		t.Fatalf("hostname should be unknown non-launch, got %v", classifyOperationalShellCommand("hostname"))
+	}
+}
+
+func TestIsOperationalInspectionOnlyCommand(t *testing.T) {
+	if !isOperationalInspectionOnlyCommand("dir") || !isOperationalInspectionOnlyCommand("Get-ChildItem -Force") {
+		t.Fatal("listing commands should be inspection-only")
+	}
+	if isOperationalInspectionOnlyCommand(".\\snake.exe") || isOperationalInspectionOnlyCommand("cmd /c .\\build_and_run.bat") {
+		t.Fatal("launch/build commands should not be inspection-only")
+	}
+	if isOperationalInspectionOnlyCommand("dir ; .\\snake.exe") {
+		t.Fatal("compound with launch must not be pure inspection-only")
+	}
+}
+
+func TestCodingTaskLooksOperationalPrefersDescription(t *testing.T) {
+	// Description is the full user text; title may be truncated noise.
+	if !codingTaskLooksOperational(&TaskItem{Title: "T1", Description: "运行下生成的游戏"}) {
+		t.Fatal("description operational text should win")
+	}
+}
 
 func TestLooksLikeComplexCodingTask(t *testing.T) {
 	if looksLikeComplexCodingTask("fix typo") {

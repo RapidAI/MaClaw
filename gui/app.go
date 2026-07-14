@@ -179,6 +179,7 @@ type App struct {
 	scheduledTaskManager              *scheduler.Manager
 	remoteInfraOnce                   sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady                  atomic.Bool // fast-path check for ensureRemoteInfra
+	backgroundUpdateOnce              sync.Once   // guards startBackgroundUpdateChecks single loop
 	warmupDone                        atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
 	mcpAutoDiscovery                  *MCPAutoDiscovery
 	llmPromptCache                    *corelib.LLMPromptResponseCache
@@ -2129,63 +2130,9 @@ func (a *App) domReady(ctx context.Context) {
 	// Trigger environment check on startup
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
 	a.CheckEnvironment(false)
-	if cfg, err := a.LoadConfig(); err == nil && !cfg.CheckUpdateOnStartup {
-		return
-	}
-
-	// Background update check: non-blocking, notify the frontend if new version available.
-	// First check after 1 minute (let startup settle), then repeat every 30 minutes.
-	go func() {
-		// Wait for startup to settle: avoid competing with other network
-		// requests and ensure the UI is fully interactive before showing the
-		// in-app update affordance.
-		select {
-		case <-time.After(60 * time.Second):
-		case <-a.ctx.Done():
-			return
-		}
-
-		var lastNotifiedVersion string
-
-		doCheck := func() {
-			cfg, _ := a.LoadConfig()
-			var result UpdateResult
-			var err error
-			if cfg.PreferBetaChannel {
-				result, err = a.CheckUpdateBeta(remoteAppVersion())
-			} else {
-				result, err = a.CheckUpdate(remoteAppVersion())
-			}
-			if err != nil {
-				a.log(fmt.Sprintf("[update-check] background check failed: %v", err))
-				return
-			}
-			if result.HasUpdate && result.LatestVersion != lastNotifiedVersion {
-				lastNotifiedVersion = result.LatestVersion
-				a.emitEvent(EventAppUpdateAvailable, result)
-			}
-		}
-
-		// First check immediately after the initial 1-minute delay.
-		doCheck()
-
-		// Then check every 30 minutes.
-		ticker := time.NewTicker(30 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				// Re-check the config each time: user might have disabled
-				// update checks while the app is running.
-				if cfg, err := a.LoadConfig(); err == nil && !cfg.CheckUpdateOnStartup {
-					continue
-				}
-				doCheck()
-			case <-a.ctx.Done():
-				return
-			}
-		}
-	}()
+	// Always arm the loop: each attempt re-reads check_update_on_startup so
+	// enabling/disabling mid-session takes effect without a restart.
+	a.startBackgroundUpdateChecks()
 }
 
 // GetUIZoomFactor returns the saved UI zoom factor (default 1.0).

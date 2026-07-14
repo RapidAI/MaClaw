@@ -9,10 +9,11 @@
  *   - Close (×) button when onCloseFile is provided
  *
  * When tabs overflow the available width, shows only as many as fit (active
- * file always kept visible) and puts the rest in a MORE dropdown — same pattern
- * as AITabBar / VS Code editor tabs (no horizontal scrollbar).
+ * file always kept visible) and puts the rest behind a sticky +N / ⋯ control
+ * (VS Code-style open editors). Capacity = width estimate + one-pass child
+ * measurement so long labels collapse without multi-frame shrink cascades.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, type CodeFile } from './useCodePreviewState';
 import { ShowItemInFolder, OpenSystemUrl } from '../../../wailsjs/go/main/App';
 
@@ -189,10 +190,156 @@ export function computeDropIndex(
     return Math.max(0, Math.min(filePaths.length - 1, target));
 }
 
-/** Minimum width per file tab in pixels. Used to calculate how many tabs fit. */
-const MIN_TAB_WIDTH = 120;
-/** Extra space reserved for the overflow button. */
-const OVERFLOW_BUTTON_WIDTH = 56;
+/**
+ * Estimated width per file tab when deciding how many fit.
+ * Tabs use maxWidth 180 + badge/close chrome; 150 is a conservative
+ * middle ground so we collapse into the overflow control before clipping.
+ */
+export const MIN_TAB_WIDTH = 150;
+
+/**
+ * Fixed width for the sticky open-editors control. Keeping this constant
+ * prevents "+N" vs "⋯" label changes from reflowing the tab strip.
+ */
+export const OVERFLOW_CONTROL_WIDTH = 48;
+
+/**
+ * How many file tabs fit in `availableWidth` (pixels of the clipped tab strip).
+ * Returns at least 1 when there is any file; never exceeds `fileCount`.
+ * Invalid / zero widths return null so callers can keep prior capacity.
+ */
+export function computeMaxVisibleTabs(
+    availableWidth: number,
+    fileCount: number,
+    minTabWidth: number = MIN_TAB_WIDTH,
+): number | null {
+    if (fileCount <= 0) return 0;
+    if (!(availableWidth > 0) || !(minTabWidth > 0)) return null;
+    const maxTabs = Math.max(1, Math.floor(availableWidth / minTabWidth));
+    return maxTabs >= fileCount ? fileCount : maxTabs;
+}
+
+/**
+ * How many leading tabs fit in `clientWidth` given each tab's measured width.
+ * The first tab is always kept (even if wider than the strip — it will clip),
+ * matching VS Code's "active tab stays visible" behavior.
+ */
+export function countFittingTabs(
+    childWidths: number[],
+    clientWidth: number,
+    epsilon: number = 1,
+): number {
+    if (childWidths.length === 0) return 0;
+    if (clientWidth <= 0) return 1;
+    let used = 0;
+    let fit = 0;
+    for (const w of childWidths) {
+        const width = Math.max(0, w);
+        if (fit > 0 && used + width > clientWidth + epsilon) break;
+        used += width;
+        fit += 1;
+    }
+    return Math.max(1, fit);
+}
+
+/**
+ * Merge a width-based capacity estimate with the currently fitted count.
+ * - Width shrank / estimate lower → take estimate immediately.
+ * - Estimate higher → only grow when the strip is not overflowing (room to try more)
+ *   and not above `maxFitted` (last measured fit — prevents grow/shrink loops).
+ * - `maxFitted == null` means "no measurement ceiling yet".
+ */
+export function reconcileVisibleCount(
+    prev: number,
+    estimate: number | null,
+    fileCount: number,
+    stripOverflowing: boolean,
+    maxFitted: number | null = null,
+): number {
+    if (fileCount <= 0) return 0;
+    if (estimate == null) {
+        return Math.min(Math.max(1, prev), fileCount);
+    }
+    let next = Math.min(Math.max(0, estimate), fileCount);
+    if (next <= 0) return fileCount > 0 ? 1 : 0;
+    if (maxFitted != null) {
+        next = Math.min(next, Math.max(1, maxFitted));
+    }
+    const clampedPrev = Math.min(Math.max(1, prev), fileCount);
+    if (next <= clampedPrev) return next;
+    // Grow only when current tabs already fit — otherwise keep fitted count.
+    if (!stripOverflowing) return next;
+    return clampedPrev;
+}
+
+/**
+ * Target visible count for the layout second pass.
+ * When overflowing, snap to measured fit; when fitting, grow toward estimate
+ * without exceeding maxFitted (avoids +1/-1 oscillation with wide tabs).
+ */
+export function nextVisibleCountFromLayout(
+    prev: number,
+    fileCount: number,
+    estimate: number,
+    overflowing: boolean,
+    measuredFit: number | null,
+    maxFitted: number | null,
+): { count: number; maxFitted: number | null } {
+    if (fileCount <= 0) return { count: 0, maxFitted: null };
+    const clampedPrev = Math.min(Math.max(1, prev), fileCount);
+    const est = Math.min(Math.max(1, estimate), fileCount);
+
+    if (overflowing && measuredFit != null) {
+        const fit = Math.min(Math.max(1, measuredFit), fileCount);
+        return { count: fit, maxFitted: fit };
+    }
+
+    // Fits: grow toward estimate, but never above last measured ceiling.
+    let target = est;
+    if (maxFitted != null) {
+        target = Math.min(target, Math.max(1, maxFitted));
+    }
+    if (target < clampedPrev) {
+        return { count: target, maxFitted };
+    }
+    if (target > clampedPrev && !overflowing) {
+        return { count: target, maxFitted };
+    }
+    return { count: clampedPrev, maxFitted };
+}
+
+/** Read observed width from a ResizeObserver entry (border-box preferred). */
+export function resizeObserverEntryWidth(entry: ResizeObserverEntry): number {
+    const box = entry.borderBoxSize;
+    // Spec: borderBoxSize is a sequence; some engines expose a single object.
+    if (box) {
+        const first = Array.isArray(box) ? box[0] : (box as unknown as ResizeObserverSize);
+        if (first && typeof first.inlineSize === 'number' && first.inlineSize > 0) {
+            return first.inlineSize;
+        }
+    }
+    return entry.contentRect?.width ?? 0;
+}
+
+/**
+ * Compact label for the sticky overflow control (fixed width).
+ * Keeps "+N" short so double-digit / triple-digit counts still fit.
+ */
+export function formatOverflowControlLabel(overflowCount: number, hasOverflow: boolean): string {
+    if (!hasOverflow) return '\u22EF'; // ⋯
+    if (overflowCount > 99) return '99+';
+    return `+${Math.max(0, overflowCount)}`;
+}
+
+/** Collect offsetWidths of element children (tab buttons). */
+export function measureChildWidths(parent: Element): number[] {
+    const widths: number[] = [];
+    const children = parent.children;
+    for (let i = 0; i < children.length; i++) {
+        widths.push((children[i] as HTMLElement).offsetWidth);
+    }
+    return widths;
+}
 
 // ── Component Props ──
 
@@ -732,18 +879,30 @@ export function FileTabBar({
     lang,
 }: FileTabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
+    /** Clipped strip only — capacity is measured here so the sticky +N slot is free. */
+    const stripRef = useRef<HTMLDivElement>(null);
+    /** Last measured fit ceiling; null = allow exploration up to width estimate. */
+    const maxFittedRef = useRef<number | null>(null);
+    const lastStripWidthRef = useRef(0);
     // Display order: pinned first, then remaining map open order (shared with state helpers).
     const filePaths = useMemo(
         () => getDisplayFilePaths(files, pinnedPaths),
         [files, pinnedPaths],
     );
     const pinnedSet = useMemo(() => new Set(pinnedPaths), [pinnedPaths]);
+    // Stable keys so parent re-creating arrays does not thrash layout measurement.
+    const pinnedKey = useMemo(() => pinnedPaths.join('\0'), [pinnedPaths]);
+    // Identity of the open set (order + paths). Length-only is not enough: replacing
+    // file A with B at the same count must clear maxFitted so short names can re-expand.
+    const openFilesKey = useMemo(() => filePaths.join('\0'), [filePaths]);
     // Open Editors / Ctrl+Tab: shared MRU order (most recent first).
     const mruCycleOrder = useMemo(
         () => getMruCycleOrder(files, mruOrder),
         [files, mruOrder],
     );
 
+    // Start with full count; layout effect + RO collapse immediately when narrow.
+    // Using filePaths.length avoids a one-frame empty strip when only one tab.
     const [visibleCount, setVisibleCount] = useState(filePaths.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
     const [filterQuery, setFilterQuery] = useState('');
@@ -753,20 +912,42 @@ export function FileTabBar({
     const closeContextMenu = useCallback(() => setContextMenu(null), []);
     const [dragOver, setDragOver] = useState<{ path: string; placeAfter: boolean } | null>(null);
 
-    // Recalculate visible tab count when container width or tab count changes.
-    useEffect(() => {
-        const el = containerRef.current;
-        if (!el) return;
+    // Reset measurement ceiling when the open set changes (composition or size).
+    useLayoutEffect(() => {
+        maxFittedRef.current = null;
+        lastStripWidthRef.current = 0;
+    }, [openFilesKey]);
+
+    // Recalculate visible tab count from the clipped strip width (not the full bar).
+    // The sticky open-editors control sits outside the strip, so its width is
+    // already excluded by flex layout — no manual width reserve needed.
+    useLayoutEffect(() => {
+        const strip = stripRef.current;
+        if (!strip) return;
 
         const applyWidth = (width: number) => {
-            const maxTabs = Math.max(1, Math.floor((width - OVERFLOW_BUTTON_WIDTH) / MIN_TAB_WIDTH));
-            const next = maxTabs >= filePaths.length ? filePaths.length : maxTabs;
-            // Avoid re-render when ResizeObserver fires with the same capacity.
-            setVisibleCount((prev) => (prev === next ? prev : next));
+            const estimate = computeMaxVisibleTabs(width, filePaths.length);
+            if (estimate == null) return; // ignore 0 / NaN (jsdom, pre-layout)
+            // Wider strip → clear ceiling so we can rediscover how many tabs fit.
+            if (width > lastStripWidthRef.current + 1) {
+                maxFittedRef.current = null;
+            }
+            lastStripWidthRef.current = width;
+            const overflowing = strip.scrollWidth > strip.clientWidth + 1;
+            setVisibleCount((prev) => {
+                const next = reconcileVisibleCount(
+                    prev,
+                    estimate,
+                    filePaths.length,
+                    overflowing,
+                    maxFittedRef.current,
+                );
+                return next === prev ? prev : next;
+            });
         };
 
         if (typeof ResizeObserver === 'undefined') {
-            const recalculate = () => applyWidth(el.getBoundingClientRect().width);
+            const recalculate = () => applyWidth(strip.clientWidth || strip.getBoundingClientRect().width);
             recalculate();
             window.addEventListener('resize', recalculate);
             return () => window.removeEventListener('resize', recalculate);
@@ -774,12 +955,44 @@ export function FileTabBar({
 
         const observer = new ResizeObserver((entries) => {
             for (const entry of entries) {
-                applyWidth(entry.contentRect.width);
+                applyWidth(resizeObserverEntryWidth(entry));
             }
         });
-        observer.observe(el);
+        observer.observe(strip);
+        // Initial measure — some WebViews delay the first RO callback.
+        applyWidth(strip.clientWidth || strip.getBoundingClientRect().width);
         return () => observer.disconnect();
-    }, [filePaths.length]);
+    }, [openFilesKey, filePaths.length]);
+
+    // Second pass: measure real tab widths. Shrink one-shot when overflowing;
+    // when fitting, grow toward estimate without exceeding maxFitted (no loops).
+    useLayoutEffect(() => {
+        const strip = stripRef.current;
+        if (!strip || filePaths.length === 0) return;
+        const clientWidth = strip.clientWidth;
+        if (clientWidth <= 0) return;
+
+        const estimate = computeMaxVisibleTabs(clientWidth, filePaths.length);
+        if (estimate == null) return;
+
+        const overflowing = strip.scrollWidth > clientWidth + 1;
+        const measuredFit = overflowing && strip.children.length > 0
+            ? countFittingTabs(measureChildWidths(strip), clientWidth)
+            : null;
+
+        const result = nextVisibleCountFromLayout(
+            visibleCount,
+            filePaths.length,
+            estimate,
+            overflowing,
+            measuredFit,
+            maxFittedRef.current,
+        );
+        maxFittedRef.current = result.maxFitted;
+        if (result.count !== visibleCount) {
+            setVisibleCount(result.count);
+        }
+    }, [openFilesKey, filePaths.length, visibleCount, activeFilePath, pinnedKey]);
 
     const filteredEditors = useMemo(
         () => filterOpenFilePaths(mruCycleOrder, filterQuery),
@@ -949,10 +1162,9 @@ export function FileTabBar({
     }, [closeEditorsPicker, filteredEditors, handleEditorsActivate, highlightIndex]);
 
     // Clamp so shrinking the file list cannot leave visibleCount > filePaths.length.
-    const effectiveVisibleCount = Math.min(
-        Math.max(1, visibleCount),
-        Math.max(1, filePaths.length || 1),
-    );
+    const effectiveVisibleCount = filePaths.length === 0
+        ? 0
+        : Math.min(Math.max(1, visibleCount), filePaths.length);
     const hasOverflow = effectiveVisibleCount < filePaths.length;
     const visiblePaths = computeVisibleFilePaths(
         filePaths,
@@ -992,10 +1204,12 @@ export function FileTabBar({
                 onKeyDown={handleKeyDown}
                 style={{
                     display: 'flex',
+                    // Outer bar stays overflow-visible so the open-editors dropdown can paint.
+                    // Tabs live in a clipped strip; sticky +N control stays on the right.
                     overflowX: 'visible',
                     overflowY: 'visible',
                     backgroundColor: theme.tabBg,
-                    borderBottom: `1px solid ${theme.border}`,
+                    // Header already draws the bottom edge; avoid a double hairline.
                     minHeight: 36,
                     alignItems: 'stretch',
                     position: 'relative',
@@ -1004,62 +1218,101 @@ export function FileTabBar({
                     outline: 'none',
                 }}
             >
-                {visiblePaths.map((filePath) => {
-                    const file = files.get(filePath);
-                    if (!file) return null;
-                    const overSide =
-                        dragOver?.path === filePath
-                            ? (dragOver.placeAfter ? 'after' as const : 'before' as const)
-                            : null;
-                    return (
-                        <FileTabButton
-                            key={filePath}
-                            filePath={filePath}
-                            file={file}
-                            isActive={filePath === activeFilePath}
-                            isPinned={pinnedSet.has(filePath)}
-                            theme={theme}
-                            onSelectFile={onSelectFile}
-                            onCloseFile={onCloseFile}
-                            onContextMenu={handleContextMenu}
-                            canDrag={Boolean(onMoveFile)}
-                            dragOverSide={overSide}
-                            onDragStateChange={handleDragStateChange}
-                            onDropOnTab={onMoveFile ? handleDropOnTab : undefined}
-                        />
-                    );
-                })}
+                {/* Clipped tab strip — flex child that absorbs remaining width; capacity is measured here. */}
+                <div
+                    ref={stripRef}
+                    data-testid="file-tab-strip"
+                    style={{
+                        display: 'flex',
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: 'hidden',
+                        alignItems: 'stretch',
+                    }}
+                >
+                    {visiblePaths.map((filePath) => {
+                        const file = files.get(filePath);
+                        if (!file) return null;
+                        const overSide =
+                            dragOver?.path === filePath
+                                ? (dragOver.placeAfter ? 'after' as const : 'before' as const)
+                                : null;
+                        return (
+                            <FileTabButton
+                                key={filePath}
+                                filePath={filePath}
+                                file={file}
+                                isActive={filePath === activeFilePath}
+                                isPinned={pinnedSet.has(filePath)}
+                                theme={theme}
+                                onSelectFile={onSelectFile}
+                                onCloseFile={onCloseFile}
+                                onContextMenu={handleContextMenu}
+                                canDrag={Boolean(onMoveFile)}
+                                dragOverSide={overSide}
+                                onDragStateChange={handleDragStateChange}
+                                onDropOnTab={onMoveFile ? handleDropOnTab : undefined}
+                            />
+                        );
+                    })}
+                </div>
+                {/* Sticky right control: always visible when multi-file / overflow. */}
                 {showEditorsButton && (
                     <button
                         type="button"
                         data-testid="file-tab-overflow-btn"
+                        aria-haspopup="listbox"
+                        aria-expanded={dropdownOpen}
                         onClick={() => {
                             if (dropdownOpen) closeEditorsPicker();
                             else openEditorsPicker();
                         }}
                         style={{
                             border: 'none',
-                            borderRight: `1px solid ${theme.border}`,
+                            borderLeft: `1px solid ${theme.border}`,
                             background: dropdownOpen ? theme.tabActiveBg : theme.tabBg,
                             color: theme.textMuted,
-                            fontSize: 11,
-                            padding: '4px 8px',
+                            fontSize: 12,
+                            padding: '4px 0',
                             cursor: 'pointer',
                             flexShrink: 0,
                             whiteSpace: 'nowrap',
                             fontFamily: 'inherit',
-                            fontWeight: 600,
+                            fontWeight: 700,
                             lineHeight: '28px',
+                            // Fixed width so "+N" vs "⋯" never reflows the tab strip.
+                            width: OVERFLOW_CONTROL_WIDTH,
+                            minWidth: OVERFLOW_CONTROL_WIDTH,
+                            textAlign: 'center',
                         }}
                         title={
                             lang === 'en'
-                                ? 'Open Editors (Ctrl+P)'
+                                ? hasOverflow
+                                    ? `Open Editors — ${overflowCount} more (Ctrl+P)`
+                                    : 'Open Editors (Ctrl+P)'
                                 : isZhHant
-                                    ? '已開啟編輯器 (Ctrl+P)'
-                                    : '已打开的编辑器 (Ctrl+P)'
+                                    ? hasOverflow
+                                        ? `已開啟編輯器 — 還有 ${overflowCount} 個 (Ctrl+P)`
+                                        : '已開啟編輯器 (Ctrl+P)'
+                                    : hasOverflow
+                                        ? `已打开的编辑器 — 还有 ${overflowCount} 个 (Ctrl+P)`
+                                        : '已打开的编辑器 (Ctrl+P)'
+                        }
+                        aria-label={
+                            lang === 'en'
+                                ? hasOverflow
+                                    ? `Open editors, ${overflowCount} more`
+                                    : 'Open editors'
+                                : isZhHant
+                                    ? hasOverflow
+                                        ? `已開啟編輯器，還有 ${overflowCount} 個`
+                                        : '已開啟編輯器'
+                                    : hasOverflow
+                                        ? `已打开的编辑器，还有 ${overflowCount} 个`
+                                        : '已打开的编辑器'
                         }
                     >
-                        {hasOverflow ? `MORE ${overflowCount}` : '\u22EF'}
+                        {formatOverflowControlLabel(overflowCount, hasOverflow)}
                     </button>
                 )}
                 {dropdownOpen && (

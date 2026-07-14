@@ -1377,10 +1377,21 @@ export function CodePreviewPanel({
                     borderBottom: `1px solid ${theme.border}`,
                     background: theme.tabBg,
                     flexShrink: 0,
+                    // Allow FileTabBar open-editors dropdown to extend below the header.
+                    overflow: 'visible',
                     '--wails-draggable': 'no-drag',
                 } as any}
             >
-                <div data-preview-no-maximize="true" style={{ flex: 1, minWidth: 0, '--wails-draggable': 'no-drag' } as any}>
+                <div
+                    data-preview-no-maximize="true"
+                    style={{
+                        flex: 1,
+                        minWidth: 0,
+                        // Keep open-editors dropdown paintable outside the strip.
+                        overflow: 'visible',
+                        '--wails-draggable': 'no-drag',
+                    } as any}
+                >
                     <FileTabBar
                         files={files}
                         activeFilePath={activeFilePath}

@@ -29,8 +29,8 @@ const (
 	// any matching isolated project tab should be closed.
 	EventProjectTaskClosed = "project-task:closed"
 
-	// EventAppUpdateAvailable is emitted after the delayed startup update check
-	// finds a newer application release.
+	// EventAppUpdateAvailable is emitted when the background update checker
+	// (startup delay + periodic re-check) finds a newer application release.
 	EventAppUpdateAvailable = "app-update-available"
 
 	// Skill evolution / self-repair events (EvolutionPipeline + SkillRunner).

@@ -2281,10 +2281,26 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 	}
 
+	// Single-task turns used to always enable TDD. That is correct for
+	// "fix the login bug" but wrong for operational pings like
+	// "运行下生成的游戏" — those must not enter red/green test generation.
+	tddMode := shouldEnableCodingTDD(recordUserText, planned, len(tasks))
+	operational := looksLikeCodingOperationalRequest(recordUserText)
+	if tddMode {
+		log.Printf("[workflow-v2] pure coding: TDD enabled for single implement task user=%s", userID)
+	}
+	if operational {
+		log.Printf("[workflow-v2] pure coding: operational run/build path user=%s", userID)
+	}
+	maxRetries := 2
+	if operational {
+		// Run/demo follow-ups should fail fast rather than thrash implement retries.
+		maxRetries = 0
+	}
 	config := v2.TaskRunnerConfig{
 		ProjectPath: projectPath,
-		MaxRetries:  2,
-		TDDMode:     !planned && len(tasks) == 1,
+		MaxRetries:  maxRetries,
+		TDDMode:     tddMode,
 		MaxParallel: maxParallel,
 	}
 

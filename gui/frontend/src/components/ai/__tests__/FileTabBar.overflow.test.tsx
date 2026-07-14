@@ -3,7 +3,16 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-import { FileTabBar } from '../FileTabBar';
+import {
+    FileTabBar,
+    computeMaxVisibleTabs,
+    countFittingTabs,
+    reconcileVisibleCount,
+    nextVisibleCountFromLayout,
+    formatOverflowControlLabel,
+    resizeObserverEntryWidth,
+    MIN_TAB_WIDTH,
+} from '../FileTabBar';
 import type { CodePreviewTheme } from '../FileTabBar';
 import type { CodeFile } from '../useCodePreviewState';
 
@@ -49,28 +58,111 @@ function makeFiles(paths: string[]): Map<string, CodeFile> {
     return map;
 }
 
-describe('FileTabBar overflow management', () => {
-    let resizeCallback: ResizeObserverCallback | null = null;
-
-    beforeEach(() => {
-        resizeCallback = null;
-        class MockResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                // Force a narrow width so only a few tabs fit.
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 280 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
+function mockResizeObserver(width: number) {
+    class MockResizeObserver {
+        private cb: ResizeObserverCallback;
+        constructor(cb: ResizeObserverCallback) {
+            this.cb = cb;
         }
-        vi.stubGlobal('ResizeObserver', MockResizeObserver);
+        observe() {
+            this.cb(
+                [{ contentRect: { width } } as ResizeObserverEntry],
+                this as unknown as ResizeObserver,
+            );
+        }
+        unobserve() {}
+        disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', MockResizeObserver);
+}
+
+describe('overflow capacity helpers', () => {
+    it('returns null for non-positive width so callers can keep prior capacity', () => {
+        expect(computeMaxVisibleTabs(0, 5)).toBeNull();
+        expect(computeMaxVisibleTabs(-10, 5)).toBeNull();
+        expect(computeMaxVisibleTabs(Number.NaN, 5)).toBeNull();
+    });
+
+    it('returns 0 when there are no files', () => {
+        expect(computeMaxVisibleTabs(400, 0)).toBe(0);
+        expect(countFittingTabs([], 200)).toBe(0);
+        expect(reconcileVisibleCount(3, 5, 0, false)).toBe(0);
+        expect(nextVisibleCountFromLayout(3, 0, 5, false, null, null).count).toBe(0);
+    });
+
+    it('caps at fileCount and floors by min tab width', () => {
+        expect(computeMaxVisibleTabs(MIN_TAB_WIDTH * 2 + 10, 6)).toBe(2);
+        expect(computeMaxVisibleTabs(MIN_TAB_WIDTH * 10, 3)).toBe(3);
+        expect(computeMaxVisibleTabs(1, 4)).toBe(1);
+    });
+
+    it('countFittingTabs keeps first tab and packs the rest', () => {
+        expect(countFittingTabs([200], 100)).toBe(1); // first always kept (clips)
+        expect(countFittingTabs([100, 100, 100], 250)).toBe(2);
+        expect(countFittingTabs([80, 80, 80, 80], 400)).toBe(4);
+        expect(countFittingTabs([120, 120, 120], 0)).toBe(1);
+    });
+
+    it('reconcileVisibleCount grows only when strip is not overflowing', () => {
+        expect(reconcileVisibleCount(2, 5, 8, true)).toBe(2); // overflowing → keep fitted
+        expect(reconcileVisibleCount(2, 5, 8, false)).toBe(5); // room → grow
+        expect(reconcileVisibleCount(5, 3, 8, false)).toBe(3); // width shrank
+        expect(reconcileVisibleCount(4, null, 8, true)).toBe(4); // null estimate → clamp prev
+        // maxFitted ceiling blocks thrash grow above last measured fit
+        expect(reconcileVisibleCount(2, 5, 8, false, 2)).toBe(2);
+        expect(reconcileVisibleCount(1, 5, 8, false, 3)).toBe(3);
+    });
+
+    it('nextVisibleCountFromLayout shrinks on overflow and respects maxFitted when growing', () => {
+        // Overflowing → snap to measured fit and record ceiling
+        expect(nextVisibleCountFromLayout(5, 8, 5, true, 2, null)).toEqual({
+            count: 2,
+            maxFitted: 2,
+        });
+        // Fitting with ceiling: do not re-expand above maxFitted (prevents loops)
+        expect(nextVisibleCountFromLayout(2, 8, 5, false, null, 2)).toEqual({
+            count: 2,
+            maxFitted: 2,
+        });
+        // Fitting with no ceiling: grow to estimate
+        expect(nextVisibleCountFromLayout(2, 8, 5, false, null, null)).toEqual({
+            count: 5,
+            maxFitted: null,
+        });
+        // Estimate lower than prev (width shrank)
+        expect(nextVisibleCountFromLayout(5, 8, 3, false, null, null)).toEqual({
+            count: 3,
+            maxFitted: null,
+        });
+    });
+
+    it('prefers borderBoxSize.inlineSize when present', () => {
+        const entry = {
+            borderBoxSize: [{ inlineSize: 320, blockSize: 36 }],
+            contentRect: { width: 100 },
+        } as unknown as ResizeObserverEntry;
+        expect(resizeObserverEntryWidth(entry)).toBe(320);
+    });
+
+    it('falls back to contentRect.width', () => {
+        const entry = {
+            contentRect: { width: 280 },
+        } as unknown as ResizeObserverEntry;
+        expect(resizeObserverEntryWidth(entry)).toBe(280);
+    });
+
+    it('formatOverflowControlLabel stays compact for the fixed-width control', () => {
+        expect(formatOverflowControlLabel(0, false)).toBe('\u22EF');
+        expect(formatOverflowControlLabel(3, true)).toBe('+3');
+        expect(formatOverflowControlLabel(99, true)).toBe('+99');
+        expect(formatOverflowControlLabel(100, true)).toBe('99+');
+    });
+});
+
+describe('FileTabBar overflow management', () => {
+    beforeEach(() => {
+        // Default: narrow strip so only a few tabs fit.
+        mockResizeObserver(280);
     });
 
     afterEach(() => {
@@ -78,7 +170,7 @@ describe('FileTabBar overflow management', () => {
         vi.unstubAllGlobals();
     });
 
-    it('shows MORE overflow button instead of rendering every tab when narrow', () => {
+    it('shows sticky +N control and clips strip instead of rendering every tab when narrow', () => {
         const paths = [
             '/src/a.ts',
             '/src/b.ts',
@@ -102,7 +194,12 @@ describe('FileTabBar overflow management', () => {
         );
 
         expect(screen.getByTestId('file-tab-bar').style.overflowX).toBe('visible');
-        expect(screen.getByTestId('file-tab-overflow-btn')).toBeTruthy();
+        expect(screen.getByTestId('file-tab-strip').style.overflow).toBe('hidden');
+        const overflowBtn = screen.getByTestId('file-tab-overflow-btn');
+        expect(overflowBtn).toBeTruthy();
+        // Compact stable label: +N for hidden count.
+        expect(overflowBtn.textContent).toMatch(/^\+\d+$/);
+        expect(overflowBtn.getAttribute('aria-expanded')).toBe('false');
 
         // Active file must remain among visible tabs.
         const visibleTabs = screen.getAllByTestId('file-tab');
@@ -112,6 +209,9 @@ describe('FileTabBar overflow management', () => {
 
         // Not all files are shown as direct tabs.
         expect(visibleTabs.length).toBeLessThan(paths.length);
+        // Expected capacity for 280px strip: floor(280/150)=1.
+        expect(visibleTabs.length).toBe(1);
+        expect(visibleTabs[0].getAttribute('data-file-path')).toBe('/src/e.ts');
     });
 
     it('opens overflow dropdown and activates a hidden file', () => {
@@ -142,22 +242,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('filters open editors by query and activates via keyboard', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const onSelect = vi.fn();
         render(
@@ -189,22 +274,7 @@ describe('FileTabBar overflow management', () => {
         const onClose = vi.fn();
 
         // Wide enough for both tabs: no overflow needed.
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         render(
             <FileTabBar
@@ -222,22 +292,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('middle-click closes a tab', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const onClose = vi.fn();
         render(
@@ -256,22 +311,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('keyboard cycles files and closes active with Ctrl+W', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const onSelect = vi.fn();
         const onClose = vi.fn();
@@ -303,22 +343,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('context menu copies path / relative path / file name', async () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const writeText = vi.fn().mockResolvedValue(undefined);
         Object.assign(navigator, { clipboard: { writeText } });
@@ -347,22 +372,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('shows dirty marker for modified/new files but not pure reads', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const files = new Map<string, CodeFile>([
             ['/src/a.ts', { ...makeFile('/src/a.ts', 'modify'), original: 'old', content: 'new' }],
@@ -388,22 +398,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('shows pin marker and pin context action', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const onTogglePin = vi.fn();
         render(
@@ -430,22 +425,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('drag-and-drop reorders via onMoveFile', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const onMove = vi.fn();
         render(
@@ -484,22 +464,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('context menu exposes close others / to the right / all', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         const onClose = vi.fn();
         const onCloseOthers = vi.fn();
@@ -537,22 +502,7 @@ describe('FileTabBar overflow management', () => {
     });
 
     it('disables close others/right/all when only pinned tabs would remain', () => {
-        class WideResizeObserver {
-            constructor(cb: ResizeObserverCallback) {
-                resizeCallback = cb;
-            }
-            observe() {
-                if (resizeCallback) {
-                    resizeCallback(
-                        [{ contentRect: { width: 800 } } as ResizeObserverEntry],
-                        this as unknown as ResizeObserver,
-                    );
-                }
-            }
-            unobserve() {}
-            disconnect() {}
-        }
-        vi.stubGlobal('ResizeObserver', WideResizeObserver);
+        mockResizeObserver(800);
 
         render(
             <FileTabBar

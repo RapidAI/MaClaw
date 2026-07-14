@@ -356,9 +356,13 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		return s.finishInspectionRoleTask(cb, task, taskTitle, result)
 	}
 
+	// Run/build/demo style follow-ups must not enter implement-oriented post-loop
+	// verify+fix (that is for code-change tasks).
+	operational := codingTaskLooksOperational(task)
+
 	// Codex-inspired post-loop verification: if the model completed without
 	// errors but didn't run verification itself, automatically verify + fix.
-	if result.Error == "" && !result.HardExit && !cb.ShouldStop() {
+	if !operational && result.Error == "" && !result.HardExit && !cb.ShouldStop() {
 		if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
@@ -400,53 +404,96 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	searchesRun := audit.SearchesRun
 	guardrailViolations := audit.GuardrailViolations
 	dynamicToolsRun := audit.DynamicToolsRun
-	existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
-	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
-	verificationStatus, verificationSummary := summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
-	unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
-	status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
-	status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
-	status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
-	summary = appendSubAgentFileChangeSummary(summary, filesModified, filesCreated)
-	cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
-	if len(unresolvedGuardrailViolations) > 0 {
-		summary = appendSubAgentGuardrailSummary(summary, unresolvedGuardrailViolations)
+
+	var (
+		explorationStatus, verificationStatus codingSubAgentQualityStatus
+		explorationSummary, verificationSummary string
+		diffChecked                             bool
+		diffSummary                             string
+		qualityStatus                           codingSubAgentQualityStatus
+		qualitySummary                          string
+		qualityIssueCount                       int
+	)
+
+	if operational {
+		// Lightweight path: require successful launch/build bash evidence, not
+		// file edits / git_diff / acceptance-criteria matrix.
+		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "operational request: exploration not required"
+		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "operational request: implement verification gates not required"
+		// Do not claim git_diff was checked — that is implement-path only.
+		diffChecked = false
+		diffSummary = ""
+		// Keep UI banners consistent with implement path (NOT_NEEDED, not blank).
+		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, 0)
+		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, 0)
+		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
+		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
+		if len(unresolvedGuardrailViolations) > 0 {
+			summary = appendSubAgentGuardrailSummary(summary, unresolvedGuardrailViolations)
+		}
+		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
+		if len(allCommandsRun) > 0 {
+			summary = appendSubAgentCommandSummary(summary, allCommandsRun)
+		}
+		cb.emitCommandSummaryEvent(allCommandsRun)
+		if modelSummary == "" {
+			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+		}
+		// Prefer an ops-specific empty-loop diagnostic over the generic hard-exit text.
+		if result.HardExit && result.ToolCalls == 0 && status == TaskExecFailed {
+			errMsg = "模型未调用工具就结束了；运行/演示类任务需要 bash 启动或构建程序"
+		}
+		qualityStatus, qualitySummary, qualityIssueCount = summarizeOperationalSubAgentQuality(audit, result)
+		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
+	} else {
+		existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
+		explorationStatus, explorationSummary = summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
+		verificationStatus, verificationSummary = summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
+		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
+		status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
+		status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
+		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
+		summary = appendSubAgentFileChangeSummary(summary, filesModified, filesCreated)
+		cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
+		if len(unresolvedGuardrailViolations) > 0 {
+			summary = appendSubAgentGuardrailSummary(summary, unresolvedGuardrailViolations)
+		}
+		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
+		if explorationSummary != "" {
+			summary = appendSubAgentExplorationSummary(summary, explorationStatus, explorationSummary)
+		}
+		cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
+		if len(allCommandsRun) > 0 {
+			summary = appendSubAgentCommandSummary(summary, allCommandsRun)
+		}
+		if len(allDynamicToolsRun) > 0 {
+			summary = appendSubAgentDynamicToolSummary(summary, allDynamicToolsRun)
+		}
+		cb.emitCommandSummaryEvent(allCommandsRun)
+		if verificationSummary != "" {
+			summary = appendSubAgentVerificationSummary(summary, verificationStatus, verificationSummary)
+		}
+		cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, countFreshSubAgentVerificationAttempts(allCommandsRun, audit.LastEditSeq))
+		diffChecked, diffSummary = cb.ensureFinalGitDiff(allFilesModified, allFilesCreated)
+		status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
+		if modelSummary == "" {
+			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+		}
+		if diffSummary != "" {
+			summary = appendSubAgentDiffSummary(summary, diffSummary)
+		}
+		qualityStatus, qualitySummary, qualityIssueCount = summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations, allDynamicToolsRun)
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentNoChangeEvidence(allFilesModified, allFilesCreated, allFilesRead, allSearchesRun, allCommandsRun, allDynamicToolsRun))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentCreatedFileContextEvidence(allFilesCreated, allFilesRead, allSearchesRun, allDynamicToolsRun))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentAcceptanceCriteriaEvidence(task, modelSummary, allFilesModified, allFilesCreated))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentScopeEvidence(task, modelSummary, allFilesModified, allFilesCreated))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentChangedFileSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentRiskSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationEvidence(modelSummary, allCommandsRun))
+		qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
+		status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
 	}
-	cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
-	if explorationSummary != "" {
-		summary = appendSubAgentExplorationSummary(summary, explorationStatus, explorationSummary)
-	}
-	cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
-	if len(allCommandsRun) > 0 {
-		summary = appendSubAgentCommandSummary(summary, allCommandsRun)
-	}
-	if len(allDynamicToolsRun) > 0 {
-		summary = appendSubAgentDynamicToolSummary(summary, allDynamicToolsRun)
-	}
-	cb.emitCommandSummaryEvent(allCommandsRun)
-	if verificationSummary != "" {
-		summary = appendSubAgentVerificationSummary(summary, verificationStatus, verificationSummary)
-	}
-	cb.emitVerificationSummaryEvent(verificationStatus, verificationSummary, countFreshSubAgentVerificationAttempts(allCommandsRun, audit.LastEditSeq))
-	diffChecked, diffSummary := cb.ensureFinalGitDiff(allFilesModified, allFilesCreated)
-	status, errMsg = applySubAgentDiffOutcome(status, errMsg, diffChecked, diffSummary, len(allFilesModified))
-	if modelSummary == "" {
-		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
-	}
-	if diffSummary != "" {
-		summary = appendSubAgentDiffSummary(summary, diffSummary)
-	}
-	qualityStatus, qualitySummary, qualityIssueCount := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq, allGuardrailViolations, allDynamicToolsRun)
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentNoChangeEvidence(allFilesModified, allFilesCreated, allFilesRead, allSearchesRun, allCommandsRun, allDynamicToolsRun))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentCreatedFileContextEvidence(allFilesCreated, allFilesRead, allSearchesRun, allDynamicToolsRun))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentAcceptanceCriteriaEvidence(task, modelSummary, allFilesModified, allFilesCreated))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentScopeEvidence(task, modelSummary, allFilesModified, allFilesCreated))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentChangedFileSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentRiskSummaryEvidence(modelSummary, allFilesModified, allFilesCreated))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentVerificationCommandSummaryEvidence(modelSummary, allFilesModified, allFilesCreated, allCommandsRun, audit.LastEditSeq))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationEvidence(modelSummary, allCommandsRun))
-	qualityStatus, qualitySummary, qualityIssueCount = appendSubAgentQualityFailure(qualityStatus, qualitySummary, qualityIssueCount, summarizeSubAgentClaimedVerificationFailureEvidence(modelSummary, allCommandsRun))
-	status, errMsg = applySubAgentQualityOutcome(status, errMsg, qualityStatus, qualitySummary, qualityIssueCount)
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 	}
@@ -10291,6 +10338,20 @@ func (c *codingSubAgentCallbacks) ShouldStop() bool {
 
 func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	var b strings.Builder
+	if codingTaskLooksOperational(c.task) {
+		b.WriteString(fmt.Sprintf("请执行以下操作任务（运行/构建/演示，不要改代码）：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
+		if c.task.Description != "" {
+			b.WriteString(compactSubAgentTaskDescription(c.task.Description))
+			b.WriteString("\n\n")
+		}
+		appendCodingSubAgentOperationalChecklist(&b)
+		if len(c.prevOutputs) > 0 {
+			b.WriteString("**前置任务上下文**（可用来定位已生成的可执行文件）：\n")
+			appendSubAgentBulletList(&b, c.prevOutputs, codingSubAgentPrevOutputsMax, codingSubAgentPromptBulletMaxRunes)
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
 	b.WriteString(fmt.Sprintf("请执行以下编码任务：\n\n## T%d: %s\n\n", taskDisplayNumber(c.task), compactSubAgentTaskTitle(c.task.Title)))
 	if c.task.Description != "" {
 		b.WriteString(compactSubAgentTaskDescription(c.task.Description))
@@ -10327,6 +10388,244 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder) {
 	b.WriteString("\n**Before finalizing**:\n")
 	b.WriteString("1. After the last edit, run matching verification command(s): test/build/lint/typecheck. Do not present pre-edit verification as final verification.\n")
 	b.WriteString("2. Make the final summary match audit evidence: name actual modified/created file paths, list only verification commands you really ran after editing, map acceptance criteria when present, explain any scope expansion, and include remaining risk or say no known remaining risk.\n\n")
+}
+
+func appendCodingSubAgentOperationalChecklist(b *strings.Builder) {
+	if b == nil {
+		return
+	}
+	b.WriteString("**操作任务要求**：\n")
+	b.WriteString("1. 先在项目目录定位可执行文件/脚本/构建产物（list_directory / glob / read 少量文件即可）。\n")
+	b.WriteString("2. 必须用 bash 实际执行启动/构建/演示命令；禁止只文字回复「已运行」。\n")
+	b.WriteString("3. GUI/游戏若是阻塞进程：用合适 timeout 启动并回报是否成功拉起；不要为「通过质量门禁」去改代码或造测试。\n")
+	b.WriteString("4. 最终摘要写清：执行了什么命令、退出码/关键输出、是否成功。\n\n")
+}
+
+// codingTaskLooksOperational detects run/build/demo follow-ups that must not use
+// implement-oriented quality gates (file-change / AC / git_diff matrix).
+// Prefer Description (full user text); fall back to Title. Do not join both —
+// that injects a newline and can double length, which weakens the short-ops heuristic.
+func codingTaskLooksOperational(task *TaskItem) bool {
+	if task == nil {
+		return false
+	}
+	text := strings.TrimSpace(task.Description)
+	if text == "" {
+		text = strings.TrimSpace(task.Title)
+	}
+	return looksLikeCodingOperationalRequest(text)
+}
+
+// summarizeOperationalSubAgentQuality requires a successful launch/build-style
+// bash command. Pure listing (dir/ls/pwd), mkdir, or read-only tools do not count.
+func summarizeOperationalSubAgentQuality(audit codingSubAgentAudit, result agent.LoopResult) (codingSubAgentQualityStatus, string, int) {
+	successfulLaunch := 0
+	failedLaunch := 0
+	otherBashSuccess := 0
+	for _, cmd := range audit.AllCommandsRun {
+		switch classifyOperationalShellCommand(cmd.Command) {
+		case operationalShellLaunchBuild:
+			if cmd.Succeeded {
+				successfulLaunch++
+			} else {
+				failedLaunch++
+			}
+		case operationalShellInspection:
+			// ignore for pass/fail primary evidence
+		default:
+			if cmd.Succeeded {
+				otherBashSuccess++
+			}
+		}
+	}
+	if successfulLaunch > 0 {
+		return codingSubAgentQualityPassed, "operational run: launch/build command evidence present", 0
+	}
+	if result.ToolCalls == 0 {
+		return codingSubAgentQualityFailed, "operational task ran no tools (need bash to launch/build)", 1
+	}
+	if failedLaunch > 0 {
+		return codingSubAgentQualityFailed, "operational task: launch/build command(s) failed", 1
+	}
+	if otherBashSuccess > 0 {
+		return codingSubAgentQualityFailed, "operational task: ran shell commands but none looked like launch/build", 1
+	}
+	// Tools ran (list_directory / read_file / dir) but never launched/built.
+	return codingSubAgentQualityFailed, "operational task: no launch/build command executed", 1
+}
+
+type operationalShellClass int
+
+const (
+	operationalShellUnknown operationalShellClass = iota
+	operationalShellInspection
+	operationalShellLaunchBuild
+)
+
+// classifyOperationalShellCommand classifies a bash command for ops evidence.
+// Compound commands (dir && .\snake.exe) are launch/build if any segment is.
+func classifyOperationalShellCommand(command string) operationalShellClass {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return operationalShellInspection
+	}
+	segments := shellCommandSegments(normalized)
+	if len(segments) == 0 {
+		return operationalShellInspection
+	}
+	sawLaunch := false
+	sawNonInspection := false
+	sawSegment := false
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		sawSegment = true
+		if isOperationalLaunchOrBuildSegment(segment) {
+			sawLaunch = true
+			continue
+		}
+		if !isOperationalInspectionOnlySegment(segment) {
+			sawNonInspection = true
+		}
+	}
+	if !sawSegment {
+		return operationalShellInspection
+	}
+	if sawLaunch {
+		return operationalShellLaunchBuild
+	}
+	if sawNonInspection {
+		return operationalShellUnknown
+	}
+	return operationalShellInspection
+}
+
+// isOperationalInspectionOnlyCommand is kept for tests and callers that only
+// need the denylist view of pure listing/env commands.
+func isOperationalInspectionOnlyCommand(command string) bool {
+	return classifyOperationalShellCommand(command) == operationalShellInspection
+}
+
+func isOperationalInspectionOnlySegment(segment []string) bool {
+	if len(segment) == 0 {
+		return true
+	}
+	base := commandNameBase(segment[0])
+	switch base {
+	case "ls", "dir", "pwd", "cd", "echo", "type", "cat", "head", "tail",
+		"where", "which", "get-childitem", "gci", "get-location", "gl",
+		"test-path", "resolve-path", "get-item", "gi", "get-content", "gc",
+		"tree", "find", "stat", "file", "wc", "du", "df",
+		"env", "printenv", "set", "whoami",
+		"mkdir", "md", "touch", "new-item", "ni":
+		return true
+	default:
+		return false
+	}
+}
+
+// isOperationalLaunchOrBuildSegment reports segments that count as run/build evidence.
+func isOperationalLaunchOrBuildSegment(segment []string) bool {
+	if len(segment) == 0 {
+		return false
+	}
+	raw0 := strings.TrimSpace(segment[0])
+	if raw0 == "" {
+		return false
+	}
+	base := commandNameBase(raw0)
+	args := segment[1:]
+
+	// Path-like invocation: .\game.exe, ./a.out, build\Release\app.exe
+	// Do not treat bare "." / ".." (or empty relative prefixes) as launch.
+	if isOperationalPathLaunchToken(raw0) {
+		return true
+	}
+	// Extension-based binaries/scripts (snake.exe, build_and_run.bat).
+	for _, ext := range []string{".exe", ".bat", ".cmd", ".com", ".ps1", ".sh", ".msi"} {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+
+	switch base {
+	case "start", "start-process", "invoke-item", "ii", "open", "xdg-open":
+		return true
+	case "make", "mingw32-make", "gmake", "ninja", "msbuild", "cmake",
+		"cl", "g++", "gcc", "clang", "clang++", "rustc", "javac", "mvn", "gradle", "flutter":
+		return true
+	case "go":
+		return len(args) > 0 && (args[0] == "run" || args[0] == "build" || args[0] == "test" || args[0] == "install")
+	case "cargo":
+		return len(args) > 0 && (args[0] == "run" || args[0] == "build" || args[0] == "test" || args[0] == "bench")
+	case "npm", "pnpm", "yarn", "bun":
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "start", "run", "test", "build", "exec", "serve", "dev":
+			return true
+		default:
+			return false
+		}
+	case "python", "python3", "py", "node", "deno", "ruby", "perl", "php", "lua", "dotnet":
+		// Bare interpreter with no args often just opens a REPL / prints help —
+		// require a script/module argument to count as launch evidence.
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "-m", "-c", "-e", "run":
+			return true
+		default:
+			return !strings.HasPrefix(args[0], "-")
+		}
+	case "powershell", "pwsh":
+		// After stripVerificationCommandPrefixes, powershell wrappers are usually
+		// peeled; if still present, look at remaining args for a launch token.
+		return segmentLooksLikeOperationalLaunchArgs(args)
+	case "bash", "sh", "zsh":
+		return segmentLooksLikeOperationalLaunchArgs(args)
+	default:
+		return false
+	}
+}
+
+// isOperationalPathLaunchToken reports path-form tokens used to invoke a program
+// (.\app.exe, ./game, build\Release\app). Bare "." / ".." are excluded.
+func isOperationalPathLaunchToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" || token == "." || token == ".." {
+		return false
+	}
+	// ".\" / "./" alone are not an invocation target.
+	if token == ".\\" || token == "./" || token == ".\\\\" {
+		return false
+	}
+	if strings.HasPrefix(token, ".") || strings.ContainsAny(token, `/\`) {
+		return true
+	}
+	return false
+}
+
+func segmentLooksLikeOperationalLaunchArgs(args []string) bool {
+	for _, a := range args {
+		al := strings.ToLower(strings.Trim(a, `"'`))
+		if al == "" || al == "-c" || al == "/c" || al == "-command" || al == "-file" || al == "-f" {
+			continue
+		}
+		if isOperationalLaunchOrBuildSegment([]string{al}) {
+			return true
+		}
+		// Nested script body sometimes arrives as one token; cheap markers.
+		if strings.Contains(al, ".exe") || strings.Contains(al, ".bat") || strings.Contains(al, ".cmd") ||
+			strings.Contains(al, "go run") || strings.Contains(al, "npm start") || strings.Contains(al, "npm run") {
+			return true
+		}
+	}
+	return false
 }
 
 func compactSubAgentTaskDescription(description string) string {
@@ -10652,6 +10951,49 @@ func probeCodingWorkspace(projectPath string) string {
 
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
 	var b strings.Builder
+
+	if codingTaskLooksOperational(task) {
+		b.WriteString(`你是编程工作台里的操作执行器。当前任务是运行/构建/演示已有产物，不是实现新功能。
+
+## 目标
+- 在项目目录内找到可执行文件、脚本或构建命令，用 bash 真正执行。
+- 不要修改源码、不要写测试、不要重构、不要调用 git_diff 来「凑」质量门禁。
+- GUI/游戏可能阻塞：设置合理 timeout 启动并回报是否成功；把命令输出与退出码写进最终摘要。
+
+## 允许
+- list_directory / glob / read_file / bash（以及只读搜索）定位并启动程序。
+- 仅当没有可执行产物时，用已有 build 脚本编译一次再运行。
+
+## 禁止
+- 为通过审计而伪造文件改动或添加无关测试。
+- 破坏性删除/Git 改写命令（reset --hard、clean -f、rm -rf 等）。
+- 只回复文字而不调用工具。
+
+## 完成标准
+- 至少成功执行过相关启动/构建命令，或明确报告可执行文件缺失及排查结果。
+`)
+		b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
+		if normalizedRemotePlatform() == "windows" {
+			b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
+			b.WriteString("Windows shell contract: bash 工具默认经 PowerShell 执行；普通命令用 `;` 分隔；需要 cmd 语义时用 `cmd /c \"...\"`，并用 working_dir 指定目录。\n")
+			b.WriteString(formatWindowsMSVCToolchainHint(detectWindowsMSVCToolchain()))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(fmt.Sprintf("平台: %s\n", normalizedRemotePlatform()))
+		}
+		if reqCtx != "" {
+			b.WriteString("\n## 需求摘要\n")
+			b.WriteString(truncateRunesForSubAgent(reqCtx, 280))
+			b.WriteString("\n")
+		}
+		if len(prevOutputs) > 0 {
+			b.WriteString("\n## 前置轮次摘要\n")
+			appendSubAgentBulletList(&b, prevOutputs, 4, 200)
+		}
+		now := time.Now()
+		b.WriteString(fmt.Sprintf("\n当前时间: %s\n", now.Format("2006-01-02 15:04")))
+		return b.String()
+	}
 
 	b.WriteString(`你是一个专注的编码执行器。目标是像资深工程师一样：先定位和理解，再做最小改动，最后验证并说明风险。
 

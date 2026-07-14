@@ -76,6 +76,88 @@ var codingComplexityKeywords = []string{
 	"then ", " plus ", "with tests", "unit test", "integration",
 }
 
+// shouldEnableCodingTDD enables TaskRunner red/green only for single-task turns
+// that look like real implement/fix work. Operational follow-ups such as
+// "运行下生成的游戏" must not enter TDD (that would generate tests for "run").
+func shouldEnableCodingTDD(userText string, planned bool, taskCount int) bool {
+	if planned || taskCount != 1 {
+		return false
+	}
+	return !looksLikeCodingOperationalRequest(userText)
+}
+
+// looksLikeCodingOperationalRequest detects short run/build/open/demo style
+// instructions that should execute directly in CodingSubAgent without TDD /
+// implement quality gates.
+func looksLikeCodingOperationalRequest(userText string) bool {
+	text := strings.TrimSpace(userText)
+	if text == "" {
+		return false
+	}
+	// Long / multi-step briefs are not pure ops even if they mention "run".
+	if utf8.RuneCountInString(text) >= 80 || strings.Count(text, "\n") >= 2 {
+		return false
+	}
+	if numberedStepCount(text) >= 2 {
+		return false
+	}
+	lower := strings.ToLower(text)
+
+	// Implementation intent wins over a trailing "and run it".
+	for _, kw := range codingImplementationKeywords {
+		if keywordMatchCI(text, lower, kw) {
+			return false
+		}
+	}
+
+	for _, kw := range codingOperationalKeywords {
+		if keywordMatchCI(text, lower, kw) {
+			return true
+		}
+	}
+	// Ultra-short Chinese run pings only (avoid English bare "start"/"run tests"
+	// false positives like "start coding").
+	if utf8.RuneCountInString(text) <= 12 {
+		if strings.Contains(text, "跑") || strings.Contains(text, "运行") || strings.Contains(text, "启动") {
+			return true
+		}
+	}
+	return false
+}
+
+// keywordMatchCI matches ASCII keywords case-insensitively via lower, and CJK
+// keywords against the original text.
+func keywordMatchCI(text, lower, kw string) bool {
+	kw = strings.TrimSpace(kw)
+	if kw == "" {
+		return false
+	}
+	for _, r := range kw {
+		if r > 127 {
+			return strings.Contains(text, kw)
+		}
+	}
+	return strings.Contains(lower, strings.ToLower(kw))
+}
+
+// Keywords that mean the user wants code written or changed (keep TDD eligible).
+var codingImplementationKeywords = []string{
+	"实现", "开发", "编写", "写个", "写一", "添加", "新增", "修改", "改成", "修复", "重构",
+	"完善", "补全", "完成功能", "实现功能", "加一个", "做一个", "创建", "生成代码",
+	"implement", "refactor", "fix bug", "fix the", "add feature", "add a ",
+	"create ", "write ", "develop ", "change code", "modify ", "patch ", "coding",
+}
+
+// Keywords that mean run/build/open/demo without implementing new code.
+var codingOperationalKeywords = []string{
+	"运行下", "运行一下", "运行游戏", "运行程序", "运行下生成", "跑一下", "跑下",
+	"再跑", "重新跑", "重新运行", "启动一下", "启动游戏", "启动程序", "打开游戏", "演示一下",
+	"看看效果", "看下效果", "试运行", "试一下游戏", "编译一下", "构建一下", "帮我运行", "请运行",
+	"run the game", "run game", "run it", "run the app", "run the program",
+	"launch the", "start the game", "start game", "execute the", "try the game",
+	"build and run", "compile and run", "rerun", "re-run", "run again",
+}
+
 // sentenceDotCount counts '.' that look like sentence terminators, not version
 // numbers (e.g. "go 1.22") or single-char extensions.
 func sentenceDotCount(text string) int {
