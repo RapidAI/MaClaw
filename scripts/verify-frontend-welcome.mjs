@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Fail CI if gui/frontend/dist is missing the current AI assistant welcome page.
+ * Fail CI / local packaging if gui/frontend/dist (or a built GUI binary)
+ * is missing the current AI assistant welcome page.
  *
  * TigerClaw / MetaStaff OEM builds share the same frontend embed as MaClaw.
  * Without this check, a stale or incomplete frontend dist can ship and look
@@ -11,6 +12,7 @@
  *   node scripts/verify-frontend-welcome.mjs
  *   node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
  *   node scripts/verify-frontend-welcome.mjs --binary dist/TigerClaw.exe
+ *   node scripts/verify-frontend-welcome.mjs --source
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -30,18 +32,25 @@ function resolveUserPath(p) {
 function parseArgs(argv) {
   let dist = path.join(repoRoot, "gui", "frontend", "dist");
   let binary = "";
+  let checkSource = false;
+  let distSpecified = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dist" && argv[i + 1]) {
       dist = resolveUserPath(argv[++i]);
+      distSpecified = true;
     } else if (arg === "--binary" && argv[i + 1]) {
       binary = resolveUserPath(argv[++i]);
+    } else if (arg === "--source") {
+      checkSource = true;
     } else if (arg === "--help" || arg === "-h") {
-      console.log(`Usage: node scripts/verify-frontend-welcome.mjs [--dist DIR] [--binary FILE]`);
+      console.log(
+        `Usage: node scripts/verify-frontend-welcome.mjs [--dist DIR] [--binary FILE] [--source]`,
+      );
       process.exit(0);
     }
   }
-  return { dist, binary };
+  return { dist, binary, checkSource, distSpecified };
 }
 
 /** New welcome scenario copy + param dialog markers that must ship. */
@@ -53,6 +62,16 @@ const REQUIRED_MARKERS = [
 ];
 
 /**
+ * UI chrome markers that are only meaningful after the full welcome shell is
+ * embedded into a GUI binary (not required in raw dist chunk scan alone —
+ * they live in the same welcome module as the scenario cards).
+ */
+const BINARY_EXTRA_MARKERS = [
+  "\u89d2\u8272", // 角色
+  "\u526a\u8d34\u677f\u8bc6\u522b", // 剪贴板识别
+];
+
+/**
  * Retired welcome-card copy. It is intentionally retained only as a CI
  * regression signature: no production source or bundled asset may contain it.
  */
@@ -61,6 +80,13 @@ const FORBIDDEN_MARKERS = [
   "\u5b9a\u4f4d\u5e76\u4fee\u590d\u4e00\u4e2a\u7ebf\u4e0a\u95ee\u9898",
   "\u4e3a\u9879\u76ee\u8865\u9f50\u90e8\u7f72\u548c\u73af\u5883\u8bf4\u660e",
   "\u63a5\u5165\u4e00\u4e2a\u7b2c\u4e09\u65b9 API",
+];
+
+/** Source files that must still carry the new welcome contract. */
+const SOURCE_REQUIRED_FILES = [
+  "gui/frontend/src/components/ai/welcomeScenarioTasks.ts",
+  "gui/frontend/src/components/ai/WelcomePromptParamDialog.tsx",
+  "gui/frontend/src/components/ai/AssistantWelcomeView.tsx",
 ];
 
 function walkFiles(dir, out = []) {
@@ -89,7 +115,39 @@ function shouldScanDistFile(filePath) {
     return false;
   }
   if (base.startsWith("diagram-") || base.includes("diagram-")) return false;
+  // Skip maps / source maps and pure CSS; markers are string literals in JS/HTML.
+  if (/\.(map|css|svg|png|jpg|jpeg|webp|woff2?|ttf|eot)$/i.test(base)) return false;
   return /\.(js|html|mjs)$/i.test(filePath);
+}
+
+function verifySource() {
+  const failures = [];
+  const texts = [];
+  for (const rel of SOURCE_REQUIRED_FILES) {
+    const full = path.join(repoRoot, rel);
+    if (!fs.existsSync(full)) {
+      failures.push(`welcome source missing: ${rel}`);
+      continue;
+    }
+    texts.push(readUtf8Safe(full));
+  }
+  const joined = texts.join("\n");
+  for (const marker of REQUIRED_MARKERS) {
+    if (!joined.includes(marker)) {
+      failures.push(`welcome source is missing required marker: ${JSON.stringify(marker)}`);
+    }
+  }
+  for (const marker of BINARY_EXTRA_MARKERS) {
+    if (!joined.includes(marker)) {
+      failures.push(`welcome source is missing binary chrome marker: ${JSON.stringify(marker)}`);
+    }
+  }
+  for (const marker of FORBIDDEN_MARKERS) {
+    if (joined.includes(marker)) {
+      failures.push(`welcome source still contains retired welcome card: ${JSON.stringify(marker)}`);
+    }
+  }
+  return failures;
 }
 
 function verifyDist(distDir) {
@@ -147,32 +205,48 @@ function verifyBinary(binaryPath) {
     failures.push(`binary not found for welcome verification: ${binaryPath}`);
     return failures;
   }
+  const st = fs.statSync(binaryPath);
+  if (!st.isFile() || st.size < 1024 * 100) {
+    failures.push(
+      `binary ${path.basename(binaryPath)} is too small to be a GUI embed (${st.size} bytes)`,
+    );
+    return failures;
+  }
   // Single Buffer scan (no latin1 string copy of ~80MB PE).
   const buf = fs.readFileSync(binaryPath);
   const binaryRequired = [
-    "Implement a feature",
+    // At least one scenario title + dialog shell + welcome chrome.
+    REQUIRED_MARKERS[0],
     "welcome-prompt-param-overlay",
-    "\u89d2\u8272",
-    "\u526a\u8d34\u677f\u8bc6\u522b",
+    ...BINARY_EXTRA_MARKERS,
   ];
   for (const marker of binaryRequired) {
     if (!bufferIncludesUtf8(buf, marker)) {
-      failures.push(`binary ${path.basename(binaryPath)} missing embedded welcome marker: ${JSON.stringify(marker)}`);
+      failures.push(
+        `binary ${path.basename(binaryPath)} missing embedded welcome marker: ${JSON.stringify(marker)}`,
+      );
     }
   }
   for (const marker of FORBIDDEN_MARKERS) {
     if (bufferIncludesUtf8(buf, marker)) {
-      failures.push(`binary ${path.basename(binaryPath)} still embeds retired welcome card: ${JSON.stringify(marker)}`);
+      failures.push(
+        `binary ${path.basename(binaryPath)} still embeds retired welcome card: ${JSON.stringify(marker)}`,
+      );
     }
   }
   return failures;
 }
 
-const { dist, binary } = parseArgs(process.argv.slice(2));
-// When only --binary is requested, skip dist checks unless dist exists (avoids
-// false failures on runners that already cleaned frontend/dist after embed).
-const checkDist = !binary || fs.existsSync(dist);
+const { dist, binary, checkSource, distSpecified } = parseArgs(process.argv.slice(2));
+// Dist is checked by default (no flags), when --dist is set, or when --binary
+// is used and a dist dir still exists. `--source` alone is source-only.
+const checkDist = binary
+  ? fs.existsSync(dist)
+  : distSpecified || !checkSource;
+// Source contract is cheap and catches copy drift before/with embed checks.
+const shouldCheckSource = checkSource || checkDist || !!binary;
 const failures = [
+  ...(shouldCheckSource ? verifySource() : []),
   ...(checkDist ? verifyDist(dist) : []),
   ...verifyBinary(binary),
 ];
@@ -186,5 +260,8 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  `[verify-frontend-welcome] OK${checkDist ? ` dist=${dist}` : ""}${binary ? ` binary=${binary}` : ""}`,
+  `[verify-frontend-welcome] OK` +
+    `${shouldCheckSource ? " source" : ""}` +
+    `${checkDist ? ` dist=${dist}` : ""}` +
+    `${binary ? ` binary=${binary}` : ""}`,
 );

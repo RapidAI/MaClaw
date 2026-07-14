@@ -97,6 +97,14 @@ if !errorlevel! neq 0 (
     echo [ERROR] Frontend build failed.
     goto :error
 )
+cd /d "%~dp0"
+REM OEM shares MaClaw frontend embed - fail local builds if welcome page is stale/old.
+echo [INFO] Verifying AI assistant welcome page in frontend dist...
+node "%~dp0scripts\verify-frontend-welcome.mjs" --dist "%~dp0gui\frontend\dist"
+if !errorlevel! neq 0 (
+    echo [ERROR] Frontend welcome verification failed.
+    goto :error
+)
 cd "%~dp0"
 
 REM -- Generate Windows Resources (icon + version info) --
