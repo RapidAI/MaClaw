@@ -172,6 +172,12 @@ func mobileDocumentBlobSize(relPath string) int {
 // mobileWriteOriginalHTTP streams original bytes to the client. Prefers disk
 // streaming when SourcePath is set to avoid holding multi-MB files in RAM.
 func mobileWriteOriginalHTTP(w http.ResponseWriter, contentType, filename string, mem []byte, relPath string) bool {
+	return mobileWriteOriginalHTTPDisp(w, contentType, filename, mem, relPath, false)
+}
+
+// mobileWriteOriginalHTTPDisp is like mobileWriteOriginalHTTP; inline=true uses
+// Content-Disposition: inline (browser image preview / <img>).
+func mobileWriteOriginalHTTPDisp(w http.ResponseWriter, contentType, filename string, mem []byte, relPath string, inline bool) bool {
 	contentType = strings.TrimSpace(contentType)
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -180,14 +186,19 @@ func mobileWriteOriginalHTTP(w http.ResponseWriter, contentType, filename string
 	if filename == "" || filename == "." {
 		filename = "download"
 	}
+	disp := "attachment"
+	if inline {
+		disp = "inline"
+	}
 	// Prefer streaming from disk when a path is available.
 	if p := strings.TrimSpace(relPath); p != "" {
 		f, size, err := mobileOpenDocumentBlob(p)
 		if err == nil {
 			defer f.Close()
 			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filename))
+			w.Header().Set("Content-Disposition", disp+"; filename="+strconv.Quote(filename))
 			w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+			w.Header().Set("Cache-Control", "private, max-age=300")
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.Copy(w, f)
 			return true
@@ -197,8 +208,9 @@ func mobileWriteOriginalHTTP(w http.ResponseWriter, contentType, filename string
 		return false
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(filename))
+	w.Header().Set("Content-Disposition", disp+"; filename="+strconv.Quote(filename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(mem)))
+	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(mem)
 	return true

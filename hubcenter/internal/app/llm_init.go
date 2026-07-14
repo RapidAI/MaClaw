@@ -50,22 +50,23 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	cardTypeRepo := cardstore.CardTypeRepository(baseCardTypeRepo)
 	baseOrderRepo := sqlite.NewLLMOrderRepo(provider)
 	orderRepo := cardstore.PurchaseOrderRepository(baseOrderRepo)
+	bindingRepo := sqlite.NewLLMBindingRepo(provider)
 	if haSvc != nil {
 		haSvc.AttachLLMAuthorizations(baseAuthRepo)
+		haSvc.AttachLLMBindings(bindingRepo)
 		authRepo = &haLLMAuthorizationRepo{inner: baseAuthRepo, sync: haSvc}
 		haSvc.AttachCardTypes(baseCardTypeRepo)
 		cardTypeRepo = &haCardTypeRepo{inner: baseCardTypeRepo, sync: haSvc}
 		haSvc.AttachCardOrders(baseOrderRepo)
 		orderRepo = &haCardOrderRepo{inner: baseOrderRepo, sync: haSvc}
 	}
-	bindingRepo := sqlite.NewLLMBindingRepo(provider)
-
 	// 3. Create services
 	llmSvc := llmservice.NewService(system)
 	authChecker := llmservice.NewAuthorizationChecker(authRepo)
 	usageRecorder := llmservice.NewUsageRecorder(usageRepo)
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
 	if haSvc != nil {
+		bindingMgr.SetSyncBinding(haSvc.AppendLLMNodeBinding)
 		seedLLMAuthorizationHAOps(context.Background(), haSvc, baseAuthRepo)
 		seedLLMCardOrderHAOps(context.Background(), haSvc, baseOrderRepo)
 	}

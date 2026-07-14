@@ -448,7 +448,14 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	hubSecret := ""
 	if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
 		hubID = regState.HubID
-		hubCenterURL = firstNonEmpty(regState.ActiveBaseURL, regState.BaseURL, hubCenterURL)
+		// The explicit Hub configuration is the routing source of truth.  The
+		// registration state is replicated/runtime data and can temporarily point
+		// at an old HA member after a topology change; letting it override the
+		// configured URL sends LLM traffic to a node that may not own the current
+		// tenant binding.  Only use it to recover a missing configuration.
+		if hubCenterURL == "" {
+			hubCenterURL = firstNonEmpty(regState.ActiveBaseURL, regState.BaseURL)
+		}
 	}
 	// hub_secret is stored in center_registration system setting
 	hubSecret = loadCenterHubSecret(context.Background(), st.System)
@@ -464,18 +471,22 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		// Keep every configured or registered remote HubCenter node available to
 		// the LLM path. Hub and HubCenter may be deployed independently.
 		candidates := append([]string{cfg.Center.BaseURL}, cfg.Center.BaseURLs...)
-		if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
-			candidates = append(candidates, regState.ActiveBaseURL)
-			candidates = append(candidates, regState.BaseURLs...)
+		if strings.TrimSpace(cfg.Center.BaseURL) == "" && len(cfg.Center.BaseURLs) == 0 {
+			if regState, err := centerService.Status(context.Background()); err == nil && regState != nil {
+				candidates = append(candidates, regState.ActiveBaseURL)
+				candidates = append(candidates, regState.BaseURLs...)
+			}
 		}
 		maclawMod.Client.SetHubCenterCandidates(candidates)
 		refreshHubCenterCandidates := func() {
 			// Probe remote cluster members proactively. This is intentionally
 			// independent of deployment topology: Hub may run on a different host.
 			urls := append([]string{cfg.Center.BaseURL}, cfg.Center.BaseURLs...)
-			if state, err := centerService.Status(context.Background()); err == nil && state != nil {
-				urls = append(urls, state.ActiveBaseURL)
-				urls = append(urls, state.BaseURLs...)
+			if strings.TrimSpace(cfg.Center.BaseURL) == "" && len(cfg.Center.BaseURLs) == 0 {
+				if state, err := centerService.Status(context.Background()); err == nil && state != nil {
+					urls = append(urls, state.ActiveBaseURL)
+					urls = append(urls, state.BaseURLs...)
+				}
 			}
 			current := maclawMod.Client.CurrentHubCenterURL()
 			ordered := remote.SelectBestCenter(context.Background(), &http.Client{Timeout: 4 * time.Second}, urls, current)

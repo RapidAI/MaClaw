@@ -44,3 +44,32 @@ func TestMaClawModuleGlobalAccessors(t *testing.T) {
 		t.Fatalf("access control getter returned %#v", got)
 	}
 }
+
+func TestHubCenterServiceGroupIDsTranslatesOnlyVEVirtualGroup(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{name: "virtual employee group", in: []string{"ve-service"}, want: []string{"system-free"}},
+		{name: "case and whitespace", in: []string{" VE-Service ", "redeem"}, want: []string{"system-free", "redeem"}},
+		{name: "ordinary groups unchanged", in: []string{"redeem", "enterprise"}, want: []string{"redeem", "enterprise"}},
+		{name: "nil remains nil", in: nil, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hubCenterServiceGroupIDs(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("groups = %#v, want %#v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("groups = %#v, want %#v", got, tt.want)
+				}
+			}
+			if len(tt.in) > 0 && &got[0] == &tt.in[0] {
+				t.Fatal("translation must not mutate the caller slice")
+			}
+		})
+	}
+}

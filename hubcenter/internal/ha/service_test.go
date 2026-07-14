@@ -660,6 +660,38 @@ func TestAppendLLMCardOrderOmitsDerivedAuthorizationFields(t *testing.T) {
 	}
 }
 
+func TestAppendLLMNodeBindingUsesStableLeaseIdentity(t *testing.T) {
+	opsRepo := &fakeHASyncOpRepo{}
+	versionsRepo := &fakeHAEntityVersionRepo{items: make(map[string]*store.HAEntityVersion)}
+	svc := &Service{nodeID: "hc-1", ops: opsRepo, versions: versionsRepo}
+	now := time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)
+	binding := &store.LLMNodeBinding{
+		HubID:      "hub-1",
+		TenantID:   "tenant-a",
+		NodeID:     "hc-1",
+		BoundAt:    now,
+		LastActive: now,
+		ExpiresAt:  now.Add(BindingLeaseTTL),
+	}
+
+	svc.AppendLLMNodeBinding(context.Background(), binding)
+
+	if len(opsRepo.ops) != 1 {
+		t.Fatalf("ops len = %d, want 1", len(opsRepo.ops))
+	}
+	op := opsRepo.ops[0]
+	if op.EntityType != EntityLLMNodeBinding || op.EntityID != "hub-1\x00tenant-a" {
+		t.Fatalf("binding op identity = %s/%q", op.EntityType, op.EntityID)
+	}
+	var payload store.LLMNodeBinding
+	if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.NodeID != "hc-1" || payload.ExpiresAt.IsZero() {
+		t.Fatalf("binding payload = %#v", payload)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }

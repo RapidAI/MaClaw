@@ -38,6 +38,21 @@ func IsMaClawProviderRequest(providerID string) bool {
 	return strings.TrimSpace(strings.ToLower(providerID)) == llmservice.MaClawOfficialProviderID
 }
 
+// hubCenterServiceGroupIDs translates Hub-only virtual groups before forwarding
+// to HubCenter. ve-service is the virtual-employee binding name exposed by Hub;
+// it is not a HubCenter billing/routing group. HubCenter's system-free alias
+// resolves the request against the tenant's active compute entitlement (redeem
+// in this deployment), while leaving the VE-side configuration unchanged.
+func hubCenterServiceGroupIDs(serviceGroupIDs []string) []string {
+	ids := append([]string(nil), serviceGroupIDs...)
+	for i := range ids {
+		if strings.EqualFold(strings.TrimSpace(ids[i]), "ve-service") {
+			ids[i] = "system-free"
+		}
+	}
+	return ids
+}
+
 // ForwardViaMaClaw forwards a request through the MaClaw Official provider (HubCenter proxy).
 // Returns (responseBody, statusCode, error).
 func ForwardViaMaClaw(ctx context.Context, body []byte, tenantID string, serviceGroupIDs ...string) ([]byte, int, error) {
@@ -45,7 +60,7 @@ func ForwardViaMaClaw(ctx context.Context, body []byte, tenantID string, service
 	if module == nil || module.Client == nil {
 		return []byte(`{"error":{"message":"MaClaw official service is not configured"}}`), http.StatusServiceUnavailable, nil
 	}
-	return module.Client.Forward(ctx, body, tenantID, serviceGroupIDs...)
+	return module.Client.Forward(ctx, body, tenantID, hubCenterServiceGroupIDs(serviceGroupIDs)...)
 }
 
 // ForwardStreamViaMaClaw forwards a streaming request through the MaClaw Official provider.
@@ -59,7 +74,7 @@ func ForwardStreamViaMaClaw(ctx context.Context, body []byte, tenantID string, s
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 		}, nil
 	}
-	return module.Client.ForwardStream(ctx, body, tenantID, serviceGroupIDs...)
+	return module.Client.ForwardStream(ctx, body, tenantID, hubCenterServiceGroupIDs(serviceGroupIDs)...)
 }
 
 // GetMaClawAccessControl returns the access control instance for permission checks.

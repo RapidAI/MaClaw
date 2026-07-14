@@ -455,6 +455,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/mobile/documents/drafts", MobileDocumentDraftsListHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftsListHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/drafts/{draftId}/source", MobileDocumentDraftSourceHandler(identity))
+	mux.HandleFunc("GET /api/mobile/documents/drafts/{draftId}/images/{imageId}", MobileDocumentDraftImageHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/quota", MobileDocumentQuotaHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/drafts", MobileDocumentDraftHandler(identity))
 	mux.HandleFunc("PATCH /api/mobile/documents/drafts/{draftId}", MobileDocumentDraftUpdateHandler(identity))

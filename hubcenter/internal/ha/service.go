@@ -41,6 +41,7 @@ const (
 	EntityLLMCardType         = "llm_card_type"
 	EntityLLMTenantAuth       = "llm_tenant_authorization"
 	EntityLLMCardOrder        = "llm_card_order"
+	EntityLLMNodeBinding      = "llm_node_binding"
 	EntityNotification        = "notification"
 
 	OpUpsert = "upsert"
@@ -91,6 +92,7 @@ type Service struct {
 	cardTypes                cardstore.CardTypeRepository
 	cardOrders               cardstore.PurchaseOrderRepository
 	llmAuthorizations        llmservice.TenantAuthorizationRepository
+	llmBindings              store.LLMNodeBindingRepository
 	notifications            notification.Store
 	heartbeatSync            store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval time.Duration
@@ -279,6 +281,13 @@ func (s *Service) AttachLLMAuthorizations(repo llmservice.TenantAuthorizationRep
 		return
 	}
 	s.llmAuthorizations = repo
+}
+
+func (s *Service) AttachLLMBindings(repo store.LLMNodeBindingRepository) {
+	if s == nil {
+		return
+	}
+	s.llmBindings = repo
 }
 
 func (s *Service) SetRouteSnapshotRefresher(refresher interface{ Rebuild(context.Context) error }) {
@@ -576,7 +585,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}}},
-		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}}},
+		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}, EntityLLMNodeBinding: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
 		{Key: "notifications", Label: "Notifications", EntityTypes: map[string]struct{}{EntityNotification: {}}},
 	}
@@ -1476,7 +1485,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityNotification:
 		return true
 	default:
 		return false
@@ -1585,6 +1594,12 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "id", payload.ID, nil
+	case EntityLLMNodeBinding:
+		var payload store.LLMNodeBinding
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "binding", llmBindingEntityID(&payload), nil
 	case EntityLLMCardOrder:
 		var payload struct {
 			OrderNo string `json:"order_no"`
@@ -1700,6 +1715,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyLLMTenantAuthOp(ctx, op)
 	case EntityLLMCardOrder:
 		return s.applyLLMCardOrderOp(ctx, op)
+	case EntityLLMNodeBinding:
+		return s.applyLLMNodeBindingOp(ctx, op)
 	case EntityNotification:
 		return s.applyNotificationOp(ctx, op)
 	default:
@@ -2068,6 +2085,30 @@ func (s *Service) applyLLMCardOrderOp(ctx context.Context, op *store.HASyncOp) e
 	}
 }
 
+func llmBindingEntityID(item *store.LLMNodeBinding) string {
+	if item == nil {
+		return ""
+	}
+	return item.HubID + "\x00" + item.TenantID
+}
+
+func (s *Service) applyLLMNodeBindingOp(ctx context.Context, op *store.HASyncOp) error {
+	if s.llmBindings == nil {
+		return nil
+	}
+	if op.OpType != OpUpsert {
+		return fmt.Errorf("unsupported llm node binding op: %s", op.OpType)
+	}
+	var item store.LLMNodeBinding
+	if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+		return err
+	}
+	if llmBindingEntityID(&item) != op.EntityID {
+		return fmt.Errorf("llm node binding identity mismatch")
+	}
+	return s.llmBindings.Upsert(ctx, &item)
+}
+
 func (s *Service) applyNotificationOp(ctx context.Context, op *store.HASyncOp) error {
 	if s.notifications == nil {
 		return nil
@@ -2184,6 +2225,17 @@ func (s *Service) AppendLLMCardOrder(ctx context.Context, item *cardstore.Purcha
 	if err := s.AppendUpsert(ctx, EntityLLMCardOrder, item.OrderNo, payload, updatedAt); err != nil {
 		log.Printf("[hubcenter][ha] append llm card order: %v", err)
 		s.recordFailure(ctx, "ha_sync", "append_llm_card_order_failed", err.Error(), item.OrderNo, map[string]any{"tenant_id": item.TenantID, "hub_id": item.HubID})
+	}
+}
+
+// AppendLLMNodeBinding replicates the short-lived owner lease so every HA node
+// makes the same routing decision after a restart or failover.
+func (s *Service) AppendLLMNodeBinding(ctx context.Context, item *store.LLMNodeBinding) {
+	if item == nil || item.HubID == "" || item.TenantID == "" || item.NodeID == "" {
+		return
+	}
+	if err := s.AppendUpsertForced(ctx, EntityLLMNodeBinding, llmBindingEntityID(item), item, item.LastActive); err != nil {
+		log.Printf("[hubcenter][ha] append llm node binding: %v", err)
 	}
 }
 

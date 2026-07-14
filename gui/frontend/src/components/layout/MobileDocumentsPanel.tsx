@@ -2,6 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { useDialog } from '../CustomDialog';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
 
+export type MobileDocumentDraftImage = {
+  id: string;
+  filename?: string;
+  content_type?: string;
+  size?: number;
+  url?: string;
+};
+
 export type MobileDocumentDraftSummary = {
   id: string;
   title: string;
@@ -15,6 +23,7 @@ export type MobileDocumentDraftSummary = {
   source_content_type?: string;
   source_size?: number;
   source_download_url?: string;
+  images?: MobileDocumentDraftImage[];
 };
 
 type MobileDocumentsPanelProps = {
@@ -120,6 +129,191 @@ function callSaveOriginal(id: string): Promise<string> {
     );
   }
   return app.SaveMobileDocumentOriginal(id);
+}
+
+type MobileDocImagePayload = {
+  content_type?: string;
+  data_base64?: string;
+  filename?: string;
+  size?: number;
+};
+
+/** Session cache so opening the same draft does not re-download every illustration. */
+const mobileDocImageCache = new Map<string, Promise<MobileDocImagePayload>>();
+const MOBILE_DOC_IMAGE_CACHE_MAX = 24;
+
+function callGetDraftImage(draftId: string, imageId: string): Promise<MobileDocImagePayload> {
+  const key = `${draftId}\0${imageId}`;
+  const hit = mobileDocImageCache.get(key);
+  if (hit) return hit;
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.GetMobileDocumentDraftImage) {
+    return Promise.reject(
+      new Error(
+        'Desktop binding missing GetMobileDocumentDraftImage — rebuild GUI after pull.',
+      ),
+    );
+  }
+  const p = app
+    .GetMobileDocumentDraftImage(draftId, imageId)
+    .then((payload: MobileDocImagePayload) => payload)
+    .catch((err: unknown) => {
+      mobileDocImageCache.delete(key);
+      throw err;
+    });
+  // Simple FIFO bound: drop oldest entries when over cap (Map preserves insertion order).
+  if (mobileDocImageCache.size >= MOBILE_DOC_IMAGE_CACHE_MAX) {
+    const oldest = mobileDocImageCache.keys().next().value;
+    if (oldest !== undefined) mobileDocImageCache.delete(oldest);
+  }
+  mobileDocImageCache.set(key, p);
+  return p;
+}
+
+/** Match Hub markdown image URLs: /api/mobile/documents/drafts/{id}/images/{imgId} */
+const MOBILE_DOC_IMAGE_RE =
+  /!\[([^\]]*)\]\((\/api\/mobile\/documents\/drafts\/([^/]+)\/images\/([^)\s]+))\)/g;
+
+type PreviewSegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; alt: string; draftId: string; imageId: string; url: string };
+
+function splitMarkdownForPreview(markdown: string): PreviewSegment[] {
+  const src = markdown || '';
+  const segments: PreviewSegment[] = [];
+  let last = 0;
+  const re = new RegExp(MOBILE_DOC_IMAGE_RE.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    if (m.index > last) {
+      segments.push({ kind: 'text', text: src.slice(last, m.index) });
+    }
+    segments.push({
+      kind: 'image',
+      alt: m[1] || m[4] || 'image',
+      draftId: m[3],
+      imageId: m[4],
+      url: m[2],
+    });
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) {
+    segments.push({ kind: 'text', text: src.slice(last) });
+  }
+  if (segments.length === 0) {
+    segments.push({ kind: 'text', text: src });
+  }
+  return segments;
+}
+
+function MobileDocImage({
+  draftId,
+  imageId,
+  alt,
+}: {
+  draftId: string;
+  imageId: string;
+  alt: string;
+}) {
+  const [src, setSrc] = useState<string>('');
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr('');
+    setSrc('');
+    void callGetDraftImage(draftId, imageId)
+      .then((payload) => {
+        if (cancelled) return;
+        const b64 = String(payload?.data_base64 || '').trim();
+        const ct = String(payload?.content_type || 'image/png').split(';')[0].trim() || 'image/png';
+        if (!b64) {
+          setErr('empty image');
+          return;
+        }
+        setSrc(`data:${ct};base64,${b64}`);
+      })
+      .catch((e: any) => {
+        if (!cancelled) setErr(String(e?.message || e || 'load failed'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draftId, imageId]);
+
+  if (loading) {
+    return (
+      <div style={{ opacity: 0.55, fontSize: '0.78rem', padding: '8px 0' }}>
+        {alt ? `${alt}…` : '…'}
+      </div>
+    );
+  }
+  if (err || !src) {
+    return (
+      <div style={{ opacity: 0.65, fontSize: '0.78rem', padding: '6px 0', color: '#f0b4b4' }}>
+        [{alt || imageId}]
+      </div>
+    );
+  }
+  return (
+    <figure style={{ margin: '10px 0', maxWidth: '100%' }}>
+      <img
+        src={src}
+        alt={alt}
+        style={{
+          maxWidth: '100%',
+          maxHeight: 360,
+          borderRadius: 8,
+          border: '1px solid var(--theme-border, rgba(255,255,255,0.12))',
+          objectFit: 'contain',
+          background: 'color-mix(in srgb, var(--theme-field-bg, #000) 40%, transparent)',
+          display: 'block',
+        }}
+      />
+      {alt ? (
+        <figcaption style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: 4 }}>{alt}</figcaption>
+      ) : null}
+    </figure>
+  );
+}
+
+function MobileDocPreviewBody({
+  markdown,
+  emptyLabel,
+}: {
+  markdown: string;
+  emptyLabel: string;
+}) {
+  const segments = useMemo(() => splitMarkdownForPreview(markdown), [markdown]);
+  if (!markdown.trim()) {
+    return <>{emptyLabel}</>;
+  }
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (seg.kind === 'text') {
+          return (
+            <span key={`t-${i}`} style={{ whiteSpace: 'pre-wrap' }}>
+              {seg.text}
+            </span>
+          );
+        }
+        return (
+          <MobileDocImage
+            key={`i-${seg.draftId}-${seg.imageId}-${i}`}
+            draftId={seg.draftId}
+            imageId={seg.imageId}
+            alt={seg.alt}
+          />
+        );
+      })}
+    </>
+  );
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -1019,7 +1213,6 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                 flex: 1,
                 overflow: 'auto',
                 padding: 16,
-                whiteSpace: 'pre-wrap',
                 fontFamily: "ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace",
                 fontSize: '0.82rem',
                 lineHeight: 1.5,
@@ -1027,7 +1220,10 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
               }}
             >
               {selected ? (
-                selected.markdown || selected.preview || t('(empty body)', '（无正文）')
+                <MobileDocPreviewBody
+                  markdown={selected.markdown || selected.preview || ''}
+                  emptyLabel={t('(empty body)', '（无正文）')}
+                />
               ) : (
                 t('Select a draft on the left, or drop original files above to share with Mobile.', '请选择左侧文稿，或将原始文件拖到上方以分享到手机。')
               )}

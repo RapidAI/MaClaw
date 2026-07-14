@@ -559,6 +559,162 @@ describe("renderContentWithCodeBlocks", () => {
         expect(Array.from(rows[1].querySelectorAll("td")).map(cell => cell.textContent)).toEqual(["明天", "- 小雨转多云", "24~32°C", "东北风 1-3级"]);
     });
 
+    it("repairs weather-style split rows with continuation markers (→ / -)", () => {
+        // Digital employees often emit one forecast day as two partial rows:
+        // date+condition, then "→" / "-" plus temperature and wind.
+        const markdown = [
+            "| 日期 | 天气 | 温度 | 风力 |",
+            "| --- | --- | --- | --- |",
+            "| 今天 (14日) | 多云转晴 |",
+            "| → | 34°C / 22°C | <3级 |",
+            "| 明天 (15日) | 晴 |",
+            "| - | 35°C / 23°C | <3级 |",
+            "| 后天 (16日) | 晴转多云 |",
+            "| → | 34°C / 24°C | <3级 |",
+        ].join("\n");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(markdown, lightTheme)}</div>
+        );
+
+        const rows = Array.from(container.querySelectorAll("tbody tr"));
+        expect(rows).toHaveLength(3);
+        expect(Array.from(rows[0].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "今天 (14日)", "多云转晴", "34°C / 22°C", "<3级",
+        ]);
+        expect(Array.from(rows[1].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "明天 (15日)", "晴", "35°C / 23°C", "<3级",
+        ]);
+        expect(Array.from(rows[2].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "后天 (16日)", "晴转多云", "34°C / 24°C", "<3级",
+        ]);
+        // Continuation markers must not appear as a date-column value.
+        const cellTexts = Array.from(container.querySelectorAll("td")).map(cell => cell.textContent || "");
+        expect(cellTexts.some(text => text === "→" || text === "-")).toBe(false);
+    });
+
+    it("without a wrap marker only merges the classic 1+(N-1) streamed form", () => {
+        // Two independent short rows must stay separate (key|val style tables).
+        const independent = [
+            "| Key | Val | Key2 | Val2 |",
+            "| --- | --- | --- | --- |",
+            "| alpha | 1 |",
+            "| beta | 2 |",
+        ].join("\n");
+        const { container: independentContainer } = render(
+            <div>{renderContentWithCodeBlocks(independent, lightTheme)}</div>
+        );
+        expect(independentContainer.querySelectorAll("tbody tr")).toHaveLength(2);
+
+        // Classic label-then-rest still merges without a marker.
+        const classic = [
+            "日期 | 天气 | 温度 | 风力",
+            "--- | --- | --- | ---",
+            "| 17日 (周五) |",
+            "| 多云转雷阵雨 | 34°C / 22°C | <3级 |",
+        ].join("\n");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(classic, lightTheme)}</div>
+        );
+        const rows = Array.from(container.querySelectorAll("tbody tr"));
+        expect(rows).toHaveLength(1);
+        expect(Array.from(rows[0].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "17日 (周五)", "多云转雷阵雨", "34°C / 22°C", "<3级",
+        ]);
+    });
+
+    it("keeps list-prefixed pipe rows inside the table and repairs them", () => {
+        // Day-20 style tails: model switches to "- cell | cell" mid-forecast.
+        const markdown = [
+            "| 日期 | 天气 | 温度 | 风力 |",
+            "| --- | --- | --- | --- |",
+            "| 19日 (周日) | 多云 |",
+            "| - | 30°C / 21°C | <3级 |",
+            "- 20日 (周一) | 雷阵雨转多云 |",
+            "- → | 29°C / 22°C | <3级 |",
+            "1. 21日 (周二) | 晴 |",
+            "2. → | 28°C / 20°C | <3级 |",
+        ].join("\n");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(markdown, lightTheme)}</div>
+        );
+
+        const rows = Array.from(container.querySelectorAll("tbody tr"));
+        expect(rows).toHaveLength(3);
+        expect(Array.from(rows[0].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "19日 (周日)", "多云", "30°C / 21°C", "<3级",
+        ]);
+        expect(Array.from(rows[1].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "20日 (周一)", "雷阵雨转多云", "29°C / 22°C", "<3级",
+        ]);
+        expect(Array.from(rows[2].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "21日 (周二)", "晴", "28°C / 20°C", "<3级",
+        ]);
+        expect(container.textContent || "").not.toMatch(/•\s*20日/);
+    });
+
+    it("does not treat leading empty cells alone as a wrap marker for multi-cell joins", () => {
+        // Without a glyph marker, "| a | b |" + "|  | c | d |" must stay two rows.
+        const markdown = [
+            "| Key | Val | Key2 | Val2 |",
+            "| --- | --- | --- | --- |",
+            "| alpha | 1 |",
+            "|  | beta | 2 |",
+        ].join("\n");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(markdown, lightTheme)}</div>
+        );
+        expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
+    });
+
+    it("repairs split rows that pad trailing empty cells on either half", () => {
+        const markdown = [
+            "| 日期 | 天气 | 温度 | 风力 |",
+            "| --- | --- | --- | --- |",
+            "| 今天 (14日) | 多云转晴 | |",
+            "| → | 34°C / 22°C | <3级 | |",
+        ].join("\n");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(markdown, lightTheme)}</div>
+        );
+
+        const rows = Array.from(container.querySelectorAll("tbody tr"));
+        expect(rows).toHaveLength(1);
+        expect(Array.from(rows[0].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "今天 (14日)", "多云转晴", "34°C / 22°C", "<3级",
+        ]);
+    });
+
+    it("does not glue two complete body rows that already fill the columns", () => {
+        const markdown = [
+            "| 日期 | 天气 | 温度 | 风力 |",
+            "| --- | --- | --- | --- |",
+            "| 今天 | 晴 | 30°C | <3级 |",
+            "| 明天 | 雨 | 28°C | 3-4级 |",
+        ].join("\n");
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks(markdown, lightTheme)}</div>
+        );
+
+        const rows = Array.from(container.querySelectorAll("tbody tr"));
+        expect(rows).toHaveLength(2);
+        expect(Array.from(rows[0].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "今天", "晴", "30°C", "<3级",
+        ]);
+        expect(Array.from(rows[1].querySelectorAll("td")).map(cell => cell.textContent)).toEqual([
+            "明天", "雨", "28°C", "3-4级",
+        ]);
+    });
+
+    it("does not treat weather text that starts with a dash as a wrap marker", () => {
+        // "- 阴转雷阵雨" is real cell content, not a pure "-" continuation glyph.
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("日期 | 天气 | 气温 | 风力\n--- | --- | --- | ---\n|今天|\n|- 阴转雷阵雨 | 24~29°C | 东风 1-3级|", lightTheme)}</div>
+        );
+
+        const cells = Array.from(container.querySelectorAll("tbody td")).map(cell => cell.textContent);
+        expect(cells).toEqual(["今天", "- 阴转雷阵雨", "24~29°C", "东风 1-3级"]);
+    });
+
     it("preserves escaped pipes and backslashes while repairing streamed table rows", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("日期 | 天气 | 路径\n--- | --- | ---\n|今天|\n|雷雨\\|大风 | C:\\weather\\today|", lightTheme)}</div>

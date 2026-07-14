@@ -19,20 +19,30 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// MobileDocumentDraftImage is an illustration extracted from an Office original.
+type MobileDocumentDraftImage struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Size        int    `json:"size,omitempty"`
+	URL         string `json:"url,omitempty"`
+}
+
 // MobileDocumentDraftSummary is a Hub-shared emergency draft visible on desktop.
 type MobileDocumentDraftSummary struct {
-	ID                string `json:"id"`
-	Title             string `json:"title"`
-	Template          string `json:"template"`
-	UpdatedAt         string `json:"updated_at"`
-	RuneCount         int    `json:"rune_count"`
-	Preview           string `json:"preview"`
-	Markdown          string `json:"markdown,omitempty"`
-	HasOriginal       bool   `json:"has_original,omitempty"`
-	SourceFilename    string `json:"source_filename,omitempty"`
-	SourceContentType string `json:"source_content_type,omitempty"`
-	SourceSize        int    `json:"source_size,omitempty"`
-	SourceDownloadURL string `json:"source_download_url,omitempty"`
+	ID                string                     `json:"id"`
+	Title             string                     `json:"title"`
+	Template          string                     `json:"template"`
+	UpdatedAt         string                     `json:"updated_at"`
+	RuneCount         int                        `json:"rune_count"`
+	Preview           string                     `json:"preview"`
+	Markdown          string                     `json:"markdown,omitempty"`
+	HasOriginal       bool                       `json:"has_original,omitempty"`
+	SourceFilename    string                     `json:"source_filename,omitempty"`
+	SourceContentType string                     `json:"source_content_type,omitempty"`
+	SourceSize        int                        `json:"source_size,omitempty"`
+	SourceDownloadURL string                     `json:"source_download_url,omitempty"`
+	Images            []MobileDocumentDraftImage `json:"images,omitempty"`
 }
 
 // ListMobileDocumentDrafts returns the viewer's mobile/Hub drafts (same library as phone).
@@ -436,7 +446,98 @@ func mobileDraftSummaryFromMap(draftMap map[string]any) *MobileDocumentDraftSumm
 	if v, ok := draftMap["rune_count"].(float64); ok {
 		out.RuneCount = int(v)
 	}
+	if rawImgs, ok := draftMap["images"].([]any); ok {
+		for _, item := range rawImgs {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			img := MobileDocumentDraftImage{
+				ID:          stringFromAny(m["id"]),
+				Filename:    stringFromAny(m["filename"]),
+				ContentType: stringFromAny(m["content_type"]),
+				URL:         stringFromAny(m["url"]),
+			}
+			switch n := m["size"].(type) {
+			case float64:
+				img.Size = int(n)
+			case int:
+				img.Size = n
+			}
+			if img.ID != "" {
+				out.Images = append(out.Images, img)
+			}
+		}
+	}
 	return out
+}
+
+// MobileDocumentDraftImagePayload is binary image content for desktop preview.
+type MobileDocumentDraftImagePayload struct {
+	ContentType string `json:"content_type"`
+	Filename    string `json:"filename,omitempty"`
+	// DataBase64 is standard base64 of the image bytes.
+	DataBase64 string `json:"data_base64"`
+	Size       int    `json:"size"`
+}
+
+// GetMobileDocumentDraftImage downloads one extracted illustration from Hub
+// (authenticated). Used by desktop preview so <img> can use a data URL.
+func (a *App) GetMobileDocumentDraftImage(draftID, imageID string) (*MobileDocumentDraftImagePayload, error) {
+	if a == nil {
+		return nil, fmt.Errorf("app is not initialized")
+	}
+	draftID = strings.TrimSpace(draftID)
+	imageID = strings.TrimSpace(imageID)
+	if draftID == "" || imageID == "" {
+		return nil, fmt.Errorf("draft id and image id are required")
+	}
+	// Path-safe image id only (matches Hub allow-list imgN).
+	imageID = filepath.Base(imageID)
+	if imageID == "." || imageID == ".." || !strings.HasPrefix(imageID, "img") {
+		return nil, fmt.Errorf("invalid image id")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
+	if hubURL == "" || viewerToken == "" {
+		return nil, fmt.Errorf("MaClaw Hub login is required to load document images")
+	}
+	req, err := http.NewRequest(http.MethodGet, hubURL+"/api/mobile/documents/drafts/"+url.PathEscape(draftID)+"/images/"+url.PathEscape(imageID), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download document image failed: %w", err)
+	}
+	defer resp.Body.Close()
+	// Cap at 8 MiB for preview UI.
+	const maxImage = 8 << 20
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxImage+1))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download document image failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	if len(data) > maxImage {
+		return nil, fmt.Errorf("image too large for preview")
+	}
+	ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	// filename from Content-Disposition is optional
+	filename := imageID
+	return &MobileDocumentDraftImagePayload{
+		ContentType: ct,
+		Filename:    filename,
+		DataBase64:  base64.StdEncoding.EncodeToString(data),
+		Size:        len(data),
+	}, nil
 }
 
 // GetMobileDocumentDraft fetches one draft (full markdown) from Hub.

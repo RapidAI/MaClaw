@@ -12,26 +12,49 @@ export interface MarkdownTableRenderModel extends MarkdownTableModel {
     notes: string[];
 }
 
-export function isMarkdownTableRow(line: string): boolean {
+/**
+ * Digital employees sometimes emit table rows as list items, e.g.
+ *   - | 今天 | 晴 |
+ *   - 20日 (周一) | 雷阵雨转多云
+ *   1. | tomorrow | rain |
+ * Strip a single leading list marker when the remainder is still a pipe row.
+ * Display-only normalize — safe to call more than once (idempotent for table lines).
+ */
+export function normalizeMarkdownTableLine(line: string): string {
     const trimmed = line.trim();
+    // -, *, +, •, or ordered "1." / "1)"
+    const listMatch = trimmed.match(/^(?:[-*+•]|\d+[.)])\s+(\S.*)$/);
+    if (!listMatch) return line;
+    const rest = listMatch[1];
+    if (!rest.includes("|")) return line;
+    if (rest.startsWith("|") && rest.length > 1) return rest;
+    if (parseMarkdownTableCells(rest).length >= 2) return rest;
+    return line;
+}
+
+export function isMarkdownTableRow(line: string): boolean {
+    const trimmed = normalizeMarkdownTableLine(line).trim();
     if (trimmed.startsWith("|") && trimmed.length > 1) return true;
     if (!trimmed.includes("|")) return false;
     return parseMarkdownTableCells(trimmed).length >= 2;
 }
 
 export function isMarkdownTableSeparatorRow(line: string): boolean {
-    const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+    const trimmed = normalizeMarkdownTableLine(line).trim().replace(/^\|/, "").replace(/\|$/, "");
     return /^[\s|:\-]+$/.test(trimmed) && trimmed.includes("-");
 }
 
 export function buildMarkdownTableModel(tableLines: string[]): MarkdownTableModel | null {
-    const dataRows = tableLines.filter(line => !isMarkdownTableSeparatorRow(line));
-    if (tableLines.length < 2 || dataRows.length === 0) return null;
-    const hasSeparator = tableLines.some(isMarkdownTableSeparatorRow);
-    const allRowsUseOuterPipes = tableLines.every(line => line.trim().startsWith("|"));
+    // Normalize once at the model boundary so list-prefixed rows and callers
+    // that skip pre-normalize still build a consistent table.
+    const lines = tableLines.map(normalizeMarkdownTableLine);
+    const dataRows = lines.filter(line => !isMarkdownTableSeparatorRow(line));
+    if (lines.length < 2 || dataRows.length === 0) return null;
+    const hasSeparator = lines.some(isMarkdownTableSeparatorRow);
+    const allRowsUseOuterPipes = lines.every(line => line.trim().startsWith("|"));
     if (!hasSeparator && !allRowsUseOuterPipes) return null;
     let headerCells = parseMarkdownTableCells(dataRows[0]);
-    const separatorLine = tableLines.find(isMarkdownTableSeparatorRow) || "";
+    const separatorLine = lines.find(isMarkdownTableSeparatorRow) || "";
     const separatorCells = parseMarkdownTableCells(separatorLine);
     if (headerCells.length === 1 && separatorCells.length >= 2) headerCells = [headerCells[0], ""];
     if (headerCells.length < 2) return null;
@@ -99,10 +122,16 @@ export function repairMixedNarrativeTable(model: MarkdownTableModel): MarkdownTa
 }
 
 /**
- * Some streamed answers put a row label (such as a weekday) on its own line,
- * then emit the remaining cells on the next line.  That is not valid Markdown,
- * but it is unambiguous for tables with three or more columns: 1 cell followed
- * by exactly N-1 cells belongs to one N-cell row.
+ * Some streamed answers split one logical table row across two lines. Common
+ * shapes (for N >= 3 columns):
+ *   1) label alone, then the remaining N-1 cells
+ *      |今天|
+ *      |阴转雷阵雨 | 24~29°C | 东风 1-3级|
+ *   2) first k cells (1 < k < N), then a continuation line with the rest,
+ *      often prefixed by a marker cell such as "→" or "-"
+ *      |今天 (14日) | 多云转晴 |
+ *      | → | 34°C / 22°C | <3级 |
+ * Neither is valid Markdown; both are unambiguous enough to rejoin.
  */
 function repairSplitTableRows(model: MarkdownTableModel): MarkdownTableModel {
     const columnCount = model.headerCells.length;
@@ -110,18 +139,77 @@ function repairSplitTableRows(model: MarkdownTableModel): MarkdownTableModel {
 
     let repairedRows: string[] | null = null;
     for (let index = 0; index < model.bodyRows.length; index++) {
-        const cells = parseMarkdownTableCells(model.bodyRows[index]);
-        const nextRow = cells.length === 1 && cells[0] ? model.bodyRows[index + 1] : undefined;
-        const nextCells = nextRow ? parseMarkdownTableCells(nextRow) : [];
-        if (nextCells.length === columnCount - 1) {
+        const merged = tryMergeSplitTableRow(model.bodyRows[index], model.bodyRows[index + 1], columnCount);
+        if (merged) {
             repairedRows ??= model.bodyRows.slice(0, index);
-            repairedRows.push(`| ${[...cells, ...nextCells].map(escapeMarkdownTableCell).join(" | ")} |`);
+            repairedRows.push(merged);
             index++;
         } else if (repairedRows) {
             repairedRows.push(model.bodyRows[index]);
         }
     }
     return repairedRows ? { ...model, bodyRows: repairedRows } : model;
+}
+
+/**
+ * Pure wrap glyphs (not real data). Keep this list tight: only tokens that
+ * signal "row continues", never standalone values like temperatures or codes.
+ */
+function isTableRowContinuationGlyph(cell: string): boolean {
+    return /^(?:→|->|=>|⇒|…|\.{2,3}|—|–|-|~|·|•)$/.test(cell.trim());
+}
+
+/** Drop trailing empty cells so "| a | b | |" counts as two data cells. */
+function trimTrailingEmptyCells(cells: string[]): string[] {
+    let end = cells.length;
+    while (end > 0 && !cells[end - 1].trim()) end--;
+    return end === cells.length ? cells : cells.slice(0, end);
+}
+
+/**
+ * If `line` is a partial row and `nextLine` holds the remainder (optionally
+ * with a leading continuation marker), return a single joined markdown row.
+ */
+function tryMergeSplitTableRow(line: string, nextLine: string | undefined, columnCount: number): string | null {
+    if (!nextLine) return null;
+
+    // Lines are usually pre-normalized; normalize again so direct callers of
+    // buildMarkdownTableModel / repair still work with list-prefixed input.
+    const left = trimTrailingEmptyCells(parseMarkdownTableCells(normalizeMarkdownTableLine(line)));
+    if (left.length === 0 || left.length >= columnCount) return null;
+
+    const nextCells = parseMarkdownTableCells(normalizeMarkdownTableLine(nextLine));
+    if (nextCells.length === 0) return null;
+
+    // Skip leading blanks (column padding) and pure wrap glyphs ("→", "-").
+    // Only a real glyph unlocks k+(N-k) merges; blanks alone stay classic-only
+    // so "| a | b |" + "|  | c | d |" does not get glued.
+    let restStart = 0;
+    let sawGlyphMarker = false;
+    while (restStart < nextCells.length) {
+        const cell = nextCells[restStart];
+        if (!cell.trim()) {
+            restStart++;
+            continue;
+        }
+        if (isTableRowContinuationGlyph(cell)) {
+            sawGlyphMarker = true;
+            restStart++;
+            continue;
+        }
+        break;
+    }
+    const rest = trimTrailingEmptyCells(nextCells.slice(restStart));
+    if (rest.length === 0 || rest.length >= columnCount) return null;
+    if (left.length + rest.length !== columnCount) return null;
+
+    if (!sawGlyphMarker) {
+        // No wrap glyph: only the classic streamed form is safe —
+        // one label cell, then exactly the remaining N-1 cells.
+        if (left.length !== 1 || rest.length !== columnCount - 1) return null;
+    }
+
+    return `| ${[...left, ...rest].map(escapeMarkdownTableCell).join(" | ")} |`;
 }
 
 function escapeMarkdownTableCell(cell: string): string {

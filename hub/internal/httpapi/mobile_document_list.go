@@ -53,8 +53,9 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				return
 			}
 
-			display, shouldPersist := mobileDraftHealMarkdownOutsideLock(record)
-			if shouldPersist {
+			heal := mobileDraftHealMarkdownOutsideLock(record)
+			display := heal.Display
+			if heal.ShouldPersist {
 				mobileDocuments.Lock()
 				if cur, exists := mobileDocuments.drafts[draftID]; exists && cur.OwnerID == ownerID {
 					if mobileDraftRepairSourceMeta(&cur) {
@@ -65,18 +66,27 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 						len(record.SourceBytes) <= mobileDocumentSourceHotCacheMax {
 						cur.SourceBytes = record.SourceBytes
 					}
-					if mobileDraftApplyHealedMarkdown(&cur, display) {
+					if mobileDraftApplyHealed(&cur, heal) {
 						mobileDocuments.drafts[draftID] = cur
 						record = cur
+						display = strings.TrimSpace(cur.Markdown)
+						if display == "" {
+							display = heal.Display
+						}
 						repaired = true
 					} else {
 						// Another writer already fixed it — use latest stored body.
 						// Never re-extract under the documents lock.
+						// If stored is still over-spaced PDF / missing image meta display,
+						// keep the heal result computed outside the lock.
 						record = cur
-						if md := strings.TrimSpace(cur.Markdown); md != "" && !mobileDraftRecordBodyUnreadable(cur, md) {
+						md := strings.TrimSpace(cur.Markdown)
+						useStored := md != "" && !mobileDraftRecordBodyUnreadable(cur, md) &&
+							!(mobileDraftSourceIsPDF(cur) && mobilePDFTextLooksOverSpaced(md))
+						if useStored {
 							display = md
 						}
-						// else keep the display computed outside the lock
+						// Prefer live Images meta even when markdown display stays from heal.
 					}
 				}
 				mobileDocuments.Unlock()

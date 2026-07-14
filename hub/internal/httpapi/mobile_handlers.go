@@ -152,6 +152,8 @@ type mobileDocumentDraftRecord struct {
 	SourcePath  string
 	SourceSize  int
 	SourceBytes []byte
+	// Images: illustrations extracted from Office docs (DOCX media) for in-app preview.
+	Images []mobileDocumentDraftImage
 }
 
 type mobileDocumentExportRecord struct {
@@ -1650,6 +1652,9 @@ func mobileDocumentDraftPayloadWithMarkdown(record mobileDocumentDraftRecord, ma
 	} else {
 		payload["has_original"] = false
 	}
+	if imgs := mobileDraftImagesPayload(record.ID, record.Images); len(imgs) > 0 {
+		payload["images"] = imgs
+	}
 	return payload
 }
 
@@ -1688,7 +1693,7 @@ func mobileDraftWorkingText(draft mobileDocumentDraftRecord) string {
 func mobileDraftDisplayMarkdown(draft mobileDocumentDraftRecord) string {
 	md := strings.TrimSpace(draft.Markdown)
 	if md != "" && !mobileDraftRecordBodyUnreadable(draft, md) {
-		return md
+		return mobileDraftMaybeNormalizePDFMarkdown(draft, md)
 	}
 	src := mobileDraftLoadSourceBytes(&draft)
 	fname := mobileDraftFallbackFilename(draft)
@@ -1697,10 +1702,12 @@ func mobileDraftDisplayMarkdown(draft mobileDocumentDraftRecord) string {
 		if md != "" && mobileDraftRecordBodyUnreadable(draft, md) {
 			return mobileDraftOriginalOnlyMarkdownSize(fname, size)
 		}
-		return md
+		return mobileDraftMaybeNormalizePDFMarkdown(draft, md)
 	}
 	// Extract from original on demand (docx/xlsx/pdf/text).
-	if extracted, ok := mobileDraftMarkdownFromUpload(fname, src); ok && strings.TrimSpace(extracted) != "" {
+	// Use empty owner/draft for pure display so we do not write orphan image blobs
+	// outside the heal path (which owns Images meta + persist).
+	if extracted, _, ok := mobileDraftMarkdownFromUploadWithImages("", "", fname, src); ok && strings.TrimSpace(extracted) != "" {
 		if !mobileDraftBodyLooksUnreadable(extracted) {
 			return extracted
 		}
@@ -1724,9 +1731,20 @@ func mobileDraftDisplayMarkdown(draft mobileDocumentDraftRecord) string {
 func mobileDraftListPreviewMarkdown(draft mobileDocumentDraftRecord) string {
 	md := strings.TrimSpace(draft.Markdown)
 	if md == "" || !mobileDraftRecordBodyUnreadable(draft, md) {
-		return md
+		return mobileDraftMaybeNormalizePDFMarkdown(draft, md)
 	}
 	return mobileDraftOriginalOnlyMarkdownSize(mobileDraftFallbackFilename(draft), mobileDraftSourceSize(draft))
+}
+
+// mobileDraftMaybeNormalizePDFMarkdown collapses glyph-spaced PDF text for display.
+func mobileDraftMaybeNormalizePDFMarkdown(draft mobileDocumentDraftRecord, md string) string {
+	if md == "" || !mobileDraftSourceIsPDF(draft) {
+		return md
+	}
+	if !mobilePDFTextLooksOverSpaced(md) {
+		return md
+	}
+	return mobilePDFNormalizeExtractedMarkdown(md)
 }
 
 func mobileDraftFallbackFilename(draft mobileDocumentDraftRecord) string {
@@ -1746,6 +1764,14 @@ func mobileDraftSourceIsPDF(draft mobileDocumentDraftRecord) bool {
 	}
 	name := strings.ToLower(strings.TrimSpace(draft.SourceFilename))
 	return strings.HasSuffix(name, ".pdf")
+}
+
+func mobileDraftSourceIsDOCX(draft mobileDocumentDraftRecord) bool {
+	ct := strings.ToLower(strings.TrimSpace(draft.SourceContentType))
+	if strings.Contains(ct, "wordprocessingml") || strings.Contains(ct, "msword") {
+		return strings.HasSuffix(strings.ToLower(draft.SourceFilename), ".docx") || strings.Contains(ct, "wordprocessingml")
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(draft.SourceFilename)), ".docx")
 }
 
 func mobileDraftSourceLooksTextLike(draft mobileDocumentDraftRecord, raw []byte) bool {
@@ -1792,41 +1818,110 @@ func mobileDraftSourceLooksTextLike(draft mobileDocumentDraftRecord, raw []byte)
 	return true
 }
 
+// mobileDraftHealResult is the outcome of lock-free draft body repair.
+type mobileDraftHealResult struct {
+	Display       string
+	Images        []mobileDocumentDraftImage
+	ReplaceImages bool
+	ShouldPersist bool
+}
+
 // mobileDraftHealMarkdownOutsideLock re-extracts a garbage body and returns the
 // display text plus whether the stored markdown should be rewritten. Safe to call
 // without holding mobileDocuments.Lock (may read blob from disk).
-func mobileDraftHealMarkdownOutsideLock(draft mobileDocumentDraftRecord) (display string, shouldPersist bool) {
+// Also persists PDF glyph-spacing cleanup and one-shot DOCX image extraction.
+func mobileDraftHealMarkdownOutsideLock(draft mobileDocumentDraftRecord) mobileDraftHealResult {
 	stored := strings.TrimSpace(draft.Markdown)
-	if stored == "" || !mobileDraftRecordBodyUnreadable(draft, stored) {
-		return stored, false
+	// One-shot: extract DOCX illustrations when meta is empty (including empty body).
+	// Prefer keeping a readable user/body text and only appending 附图 links.
+	if mobileDraftSourceIsDOCX(draft) && len(draft.Images) == 0 && draft.ID != "" && draft.OwnerID != "" {
+		src := mobileDraftLoadSourceBytes(&draft)
+		if len(src) > 0 {
+			fname := mobileDraftFallbackFilename(draft)
+			md, images, ok := mobileDraftMarkdownFromUploadWithImages(draft.OwnerID, draft.ID, fname, src)
+			md = strings.TrimSpace(md)
+			if ok && len(images) > 0 {
+				display := md
+				// Keep existing readable body (user edits); only attach image section.
+				// Empty/unreadable stored body → use full re-extract (text + image markers).
+				if stored != "" && !mobileDraftRecordBodyUnreadable(draft, stored) {
+					display = mobileDraftAppendImageMarkdown(stored, draft.ID, images)
+				}
+				if strings.TrimSpace(display) == "" {
+					display = md
+				}
+				return mobileDraftHealResult{
+					Display:       display,
+					Images:        images,
+					ReplaceImages: true,
+					ShouldPersist: true,
+				}
+			}
+		}
 	}
-	display = mobileDraftDisplayMarkdown(draft)
-	display = strings.TrimSpace(display)
+	if stored == "" {
+		return mobileDraftHealResult{Display: stored}
+	}
+	if !mobileDraftRecordBodyUnreadable(draft, stored) {
+		// Readable PDF body with per-glyph spaces → normalize and persist.
+		if mobileDraftSourceIsPDF(draft) && mobilePDFTextLooksOverSpaced(stored) {
+			normalized := strings.TrimSpace(mobilePDFNormalizeExtractedMarkdown(stored))
+			if normalized != "" && normalized != stored {
+				return mobileDraftHealResult{Display: normalized, ShouldPersist: true}
+			}
+		}
+		return mobileDraftHealResult{Display: stored}
+	}
+	display := strings.TrimSpace(mobileDraftDisplayMarkdown(draft))
 	if display == "" || display == stored {
-		return stored, false
+		return mobileDraftHealResult{Display: stored}
 	}
-	return display, true
+	return mobileDraftHealResult{Display: display, ShouldPersist: true}
 }
 
 // mobileDraftApplyHealedMarkdown writes a previously computed display body.
 // Caller must hold mobileDocuments.Lock.
 func mobileDraftApplyHealedMarkdown(draft *mobileDocumentDraftRecord, display string) bool {
+	return mobileDraftApplyHealed(draft, mobileDraftHealResult{Display: display, ShouldPersist: true})
+}
+
+// mobileDraftApplyHealed applies a heal result (markdown and optional images).
+// Caller must hold mobileDocuments.Lock.
+func mobileDraftApplyHealed(draft *mobileDocumentDraftRecord, heal mobileDraftHealResult) bool {
 	if draft == nil {
 		return false
 	}
-	display = strings.TrimSpace(display)
-	if display == "" {
-		return false
+	display := strings.TrimSpace(heal.Display)
+	stored := strings.TrimSpace(draft.Markdown)
+	changed := false
+	if display != "" && display != stored {
+		// Replace while unreadable, cleaning glyph-spaced PDF, or DOCX image extract.
+		allow := mobileDraftRecordBodyUnreadable(*draft, draft.Markdown) ||
+			(mobileDraftSourceIsPDF(*draft) && mobilePDFTextLooksOverSpaced(stored)) ||
+			heal.ReplaceImages
+		if allow {
+			draft.Markdown = display
+			changed = true
+		}
 	}
-	// Only replace while the stored body is still unreadable (avoid racing a good write).
-	if !mobileDraftRecordBodyUnreadable(*draft, draft.Markdown) {
-		return false
+	if heal.ReplaceImages && len(heal.Images) > 0 {
+		// Avoid deleting blobs we just wrote when paths are identical (same draftimg keys).
+		old := draft.Images
+		newPaths := make(map[string]bool, len(heal.Images))
+		for _, im := range heal.Images {
+			if p := strings.TrimSpace(im.SourcePath); p != "" {
+				newPaths[p] = true
+			}
+		}
+		for _, im := range old {
+			if p := strings.TrimSpace(im.SourcePath); p != "" && !newPaths[p] {
+				mobileDeleteDocumentBlob(p)
+			}
+		}
+		draft.Images = heal.Images
+		changed = true
 	}
-	if display == strings.TrimSpace(draft.Markdown) {
-		return false
-	}
-	draft.Markdown = display
-	return true
+	return changed
 }
 
 func mobileDraftMarkdownLooksLikeRawBinary(text string) bool {
@@ -4038,6 +4133,7 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 		return
 	}
 	blobPath := record.SourcePath
+	images := append([]mobileDocumentDraftImage(nil), record.Images...)
 	delete(mobileDocuments.drafts, draftID)
 	// Drop related upload tasks that pointed at this draft (free quota/source).
 	for taskID, upload := range mobileDocuments.uploads {
@@ -4048,6 +4144,7 @@ func mobileDocumentDraftDelete(w http.ResponseWriter, r *http.Request, identity 
 	}
 	mobileDocuments.Unlock()
 	mobileDeleteDocumentBlob(blobPath)
+	mobileDraftDeleteImages(images)
 	mobilePersistState()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "draft_deleted",
@@ -4671,24 +4768,33 @@ func mobileUploadedFileIsImage(filename string) bool {
 }
 
 func mobileDraftMarkdownFromUpload(filename string, raw []byte) (string, bool) {
+	md, _, ok := mobileDraftMarkdownFromUploadWithImages("", "", filename, raw)
+	return md, ok
+}
+
+// mobileDraftMarkdownFromUploadWithImages is like mobileDraftMarkdownFromUpload but
+// can persist DOCX illustrations when ownerID+draftID are provided.
+func mobileDraftMarkdownFromUploadWithImages(ownerID, draftID, filename string, raw []byte) (string, []mobileDocumentDraftImage, bool) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".docx":
-		return mobileDraftMarkdownFromDOCX(filename, raw)
+		return mobileDraftMarkdownFromDOCXEx(ownerID, draftID, filename, raw)
 	case ".xlsx":
-		return mobileDraftMarkdownFromXLSX(filename, raw)
+		md, ok := mobileDraftMarkdownFromXLSX(filename, raw)
+		return md, nil, ok
 	case ".pdf":
-		return mobileDraftMarkdownFromPDF(filename, raw)
+		md, ok := mobileDraftMarkdownFromPDF(filename, raw)
+		return md, nil, ok
 	}
 	if !utf8.Valid(raw) {
-		return "", false
+		return "", nil, false
 	}
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
 		text = "_导入文件为空。_"
 	}
 	if ext == ".md" || ext == ".markdown" {
-		return text + "\n", true
+		return text + "\n", nil, true
 	}
 	title := strings.TrimSpace(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
 	if title == "" {
@@ -4696,54 +4802,20 @@ func mobileDraftMarkdownFromUpload(filename string, raw []byte) (string, bool) {
 	}
 	switch ext {
 	case ".log":
-		return "# " + title + "\n\n```text\n" + text + "\n```\n", true
+		return "# " + title + "\n\n```text\n" + text + "\n```\n", nil, true
 	case ".csv":
-		return "# " + title + "\n\n```csv\n" + text + "\n```\n", true
+		return "# " + title + "\n\n```csv\n" + text + "\n```\n", nil, true
 	case ".json":
-		return "# " + title + "\n\n```json\n" + text + "\n```\n", true
+		return "# " + title + "\n\n```json\n" + text + "\n```\n", nil, true
 	default:
-		return "# " + title + "\n\n" + text + "\n", true
+		return "# " + title + "\n\n" + text + "\n", nil, true
 	}
 }
 
+// mobileDraftMarkdownFromDOCX is the text-only convenience wrapper (tests / dry extract).
 func mobileDraftMarkdownFromDOCX(filename string, raw []byte) (string, bool) {
-	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
-	if err != nil {
-		return "", false
-	}
-	var documentXML []byte
-	for _, file := range zr.File {
-		if file.Name != "word/document.xml" {
-			continue
-		}
-		rc, err := file.Open()
-		if err != nil {
-			return "", false
-		}
-		documentXML, err = io.ReadAll(io.LimitReader(rc, mobileDocumentUploadMaxBytes))
-		_ = rc.Close()
-		if err != nil {
-			return "", false
-		}
-		break
-	}
-	if len(documentXML) == 0 {
-		return "", false
-	}
-	paragraphs := mobileDOCXParagraphs(documentXML)
-	if len(paragraphs) == 0 {
-		return "", false
-	}
-	title := mobileUploadTitle(filename)
-	var b strings.Builder
-	b.WriteString("# ")
-	b.WriteString(title)
-	b.WriteString("\n\n")
-	for _, paragraph := range paragraphs {
-		b.WriteString(paragraph)
-		b.WriteString("\n\n")
-	}
-	return b.String(), true
+	md, _, ok := mobileDraftMarkdownFromDOCXEx("", "", filename, raw)
+	return md, ok
 }
 
 func mobileDOCXParagraphs(raw []byte) []string {
@@ -4936,7 +5008,8 @@ const mobilePDFNaiveScanMaxBytes = 2 << 20 // 2 MiB
 func mobilePDFExtractText(raw []byte) string {
 	// Prefer GoPDF2 (same stack as knowledge import) for compressed / modern PDFs.
 	// Cap pages so a 100-page paper does not block upload/get for long.
-	if text := mobilePDFExtractTextGoPDF(raw); mobilePDFExtractedTextIsUsable(text) {
+	// Normalize before usability: glyph-spaced Chinese/Latin is real text once joined.
+	if text := mobilePDFNormalizeExtractedText(mobilePDFExtractTextGoPDF(raw)); mobilePDFExtractedTextIsUsable(text) {
 		return text
 	}
 	// Fallback: lightweight scan of uncompressed literal/hex strings
@@ -4954,11 +5027,232 @@ func mobilePDFExtractText(raw []byte) string {
 	var out []string
 	out = append(out, mobilePDFExtractHexStrings(text)...)
 	out = append(out, mobilePDFExtractLiteralStrings(text)...)
-	joined := strings.Join(mobileCompactTextLines(out), "\n")
+	joined := mobilePDFNormalizeExtractedText(strings.Join(mobileCompactTextLines(out), "\n"))
 	if mobilePDFExtractedTextIsUsable(joined) {
 		return joined
 	}
 	return ""
+}
+
+// mobilePDFSpacedLatinRe matches runs of single Latin/digit glyphs separated by
+// spaces, e.g. "G e n e r a t o r" (common when PDFs position each glyph).
+// Uses \s so NBSP / fullwidth spaces are included after we map them to ' '.
+var mobilePDFSpacedLatinRe = regexp.MustCompile(`(?:[A-Za-z0-9] ){2,}[A-Za-z0-9]`)
+
+// mobilePDFNormalizeExtractedText fixes per-glyph spacing from PDF text extractors:
+//  1. Drop spaces between CJK characters / CJK punctuation
+//  2. Join "G e n e r a t o r"-style Latin runs into words
+//  3. Collapse leftover multi-spaces (preserve newlines)
+func mobilePDFNormalizeExtractedText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	// Map exotic spaces to ASCII so later passes are uniform.
+	text = mobilePDFNormalizeSpaceRunes(text)
+	// Work line-by-line so paragraph structure survives.
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = mobilePDFNormalizeExtractedLine(line)
+	}
+	// Collapse 3+ blank lines to at most one empty line between blocks.
+	var out []string
+	blankRun := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+			if blankRun == 1 {
+				out = append(out, "")
+			}
+			continue
+		}
+		blankRun = 0
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// mobilePDFNormalizeSpaceRunes maps NBSP / ideographic space / other unicode
+// spaces to ASCII space so CJK/Latin collapse rules see them.
+func mobilePDFNormalizeSpaceRunes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\u00a0', // NBSP
+			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004',
+			'\u2005', '\u2006', '\u2007', '\u2008', '\u2009',
+			'\u200a', '\u202f', '\u205f',
+			'\u3000': // ideographic space
+			b.WriteByte(' ')
+		case '\r':
+			// drop CR; LF remains as line break
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// mobilePDFNormalizeExtractedMarkdown normalizes body text but keeps a leading
+// markdown title line intact (filenames / titles are rarely glyph-spaced).
+func mobilePDFNormalizeExtractedMarkdown(md string) string {
+	md = strings.TrimSpace(md)
+	if md == "" {
+		return ""
+	}
+	if strings.HasPrefix(md, "#") {
+		if i := strings.IndexByte(md, '\n'); i >= 0 {
+			title := strings.TrimSpace(mobilePDFNormalizeExtractedLine(md[:i]))
+			body := strings.TrimSpace(md[i+1:])
+			if body == "" {
+				return title
+			}
+			return title + "\n\n" + mobilePDFNormalizeExtractedText(body)
+		}
+		return strings.TrimSpace(mobilePDFNormalizeExtractedLine(md))
+	}
+	return mobilePDFNormalizeExtractedText(md)
+}
+
+func mobilePDFNormalizeExtractedLine(line string) string {
+	if strings.TrimSpace(line) == "" {
+		return ""
+	}
+	line = mobilePDFRemoveCJKAdjacentSpaces(line)
+	line = mobilePDFCollapseSpacedLatin(line)
+	// Collapse runs of spaces/tabs to a single space (line-local; newlines already split).
+	var b strings.Builder
+	b.Grow(len(line))
+	prevSpace := false
+	for _, r := range line {
+		if r == ' ' || r == '\t' {
+			if prevSpace {
+				continue
+			}
+			b.WriteByte(' ')
+			prevSpace = true
+			continue
+		}
+		prevSpace = false
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func mobilePDFRemoveCJKAdjacentSpaces(s string) string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return s
+	}
+	out := make([]rune, 0, len(runes))
+	for i, r := range runes {
+		if r == ' ' || r == '\t' {
+			prevCJK := i > 0 && mobilePDFRuneIsCJKOrPunct(runes[i-1])
+			nextCJK := i+1 < len(runes) && mobilePDFRuneIsCJKOrPunct(runes[i+1])
+			// Drop spaces glued to CJK (e.g. "例 如" → "例如", "用 ACE" → "用ACE").
+			if prevCJK || nextCJK {
+				continue
+			}
+		}
+		out = append(out, r)
+	}
+	return string(out)
+}
+
+func mobilePDFCollapseSpacedLatin(s string) string {
+	return mobilePDFSpacedLatinRe.ReplaceAllStringFunc(s, func(m string) string {
+		var b strings.Builder
+		b.Grow(len(m))
+		for _, r := range m {
+			if r == ' ' || r == '\t' {
+				continue
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
+	})
+}
+
+func mobilePDFRuneIsCJKOrPunct(r rune) bool {
+	if mobileRuneIsCJK(r) {
+		return true
+	}
+	// CJK punctuation & fullwidth forms commonly glued to Chinese prose.
+	switch r {
+	case '，', '。', '、', '；', '：', '！', '？',
+		'「', '」', '『', '』', '（', '）', '【', '】', '《', '》',
+		'…', '—', '–',
+		'\u201c', '\u201d', '\u2018', '\u2019': // “ ” ‘ ’
+		return true
+	}
+	return (r >= 0x3000 && r <= 0x303F) || (r >= 0xFF00 && r <= 0xFFEF)
+}
+
+func mobilePDFRuneIsLatinAlnum(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+}
+
+// mobilePDFTextLooksOverSpaced detects glyph-positioned PDF extracts where nearly
+// every character is separated by a space (中 文 / G e n e r a t o r).
+func mobilePDFTextLooksOverSpaced(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	// Rune-safe sample (never mid-code-point cut).
+	runes := []rune(text)
+	if len(runes) > 800 {
+		runes = runes[:800]
+	}
+	cjkSpace := 0
+	latinSpaceRuns := 0
+	spaces := 0
+	letters := 0
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if unicode.IsLetter(r) {
+			letters++
+		}
+		if mobilePDFIsSpaceRune(r) {
+			spaces++
+			if i > 0 && i+1 < len(runes) {
+				prev, next := runes[i-1], runes[i+1]
+				if mobilePDFRuneIsCJKOrPunct(prev) && mobilePDFRuneIsCJKOrPunct(next) {
+					cjkSpace++
+				}
+				if mobilePDFRuneIsLatinAlnum(prev) && mobilePDFRuneIsLatinAlnum(next) {
+					latinSpaceRuns++
+				}
+			}
+		}
+	}
+	if letters < 12 || spaces < 8 {
+		return false
+	}
+	// Strong signals: many CJK-space-CJK or many single-letter gaps.
+	if cjkSpace >= 6 {
+		return true
+	}
+	if latinSpaceRuns >= 8 {
+		return true
+	}
+	// High space-to-letter ratio on dense extracts.
+	return float64(spaces) >= float64(letters)*0.45 && (cjkSpace+latinSpaceRuns) >= 4
+}
+
+func mobilePDFIsSpaceRune(r rune) bool {
+	switch r {
+	case ' ', '\t',
+		'\u00a0',
+		'\u2000', '\u2001', '\u2002', '\u2003', '\u2004',
+		'\u2005', '\u2006', '\u2007', '\u2008', '\u2009',
+		'\u200a', '\u202f', '\u205f',
+		'\u3000':
+		return true
+	default:
+		return false
+	}
 }
 
 func mobilePDFExtractTextGoPDF(raw []byte) string {
@@ -5466,14 +5760,16 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		}
 
 		if mobileUploadedFileIsImmediateDraft(name) {
-			if markdown, ok := mobileDraftMarkdownFromUpload(name, body); ok {
+			draftID := fmt.Sprintf("mobdoc_%d", now.UnixNano())
+			if markdown, images, ok := mobileDraftMarkdownFromUploadWithImages(principal.UserID, draftID, name, body); ok {
 				draft := mobileDocumentDraftRecord{
-					ID:        fmt.Sprintf("mobdoc_%d", now.UnixNano()),
+					ID:        draftID,
 					OwnerID:   principal.UserID,
 					Title:     strings.TrimSpace(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))),
 					Template:  "report",
 					Markdown:  markdown,
 					UpdatedAt: now,
+					Images:    images,
 				}
 				if draft.Title == "" {
 					draft.Title = name
@@ -5482,6 +5778,9 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				record.Status = "ready"
 				record.DraftID = draft.ID
 				record.Message = "文件已导入（保留原件，并生成可读正文）。"
+				if len(images) > 0 {
+					record.Message = fmt.Sprintf("文件已导入（保留原件，抽取正文与 %d 张插图）。", len(images))
+				}
 				payload := mobileStoreDraftAndUpload(draft, &record, true)
 				mobilePersistState()
 				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))

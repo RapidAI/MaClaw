@@ -38,12 +38,15 @@ func bindingKey(b *LLMBinding) string {
 
 // LLMBindingManager manages tenant-node bindings for the current node.
 type LLMBindingManager struct {
-	nodeID   string
-	repo     LLMBindingRepository
-	mu       sync.RWMutex
-	bindings map[string]*LLMBinding
+	nodeID         string
+	repo           LLMBindingRepository
+	mu             sync.RWMutex
+	bindings       map[string]*LLMBinding
 	remoteMu       sync.RWMutex
 	remoteBindings map[string]*LLMBinding
+	syncMu         sync.Mutex
+	lastSynced     map[string]time.Time
+	syncBinding    func(context.Context, *LLMBinding)
 }
 
 // NewLLMBindingManager creates a binding manager for the given node.
@@ -53,7 +56,33 @@ func NewLLMBindingManager(nodeID string, repo LLMBindingRepository) *LLMBindingM
 		repo:           repo,
 		bindings:       map[string]*LLMBinding{},
 		remoteBindings: map[string]*LLMBinding{},
+		lastSynced:     map[string]time.Time{},
 	}
+}
+
+// SetSyncBinding registers a throttled durable HA replication hook.
+func (m *LLMBindingManager) SetSyncBinding(fn func(context.Context, *LLMBinding)) {
+	if m == nil {
+		return
+	}
+	m.syncBinding = fn
+}
+
+func (m *LLMBindingManager) sync(ctx context.Context, binding *LLMBinding) {
+	if m == nil || m.syncBinding == nil || binding == nil {
+		return
+	}
+	key := bindingKey(binding)
+	now := time.Now().UTC()
+	m.syncMu.Lock()
+	if last := m.lastSynced[key]; !last.IsZero() && now.Sub(last) < BindingSyncInterval {
+		m.syncMu.Unlock()
+		return
+	}
+	m.lastSynced[key] = now
+	m.syncMu.Unlock()
+	copy := *binding
+	m.syncBinding(ctx, &copy)
 }
 
 // TryBind attempts to bind a tenant to this node.
@@ -68,6 +97,7 @@ func (m *LLMBindingManager) TryBind(ctx context.Context, hubID, tenantID string)
 		existing.LastActive = now
 		existing.ExpiresAt = now.Add(BindingLeaseTTL)
 		_ = m.repo.Upsert(ctx, existing)
+		m.sync(ctx, existing)
 		return true, existing, nil
 	}
 
@@ -103,6 +133,7 @@ func (m *LLMBindingManager) TryBind(ctx context.Context, hubID, tenantID string)
 	m.mu.Lock()
 	m.bindings[key] = binding
 	m.mu.Unlock()
+	m.sync(ctx, binding)
 	return true, binding, nil
 }
 
@@ -115,6 +146,7 @@ func (m *LLMBindingManager) RenewBinding(ctx context.Context, hubID, tenantID st
 		b.LastActive = now
 		b.ExpiresAt = now.Add(BindingLeaseTTL)
 		_ = m.repo.Upsert(ctx, b)
+		m.sync(ctx, b)
 	}
 	m.mu.Unlock()
 }

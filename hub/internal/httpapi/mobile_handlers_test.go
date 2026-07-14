@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -3300,6 +3301,117 @@ func TestMobileUploadedDOCXDraftMarkdown(t *testing.T) {
 	}
 }
 
+func TestMobileSniffImageContentType(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0}
+	if got := mobileSniffImageContentType(png); got != "image/png" {
+		t.Fatalf("png sniff = %q", got)
+	}
+	jpg := []byte{0xff, 0xd8, 0xff, 0xe0, 0, 0}
+	if got := mobileSniffImageContentType(jpg); got != "image/jpeg" {
+		t.Fatalf("jpeg sniff = %q", got)
+	}
+	if got := mobileSniffImageContentType([]byte("not-an-image")); got != "" {
+		t.Fatalf("want empty sniff, got %q", got)
+	}
+}
+
+func TestMobileDraftAppendImageMarkdownSkipsDuplicates(t *testing.T) {
+	body := "# note\n\nhello\n\n![图1](/api/mobile/documents/drafts/d1/images/img1)\n"
+	images := []mobileDocumentDraftImage{
+		{ID: "img1", Filename: "a.png"},
+		{ID: "img2", Filename: "b.png"},
+	}
+	got := mobileDraftAppendImageMarkdown(body, "d1", images)
+	if strings.Count(got, "/images/img1") != 1 {
+		t.Fatalf("img1 should appear once: %q", got)
+	}
+	if !strings.Contains(got, "/images/img2") {
+		t.Fatalf("img2 missing: %q", got)
+	}
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("body text lost: %q", got)
+	}
+	// All already linked → no empty 附图 section.
+	onlyLinked := mobileDraftAppendImageMarkdown(body, "d1", []mobileDocumentDraftImage{
+		{ID: "img1", Filename: "a.png"},
+	})
+	if strings.Contains(onlyLinked, "## 附图") {
+		t.Fatalf("should not add empty 附图 section: %q", onlyLinked)
+	}
+}
+
+func TestMobileDOCXExtractsEmbeddedPNG(t *testing.T) {
+	// Durable blob store required so illustrations get SourcePath + markdown links.
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	t.Setenv(mobileStatePathEnv, statePath)
+	mobileStatePathOverride = statePath
+	t.Cleanup(func() { mobileStatePathOverride = "" })
+	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Minimal 1x1 PNG
+	png := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+		0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xef, 0x00, 0x00,
+		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	write := func(name string, body []byte) {
+		t.Helper()
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("word/document.xml", []byte(`<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+  <w:p><w:r><w:t>Before figure</w:t></w:r></w:p>
+  <w:p><w:r><w:drawing><a:blip r:embed="rId5"/></w:drawing></w:r></w:p>
+  <w:p><w:r><w:t>After figure</w:t></w:r></w:p>
+</w:body></w:document>`))
+	write("word/_rels/document.xml.rels", []byte(`<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>`))
+	write("word/media/image1.png", png)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := buf.Bytes()
+
+	md, images, ok := mobileDraftMarkdownFromDOCXEx("user1", "mobdoc_test1", "report.docx", data)
+	if !ok {
+		t.Fatal("docx+image not parsed")
+	}
+	if !strings.Contains(md, "Before figure") || !strings.Contains(md, "After figure") {
+		t.Fatalf("markdown missing text: %q", md)
+	}
+	if !strings.Contains(md, "/api/mobile/documents/drafts/mobdoc_test1/images/img1") {
+		t.Fatalf("markdown missing image url: %q", md)
+	}
+	if len(images) != 1 || images[0].ID != "img1" {
+		t.Fatalf("images = %+v", images)
+	}
+	if images[0].SourceSize != len(png) {
+		t.Fatalf("image size = %d want %d", images[0].SourceSize, len(png))
+	}
+	if strings.TrimSpace(images[0].SourcePath) == "" {
+		t.Fatal("image SourcePath empty")
+	}
+}
+
 func TestMobileUploadedXLSXDraftMarkdown(t *testing.T) {
 	data := mobileTestZip(t, map[string]string{
 		"xl/sharedStrings.xml":     `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Host</t></si><si><t>Status</t></si><si><t>api-1</t></si><si><t>ok</t></si></sst>`,
@@ -3333,6 +3445,50 @@ func TestMobileUploadedPDFDraftMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "Service recovered after restart.") {
 		t.Fatalf("markdown = %q, want extracted PDF text", markdown)
+	}
+}
+
+func TestMobilePDFNormalizeExtractedTextCollapsesGlyphSpaces(t *testing.T) {
+	// Typical Chinese academic PDF extract: every glyph separated by a space.
+	raw := "。 。 。 展 例 如 ， A C E 采 用 “ 生 成 器 - 反 思 器 ” （ G e n e r a t o r - R e f l e c t o r ） 的 固 定 工 作 流"
+	got := mobilePDFNormalizeExtractedText(raw)
+	if strings.Contains(got, "例 如") || strings.Contains(got, "采 用") {
+		t.Fatalf("CJK spaces not collapsed: %q", got)
+	}
+	if strings.Contains(got, "G e n e r a t o r") || strings.Contains(got, "A C E") {
+		t.Fatalf("Latin glyph spaces not collapsed: %q", got)
+	}
+	if !strings.Contains(got, "例如") || !strings.Contains(got, "采用") {
+		t.Fatalf("expected joined CJK words, got %q", got)
+	}
+	if !strings.Contains(got, "Generator") || !strings.Contains(got, "Reflector") || !strings.Contains(got, "ACE") {
+		t.Fatalf("expected joined Latin words, got %q", got)
+	}
+	// NBSP / ideographic space between CJK should collapse too.
+	nbsp := "智\u00a0能\u3000体"
+	gotNBSP := mobilePDFNormalizeExtractedText(nbsp)
+	if gotNBSP != "智能体" {
+		t.Fatalf("unicode spaces not collapsed: %q", gotNBSP)
+	}
+	// Normal English must keep word spaces.
+	normal := mobilePDFNormalizeExtractedText("Service recovered after restart.")
+	if normal != "Service recovered after restart." {
+		t.Fatalf("normal English changed: %q", normal)
+	}
+	if !mobilePDFTextLooksOverSpaced(raw) {
+		t.Fatal("expected over-spaced detector to fire")
+	}
+	if mobilePDFTextLooksOverSpaced(normal) {
+		t.Fatal("normal prose should not look over-spaced")
+	}
+	// Markdown title preserved; body normalized.
+	md := "# AI智能体自进化文献综述\n\n" + raw
+	gotMD := mobilePDFNormalizeExtractedMarkdown(md)
+	if !strings.HasPrefix(gotMD, "# AI智能体自进化文献综述\n") {
+		t.Fatalf("title not preserved: %q", gotMD)
+	}
+	if strings.Contains(gotMD, "G e n e r a t o r") {
+		t.Fatalf("body not normalized: %q", gotMD)
 	}
 }
 
@@ -3419,20 +3575,20 @@ func TestMobileDraftDisplayMarkdownHidesPDFGarbage(t *testing.T) {
 		SourceSize:        len(pdf),
 		Markdown:          "# Clean Paper\n\n*\nOS\n7ooooooooo\n0\nS@\n$V\nzK\n0\nL0\n",
 	}
-	display2, shouldPersist := mobileDraftHealMarkdownOutsideLock(draft2)
-	if !shouldPersist {
+	heal2 := mobileDraftHealMarkdownOutsideLock(draft2)
+	if !heal2.ShouldPersist {
 		t.Fatal("expected heal to want persist")
 	}
-	if !strings.Contains(display2, "neural networks") {
-		t.Fatalf("display2 = %q, want re-extracted PDF text", display2)
+	if !strings.Contains(heal2.Display, "neural networks") {
+		t.Fatalf("display2 = %q, want re-extracted PDF text", heal2.Display)
 	}
-	if strings.Contains(display2, "7ooooooooo") {
-		t.Fatalf("display2 still contains garbage: %q", display2)
+	if strings.Contains(heal2.Display, "7ooooooooo") {
+		t.Fatalf("display2 still contains garbage: %q", heal2.Display)
 	}
-	if !mobileDraftApplyHealedMarkdown(&draft2, display2) {
+	if !mobileDraftApplyHealed(&draft2, heal2) {
 		t.Fatal("expected apply heal to succeed")
 	}
-	if draft2.Markdown != display2 {
+	if draft2.Markdown != heal2.Display {
 		t.Fatalf("stored markdown not healed")
 	}
 }
