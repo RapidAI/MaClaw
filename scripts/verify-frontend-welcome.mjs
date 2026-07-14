@@ -52,12 +52,15 @@ const REQUIRED_MARKERS = [
   "welcome-prompt-param-dialog",
 ];
 
-/** Known retired welcome cards; presence means an old frontend was embedded. */
+/**
+ * Retired welcome-card copy. It is intentionally retained only as a CI
+ * regression signature: no production source or bundled asset may contain it.
+ */
 const FORBIDDEN_MARKERS = [
-  "实现一个后台功能闭环",
-  "定位并修复一个线上问题",
-  "为项目补齐部署和环境说明",
-  "接入一个第三方 API",
+  "\u5b9e\u73b0\u4e00\u4e2a\u540e\u53f0\u529f\u80fd\u95ed\u73af",
+  "\u5b9a\u4f4d\u5e76\u4fee\u590d\u4e00\u4e2a\u7ebf\u4e0a\u95ee\u9898",
+  "\u4e3a\u9879\u76ee\u8865\u9f50\u90e8\u7f72\u548c\u73af\u5883\u8bf4\u660e",
+  "\u63a5\u5165\u4e00\u4e2a\u7b2c\u4e09\u65b9 API",
 ];
 
 function walkFiles(dir, out = []) {
@@ -133,8 +136,8 @@ function verifyDist(distDir) {
   return failures;
 }
 
-function bufferIncludesAscii(buf, ascii) {
-  return buf.includes(Buffer.from(ascii, "utf8"));
+function bufferIncludesUtf8(buf, text) {
+  return buf.includes(Buffer.from(text, "utf8"));
 }
 
 function verifyBinary(binaryPath) {
@@ -146,14 +149,19 @@ function verifyBinary(binaryPath) {
   }
   // Single Buffer scan (no latin1 string copy of ~80MB PE).
   const buf = fs.readFileSync(binaryPath);
-  const binaryRequired = ["Implement a feature", "welcome-prompt-param-overlay"];
+  const binaryRequired = [
+    "Implement a feature",
+    "welcome-prompt-param-overlay",
+    "\u89d2\u8272",
+    "\u526a\u8d34\u677f\u8bc6\u522b",
+  ];
   for (const marker of binaryRequired) {
-    if (!bufferIncludesAscii(buf, marker)) {
+    if (!bufferIncludesUtf8(buf, marker)) {
       failures.push(`binary ${path.basename(binaryPath)} missing embedded welcome marker: ${JSON.stringify(marker)}`);
     }
   }
   for (const marker of FORBIDDEN_MARKERS) {
-    if (bufferIncludesAscii(buf, marker)) {
+    if (bufferIncludesUtf8(buf, marker)) {
       failures.push(`binary ${path.basename(binaryPath)} still embeds retired welcome card: ${JSON.stringify(marker)}`);
     }
   }

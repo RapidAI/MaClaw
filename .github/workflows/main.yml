@@ -123,6 +123,10 @@ jobs:
       - name: Build frontend
         shell: pwsh
         run: |
+          # Keep CI aligned with build_win*.bat: never reuse an old Vite output.
+          # This is especially important because the directory is embedded into
+          # the GUI binary in the next step.
+          Remove-Item gui/frontend/dist -Recurse -Force -ErrorAction SilentlyContinue
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
@@ -236,6 +240,8 @@ jobs:
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_amd64.exe" ./gui/
           Remove-Item gui/resource_windows_amd64.syso -ErrorAction SilentlyContinue
           # Catch embed regressions (e.g. empty/stale dist) for MaClaw and OEM brands alike.
+          # The installer can select either architecture, so each final GUI
+          # binary must be checked instead of validating amd64 alone.
           node scripts/verify-frontend-welcome.mjs --binary "dist/${outName}_amd64.exe"
 
           # --- arm64 (no CGO, NoopEmbedder — cross-compile CGO not supported) ---
@@ -243,6 +249,7 @@ jobs:
           $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./gui/
           Remove-Item gui/resource_windows_arm64.syso -ErrorAction SilentlyContinue
+          node scripts/verify-frontend-welcome.mjs --binary "dist/${outName}_arm64.exe"
 
           Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp
 
@@ -823,6 +830,8 @@ jobs:
 
       - name: Build frontend
         run: |
+          # Match the Windows batch builds and prevent stale chunks entering go:embed.
+          rm -rf gui/frontend/dist
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
@@ -1295,6 +1304,8 @@ jobs:
 
       - name: Build frontend
         run: |
+          # Match the Windows batch builds and prevent stale chunks entering go:embed.
+          rm -rf gui/frontend/dist
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
@@ -1564,6 +1575,8 @@ jobs:
 
       - name: Build frontend
         run: |
+          # Match the Windows batch builds and prevent stale chunks entering go:embed.
+          rm -rf gui/frontend/dist
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
