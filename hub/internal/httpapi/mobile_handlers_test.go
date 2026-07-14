@@ -3336,6 +3336,107 @@ func TestMobileUploadedPDFDraftMarkdown(t *testing.T) {
 	}
 }
 
+func TestMobilePDFExtractRejectsScrapeGarbage(t *testing.T) {
+	// Mimic naive literal-string scrape noise from compressed academic PDFs.
+	garbage := "*\nOS\n7ooooooooo\n0\nS@\n@\n$V\nzK\n0\nL0\n00p\n] p\nNF\n0d}\nOo\nKoooo\n"
+	if mobilePDFExtractedTextIsUsable(garbage) {
+		t.Fatalf("expected scrape garbage to be rejected")
+	}
+	md := "# paper-title\n\n" + garbage
+	if !mobileDraftMarkdownLooksLikePDFGarbage(md) {
+		t.Fatalf("expected draft body to be flagged as PDF garbage")
+	}
+	// Readable Chinese/English original-only notice must not be flagged.
+	notice := mobileDraftOriginalOnlyMarkdown("paper.pdf", []byte{1, 2, 3})
+	if mobileDraftBodyLooksUnreadable(notice) {
+		t.Fatalf("original-only notice should be readable: %q", notice)
+	}
+	// Short legitimate drafts must NOT be treated as unreadable.
+	for _, short := range []string{
+		"收到，谢谢",
+		"OK",
+		"# 备注\n\n明天跟进。",
+		"Done.",
+		// CJK short bullets previously false-positive as scrape noise.
+		"# todo\n\n- 买\n- 卖\n- 走\n- 看\n- 写\n",
+	} {
+		if mobileDraftBodyLooksUnreadable(short) {
+			t.Fatalf("short draft wrongly flagged unreadable: %q", short)
+		}
+	}
+	// Non-PDF original with short symbol-ish lines (e.g. code) must not be replaced.
+	codeDraft := mobileDocumentDraftRecord{
+		SourceFilename:    "snippet.go",
+		SourceContentType: "text/plain",
+		Markdown:          "# snippet\n\nfunc\nmain\n{\n}\nreturn\n",
+	}
+	if mobileDraftRecordBodyUnreadable(codeDraft, codeDraft.Markdown) {
+		t.Fatalf("code draft wrongly flagged unreadable")
+	}
+}
+
+func TestMobileDraftDisplayMarkdownHidesPDFGarbage(t *testing.T) {
+	clearMobileStateForTest(t)
+	// Stored body is scrape garbage; no original bytes → show original-file notice.
+	draft := mobileDocumentDraftRecord{
+		ID:             "draft-pdf-garbage",
+		Title:          "1-s2.0-paper-main",
+		SourceFilename: "1-s2.0-paper-main.pdf",
+		SourceSize:     2760 * 1024,
+		Markdown:       "# 1-s2.0-paper-main\n\n*\nOS\n7ooooooooo\n0\nS@\n$V\nzK\n0\nL0\n00p\n",
+	}
+	display := mobileDraftDisplayMarkdown(draft)
+	if strings.Contains(display, "7ooooooooo") || strings.Contains(display, "S@") {
+		t.Fatalf("display still shows binary scrape: %q", display)
+	}
+	if !strings.Contains(display, "原始文件") {
+		t.Fatalf("display = %q, want original-file notice", display)
+	}
+	if !strings.Contains(display, fmt.Sprintf("%d bytes", 2760*1024)) {
+		t.Fatalf("display = %q, want preserved SourceSize", display)
+	}
+
+	// List path must hide garbage without requiring a re-extract.
+	listPreview := mobileDraftListPreviewMarkdown(draft)
+	if strings.Contains(listPreview, "7ooooooooo") {
+		t.Fatalf("list preview still shows scrape: %q", listPreview)
+	}
+	if !strings.Contains(listPreview, "原始文件") {
+		t.Fatalf("list preview = %q, want original-file notice", listPreview)
+	}
+
+	// When a real extractable PDF original exists, display must use extracted text.
+	pdf := mobileRenderDraftPDF(mobileDocumentDraftRecord{
+		Title:    "Clean Paper",
+		Markdown: "Abstract: neural networks improve accuracy after fine tuning.",
+	})
+	draft2 := mobileDocumentDraftRecord{
+		ID:                "draft-pdf-heal",
+		Title:             "Clean Paper",
+		SourceFilename:    "clean.pdf",
+		SourceContentType: "application/pdf",
+		SourceBytes:       pdf,
+		SourceSize:        len(pdf),
+		Markdown:          "# Clean Paper\n\n*\nOS\n7ooooooooo\n0\nS@\n$V\nzK\n0\nL0\n",
+	}
+	display2, shouldPersist := mobileDraftHealMarkdownOutsideLock(draft2)
+	if !shouldPersist {
+		t.Fatal("expected heal to want persist")
+	}
+	if !strings.Contains(display2, "neural networks") {
+		t.Fatalf("display2 = %q, want re-extracted PDF text", display2)
+	}
+	if strings.Contains(display2, "7ooooooooo") {
+		t.Fatalf("display2 still contains garbage: %q", display2)
+	}
+	if !mobileDraftApplyHealedMarkdown(&draft2, display2) {
+		t.Fatal("expected apply heal to succeed")
+	}
+	if draft2.Markdown != display2 {
+		t.Fatalf("stored markdown not healed")
+	}
+}
+
 func TestMobileUploadedImageDraftMarkdown(t *testing.T) {
 	data := mobileTestPNG(640, 480)
 

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	gopdf "github.com/VantageDataChat/GoPDF2"
 	"github.com/gorilla/websocket"
 )
 
@@ -1623,11 +1625,19 @@ func newMobileLlmQRSessionID() (string, error) {
 }
 
 func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any {
+	// Prefer display-safe body: never surface raw PDF binary / failed extract garbage.
+	display := mobileDraftDisplayMarkdown(record)
+	return mobileDocumentDraftPayloadWithMarkdown(record, display)
+}
+
+// mobileDocumentDraftPayloadWithMarkdown builds the wire payload using an already-resolved
+// display body (avoids a second extract after heal).
+func mobileDocumentDraftPayloadWithMarkdown(record mobileDocumentDraftRecord, markdown string) map[string]any {
 	payload := map[string]any{
 		"id":         record.ID,
 		"title":      record.Title,
 		"template":   record.Template,
-		"markdown":   record.Markdown,
+		"markdown":   markdown,
 		"updated_at": record.UpdatedAt.Format(time.RFC3339),
 		"owner_id":   record.OwnerID,
 	}
@@ -1666,34 +1676,157 @@ func mobileAttachDraftOriginal(draft *mobileDocumentDraftRecord, filename, conte
 // mobileDraftWorkingText returns text for AI/preview: prefer extracted/OCR markdown;
 // for text-like originals fall back to raw UTF-8; otherwise a short original-file notice.
 func mobileDraftWorkingText(draft mobileDocumentDraftRecord) string {
+	return mobileDraftDisplayMarkdown(draft)
+}
+
+// mobileDraftDisplayMarkdown returns markdown safe for UI preview and AI context.
+// When stored body looks like raw binary or failed PDF string-scrape garbage,
+// re-extracts from the original or falls back to an original-file notice.
+//
+// Heavy PDF extract happens here (not under the documents lock). Callers that hold
+// mobileDocuments.Lock must not call this; use mobileDraftListPreviewMarkdown instead.
+func mobileDraftDisplayMarkdown(draft mobileDocumentDraftRecord) string {
 	md := strings.TrimSpace(draft.Markdown)
-	if md != "" && !mobileDraftMarkdownLooksLikeRawBinary(md) {
+	if md != "" && !mobileDraftRecordBodyUnreadable(draft, md) {
 		return md
 	}
 	src := mobileDraftLoadSourceBytes(&draft)
+	fname := mobileDraftFallbackFilename(draft)
+	size := mobileDraftSourceSize(draft)
 	if len(src) == 0 {
+		if md != "" && mobileDraftRecordBodyUnreadable(draft, md) {
+			return mobileDraftOriginalOnlyMarkdownSize(fname, size)
+		}
 		return md
 	}
 	// Extract from original on demand (docx/xlsx/pdf/text).
-	if extracted, ok := mobileDraftMarkdownFromUpload(draft.SourceFilename, src); ok && strings.TrimSpace(extracted) != "" {
-		return extracted
+	if extracted, ok := mobileDraftMarkdownFromUpload(fname, src); ok && strings.TrimSpace(extracted) != "" {
+		if !mobileDraftBodyLooksUnreadable(extracted) {
+			return extracted
+		}
 	}
-	if utf8.Valid(src) {
+	// Only treat original bytes as UTF-8 text when the source is text-like.
+	// Never string() a PDF/binary original (can be valid UTF-8 by chance on small files).
+	if mobileDraftSourceLooksTextLike(draft, src) {
 		text := strings.TrimSpace(string(src))
-		if text != "" && !mobileDraftMarkdownLooksLikeRawBinary(text) {
+		if text != "" && !mobileDraftBodyLooksUnreadable(text) {
 			return text
 		}
 	}
-	title := strings.TrimSpace(draft.Title)
-	if title == "" {
-		title = draft.SourceFilename
+	if size <= 0 {
+		size = len(src)
 	}
-	return fmt.Sprintf(
-		"# %s\n\n_原始文件已保存（%s，%d bytes）。请以原件为准进行处理；正文提取尚未完成或无法直接显示。_\n",
-		title,
-		draft.SourceFilename,
-		mobileDraftSourceSize(draft),
-	)
+	return mobileDraftOriginalOnlyMarkdownSize(fname, size)
+}
+
+// mobileDraftListPreviewMarkdown is a lock-safe, cheap display path for list rows.
+// It never opens original blobs or runs PDF extract (those belong on GET-by-id heal).
+func mobileDraftListPreviewMarkdown(draft mobileDocumentDraftRecord) string {
+	md := strings.TrimSpace(draft.Markdown)
+	if md == "" || !mobileDraftRecordBodyUnreadable(draft, md) {
+		return md
+	}
+	return mobileDraftOriginalOnlyMarkdownSize(mobileDraftFallbackFilename(draft), mobileDraftSourceSize(draft))
+}
+
+func mobileDraftFallbackFilename(draft mobileDocumentDraftRecord) string {
+	if name := strings.TrimSpace(draft.SourceFilename); name != "" {
+		return name
+	}
+	if title := strings.TrimSpace(draft.Title); title != "" {
+		return title
+	}
+	return "document"
+}
+
+func mobileDraftSourceIsPDF(draft mobileDocumentDraftRecord) bool {
+	ct := strings.ToLower(strings.TrimSpace(draft.SourceContentType))
+	if strings.Contains(ct, "pdf") {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(draft.SourceFilename))
+	return strings.HasSuffix(name, ".pdf")
+}
+
+func mobileDraftSourceLooksTextLike(draft mobileDocumentDraftRecord, raw []byte) bool {
+	if mobileDraftSourceIsPDF(draft) {
+		return false
+	}
+	ct := strings.ToLower(strings.TrimSpace(draft.SourceContentType))
+	if strings.HasPrefix(ct, "image/") ||
+		strings.Contains(ct, "officedocument") ||
+		strings.Contains(ct, "msword") ||
+		strings.Contains(ct, "spreadsheet") ||
+		ct == "application/octet-stream" {
+		// octet-stream still may be text — fall through to sniff.
+		if ct != "application/octet-stream" && ct != "" {
+			return false
+		}
+	}
+	name := strings.ToLower(strings.TrimSpace(draft.SourceFilename))
+	switch {
+	case strings.HasSuffix(name, ".docx"), strings.HasSuffix(name, ".xlsx"),
+		strings.HasSuffix(name, ".doc"), strings.HasSuffix(name, ".xls"),
+		strings.HasSuffix(name, ".pptx"), strings.HasSuffix(name, ".png"),
+		strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"),
+		strings.HasSuffix(name, ".gif"), strings.HasSuffix(name, ".webp"),
+		strings.HasSuffix(name, ".pdf"):
+		return false
+	}
+	if len(raw) == 0 {
+		return false
+	}
+	// Require full-buffer UTF-8 and no NULs in a prefix (binary reject).
+	if !utf8.Valid(raw) {
+		return false
+	}
+	limit := len(raw)
+	if limit > 4096 {
+		limit = 4096
+	}
+	for i := 0; i < limit; i++ {
+		if raw[i] == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// mobileDraftHealMarkdownOutsideLock re-extracts a garbage body and returns the
+// display text plus whether the stored markdown should be rewritten. Safe to call
+// without holding mobileDocuments.Lock (may read blob from disk).
+func mobileDraftHealMarkdownOutsideLock(draft mobileDocumentDraftRecord) (display string, shouldPersist bool) {
+	stored := strings.TrimSpace(draft.Markdown)
+	if stored == "" || !mobileDraftRecordBodyUnreadable(draft, stored) {
+		return stored, false
+	}
+	display = mobileDraftDisplayMarkdown(draft)
+	display = strings.TrimSpace(display)
+	if display == "" || display == stored {
+		return stored, false
+	}
+	return display, true
+}
+
+// mobileDraftApplyHealedMarkdown writes a previously computed display body.
+// Caller must hold mobileDocuments.Lock.
+func mobileDraftApplyHealedMarkdown(draft *mobileDocumentDraftRecord, display string) bool {
+	if draft == nil {
+		return false
+	}
+	display = strings.TrimSpace(display)
+	if display == "" {
+		return false
+	}
+	// Only replace while the stored body is still unreadable (avoid racing a good write).
+	if !mobileDraftRecordBodyUnreadable(*draft, draft.Markdown) {
+		return false
+	}
+	if display == strings.TrimSpace(draft.Markdown) {
+		return false
+	}
+	draft.Markdown = display
+	return true
 }
 
 func mobileDraftMarkdownLooksLikeRawBinary(text string) bool {
@@ -1702,6 +1835,10 @@ func mobileDraftMarkdownLooksLikeRawBinary(text string) bool {
 	}
 	// ZIP/OOXML (docx/xlsx) or obvious binary garbage mistaken for text.
 	if strings.HasPrefix(text, "PK") && (strings.Contains(text, "Content_Types") || strings.Contains(text, "[Content_Types]")) {
+		return true
+	}
+	// Raw PDF file mistaken for text.
+	if strings.HasPrefix(strings.TrimSpace(text), "%PDF-") {
 		return true
 	}
 	nul := 0
@@ -1715,6 +1852,192 @@ func mobileDraftMarkdownLooksLikeRawBinary(text string) bool {
 		}
 	}
 	return nul > 0
+}
+
+// mobileDraftBodyLooksUnreadable reports bodies unsafe for UI preview: raw binary
+// or failed PDF literal-string scrapes (short symbol-heavy lines).
+// Text-only helper for extract results / unit tests (no source metadata).
+func mobileDraftBodyLooksUnreadable(text string) bool {
+	if mobileDraftMarkdownLooksLikeRawBinary(text) {
+		return true
+	}
+	return mobileDraftMarkdownLooksLikePDFGarbage(text)
+}
+
+// mobileDraftRecordBodyUnreadable uses source metadata so non-PDF drafts
+// (code, logs) are not treated as PDF scrape garbage.
+func mobileDraftRecordBodyUnreadable(draft mobileDocumentDraftRecord, text string) bool {
+	if mobileDraftMarkdownLooksLikeRawBinary(text) {
+		return true
+	}
+	// PDF scrape heuristic only for PDF originals (or unknown source — list rows
+	// with garbage from older uploads may lack content-type).
+	if mobileDraftSourceIsPDF(draft) || (!mobileDraftHasOriginal(draft) && strings.TrimSpace(draft.SourceFilename) == "") {
+		return mobileDraftMarkdownLooksLikePDFGarbage(text)
+	}
+	// Non-PDF original: only replace when the body is extremely scrape-like
+	// (almost no letters) — avoids flagging code/hex dumps with short lines.
+	return mobileDraftMarkdownLooksLikeStrongScrapeOnly(text)
+}
+
+// mobileDraftMarkdownLooksLikeStrongScrapeOnly is a stricter bar used for non-PDF
+// originals so symbol-heavy but letter-dense content (source code) is kept.
+func mobileDraftMarkdownLooksLikeStrongScrapeOnly(text string) bool {
+	if !mobileDraftMarkdownLooksLikePDFGarbage(text) {
+		return false
+	}
+	body := mobileDraftBodyAfterTitle(text)
+	letters, _, _, other, nonSpace := mobileCountTextClasses(body)
+	if nonSpace == 0 {
+		return false
+	}
+	return float64(letters)/float64(nonSpace) < 0.25 && float64(other)/float64(nonSpace) > 0.35
+}
+
+func mobileDraftBodyAfterTitle(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "#") {
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			return strings.TrimSpace(text[i+1:])
+		}
+		return ""
+	}
+	return text
+}
+
+// mobileDraftMarkdownLooksLikePDFGarbage detects naive PDF string-scrape output
+// (many ultra-short / symbol-heavy lines). Must not treat short real drafts as garbage.
+func mobileDraftMarkdownLooksLikePDFGarbage(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	// Cap work on huge accidental binary-as-text bodies.
+	if len(text) > 16<<10 {
+		text = text[:16<<10]
+	}
+	// Keep intentional original-only / OCR placeholders readable.
+	// Match whole-word-ish markers used by our templates (not arbitrary "OCR" in papers).
+	if strings.Contains(text, "原始文件已保存") || strings.Contains(text, "原件已保存") ||
+		strings.Contains(text, "可预览元数据或分享原件") ||
+		strings.Contains(text, "待识别内容") ||
+		strings.Contains(strings.ToLower(text), "original file") {
+		return false
+	}
+	body := mobileDraftBodyAfterTitle(text)
+	if body == "" {
+		return false
+	}
+
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	// Short real notes ("OK", "收到") are not scrape noise — need several crumb lines.
+	if len(lines) < 5 {
+		return mobileIsSymbolDominatedScrape(body, lines)
+	}
+
+	goodLines := 0
+	garbageLines := 0
+	for _, line := range lines {
+		if mobilePDFLineLooksLikeProse(line) {
+			goodLines++
+		} else {
+			garbageLines++
+		}
+	}
+	letters, _, _, other, nonSpace := mobileCountTextClasses(body)
+	if goodLines == 0 {
+		// Chinese short bullets ("- 买") have few long lines but high letter density.
+		// PDF scrapes are symbol-heavy with almost no letters.
+		if nonSpace > 0 && float64(letters)/float64(nonSpace) >= 0.45 && float64(other)/float64(nonSpace) <= 0.4 {
+			return false
+		}
+		return true
+	}
+	// Typical bad scrape: dozens of 1–3 char symbol lines and almost no prose.
+	return garbageLines >= goodLines*3 && goodLines < 6
+}
+
+// mobilePDFLineLooksLikeProse reports a line that is unlikely to be PDF operator noise.
+// CJK single-character lines count as prose; Latin needs a few letters.
+func mobilePDFLineLooksLikeProse(line string) bool {
+	runes := []rune(strings.TrimSpace(line))
+	if len(runes) == 0 {
+		return false
+	}
+	lc := 0
+	cjk := 0
+	for _, r := range runes {
+		if unicode.IsLetter(r) {
+			lc++
+			if mobileRuneIsCJK(r) {
+				cjk++
+			}
+		}
+	}
+	if cjk > 0 && lc >= 1 {
+		return true
+	}
+	if len(runes) <= 3 {
+		return false
+	}
+	return lc >= 4 && float64(lc) >= float64(len(runes))*0.35
+}
+
+func mobileRuneIsCJK(r rune) bool {
+	// CJK Unified Ideographs + common extensions / kana / hangul syllables.
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3400 && r <= 0x4DBF) ||
+		(r >= 0x3040 && r <= 0x30FF) ||
+		(r >= 0xAC00 && r <= 0xD7AF)
+}
+
+// mobileIsSymbolDominatedScrape flags short multi-crumb binary leftovers without
+// treating a normal one-line note as unreadable.
+func mobileIsSymbolDominatedScrape(body string, lines []string) bool {
+	if len(lines) < 3 {
+		return false
+	}
+	letters, _, _, other, nonSpace := mobileCountTextClasses(body)
+	if nonSpace == 0 {
+		return false
+	}
+	// Real short notes have mostly letters; scrape crumbs are symbol-heavy.
+	if letters >= 20 && float64(letters)/float64(nonSpace) >= 0.5 {
+		return false
+	}
+	short := 0
+	for _, line := range lines {
+		if len([]rune(line)) <= 4 {
+			short++
+		}
+	}
+	if short < 3 {
+		return false
+	}
+	return float64(other)/float64(nonSpace) > 0.3 || letters < 12
+}
+
+func mobileCountTextClasses(text string) (letters, spaces, digits, other, nonSpace int) {
+	for _, r := range text {
+		switch {
+		case unicode.IsLetter(r):
+			letters++
+		case unicode.IsSpace(r):
+			spaces++
+		case unicode.IsDigit(r):
+			digits++
+		default:
+			other++
+		}
+	}
+	nonSpace = letters + digits + other
+	return
 }
 
 func mobileDocumentExportPayload(record mobileDocumentExportRecord) map[string]any {
@@ -4549,17 +4872,24 @@ func mobileDraftMarkdownFromImage(filename string, raw []byte) string {
 }
 
 func mobileDraftOriginalOnlyMarkdown(filename string, raw []byte) string {
+	return mobileDraftOriginalOnlyMarkdownSize(filename, len(raw))
+}
+
+func mobileDraftOriginalOnlyMarkdownSize(filename string, size int) string {
 	title := mobileUploadTitle(filename)
 	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
 	if ext == "" {
 		ext = "bin"
+	}
+	if size < 0 {
+		size = 0
 	}
 	return fmt.Sprintf(
 		"# %s\n\n原始文件已保存到文稿库，可预览元数据或分享原件。\n\n- 文件名：%s\n- 类型：%s\n- 大小：%d bytes\n\n_正文提取有限或尚未完成；AI 处理以原件为准。_\n",
 		title,
 		filepath.Base(filename),
 		ext,
-		len(raw),
+		size,
 	)
 }
 func mobileImageDimensions(format string, raw []byte) (int, int) {
@@ -4595,12 +4925,151 @@ func mobileImageDimensions(format string, raw []byte) (int, int) {
 	return 0, 0
 }
 
+// mobilePDFPreviewMaxPages caps extract cost for mobile draft preview / AI context.
+// Full-document RAG still uses knowledge's unrestricted path.
+const mobilePDFPreviewMaxPages = 12
+
+// mobilePDFNaiveScanMaxBytes caps the legacy literal/hex scrape. Scanning multi-MB
+// academic PDFs as a Go string is expensive and almost never yields usable text.
+const mobilePDFNaiveScanMaxBytes = 2 << 20 // 2 MiB
+
 func mobilePDFExtractText(raw []byte) string {
-	text := string(raw)
+	// Prefer GoPDF2 (same stack as knowledge import) for compressed / modern PDFs.
+	// Cap pages so a 100-page paper does not block upload/get for long.
+	if text := mobilePDFExtractTextGoPDF(raw); mobilePDFExtractedTextIsUsable(text) {
+		return text
+	}
+	// Fallback: lightweight scan of uncompressed literal/hex strings
+	// (covers simple PDFs produced by mobileRenderDraftPDF).
+	scan := raw
+	if len(scan) > mobilePDFNaiveScanMaxBytes {
+		scan = scan[:mobilePDFNaiveScanMaxBytes]
+	}
+	// Compressed streams almost never expose plain Tj operators outside content;
+	// skip naive scrape for large FlateDecode PDFs after GoPDF already failed.
+	if len(raw) > 512<<10 && bytes.Contains(scan, []byte("/FlateDecode")) {
+		return ""
+	}
+	text := string(scan)
 	var out []string
 	out = append(out, mobilePDFExtractHexStrings(text)...)
 	out = append(out, mobilePDFExtractLiteralStrings(text)...)
-	return strings.Join(mobileCompactTextLines(out), "\n")
+	joined := strings.Join(mobileCompactTextLines(out), "\n")
+	if mobilePDFExtractedTextIsUsable(joined) {
+		return joined
+	}
+	return ""
+}
+
+func mobilePDFExtractTextGoPDF(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	n, err := gopdf.GetSourcePDFPageCountFromBytes(raw)
+	if err == nil && n > 0 {
+		// Small PDFs: one-shot all-pages extract (cheaper than N page opens).
+		if n <= mobilePDFPreviewMaxPages {
+			text, err2 := gopdf.ExtractAllPagesText(raw)
+			if err2 == nil {
+				return strings.TrimSpace(text)
+			}
+		}
+		// Large PDFs: only the first N pages for preview latency.
+		limit := mobilePDFPreviewMaxPages
+		if n < limit {
+			limit = n
+		}
+		var b strings.Builder
+		for i := 0; i < limit; i++ {
+			pageText, pageErr := gopdf.ExtractPageText(raw, i)
+			if pageErr != nil {
+				continue
+			}
+			pageText = strings.TrimSpace(pageText)
+			if pageText == "" {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteString("\n\n")
+			}
+			b.WriteString(pageText)
+		}
+		text := strings.TrimSpace(b.String())
+		if text != "" {
+			if n > mobilePDFPreviewMaxPages {
+				text += fmt.Sprintf("\n\n_…已截取前 %d 页（共 %d 页）；完整内容请打开原件。_\n", mobilePDFPreviewMaxPages, n)
+			}
+			return text
+		}
+		// Page count worked but no text — scanned/image PDF; skip full re-parse.
+		return ""
+	}
+	// Page count failed — all-pages helper only for small PDFs (avoid multi-second stalls).
+	if len(raw) > mobilePDFNaiveScanMaxBytes {
+		return ""
+	}
+	text, err := gopdf.ExtractAllPagesText(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+// mobilePDFExtractedTextIsUsable rejects empty or binary-like scrape noise so the
+// UI falls back to original-file metadata instead of showing PDF operator garbage.
+// Used only to accept/reject *extraction results*, not to judge user-written drafts.
+func mobilePDFExtractedTextIsUsable(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	letters, spaces, digits, other, nonSpace := mobileCountTextClasses(text)
+	total := letters + spaces + digits + other
+	if total < 8 || letters < 12 {
+		return false
+	}
+	if nonSpace == 0 {
+		return false
+	}
+	// Real prose is mostly letters; PDF scrape noise is symbols/digits.
+	if float64(letters)/float64(nonSpace) < 0.4 {
+		return false
+	}
+	if float64(other)/float64(nonSpace) > 0.45 {
+		return false
+	}
+
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return false
+	}
+	// Single-block extracts (no newlines) only need letter ratio.
+	if len(lines) == 1 {
+		return true
+	}
+	goodLines := 0
+	garbageLines := 0
+	for _, line := range lines {
+		if mobilePDFLineLooksLikeProse(line) {
+			goodLines++
+		} else {
+			garbageLines++
+		}
+	}
+	if goodLines == 0 {
+		return false
+	}
+	// Typical bad scrape: dozens of 1–3 char symbol lines and almost no prose.
+	if garbageLines >= goodLines*3 && goodLines < 6 {
+		return false
+	}
+	return true
 }
 
 func mobilePDFExtractHexStrings(text string) []string {

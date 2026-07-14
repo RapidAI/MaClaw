@@ -36,6 +36,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 
 		draftID := strings.TrimSpace(r.PathValue("draftId"))
 		if draftID != "" {
+			// Snapshot under lock, then heavy re-extract / PDF parse outside the lock.
 			mobileDocuments.Lock()
 			record, ok := mobileDocuments.drafts[draftID]
 			repaired := false
@@ -44,21 +45,54 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				repaired = true
 			}
 			mobileDocuments.Unlock()
-			if repaired {
-				// Drop dead blob paths from state.json so restarts do not revive them.
-				mobilePersistState()
-			}
 			if !ok || record.OwnerID != ownerID {
+				if repaired {
+					mobilePersistState()
+				}
 				writeError(w, http.StatusNotFound, "DRAFT_NOT_FOUND", "draft not found")
 				return
 			}
+
+			display, shouldPersist := mobileDraftHealMarkdownOutsideLock(record)
+			if shouldPersist {
+				mobileDocuments.Lock()
+				if cur, exists := mobileDocuments.drafts[draftID]; exists && cur.OwnerID == ownerID {
+					if mobileDraftRepairSourceMeta(&cur) {
+						repaired = true
+					}
+					// Hot-cache only; never pin multi-MB originals on the draft record.
+					if len(record.SourceBytes) > 0 && len(cur.SourceBytes) == 0 &&
+						len(record.SourceBytes) <= mobileDocumentSourceHotCacheMax {
+						cur.SourceBytes = record.SourceBytes
+					}
+					if mobileDraftApplyHealedMarkdown(&cur, display) {
+						mobileDocuments.drafts[draftID] = cur
+						record = cur
+						repaired = true
+					} else {
+						// Another writer already fixed it — use latest stored body.
+						// Never re-extract under the documents lock.
+						record = cur
+						if md := strings.TrimSpace(cur.Markdown); md != "" && !mobileDraftRecordBodyUnreadable(cur, md) {
+							display = md
+						}
+						// else keep the display computed outside the lock
+					}
+				}
+				mobileDocuments.Unlock()
+			}
+			if repaired {
+				// Drop dead blob paths / persist healed markdown.
+				mobilePersistState()
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"draft": mobileDocumentDraftPayload(record),
+				"draft": mobileDocumentDraftPayloadWithMarkdown(record, display),
 			})
 			return
 		}
 
 		// List: omit full markdown by default; include preview + size for GUI top-bar.
+		// Cheap path only — never run PDF extract under the global documents lock.
 		includeBody := strings.EqualFold(r.URL.Query().Get("include_body"), "1") ||
 			strings.EqualFold(r.URL.Query().Get("include_body"), "true")
 		limit := parsePositiveInt(r.URL.Query().Get("limit"), 50)
@@ -97,13 +131,15 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 			if !rec.UpdatedAt.IsZero() {
 				updated = rec.UpdatedAt.UTC().Format(time.RFC3339)
 			}
+			// Lock-safe preview: original-only notice for garbage, never re-parse PDFs here.
+			display := mobileDraftListPreviewMarkdown(rec)
 			item := map[string]any{
 				"id":         rec.ID,
 				"title":      rec.Title,
 				"template":   rec.Template,
 				"updated_at": updated,
-				"rune_count": utf8.RuneCountInString(rec.Markdown),
-				"preview":    mobileClipRunes(rec.Markdown, 160),
+				"rune_count": utf8.RuneCountInString(display),
+				"preview":    mobileClipRunes(display, 160),
 			}
 			if mobileDraftHasOriginal(rec) {
 				item["has_original"] = true
@@ -115,7 +151,7 @@ func MobileDocumentDraftsListHandler(identity *auth.IdentityService) http.Handle
 				item["has_original"] = false
 			}
 			if includeBody {
-				item["markdown"] = rec.Markdown
+				item["markdown"] = display
 			}
 			out = append(out, item)
 		}
