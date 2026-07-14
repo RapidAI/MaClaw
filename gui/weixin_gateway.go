@@ -1006,6 +1006,10 @@ func truncateForLog(s string, maxRunes int) string {
 // active local WeChat session (does not go through Hub). Prefers the last active
 // user, then other sessions newest-first, until one SendMedia succeeds.
 func (m *weixinGatewayManager) SendProactiveFile(b64Data, fileName, mimeType, message string) error {
+	lang := "zh"
+	if m != nil {
+		lang = appUILang(m.app)
+	}
 	if m == nil {
 		return fmt.Errorf("weixin gateway manager is nil")
 	}
@@ -1013,14 +1017,14 @@ func (m *weixinGatewayManager) SendProactiveFile(b64Data, fileName, mimeType, me
 	gw := m.gateway
 	m.mu.Unlock()
 	if gw == nil || !gw.IsRunning() {
-		return fmt.Errorf("本地微信网关未运行（请确认微信机器人已登录并启动）")
+		return fmt.Errorf("%s", i18n.T(i18n.MsgWeixinGatewayNotRunning, lang))
 	}
 	raw, err := decodeToolPayloadBase64(b64Data)
 	if err != nil {
-		return fmt.Errorf("文件数据解码失败: %w", err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.MsgWeixinFileDecodeFailed, lang), err)
 	}
 	if len(raw) == 0 {
-		return fmt.Errorf("文件数据为空")
+		return fmt.Errorf("%s", i18n.T(i18n.MsgWeixinFileDataEmpty, lang))
 	}
 
 	// Build candidate sessions: last-active first, then remaining by recency.
@@ -1042,7 +1046,7 @@ func (m *weixinGatewayManager) SendProactiveFile(b64Data, fileName, mimeType, me
 		seen[uid] = true
 	}
 	if len(candidates) == 0 {
-		return fmt.Errorf("没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件")
+		return fmt.Errorf("%s", i18n.T(i18n.MsgWeixinNoActiveSession, lang))
 	}
 
 	name := strings.TrimSpace(fileName)
@@ -1056,7 +1060,8 @@ func (m *weixinGatewayManager) SendProactiveFile(b64Data, fileName, mimeType, me
 			mediaType = sniffed
 		}
 	}
-	caption := strings.TrimSpace(message)
+	// Defense-in-depth: never ship legacy English bot instructions as captions.
+	caption := resolveIMProactiveCaption(lang, message, name, mimeType)
 
 	var lastErr error
 	for _, c := range candidates {
@@ -1073,12 +1078,12 @@ func (m *weixinGatewayManager) SendProactiveFile(b64Data, fileName, mimeType, me
 			weixin.GetWxLog().Log("mgr.proactive", "OUT", c.uid, "ERR SendProactiveFile name=%s size=%d err=%v", name, len(raw), err)
 			continue
 		}
-		log.Printf("[weixin-mgr] SendProactiveFile OK (to=%s name=%s size=%d media=%s mime=%s)", c.uid, name, len(raw), mediaType, mimeType)
-		weixin.GetWxLog().Log("mgr.proactive", "OUT", c.uid, "OK SendProactiveFile name=%s size=%d media=%s mime=%s", name, len(raw), mediaType, mimeType)
+		log.Printf("[weixin-mgr] SendProactiveFile OK (to=%s name=%s size=%d media=%s mime=%s caption=%q)", c.uid, name, len(raw), mediaType, mimeType, truncateForLog(caption, 80))
+		weixin.GetWxLog().Log("mgr.proactive", "OUT", c.uid, "OK SendProactiveFile name=%s size=%d media=%s mime=%s caption=%s", name, len(raw), mediaType, mimeType, caption)
 		return nil
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件")
+		lastErr = fmt.Errorf("%s", i18n.T(i18n.MsgWeixinNoActiveSession, lang))
 	}
 	return lastErr
 }

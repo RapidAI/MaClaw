@@ -2373,11 +2373,19 @@ func (a *App) resolveProjectProxyURL(config corelib.AppConfig, projectDir string
 	return fmt.Sprintf("%s://%s:%s", scheme, proxyHost, proxyPort)
 }
 
+// Named flags for whether launch-env builders may rewrite each tool's native
+// CLI config files (~/.codex, ~/.claude, …). Prefer these over bare booleans.
+const (
+	persistNativeToolConfig = true  // real LaunchTool / remote session start
+	probeNativeToolConfig   = false // diagnostics, readiness, dry-run probes
+)
+
 func (a *App) buildClaudeLaunchEnv(
 	config corelib.AppConfig,
 	selectedModel *corelib.ModelConfig,
 	projectDir string,
 	useProxy bool,
+	writeNativeConfig bool,
 ) (map[string]string, error) {
 	if selectedModel == nil {
 		return nil, fmt.Errorf("selected claude model is nil")
@@ -2454,6 +2462,10 @@ func (a *App) buildClaudeLaunchEnv(
 
 	a.injectProxyEnv(env, config, projectDir, useProxy)
 
+	if !writeNativeConfig {
+		return env, nil
+	}
+
 	if !selectedModel.IsBuiltin {
 		// Surgical update: write only provider-specific env fields into
 		// ~/.claude/settings.json, preserving all user state (conversations,
@@ -2488,7 +2500,7 @@ func (a *App) buildClaudeLaunchSpec(
 	projectDir string,
 	useProxy bool,
 ) (LaunchSpec, error) {
-	return a.buildRemoteLaunchSpec("claude", config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
+	return a.buildRemoteLaunchSpec("claude", config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "", persistNativeToolConfig)
 }
 
 func (a *App) buildCodexLaunchEnv(
@@ -2496,6 +2508,7 @@ func (a *App) buildCodexLaunchEnv(
 	selectedModel *corelib.ModelConfig,
 	projectDir string,
 	useProxy bool,
+	writeNativeConfig bool,
 ) (map[string]string, error) {
 	if selectedModel == nil {
 		return nil, fmt.Errorf("selected codex model is nil")
@@ -2511,13 +2524,15 @@ func (a *App) buildCodexLaunchEnv(
 		if baseURL != "" {
 			env["OPENAI_BASE_URL"] = baseURL
 		}
-		// Surgical update: persist provider config to ~/.codex/auth.json and
-		// ~/.codex/config.toml so Codex subprocesses pick up the settings.
-		// Preserves user's MCP servers, profiles, and other config.
-		if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, baseURL, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
-			return nil, fmt.Errorf("prepare codex provider switch: %w", err)
+		if writeNativeConfig {
+			// Surgical update: persist provider config to ~/.codex/auth.json and
+			// ~/.codex/config.toml so Codex subprocesses pick up the settings.
+			// Preserves user's MCP servers, profiles, and other config.
+			if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, baseURL, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
+				return nil, fmt.Errorf("prepare codex provider switch: %w", err)
+			}
 		}
-	} else {
+	} else if writeNativeConfig {
 		// Surgical cleanup: remove only third-party auth/provider entries,
 		// preserving all other user state (MCP servers, profiles, etc.).
 		if err := configfile.ClearCodexThirdPartySettings(); err != nil {
@@ -2544,6 +2559,7 @@ func (a *App) buildOpencodeLaunchEnv(
 	selectedModel *corelib.ModelConfig,
 	projectDir string,
 	useProxy bool,
+	writeNativeConfig bool,
 ) (map[string]string, error) {
 	if selectedModel == nil {
 		return nil, fmt.Errorf("selected opencode model is nil")
@@ -2561,15 +2577,19 @@ func (a *App) buildOpencodeLaunchEnv(
 		if selectedModel.ModelId != "" {
 			env["OPENCODE_MODEL"] = selectedModel.ModelId
 		}
-		a.backupToolNativeConfig("opencode")
-		// Write ~/.config/opencode/opencode.json for persistence across subprocess restarts.
-		// Env vars alone don't populate the model selector in OpenCode's UI.
-		if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId, selectedModel.ModelName); err != nil {
-			log.Printf("[opencode-config] failed to write config: %v", err)
+		if writeNativeConfig {
+			a.backupToolNativeConfig("opencode")
+			// Write ~/.config/opencode/opencode.json for persistence across subprocess restarts.
+			// Env vars alone don't populate the model selector in OpenCode's UI.
+			if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId, selectedModel.ModelName); err != nil {
+				log.Printf("[opencode-config] failed to write config: %v", err)
+			}
 		}
 	} else {
-		// Restore native config so Opencode can use its own auth.
-		a.restoreToolNativeConfig("opencode")
+		if writeNativeConfig {
+			// Restore native config so Opencode can use its own auth.
+			a.restoreToolNativeConfig("opencode")
+		}
 		if selectedModel.ModelId != "" {
 			env["OPENCODE_MODEL"] = selectedModel.ModelId
 		}
@@ -2585,6 +2605,7 @@ func (a *App) buildIFlowLaunchEnv(
 	selectedModel *corelib.ModelConfig,
 	projectDir string,
 	useProxy bool,
+	writeNativeConfig bool,
 ) (map[string]string, error) {
 	if selectedModel == nil {
 		return nil, fmt.Errorf("selected iflow model is nil")
@@ -2604,15 +2625,19 @@ func (a *App) buildIFlowLaunchEnv(
 		if selectedModel.ModelId != "" {
 			env["IFLOW_MODEL"] = selectedModel.ModelId
 		}
-		a.backupToolNativeConfig("iflow")
-		// Write ~/.iflow/settings.json for persistence across subprocess restarts.
-		// Without this config file, iFlow CLI prompts the user to configure provider URL.
-		if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId); err != nil {
-			log.Printf("[iflow-config] failed to write config: %v", err)
+		if writeNativeConfig {
+			a.backupToolNativeConfig("iflow")
+			// Write ~/.iflow/settings.json for persistence across subprocess restarts.
+			// Without this config file, iFlow CLI prompts the user to configure provider URL.
+			if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId); err != nil {
+				log.Printf("[iflow-config] failed to write config: %v", err)
+			}
 		}
 	} else {
-		// Restore native config so iFlow can use its own auth.
-		a.restoreToolNativeConfig("iflow")
+		if writeNativeConfig {
+			// Restore native config so iFlow can use its own auth.
+			a.restoreToolNativeConfig("iflow")
+		}
 		if selectedModel.ModelId != "" {
 			env["IFLOW_MODEL"] = selectedModel.ModelId
 		}
@@ -2628,6 +2653,7 @@ func (a *App) buildKiloLaunchEnv(
 	selectedModel *corelib.ModelConfig,
 	projectDir string,
 	useProxy bool,
+	writeNativeConfig bool,
 ) (map[string]string, error) {
 	if selectedModel == nil {
 		return nil, fmt.Errorf("selected kilo model is nil")
@@ -2647,15 +2673,19 @@ func (a *App) buildKiloLaunchEnv(
 		if selectedModel.ModelId != "" {
 			env["KILO_MODEL"] = selectedModel.ModelId
 		}
-		a.backupToolNativeConfig("kilo")
-		// Write ~/.kilocode/cli/config.json for persistence across subprocess restarts.
-		// Env vars alone don't populate the model selector in Kilo Code's UI.
-		if err := configfile.WriteKiloConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId); err != nil {
-			log.Printf("[kilo-config] failed to write config: %v", err)
+		if writeNativeConfig {
+			a.backupToolNativeConfig("kilo")
+			// Write ~/.kilocode/cli/config.json for persistence across subprocess restarts.
+			// Env vars alone don't populate the model selector in Kilo Code's UI.
+			if err := configfile.WriteKiloConfig(selectedModel.ApiKey, baseURL, selectedModel.ModelId); err != nil {
+				log.Printf("[kilo-config] failed to write config: %v", err)
+			}
 		}
 	} else {
-		// Restore native config so Kilo can use its own auth.
-		a.restoreToolNativeConfig("kilo")
+		if writeNativeConfig {
+			// Restore native config so Kilo can use its own auth.
+			a.restoreToolNativeConfig("kilo")
+		}
 		if selectedModel.ModelId != "" {
 			env["KILO_MODEL"] = selectedModel.ModelId
 		}
@@ -2672,19 +2702,20 @@ func (a *App) buildRemoteLaunchEnvForTool(
 	selectedModel *corelib.ModelConfig,
 	projectDir string,
 	useProxy bool,
+	writeNativeConfig bool,
 ) (map[string]string, error) {
 	toolKind := normalizeRemoteToolNameKind(toolName)
 	switch toolKind {
 	case remoteToolNameClaude:
-		return a.buildClaudeLaunchEnv(config, selectedModel, projectDir, useProxy)
+		return a.buildClaudeLaunchEnv(config, selectedModel, projectDir, useProxy, writeNativeConfig)
 	case remoteToolNameCodex:
-		return a.buildCodexLaunchEnv(config, selectedModel, projectDir, useProxy)
+		return a.buildCodexLaunchEnv(config, selectedModel, projectDir, useProxy, writeNativeConfig)
 	case remoteToolNameOpencode:
-		return a.buildOpencodeLaunchEnv(config, selectedModel, projectDir, useProxy)
+		return a.buildOpencodeLaunchEnv(config, selectedModel, projectDir, useProxy, writeNativeConfig)
 	case remoteToolNameIFlow:
-		return a.buildIFlowLaunchEnv(config, selectedModel, projectDir, useProxy)
+		return a.buildIFlowLaunchEnv(config, selectedModel, projectDir, useProxy, writeNativeConfig)
 	case remoteToolNameKilo:
-		return a.buildKiloLaunchEnv(config, selectedModel, projectDir, useProxy)
+		return a.buildKiloLaunchEnv(config, selectedModel, projectDir, useProxy, writeNativeConfig)
 	default:
 		// Check OEM extra tools
 		extraTool := findExtraTool(toolKind.String())
@@ -2751,6 +2782,7 @@ func (a *App) buildRemoteLaunchSpec(
 	projectDir string,
 	useProxy bool,
 	providerOverride string,
+	writeNativeConfig bool,
 ) (LaunchSpec, error) {
 	tool := normalizeRemoteToolName(toolName)
 	meta, err := getRemoteToolMetadata(tool)
@@ -2791,7 +2823,7 @@ func (a *App) buildRemoteLaunchSpec(
 	}
 	projectDir = filepath.Clean(projectDir)
 
-	env, err := a.buildRemoteLaunchEnvForTool(tool, config, selectedModel, projectDir, useProxy)
+	env, err := a.buildRemoteLaunchEnvForTool(tool, config, selectedModel, projectDir, useProxy, writeNativeConfig)
 	if err != nil {
 		return LaunchSpec{}, err
 	}
@@ -4245,6 +4277,16 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		a.ShowMessage(title, message)
 		return fmt.Errorf("please select a provider first")
 	}
+
+	// Remote desktop launches write native configs exactly once inside
+	// buildRemoteLaunchSpec. Handle them before the local env/write path so we
+	// do not rewrite ~/.codex / ~/.claude twice.
+	launchMode := normalizeLaunchModeKind(config.DefaultLaunchMode)
+	remoteCapableTool := launchToolKind.IsDesktopRemoteLaunchCapableBuiltin() || findExtraTool(launchToolKind.String()) != nil
+	if launchMode.IsRemote() && config.RemoteEnabled && remoteCapableTool {
+		return a.launchToolRemoteSession(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, launchToolKind)
+	}
+
 	// Ensure ActiveTool is set correctly for syncToSystemEnv
 	config.ActiveTool = launchToolKind.String()
 	a.syncToSystemEnv(config)
@@ -4299,207 +4341,76 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			a.log(fmt.Sprintf("Proxy enabled: %s:%s", proxyHost, proxyPort))
 		}
 	}
-	if !selectedModel.IsBuiltin {
-		// --- OTHER PROVIDER MODE: WRITE CONFIG & SET ENV ---
-		// Only add to env map, do NOT set in main process (to avoid cross-contamination)
-		toolBaseURL := strings.TrimSpace(selectedModel.ModelUrl)
-		if !launchToolKind.IsClaude() {
-			toolBaseURL = normalizedOpenAICompatibleToolBaseURL(launchToolKind.String(), *selectedModel)
+	// Shared launch-env builders own native config writes for the main tools so
+	// local desktop launch matches remote launch (normalization, surgical
+	// update/clear, CodeGen headers). CodeBuddy / OEM extras keep the legacy path.
+	switch launchToolKind {
+	case remoteToolNameClaude, remoteToolNameCodex, remoteToolNameOpencode, remoteToolNameIFlow, remoteToolNameKilo:
+		built, err := a.buildRemoteLaunchEnvForTool(launchToolKind.String(), config, selectedModel, projectDir, useProxy, persistNativeToolConfig)
+		if err != nil {
+			a.log(fmt.Sprintf("prepare %s launch env failed: %v", toolName, err))
+			return err
 		}
-		env[envKey] = selectedModel.ApiKey
-		if toolBaseURL != "" && envBaseUrl != "" {
-			env[envBaseUrl] = toolBaseURL
+		for k, v := range built {
+			env[k] = v
 		}
-		// Add CODEBUDDY_CODE_MAX_OUTPUT_TOKENS for DeepSeek
-		selectedModelProvider := normalizeModelProviderKind(selectedModel.ModelName)
-		if selectedModelProvider.IsDeepSeek() {
-			env["CODEBUDDY_CODE_MAX_OUTPUT_TOKENS"] = "8192"
-		}
-		// Set generic model name env var if applicable
-		if selectedModel.ModelId != "" {
+		if !selectedModel.IsBuiltin {
+			// Local desktop extras not required by remote session adapters.
+			if launchToolKind == remoteToolNameCodex {
+				env["WIRE_API"] = "responses"
+				if selectedModel.ModelId != "" {
+					env["OPENAI_MODEL"] = selectedModel.ModelId
+				}
+			}
+			// Instance-scoped config files for multi-window local launches.
 			switch launchToolKind {
-			case remoteToolNameClaude:
-				env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-			case remoteToolNameCodex:
-				env["OPENAI_MODEL"] = selectedModel.ModelId
 			case remoteToolNameOpencode:
-				env["OPENCODE_MODEL"] = selectedModel.ModelId
-			case remoteToolNameCodeBuddy:
-				// env["CODEBUDDY_MODEL"] = selectedModel.ModelId
+				if err := a.syncToOpencodeSettings(config, projectDir, instanceID); err != nil {
+					log.Printf("Opencode: sync instance settings failed: %v", err)
+				}
 			case remoteToolNameIFlow:
-				// iFlow uses settings.json, but maybe env var too?
-				env["IFLOW_MODEL"] = selectedModel.ModelId
+				if err := a.syncToIFlowSettings(config, projectDir, instanceID); err != nil {
+					log.Printf("iFlow: sync instance settings failed: %v", err)
+				}
 			case remoteToolNameKilo:
-				env["KILO_MODEL"] = selectedModel.ModelId
-			default:
-				// OEM extra tools use generic OpenAI model env var
+				if err := a.syncToKiloSettings(config, projectDir, instanceID); err != nil {
+					log.Printf("Kilo: sync instance settings failed: %v", err)
+				}
+			}
+			a.log(fmt.Sprintf("%s: prepared provider env and native config for local launch", toolName))
+		} else {
+			a.log(fmt.Sprintf("Running %s in Original mode: native config restored.", toolName))
+		}
+	default:
+		if !selectedModel.IsBuiltin {
+			// --- OTHER PROVIDER MODE (CodeBuddy / OEM): SET ENV ONLY ---
+			toolBaseURL := strings.TrimSpace(selectedModel.ModelUrl)
+			if !launchToolKind.IsClaude() {
+				toolBaseURL = normalizedOpenAICompatibleToolBaseURL(launchToolKind.String(), *selectedModel)
+			}
+			env[envKey] = selectedModel.ApiKey
+			if toolBaseURL != "" && envBaseUrl != "" {
+				env[envBaseUrl] = toolBaseURL
+			}
+			selectedModelProvider := normalizeModelProviderKind(selectedModel.ModelName)
+			if selectedModelProvider.IsDeepSeek() {
+				env["CODEBUDDY_CODE_MAX_OUTPUT_TOKENS"] = "8192"
+			}
+			if selectedModel.ModelId != "" {
 				if findExtraTool(launchToolKind.String()) != nil {
 					env["OPENAI_MODEL"] = selectedModel.ModelId
 				}
 			}
-		}
-		if launchToolKind.IsClaude() {
-			switch selectedModelProvider {
-			case modelProviderQianfan:
-				modelId := selectedModel.ModelId
-				if modelId == "" {
-					modelId = "qianfan-code-latest"
-				}
-				env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
-				env["ANTHROPIC_BASE_URL"] = "https://qianfan.baidubce.com/anthropic/coding"
-				env["ANTHROPIC_MODEL"] = modelId
-				env["ANTHROPIC_SMALL_FAST_MODEL"] = modelId
-				env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-				env["API_TIMEOUT_MS"] = "600000"
-			}
-		}
-		// Tool-specific configurations
-		// Tools that support pure env vars: clear old config files to avoid interference
-		// Tools that need config files: use instanceID for isolation
-		switch launchToolKind {
-		case remoteToolNameClaude:
-			// Surgically update only the provider settings in ~/.claude/settings.json,
-			// preserving conversation history, MCP plugins, hooks, and other user state.
-			if err := configfile.WriteClaudeProviderSettings(selectedModel.ModelName, selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
-				log.Printf("Claude: failed to write provider settings: %v", err)
-			}
-			a.log("Claude: Updated settings.json with provider config (preserving user state)")
-		case remoteToolNameCodex:
-			env["WIRE_API"] = "responses"
-			// Ensure OpenAI standard vars for Codex
-			env["OPENAI_API_KEY"] = selectedModel.ApiKey
-			if toolBaseURL != "" {
-				env["OPENAI_BASE_URL"] = toolBaseURL
-			}
-			// Surgically update ~/.codex/auth.json and ~/.codex/config.toml with provider config,
-			// preserving user's MCP servers, profiles, and other settings.
-			if err := configfile.WriteCodexConfigWithClientName(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel), codeGenClientNameForModelConfig(config, *selectedModel)); err != nil {
-				a.log("Codex provider switch failed: " + err.Error())
-				return err
-			}
-			a.log("Codex: Updated config with provider settings (preserving user state)")
-		case remoteToolNameOpencode:
-			// Opencode needs config file - use instanceID for isolation
-			a.backupToolNativeConfig("opencode")
-			a.syncToOpencodeSettings(config, projectDir, instanceID)
-			// Also write to ~/.config/opencode/opencode.json so the tool can find the provider
-			if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId, selectedModel.ModelName); err != nil {
-				log.Printf("Opencode: failed to write home config: %v", err)
-			}
-		case remoteToolNameCodeBuddy:
-			// CodeBuddy may need config file
-			// a.syncToCodeBuddySettings(config, projectDir, instanceID)
-		case remoteToolNameIFlow:
-			// iFlow needs config file - use instanceID for isolation
-			// Ensure OpenAI standard vars for iFlow (compatibility)
-			env["OPENAI_API_KEY"] = selectedModel.ApiKey
-			if toolBaseURL != "" {
-				env["OPENAI_BASE_URL"] = toolBaseURL
-			}
-			a.backupToolNativeConfig("iflow")
-			a.syncToIFlowSettings(config, projectDir, instanceID)
-			// Also write to ~/.iflow/settings.json so the tool can find the provider
-			if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId); err != nil {
-				log.Printf("iFlow: failed to write home config: %v", err)
-			}
-		case remoteToolNameKilo:
-			// Kilo needs config file - use instanceID for isolation
-			a.backupToolNativeConfig("kilo")
-			a.syncToKiloSettings(config, projectDir, instanceID)
-			// Also write to ~/.kilocode/cli/config.json so the tool can find the provider
-			if err := configfile.WriteKiloConfig(selectedModel.ApiKey, toolBaseURL, selectedModel.ModelId); err != nil {
-				log.Printf("Kilo: failed to write home config: %v", err)
-			}
-		default:
-			// OEM extra tools: if EnvBuilderFunc is set, merge its output into env
 			if et := findExtraTool(launchToolKind.String()); et != nil && et.EnvBuilderFunc != nil {
 				extraEnv := et.EnvBuilderFunc(nil, selectedModel, projectDir)
 				for k, v := range extraEnv {
 					env[k] = v
 				}
 			}
+		} else {
+			a.restoreToolNativeConfig(launchToolKind.String())
+			a.log(fmt.Sprintf("Running %s in Original mode: native config restored.", toolName))
 		}
-	} else {
-		// --- ORIGINAL MODE: RESTORE NATIVE CONFIG ---
-		// For Claude/Codex: use surgical cleanup to remove only
-		// third-party config entries, preserving user state (conversations,
-		// plugins, hooks, MCP servers, etc.). Fall back to full directory
-		// restore only for backward-compat migration of pre-fix backups.
-		// For other tools (opencode, iflow, kilo): use the existing
-		// full-directory restore since they use instance-specific config.
-		tool := launchToolKind.String()
-		switch launchToolKind {
-		case remoteToolNameClaude:
-			if err := configfile.ClearClaudeThirdPartySettings(); err != nil {
-				log.Printf("[LaunchTool-desktop] Claude: ClearClaudeThirdPartySettings error: %v", err)
-			}
-			// Backward-compat: restore pre-fix backup if it exists (one-time migration).
-			backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
-			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found -running one-time migration restore")
-				a.restoreToolNativeConfig("claude")
-			}
-		case remoteToolNameCodex:
-			if err := configfile.ClearCodexThirdPartySettings(); err != nil {
-				a.log("Codex builtin switch failed: " + err.Error())
-				return err
-			}
-			backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
-			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Codex: pre-fix backup found -running one-time migration restore")
-				a.restoreToolNativeConfig("codex")
-			}
-		default:
-			a.restoreToolNativeConfig(tool)
-		}
-		a.log(fmt.Sprintf("Running %s in Original mode: native config restored.", toolName))
-	}
-
-	// Claude Code Agent Teams mode
-	if launchToolKind.IsClaude() {
-		// Find the current project config to check team_mode
-		for _, proj := range config.Projects {
-			if proj.Path == projectDir || proj.Id == config.CurrentProject {
-				if proj.TeamMode {
-					env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
-					a.log("Claude Code Agent Teams mode enabled")
-				}
-				break
-			}
-		}
-	}
-
-	launchMode := normalizeLaunchModeKind(config.DefaultLaunchMode)
-	toolKind := launchToolKind
-	remoteCapableTool := toolKind.IsDesktopRemoteLaunchCapableBuiltin() || findExtraTool(toolKind.String()) != nil
-	if launchToolKind.IsClaude() {
-		// Keep a durable, non-sensitive audit record for diagnosing unexpected
-		// Claude Code windows.  Do not log env (it can contain credentials) or
-		// prompt text here.
-		log.Printf("[claude-launch] requested source=desktop-ui mode=%s remote_enabled=%v project=%q yolo=%v admin=%v",
-			launchMode.String(), config.RemoteEnabled, projectDir, yoloMode, adminMode)
-	}
-	if launchMode.IsRemote() && config.RemoteEnabled && remoteCapableTool {
-		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
-		if err != nil {
-			a.log("build remote launch spec failed: " + err.Error())
-			return err
-		}
-
-		if a.remoteSessions == nil {
-			a.createAndWireHubClient()
-		}
-
-		session, err := a.remoteSessions.CreateUserSession(spec)
-		if err != nil {
-			a.log("create remote session failed: " + err.Error())
-			return err
-		}
-		if launchToolKind.IsClaude() && session != nil {
-			log.Printf("[claude-launch] dispatched mode=remote session=%s pid=%d source=%s project=%q",
-				session.ID, session.PID, session.LaunchSource, session.ProjectPath)
-		}
-		return nil
 	}
 
 	// Ensure tool onboarding is complete for local launches so the user
@@ -4514,6 +4425,43 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 
 	// Platform specific launch
 	return a.platformLaunch(binaryName, yoloMode, adminMode, pythonEnv, projectDir, env, selectedModel.ModelId)
+}
+
+// launchToolRemoteSession builds a remote launch spec (writing native configs
+// once) and creates the session. Used by LaunchTool so remote mode never runs
+// the local env/config write path first.
+func (a *App) launchToolRemoteSession(
+	toolName string,
+	config corelib.AppConfig,
+	yoloMode, adminMode bool,
+	pythonEnv, projectDir string,
+	useProxy bool,
+	launchToolKind remoteToolNameKind,
+) error {
+	if launchToolKind.IsClaude() {
+		log.Printf("[claude-launch] requested source=desktop-ui mode=remote remote_enabled=%v project=%q yolo=%v admin=%v",
+			config.RemoteEnabled, projectDir, yoloMode, adminMode)
+	}
+	spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "", persistNativeToolConfig)
+	if err != nil {
+		a.log("build remote launch spec failed: " + err.Error())
+		return err
+	}
+
+	if a.remoteSessions == nil {
+		a.createAndWireHubClient()
+	}
+
+	session, err := a.remoteSessions.CreateUserSession(spec)
+	if err != nil {
+		a.log("create remote session failed: " + err.Error())
+		return err
+	}
+	if launchToolKind.IsClaude() && session != nil {
+		log.Printf("[claude-launch] dispatched mode=remote session=%s pid=%d source=%s project=%q",
+			session.ID, session.PID, session.LaunchSource, session.ProjectPath)
+	}
+	return nil
 }
 func (a *App) log(message string) {
 	if a.IsInitMode {

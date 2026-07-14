@@ -207,7 +207,7 @@ func TestMaterializeToolFilePayloadForwardsOnSharedPath(t *testing.T) {
 	if gotName != "shot.png" {
 		t.Fatalf("name=%q", gotName)
 	}
-	if !strings.Contains(got.Text, "已向微信/IM 转发") {
+	if !strings.Contains(got.Text, "已向微信/IM 转发") && !strings.Contains(got.Text, "Forwarded") {
 		t.Fatalf("materialize text should report success, got %q", got.Text)
 	}
 	if len(got.LocalPaths) != 1 {
@@ -257,5 +257,72 @@ func TestAppendUniqueStrings(t *testing.T) {
 	got := appendUniqueStrings(nil, "a", "b", "a", " ", "b", "c")
 	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestLocalizeIMProactiveCaption(t *testing.T) {
+	// Images: bare caption (no long screenshot filename).
+	zhImg := localizeIMProactiveCaption("zh", "屏幕截图 2026-06-19.png", "image/png")
+	if zhImg != "请查收图片" {
+		t.Fatalf("zh image caption = %q, want bare 请查收图片", zhImg)
+	}
+	zhFile := localizeIMProactiveCaption("zh", "report.pdf", "application/pdf")
+	if !strings.Contains(zhFile, "请查收文件") || !strings.Contains(zhFile, "report.pdf") {
+		t.Fatalf("zh file caption = %q", zhFile)
+	}
+	enImg := localizeIMProactiveCaption("en", "shot.png", "image/png")
+	if enImg != "Please find the image" {
+		t.Fatalf("en image caption = %q", enImg)
+	}
+	// Bare caption when name missing.
+	if bare := localizeIMProactiveCaption("zh", "", "image/png"); bare != "请查收图片" {
+		t.Fatalf("zh bare image = %q", bare)
+	}
+	// Legacy English bot instruction must be replaced.
+	got := resolveIMProactiveCaption("zh", "Please send shot.png to the user.", "shot.png", "image/png")
+	if strings.Contains(got, "Please send") || got != "请查收图片" {
+		t.Fatalf("legacy instruction not replaced: %q", got)
+	}
+	// Previously auto-generated zh caption re-localized when GUI is en.
+	re := resolveIMProactiveCaption("en", "请查收图片：shot.png", "shot.png", "image/png")
+	if re != "Please find the image" {
+		t.Fatalf("auto caption should re-localize to en bare, got %q", re)
+	}
+	// Explicit workflow message kept.
+	keep := resolveIMProactiveCaption("zh", "需求文档已生成，请确认。", "a.pdf", "application/pdf")
+	if keep != "需求文档已生成，请确认。" {
+		t.Fatalf("workflow message should be kept, got %q", keep)
+	}
+	// Empty message → fresh localized caption.
+	empty := resolveIMProactiveCaption("zh", "", "shot.png", "image/png")
+	if empty != "请查收图片" {
+		t.Fatalf("empty message caption = %q", empty)
+	}
+}
+
+func TestPopulateDesktopFileArtifactUsesLocalizedCaption(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var gotCaption string
+	h := &IMMessageHandler{app: &App{CurrentLanguage: "zh"}}
+	h.imFileSender = func(b64Data, fileName, mimeType, message string) error {
+		gotCaption = message
+		return nil
+	}
+	resp := &IMAgentResponse{}
+	n := h.populateDesktopFileArtifactResponse(resp, []pendingFile{{
+		name:      "屏幕截图.png",
+		mimeType:  "image/png",
+		data:      "iVBORw0KGgo=",
+		forwardIM: true,
+		message:   "Please send 屏幕截图.png to the user.",
+	}})
+	if n != 1 {
+		t.Fatalf("forwarded=%d", n)
+	}
+	if gotCaption != "请查收图片" {
+		t.Fatalf("caption should be bare zh image form, got %q", gotCaption)
 	}
 }

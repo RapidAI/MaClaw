@@ -19,15 +19,27 @@ import (
 
 type ImportProgressFunc func(DirectoryImportResult)
 
+// ScanProgressFunc reports precheck progress.
+// phase is "walk" (discovery) or "hash" (content hashing).
+// For "walk", total may be 0 (unknown). path is the current file when available.
+type ScanProgressFunc func(phase string, done, total int, path string)
+
 type SQLiteStore struct {
 	db             *sql.DB
+	dbPath         string // for background post-import work on a separate connection
 	distiller      CardDistiller
 	importProgress ImportProgressFunc
+	scanProgress   ScanProgressFunc
 	embedder       embedding.Embedder
 	embedderMu     sync.RWMutex
 	imageAssets    *ImageAssetManager
 	imageDescriber ImageDescriber
 	imageDescSem   chan struct{} // semaphore for concurrent image description calls
+	bgWG              sync.WaitGroup
+	bgCancelMu        sync.Mutex
+	bgCancel          context.CancelFunc
+	bgCancelGen       uint64 // increments per schedule; clear only matches gen
+	bgCancelRequested bool   // set if CancelBackground raced ahead of schedule
 }
 
 // SetEmbedder sets the embedding model for vector search.
@@ -76,7 +88,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{db: db, dbPath: dbPath}, nil
 }
 
 func (s *SQLiteStore) SetCardDistiller(distiller CardDistiller) {
@@ -91,6 +103,63 @@ func (s *SQLiteStore) SetImportProgressCallback(callback ImportProgressFunc) {
 	}
 }
 
+func (s *SQLiteStore) SetScanProgressCallback(callback ScanProgressFunc) {
+	if s != nil {
+		s.scanProgress = callback
+	}
+}
+
+// CancelBackground aborts in-flight import post-work (topic linking / node embeddings).
+// File ingest already committed is not rolled back. Safe to call multiple times.
+// If called before post-work is scheduled, the next schedule starts already cancelled.
+func (s *SQLiteStore) CancelBackground() {
+	if s == nil {
+		return
+	}
+	s.bgCancelMu.Lock()
+	s.bgCancelRequested = true
+	cancel := s.bgCancel
+	s.bgCancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// setBackgroundCancel installs cancel for the next post-work run and returns a
+// generation token. clearBackgroundCancel(gen) only clears when gen still matches,
+// so a finished older run cannot wipe a newer cancel handle.
+func (s *SQLiteStore) setBackgroundCancel(cancel context.CancelFunc) uint64 {
+	if s == nil {
+		return 0
+	}
+	s.bgCancelMu.Lock()
+	prev := s.bgCancel
+	s.bgCancelGen++
+	gen := s.bgCancelGen
+	s.bgCancel = cancel
+	if s.bgCancelRequested && cancel != nil {
+		cancel()
+	}
+	s.bgCancelMu.Unlock()
+	// Abort any overlapping prior post-work so its cancel handle is not leaked.
+	if prev != nil {
+		prev()
+	}
+	return gen
+}
+
+func (s *SQLiteStore) clearBackgroundCancel(gen uint64) {
+	if s == nil {
+		return
+	}
+	s.bgCancelMu.Lock()
+	if gen == 0 || s.bgCancelGen == gen {
+		s.bgCancel = nil
+		s.bgCancelRequested = false
+	}
+	s.bgCancelMu.Unlock()
+}
+
 // SetImageAssetManager sets the image asset manager for storing extracted images.
 func (s *SQLiteStore) SetImageAssetManager(mgr *ImageAssetManager) {
 	if s != nil {
@@ -102,9 +171,17 @@ func (s *SQLiteStore) SetImageAssetManager(mgr *ImageAssetManager) {
 func (s *SQLiteStore) SetImageDescriber(describer ImageDescriber) {
 	if s != nil {
 		s.imageDescriber = describer
-		// Initialize concurrency semaphore for image description (max 2 concurrent).
+		// Concurrent image descriptions (OCR/vision). Cap at 4 to avoid API stampede
+		// while still utilizing multi-core OCR on multi-image documents.
 		if s.imageDescSem == nil {
-			s.imageDescSem = make(chan struct{}, 2)
+			n := 4
+			if n > importParallelWorkers(8) {
+				n = importParallelWorkers(8)
+			}
+			if n < 2 {
+				n = 2
+			}
+			s.imageDescSem = make(chan struct{}, n)
 		}
 	}
 }
@@ -117,8 +194,24 @@ func (s *SQLiteStore) ImageAssets() *ImageAssetManager {
 	return s.imageAssets
 }
 
+// WaitBackground blocks until async import post-work (linking/embedding) finishes.
+// ImportDirectory returns before that work completes so the UI can unblock early;
+// callers that need embeddings immediately should WaitBackground (or Close).
+func (s *SQLiteStore) WaitBackground() {
+	if s == nil {
+		return
+	}
+	s.bgWG.Wait()
+}
+
 func (s *SQLiteStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
+		return nil
+	}
+	// Cancel then wait so shutdown does not block on full post-work.
+	s.CancelBackground()
+	s.bgWG.Wait()
+	if s.db == nil {
 		return nil
 	}
 	return s.db.Close()
@@ -442,41 +535,8 @@ func (s *SQLiteStore) DistillAndSaveCards(ctx context.Context, tx *sql.Tx, sourc
 }
 
 func (s *SQLiteStore) DistillAndSaveCardsWithMode(ctx context.Context, tx *sql.Tx, source Source, nodes []DocumentNode, mode string) (Source, error) {
-	cards := BuildCardsForNodes(source, nodes)
-	if s != nil && s.distiller != nil && shouldUseLLMForMode(mode, source, nodes) {
-		if llmCards, err := s.distiller.DistillCards(ctx, source, nodes); err == nil && len(llmCards) > 0 {
-			cards = NormalizeDistilledCards(source, llmCards)
-		}
-	}
-	if len(cards) == 0 {
-		return source, nil
-	}
-	// Generate embeddings for cards if embedder is available
-	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
-		texts := make([]string, len(cards))
-		for i, card := range cards {
-			texts[i] = cardEmbeddingText(card)
-		}
-		if vectors, err := emb.EmbedBatch(texts); err == nil && len(vectors) == len(cards) {
-			for i := range cards {
-				cards[i].Embedding = vectors[i]
-			}
-		}
-	}
-	for _, card := range cards {
-		card = enrichCardStructure(source, card)
-		if err := insertCard(ctx, tx, card); err != nil {
-			return source, err
-		}
-		for _, fact := range BuildFactsForCard(source, card) {
-			if err := insertFact(ctx, tx, fact); err != nil {
-				return source, err
-			}
-		}
-	}
-	source.Status = StatusDistilled
-	source.UpdatedAt = time.Now().UTC()
-	return source, insertSource(ctx, tx, source)
+	// Single-file / multi-node fast path: parallel FTS + prepared inserts.
+	return s.distillAndSaveCardsFast(ctx, tx, source, nodes, mode)
 }
 
 func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) ([]Source, error) {
@@ -3393,11 +3453,12 @@ func (s *SQLiteStore) KnownContentHashes(ctx context.Context, req DirectoryImpor
 
 func (s *SQLiteStore) ScanDirectory(ctx context.Context, req DirectoryImportRequest) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
-	existing, err := s.KnownContentHashes(ctx, req)
+	// Hash files first, then look up only those hashes (avoids loading entire KB hash set).
+	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.scanProgress)
 	if err != nil {
-		return DirectoryImportResult{}, err
+		return result, err
 	}
-	result, _, err := ScanDirectory(ctx, req, existing)
+	result, _, err = s.markExistingContentDuplicates(ctx, req, result, items)
 	return result, err
 }
 
@@ -3534,7 +3595,12 @@ func (s *SQLiteStore) RetryImportBatch(ctx context.Context, req ImportRetryReque
 		importReq.MaxFileBytes = req.MaxFileBytes
 	}
 	importReq = NormalizeDirectoryImportRequest(importReq)
+	// Empty existingHashes: within-batch dedupe only; then targeted DB lookup.
 	result, scanned, err := ScanFiles(ctx, importReq, selected, map[string]struct{}{})
+	if err != nil {
+		return result, err
+	}
+	result, scanned, err = s.markExistingContentDuplicates(ctx, importReq, result, scanned)
 	if err != nil {
 		return result, err
 	}
@@ -3608,21 +3674,22 @@ func retryImportFilePaths(items []ImportItem, req ImportRetryRequest) []string {
 
 func (s *SQLiteStore) ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []string) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
-	existing, err := s.KnownContentHashes(ctx, req)
+	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.scanProgress)
 	if err != nil {
-		return DirectoryImportResult{}, err
+		return result, err
 	}
-	result, _, err := ScanFiles(ctx, req, filePaths, existing)
+	result, _, err = s.markExistingContentDuplicates(ctx, req, result, items)
 	return result, err
 }
 
 func (s *SQLiteStore) ImportDirectory(ctx context.Context, req DirectoryImportRequest) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
-	existing, err := s.KnownContentHashes(ctx, req)
+	// Targeted DB hash lookup after scanning — do not load all content hashes.
+	result, items, err := ScanDirectoryProgress(ctx, req, nil, s.scanProgress)
 	if err != nil {
-		return DirectoryImportResult{}, err
+		return result, err
 	}
-	result, items, err := ScanDirectory(ctx, req, existing)
+	result, items, err = s.markExistingContentDuplicates(ctx, req, result, items)
 	if err != nil {
 		return result, err
 	}
@@ -3631,15 +3698,38 @@ func (s *SQLiteStore) ImportDirectory(ctx context.Context, req DirectoryImportRe
 
 func (s *SQLiteStore) ImportFiles(ctx context.Context, req DirectoryImportRequest, filePaths []string) (DirectoryImportResult, error) {
 	req = NormalizeDirectoryImportRequest(req)
-	existing, err := s.KnownContentHashes(ctx, req)
+	result, items, err := ScanFilesProgress(ctx, req, filePaths, nil, s.scanProgress)
 	if err != nil {
-		return DirectoryImportResult{}, err
+		return result, err
 	}
-	result, items, err := ScanFiles(ctx, req, filePaths, existing)
+	result, items, err = s.markExistingContentDuplicates(ctx, req, result, items)
 	if err != nil {
 		return result, err
 	}
 	return s.importScannedItems(ctx, req, result, items)
+}
+
+// markExistingContentDuplicates looks up only hashes from the current scan batch
+// instead of SELECT-ing every content_hash in the knowledge base.
+func (s *SQLiteStore) markExistingContentDuplicates(ctx context.Context, req DirectoryImportRequest, result DirectoryImportResult, items []ImportItem) (DirectoryImportResult, []ImportItem, error) {
+	hashes := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Status == ItemStatusQueued && item.FileHash != "" {
+			hashes = append(hashes, item.FileHash)
+		}
+	}
+	if len(hashes) == 0 {
+		return result, items, nil
+	}
+	existing, err := s.lookupContentHashes(ctx, req, hashes)
+	if err != nil {
+		return result, items, err
+	}
+	if len(existing) == 0 {
+		return result, items, nil
+	}
+	result, items = applyExistingHashSkips(result, items, existing)
+	return result, items, nil
 }
 
 // lastItemProgressFields maps a finished ImportItem into frontend log fields.
@@ -3772,8 +3862,12 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		emitImportProgress(item)
 	}
 	emitImportProgress(ImportItem{})
+	// Warm CJK segmenter early for multi-file imports (used heavily by FTS prep).
+	if result.QueuedFiles > 1 {
+		bm25.PrewarmDict()
+	}
 
-	for i := range items {
+	for i := 0; i < len(items); {
 		item := items[i]
 		item.BatchID = batchID
 		if item.Status != ItemStatusQueued {
@@ -3784,6 +3878,29 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				return result, err
 			}
 			markImportItemProcessed(i, item)
+			i++
+			continue
+		}
+
+		// Parallel path for small markdown/text files: CPU prep on all cores,
+		// then sequential SQLite writes with prepared statements.
+		if canParallelLightImport(item.Kind, req) {
+			end := i + 1
+			for end < len(items) && end-i < importLightBatchMax {
+				next := items[end]
+				if next.Status != ItemStatusQueued || !canParallelLightImport(next.Kind, req) {
+					break
+				}
+				end++
+			}
+			if err := s.importLightItemsBatch(
+				ctx, tx, req, batchID, items, i, end,
+				&imported, &failed, &importedSourceIDs,
+				recordFailedItem, markImportItemProcessed, emitStepProgress,
+			); err != nil {
+				return result, err
+			}
+			i = end
 			continue
 		}
 
@@ -3817,6 +3934,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				return result, err
 			}
 			markImportItemProcessed(i, item)
+			i++
 			continue
 		}
 		if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
@@ -3828,6 +3946,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				return result, err
 			}
 			markImportItemProcessed(i, item)
+			i++
 			continue
 		}
 
@@ -3855,6 +3974,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						return result, err
 					}
 					markImportItemProcessed(i, item)
+					i++
 					continue
 				}
 			}
@@ -3879,6 +3999,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						return result, err
 					}
 					markImportItemProcessed(i, item)
+					i++
 					continue
 				}
 				if isSpreadsheetKind(item.Kind) {
@@ -3915,6 +4036,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 							return result, err
 						}
 						markImportItemProcessed(i, item)
+						i++
 						continue
 					} else {
 						source = nextSource
@@ -3936,6 +4058,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 						return result, err
 					}
 					markImportItemProcessed(i, item)
+					i++
 					continue
 				}
 				source = nextSource
@@ -3958,6 +4081,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 							return result, err
 						}
 						markImportItemProcessed(i, item)
+						i++
 						continue
 					}
 					source.NodeCount = len(imageNodes)
@@ -3977,6 +4101,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 							return result, err
 						}
 						markImportItemProcessed(i, item)
+						i++
 						continue
 					}
 					source = nextSource
@@ -3993,6 +4118,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 			return result, err
 		}
 		markImportItemProcessed(i, item)
+		i++
 	}
 
 	result.ImportedFiles = imported
@@ -4019,63 +4145,75 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
-	// Post-import: embedding backfill with progress reporting
-	if len(importedSourceIDs) > 0 && s.importProgress != nil {
-		// Check if there are nodes to embed before emitting progress events
-		nodes, _ := s.queryMissingNodeEmbeddings(ctx, importedSourceIDs)
-		if len(nodes) > 0 {
-			postImportSnapshot := result
-			postImportSnapshot.Status = ImportStatusRunning
-			postImportSnapshot.CurrentFile = ""
-			postImportSnapshot.CurrentStep = "embedding"
-			postImportSnapshot.StepProgress = 0
-			postImportSnapshot.TotalSteps = 0
-			postImportSnapshot.CurrentStepNum = 0
-			s.importProgress(postImportSnapshot)
-
-			_ = s.embedAndStoreNodeEmbeddingsWithProgress(ctx, nodes, func(processed, total int) {
-				snap := result
-				snap.Status = ImportStatusRunning
-				snap.CurrentFile = ""
-				snap.CurrentStep = "embedding"
-				snap.StepProgress = (processed * 100) / total
-				snap.TotalSteps = 0
-				snap.CurrentStepNum = 0
-				s.importProgress(snap)
-			})
-		}
-	} else {
-		_ = s.BackfillNodeEmbeddingsForSources(ctx, importedSourceIDs)
-	}
-	// Post-import: topic linking with progress reporting
-	if len(importedSourceIDs) > 0 && s.importProgress != nil {
-		for i, sourceID := range importedSourceIDs {
-			snap := result
-			snap.Status = ImportStatusRunning
-			snap.CurrentFile = ""
-			snap.CurrentStep = "linking"
-			snap.StepProgress = (i * 100) / len(importedSourceIDs)
-			snap.TotalSteps = 0
-			snap.CurrentStepNum = 0
-			s.importProgress(snap)
-			_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
-		}
-	} else {
-		for _, sourceID := range importedSourceIDs {
-			_, _ = s.RefreshSourceTopicLinks(ctx, sourceID, 8)
-		}
-	}
-	if s.importProgress != nil {
-		finalSnapshot := result
-		finalSnapshot.CurrentFile = ""
-		finalSnapshot.CurrentStep = ""
-		finalSnapshot.StepProgress = 0
-		finalSnapshot.TotalSteps = 0
-		finalSnapshot.CurrentStepNum = 0
-		finalSnapshot.Items = nil
-		s.importProgress(finalSnapshot)
-	}
+	// File ingest is done. Post-work (linking + node embeddings) runs in the
+	// background with status "indexing" so the UI can show
+	// "已完成文件 · 后台索引中" without blocking the import loop return.
 	result.Items = items
+	terminalStatus := result.Status // completed or failed (batch outcome)
+	if len(importedSourceIDs) == 0 {
+		if s.importProgress != nil {
+			finalSnapshot := result
+			finalSnapshot.CurrentFile = ""
+			finalSnapshot.CurrentStep = ""
+			finalSnapshot.StepProgress = 0
+			finalSnapshot.TotalSteps = 0
+			finalSnapshot.CurrentStepNum = 0
+			finalSnapshot.Items = nil
+			s.importProgress(finalSnapshot)
+		}
+		return result, nil
+	}
+
+	base := result
+	base.CurrentFile = ""
+	base.CurrentStep = "linking"
+	base.StepProgress = 0
+	base.TotalSteps = 0
+	base.CurrentStepNum = 0
+	base.Items = nil
+
+	emitPost := func(phase string, progress int) {
+		if s == nil || s.importProgress == nil {
+			return
+		}
+		snap := base
+		// Keep indexing while post-work runs (even if some files failed).
+		snap.Status = ImportStatusIndexing
+		snap.CurrentStep = phase
+		if progress < 0 {
+			progress = 0
+		}
+		if progress > 100 {
+			progress = 100
+		}
+		snap.StepProgress = progress
+		s.importProgress(snap)
+	}
+	emitDone := func() {
+		if s == nil || s.importProgress == nil {
+			return
+		}
+		snap := base
+		snap.Status = terminalStatus
+		if snap.Status == "" {
+			snap.Status = ImportStatusCompleted
+		}
+		snap.CurrentStep = ""
+		snap.StepProgress = 0
+		s.importProgress(snap)
+	}
+
+	if s.importProgress != nil {
+		// Surface indexing state before returning so the job is not toasted as done yet.
+		result.Status = ImportStatusIndexing
+		emitPost("linking", 0)
+		s.scheduleImportPostWork(importedSourceIDs, emitPost, emitDone)
+	} else {
+		// Tests / headless: run post-work and report terminal batch status.
+		s.scheduleImportPostWork(importedSourceIDs, nil, nil)
+		s.WaitBackground()
+		result.Status = terminalStatus
+	}
 	return result, nil
 }
 
@@ -4165,12 +4303,8 @@ func insertDocumentNode(ctx context.Context, tx *sql.Tx, node DocumentNode) erro
 }
 
 func insertDocumentNodes(ctx context.Context, tx *sql.Tx, nodes []DocumentNode) error {
-	for _, node := range nodes {
-		if err := insertDocumentNode(ctx, tx, node); err != nil {
-			return err
-		}
-	}
-	return nil
+	// Parallel FTS prep + prepared statements (single large files benefit most).
+	return insertDocumentNodesFast(ctx, tx, nodes)
 }
 
 func insertCard(ctx context.Context, tx *sql.Tx, card Card) error {

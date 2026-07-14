@@ -130,7 +130,7 @@ func (a *App) StartRemoteSessionForProject(req RemoteStartSessionRequest) (Remot
 		pythonEnv = strings.TrimSpace(req.PythonEnv)
 	}
 
-	spec, err := a.buildRemoteLaunchSpec(tool, cfg, yoloMode, adminMode, pythonEnv, project.Path, useProxy, req.Provider)
+	spec, err := a.buildRemoteLaunchSpec(tool, cfg, yoloMode, adminMode, pythonEnv, project.Path, useProxy, req.Provider, persistNativeToolConfig)
 	if err != nil {
 		return RemoteSessionView{}, err
 	}

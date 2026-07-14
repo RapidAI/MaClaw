@@ -739,6 +739,8 @@ func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) 
 		strings.Contains(text, "工具执行异常") ||
 		strings.Contains(text, "未知工具") ||
 		strings.Contains(text, "无法转发") ||
+		strings.Contains(text, "Could not forward") ||
+		strings.Contains(text, "Failed to save") ||
 		(strings.Contains(text, "保存") && strings.Contains(text, "失败")) {
 		outcome = agent.ToolExecutionOutcomeError
 	}

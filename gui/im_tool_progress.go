@@ -441,10 +441,14 @@ func (h *IMMessageHandler) imUILang() string {
 	return "zh"
 }
 
-// appUILang returns the GUI interface language from App settings.
+// appUILang returns the GUI interface language from App settings (zh/en tags).
 // Used by IM gateways and tool progress so localized text matches the desktop UI language.
 func appUILang(app *App) string {
 	if app != nil {
+		// Prefer structured tag (zh-Hans / en) so i18n.NormalizeLang maps correctly.
+		if tag := strings.TrimSpace(normalizeAppLanguageKind(app.CurrentLanguage).TranslationTag()); tag != "" {
+			return tag
+		}
 		if lang := strings.TrimSpace(app.CurrentLanguage); lang != "" {
 			return lang
 		}

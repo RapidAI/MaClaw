@@ -77,6 +77,21 @@ func TestTf_FileGeneric(t *testing.T) {
 	}
 }
 
+func TestTf_IMProactiveCaptions(t *testing.T) {
+	if got := Tf(MsgIMProactiveImageCaption, "zh", "a.png"); got != "请查收图片：a.png" {
+		t.Fatalf("zh image = %q", got)
+	}
+	if got := Tf(MsgIMProactiveFileCaption, "en", "a.pdf"); got != "Please find the file: a.pdf" {
+		t.Fatalf("en file = %q", got)
+	}
+	if got := T(MsgIMProactiveImageCaptionBare, "zh-Hans"); got != "请查收图片" {
+		t.Fatalf("bare zh-Hans = %q", got)
+	}
+	if got := NormalizeLang("EN-us"); got != "en" {
+		t.Fatalf("NormalizeLang EN-us = %q", got)
+	}
+}
+
 func TestNormalizeLang_Variants(t *testing.T) {
 	cases := []struct {
 		input string

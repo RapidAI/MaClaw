@@ -28,6 +28,9 @@ const (
 	ImportStatusScanned   = "scanned"
 	ImportStatusQueued    = "queued"
 	ImportStatusRunning   = "running"
+	// ImportStatusIndexing means file ingest finished and background post-work
+	// (topic linking + node embeddings) is still running.
+	ImportStatusIndexing  = "indexing"
 	ImportStatusCompleted = "completed"
 	ImportStatusFailed    = "failed"
 	ImportStatusCancelled = "cancelled"

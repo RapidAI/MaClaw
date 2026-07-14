@@ -782,7 +782,7 @@ func TestBuildClaudeLaunchEnv_SetsAnthropicFields(t *testing.T) {
 		WireApi:   "anthropic",
 	}
 
-	env, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	env, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false, true)
 	if err != nil {
 		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
 	}
@@ -818,7 +818,7 @@ func TestBuildClaudeLaunchEnv_CodegenWritesDedicatedSettings(t *testing.T) {
 		WireApi:   "anthropic",
 	}
 
-	env, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	env, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false, true)
 	if err != nil {
 		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
 	}
@@ -872,7 +872,7 @@ func TestBuildClaudeLaunchEnv_EnablesTeamModeAndProxy(t *testing.T) {
 		WireApi:   "anthropic",
 	}
 
-	env, err := app.buildClaudeLaunchEnv(cfg, model, projectPath, true)
+	env, err := app.buildClaudeLaunchEnv(cfg, model, projectPath, true, true)
 	if err != nil {
 		t.Fatalf("buildClaudeLaunchEnv() error = %v", err)
 	}
@@ -900,7 +900,7 @@ func TestBuildClaudeLaunchEnv_RejectsNonAnthropicWireAPI(t *testing.T) {
 		WireApi:   "responses",
 	}
 
-	_, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false)
+	_, err := app.buildClaudeLaunchEnv(corelib.AppConfig{}, model, filepath.Clean(`D:\workprj\proj`), false, true)
 	if err == nil {
 		t.Fatal("expected error for non-anthropic wire_api, got nil")
 	}

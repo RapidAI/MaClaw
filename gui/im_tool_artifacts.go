@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
@@ -167,8 +168,9 @@ func (h *IMMessageHandler) materializeToolFilePayloadIfNeeded(raw string) toolFi
 	if obs.File == nil {
 		return toolFileMaterializeResult{Text: raw}
 	}
+	lang := h.imUILang()
 	if strings.TrimSpace(obs.File.data) == "" {
-		msg := fmt.Sprintf("文件 %s 数据为空，无法保存或转发到微信/IM。", obs.File.name)
+		msg := i18n.Tf(i18n.MsgIMFileEmptyPayload, lang, obs.File.name)
 		log.Printf("[file-delivery] shared/materialize empty payload name=%q", obs.File.name)
 		return toolFileMaterializeResult{Text: msg, Handled: true}
 	}
@@ -179,7 +181,7 @@ func (h *IMMessageHandler) materializeToolFilePayloadIfNeeded(raw string) toolFi
 		text = strings.TrimSpace(obs.ToolContent)
 	}
 	if text == "" {
-		text = "文件交付完成。"
+		text = i18n.T(i18n.MsgIMProactiveFileCaptionBare, lang)
 	}
 	forwarded := forwardedCount > 0
 	log.Printf("[file-delivery] shared/materialize name=%q forwardIM=%v forwarded=%v paths=%d text=%q",
@@ -199,6 +201,10 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 	if resp == nil {
 		return 0
 	}
+	lang := "zh"
+	if h != nil {
+		lang = h.imUILang()
+	}
 	fileMaterializeStartedAt := time.Now()
 	var savedPaths []string
 	var failLines []string
@@ -206,30 +212,33 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 	var deliveryMessage string
 	for _, pf := range pendingFiles {
 		if strings.TrimSpace(pf.data) == "" {
-			failLines = append(failLines, fmt.Sprintf("保存 %s 失败：文件数据为空", pf.name))
+			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileSaveEmpty, lang, pf.name))
 			continue
 		}
 		filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 		if err != nil {
-			failLines = append(failLines, fmt.Sprintf("保存 %s 失败：%s", pf.name, err.Error()))
+			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileSaveFailed, lang, pf.name, err.Error()))
 			continue
 		}
 		savedPaths = append(savedPaths, filePath)
-		if strings.TrimSpace(pf.message) != "" {
-			deliveryMessage = pf.message
+		if strings.TrimSpace(pf.message) != "" && !isLegacyBotFileInstruction(pf.message) && !isAutoProactiveCaption(pf.message) {
+			deliveryMessage = strings.TrimSpace(pf.message)
 		}
 		if !pf.forwardIM {
 			continue
 		}
 		if h.imFileSender == nil {
-			failLines = append(failLines, fmt.Sprintf("无法转发 %s 到 IM：发送器未配置（请确认微信/飞书已登录）", pf.name))
+			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileSenderNotConfigured, lang, pf.name))
 			continue
 		}
-		if err := h.imFileSender(pf.data, pf.name, pf.mimeType, pf.message); err != nil {
+		// Caption on WeChat/Feishu: GUI language, never legacy "Please send … to the user."
+		caption := resolveIMProactiveCaption(lang, pf.message, pf.name, pf.mimeType)
+		if err := h.imFileSender(pf.data, pf.name, pf.mimeType, caption); err != nil {
 			log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
-			failLines = append(failLines, fmt.Sprintf("无法转发 %s 到微信/IM：%s", pf.name, err.Error()))
+			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileForwardFailed, lang, pf.name, err.Error()))
 			continue
 		}
+		log.Printf("[IMMessageHandler] IM forward OK name=%s mime=%s caption=%q", pf.name, pf.mimeType, truncateRunes(caption, 80))
 		imForwardedCount++
 	}
 	text := strings.Join(failLines, "\n")
@@ -237,7 +246,7 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 		text = deliveryMessage
 	}
 	if imForwardedCount > 0 {
-		imNote := fmt.Sprintf("已向微信/IM 转发 %d 个文件。", imForwardedCount)
+		imNote := i18n.Tf(i18n.MsgIMFileForwardedCount, lang, imForwardedCount)
 		if text != "" {
 			text = imNote + "\n" + text
 		} else {
@@ -247,9 +256,9 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 	// Desktop-only stage with no caption: still give the model/UI a clear status.
 	if strings.TrimSpace(text) == "" && len(savedPaths) > 0 && imForwardedCount == 0 {
 		if len(savedPaths) == 1 {
-			text = fmt.Sprintf("文件已在当前对话中准备好：%s（未转发到微信/IM；若需发送请用 send_to_im）。", filepath.Base(savedPaths[0]))
+			text = i18n.Tf(i18n.MsgIMFileDesktopReadyOne, lang, filepath.Base(savedPaths[0]))
 		} else {
-			text = fmt.Sprintf("已在当前对话中准备好 %d 个文件（未转发到微信/IM；若需发送请用 send_to_im）。", len(savedPaths))
+			text = i18n.Tf(i18n.MsgIMFileDesktopReadyMany, lang, len(savedPaths))
 		}
 	}
 	resp.Text = text

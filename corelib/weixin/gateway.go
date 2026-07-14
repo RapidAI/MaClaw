@@ -1390,13 +1390,6 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		return fmt.Errorf("weixin: CDN upload failed: %w", err)
 	}
 
-	// Send caption as separate text item if present
-	if msg.Caption != "" {
-		if err := g.sendTextChunk(ctx, msg.ToUserID, msg.Caption, msg.ContextToken); err != nil {
-			log.Printf("[weixin/gw] SendMedia caption error (to=%s): %v", msg.ToUserID, err)
-		}
-	}
-
 	// Build media message item
 	var item messageItem
 	// AES key for cdnMedia: base64(hex_string) — the hex-encoded key is 32 chars,
@@ -1487,6 +1480,15 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		return err
 	}
 	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "OK media=%s sendmessage_resp_len=%d", msg.MediaType, len(data))
+
+	// Caption after media succeeds so users never get a lone text bubble when
+	// CDN/upload fails. Caption errors are non-fatal (media already delivered).
+	if cap := strings.TrimSpace(msg.Caption); cap != "" {
+		if err := g.sendTextChunk(ctx, msg.ToUserID, cap, msg.ContextToken); err != nil {
+			log.Printf("[weixin/gw] SendMedia caption error (to=%s): %v", msg.ToUserID, err)
+			wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "WARN caption after media: %v", err)
+		}
+	}
 	return nil
 }
 

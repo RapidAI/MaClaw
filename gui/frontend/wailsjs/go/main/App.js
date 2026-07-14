@@ -2567,6 +2567,10 @@ export function KnowledgeImportJobStatus(arg1) {
   return window['go']['main']['App']['KnowledgeImportJobStatus'](arg1);
 }
 
+export function KnowledgeCancelImportIndexing(arg1) {
+  return window['go']['main']['App']['KnowledgeCancelImportIndexing'](arg1);
+}
+
 export function KnowledgeSaveURL(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['KnowledgeSaveURL'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

@@ -878,7 +878,7 @@ func TestBuildRemoteLaunchSpecSupportsCodex(t *testing.T) {
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 
-	spec, err := app.buildRemoteLaunchSpec("codex", cfg, false, false, "", projectDir, false, "")
+	spec, err := app.buildRemoteLaunchSpec("codex", cfg, false, false, "", projectDir, false, "", true)
 	if err != nil {
 		t.Fatalf("buildRemoteLaunchSpec(codex) error = %v", err)
 	}
@@ -1044,7 +1044,7 @@ func TestBuildRemoteLaunchSpecSupportsOpencode(t *testing.T) {
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 
-	spec, err := app.buildRemoteLaunchSpec("opencode", cfg, false, false, "", projectDir, false, "")
+	spec, err := app.buildRemoteLaunchSpec("opencode", cfg, false, false, "", projectDir, false, "", true)
 	if err != nil {
 		t.Fatalf("buildRemoteLaunchSpec(opencode) error = %v", err)
 	}
@@ -1132,7 +1132,7 @@ func TestBuildRemoteLaunchSpecSupportsIFlow(t *testing.T) {
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 
-	spec, err := app.buildRemoteLaunchSpec("iflow", cfg, false, false, "", projectDir, false, "")
+	spec, err := app.buildRemoteLaunchSpec("iflow", cfg, false, false, "", projectDir, false, "", true)
 	if err != nil {
 		t.Fatalf("buildRemoteLaunchSpec(iflow) error = %v", err)
 	}
@@ -1220,7 +1220,7 @@ func TestBuildRemoteLaunchSpecSupportsKilo(t *testing.T) {
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: projectDir}}
 	cfg.CurrentProject = "p1"
 
-	spec, err := app.buildRemoteLaunchSpec("kilo", cfg, false, false, "", projectDir, false, "")
+	spec, err := app.buildRemoteLaunchSpec("kilo", cfg, false, false, "", projectDir, false, "", true)
 	if err != nil {
 		t.Fatalf("buildRemoteLaunchSpec(kilo) error = %v", err)
 	}
@@ -1445,7 +1445,7 @@ func TestBuildRemoteLaunchSpecReturnsErrorWhenConfigSelectorMissing(t *testing.T
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
-	_, err = app.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, false, "")
+	_, err = app.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, false, "", true)
 	if err == nil {
 		t.Fatal("expected error when ConfigSelector is missing")
 	}
@@ -1482,7 +1482,7 @@ func TestBuildRemoteLaunchSpecProviderOverride(t *testing.T) {
 	cfg.CurrentProject = "p1"
 
 	t.Run("empty override uses CurrentModel", func(t *testing.T) {
-		spec, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "")
+		spec, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1492,7 +1492,7 @@ func TestBuildRemoteLaunchSpecProviderOverride(t *testing.T) {
 	})
 
 	t.Run("valid override replaces default", func(t *testing.T) {
-		spec, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "DeepSeek")
+		spec, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "DeepSeek", true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1505,7 +1505,7 @@ func TestBuildRemoteLaunchSpecProviderOverride(t *testing.T) {
 	})
 
 	t.Run("invalid provider returns error", func(t *testing.T) {
-		_, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "EmptyKey")
+		_, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "EmptyKey", true)
 		if err == nil {
 			t.Fatal("expected error for invalid provider, got nil")
 		}
@@ -1515,7 +1515,7 @@ func TestBuildRemoteLaunchSpecProviderOverride(t *testing.T) {
 	})
 
 	t.Run("nonexistent provider returns error", func(t *testing.T) {
-		_, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "NonExistent")
+		_, err := app.buildRemoteLaunchSpec("claude", cfg, false, false, "", projectDir, false, "NonExistent", true)
 		if err == nil {
 			t.Fatal("expected error for nonexistent provider, got nil")
 		}

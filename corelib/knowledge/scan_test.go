@@ -2,10 +2,122 @@ package knowledge
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestHashScanCandidatesParallel(t *testing.T) {
+	root := t.TempDir()
+	const n = 24
+	cands := make([]scanHashCandidate, n)
+	for i := 0; i < n; i++ {
+		path := filepath.Join(root, fmt.Sprintf("f%02d.md", i))
+		mustWrite(t, path, []byte(fmt.Sprintf("content-%d-unique", i)))
+		cands[i] = scanHashCandidate{path: path, rel: filepath.Base(path), kind: SourceKindMarkdown, size: 16}
+	}
+	if err := hashScanCandidates(context.Background(), cands, nil); err != nil {
+		t.Fatalf("hashScanCandidates: %v", err)
+	}
+	seen := map[string]struct{}{}
+	for i, c := range cands {
+		if c.err != nil || c.hash == "" {
+			t.Fatalf("candidate %d: hash=%q err=%v", i, c.hash, c.err)
+		}
+		if _, ok := seen[c.hash]; ok {
+			t.Fatalf("unexpected hash collision at %d", i)
+		}
+		seen[c.hash] = struct{}{}
+	}
+	// Single-file path
+	one := []scanHashCandidate{cands[0]}
+	one[0].hash = ""
+	if err := hashScanCandidates(context.Background(), one, nil); err != nil || one[0].hash == "" {
+		t.Fatalf("single hash failed: %v %#v", err, one[0])
+	}
+}
+
+func TestScanDirectoryProgressCallback(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 20; i++ {
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("p%02d.md", i)), []byte(fmt.Sprintf("scan-progress-%d", i)))
+	}
+	var phases []string
+	var maxHashDone int
+	_, _, err := ScanDirectoryProgress(context.Background(), DirectoryImportRequest{
+		RootPath:     root,
+		Recursive:    true,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	}, nil, func(phase string, done, total int, path string) {
+		phases = append(phases, phase)
+		if phase == "hash" && done > maxHashDone {
+			maxHashDone = done
+		}
+	})
+	if err != nil {
+		t.Fatalf("ScanDirectoryProgress: %v", err)
+	}
+	hasWalk, hasHash := false, false
+	for _, p := range phases {
+		if p == "walk" {
+			hasWalk = true
+		}
+		if p == "hash" {
+			hasHash = true
+		}
+	}
+	if !hasWalk || !hasHash {
+		t.Fatalf("expected walk+hash phases, got %v", phases)
+	}
+	if maxHashDone < 20 {
+		t.Fatalf("hash done=%d want >=20", maxHashDone)
+	}
+}
+
+func TestScanDirectoryParallelHashDedups(t *testing.T) {
+	root := t.TempDir()
+	// Many files including duplicates — parallel hash must preserve first-wins dedupe.
+	for i := 0; i < 20; i++ {
+		content := "shared"
+		if i%5 == 0 {
+			content = fmt.Sprintf("unique-%d", i)
+		}
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("n%02d.md", i)), []byte(content))
+	}
+	res, items, err := ScanDirectory(context.Background(), DirectoryImportRequest{
+		RootPath:     root,
+		Recursive:    true,
+		IncludeExts:  []string{".md"},
+		MaxFileBytes: 1024,
+	}, nil)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.QueuedFiles+res.DuplicateFiles != 20 {
+		t.Fatalf("queued=%d dup=%d want sum 20", res.QueuedFiles, res.DuplicateFiles)
+	}
+	// 4 unique (0,5,10,15) + 1 first "shared" = 5 queued; rest dups
+	if res.QueuedFiles != 5 {
+		t.Fatalf("queued=%d want 5", res.QueuedFiles)
+	}
+	if res.DuplicateFiles != 15 {
+		t.Fatalf("duplicates=%d want 15", res.DuplicateFiles)
+	}
+	queued := 0
+	for _, it := range items {
+		if it.Status == ItemStatusQueued {
+			queued++
+			if it.FileHash == "" {
+				t.Fatalf("queued item missing hash: %#v", it)
+			}
+		}
+	}
+	if queued != 5 {
+		t.Fatalf("queued items=%d", queued)
+	}
+}
 
 func TestScanDirectoryFiltersAndDedups(t *testing.T) {
 	root := t.TempDir()

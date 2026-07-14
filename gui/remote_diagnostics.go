@@ -123,7 +123,8 @@ func (a *App) CheckRemoteToolReadiness(toolName, projectDir string, useProxy boo
 		readiness.Issues = append(readiness.Issues, fmt.Sprintf("no %s provider/model is selected", toolLabel))
 	}
 
-	spec, err := a.buildRemoteLaunchSpec(tool, cfg, false, false, "", projectDir, useProxy, "")
+	// Diagnostics must not rewrite native CLI configs (~/.codex, ~/.claude, …).
+	spec, err := a.buildRemoteLaunchSpec(tool, cfg, false, false, "", projectDir, useProxy, "", probeNativeToolConfig)
 	if err != nil {
 		readiness.Issues = append(readiness.Issues, fmt.Sprintf("build %s launch spec failed: %v", toolLabel, err))
 		return readiness
@@ -243,7 +244,8 @@ func (a *App) CheckRemoteToolLaunchProbe(toolName, projectDir string, useProxy b
 		return result
 	}
 
-	spec, err := a.buildRemoteLaunchSpec(tool, cfg, false, false, "", projectDir, useProxy, "")
+	// Probes must not rewrite native CLI configs (~/.codex, ~/.claude, …).
+	spec, err := a.buildRemoteLaunchSpec(tool, cfg, false, false, "", projectDir, useProxy, "", probeNativeToolConfig)
 	if err != nil {
 		result.Message = fmt.Sprintf("build %s launch spec failed: %v", toolLabel, err)
 		return result

@@ -9,7 +9,10 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	excelread "github.com/RapidAI/CodeClaw/corelib/excel"
 	"github.com/RapidAI/CodeClaw/corelib/pptx"
@@ -369,24 +372,69 @@ func parsePPTXNodes(source Source, filePath string) ([]DocumentNode, error) {
 		return nil, err
 	}
 
-	// Extract all text content from slides into paragraphs.
-	var paragraphs []string
-
-	for _, slide := range pres.Slides {
-		var slideTexts []string
-		for _, shape := range slide.Shapes {
-			text := pptxShapeText(shape)
-			if text != "" {
-				slideTexts = append(slideTexts, text)
+	// Parallel per-slide text extraction for large decks (CPU-bound shape walks).
+	type slidePack struct {
+		number int
+		texts  []string
+		notes  string
+	}
+	n := len(pres.Slides)
+	packs := make([]slidePack, n)
+	if n >= 4 {
+		var wg sync.WaitGroup
+		workers := runtime.NumCPU()
+		if workers > 8 {
+			workers = 8
+		}
+		if workers > n {
+			workers = n
+		}
+		if workers < 1 {
+			workers = 1
+		}
+		ch := make(chan int, n)
+		for i := 0; i < n; i++ {
+			ch <- i
+		}
+		close(ch)
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range ch {
+					slide := pres.Slides[i]
+					var slideTexts []string
+					for _, shape := range slide.Shapes {
+						if text := pptxShapeText(shape); text != "" {
+							slideTexts = append(slideTexts, text)
+						}
+					}
+					packs[i] = slidePack{number: slide.Number, texts: slideTexts, notes: slide.Notes}
+				}
+			}()
+		}
+		wg.Wait()
+	} else {
+		for i, slide := range pres.Slides {
+			var slideTexts []string
+			for _, shape := range slide.Shapes {
+				if text := pptxShapeText(shape); text != "" {
+					slideTexts = append(slideTexts, text)
+				}
 			}
+			packs[i] = slidePack{number: slide.Number, texts: slideTexts, notes: slide.Notes}
 		}
-		if len(slideTexts) > 0 {
-			header := fmt.Sprintf("--- Slide %d ---", slide.Number)
+	}
+
+	var paragraphs []string
+	for _, pack := range packs {
+		if len(pack.texts) > 0 {
+			header := fmt.Sprintf("--- Slide %d ---", pack.number)
 			paragraphs = append(paragraphs, header)
-			paragraphs = append(paragraphs, slideTexts...)
+			paragraphs = append(paragraphs, pack.texts...)
 		}
-		if slide.Notes != "" {
-			paragraphs = append(paragraphs, "[Notes] "+strings.TrimSpace(slide.Notes))
+		if pack.notes != "" {
+			paragraphs = append(paragraphs, "[Notes] "+strings.TrimSpace(pack.notes))
 		}
 	}
 
@@ -478,12 +526,12 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 		return nodes, nil
 	}
 
+	// Extract page text (parallel with panic-safe sequential fallback).
+	pageTexts := extractPDFPageTexts(pdfData, numPages)
+
+	// Segment + node construction (order-preserving).
 	for i := 0; i < numPages; i++ {
-		text, err := gopdf2.ExtractPageText(pdfData, i)
-		if err != nil {
-			continue
-		}
-		text = strings.TrimSpace(trimNodeText(text))
+		text := pageTexts[i]
 		if text == "" {
 			continue
 		}
@@ -516,6 +564,78 @@ func parsePDFNodes(source Source, filePath string) ([]DocumentNode, error) {
 		return nil, fmt.Errorf("pdf has no readable text")
 	}
 	return nodes, nil
+}
+
+// extractPDFPageTexts pulls text for each page. Multi-page PDFs use a worker
+// pool; if any worker panics (non-thread-safe parser edge cases), the whole
+// extraction is retried sequentially.
+func extractPDFPageTexts(pdfData []byte, numPages int) []string {
+	if numPages <= 0 {
+		return nil
+	}
+	if numPages == 1 {
+		text, err := gopdf2.ExtractPageText(pdfData, 0)
+		if err != nil {
+			return []string{""}
+		}
+		return []string{strings.TrimSpace(trimNodeText(text))}
+	}
+
+	pageTexts := make([]string, numPages)
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > numPages {
+		workers = numPages
+	}
+
+	var wg sync.WaitGroup
+	var panicked atomic.Bool
+	pageCh := make(chan int, numPages)
+	for p := 0; p < numPages; p++ {
+		pageCh <- p
+	}
+	close(pageCh)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					panicked.Store(true)
+				}
+			}()
+			for i := range pageCh {
+				if panicked.Load() {
+					return
+				}
+				text, err := gopdf2.ExtractPageText(pdfData, i)
+				if err != nil {
+					continue
+				}
+				pageTexts[i] = strings.TrimSpace(trimNodeText(text))
+			}
+		}()
+	}
+	wg.Wait()
+
+	if !panicked.Load() {
+		return pageTexts
+	}
+	// Sequential fallback after parallel panic.
+	out := make([]string, numPages)
+	for i := 0; i < numPages; i++ {
+		text, err := gopdf2.ExtractPageText(pdfData, i)
+		if err != nil {
+			continue
+		}
+		out[i] = strings.TrimSpace(trimNodeText(text))
+	}
+	return out
 }
 
 // splitPDFPageIntoSegments splits a long PDF page text into smaller segments.

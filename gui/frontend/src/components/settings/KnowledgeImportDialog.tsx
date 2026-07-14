@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
     ExportTextFile,
+    KnowledgeCancelImportIndexing,
     KnowledgeImportJobStatus,
     KnowledgeScanDirectory,
     KnowledgeScanFiles,
@@ -56,10 +57,10 @@ export type ImportJob = {
     result?: ImportResult;
 };
 
-/** True when the import job is still in flight. */
+/** True when the import job is still in flight (including background indexing). */
 export function isKnowledgeImportJobActive(job: ImportJob | null | undefined): boolean {
     const st = String(job?.status || '').toLowerCase();
-    return ['queued', 'running', 'pending'].includes(st);
+    return ['queued', 'running', 'pending', 'indexing'].includes(st);
 }
 
 /** True when the import job has finished (success or failure). */
@@ -71,17 +72,47 @@ export function isKnowledgeImportJobTerminal(job: ImportJob | null | undefined):
 /** Merge a progress event payload into an ImportJob (shared by dialog + global host). */
 export function mergeKnowledgeImportProgress(prev: ImportJob | null, data: any): ImportJob {
     const base: ImportJob = prev || { id: data?.job_id };
+    const prevStatus = String(base.status || '').toLowerCase();
+    const nextStatus = String(data?.status || base.status || '').toLowerCase();
+    // Never regress terminal -> indexing/running, and never overwrite failed with completed.
+    let status = data?.status || base.status;
+    if (
+        (prevStatus === 'completed' || prevStatus === 'failed') &&
+        (nextStatus === 'indexing' || nextStatus === 'running' || nextStatus === 'queued' || nextStatus === 'pending')
+    ) {
+        status = base.status;
+    } else if (prevStatus === 'failed' && nextStatus === 'completed') {
+        status = base.status;
+    }
+
     const mergedResult = { ...(base.result || {}), ...data };
+    // When a new file completes, clear stale per-file step fields if omitted (omitempty).
     if ((data?.processed_files || 0) > (base.result?.processed_files || 0)) {
-        mergedResult.current_step = data.current_step ?? '';
+        if (data.current_step === undefined) mergedResult.current_step = '';
         if (data.step_progress === undefined) mergedResult.step_progress = 0;
         if (data.current_step_num === undefined) mergedResult.current_step_num = 0;
         if (data.total_steps === undefined) mergedResult.total_steps = 0;
     }
+    // Explicit post-import indexing events always win for step fields.
+    if (data?.status === 'indexing' || data?.current_step === 'embedding' || data?.current_step === 'linking') {
+        if (data.current_step !== undefined) mergedResult.current_step = data.current_step ?? '';
+        if (data.step_progress !== undefined) mergedResult.step_progress = data.step_progress;
+        if (data.current_step_num !== undefined) mergedResult.current_step_num = data.current_step_num;
+        if (data.total_steps !== undefined) mergedResult.total_steps = data.total_steps;
+    }
+    // Terminal events clear step labels even when omitempty drops empty strings.
+    if (nextStatus === 'completed' || nextStatus === 'failed') {
+        if (!data?.current_step) {
+            mergedResult.current_step = '';
+            mergedResult.step_progress = 0;
+            mergedResult.current_step_num = 0;
+            mergedResult.total_steps = 0;
+        }
+    }
     return {
         ...base,
         id: data?.job_id || base.id,
-        status: data?.status || base.status,
+        status,
         error: data?.error || base.error,
         result: mergedResult,
     };
@@ -115,6 +146,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [scanResult, setScanResult] = useState<ImportResult | null>(null);
     const [scanning, setScanning] = useState(false);
+    const [scanProgress, setScanProgress] = useState<{ phase: string; done: number; total: number; path: string } | null>(null);
     const [job, setJob] = useState<ImportJob | null>(null);
     const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
     const [error, setError] = useState('');
@@ -226,6 +258,9 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
             }
             if (data.status === 'completed' || data.status === 'failed') {
                 setStep('done');
+            } else if (data.status === 'indexing') {
+                // Files finished; stay on progress to show background index phase.
+                setStep('progress');
             }
         });
         return () => { cleanup(); };
@@ -235,12 +270,13 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
     useEffect(() => {
         const id = job?.id;
         const status = (job?.status || '').toLowerCase();
-        if (!id || !['queued', 'running', 'pending'].includes(status)) return;
+        if (!id || !['queued', 'running', 'pending', 'indexing'].includes(status)) return;
         const handle = window.setInterval(() => {
             void KnowledgeImportJobStatus(id).then(j => {
                 if (j) {
-                    setJob(j);
+                    setJob(j as ImportJob);
                     if (j.status === 'completed' || j.status === 'failed') setStep('done');
+                    else if (j.status === 'indexing') setStep('progress');
                 }
             }).catch(() => {});
         }, 5000);
@@ -248,7 +284,8 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
     }, [job?.id, job?.status]);
 
     const handleClose = () => {
-        const running = ['running', 'queued', 'pending'].includes(String(job?.status || '').toLowerCase());
+        // Include indexing so closing during background post-work minimizes (does not reset).
+        const running = isKnowledgeImportJobActive(job);
         if (step === 'progress' && running) {
             // Import in progress — minimize to floating bar; backend continues.
             // Keep dialog state so Expand restores progress/logs.
@@ -287,6 +324,20 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
         };
     };
 
+    // Scan progress events while configure-step precheck runs.
+    useEffect(() => {
+        if (!scanning) return;
+        const cleanup = EventsOn('knowledge:scan-progress', (data: any) => {
+            setScanProgress({
+                phase: String(data?.phase || ''),
+                done: Number(data?.done || 0),
+                total: Number(data?.total || 0),
+                path: String(data?.current_path || ''),
+            });
+        });
+        return () => { cleanup(); };
+    }, [scanning]);
+
     const handleChooseDirectory = async () => {
         try {
             const dir = await SelectKnowledgeDirectory();
@@ -295,6 +346,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
             setImportMode('directory');
             setStep('configure');
             setScanning(true);
+            setScanProgress(null);
             setError('');
             const result = await KnowledgeScanDirectory({ ...buildPayload(), root_path: dir, dry_run: true });
             setScanResult(result);
@@ -302,6 +354,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
             setError(err?.message || String(err));
         } finally {
             setScanning(false);
+            setScanProgress(null);
         }
     };
 
@@ -313,6 +366,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
             setImportMode('files');
             setStep('configure');
             setScanning(true);
+            setScanProgress(null);
             setError('');
             const result = await KnowledgeScanFiles({ ...buildPayload(), dry_run: true }, files);
             setScanResult(result);
@@ -320,6 +374,28 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
             setError(err?.message || String(err));
         } finally {
             setScanning(false);
+            setScanProgress(null);
+        }
+    };
+
+    const handleSkipIndexing = async () => {
+        const id = job?.id;
+        if (!id) return;
+        try {
+            await KnowledgeCancelImportIndexing(id);
+            setJob(prev => {
+                if (!prev) return prev;
+                const failed = (prev.result?.failed_files || 0) > 0;
+                const terminal = failed ? 'failed' : 'completed';
+                return {
+                    ...prev,
+                    status: terminal,
+                    result: { ...(prev.result || {}), current_step: '', step_progress: 0, status: terminal },
+                };
+            });
+            setStep('done');
+        } catch (err: any) {
+            setError(err?.message || String(err));
         }
     };
 
@@ -356,16 +432,18 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
     // Progress calculation: combines file-level and step-level granularity.
     // For post-import phases (embedding/linking), files are done but step_progress tracks the sub-operation.
     const currentStep = job?.result?.current_step || '';
-    const isPostImportPhase = currentStep === 'embedding' || currentStep === 'linking';
+    const jobStatus = String(job?.status || '').toLowerCase();
+    const isIndexing = jobStatus === 'indexing';
+    const isPostImportPhase = isIndexing || currentStep === 'embedding' || currentStep === 'linking';
     const stepProgress = job?.result?.step_progress || 0;
     const isDone = step === 'done';
-    // File processing occupies 0-85%, embedding occupies 85-95%, linking occupies 95-99%, done=100%.
+    // File processing occupies 0-85%, linking 85-92%, embedding 92-99%, done=100%.
     const percent = isDone
         ? 100
         : isPostImportPhase
             ? currentStep === 'embedding'
-                ? Math.min(95, 85 + Math.round(stepProgress / 10))
-                : Math.min(99, 95 + Math.round(stepProgress / 25))
+                ? Math.min(99, 92 + Math.round(stepProgress * 0.07))
+                : Math.min(92, 85 + Math.round(stepProgress * 0.07))
             : total === 1 && stepProgress > 0
                 ? Math.min(85, stepProgress)
                 : total > 0 ? Math.round((processed / total) * 85) : 0;
@@ -393,7 +471,9 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                         <h3 className="knowledge-import-title">
                             {step === 'choose' && t('Import to Knowledge Base', '导入知识到知识库')}
                             {step === 'configure' && t('Review & Configure', '预检与配置')}
-                            {step === 'progress' && t('Importing...', '正在导入...')}
+                            {step === 'progress' && (isIndexing
+                                ? t('Files imported · indexing…', '文件已导入 · 后台索引中…')
+                                : t('Importing...', '正在导入...'))}
                             {step === 'done' && (job?.status === 'failed' ? t('Import Failed', '导入失败') :
                                 (job?.result?.failed_files || 0) > 0 ? t('Import Completed (with errors)', '导入完成（部分失败）') :
                                 t('Import Completed', '导入完成'))}
@@ -402,13 +482,13 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                     <button
                         className="knowledge-import-icon-button"
                         aria-label={
-                            step === 'progress' && ['running', 'queued', 'pending'].includes(String(job?.status || '').toLowerCase())
+                            step === 'progress' && ['running', 'queued', 'pending', 'indexing'].includes(String(job?.status || '').toLowerCase())
                                 ? t('Minimize', '最小化')
                                 : t('Close', '关闭')
                         }
                         onClick={handleClose}
                     >
-                        {step === 'progress' && ['running', 'queued', 'pending'].includes(String(job?.status || '').toLowerCase()) ? '–' : '×'}
+                        {step === 'progress' && ['running', 'queued', 'pending', 'indexing'].includes(String(job?.status || '').toLowerCase()) ? '–' : '×'}
                     </button>
                 </div>
 
@@ -441,7 +521,23 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                             </div>
 
                             {scanning ? (
-                                <div className="knowledge-import-scanning" role="status">{t('Scanning files...', '正在扫描文件...')}</div>
+                                <div className="knowledge-import-scanning" role="status">
+                                    <div>{t('Scanning files...', '正在扫描文件...')}</div>
+                                    {scanProgress && (
+                                        <div className="knowledge-import-scan-meta" style={{ marginTop: 6 }}>
+                                            {scanProgress.phase === 'hash'
+                                                ? t('Hashing files…', '正在计算文件指纹…')
+                                                : t('Discovering files…', '正在发现文件…')}
+                                            {' '}
+                                            {scanProgress.total > 0
+                                                ? `${scanProgress.done}/${scanProgress.total}`
+                                                : scanProgress.done > 0
+                                                    ? `${scanProgress.done}`
+                                                    : ''}
+                                            {scanProgress.path ? ` · ${truncatePath(scanProgress.path, 48)}` : ''}
+                                        </div>
+                                    )}
+                                </div>
                             ) : scanResult ? (
                                 <div className="knowledge-import-scan-box">
                                     <div className="knowledge-import-scan-stat">
@@ -565,6 +661,17 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, restoreJob, 
                                     {(job.result.step_progress || 0) > 0 && <span className="knowledge-import-current-path" style={{ marginLeft: 8 }}>{job.result.step_progress}%</span>}
                                 </div>
                             )}
+                            {step === 'progress' && isIndexing && (
+                                <div className="knowledge-import-actions" style={{ marginTop: 8 }}>
+                                    <button
+                                        type="button"
+                                        className="knowledge-import-button knowledge-import-button--secondary"
+                                        onClick={() => { void handleSkipIndexing(); }}
+                                    >
+                                        {t('Skip background indexing', '跳过后台索引')}
+                                    </button>
+                                </div>
+                            )}
 
                             {/* Compact stats row */}
                             <div className="knowledge-import-stats">
@@ -610,31 +717,42 @@ export function KnowledgeImportFloatingBar({
     onDismiss?: () => void;
 }) {
     const status = String(job.status || '').toLowerCase();
-    const running = ['queued', 'running', 'pending'].includes(status);
+    const indexing = status === 'indexing';
+    const running = ['queued', 'running', 'pending', 'indexing'].includes(status);
     const partial = status === 'completed' && (job.result?.failed_files || 0) > 0;
     const total = job.result?.total_files || 0;
     const processed = job.result?.processed_files || 0;
+    const stepProgress = job.result?.step_progress || 0;
+    const currentStep = job.result?.current_step || '';
     const percent = !running
         ? 100
-        : total > 0
-            ? Math.min(99, Math.round((processed / total) * 100))
-            : 0;
+        : indexing
+            ? currentStep === 'embedding'
+                ? Math.min(99, 92 + Math.round(stepProgress * 0.07))
+                : Math.min(92, 85 + Math.round(stepProgress * 0.07))
+            : total > 0
+                ? Math.min(85, Math.round((processed / total) * 85))
+                : 0;
     const tone = !running
         ? (status === 'failed' || ((job.result?.failed_files || 0) > 0 && (job.result?.imported_files || 0) === 0)
             ? 'failed'
             : partial || (job.result?.failed_files || 0) > 0
                 ? 'warning'
                 : 'success')
-        : 'running';
-    const label = running
-        ? t('Importing knowledge…', '正在导入知识…')
-        : status === 'failed' || ((job.result?.failed_files || 0) > 0 && (job.result?.imported_files || 0) === 0)
-            ? t('Knowledge import failed', '知识库导入失败')
-            : (job.result?.failed_files || 0) > 0
-                ? t('Knowledge import finished with errors', '知识库导入完成（有失败）')
-                : t('Knowledge import completed', '知识库导入完成');
+        : indexing
+            ? 'warning'
+            : 'running';
+    const label = indexing
+        ? t('Files imported · indexing…', '文件已导入 · 后台索引中…')
+        : running
+            ? t('Importing knowledge…', '正在导入知识…')
+            : status === 'failed' || ((job.result?.failed_files || 0) > 0 && (job.result?.imported_files || 0) === 0)
+                ? t('Knowledge import failed', '知识库导入失败')
+                : (job.result?.failed_files || 0) > 0
+                    ? t('Knowledge import finished with errors', '知识库导入完成（有失败）')
+                    : t('Knowledge import completed', '知识库导入完成');
     const detail = [
-        job.result?.current_file,
+        indexing ? stepLabel(currentStep || 'linking', t) : job.result?.current_file,
         `${job.result?.imported_files || 0} ${t('imported', '已导入')}`,
         (job.result?.failed_files || 0) > 0 ? `${job.result?.failed_files} ${t('failed', '失败')}` : '',
         total > 0 ? `${processed}/${total}` : '',
@@ -778,6 +896,7 @@ function stepLabel(step: string, t: TFunc): string {
         case 'distilling': return t('Generating cards...', '生成知识卡片...');
         case 'embedding': return t('Building vector index...', '构建向量索引...');
         case 'linking': return t('Linking topics...', '关联主题...');
+        case 'post_index': return t('Background indexing...', '后台索引中...');
         case 'processing image': return t('Processing image...', '处理图片...');
         default: return step;
     }

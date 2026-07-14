@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -54,12 +55,97 @@ func workflowPhaseKindFromMetadata(values ...string) workflowPhaseKind {
 	return workflowPhaseUnknown
 }
 
+// inferFileDeliveryMessage builds a default proactive-IM caption (zh fallback).
+// Prefer resolveIMProactiveCaption(lang, …) at send time for GUI language.
 func inferFileDeliveryMessage(fileName string) string {
-	base := strings.TrimSpace(filepath.Base(fileName))
-	if base == "." || base == string(filepath.Separator) {
-		base = "the generated file"
+	return localizeIMProactiveCaption("zh", fileName, "")
+}
+
+// isLegacyBotFileInstruction detects bot-to-bot placeholders that must never
+// be shown to WeChat/Feishu end users as captions.
+func isLegacyBotFileInstruction(msg string) bool {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return false
 	}
-	return fmt.Sprintf("Please send %s to the user.", base)
+	// Historical English: "Please send <name> to the user."
+	if strings.HasPrefix(msg, "Please send ") && strings.HasSuffix(msg, " to the user.") {
+		return true
+	}
+	// Case-insensitive / punctuation variants.
+	lower := strings.ToLower(msg)
+	if strings.HasPrefix(lower, "please send ") && strings.Contains(lower, " to the user") {
+		return true
+	}
+	return false
+}
+
+// isAutoProactiveCaption reports whether msg looks like a short auto-generated
+// delivery caption (so send-time can re-localize for the current GUI language).
+func isAutoProactiveCaption(msg string) bool {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return false
+	}
+	// Named captions we generate (fullwidth or ASCII colon).
+	if strings.HasPrefix(msg, "请查收图片：") || strings.HasPrefix(msg, "请查收文件：") ||
+		strings.HasPrefix(msg, "请查收图片:") || strings.HasPrefix(msg, "请查收文件:") {
+		return true
+	}
+	if strings.HasPrefix(msg, "Please find the image:") || strings.HasPrefix(msg, "Please find the file:") ||
+		strings.HasPrefix(msg, "Please find the image：") || strings.HasPrefix(msg, "Please find the file：") {
+		return true
+	}
+	// Bare captions without filename.
+	switch msg {
+	case "请查收图片", "请查收文件", "Please find the image", "Please find the file":
+		return true
+	default:
+		return false
+	}
+}
+
+// localizeIMProactiveCaption returns a short user-facing caption for IM file
+// delivery, matching the GUI interface language (zh/en).
+//
+// Images use the bare form ("请查收图片") — the media bubble already carries
+// the content, and system screenshot names are noisy. Non-image files keep the
+// filename so users can tell PDFs/docs apart.
+func localizeIMProactiveCaption(lang, fileName, mimeType string) string {
+	base := strings.TrimSpace(filepath.Base(fileName))
+	invalidName := base == "" || base == "." || base == string(filepath.Separator)
+	image := isProactiveImageMIMEOrName(mimeType, base)
+	if image {
+		return i18n.T(i18n.MsgIMProactiveImageCaptionBare, lang)
+	}
+	if invalidName {
+		return i18n.T(i18n.MsgIMProactiveFileCaptionBare, lang)
+	}
+	return i18n.Tf(i18n.MsgIMProactiveFileCaption, lang, base)
+}
+
+func isProactiveImageMIMEOrName(mimeType, fileName string) bool {
+	mt := strings.ToLower(strings.TrimSpace(mimeType))
+	if strings.HasPrefix(mt, "image/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveIMProactiveCaption picks the caption actually sent with a file on IM.
+// Explicit workflow messages (e.g. 需求文档已生成) are kept; empty, legacy bot
+// instructions, or previously auto-generated captions are (re)localized.
+func resolveIMProactiveCaption(lang, message, fileName, mimeType string) string {
+	msg := strings.TrimSpace(message)
+	if msg != "" && !isLegacyBotFileInstruction(msg) && !isAutoProactiveCaption(msg) {
+		return msg
+	}
+	return localizeIMProactiveCaption(lang, fileName, mimeType)
 }
 
 type searchAndInstallSkillResult struct {

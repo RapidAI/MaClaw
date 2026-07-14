@@ -1650,11 +1650,13 @@ func shouldSkipCodeGenSSO(brandID string) bool {
 //  2. 查找 AuthType=="sso" 的 CodeGen provider
 //  3. TokenExpiresAt > 0 且未过期 → 返回 nil
 //  4. TokenExpiresAt > 0 且即将过期 → 尝试 RefreshCodeGenToken
-//     a. 刷新成功 → 更新 provider + WriteAllToolConfigs + 持久化
+//     a. 刷新成功 → 更新 provider + 持久化到 MaClaw config（不写编程工具原生配置）
 //     b. 刷新失败 → 返回 "认证已过期" 错误
 //  5. TokenExpiresAt == 0 → ValidateCodeGenToken(API 调用验证)
 //     a. 有效 → 返回 nil
 //     b. 无效 → 返回 "认证已失效" 错误
+//
+// 原生工具配置（~/.codex、~/.claude 等）仅在用户从编程工具界面点击「启动」时写入。
 func (a *App) ensureCodeGenToken() error {
 	// 1. 品牌检查：非 qianxin 直接返回
 	if shouldSkipCodeGenSSO(brand.Current().ID) {
@@ -1699,44 +1701,10 @@ func (a *App) ensureCodeGenToken() error {
 			log.Printf("[CodeGen] save refreshed token failed: %v", err)
 			return fmt.Errorf("CodeGen 认证刷新成功但保存失败: %w", err)
 		}
-		// 同步更新所有工具配置
-		tcResult := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
-			Token:            updated.Key,
-			BaseURL:          updated.URL,
-			AnthropicBaseURL: codegenAnthropicBaseURL(updated.URL),
-			ModelID:          updated.Model,
-			ProviderName:     codegenProviderName,
-			ClientName:       updated.UserAgent(),
-		})
-		for _, f := range tcResult.Failed {
-			log.Printf("[CodeGen] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
-		}
-		// 同步更新编程工具模型列表中 CodeGen 条目的 api_key
-		if cfg, loadErr := a.LoadConfig(); loadErr == nil {
-			changed := false
-			if updateCodeGenToolAPIKey(&cfg.Claude, codeGenToolTarget(updated, "anthropic")) {
-				changed = true
-			}
-			openaiTarget := codeGenToolTarget(updated, "responses")
-			toolConfigs := []*corelib.ToolConfig{
-				&cfg.Codex, &cfg.Opencode, &cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
-			}
-			for _, tc := range toolConfigs {
-				if updateCodeGenToolAPIKey(tc, openaiTarget) {
-					changed = true
-				}
-			}
-			if changed {
-				_ = a.PatchConfig(func(currentCfg *corelib.AppConfig) {
-					currentCfg.Claude = cfg.Claude
-					currentCfg.Codex = cfg.Codex
-					currentCfg.Opencode = cfg.Opencode
-					currentCfg.CodeBuddy = cfg.CodeBuddy
-					currentCfg.IFlow = cfg.IFlow
-					currentCfg.Kilo = cfg.Kilo
-				})
-			}
-		}
+		// Only update MaClaw's in-app tool model lists (config.json). Do not
+		// rewrite native CLI configs (~/.codex, ~/.claude, …) until the user
+		// explicitly launches that tool from the programming-tools UI.
+		a.syncCodeGenAPIKeysToToolConfigs(updated)
 		return nil
 	}
 
@@ -1826,19 +1794,8 @@ func (a *App) ensureCodeGenConfiguredModelAvailable() error {
 	}); err != nil {
 		return err
 	}
-	if cfg.MaclawLLMCurrentProvider == codegenProviderName {
-		result := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
-			Token:            codegenProvider.Key,
-			BaseURL:          codegenProvider.URL,
-			AnthropicBaseURL: codegenAnthropicBaseURL(codegenProvider.URL),
-			ModelID:          firstModel,
-			ProviderName:     codegenProviderName,
-			ClientName:       codegenProvider.UserAgent(),
-		})
-		for _, f := range result.Failed {
-			log.Printf("[CodeGen] startup model fallback tool file sync failed: %s: %v", f.Tool, f.Error)
-		}
-	}
+	// Native tool configs are deferred until LaunchTool; only MaClaw config
+	// (providers + per-tool model lists) is updated above.
 	return nil
 }
 
@@ -1869,9 +1826,10 @@ func shouldPatchRemoteEmailFromLogin(currentEmail, loginEmail string) bool {
 
 // StartCodeGenSSO 执行企业 SSO 扫码登录流程，成功后：
 //  1. 将 "CodeGen" 服务商 upsert 到 MaClaw LLM providers 列表并设为当前服务商
-//  2. 将认证信息写入 ~/.claude/settings.json 供 TigerClaw Code 使用
+//  2. 将 CodeGen 注入各编程工具在 MaClaw config 中的服务商列表（不写原生 CLI 配置）
 //  3. 返回用户 email（从 SSO 解析），供前端自动注册 Hub
 //
+// 原生工具配置（~/.codex、~/.claude 等）仅在用户从编程工具界面点击「启动」时写入。
 // 仅在 TigerClaw 品牌（oem_qianxin）下的 Onboarding 第 1 步调用。
 func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 	// 1. 启动扫码登录流程，弹出浏览器完成企业 SSO 登录
@@ -1898,34 +1856,11 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 		}
 	}
 
-	// 5. 写入所有编程工具配置文件
-	// 非致命：MaClaw 已配置成功，部分工具写入失败仅记录警告
-	toolResult := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
-		Token:            result.AccessToken,
-		BaseURL:          result.BaseURL,
-		AnthropicBaseURL: codegenAnthropicBaseURL(result.BaseURL),
-		ModelID:          result.ModelID,
-		ProviderName:     codegenProviderName,
-		ClientName:       corelib.CodeGenClientName,
-	})
-
-	// 6. 将 CodeGen 注入到各编程工具的服务商列表中
+	// 5. 将 CodeGen 注入到各编程工具的服务商列表中（仅 MaClaw config.json）
 	a.injectCodeGenModelIntoToolConfigs(result)
 
-	var msg string
-	if len(toolResult.Failed) == 0 {
-		msg = "SSO 认证成功，所有工具配置已写入完毕"
-	} else {
-		failedNames := make([]string, 0, len(toolResult.Failed))
-		for _, f := range toolResult.Failed {
-			log.Printf("[CodeGen SSO] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
-			failedNames = append(failedNames, f.Tool)
-		}
-		msg = fmt.Sprintf("SSO 认证成功（注意：%s 配置写入失败，请手动检查）", strings.Join(failedNames, "、"))
-	}
-
 	return CodeGenSSOInfo{
-		Message: msg,
+		Message: "SSO 认证成功",
 		Email:   result.Email,
 		ModelID: result.ModelID,
 	}, nil
@@ -2090,6 +2025,40 @@ func updateCodeGenToolAPIKey(tc *corelib.ToolConfig, target corelib.ModelConfig)
 		}
 	}
 	return changed
+}
+
+// syncCodeGenAPIKeysToToolConfigs updates CodeGen entries in MaClaw's per-tool
+// model lists after a token refresh. It never touches native CLI config files.
+func (a *App) syncCodeGenAPIKeysToToolConfigs(provider corelib.MaclawLLMProvider) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return
+	}
+	changed := false
+	if updateCodeGenToolAPIKey(&cfg.Claude, codeGenToolTarget(provider, "anthropic")) {
+		changed = true
+	}
+	openaiTarget := codeGenToolTarget(provider, "responses")
+	for _, tc := range []*corelib.ToolConfig{
+		&cfg.Codex, &cfg.Opencode, &cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
+	} {
+		if updateCodeGenToolAPIKey(tc, openaiTarget) {
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	if err := a.PatchConfig(func(currentCfg *corelib.AppConfig) {
+		currentCfg.Claude = cfg.Claude
+		currentCfg.Codex = cfg.Codex
+		currentCfg.Opencode = cfg.Opencode
+		currentCfg.CodeBuddy = cfg.CodeBuddy
+		currentCfg.IFlow = cfg.IFlow
+		currentCfg.Kilo = cfg.Kilo
+	}); err != nil {
+		log.Printf("[CodeGen] syncCodeGenAPIKeysToToolConfigs failed: %v", err)
+	}
 }
 
 func ensureCodeGenToolModelAvailable(tc *corelib.ToolConfig, target corelib.ModelConfig, available map[string]bool) bool {
@@ -2275,9 +2244,10 @@ func codeGenModelItemsFromSavedIDs(ids []string) []CodeGenModelItem {
 
 // SaveCodeGenModelChoice 保存用户在 SSO 后选择的模型：
 //   - maclawModel：用于驱动 MaClaw Agent（写入 config.json 的 CodeGen provider）
-//   - claudeCodeModel：用于驱动 TigerClaw Code（写入 ~/.claude/settings.json）
+//   - claudeCodeModel：用于 TigerClaw Code / Claude 工具在 MaClaw 内的模型列表条目
 //
 // 两个模型可以相同也可以不同，独立配置。
+// 不写入 ~/.claude/settings.json 等原生 CLI 配置；那些仅在编程工具「启动」时写入。
 func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error {
 	maclawModel = strings.TrimSpace(maclawModel)
 	claudeCodeModel = strings.TrimSpace(claudeCodeModel)
@@ -2310,10 +2280,9 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 		claudeTargetModel = maclawModel
 	}
 
-	// 2. 同步更新各编程工具模型列表中的 CodeGen 条目
+	// 2. 同步更新各编程工具模型列表中的 CodeGen 条目（仅 MaClaw config.json）
 	if cfg, err := a.LoadConfig(); err == nil {
 		changed := false
-		var claudeEntry *corelib.ModelConfig
 		if codegenKey == "" || codegenURL == "" {
 			for _, p := range cfg.MaclawLLMProviders {
 				if p.Name == codegenProviderName {
@@ -2340,12 +2309,6 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 			}
 			if upsertModelInToolConfig(&cfg.Claude, claudeTargetEntry) {
 				changed = true
-			}
-			for i := range cfg.Claude.Models {
-				if cfg.Claude.Models[i].ModelName == codegenProviderName {
-					claudeEntry = &cfg.Claude.Models[i]
-					break
-				}
 			}
 		}
 
@@ -2379,10 +2342,6 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 				currentCfg.Kilo = cfg.Kilo
 			}); err != nil {
 				log.Printf("[CodeGen] SaveCodeGenModelChoice: sync tool config model failed: %v", err)
-			} else if claudeEntry != nil && claudeEntry.ApiKey != "" {
-				if err := configfile.WriteClaudeSettings(claudeEntry.ApiKey, claudeEntry.ModelUrl, claudeEntry.ModelId); err != nil {
-					log.Printf("[CodeGen] SaveCodeGenModelChoice: update claude model failed: %v", err)
-				}
 			}
 		}
 	}
@@ -2469,32 +2428,12 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 			}
 		}
 
-		toolResult := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
-			Token:            result.AccessToken,
-			BaseURL:          result.BaseURL,
-			AnthropicBaseURL: codegenAnthropicBaseURL(result.BaseURL),
-			ModelID:          result.ModelID,
-			ProviderName:     codegenProviderName,
-			ClientName:       corelib.CodeGenClientName,
-		})
-
-		// 将 CodeGen 注入到各编程工具的服务商列表中
+		// Inject into MaClaw tool model lists only; native CLI configs are
+		// written later when the user launches a programming tool.
 		a.injectCodeGenModelIntoToolConfigs(result)
 
-		var msg string
-		if len(toolResult.Failed) == 0 {
-			msg = "SSO 认证成功，所有工具配置已写入完毕"
-		} else {
-			failedNames := make([]string, 0, len(toolResult.Failed))
-			for _, f := range toolResult.Failed {
-				log.Printf("[CodeGen SSO Embedded] WriteAllToolConfigs: %s failed: %v", f.Tool, f.Error)
-				failedNames = append(failedNames, f.Tool)
-			}
-			msg = fmt.Sprintf("SSO 认证成功（注意：%s 配置写入失败，请手动检查）", strings.Join(failedNames, "、"))
-		}
-
 		resultCh <- ssoPollingResult{
-			info: CodeGenSSOInfo{Message: msg, Email: result.Email, ModelID: result.ModelID},
+			info: CodeGenSSOInfo{Message: "SSO 认证成功", Email: result.Email, ModelID: result.ModelID},
 		}
 	}()
 

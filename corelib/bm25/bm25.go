@@ -21,6 +21,9 @@ var (
 	seg     gse.Segmenter
 	segOnce sync.Once
 	segDone chan struct{} // closed when dictionary loading finishes
+	// segMu serializes Cut: gse's DAG/HMM paths use package-level Segmenter state
+	// that is not safe for concurrent Cut from parallel import FTS prep.
+	segMu sync.Mutex
 )
 
 func init() {
@@ -395,7 +398,9 @@ func Tokenize(text string) []string {
 	waitSeg()
 
 	lower := strings.ToLower(text)
+	segMu.Lock()
 	segments := seg.Cut(lower, true)
+	segMu.Unlock()
 
 	var tokens []string
 	for _, s := range segments {

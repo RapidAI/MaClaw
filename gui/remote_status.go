@@ -618,7 +618,7 @@ func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, pro
 		}
 	}
 
-	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy, provider)
+	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy, provider, persistNativeToolConfig)
 	if err != nil {
 		return RemoteSessionView{}, err
 	}
@@ -679,7 +679,7 @@ func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bo
 		}
 	}
 
-	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy, provider)
+	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy, provider, persistNativeToolConfig)
 	if err != nil {
 		return RemoteSessionView{}, err
 	}

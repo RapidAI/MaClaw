@@ -1297,6 +1297,8 @@ export function KnowledgeStartImportFiles(arg1:any,arg2:Array<string>):Promise<a
 
 export function KnowledgeImportJobStatus(arg1:string):Promise<any>;
 
+export function KnowledgeCancelImportIndexing(arg1:string):Promise<void>;
+
 export function KnowledgeSaveURL(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:boolean):Promise<any>;
 
 export function KnowledgeSaveURLs(arg1:Array<string>,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:boolean):Promise<any>;

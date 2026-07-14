@@ -100,9 +100,9 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 				mimeType += "|" + seg
 			}
 		}
-		if forwardIM && message == "" {
-			message = inferFileDeliveryMessage(parts[0])
-		}
+		// Leave empty default captions unset here. Caption language is resolved
+		// at send time via resolveIMProactiveCaption(imUILang(), …) so GUI en/zh
+		// is applied correctly (parse path has no access to App language).
 		obs.File = &pendingFile{
 			name:      parts[0],
 			mimeType:  mimeType,

@@ -96,6 +96,11 @@ func WriteAllToolConfigsWithWriters(writers []ToolWriter) ToolConfigResult {
 
 // WriteAllToolConfigs writes authentication info to all supported coding tool
 // config files. A failure in one tool does not block the others.
+//
+// Deprecated: do not call from product paths. Native CLI configs must only be
+// written when the user launches that specific tool (LaunchTool / remote
+// session start). Bulk writes overwrite user-managed configs for tools they
+// never started. Kept for tests and rare explicit recovery tooling.
 func WriteAllToolConfigs(params ToolConfigParams) ToolConfigResult {
 	return WriteAllToolConfigsWithWriters(DefaultToolWriters(params))
 }

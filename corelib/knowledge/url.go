@@ -79,7 +79,7 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 		return Source{}, err
 	}
 	_ = s.BackfillNodeEmbeddingsForSources(ctx, []string{source.ID})
-	_, _ = s.RefreshSourceTopicLinks(ctx, source.ID, 8)
+	_, _ = s.refreshSourceTopicLinksFast(ctx, source.ID, importTopicLinkLimit, nil)
 	sources := []Source{source}
 	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
 		return Source{}, err

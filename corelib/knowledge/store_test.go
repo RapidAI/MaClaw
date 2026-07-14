@@ -743,6 +743,45 @@ func TestImportFailedItemsFromScanFailure(t *testing.T) {
 	}
 }
 
+// TestImportSequentialParseFailureAdvancesOnce ensures failure paths on the
+// non-parallel (PDF/DOCX/…) branch increment the loop index. Missing i++ would
+// re-process the same item and inflate ProcessedFiles.
+func TestImportSequentialParseFailureAdvancesOnce(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	badPDF := filepath.Join(root, "broken.pdf")
+	goodMD := filepath.Join(root, "ok.md")
+	mustWrite(t, badPDF, []byte("%PDF-1.4 not a real pdf body"))
+	mustWrite(t, goodMD, []byte("# ok\n\nvalid markdown for import after a failed PDF.\n"))
+
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "seq-fail.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+
+	res, err := store.ImportFiles(ctx, DirectoryImportRequest{
+		ProjectPath:  "D:/project-seq-fail",
+		SaveScope:    SaveScopeProject,
+		IncludeExts:  []string{".pdf", ".md"},
+		MaxFileBytes: 1024 * 1024,
+		DistillMode:  DistillModeRules,
+	}, []string{badPDF, goodMD})
+	if err != nil {
+		t.Fatalf("ImportFiles: %v", err)
+	}
+	if res.FailedFiles != 1 {
+		t.Fatalf("FailedFiles=%d want 1; result=%#v", res.FailedFiles, res)
+	}
+	if res.ImportedFiles != 1 {
+		t.Fatalf("ImportedFiles=%d want 1; result=%#v", res.ImportedFiles, res)
+	}
+	// TotalFiles includes both; processed must equal total (not total+1 from double-count).
+	if res.ProcessedFiles != res.TotalFiles {
+		t.Fatalf("ProcessedFiles=%d TotalFiles=%d (double-count on failure path?)", res.ProcessedFiles, res.TotalFiles)
+	}
+}
+
 func TestSQLiteStoreImportFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -787,6 +826,8 @@ func TestSQLiteStoreImportFiles(t *testing.T) {
 	if res.TotalFiles != 1 || res.ImportedFiles != 1 || res.SkippedFiles != 0 {
 		t.Fatalf("unexpected file import result: %#v", res)
 	}
+	// Post-work finishes asynchronously when a progress callback is set.
+	store.WaitBackground()
 	if len(progressSnapshots) == 0 {
 		t.Fatalf("expected import progress snapshots")
 	}
@@ -887,6 +928,7 @@ func TestSearchEmbeddingFallbackWhenFTSEmpty(t *testing.T) {
 	if res.ImportedFiles != 1 {
 		t.Fatalf("imported=%d want 1", res.ImportedFiles)
 	}
+	store.WaitBackground()
 
 	// Lexical FTS has no match; hybrid embedding path should still surface content.
 	got, err := store.Search(ctx, SearchOptions{Query: "zzzzqwertyuiopnomatch", ProjectPath: "D:/project", Limit: 5})
@@ -927,6 +969,8 @@ func TestSQLiteStoreImportFilesBackfillsNodeEmbeddings(t *testing.T) {
 		t.Fatalf("unexpected import result: %#v", res)
 	}
 	sourceID := res.Items[0].SourceID
+	// Node embeddings are scheduled after commit; wait before asserting.
+	store.WaitBackground()
 
 	var cardEmbeddings int
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_cards WHERE source_id = ? AND embedding IS NOT NULL AND LENGTH(embedding) > 0`, sourceID).Scan(&cardEmbeddings); err != nil {

@@ -10,8 +10,11 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +51,12 @@ func NormalizeDirectoryImportRequest(req DirectoryImportRequest) DirectoryImport
 // ScanDirectory scans a directory and classifies files for import. The caller
 // can pass existingHashes to mark already imported files as duplicates.
 func ScanDirectory(ctx context.Context, req DirectoryImportRequest, existingHashes map[string]struct{}) (DirectoryImportResult, []ImportItem, error) {
+	return ScanDirectoryProgress(ctx, req, existingHashes, nil)
+}
+
+// ScanDirectoryProgress is ScanDirectory with optional progress callbacks
+// (phase "walk" then "hash").
+func ScanDirectoryProgress(ctx context.Context, req DirectoryImportRequest, existingHashes map[string]struct{}, onProgress ScanProgressFunc) (DirectoryImportResult, []ImportItem, error) {
 	req = NormalizeDirectoryImportRequest(req)
 	if req.RootPath == "" {
 		return DirectoryImportResult{}, nil, fmt.Errorf("root path is required")
@@ -78,6 +87,8 @@ func ScanDirectory(ctx context.Context, req DirectoryImportRequest, existingHash
 	now := time.Now().UTC()
 	result := DirectoryImportResult{Status: ImportStatusScanned, RootPath: root}
 	items := make([]ImportItem, 0)
+	// Collect hashable candidates during walk; hash them in parallel afterwards.
+	candidates := make([]scanHashCandidate, 0)
 
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -155,46 +166,28 @@ func ScanDirectory(ctx context.Context, req DirectoryImportRequest, existingHash
 			return nil
 		}
 
-		hash, err := fileSHA256(path)
-		if err != nil {
-			result.FailedFiles++
-			item := newFailedImportItem(root, path, now, err)
-			item.FileSize = info.Size()
-			item.Kind = kind
-			items = append(items, item)
-			return nil
+		candidates = append(candidates, scanHashCandidate{
+			path: path,
+			rel:  relativePath(root, path),
+			kind: kind,
+			size: info.Size(),
+		})
+		if onProgress != nil && len(candidates)%16 == 0 {
+			onProgress("walk", len(candidates), 0, path)
 		}
-		if _, dup := seen[hash]; dup {
-			result.DuplicateFiles++
-			result.SkippedFiles++
-			item := newSkippedImportItem(root, path, now, ItemStatusSkippedDuplicate, "duplicate content hash")
-			item.FileHash = hash
-			item.FileSize = info.Size()
-			item.Kind = kind
-			items = append(items, item)
-			return nil
-		}
-		seen[hash] = struct{}{}
-
-		item := ImportItem{
-			ID:           NewID("kii"),
-			FilePath:     path,
-			RelativePath: relativePath(root, path),
-			FileHash:     hash,
-			FileSize:     info.Size(),
-			Kind:         kind,
-			Status:       ItemStatusQueued,
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
-		result.QueuedFiles++
-		result.EstimatedBytes += info.Size()
-		items = append(items, item)
 		return nil
 	})
 	if walkErr != nil {
 		return result, items, walkErr
 	}
+	if onProgress != nil {
+		onProgress("walk", len(candidates), len(candidates), "")
+	}
+
+	if err := hashScanCandidates(ctx, candidates, onProgress); err != nil {
+		return result, items, err
+	}
+	result, items = appendHashedCandidates(result, items, candidates, seen, now)
 
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].RelativePath < items[j].RelativePath
@@ -204,6 +197,11 @@ func ScanDirectory(ctx context.Context, req DirectoryImportRequest, existingHash
 }
 
 func ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []string, existingHashes map[string]struct{}) (DirectoryImportResult, []ImportItem, error) {
+	return ScanFilesProgress(ctx, req, filePaths, existingHashes, nil)
+}
+
+// ScanFilesProgress is ScanFiles with optional progress callbacks.
+func ScanFilesProgress(ctx context.Context, req DirectoryImportRequest, filePaths []string, existingHashes map[string]struct{}, onProgress ScanProgressFunc) (DirectoryImportResult, []ImportItem, error) {
 	req = NormalizeDirectoryImportRequest(req)
 	filePaths = splitFilePathInputs(filePaths)
 	cleaned := make([]string, 0, len(filePaths))
@@ -248,6 +246,7 @@ func ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []stri
 	result := DirectoryImportResult{Status: ImportStatusScanned, RootPath: root}
 	items := make([]ImportItem, 0, len(cleaned))
 
+	candidates := make([]scanHashCandidate, 0, len(cleaned))
 	for _, path := range cleaned {
 		select {
 		case <-ctx.Done():
@@ -308,48 +307,157 @@ func ScanFiles(ctx context.Context, req DirectoryImportRequest, filePaths []stri
 			continue
 		}
 
-		hash, err := fileSHA256(path)
-		if err != nil {
-			result.FailedFiles++
-			item := newFailedImportItem(root, path, now, err)
-			item.FileSize = info.Size()
-			item.Kind = kind
-			items = append(items, item)
-			continue
-		}
-		if _, dup := seen[hash]; dup {
-			result.DuplicateFiles++
-			result.SkippedFiles++
-			item := newSkippedImportItem(root, path, now, ItemStatusSkippedDuplicate, "duplicate content hash")
-			item.FileHash = hash
-			item.FileSize = info.Size()
-			item.Kind = kind
-			items = append(items, item)
-			continue
-		}
-		seen[hash] = struct{}{}
-
-		item := ImportItem{
-			ID:           NewID("kii"),
-			FilePath:     path,
-			RelativePath: relativePath(root, path),
-			FileHash:     hash,
-			FileSize:     info.Size(),
-			Kind:         kind,
-			Status:       ItemStatusQueued,
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
-		result.QueuedFiles++
-		result.EstimatedBytes += info.Size()
-		items = append(items, item)
+		candidates = append(candidates, scanHashCandidate{
+			path: path,
+			rel:  relativePath(root, path),
+			kind: kind,
+			size: info.Size(),
+		})
 	}
+
+	if onProgress != nil {
+		onProgress("walk", len(candidates), len(candidates), "")
+	}
+	if err := hashScanCandidates(ctx, candidates, onProgress); err != nil {
+		return result, items, err
+	}
+	result, items = appendHashedCandidates(result, items, candidates, seen, now)
 
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].RelativePath < items[j].RelativePath
 	})
 	result.Items = items
 	return result, items, nil
+}
+
+// scanHashCandidate is a file that passed metadata filters and still needs content hashing.
+type scanHashCandidate struct {
+	path string
+	rel  string
+	kind string
+	size int64
+	hash string
+	err  error
+}
+
+// hashScanCandidates SHA-256s candidate files in parallel (I/O + CPU bound).
+// Preserves slice order; duplicate detection remains sequential afterward.
+func hashScanCandidates(ctx context.Context, candidates []scanHashCandidate, onProgress ScanProgressFunc) error {
+	n := len(candidates)
+	if n == 0 {
+		return nil
+	}
+	report := func(done int, path string) {
+		if onProgress == nil {
+			return
+		}
+		if done == n || done == 1 || done%8 == 0 {
+			onProgress("hash", done, n, path)
+		}
+	}
+	if n == 1 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		candidates[0].hash, candidates[0].err = fileSHA256(candidates[0].path)
+		report(1, candidates[0].path)
+		return nil
+	}
+
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	if workers > n {
+		workers = n
+	}
+
+	jobs := make(chan int, n)
+	for i := 0; i < n; i++ {
+		jobs <- i
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+	var doneCount int64
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					errOnce.Do(func() { firstErr = ctx.Err() })
+					return
+				}
+				h, err := fileSHA256(candidates[i].path)
+				candidates[i].hash = h
+				candidates[i].err = err
+				d := int(atomic.AddInt64(&doneCount, 1))
+				report(d, candidates[i].path)
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
+}
+
+// appendHashedCandidates applies walk-order duplicate detection after parallel hashing.
+func appendHashedCandidates(
+	result DirectoryImportResult,
+	items []ImportItem,
+	candidates []scanHashCandidate,
+	seen map[string]struct{},
+	now time.Time,
+) (DirectoryImportResult, []ImportItem) {
+	if seen == nil {
+		seen = make(map[string]struct{})
+	}
+	for _, c := range candidates {
+		if c.err != nil {
+			result.FailedFiles++
+			item := newFailedImportItem(result.RootPath, c.path, now, c.err)
+			item.FileSize = c.size
+			item.Kind = c.kind
+			items = append(items, item)
+			continue
+		}
+		if _, dup := seen[c.hash]; dup {
+			result.DuplicateFiles++
+			result.SkippedFiles++
+			item := newSkippedImportItem(result.RootPath, c.path, now, ItemStatusSkippedDuplicate, "duplicate content hash")
+			item.FileHash = c.hash
+			item.FileSize = c.size
+			item.Kind = c.kind
+			items = append(items, item)
+			continue
+		}
+		seen[c.hash] = struct{}{}
+		item := ImportItem{
+			ID:           NewID("kii"),
+			FilePath:     c.path,
+			RelativePath: c.rel,
+			FileHash:     c.hash,
+			FileSize:     c.size,
+			Kind:         c.kind,
+			Status:       ItemStatusQueued,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		result.QueuedFiles++
+		result.EstimatedBytes += c.size
+		items = append(items, item)
+	}
+	return result, items
 }
 
 func splitFilePathInputs(values []string) []string {

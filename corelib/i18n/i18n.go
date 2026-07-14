@@ -8,7 +8,10 @@
 //	i18n.Tf(i18n.MsgAgentRoundOf, "en", 2, 5) // formatted
 package i18n
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ---------------------------------------------------------------------------
 // Translation key constants
@@ -23,11 +26,33 @@ const (
 	MsgRoundsExhaust = "msg.rounds_exhausted" // rounds used up
 	MsgMaxRounds     = "msg.max_rounds"       // max rounds reached hint
 
-	// im_message_handler.go – inferFileDeliveryMessage
+	// im_message_handler.go – inferFileDeliveryMessage / workflow docs
 	MsgFileRequirements = "msg.file_requirements"
 	MsgFileDesign       = "msg.file_design"
 	MsgFileTaskList     = "msg.file_task_list"
 	MsgFileGeneric      = "msg.file_generic" // %s filename
+
+	// Proactive IM delivery captions (WeChat/Feishu/etc.) — user-facing, not bot instructions.
+	MsgIMProactiveFileCaption      = "msg.im_proactive_file_caption"       // %s filename
+	MsgIMProactiveImageCaption     = "msg.im_proactive_image_caption"      // %s filename
+	MsgIMProactiveFileCaptionBare  = "msg.im_proactive_file_caption_bare"  // no filename
+	MsgIMProactiveImageCaptionBare = "msg.im_proactive_image_caption_bare" // no filename
+
+	// Desktop-side file delivery status (shown in AI assistant after materialize).
+	MsgIMFileForwardedCount       = "msg.im_file_forwarded_count"        // %d count
+	MsgIMFileForwardFailed        = "msg.im_file_forward_failed"         // %s name, %s err
+	MsgIMFileSenderNotConfigured  = "msg.im_file_sender_not_configured"  // %s name
+	MsgIMFileSaveFailed           = "msg.im_file_save_failed"            // %s name, %s err
+	MsgIMFileSaveEmpty            = "msg.im_file_save_empty"             // %s name
+	MsgIMFileDesktopReadyOne      = "msg.im_file_desktop_ready_one"      // %s name
+	MsgIMFileDesktopReadyMany     = "msg.im_file_desktop_ready_many"     // %d count
+	MsgIMFileEmptyPayload         = "msg.im_file_empty_payload"          // %s name
+
+	// Local WeChat gateway proactive-send errors (GUI language).
+	MsgWeixinGatewayNotRunning = "msg.weixin_gateway_not_running"
+	MsgWeixinFileDecodeFailed  = "msg.weixin_file_decode_failed" // wraps %v via %w style text
+	MsgWeixinFileDataEmpty     = "msg.weixin_file_data_empty"
+	MsgWeixinNoActiveSession   = "msg.weixin_no_active_session"
 
 	// gateway – LLM / Hub status
 	MsgLLMNotConfigured   = "msg.llm_not_configured"
@@ -432,6 +457,22 @@ var translations = map[string]map[string]string{
 		MsgFileDesign:                         "技术设计文档已生成，请查看设计方案并确认，或提出修改意见。\n\n请输入：确认 或 修改意见",
 		MsgFileTaskList:                       "任务列表已生成，请查看任务拆分是否合理，确认后开始执行。\n\n请输入：确认 或 修改意见",
 		MsgFileGeneric:                        "已生成文件 %s，请查看并确认，或提出修改意见。\n\n请输入：确认 或 修改意见",
+		MsgIMProactiveFileCaption:             "请查收文件：%s",
+		MsgIMProactiveImageCaption:            "请查收图片：%s",
+		MsgIMProactiveFileCaptionBare:         "请查收文件",
+		MsgIMProactiveImageCaptionBare:        "请查收图片",
+		MsgIMFileForwardedCount:               "已向微信/IM 转发 %d 个文件。",
+		MsgIMFileForwardFailed:                "无法转发 %s 到微信/IM：%s",
+		MsgIMFileSenderNotConfigured:          "无法转发 %s 到 IM：发送器未配置（请确认微信/飞书已登录）",
+		MsgIMFileSaveFailed:                   "保存 %s 失败：%s",
+		MsgIMFileSaveEmpty:                    "保存 %s 失败：文件数据为空",
+		MsgIMFileDesktopReadyOne:              "文件已在当前对话中准备好：%s（未转发到微信/IM；若需发送请用 send_to_im）。",
+		MsgIMFileDesktopReadyMany:             "已在当前对话中准备好 %d 个文件（未转发到微信/IM；若需发送请用 send_to_im）。",
+		MsgIMFileEmptyPayload:                 "文件 %s 数据为空，无法保存或转发到微信/IM。",
+		MsgWeixinGatewayNotRunning:            "本地微信网关未运行（请确认微信机器人已登录并启动）",
+		MsgWeixinFileDecodeFailed:             "文件数据解码失败",
+		MsgWeixinFileDataEmpty:                "文件数据为空",
+		MsgWeixinNoActiveSession:              "没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件",
 		MsgLLMNotConfigured:                   "本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
 		MsgHubUnavailable:                     "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
 		MsgProgressPrefix:                     "",
@@ -807,6 +848,22 @@ var translations = map[string]map[string]string{
 		MsgFileDesign:                         "Technical design document generated. Please review and confirm, or suggest changes.\n\nPlease reply: confirm or your feedback",
 		MsgFileTaskList:                       "Task list generated. Please review the task breakdown and confirm to start execution.\n\nPlease reply: confirm or your feedback",
 		MsgFileGeneric:                        "File %s generated. Please review and confirm, or suggest changes.\n\nPlease reply: confirm or your feedback",
+		MsgIMProactiveFileCaption:             "Please find the file: %s",
+		MsgIMProactiveImageCaption:            "Please find the image: %s",
+		MsgIMProactiveFileCaptionBare:         "Please find the file",
+		MsgIMProactiveImageCaptionBare:        "Please find the image",
+		MsgIMFileForwardedCount:               "Forwarded %d file(s) to WeChat/IM.",
+		MsgIMFileForwardFailed:                "Could not forward %s to WeChat/IM: %s",
+		MsgIMFileSenderNotConfigured:          "Could not forward %s to IM: sender not configured (sign in to WeChat/Feishu first).",
+		MsgIMFileSaveFailed:                   "Failed to save %s: %s",
+		MsgIMFileSaveEmpty:                    "Failed to save %s: empty file data",
+		MsgIMFileDesktopReadyOne:              "File ready in this chat: %s (not sent to WeChat/IM; use send_to_im if needed).",
+		MsgIMFileDesktopReadyMany:             "%d file(s) ready in this chat (not sent to WeChat/IM; use send_to_im if needed).",
+		MsgIMFileEmptyPayload:                 "File %s has empty data; cannot save or forward to WeChat/IM.",
+		MsgWeixinGatewayNotRunning:            "Local WeChat gateway is not running (sign in and start the WeChat bot first)",
+		MsgWeixinFileDecodeFailed:             "Failed to decode file data",
+		MsgWeixinFileDataEmpty:                "File data is empty",
+		MsgWeixinNoActiveSession:              "No active WeChat session: message the bot once in WeChat, then retry sending the file",
 		MsgLLMNotConfigured:                   "Local LLM not configured. Please configure MaClaw LLM in settings first.",
 		MsgHubUnavailable:                     "Multi-device mode is active but Hub is disconnected. Message has been processed locally.\nPlease check Hub connection or switch to standalone mode.",
 		MsgProgressPrefix:                     "",
@@ -1180,16 +1237,21 @@ var translations = map[string]map[string]string{
 // NormalizeLang maps common language codes to the keys used in the
 // translations table. An empty or unrecognised code falls back to "zh".
 func NormalizeLang(lang string) string {
-	switch lang {
-	case "zh", "zh-CN", "zh-Hans", "zh-TW", "zh-Hant":
+	lang = strings.TrimSpace(lang)
+	// Case-insensitive + common GUI tags (zh-Hans / en-US).
+	lower := strings.ToLower(lang)
+	switch {
+	case lower == "" || lower == "zh" || strings.HasPrefix(lower, "zh-") || lower == "chinese" || lower == "cn":
 		return "zh"
-	case "en", "en-US", "en-GB":
+	case lower == "en" || strings.HasPrefix(lower, "en-") || lower == "english":
 		return "en"
-	case "":
+	default:
+		// Preserve exact known table keys if any future variants are added.
+		if _, ok := translations[lang]; ok {
+			return lang
+		}
 		return defaultLang
 	}
-	// Unknown language → fallback
-	return defaultLang
 }
 
 // T returns the translated string for the given key and language.

@@ -5,6 +5,7 @@ import (
 	"log"
 	"path/filepath"
 	"strconv"
+	"sync"
 )
 
 // ExtractAndProcessDocumentImages extracts embedded images from a parsed document,
@@ -52,107 +53,167 @@ func (s *SQLiteStore) ExtractAndProcessDocumentImages(
 		return nil
 	}
 
-	// Process each extracted image: save asset + generate description
-	var processedNodes []DocumentNode
-	for i := range imageNodes {
-		// Check context cancellation between images.
-		select {
-		case <-ctx.Done():
-			log.Printf("[knowledge-image] context cancelled, processed %d/%d images", len(processedNodes), len(imageNodes))
-			return processedNodes
-		default:
-		}
-
-		node := &imageNodes[i]
-		bytesKey := node.Metadata["_image_bytes_key"]
-		data, ok := imageBytes[bytesKey]
-		if !ok || len(data) == 0 {
-			continue
-		}
-
-		// Determine file extension from format metadata
-		format := node.Metadata[MetaImageFormat]
-		ext := "." + format
-		if ext == "." {
-			ext = ".png"
-		}
-
-		// Skip vector images for asset processing (keep node for metadata)
-		if node.Metadata[MetaImageIsVector] == "true" {
-			node.Text = "矢量图片 (" + format + ")"
-			if node.Title == "" {
-				node.Title = "矢量图"
-			}
-			// Still save the raw file but don't generate thumbnails/OCR
-			asset, err := s.imageAssets.SaveImageFromBytes(source.ID+"_"+bytesKey, data, ext)
-			if err == nil {
-				node.Metadata[MetaImageAssetPath] = asset.OriginalPath
-			}
-			cleanImageNodeMetadata(node)
-			processedNodes = append(processedNodes, *node)
-			continue
-		}
-
-		// Save image asset (original + thumbnails)
-		assetID := source.ID + "_" + bytesKey
-		asset, err := s.imageAssets.SaveImageFromBytes(assetID, data, ext)
-		if err != nil {
-			log.Printf("[knowledge-image] save asset failed: %v", err)
-			continue
-		}
-
-		// Update metadata with asset info
-		node.Metadata[MetaImageAssetPath] = asset.OriginalPath
-		if asset.Width > 0 {
-			node.Metadata[MetaImageWidth] = itoa(asset.Width)
-			node.Metadata[MetaImageHeight] = itoa(asset.Height)
-		}
-
-		// Generate description (Vision LLM or OCR + context)
-		if s.imageDescriber != nil {
-			// Acquire semaphore for concurrency control (ctx-aware).
-			if s.imageDescSem != nil {
-				select {
-				case s.imageDescSem <- struct{}{}:
-				case <-ctx.Done():
-					return processedNodes
-				}
-			}
-			hints := BuildImageHintsFromNode(*node, source)
-			desc, err := s.imageDescriber.Describe(ctx, asset.OriginalPath, hints)
-			if s.imageDescSem != nil {
-				<-s.imageDescSem
-			}
-			if err != nil {
-				log.Printf("[knowledge-image] describe failed for %s: %v", filepath.Base(asset.OriginalPath), err)
-			} else {
-				node.Text = FormatImageNodeText(desc)
-				if desc.Title != "" && node.Title == "" {
-					node.Title = desc.Title
-				}
-				if desc.OCRText != "" {
-					node.Metadata[MetaImageOCRText] = desc.OCRText
-				}
-			}
-		}
-
-		// If no description was generated, use fallback
-		if node.Text == "" {
-			hints := BuildImageHintsFromNode(*node, source)
-			node.Text = FormatImageNodeText(ImageDescription{
-				Title:       inferImageTitle(hints),
-				Description: inferImageDescription(hints, ""),
-			})
-		}
-
-		cleanImageNodeMetadata(node)
-		processedNodes = append(processedNodes, *node)
-	}
+	// Parallel save + describe when a document embeds multiple images.
+	// Order of returned nodes matches input order for stable indexing.
+	processedNodes := s.processExtractedImagesParallel(ctx, source, imageNodes, imageBytes)
 
 	if len(processedNodes) > 0 {
 		log.Printf("[knowledge-image] extracted %d images from %s (%s)", len(processedNodes), filepath.Base(filePath), kind)
 	}
 	return processedNodes
+}
+
+// processExtractedImagesParallel saves assets and generates descriptions using
+// the store imageDescSem (vision/OCR concurrency). Safe for multi-image DOCX/PPTX/PDF.
+func (s *SQLiteStore) processExtractedImagesParallel(
+	ctx context.Context,
+	source Source,
+	imageNodes []DocumentNode,
+	imageBytes map[string][]byte,
+) []DocumentNode {
+	if len(imageNodes) == 0 {
+		return nil
+	}
+	// Single image: keep sequential path (no goroutine overhead).
+	if len(imageNodes) == 1 {
+		if node, ok := s.processOneExtractedImage(ctx, source, imageNodes[0], imageBytes); ok {
+			return []DocumentNode{node}
+		}
+		return nil
+	}
+
+	out := make([]DocumentNode, len(imageNodes))
+	okFlags := make([]bool, len(imageNodes))
+	var wg sync.WaitGroup
+	// Bound fan-out: description semaphore already limits vision/OCR; still cap
+	// goroutines for asset save/thumbnail work.
+	workers := importParallelWorkers(len(imageNodes))
+	if workers > 4 {
+		workers = 4
+	}
+	jobs := make(chan int, len(imageNodes))
+	for i := range imageNodes {
+		jobs <- i
+	}
+	close(jobs)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				if node, ok := s.processOneExtractedImage(ctx, source, imageNodes[i], imageBytes); ok {
+					out[i] = node
+					okFlags[i] = true
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	processed := make([]DocumentNode, 0, len(imageNodes))
+	for i, ok := range okFlags {
+		if ok {
+			processed = append(processed, out[i])
+		}
+	}
+	if ctx.Err() != nil && len(processed) > 0 {
+		log.Printf("[knowledge-image] context cancelled, processed %d/%d images", len(processed), len(imageNodes))
+	}
+	return processed
+}
+
+func (s *SQLiteStore) processOneExtractedImage(
+	ctx context.Context,
+	source Source,
+	node DocumentNode,
+	imageBytes map[string][]byte,
+) (DocumentNode, bool) {
+	select {
+	case <-ctx.Done():
+		return DocumentNode{}, false
+	default:
+	}
+
+	bytesKey := node.Metadata["_image_bytes_key"]
+	data, ok := imageBytes[bytesKey]
+	if !ok || len(data) == 0 {
+		return DocumentNode{}, false
+	}
+
+	format := node.Metadata[MetaImageFormat]
+	ext := "." + format
+	if ext == "." {
+		ext = ".png"
+	}
+
+	// Skip vector images for asset processing (keep node for metadata)
+	if node.Metadata[MetaImageIsVector] == "true" {
+		node.Text = "矢量图片 (" + format + ")"
+		if node.Title == "" {
+			node.Title = "矢量图"
+		}
+		asset, err := s.imageAssets.SaveImageFromBytes(source.ID+"_"+bytesKey, data, ext)
+		if err == nil {
+			node.Metadata[MetaImageAssetPath] = asset.OriginalPath
+		}
+		cleanImageNodeMetadata(&node)
+		return node, true
+	}
+
+	assetID := source.ID + "_" + bytesKey
+	asset, err := s.imageAssets.SaveImageFromBytes(assetID, data, ext)
+	if err != nil {
+		log.Printf("[knowledge-image] save asset failed: %v", err)
+		return DocumentNode{}, false
+	}
+
+	node.Metadata[MetaImageAssetPath] = asset.OriginalPath
+	if asset.Width > 0 {
+		node.Metadata[MetaImageWidth] = itoa(asset.Width)
+		node.Metadata[MetaImageHeight] = itoa(asset.Height)
+	}
+
+	if s.imageDescriber != nil {
+		if s.imageDescSem != nil {
+			select {
+			case s.imageDescSem <- struct{}{}:
+			case <-ctx.Done():
+				return DocumentNode{}, false
+			}
+		}
+		hints := BuildImageHintsFromNode(node, source)
+		desc, descErr := s.imageDescriber.Describe(ctx, asset.OriginalPath, hints)
+		if s.imageDescSem != nil {
+			<-s.imageDescSem
+		}
+		if descErr != nil {
+			log.Printf("[knowledge-image] describe failed for %s: %v", filepath.Base(asset.OriginalPath), descErr)
+		} else {
+			node.Text = FormatImageNodeText(desc)
+			if desc.Title != "" && node.Title == "" {
+				node.Title = desc.Title
+			}
+			if desc.OCRText != "" {
+				node.Metadata[MetaImageOCRText] = desc.OCRText
+			}
+		}
+	}
+
+	if node.Text == "" {
+		hints := BuildImageHintsFromNode(node, source)
+		node.Text = FormatImageNodeText(ImageDescription{
+			Title:       inferImageTitle(hints),
+			Description: inferImageDescription(hints, ""),
+		})
+	}
+
+	cleanImageNodeMetadata(&node)
+	return node, true
 }
 
 // ProcessStandaloneImage processes a standalone image file during directory import.
@@ -217,7 +278,7 @@ func (s *SQLiteStore) ProcessStandaloneImage(
 	metadata := map[string]string{
 		MetaImageAssetPath: asset.OriginalPath,
 		MetaImageFormat:    asset.Format,
-		"relative_path":   source.RelativePath,
+		"relative_path":    source.RelativePath,
 	}
 	if asset.Width > 0 {
 		metadata[MetaImageWidth] = itoa(asset.Width)

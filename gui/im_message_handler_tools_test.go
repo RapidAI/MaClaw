@@ -1021,8 +1021,10 @@ func TestParseToolPayloadResult(t *testing.T) {
 	if file.File == nil || file.File.name != "report.pdf" || !file.File.forwardIM {
 		t.Fatalf("file payload = %#v", file)
 	}
-	if file.File.message == "" {
-		t.Fatalf("expected file delivery message, got %#v", file.File)
+	// Default caption is intentionally empty at parse time; language is applied
+	// when forwarding via resolveIMProactiveCaption(imUILang(), …).
+	if file.File.message != "" {
+		t.Fatalf("default IM caption should be deferred to send time, got %#v", file.File)
 	}
 	withMessage := parseToolPayloadResult("[file_base64|01-requirements.pdf|application/pdf|im|msg64:" + strings.TrimPrefix(encodeToolPayloadMessage("需求文档已生成"), "msg64:") + "]ZGF0YQ==")
 	if withMessage.File == nil || withMessage.File.message != "需求文档已生成" {

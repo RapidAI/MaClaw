@@ -420,31 +420,44 @@ func (s *SQLiteStore) queryMissingNodeEmbeddings(ctx context.Context, sourceIDs 
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, 0, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes WHERE source_id IN (`+strings.Join(placeholders, ",")+`) AND (embedding IS NULL OR LENGTH(embedding) = 0)`, args...)
-	if err != nil {
-		if strings.Contains(err.Error(), "no such column") {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer rows.Close()
-
+	// Chunk IN lists: very large imports can exceed SQLite variable limits.
+	const idBatch = 400
 	var nodes []nodeEmbeddingRow
-	for rows.Next() {
-		var n nodeEmbeddingRow
-		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+	for start := 0; start < len(ids); start += idBatch {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		end := start + idBatch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes WHERE source_id IN (`+strings.Join(placeholders, ",")+`) AND (embedding IS NULL OR LENGTH(embedding) = 0)`, args...)
+		if err != nil {
+			if strings.Contains(err.Error(), "no such column") {
+				return nil, nil
+			}
 			return nil, err
 		}
-		nodes = append(nodes, n)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		for rows.Next() {
+			var n nodeEmbeddingRow
+			if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			nodes = append(nodes, n)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return nodes, nil
 }
@@ -460,17 +473,50 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsWithProgress(ctx context.Contex
 	if len(nodes) == 0 {
 		return nil
 	}
-	texts := make([]string, len(nodes))
-	for i, n := range nodes {
-		texts[i] = nodeEmbeddingText(n.title, n.text)
-	}
 	emb := s.currentEmbedder()
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil
 	}
-	// Process in batches to allow progress reporting and avoid huge single calls
+	// Parallel text prep (truncate/join) before model calls.
+	texts := make([]string, len(nodes))
+	parallelFor(len(nodes), func(i int) {
+		texts[i] = nodeEmbeddingText(nodes[i].title, nodes[i].text)
+	})
+
+	// Process in batches to allow progress reporting and avoid huge single calls.
 	const batchSize = 64
 	totalNodes := len(nodes)
+	stmt, err := s.db.PrepareContext(ctx, `UPDATE document_nodes SET embedding = ? WHERE id = ?`)
+	if err != nil {
+		// Fallback without prepared statement.
+		for batchStart := 0; batchStart < totalNodes; batchStart += batchSize {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			batchEnd := batchStart + batchSize
+			if batchEnd > totalNodes {
+				batchEnd = totalNodes
+			}
+			vectors, embErr := emb.EmbedBatch(texts[batchStart:batchEnd])
+			if embErr != nil {
+				return embErr
+			}
+			for i, vec := range vectors {
+				nodeIdx := batchStart + i
+				if nodeIdx >= totalNodes || len(vec) == 0 {
+					continue
+				}
+				_, _ = s.db.ExecContext(ctx, `UPDATE document_nodes SET embedding = ? WHERE id = ?`,
+					float32SliceToBytes(vec), nodes[nodeIdx].id)
+			}
+			if onProgress != nil {
+				onProgress(batchEnd, totalNodes)
+			}
+		}
+		return nil
+	}
+	defer stmt.Close()
+
 	for batchStart := 0; batchStart < totalNodes; batchStart += batchSize {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -479,18 +525,16 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsWithProgress(ctx context.Contex
 		if batchEnd > totalNodes {
 			batchEnd = totalNodes
 		}
-		batchTexts := texts[batchStart:batchEnd]
-		vectors, err := emb.EmbedBatch(batchTexts)
-		if err != nil {
-			return err
+		vectors, embErr := emb.EmbedBatch(texts[batchStart:batchEnd])
+		if embErr != nil {
+			return embErr
 		}
 		for i, vec := range vectors {
 			nodeIdx := batchStart + i
 			if nodeIdx >= totalNodes || len(vec) == 0 {
 				continue
 			}
-			_, _ = s.db.ExecContext(ctx, `UPDATE document_nodes SET embedding = ? WHERE id = ?`,
-				float32SliceToBytes(vec), nodes[nodeIdx].id)
+			_, _ = stmt.ExecContext(ctx, float32SliceToBytes(vec), nodes[nodeIdx].id)
 		}
 		if onProgress != nil {
 			onProgress(batchEnd, totalNodes)

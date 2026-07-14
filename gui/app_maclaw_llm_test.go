@@ -1017,21 +1017,15 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 		t.Fatalf("Codex wire_api = %q, want %q", got, "responses")
 	}
 
+	// Saving model choice must not rewrite native CLI configs; those are only
+	// written when the user launches the programming tool from the UI.
 	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("Read settings.json error = %v", err)
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		t.Fatalf("settings.json should not be created by SaveCodeGenModelChoice, stat err = %v", err)
 	}
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatalf("Unmarshal settings.json error = %v", err)
-	}
-	env, ok := settings["env"].(map[string]any)
-	if !ok {
-		t.Fatal("settings env missing")
-	}
-	if got := env["ANTHROPIC_MODEL"]; got != "claude-model" {
-		t.Fatalf("ANTHROPIC_MODEL = %v, want %q", got, "claude-model")
+	codexPath := filepath.Join(tmpHome, ".codex", "config.toml")
+	if _, err := os.Stat(codexPath); !os.IsNotExist(err) {
+		t.Fatalf("codex config.toml should not be created by SaveCodeGenModelChoice, stat err = %v", err)
 	}
 }
 
@@ -1800,7 +1794,60 @@ func TestProviderModelItemFromEntryUsesDisplayNameWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *testing.T) {
+func TestSyncCodeGenAPIKeysToToolConfigsDoesNotWriteNativeConfigs(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{
+		Claude: corelib.ToolConfig{Models: []corelib.ModelConfig{{
+			ModelName: codegenProviderName,
+			ModelId:   "claude-model",
+			ModelUrl:  codegenClaudeRemoteBaseURL,
+			ApiKey:    "old-token",
+			WireApi:   "anthropic",
+		}}},
+		Codex: corelib.ToolConfig{Models: []corelib.ModelConfig{{
+			ModelName: codegenProviderName,
+			ModelId:   "maclaw-model",
+			ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+			ApiKey:    "old-token",
+			WireApi:   "responses",
+		}}},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.syncCodeGenAPIKeysToToolConfigs(corelib.MaclawLLMProvider{
+		Name:      codegenProviderName,
+		URL:       "https://codegen.qianxin-inc.cn/api/v1",
+		Key:       "new-token",
+		Model:     "maclaw-model",
+		AgentType: corelib.CodeGenClientName,
+		AuthType:  "sso",
+	})
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := saved.Codex.Models[0].ApiKey; got != "new-token" {
+		t.Fatalf("Codex api key = %q, want new-token", got)
+	}
+	if got := saved.Claude.Models[0].ApiKey; got != "new-token" {
+		t.Fatalf("Claude api key = %q, want new-token", got)
+	}
+	if _, err := os.Stat(filepath.Join(tmpHome, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("token sync must not write ~/.codex/config.toml, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpHome, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("token sync must not write ~/.claude/settings.json, stat err = %v", err)
+	}
+}
+
+func TestSaveCodeGenModelChoiceDoesNotRewriteNativeClaudeSettings(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
@@ -1852,6 +1899,7 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 		t.Fatalf("Codex CurrentModel = %q, want %q", got, codegenProviderName)
 	}
 
+	// Existing native Claude settings must stay untouched until LaunchTool.
 	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -1865,11 +1913,14 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 	if !ok {
 		t.Fatal("settings env missing")
 	}
-	if got := env["ANTHROPIC_MODEL"]; got != "claude-model" {
-		t.Fatalf("ANTHROPIC_MODEL = %v, want %q", got, "claude-model")
+	if got := env["ANTHROPIC_MODEL"]; got != "glm-4.7" {
+		t.Fatalf("ANTHROPIC_MODEL = %v, want seeded %q", got, "glm-4.7")
 	}
-	if got := env["ANTHROPIC_BASE_URL"]; got != codegenClaudeRemoteBaseURL {
-		t.Fatalf("ANTHROPIC_BASE_URL = %v, want %q", got, codegenClaudeRemoteBaseURL)
+	if got := env["ANTHROPIC_BASE_URL"]; got != "https://open.bigmodel.cn/api/anthropic" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %v, want seeded GLM URL", got)
+	}
+	if _, err := os.Stat(filepath.Join(tmpHome, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("codex config.toml should not be written by SaveCodeGenModelChoice, stat err = %v", err)
 	}
 }
 

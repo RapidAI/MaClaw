@@ -240,9 +240,21 @@ const (
 
 var knowledgeImportJobs sync.Map
 
+// knowledgeImportJobsMu serializes load-modify-store on knowledgeImportJobs so
+// concurrent progress ticks / finish / cancel cannot lose terminal status updates.
+var knowledgeImportJobsMu sync.Mutex
+
+// knowledgeImportActiveStores holds the live SQLiteStore for in-flight import jobs
+// so KnowledgeCancelImportIndexing can abort background post-work.
+var knowledgeImportActiveStores sync.Map // map[string]*knowledge.SQLiteStore
+
 // knowledgeImportProgressLastEmit tracks last Wails progress emit time per job ID.
 // Used to throttle high-frequency per-file callbacks during large imports.
 var knowledgeImportProgressLastEmit sync.Map // map[string]time.Time
+
+// knowledgeImportToastSent tracks job IDs that already emitted a completion toast
+// so finish + post-work progress cannot double-toast under races.
+var knowledgeImportToastSent sync.Map // map[string]struct{}
 
 const knowledgeImportProgressMinInterval = 500 * time.Millisecond
 
@@ -272,6 +284,25 @@ func clearKnowledgeImportProgressThrottle(jobID string) {
 		return
 	}
 	knowledgeImportProgressLastEmit.Delete(jobID)
+}
+
+func knowledgeImportToastOnce(a *App, jobID string, result knowledge.DirectoryImportResult, err error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID != "" {
+		if _, loaded := knowledgeImportToastSent.LoadOrStore(jobID, struct{}{}); loaded {
+			return
+		}
+	}
+	emitKnowledgeImportDoneToast(a, result, err)
+}
+
+func knowledgeImportStatusTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case knowledge.ImportStatusCompleted, knowledge.ImportStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) knowledgeDBPath() string {
@@ -2907,6 +2938,7 @@ func (a *App) KnowledgeScanDirectory(req knowledge.DirectoryImportRequest) (know
 	defer store.Close()
 	req = a.normalizeKnowledgeImportRequest(req)
 	req.DryRun = true
+	store.SetScanProgressCallback(a.knowledgeScanProgressEmitter())
 	return store.ScanDirectory(a.knowledgeContext(), req)
 }
 
@@ -2919,7 +2951,40 @@ func (a *App) KnowledgeScanFiles(req knowledge.DirectoryImportRequest, filePaths
 		return knowledge.DirectoryImportResult{}, err
 	}
 	defer store.Close()
+	store.SetScanProgressCallback(a.knowledgeScanProgressEmitter())
 	return store.ScanFiles(a.knowledgeContext(), req, filePaths)
+}
+
+// knowledgeScanProgressEmitter throttles scan precheck events so large trees
+// do not flood the frontend.
+func (a *App) knowledgeScanProgressEmitter() knowledge.ScanProgressFunc {
+	var mu sync.Mutex
+	var lastPhase string
+	var lastAt time.Time
+	var lastDone int
+	const minInterval = 150 * time.Millisecond
+	return func(phase string, done, total int, path string) {
+		if a == nil || a.ctx == nil {
+			return
+		}
+		mu.Lock()
+		now := time.Now()
+		force := phase != lastPhase || done <= 1 || (total > 0 && done >= total) || done-lastDone >= 16
+		if !force && !lastAt.IsZero() && now.Sub(lastAt) < minInterval {
+			mu.Unlock()
+			return
+		}
+		lastPhase = phase
+		lastAt = now
+		lastDone = done
+		mu.Unlock()
+		a.emitEvent("knowledge:scan-progress", map[string]interface{}{
+			"phase":        phase,
+			"done":         done,
+			"total":        total,
+			"current_path": path,
+		})
+	}
 }
 
 func (a *App) KnowledgeImportFiles(req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error) {
@@ -3196,10 +3261,21 @@ func (a *App) KnowledgeStartImportDirectory(req knowledge.DirectoryImportRequest
 			finishKnowledgeImportJob(a, jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed, RootPath: req.RootPath}, err)
 			return
 		}
-		defer store.Close()
+		knowledgeImportActiveStores.Store(jobID, store)
+		// Keep store registered until close finishes so CancelBackground works
+		// during post-work wait (do not Delete before Wait/Close).
+		// WaitBackground BEFORE Close: Close cancels post-work, which would abort
+		// linking/embedding the moment ingest returns "indexing".
+		defer func() {
+			store.WaitBackground()
+			_ = store.Close()
+			knowledgeImportActiveStores.Delete(jobID)
+		}()
 		store.SetImportProgressCallback(func(progress knowledge.DirectoryImportResult) {
 			updateKnowledgeImportJobProgress(a, jobID, progress)
 		})
+		// Scan phase during import (walk/hash) — same events as dry-run precheck.
+		store.SetScanProgressCallback(a.knowledgeScanProgressEmitter())
 		result, err := store.ImportDirectory(a.knowledgeContext(), req)
 		finishKnowledgeImportJob(a, jobID, result, err)
 	}(job.ID, req)
@@ -3227,15 +3303,90 @@ func (a *App) KnowledgeStartImportFiles(req knowledge.DirectoryImportRequest, fi
 			finishKnowledgeImportJob(a, jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed}, err)
 			return
 		}
-		defer store.Close()
+		knowledgeImportActiveStores.Store(jobID, store)
+		// WaitBackground before Close so async indexing is not cancelled on return.
+		defer func() {
+			store.WaitBackground()
+			_ = store.Close()
+			knowledgeImportActiveStores.Delete(jobID)
+		}()
 		store.SetImportProgressCallback(func(progress knowledge.DirectoryImportResult) {
 			updateKnowledgeImportJobProgress(a, jobID, progress)
 		})
+		store.SetScanProgressCallback(a.knowledgeScanProgressEmitter())
 		result, err := store.ImportFiles(a.knowledgeContext(), req, filePaths)
 		finishKnowledgeImportJob(a, jobID, result, err)
 	}(job.ID, req, filePaths)
 
 	return job, nil
+}
+
+// KnowledgeCancelImportIndexing aborts background topic-linking / embedding for a
+// job that is already in the "indexing" phase. Imported files remain in the DB.
+// File-ingest ("running") cannot be cancelled mid-transaction.
+func (a *App) KnowledgeCancelImportIndexing(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("knowledge import job id is required")
+	}
+	knowledgeImportJobsMu.Lock()
+	v, ok := knowledgeImportJobs.Load(id)
+	if !ok {
+		knowledgeImportJobsMu.Unlock()
+		return fmt.Errorf("knowledge import job %s not found", id)
+	}
+	job, ok := v.(KnowledgeImportJob)
+	if !ok {
+		knowledgeImportJobsMu.Unlock()
+		return fmt.Errorf("knowledge import job %s has invalid state", id)
+	}
+	st := strings.ToLower(strings.TrimSpace(job.Status))
+	// Only indexing (post-work) is cancellable. Running means the write txn is open.
+	if st != knowledge.ImportStatusIndexing {
+		knowledgeImportJobsMu.Unlock()
+		if knowledgeImportStatusTerminal(st) {
+			return nil // already finished
+		}
+		return fmt.Errorf("import job is not in indexing phase (status=%s)", job.Status)
+	}
+	// Optimistically reflect skip; keep failed if file ingest had failures.
+	terminal := knowledge.ImportStatusCompleted
+	if job.Result.FailedFiles > 0 {
+		terminal = knowledge.ImportStatusFailed
+	}
+	job.Status = terminal
+	job.Result.Status = terminal
+	job.Result.CurrentStep = ""
+	job.Result.StepProgress = 0
+	job.UpdatedAt = time.Now().UTC()
+	knowledgeImportJobs.Store(id, job)
+	resultSnap := job.Result
+	knowledgeImportJobsMu.Unlock()
+
+	// Cancel outside the job mutex so WaitBackground on the import goroutine
+	// can finish without contending with this critical section.
+	if storeV, ok := knowledgeImportActiveStores.Load(id); ok {
+		if store, ok := storeV.(*knowledge.SQLiteStore); ok && store != nil {
+			store.CancelBackground()
+		}
+	}
+	if a != nil && a.ctx != nil {
+		a.emitEvent("knowledge:import-progress", map[string]interface{}{
+			"job_id":          id,
+			"status":          terminal,
+			"total_files":     resultSnap.TotalFiles,
+			"processed_files": resultSnap.ProcessedFiles,
+			"imported_files":  resultSnap.ImportedFiles,
+			"skipped_files":   resultSnap.SkippedFiles,
+			"failed_files":    resultSnap.FailedFiles,
+			"current_step":    "",
+			"step_progress":   0,
+		})
+		// Toast now: post-work may finish with prevStatus already terminal (no toast).
+		knowledgeImportToastOnce(a, id, resultSnap, nil)
+		clearKnowledgeImportProgressThrottle(id)
+	}
+	return nil
 }
 
 func (a *App) KnowledgeImportJobStatus(id string) (KnowledgeImportJob, error) {
@@ -3255,6 +3406,8 @@ func (a *App) KnowledgeImportJobStatus(id string) (KnowledgeImportJob, error) {
 }
 
 func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.DirectoryImportResult) {
+	knowledgeImportJobsMu.Lock()
+	defer knowledgeImportJobsMu.Unlock()
 	value, ok := knowledgeImportJobs.Load(id)
 	if !ok {
 		return
@@ -3266,8 +3419,23 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 	prevProcessed := job.Result.ProcessedFiles
 	prevFailed := job.Result.FailedFiles
 	prevSkipped := job.Result.SkippedFiles
+	prevStatus := job.Status
+	prevStep := job.Result.CurrentStep
+	prevStepProgress := job.Result.StepProgress
 	if result.Status == "" {
 		result.Status = knowledge.ImportStatusRunning
+	}
+	// Never regress a terminal job (cancel/skip can complete before late indexing ticks).
+	if knowledgeImportStatusTerminal(prevStatus) {
+		switch result.Status {
+		case knowledge.ImportStatusIndexing, knowledge.ImportStatusRunning, knowledge.ImportStatusQueued, "pending":
+			return
+		case knowledge.ImportStatusCompleted:
+			// Prefer failed over completed when we already recorded failures.
+			if prevStatus == knowledge.ImportStatusFailed {
+				return
+			}
+		}
 	}
 	job.Result = result
 	job.Status = result.Status
@@ -3295,8 +3463,17 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 				lastStatus = "skipped"
 			}
 		}
-		// Always push failed-item events so the log keeps failure reasons under throttle.
-		forceEmit := lastStatus == "failed"
+		// Force-emit only meaningful transitions — not every indexing percent tick
+		// (bulk linking would otherwise flood the UI bus).
+		forceEmit := lastStatus == "failed" ||
+			result.Status == knowledge.ImportStatusCompleted ||
+			result.Status == knowledge.ImportStatusFailed ||
+			(result.Status == knowledge.ImportStatusIndexing &&
+				(prevStatus != knowledge.ImportStatusIndexing ||
+					result.CurrentStep != prevStep ||
+					result.StepProgress == 0 ||
+					result.StepProgress >= 100 ||
+					result.StepProgress-prevStepProgress >= 10))
 		if !knowledgeImportProgressShouldEmit(id, time.Now(), forceEmit) {
 			return
 		}
@@ -3322,10 +3499,24 @@ func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.Direct
 			}
 		}
 		a.emitEvent("knowledge:import-progress", eventData)
+
+		// Toast once when post-work (or any path) reaches a true terminal state.
+		// Accept prev running/indexing so a fast post-work race before finish still toasts.
+		if knowledgeImportStatusTerminal(result.Status) && result.CurrentStep == "" &&
+			(prevStatus == knowledge.ImportStatusIndexing ||
+				prevStatus == knowledge.ImportStatusRunning ||
+				prevStatus == knowledge.ImportStatusQueued ||
+				prevStatus == "pending" ||
+				prevStatus == "") {
+			knowledgeImportToastOnce(a, id, result, nil)
+			clearKnowledgeImportProgressThrottle(id)
+		}
 	}
 }
 
 func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImportResult, err error) {
+	knowledgeImportJobsMu.Lock()
+	defer knowledgeImportJobsMu.Unlock()
 	value, ok := knowledgeImportJobs.Load(id)
 	if !ok {
 		return
@@ -3337,6 +3528,24 @@ func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImpor
 	if result.Status == "" {
 		result.Status = knowledge.ImportStatusCompleted
 	}
+	// Critical race: background post-work / cancel may reach a terminal state
+	// BEFORE this finish call. Never regress terminal -> non-terminal, and never
+	// overwrite failed with completed.
+	if err == nil && knowledgeImportStatusTerminal(job.Status) {
+		switch result.Status {
+		case knowledge.ImportStatusIndexing, knowledge.ImportStatusRunning, knowledge.ImportStatusQueued, "pending":
+			if len(result.FailedItems) > 0 && len(job.Result.FailedItems) == 0 {
+				job.Result.FailedItems = result.FailedItems
+				job.Result.FailedFiles = result.FailedFiles
+				knowledgeImportJobs.Store(id, job)
+			}
+			return
+		case knowledge.ImportStatusCompleted:
+			if job.Status == knowledge.ImportStatusFailed {
+				return
+			}
+		}
+	}
 	job.Result = result
 	job.Status = result.Status
 	job.UpdatedAt = time.Now().UTC()
@@ -3347,16 +3556,20 @@ func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImpor
 	}
 	knowledgeImportJobs.Store(id, job)
 
-	// Emit final status event (always immediate; includes failure details).
+	// Emit status event (always immediate; includes failure details).
 	if a != nil && a.ctx != nil {
 		eventData := map[string]interface{}{
-			"job_id":          id,
-			"status":          job.Status,
-			"total_files":     result.TotalFiles,
-			"processed_files": result.ProcessedFiles,
-			"imported_files":  result.ImportedFiles,
-			"skipped_files":   result.SkippedFiles,
-			"failed_files":    result.FailedFiles,
+			"job_id":           id,
+			"status":           job.Status,
+			"total_files":      result.TotalFiles,
+			"processed_files":  result.ProcessedFiles,
+			"imported_files":   result.ImportedFiles,
+			"skipped_files":    result.SkippedFiles,
+			"failed_files":     result.FailedFiles,
+			"current_step":     result.CurrentStep,
+			"step_progress":    result.StepProgress,
+			"total_steps":      result.TotalSteps,
+			"current_step_num": result.CurrentStepNum,
 		}
 		if job.Error != "" {
 			eventData["error"] = job.Error
@@ -3365,8 +3578,12 @@ func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImpor
 			eventData["failed_items"] = result.FailedItems
 		}
 		a.emitEvent("knowledge:import-progress", eventData)
-		// Toast so users who closed the dialog still learn the outcome.
-		emitKnowledgeImportDoneToast(a, result, err)
+		// Defer toast until post-work finishes when still indexing.
+		if job.Status != knowledge.ImportStatusIndexing {
+			knowledgeImportToastOnce(a, id, result, err)
+			clearKnowledgeImportProgressThrottle(id)
+		}
+		return
 	}
 	clearKnowledgeImportProgressThrottle(id)
 }

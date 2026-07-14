@@ -551,10 +551,3 @@ func mergeTableRowResults(existing, incoming []SearchResult, limit int) []Search
 	}
 	return out
 }
-
-func placeholders(count int) string {
-	if count <= 0 {
-		return ""
-	}
-	return strings.TrimRight(strings.Repeat("?,", count), ",")
-}
