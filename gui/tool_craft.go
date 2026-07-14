@@ -186,16 +186,8 @@ func appendUniqueArtifacts(base []string, artifacts ...string) []string {
 }
 
 func boolArg(args map[string]interface{}, key string, fallback bool) bool {
-	if args == nil {
-		return fallback
-	}
-	if v, ok := args[key].(bool); ok {
+	if v, ok := boolArgPresent(args, key); ok {
 		return v
-	}
-	if v, ok := args[key].(string); ok {
-		if value, ok := coerceToolBoolToken(v); ok {
-			return value
-		}
 	}
 	return fallback
 }

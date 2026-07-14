@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -149,7 +151,9 @@ func main() {
 		OnDomReady:               app.domReady,
 		OnShutdown:               app.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "maclaw-lock",
+			// Brand-scoped: TigerClaw/MetaStaff must not share MaClaw's single-instance lock
+			// (otherwise launching OEM can activate/hide behind the other product).
+			UniqueId: singleInstanceUniqueID(),
 			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
 				if app.ctx == nil {
 					return
@@ -213,6 +217,20 @@ func main() {
 	}
 }
 
+// singleInstanceUniqueID isolates OEM brands so MaClaw / TigerClaw / MetaStaff
+// can run side by side without one process swallowing the other.
+func singleInstanceUniqueID() string {
+	id := strings.TrimSpace(brand.Current().ID)
+	if id == "" {
+		id = "maclaw"
+	}
+	// Keep historical id for default brand so existing Mac installs continue to work.
+	if id == "maclaw" {
+		return "maclaw-lock"
+	}
+	return id + "-lock"
+}
+
 func defaultWebviewUserDataPath() string {
 	if goruntime.GOOS != "windows" {
 		return ""
@@ -221,7 +239,24 @@ func defaultWebviewUserDataPath() string {
 	if err != nil || strings.TrimSpace(configDir) == "" {
 		return ""
 	}
-	return filepath.Join(configDir, "MaClaw.exe")
+	// Brand-isolated WebView2 profile. Sharing "MaClaw.exe" across OEM builds caused
+	// "version is new but welcome/UI looks old" when a newer product's cache fingerprint
+	// skipped clearing and WebView reused another brand's chunk cache.
+	// Use stable ASCII folder names (not DisplayNameCN) so paths stay portable.
+	return filepath.Join(configDir, webviewProfileFolder()+".exe")
+}
+
+// webviewProfileFolder returns the Windows WebView2 user-data folder basename.
+func webviewProfileFolder() string {
+	switch strings.TrimSpace(brand.Current().ID) {
+	case "qianxin":
+		return "TigerClaw"
+	case "metastaff":
+		return "MetaStaff"
+	default:
+		// Historical MaClaw path — keep for upgrade continuity.
+		return "MaClaw"
+	}
 }
 
 func noStoreAssetMiddleware(next http.Handler) http.Handler {
@@ -244,7 +279,10 @@ func clearWebviewAssetCacheForFingerprint(userDataPath string, fingerprintFunc f
 	}
 	fingerprint, err := fingerprintFunc()
 	if err != nil {
-		log.Printf("[webview-cache] frontend fingerprint unavailable: %v", err)
+		// Fail-open: if we cannot identify the build, clear caches so a broken
+		// fingerprint path never leaves users stuck on a stale WebView Code Cache.
+		log.Printf("[webview-cache] frontend fingerprint unavailable (%v); clearing caches", err)
+		clearWebviewAssetCacheDirs(userDataPath)
 		return
 	}
 	markerPath := filepath.Join(userDataPath, ".maclaw-frontend-build.sha256")
@@ -252,12 +290,7 @@ func clearWebviewAssetCacheForFingerprint(userDataPath string, fingerprintFunc f
 		return
 	}
 
-	for _, rel := range webviewAssetCacheDirs() {
-		target := filepath.Join(userDataPath, rel)
-		if err := os.RemoveAll(target); err != nil {
-			log.Printf("[webview-cache] failed to remove %s: %v", target, err)
-		}
-	}
+	clearWebviewAssetCacheDirs(userDataPath)
 	if err := os.MkdirAll(userDataPath, 0o755); err != nil {
 		log.Printf("[webview-cache] failed to create %s: %v", userDataPath, err)
 		return
@@ -267,13 +300,71 @@ func clearWebviewAssetCacheForFingerprint(userDataPath string, fingerprintFunc f
 	}
 }
 
-func embeddedFrontendFingerprint() (string, error) {
-	indexHTML, err := assets.ReadFile("frontend/dist/index.html")
-	if err != nil {
-		return "", err
+func clearWebviewAssetCacheDirs(userDataPath string) {
+	for _, rel := range webviewAssetCacheDirs() {
+		target := filepath.Join(userDataPath, rel)
+		if err := os.RemoveAll(target); err != nil {
+			log.Printf("[webview-cache] failed to remove %s: %v", target, err)
+		}
 	}
-	sum := sha256.Sum256(indexHTML)
-	return hex.EncodeToString(sum[:]), nil
+}
+
+// embeddedFrontendFingerprint builds a cheap, reliable identity for the embedded
+// frontend so WebView2 Code Cache is cleared when the UI actually changes.
+//
+// We intentionally avoid hashing every asset body (mermaid/katex can be multi-MB):
+// Vite content-hashes chunk names, so those names appear in index.html / entry JS.
+// Inventory of path+size catches missing/extra files; full body of index.html is
+// enough to detect the cascade. Brand + binary version isolate OEM/rebuilds.
+func embeddedFrontendFingerprint() (string, error) {
+	h := sha256.New()
+	indexPath := "frontend/dist/index.html"
+	indexHTML, err := assets.ReadFile(indexPath)
+	if err != nil {
+		// Fallback for test assets stub that only has index.html at root.
+		data, readErr := assets.ReadFile("index.html")
+		if readErr != nil {
+			return "", err
+		}
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:]), nil
+	}
+	_, _ = io.WriteString(h, indexPath)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(indexHTML)
+	_, _ = h.Write([]byte{0})
+
+	type inv struct {
+		path string
+		size int64
+	}
+	var items []inv
+	walkErr := fs.WalkDir(assets, "frontend/dist", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || path == indexPath {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		items = append(items, inv{path: path, size: info.Size()})
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].path < items[j].path })
+	for _, it := range items {
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00", it.path, it.size)
+	}
+	_, _ = io.WriteString(h, "\nbrand=")
+	_, _ = io.WriteString(h, brand.Current().ID)
+	_, _ = io.WriteString(h, "\nversion=")
+	_, _ = io.WriteString(h, version)
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func webviewAssetCacheDirs() []string {

@@ -57,10 +57,15 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 
 ## Local Coding Tools Boundary
 - External programming session tools/providers may be unavailable in simplified mode.
-- Local tools such as bash, write_file, edit_file, read_file, list_directory, craft_tool, and send_file remain available when they are present in the current tool list.
+- Local tools such as bash, write_file, edit_file, read_file, list_directory, craft_tool, send_file, and send_to_im remain available when they are present in the current tool list.
 - During workflow-driven coding execution, use those local tools to create directories, write files, edit files, build, and test.
 - Do not tell the user that bash/write_file/edit_file are unavailable merely because simplified mode is active.
 - If a tool is not in the current tool list, choose another available local path or ask for a mode/provider change only for external coding sessions.
+
+## 文件发到微信/飞书（桌面端）
+- send_file：默认只在当前桌面对话展示，不会到微信。
+- send_to_im：专用「发到 IM」工具，调用即转发到微信/飞书等。用户说「发到微信」「放到飞书」时必须用 send_to_im，不要用 send_file。
+- 不要只在回复文字里写「已发到微信」却未调用 send_to_im；若工具结果提示未转发，立刻用 send_to_im 重试。
 `)
 
 	if trialReflectEnabled {

@@ -2,6 +2,7 @@ package progress
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,7 @@ type AgentProgressTracker struct {
 	mu     sync.Mutex
 	buffer *MilestoneBuffer
 	pusher *ProgressPusher
+	lang   string
 
 	tickerDone chan struct{}
 	stopped    bool
@@ -35,12 +37,25 @@ type AgentProgressTracker struct {
 // NewAgentProgressTracker creates a tracker for one agent loop execution.
 // onProgress is the callback to deliver progress messages (same as the existing
 // onProgress callback in runAgentLoop). taskEmbed may be nil if embedding is
-// not available.
+// not available. Language defaults to zh; prefer NewAgentProgressTrackerLang
+// when the GUI UI language is known.
 func NewAgentProgressTracker(
 	onProgress func(string),
 	taskDesc string,
 	intentLabel string,
 	taskEmbed []float32,
+) *AgentProgressTracker {
+	return NewAgentProgressTrackerLang(onProgress, taskDesc, intentLabel, taskEmbed, "zh")
+}
+
+// NewAgentProgressTrackerLang is like NewAgentProgressTracker but localizes
+// acknowledgment / heartbeat text to the given GUI language.
+func NewAgentProgressTrackerLang(
+	onProgress func(string),
+	taskDesc string,
+	intentLabel string,
+	taskEmbed []float32,
+	lang string,
 ) *AgentProgressTracker {
 	buf := NewMilestoneBuffer(64)
 	buf.Reset(taskDesc, intentLabel, taskEmbed)
@@ -54,11 +69,12 @@ func NewAgentProgressTracker(
 		}
 	}
 
-	pusher := NewProgressPusher(buf, pushFn, complexity)
+	pusher := NewProgressPusher(buf, pushFn, complexity, lang)
 
 	t := &AgentProgressTracker{
 		buffer:     buf,
 		pusher:     pusher,
+		lang:       lang,
 		tickerDone: make(chan struct{}),
 	}
 
@@ -83,12 +99,26 @@ func NewAgentProgressTracker(
 // raw JSON string from the tool call (will be parsed to extract summary args).
 // completed should be true when the tool call has finished.
 func (t *AgentProgressTracker) RecordToolCall(toolName string, argsJSON string, completed bool) {
+	if t == nil || t.pusher == nil || t.buffer == nil {
+		return
+	}
+	t.mu.Lock()
+	stopped := t.stopped
+	lang := t.lang
+	t.mu.Unlock()
+	if stopped {
+		return
+	}
+	if strings.TrimSpace(lang) == "" {
+		lang = "zh"
+	}
+
 	var args map[string]any
 	if argsJSON != "" {
 		_ = json.Unmarshal([]byte(argsJSON), &args)
 	}
 
-	m := ExtractMilestone(toolName, args, completed)
+	m := ExtractMilestoneLang(toolName, args, completed, lang)
 	if m == nil {
 		return
 	}

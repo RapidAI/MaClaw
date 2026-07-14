@@ -4,17 +4,25 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // SummaryRule defines how to extract a human-readable summary from a tool call.
 // Adding support for a new tool requires only adding one entry to toolSummaryRules.
 type SummaryRule struct {
-	// Verb is the Chinese action verb shown to the user (e.g. "搜索", "生成").
-	Verb string
+	// VerbKey is an i18n key for the action verb shown to the user.
+	VerbKey string
 
 	// ArgKey is the JSON key in the tool args to extract the object of the action.
-	// If empty, Static must be true.
+	// If empty, Static must be true (or PrefixFunc supplies the full summary).
+	// Ignored when ArgKeys is non-empty.
 	ArgKey string
+
+	// ArgKeys are alternate JSON keys tried in order (first non-empty wins).
+	// Prefer this when callers use multiple names for the same parameter
+	// (e.g. run_skill: name / skill_name / skill).
+	ArgKeys []string
 
 	// MaxLen truncates the extracted arg value to this many runes. 0 = no limit.
 	MaxLen int
@@ -26,37 +34,55 @@ type SummaryRule struct {
 	Phase string
 
 	// PrefixFunc optionally transforms the verb based on a sub-action arg.
-	// For example, SSH tool uses the "action" arg to produce "连接服务器" vs "服务器执行".
-	PrefixFunc func(args map[string]any) string
+	// For example, SSH tool uses the "action" arg to produce localized connect/exec text.
+	PrefixFunc func(args map[string]any, lang string) string
 }
 
 // toolSummaryRules is the declarative mapping from tool name to summary extraction rule.
 // To add a new tool, add one entry here. No other code changes needed.
 var toolSummaryRules = map[string]SummaryRule{
 	"web_search": {
-		Verb: "搜索", ArgKey: "query", MaxLen: 30, Phase: "searching",
+		VerbKey: i18n.MsgToolActionWebSearch, ArgKey: "query", MaxLen: 30, Phase: "searching",
+	},
+	"web_fetch": {
+		VerbKey: i18n.MsgToolActionWebFetch, ArgKey: "url", MaxLen: 50, Phase: "searching",
 	},
 	"write_file": {
-		Verb: "生成", ArgKey: "path", MaxLen: 50, Phase: "writing",
+		VerbKey: i18n.MsgToolActionWriteFile, ArgKey: "path", MaxLen: 50, Phase: "writing",
+	},
+	"edit_file": {
+		VerbKey: i18n.MsgToolActionEditFile, ArgKey: "path", MaxLen: 50, Phase: "writing",
 	},
 	"bash": {
-		Verb: "执行命令", ArgKey: "command", MaxLen: 30, Phase: "executing",
+		VerbKey: i18n.MsgToolActionRunCommand, ArgKey: "command", MaxLen: 30, Phase: "executing",
+	},
+	"search_files": {
+		VerbKey: i18n.MsgToolActionSearchFiles, ArgKey: "pattern", MaxLen: 40, Phase: "searching",
+	},
+	"grep_search": {
+		VerbKey: i18n.MsgToolActionGrep, ArgKey: "pattern", MaxLen: 40, Phase: "searching",
+	},
+	"list_directory": {
+		VerbKey: i18n.MsgToolActionListDir, ArgKey: "path", MaxLen: 50, Phase: "reading",
 	},
 	"ssh": {
-		Verb: "服务器操作", Phase: "remote",
+		VerbKey: i18n.MsgToolActionSSH, Phase: "remote",
 		PrefixFunc: sshActionPrefix,
 	},
 	"generate_pdf": {
-		Verb: "生成 PDF 文档", Static: true, Phase: "generating",
+		VerbKey: i18n.MsgToolActionGeneratePDF, Static: true, Phase: "generating",
 	},
 	"run_skill": {
-		Verb: "执行技能", ArgKey: "skill_name", MaxLen: 30, Phase: "skill",
+		VerbKey: i18n.MsgToolActionRunSkill, ArgKeys: []string{"name", "skill_name", "skill"}, MaxLen: 30, Phase: "skill",
 	},
 	"send_file": {
-		Verb: "发送文件", ArgKey: "path", MaxLen: 50, Phase: "delivering",
+		VerbKey: i18n.MsgToolActionSendFile, ArgKey: "path", MaxLen: 50, Phase: "delivering",
+	},
+	"send_to_im": {
+		VerbKey: i18n.MsgToolActionSendFile, ArgKey: "path", MaxLen: 50, Phase: "delivering",
 	},
 	"screenshot": {
-		Verb: "截取屏幕", Static: true, Phase: "capturing",
+		VerbKey: i18n.MsgToolActionScreenshot, Static: true, Phase: "capturing",
 	},
 }
 
@@ -83,9 +109,15 @@ func IsSilentTool(toolName string) bool {
 
 // ExtractMilestone creates a Milestone from a tool call. Returns nil for
 // silent tools or tools without a summary rule (unknown tools are treated
-// as silent to avoid noisy fallback messages).
+// as silent to avoid noisy fallback messages). Defaults to Chinese labels.
 func ExtractMilestone(toolName string, args map[string]any, completed bool) *Milestone {
-	if silentTools[toolName] {
+	return ExtractMilestoneLang(toolName, args, completed, "zh")
+}
+
+// ExtractMilestoneLang is like ExtractMilestone but localizes verbs to lang.
+func ExtractMilestoneLang(toolName string, args map[string]any, completed bool, lang string) *Milestone {
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+	if toolName == "" || silentTools[toolName] {
 		return nil
 	}
 
@@ -96,7 +128,7 @@ func ExtractMilestone(toolName string, args map[string]any, completed bool) *Mil
 		return nil
 	}
 
-	summary := buildSummary(rule, args)
+	summary := buildSummary(rule, args, lang)
 	if summary == "" {
 		return nil
 	}
@@ -111,15 +143,16 @@ func ExtractMilestone(toolName string, args map[string]any, completed bool) *Mil
 }
 
 // buildSummary constructs the human-readable summary string from a rule and args.
-func buildSummary(rule SummaryRule, args map[string]any) string {
-	verb := rule.Verb
+func buildSummary(rule SummaryRule, args map[string]any, lang string) string {
+	verb := i18n.T(rule.VerbKey, lang)
+	hasArgKey := rule.ArgKey != "" || len(rule.ArgKeys) > 0
 	if rule.PrefixFunc != nil {
-		if custom := rule.PrefixFunc(args); custom != "" {
+		if custom := rule.PrefixFunc(args, lang); custom != "" {
 			verb = custom
 		}
 		// When PrefixFunc provides the full summary and there's no ArgKey,
 		// the verb IS the complete summary.
-		if rule.ArgKey == "" {
+		if !hasArgKey {
 			return verb
 		}
 	}
@@ -128,40 +161,51 @@ func buildSummary(rule SummaryRule, args map[string]any) string {
 		return verb
 	}
 
-	argVal := extractStringArg(args, rule.ArgKey)
+	argVal := extractRuleArg(args, rule)
 	if argVal == "" {
-		return verb + "..."
+		return i18n.Tf(i18n.MsgMilestoneVerbEllipsis, lang, verb)
 	}
 
 	argVal = truncateRunes(argVal, rule.MaxLen)
 	return fmt.Sprintf("%s: %s", verb, argVal)
 }
 
+func extractRuleArg(args map[string]any, rule SummaryRule) string {
+	if len(rule.ArgKeys) > 0 {
+		for _, key := range rule.ArgKeys {
+			if v := extractStringArg(args, key); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	return extractStringArg(args, rule.ArgKey)
+}
+
 // sshActionPrefix returns a complete summary for SSH tool calls.
-// Because SSH actions have heterogeneous args (connect uses host, exec uses command),
-// PrefixFunc returns the full summary string and the rule is marked Static-like
-// (no ArgKey) so buildSummary just uses the PrefixFunc output.
-func sshActionPrefix(args map[string]any) string {
+func sshActionPrefix(args map[string]any, lang string) string {
 	action := extractStringArg(args, "action")
 	switch action {
 	case "connect":
 		host := extractStringArg(args, "host")
+		base := i18n.T(i18n.MsgToolActionSSHConnect, lang)
 		if host != "" {
-			return fmt.Sprintf("连接服务器 %s", host)
+			return base + " " + host
 		}
-		return "连接服务器"
+		return base
 	case "exec":
 		cmd := extractStringArg(args, "command")
+		base := i18n.T(i18n.MsgToolActionSSHExec, lang)
 		if cmd != "" {
-			return fmt.Sprintf("服务器执行: %s", truncateRunes(cmd, 30))
+			return base + ": " + truncateRunes(cmd, 30)
 		}
-		return "服务器执行命令"
+		return base
 	case "close":
-		return "断开服务器连接"
+		return i18n.T(i18n.MsgToolActionSSHClose, lang)
 	case "close_all":
-		return "断开所有服务器连接"
+		return i18n.T(i18n.MsgToolActionSSHCloseAll, lang)
 	default:
-		return "服务器操作"
+		return i18n.T(i18n.MsgToolActionSSH, lang)
 	}
 }
 
@@ -194,8 +238,13 @@ func truncateRunes(s string, maxLen int) string {
 }
 
 // MergeMilestones combines multiple milestones into a single progress message.
-// Used by the pusher's merge window to avoid sending one message per milestone.
+// Defaults to Chinese labels; prefer MergeMilestonesLang when GUI language is known.
 func MergeMilestones(milestones []Milestone) string {
+	return MergeMilestonesLang("zh", milestones)
+}
+
+// MergeMilestonesLang is like MergeMilestones but localizes templates to lang.
+func MergeMilestonesLang(lang string, milestones []Milestone) string {
 	if len(milestones) == 0 {
 		return ""
 	}
@@ -204,7 +253,7 @@ func MergeMilestones(milestones []Milestone) string {
 		if m.Completed {
 			return m.Summary
 		}
-		return "正在 " + m.Summary
+		return i18n.Tf(i18n.MsgMilestoneWorking, lang, m.Summary)
 	}
 
 	// Collect completed summaries.
@@ -221,24 +270,21 @@ func MergeMilestones(milestones []Milestone) string {
 	var parts []string
 	switch {
 	case len(completed) <= 3:
-		for _, s := range completed {
-			parts = append(parts, s)
-		}
+		parts = append(parts, completed...)
 	default:
-		parts = append(parts, fmt.Sprintf("已完成 %d 个步骤", len(completed)))
-	}
-
-	suffix := ""
-	if current != "" {
-		suffix = fmt.Sprintf("，正在 %s", current)
+		parts = append(parts, i18n.Tf(i18n.MsgMilestoneDoneSteps, lang, len(completed)))
 	}
 
 	if len(parts) == 0 {
 		if current != "" {
-			return "正在 " + current
+			return i18n.Tf(i18n.MsgMilestoneWorking, lang, current)
 		}
 		return ""
 	}
 
-	return "已完成: " + strings.Join(parts, " + ") + suffix
+	joined := strings.Join(parts, " + ")
+	if current != "" {
+		return i18n.Tf(i18n.MsgMilestoneDoneWorking, lang, joined, current)
+	}
+	return i18n.Tf(i18n.MsgMilestoneDoneList, lang, joined)
 }

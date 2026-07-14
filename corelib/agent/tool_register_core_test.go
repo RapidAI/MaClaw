@@ -352,4 +352,5 @@ func TestCoreWorkflowDocumentToolsExposeMetadata(t *testing.T) {
 
 	assertProps("write_file", "phase_id", "doc_type")
 	assertProps("send_file", "phase_id", "doc_type")
+	assertProps("send_to_im", "phase_id", "doc_type")
 }

@@ -22,7 +22,7 @@ func EnforceConfig(cfg corelib.AppConfig, name string, args map[string]interface
 	if !cfg.HubSecurityCentralized {
 		return true, ""
 	}
-	if name == "send_file" && !cfg.FileOutboundEnabled {
+	if (name == "send_file" || name == "send_to_im") && !cfg.FileOutboundEnabled {
 		return false, "file outbound is disabled by Hub security policy"
 	}
 	if isImageOutboundTool(name) && !cfg.ImageOutboundEnabled {

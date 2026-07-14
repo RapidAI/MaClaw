@@ -168,6 +168,44 @@ func TestIMToolSendFile_WorkflowForwardIMUsesStructuredDeliveryMessage(t *testin
 	}
 }
 
+func TestIMToolSendToIM_AlwaysForwardsWithoutFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "shot.png")
+	// Minimal PNG-like payload (magic + padding) so mime sniff can still work.
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 1, 2, 3}
+	if err := os.WriteFile(path, png, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	h := &IMMessageHandler{}
+	// No forward_to_im, no destination — tool name alone must force IM.
+	got := h.toolSendToIM(map[string]interface{}{"path": path})
+	payload := parseToolPayloadResult(got)
+	if payload.File == nil {
+		t.Fatalf("expected file payload, got %q", got)
+	}
+	if !payload.File.forwardIM {
+		t.Fatalf("send_to_im must set forwardIM, payload=%#v raw=%q", payload.File, got)
+	}
+	if !strings.Contains(got, "|im]") && !strings.Contains(got, "|im|") {
+		t.Fatalf("raw payload should include im flag: %q", got)
+	}
+
+	// Contradictory destination=desktop must still forward (tool name wins).
+	got2 := h.toolSendToIM(map[string]interface{}{"path": path, "destination": "desktop"})
+	payload2 := parseToolPayloadResult(got2)
+	if payload2.File == nil || !payload2.File.forwardIM {
+		t.Fatalf("send_to_im should override destination=desktop, got %#v raw=%q", payload2.File, got2)
+	}
+
+	// send_file without flags must NOT forward.
+	got3 := h.toolSendFile(map[string]interface{}{"path": path})
+	payload3 := parseToolPayloadResult(got3)
+	if payload3.File == nil || payload3.File.forwardIM {
+		t.Fatalf("send_file default must stay desktop-only, got %#v", payload3.File)
+	}
+}
+
 func TestIMToolSendFile_NormalizesWorkflowDocDisplayFileNameWithPathExtension(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "requirements.pdf")
@@ -210,7 +248,7 @@ func TestWorkflowDocDeliveryFileNameRejectsLocalizedExtension(t *testing.T) {
 func TestBuildToolDefinitionsExposeWorkflowDocMetadata(t *testing.T) {
 	h := &IMMessageHandler{app: &App{}}
 	defs := h.buildToolDefinitions()
-	for _, toolName := range []string{"write_file", "send_file"} {
+	for _, toolName := range []string{"write_file", "send_file", "send_to_im"} {
 		props := toolDefinitionProperties(t, defs, toolName)
 		for _, prop := range []string{"phase_id", "doc_type"} {
 			if _, ok := props[prop]; !ok {
@@ -238,6 +276,14 @@ func TestBuildToolDefinitionsWorkflowDocMetadataDescriptions(t *testing.T) {
 	}
 	if got := toolSchemaDescription(t, sendProps, "doc_type"); got != workflowDocDeliveryTypeSchemaDescription() {
 		t.Fatalf("send_file doc_type description = %q, want %q", got, workflowDocDeliveryTypeSchemaDescription())
+	}
+
+	sendToIMProps := toolDefinitionProperties(t, defs, "send_to_im")
+	if got := toolSchemaDescription(t, sendToIMProps, "phase_id"); got != workflowDocDeliveryPhaseIDSchemaDescription() {
+		t.Fatalf("send_to_im phase_id description = %q, want %q", got, workflowDocDeliveryPhaseIDSchemaDescription())
+	}
+	if got := toolSchemaDescription(t, sendToIMProps, "doc_type"); got != workflowDocDeliveryTypeSchemaDescription() {
+		t.Fatalf("send_to_im doc_type description = %q, want %q", got, workflowDocDeliveryTypeSchemaDescription())
 	}
 }
 

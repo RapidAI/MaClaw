@@ -26,6 +26,9 @@ func TestHubSecurityToolGuardBlocksDisabledOutbound(t *testing.T) {
 	if ok, reason := h.enforceHubSecurityToolPolicy("send_file", map[string]interface{}{"path": "report.pdf"}); ok || !strings.Contains(reason, "file outbound") {
 		t.Fatalf("send_file allowed=%v reason=%q, want file outbound rejection", ok, reason)
 	}
+	if ok, reason := h.enforceHubSecurityToolPolicy("send_to_im", map[string]interface{}{"path": "report.pdf"}); ok || !strings.Contains(reason, "file outbound") {
+		t.Fatalf("send_to_im allowed=%v reason=%q, want file outbound rejection", ok, reason)
+	}
 	if ok, reason := h.enforceHubSecurityToolPolicy("screenshot", nil); ok || !strings.Contains(reason, "image outbound") {
 		t.Fatalf("screenshot allowed=%v reason=%q, want image outbound rejection", ok, reason)
 	}

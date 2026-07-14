@@ -279,8 +279,15 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 		}
 		lastProgress = now
 		lastProgressText = stripped
+		lang := "zh"
+		if g != nil && g.app != nil {
+			lang = strings.TrimSpace(g.app.appConfig.Language)
+			if lang == "" {
+				lang = "zh"
+			}
+		}
 		g.sendText(userID, contextToken,
-			i18n.T(i18n.MsgProgressPrefix, "zh")+stripped)
+			i18n.T(i18n.MsgProgressPrefix, lang)+stripped)
 	}
 
 	// NOTE: Workflow interception is skipped for WeChat messages.

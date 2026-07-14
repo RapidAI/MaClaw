@@ -361,6 +361,54 @@ const (
 	MsgExecRevisionAmbig2   = "msg.exec_revision_ambig_2"
 	MsgExecRevisionDefault1 = "msg.exec_revision_default_1"
 	MsgExecRevisionDefault2 = "msg.exec_revision_default_2"
+
+	// IM tool-status card labels (must stay distinct from normal chat replies).
+	MsgToolStatusLabel            = "msg.tool_status_label"
+	MsgToolActionProcessing       = "msg.tool_action_processing"
+	MsgToolActionRunCommand       = "msg.tool_action_run_command"
+	MsgToolActionReadFile         = "msg.tool_action_read_file"
+	MsgToolActionWriteFile        = "msg.tool_action_write_file"
+	MsgToolActionEditFile         = "msg.tool_action_edit_file"
+	MsgToolActionListDir          = "msg.tool_action_list_dir"
+	MsgToolActionSearchFiles      = "msg.tool_action_search_files"
+	MsgToolActionGrep             = "msg.tool_action_grep"
+	MsgToolActionWebSearch        = "msg.tool_action_web_search"
+	MsgToolActionWebFetch         = "msg.tool_action_web_fetch"
+	MsgToolActionSendFile         = "msg.tool_action_send_file"
+	MsgToolActionRunSkill         = "msg.tool_action_run_skill"
+	MsgToolActionGeneratePDF      = "msg.tool_action_generate_pdf"
+	MsgToolActionMemory           = "msg.tool_action_memory"
+	MsgToolActionSSHConnect       = "msg.tool_action_ssh_connect"
+	MsgToolActionSSHExec          = "msg.tool_action_ssh_exec"
+	MsgToolActionSSHClose         = "msg.tool_action_ssh_close"
+	MsgToolActionSSHCloseAll      = "msg.tool_action_ssh_close_all"
+	MsgToolActionSSH              = "msg.tool_action_ssh"
+	MsgToolActionScreenshot       = "msg.tool_action_screenshot"
+	MsgToolActionTTS              = "msg.tool_action_tts"
+	MsgToolActionBrowser          = "msg.tool_action_browser"
+	MsgToolActionCraft            = "msg.tool_action_craft"
+	MsgToolActionOpen             = "msg.tool_action_open"
+	MsgToolActionDelegate         = "msg.tool_action_delegate"
+	MsgToolActionCallTool         = "msg.tool_action_call_tool"
+	MsgToolActionScriptProgress   = "msg.tool_action_script_progress"
+	MsgToolActionCommandProgress  = "msg.tool_action_command_progress"
+	MsgToolActionSkillProgress    = "msg.tool_action_skill_progress"
+
+	// IM intermediate progress (non-final replies).
+	MsgProgressAck          = "msg.progress_ack"
+	MsgProgressLongTask     = "msg.progress_long_task"
+	MsgProgressStillWorking = "msg.progress_still_working" // %s summary
+	MsgProgressStatusLabel  = "msg.progress_status_label"
+
+	// Milestone merge / heartbeat summary templates.
+	MsgMilestoneWorking           = "msg.milestone_working"             // %s summary
+	MsgMilestoneDoneList          = "msg.milestone_done_list"            // %s joined summaries
+	MsgMilestoneDoneSteps         = "msg.milestone_done_steps"           // %d count
+	MsgMilestoneDoneWorking       = "msg.milestone_done_working"         // %s done, %s current
+	MsgMilestoneProcessingElapsed = "msg.milestone_processing_elapsed"   // %s duration
+	MsgMilestoneStepsCurrent      = "msg.milestone_steps_current"        // %d, %s current, %s duration
+	MsgMilestoneStepsLatest       = "msg.milestone_steps_latest"         // %d, %s latest, %s duration
+	MsgMilestoneVerbEllipsis      = "msg.milestone_verb_ellipsis"        // %s verb → "verb..."
 )
 
 // defaultLang is the fallback language when lang is empty or unknown.
@@ -704,6 +752,49 @@ var translations = map[string]map[string]string{
 		MsgExecRevisionAmbig2:    "请提供正确的项目目录或主机信息",
 		MsgExecRevisionDefault1:  "如果目录不对，请回复正确目录",
 		MsgExecRevisionDefault2:  "如果任务理解不对，请回复修正内容",
+		// IM tool-status card
+		MsgToolStatusLabel:           "【工具】",
+		MsgToolActionProcessing:      "处理中",
+		MsgToolActionRunCommand:      "执行命令",
+		MsgToolActionReadFile:        "读取文件",
+		MsgToolActionWriteFile:       "写入文件",
+		MsgToolActionEditFile:        "编辑文件",
+		MsgToolActionListDir:         "列出目录",
+		MsgToolActionSearchFiles:     "搜索文件",
+		MsgToolActionGrep:            "检索内容",
+		MsgToolActionWebSearch:       "搜索网络",
+		MsgToolActionWebFetch:        "访问网页",
+		MsgToolActionSendFile:        "发送文件",
+		MsgToolActionRunSkill:        "执行技能",
+		MsgToolActionGeneratePDF:     "生成 PDF",
+		MsgToolActionMemory:          "访问记忆",
+		MsgToolActionSSHConnect:      "连接服务器",
+		MsgToolActionSSHExec:         "远程执行",
+		MsgToolActionSSHClose:        "断开连接",
+		MsgToolActionSSHCloseAll:     "断开全部连接",
+		MsgToolActionSSH:             "远程操作",
+		MsgToolActionScreenshot:      "截取屏幕",
+		MsgToolActionTTS:             "生成语音",
+		MsgToolActionBrowser:         "操作浏览器",
+		MsgToolActionCraft:           "生成脚本",
+		MsgToolActionOpen:            "打开",
+		MsgToolActionDelegate:        "委派任务",
+		MsgToolActionCallTool:        "调用工具",
+		MsgToolActionScriptProgress:  "脚本进度",
+		MsgToolActionCommandProgress: "命令进度",
+		MsgToolActionSkillProgress:   "技能进度",
+		MsgProgressAck:                "收到，正在处理",
+		MsgProgressLongTask:           "任务耗时较长，完成后会立即通知你。",
+		MsgProgressStillWorking:       "仍在执行中，%s",
+		MsgProgressStatusLabel:        "〔进度〕",
+		MsgMilestoneWorking:           "正在 %s",
+		MsgMilestoneDoneList:          "已完成: %s",
+		MsgMilestoneDoneSteps:         "已完成 %d 个步骤",
+		MsgMilestoneDoneWorking:       "已完成: %s，正在 %s",
+		MsgMilestoneProcessingElapsed: "正在处理中（已耗时 %s）...",
+		MsgMilestoneStepsCurrent:      "已完成 %d 个步骤，当前: %s（已耗时 %s）",
+		MsgMilestoneStepsLatest:       "已完成 %d 个步骤，最近: %s（已耗时 %s）",
+		MsgMilestoneVerbEllipsis:      "%s...",
 	},
 	"en": {
 		MsgAckProcessing:                      "Processing, please wait...",
@@ -1036,6 +1127,49 @@ var translations = map[string]map[string]string{
 		MsgExecRevisionAmbig2:    "Provide the correct project directory or host information",
 		MsgExecRevisionDefault1:  "If the directory is wrong, reply with the correct directory",
 		MsgExecRevisionDefault2:  "If the task understanding is wrong, reply with the correction",
+		// IM tool-status card
+		MsgToolStatusLabel:           "[Tool] ",
+		MsgToolActionProcessing:      "Working",
+		MsgToolActionRunCommand:      "Run command",
+		MsgToolActionReadFile:        "Read file",
+		MsgToolActionWriteFile:       "Write file",
+		MsgToolActionEditFile:        "Edit file",
+		MsgToolActionListDir:         "List directory",
+		MsgToolActionSearchFiles:     "Search files",
+		MsgToolActionGrep:            "Search content",
+		MsgToolActionWebSearch:       "Web search",
+		MsgToolActionWebFetch:        "Open page",
+		MsgToolActionSendFile:        "Send file",
+		MsgToolActionRunSkill:        "Run Skill",
+		MsgToolActionGeneratePDF:     "Generate PDF",
+		MsgToolActionMemory:          "Access memory",
+		MsgToolActionSSHConnect:      "Connect server",
+		MsgToolActionSSHExec:         "Remote exec",
+		MsgToolActionSSHClose:        "Disconnect",
+		MsgToolActionSSHCloseAll:     "Disconnect all",
+		MsgToolActionSSH:             "Remote operation",
+		MsgToolActionScreenshot:      "Screenshot",
+		MsgToolActionTTS:             "Generate speech",
+		MsgToolActionBrowser:         "Browser",
+		MsgToolActionCraft:           "Generate script",
+		MsgToolActionOpen:            "Open",
+		MsgToolActionDelegate:        "Delegate task",
+		MsgToolActionCallTool:        "Call tool",
+		MsgToolActionScriptProgress:  "Script progress",
+		MsgToolActionCommandProgress: "Command progress",
+		MsgToolActionSkillProgress:   "Skill progress",
+		MsgProgressAck:                "Got it, working on it...",
+		MsgProgressLongTask:           "This is taking a while; I'll notify you when done.",
+		MsgProgressStillWorking:       "Still working: %s",
+		MsgProgressStatusLabel:        "[Status] ",
+		MsgMilestoneWorking:           "Working: %s",
+		MsgMilestoneDoneList:          "Done: %s",
+		MsgMilestoneDoneSteps:         "Completed %d steps",
+		MsgMilestoneDoneWorking:       "Done: %s; working: %s",
+		MsgMilestoneProcessingElapsed: "Still processing (elapsed %s)...",
+		MsgMilestoneStepsCurrent:      "Completed %d steps, now: %s (elapsed %s)",
+		MsgMilestoneStepsLatest:       "Completed %d steps, last: %s (elapsed %s)",
+		MsgMilestoneVerbEllipsis:      "%s...",
 	},
 }
 

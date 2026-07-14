@@ -111,9 +111,10 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 			message:   message,
 		}
 		if forwardIM {
-			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道发送。", parts[0])
+			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道（微信/飞书等）发送。若发送失败会在结果中说明。", parts[0])
 		} else {
-			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
+			// Be explicit so the model does not claim "已发到微信" after a desktop-only stage.
+			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好在当前对话中交付（未转发到微信/飞书等 IM）。若用户要求发到微信/飞书/QQ，请调用 send_to_im(path=...)；不要只用文字声称已发送。", parts[0])
 		}
 		obs.TraceResult = obs.ToolContent
 		return obs

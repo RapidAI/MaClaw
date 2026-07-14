@@ -335,6 +335,7 @@ func TestFilterToolsForVEWithConfig_EmptySlice_SendFileBlocked(t *testing.T) {
 func TestFilterToolsForVEWithConfig_WithDirs_SendFileUnblocked(t *testing.T) {
 	tools := []map[string]interface{}{
 		{"function": map[string]interface{}{"name": "send_file"}},
+		{"function": map[string]interface{}{"name": "send_to_im"}},
 		{"function": map[string]interface{}{"name": "read_file"}},
 		{"function": map[string]interface{}{"name": "list_directory"}},
 		{"function": map[string]interface{}{"name": "web_search"}},
@@ -342,7 +343,7 @@ func TestFilterToolsForVEWithConfig_WithDirs_SendFileUnblocked(t *testing.T) {
 		{"function": map[string]interface{}{"name": "write_file"}},
 	}
 
-	// Non-empty allowedDirs: send_file is unblocked
+	// Non-empty allowedDirs: send_file / send_to_im are unblocked
 	filtered := filterToolsForVEWithConfig(tools, []string{"D:\\Documents\\Templates"})
 
 	names := make(map[string]bool)
@@ -354,6 +355,9 @@ func TestFilterToolsForVEWithConfig_WithDirs_SendFileUnblocked(t *testing.T) {
 
 	if !names["send_file"] {
 		t.Error("send_file should be unblocked when allowedDirs is non-empty")
+	}
+	if !names["send_to_im"] {
+		t.Error("send_to_im should be unblocked when allowedDirs is non-empty")
 	}
 	if !names["read_file"] {
 		t.Error("read_file should be allowed")

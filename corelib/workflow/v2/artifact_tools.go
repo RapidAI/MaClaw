@@ -17,6 +17,7 @@ var ArtifactPhaseAllowedTools = map[string]bool{
 	"read_file":                true,
 	"search_and_install_skill": true,
 	"send_file":                true,
+	"send_to_im":               true,
 	"web_fetch":                true,
 	"web_search":               true,
 	"write_file":               true,

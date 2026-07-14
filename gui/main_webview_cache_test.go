@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -58,6 +59,63 @@ func TestClearWebviewAssetCacheForFingerprintSkipsMatchingBuild(t *testing.T) {
 
 	if _, err := os.Stat(cacheFile); err != nil {
 		t.Fatalf("matching build should not clear cache file: %v", err)
+	}
+}
+
+func TestClearWebviewAssetCacheForFingerprintClearsWhenFingerprintFails(t *testing.T) {
+	root := t.TempDir()
+	cacheFile := filepath.Join(root, "EBWebView", "Default", "Code Cache", "js", "chunk")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	clearWebviewAssetCacheForFingerprint(root, func() (string, error) {
+		return "", os.ErrNotExist
+	})
+	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
+		t.Fatalf("cache should be cleared when fingerprint fails, stat err=%v", err)
+	}
+}
+
+func TestSingleInstanceUniqueIDIsBrandScoped(t *testing.T) {
+	// Default (non-OEM) build must keep historical lock id.
+	if got := singleInstanceUniqueID(); got != "maclaw-lock" {
+		t.Fatalf("default singleInstanceUniqueID() = %q, want maclaw-lock", got)
+	}
+}
+
+func TestDefaultWebviewUserDataPathIsBrandScoped(t *testing.T) {
+	if got := webviewProfileFolder(); got != "MaClaw" {
+		t.Fatalf("default webviewProfileFolder() = %q, want MaClaw", got)
+	}
+	if goruntime.GOOS != "windows" {
+		if got := defaultWebviewUserDataPath(); got != "" {
+			t.Fatalf("non-windows path = %q, want empty", got)
+		}
+		return
+	}
+	got := defaultWebviewUserDataPath()
+	if filepath.Base(got) != "MaClaw.exe" {
+		t.Fatalf("default brand path base = %q, want MaClaw.exe (got full %q)", filepath.Base(got), got)
+	}
+}
+
+func TestEmbeddedFrontendFingerprintIsDeterministic(t *testing.T) {
+	a, err := embeddedFrontendFingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	b, err := embeddedFrontendFingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint 2nd: %v", err)
+	}
+	if a == "" || a != b {
+		t.Fatalf("fingerprint not stable: %q vs %q", a, b)
+	}
+	if len(a) != 64 { // sha256 hex
+		t.Fatalf("fingerprint length = %d, want 64 hex chars", len(a))
 	}
 }
 

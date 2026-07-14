@@ -546,7 +546,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		lastProgressText = stripped
 		_ = gw.SendText(context.Background(), lansenger.OutgoingText{
 			ToUserID: msg.FromUserID,
-			Text:     i18n.T(i18n.MsgProgressPrefix, "zh") + stripped,
+			Text:     i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + stripped,
 		})
 	}
 
@@ -554,7 +554,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		UserID:      msg.FromUserID,
 		Platform:    "lansenger_local",
 		Text:        text,
-		Lang:        "zh",
+		Lang:        appUILang(m.app),
 		Attachments: attachments,
 	}, onProgress)
 

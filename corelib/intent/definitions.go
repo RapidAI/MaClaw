@@ -247,7 +247,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"open this spreadsheet file",
 				"export the results and send the file",
 			},
-			ToolNames: []string{"send_file", "open", "craft_tool"},
+			ToolNames: []string{"send_file", "send_to_im", "open", "craft_tool"},
 		},
 		{
 			Label:  LabelBusinessData,

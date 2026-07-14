@@ -362,7 +362,12 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	telemetry.Route = startState.RouteDecision
 
 	// Multimodal user payload (text / image blocks / file path annotations).
-	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, onProgress)
+	// Use runtime SendProgress so intermediate status styling matches the legacy loop.
+	progressOut := runtimeState.SendProgress
+	if progressOut == nil {
+		progressOut = onProgress
+	}
+	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision, h.app, progressOut)
 
 	cb := &sharedAgentLoopCallbacks{
 		handler:      h,
@@ -373,7 +378,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		tools:        startState.Tools,
 		llmCfg:       cfg,
 		route:        startState.RouteDecision,
-		onProgress:   onProgress,
+		onProgress:   progressOut,
 		onToken:      onToken,
 		maxIter:      startState.EffectiveMax,
 		httpClient:   startState.HTTPClient,
@@ -669,7 +674,17 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		}
 		return fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, guiMaxToolArgumentsBytes)
 	}
-	exec := c.handler.executeToolDetailedWithUserText(name, argsJSON, c.userText, c.onProgress)
+	// IM channels need concrete tool details (path/command/pattern), not bare tool names.
+	// Emit here where argsJSON is available; OnToolCall only receives the name.
+	// Language follows GUI interface language (App.CurrentLanguage).
+	lang := c.handler.imUILang()
+	if c.onProgress != nil {
+		c.onProgress(userFacingToolProgressTextWithArgs(lang, name, argsJSON))
+	}
+	// Filter internal tool chatter the same way as the legacy agent-loop path so
+	// unstyled bash/skill logs never leak into WeChat/QQ as normal chat bubbles.
+	toolProgress := filteredToolProgressCallback(lang, name, c.onProgress, false)
+	exec := c.handler.executeToolDetailedWithUserText(name, argsJSON, c.userText, toolProgress)
 	return truncateToolResultForToolWithSession(name, c.userID, exec.Text)
 }
 
@@ -700,9 +715,9 @@ func (c *sharedAgentLoopCallbacks) OnProgress(text string) {
 }
 
 func (c *sharedAgentLoopCallbacks) OnToolCall(name string) {
-	if c.onProgress != nil {
-		c.onProgress(name)
-	}
+	// Intentionally no-op: bare tool names (e.g. "bash", "read_file") are not
+	// useful on IM. Concrete progress with args is emitted from ExecuteTool.
+	_ = name
 }
 
 func (c *sharedAgentLoopCallbacks) OnToolResult(name string) {

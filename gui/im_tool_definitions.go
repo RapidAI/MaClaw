@@ -179,13 +179,22 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"path": map[string]string{"type": "string", "description": "目录路径（绝对路径或相对于 Project directory 的相对路径）"},
 			}, nil),
-		toolDef("send_file", "读取本机文件并发送给用户（通过 IM 通道直接发送文件）。飞书/微信/QQ等平台均支持文件上传，系统自动处理。设置 forward_to_im=true 可将文件同时转发到用户的 IM 平台。",
+		toolDef("send_file", "读取本机文件并在当前桌面对话中展示。默认不转发到微信/飞书。用户要求发到 IM 时请改用 send_to_im（推荐），或在此工具设 destination/forward_to_im。",
 			map[string]interface{}{
 				"path":          map[string]string{"type": "string", "description": "文件的绝对路径或相对于 Project directory 的路径"},
 				"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）。工作流交付文档请使用稳定 ASCII 文件名，本地化文本放在文档标题或消息正文中。"},
 				"phase_id":      map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
 				"doc_type":      map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
-				"forward_to_im": map[string]string{"type": "boolean", "description": "是否同时转发到用户的 IM 平台（飞书/微信/QQ等）。仅在用户明确要求发送到飞书、微信、QQ等 IM 时设为 true，默认 false"},
+				"destination":   map[string]string{"type": "string", "description": "交付目标：chat/desktop=仅桌面对话；im/wechat/weixin/feishu/lark/qq/dingtalk/telegram=转发到对应 IM。与 forward_to_im 二选一即可"},
+				"forward_to_im": map[string]string{"type": "boolean", "description": "是否转发到用户已绑定的 IM。true 等价于 destination=im。优先推荐用 send_to_im 工具"},
+			}, []string{"path"}),
+		toolDef("send_to_im", "把本机文件发送到用户绑定的 IM（微信/飞书/QQ/钉钉等）。用户说「发到微信」「放到飞书」时必须用本工具，不要用 send_file。调用即转发，无需再设 forward_to_im。",
+			map[string]interface{}{
+				"path":        map[string]string{"type": "string", "description": "文件的绝对路径或相对于 Project directory 的路径"},
+				"file_name":   map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）"},
+				"destination": map[string]string{"type": "string", "description": "可选渠道：wechat/weixin/feishu/lark/qq/dingtalk/telegram/im（默认 im，发到已绑定 IM）"},
+				"phase_id":    map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
+				"doc_type":    map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
 			}, []string{"path"}),
 		toolDef("open", "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",
 			map[string]interface{}{

@@ -106,8 +106,9 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	}
 	// Emit user-facing tool progress only after policy gates pass. Otherwise a
 	// workflow-blocked browser/tool call can still leak confusing progress text.
+	progressLang := h.imUILang()
 	if result.Text == "" && opts.SendToolProgress != nil {
-		opts.SendToolProgress(userFacingToolProgressTextWithArgs(tc.Function.Name, tc.Function.Arguments))
+		opts.SendToolProgress(userFacingToolProgressTextWithArgs(progressLang, tc.Function.Name, tc.Function.Arguments))
 	}
 	if result.Text == "" && opts.Phase.TruncationBlockedTools[tc.Function.Name] {
 		text := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
@@ -154,7 +155,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			execCtx, cancel, _ = opts.Context.BeginReplannableOperation(context.Background())
 			defer cancel()
 		}
-		result = h.executeToolDetailedWithRuntimeContext(execCtx, policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
+		result = h.executeToolDetailedWithRuntimeContext(execCtx, policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
@@ -746,6 +747,17 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContext(execCtx context
 	if name == "set_nickname" && strings.TrimSpace(userText) != "" {
 		args["_user_text"] = userText
 	}
+	// File delivery: structured only. send_to_im forces IM; send_file needs flag/destination.
+	// Do not keyword-scan userText.
+	switch name {
+	case "send_to_im":
+		forceSendFileToIMArgs(args)
+		log.Printf("[tool-call] send_to_im forward forced (tool name is intent)")
+	case "send_file":
+		if applySendFileForwardArgs(args) {
+			log.Printf("[tool-call] send_file forward_to_im=true (structured destination/flag)")
+		}
+	}
 
 	log.Printf("[tool-call] name=%q args_len=%d summary=%s", name, len(argsJSON), summarizeToolArgsForLog(name, args))
 
@@ -931,7 +943,7 @@ func (h *IMMessageHandler) registeredToolAcceptsRuntimePlatformArg(name string) 
 func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "bash",
-		"read_file", "write_file", "edit_file", "edit_lines", "list_directory", "send_file",
+		"read_file", "write_file", "edit_file", "edit_lines", "list_directory", "send_file", "send_to_im",
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
 		"group_discussion", "screenshot", "call_mcp_tool",
@@ -1445,6 +1457,16 @@ func summarizeToolArgsForLog(toolName string, args map[string]interface{}) strin
 	case "call_mcp_tool":
 		summary["server_id"] = nonEmptyStringFromAny(args["server_id"])
 		summary["tool_name"] = nonEmptyStringFromAny(args["tool_name"])
+	case "send_file", "send_to_im":
+		if p := strings.TrimSpace(nonEmptyStringFromAny(args["path"])); p != "" {
+			summary["path"] = filepath.Base(p)
+		}
+		if dest := strings.TrimSpace(nonEmptyStringFromAny(args["destination"])); dest != "" {
+			summary["destination"] = dest
+		}
+		if v, ok := boolArgPresent(args, "forward_to_im"); ok {
+			summary["forward_to_im"] = v
+		}
 	}
 	data, err := json.Marshal(summary)
 	if err != nil {

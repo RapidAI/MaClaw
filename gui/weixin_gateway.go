@@ -557,7 +557,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		lastProgressText = stripped
 		_ = gw.SendText(context.Background(), weixin.OutgoingText{
 			ToUserID:     msg.FromUserID,
-			Text:         i18n.T(i18n.MsgProgressPrefix, "zh") + textutil.StripMarkdown(progressText),
+			Text:         i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + textutil.StripMarkdown(progressText),
 			ContextToken: contextToken,
 		})
 	}
@@ -568,7 +568,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 		Platform:    "weixin_local",
 		MessageType: msg.MediaType,
 		Text:        text,
-		Lang:        "zh",
+		Lang:        appUILang(m.app),
 		Attachments: attachments,
 	}, onProgress)
 
@@ -1002,6 +1002,186 @@ func truncateForLog(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
+// SendProactiveFile delivers a file/image from the desktop AI assistant to the
+// active local WeChat session (does not go through Hub). Prefers the last active
+// user, then other sessions newest-first, until one SendMedia succeeds.
+func (m *weixinGatewayManager) SendProactiveFile(b64Data, fileName, mimeType, message string) error {
+	if m == nil {
+		return fmt.Errorf("weixin gateway manager is nil")
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil || !gw.IsRunning() {
+		return fmt.Errorf("本地微信网关未运行（请确认微信机器人已登录并启动）")
+	}
+	raw, err := decodeToolPayloadBase64(b64Data)
+	if err != nil {
+		return fmt.Errorf("文件数据解码失败: %w", err)
+	}
+	if len(raw) == 0 {
+		return fmt.Errorf("文件数据为空")
+	}
+
+	// Build candidate sessions: last-active first, then remaining by recency.
+	type session struct{ uid, tok string }
+	var candidates []session
+	seen := map[string]bool{}
+	if last := strings.TrimSpace(gw.LastActiveUserID()); last != "" {
+		if tok := strings.TrimSpace(gw.GetContextToken(last)); tok != "" {
+			candidates = append(candidates, session{uid: last, tok: tok})
+			seen[last] = true
+		}
+	}
+	for _, pair := range gw.ContextSessionsByRecency() {
+		uid, tok := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+		if uid == "" || tok == "" || seen[uid] {
+			continue
+		}
+		candidates = append(candidates, session{uid: uid, tok: tok})
+		seen[uid] = true
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件")
+	}
+
+	name := strings.TrimSpace(fileName)
+	if name == "" {
+		name = "file.bin"
+	}
+	mediaType := mediaTypeForProactiveFile(mimeType, name)
+	// Sniff magic when MIME/extension are missing or generic (common for screenshots).
+	if mediaType == imMediaFile.String() {
+		if sniffed := sniffProactiveMediaType(raw); sniffed != "" {
+			mediaType = sniffed
+		}
+	}
+	caption := strings.TrimSpace(message)
+
+	var lastErr error
+	for _, c := range candidates {
+		if err := gw.SendMedia(context.Background(), weixin.OutgoingMedia{
+			ToUserID:     c.uid,
+			Caption:      caption,
+			ContextToken: c.tok,
+			FileData:     raw,
+			FileName:     name,
+			MediaType:    mediaType,
+		}); err != nil {
+			lastErr = err
+			log.Printf("[weixin-mgr] SendProactiveFile failed (to=%s name=%s size=%d): %v", c.uid, name, len(raw), err)
+			weixin.GetWxLog().Log("mgr.proactive", "OUT", c.uid, "ERR SendProactiveFile name=%s size=%d err=%v", name, len(raw), err)
+			continue
+		}
+		log.Printf("[weixin-mgr] SendProactiveFile OK (to=%s name=%s size=%d media=%s mime=%s)", c.uid, name, len(raw), mediaType, mimeType)
+		weixin.GetWxLog().Log("mgr.proactive", "OUT", c.uid, "OK SendProactiveFile name=%s size=%d media=%s mime=%s", name, len(raw), mediaType, mimeType)
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件")
+	}
+	return lastErr
+}
+
+// decodeToolPayloadBase64 decodes standard or raw/unpadded base64 used in tool payloads.
+// Strips whitespace/newlines that may appear when models wrap large payloads.
+func decodeToolPayloadBase64(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("empty base64")
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		s = strings.Map(func(r rune) rune {
+			switch r {
+			case ' ', '\t', '\r', '\n':
+				return -1
+			default:
+				return r
+			}
+		}, s)
+	}
+	if raw, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return raw, nil
+	}
+	// Some tool paths strip padding; accept raw standard encoding too.
+	if raw, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return raw, nil
+	}
+	return nil, fmt.Errorf("invalid base64 payload")
+}
+
+// mediaTypeForProactiveFile picks WeChat media kind from MIME and filename.
+// Screenshots often arrive as application/octet-stream with a .png name.
+func mediaTypeForProactiveFile(mimeType, fileName string) string {
+	mt := strings.ToLower(strings.TrimSpace(mimeType))
+	if strings.HasPrefix(mt, "image/") {
+		return imMediaImage.String()
+	}
+	if strings.HasPrefix(mt, "video/") {
+		return imMediaVideo.String()
+	}
+	if strings.HasPrefix(mt, "audio/") {
+		return imMediaVoice.String()
+	}
+	ext := strings.ToLower(filepath.Ext(fileName))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif":
+		return imMediaImage.String()
+	case ".mp4", ".mov", ".avi", ".mkv", ".webm":
+		return imMediaVideo.String()
+	case ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".silk", ".amr":
+		return imMediaVoice.String()
+	default:
+		return imMediaFile.String()
+	}
+}
+
+// sniffProactiveMediaType returns image/video/voice from magic bytes, or "".
+func sniffProactiveMediaType(data []byte) string {
+	if len(data) < 12 {
+		return ""
+	}
+	// PNG
+	if data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' {
+		return imMediaImage.String()
+	}
+	// JPEG (must run before MP3 frame-sync — both can start with 0xFF)
+	if data[0] == 0xff && data[1] == 0xd8 {
+		return imMediaImage.String()
+	}
+	// GIF
+	if data[0] == 'G' && data[1] == 'I' && data[2] == 'F' {
+		return imMediaImage.String()
+	}
+	// WEBP: RIFF....WEBP
+	if data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+		data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P' {
+		return imMediaImage.String()
+	}
+	// BMP
+	if data[0] == 'B' && data[1] == 'M' {
+		return imMediaImage.String()
+	}
+	// MP4/MOV: ftyp at offset 4
+	if data[4] == 'f' && data[5] == 't' && data[6] == 'y' && data[7] == 'p' {
+		return imMediaVideo.String()
+	}
+	// WAV
+	if data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+		data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E' {
+		return imMediaVoice.String()
+	}
+	// MP3 with ID3 tag
+	if data[0] == 'I' && data[1] == 'D' && data[2] == '3' {
+		return imMediaVoice.String()
+	}
+	// MP3 frame sync (after JPEG so 0xFF 0xD8 is not misclassified)
+	if data[0] == 0xff && (data[1]&0xe0) == 0xe0 {
+		return imMediaVoice.String()
+	}
+	return ""
+}
+
 // HandleGatewayReply dispatches a reply from Hub to the WeChat API.
 func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 	wl := weixin.GetWxLog()
@@ -1131,6 +1311,45 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 // ---------------------------------------------------------------------------
 // App integration — Wails bindings and lifecycle
 // ---------------------------------------------------------------------------
+
+// forwardDesktopFileToIM delivers a file from the desktop AI assistant to the
+// user's IM channels. Prefer the local Weixin gateway (single-machine mode);
+// fall back to Hub proactive file broadcast for multi-machine / Feishu etc.
+func (a *App) forwardDesktopFileToIM(hubClient *RemoteHubClient, b64Data, fileName, mimeType, message string) error {
+	var localErr, hubErr error
+	// Local Weixin first — users on weixin_local often have no Hub IM route.
+	if a != nil {
+		a.ensureWeixinGateway()
+		if a.weixinGateway != nil {
+			localErr = a.weixinGateway.SendProactiveFile(b64Data, fileName, mimeType, message)
+			if localErr == nil {
+				return nil
+			}
+			log.Printf("[IM-forward] local weixin SendProactiveFile failed: %v", localErr)
+		} else {
+			localErr = fmt.Errorf("local weixin gateway unavailable")
+		}
+	}
+	if hubClient != nil {
+		hubErr = hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
+		if hubErr == nil {
+			if localErr != nil {
+				log.Printf("[IM-forward] hub proactive file OK after local failure: %v", localErr)
+			}
+			return nil
+		}
+		log.Printf("[IM-forward] hub SendIMProactiveFile failed: %v", hubErr)
+	} else {
+		hubErr = fmt.Errorf("hub client unavailable")
+	}
+	if localErr != nil && hubErr != nil {
+		return fmt.Errorf("local weixin: %v; hub: %v", localErr, hubErr)
+	}
+	if localErr != nil {
+		return localErr
+	}
+	return hubErr
+}
 
 // ensureWeixinGateway lazily creates the gateway manager and syncs from config.
 // If WeChat is not enabled in config, skips entirely to avoid unnecessary work.

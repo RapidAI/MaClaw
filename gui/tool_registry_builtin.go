@@ -429,15 +429,28 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolListDirectory(args) })
 
-	reg("send_file", "读取本机文件并发送给用户（通过 IM 通道直接发送文件）",
+	reg("send_file", "读取本机文件并在当前桌面对话中展示（默认不转发 IM）",
 		ToolCategoryBuiltin, []string{"file", "send", "share"},
 		map[string]interface{}{
-			"path":      map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
-			"file_name": map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）。工作流交付文档请使用稳定 ASCII 文件名，本地化文本放在文档标题或消息正文中。"},
-			"phase_id":  map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
-			"doc_type":  map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
+			"path":          map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
+			"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）。工作流交付文档请使用稳定 ASCII 文件名，本地化文本放在文档标题或消息正文中。"},
+			"phase_id":      map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
+			"doc_type":      map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
+			"destination":   map[string]string{"type": "string", "description": "chat/desktop 或 im/wechat/feishu/qq/dingtalk 等"},
+			"forward_to_im": map[string]string{"type": "boolean", "description": "是否转发到 IM；发到 IM 更推荐 send_to_im"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolSendFile(args) })
+
+	reg("send_to_im", "把本机文件发送到用户绑定的 IM（微信/飞书/QQ/钉钉）。用户要求发到微信时用本工具",
+		ToolCategoryBuiltin, []string{"file", "send", "share", "wechat", "im", "feishu"},
+		map[string]interface{}{
+			"path":        map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
+			"file_name":   map[string]string{"type": "string", "description": "发送时显示的文件名（可选）"},
+			"destination": map[string]string{"type": "string", "description": "可选：wechat/feishu/qq/dingtalk/im（默认 im）"},
+			"phase_id":    map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
+			"doc_type":    map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
+		}, []string{"path"},
+		func(args map[string]interface{}) string { return h.toolSendToIM(args) })
 
 	reg("open", "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",
 		ToolCategoryBuiltin, []string{"open", "launch", "browse"},

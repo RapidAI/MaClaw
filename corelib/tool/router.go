@@ -103,7 +103,7 @@ var conditionalKeepRules = []conditionalKeepRule{
 	{keepTools: []string{"mis_data"}},
 	{keepTools: []string{"ssh"}},
 	{keepTools: []string{"web_search"}},
-	{keepTools: []string{"send_file", "open"}},
+	{keepTools: []string{"send_file", "send_to_im", "open"}},
 	{keepTools: []string{"craft_tool"}},
 	{keepTools: allBrowserToolNames, noMemoryPin: true},
 	{keepTools: []string{"office"}},

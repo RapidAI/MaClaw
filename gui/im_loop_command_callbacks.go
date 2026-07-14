@@ -240,11 +240,18 @@ func (c *loopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c == nil || c.parent == nil || c.parent.handler == nil {
 		return fmt.Sprintf("Unknown tool: %s", name)
 	}
-	// Delegate to the host's tool implementations.
+	// Show concrete tool details on IM/progress channels (args available here).
+	// Language follows GUI interface language (App.CurrentLanguage).
+	lang := c.parent.handler.imUILang()
+	if c.parent.onProgress != nil {
+		c.parent.onProgress(userFacingToolProgressTextWithArgs(lang, name, argsJSON))
+	}
+	// Delegate to the host's tool implementations; filter internal chatter.
 	policyUserID := c.parent.handler.workflowPolicyUserID(strings.TrimSpace(c.parent.userID))
 	ctx, cancel := c.toolContext()
 	defer cancel()
-	return c.parent.handler.executeToolDetailedWithRuntimeContext(ctx, policyUserID, strings.TrimSpace(policyUserID) != "", "", name, argsJSON, "", nil).Text
+	toolProgress := filteredToolProgressCallback(lang, name, c.parent.onProgress, false)
+	return c.parent.handler.executeToolDetailedWithRuntimeContext(ctx, policyUserID, strings.TrimSpace(policyUserID) != "", "", name, argsJSON, "", toolProgress).Text
 }
 
 func (c *loopCycleCallbacks) toolContext() (context.Context, context.CancelFunc) {
@@ -308,9 +315,9 @@ func (c *loopCycleCallbacks) OnProgress(text string) {
 }
 
 func (c *loopCycleCallbacks) OnToolCall(name string) {
-	if c.parent.onProgress != nil {
-		c.parent.onProgress(fmt.Sprintf("%s", name))
-	}
+	// Intentionally no-op: bare tool names are not useful on IM.
+	// Concrete progress with args is emitted from ExecuteTool.
+	_ = name
 }
 
 func (c *loopCycleCallbacks) OnToolResult(name string) {}

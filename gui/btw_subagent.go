@@ -328,9 +328,16 @@ func (c *btwCallbacks) OnProgress(text string) {
 }
 
 func (c *btwCallbacks) OnToolCall(name string) {
-	if c.subagent.onProgress != nil {
-		c.subagent.onProgress(fmt.Sprintf("%s", name))
+	// No bare tool names on progress — emit a styled, localized status card.
+	// Args are not available on OnToolCall; detail cards come from tool start paths.
+	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
+		return
 	}
+	lang := "zh"
+	if c.subagent.handler != nil {
+		lang = c.subagent.handler.imUILang()
+	}
+	c.subagent.onProgress(userFacingToolProgressText(lang, name))
 }
 
 func (c *btwCallbacks) OnToolResult(name string) {}

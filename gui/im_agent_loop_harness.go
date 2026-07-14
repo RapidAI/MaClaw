@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,8 +87,9 @@ func (h *IMMessageHandler) beginAgentLoopRuntimeState(ctx *LoopContext, userID, 
 		LoopID:    ctx.ID,
 	})
 	harnessState := h.prepareAgentLoopHarnessState(userID, userText)
-	sendProgress := agentLoopProgressSender(onProgress)
-	milestoneTracker, cleanupMilestoneTracker := h.startAgentLoopMilestoneTracker(userID, userText, sendProgress)
+	uiLang := h.imUILang()
+	sendProgress := agentLoopProgressSenderLang(onProgress, uiLang)
+	milestoneTracker, cleanupMilestoneTracker := h.startAgentLoopMilestoneTracker(userID, userText, sendProgress, uiLang)
 	stopHeartbeat := startAgentLoopHeartbeat(sendProgress)
 	cleanup := func() {
 		stopHeartbeat()
@@ -119,14 +121,17 @@ func (h *IMMessageHandler) newAgentLoopDebugFlag() func() bool {
 	return func() bool { return debugEnabled }
 }
 
-func (h *IMMessageHandler) startAgentLoopMilestoneTracker(userID, userText string, sendProgress func(string)) (*progress.AgentProgressTracker, func()) {
+func (h *IMMessageHandler) startAgentLoopMilestoneTracker(userID, userText string, sendProgress func(string), uiLang string) (*progress.AgentProgressTracker, func()) {
 	var taskEmbed []float32
 	if h.interruptHandler != nil {
 		taskEmbed = h.interruptHandler.EmbedText(userText)
 	}
-	tracker := progress.NewAgentProgressTracker(
+	if strings.TrimSpace(uiLang) == "" {
+		uiLang = h.imUILang()
+	}
+	tracker := progress.NewAgentProgressTrackerLang(
 		func(text string) { sendProgress(text) },
-		userText, "", taskEmbed,
+		userText, "", taskEmbed, uiLang,
 	)
 	cleanup := func() {
 		tracker.Stop()
@@ -179,9 +184,17 @@ func startRequestLevelHeartbeat(onProgress func(string)) func() {
 }
 
 func agentLoopProgressSender(onProgress func(string)) func(string) {
+	return agentLoopProgressSenderLang(onProgress, "")
+}
+
+// agentLoopProgressSenderLang wraps progress delivery so intermediate status
+// text is visually distinct from final assistant replies on IM channels.
+// Tool-status cards (【工具】/[Tool]) and heartbeats are left unchanged.
+func agentLoopProgressSenderLang(onProgress func(string), lang string) func(string) {
 	return func(text string) {
-		if onProgress != nil {
-			onProgress(text)
+		if onProgress == nil {
+			return
 		}
+		onProgress(styleIMIntermediateProgress(lang, text))
 	}
 }

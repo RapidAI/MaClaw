@@ -1,7 +1,10 @@
 package progress
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 func TestExtractMilestone_SilentTools(t *testing.T) {
@@ -34,8 +37,9 @@ func TestExtractMilestone_StaticTool(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected milestone for generate_pdf")
 	}
-	if m.Summary != "生成 PDF 文档" {
-		t.Fatalf("expected '生成 PDF 文档', got %q", m.Summary)
+	want := i18n.T(i18n.MsgToolActionGeneratePDF, "zh")
+	if m.Summary != want {
+		t.Fatalf("expected %q, got %q", want, m.Summary)
 	}
 	if m.Phase != "generating" {
 		t.Fatalf("expected phase 'generating', got %q", m.Phase)
@@ -47,8 +51,40 @@ func TestExtractMilestone_WithArgs(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected milestone for web_search")
 	}
-	if m.Summary != "搜索: 杭州天气" {
-		t.Fatalf("expected '搜索: 杭州天气', got %q", m.Summary)
+	want := i18n.T(i18n.MsgToolActionWebSearch, "zh") + ": 杭州天气"
+	if m.Summary != want {
+		t.Fatalf("expected %q, got %q", want, m.Summary)
+	}
+}
+
+func TestExtractMilestone_RunSkillAlternateKeys(t *testing.T) {
+	m := ExtractMilestone("run_skill", map[string]any{"skill_name": "docx-writer"}, true)
+	if m == nil {
+		t.Fatal("expected milestone for skill_name key")
+	}
+	if !strings.Contains(m.Summary, "docx-writer") {
+		t.Fatalf("expected skill name in summary, got %q", m.Summary)
+	}
+}
+
+func TestExtractMilestone_NormalizesToolName(t *testing.T) {
+	m := ExtractMilestone(" Web_Search ", map[string]any{"query": "x"}, true)
+	if m == nil {
+		t.Fatal("expected milestone for mixed-case tool name")
+	}
+}
+
+func TestExtractMilestone_English(t *testing.T) {
+	m := ExtractMilestoneLang("web_search", map[string]any{"query": "weather"}, true, "en")
+	if m == nil {
+		t.Fatal("expected milestone")
+	}
+	want := i18n.T(i18n.MsgToolActionWebSearch, "en") + ": weather"
+	if m.Summary != want {
+		t.Fatalf("expected %q, got %q", want, m.Summary)
+	}
+	if stringsContainsHan(m.Summary) {
+		t.Fatalf("English milestone should not contain Chinese: %q", m.Summary)
 	}
 }
 
@@ -58,10 +94,9 @@ func TestExtractMilestone_ArgTruncation(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected milestone")
 	}
-	// Should be truncated to 30 runes + "..."
+	// Verb + ": " + 30 runes + "..." should stay bounded.
 	runes := []rune(m.Summary)
-	// "搜索: " is 4 runes, then 30 runes of content, then "..."
-	if len(runes) > 40 {
+	if len(runes) > 50 {
 		t.Fatalf("summary too long (%d runes): %q", len(runes), m.Summary)
 	}
 }
@@ -72,9 +107,9 @@ func TestExtractMilestone_SSHActions(t *testing.T) {
 		host     string
 		expected string
 	}{
-		{"connect", "api.example.com", "连接服务器 api.example.com"},
-		{"exec", "", "服务器执行: ls -la"},
-		{"close", "", "断开服务器连接"},
+		{"connect", "api.example.com", i18n.T(i18n.MsgToolActionSSHConnect, "zh") + " api.example.com"},
+		{"exec", "", i18n.T(i18n.MsgToolActionSSHExec, "zh") + ": ls -la"},
+		{"close", "", i18n.T(i18n.MsgToolActionSSHClose, "zh")},
 	}
 
 	for _, tt := range tests {
@@ -101,8 +136,9 @@ func TestExtractMilestone_MissingArgs(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected milestone even with missing args")
 	}
-	if m.Summary != "生成..." {
-		t.Fatalf("expected '生成...', got %q", m.Summary)
+	want := i18n.Tf(i18n.MsgMilestoneVerbEllipsis, "zh", i18n.T(i18n.MsgToolActionWriteFile, "zh"))
+	if m.Summary != want {
+		t.Fatalf("expected %q, got %q", want, m.Summary)
 	}
 }
 
@@ -153,6 +189,17 @@ func TestMergeMilestones(t *testing.T) {
 	}
 }
 
+func TestMergeMilestonesLang_English(t *testing.T) {
+	got := MergeMilestonesLang("en", []Milestone{{Summary: "Web search: weather", Completed: false}})
+	want := i18n.Tf(i18n.MsgMilestoneWorking, "en", "Web search: weather")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if stringsContainsHan(got) {
+		t.Fatalf("English merge should not contain Chinese: %q", got)
+	}
+}
+
 func TestIsSilentTool(t *testing.T) {
 	if !IsSilentTool("read_file") {
 		t.Error("read_file should be silent")
@@ -163,4 +210,13 @@ func TestIsSilentTool(t *testing.T) {
 	if IsSilentTool("web_search") {
 		t.Error("web_search should not be silent")
 	}
+}
+
+func stringsContainsHan(s string) bool {
+	for _, r := range s {
+		if r >= 0x4e00 && r <= 0x9fff {
+			return true
+		}
+	}
+	return false
 }

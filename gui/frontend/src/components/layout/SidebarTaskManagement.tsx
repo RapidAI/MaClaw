@@ -337,22 +337,6 @@ const normalizeTaskCommandInput = (value?: string | null) => {
     return trimmed.slice(0, CODING_TASK_COMMAND_MAX_LEN);
 };
 
-/** After welcome templates prefill the command, select the first [placeholder] for quick edit. */
-function selectFirstTaskCommandPlaceholder() {
-    const el = document.getElementById(TASK_COMMAND_INPUT_ID) as HTMLTextAreaElement | null;
-    if (!el) return;
-    el.focus();
-    const text = el.value || '';
-    const open = text.indexOf('[');
-    const close = open >= 0 ? text.indexOf(']', open) : -1;
-    if (open >= 0 && close > open) {
-        el.selectionStart = open;
-        el.selectionEnd = close + 1;
-    } else {
-        el.selectionStart = text.length;
-        el.selectionEnd = text.length;
-    }
-}
 
 export const SidebarTaskManagement = ({
     lang,
@@ -504,12 +488,7 @@ export const SidebarTaskManagement = ({
         selectPlaceholderTimerRef.current = setTimeout(() => {
             selectPlaceholderTimerRef.current = null;
             if (!mountedRef.current || selectPlaceholderGenRef.current !== gen) return;
-            // Prefer first [placeholder] in the command when present (welcome raw templates).
-            if (name.includes('[')) {
-                selectFirstTaskCommandPlaceholder();
-                return;
-            }
-            // Params already filled: jump to first empty env field for coding modes.
+            // Welcome param dialog fills the command before open; jump to empty env fields.
             if (mode === 'remote_coding_dev') {
                 const ids = ['task-remote-host', 'task-remote-user', 'task-remote-password', 'task-remote-workdir'] as const;
                 for (const id of ids) {

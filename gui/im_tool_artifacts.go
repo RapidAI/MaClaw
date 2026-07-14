@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -145,7 +146,7 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 	for _, pf := range pendingFiles {
 		filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 		if err != nil {
-			failLines = append(failLines, fmt.Sprintf("Failed to save %s: %s", pf.name, err.Error()))
+			failLines = append(failLines, fmt.Sprintf("保存 %s 失败：%s", pf.name, err.Error()))
 			continue
 		}
 		savedPaths = append(savedPaths, filePath)
@@ -156,12 +157,12 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 			continue
 		}
 		if h.imFileSender == nil {
-			failLines = append(failLines, fmt.Sprintf("Could not forward %s to IM: sender is not configured", pf.name))
+			failLines = append(failLines, fmt.Sprintf("无法转发 %s 到 IM：发送器未配置（请确认微信/飞书已登录）", pf.name))
 			continue
 		}
 		if err := h.imFileSender(pf.data, pf.name, pf.mimeType, pf.message); err != nil {
 			log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
-			failLines = append(failLines, fmt.Sprintf("Could not forward %s to IM: %s", pf.name, err.Error()))
+			failLines = append(failLines, fmt.Sprintf("无法转发 %s 到微信/IM：%s", pf.name, err.Error()))
 			continue
 		}
 		imForwardedCount++
@@ -171,11 +172,19 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 		text = deliveryMessage
 	}
 	if imForwardedCount > 0 {
-		imNote := fmt.Sprintf("Forwarded %d file(s) to IM.", imForwardedCount)
+		imNote := fmt.Sprintf("已向微信/IM 转发 %d 个文件。", imForwardedCount)
 		if text != "" {
 			text = imNote + "\n" + text
 		} else {
 			text = imNote
+		}
+	}
+	// Desktop-only stage with no caption: still give the model/UI a clear status.
+	if strings.TrimSpace(text) == "" && len(savedPaths) > 0 && imForwardedCount == 0 {
+		if len(savedPaths) == 1 {
+			text = fmt.Sprintf("文件已在当前对话中准备好：%s（未转发到微信/IM；若需发送请用 send_to_im）。", filepath.Base(savedPaths[0]))
+		} else {
+			text = fmt.Sprintf("已在当前对话中准备好 %d 个文件（未转发到微信/IM；若需发送请用 send_to_im）。", len(savedPaths))
 		}
 	}
 	resp.Text = text

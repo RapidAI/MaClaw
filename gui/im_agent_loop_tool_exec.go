@@ -352,15 +352,12 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			}
 		}
 
-		// Track files delivered via send_file during workflow agent loops.
-		// This covers the case where LLM creates a file via bash (heredoc/Python)
-		// and then delivers it via send_file. The file path from send_file args
-		// is the definitive "this is the phase output" signal — regardless of how
-		// the file was created. This is a generic mechanism: any tool path that
-		// produces a deliverable document contributes to phase output capture.
+		// Track files delivered via send_file / send_to_im during workflow agent loops.
+		// Covers: LLM creates a file via bash then delivers it. Path from tool args
+		// is the definitive "this is the phase output" signal.
 		if opts.Context != nil && opts.Context.WorkflowAgentLoop &&
 			execResult.Outcome == toolOutcomeSucceeded &&
-			strings.TrimSpace(tc.Function.Name) == "send_file" {
+			isSendFileFamilyTool(tc.Function.Name) {
 			if sentPath := extractSendFileResolvedPath(tc, h, opts.Context); sentPath != "" {
 				appendWorkflowWrittenFile(opts.Context, sentPath)
 			}

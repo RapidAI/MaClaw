@@ -1,6 +1,6 @@
 package main
 
-// Local tools: bash, read_file, write_file, list_directory, send_file, open.
+// Local tools: bash, read_file, write_file, list_directory, send_file, send_to_im, open.
 // These operate directly on the host machine without a coding session.
 
 import (
@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"mime"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -709,7 +710,7 @@ const sendFileMaxSize = 200 << 20 // 200 MB — large files are handled by plugi
 func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
 	if hasRuntimeOwner && ownerID == "" {
-		return "send_file failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+		return "file delivery failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
 	}
 	p, _ := args["path"].(string)
 	if p == "" {
@@ -742,15 +743,30 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	}
 	fileName = workflowDocDeliveryFileNameWithFallbackExt(fileName, args, filepath.Ext(absPath))
 
-	mimeType := mime.TypeByExtension(filepath.Ext(absPath))
+	// Prefer display-name extension, then source path, then content sniff.
+	// Screenshots often arrive as application/octet-stream without a reliable ext.
+	mimeType := mime.TypeByExtension(filepath.Ext(fileName))
+	if mimeType == "" {
+		mimeType = mime.TypeByExtension(filepath.Ext(absPath))
+	}
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		if sniffed := http.DetectContentType(data); sniffed != "" && sniffed != "application/octet-stream" {
+			// DetectContentType may append "; charset=utf-8" — keep the media type only.
+			if semi := strings.IndexByte(sniffed, ';'); semi > 0 {
+				sniffed = strings.TrimSpace(sniffed[:semi])
+			}
+			mimeType = sniffed
+		}
+	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(data)
 
-	// Check if the caller wants to forward the file to IM channels.
-	forwardIM, _ := args["forward_to_im"].(bool)
+	// Structured control only: forward_to_im and/or destination enum.
+	// No free-text keyword guessing on the user message.
+	forwardIM := applySendFileForwardArgs(args)
 	if forwardIM {
 		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
 			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, msgFlag, b64)
@@ -760,6 +776,16 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	}
 	// Use | as delimiter to avoid conflicts with : in filenames or MIME types.
 	return fmt.Sprintf("[file_base64|%s|%s]%s", fileName, mimeType, b64)
+}
+
+// toolSendToIM always delivers via IM (WeChat/Feishu/etc). Prefer this over
+// send_file when the user asked to push a file off the desktop.
+func (h *IMMessageHandler) toolSendToIM(args map[string]interface{}) string {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	forceSendFileToIMArgs(args)
+	return h.toolSendFile(args)
 }
 
 func (h *IMMessageHandler) toolOpen(args map[string]interface{}) string {

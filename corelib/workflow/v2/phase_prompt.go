@@ -454,7 +454,8 @@ func phaseInstructionHasOwnArtifactGuidance(workflowType WorkflowType, phaseID s
 	// If the instruction mentions both a tool-invocation method AND a delivery method,
 	// it has its own artifact generation guidance.
 	hasToolChain := strings.Contains(lower, "manage_skill") || strings.Contains(lower, "craft_tool")
-	hasDelivery := strings.Contains(lower, "send_file") || strings.Contains(lower, ".pptx") || strings.Contains(lower, ".docx")
+	hasDelivery := strings.Contains(lower, "send_file") || strings.Contains(lower, "send_to_im") ||
+		strings.Contains(lower, ".pptx") || strings.Contains(lower, ".docx")
 	return hasToolChain && hasDelivery
 }
 
@@ -473,7 +474,7 @@ func genericArtifactGenerationGuidance(phase *Phase) string {
 - 如果合适的 Skill 不存在或不可用，先用 search_and_install_skill 搜索/安装。
 - 如果仍不可用，使用 craft_tool 创建本次任务所需的生成工具，再调用该工具生成文件。
 - 工具参数保持结构化和简洁，避免把超长全文塞进单个 JSON 字符串导致工具调用截断。
-- 成功后必须调用 send_file 发送最终文件；预览 PDF 或中间文件只能作为附加物，不能替代主交付物。
+- 成功后必须调用 send_file（桌面展示）或 send_to_im（发到微信/飞书等 IM）发送最终文件；预览 PDF 或中间文件只能作为附加物，不能替代主交付物。
 - 只有在已有 Skill、安装 Skill、craft_tool 自建工具都明确失败时，才说明失败原因，并列出真实尝试结果。
 
 禁止事项：
@@ -778,7 +779,7 @@ title: 第2页标题
 - 如果 Skill 也不可用，按上面「分步写入」模式手动创建脚本生成 .pptx。
 - 输出文件名使用清晰的 ASCII 或安全中文文件名，扩展名必须是 .pptx。
 - 如果工具返回 run_id，使用对应 status 动作轮询直到 completed/failed。
-- 成功后调用 send_file 发送生成的 .pptx 文件。
+- 成功后调用 send_file（桌面）或 send_to_im（发到微信/飞书）发送生成的 .pptx 文件。
 - 只有在已有 Skill、安装 Skill、手动脚本生成都明确失败时，才说明失败原因。
 
 禁止事项：

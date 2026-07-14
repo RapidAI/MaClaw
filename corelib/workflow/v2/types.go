@@ -149,6 +149,7 @@ var DocOnlyAllowedTools = map[string]bool{
 	"generate_pdf":             true,
 	"office":                   true,
 	"send_file":                true,
+	"send_to_im":               true,
 	"web_search":               true,
 	"web_fetch":                true,
 	"open":                     true,
@@ -169,6 +170,7 @@ var PlanningAllowedTools = map[string]bool{
 	"list_directory":           true,
 	"memory":                   true,
 	"send_file":                true,
+	"send_to_im":               true,
 	"web_search":               true,
 	"web_fetch":                true,
 	"open":                     true,
@@ -191,6 +193,7 @@ var OpsControlledAllowedTools = map[string]bool{
 	"memory":         true,
 	"async_wait":     true,
 	"send_file":      true,
+	"send_to_im":     true,
 	"web_search":     true,
 	"web_fetch":      true,
 	"set_nickname":   true,
@@ -270,9 +273,9 @@ func RequiredToolNamesForPolicy(policy ToolFilterPolicy) []string {
 	case ToolPolicyFull:
 		return []string{"bash", "read_file", "list_directory", "write_file", "edit_file"}
 	case ToolPolicyDocOnly:
-		return []string{"bash", "read_file", "list_directory", "send_file"}
+		return []string{"bash", "read_file", "list_directory", "send_file", "send_to_im"}
 	case ToolPolicyPlanning:
-		return []string{"read_file", "list_directory", "write_file", "send_file"}
+		return []string{"read_file", "list_directory", "write_file", "send_file", "send_to_im"}
 	case ToolPolicyOpsControlled:
 		return []string{"bash", "ssh", "read_file", "list_directory"}
 	default:

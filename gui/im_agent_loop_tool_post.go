@@ -99,6 +99,15 @@ func (h *IMMessageHandler) handleAgentLoopPostToolBranch(opts agentLoopPostToolB
 		result.PostStreamReturnPrepTime = true
 	}
 	if fileArtifactResult.Response != nil {
+		// File delivery short-circuits the loop; keep any assistant text from
+		// this turn so the user still sees the explanation plus forward status.
+		if msg := strings.TrimSpace(stripThinkingTags(opts.MessageContent)); msg != "" {
+			if existing := strings.TrimSpace(fileArtifactResult.Response.Text); existing != "" {
+				fileArtifactResult.Response.Text = msg + "\n\n" + existing
+			} else {
+				fileArtifactResult.Response.Text = msg
+			}
+		}
 		result.Response = fileArtifactResult.Response
 		return result
 	}

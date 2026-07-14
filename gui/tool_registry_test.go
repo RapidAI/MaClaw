@@ -169,7 +169,7 @@ func TestRegisterBuiltinToolsExposeWorkflowDocMetadata(t *testing.T) {
 	r := NewToolRegistry()
 	registerBuiltinTools(r, &IMMessageHandler{})
 
-	for _, toolName := range []string{"write_file", "send_file", "office", "generate_pdf"} {
+	for _, toolName := range []string{"write_file", "send_file", "send_to_im", "office", "generate_pdf"} {
 		tool, ok := r.Get(toolName)
 		if !ok {
 			t.Fatalf("%s tool is not registered", toolName)
@@ -230,6 +230,8 @@ func TestRegisterBuiltinToolsWorkflowDocMetadataDescriptions(t *testing.T) {
 	assertRegistrySchemaDescription(t, r, "write_file", "doc_type", workflowDocTypeSchemaDescription())
 	assertRegistrySchemaDescription(t, r, "send_file", "phase_id", workflowDocDeliveryPhaseIDSchemaDescription())
 	assertRegistrySchemaDescription(t, r, "send_file", "doc_type", workflowDocDeliveryTypeSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "send_to_im", "phase_id", workflowDocDeliveryPhaseIDSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "send_to_im", "doc_type", workflowDocDeliveryTypeSchemaDescription())
 	assertRegistrySchemaDescription(t, r, "office", "phase_id", workflowDocGeneratePDFPhaseIDSchemaDescription())
 	assertRegistrySchemaDescription(t, r, "generate_pdf", "phase_id", workflowDocGeneratePDFPhaseIDSchemaDescription())
 }

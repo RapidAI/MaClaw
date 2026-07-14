@@ -24,8 +24,6 @@ import (
 	"unsafe"
 )
 
-const lockUniqueID = "maclaw-lock"
-
 // cleanStaleLock removes the Wails SingleInstanceLock file if the owning
 // process is no longer alive.  This prevents the "silent exit" problem where
 // a previous crash leaves a lock file behind and every subsequent launch
@@ -41,7 +39,8 @@ func cleanStaleLock() {
 	tempDir := C.GoString(cDir)
 	C.free(unsafe.Pointer(cDir))
 
-	lockPath := filepath.Join(tempDir, lockUniqueID+".lock")
+	// Must match SingleInstanceLock.UniqueId in main.go (brand-scoped).
+	lockPath := filepath.Join(tempDir, singleInstanceUniqueID()+".lock")
 
 	f, err := os.OpenFile(lockPath, os.O_WRONLY, 0o600)
 	if err != nil {
@@ -59,7 +58,6 @@ func cleanStaleLock() {
 	}
 
 	// We got the lock, meaning the previous owner is gone. Release, close, and remove.
-	// NOTE: lockUniqueID must match SingleInstanceLock.UniqueId in main.go.
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	f.Close()
 	if err := os.Remove(lockPath); err == nil {

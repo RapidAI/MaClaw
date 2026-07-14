@@ -1,8 +1,11 @@
 package progress
 
 import (
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // TaskComplexity classifies the expected duration of a task.
@@ -51,25 +54,39 @@ type ProgressPusher struct {
 	buffer     *MilestoneBuffer
 	pushFn     PushFunc
 	complexity TaskComplexity
+	lang       string // GUI UI language for localized status text
 
 	// State tracking.
-	ackSent        bool      // whether the initial acknowledgment was sent
-	lastPushTime   time.Time // last time a progress message was pushed
+	ackSent        bool        // whether the initial acknowledgment was sent
+	lastPushTime   time.Time   // last time a progress message was pushed
 	pendingMerge   []Milestone // milestones waiting in the merge window
-	heartbeatCount int       // number of heartbeats sent
-	silenced       bool      // true after maxHeartbeats — no more messages
+	heartbeatCount int         // number of heartbeats sent
+	silenced       bool        // true after maxHeartbeats — no more messages
 
 	// For light→medium upgrade detection.
 	upgraded bool
 }
 
 // NewProgressPusher creates a pusher for the given task complexity.
-func NewProgressPusher(buffer *MilestoneBuffer, pushFn PushFunc, complexity TaskComplexity) *ProgressPusher {
+// lang is the GUI interface language (zh/en/zh-Hans/…); empty defaults to zh.
+func NewProgressPusher(buffer *MilestoneBuffer, pushFn PushFunc, complexity TaskComplexity, lang string) *ProgressPusher {
+	if strings.TrimSpace(lang) == "" {
+		lang = "zh"
+	}
 	return &ProgressPusher{
 		buffer:     buffer,
 		pushFn:     pushFn,
 		complexity: complexity,
+		lang:       lang,
 	}
+}
+
+func (p *ProgressPusher) t(key string) string {
+	return i18n.T(key, p.lang)
+}
+
+func (p *ProgressPusher) tf(key string, args ...interface{}) string {
+	return i18n.Tf(key, p.lang, args...)
 }
 
 // OnMilestone is called each time a new milestone is recorded in the buffer.
@@ -90,7 +107,7 @@ func (p *ProgressPusher) OnMilestone(m Milestone) {
 	// Layer 1: instant acknowledgment (once).
 	if !p.ackSent && p.complexity != ComplexityLight {
 		p.ackSent = true
-		p.pushFn("收到，正在处理")
+		p.pushFn(p.t(i18n.MsgProgressAck))
 		p.lastPushTime = time.Now()
 	}
 
@@ -125,7 +142,7 @@ func (p *ProgressPusher) Tick() {
 			p.complexity = ComplexityMedium
 			if !p.ackSent {
 				p.ackSent = true
-				p.pushFn("收到，正在处理")
+				p.pushFn(p.t(i18n.MsgProgressAck))
 				p.lastPushTime = time.Now()
 			}
 		}
@@ -168,7 +185,7 @@ func (p *ProgressPusher) flushMergeWindow() {
 		return
 	}
 
-	msg := MergeMilestones(p.pendingMerge)
+	msg := MergeMilestonesLang(p.lang, p.pendingMerge)
 	p.pendingMerge = p.pendingMerge[:0]
 
 	if msg != "" {
@@ -183,13 +200,13 @@ func (p *ProgressPusher) sendHeartbeat() {
 	p.heartbeatCount++
 
 	if p.heartbeatCount > maxHeartbeats {
-		p.pushFn("任务耗时较长，完成后会立即通知你。")
+		p.pushFn(p.t(i18n.MsgProgressLongTask))
 		p.silenced = true
 		return
 	}
 
-	summary := p.buffer.ProgressSummary()
-	p.pushFn("仍在执行中，" + summary)
+	summary := p.buffer.ProgressSummaryLang(p.lang)
+	p.pushFn(p.tf(i18n.MsgProgressStillWorking, summary))
 	p.lastPushTime = time.Now()
 }
 

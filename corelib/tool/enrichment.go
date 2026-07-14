@@ -319,9 +319,14 @@ Typical usage: Generate and execute a single local script for data processing, A
 Typical usage: Get a recommendation for which coding tool fits a task best`,
 
 	"send_file": `Parameters:
-- path (string, required): Local file path to send
-- caption (string, optional): Message to accompany the file
-Typical usage: Share a file with the user in the chat`,
+- path (string, required): Local file path to show in the current chat
+- destination / forward_to_im (optional): set only if also forwarding to IM
+Typical usage: Attach a file in the desktop chat (not WeChat by default)`,
+
+	"send_to_im": `Parameters:
+- path (string, required): Local file path to send to bound IM (WeChat/Feishu/etc)
+- destination (string, optional): wechat/feishu/qq/dingtalk/im
+Typical usage: User asked to send a file to WeChat or other IM`,
 
 	"set_nickname": `Parameters:
 - nickname (string, required): New display name to set
@@ -498,6 +503,14 @@ var BuiltinEnrichments = map[string][]string{
 		"发送文件",
 		"deliver this file",
 		"upload file to chat",
+	},
+	"send_to_im": {
+		"send file to wechat",
+		"发到微信",
+		"发送到飞书",
+		"forward file to im",
+		"push file to wechat",
+		"放到微信",
 	},
 	"set_nickname": {
 		"change my nickname",

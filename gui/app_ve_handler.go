@@ -828,8 +828,8 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		// veConfigUnblockedTools are allowed through (execution-layer path
 		// validation enforces directory scoping below).
 		if !(len(allowedDirs) > 0 && veConfigUnblockedTools[name]) {
-			if name == "send_file" && len(allowedDirs) == 0 {
-				return "[error] send_file is unavailable because no allowed access directories are configured. Add a directory in Settings > Digital Employee > Allowed Access Directories first."
+			if (name == "send_file" || name == "send_to_im") && len(allowedDirs) == 0 {
+				return fmt.Sprintf("[error] %s is unavailable because no allowed access directories are configured. Add a directory in Settings > Digital Employee > Allowed Access Directories first.", name)
 			}
 			return fmt.Sprintf("[error] tool %s is unavailable in digital employee mode (safety policy)", name)
 		}
@@ -878,7 +878,7 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	// ---------------------------------------------------------------------------
 
 	switch name {
-	case "send_file":
+	case "send_file", "send_to_im":
 		path, _ := args["path"].(string)
 		// Steps 2-3: empty path + directory containment check (also returns FileInfo to avoid double stat)
 		canonicalPath, info, err := ValidateVEFilePathWithInfo(path, allowedDirs)
@@ -896,7 +896,7 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 		}
 		// Step 6: Upload to Hub relay and emit a real A2A attachment message.
 		if c.app == nil || strings.TrimSpace(c.sessionID) == "" {
-			return "[error] send_file handler unavailable"
+			return fmt.Sprintf("[error] %s handler unavailable", name)
 		}
 		displayName, _ := args["file_name"].(string)
 		message, _ := args["message"].(string)
@@ -904,7 +904,7 @@ func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 			message = fmt.Sprintf("已发送文件：%s", firstNonEmptyGroupString(displayName, filepath.Base(canonicalPath)))
 		}
 		if err := c.app.sendVEFileAttachmentMessage(c.sessionID, canonicalPath, displayName, message); err != nil {
-			return fmt.Sprintf("[error] send_file failed: %v", err)
+			return fmt.Sprintf("[error] %s failed: %v", name, err)
 		}
 		return fmt.Sprintf("File %s has been sent to the user.", filepath.Base(canonicalPath))
 

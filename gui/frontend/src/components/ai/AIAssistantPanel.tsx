@@ -3184,27 +3184,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setWelcomeTemplateOffer(null);
     }, [activeTab.id]);
     const handleWelcomePromptSelect = useCallback((text: string, _meta?: WelcomePromptSubmitMeta) => {
-        // Scenario templates are free-form prompts, not slash-command arguments.
+        // Filled prompts from WelcomePromptParamDialog — free-form text, not slash commands.
         setComposeAction(null);
         setWelcomeTemplateOffer(null);
         updateInputValue(text);
         requestAnimationFrame(() => {
             if (inputRef.current) {
                 inputRef.current.focus();
-                // Auto-grow textarea height to fit multi-line template
                 inputRef.current.style.height = "auto";
                 inputRef.current.style.height = inputRef.current.scrollHeight + "px";
-                // Select the first [placeholder] so user can immediately type the value
-                const firstBracket = text.indexOf('[');
-                const closeBracket = text.indexOf(']', firstBracket);
-                if (firstBracket >= 0 && closeBracket > firstBracket) {
-                    inputRef.current.selectionStart = firstBracket;
-                    inputRef.current.selectionEnd = closeBracket + 1;
-                } else {
-                    // No placeholder — move cursor to end
-                    inputRef.current.selectionStart = text.length;
-                    inputRef.current.selectionEnd = text.length;
-                }
+                // Params are already filled in the dialog; place caret at end for review/send.
+                inputRef.current.selectionStart = text.length;
+                inputRef.current.selectionEnd = text.length;
             }
         });
     }, [updateInputValue, inputRef]);

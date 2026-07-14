@@ -897,7 +897,8 @@ func ToolSendFile(args map[string]interface{}) string {
 
 	b64 := base64.StdEncoding.EncodeToString(data)
 
-	forwardIM, _ := args["forward_to_im"].(bool)
+	// Structured only: destination enum and/or forward_to_im flag (no free-text NLP).
+	forwardIM := resolveToolSendFileForward(args)
 	if forwardIM {
 		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
 			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, msgFlag, b64)
@@ -977,10 +978,87 @@ func boolArg(args map[string]interface{}, key string, fallback bool) bool {
 	if args == nil {
 		return fallback
 	}
-	if v, ok := args[key].(bool); ok {
-		return v
+	v, exists := args[key]
+	if !exists || v == nil {
+		return fallback
+	}
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		s := strings.ToLower(strings.TrimSpace(t))
+		if s == "1" || s == "true" || s == "yes" || s == "on" {
+			return true
+		}
+		if s == "0" || s == "false" || s == "no" || s == "off" {
+			return false
+		}
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
 	}
 	return fallback
+}
+
+// resolveToolSendFileForward uses structured tool args only (destination /
+// forward_to_im). No free-text keyword matching on the user message.
+func resolveToolSendFileForward(args map[string]interface{}) bool {
+	if args == nil {
+		return false
+	}
+	if raw, ok := args["destination"]; ok && raw != nil {
+		if s, isStr := raw.(string); isStr {
+			switch destKind := agentSendFileDestinationKind(s); destKind {
+			case agentSendFileDestIM:
+				return true
+			case agentSendFileDestDesktop:
+				return false
+			}
+		}
+	}
+	return boolArg(args, "forward_to_im", false)
+}
+
+type agentSendFileDestKind int
+
+const (
+	agentSendFileDestUnknown agentSendFileDestKind = iota
+	agentSendFileDestIM
+	agentSendFileDestDesktop
+)
+
+func agentSendFileDestinationKind(dest string) agentSendFileDestKind {
+	d := strings.ToLower(strings.TrimSpace(dest))
+	raw := strings.TrimSpace(dest)
+	switch d {
+	case "im", "wechat", "weixin", "wx", "feishu", "lark", "qq",
+		"dingtalk", "ding", "telegram", "tg":
+		return agentSendFileDestIM
+	case "chat", "desktop", "local", "ui", "assistant":
+		return agentSendFileDestDesktop
+	}
+	switch raw {
+	case "微信", "飞书", "钉钉", "企微", "企业微信":
+		return agentSendFileDestIM
+	case "桌面", "对话", "当前对话":
+		return agentSendFileDestDesktop
+	default:
+		return agentSendFileDestUnknown
+	}
+}
+
+// ToolSendToIM is send_file with IM delivery forced by tool name.
+func ToolSendToIM(args map[string]interface{}) string {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	args["forward_to_im"] = true
+	// Tool name wins over missing/desktop/unknown destination.
+	if agentSendFileDestinationKind(StringArg(args, "destination")) != agentSendFileDestIM {
+		args["destination"] = "im"
+	}
+	return ToolSendFile(args)
 }
 
 func resolveSearchBase(path string) (string, error) {

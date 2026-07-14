@@ -401,6 +401,56 @@ func (c *contextTokenCache) Get(userID string) string {
 	return ""
 }
 
+// Snapshot returns a copy of userID → contextToken for all cached users.
+// Used for proactive desktop→WeChat file delivery when the request is not
+// bound to a single inbound message.
+func (c *contextTokenCache) Snapshot() map[string]string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.tokens) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(c.tokens))
+	for userID, e := range c.tokens {
+		if token := strings.TrimSpace(e.token); token != "" && strings.TrimSpace(userID) != "" {
+			out[userID] = token
+		}
+	}
+	return out
+}
+
+// ListByRecency returns (userID, token) pairs newest-first.
+func (c *contextTokenCache) ListByRecency() [][2]string {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	type item struct {
+		uid, tok string
+		at       time.Time
+	}
+	items := make([]item, 0, len(c.tokens))
+	for uid, e := range c.tokens {
+		tok := strings.TrimSpace(e.token)
+		if tok == "" || strings.TrimSpace(uid) == "" {
+			continue
+		}
+		items = append(items, item{uid: uid, tok: tok, at: e.updated})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].at.After(items[j].at)
+	})
+	out := make([][2]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, [2]string{it.uid, it.tok})
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Gateway
 // ---------------------------------------------------------------------------
@@ -652,6 +702,22 @@ func (g *Gateway) IsRunning() bool {
 // GetContextToken returns the cached context token for a user.
 func (g *Gateway) GetContextToken(userID string) string {
 	return g.ctxTokens.Get(userID)
+}
+
+// SnapshotContextTokens returns userID → contextToken for all cached sessions.
+func (g *Gateway) SnapshotContextTokens() map[string]string {
+	if g == nil || g.ctxTokens == nil {
+		return nil
+	}
+	return g.ctxTokens.Snapshot()
+}
+
+// ContextSessionsByRecency returns (userID, contextToken) newest-first.
+func (g *Gateway) ContextSessionsByRecency() [][2]string {
+	if g == nil || g.ctxTokens == nil {
+		return nil
+	}
+	return g.ctxTokens.ListByRecency()
 }
 
 // LastActiveUserID returns the most recent user who sent a message.

@@ -466,8 +466,6 @@ export function saveWelcomeCloudRevision(revision: string): void {
 }
 
 export const WELCOME_SCENARIO_TAB_KEY = "maclaw:welcome-scenario-tab";
-/** Older industry-tab key still read when packing a full backup. */
-const WELCOME_SCENARIO_TAB_LEGACY_KEY = "maclaw:welcome-industry-tab";
 
 /** Portable export shape (template ids are regenerated on import). */
 export type WelcomeTemplatesExportPayload = {
@@ -637,11 +635,10 @@ export function buildWelcomeTemplatesExport(
         payload.userRole = options?.userRole ?? loadWelcomeUserRole();
         payload.recent = normalizeExportRecent(options?.recent ?? loadWelcomeRecentEntries());
         try {
-            const tab =
-                options?.lastScenarioTab
-                ?? localStorage.getItem(WELCOME_SCENARIO_TAB_KEY)
-                ?? localStorage.getItem(WELCOME_SCENARIO_TAB_LEGACY_KEY);
+            const tab = options?.lastScenarioTab ?? localStorage.getItem(WELCOME_SCENARIO_TAB_KEY);
             if (tab) payload.lastScenarioTab = tab;
+            // Drop retired pre-scenario key if still present on this profile.
+            localStorage.removeItem("maclaw:welcome-industry-tab");
         } catch { /* ignore */ }
     }
     return payload;

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -30,7 +31,8 @@ func (h *IMMessageHandler) saveScreenshotToFile(base64Data string) (string, erro
 }
 
 // saveFileDataToLocal saves base64-encoded file data to ~/.maclaw/data/files/
-// and returns the absolute file path.
+// and returns the absolute file path. If the display name already exists, a
+// unique suffix is added so concurrent/repeated deliveries do not overwrite.
 func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string, error) {
 	dir := filepath.Join(corelib.MaclawDataDir(), "files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -43,8 +45,8 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 	if name == "." || name == ".." || name == string(filepath.Separator) {
 		name = fmt.Sprintf("file_%s_%d", time.Now().Format("20060102_150405"), time.Now().UnixMilli()%1000)
 	}
-	filePath := filepath.Join(dir, name)
-	decoded, err := base64.StdEncoding.DecodeString(base64Data)
+	filePath := uniqueLocalDeliveryPath(dir, name)
+	decoded, err := decodeToolPayloadBase64(base64Data)
 	if err != nil {
 		return "", fmt.Errorf("base64 decode failed: %w", err)
 	}
@@ -52,4 +54,25 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 		return "", fmt.Errorf("write file failed: %w", err)
 	}
 	return filePath, nil
+}
+
+// uniqueLocalDeliveryPath returns dir/name, or a suffixed path if name already exists.
+func uniqueLocalDeliveryPath(dir, name string) string {
+	filePath := filepath.Join(dir, name)
+	if _, err := os.Stat(filePath); err != nil {
+		return filePath
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	if base == "" {
+		base = "file"
+	}
+	for i := 0; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s_%s_%03d%s", base, time.Now().Format("150405"), (time.Now().UnixMilli()+int64(i))%1000, ext)
+		filePath = filepath.Join(dir, candidate)
+		if _, err := os.Stat(filePath); err != nil {
+			return filePath
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s_%d%s", base, time.Now().UnixNano(), ext))
 }

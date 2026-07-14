@@ -66,7 +66,7 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindWebFetch
 	case "web_search":
 		return agentToolKindWebSearch
-	case "send_file":
+	case "send_file", "send_to_im":
 		return agentToolKindSendFile
 	case "ssh":
 		return agentToolKindSSH
@@ -135,7 +135,7 @@ func (k agentToolKind) TraceCategory(execResult toolExecutionResult) traceEviden
 		return traceEvidenceCategoryError
 	}
 	switch k {
-	case agentToolKindWriteFile, agentToolKindGeneratePDF, agentToolKindOffice:
+	case agentToolKindWriteFile, agentToolKindGeneratePDF, agentToolKindOffice, agentToolKindSendFile:
 		return traceEvidenceCategoryFile
 	default:
 		return traceEvidenceCategoryEvent

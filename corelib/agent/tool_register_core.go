@@ -213,16 +213,31 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "send_file",
-		Description: "Read a file and send it to the user.",
+		Description: "Read a local file and show it in the current chat (desktop). Does not forward to WeChat/IM unless destination/forward_to_im is set. Prefer send_to_im for IM delivery.",
 		Properties: map[string]interface{}{
 			"path":          map[string]string{"type": "string", "description": "File path"},
 			"file_name":     map[string]string{"type": "string", "description": "Display file name (optional)"},
+			"destination":   map[string]string{"type": "string", "description": "chat/desktop or im/wechat/feishu/qq/dingtalk"},
 			"forward_to_im": map[string]string{"type": "boolean", "description": "Whether to forward through IM"},
 			"phase_id":      map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
 			"doc_type":      map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
 		},
 		Required: []string{"path"},
 		Handler:  guardedHandler(deps, "send_file", func(args map[string]interface{}) string { return ToolSendFile(args) }),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "send_to_im",
+		Description: "Send a local file to the user's bound IM channels (WeChat/Feishu/QQ/etc). Use when the user asks to deliver a file to WeChat. Always forwards; no extra flags required.",
+		Properties: map[string]interface{}{
+			"path":        map[string]string{"type": "string", "description": "File path"},
+			"file_name":   map[string]string{"type": "string", "description": "Display file name (optional)"},
+			"destination": map[string]string{"type": "string", "description": "Optional: wechat/feishu/qq/dingtalk/im (default im)"},
+			"phase_id":    map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
+			"doc_type":    map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
+		},
+		Required: []string{"path"},
+		Handler:  guardedHandler(deps, "send_to_im", func(args map[string]interface{}) string { return ToolSendToIM(args) }),
 	})
 
 	r.Register(ToolEntry{

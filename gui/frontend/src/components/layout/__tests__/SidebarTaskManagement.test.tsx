@@ -337,7 +337,8 @@ describe('SidebarTaskManagement', () => {
 
         act(() => {
             window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
-                detail: { mode: 'coding_dev', name: '按需求实现功能\n需求描述：[审核流程]' },
+                // Post-param-dialog commands are fully filled (no [placeholder] fill-in).
+                detail: { mode: 'coding_dev', name: '按需求实现功能\n需求描述：审核流程' },
             }));
         });
 
@@ -349,15 +350,15 @@ describe('SidebarTaskManagement', () => {
         // Prefers last coding task workdir
         expect(screen.getByTitle('D:/work/coding-project')).toBeTruthy();
 
+        // Local coding: focus the command box for review (no [placeholder] selection).
         await waitFor(() => {
-            expect(commandInput.selectionStart).toBe(commandInput.value.indexOf('['));
-            expect(commandInput.selectionEnd).toBe(commandInput.value.indexOf(']') + 1);
+            expect(document.activeElement).toBe(commandInput);
         });
 
         fireEvent.click(screen.getByRole('button', { name: 'OK' }));
         await waitFor(() => {
             expect(createTask).toHaveBeenCalledWith(
-                '按需求实现功能\n需求描述：[审核流程]',
+                '按需求实现功能\n需求描述：审核流程',
                 'D:/work/coding-project',
                 'coding_dev',
             );

@@ -199,13 +199,13 @@ func requiredWorkflowToolNamesForPolicy(policy interface{}) []string {
 	}
 	switch v2.ToolFilterPolicy(policyName) {
 	case v2.ToolFilterDocOnly:
-		return []string{"bash", "read_file", "list_directory", "send_file"}
+		return []string{"bash", "read_file", "list_directory", "send_file", "send_to_im"}
 	case v2.ToolFilterPlanning:
-		return []string{"read_file", "list_directory", "write_file", "send_file"}
+		return []string{"read_file", "list_directory", "write_file", "send_file", "send_to_im"}
 	case v2.ToolFilterOpsControlled:
-		return []string{"read_file", "list_directory", "send_file", "bash", "ssh"}
+		return []string{"read_file", "list_directory", "send_file", "send_to_im", "bash", "ssh"}
 	case v2.ToolFilterFull:
-		return []string{"read_file", "list_directory", "send_file", "bash", "write_file", "edit_file", "task"}
+		return []string{"read_file", "list_directory", "send_file", "send_to_im", "bash", "write_file", "edit_file", "task"}
 	default:
 		return nil
 	}

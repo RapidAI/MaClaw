@@ -128,12 +128,13 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		}
 		tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
 		workflowAllowed, workflowReject := h.workflowAllowsBonusRoundToolCall(opts.UserID, opts.Context, tc)
-		toolOnProgress := filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug)
+		lang := h.imUILang()
+		toolOnProgress := filteredToolProgressCallback(lang, tc.Function.Name, opts.OnProgress, opts.Debug)
 		toolExecStartedAt := time.Now()
 		if workflowAllowed {
 			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
 			if opts.Debug && opts.SendProgress != nil {
-				opts.SendProgress(userFacingToolProgressText(tc.Function.Name))
+				opts.SendProgress(userFacingToolProgressText(lang, tc.Function.Name))
 			}
 			opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 		}

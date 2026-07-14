@@ -248,6 +248,7 @@ func filterToolsForVE(tools []map[string]interface{}) []map[string]interface{} {
 // scoping at runtime via ValidateVEFilePath / IsWithinAllowedDirs.
 var veConfigUnblockedTools = map[string]bool{
 	"send_file":      true,
+	"send_to_im":     true,
 	"list_directory": true,
 	"read_file":      true,
 }

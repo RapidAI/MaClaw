@@ -423,7 +423,7 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 		lastProgressText = stripped
 		_ = gw.SendText(context.Background(), qqbot.OutgoingText{
 			OpenID: msg.OpenID,
-			Text:   i18n.T(i18n.MsgProgressPrefix, "zh") + textutil.StripMarkdown(progressText),
+			Text:   i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + textutil.StripMarkdown(progressText),
 		})
 	}
 
@@ -431,7 +431,7 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 		UserID:      msg.OpenID,
 		Platform:    "qqbot_local",
 		Text:        text,
-		Lang:        "zh",
+		Lang:        appUILang(m.app),
 		Attachments: attachments,
 	}, onProgress)
 

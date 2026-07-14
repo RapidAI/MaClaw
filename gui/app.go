@@ -1610,9 +1610,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			handler.SetSecurityFirewall(a.securityFirewall)
 		}
 		// Wire IM file sender so the desktop AI assistant can forward files to
-		// the user's Feishu/WeChat via the Hub WebSocket.
+		// the user's Feishu/WeChat. Prefer local Weixin gateway; fall back to Hub.
 		handler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
-			return hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
+			return a.forwardDesktopFileToIM(hubClient, b64Data, fileName, mimeType, message)
 		})
 		// Initialize and wire BackgroundLoopManager + SessionMonitor.
 		statusC := make(chan StatusEvent, 32)
@@ -1868,9 +1868,9 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 			handler.SetSecurityFirewall(a.securityFirewall)
 		}
 		// Wire IM file sender so the desktop AI assistant can forward files to
-		// the user's Feishu/WeChat via the Hub WebSocket.
+		// the user's Feishu/WeChat. Prefer local Weixin gateway; fall back to Hub.
 		handler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
-			return hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
+			return a.forwardDesktopFileToIM(hubClient, b64Data, fileName, mimeType, message)
 		})
 		// Initialize and wire BackgroundLoopManager + SessionMonitor.
 		statusC := make(chan StatusEvent, 32)

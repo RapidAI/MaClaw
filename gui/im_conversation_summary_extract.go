@@ -333,7 +333,11 @@ func extractKeyToolArg(toolName, argsJSON string) string {
 			return truncateStr(v, 80)
 		}
 	case agentToolKindSendFile:
-		if v, ok := args["file_path"].(string); ok {
+		// send_file / send_to_im use "path" (not file_path).
+		if v, ok := args["path"].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+		if v, ok := args["file_name"].(string); ok && strings.TrimSpace(v) != "" {
 			return v
 		}
 	case agentToolKindManageSkill:

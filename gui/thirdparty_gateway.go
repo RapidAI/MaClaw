@@ -835,7 +835,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 			ConversationID:   req.ConversationID,
 			ReplyToMessageID: req.MessageID,
 			Type:             "text",
-			Text:             i18n.T(i18n.MsgProgressPrefix, "zh") + stripped,
+			Text:             i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + stripped,
 			Progress:         true,
 		})
 	}
@@ -844,7 +844,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		UserID:      thirdPartySessionUserID(req.ClientID, req.ConversationID),
 		Platform:    thirdPartyPlatform(req.ClientID),
 		Text:        text,
-		Lang:        "zh",
+		Lang:        appUILang(m.app),
 		Attachments: attachments,
 	}, onProgress)
 	if resp == nil || resp.Deferred {

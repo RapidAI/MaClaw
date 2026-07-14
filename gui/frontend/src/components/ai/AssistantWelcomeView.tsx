@@ -17,7 +17,6 @@ import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
 import { SCENARIO_TABS, type WelcomePrompt } from "./welcomeScenarioTasks";
-import { welcomeTemplateNeedsParams } from "./welcomePromptTemplate";
 import {
     matchWelcomeTasksFromClipboard,
     pickClipboardPrefillLabel,
@@ -140,7 +139,8 @@ function WelcomePromptIcon({ name, color }: { name: string; color: string }) {
 }
 
 const STORAGE_KEY = "maclaw:welcome-scenario-tab";
-const LEGACY_STORAGE_KEY = "maclaw:welcome-industry-tab";
+/** Retired pre-scenario industry tab key (purged once on welcome mount). */
+const RETIRED_INDUSTRY_TAB_KEY = "maclaw:welcome-industry-tab";
 const SCENARIO_TAB_IDS = new Set(SCENARIO_TABS.map(tab => tab.id));
 const SCENARIO_TAB_BY_ID = new Map(SCENARIO_TABS.map(tab => [tab.id, tab]));
 const isScenarioTabId = (value: string | null): value is string => !!value && SCENARIO_TAB_IDS.has(value);
@@ -256,6 +256,13 @@ export function AssistantWelcomeView({
     composer: cp,
 }: AssistantWelcomeViewProps) {
     const isZh = !lang?.startsWith("en");
+
+    // Drop retired industry-tab key once (no longer read).
+    useEffect(() => {
+        try {
+            localStorage.removeItem(RETIRED_INDUSTRY_TAB_KEY);
+        } catch { /* ignore */ }
+    }, []);
 
     type ParamDialogState = {
         title: string;
@@ -459,32 +466,20 @@ export function AssistantWelcomeView({
                 ? prompt.agentMode
                 : "chat";
         const clip = (options?.clipboardPrefill || "").trim();
-        // Coding cards always open the param dialog so workdir/SSH can be collected
-        // in one step (even when the template has no [placeholders]).
-        if (welcomeTemplateNeedsParams(text) || submitMode !== "chat") {
-            setParamDialog({
-                title,
-                description,
-                template: text,
-                submitMode,
-                taskKey,
-                tabId,
-                textEn: prompt.textEn,
-                clipboardPrefill: clip || undefined,
-                clipboardPrefillLabel: clip ? pickClipboardPrefillLabel(text) : null,
-            });
-            return;
-        }
-        if (tabId !== "custom") {
-            touchRecent(tabId, prompt.textEn);
-        }
-        const meta: WelcomePromptSubmitMeta = {
+        // Always open the param dialog — never dump raw [placeholder] templates into the composer.
+        // Coding cards also collect workdir/SSH here; chat templates collect field values.
+        setParamDialog({
             title,
+            description,
+            template: text,
+            submitMode,
+            taskKey,
             tabId,
-            taskKey: tabId === "custom" ? undefined : welcomePromptKey(tabId, prompt.textEn),
-        };
-        onPromptSelect(clip ? `${text}\n\n${clip}` : text, meta);
-    }, [isZh, onPromptSelect, touchRecent]);
+            textEn: prompt.textEn,
+            clipboardPrefill: clip || undefined,
+            clipboardPrefillLabel: clip ? pickClipboardPrefillLabel(text) : null,
+        });
+    }, [isZh]);
 
     const clipboardScanInFlightRef = useRef(false);
     const clipboardFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -651,7 +646,7 @@ export function AssistantWelcomeView({
     const [activeTab, setActiveTab] = useState<string>(() => {
         let saved: string | null = null;
         try {
-            saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+            saved = localStorage.getItem(STORAGE_KEY);
         } catch { /* ignore */ }
         return resolveWelcomeDefaultTab(
             isScenarioTabId(saved) ? saved : null,
@@ -663,7 +658,6 @@ export function AssistantWelcomeView({
     useEffect(() => {
         try {
             localStorage.setItem(STORAGE_KEY, activeTab);
-            localStorage.removeItem(LEGACY_STORAGE_KEY);
         } catch { /* ignore */ }
     }, [activeTab]);
 
@@ -819,7 +813,7 @@ export function AssistantWelcomeView({
         let tab = activeTab;
         if (opts?.fromStorage) {
             try {
-                const saved = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+                const saved = localStorage.getItem(STORAGE_KEY);
                 if (isScenarioTabId(saved)) tab = saved;
             } catch { /* keep activeTab */ }
         }

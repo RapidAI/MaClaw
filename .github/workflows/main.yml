@@ -126,6 +126,12 @@ jobs:
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
+          cd ../..
+          # Stamp forces //go:embed to invalidate even when GOCACHE is warm.
+          $stamp = "$env:VERSION`n${{ github.sha }}"
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'gui/frontend/dist/.build-stamp'), $stamp)
+          # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
+          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
 
       - name: Install goversioninfo
         shell: pwsh
@@ -226,10 +232,13 @@ jobs:
           & $goversioninfo -64 -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_amd64.syso build/windows/versioninfo.json.tmp
           $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='1'
           $env:CC='gcc'
+          # .build-stamp (written after npm build) invalidates //go:embed without full -a rebuild.
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_amd64.exe" ./gui/
           Remove-Item gui/resource_windows_amd64.syso -ErrorAction SilentlyContinue
+          # Catch embed regressions (e.g. empty/stale dist) for MaClaw and OEM brands alike.
+          node scripts/verify-frontend-welcome.mjs --binary "dist/${outName}_amd64.exe"
 
-          # --- arm64 (no CGO, NoopEmbedder 鈥?cross-compile CGO not supported) ---
+          # --- arm64 (no CGO, NoopEmbedder — cross-compile CGO not supported) ---
           & $goversioninfo -64 -arm -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
           $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
           go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./gui/
@@ -817,6 +826,10 @@ jobs:
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
+          cd ../..
+          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
+          # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
+          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
 
       - name: Build macOS GUI binaries
         env:
@@ -826,14 +839,14 @@ jobs:
           GUI_TAGS="desktop,production"
           if [ -n "$BRAND_TAG" ]; then GUI_TAGS="${GUI_TAGS},${BRAND_TAG}"; fi
           OUT_NAME="${BRAND_APP_NAME}"
-          # amd64
+          # .build-stamp invalidates //go:embed without full -a rebuild.
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=amd64 \
             go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64" ./gui/
-          # arm64
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=arm64 \
             go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
+          node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_arm64"
 
       - name: Build TUI & maclaw-tool & maclaw-cli (darwin)
         run: |
@@ -1285,6 +1298,10 @@ jobs:
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
+          cd ../..
+          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
+          # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
+          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
 
       - name: Build Linux GUI (amd64)
         run: |
@@ -1296,6 +1313,7 @@ jobs:
             -o "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" ./gui/
           # Also copy to the generic name for AppImage packaging
           cp "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_amd64_linux"
+          node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_amd64_linux"
 
       - name: Build TUI & maclaw-tool & maclaw-cli (linux, pure Go 鈥?only on newest runner)
         if: env.BUILD_PURE_GO == 'true'
@@ -1549,6 +1567,10 @@ jobs:
           cd gui/frontend
           npm ci --cache ./.npm_cache
           npm run build
+          cd ../..
+          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
+          # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
+          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
 
       - name: Build Linux GUI (arm64)
         run: |
@@ -1558,6 +1580,7 @@ jobs:
             go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" \
             -o "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" ./gui/
           cp "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_arm64_linux"
+          node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_arm64_linux"
 
       - name: Build srvdemo (default brand, newest runner only)
         if: matrix.brand == '' && env.BUILD_SRVDEMO == 'true'

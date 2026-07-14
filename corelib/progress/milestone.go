@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // Milestone represents one observable step completed during an agent loop.
@@ -190,14 +192,19 @@ func (b *MilestoneBuffer) Elapsed() time.Duration {
 }
 
 // ProgressSummary returns a human-readable summary of the current progress.
-// Used by StatusQuery and heartbeat messages.
+// Used by StatusQuery and heartbeat messages. Defaults to Chinese labels.
 func (b *MilestoneBuffer) ProgressSummary() string {
+	return b.ProgressSummaryLang("zh")
+}
+
+// ProgressSummaryLang is like ProgressSummary but localizes templates to lang.
+func (b *MilestoneBuffer) ProgressSummaryLang(lang string) string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	if len(b.milestones) == 0 {
 		elapsed := time.Since(b.startTime).Truncate(time.Second)
-		return fmt.Sprintf("正在处理中（已耗时 %s）...", formatDuration(elapsed))
+		return i18n.Tf(i18n.MsgMilestoneProcessingElapsed, lang, formatDuration(elapsed))
 	}
 
 	completed := 0
@@ -214,11 +221,11 @@ func (b *MilestoneBuffer) ProgressSummary() string {
 
 	if !latest.Completed {
 		// Currently executing a step.
-		return fmt.Sprintf("已完成 %d 个步骤，当前: %s（已耗时 %s）",
+		return i18n.Tf(i18n.MsgMilestoneStepsCurrent, lang,
 			completed, latest.Summary, formatDuration(elapsed))
 	}
 
-	return fmt.Sprintf("已完成 %d 个步骤，最近: %s（已耗时 %s）",
+	return i18n.Tf(i18n.MsgMilestoneStepsLatest, lang,
 		completed, lastSummary, formatDuration(elapsed))
 }
 

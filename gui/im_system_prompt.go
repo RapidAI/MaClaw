@@ -396,7 +396,7 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 
 ## 文档交付契约
 - 需求文档、设计文档、任务列表优先生成 PDF，可使用 craft_tool、bash、pandoc、wkhtmltopdf 或等价工具。
-- 通过 send_file 且 forward_to_im=true 发送给用户。
+- 通过 send_to_im（推荐）或 send_file+destination/forward_to_im 发送给用户。
 - PDF 文件名使用 requirements_<feature>.pdf、design_<feature>.pdf、task-plan_<feature>.pdf；文件名保持稳定 ASCII，展示标题可本地化。
 - 发送 PDF 时必须附带行动提示或文字摘要，不能只发文件。
 - 用户提出修改时，更新文档、重新生成 PDF，并把修订后使用最新版本作为后续阶段输入。

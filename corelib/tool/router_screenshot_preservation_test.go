@@ -5,7 +5,7 @@ import "testing"
 func TestConditionalKeepRules_DocumentDeliveryNoLocalActivation(t *testing.T) {
 	keep, _, _ := matchConditionalKeepRules("send this report to me")
 
-	for _, tool := range []string{"craft_tool", "send_file", "open"} {
+	for _, tool := range []string{"craft_tool", "send_file", "send_to_im", "open"} {
 		if keep[tool] {
 			t.Errorf("matchConditionalKeepRules must not activate %q from local wording; keep=%v", tool, keep)
 		}

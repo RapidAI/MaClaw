@@ -401,7 +401,7 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		lastProgress = now
 		_ = gw.SendText(context.Background(), telegram.OutgoingText{
 			ChatID: msg.ChatID,
-			Text:   i18n.T(i18n.MsgProgressPrefix, "zh") + textutil.StripMarkdown(progressText),
+			Text:   i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + textutil.StripMarkdown(progressText),
 		})
 	}
 
@@ -409,7 +409,8 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 		UserID:      strconv.FormatInt(msg.ChatID, 10),
 		Platform:    "telegram_local",
 		Text:        text,
-		Lang:        i18n.NormalizeLang(msg.LanguageCode),
+		// Prefer GUI interface language so IM tool/status text matches desktop settings.
+		Lang:        appUILang(m.app),
 		Attachments: attachments,
 	}, onProgress)
 
