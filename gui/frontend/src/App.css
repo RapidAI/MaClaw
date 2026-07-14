@@ -8223,6 +8223,18 @@ body {
     text-align: center;
 }
 
+.update-modal__info--error {
+    border-color: color-mix(in srgb, var(--theme-danger) 34%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg) 56%, var(--theme-surface));
+}
+
+.update-modal__error-message {
+    margin: 12px 0 0;
+    color: var(--theme-danger);
+    font-size: 0.9rem;
+    line-height: 1.45;
+}
+
 .update-modal__info--version {
     margin-bottom: 15px;
 }

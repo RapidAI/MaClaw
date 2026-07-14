@@ -3876,7 +3876,8 @@ ${instruction}`;
                                     setStatus((lang === 'zh-Hans' ? '检查更新失败：' : lang === 'zh-Hant' ? '檢查更新失敗：' : 'Update check failed: ') + err);
                                     setUpdateResult({
                                         has_update: false,
-                                        latest_version: lang === 'zh-Hans' ? "鑾峰彇澶辫触" : lang === 'zh-Hant' ? "鍙栧緱澶辨晽" : "Fetch failed",
+                                        check_failed: true,
+                                        message: lang === 'zh-Hans' ? '无法检查更新，请检查网络后重试。' : lang === 'zh-Hant' ? '無法檢查更新，請檢查網路後重試。' : 'Unable to check for updates. Check your connection and try again.',
                                         release_url: ""
                                     });
                                     setShowUpdateModal(true);

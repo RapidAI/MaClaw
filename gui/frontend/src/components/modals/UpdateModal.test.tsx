@@ -9,7 +9,7 @@ describe('downloadSourceName', () => {
 
     it('maps known download hosts to their user-facing station names', () => {
         expect(downloadSourceName('github.com')).toBe('GitHub Releases');
-        expect(downloadSourceName('https://assets-123.cos.ap-shanghai.myqcloud.com/update.exe')).toBe('腾讯云 COS');
+        expect(downloadSourceName('https://assets-123.cos.ap-shanghai.myqcloud.com/update.exe')).toBe('Tencent Cloud COS');
         expect(downloadSourceName('https://downloads.example.r2.dev/update.exe')).toBe('Cloudflare R2');
     });
 

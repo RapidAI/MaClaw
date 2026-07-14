@@ -40,7 +40,7 @@ export const AboutActions = ({
             setStatus('');
         }).catch(err => {
             setStatus('Check update failed: ' + err);
-            setUpdateResult({ has_update: false, latest_version: 'Failed to fetch', release_url: '' });
+            setUpdateResult({ has_update: false, check_failed: true, message: 'Unable to check for updates. Check your connection and try again.', release_url: '' });
             setIsStartupUpdateCheck(false);
             setShowUpdateModal(true);
         });

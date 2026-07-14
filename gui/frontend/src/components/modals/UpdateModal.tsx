@@ -33,7 +33,7 @@ export function downloadSourceName(value: unknown): string {
     }
     const normalizedHost = host.toLowerCase();
     if (normalizedHost === 'github.com' || normalizedHost.endsWith('.github.com')) return 'GitHub Releases';
-    if (normalizedHost.includes('myqcloud.com') || normalizedHost.includes('cos.')) return '腾讯云 COS';
+    if (normalizedHost.includes('myqcloud.com') || normalizedHost.includes('cos.')) return 'Tencent Cloud COS';
     if (normalizedHost.includes('cloudflare') || normalizedHost.includes('r2.')) return 'Cloudflare R2';
     return host;
 }
@@ -59,6 +59,7 @@ export const UpdateModal = ({
     // Cache the stable result so we can restore it when user unchecks beta
     const stableResultRef = useRef(updateResult);
     const downloadSource = downloadSourceName(activeDownloadSource || updateResult?.download_url || updateResult?.release_url);
+    const checkFailed = Boolean(updateResult?.check_failed);
 
     // When modal opens with beta preference already enabled, immediately fetch beta info
     // so the user sees beta results instead of stale stable results.
@@ -120,7 +121,7 @@ export const UpdateModal = ({
                 <div className="update-modal__header">
                     <div>
                         <p className="update-modal__eyebrow">{t("onlineUpdate")}</p>
-                        <h3 id="update-modal-title">{t("foundNewVersion")}</h3>
+                        <h3 id="update-modal-title">{checkFailed ? t("updateCheckFailed") : t("foundNewVersion")}</h3>
                     </div>
                     <label className="update-modal__beta-toggle">
                         <input
@@ -136,6 +137,12 @@ export const UpdateModal = ({
                 {betaLoading ? (
                     <div className="update-modal__info update-modal__info--center">
                         <p className="update-modal__checking">{t("checkingUpdate")}</p>
+                    </div>
+                ) : checkFailed ? (
+                    <div className="update-modal__info update-modal__info--error" role="alert">
+                        <div className="update-modal__label">{t("currentVersion")}</div>
+                        <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
+                        <p className="update-modal__error-message">{updateResult.message || t("updateCheckFailedMessage")}</p>
                     </div>
                 ) : updateResult.has_update ? (
                     <>
