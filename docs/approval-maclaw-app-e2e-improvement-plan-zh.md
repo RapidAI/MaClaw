@@ -1,10 +1,11 @@
 # 审批工作流 × MaClaw App 端到端改进计划
 
-**状态**：Phase 0–18 完成 + 升级栈硬化（CAS / 重启 reconcile / any-N / peer timeout / attempts UI）  
+**状态**：**Track freeze** — 见 [approval-hub-e2e-track-freeze-2026.md](./approval-hub-e2e-track-freeze-2026.md)  
 **日期**：2026-07-15  
 **验证手册**：[approval-e2e-verification-zh.md](./approval-e2e-verification-zh.md)（含实机 #1–#10）  
 **发版短清单**：[approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md)（约 15 分钟）  
 **一键检查**：`scripts\run-approval-e2e-checks.cmd`  
+**CI**：`.github/workflows/approval-e2e.yml`
 **关联文档**：
 
 - [maclaw-app-technical-guide.md](./maclaw-app-technical-guide.md)

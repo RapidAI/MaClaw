@@ -1,6 +1,6 @@
 # 审批工作流 × MaClaw E2E 验证手册
 
-**关联**：[approval-maclaw-app-e2e-improvement-plan-zh.md](./approval-maclaw-app-e2e-improvement-plan-zh.md)  
+**关联**：[approval-maclaw-app-e2e-improvement-plan-zh.md](./approval-maclaw-app-e2e-improvement-plan-zh.md) · **[Track freeze](./approval-hub-e2e-track-freeze-2026.md)**  
 **发版当日 15 分钟清单**：[approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md)  
 **原则**：Hub WorkflowExecutor 为 SoT；桌面 registry / DataSrv 为投影。  
 **一键脚本**：`scripts\run-approval-e2e-checks.cmd`（或 `.ps1`）  
