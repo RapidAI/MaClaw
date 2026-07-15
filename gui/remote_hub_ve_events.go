@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -21,6 +22,11 @@ const (
 	veEventDiscussionInvite  = "ve:discussion_invite"
 	veEventDiscussionMessage = "ve:discussion_message"
 	veEventDiscussionRename  = "ve:discussion_rename"
+	// veEventApprovalRequest is Hub → machine delivery of a workflow approval node payload.
+	// Wire type matches hub/internal/httpapi.approvalRequestWireType.
+	veEventApprovalRequest = "ve:approval_request"
+	// veEventWorkflowStatus is Hub → machine push for blocked/escalation lifecycle events.
+	veEventWorkflowStatus = "ve:workflow_status"
 )
 
 // isVEEvent returns true if the message type is a VE-related event.
@@ -41,6 +47,14 @@ func (c *RemoteHubClient) handleVEEvent(msg inboundHubEnvelope) {
 	switch msgType {
 	case veEventDiscussionMessage:
 		go c.handleVEDiscussionMessage(msg)
+		return
+	case veEventApprovalRequest:
+		// Approval pipeline may call Hub decision API + local registry — never block readLoop.
+		go c.handleVEApprovalRequest(msg)
+		return
+	case veEventWorkflowStatus:
+		// Blocked/escalation push — update local approval projection off the readLoop.
+		go c.handleVEWorkflowStatus(msg)
 		return
 	case veEventDiscussionInvite:
 		// AcceptInvite is an HTTP call to Hub — keep readLoop unblocked.
@@ -521,4 +535,89 @@ func decodeVEDiscussionPayload(payload json.RawMessage) (a2a.GroupEnvelope, stri
 		return a2a.GroupEnvelope{}, "", err
 	}
 	return envelope, "", nil
+}
+
+// handleVEWorkflowStatus applies Hub blocked/escalation pushes to the local approval registry.
+// Payload: { event, status, instance_id, reason, details, current_node, workflow_name, ... }.
+func (c *RemoteHubClient) handleVEWorkflowStatus(msg inboundHubEnvelope) {
+	if c == nil || c.app == nil {
+		return
+	}
+	payload := decodeVEEventPayloadMap(msg)
+	if len(payload) == 0 {
+		return
+	}
+	event := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload["event"])))
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload["status"])))
+	hubInstanceID := strings.TrimSpace(fmt.Sprint(payload["instance_id"]))
+	if hubInstanceID == "" || hubInstanceID == "<nil>" {
+		return
+	}
+	reason := strings.TrimSpace(fmt.Sprint(payload["reason"]))
+	details := strings.TrimSpace(fmt.Sprint(payload["details"]))
+	nodeID := strings.TrimSpace(fmt.Sprint(payload["current_node"]))
+	workflowName := strings.TrimSpace(fmt.Sprint(payload["workflow_name"]))
+	if workflowName == "" || workflowName == "<nil>" {
+		workflowName = "Hub Workflow"
+	}
+	// Map blocked / escalation-style events to local attention projections.
+	urgency := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload["urgency"])))
+	escPending, _ := payload["escalation_pending"].(bool)
+	if event == "blocked" || status == "blocked" || event == "escalation" || urgency == "overdue" || urgency == "critical" || escPending || strings.Contains(strings.ToLower(reason), "timeout") {
+		msgText := firstNonEmptyMaclawAppString(reason, details, "workflow blocked")
+		extras := map[string]any{}
+		if escPending {
+			extras["escalation_pending"] = true
+		}
+		if approvers := maclawAppStringSliceFromAny(payload["escalation_approvers"]); len(approvers) > 0 {
+			extras["escalation_approvers"] = approvers
+			extras["escalation_pending"] = true
+		} else if one := strings.TrimSpace(fmt.Sprint(payload["escalation_approver"])); one != "" && one != "<nil>" {
+			extras["escalation_approver"] = one
+			extras["escalation_approvers"] = []string{one}
+			extras["escalation_pending"] = true
+		}
+		if err := c.app.applyHubWorkflowStatusAttention(hubInstanceID, nodeID, workflowName, msgText, urgency, extras); err != nil {
+			log.Printf("[hub-client] handleVEWorkflowStatus apply failed: %v", err)
+		}
+		maclawAppApprovalTrace("workflow_status_push", map[string]any{
+			"hub_instance_id": hubInstanceID, "hub_node_id": nodeID, "event": event, "status": status, "urgency": urgency,
+			"escalation_pending": extras["escalation_pending"],
+		})
+	}
+	c.app.emitEvent("ve:workflow_status", map[string]any{
+		"type": msg.Type, "ts": msg.TS, "payload": payload,
+	})
+}
+
+// handleVEApprovalRequest routes Hub workflow approval envelopes to the local VE approval pipeline.
+// Payload shape matches HubApprovalDispatcher: { "envelope": GroupEnvelope, "is_fallback"?, "fallback_reason"? }.
+func (c *RemoteHubClient) handleVEApprovalRequest(msg inboundHubEnvelope) {
+	if c == nil || c.app == nil {
+		return
+	}
+	envelope, _, err := decodeVEDiscussionPayload(msg.Payload)
+	if err != nil {
+		log.Printf("[hub-client] handleVEApprovalRequest: failed to parse payload: %v", err)
+		return
+	}
+	if envelope.Type == "" {
+		envelope.Type = a2a.GroupMessageApprovalRequest
+	}
+	if envelope.Type != a2a.GroupMessageApprovalRequest {
+		log.Printf("[hub-client] handleVEApprovalRequest: unexpected envelope type %q", envelope.Type)
+		return
+	}
+	handler := c.digitalEmployeeMessageHandler()
+	if handler == nil {
+		log.Printf("[hub-client] handleVEApprovalRequest: no VE message handler available")
+		return
+	}
+	handler.HandleGroupEnvelope(envelope)
+	// Surface a light UI signal (details are managed by the handler / approval registry).
+	c.app.emitEvent("ve:approval_request", map[string]any{
+		"type":    msg.Type,
+		"ts":      msg.TS,
+		"payload": decodeVEEventPayloadMap(msg),
+	})
 }

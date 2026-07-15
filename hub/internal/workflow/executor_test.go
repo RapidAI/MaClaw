@@ -73,6 +73,9 @@ func (m *mockInstanceStore) UpdateCurrentNode(ctx context.Context, id, nodeID st
 	return nil
 }
 func (m *mockInstanceStore) UpdateInstanceData(ctx context.Context, id string, data map[string]interface{}) error {
+	if m.createdInstance != nil && m.createdInstance.ID == id {
+		m.createdInstance.InstanceData = data
+	}
 	return nil
 }
 func (m *mockInstanceStore) CreateNodeExecution(ctx context.Context, exec *NodeExecution) error {
@@ -128,15 +131,25 @@ func (m *mockAuditStore) QueryByDecision(ctx context.Context, decision string, p
 }
 
 type mockDispatcher struct {
-	dispatched []string
+	dispatched      []string
+	dispatchErr     error
+	failApprovers   map[string]error // per-approver dispatch failure
+	fallbackIDs     []string
+	fallbackErr     error
 }
 
 func (m *mockDispatcher) Dispatch(ctx context.Context, req *ApprovalRequest, approverID string) error {
 	m.dispatched = append(m.dispatched, approverID)
-	return nil
+	if m.failApprovers != nil {
+		if err, ok := m.failApprovers[approverID]; ok && err != nil {
+			return err
+		}
+	}
+	return m.dispatchErr
 }
 func (m *mockDispatcher) DispatchFallback(ctx context.Context, req *ApprovalRequest, fallbackID string, reason string) error {
-	return nil
+	m.fallbackIDs = append(m.fallbackIDs, fallbackID)
+	return m.fallbackErr
 }
 
 type mockApproverResolver struct {
@@ -255,6 +268,238 @@ func TestStartInstance_Success(t *testing.T) {
 	}
 	if exec.InstanceID != instance.ID {
 		t.Errorf("NodeExecution InstanceID = %q, want %q", exec.InstanceID, instance.ID)
+	}
+}
+
+func TestStartInstance_PrimaryDispatchFailure_QueuesEscalation(t *testing.T) {
+	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-primary"},
+		Mode:         ModeSingle,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger-1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval-1", Type: NodeApproval, Label: "Review", Config: approvalCfg},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "trigger-1", TargetID: "approval-1"}},
+	}
+	version := &WorkflowVersion{ID: "ver-1", WorkflowID: "wf-1", Status: VersionPublished, Graph: graph}
+	wfStore := &mockWorkflowStore{publishedVersion: version, version: version}
+	instStore := &mockInstanceStore{}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcher{dispatchErr: errors.New("machine offline")}
+	notifier := &mockNotifier{}
+	escMgr := NewEscalationManager(dispatcher, auditStore, &mockHumanChecker{available: false})
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher,
+		WithNotifier(notifier),
+		WithEscalationManager(escMgr),
+	)
+
+	inst, err := executor.StartInstance(context.Background(), "wf-1", `{"title":"Leave"}`)
+	if err != nil {
+		t.Fatalf("StartInstance should absorb dispatch failure via escalation: %v", err)
+	}
+	if inst.Status != InstanceRunning {
+		t.Fatalf("status=%s want running", inst.Status)
+	}
+	if !escMgr.HasPendingForInstance(inst.ID, "approval-1") {
+		t.Fatal("expected pending escalation for primary approver")
+	}
+	// Instance data may be on createdInstance after UpdateInstanceData.
+	data := inst.InstanceData
+	if instStore.createdInstance != nil && instStore.createdInstance.InstanceData != nil {
+		data = instStore.createdInstance.InstanceData
+	}
+	if pending, _ := data["escalation_pending"].(bool); !pending {
+		t.Fatalf("expected escalation_pending, data=%#v", data)
+	}
+	hasDispatchFailed := false
+	for _, e := range auditStore.entries {
+		if e.EventType == "dispatch_failed" {
+			hasDispatchFailed = true
+		}
+	}
+	if !hasDispatchFailed {
+		t.Fatal("expected dispatch_failed audit")
+	}
+}
+
+func TestStartInstance_CountersignPartialFailure_QueuesEscalationAndContinues(t *testing.T) {
+	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-a", "ve-b", "ve-c"},
+		Mode:         ModeCountersign,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger-1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval-1", Type: NodeApproval, Label: "Countersign", Config: approvalCfg},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "trigger-1", TargetID: "approval-1"}},
+	}
+	version := &WorkflowVersion{ID: "ver-1", WorkflowID: "wf-1", Status: VersionPublished, Graph: graph}
+	wfStore := &mockWorkflowStore{publishedVersion: version, version: version}
+	instStore := &mockInstanceStore{}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcher{
+		failApprovers: map[string]error{"ve-b": errors.New("ve-b offline")},
+	}
+	notifier := &mockNotifier{}
+	escMgr := NewEscalationManager(dispatcher, auditStore, &mockHumanChecker{available: false})
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher,
+		WithNotifier(notifier),
+		WithEscalationManager(escMgr),
+	)
+
+	inst, err := executor.StartInstance(context.Background(), "wf-1", `{}`)
+	if err != nil {
+		t.Fatalf("StartInstance: %v", err)
+	}
+	// ve-a and ve-c should still receive; ve-b failed then escalated.
+	if len(dispatcher.dispatched) != 3 {
+		t.Fatalf("dispatched=%v want all three attempted", dispatcher.dispatched)
+	}
+	if inst.Status != InstanceRunning {
+		t.Fatalf("status=%s want running (not soft-blocked)", inst.Status)
+	}
+	if !escMgr.HasPendingForInstance(inst.ID, "approval-1") {
+		t.Fatal("expected escalation pending for ve-b")
+	}
+	hasPartial := false
+	for _, e := range auditStore.entries {
+		if e.EventType == "dispatch_partial_failure" {
+			hasPartial = true
+		}
+	}
+	if !hasPartial {
+		t.Fatal("expected dispatch_partial_failure audit")
+	}
+}
+
+func TestStartInstance_CountersignMultiFailure_AccumulatesApproversList(t *testing.T) {
+	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-a", "ve-b", "ve-c"},
+		Mode:         ModeCountersign,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger-1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval-1", Type: NodeApproval, Label: "Countersign", Config: approvalCfg},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "trigger-1", TargetID: "approval-1"}},
+	}
+	version := &WorkflowVersion{ID: "ver-1", WorkflowID: "wf-1", Status: VersionPublished, Graph: graph}
+	wfStore := &mockWorkflowStore{publishedVersion: version, version: version}
+	instStore := &mockInstanceStore{}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcher{
+		failApprovers: map[string]error{
+			"ve-a": errors.New("a offline"),
+			"ve-c": errors.New("c offline"),
+		},
+	}
+	escMgr := NewEscalationManager(dispatcher, auditStore, &mockHumanChecker{available: false})
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher,
+		WithEscalationManager(escMgr),
+	)
+
+	inst, err := executor.StartInstance(context.Background(), "wf-1", `{}`)
+	if err != nil {
+		t.Fatalf("StartInstance: %v", err)
+	}
+	data := inst.InstanceData
+	if instStore.createdInstance != nil && instStore.createdInstance.InstanceData != nil {
+		data = instStore.createdInstance.InstanceData
+	}
+	list := stringSliceFromInstanceData(data["escalation_approvers"])
+	if len(list) != 2 {
+		t.Fatalf("escalation_approvers=%v want [ve-a ve-c]", list)
+	}
+	seen := map[string]bool{}
+	for _, id := range list {
+		seen[id] = true
+	}
+	if !seen["ve-a"] || !seen["ve-c"] {
+		t.Fatalf("list=%v", list)
+	}
+	// ve-b succeeded so only a,c pending.
+	if escMgr.PendingCount() != 2 {
+		t.Fatalf("PendingCount=%d want 2", escMgr.PendingCount())
+	}
+}
+
+func TestStartInstance_AnyNofMPartialFailure_LegacySoftBlockWithoutManager(t *testing.T) {
+	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"ve-a", "ve-b"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 1,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger-1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: approvalCfg},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "trigger-1", TargetID: "approval-1"}},
+	}
+	version := &WorkflowVersion{ID: "ver-1", WorkflowID: "wf-1", Status: VersionPublished, Graph: graph}
+	wfStore := &mockWorkflowStore{publishedVersion: version, version: version}
+	instStore := &mockInstanceStore{}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcher{
+		failApprovers: map[string]error{"ve-b": errors.New("offline")},
+	}
+	// No EscalationManager → legacy soft-block after first failure (stops fan-out).
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	inst, err := executor.StartInstance(context.Background(), "wf-1", `{}`)
+	if err != nil {
+		t.Fatalf("StartInstance: %v", err)
+	}
+	if inst.Status != InstanceBlocked {
+		// Status is set on in-memory inst; mock UpdateStatus doesn't mutate inst.
+		// Check via audit / that only ve-a was attempted then stop... actually
+		// UpdateStatus is called and inst.Status is set on the local object returned.
+		t.Fatalf("status=%s want blocked", inst.Status)
+	}
+	// First approver ok, second fails → stop without dispatching further (only 2 total).
+	if len(dispatcher.dispatched) != 2 {
+		t.Fatalf("dispatched=%v", dispatcher.dispatched)
+	}
+}
+
+func TestStartInstance_PrimaryDispatchFailure_RoutesToFallback(t *testing.T) {
+	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:      []string{"ve-primary"},
+		Mode:             ModeSingle,
+		TimeoutHours:     24,
+		FallbackApprover: "ve-fallback",
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "trigger-1", Type: NodeTrigger, Label: "Start"},
+			{ID: "approval-1", Type: NodeApproval, Label: "Review", Config: approvalCfg},
+		},
+		Edges: []WorkflowEdge{{ID: "e1", SourceID: "trigger-1", TargetID: "approval-1"}},
+	}
+	version := &WorkflowVersion{ID: "ver-1", WorkflowID: "wf-1", Status: VersionPublished, Graph: graph}
+	wfStore := &mockWorkflowStore{publishedVersion: version, version: version}
+	instStore := &mockInstanceStore{}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcher{dispatchErr: errors.New("primary offline")}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	inst, err := executor.StartInstance(context.Background(), "wf-1", `{}`)
+	if err != nil {
+		t.Fatalf("StartInstance: %v", err)
+	}
+	if len(dispatcher.fallbackIDs) != 1 || dispatcher.fallbackIDs[0] != "ve-fallback" {
+		t.Fatalf("fallback = %#v, want ve-fallback", dispatcher.fallbackIDs)
+	}
+	if inst.Status != InstanceRunning {
+		t.Fatalf("status=%s", inst.Status)
 	}
 }
 

@@ -694,6 +694,20 @@ func (s *SecurityService) getGroupPathItems(ctx context.Context, groupID string)
 	return items, nil
 }
 
+// GetUserGroupID returns the security group the email is assigned to.
+// Empty string means the user is not in any group (no root fallback).
+// Used by approval-role runtime resolution for applicant_department scopes.
+func (s *SecurityService) GetUserGroupID(ctx context.Context, email string) (string, error) {
+	if s == nil || s.store == nil {
+		return "", nil
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return "", nil
+	}
+	return s.store.GetUserGroup(ctx, email)
+}
+
 func (s *SecurityService) resolveUserPolicyGroup(ctx context.Context, email string) (string, error) {
 	groupID, err := s.store.GetUserGroup(ctx, email)
 	if err != nil {

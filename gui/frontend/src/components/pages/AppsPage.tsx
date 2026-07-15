@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import {
     clearWorkspaceLaunchIssue,
@@ -644,6 +644,15 @@ type ApprovalInstanceView = {
     artifacts?: ApprovalInstanceArtifactView[];
     events?: ApprovalInstanceEventView[];
     amount?: string;
+    approvalEngine?: string;
+    hubInstanceID?: string;
+    hubNodeID?: string;
+    hubSyncError?: string;
+    /** Hub push urgency: overdue | critical | attention (from ResultPayload.urgency). */
+    urgency?: string;
+    /** Hub EscalationManager peers still awaiting redelivery. */
+    escalationApprovers?: string[];
+    escalationPending?: boolean;
 };
 
 type BackendApprovalInstance = {
@@ -737,6 +746,21 @@ type BackendApprovalInstance = {
     resultPayload?: Record<string, unknown>;
     outputs?: ApprovalInstanceOutputView[];
     artifacts?: ApprovalInstanceArtifactView[];
+    approval_engine?: string;
+    approvalEngine?: string;
+    hub_instance_id?: string;
+    hubInstanceID?: string;
+    hub_node_id?: string;
+    hubNodeID?: string;
+    hub_sync_error?: string;
+    hubSyncError?: string;
+    urgency?: string;
+    escalation_pending?: boolean;
+    escalationPending?: boolean;
+    escalation_approvers?: string[];
+    escalationApprovers?: string[];
+    escalation_approver?: string;
+    escalationApprover?: string;
 };
 
 type ApprovalRunContext = {
@@ -8472,6 +8496,33 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
         outputs: normalizeApprovalOutputs(instance.outputs),
         artifacts: normalizeApprovalArtifacts(instance.artifacts),
         events,
+        approvalEngine: String(instance.approval_engine || instance.approvalEngine || '').trim(),
+        hubInstanceID: String(instance.hub_instance_id || instance.hubInstanceID || '').trim(),
+        hubNodeID: String(instance.hub_node_id || instance.hubNodeID || '').trim(),
+        hubSyncError: String(instance.hub_sync_error || instance.hubSyncError || '').trim(),
+        urgency: String(
+            (resultPayload && (resultPayload.urgency || resultPayload.Urgency))
+            || instance.urgency
+            || '',
+        ).trim().toLowerCase(),
+        escalationApprovers: (() => {
+            const raw = (resultPayload && (resultPayload.escalation_approvers || resultPayload.escalationApprovers))
+                || instance.escalation_approvers
+                || instance.escalationApprovers;
+            if (Array.isArray(raw)) {
+                return raw.map((v) => String(v || '').trim()).filter(Boolean);
+            }
+            const one = String(
+                (resultPayload && (resultPayload.escalation_approver || resultPayload.escalationApprover))
+                || '',
+            ).trim();
+            return one ? [one] : undefined;
+        })(),
+        escalationPending: !!(
+            (resultPayload && (resultPayload.escalation_pending || resultPayload.escalationPending))
+            || instance.escalation_pending
+            || instance.escalationPending
+        ),
     };
 }
 function approvalLaneFromEvidence(evidence: AppRunApprovalInstanceEvidence): ApprovalLaneFilter {
@@ -10772,6 +10823,8 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const loadInstances = useCallback(async () => {
         setLoadingState('loading');
         try {
+            // Best-effort Hub↔local reconcile (also runs inside List…All).
+            try { await ReconcileMaclawAppApprovalProjections(); } catch { /* offline ok */ }
             const records = await ListMaclawAppApprovalInstancesAll('all', 200) as BackendApprovalInstance[];
             const remoteViews = (records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[];
             setInstances(mergeApprovalInstanceViews(localSeedInstances, remoteViews));
@@ -10852,6 +10905,32 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const zh = isZh(lang);
         const app = findAppByRuntimeID(apps, instance.appID);
         const statusText = decision === 'approved' ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved') : decision === 'rejected' ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected') : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
+        // Hub-bound instances must advance WorkflowExecutor via DecideMaclawAppApprovalInstance.
+        if ((instance.approvalEngine === 'hub' || instance.hubInstanceID) && (decision === 'approved' || decision === 'rejected')) {
+            try {
+                const openAppView = false;
+                const result = await DecideMaclawAppApprovalInstance({
+                    app_id: instance.appID || 'hub-workflow',
+                    instance_id: instance.id,
+                    approval_id: instance.approvalID,
+                    record_id: instance.recordID,
+                    decision,
+                    note: statusText,
+                    actor: instance.currentAssignee || instance.approver || '',
+                    open_app_view: openAppView,
+                }) as { instance?: BackendApprovalInstance; decided?: boolean };
+                const savedInstance = (result?.instance || null) as BackendApprovalInstance | null;
+                if (savedInstance) {
+                    const view = backendApprovalInstanceToView(savedInstance, lang);
+                    if (view) setInstances((current) => [view, ...current.filter((item) => item.id !== view.id)]);
+                } else {
+                    await loadInstances();
+                }
+            } catch {
+                await loadInstances();
+            }
+            return;
+        }
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
         const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
         const workflowDecisionID = `decision-${Date.now().toString(36)}`;
@@ -10906,6 +10985,9 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             outputs,
             artifacts: instance.artifacts,
             updated_at: now,
+            hub_instance_id: instance.hubInstanceID,
+            hub_node_id: instance.hubNodeID,
+            approval_engine: instance.approvalEngine,
             events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'), decision, message: statusText, action: decision }],
         };
         const fallback = backendApprovalInstanceToView(payload, lang);
@@ -10964,8 +11046,8 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                         <div className="apps-approval-manager__body">
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
-                                    <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
-                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} ·  {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}</span><small>{text.approvalInstanceId}: {item.id} ·  {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div></div>
+                                    <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length) ? 'pending' : ''} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} ·  {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? (isZh(lang) ? ' · Hub' : ' · Hub') : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` · hub:${item.hubInstanceID}` : ''} ·  {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '超时' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '紧急' : 'Critical') : (isZh(lang) ? '关注' : 'Attention')}</span> : null}{(item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length > 0)) ? <span className="apps-approval-row__escalation" title={(item.escalationApprovers || []).join(', ')}>{isZh(lang) ? '升级重投' : 'Escalation retry'}{(item.escalationApprovers && item.escalationApprovers.length) ? `: ${item.escalationApprovers.slice(0, 3).join(', ')}${item.escalationApprovers.length > 3 ? ` +${item.escalationApprovers.length - 3}` : ''}` : ''}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>
                                 ))}

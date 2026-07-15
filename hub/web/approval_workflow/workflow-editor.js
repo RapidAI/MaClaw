@@ -2484,24 +2484,17 @@
   }
 
   function approverRoleCatalog(directory) {
+    // Production path: only Hub directory approval_roles (tenant system setting).
+    // Do not fall back to localStorage — that can show stale assignees after admin edits.
     if (directory && Array.isArray(directory.approvalRoles)) return directory.approvalRoles;
-    var fromHub = loadStoredApprovalRoles();
-    if (fromHub.length) return fromHub;
-    return defaultApprovalRoles();
+    // Directory not loaded yet: show empty role list (designer still offers default templates via defaultApprovalRoles for empty UX only).
+    return [];
   }
 
+  // Deprecated: localStorage is no longer a production source for approval roles.
+  // Kept as a no-op reader so older tests/tooling that call the name do not break.
   function loadStoredApprovalRoles() {
-    try {
-      if (!window.localStorage) return [];
-      var raw = window.localStorage.getItem('maclaw_approval_roles_v1');
-      if (!raw) return [];
-      var parsed = JSON.parse(raw);
-      var roles = Array.isArray(parsed) ? parsed : parsed.roles;
-      if (!Array.isArray(roles)) return [];
-      return roles.map(normalizeApprovalRole).filter(Boolean);
-    } catch (_) {
-      return [];
-    }
+    return [];
   }
 
   function approvalScopeHash(value) {
@@ -2637,6 +2630,22 @@
         rows.push({ disabled: true, name: scope.scopeName, meta: tr('approvalRoleNotConfigured') });
       });
     }
+    // Empty Hub catalog: guide designers to Admin → 审批角色 instead of silent empty list.
+    if (!rows.length && !query && (!catalog || !catalog.length)) {
+      rows.push({
+        disabled: true,
+        name: tr('approvalRolesEmptyTitle'),
+        meta: tr('approvalRolesEmptyHint'),
+        detail: tr('approvalRolesEmptyAction')
+      });
+    } else if (!rows.length && !query && catalog && catalog.length && !configuredCatalog.length) {
+      rows.push({
+        disabled: true,
+        name: tr('approvalRolesNoAssigneesTitle'),
+        meta: tr('approvalRolesNoAssigneesHint'),
+        detail: tr('approvalRolesEmptyAction')
+      });
+    }
     return rows;
   }
 
@@ -2688,7 +2697,21 @@
     } else {
       html = renderApproverRowsSection(tr('approverRole'), approvalRoleRows('organization', directory, query)) + renderApproverGroup(directory, directory.root, query, { includeRoles: false });
     }
-    body.innerHTML = html || '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>';
+    if (!html) {
+      // Distinguish "no match" vs "Hub has no configured approval roles".
+      var catalog = approverRoleCatalog(directory);
+      var hasConfigured = (catalog || []).some(approvalRoleHasAssignees);
+      if (!hasConfigured) {
+        html = '<div class="approver-picker-empty approver-picker-empty--guide" role="status">' +
+          '<strong>' + escapeHtml(tr('approvalRolesEmptyTitle')) + '</strong>' +
+          '<p>' + escapeHtml(tr('approvalRolesEmptyHint')) + '</p>' +
+          '<p class="approver-picker-empty__action">' + escapeHtml(tr('approvalRolesEmptyAction')) + '</p>' +
+          '</div>';
+      } else {
+        html = '<div class="approver-picker-empty">' + escapeHtml(tr('approverPickerEmpty')) + '</div>';
+      }
+    }
+    body.innerHTML = html;
     body.querySelectorAll('[data-approver-id]').forEach(function (row) {
       row.addEventListener('click', function () { toggleApproverSelection(row.getAttribute('data-approver-id')); });
       row.addEventListener('keydown', function (event) {

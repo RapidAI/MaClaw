@@ -295,13 +295,14 @@ func (s *PgInstanceStore) QueryMyInitiated(ctx context.Context, userID string, f
 			item.CompletedAt = &completedAt.Time
 		}
 
-		// Extract workflow_name from instance_data JSON
+		// Extract workflow_name + escalation markers from instance_data JSON
 		if len(dataJSON) > 0 {
 			var data map[string]interface{}
 			if json.Unmarshal(dataJSON, &data) == nil {
 				if name, ok := data["workflow_name"].(string); ok {
 					item.WorkflowName = name
 				}
+				ApplyEscalationFieldsToDirectoryItem(&item, data)
 			}
 		}
 
@@ -351,7 +352,7 @@ func (s *PgInstanceStore) QueryPendingMyAction(ctx context.Context, userID strin
 			Urgency:     "normal",
 		}
 
-		// Extract workflow_name and initiator_name from instance_data
+		// Extract workflow_name, initiator_name, and escalation markers from instance_data
 		if len(dataJSON) > 0 {
 			var data map[string]interface{}
 			if json.Unmarshal(dataJSON, &data) == nil {
@@ -361,6 +362,7 @@ func (s *PgInstanceStore) QueryPendingMyAction(ctx context.Context, userID strin
 				if iname, ok := data["initiator_name"].(string); ok {
 					item.InitiatorName = iname
 				}
+				ApplyEscalationFieldsToDirectoryItem(&item, data)
 			}
 		}
 
@@ -436,7 +438,7 @@ func (s *PgInstanceStore) QueryPendingMyConfirmation(ctx context.Context, userID
 		}
 		item.TimeRemaining = &remaining
 
-		// Extract workflow_name and result from instance_data
+		// Extract workflow_name, result, and escalation markers from instance_data
 		if len(dataJSON) > 0 {
 			var data map[string]interface{}
 			if json.Unmarshal(dataJSON, &data) == nil {
@@ -446,6 +448,7 @@ func (s *PgInstanceStore) QueryPendingMyConfirmation(ctx context.Context, userID
 				if result, ok := data["result"].(string); ok {
 					item.Result = result
 				}
+				ApplyEscalationFieldsToDirectoryItem(&item, data)
 			}
 		}
 
@@ -555,7 +558,7 @@ func (s *PgInstanceStore) QueryCompleted(ctx context.Context, userID string, fil
 			item.CompletedAt = &completedAt.Time
 		}
 
-		// Extract workflow_name, result, and determine user role from instance_data
+		// Extract workflow_name, result, escalation markers, and determine user role
 		if len(dataJSON) > 0 {
 			var data map[string]interface{}
 			if json.Unmarshal(dataJSON, &data) == nil {
@@ -569,6 +572,7 @@ func (s *PgInstanceStore) QueryCompleted(ctx context.Context, userID string, fil
 				if initiatorID, ok := data["initiator_id"].(string); ok && initiatorID == userID {
 					item.UserRole = "initiator"
 				}
+				ApplyEscalationFieldsToDirectoryItem(&item, data)
 			}
 		}
 

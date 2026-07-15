@@ -60,6 +60,10 @@ type DirectoryItem struct {
 	Urgency       string     `json:"urgency,omitempty"`              // normal/approaching_timeout/overdue
 	TimeRemaining *int       `json:"time_remaining_hours,omitempty"` // hours until timeout
 	ConfirmType   string     `json:"confirm_type,omitempty"`         // executor/notifier
+	// EscalationPending is true when EscalationManager is still retrying delivery.
+	EscalationPending bool `json:"escalation_pending,omitempty"`
+	// EscalationApprovers lists machine/user IDs awaiting redelivery (multi-failure).
+	EscalationApprovers []string `json:"escalation_approvers,omitempty"`
 }
 
 // DirectoryResponse is the paginated response for directory queries.
@@ -227,6 +231,7 @@ func (ds *DirectoryService) PendingMyAction(ctx context.Context, userID string) 
 			Urgency:       urgency,
 			TimeRemaining: timeRemaining,
 		}
+		ApplyEscalationFieldsToDirectoryItem(&item, inst.InstanceData)
 
 		items = append(items, item)
 	}
@@ -329,6 +334,53 @@ func extractStringFromInstanceData(data map[string]interface{}, key string) stri
 		}
 	}
 	return ""
+}
+
+// extractEscalationFieldsFromInstanceData reads EscalationManager markers written by
+// WorkflowExecutor (escalation_pending / escalation_approvers / escalation_approver).
+func extractEscalationFieldsFromInstanceData(data map[string]interface{}) (pending bool, approvers []string) {
+	if data == nil {
+		return false, nil
+	}
+	switch v := data["escalation_pending"].(type) {
+	case bool:
+		pending = v
+	case string:
+		pending = strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+	}
+	approvers = stringSliceFromInstanceData(data["escalation_approvers"])
+	if len(approvers) == 0 {
+		if s := strings.TrimSpace(extractStringFromInstanceData(data, "escalation_approver")); s != "" {
+			approvers = []string{s}
+		}
+	}
+	if len(approvers) > 0 {
+		pending = true
+	}
+	return pending, approvers
+}
+
+// ApplyEscalationFieldsToDirectoryItem copies escalation markers from instance
+// data onto a DirectoryItem and mildly elevates urgency when retries are pending.
+func ApplyEscalationFieldsToDirectoryItem(item *DirectoryItem, data map[string]interface{}) {
+	if item == nil {
+		return
+	}
+	pending, approvers := extractEscalationFieldsFromInstanceData(data)
+	if !pending && len(approvers) == 0 {
+		return
+	}
+	item.EscalationPending = pending || len(approvers) > 0
+	if len(approvers) > 0 {
+		item.EscalationApprovers = approvers
+	}
+	if item.EscalationPending && strings.TrimSpace(item.Result) == "" {
+		item.Result = "escalation pending"
+	}
+	// Soft elevate so ops lists surface retry pressure without pretending overdue.
+	if item.EscalationPending && (item.Urgency == "" || item.Urgency == UrgencyNormal) {
+		item.Urgency = UrgencyApproachingTimeout
+	}
 }
 
 // PendingMyConfirmation returns instances with pending confirmations for the user.

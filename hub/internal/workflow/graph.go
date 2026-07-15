@@ -64,6 +64,10 @@ type ApprovalNodeConfig struct {
 	ApproverOrder    []string     `json:"approver_order,omitempty"`
 	TimeoutHours     int          `json:"timeout_hours"`
 	FallbackApprover string       `json:"fallback_approver,omitempty"`
+	// ExecutionMode is the role-level policy applied when dispatching to VEs:
+	// manual | digital_suggest | digital_review | auto.
+	// When empty, VEs treat the request as auto-capable (legacy).
+	ExecutionMode string `json:"execution_mode,omitempty"`
 }
 
 // ConditionBranchConfig is the configuration for a Condition Branch node.

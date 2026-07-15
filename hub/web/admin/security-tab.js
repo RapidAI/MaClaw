@@ -3324,33 +3324,19 @@
   function loadApprovalRoles() {
     var sec = state();
     if (Array.isArray(sec.approvalRoles)) return sec.approvalRoles;
-    sec.approvalRoles = loadApprovalRolesFromLocal();
+    // Production source of truth is Hub GET /api/admin/security/approval-roles only.
+    // Never seed from localStorage (stale assignees after admin changes).
+    sec.approvalRoles = [];
     return sec.approvalRoles;
   }
 
   function loadApprovalRolesFromLocal() {
-    var roles = [];
-    try {
-      var raw = global.localStorage && global.localStorage.getItem(APPROVAL_ROLES_STORAGE_KEY);
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        roles = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.roles) ? parsed.roles : []);
-      }
-    } catch (_) {
-      roles = [];
-    }
-    return roles.map(normalizeApprovalRoleRecord).filter(Boolean);
+    // Deprecated non-production reader — always empty.
+    return [];
   }
 
   function loadApprovalFunctionScopesFromLocal() {
-    try {
-      var raw = global.localStorage && global.localStorage.getItem(APPROVAL_ROLES_STORAGE_KEY);
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.functionScopes)) return setApprovalFunctionScopes(parsed.functionScopes);
-        if (parsed && Array.isArray(parsed.function_scopes)) return setApprovalFunctionScopes(parsed.function_scopes);
-      }
-    } catch (_) {}
+    // On Hub failure use built-in function scope catalog only (no localStorage roles).
     return setApprovalFunctionScopes(defaultApprovalFunctionScopes());
   }
 
@@ -3364,14 +3350,18 @@
       var incomingScopes = data && (data.functionScopes || data.function_scopes);
       setApprovalFunctionScopes(Array.isArray(incomingScopes) ? incomingScopes : (data && data.updated_at ? [] : defaultApprovalFunctionScopes()));
       sec.approvalRolesLoaded = true;
+      // Optional local cache for offline UI only — never used as load source of truth.
       try {
-        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: sec.approvalRoles, functionScopes: approvalFunctionScopes(), updated_at: data && data.updated_at || '' }));
+        if (global.localStorage) global.localStorage.setItem(APPROVAL_ROLES_STORAGE_KEY, JSON.stringify({ roles: sec.approvalRoles, functionScopes: approvalFunctionScopes(), updated_at: data && data.updated_at || '', source: 'hub' }));
       } catch (_) {}
       return sec.approvalRoles;
-    }).catch(function() {
-      sec.approvalRoles = loadApprovalRolesFromLocal();
+    }).catch(function(err) {
+      sec.approvalRoles = [];
       loadApprovalFunctionScopesFromLocal();
       sec.approvalRolesLoaded = true;
+      if (typeof showToast === 'function') {
+        try { showToast(st('loadApprovalRolesFailed') || ('Failed to load approval roles from Hub' + (err && err.message ? (': ' + err.message) : '')), 'error'); } catch (_) {}
+      }
       return sec.approvalRoles;
     }).finally(function() {
       sec.approvalRolesLoading = false;

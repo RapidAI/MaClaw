@@ -1569,6 +1569,62 @@
     background: color-mix(in srgb, var(--theme-warning-bg) 42%, var(--theme-surface));
 }
 
+.apps-approval-row[data-urgency='overdue'] {
+    border-color: color-mix(in srgb, var(--theme-danger, #dc2626) 42%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger, #dc2626) 10%, var(--theme-surface));
+}
+
+.apps-approval-row[data-urgency='critical'] {
+    border-color: color-mix(in srgb, var(--theme-danger, #b91c1c) 55%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger, #b91c1c) 14%, var(--theme-surface));
+    box-shadow: inset 3px 0 0 var(--theme-danger, #b91c1c);
+}
+
+.apps-approval-row__urgency {
+    display: inline-flex !important;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.62rem !important;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.apps-approval-row__urgency--overdue {
+    color: #9a3412;
+    background: #ffedd5;
+}
+
+.apps-approval-row__urgency--critical {
+    color: #991b1b;
+    background: #fee2e2;
+}
+
+.apps-approval-row__urgency--attention {
+    color: #854d0e;
+    background: #fef9c3;
+}
+
+.apps-approval-row[data-escalation='pending'] {
+    border-color: color-mix(in srgb, #7c3aed 36%, var(--theme-border));
+}
+
+.apps-approval-row__escalation {
+    display: inline-flex !important;
+    align-items: center;
+    max-width: 100%;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.62rem !important;
+    font-weight: 800;
+    color: #5b21b6;
+    background: #ede9fe;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .apps-approval-row strong,
 .apps-approval-row span,
 .apps-approval-row small {

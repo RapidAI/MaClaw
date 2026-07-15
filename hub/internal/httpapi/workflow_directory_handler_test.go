@@ -102,11 +102,12 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 		t.Fatalf("save runtime registry: %v", err)
 	}
 	if err := saveVERegistry(ctx, tenantSystem, digitalEmployeeRegistry{Employees: []digitalEmployeeEntry{
-		{ID: "ve-active", MachineID: "ve-machine-active", Name: "Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com"},
-		{ID: "ve-finance-twin", MachineID: "ve-machine-finance-twin", Name: "Finance Twin", Status: veStatusActive, OwnerEmail: "finance@example.com"},
-		{ID: "ve-finance-bot", MachineID: "ve-machine-finance-bot", Name: "Finance Bot", Status: veStatusActive, VisibleGroupIDs: []string{financeGroup.ID}},
-		{ID: "ve-ghost", MachineID: "ve-ghost", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com"},
-		{ID: "ve-disabled", MachineID: "ve-machine-disabled", Name: "Disabled Worker", Status: veStatusDisabled, OwnerEmail: "owner@example.com"},
+		{ID: "ve-active", MachineID: "ve-machine-active", Name: "Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com", ApprovalCapabilityEnabled: true},
+		{ID: "ve-finance-twin", MachineID: "ve-machine-finance-twin", Name: "Finance Twin", Status: veStatusActive, OwnerEmail: "finance@example.com", ApprovalCapabilityEnabled: true},
+		{ID: "ve-finance-bot", MachineID: "ve-machine-finance-bot", Name: "Finance Bot", Status: veStatusActive, VisibleGroupIDs: []string{financeGroup.ID}, ApprovalCapabilityEnabled: true},
+		{ID: "ve-no-approval", MachineID: "ve-machine-no-approval", Name: "No Approval Cap", Status: veStatusActive, OwnerEmail: "owner@example.com", ApprovalCapabilityEnabled: false},
+		{ID: "ve-ghost", MachineID: "ve-ghost", PlatformID: maclawSrvRuntimePlatformID, PlatformEmployeeID: "deleted-employee", Name: "Deleted Runtime Worker", Status: veStatusActive, OwnerEmail: "owner@example.com", ApprovalCapabilityEnabled: true},
+		{ID: "ve-disabled", MachineID: "ve-machine-disabled", Name: "Disabled Worker", Status: veStatusDisabled, OwnerEmail: "owner@example.com", ApprovalCapabilityEnabled: true},
 	}}); err != nil {
 		t.Fatalf("save ve registry: %v", err)
 	}
@@ -155,8 +156,13 @@ func TestWorkflowApproverDirectoryHandlerReturnsTenantScopedApprovers(t *testing
 	if !jsonListContains(body.Machines, "machine_id", "machine-approver") || !jsonListContains(body.Machines, "machine_id", "machine-finance") || jsonListContains(body.Machines, "machine_id", "machine-other") {
 		t.Fatalf("unexpected machines: %#v", body.Machines)
 	}
-	if len(body.Employees) != 3 || !employeeListContains(body.Employees, "ve-machine-active") || !employeeListContains(body.Employees, "ve-machine-finance-twin") || !employeeListContains(body.Employees, "ve-machine-finance-bot") {
+	// active + approval_capability_enabled only; ve-no-approval and ve-disabled excluded;
+	// ve-ghost may drop via presence enrichment when runtime is missing.
+	if !employeeListContains(body.Employees, "ve-machine-active") || !employeeListContains(body.Employees, "ve-machine-finance-twin") || !employeeListContains(body.Employees, "ve-machine-finance-bot") {
 		t.Fatalf("unexpected employees: %#v", body.Employees)
+	}
+	if employeeListContains(body.Employees, "ve-machine-no-approval") || employeeListContains(body.Employees, "ve-machine-disabled") {
+		t.Fatalf("employees without approval capability or disabled should be filtered: %#v", body.Employees)
 	}
 	if len(body.ApprovalRoles) != 2 {
 		t.Fatalf("unexpected approval roles: %#v", body.ApprovalRoles)

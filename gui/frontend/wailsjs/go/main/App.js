@@ -2956,6 +2956,10 @@ export function ListMaclawAppApprovalInstancesAll(arg1, arg2) {
   return window['go']['main']['App']['ListMaclawAppApprovalInstancesAll'](arg1, arg2);
 }
 
+export function ReconcileMaclawAppApprovalProjections() {
+  return window['go']['main']['App']['ReconcileMaclawAppApprovalProjections']();
+}
+
 export function StartMaclawAppApprovalWorkflow(arg1) {
   return window['go']['main']['App']['StartMaclawAppApprovalWorkflow'](arg1);
 }

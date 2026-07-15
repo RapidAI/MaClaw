@@ -44,6 +44,8 @@ MaClaw App 是基于 **AG UI 协议**和 **Skill 运行时**构建的应用程�
 
 工具应用是最简单的 MaClaw App 类型。它将一个已安装的 Skill 包装为"上传文件 → 处理 → 输出结果"的固定 UI 模式。适用于文档转换、数据提取、内容生成等单次执行任务。
 
+> **名词隔离**：AG UI 的 `tool:approval`（工具安全确认）属于高风险操作闸门，**不是**企业业务审批，不走 Hub WorkflowExecutor / `enterprise_approval_app` 链路。
+
 ### 运行模式：`fixed_skill_ui`
 
 ```
@@ -152,56 +154,98 @@ type SkillAppManifestEntry struct {
 
 ### 概念
 
-审批型应用将 DataSrv 的数据管理能力与 Hub 的审批工作流引擎结合。用户提交数据后自动触发审批流程，审批人在 AG UI 面板或 IM 通道中处理。
+审批型应用将 DataSrv 的数据管理能力与 Hub 的审批工作流引擎结合。用户提交数据后触发审批；**权威状态在 Hub WorkflowExecutor**，桌面本地 registry 与 DataSrv 为投影。
 
-### 运行模式：`agent_dynamic_ui`
+### 运行模式：`agent_dynamic_ui` + 应用面板操作区
+
+完整审批队列已迁到应用面板左侧 **操作 → 审批状态**（全局实例管理），审批应用运行页只保留轻量摘要与跳转。详见 [app-panel-approval-ops-redesign-zh.md](./app-panel-approval-ops-redesign-zh.md)、[approval-maclaw-app-e2e-improvement-plan-zh.md](./approval-maclaw-app-e2e-improvement-plan-zh.md)、[approval-e2e-verification-zh.md](./approval-e2e-verification-zh.md)。
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│              enterprise_approval_app 运行界面              │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ [我的申请] [待我审批] [已处理] [需关注] [全部]     │    │
-│  └──────────────────────────────────────────────────┘    │
-│                                                          │
-│  ┌──────────────┐    ┌────────────────────────────────┐  │
-│  │ 审批列表      │    │ 审批详情                        │  │
-│  │              │    │                                │  │
-│  │ EXP-001 *待审│    │ 标题：差旅报销                  │  │
-│  │ EXP-002 通过│    │ 申请人：张三                    │  │
-│  │ EXP-003 拒绝│    │ 金额：¥2,580                   │  │
-│  │              │    │ 当前节点：部门主管审批           │  │
-│  │              │    │                                │  │
-│  │              │    │ [通过]  [拒绝]  [↑ 转签]  │  │
-│  └──────────────┘    └────────────────────────────────┘  │
+┌─ 应用面板 ───────────────────────────────────────────────┐
+│ 操作                                                     │
+│  · 审批状态  → 全局列表（本地 + DataSrv + Hub directory）  │
+│  · 运行记录                                              │
+│ 应用列表 · 报销申请（轻量摘要 + 打开工作区）                │
 └──────────────────────────────────────────────────────────┘
 ```
 
-### 执行链路
+### 执行链路（当前实现）
 
 ```
-1. 用户填写审批表单（通过 AG UI form 或 App 界面）
+1. 用户填写审批表单（AppView / 应用 UI）
 
-2. 调用 RunNLSkillAsync(workflowSkillID, {
-     _maclaw_app: true,
-     app_id: "expense",
-     business_entity: "expense_report",
-     business_action: "submit",
-     ...表单数据
-   })
+2. StartMaclawAppApprovalWorkflow
+     → 本地 registry（pending）
+     → SyncMaclawAppApprovalInstanceToDataSrv
+     → 可选 Trigger Hub: POST /api/v1/workflows/{id}/trigger
+     → 回写 hub_instance_id / hub_node_id（approval_engine=hub）
 
-3. Workflow Skill 执行 → 创建审批实例 (ApprovalInstance)
+3. Hub WorkflowExecutor
+     → ResolveApproverIDs（含 role:dynamic:applicant_department:…）
+     → executionMode 排序 / 数字两阶段（sequential: digital → human）
+     → HubApprovalDispatcher → ve:approval_request
 
-4. Hub WorkflowExecutor 按图流转：
-   trigger → form(填写) → approval(审批) → action(执行) → terminal
+4. 桌面 VE
+     → ACL + 规则引擎
+     → digital_suggest: 自动结果仅作建议，入待人工
+     → digital_review: 自动拒绝可终裁；通过仍需人工
+     → auto: 直接 Decision API
+     → require_human: 本地 pending_my_approval
 
-5. 审批人收到通知 → 在 AG UI / IM 中做出决策 (approve/reject)
+5. 人工决策
+     → DecideMaclawAppApprovalInstance
+     → POST /api/v1/instances/{id}/nodes/{node}/decision
+     → ResumeInstance
 
-6. 结果回写：
-   → SyncMaclawAppApprovalInstanceToDataSrv
-   → DataSrv 更新 RecordApproval 状态
-   → 前端刷新审批列表
+6. 阻塞 / 超时 / 升级（推送，无需等刷新）
+     → 主路径 Dispatch 失败（single/sequential）：
+         · 有 FallbackApprover → 先 fallback
+         · 否则 EscalationManager 对主审批人入队重试
+     → 会签 / N 票部分派发失败：
+         · 有 EscalationManager：失败人入队，继续 fan-out 其余审批人
+         · instance data：`escalation_approvers[]` 累积多失败人（`escalation_approver` 为最后一人）
+         · 重投成功从列表移除；全清或 markNodeBlocked 时清 pending 标记
+         · 无 manager：soft-block 实例（兼容旧行为）
+     → 超时/不可达 → FallbackApprover；DispatchFallback 失败：
+         · 有 EscalationManager：入队重试 +「escalation pending」推送
+         · 无 manager 或 max-retries 耗尽：markNodeBlocked
+     → HubWorkflowParticipantNotifier → ve:workflow_status
+       · event=blocked | escalation
+       · urgency=attention | overdue | critical
+       · 广播到发起人全部在线机（全离线则回退全部已知机）
+     → 桌面 handleVEWorkflowStatus → 本地 attention + ResultPayload.urgency / escalation_approvers
+     → 操作台列表按 urgency 分层；升级重投人显示为「升级重投: a, b」
+
+7. 刷新 / 对账
+     → ReconcileMaclawAppApprovalProjections
+     → 列表合并本地 + DataSrv + Hub directory
 ```
+
+### 操作台投影字段（SoT → UI）
+
+| 来源 | 本地/操作台字段 | 说明 |
+| --- | --- | --- |
+| Hub directory `status=blocked` / `urgency=overdue` | `status=attention`、`lane=attention` | 超时压力、节点阻塞 |
+| Hub `escalation_pending` / `escalation_approvers` | `ResultPayload.escalation_*` + 徽章「升级重投」 | EscalationManager 重投队列 |
+| Hub push `ve:workflow_status` | 同上 + `urgency` 徽章 | 无需等刷新 |
+| Reconcile | 对齐终态 / missing / upsert 发起人侧 attention | Hub 不可达时**不改**本地 |
+
+刷新路径：`ListMaclawAppApprovalInstancesAll` → soft `ReconcileMaclawAppApprovalProjections` → 合并本地 + DataSrv + Hub directory。
+
+### 审批角色与执行方式
+
+| executionMode | 行为 |
+| --- | --- |
+| `manual` | 优先真人机器 |
+| `digital_suggest` | 数字先建议，**人工终裁** |
+| `digital_review` | 数字可拒；通过后仍需人工 |
+| `auto` | 数字可直接 approve/reject |
+
+动态角色：`role:dynamic:applicant_department:department_manager` 在运行时解析为申请人所在部门的 `role:department:<deptId>:department_manager`。
+
+**角色权威源**：Hub `approval_roles_v1` / Approver Directory。设计器与 Admin 不再以浏览器 localStorage 作为生产角色表；无角色或无 assignee 时设计器展示 empty-state，引导到 Hub Admin → 安全 → 审批角色。
+
+**验证**：`scripts\run-approval-e2e-checks.cmd`；实机步骤见 [approval-e2e-verification-zh.md](./approval-e2e-verification-zh.md)。
 
 ### Manifest 结构
 
@@ -266,7 +310,7 @@ ModeSequential      // 顺序审批（逐个）
 
 ### 概念
 
-企业普通应用绑定到 DataSrv 的 Business Actions/Views/Reports，但没有审批工作流。适用于主数据管理（客户、供应商、物料等）和业务操作（录入、查询、导出）。
+企业普通应用绑定到 DataSrv 的 Business Actions/Views/Reports，但**没有** Hub 审批工作流（不产生 `hub_instance_id`、不进审批操作台 pending/attention）。适用于主数据管理（客户、供应商、物料等）和业务操作（录入、查询、导出）。若业务需要审批，应使用 `enterprise_approval_app` 并绑定已发布 Hub workflow。
 
 ### 运行模式：`agent_dynamic_ui`
 

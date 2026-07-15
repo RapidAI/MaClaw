@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -98,6 +99,8 @@ func (h *VEMessageHandler) HandleGroupEnvelope(envelope a2a.GroupEnvelope) {
 
 // handleApprovalRequest processes an incoming approval_request envelope by
 // deserializing the payload and routing it to the VE approval handler.
+// Auto decisions are submitted to Hub Decision API (ResumeInstance).
+// require_human enqueues a local pending instance for the human operator.
 func (h *VEMessageHandler) handleApprovalRequest(envelope a2a.GroupEnvelope) {
 	if len(envelope.Payload) == 0 {
 		log.Printf("[ve-handler] received approval_request with empty payload, ignoring")
@@ -109,51 +112,132 @@ func (h *VEMessageHandler) handleApprovalRequest(envelope a2a.GroupEnvelope) {
 		log.Printf("[ve-handler] failed to parse approval request payload: %v", err)
 		return
 	}
+	// SessionID on the envelope is the Hub workflow instance id (see HubApprovalDispatcher).
+	if strings.TrimSpace(req.InstanceID) == "" {
+		req.InstanceID = strings.TrimSpace(envelope.SessionID)
+	}
 
-	// Load VE approval config and create handler if needed
 	cfg := h.loadVEApprovalConfig()
 	if cfg == nil || !cfg.Enabled {
 		log.Printf("[ve-handler] approval capability disabled, rejecting request %s", req.ID)
-		h.sendApprovalResponse(envelope, req.ID, "reject", "approval capability is disabled on this VE")
+		h.submitHubApprovalDecision(req, "reject", "approval capability is disabled on this VE", "")
 		return
 	}
 
 	details, err := decodeVEApprovalDetails(req.Details)
 	if err != nil {
 		log.Printf("[ve-handler] failed to parse approval request details: %v", err)
-		h.sendApprovalResponse(envelope, req.ID, "reject", "invalid approval request details: "+err.Error())
+		h.submitHubApprovalDecision(req, "reject", "invalid approval request details: "+err.Error(), "")
 		return
 	}
 
 	handler := NewVEApprovalHandler(cfg)
+	detailsAny := map[string]any(details)
 	veReq := &VEApprovalRequest{
-		ID:            req.ID,
-		RequesterID:   req.RequesterID,
-		RequesterName: req.RequesterName,
-		Payload:       details,
+		ID:                  req.ID,
+		RequesterID:         req.RequesterID,
+		RequesterName:       req.RequesterName,
+		RequesterDepartment: firstNonEmptyMaclawAppString(maclawAppStringValue(detailsAny, "requester_department", "requesterDepartment", "department"), req.RequesterDepartment),
+		RequesterRole:       firstNonEmptyMaclawAppString(maclawAppStringValue(detailsAny, "requester_role", "requesterRole", "role"), req.RequesterRole),
+		RequesterSkills:     firstNonEmptyMaclawAppStringList(req.RequesterSkills, maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(details["requester_skills"], details["requesterSkills"], details["skills"]))),
+		Payload:             details,
 	}
 
 	decision, err := handler.HandleApprovalRequest(context.Background(), veReq)
 	if err != nil {
 		log.Printf("[ve-handler] approval request %s rejected: %v", req.ID, err)
-		h.sendApprovalResponse(envelope, req.ID, "reject", err.Error())
+		h.submitHubApprovalDecision(req, "reject", err.Error(), "")
 		return
 	}
 
-	h.sendApprovalResponse(envelope, req.ID, string(decision.Decision), decision.Rationale)
+	matchedRule := ""
+	if decision.MatchedRule != nil {
+		matchedRule = decision.MatchedRule.Name
+	}
+	// Two-phase role policy (digital_suggest / digital_review): digital output is
+	// advisory or pre-check; human must finalize unless digital_review auto-rejects.
+	execMode := normalizeVEExecutionMode(firstNonEmptyMaclawAppString(
+		maclawAppStringValue(detailsAny, "execution_mode", "executionMode"),
+		req.ExecutionMode,
+	))
+	decision = applyVETwoPhaseExecutionPolicy(execMode, decision)
+
+	switch decision.Decision {
+	case DecisionAutoApprove:
+		h.submitHubApprovalDecision(req, "approve", decision.Rationale, matchedRule)
+	case DecisionAutoReject:
+		h.submitHubApprovalDecision(req, "reject", decision.Rationale, matchedRule)
+	case DecisionRequireHuman:
+		h.enqueueRequireHumanApproval(req, decision.Rationale, matchedRule, details)
+	default:
+		log.Printf("[ve-handler] unknown routing decision %q for request %s; escalating to human", decision.Decision, req.ID)
+		h.enqueueRequireHumanApproval(req, decision.Rationale, matchedRule, details)
+	}
 }
 
 // veApprovalRequestPayload is the JSON structure within an approval_request envelope payload.
+// It mirrors hub/internal/workflow.ApprovalRequest plus optional requester org context.
 type veApprovalRequestPayload struct {
-	ID            string          `json:"id"`
-	InstanceID    string          `json:"instance_id"`
-	NodeID        string          `json:"node_id"`
-	RequesterID   string          `json:"requester_id"`
-	RequesterName string          `json:"requester_name"`
-	WorkflowName  string          `json:"workflow_name"`
-	Title         string          `json:"title"`
-	Summary       string          `json:"summary"`
-	Details       json.RawMessage `json:"details"`
+	ID                  string          `json:"id"`
+	InstanceID          string          `json:"instance_id"`
+	NodeID              string          `json:"node_id"`
+	RequesterID         string          `json:"requester_id"`
+	RequesterName       string          `json:"requester_name"`
+	RequesterDepartment string          `json:"requester_department,omitempty"`
+	RequesterRole       string          `json:"requester_role,omitempty"`
+	RequesterSkills     []string        `json:"requester_skills,omitempty"`
+	WorkflowName        string          `json:"workflow_name"`
+	Title               string          `json:"title"`
+	Summary             string          `json:"summary"`
+	ExecutionMode       string          `json:"execution_mode,omitempty"`
+	Details             json.RawMessage `json:"details"`
+}
+
+func normalizeVEExecutionMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "manual", "human":
+		return "manual"
+	case "digital_suggest", "digital-suggest", "suggest":
+		return "digital_suggest"
+	case "digital_review", "digital-review", "review":
+		return "digital_review"
+	case "auto", "automatic", "auto_approve":
+		return "auto"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+// applyVETwoPhaseExecutionPolicy enforces digital_suggest / digital_review semantics:
+//   - digital_suggest: never finalize on VE; auto_* becomes require_human with suggestion text
+//   - digital_review: auto_reject may finalize; auto_approve still needs human confirmation
+//   - auto / empty: leave decision unchanged
+func applyVETwoPhaseExecutionPolicy(execMode string, decision *ApprovalDecision) *ApprovalDecision {
+	if decision == nil {
+		return &ApprovalDecision{Decision: DecisionRequireHuman, Rationale: "nil decision", DecidedAt: time.Now()}
+	}
+	switch normalizeVEExecutionMode(execMode) {
+	case "digital_suggest":
+		if decision.Decision == DecisionAutoApprove || decision.Decision == DecisionAutoReject {
+			suggestion := decision.Rationale
+			if suggestion == "" {
+				suggestion = string(decision.Decision)
+			}
+			decision.Decision = DecisionRequireHuman
+			decision.Rationale = "digital_suggest: " + suggestion
+		}
+	case "digital_review":
+		if decision.Decision == DecisionAutoApprove {
+			suggestion := decision.Rationale
+			if suggestion == "" {
+				suggestion = "digital pre-check passed"
+			}
+			decision.Decision = DecisionRequireHuman
+			decision.Rationale = "digital_review: " + suggestion
+		}
+		// auto_reject stays reject (digital may fail the pre-check).
+	}
+	return decision
 }
 
 func decodeVEApprovalDetails(raw json.RawMessage) (map[string]interface{}, error) {
@@ -170,40 +254,145 @@ func decodeVEApprovalDetails(raw json.RawMessage) (map[string]interface{}, error
 	return details, nil
 }
 
-// sendApprovalResponse sends an approval_response back through the Hub
-// as a discussion message with the decision embedded in the content.
-func (h *VEMessageHandler) sendApprovalResponse(originalEnvelope a2a.GroupEnvelope, requestID, decision, rationale string) {
-	if h.app == nil {
+// submitHubApprovalDecision advances Hub WorkflowExecutor via Decision API.
+// decision must be Hub wire format: approve | reject | escalate.
+func (h *VEMessageHandler) submitHubApprovalDecision(req veApprovalRequestPayload, decision, rationale, matchedRule string) {
+	if h == nil || h.app == nil {
 		return
 	}
-
-	sessionID := originalEnvelope.SessionID
-	if sessionID == "" {
-		log.Printf("[ve-handler] cannot send approval response: no session ID in original envelope")
+	instanceID := strings.TrimSpace(req.InstanceID)
+	nodeID := strings.TrimSpace(req.NodeID)
+	decision = normalizeMaclawAppHubDecisionWire(decision)
+	if instanceID == "" || nodeID == "" {
+		log.Printf("[ve-handler] cannot submit hub decision: missing instance_id/node_id request=%s", req.ID)
 		return
 	}
-
-	response := map[string]interface{}{
-		"type":       "approval_response",
-		"request_id": requestID,
-		"decision":   decision,
-		"rationale":  rationale,
-		"decided_at": time.Now().UTC().Format(time.RFC3339),
+	if decision == "" {
+		log.Printf("[ve-handler] cannot submit hub decision: invalid decision for request %s", req.ID)
+		return
 	}
-
-	payload, err := json.Marshal(response)
+	// Machine token is required: workflowUserAuth sets X-Owner-ID = machine_id (the resolved approver identity).
+	hubURL, token, err := h.app.getHubCredentials()
 	if err != nil {
-		log.Printf("[ve-handler] failed to marshal approval response: %v", err)
+		log.Printf("[ve-handler] hub credentials unavailable for request %s: %v", req.ID, err)
+		maclawAppApprovalTrace("ve_decision_no_creds", map[string]any{
+			"request_id": req.ID, "hub_instance_id": instanceID, "hub_node_id": nodeID, "error": err.Error(),
+		})
 		return
 	}
-
-	// Send as a discussion message with the approval response payload in content.
-	msg := a2a.GroupDiscussionMessage{
-		Kind:    a2a.MessageStatement,
-		Content: string(payload),
+	path := "/api/v1/instances/" + url.PathEscape(instanceID) + "/nodes/" + url.PathEscape(nodeID) + "/decision"
+	body := map[string]any{
+		"decision":     decision,
+		"rationale":    strings.TrimSpace(rationale),
+		"matched_rule": strings.TrimSpace(matchedRule),
+		"request_id":   strings.TrimSpace(req.ID),
 	}
-	if err := h.app.sendVEA2AMessage(sessionID, msg); err != nil {
-		log.Printf("[ve-handler] failed to send approval response for request %s: %v", requestID, err)
+	maclawAppApprovalTrace("ve_decision_submit", map[string]any{
+		"request_id": req.ID, "hub_instance_id": instanceID, "hub_node_id": nodeID, "decision": decision,
+	})
+	if _, err := h.app.postHubJSON(hubURL, token, path, body); err != nil {
+		log.Printf("[ve-handler] hub decision failed request=%s instance=%s node=%s decision=%s: %v", req.ID, instanceID, nodeID, decision, err)
+		maclawAppApprovalTrace("ve_decision_error", map[string]any{
+			"request_id": req.ID, "hub_instance_id": instanceID, "hub_node_id": nodeID, "error": err.Error(),
+		})
+		// Keep a local attention record so the operator can retry from the App panel.
+		h.recordHubApprovalAttention(req, err.Error())
+		return
+	}
+	log.Printf("[ve-handler] hub decision ok request=%s instance=%s node=%s decision=%s", req.ID, instanceID, nodeID, decision)
+	maclawAppApprovalTrace("ve_decision_ok", map[string]any{
+		"request_id": req.ID, "hub_instance_id": instanceID, "hub_node_id": nodeID, "decision": decision,
+	})
+}
+
+// enqueueRequireHumanApproval parks a hub-bound local projection for human decision
+// without calling ResumeInstance (Hub stays blocked on the approval node).
+func (h *VEMessageHandler) enqueueRequireHumanApproval(req veApprovalRequestPayload, rationale, matchedRule string, details map[string]interface{}) {
+	if h == nil || h.app == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	title := firstNonEmptyMaclawAppString(req.Title, req.WorkflowName, "Approval request")
+	inst := maclawAppApprovalInstance{
+		AppID:           "hub-workflow",
+		AppName:         firstNonEmptyMaclawAppString(req.WorkflowName, "Hub Workflow"),
+		Title:           title,
+		InstanceID:      "ve-appr-" + firstNonEmptyMaclawAppString(req.ID, shortRandomHex()),
+		Status:          "pending",
+		Lane:            "pending_my_approval",
+		ApprovalEngine:  maclawAppApprovalEngineHub,
+		HubInstanceID:   strings.TrimSpace(req.InstanceID),
+		HubNodeID:       strings.TrimSpace(req.NodeID),
+		CurrentNode:     strings.TrimSpace(req.NodeID),
+		CurrentNodeIDs:  []string{strings.TrimSpace(req.NodeID)},
+		WorkflowNodeIDs: []string{strings.TrimSpace(req.NodeID)},
+		Owner:           firstNonEmptyMaclawAppString(req.RequesterID, "requester"),
+		Applicant:       firstNonEmptyMaclawAppString(req.RequesterName, req.RequesterID, "requester"),
+		Result:          firstNonEmptyMaclawAppString(rationale, req.Summary, "awaiting human approval"),
+		BusinessStatus:  "pending",
+		ResultStatus:    "pending",
+		ResultPayload: map[string]any{
+			"hub_request_id":   req.ID,
+			"workflow_name":    req.WorkflowName,
+			"summary":          req.Summary,
+			"matched_rule":     matchedRule,
+			"require_human":    true,
+			"details":          details,
+			"approval_result":  "pending",
+			"panel_source":     "ve_require_human",
+		},
+		Events: []maclawAppApprovalEvent{{
+			At: now, Node: strings.TrimSpace(req.NodeID), Actor: "ve",
+			Decision: "require_human", Message: firstNonEmptyMaclawAppString(rationale, "escalated to human review"),
+		}},
+	}
+	if stored, err := h.app.RecordMaclawAppApprovalInstance(inst); err != nil {
+		log.Printf("[ve-handler] failed to enqueue require_human instance for request %s: %v", req.ID, err)
+	} else {
+		inst = stored
+	}
+	if h.app.ctx != nil {
+		h.app.emitEvent("ve:approval-require-human", map[string]any{
+			"request_id":      req.ID,
+			"hub_instance_id": req.InstanceID,
+			"hub_node_id":     req.NodeID,
+			"title":           title,
+			"rationale":       rationale,
+			"matched_rule":    matchedRule,
+			"instance":        inst,
+		})
+	}
+	log.Printf("[ve-handler] require_human enqueued request=%s instance=%s node=%s local=%s", req.ID, req.InstanceID, req.NodeID, inst.InstanceID)
+}
+
+func (h *VEMessageHandler) recordHubApprovalAttention(req veApprovalRequestPayload, errMsg string) {
+	if h == nil || h.app == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	inst := maclawAppApprovalInstance{
+		AppID:          "hub-workflow",
+		AppName:        firstNonEmptyMaclawAppString(req.WorkflowName, "Hub Workflow"),
+		Title:          firstNonEmptyMaclawAppString(req.Title, req.WorkflowName, "Approval request"),
+		InstanceID:     "ve-appr-" + firstNonEmptyMaclawAppString(req.ID, shortRandomHex()),
+		Status:         "attention",
+		Lane:           "attention",
+		ApprovalEngine: maclawAppApprovalEngineHub,
+		HubInstanceID:  strings.TrimSpace(req.InstanceID),
+		HubNodeID:      strings.TrimSpace(req.NodeID),
+		CurrentNode:    strings.TrimSpace(req.NodeID),
+		HubSyncError:   errMsg,
+		Owner:          firstNonEmptyMaclawAppString(req.RequesterID, "requester"),
+		Applicant:      firstNonEmptyMaclawAppString(req.RequesterName, req.RequesterID),
+		Result:         errMsg,
+		ResultPayload:  map[string]any{"hub_sync_error": errMsg, "hub_request_id": req.ID},
+		Events: []maclawAppApprovalEvent{{
+			At: now, Node: strings.TrimSpace(req.NodeID), Actor: "ve",
+			Decision: "attention", Message: errMsg,
+		}},
+	}
+	if _, err := h.app.RecordMaclawAppApprovalInstance(inst); err != nil {
+		log.Printf("[ve-handler] failed to record attention instance: %v", err)
 	}
 }
 

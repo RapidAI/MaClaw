@@ -78,6 +78,9 @@ func (m *mockInstanceStoreForTimeout) UpdateCurrentNode(ctx context.Context, id,
 	return nil
 }
 func (m *mockInstanceStoreForTimeout) UpdateInstanceData(ctx context.Context, id string, data map[string]interface{}) error {
+	if m.instance != nil && m.instance.ID == id {
+		m.instance.InstanceData = data
+	}
 	return nil
 }
 func (m *mockInstanceStoreForTimeout) CreateNodeExecution(ctx context.Context, exec *NodeExecution) error {
@@ -332,6 +335,7 @@ func TestHandleTimeout_CascadingFailure_FallbackAlsoUnavailable(t *testing.T) {
 	}
 	notifier := &mockNotifier{}
 
+	// No EscalationManager → immediate block (legacy / soft-fail path).
 	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, WithNotifier(notifier))
 
 	err := executor.HandleTimeout(context.Background(), "inst-1", "approval-1")
@@ -371,6 +375,78 @@ func TestHandleTimeout_CascadingFailure_FallbackAlsoUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(notifier.notifications[0].Reason, "blocked") {
 		t.Errorf("expected notification reason to contain 'blocked', got %s", notifier.notifications[0].Reason)
+	}
+}
+
+func TestHandleTimeout_CascadingFailure_QueuesEscalationWhenManagerWired(t *testing.T) {
+	graph := buildTimeoutTestGraph("ve-fallback")
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	instStore := &mockInstanceStoreForTimeout{
+		instance: &WorkflowInstance{
+			ID:           "inst-1",
+			VersionID:    "ver-1",
+			Status:       InstanceRunning,
+			InstanceData: map[string]interface{}{"title": "Purchase Request"},
+		},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{
+		fallbackErr: errors.New("fallback offline"),
+	}
+	notifier := &mockNotifier{}
+	// Checker reports unavailable so Escalate queues rather than immediate re-dispatch success.
+	checker := &mockHumanChecker{available: false}
+	escMgr := NewEscalationManager(dispatcher, auditStore, checker)
+	escMgr.maxRetries = 2
+	escMgr.retryInterval = time.Millisecond
+
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher,
+		WithNotifier(notifier),
+		WithEscalationManager(escMgr),
+	)
+
+	if err := executor.HandleTimeout(context.Background(), "inst-1", "approval-1"); err != nil {
+		t.Fatalf("HandleTimeout: %v", err)
+	}
+
+	// Must not block immediately — EscalationManager owns retries.
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatalf("expected no immediate block while escalation pending, got %s", instStore.updatedStatus)
+	}
+	if !escMgr.HasPendingForInstance("inst-1", "approval-1") {
+		t.Fatal("expected pending escalation for inst-1/approval-1")
+	}
+	if pending, _ := instStore.instance.InstanceData["escalation_pending"].(bool); !pending {
+		t.Fatalf("expected escalation_pending on instance data, got %#v", instStore.instance.InstanceData)
+	}
+	if len(notifier.notifications) < 1 || !strings.Contains(notifier.notifications[0].Reason, "escalation pending") {
+		t.Fatalf("expected pending escalation notify, got %#v", notifier.notifications)
+	}
+	// Reason wording is shared for primary and fallback ("approver unavailable").
+
+	// Subsequent timeout while escalation is pending must not short-circuit to block.
+	if err := executor.HandleTimeout(context.Background(), "inst-1", "approval-1"); err != nil {
+		t.Fatalf("second HandleTimeout: %v", err)
+	}
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("timeout must not block while escalation is still pending")
+	}
+
+	// Exhaust retries → failed hook marks blocked.
+	for i := 0; i < 3; i++ {
+		escMgr.mu.Lock()
+		for _, req := range escMgr.queue {
+			req.LastAttemptAt = time.Now().Add(-time.Minute)
+		}
+		escMgr.mu.Unlock()
+		escMgr.processPendingEscalations()
+	}
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("after max retries expected blocked, got %s", instStore.updatedStatus)
+	}
+	if escMgr.HasPendingForInstance("inst-1", "approval-1") {
+		t.Fatal("escalation queue should be empty after failure")
 	}
 }
 

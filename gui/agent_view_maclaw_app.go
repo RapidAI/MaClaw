@@ -175,6 +175,37 @@ func (a *App) DecideMaclawAppApprovalInstance(input MaclawAppApprovalDecisionInp
 		// Approve may omit note; reject is validated above.
 		note = avTr("Approved from AppView panel", "已在应用工作区批准")
 	}
+
+	// Phase 1: Hub-bound instances must advance WorkflowExecutor before local finalization.
+	hubDecision, usedHub, hubErr := a.decideMaclawAppApprovalOnHub(*found, decision, note)
+	if usedHub && hubErr != nil {
+		failed := markMaclawAppApprovalHubAttention(cloneMaclawAppApprovalInstance(*found), hubErr)
+		failed.UpdatedAt = now
+		failed.Events = append(failed.Events, maclawAppApprovalEvent{
+			At: now, Node: firstNonEmptyMaclawAppString(failed.HubNodeID, failed.CurrentNode, "decision"),
+			Actor: actor, Decision: "attention", Message: hubErr.Error(),
+		})
+		stored, recErr := a.RecordMaclawAppApprovalInstance(failed)
+		if recErr != nil {
+			return nil, fmt.Errorf("hub decision failed (%v) and local attention record failed: %w", hubErr, recErr)
+		}
+		result := map[string]any{
+			"decided":         false,
+			"decision":        decision,
+			"instance":        stored,
+			"approval_id":     stored.ApprovalID,
+			"hub_error":       hubErr.Error(),
+			"approval_engine": stored.ApprovalEngine,
+			"hub_instance_id": stored.HubInstanceID,
+			"hub_node_id":     stored.HubNodeID,
+			"result_feedback": maclawAppApprovalResultFeedback(stored),
+		}
+		if input.OpenAppView == nil || *input.OpenAppView {
+			return a.emitMaclawAppApprovalAppViewResult(result, appID)
+		}
+		return result, hubErr
+	}
+
 	updated := cloneMaclawAppApprovalInstance(*found)
 	updated.FromStatus = status
 	updated.Status = decision
@@ -186,14 +217,30 @@ func (a *App) DecideMaclawAppApprovalInstance(input MaclawAppApprovalDecisionInp
 	updated.BusinessNote = firstNonEmptyMaclawAppString(note, updated.BusinessNote)
 	updated.UpdatedAt = now
 	updated.CurrentNodeStatus = decision
+	updated.HubSyncError = ""
+	if usedHub {
+		updated.ApprovalEngine = maclawAppApprovalEngineHub
+		if hubDecision.Status != "" {
+			updated.ResultPayload = cloneMapAny(updated.ResultPayload)
+			if updated.ResultPayload == nil {
+				updated.ResultPayload = map[string]any{}
+			}
+			updated.ResultPayload["hub_instance_status"] = hubDecision.Status
+		}
+	}
 	if updated.ResultPayload == nil {
 		updated.ResultPayload = map[string]any{}
 	}
 	updated.ResultPayload["panel_decision"] = decision
 	updated.ResultPayload["panel_decision_note"] = note
 	updated.ResultPayload["panel_decision_actor"] = actor
+	if usedHub {
+		updated.ResultPayload["hub_decision"] = true
+		updated.ResultPayload["hub_instance_id"] = updated.HubInstanceID
+		updated.ResultPayload["hub_node_id"] = firstNonEmptyMaclawAppString(updated.HubNodeID, updated.CurrentNode)
+	}
 	updated.Events = append(updated.Events, maclawAppApprovalEvent{
-		At: now, Node: firstNonEmptyMaclawAppString(updated.CurrentNode, "decision"),
+		At: now, Node: firstNonEmptyMaclawAppString(updated.HubNodeID, updated.CurrentNode, "decision"),
 		Actor: actor, Decision: decision, Message: note,
 	})
 
@@ -202,20 +249,30 @@ func (a *App) DecideMaclawAppApprovalInstance(input MaclawAppApprovalDecisionInp
 		return nil, err
 	}
 	syncResult, syncErr := a.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{
-		DatasetID:  stored.DatasetID,
-		ObjectRole: stored.ObjectRole,
-		AppID:      stored.AppID,
+		DatasetID:   stored.DatasetID,
+		ObjectRole:  stored.ObjectRole,
+		AppID:       stored.AppID,
 		BlueprintID: stored.BlueprintID,
-		RecordID:   stored.RecordID,
-		ApprovalID: firstNonEmptyMaclawAppString(stored.ApprovalID, stored.RecordApprovalID),
-		Instance:   stored,
+		RecordID:    stored.RecordID,
+		ApprovalID:  firstNonEmptyMaclawAppString(stored.ApprovalID, stored.RecordApprovalID),
+		Instance:    stored,
 	})
 	result := map[string]any{
 		"decided":         true,
 		"decision":        decision,
 		"instance":        stored,
 		"approval_id":     stored.ApprovalID,
+		"approval_engine": stored.ApprovalEngine,
+		"hub_instance_id": stored.HubInstanceID,
+		"hub_node_id":     stored.HubNodeID,
 		"result_feedback": maclawAppApprovalResultFeedback(stored),
+	}
+	if usedHub {
+		result["hub"] = map[string]any{
+			"instance_id": hubDecision.InstanceID,
+			"node_id":     hubDecision.NodeID,
+			"status":      hubDecision.Status,
+		}
 	}
 	if syncErr != nil {
 		result["sync_error"] = syncErr.Error()

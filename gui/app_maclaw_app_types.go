@@ -300,6 +300,15 @@ type maclawAppApprovalInstance struct {
 	ApprovalObjectRole  string                      `json:"approval_object_role,omitempty"`
 	ApprovalEvent       string                      `json:"approval_event,omitempty"`
 	ApprovalWorkflowID  string                      `json:"approval_workflow_id,omitempty"`
+	// ApprovalEngine is the authority for node advancement: "hub" or "local".
+	// hub = Hub WorkflowExecutor is source of truth; local = desktop-only projection.
+	ApprovalEngine string `json:"approval_engine,omitempty"`
+	// HubWorkflowID / HubInstanceID / HubNodeID bind this App projection to a Hub runtime instance.
+	HubWorkflowID string `json:"hub_workflow_id,omitempty"`
+	HubInstanceID string `json:"hub_instance_id,omitempty"`
+	HubNodeID     string `json:"hub_node_id,omitempty"`
+	// HubSyncError records the last Hub trigger/decision failure without inventing a final business status.
+	HubSyncError        string                      `json:"hub_sync_error,omitempty"`
 	InstanceID          string                      `json:"instance_id"`
 	Title               string                      `json:"title"`
 	Lane                string                      `json:"lane"`
@@ -405,21 +414,28 @@ type MaclawAppApprovalWorkflowStartInput struct {
 	ApprovalEvent       string         `json:"approval_event,omitempty"`
 	WorkflowSkillID     string         `json:"workflow_skill_id,omitempty"`
 	WorkflowVersion     string         `json:"workflow_version,omitempty"`
-	CurrentNode         string         `json:"current_node,omitempty"`
-	CurrentNodeIDs      []string       `json:"current_node_ids,omitempty"`
-	WorkflowNodeIDs     []string       `json:"workflow_node_ids,omitempty"`
-	BusinessStatus      string         `json:"business_status,omitempty"`
-	ResultStatus        string         `json:"result_status,omitempty"`
-	FromStatus          string         `json:"from_status,omitempty"`
-	ToStatus            string         `json:"to_status,omitempty"`
-	BusinessEntity      string         `json:"business_entity,omitempty"`
-	BusinessAction      string         `json:"business_action,omitempty"`
-	BusinessNote        string         `json:"business_note,omitempty"`
-	FormData            map[string]any `json:"form_data,omitempty"`
-	BusinessPayload     map[string]any `json:"business_payload,omitempty"`
-	ResultPayload       map[string]any `json:"result_payload,omitempty"`
-	RunWorkflowSkill    bool           `json:"run_workflow_skill,omitempty"`
-	WorkflowRunArgs     map[string]any `json:"workflow_run_args,omitempty"`
+	// HubWorkflowID is the published Hub workflow graph id (source of truth for engine=hub).
+	HubWorkflowID string `json:"hub_workflow_id,omitempty"`
+	// HubInstanceID / HubNodeID bind to an existing Hub instance (skip re-trigger when set).
+	HubInstanceID string `json:"hub_instance_id,omitempty"`
+	HubNodeID     string `json:"hub_node_id,omitempty"`
+	// TriggerHubWorkflow controls Hub StartInstance. nil = auto (trigger when hub workflow id + hub creds exist).
+	TriggerHubWorkflow *bool          `json:"trigger_hub_workflow,omitempty"`
+	CurrentNode        string         `json:"current_node,omitempty"`
+	CurrentNodeIDs     []string       `json:"current_node_ids,omitempty"`
+	WorkflowNodeIDs    []string       `json:"workflow_node_ids,omitempty"`
+	BusinessStatus     string         `json:"business_status,omitempty"`
+	ResultStatus       string         `json:"result_status,omitempty"`
+	FromStatus         string         `json:"from_status,omitempty"`
+	ToStatus           string         `json:"to_status,omitempty"`
+	BusinessEntity     string         `json:"business_entity,omitempty"`
+	BusinessAction     string         `json:"business_action,omitempty"`
+	BusinessNote       string         `json:"business_note,omitempty"`
+	FormData           map[string]any `json:"form_data,omitempty"`
+	BusinessPayload    map[string]any `json:"business_payload,omitempty"`
+	ResultPayload      map[string]any `json:"result_payload,omitempty"`
+	RunWorkflowSkill   bool           `json:"run_workflow_skill,omitempty"`
+	WorkflowRunArgs    map[string]any `json:"workflow_run_args,omitempty"`
 }
 
 type maclawAppApprovalWorkflowStartInput = MaclawAppApprovalWorkflowStartInput

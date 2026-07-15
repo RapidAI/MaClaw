@@ -103,7 +103,7 @@ var i18nKeys = [
 	'approverPickerLoadFailed', 'selectedApprovers', 'clearSelection', 'cancel',
 	'confirm', 'noApproverIdentity', 'virtualEmployee', 'userMachine',
 	'approverViewOrganization', 'approverViewFunction', 'approverViewDirect',
-	'approverRole', 'approvalRoleNotConfigured', 'departmentDigitalEmployee', 'digitalTwin',
+	'approverRole', 'approvalRoleNotConfigured', 'approvalRolesEmptyTitle', 'approvalRolesEmptyHint', 'approvalRolesEmptyAction', 'approvalRolesNoAssigneesTitle', 'approvalRolesNoAssigneesHint', 'departmentDigitalEmployee', 'digitalTwin',
 	'applicantDepartmentScope', 'fixedDepartmentScope', 'departmentManager', 'directManager',
 	'functionScopeFinance', 'functionScopeProcurement', 'functionScopeLegal', 'functionScopeIT',
 	'functionScopeHR', 'functionScopeAdministration', 'functionScopeSales', 'functionScopeOperations',

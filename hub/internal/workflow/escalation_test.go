@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -214,12 +215,31 @@ func TestEscalation_RetrySucceeds(t *testing.T) {
 	}
 }
 
+type captureEscNotifier struct {
+	mu    sync.Mutex
+	calls []struct{ instanceID, reason, details string }
+}
+
+func (n *captureEscNotifier) NotifyInitiator(ctx context.Context, instanceID string, reason string, details string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, struct{ instanceID, reason, details string }{instanceID, reason, details})
+	return nil
+}
+
+func (n *captureEscNotifier) callCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.calls)
+}
+
 func TestEscalation_MaxRetriesExhausted(t *testing.T) {
 	checker := &mockHumanChecker{available: false}
 	dispatcher := &mockDispatcherForEsc{}
 	audit := &mockAuditStoreForEsc{}
+	notifier := &captureEscNotifier{}
 
-	mgr := NewEscalationManager(dispatcher, audit, checker)
+	mgr := NewEscalationManager(dispatcher, audit, checker).SetNotifier(notifier)
 	mgr.retryInterval = 10 * time.Millisecond
 	mgr.maxRetries = 5
 
@@ -268,6 +288,20 @@ func TestEscalation_MaxRetriesExhausted(t *testing.T) {
 	// No successful dispatches.
 	if dispatcher.dispatchCount() != 0 {
 		t.Errorf("expected 0 dispatches, got %d", dispatcher.dispatchCount())
+	}
+
+	// Initiator must be notified once so desktop can project attention.
+	if notifier.callCount() != 1 {
+		t.Fatalf("expected 1 NotifyInitiator call on escalation failure, got %d", notifier.callCount())
+	}
+	notifier.mu.Lock()
+	call := notifier.calls[0]
+	notifier.mu.Unlock()
+	if call.instanceID != "inst_4" {
+		t.Fatalf("instanceID=%q", call.instanceID)
+	}
+	if !strings.Contains(strings.ToLower(call.reason), "escalation") {
+		t.Fatalf("reason should mention escalation: %q", call.reason)
 	}
 }
 

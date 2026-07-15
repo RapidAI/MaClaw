@@ -45,6 +45,9 @@ type WorkflowExecutor struct {
 	notifier         WorkflowNotifier
 	notifDispatcher  *NotificationDispatcher
 	confirmTracker   *ConfirmationTracker
+	// escalationMgr retries fallback human delivery when DispatchFallback fails.
+	// Optional; without it cascading fallback failure blocks immediately.
+	escalationMgr *EscalationManager
 	// resumeLocks serializes the approval read-modify-write-persist cycle in
 	// ResumeInstance per instance, so concurrent decisions on the same node
 	// cannot lose a vote (Requirement 2.6). See instance_locks.go.
@@ -108,6 +111,19 @@ func WithNotificationDispatcher(nd *NotificationDispatcher) ExecutorOption {
 func WithApprovalApproverResolver(resolver ApprovalApproverResolver) ExecutorOption {
 	return func(e *WorkflowExecutor) {
 		e.approverResolver = resolver
+	}
+}
+
+// WithEscalationManager wires the pending-escalation retry queue used when
+// fallback delivery fails. Also registers hooks that mark the node blocked after
+// max retries and clear per-approver pending markers on successful redelivery.
+func WithEscalationManager(mgr *EscalationManager) ExecutorOption {
+	return func(e *WorkflowExecutor) {
+		e.escalationMgr = mgr
+		if mgr != nil {
+			mgr.SetFailedHook(e.onEscalationFailed)
+			mgr.SetDeliveredHook(e.onEscalationDelivered)
+		}
 	}
 }
 
@@ -285,6 +301,9 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 	var cfg ApprovalNodeConfig
 	if err := json.Unmarshal(approvalNode.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
+	}
+	if inst != nil {
+		ctx = WithApprovalResolveContext(ctx, ApprovalResolveContextFromInstanceData(inst.InstanceData))
 	}
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
@@ -762,8 +781,15 @@ func (e *WorkflowExecutor) HandleTimeout(ctx context.Context, instanceID, nodeID
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
+	if inst != nil {
+		ctx = WithApprovalResolveContext(ctx, ApprovalResolveContextFromInstanceData(inst.InstanceData))
+	}
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
+	}
+	// EscalationManager already owns delivery retries for this node — wait for it.
+	if e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(instanceID, nodeID) {
+		return nil
 	}
 	// A fallback is dispatched only once. Its routing state is persisted on the
 	// running node execution so the next timeout check blocks the instance
@@ -813,6 +839,9 @@ func (e *WorkflowExecutor) HandleUnavailable(ctx context.Context, instanceID, no
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
+	if inst != nil {
+		ctx = WithApprovalResolveContext(ctx, ApprovalResolveContextFromInstanceData(inst.InstanceData))
+	}
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
 	}
@@ -857,6 +886,9 @@ func (e *WorkflowExecutor) HandleQueueFull(ctx context.Context, instanceID, node
 	if err := json.Unmarshal(node.Config, &cfg); err != nil {
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
+	if inst != nil {
+		ctx = WithApprovalResolveContext(ctx, ApprovalResolveContextFromInstanceData(inst.InstanceData))
+	}
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
 	}
@@ -868,8 +900,16 @@ func (e *WorkflowExecutor) HandleQueueFull(ctx context.Context, instanceID, node
 // unavailability, and queue-full handlers.
 // reason is one of: "timeout", "unavailable", "queue_full".
 func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, cfg *ApprovalNodeConfig, reason string) error {
+	// Primary or fallback delivery already in EscalationManager retry — do not
+	// double-route or block until the queue exhausts (onEscalationFailed).
+	if e.escalationMgr != nil && inst != nil && node != nil &&
+		e.escalationMgr.HasPendingForInstance(inst.ID, node.ID) {
+		return nil
+	}
 	if cfg.FallbackApprover == "" {
-		// No fallback configured; mark node as blocked and notify initiator.
+		// No fallback: if primary dispatch earlier left escalation_approver on
+		// instance data we could re-queue, but without a live EscalationManager
+		// entry just block and notify.
 		return e.markNodeBlocked(ctx, inst, node, reason, "no fallback approver configured")
 	}
 
@@ -898,8 +938,10 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 				Timestamp:  NormalizeAuditTimestamp(time.Time{}),
 			}))
 
-		// Mark node as blocked due to cascading failure.
-		return e.markNodeBlocked(ctx, inst, node, reason, "fallback approver also unavailable: "+err.Error())
+		// Prefer EscalationManager retry queue over immediate block when wired.
+		// Max-retries failure re-enters via onEscalationFailed → markNodeBlocked.
+		return e.enqueueEscalationOrBlock(ctx, inst, node, req, cfg.FallbackApprover, reason,
+			"fallback approver also unavailable: "+err.Error())
 	}
 
 	// Fallback dispatch succeeded; record the event.
@@ -966,6 +1008,244 @@ func (e *WorkflowExecutor) markFallbackDispatched(ctx context.Context, instanceI
 	return nil
 }
 
+// enqueueEscalationOrBlock queues EscalationManager retries for approverID.
+// When no manager is wired, marks the node blocked immediately.
+// Returns nil when the failure was absorbed (queued or blocked).
+func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, req *ApprovalRequest, approverID, reason, blockDetails string) error {
+	if e == nil || inst == nil || node == nil {
+		return fmt.Errorf("enqueue escalation: missing executor/instance/node")
+	}
+	approverID = strings.TrimSpace(approverID)
+	if e.escalationMgr == nil || approverID == "" {
+		return e.markNodeBlocked(ctx, inst, node, reason, blockDetails)
+	}
+	if req == nil {
+		req = e.buildApprovalRequestFromInstance(inst, node)
+	}
+	if qerr := e.escalationMgr.Escalate(ctx, req, approverID); qerr != nil {
+		return e.markNodeBlocked(ctx, inst, node, reason, "escalation queue failed: "+qerr.Error())
+	}
+	// Escalate may redeliver immediately when the approver is now online; only
+	// mark pending when a queue entry remains for this instance/node.
+	if !e.escalationMgr.HasPendingForInstance(inst.ID, node.ID) {
+		return nil
+	}
+	if e.notifier != nil {
+		_ = e.notifier.NotifyInitiator(ctx, inst.ID,
+			fmt.Sprintf("escalation pending: approver unavailable (%s)", reason),
+			fmt.Sprintf("Node ID: %s, Approver: %s, Details: %s", node.ID, approverID, blockDetails),
+		)
+	}
+	if inst.InstanceData == nil {
+		inst.InstanceData = map[string]interface{}{}
+	}
+	inst.InstanceData["escalation_pending"] = true
+	// Keep last-writer scalar for older consumers; also accumulate a unique list
+	// so countersign multi-failure doesn't lose earlier offline peers.
+	inst.InstanceData["escalation_approver"] = approverID
+	inst.InstanceData["escalation_approvers"] = appendUniqueStringList(
+		stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]),
+		approverID,
+	)
+	inst.InstanceData["escalation_reason"] = reason
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_instance_data_escalation_pending",
+		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+	return nil
+}
+
+// appendUniqueStringList returns prev with value appended if not already present.
+func appendUniqueStringList(prev []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return prev
+	}
+	for _, p := range prev {
+		if strings.TrimSpace(p) == value {
+			return prev
+		}
+	}
+	return append(prev, value)
+}
+
+// stringSliceFromInstanceData coerces instance-data list fields that may be
+// []string or []interface{} after JSON round-trips.
+func stringSliceFromInstanceData(raw interface{}) []string {
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, s := range v {
+			if t := strings.TrimSpace(s); t != "" {
+				out = append(out, t)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				if t := strings.TrimSpace(s); t != "" {
+					out = append(out, t)
+				}
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// handlePrimaryDispatchFailure absorbs a failed first-hop Dispatch for single /
+// sequential modes: prefer configured fallback, else EscalationManager retry of
+// the primary approver, else return the original error (legacy hard-fail).
+func (e *WorkflowExecutor) handlePrimaryDispatchFailure(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, cfg *ApprovalNodeConfig, req *ApprovalRequest, approverID string, dispatchErr error) error {
+	if dispatchErr == nil {
+		return nil
+	}
+	approverID = strings.TrimSpace(approverID)
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_dispatch_failed",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			NodeID:     node.ID,
+			EventType:  "dispatch_failed",
+			ActorID:    approverID,
+			Details:    fmt.Sprintf(`{"error":"%s"}`, escapeJSON(dispatchErr.Error())),
+			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+		}))
+
+	if cfg != nil && strings.TrimSpace(cfg.FallbackApprover) != "" {
+		return e.handleFallbackRouting(ctx, inst, node, cfg, "unavailable")
+	}
+	if e.escalationMgr != nil && approverID != "" {
+		return e.enqueueEscalationOrBlock(ctx, inst, node, req, approverID, "unavailable",
+			"primary dispatch failed: "+dispatchErr.Error())
+	}
+	return fmt.Errorf("dispatch to approver: %w", dispatchErr)
+}
+
+// handlePartialMultiDispatchFailure absorbs a mid-fan-out Dispatch failure for
+// countersign / any-N-of-M. When EscalationManager is wired, the failed approver
+// is queued for retry and the caller may continue delivering to remaining
+// approvers. Without a manager, preserves legacy soft-block (instance blocked,
+// timeout may later route fallback).
+//
+// Returns continueLoop=true when the executor should keep dispatching the rest
+// of the approver list; false when fan-out should stop (legacy block path).
+func (e *WorkflowExecutor) handlePartialMultiDispatchFailure(
+	ctx context.Context,
+	inst *WorkflowInstance,
+	node *WorkflowNode,
+	req *ApprovalRequest,
+	failedApprover string,
+	dispatched []string,
+	dispatchErr error,
+) (continueLoop bool, err error) {
+	if dispatchErr == nil {
+		return true, nil
+	}
+	failedApprover = strings.TrimSpace(failedApprover)
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_dispatch_partial_failure",
+		e.auditStore.Append(ctx, &AuditEntry{
+			ID:         generateID("audit"),
+			InstanceID: inst.ID,
+			NodeID:     node.ID,
+			EventType:  "dispatch_partial_failure",
+			ActorID:    failedApprover,
+			Details: fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`,
+				failedApprover, marshalStringSlice(dispatched), escapeJSON(dispatchErr.Error())),
+			Timestamp: NormalizeAuditTimestamp(time.Time{}),
+		}))
+
+	if e.escalationMgr != nil && failedApprover != "" {
+		// Keep instance running so already-notified approvers can still decide;
+		// EscalationManager retries the unreachable peer.
+		if qerr := e.enqueueEscalationOrBlock(ctx, inst, node, req, failedApprover, "partial_dispatch",
+			fmt.Sprintf("partial dispatch failure at approver %s: %s", failedApprover, dispatchErr.Error())); qerr != nil {
+			return false, qerr
+		}
+		return true, nil
+	}
+
+	// Legacy: soft-block so timeout / fallback handlers can recover.
+	pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
+	for _, exec := range pendingExecs {
+		if exec.InstanceID == inst.ID && exec.NodeID == node.ID {
+			e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_blocked",
+				e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil,
+					fmt.Sprintf("partial dispatch failure at approver %s", failedApprover)))
+			break
+		}
+	}
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
+		e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
+	inst.Status = InstanceBlocked
+	return false, nil
+}
+
+// onEscalationDelivered clears the delivered approver from instance-data lists.
+// When no pending peers remain and EscalationManager has no more queue items for
+// the instance, escalation_pending is cleared.
+func (e *WorkflowExecutor) onEscalationDelivered(ctx context.Context, esc *EscalationRequest) {
+	if e == nil || esc == nil || strings.TrimSpace(esc.InstanceID) == "" {
+		return
+	}
+	inst, err := e.instanceStore.Get(ctx, esc.InstanceID)
+	if err != nil || inst == nil {
+		return
+	}
+	if inst.InstanceData == nil {
+		return
+	}
+	approver := strings.TrimSpace(esc.HumanApprover)
+	remaining := make([]string, 0)
+	for _, id := range stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]) {
+		if id != approver {
+			remaining = append(remaining, id)
+		}
+	}
+	// Also drop scalar if it matches.
+	if s, _ := inst.InstanceData["escalation_approver"].(string); strings.TrimSpace(s) == approver {
+		delete(inst.InstanceData, "escalation_approver")
+	}
+	if len(remaining) == 0 {
+		delete(inst.InstanceData, "escalation_approvers")
+		// Only clear pending when manager also has no other retries for this instance.
+		if e.escalationMgr == nil || !e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID) {
+			delete(inst.InstanceData, "escalation_pending")
+			delete(inst.InstanceData, "escalation_reason")
+		}
+	} else {
+		inst.InstanceData["escalation_approvers"] = remaining
+		inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
+	}
+	e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_delivered",
+		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+}
+
+// onEscalationFailed is the EscalationManager max-retries hook: mark the node
+// blocked and clear escalation_pending so desktop reconcile / directory align.
+func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *EscalationRequest) {
+	if e == nil || esc == nil || strings.TrimSpace(esc.InstanceID) == "" {
+		return
+	}
+	inst, err := e.instanceStore.Get(ctx, esc.InstanceID)
+	if err != nil || inst == nil {
+		return
+	}
+	var node *WorkflowNode
+	if e.store != nil && strings.TrimSpace(inst.VersionID) != "" {
+		if ver, verr := e.store.GetVersion(ctx, inst.VersionID); verr == nil && ver != nil {
+			node = findNodeByID(&ver.Graph, esc.NodeID)
+		}
+	}
+	if node == nil {
+		// Minimal node so markNodeBlocked can still update instance status / notify.
+		node = &WorkflowNode{ID: firstNonEmptyString(esc.NodeID, inst.CurrentNodeID), Label: esc.NodeID}
+	}
+	details := fmt.Sprintf("escalation max retries exhausted for approver %s (attempts=%d)", esc.HumanApprover, esc.Attempts)
+	_ = e.markNodeBlocked(ctx, inst, node, "escalation_failed", details)
+}
+
 // markNodeBlocked marks an approval node as "blocked", updates the instance status,
 // notifies the workflow initiator, and records the event in the audit trail.
 func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, reason, details string) error {
@@ -987,6 +1267,22 @@ func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowIn
 	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
 		e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
 	inst.Status = InstanceBlocked
+
+	// Persist blocked reason on instance data so desktop reconcile / directory
+	// projections can surface attention without relying only on status.
+	if inst.InstanceData == nil {
+		inst.InstanceData = map[string]interface{}{}
+	}
+	inst.InstanceData["blocked_reason"] = reason
+	inst.InstanceData["blocked_details"] = details
+	inst.InstanceData["blocked_node_id"] = node.ID
+	inst.InstanceData["blocked_at"] = time.Now().UTC().Format(time.RFC3339)
+	delete(inst.InstanceData, "escalation_pending")
+	delete(inst.InstanceData, "escalation_approver")
+	delete(inst.InstanceData, "escalation_approvers")
+	delete(inst.InstanceData, "escalation_reason")
+	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_instance_data_blocked",
+		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
 
 	// Record blocked event in audit trail.
 	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_node_blocked",
@@ -1300,13 +1596,30 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 		return fmt.Errorf("parse approval node config: %w", err)
 	}
 	originalCfg := cfg
+	if inst != nil {
+		ctx = WithApprovalResolveContext(ctx, ApprovalResolveContextFromInstanceData(inst.InstanceData))
+	}
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
 	}
 
 	if len(cfg.ApproverIDs) == 0 {
-		return fmt.Errorf("approval node %s has no approvers configured", node.ID)
+		// Prefer fallback approver when role expansion left nobody (e.g. empty department role).
+		if fb := strings.TrimSpace(cfg.FallbackApprover); fb != "" {
+			cfg.ApproverIDs = []string{fb}
+		}
 	}
+	if len(cfg.ApproverIDs) == 0 {
+		reason := fmt.Sprintf("approval node %s has no resolvable approvers (check approval roles / applicant department)", node.ID)
+		if e.notifier != nil && inst != nil {
+			_ = e.notifier.NotifyInitiator(ctx, inst.ID, "approval node blocked", reason)
+		}
+		return fmt.Errorf("%s", reason)
+	}
+	// Two-phase digital modes: when the node is single-approver but expansion
+	// produced multiple identities (digital first + human), promote to sequential
+	// so the VE can suggest/review before the human finalizes.
+	cfg = applyDigitalTwoPhaseDispatchShape(cfg)
 	e.recordApprovalRuntimeMetadata(ctx, inst.ID, node.ID, nodeExecID, originalCfg, cfg)
 
 	// Build the approval request from instance data.
@@ -1323,43 +1636,52 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 		req.Summary = summary
 	}
 	if details, ok := inst.InstanceData["details"].(map[string]interface{}); ok {
-		req.Details = details
+		req.Details = cloneStringAnyMap(details)
+	} else {
+		req.Details = map[string]interface{}{}
+	}
+	// Enrich details with applicant org context for VE ACL / rules.
+	if resolveCtx := ApprovalResolveContextFrom(ctx); resolveCtx != nil {
+		if resolveCtx.ApplicantID != "" {
+			req.RequesterID = firstNonEmptyString(req.RequesterID, resolveCtx.ApplicantID)
+			req.Details["requester_id"] = resolveCtx.ApplicantID
+		}
+		if resolveCtx.ApplicantName != "" {
+			req.RequesterName = firstNonEmptyString(req.RequesterName, resolveCtx.ApplicantName)
+			req.Details["requester_name"] = resolveCtx.ApplicantName
+		}
+		if resolveCtx.DepartmentID != "" {
+			req.Details["requester_department"] = resolveCtx.DepartmentID
+			req.Details["department_id"] = resolveCtx.DepartmentID
+		}
+	}
+	// Publish execution mode so VE two-phase policy can enforce human confirmation.
+	execMode := normalizeApprovalExecutionMode(cfg.ExecutionMode)
+	if execMode != "" {
+		req.Details["execution_mode"] = execMode
+		req.Details["needs_human_confirm"] = execMode == "digital_suggest" || execMode == "digital_review"
 	}
 
 	// Dispatch based on approval mode.
 	switch cfg.Mode {
 	case ModeSingle:
 		if err := e.dispatcher.Dispatch(ctx, req, cfg.ApproverIDs[0]); err != nil {
-			return fmt.Errorf("dispatch to approver: %w", err)
+			return e.handlePrimaryDispatchFailure(ctx, inst, node, &cfg, req, cfg.ApproverIDs[0], err)
 		}
 	case ModeCountersign:
 		// Dispatch to all approvers; all must approve.
 		var dispatched []string
 		for _, approverID := range cfg.ApproverIDs {
 			if err := e.dispatcher.Dispatch(ctx, req, approverID); err != nil {
-				// Partial dispatch failure: some approvers already received the request.
-				e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_dispatch_partial_failure",
-					e.auditStore.Append(ctx, &AuditEntry{
-						ID:         generateID("audit"),
-						InstanceID: inst.ID,
-						NodeID:     node.ID,
-						EventType:  "dispatch_partial_failure",
-						Details:    fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`, approverID, marshalStringSlice(dispatched), escapeJSON(err.Error())),
-						Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-					}))
-				// Mark node as blocked so timeout handler can retry or route to fallback.
-				pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
-				for _, exec := range pendingExecs {
-					if exec.InstanceID == inst.ID && exec.NodeID == node.ID {
-						e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_blocked",
-							e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, fmt.Sprintf("partial dispatch failure at approver %s", approverID)))
-						break
-					}
+				cont, herr := e.handlePartialMultiDispatchFailure(ctx, inst, node, req, approverID, dispatched, err)
+				if herr != nil {
+					return herr
 				}
-				e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
-					e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
-				inst.Status = InstanceBlocked
-				return nil // Don't fail the node; let timeout handler deal with it.
+				if !cont {
+					return nil // legacy soft-block; timeout may recover
+				}
+				// Escalation queued for this peer; keep fan-out to remaining approvers.
+				continue
 			}
 			dispatched = append(dispatched, approverID)
 		}
@@ -1368,28 +1690,14 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 		var dispatched []string
 		for _, approverID := range cfg.ApproverIDs {
 			if err := e.dispatcher.Dispatch(ctx, req, approverID); err != nil {
-				// Partial dispatch failure.
-				e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_dispatch_partial_failure",
-					e.auditStore.Append(ctx, &AuditEntry{
-						ID:         generateID("audit"),
-						InstanceID: inst.ID,
-						NodeID:     node.ID,
-						EventType:  "dispatch_partial_failure",
-						Details:    fmt.Sprintf(`{"failed_approver":"%s","dispatched":%s,"error":"%s"}`, approverID, marshalStringSlice(dispatched), escapeJSON(err.Error())),
-						Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-					}))
-				pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
-				for _, exec := range pendingExecs {
-					if exec.InstanceID == inst.ID && exec.NodeID == node.ID {
-						e.surfaceWriteError(ctx, inst.ID, node.ID, "update_node_execution_blocked",
-							e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeBlocked, nil, fmt.Sprintf("partial dispatch failure at approver %s", approverID)))
-						break
-					}
+				cont, herr := e.handlePartialMultiDispatchFailure(ctx, inst, node, req, approverID, dispatched, err)
+				if herr != nil {
+					return herr
 				}
-				e.surfaceWriteError(ctx, inst.ID, node.ID, "update_status_blocked",
-					e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
-				inst.Status = InstanceBlocked
-				return nil
+				if !cont {
+					return nil
+				}
+				continue
 			}
 			dispatched = append(dispatched, approverID)
 		}
@@ -1400,7 +1708,7 @@ func (e *WorkflowExecutor) executeApprovalNode(ctx context.Context, inst *Workfl
 			order = cfg.ApproverIDs
 		}
 		if err := e.dispatcher.Dispatch(ctx, req, order[0]); err != nil {
-			return fmt.Errorf("dispatch to first sequential approver: %w", err)
+			return e.handlePrimaryDispatchFailure(ctx, inst, node, &cfg, req, order[0], err)
 		}
 	default:
 		return fmt.Errorf("unknown approval mode: %s", cfg.Mode)
@@ -1471,6 +1779,7 @@ func (e *WorkflowExecutor) resolveApprovalNodeConfig(ctx context.Context, cfg *A
 	if cfg == nil || e.approverResolver == nil {
 		return nil
 	}
+	originalIDs := append([]string(nil), cfg.ApproverIDs...)
 	var err error
 	cfg.ApproverIDs, err = e.approverResolver.ResolveApproverIDs(ctx, cfg.ApproverIDs)
 	if err != nil {
@@ -1489,6 +1798,16 @@ func (e *WorkflowExecutor) resolveApprovalNodeConfig(ctx context.Context, cfg *A
 		}
 		if len(resolved) > 0 {
 			cfg.FallbackApprover = resolved[0]
+		}
+	}
+	// Derive execution mode from approval roles when the node config omits it.
+	if strings.TrimSpace(cfg.ExecutionMode) == "" {
+		if modeLookup, ok := e.approverResolver.(interface {
+			ResolveExecutionMode(context.Context, []string) string
+		}); ok {
+			if mode := modeLookup.ResolveExecutionMode(ctx, originalIDs); mode != "" {
+				cfg.ExecutionMode = mode
+			}
 		}
 	}
 	return nil

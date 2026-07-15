@@ -804,7 +804,19 @@ func NewRouter(
 		// Without WithConfirmationTracker the executor's tracker is nil and
 		// StartTracking is skipped, so no confirmation records are ever created
 		// in production (Finding 1.5 / design Fix Implementation item 5).
-		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher, workflow.WithConfirmationTracker(confirmTracker), workflow.WithApprovalApproverResolver(newWorkflowApprovalRoleResolver(system, identity, deviceSvc)))
+		// Participant notifier pushes blocked/attention events to initiator machines
+		// (ve:workflow_status) so desktop projections update without waiting for reconcile.
+		participantNotifier := NewHubWorkflowParticipantNotifier(deviceSvc, instStore, deviceSvc, identity)
+		// EscalationManager retries fallback human delivery; max-fail notifies + blocks.
+		// Created before executor so WithEscalationManager can register the failed hook.
+		escalationMgr := workflow.NewEscalationManager(dispatcher, auditStore, NewHubAvailabilityChecker(deviceSvc)).
+			SetNotifier(participantNotifier)
+		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher,
+			workflow.WithConfirmationTracker(confirmTracker),
+			workflow.WithApprovalApproverResolver(newWorkflowApprovalRoleResolver(system, identity, deviceSvc, securitySvc)),
+			workflow.WithNotifier(participantNotifier),
+			workflow.WithEscalationManager(escalationMgr),
+		)
 		instanceAPI := workflow.NewInstanceAPI(executor, instStore, auditStore)
 		instanceAPI.RegisterRoutes(mux, workflowUserAuth)
 
@@ -837,7 +849,7 @@ func NewRouter(
 		// timeout conditions can route to fallback/escalation (Finding 1.4 / 2.4).
 		// EscalationManager and HandleUnavailable/HandleTimeout/HandleQueueFull are
 		// unchanged; only the availability source changes (Preservation 3.6).
-		escalationMgr := workflow.NewEscalationManager(dispatcher, auditStore, NewHubAvailabilityChecker(deviceSvc))
+		// Background retry loop for EscalationManager (wired on executor above).
 		escalationMgr.Start()
 
 		timeoutTicker := workflow.NewTimeoutTicker(executor, instStore)

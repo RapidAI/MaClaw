@@ -85,12 +85,19 @@ func WorkflowApproverDirectoryHandler(securitySvc *security.SecurityService, ide
 		if veRegistryHasMacLawSrvRuntimeEmployees(registry, true) {
 			runtimePresence = loadMacLawSrvRuntimePresence(r.Context(), globalSystemSettings(system), tenantID)
 		}
+		// Approver directory only surfaces VEs that are active AND have
+		// approval capability enabled on the desktop (owner opted in).
+		// Design: docs/ve-approval-capability-design-zh.md.
 		employees := make([]digitalEmployeeEntry, 0, len(registry.Employees))
 		for _, entry := range registry.Employees {
 			entry = applyVEDiscoverablePresence(r.Context(), entry, devices, runtimePresence)
-			if strings.EqualFold(strings.TrimSpace(entry.Status), veStatusActive) {
-				employees = append(employees, entry)
+			if !strings.EqualFold(strings.TrimSpace(entry.Status), veStatusActive) {
+				continue
 			}
+			if !entry.ApprovalCapabilityEnabled {
+				continue
+			}
+			employees = append(employees, entry)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{

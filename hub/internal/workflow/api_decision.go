@@ -118,7 +118,11 @@ func (api *DecisionAPI) handleSubmitDecision(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := api.executor.resolveApprovalNodeConfig(r.Context(), &cfg); err != nil {
+	resolveCtx := r.Context()
+	if inst != nil {
+		resolveCtx = WithApprovalResolveContext(resolveCtx, ApprovalResolveContextFromInstanceData(inst.InstanceData))
+	}
+	if err := api.executor.resolveApprovalNodeConfig(resolveCtx, &cfg); err != nil {
 		apiWriteError(w, http.StatusInternalServerError, "RESOLVE_APPROVERS_FAILED", "failed to resolve approval role references: "+err.Error())
 		return
 	}

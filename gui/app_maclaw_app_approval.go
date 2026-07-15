@@ -127,6 +127,10 @@ func (a *App) StartMaclawAppApprovalWorkflow(input MaclawAppApprovalWorkflowStar
 		ObjectRole:          strings.TrimSpace(input.ObjectRole),
 		ApprovalObjectRole:  strings.TrimSpace(input.ObjectRole),
 		ApprovalEvent:       strings.TrimSpace(input.ApprovalEvent),
+		ApprovalWorkflowID:  firstNonEmptyMaclawAppString(input.HubWorkflowID, input.WorkflowSkillID),
+		HubWorkflowID:       strings.TrimSpace(input.HubWorkflowID),
+		HubInstanceID:       strings.TrimSpace(input.HubInstanceID),
+		HubNodeID:           strings.TrimSpace(input.HubNodeID),
 		Title:               firstNonEmptyMaclawAppString(input.Title, install.AppName, input.AppID),
 		Lane:                "my_requests",
 		Status:              "pending",
@@ -169,6 +173,10 @@ func (a *App) StartMaclawAppApprovalWorkflow(input MaclawAppApprovalWorkflowStar
 		instance.CurrentAssignee = firstNonEmptyMaclawAppString(input.CurrentAssignee, input.Approver, previous.Approver, previous.CurrentAssignee)
 		instance.WorkflowSkillID = firstNonEmptyMaclawAppString(input.WorkflowSkillID, previous.WorkflowSkillID)
 		instance.WorkflowVersion = firstNonEmptyMaclawAppString(input.WorkflowVersion, previous.WorkflowVersion)
+		instance.HubWorkflowID = firstNonEmptyMaclawAppString(input.HubWorkflowID, previous.HubWorkflowID)
+		instance.HubInstanceID = firstNonEmptyMaclawAppString(input.HubInstanceID, previous.HubInstanceID)
+		instance.HubNodeID = firstNonEmptyMaclawAppString(input.HubNodeID, previous.HubNodeID)
+		instance.ApprovalEngine = firstNonEmptyMaclawAppString(previous.ApprovalEngine)
 		instance.FromStatus = firstNonEmptyMaclawAppString(input.FromStatus, previous.Status, previous.BusinessStatus)
 		instance.BusinessStatus = firstNonEmptyMaclawAppString(input.BusinessStatus, "supplemented")
 		instance.ResultStatus = firstNonEmptyMaclawAppString(input.ResultStatus, "pending")
@@ -195,7 +203,45 @@ func (a *App) StartMaclawAppApprovalWorkflow(input MaclawAppApprovalWorkflowStar
 		stored.RecordApprovalID = approvalID
 		stored, _ = a.RecordMaclawAppApprovalInstance(stored)
 	}
-	result := map[string]any{"started": true, "instance": stored, "sync": syncResult, "workflow_skill_id": stored.WorkflowSkillID, "workflow_version": stored.WorkflowVersion, "approval_id": stored.ApprovalID, "result_feedback": maclawAppApprovalResultFeedback(stored)}
+	// Phase 1: bind/trigger Hub workflow so App projection carries hub_instance_id / hub_node_id.
+	// Only re-record/re-sync when Hub state actually changed (bound, triggered, or attention).
+	maclawAppApprovalTrace("workflow_start", map[string]any{
+		"app_id": stored.AppID, "instance_id": stored.InstanceID, "record_id": stored.RecordID,
+		"hub_workflow_id": firstNonEmptyMaclawAppString(input.HubWorkflowID, stored.HubWorkflowID),
+	})
+	hubBound, hubMeta, hubErr := a.bindOrTriggerMaclawAppHubWorkflow(stored, input)
+	hubChanged := strings.TrimSpace(hubBound.HubInstanceID) != "" ||
+		normalizeMaclawAppApprovalStatus(hubBound.Status) == "attention" ||
+		strings.TrimSpace(hubBound.HubSyncError) != "" ||
+		(hubMeta != nil && (hubMeta["triggered"] == true || hubMeta["bound"] == true))
+	if hubChanged {
+		if recorded, recErr := a.RecordMaclawAppApprovalInstance(hubBound); recErr == nil {
+			stored = recorded
+		} else {
+			stored = hubBound
+		}
+		if resync, resyncErr := a.SyncMaclawAppApprovalInstanceToDataSrv(maclawAppApprovalDataSrvSyncInput{DatasetID: stored.DatasetID, ObjectRole: stored.ObjectRole, AppID: stored.AppID, BlueprintID: stored.BlueprintID, RecordID: stored.RecordID, ApprovalID: firstNonEmptyMaclawAppString(stored.ApprovalID, stored.RecordApprovalID), Instance: stored}); resyncErr == nil {
+			syncResult = resync
+		}
+	} else if hubBound.ApprovalEngine != "" && stored.ApprovalEngine == "" {
+		// Soft-mark local engine in memory/result without extra DataSrv traffic.
+		stored.ApprovalEngine = hubBound.ApprovalEngine
+	}
+	result := map[string]any{"started": true, "instance": stored, "sync": syncResult, "workflow_skill_id": stored.WorkflowSkillID, "workflow_version": stored.WorkflowVersion, "approval_id": stored.ApprovalID, "result_feedback": maclawAppApprovalResultFeedback(stored), "hub": hubMeta, "approval_engine": stored.ApprovalEngine, "hub_instance_id": stored.HubInstanceID, "hub_node_id": stored.HubNodeID}
+	if hubErr != nil {
+		result["hub_error"] = hubErr.Error()
+		maclawAppApprovalTrace("workflow_start_hub_error", map[string]any{
+			"app_id": stored.AppID, "instance_id": stored.InstanceID, "error": hubErr.Error(),
+		})
+		if input.TriggerHubWorkflow != nil && *input.TriggerHubWorkflow {
+			return result, hubErr
+		}
+	} else if stored.HubInstanceID != "" {
+		maclawAppApprovalTrace("workflow_start_hub_bound", map[string]any{
+			"app_id": stored.AppID, "instance_id": stored.InstanceID,
+			"hub_instance_id": stored.HubInstanceID, "hub_node_id": stored.HubNodeID,
+		})
+	}
 	if input.RunWorkflowSkill {
 		workflowRun, err := a.runMaclawAppApprovalWorkflowSkill(stored, input)
 		if err != nil {
@@ -206,6 +252,9 @@ func (a *App) StartMaclawAppApprovalWorkflow(input MaclawAppApprovalWorkflowStar
 			result["instance"] = instance
 			result["approval_id"] = instance.ApprovalID
 			result["result_feedback"] = maclawAppApprovalResultFeedback(instance)
+			result["approval_engine"] = instance.ApprovalEngine
+			result["hub_instance_id"] = instance.HubInstanceID
+			result["hub_node_id"] = instance.HubNodeID
 		}
 	}
 	return result, nil
@@ -367,10 +416,20 @@ func maclawAppApprovalInstanceFromWorkflowPayload(payload map[string]any, base m
 	instance.RecordID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "record_id", "recordID"), instance.RecordID)
 	instance.ApprovalID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "approval_id", "approvalID", "record_approval_id", "recordApprovalID"), instance.ApprovalID)
 	instance.RecordApprovalID = firstNonEmptyMaclawAppString(instance.ApprovalID, instance.RecordApprovalID)
-	instance.InstanceID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "instance_id", "instanceID", "workflow_instance_id", "workflowInstanceID", "approval_instance_id", "approvalInstanceID"), instance.InstanceID)
+	// Local MaClaw App instance id (projection key). Prefer explicit app/local ids.
+	instance.InstanceID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "instance_id", "instanceID", "approval_instance_id", "approvalInstanceID", "workflow_instance_id", "workflowInstanceID"), instance.InstanceID)
+	instance.ApprovalEngine = firstNonEmptyMaclawAppString(normalizeMaclawAppApprovalEngine(maclawAppStringValue(source, "approval_engine", "approvalEngine", "engine")), instance.ApprovalEngine)
+	instance.HubWorkflowID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "hub_workflow_id", "hubWorkflowId", "hub_workflow", "hubWorkflow"), instance.HubWorkflowID)
+	// Hub runtime ids — only explicit hub_* (or current_node_id for node) to avoid clobbering local instance_id.
+	instance.HubInstanceID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "hub_instance_id", "hubInstanceId"), instance.HubInstanceID)
+	instance.HubNodeID = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "hub_node_id", "hubNodeId", "current_node_id", "currentNodeId"), instance.HubNodeID)
+	instance.HubSyncError = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "hub_sync_error", "hubSyncError"), instance.HubSyncError)
+	if instance.HubInstanceID != "" && instance.ApprovalEngine == "" {
+		instance.ApprovalEngine = maclawAppApprovalEngineHub
+	}
 	instance.Status = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "status", "decision"), instance.Status)
 	instance.Lane = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "lane"), instance.Lane)
-	instance.CurrentNode = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "current_node", "currentNode", "workflow_node_id", "workflowNodeId", "node"), instance.CurrentNode)
+	instance.CurrentNode = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "current_node", "currentNode", "workflow_node_id", "workflowNodeId", "node", "hub_node_id", "hubNodeId"), instance.CurrentNode)
 	instance.CurrentNodeStatus = firstNonEmptyMaclawAppString(maclawAppStringValue(source, "current_node_status", "currentNodeStatus", "node_status", "nodeStatus", "workflow_node_status", "workflowNodeStatus"), instance.CurrentNodeStatus)
 	if nodes := maclawAppStringListFromAny(firstNonEmptyMaclawAppAny(source["current_node_ids"], source["currentNodeIDs"], source["workflow_node_ids"], source["workflowNodeIds"])); len(nodes) > 0 {
 		instance.CurrentNodeIDs = nodes
@@ -1310,7 +1369,9 @@ func (a *App) ListMaclawAppApprovalInstances(appID string, lane string, limit in
 // ListMaclawAppApprovalInstancesAll returns newest-first approval instances
 // across all MaClaw approval apps. lane can be my_requests,
 // pending_my_approval, handled, attention, or all/empty.
+// Soft-reconciles hub-bound local projections before listing (best-effort).
 func (a *App) ListMaclawAppApprovalInstancesAll(lane string, limit int) ([]maclawAppApprovalInstance, error) {
+	_ = a.reconcileMaclawAppApprovalProjections(100)
 	return a.listMaclawAppApprovalInstances("", lane, limit)
 }
 
@@ -1335,10 +1396,19 @@ func (a *App) listMaclawAppApprovalInstances(appID string, lane string, limit in
 			localVisible = append(localVisible, cloned)
 		}
 	}
-	remote, _ := a.listMaclawAppApprovalInstancesFromDataSrv(appID, lane, limit)
+	// Merge order: local registry (projection) ← DataSrv ← Hub directory (SoT for cross-machine pending).
 	out := localVisible
+	remote, _ := a.listMaclawAppApprovalInstancesFromDataSrv(appID, lane, limit)
 	if len(remote) > 0 {
 		out = filterMaclawAppApprovalInstancesByLane(mergeMaclawAppApprovalInstanceLists(localContext, remote), lane)
+		localContext = mergeMaclawAppApprovalInstanceLists(localContext, remote)
+	}
+	// Hub directory items only apply to global (or hub-workflow) views; skip when filtering a specific enterprise app.
+	if appID == "" || strings.EqualFold(appID, "hub-workflow") {
+		hubItems, _ := a.listMaclawAppApprovalInstancesFromHub(lane, limit)
+		if len(hubItems) > 0 {
+			out = filterMaclawAppApprovalInstancesByLane(mergeMaclawAppApprovalInstanceLists(localContext, hubItems), lane)
+		}
 	}
 	if len(out) > limit {
 		out = out[:limit]
@@ -1703,6 +1773,8 @@ func maclawAppApprovalInstanceMergeKeys(instance maclawAppApprovalInstance) []st
 		keys = append(keys, prefix+":"+strings.Join(cleaned, "|"))
 	}
 	add("approval", firstNonEmptyMaclawAppString(instance.RecordApprovalID, instance.ApprovalID))
+	add("hub", instance.HubInstanceID)
+	add("hub_node", instance.HubInstanceID, instance.HubNodeID)
 	add("workflow", instance.WorkflowSkillID, instance.InstanceID)
 	add("instance", instance.AppID, instance.InstanceID)
 	add("record", instance.AppID, instance.DatasetID, instance.RecordID)
@@ -2288,7 +2360,26 @@ func normalizeMaclawAppApprovalInstanceFields(instance maclawAppApprovalInstance
 	instance.ApprovalObjectRole = firstNonEmptyMaclawAppString(instance.ApprovalObjectRole, instance.ObjectRole)
 	instance.ApprovalEvent = strings.TrimSpace(instance.ApprovalEvent)
 	instance.ApprovalWorkflowID = strings.TrimSpace(instance.ApprovalWorkflowID)
-	instance.ApprovalWorkflowID = firstNonEmptyMaclawAppString(instance.ApprovalWorkflowID, instance.WorkflowSkillID)
+	instance.ApprovalWorkflowID = firstNonEmptyMaclawAppString(instance.ApprovalWorkflowID, instance.HubWorkflowID, instance.WorkflowSkillID)
+	instance.ApprovalEngine = normalizeMaclawAppApprovalEngine(instance.ApprovalEngine)
+	instance.HubWorkflowID = strings.TrimSpace(instance.HubWorkflowID)
+	instance.HubInstanceID = strings.TrimSpace(instance.HubInstanceID)
+	instance.HubNodeID = strings.TrimSpace(instance.HubNodeID)
+	instance.HubSyncError = strings.TrimSpace(instance.HubSyncError)
+	instance.HubWorkflowID = firstNonEmptyMaclawAppString(instance.HubWorkflowID, func() string {
+		if instance.ApprovalEngine == maclawAppApprovalEngineHub {
+			return instance.ApprovalWorkflowID
+		}
+		return ""
+	}())
+	if instance.ApprovalEngine == "" {
+		if instance.HubInstanceID != "" {
+			instance.ApprovalEngine = maclawAppApprovalEngineHub
+		}
+	}
+	if instance.HubNodeID == "" && instance.ApprovalEngine == maclawAppApprovalEngineHub {
+		instance.HubNodeID = strings.TrimSpace(instance.CurrentNode)
+	}
 	instance.InstanceID = strings.TrimSpace(instance.InstanceID)
 	instance.Title = strings.TrimSpace(instance.Title)
 	instance.Lane = strings.TrimSpace(instance.Lane)
@@ -2311,7 +2402,7 @@ func normalizeMaclawAppApprovalInstanceFields(instance maclawAppApprovalInstance
 	instance.UpdatedAt = strings.TrimSpace(instance.UpdatedAt)
 	instance.Result = strings.TrimSpace(instance.Result)
 	instance.WorkflowSkillID = strings.TrimSpace(instance.WorkflowSkillID)
-	instance.ApprovalWorkflowID = firstNonEmptyMaclawAppString(instance.ApprovalWorkflowID, instance.WorkflowSkillID)
+	instance.ApprovalWorkflowID = firstNonEmptyMaclawAppString(instance.ApprovalWorkflowID, instance.HubWorkflowID, instance.WorkflowSkillID)
 	instance.WorkflowVersion = strings.TrimSpace(instance.WorkflowVersion)
 	instance.BusinessStatus = strings.TrimSpace(instance.BusinessStatus)
 	instance.ResultStatus = strings.TrimSpace(instance.ResultStatus)
@@ -2341,7 +2432,17 @@ func mergeMaclawAppApprovalInstance(existing, incoming maclawAppApprovalInstance
 	incoming.ObjectRole = firstNonEmptyMaclawAppString(incoming.ObjectRole, existing.ObjectRole, existing.ApprovalObjectRole)
 	incoming.ApprovalObjectRole = firstNonEmptyMaclawAppString(incoming.ApprovalObjectRole, incoming.ObjectRole, existing.ApprovalObjectRole)
 	incoming.ApprovalEvent = firstNonEmptyMaclawAppString(incoming.ApprovalEvent, existing.ApprovalEvent)
-	incoming.ApprovalWorkflowID = firstNonEmptyMaclawAppString(incoming.ApprovalWorkflowID, existing.ApprovalWorkflowID, incoming.WorkflowSkillID, existing.WorkflowSkillID)
+	incoming.ApprovalWorkflowID = firstNonEmptyMaclawAppString(incoming.ApprovalWorkflowID, existing.ApprovalWorkflowID, incoming.HubWorkflowID, existing.HubWorkflowID, incoming.WorkflowSkillID, existing.WorkflowSkillID)
+	incoming.ApprovalEngine = firstNonEmptyMaclawAppString(normalizeMaclawAppApprovalEngine(incoming.ApprovalEngine), normalizeMaclawAppApprovalEngine(existing.ApprovalEngine))
+	incoming.HubWorkflowID = firstNonEmptyMaclawAppString(incoming.HubWorkflowID, existing.HubWorkflowID)
+	incoming.HubInstanceID = firstNonEmptyMaclawAppString(incoming.HubInstanceID, existing.HubInstanceID)
+	incoming.HubNodeID = firstNonEmptyMaclawAppString(incoming.HubNodeID, existing.HubNodeID)
+	if incoming.HubSyncError == "" && normalizeMaclawAppApprovalStatus(incoming.Status) != "attention" {
+		// clear stale hub error when merging a healthy status unless still attention
+		incoming.HubSyncError = ""
+	} else if incoming.HubSyncError == "" {
+		incoming.HubSyncError = existing.HubSyncError
+	}
 	incoming.Owner = firstNonEmptyMaclawAppString(incoming.Owner, existing.Owner, existing.Applicant)
 	incoming.Applicant = firstNonEmptyMaclawAppString(incoming.Applicant, incoming.Owner, existing.Applicant)
 	incoming.Approver = firstNonEmptyMaclawAppString(incoming.Approver, existing.Approver)

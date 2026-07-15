@@ -476,6 +476,8 @@ func populateDirectoryItemFromJSON(item *workflow.DirectoryItem, dataJSON string
 			item.UserRole = "initiator"
 		}
 	}
+	// EscalationManager markers (written by WorkflowExecutor on dispatch retry).
+	workflow.ApplyEscalationFieldsToDirectoryItem(item, data)
 }
 
 // ---------------------------------------------------------------------------

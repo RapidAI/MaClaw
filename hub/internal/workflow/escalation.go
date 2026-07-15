@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +44,15 @@ type HumanApproverChecker interface {
 	IsAvailable(ctx context.Context, approverID string) bool
 }
 
+// EscalationFailedHook is invoked after an escalation exhausts max retries
+// (audit + optional initiator notify already recorded). Used by WorkflowExecutor
+// to mark the approval node blocked so directory/reconcile stay consistent.
+type EscalationFailedHook func(ctx context.Context, esc *EscalationRequest)
+
+// EscalationDeliveredHook is invoked after a queued escalation is successfully
+// dispatched so the executor can clear per-approver pending markers.
+type EscalationDeliveredHook func(ctx context.Context, esc *EscalationRequest)
+
 // EscalationManager manages the pending-escalation queue and retry logic.
 type EscalationManager struct {
 	mu             sync.Mutex
@@ -50,6 +60,9 @@ type EscalationManager struct {
 	dispatcher     ApprovalDispatcher
 	auditStore     AuditStore
 	checker        HumanApproverChecker
+	notifier       WorkflowNotifier // optional: push ve:workflow_status when escalation fails
+	failedHook     EscalationFailedHook
+	deliveredHook  EscalationDeliveredHook
 	retryInterval  time.Duration
 	maxRetries     int
 	stopCh         chan struct{}
@@ -67,6 +80,64 @@ func NewEscalationManager(dispatcher ApprovalDispatcher, auditStore AuditStore, 
 		maxRetries:    EscalationMaxRetries,
 		stopCh:        make(chan struct{}),
 	}
+}
+
+// SetNotifier wires an optional WorkflowNotifier so exhausted escalations can
+// push blocked/escalation status to the initiator's machines (desktop attention).
+// Returns the manager for fluent wiring in the Hub router.
+func (m *EscalationManager) SetNotifier(n WorkflowNotifier) *EscalationManager {
+	if m == nil {
+		return nil
+	}
+	m.notifier = n
+	return m
+}
+
+// SetFailedHook registers a callback after max-retries escalation failure.
+func (m *EscalationManager) SetFailedHook(h EscalationFailedHook) *EscalationManager {
+	if m == nil {
+		return nil
+	}
+	m.failedHook = h
+	return m
+}
+
+// SetDeliveredHook registers a callback after a queued escalation is delivered.
+func (m *EscalationManager) SetDeliveredHook(h EscalationDeliveredHook) *EscalationManager {
+	if m == nil {
+		return nil
+	}
+	m.deliveredHook = h
+	return m
+}
+
+// HasPendingForInstance reports whether any pending escalation targets the
+// given instance (and optional node). Used by timeout handling to avoid
+// short-circuiting EscalationManager retries with an early markNodeBlocked.
+func (m *EscalationManager) HasPendingForInstance(instanceID, nodeID string) bool {
+	if m == nil {
+		return false
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	nodeID = strings.TrimSpace(nodeID)
+	if instanceID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, req := range m.queue {
+		if req == nil || req.Status != EscalationPending {
+			continue
+		}
+		if strings.TrimSpace(req.InstanceID) != instanceID {
+			continue
+		}
+		if nodeID != "" && strings.TrimSpace(req.NodeID) != nodeID {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // Escalate attempts to escalate a request to the configured human approver.
@@ -216,6 +287,9 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 		m.mu.Lock()
 		delete(m.queue, escReq.ID)
 		m.mu.Unlock()
+		if m.deliveredHook != nil {
+			m.deliveredHook(ctx, escReq)
+		}
 		return
 	}
 
@@ -257,4 +331,24 @@ func (m *EscalationManager) markEscalationFailed(ctx context.Context, escReq *Es
 		Details:    fmt.Sprintf(`{"reason":"max retries exhausted","total_attempts":%d}`, escReq.Attempts),
 		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
 	})
+
+	// Push to initiator machines so MaClaw can project attention without waiting
+	// for the next directory reconcile. Reason includes "escalation" so Hub
+	// participant notifier classifies event=escalation / urgency=overdue.
+	if m.notifier != nil && strings.TrimSpace(escReq.InstanceID) != "" {
+		reason := fmt.Sprintf(
+			"escalation failed: human approver %s unavailable after %d attempts",
+			escReq.HumanApprover, escReq.Attempts,
+		)
+		details := fmt.Sprintf(
+			"node=%s approver=%s reason=max_retries_exhausted",
+			escReq.NodeID, escReq.HumanApprover,
+		)
+		_ = m.notifier.NotifyInitiator(ctx, escReq.InstanceID, reason, details)
+	}
+
+	// Executor marks the node blocked so Hub directory / desktop reconcile align.
+	if m.failedHook != nil {
+		m.failedHook(ctx, escReq)
+	}
 }

@@ -67,6 +67,11 @@ var approverHelpers = new Function('state', 'tr', [
     if (key === 'userMachine') return 'Machine';
     if (key === 'approverRole') return 'Approval role';
     if (key === 'approvalRoleNotConfigured') return 'No approval role configured';
+    if (key === 'approvalRolesEmptyTitle') return 'No approval roles from Hub';
+    if (key === 'approvalRolesEmptyHint') return 'Configure roles in Admin';
+    if (key === 'approvalRolesEmptyAction') return 'Open Hub Admin → Approval roles';
+    if (key === 'approvalRolesNoAssigneesTitle') return 'Approval roles need assignees';
+    if (key === 'approvalRolesNoAssigneesHint') return 'Bind people to roles';
     if (key === 'departmentDigitalEmployee') return 'Department digital employee';
     if (key === 'digitalTwin') return 'Digital twin';
     if (key === 'roleExecutionManual') return 'Manual';
@@ -324,6 +329,13 @@ var emptyRoleDirectory = {
 var emptyRoleRows = approverHelpers.approvalRoleRows('function', emptyRoleDirectory, 'finance');
 assertEqual(emptyRoleRows.length, 1, 'function role view should keep empty Hub role scopes visible');
 assertEqual(emptyRoleRows[0].disabled, true, 'empty Hub role should not be selectable');
+var noCatalogRows = approverHelpers.approvalRoleRows('function', { functionScopes: [], approvalRoles: [], byId: {} }, '');
+assertEqual(noCatalogRows.length, 1, 'empty Hub catalog shows admin guide row');
+assertEqual(noCatalogRows[0].disabled, true, 'admin guide row is not selectable');
+assertEqual(noCatalogRows[0].name, 'No approval roles from Hub', 'admin guide title');
+var noAssigneeRows = approverHelpers.approvalRoleRows('organization', emptyRoleDirectory, '');
+assertEqual(noAssigneeRows.length, 1, 'roles without assignees show bind-people guide');
+assertEqual(noAssigneeRows[0].name, 'Approval roles need assignees', 'no-assignees guide title');
 var organizationRoleRows = approverHelpers.approvalRoleRows('organization', roleDirectory, 'alice twin');
 assertEqual(organizationRoleRows.length, 1, 'organization role view searches configured assignees');
 assertEqual(organizationRoleRows[0].id, 'role:department:dept-finance:department_manager', 'organization role view lists department approval roles');
