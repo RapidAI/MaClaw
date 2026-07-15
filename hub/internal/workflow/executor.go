@@ -1060,7 +1060,13 @@ func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *W
 		return e.markNodeBlocked(ctx, inst, node, reason, blockDetails)
 	}
 	// Do not re-queue peers already marked permanently offline on this instance.
+	// If the node can no longer complete without them, block instead of hanging.
 	if _, dead := exhaustedApproverSet(inst.InstanceData)[approverID]; dead {
+		_, cfg := e.loadApprovalNodeAndConfig(ctx, inst, node.ID)
+		if cfg != nil && !e.approvalStillSatisfiable(inst, node.ID, cfg, "") {
+			return e.markNodeBlocked(ctx, inst, node, reason,
+				"approver "+approverID+" already exhausted; approval no longer satisfiable")
+		}
 		return nil
 	}
 	if req == nil {
@@ -1608,22 +1614,7 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 	// other peers are still in the retry queue.
 	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
 	if peersStillPending {
-		e.patchInstanceData(ctx, inst, esc.NodeID, "update_instance_data_escalation_peer_failed", func(data map[string]interface{}) {
-			if failedPeer != "" {
-				data["escalation_exhausted_approvers"] = appendUniqueStringList(
-					stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
-					failedPeer,
-				)
-			}
-			var remaining []string
-			var attempts map[string]int
-			if e.escalationMgr != nil {
-				remaining = e.escalationMgr.PendingApprovers(inst.ID, esc.NodeID)
-				attempts = e.escalationMgr.PendingAttempts(inst.ID, esc.NodeID)
-			}
-			writeEscalationMarkersInData(data, remaining, "")
-			writeEscalationAttemptsInData(data, attempts)
-		})
+		e.recordExhaustedPeerAndSyncMarkers(ctx, inst, esc.NodeID, failedPeer, "update_instance_data_escalation_peer_failed")
 		// After recording exhausted, N may already be unreachable (e.g. any-2-of-2
 		// with one peer dead and one still retrying). Stop wasted retries and block.
 		if cfg != nil && !e.approvalStillSatisfiable(inst, esc.NodeID, cfg, "") {
@@ -1644,10 +1635,12 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 	// any-N-of-M: peer permanently offline may still leave N reachable via others.
 	if cfg != nil && e.approvalStillSatisfiable(inst, esc.NodeID, cfg, esc.HumanApprover) {
 		e.patchInstanceData(ctx, inst, esc.NodeID, "update_instance_data_escalation_exhausted_keep_running", func(data map[string]interface{}) {
-			data["escalation_exhausted_approvers"] = appendUniqueStringList(
-				stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
-				failedPeer,
-			)
+			if failedPeer != "" {
+				data["escalation_exhausted_approvers"] = appendUniqueStringList(
+					stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
+					failedPeer,
+				)
+			}
 			clearEscalationMarkersInData(data)
 		})
 		if e.notifier != nil {
@@ -1662,6 +1655,30 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 	// Required peer(s) cannot complete the node — block.
 	details := fmt.Sprintf("escalation max retries exhausted for approver %s (attempts=%d)", esc.HumanApprover, esc.Attempts)
 	_ = e.markNodeBlocked(ctx, inst, node, "escalation_failed", details)
+}
+
+// recordExhaustedPeerAndSyncMarkers appends a permanently offline peer and
+// rewrites pending escalation markers from the live queue (CAS-safe).
+func (e *WorkflowExecutor) recordExhaustedPeerAndSyncMarkers(ctx context.Context, inst *WorkflowInstance, nodeID, failedPeer, op string) {
+	if e == nil || inst == nil {
+		return
+	}
+	e.patchInstanceData(ctx, inst, nodeID, op, func(data map[string]interface{}) {
+		if fp := strings.TrimSpace(failedPeer); fp != "" {
+			data["escalation_exhausted_approvers"] = appendUniqueStringList(
+				stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
+				fp,
+			)
+		}
+		var remaining []string
+		var attempts map[string]int
+		if e.escalationMgr != nil {
+			remaining = e.escalationMgr.PendingApprovers(inst.ID, nodeID)
+			attempts = e.escalationMgr.PendingAttempts(inst.ID, nodeID)
+		}
+		writeEscalationMarkersInData(data, remaining, "")
+		writeEscalationAttemptsInData(data, attempts)
+	})
 }
 
 // loadApprovalNodeAndConfig resolves the graph node + approval config for hooks.
