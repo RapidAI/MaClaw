@@ -474,6 +474,106 @@ func TestOnEscalationFailed_LastPeerBlocks(t *testing.T) {
 	}
 }
 
+func TestOnEscalationFailed_PeerFailWhileOthersPending_RecordsExhausted(t *testing.T) {
+	// Multi-peer: human-a exhausts while human-b still queued — a must be marked
+	// exhausted so any-N capacity does not keep waiting on a dead peer.
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "CS"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-peer-exh", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a", "human-b"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	req := &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}
+	_ = esc.Escalate(context.Background(), req, "human-a")
+	_ = esc.Escalate(context.Background(), req, "human-b")
+	// Remove only human-a (simulate max-retries removal) then call failed hook.
+	esc.mu.Lock()
+	var escA *EscalationRequest
+	for _, r := range esc.queue {
+		if r.HumanApprover == "human-a" {
+			escA = r
+			delete(esc.queue, r.ID)
+			break
+		}
+	}
+	esc.mu.Unlock()
+	if escA == nil {
+		t.Fatal("human-a missing from queue")
+	}
+	escA.Attempts = 5
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), escA)
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("must not block while human-b still pending")
+	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "human-a" {
+		t.Fatalf("exhausted=%v want [human-a]", exh)
+	}
+	list := stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])
+	if len(list) != 1 || list[0] != "human-b" {
+		t.Fatalf("approvers=%v want [human-b]", list)
+	}
+	if !esc.HasPendingApprover(inst.ID, "approval-1", "human-b") {
+		t.Fatal("human-b should remain queued")
+	}
+}
+
+func TestHandleTimeout_CancelsRemainingEscalationsWhenNotDeferred(t *testing.T) {
+	// human-a queued, human-b already delivered (not queued) → timeout proceeds
+	// and must cancel human-a's live queue entry (no dual recovery path).
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeCountersign,
+		TimeoutHours: 1,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "CS", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-to-cancel", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}, "human-a")
+	if esc.PendingCount() != 1 {
+		t.Fatalf("setup PendingCount=%d", esc.PendingCount())
+	}
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	if err := exec.HandleTimeout(context.Background(), inst.ID, "approval-1"); err != nil {
+		t.Fatal(err)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("PendingCount=%d want 0 after timeout takeover", esc.PendingCount())
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending {
+		t.Fatalf("escalation_pending should clear after timeout takeover: %#v", inst.InstanceData)
+	}
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked (no fallback)", instStore.updatedStatus)
+	}
+}
+
 func TestOnEscalationFailed_AnyNofM_KeepsRunningWhenStillSatisfiable(t *testing.T) {
 	// any-2-of-3: human-a permanently offline; b and c can still approve.
 	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{

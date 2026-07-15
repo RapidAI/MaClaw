@@ -934,6 +934,14 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 	if inst != nil && node != nil && e.shouldDeferForEscalationRetries(inst, node.ID, cfg) {
 		return nil
 	}
+	// Timeout/fallback now owns this node. Drop any still-queued delivery retries
+	// so EscalationManager cannot re-dispatch after we block or route fallback.
+	if inst != nil && node != nil {
+		e.cancelEscalations(inst.ID, node.ID)
+		e.patchInstanceData(ctx, inst, node.ID, "clear_escalation_after_timeout_takeover", func(data map[string]interface{}) {
+			clearEscalationMarkersInData(data)
+		})
+	}
 	if cfg.FallbackApprover == "" {
 		// No fallback: if primary dispatch earlier left escalation_approver on
 		// instance data we could re-queue, but without a live EscalationManager
@@ -1584,14 +1592,31 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 		e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_failed_terminal")
 		return
 	}
-	// Queue entry was already removed. Rebuild markers from live peers.
-	// Peers still queued → keep instance running (countersign multi-fail).
+	failedPeer := strings.TrimSpace(esc.HumanApprover)
+	// Queue entry was already removed. Always record this peer as permanently
+	// offline so any-N capacity math does not wait on a dead approver — even when
+	// other peers are still in the retry queue.
 	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
 	if peersStillPending {
-		e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_peer_failed")
+		e.patchInstanceData(ctx, inst, esc.NodeID, "update_instance_data_escalation_peer_failed", func(data map[string]interface{}) {
+			if failedPeer != "" {
+				data["escalation_exhausted_approvers"] = appendUniqueStringList(
+					stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
+					failedPeer,
+				)
+			}
+			var remaining []string
+			var attempts map[string]int
+			if e.escalationMgr != nil {
+				remaining = e.escalationMgr.PendingApprovers(inst.ID, esc.NodeID)
+				attempts = e.escalationMgr.PendingAttempts(inst.ID, esc.NodeID)
+			}
+			writeEscalationMarkersInData(data, remaining, "")
+			writeEscalationAttemptsInData(data, attempts)
+		})
 		if e.notifier != nil {
 			_ = e.notifier.NotifyInitiator(ctx, inst.ID,
-				fmt.Sprintf("escalation failed for approver %s (other peers still retrying)", strings.TrimSpace(esc.HumanApprover)),
+				fmt.Sprintf("escalation failed for approver %s (other peers still retrying)", failedPeer),
 				fmt.Sprintf("node=%s attempts=%d", esc.NodeID, esc.Attempts),
 			)
 		}
@@ -1618,7 +1643,6 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 
 	// any-N-of-M: peer permanently offline may still leave N reachable via others.
 	if cfg != nil && e.approvalStillSatisfiable(inst, esc.NodeID, cfg, esc.HumanApprover) {
-		failedPeer := strings.TrimSpace(esc.HumanApprover)
 		e.patchInstanceData(ctx, inst, esc.NodeID, "update_instance_data_escalation_exhausted_keep_running", func(data map[string]interface{}) {
 			data["escalation_exhausted_approvers"] = appendUniqueStringList(
 				stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
