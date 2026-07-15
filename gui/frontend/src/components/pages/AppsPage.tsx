@@ -1744,7 +1744,7 @@ const labels = {
         upgradedItem: 'Upgraded',
         skippedItem: 'Skipped',
         installDetails: 'Install details',
-        hubInstallSummary: 'Source package {source} 路 installed {installed}',
+        hubInstallSummary: 'Source package {source} \u00b7 installed {installed}',
         hubInstallDependencySummary: '{count} dependencies',
         installRecords: 'Recent installs',
         installRecordsHint: 'Local app package installs and Skill dependency audit',
@@ -1811,7 +1811,7 @@ const sourceLabels: Record<AppEntry['source'], { zh: string; en: string }> = {
     local: { zh: '\u672c\u5730', en: 'Local' },
 };
 
-// initialApps is intentionally empty 路 apps are discovered at runtime from
+// initialApps is intentionally empty \u00b7 apps are discovered at runtime from
 // installed Skills (via ListSkillAppManifests), DataSrv capabilities, or
 // user-created entries persisted in localStorage. Placeholder entries that
 // lacked real backend implementations have been removed to avoid misleading
@@ -2400,7 +2400,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                     <div className="apps-layout-designer__evidence" data-testid={`${testIdPrefix}-layout-evidence`}>
                         <span>
                             <strong>{zh ? '\u5e03\u5c40' : 'Layout'}</strong>
-                            <small>{value.template} 路 {value.density}</small>
+                            <small>{value.template} \u00b7 {value.density}</small>
                         </span>
                         <span>
                             <strong>{zh ? '\u4e3b\u533a' : 'Primary'}</strong>
@@ -3147,7 +3147,7 @@ async function fetchDataSrvInstallRegistrationAudit(record: BackendAppInstallRec
         `${text.datasrvRegistrationFailed}: ${failed}`,
     ];
     if (skipped > 0) parts.push(`${text.datasrvRegistrationSkipped}: ${skipped}`);
-    return { state, message: parts.join(' 路 ') };
+    return { state, message: parts.join(' \u00b7 ') };
 }
 
 
@@ -4496,7 +4496,7 @@ function structuredBusinessErrorMessage(error: StructuredBusinessErrorView | nul
 function skillRunOutputSuffix(status?: SkillRunStatusView | null) {
 	const snippet = String(status?.summary?.last_output_snippet || status?.session_progress?.last_result || '').trim();
 	if (!snippet) return '';
-	return ` 路 ${snippet.slice(0, 120)}`;
+	return ` \u00b7 ${snippet.slice(0, 120)}`;
 }
 
 function skillRunArtifactKeys(artifact?: SkillRunArtifactView | null) {
@@ -4712,7 +4712,7 @@ function approvalWorkflowResultPayloadFromObjects(objects: Record<string, any>[]
             if (Object.prototype.hasOwnProperty.call(object, sourceKey)) mergeApprovalPayloadValue(payload, targetKey, object[sourceKey]);
         }
     }
-    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ \u00b7 /, '');
     if (payload.text === undefined && snippet && parseSkillRunResultObjects(snippet).length === 0) payload.text = snippet.slice(0, 500);
     return Object.keys(payload).length > 0 ? payload : undefined;
 }
@@ -4839,7 +4839,7 @@ function approvalOutputsOrDefault(
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
     if (payload) return payload;
-    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ \u00b7 /, '');
     return snippet ? { text: snippet.slice(0, 500) } : undefined;
 }
 
@@ -4940,7 +4940,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
     const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
     const explicitDecision = firstSkillRunResultString(objects, ['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']);
     const decision = normalizeApprovalWorkflowDecision(explicitDecision, lifecycle);
-    const outputText = skillRunOutputSuffix(status).replace(/^ 路 /, '');
+    const outputText = skillRunOutputSuffix(status).replace(/^ \u00b7 /, '');
     const fallbackText = lifecycle === 'cancelled'
         ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
         : lifecycle === 'timeout'
@@ -5003,7 +5003,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
     const progress = String(status?.session_progress?.progress_summary || status?.session_progress?.current_task || status?.summary?.current_step || '').trim();
     const statusText = String(status?.status || '').trim();
-    return [fallback, runID, statusText, progress].filter(Boolean).join(' 路 ');
+    return [fallback, runID, statusText, progress].filter(Boolean).join(' \u00b7 ');
 }
 
 function compactStepLabel(step: SkillRunStepView) {
@@ -5149,7 +5149,7 @@ function businessOperationResponseSummary(response?: Record<string, unknown>): s
             return Object.entries(first as Record<string, unknown>)
                 .slice(0, 3)
                 .map(([key, value]) => key + ': ' + String(value))
-                .join(' 路  ')
+                .join(' \u00b7  ')
                 .slice(0, 180);
         }
         return String(first).slice(0, 180);
@@ -5173,7 +5173,7 @@ function buildBusinessOperationResult(result: Record<string, unknown> | undefine
     const recordCount = rows.length;
     const kind = businessOperationResultKind(mode, primaryResult, resultPayload, response);
     const summary = businessOperationResponseSummary(resultPayload) || businessOperationResponseSummary(response);
-    const message = summary || text.runCompleted + ': ' + mode + ' 路  ' + status;
+    const message = summary || text.runCompleted + ': ' + mode + ' \u00b7  ' + status;
     const outputs = normalizeApprovalOutputs(Array.isArray(result?.outputs) ? result.outputs as ApprovalInstanceOutputView[] : undefined);
     const artifacts = Array.isArray(result?.artifacts)
         ? result.artifacts.filter((item): item is SkillRunArtifactView => !!item && typeof item === 'object' && !Array.isArray(item))
@@ -5823,7 +5823,7 @@ function reviewIssueSummary(issue: AppReviewIssue) {
     return [issue.severity, issue.path, issue.message, issue.suggestion]
         .map((value) => String(value || '').trim())
         .filter(Boolean)
-        .join(' 路 ');
+        .join(' \u00b7 ');
 }
 
 function reviewIssueMetadataText(issue: AppReviewIssue, key: string) {
@@ -5857,7 +5857,7 @@ function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
     return [
         ...visible,
         remaining > 0 ? `${text.reviewIssuesMore} ${remaining} ${text.reviewIssuesMoreUnit}` : '',
-    ].filter(Boolean).join(' 路  ');
+    ].filter(Boolean).join(' \u00b7  ');
 }
 
 function reviewIssueSeverity(issue: AppReviewIssue) {
@@ -5929,7 +5929,7 @@ function packageWorkspaceLayoutSummariesFromRecord(record: Record<string, unknow
             regionCount ? `${regionCount} regions` : '',
             fingerprint ? `fp:${fingerprint}` : '',
         ].filter(Boolean);
-        return parts.length > 1 ? parts.join(' 路 ') : '';
+        return parts.length > 1 ? parts.join(' \u00b7 ') : '';
     }).filter(Boolean);
 }
 
@@ -5941,7 +5941,7 @@ function eventSummariesFromRecord(record: Record<string, unknown> | null): strin
         return [event.at, event.status, event.channel, event.submission_id || event.submissionID]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
-            .join(' 路 ');
+            .join(' \u00b7 ');
     }).filter(Boolean);
 }
 
@@ -6189,7 +6189,7 @@ function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
             : !actualHash
                 ? (zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
                 : ok
-                    ? `${evidence.runID || ''} 路  ${actualHash}`.trim()
+                    ? `${evidence.runID || ''} \u00b7  ${actualHash}`.trim()
                     : (zh ? '\u8fd0\u884c\u8bc1\u636e\u5df2\u4e0d\u5339\u914d\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is stale for the current app definition; rerun the test'),
     };
 }
@@ -6217,7 +6217,7 @@ function appRunEvidenceDesignConsistencyCheck(app: AppEntry, evidence: AppRunHis
     }
     return {
         ok: true,
-        detail: `${evidence.runID || ''} 路  protocol ${actualProtocol} 路  layout ${actualLayout}`.trim(),
+        detail: `${evidence.runID || ''} \u00b7  protocol ${actualProtocol} \u00b7  layout ${actualLayout}`.trim(),
     };
 }
 
@@ -6461,7 +6461,7 @@ function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
     if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '\u7f3a\u5c11 workspace layout' : 'Missing workspace layout';
     const missingRoles = missingWorkspaceRegionRoles(app);
     if (missingRoles.length > 0) return zh ? `\u7f3a\u5c11 workspace \u533a\u57df\u89d2\u8272: ${missingRoles.join(', ')}` : `Missing workspace region roles: ${missingRoles.join(', ')}`;
-    return `${layout.entry} 路  ${layout.template} 路  ${layout.density} 路  ${layout.regionCount} regions`;
+    return `${layout.entry} \u00b7  ${layout.template} \u00b7  ${layout.density} \u00b7  ${layout.regionCount} regions`;
 }
 function buildAppResultContract(kind: AppKind, outputModes: string[] = []): AppResultContract {
     const normalizedOutputModes = normalizeOutputModes(outputModes);
@@ -6635,7 +6635,7 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
     if (sampleKeys === 0 || outputKeys === 0) return zh ? '\u7f3a\u5c11 sampleInput \u6216 expectedOutput' : 'Missing sampleInput or expectedOutput';
-    return `${zh ? '\u534f\u8bae\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} 路  ${protocol.riskLevel}`;
+    return `${zh ? '\u534f\u8bae\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} \u00b7  ${protocol.riskLevel}`;
 }
 
 function appHasPublishableTestProtocol(app: AppEntry): boolean {
@@ -6800,13 +6800,13 @@ function appWorkflowContractPublishSummary(app: AppEntry, lang?: string) {
     const contract = workflowContractForApp(app);
     if (!contract) return zh ? '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6' : 'Runtime contract not declared';
     const workflow = [contract.workflowSkillId, contract.workflowVersion ? `v${contract.workflowVersion}` : ''].filter(Boolean).join('@');
-    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' 路  ');
+    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' \u00b7  ');
 }
 function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const contract = appResultContractForManifest(app);
     const types = contract.types.slice(0, 4).join(', ');
-    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` 路  ${types}` : ''}`;
+    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` \u00b7  ${types}` : ''}`;
 }
 
 function appRunEvidencePayloadValue(payload: Record<string, unknown> | undefined, keys: string[]): unknown {
@@ -7042,7 +7042,7 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
     const covered = new Set(effectiveCoveredTypes);
     const primaryCovered = !primary || covered.has(primary) || (primary === 'document' && covered.has('artifact')) || (primary === 'artifact' && covered.has('document')) || (primary === 'text' && covered.has('content')) || (primary === 'content' && covered.has('text'));
     const missingTypes = explicitMissingTypes.length ? explicitMissingTypes : primaryCovered || !primary ? [] : [primary];
-    const evidenceLabel = evidence ? `${evidence.runID || ''} 路  ${evidence.at || ''}`.trim() : '';
+    const evidenceLabel = evidence ? `${evidence.runID || ''} \u00b7  ${evidence.at || ''}`.trim() : '';
     const coveredLabel = effectiveCoveredTypes.length > 0 ? effectiveCoveredTypes.join(', ') : (zh ? '\u672a\u8bc6\u522b\u7ed3\u679c\u7c7b\u578b' : 'No result type recognized');
     return {
         ok: !!evidence && primaryCovered && missingTypes.length === 0,
@@ -7052,8 +7052,8 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
         detail: !evidence
             ? (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review')
             : primaryCovered && missingTypes.length === 0
-                ? `${evidenceLabel}${primary ? ` 路  primary: ${primary}` : ''} 路  ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
-                : `${evidenceLabel} 路  ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
+                ? `${evidenceLabel}${primary ? ` \u00b7  primary: ${primary}` : ''} \u00b7  ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
+                : `${evidenceLabel} \u00b7  ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
     };
 }
 function defaultAppWorkflowMapping(kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
@@ -7297,7 +7297,7 @@ function appRunHistoryMessageSummary(item: AppRunHistoryEntry) {
     if (!message) return item.status;
     const shell = message.match(/\bshell:\s*([^\s,;]+)/i)?.[1];
     const elapsed = message.match(/\belapsed:\s*([^\s,;]+)/i)?.[1];
-    if (shell || elapsed) return [shell ? `shell: ${shell}` : '', elapsed ? `elapsed: ${elapsed}` : ''].filter(Boolean).join(' 路 ');
+    if (shell || elapsed) return [shell ? `shell: ${shell}` : '', elapsed ? `elapsed: ${elapsed}` : ''].filter(Boolean).join(' \u00b7 ');
     return message;
 }
 
@@ -7377,7 +7377,7 @@ function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel:
     return [
         app.name,
         app.description,
-        [appKinds[app.kind][isZh(lang) ? 'zh' : 'en'], sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'], panelStatus].filter(Boolean).join(' 路 '),
+        [appKinds[app.kind][isZh(lang) ? 'zh' : 'en'], sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'], panelStatus].filter(Boolean).join(' \u00b7 '),
         `${text.appStatus}: ${statusLabel}`,
         `${text.recentUsed}: ${recent || text.neverUsed}`,
     ].filter(Boolean).join('\n');
@@ -7473,13 +7473,13 @@ function filterSummaryText({ query, category, count, lang, allLabel }: { query: 
     const zh = isZh(lang);
     const categoryText = category === 'all' ? allLabel : category;
     if (trimmedQuery && category !== 'all') {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d 路 ${categoryText} 路 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" 路 ${categoryText} 路 ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d \u00b7 ${categoryText} \u00b7 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" \u00b7 ${categoryText} \u00b7 ${count} matches`;
     }
     if (trimmedQuery) {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d 路 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" 路 ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d \u00b7 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" \u00b7 ${count} matches`;
     }
     if (category !== 'all') {
-        return zh ? `${categoryText} 路 ${count} \u4e2a\u5e94\u7528` : `${categoryText} 路 ${count} apps`;
+        return zh ? `${categoryText} \u00b7 ${count} \u4e2a\u5e94\u7528` : `${categoryText} \u00b7 ${count} apps`;
     }
     return '';
 }
@@ -8360,12 +8360,12 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
         {
             id: `${app.id}-current`,
             appID: app.id,
-            title: submitted ? `${title} 路 ${businessAction}` : title,
+            title: submitted ? `${title} \u00b7 ${businessAction}` : title,
             lane: 'my_requests',
             status: draftStatus,
             currentNode: draftNode,
             owner: zh ? '\u6211' : 'Me',
-            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 路  VE' : 'Manager 路  VE') : workflow,
+            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 \u00b7  VE' : 'Manager \u00b7  VE') : workflow,
             updatedAt: submitted ? new Date().toLocaleString() : '-',
             result: businessNote.trim() || draftResult,
             workflowSkillID: workflow,
@@ -8563,17 +8563,19 @@ function approvalEscalationRetryText(instance: ApprovalInstanceView | undefined,
     const attempts = instance.escalationAttempts || {};
     const parts = peers.slice(0, 4).map((id) => {
         const n = attempts[id];
-        return n && n > 0 ? `${id}脳${n}` : id;
+        return n && n > 0 ? `${id}\u00d7${n}` : id;
     });
     const more = peers.length > 4 ? ` +${peers.length - 4}` : '';
-    const head = isZh(lang) ? '鍗囩骇閲嶆姇' : 'Escalation retry';
+    // 升级重投 — use \u escapes (file historically suffered mojibake from shell rewrites)
+    const head = isZh(lang) ? '\u5347\u7ea7\u91cd\u6295' : 'Escalation retry';
     return parts.length ? `${head}: ${parts.join(', ')}${more}` : head;
 }
 
 function approvalEscalationExhaustedText(instance: ApprovalInstanceView | undefined, lang?: string): string {
     const peers = instance?.escalationExhaustedApprovers || [];
     if (!peers.length) return '';
-    const head = isZh(lang) ? '绂荤嚎鑰楀敖' : 'Escalation exhausted';
+    // 离线耗尽
+    const head = isZh(lang) ? '\u79bb\u7ebf\u8017\u5c3d' : 'Escalation exhausted';
     const body = peers.slice(0, 4).join(', ') + (peers.length > 4 ? ` +${peers.length - 4}` : '');
     return `${head}: ${body}`;
 }
@@ -9277,7 +9279,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     const detail = result.error || (isZh(lang) ? '鎸佷箙鍖栬繍琛岃瘉鎹け璐? : 'Failed to persist run evidence');
                     if (current && current.includes(detail)) return current;
                     const prefix = isZh(lang) ? '杩愯璇佹嵁鏈啓鍏ユ湰鏈哄瓨鍌? : 'Run evidence was not saved to durable store';
-                    return current ? `${current} 路 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
+                    return current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                 });
             }
         });
@@ -9553,7 +9555,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                         definitionHash,
                         outputMode: currentRunContext.outputMode,
                         inputSummary: currentRunContext.inputSummary,
-                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ 路 /, '') || text.skillRunCompleted,
+                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ \u00b7 /, '') || text.skillRunCompleted,
                         artifactID,
                         artifactURI,
                         artifactName,
@@ -9573,14 +9575,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                     setValidationMessage((current) => {
                                         const detail = String(result.durable_history_error);
                                         const prefix = isZh(lang) ? 'Skill 璇佹嵁宸插啓鍏ワ紝浣嗘湰鏈鸿繍琛屽巻鍙叉寔涔呭寲澶辫触' : 'Skill evidence saved, but durable run history failed';
-                                        return current ? `${current} 路 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
+                                        return current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                                     });
                                 }
                             })
                             .catch((error: any) => {
                                 const detail = String(error?.message || error || '');
                                 const prefix = isZh(lang) ? '鍐欏叆 Skill 杩愯璇佹嵁澶辫触' : 'Failed to record skill run evidence';
-                                setValidationMessage((current) => current ? `${current} 路 ${prefix}: ${detail}` : `${prefix}: ${detail}`);
+                                setValidationMessage((current) => current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`);
                             });
                     }
                 } else if (lifecycle === 'error') {
@@ -9659,15 +9661,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     }).filter(Boolean).join(', ');
     const selectedFileLabel = selectedFiles.length > 1 ? (isZh(lang) ? `${selectedFiles.length} \u4e2a\u6587\u4ef6` : `${selectedFiles.length} files`) : fileName;
     const toolInputSummary = showFileInput && showParamInput
-        ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` 路 ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
+        ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` \u00b7 ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
         : showParamInput
             ? (fieldSummary || toolParams.trim() || (isZh(lang) ? '\u672a\u586b\u5199\u53c2\u6570' : 'No parameters'))
             : (selectedFileLabel || text.noFile);
     const resultText = isTool
-        ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` 路 ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
+        ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` \u00b7 ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
         : isAutomation
             ? (isZh(lang) ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002' : 'Automation console started. Agent will run and report by app definition.')
-            : `${text.submitted}: ${businessEntity || app.category} 路 ${businessAction} 路 ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
+            : `${text.submitted}: ${businessEntity || app.category} \u00b7 ${businessAction} \u00b7 ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
 	const markDirty = () => {
         if (runState === 'running') return;
 		setRunState('idle');
@@ -9873,7 +9875,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         if (isApproval) {
             const now = new Date().toISOString();
             const fallbackID = `appr-${Date.now().toString(36)}`;
-            const inputSummary = `${businessEntity || app.category} 路  ${businessAction || 'create'}`;
+            const inputSummary = `${businessEntity || app.category} \u00b7  ${businessAction || 'create'}`;
             if (!workflowSkillID) {
                 setValidationMessage(text.missingRequiredDependency);
                 setRunState('error');
@@ -9921,7 +9923,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 datasrv_domain: app.manifest?.datasrv?.domain || '',
                 preferred_action: app.manifest?.datasrv?.preferredAction || '',
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
-                prompt: `Start MaClaw approval workflow: ${app.name} 路 ${inputSummary}`,
+                prompt: `Start MaClaw approval workflow: ${app.name} \u00b7 ${inputSummary}`,
             };
             const fallbackPayload: BackendApprovalInstance = {
                 instance_id: fallbackID,
@@ -9935,7 +9937,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 object_role: approvalObjectRole || undefined,
                 dataset_id: approvalDatasetID || undefined,
                 blueprint_id: approvalBlueprintID || undefined,
-                title: `${businessEntity || app.category} 路 ${businessAction || 'create'}`,
+                title: `${businessEntity || app.category} \u00b7 ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
                 current_node: workflowMapping?.approvalNode || (isZh(lang) ? '缁忕悊瀹℃壒' : 'Manager approval'),
@@ -10099,7 +10101,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             return;
         }
         if (isBusiness) {
-            const inputSummary = `${businessEntity || app.category} 路  ${businessActionRole || businessAction || 'execute'}`;
+            const inputSummary = `${businessEntity || app.category} \u00b7  ${businessActionRole || businessAction || 'execute'}`;
             const businessPayload = {
                 _maclaw_app: true,
                 app_id: app.id,
@@ -10116,7 +10118,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
                 preferred_report: app.manifest?.datasrv?.preferredReport || '',
                 preferred_dashboard: app.manifest?.datasrv?.preferredDashboard || '',
-                prompt: `Run MaClaw business app: ${app.name} 路  ${inputSummary}`,
+                prompt: `Run MaClaw business app: ${app.name} \u00b7  ${inputSummary}`,
             };
             if (businessSkillID && app.source !== 'datasrv') {
                 setRunState('running');
@@ -10167,7 +10169,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
 				setValidationMessage('');
 				setRuntimeBusinessError(null);
 				setRunState('done');
-					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' 路  ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
+					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' \u00b7  ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
 				return;
 			} catch (error: any) {
 				const message = setRuntimeError(error, text.skillRunFailed);
@@ -10229,7 +10231,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 business_payload: businessPayload,
             },
         };
-        const inputSummary = `${instance.title || businessEntity || app.category} 路  ${text.supplementContinue}`;
+        const inputSummary = `${instance.title || businessEntity || app.category} \u00b7  ${text.supplementContinue}`;
         setRunState('running');
         setValidationMessage(text.supplementRunning);
         setRuntimeBusinessError(null);
@@ -10287,7 +10289,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     business_entity: instance.objectRole || businessEntity || app.category,
                     business_action: 'supplement',
                     business_note: note || text.supplementContinue,
-                    prompt: `Continue MaClaw approval workflow: ${app.name} 路  ${instance.title}`,
+                    prompt: `Continue MaClaw approval workflow: ${app.name} \u00b7  ${instance.title}`,
                 },
             }) as { instance?: BackendApprovalInstance; approval_id?: string; workflow_run?: { ran?: boolean; workflow_skill_id?: string; instance?: BackendApprovalInstance; progress_instances?: BackendApprovalInstance[]; progressInstances?: BackendApprovalInstance[] } } | undefined;
             const workflowRunProgressInstances = (Array.isArray(started?.workflow_run?.progress_instances) ? started?.workflow_run?.progress_instances : Array.isArray(started?.workflow_run?.progressInstances) ? started?.workflow_run?.progressInstances : []) as BackendApprovalInstance[];
@@ -10545,7 +10547,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     // write failures were set but never rendered after a successful run.
     const runtimeStatusMessage = runState === 'done'
         ? (validationMessage
-            ? `${text.runCompleted} 路 ${validationMessage}`
+            ? `${text.runCompleted} \u00b7 ${validationMessage}`
             : text.runCompleted)
         : runState === 'running'
             ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID)
@@ -11099,7 +11101,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
                                     <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length) ? 'pending' : ((item.escalationExhaustedApprovers && item.escalationExhaustedApprovers.length) ? 'exhausted' : '')} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
-                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} 璺? {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? (isZh(lang) ? ' 璺?Hub' : ' 璺?Hub') : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` 璺?hub:${item.hubInstanceID}` : ''} 璺? {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '鐡掑懏妞? : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '缁毖勨偓? : 'Critical') : (isZh(lang) ? '閸忚櫕鏁? : 'Attention')}</span> : null}{approvalEscalationRetryText(item, lang) ? <span className="apps-approval-row__escalation" title={approvalEscalationRetryText(item, lang)}>{approvalEscalationRetryText(item, lang)}</span> : null}{approvalEscalationExhaustedText(item, lang) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={approvalEscalationExhaustedText(item, lang)}>{approvalEscalationExhaustedText(item, lang)}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} {'\u00b7'} {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? ` ${'\u00b7'} Hub` : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` ${'\u00b7'} hub:${item.hubInstanceID}` : ''} {'\u00b7'} {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '\u8d85\u65f6' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '\u7d27\u6025' : 'Critical') : (isZh(lang) ? '\u5173\u6ce8' : 'Attention')}</span> : null}{approvalEscalationRetryText(item, lang) ? <span className="apps-approval-row__escalation" title={approvalEscalationRetryText(item, lang)}>{approvalEscalationRetryText(item, lang)}</span> : null}{approvalEscalationExhaustedText(item, lang) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={approvalEscalationExhaustedText(item, lang)}>{approvalEscalationExhaustedText(item, lang)}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>
                                 ))}
@@ -11144,7 +11146,7 @@ const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSele
                         <button className="apps-datasrv-approval-summary__item" data-selected={selectedBucket?.key === bucket.key ? 'true' : 'false'} type="button" key={bucket.key} onClick={() => { setSelectedKey(bucket.key); onBucketSelect?.(bucket); }} aria-pressed={selectedBucket?.key === bucket.key}>
                             <span>{bucket.label}</span>
                             <strong>{bucket.count}</strong>
-                            <small>{bucket.apps.join(' 路  ') || '-'}</small>
+                            <small>{bucket.apps.join(' \u00b7  ') || '-'}</small>
                         </button>
                         ))}
                     </div>
@@ -11166,7 +11168,7 @@ const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSele
                                                 {(item.approvalID || item.workflowInstanceID || item.recordID) && <code>{[item.approvalID, item.workflowInstanceID, item.recordID].filter(Boolean).join(' / ')}</code>}
                                                 {(item.datasetID || item.objectRole) && <code>{[item.datasetID, item.objectRole].filter(Boolean).join(' / ')}</code>}
                                             </div>
-                                            <small>{[item.status || item.decision, item.resultTypes.slice(0, 3).join(', '), item.updatedAt].filter(Boolean).join(' 路 ') || '-'}</small>
+                                            <small>{[item.status || item.decision, item.resultTypes.slice(0, 3).join(', '), item.updatedAt].filter(Boolean).join(' \u00b7 ') || '-'}</small>
                                         </button>
                                         <div className="apps-datasrv-approval-summary__row-actions">
                                             <button className="apps-link-button" type="button" disabled={!approvalURL} onClick={() => approvalURL && onOpenApproval?.(item)}>{text.openDataSrvApproval}</button>
@@ -11256,17 +11258,17 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
             </div>
             {instance ? (
                 <>
-                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {approvalCurrentNodeText(instance, lang)}{instance.currentNodeStatus ? ` 路 ${text.currentNodeStatus}: ${instance.currentNodeStatus}` : ''}</span></div>
+                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {approvalCurrentNodeText(instance, lang)}{instance.currentNodeStatus ?  `\u00b7${text.currentNodeStatus}: ${instance.currentNodeStatus}` : ''}</span></div>
                     <dl className="apps-approval-facts">
                         <div><dt>{text.approvalApplicantLabel}</dt><dd>{approvalApplicantText(instance)}</dd></div><div><dt>{text.approvalApproverLabel}</dt><dd>{instance.approver}</dd></div><div><dt>{text.currentAssigneeLabel}</dt><dd>{approvalCurrentAssigneeText(instance)}</dd></div><div><dt>{text.assigneeTypeLabel}</dt><dd>{instance.currentAssigneeType || '-'}</dd></div><div><dt>{text.statusTransitionLabel}</dt><dd>{approvalStatusTransitionText(instance, lang)}</dd></div><div><dt>{text.approvalResult}</dt><dd>{instance.result}</dd></div>
                         <div><dt>{text.workflowSkill}</dt><dd>{[instance.workflowSkillID, instance.workflowVersion ? 'v' + instance.workflowVersion : ''].filter(Boolean).join(' @ ') || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
                         <div><dt>{text.currentNodeStatus}</dt><dd>{instance.currentNodeStatus || '-'}</dd></div><div><dt>{text.approvalNodeTasks}</dt><dd>{approvalNodeTaskCountText(instance, lang)}</dd></div>
                         {(instance.escalationPending || (instance.escalationApprovers && instance.escalationApprovers.length > 0)) ? (
-                            <div><dt>{isZh(lang) ? '鍗囩骇閲嶆姇' : 'Escalation retry'}</dt><dd>{approvalEscalationRetryText(instance, lang) || '-'}</dd></div>
+                            <div><dt>{isZh(lang) ? '\u5347\u7ea7\u91cd\u6295' : 'Escalation retry'}</dt><dd>{approvalEscalationRetryText(instance, lang) || '-'}</dd></div>
                         ) : null}
                         {(instance.escalationExhaustedApprovers && instance.escalationExhaustedApprovers.length > 0) ? (
-                            <div><dt>{isZh(lang) ? '绂荤嚎鑰楀敖' : 'Escalation exhausted'}</dt><dd>{approvalEscalationExhaustedText(instance, lang) || '-'}</dd></div>
+                            <div><dt>{isZh(lang) ? '\u79bb\u7ebf\u8017\u5c3d' : 'Escalation exhausted'}</dt><dd>{approvalEscalationExhaustedText(instance, lang) || '-'}</dd></div>
                         ) : null}
                     </dl>
 	                    {instance.detailURL && <div className="apps-approval-detail__links"><button className="apps-link-button" type="button" onClick={() => instance.detailURL && BrowserOpenURL(instance.detailURL)}>{text.viewFullWorkflow}</button></div>}
@@ -11279,9 +11281,9 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
                                 const kind = approvalOutputKind(output);
                                 const body = approvalOutputBody(output);
                                 const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
-                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' 路  ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
+                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' \u00b7  ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
                             })}
-                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' 路  ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
+                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' \u00b7  ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
                             {selectedPayloadEntries.length > 0 && <div className="apps-approval-payload"><strong>{text.approvalOutputData}</strong>{selectedPayloadEntries.map(([key, value]) => <div key={`${instance.id}-payload-${key}`}><span>{key}</span><pre>{formatApprovalResultValue(value)}</pre></div>)}</div>}
                         </section>
                     )}
@@ -11289,8 +11291,8 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
 
                     <div className="apps-approval-timeline">
                         {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' }, { node: approvalCurrentNodeText(instance, lang) }, { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
-                            const primary = [event.node, event.decision].filter(Boolean).join(' 路  ') || event.message || '-';
-                            const secondary = [event.actor, event.at].filter(Boolean).join(' 路  ');
+                            const primary = [event.node, event.decision].filter(Boolean).join(' \u00b7  ') || event.message || '-';
+                            const secondary = [event.actor, event.at].filter(Boolean).join(' \u00b7  ');
                             return <div key={`${instance.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>;
                         })}
                     </div>
@@ -11382,8 +11384,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                             <div>
                                 <strong>{item.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ? ` 路 ${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} 路 {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
-                                <small>{text.approvalInstanceId}: {item.id} 路 {item.updatedAt}</small>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ?  `\u00b7${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} \u00b7 {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
+                                <small>{text.approvalInstanceId}: {item.id} \u00b7 {item.updatedAt}</small>
                                 <div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div>
                             </div>
                             <em>{approvalStatusLabel(item.status, lang)}</em>
@@ -11399,7 +11401,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <>
                             <div className="apps-approval-detail__head">
                                 <strong>{selected.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(selected, lang)}{selected.currentNodeStatus ? ` 路 ${text.currentNodeStatus}: ${selected.currentNodeStatus}` : ''}</span>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(selected, lang)}{selected.currentNodeStatus ?  `\u00b7${text.currentNodeStatus}: ${selected.currentNodeStatus}` : ''}</span>
                             </div>
                             <dl className="apps-approval-facts">
                                 <div><dt>{text.approvalApplicantLabel}</dt><dd>{approvalApplicantText(selected)}</dd></div>
@@ -11433,7 +11435,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                         const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
                                         return (
                                             <div className="apps-approval-output" data-kind={kind} key={`${selected.id}-output-${index}-${approvalOutputTitle(output, text)}`}>
-                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' 路 ')}</span></div>
+                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' \u00b7 ')}</span></div>
                                                 {body && <pre>{body}</pre>}
                                                 {artifactRef && <code>{artifactRef}</code>}
                                             </div>
@@ -11441,7 +11443,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     })}
                                     {selectedArtifacts.map((artifact, index) => (
                                         <div className="apps-approval-artifact" key={`${selected.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}>
-                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' 路 ')}</span></div>
+                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' \u00b7 ')}</span></div>
                                             <code>{approvalArtifactReference(artifact)}</code>
                                         </div>
                                     ))}
@@ -11463,8 +11465,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     { node: approvalCurrentNodeText(selected, lang) },
                                     { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' },
                                 ] as ApprovalInstanceEventView[]).map((event, index) => {
-                                    const primary = [event.node, event.decision].filter(Boolean).join(' 路 ') || event.message || '-';
-                                    const secondary = [event.actor, event.at].filter(Boolean).join(' 路 ');
+                                    const primary = [event.node, event.decision].filter(Boolean).join(' \u00b7 ') || event.message || '-';
+                                    const secondary = [event.actor, event.at].filter(Boolean).join(' \u00b7 ');
                                     return (
                                         <div key={`${selected.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>
                                     );
@@ -11504,7 +11506,7 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
                             <span className="apps-run-step__dot" />
                             <div>
                                 <strong>{compactStepLabel(step)}</strong>
-                                <span>{[step.status, step.duration_ms ? `${step.duration_ms}ms` : '', compactStepDetail(step)].filter(Boolean).join(' 路 ')}</span>
+                                <span>{[step.status, step.duration_ms ? `${step.duration_ms}ms` : '', compactStepDetail(step)].filter(Boolean).join(' \u00b7 ')}</span>
                             </div>
                         </div>
                     ))}
@@ -12001,7 +12003,7 @@ function installSummaryMessage(installedCount: number, upgradedCount: number, sk
     const parts = [`${text.installedCount}: ${installedCount}`];
     if (upgradedCount > 0) parts.push(`${text.upgradedCount}: ${upgradedCount}`);
     parts.push(`${text.skippedCount}: ${skippedCount}`);
-    return parts.join(' 路 ');
+    return parts.join(' \u00b7 ');
 }
 
 function formatHubInstallScopeSummary(sourceAppCount: number | undefined, installedAppCount: number | undefined, dependencyCount: number | undefined, text: typeof labels.zh) {
@@ -12015,7 +12017,7 @@ function formatHubInstallScopeSummary(sourceAppCount: number | undefined, instal
     if (Number.isFinite(dependencies) && dependencies > 0) {
         parts.push(text.hubInstallDependencySummary.replace('{count}', String(dependencies)));
     }
-    return parts.join(' 路 ');
+    return parts.join(' \u00b7 ');
 }
 function dataSrvRegistrationNumber(value: unknown) {
     const numberValue = Number(value || 0);
@@ -12041,7 +12043,7 @@ function dataSrvRegistrationSummary(registration: BackendAppDataSrvRegistration 
     if (!status) return '';
     const ratio = `${status.syncedCount}/${status.eligibleCount}`;
     if (status.state === 'ready') return `${text.datasrvRegistrationReady}: ${ratio}`;
-    if (status.state === 'partial') return `${text.datasrvRegistrationPartial}: ${ratio}${status.reason ? ` 路 ${status.reason}` : ''}`;
+    if (status.state === 'partial') return `${text.datasrvRegistrationPartial}: ${ratio}${status.reason ? ` \u00b7 ${status.reason}` : ''}`;
     if (status.state === 'failed') return `${text.datasrvRegistrationFailed}: ${status.reason || ratio}`;
     return `${text.datasrvRegistrationSkipped}: ${status.reason || ratio}`;
 }
@@ -12072,7 +12074,7 @@ function appHasDataSrvRegistrationCandidate(app: AppEntry) {
 function installDetailWithDataSrvRegistration(detail: string, registration: BackendAppDataSrvRegistration | undefined | null, appID: string | undefined, dataSrvCandidate: boolean | undefined, text: typeof labels.zh) {
     if (!appID || !dataSrvCandidate) return detail;
     const summary = dataSrvRegistrationSummaryForApp(registration, appID, text);
-    return summary ? `${detail} 路 ${summary}` : detail;
+    return summary ? `${detail} \u00b7 ${summary}` : detail;
 }
 
 function backendDependencyMatchesAppIDs(dep: BackendAppInstallDependency, appIds: string[]) {
@@ -12238,20 +12240,20 @@ function backendDependencyTraceItems(dep: BackendAppInstallDependency, text: typ
         dep.install_ref_status ? `status:${dep.install_ref_status}` : '',
         installTarget ? `target:${installTarget}` : '',
         dep.install_ref_message || '',
-    ].filter(Boolean).join(' 路 '), dependencyTraceState(String(dep.install_ref_status || '').trim(), installRef ? 'ready' : 'unknown'));
+    ].filter(Boolean).join(' \u00b7 '), dependencyTraceState(String(dep.install_ref_status || '').trim(), installRef ? 'ready' : 'unknown'));
     add(text.dependencyPreflightStage, [
         dep.preflight_status || '',
         dep.preflight_code ? `code:${dep.preflight_code}` : '',
         dep.preflight_stage ? `stage:${dep.preflight_stage}` : '',
         dep.preflight_message || '',
-    ].filter(Boolean).join(' 路 '), dependencyTraceState(String(dep.preflight_status || '').trim()));
+    ].filter(Boolean).join(' \u00b7 '), dependencyTraceState(String(dep.preflight_status || '').trim()));
     add(text.dependencyDownloadStage, [
         dep.download_node ? `node:${dep.download_node}` : '',
         dep.resolved_download_url ? `resolved:${dep.resolved_download_url}` : '',
         dep.package_download_url ? (dep.download_node ? `preferred:${dep.package_download_url}` : 'available') : '',
         dep.package_sha256 || dep.package_checksum ? `sha:${dep.package_sha256 || dep.package_checksum}` : '',
         dep.package_signature ? 'signature:available' : '',
-    ].filter(Boolean).join(' 路 '), dep.download_node || dep.resolved_download_url || dep.package_download_url || dep.package_sha256 || dep.package_checksum || dep.package_signature
+    ].filter(Boolean).join(' \u00b7 '), dep.download_node || dep.resolved_download_url || dep.package_download_url || dep.package_sha256 || dep.package_checksum || dep.package_signature
         ? (dep.install_error_code === 'download_failed' ? 'blocked' : 'ready')
         : undefined);
     add(text.dependencyIntegrityStage, [
@@ -12259,18 +12261,18 @@ function backendDependencyTraceItems(dep: BackendAppInstallDependency, text: typ
         dep.integrity_code ? `code:${dep.integrity_code}` : '',
         dep.integrity_stage ? `stage:${dep.integrity_stage}` : '',
         dep.integrity_message || '',
-    ].filter(Boolean).join(' 路 '), dependencyTraceState(String(dep.integrity_status || '').trim()));
+    ].filter(Boolean).join(' \u00b7 '), dependencyTraceState(String(dep.integrity_status || '').trim()));
     add(text.dependencyInstallStage, [
         dep.action || '',
         dep.health ? `health:${dep.health}` : '',
         dep.installed_status ? `status:${dep.installed_status}` : '',
         dep.installed_version ? `installed:${dep.installed_version}` : '',
-    ].filter(Boolean).join(' 路 '), isBlockingBackendDependency(dep) ? 'blocked' : dep.installed ? 'ready' : dependencyTraceState(String(dep.action || '').trim()));
+    ].filter(Boolean).join(' \u00b7 '), isBlockingBackendDependency(dep) ? 'blocked' : dep.installed ? 'ready' : dependencyTraceState(String(dep.action || '').trim()));
     add(text.dependencyErrorStage, [
         dep.install_error_code || '',
         dep.install_error_stage ? `stage:${dep.install_error_stage}` : '',
         dep.install_error_detail || '',
-    ].filter(Boolean).join(' 路 '), 'blocked');
+    ].filter(Boolean).join(' \u00b7 '), 'blocked');
     return items;
 }
 
@@ -12296,8 +12298,8 @@ function installRecordDependencyStatus(dep: BackendAppInstallDependency, text: t
 
 function versionSnapshotSkillText(skill: BackendAppInstallSkillVersionSnapshot | undefined | null) {
     if (!skill?.id) return '';
-    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' 路 ');
-    return meta ? skill.id + ' 路 ' + meta : skill.id;
+    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' \u00b7 ');
+    return meta ? skill.id + ' \u00b7 ' + meta : skill.id;
 }
 
 function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot | undefined | null, text: typeof labels.zh) {
@@ -12312,7 +12314,7 @@ function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot 
     });
     (snapshot.approval_bindings || []).forEach((binding) => {
         const workflow = [binding.workflow_skill_id, binding.workflow_version ? 'v' + binding.workflow_version : ''].filter(Boolean).join('@');
-        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' 路 ');
+        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' \u00b7 ');
         if (value) items.push({ label: text.approvalBinding, value });
     });
     return items;
@@ -12406,7 +12408,7 @@ function resultCoverageEvidenceSummary(coverage: Record<string, unknown> | undef
     ].filter(Boolean);
     if (parts.length === 0 && ok === undefined) return null;
     const state: DataSrvRegistrationState = ok === false || missing.length > 0 ? 'failed' : ok === true || shownCoveredCount > 0 ? 'ready' : 'partial';
-    return { value: parts.join(' 路 ') || (ok ? 'ok' : 'pending'), state };
+    return { value: parts.join(' \u00b7 ') || (ok ? 'ok' : 'pending'), state };
 }
 
 function installRecordDependencyDiagnostics(record: BackendAppInstallRecord): { value: string; state: DataSrvRegistrationState } | null {
@@ -12419,7 +12421,7 @@ function installRecordDependencyDiagnostics(record: BackendAppInstallRecord): { 
             ...backendDependencyDiagnosticMeta(dep),
             ...backendDependencyDiagnosticItems(dep),
         ].filter(Boolean);
-        return parts.length > 1 ? parts.join(' 路 ') : '';
+        return parts.length > 1 ? parts.join(' \u00b7 ') : '';
     }).filter(Boolean);
     if (diagnosticRows.length === 0) return null;
     const hasFailure = dependencies.some((dep) => {
@@ -12447,7 +12449,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
     const hubCapabilityID = installRecordString(submission.capability_id || submission.capabilityID || submission.hub_capability_id || submission.market_capability_id || submission.marketCapabilityID);
     const hubVersionKey = installRecordString(submission.version_key || submission.versionKey);
     const hubSubmissionID = installRecordString(submission.submission_id || submission.submissionID);
-    const hubValue = [hubStatus, hubCapabilityID, hubVersionKey || hubSubmissionID].filter(Boolean).join(' 路 ');
+    const hubValue = [hubStatus, hubCapabilityID, hubVersionKey || hubSubmissionID].filter(Boolean).join(' \u00b7 ');
     if (hubValue) items.push({ label: text.marketSource, value: hubValue, state: publishReviewEvidenceState(hubStatus || hubValue) });
     const packageEvidence = appEvidenceRecord(record.package);
     const packageSignature = appEvidenceRecord(record.hub_package_signature)
@@ -12471,19 +12473,19 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         packageSignatureFingerprint,
         packageSignatureSignedBy,
         packageSignatureSignedAt,
-    ].filter(Boolean).join(' 路 ');
+    ].filter(Boolean).join(' \u00b7 ');
     if (packageSignature || packageSignatureValue) {
         items.push({ label: text.packageSignature, value: packageSignatureValue || 'signed', state: 'ready' });
     }
     const layout = record.workspace_layout || {};
-    const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' 路 ');
+    const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' \u00b7 ');
     if (layoutValue) items.push({ label: text.workspaceLayout, value: layoutValue });
     const contract = record.result_contract || {};
     const resultTypes = installRecordStringList(contract.types);
     const resultValue = [
         installRecordString(contract.primary),
         resultTypes.length ? `${resultTypes.length} types` : '',
-    ].filter(Boolean).join(' 路 ');
+    ].filter(Boolean).join(' \u00b7 ');
     if (resultValue) items.push({ label: text.resultContract, value: resultValue });
     const evidence = record.test_evidence || {};
     const protocol = evidence.testProtocol && typeof evidence.testProtocol === 'object'
@@ -12494,7 +12496,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
     const evidenceValue = [
         installRecordString(evidence.runId || evidence.run_id),
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
-    ].filter(Boolean).join(' 路 ');
+    ].filter(Boolean).join(' \u00b7 ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
     const coverage = evidence.resultCoverage && typeof evidence.resultCoverage === 'object'
         ? evidence.resultCoverage as Record<string, unknown>
@@ -12512,7 +12514,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         installRecordString(approvalInstance.instanceId || approvalInstance.instance_id || approvalInstance.workflowInstanceID || approvalInstance.workflow_instance_id || approvalInstance.approvalID || approvalInstance.approval_id || approvalInstance.recordApprovalID || approvalInstance.record_approval_id),
         installRecordString(approvalInstance.status),
         installRecordString(approvalInstance.currentNode || approvalInstance.current_node),
-    ].filter(Boolean).join(' 路 ');
+    ].filter(Boolean).join(' \u00b7 ');
     if (approvalInstanceValue) items.push({ label: text.approvalInstanceId, value: approvalInstanceValue });
     const outputCount = Array.isArray(evidence.outputs)
         ? evidence.outputs.length
@@ -12525,7 +12527,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
             ? ((evidence as Record<string, unknown>).artifact_files as unknown[]).length
             : 0;
     if (outputCount > 0 || artifactCount > 0) {
-        items.push({ label: text.approvalResultPackage, value: `${text.output}: ${outputCount} 路 ${text.runArtifacts}: ${artifactCount}` });
+        items.push({ label: text.approvalResultPackage, value: `${text.output}: ${outputCount} \u00b7 ${text.runArtifacts}: ${artifactCount}` });
     }
     const resultPayload = evidence.resultPayload && typeof evidence.resultPayload === 'object'
         ? evidence.resultPayload as Record<string, unknown>
@@ -12548,7 +12550,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         || record.has_missing_required;
     const blockingCount = blockingCountFromVerification || blockingCountFromRecord || (hasBlockingDependency ? 1 : 0);
     if (installRecordString(dependencyVerification.schema) || dependencyCount > 0 || blockingCount > 0) {
-        items.push({ label: text.dependencyVerification, value: `${text.skillDependencies}: ${dependencyCount} 路 ${text.missingDependencyCount}: ${blockingCount}` });
+        items.push({ label: text.dependencyVerification, value: `${text.skillDependencies}: ${dependencyCount} \u00b7 ${text.missingDependencyCount}: ${blockingCount}` });
     }
     const dependencyDiagnostics = installRecordDependencyDiagnostics(record);
     if (dependencyDiagnostics) {
@@ -12724,7 +12726,7 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const suffix = records.length > 1 ? ` #${index + 1}` : '';
         const approvalStatus = appEvidenceString(record.approval_status, record.approvalStatus, record.status);
         if (appEvidenceBool(record.has_approval_instance, record.hasApprovalInstance) || approvalStatus) {
-            const approvalValue = [approvalStatus, appEvidenceString(record.current_node, record.currentNode)].filter(Boolean).join(' 路 ') || 'ready';
+            const approvalValue = [approvalStatus, appEvidenceString(record.current_node, record.currentNode)].filter(Boolean).join(' \u00b7 ') || 'ready';
             items.push({ label: `${text.approval}${suffix}`, value: approvalValue, state: publishReviewEvidenceState(approvalStatus || approvalValue) });
         }
         const progressCount = appEvidenceNumber(record.progress_count, record.progressCount);
@@ -12743,7 +12745,7 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const layoutSaved = appEvidenceBool(record.workspace_saved_in_manifest, record.workspaceSavedInManifest, layoutRecord?.studio_saved_in_manifest, layoutRecord?.studioSavedInManifest, layoutStudio?.savedInManifest, layoutStudio?.saved_in_manifest);
         const layoutUpdatedBy = appEvidenceString(record.workspace_updated_by, record.workspaceUpdatedBy, layoutRecord?.studio_updated_by, layoutRecord?.studioUpdatedBy, layoutStudio?.updatedBy, layoutStudio?.updated_by);
         if (appEvidenceBool(record.has_workspace_layout, record.hasWorkspaceLayout) || layout || layoutSaved) {
-            const layoutValue = [layout || 'ready', layoutSaved ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' 路 ');
+            const layoutValue = [layout || 'ready', layoutSaved ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' \u00b7 ');
             items.push({ label: `${text.workspaceLayout}${suffix}`, value: layoutValue, state: 'ready' });
         }
         const dataSrvStatus = appEvidenceString(record.datasrv_registration_status, record.dataSrvRegistrationStatus, record.datasrvRegistrationStatus);
@@ -12758,13 +12760,13 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const resultPrimary = appEvidenceString(record.result_contract_primary, record.resultContractPrimary);
         const resultTypeCount = appEvidenceNumber(record.result_contract_type_count, record.resultContractTypeCount);
         if (appEvidenceBool(record.has_result_contract, record.hasResultContract) || resultPrimary || resultTypeCount !== undefined) {
-            const value = [resultPrimary || 'ready', resultTypeCount !== undefined ? `${resultTypeCount} types` : ''].filter(Boolean).join(' 路 ');
+            const value = [resultPrimary || 'ready', resultTypeCount !== undefined ? `${resultTypeCount} types` : ''].filter(Boolean).join(' \u00b7 ');
             items.push({ label: `${text.resultContract}${suffix}`, value, state: 'ready' });
         }
         const runID = appEvidenceString(record.run_id, record.runId);
         const protocolFingerprint = appEvidenceString(record.test_protocol_fingerprint, record.testProtocolFingerprint);
         if (appEvidenceBool(record.has_test_protocol, record.hasTestProtocol) || protocolFingerprint || runID) {
-            items.push({ label: `${text.testEvidence}${suffix}`, value: [runID, protocolFingerprint || (!runID ? 'ready' : '')].filter(Boolean).join(' 路 '), state: 'ready' });
+            items.push({ label: `${text.testEvidence}${suffix}`, value: [runID, protocolFingerprint || (!runID ? 'ready' : '')].filter(Boolean).join(' \u00b7 '), state: 'ready' });
         }
         const coverageSummary = resultCoverageEvidenceSummary({
             ok: firstAppEvidenceValue(record.result_coverage_ok, record.resultCoverageOK),
@@ -12779,7 +12781,7 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const outputCount = appEvidenceNumber(record.output_count, record.outputCount);
         const artifactCount = appEvidenceNumber(record.artifact_count, record.artifactCount);
         if (outputCount !== undefined || artifactCount !== undefined) {
-            items.push({ label: `${text.approvalResultPackage}${suffix}`, value: `${text.output}: ${outputCount ?? 0} 路 ${text.runArtifacts}: ${artifactCount ?? 0}`, state: 'ready' });
+            items.push({ label: `${text.approvalResultPackage}${suffix}`, value: `${text.output}: ${outputCount ?? 0} \u00b7 ${text.runArtifacts}: ${artifactCount ?? 0}`, state: 'ready' });
         }
     });
     return items;
@@ -12956,7 +12958,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text,
             <div className="apps-dependency-verification__head">
                 <strong>{text.dependencyVerification}</strong>
                 <span>{status}</span>
-                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} 路 {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` 路 ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` 路 ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
+                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} \u00b7 {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` \u00b7 ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` \u00b7 ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
                 {hasDetailContent && state !== 'loading' && state !== 'repairing' && (
                     <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setDetailOpen((prev) => !prev)}>
                         {detailOpen ? text.installErrorHideDetail : text.installErrorShowDetail}
@@ -13023,8 +13025,8 @@ const InstallRecordDependencies = ({ dependencies, text }: { dependencies?: Back
                     backendDependencyInstallRef(dep) ? `ref:${backendDependencyInstallRef(dep)}` : '',
                     ...backendDependencyDiagnosticMeta(dep),
                     state !== 'ready' ? installedStatus || health : '',
-                ].filter(Boolean).join(' 路 ');
-                const summary = [backendDependencySummary(dep, text), ...diagnostics].filter(Boolean).join(' 路 ');
+                ].filter(Boolean).join(' \u00b7 ');
+                const summary = [backendDependencySummary(dep, text), ...diagnostics].filter(Boolean).join(' \u00b7 ');
                 return (
                     <div className="apps-install-record__dep" data-state={state} role="listitem" key={`${dep.id}-${dep.version || ''}-${index}`} title={summary}>
                         <span className="apps-install-record__dep-main">
@@ -13577,8 +13579,8 @@ const StudioSkillPicker = ({
                         }
                     }}
                     placeholder={placeholder || (mode === 'approvalWorkflow'
-                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 路  Hub' : 'Search approval workflows 路  Hub')
-                        : (zh ? '\u641c\u5df2\u5b89\u88c5 路  SkillMarket' : 'Search installed 路  SkillMarket'))}
+                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 \u00b7  Hub' : 'Search approval workflows \u00b7  Hub')
+                        : (zh ? '\u641c\u5df2\u5b89\u88c5 \u00b7  SkillMarket' : 'Search installed \u00b7  SkillMarket'))}
                     aria-label={label}
                 />
                 <button className="apps-secondary-button" type="button" disabled={!query.trim() || currentQueryIsSearching} onClick={() => void searchMarket()}>
@@ -13588,7 +13590,7 @@ const StudioSkillPicker = ({
             {selectedSummary && (
                 <div className="apps-skill-picker__selected">
                     <strong>{selectedSummary.name}</strong>
-                    <span>{selectedSummary.id} 路 {selectedSummary.sourceLabel}</span>
+                    <span>{selectedSummary.id} \u00b7 {selectedSummary.sourceLabel}</span>
                 </div>
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
@@ -14468,7 +14470,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <section className="apps-layout-designer" aria-label={zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}>
                         <div className="apps-preview-title-row">
                             <div className="apps-definition__title">{zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}</div>
-                            <span className="apps-count">appSkill 路  workflow_skill</span>
+                            <span className="apps-count">appSkill \u00b7  workflow_skill</span>
                         </div>
                         <div className="apps-capability-skill-grid">
                             <div className="apps-capability-skill-card">
@@ -14561,7 +14563,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                                     </div>
                                     <div className="apps-form-row">
                                         <label>{zh ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID 路  GitHub URL' : 'Capability ID 路  GitHub URL'} />
+                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID \u00b7  GitHub URL' : 'Capability ID \u00b7  GitHub URL'} />
                                     </div>
                                 </>
                             )}
@@ -15165,7 +15167,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                                     <div>
                                         <strong>{app.name}</strong>
-                                        <span>{app.category} 路 {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
+                                        <span>{app.category} \u00b7 {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
                                     </div>
                                     <em>{submission ? submissionStatus : ready ? text.readyToSubmit : text.needsWork}</em>
                                 </div>
@@ -15295,14 +15297,14 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <div className="apps-publish-queue__row" key={item.submissionID}>
                                         <div className="apps-publish-queue__body">
                                             <strong>{item.submissionID}</strong>
-                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} 路 {item.channel || 'local'} 路 {item.status || 'submitted'}</span>
+                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} \u00b7 {item.channel || 'local'} \u00b7 {item.status || 'submitted'}</span>
                                             <small>
                                                 {item.submittedAt}
-                                                {item.packageSHA ? ` 路 sha256:${item.packageSHA.slice(0, 12)}` : ''}
-                                                {item.packageBytes ? ` 路 ${formatPackageBytes(item.packageBytes)}` : ''}
+                                                {item.packageSHA ? ` \u00b7 sha256:${item.packageSHA.slice(0, 12)}` : ''}
+                                                {item.packageBytes ? ` \u00b7 ${formatPackageBytes(item.packageBytes)}` : ''}
                                                 {dependencyCount ? ` | ${text.skillDependencies}:${dependencyCount} ${text.missingDependencyCount}:${missingDependencyCount}` : ''}
-                                                {item.eventCount ? ` 路 ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
-                                                {item.message ? ` 路 ${item.message}` : ''}
+                                                {item.eventCount ? ` \u00b7 ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
+                                                {item.message ? ` \u00b7 ${item.message}` : ''}
                                             </small>
                                             {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
                                             {queueSyncErrorId === item.submissionID && (
@@ -15415,7 +15417,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                                 {detailWorkspaceLayouts.length > 0 && <span>{text.workspaceLayout}: {detailWorkspaceLayouts.join(' | ')}</span>}
                                                 {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text)}</span>}
                                                 <ReviewIssuesPanel issues={item.reviewIssues} text={text} compact />
-                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' 路  ')}</span>}
+                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' \u00b7  ')}</span>}
                                             </div>
                                         )}
                                     </div>
@@ -15946,7 +15948,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {skillDiscovery.status === 'error' && (
                 <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--error-color, #ef4444)' }}>
                     {isZh(lang) ? '妫€鏌ュ凡瀹夎鑳藉姏鏃堕亣鍒伴棶棰? : 'Could not check installed capabilities'}
-                    {skillDiscovery.error && <span> 路 {skillDiscovery.error}</span>}
+                    {skillDiscovery.error && <span> \u00b7 {skillDiscovery.error}</span>}
                 </div>
             )}
             {manageMatchCount === 0 && <div className="apps-empty">{text.noApps}</div>}
@@ -15960,8 +15962,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <div className="apps-manage-row">
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                        <div className="apps-manage-row__desc" title={`${app.category} 路 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} 路 ${isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}`}>
-                            {app.category} 路 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} 路 {isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}
+                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 ${isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}`}>
+                            {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 {isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}
                         </div>
                         <div className="apps-manage-actions">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>{text.moveTopShort}</button>
@@ -16000,8 +16002,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                            <div className="apps-manage-row__desc" title={`${app.category} 路 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}`}>
-                                {app.category} 路 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}
+                            <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}`}>
+                                {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
@@ -16020,8 +16022,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div key={app.id} className="apps-manage-row apps-manage-row--not-in-panel">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                            <div className="apps-manage-row__desc" title={`${app.category} 路 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}`}>
-                                {app.category} 路 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}
+                            <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}`}>
+                                {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.addToPanel} onClick={() => onAddDiscoveredApp(app)}>{text.addToPanel}</button>
@@ -16037,7 +16039,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div className="apps-manage-edit-dialog__header">
                             <div>
                                 <div className="apps-definition__title" id="apps-manage-edit-title">{text.edit}</div>
-                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} 路 {editingApp.category}</div>
+                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} \u00b7 {editingApp.category}</div>
                             </div>
                             <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
@@ -16261,7 +16263,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                             </div>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID 路  GitHub URL' : 'Capability ID 路  GitHub URL'} />
+                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID \u00b7  GitHub URL' : 'Capability ID \u00b7  GitHub URL'} />
                                             </div>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5ba1\u6279\u4e8b\u4ef6' : 'Approval event'}</label>
@@ -16515,7 +16517,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'done',
-                    message: scopeSummary ? `${text.alreadyInstalled} 路 ${scopeSummary}` : text.alreadyInstalled,
+                    message: scopeSummary ? `${text.alreadyInstalled} \u00b7 ${scopeSummary}` : text.alreadyInstalled,
                     plan: dependencyInstallPlan || null,
                     appIDs: installedAppIDs.length > 0 ? installedAppIDs : [app.id],
                     dependencies: dependencyDetails,
@@ -16608,7 +16610,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
             try {
                 installAudit = await RecordMaclawAppInstall(installManifestText, auditSource) as BackendAppInstallRecord;
                 const dataSrvSummary = appHasDataSrvRegistrationCandidate(installTarget) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
-                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} 路 ${dataSrvSummary}`;
+                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} \u00b7 ${dataSrvSummary}`;
                 await refreshInstallRecords();
             } catch (error: any) {
                 if (isEnterpriseAppKind(installTarget.kind)) {
@@ -16802,7 +16804,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
 	                <div className="apps-preview-title-row">
 	                    <div>
 	                        <div className="apps-definition__title">{text.marketApps}</div>
-	                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} 路 {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
+	                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} \u00b7 {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
 	                    </div>
 	                    {onManageApps && <button className="apps-secondary-button" type="button" onClick={onManageApps}>{text.manageTab}</button>}
 	                </div>
@@ -16836,7 +16838,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-market-row__main">
                                     <strong>{app.name}</strong>
                                     <span>{app.description}</span>
-                                    <small>{app.category} 路 {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} 路 {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
+                                    <small>{app.category} \u00b7 {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} \u00b7 {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                                     {app.marketReviewEvidence && <PublishReviewEvidenceStrip evidence={app.marketReviewEvidence} text={text} />}
 	                                </div>
 	                                <div className="apps-actions">
@@ -16898,8 +16900,8 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-install-record" key={recordKey} data-missing={missingCount > 0 ? 'true' : 'false'}>
                                     <div className="apps-install-record__main">
                                         <strong>{appNames}</strong>
-                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} 路 {text.marketSource}: {record.source || '-'}</span>
-                                        <small>{text.packageSha}: {sha} 路 {text.skillDependencies}: {dependencyCount} 路 {text.missingDependencyCount}: {missingCount}</small>
+                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} \u00b7 {text.marketSource}: {record.source || '-'}</span>
+                                        <small>{text.packageSha}: {sha} \u00b7 {text.skillDependencies}: {dependencyCount} \u00b7 {text.missingDependencyCount}: {missingCount}</small>
                                         <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordEvidenceSnapshot record={record} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
@@ -16971,7 +16973,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-install-preview__tools">
                                     <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys(installableKeys); }}>{text.selectAll}</button>
                                     <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys([]); }}>{text.clearSelection}</button>
-                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} 路 ${text.upgradeableCount} ${upgradeableCount} 路 ${text.willSkip} ${skippedPreviewCount}`}</span>
+                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} \u00b7 ${text.upgradeableCount} ${upgradeableCount} \u00b7 ${text.willSkip} ${skippedPreviewCount}`}</span>
                                     <span className="apps-count">{selectedInstallCount}/{installPlan.length}</span>
                                 </div>
                             </div>
@@ -16981,10 +16983,10 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                     const statusText = checked
                                         ? item.action === 'upgrade' ? `${text.willUpgrade} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}` : text.willInstall
                                         : item.action === 'installed'
-                                            ? `${text.willSkip} 路 ${text.alreadyInstalled}`
+                                            ? `${text.willSkip} \u00b7 ${text.alreadyInstalled}`
                                             : item.action === 'duplicate'
-                                                ? `${text.willSkip} 路 ${text.duplicateApp}`
-                                                : `${text.willSkip} 路 ${text.notSelected}`;
+                                                ? `${text.willSkip} \u00b7 ${text.duplicateApp}`
+                                                : `${text.willSkip} \u00b7 ${text.notSelected}`;
                                     const backendDependencies = backendDependenciesForApp(backendInstallPlan, item.app.id);
                                     const workflowIssue = backendInstallPlanState === 'ready' ? workflowContractIssueForApp(backendInstallPlan, item.app) : undefined;
                                     const governanceIssue = backendInstallPlanState === 'ready' ? governanceReviewIssueForApp(backendInstallPlan, item.app) : undefined;
@@ -16992,7 +16994,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                     const dependencyText = backendInstallPlanState === 'ready' && backendDependencies.length > 0
                                         ? backendDependencies.map((dep) => backendDependencySummary(dep, text)).join(', ')
                                         : item.dependencies.map((dep) => dep.version ? `${dep.id}@${dep.version}` : dep.id).join(', ');
-                                    const checkboxLabel = `${item.app.name} 路 ${statusText}`;
+                                    const checkboxLabel = `${item.app.name} \u00b7 ${statusText}`;
                                     return (
                                     <label className="apps-install-preview__row" key={item.key} data-action={checked ? 'install' : 'skip'} data-dependency-state={hasBlockingDependencies ? 'blocked' : undefined} title={statusText}>
                                         <input
@@ -17013,14 +17015,14 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                         <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><AppIcon icon={item.app.icon} customIconDataUrl={item.app.customIconDataUrl} /></span>
                                         <div>
                                             <strong>{item.app.name}</strong>
-                                            <span>{item.app.category} 路 {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
+                                            <span>{item.app.category} \u00b7 {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
                                             {dependencyText && <small>{text.skillDependencies}: {dependencyText}</small>}
                                             {governanceIssue && <small>{text.reviewIssues}: {reviewIssueSummary(governanceIssue)}</small>}
                                             {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue)}</small>}
                                             {item.action === 'upgrade' && item.addedScopes.length > 0 && (
                                                 <small>
                                                     {text.permissionChanges}: +{item.addedScopes.join(', ')}
-                                                    {item.highRiskScopes.length > 0 ? ` 路 ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
+                                                    {item.highRiskScopes.length > 0 ? ` \u00b7 ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
                                                 </small>
                                             )}
                                         </div>

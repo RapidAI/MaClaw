@@ -1610,6 +1610,11 @@
     border-color: color-mix(in srgb, #7c3aed 36%, var(--theme-border));
 }
 
+.apps-approval-row[data-escalation='exhausted'] {
+    border-color: color-mix(in srgb, #b45309 36%, var(--theme-border));
+    background: color-mix(in srgb, #fbbf24 12%, var(--theme-surface));
+}
+
 .apps-approval-row__escalation {
     display: inline-flex !important;
     align-items: center;
@@ -1623,6 +1628,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Permanent offline peers (any-N may still complete) — amber, not purple. */
+.apps-approval-row__escalation--exhausted {
+    color: #9a3412;
+    background: #ffedd5;
+    border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+}
+
+.apps-approval-facts .apps-approval-row__escalation,
+.apps-approval-detail .apps-approval-escalation-note {
+    margin-top: 2px;
 }
 
 .apps-approval-row strong,
