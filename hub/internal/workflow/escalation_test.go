@@ -290,7 +290,7 @@ func TestEscalation_MaxRetriesExhausted(t *testing.T) {
 		t.Errorf("expected 0 dispatches, got %d", dispatcher.dispatchCount())
 	}
 
-	// Initiator must be notified once so desktop can project attention.
+	// Standalone manager (no failedHook): initiator notified once.
 	if notifier.callCount() != 1 {
 		t.Fatalf("expected 1 NotifyInitiator call on escalation failure, got %d", notifier.callCount())
 	}
@@ -302,6 +302,43 @@ func TestEscalation_MaxRetriesExhausted(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(call.reason), "escalation") {
 		t.Fatalf("reason should mention escalation: %q", call.reason)
+	}
+}
+
+func TestEscalation_MaxRetries_FailedHookSkipsDirectNotify(t *testing.T) {
+	// When failedHook is wired (production executor path), manager must not also
+	// NotifyInitiator — markNodeBlocked owns the single desktop push.
+	checker := &mockHumanChecker{available: false}
+	dispatcher := &mockDispatcherForEsc{}
+	audit := &mockAuditStoreForEsc{}
+	notifier := &captureEscNotifier{}
+	hookCalls := 0
+	mgr := NewEscalationManager(dispatcher, audit, checker).
+		SetNotifier(notifier).
+		SetFailedHook(func(ctx context.Context, esc *EscalationRequest) {
+			hookCalls++
+			if esc == nil || esc.InstanceID != "inst_hook" {
+				t.Fatalf("esc=%#v", esc)
+			}
+		})
+	mgr.retryInterval = time.Millisecond
+	mgr.maxRetries = 2
+	_ = mgr.Escalate(context.Background(), &ApprovalRequest{
+		ID: "req", InstanceID: "inst_hook", NodeID: "n1",
+	}, "human-1")
+	for i := 0; i < 2; i++ {
+		mgr.mu.Lock()
+		for _, escReq := range mgr.queue {
+			escReq.LastAttemptAt = time.Now().Add(-time.Minute)
+		}
+		mgr.mu.Unlock()
+		mgr.processPendingEscalations()
+	}
+	if hookCalls != 1 {
+		t.Fatalf("hookCalls=%d", hookCalls)
+	}
+	if notifier.callCount() != 0 {
+		t.Fatalf("expected no direct NotifyInitiator when failedHook is set, got %d", notifier.callCount())
 	}
 }
 

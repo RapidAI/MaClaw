@@ -1090,8 +1090,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         const autoKey = `${projectPath}|${remoteSSHPasswordVaultKey(host, user, port)}`;
         if (opts?.auto) {
-            // Reserve only after validation so a skipped attempt cannot block a later one.
-            if (remoteAutoReconnectKeyRef.current === autoKey) return;
+            // Effect may have already reserved autoKey; only skip when another attempt is mid-flight.
+            if (remoteAutoReconnectKeyRef.current === autoKey && remoteReconnectInFlightRef.current) {
+                return;
+            }
             remoteAutoReconnectKeyRef.current = autoKey;
         }
         remoteReconnectInFlightRef.current = true;
@@ -1139,6 +1141,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         } catch (err) {
             // autoKey stays set on failure so we do not loop on a bad/stale password.
+            remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
             const msg = err instanceof Error ? err.message : String(err || "reconnect failed");
             setRemoteReconnect(prev => ({
                 ...prev,
@@ -1212,8 +1215,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
         const autoKey = `${projectPath}|${remoteSSHPasswordVaultKey(host, user, port)}`;
+        // Reserve before async so Strict Mode / double-effect cannot start two prepares.
         if (remoteAutoReconnectKeyRef.current === autoKey) return;
-        // Bind form password identity to the auto target (vault password will be used).
+        remoteAutoReconnectKeyRef.current = autoKey;
         remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
         void handleRemoteCodingReconnect({ auto: true });
     }, [

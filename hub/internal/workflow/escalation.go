@@ -332,9 +332,13 @@ func (m *EscalationManager) markEscalationFailed(ctx context.Context, escReq *Es
 		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
 	})
 
-	// Push to initiator machines so MaClaw can project attention without waiting
-	// for the next directory reconcile. Reason includes "escalation" so Hub
-	// participant notifier classifies event=escalation / urgency=overdue.
+	// Prefer failedHook (WorkflowExecutor.markNodeBlocked) for a single
+	// NotifyInitiator path — avoids double ve:workflow_status when both are wired.
+	if m.failedHook != nil {
+		m.failedHook(ctx, escReq)
+		return
+	}
+	// Standalone manager (no executor hook): still push so desktops can attention.
 	if m.notifier != nil && strings.TrimSpace(escReq.InstanceID) != "" {
 		reason := fmt.Sprintf(
 			"escalation failed: human approver %s unavailable after %d attempts",
@@ -345,10 +349,5 @@ func (m *EscalationManager) markEscalationFailed(ctx context.Context, escReq *Es
 			escReq.NodeID, escReq.HumanApprover,
 		)
 		_ = m.notifier.NotifyInitiator(ctx, escReq.InstanceID, reason, details)
-	}
-
-	// Executor marks the node blocked so Hub directory / desktop reconcile align.
-	if m.failedHook != nil {
-		m.failedHook(ctx, escReq)
 	}
 }
