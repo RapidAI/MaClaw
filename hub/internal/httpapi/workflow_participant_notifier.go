@@ -92,6 +92,12 @@ func (n *HubWorkflowParticipantNotifier) NotifyInitiator(ctx context.Context, in
 			payload["escalation_approvers"] = []string{strings.TrimSpace(s)}
 			payload["escalation_pending"] = true
 		}
+		if exhausted := stringSliceFromPayloadAny(inst.InstanceData["escalation_exhausted_approvers"]); len(exhausted) > 0 {
+			payload["escalation_exhausted_approvers"] = exhausted
+		}
+		if attempts := escalationAttemptsFromPayloadAny(inst.InstanceData["escalation_attempts"]); len(attempts) > 0 {
+			payload["escalation_attempts"] = attempts
+		}
 	}
 	var lastErr error
 	for _, machineID := range recipients {
@@ -107,6 +113,45 @@ func (n *HubWorkflowParticipantNotifier) NotifyInitiator(ctx context.Context, in
 		log.Printf("[workflow-notifier] delivered status instance=%s machine=%s event=%s", instanceID, machineID, event)
 	}
 	return lastErr
+}
+
+// escalationAttemptsFromPayloadAny coerces instance_data.escalation_attempts maps.
+func escalationAttemptsFromPayloadAny(raw any) map[string]int {
+	out := map[string]int{}
+	switch m := raw.(type) {
+	case map[string]int:
+		for k, v := range m {
+			k = strings.TrimSpace(k)
+			if k != "" && v > 0 {
+				out[k] = v
+			}
+		}
+	case map[string]any: // same as map[string]interface{}
+		for k, v := range m {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			switch n := v.(type) {
+			case int:
+				if n > 0 {
+					out[k] = n
+				}
+			case int64:
+				if n > 0 {
+					out[k] = int(n)
+				}
+			case float64:
+				if n >= 1 {
+					out[k] = int(n)
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // stringSliceFromPayloadAny coerces instance-data list fields for push payloads.

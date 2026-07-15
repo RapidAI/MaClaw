@@ -67,6 +67,8 @@ type DirectoryItem struct {
 	// EscalationExhaustedApprovers lists peers that permanently failed redelivery
 	// (any-N-of-M may still complete without them).
 	EscalationExhaustedApprovers []string `json:"escalation_exhausted_approvers,omitempty"`
+	// EscalationAttempts maps still-pending peers to retry attempt counts.
+	EscalationAttempts map[string]int `json:"escalation_attempts,omitempty"`
 }
 
 // DirectoryResponse is the paginated response for directory queries.
@@ -382,6 +384,9 @@ func ApplyEscalationFieldsToDirectoryItem(item *DirectoryItem, data map[string]i
 	if len(exhausted) > 0 {
 		item.EscalationExhaustedApprovers = exhausted
 	}
+	if attempts := escalationAttemptsFromDirectoryData(data); len(attempts) > 0 {
+		item.EscalationAttempts = attempts
+	}
 	if item.EscalationPending && strings.TrimSpace(item.Result) == "" {
 		item.Result = "escalation pending"
 	} else if !item.EscalationPending && len(exhausted) > 0 && strings.TrimSpace(item.Result) == "" {
@@ -391,6 +396,52 @@ func ApplyEscalationFieldsToDirectoryItem(item *DirectoryItem, data map[string]i
 	if item.EscalationPending && (item.Urgency == "" || item.Urgency == UrgencyNormal) {
 		item.Urgency = UrgencyApproachingTimeout
 	}
+}
+
+// escalationAttemptsFromDirectoryData reads durable per-peer attempt counts for list APIs.
+func escalationAttemptsFromDirectoryData(data map[string]interface{}) map[string]int {
+	if data == nil {
+		return nil
+	}
+	raw, ok := data["escalation_attempts"]
+	if !ok || raw == nil {
+		return nil
+	}
+	out := map[string]int{}
+	switch m := raw.(type) {
+	case map[string]int:
+		for k, v := range m {
+			k = strings.TrimSpace(k)
+			if k != "" && v > 0 {
+				out[k] = v
+			}
+		}
+	case map[string]interface{}:
+		for k, v := range m {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			switch n := v.(type) {
+			case int:
+				if n > 0 {
+					out[k] = n
+				}
+			case int64:
+				if n > 0 {
+					out[k] = int(n)
+				}
+			case float64:
+				if n >= 1 {
+					out[k] = int(n)
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // PendingMyConfirmation returns instances with pending confirmations for the user.

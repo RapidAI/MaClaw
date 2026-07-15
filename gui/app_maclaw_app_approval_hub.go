@@ -593,6 +593,11 @@ func maclawAppApprovalInstanceFromHubDirectoryItem(item map[string]any, requeste
 			}
 		}
 	}
+	if att, ok := item["escalation_attempts"]; ok && att != nil {
+		payload["escalation_attempts"] = att
+	} else if att, ok := item["escalationAttempts"]; ok && att != nil {
+		payload["escalation_attempts"] = att
+	}
 	return normalizeMaclawAppApprovalInstanceFields(maclawAppApprovalInstance{
 		AppID:           "hub-workflow",
 		AppName:         "Hub Workflow",

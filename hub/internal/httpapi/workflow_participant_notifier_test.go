@@ -93,6 +93,54 @@ func TestHubWorkflowParticipantNotifier_NotifyInitiator(t *testing.T) {
 	}
 }
 
+func TestHubWorkflowParticipantNotifier_IncludesEscalationAttemptsAndExhausted(t *testing.T) {
+	sender := &captureMachineSender{}
+	store := &stubInstanceStore{inst: &workflow.WorkflowInstance{
+		ID:            "inst-esc",
+		WorkflowID:    "wf-1",
+		Status:        workflow.InstanceRunning,
+		CurrentNodeID: "approval-1",
+		InstanceData: map[string]interface{}{
+			"requester_machine_id": "machine-bob",
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"ve-a"},
+			"escalation_attempts": map[string]interface{}{
+				"ve-a": float64(3),
+			},
+			"escalation_exhausted_approvers": []string{"ve-b"},
+		},
+	}}
+	n := NewHubWorkflowParticipantNotifier(sender, store, nil, nil)
+	if err := n.NotifyInitiator(context.Background(), "inst-esc",
+		"escalation failed for approver ve-b (approval still satisfiable)", "node=approval-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("messages=%d", len(sender.messages))
+	}
+	payload, _ := sender.messages[0]["payload"].(map[string]any)
+	if payload["escalation_pending"] != true {
+		t.Fatalf("pending missing: %#v", payload)
+	}
+	approvers, _ := payload["escalation_approvers"].([]string)
+	if len(approvers) != 1 || approvers[0] != "ve-a" {
+		// JSON may round-trip as []any after cast — accept both
+		if raw, ok := payload["escalation_approvers"].([]any); ok && len(raw) == 1 && raw[0] == "ve-a" {
+			// ok
+		} else if len(approvers) != 1 || approvers[0] != "ve-a" {
+			t.Fatalf("approvers=%#v", payload["escalation_approvers"])
+		}
+	}
+	exhausted := stringSliceFromPayloadAny(payload["escalation_exhausted_approvers"])
+	if len(exhausted) != 1 || exhausted[0] != "ve-b" {
+		t.Fatalf("exhausted=%v", exhausted)
+	}
+	att := escalationAttemptsFromPayloadAny(payload["escalation_attempts"])
+	if att["ve-a"] != 3 {
+		t.Fatalf("attempts=%v", att)
+	}
+}
+
 func TestHubWorkflowParticipantNotifier_NoRecipientOK(t *testing.T) {
 	sender := &captureMachineSender{}
 	store := &stubInstanceStore{inst: &workflow.WorkflowInstance{

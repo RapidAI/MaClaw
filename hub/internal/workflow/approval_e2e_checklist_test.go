@@ -179,6 +179,11 @@ func TestChecklist_ApplyEscalationFieldsToDirectoryItem(t *testing.T) {
 	ApplyEscalationFieldsToDirectoryItem(&item, map[string]interface{}{
 		"escalation_pending":   true,
 		"escalation_approvers": []string{"m1", "m2"},
+		"escalation_attempts": map[string]interface{}{
+			"m1": float64(2),
+			"m2": float64(4),
+		},
+		"escalation_exhausted_approvers": []string{"m0"},
 	})
 	if !item.EscalationPending || len(item.EscalationApprovers) != 2 {
 		t.Fatalf("%#v", item)
@@ -188,6 +193,54 @@ func TestChecklist_ApplyEscalationFieldsToDirectoryItem(t *testing.T) {
 	}
 	if item.Result != "escalation pending" {
 		t.Fatalf("result=%s", item.Result)
+	}
+	if len(item.EscalationExhaustedApprovers) != 1 || item.EscalationExhaustedApprovers[0] != "m0" {
+		t.Fatalf("exhausted=%v", item.EscalationExhaustedApprovers)
+	}
+	if item.EscalationAttempts["m1"] != 2 || item.EscalationAttempts["m2"] != 4 {
+		t.Fatalf("attempts=%v", item.EscalationAttempts)
+	}
+}
+
+// Checklist — any-N-of-M peer exhaust keeps instance running and records exhausted + attempts.
+func TestChecklist_AnyNofM_ExhaustedPeerKeepsRunningWithMarkers(t *testing.T) {
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"a", "b", "c"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 2,
+		TimeoutHours: 8,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	inst := &WorkflowInstance{
+		ID: "inst-chk-anyn", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"a"},
+			"escalation_attempts":  map[string]interface{}{"a": float64(5)},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	esc.maxRetries = 5
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{version: ver}, instStore, &mockAuditStore{},
+		&mockDispatcherForTimeout{}, WithNotifier(&mockNotifier{}), WithEscalationManager(esc))
+	exec.onEscalationFailed(context.Background(), &EscalationRequest{
+		InstanceID: inst.ID, NodeID: "approval-1", HumanApprover: "a", Attempts: 5,
+	})
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("any-N must not block when still satisfiable")
+	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "a" {
+		t.Fatalf("exhausted=%v", exh)
+	}
+	item := DirectoryItem{Status: "running"}
+	ApplyEscalationFieldsToDirectoryItem(&item, inst.InstanceData)
+	if len(item.EscalationExhaustedApprovers) != 1 {
+		t.Fatalf("directory exhausted=%v", item.EscalationExhaustedApprovers)
 	}
 }
 

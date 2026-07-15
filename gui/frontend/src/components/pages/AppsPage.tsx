@@ -655,6 +655,8 @@ type ApprovalInstanceView = {
     escalationPending?: boolean;
     /** Peers that permanently failed redelivery (any-N may still complete). */
     escalationExhaustedApprovers?: string[];
+    /** Per-peer escalation retry attempt counts from Hub instance_data. */
+    escalationAttempts?: Record<string, number>;
 };
 
 type BackendApprovalInstance = {
@@ -763,7 +765,10 @@ type BackendApprovalInstance = {
     escalationApprovers?: string[];
     escalation_approver?: string;
     escalationApprover?: string;
-    escalation_exhausted_approvers?: string[];     escalationExhaustedApprovers?: string[];
+    escalation_exhausted_approvers?: string[];
+    escalationExhaustedApprovers?: string[];
+    escalation_attempts?: Record<string, number> | Record<string, unknown>;
+    escalationAttempts?: Record<string, number> | Record<string, unknown>;
 };
 
 type ApprovalRunContext = {
@@ -1442,7 +1447,7 @@ const labels = {
         refreshingQueue: 'Refreshing',
         syncQueueToHub: 'Sync to Hub',
         oneClickPublish: 'One-click publish',
-        oneClickPublishBusy: 'Publishing…',
+        oneClickPublishBusy: 'Publishing鈥?,
         oneClickPublishHint: 'Local queue + Enterprise Hub + SkillMarket/HubCenter (per config)',
         syncingQueueToHub: 'Syncing',
         refreshQueueFromHub: 'Refresh Hub Status',
@@ -1739,7 +1744,7 @@ const labels = {
         upgradedItem: 'Upgraded',
         skippedItem: 'Skipped',
         installDetails: 'Install details',
-        hubInstallSummary: 'Source package {source} · installed {installed}',
+        hubInstallSummary: 'Source package {source} 路 installed {installed}',
         hubInstallDependencySummary: '{count} dependencies',
         installRecords: 'Recent installs',
         installRecordsHint: 'Local app package installs and Skill dependency audit',
@@ -1806,7 +1811,7 @@ const sourceLabels: Record<AppEntry['source'], { zh: string; en: string }> = {
     local: { zh: '\u672c\u5730', en: 'Local' },
 };
 
-// initialApps is intentionally empty · apps are discovered at runtime from
+// initialApps is intentionally empty 路 apps are discovered at runtime from
 // installed Skills (via ListSkillAppManifests), DataSrv capabilities, or
 // user-created entries persisted in localStorage. Placeholder entries that
 // lacked real backend implementations have been removed to avoid misleading
@@ -2395,7 +2400,7 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                     <div className="apps-layout-designer__evidence" data-testid={`${testIdPrefix}-layout-evidence`}>
                         <span>
                             <strong>{zh ? '\u5e03\u5c40' : 'Layout'}</strong>
-                            <small>{value.template} · {value.density}</small>
+                            <small>{value.template} 路 {value.density}</small>
                         </span>
                         <span>
                             <strong>{zh ? '\u4e3b\u533a' : 'Primary'}</strong>
@@ -2649,12 +2654,12 @@ function extractSkillPackageIDFromHubRef(ref: string): string {
     return rest;
 }
 
-/** Mirrors corelib.IsUploadSubmissionSkillRef — do not treat ordinary "sub-*" package names as submissions. */
+/** Mirrors corelib.IsUploadSubmissionSkillRef 鈥?do not treat ordinary "sub-*" package names as submissions. */
 function isUploadSubmissionSkillRef(ref: string): boolean {
     const lower = String(ref || '').trim().toLowerCase();
     if (!lower) return false;
     if (lower.includes(';enterprise_hub=') || lower.startsWith('enterprise_hub=')) return true;
-    // Lifecycle ids: sub-<digits>… (not sub-process-monitor style package names).
+    // Lifecycle ids: sub-<digits>鈥?(not sub-process-monitor style package names).
     if (lower.startsWith('sub-') && lower.length > 4) {
         const c = lower.charCodeAt(4);
         if (c >= 48 && c <= 57) return true; // '0'..'9'
@@ -2705,7 +2710,7 @@ function skillIdentityKeysOverlap(a: string, b: string): boolean {
 /**
  * Resolve the skill id used for RunNLSkillAsync.
  *
- * Coordinate model (authoring → plan → run):
+ * Coordinate model (authoring 鈫?plan 鈫?run):
  * 1. Declared appSkill.id / skill.id (stable hub/package id preferred at authoring)
  * 2. After PlanMaclawAppInstall: dependency.runtime_skill_ref (HubSkillID) or
  *    installed_name when the local registry display name is the only handle
@@ -2833,7 +2838,7 @@ function normalizeAppVersion(value: unknown) {
     return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
 }
 
-/** Panel apps eligible for the 审核/发布 surface (not market/DataSrv/disabled installs). */
+/** Panel apps eligible for the 瀹℃牳/鍙戝竷 surface (not market/DataSrv/disabled installs). */
 function isAppPublishCandidate(app: AppEntry): boolean {
     if (app.disabled) return false;
     return app.source === 'local' || app.source === 'skill' || app.studioOrigin === 'app_studio';
@@ -3142,7 +3147,7 @@ async function fetchDataSrvInstallRegistrationAudit(record: BackendAppInstallRec
         `${text.datasrvRegistrationFailed}: ${failed}`,
     ];
     if (skipped > 0) parts.push(`${text.datasrvRegistrationSkipped}: ${skipped}`);
-    return { state, message: parts.join(' · ') };
+    return { state, message: parts.join(' 路 ') };
 }
 
 
@@ -4271,19 +4276,19 @@ function outputModeLabel(mode: string) {
 function appContractTypeLabel(type: string, lang?: string) {
     const normalized = String(type || '').trim();
     const labels: Record<string, { zh: string; en: string }> = {
-        approval_result: { zh: '审批结果', en: 'Approval result' },
-        business_status: { zh: '业务状态', en: 'Business status' },
-        business_record: { zh: '业务记录', en: 'Business record' },
-        content: { zh: '内容', en: 'Content' },
-        text: { zh: '文本', en: 'Text' },
-        artifact: { zh: '产物', en: 'Artifact' },
-        artifacts: { zh: '产物', en: 'Artifacts' },
-        document: { zh: '文件', en: 'Document' },
-        file: { zh: '文件', en: 'File' },
-        notification: { zh: '通知', en: 'Notification' },
-        workflow_result: { zh: '工作流结果', en: 'Workflow result' },
-        approval_instance: { zh: '审批实例', en: 'Approval instance' },
-        outputs: { zh: '输出', en: 'Outputs' },
+        approval_result: { zh: '瀹℃壒缁撴灉', en: 'Approval result' },
+        business_status: { zh: '涓氬姟鐘舵€?, en: 'Business status' },
+        business_record: { zh: '涓氬姟璁板綍', en: 'Business record' },
+        content: { zh: '鍐呭', en: 'Content' },
+        text: { zh: '鏂囨湰', en: 'Text' },
+        artifact: { zh: '浜х墿', en: 'Artifact' },
+        artifacts: { zh: '浜х墿', en: 'Artifacts' },
+        document: { zh: '鏂囦欢', en: 'Document' },
+        file: { zh: '鏂囦欢', en: 'File' },
+        notification: { zh: '閫氱煡', en: 'Notification' },
+        workflow_result: { zh: '宸ヤ綔娴佺粨鏋?, en: 'Workflow result' },
+        approval_instance: { zh: '瀹℃壒瀹炰緥', en: 'Approval instance' },
+        outputs: { zh: '杈撳嚭', en: 'Outputs' },
     };
     const label = labels[normalized];
     return label ? label[isZh(lang) ? 'zh' : 'en'] : normalized;
@@ -4491,7 +4496,7 @@ function structuredBusinessErrorMessage(error: StructuredBusinessErrorView | nul
 function skillRunOutputSuffix(status?: SkillRunStatusView | null) {
 	const snippet = String(status?.summary?.last_output_snippet || status?.session_progress?.last_result || '').trim();
 	if (!snippet) return '';
-	return ` · ${snippet.slice(0, 120)}`;
+	return ` 路 ${snippet.slice(0, 120)}`;
 }
 
 function skillRunArtifactKeys(artifact?: SkillRunArtifactView | null) {
@@ -4603,7 +4608,7 @@ function normalizeSkillRunResultStringList(value: unknown): string[] {
     if (text.startsWith('[') || text.startsWith('{')) {
         try { return normalizeSkillRunResultStringList(JSON.parse(text)); } catch { /* fall through to delimiter parsing */ }
     }
-    return Array.from(new Set(text.split(/\s*(?:->|→|,|;|>|\||\n)\s*/).map((item) => item.trim()).filter(Boolean)));
+    return Array.from(new Set(text.split(/\s*(?:->|鈫抾,|;|>|\||\n)\s*/).map((item) => item.trim()).filter(Boolean)));
 }
 
 function skillRunWorkflowNodeIDs(objects: Record<string, any>[], currentNode: string): string[] | undefined {
@@ -4707,7 +4712,7 @@ function approvalWorkflowResultPayloadFromObjects(objects: Record<string, any>[]
             if (Object.prototype.hasOwnProperty.call(object, sourceKey)) mergeApprovalPayloadValue(payload, targetKey, object[sourceKey]);
         }
     }
-    const snippet = skillRunOutputSuffix(status).replace(/^ · /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
     if (payload.text === undefined && snippet && parseSkillRunResultObjects(snippet).length === 0) payload.text = snippet.slice(0, 500);
     return Object.keys(payload).length > 0 ? payload : undefined;
 }
@@ -4834,7 +4839,7 @@ function approvalOutputsOrDefault(
 function appRunResultPayloadFromStatus(status?: SkillRunStatusView | null): Record<string, unknown> | undefined {
     const payload = approvalWorkflowResultPayloadFromObjects(skillRunApprovalObjects(status), status);
     if (payload) return payload;
-    const snippet = skillRunOutputSuffix(status).replace(/^ · /, '');
+    const snippet = skillRunOutputSuffix(status).replace(/^ 路 /, '');
     return snippet ? { text: snippet.slice(0, 500) } : undefined;
 }
 
@@ -4935,7 +4940,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
     const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
     const explicitDecision = firstSkillRunResultString(objects, ['approval_result', 'approvalResult', 'approval_status', 'approvalStatus', 'approval_decision', 'approvalDecision', 'decision']);
     const decision = normalizeApprovalWorkflowDecision(explicitDecision, lifecycle);
-    const outputText = skillRunOutputSuffix(status).replace(/^ · /, '');
+    const outputText = skillRunOutputSuffix(status).replace(/^ 路 /, '');
     const fallbackText = lifecycle === 'cancelled'
         ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
         : lifecycle === 'timeout'
@@ -4998,7 +5003,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
 function skillRunProgressMessage(status: SkillRunStatusView | null, fallback: string, runID: string) {
     const progress = String(status?.session_progress?.progress_summary || status?.session_progress?.current_task || status?.summary?.current_step || '').trim();
     const statusText = String(status?.status || '').trim();
-    return [fallback, runID, statusText, progress].filter(Boolean).join(' · ');
+    return [fallback, runID, statusText, progress].filter(Boolean).join(' 路 ');
 }
 
 function compactStepLabel(step: SkillRunStepView) {
@@ -5144,7 +5149,7 @@ function businessOperationResponseSummary(response?: Record<string, unknown>): s
             return Object.entries(first as Record<string, unknown>)
                 .slice(0, 3)
                 .map(([key, value]) => key + ': ' + String(value))
-                .join(' ·  ')
+                .join(' 路  ')
                 .slice(0, 180);
         }
         return String(first).slice(0, 180);
@@ -5168,7 +5173,7 @@ function buildBusinessOperationResult(result: Record<string, unknown> | undefine
     const recordCount = rows.length;
     const kind = businessOperationResultKind(mode, primaryResult, resultPayload, response);
     const summary = businessOperationResponseSummary(resultPayload) || businessOperationResponseSummary(response);
-    const message = summary || text.runCompleted + ': ' + mode + ' ·  ' + status;
+    const message = summary || text.runCompleted + ': ' + mode + ' 路  ' + status;
     const outputs = normalizeApprovalOutputs(Array.isArray(result?.outputs) ? result.outputs as ApprovalInstanceOutputView[] : undefined);
     const artifacts = Array.isArray(result?.artifacts)
         ? result.artifacts.filter((item): item is SkillRunArtifactView => !!item && typeof item === 'object' && !Array.isArray(item))
@@ -5674,7 +5679,7 @@ async function submitAppPackageToEnterpriseMarket(
             const response = await bridge(existingID);
             return parseOneClickPublishSubmission(app, response);
         } catch (error) {
-            // Stale card id after hub rename / queue prune → fall through to a fresh one-click.
+            // Stale card id after hub rename / queue prune 鈫?fall through to a fresh one-click.
             if (!isMissingPublishSubmissionError(error)) throw error;
         }
     }
@@ -5818,7 +5823,7 @@ function reviewIssueSummary(issue: AppReviewIssue) {
     return [issue.severity, issue.path, issue.message, issue.suggestion]
         .map((value) => String(value || '').trim())
         .filter(Boolean)
-        .join(' · ');
+        .join(' 路 ');
 }
 
 function reviewIssueMetadataText(issue: AppReviewIssue, key: string) {
@@ -5852,7 +5857,7 @@ function reviewIssuesSummary(issues: AppReviewIssue[], text: typeof labels.zh) {
     return [
         ...visible,
         remaining > 0 ? `${text.reviewIssuesMore} ${remaining} ${text.reviewIssuesMoreUnit}` : '',
-    ].filter(Boolean).join(' ·  ');
+    ].filter(Boolean).join(' 路  ');
 }
 
 function reviewIssueSeverity(issue: AppReviewIssue) {
@@ -5924,7 +5929,7 @@ function packageWorkspaceLayoutSummariesFromRecord(record: Record<string, unknow
             regionCount ? `${regionCount} regions` : '',
             fingerprint ? `fp:${fingerprint}` : '',
         ].filter(Boolean);
-        return parts.length > 1 ? parts.join(' · ') : '';
+        return parts.length > 1 ? parts.join(' 路 ') : '';
     }).filter(Boolean);
 }
 
@@ -5936,7 +5941,7 @@ function eventSummariesFromRecord(record: Record<string, unknown> | null): strin
         return [event.at, event.status, event.channel, event.submission_id || event.submissionID]
             .map((value) => String(value || '').trim())
             .filter(Boolean)
-            .join(' · ');
+            .join(' 路 ');
     }).filter(Boolean);
 }
 
@@ -6180,11 +6185,11 @@ function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
     return {
         ok,
         detail: !evidence
-            ? (zh ? '请先运行当前应用再评审' : 'Run the current app before review')
+            ? (zh ? '璇峰厛杩愯褰撳墠搴旂敤鍐嶈瘎瀹? : 'Run the current app before review')
             : !actualHash
                 ? (zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
                 : ok
-                    ? `${evidence.runID || ''} ·  ${actualHash}`.trim()
+                    ? `${evidence.runID || ''} 路  ${actualHash}`.trim()
                     : (zh ? '\u8fd0\u884c\u8bc1\u636e\u5df2\u4e0d\u5339\u914d\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is stale for the current app definition; rerun the test'),
     };
 }
@@ -6196,23 +6201,23 @@ function appRunEvidenceDesignConsistencyCheck(app: AppEntry, evidence: AppRunHis
     const actualProtocol = String(evidence?.testProtocolFingerprint || '').trim();
     const actualLayout = String(evidence?.workspaceLayoutFingerprint || '').trim();
     if (!evidence) {
-        return { ok: false, detail: zh ? '请先运行当前设计的测试用例' : 'Run the test case for the current design first' };
+        return { ok: false, detail: zh ? '璇峰厛杩愯褰撳墠璁捐鐨勬祴璇曠敤渚? : 'Run the test case for the current design first' };
     }
     if (!actualProtocol) {
         return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u6d4b\u8bd5\u534f\u8bae\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the test protocol fingerprint; rerun the test' };
     }
     if (actualProtocol !== expectedProtocol) {
-        return { ok: false, detail: zh ? '测试协议已变更；请重新运行测试' : 'Test protocol changed; rerun the test' };
+        return { ok: false, detail: zh ? '娴嬭瘯鍗忚宸插彉鏇达紱璇烽噸鏂拌繍琛屾祴璇? : 'Test protocol changed; rerun the test' };
     }
     if (!actualLayout) {
         return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u754c\u9762\u5e03\u5c40\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the workspace layout fingerprint; rerun the test' };
     }
     if (actualLayout !== expectedLayout) {
-        return { ok: false, detail: zh ? '界面布局已变更；请重新运行测试' : 'Workspace layout changed; rerun the test' };
+        return { ok: false, detail: zh ? '鐣岄潰甯冨眬宸插彉鏇达紱璇烽噸鏂拌繍琛屾祴璇? : 'Workspace layout changed; rerun the test' };
     }
     return {
         ok: true,
-        detail: `${evidence.runID || ''} ·  protocol ${actualProtocol} ·  layout ${actualLayout}`.trim(),
+        detail: `${evidence.runID || ''} 路  protocol ${actualProtocol} 路  layout ${actualLayout}`.trim(),
     };
 }
 
@@ -6456,7 +6461,7 @@ function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
     if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '\u7f3a\u5c11 workspace layout' : 'Missing workspace layout';
     const missingRoles = missingWorkspaceRegionRoles(app);
     if (missingRoles.length > 0) return zh ? `\u7f3a\u5c11 workspace \u533a\u57df\u89d2\u8272: ${missingRoles.join(', ')}` : `Missing workspace region roles: ${missingRoles.join(', ')}`;
-    return `${layout.entry} ·  ${layout.template} ·  ${layout.density} ·  ${layout.regionCount} regions`;
+    return `${layout.entry} 路  ${layout.template} 路  ${layout.density} 路  ${layout.regionCount} regions`;
 }
 function buildAppResultContract(kind: AppKind, outputModes: string[] = []): AppResultContract {
     const normalizedOutputModes = normalizeOutputModes(outputModes);
@@ -6630,7 +6635,7 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
     if (sampleKeys === 0 || outputKeys === 0) return zh ? '\u7f3a\u5c11 sampleInput \u6216 expectedOutput' : 'Missing sampleInput or expectedOutput';
-    return `${zh ? '\u534f\u8bae\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} ·  ${protocol.riskLevel}`;
+    return `${zh ? '\u534f\u8bae\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} 路  ${protocol.riskLevel}`;
 }
 
 function appHasPublishableTestProtocol(app: AppEntry): boolean {
@@ -6795,13 +6800,13 @@ function appWorkflowContractPublishSummary(app: AppEntry, lang?: string) {
     const contract = workflowContractForApp(app);
     if (!contract) return zh ? '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6' : 'Runtime contract not declared';
     const workflow = [contract.workflowSkillId, contract.workflowVersion ? `v${contract.workflowVersion}` : ''].filter(Boolean).join('@');
-    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' ·  ');
+    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' 路  ');
 }
 function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const contract = appResultContractForManifest(app);
     const types = contract.types.slice(0, 4).join(', ');
-    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` ·  ${types}` : ''}`;
+    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` 路  ${types}` : ''}`;
 }
 
 function appRunEvidencePayloadValue(payload: Record<string, unknown> | undefined, keys: string[]): unknown {
@@ -7037,7 +7042,7 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
     const covered = new Set(effectiveCoveredTypes);
     const primaryCovered = !primary || covered.has(primary) || (primary === 'document' && covered.has('artifact')) || (primary === 'artifact' && covered.has('document')) || (primary === 'text' && covered.has('content')) || (primary === 'content' && covered.has('text'));
     const missingTypes = explicitMissingTypes.length ? explicitMissingTypes : primaryCovered || !primary ? [] : [primary];
-    const evidenceLabel = evidence ? `${evidence.runID || ''} ·  ${evidence.at || ''}`.trim() : '';
+    const evidenceLabel = evidence ? `${evidence.runID || ''} 路  ${evidence.at || ''}`.trim() : '';
     const coveredLabel = effectiveCoveredTypes.length > 0 ? effectiveCoveredTypes.join(', ') : (zh ? '\u672a\u8bc6\u522b\u7ed3\u679c\u7c7b\u578b' : 'No result type recognized');
     return {
         ok: !!evidence && primaryCovered && missingTypes.length === 0,
@@ -7047,8 +7052,8 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
         detail: !evidence
             ? (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review')
             : primaryCovered && missingTypes.length === 0
-                ? `${evidenceLabel}${primary ? ` ·  primary: ${primary}` : ''} ·  ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
-                : `${evidenceLabel} ·  ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
+                ? `${evidenceLabel}${primary ? ` 路  primary: ${primary}` : ''} 路  ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
+                : `${evidenceLabel} 路  ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
     };
 }
 function defaultAppWorkflowMapping(kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
@@ -7292,7 +7297,7 @@ function appRunHistoryMessageSummary(item: AppRunHistoryEntry) {
     if (!message) return item.status;
     const shell = message.match(/\bshell:\s*([^\s,;]+)/i)?.[1];
     const elapsed = message.match(/\belapsed:\s*([^\s,;]+)/i)?.[1];
-    if (shell || elapsed) return [shell ? `shell: ${shell}` : '', elapsed ? `elapsed: ${elapsed}` : ''].filter(Boolean).join(' · ');
+    if (shell || elapsed) return [shell ? `shell: ${shell}` : '', elapsed ? `elapsed: ${elapsed}` : ''].filter(Boolean).join(' 路 ');
     return message;
 }
 
@@ -7372,7 +7377,7 @@ function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel:
     return [
         app.name,
         app.description,
-        [appKinds[app.kind][isZh(lang) ? 'zh' : 'en'], sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'], panelStatus].filter(Boolean).join(' · '),
+        [appKinds[app.kind][isZh(lang) ? 'zh' : 'en'], sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'], panelStatus].filter(Boolean).join(' 路 '),
         `${text.appStatus}: ${statusLabel}`,
         `${text.recentUsed}: ${recent || text.neverUsed}`,
     ].filter(Boolean).join('\n');
@@ -7468,13 +7473,13 @@ function filterSummaryText({ query, category, count, lang, allLabel }: { query: 
     const zh = isZh(lang);
     const categoryText = category === 'all' ? allLabel : category;
     if (trimmedQuery && category !== 'all') {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d · ${categoryText} · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${categoryText} · ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d 路 ${categoryText} 路 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" 路 ${categoryText} 路 ${count} matches`;
     }
     if (trimmedQuery) {
-        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d · ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" · ${count} matches`;
+        return zh ? `\u641c\u7d22\u201c${trimmedQuery}\u201d 路 ${count} \u4e2a\u5339\u914d` : `Search "${trimmedQuery}" 路 ${count} matches`;
     }
     if (category !== 'all') {
-        return zh ? `${categoryText} · ${count} \u4e2a\u5e94\u7528` : `${categoryText} · ${count} apps`;
+        return zh ? `${categoryText} 路 ${count} \u4e2a\u5e94\u7528` : `${categoryText} 路 ${count} apps`;
     }
     return '';
 }
@@ -8149,7 +8154,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                                 style={{ marginLeft: 12 }}
                                 onClick={() => setWorkspaceLaunchHint('')}
                             >
-                                {isZh(lang) ? '关闭' : 'Dismiss'}
+                                {isZh(lang) ? '鍏抽棴' : 'Dismiss'}
                             </button>
                         </div>
                     )}
@@ -8355,12 +8360,12 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
         {
             id: `${app.id}-current`,
             appID: app.id,
-            title: submitted ? `${title} · ${businessAction}` : title,
+            title: submitted ? `${title} 路 ${businessAction}` : title,
             lane: 'my_requests',
             status: draftStatus,
             currentNode: draftNode,
             owner: zh ? '\u6211' : 'Me',
-            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 ·  VE' : 'Manager ·  VE') : workflow,
+            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 路  VE' : 'Manager 路  VE') : workflow,
             updatedAt: submitted ? new Date().toLocaleString() : '-',
             result: businessNote.trim() || draftResult,
             workflowSkillID: workflow,
@@ -8534,7 +8539,43 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
             const list = raw.map((v) => String(v || '').trim()).filter(Boolean);
             return list.length ? list : undefined;
         })(),
+        escalationAttempts: (() => {
+            const raw = (resultPayload && (resultPayload.escalation_attempts || resultPayload.escalationAttempts))
+                || instance.escalation_attempts
+                || instance.escalationAttempts;
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+            const out: Record<string, number> = {};
+            for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+                const id = String(key || '').trim();
+                const n = typeof value === 'number' ? value : Number(value);
+                if (id && Number.isFinite(n) && n >= 1) out[id] = Math.floor(n);
+            }
+            return Object.keys(out).length ? out : undefined;
+        })(),
     };
+}
+
+/** Format Hub escalation retry line for list/detail (pending peers + attempts). */
+function approvalEscalationRetryText(instance: ApprovalInstanceView | undefined, lang?: string): string {
+    if (!instance) return '';
+    const peers = instance.escalationApprovers || [];
+    if (!instance.escalationPending && peers.length === 0) return '';
+    const attempts = instance.escalationAttempts || {};
+    const parts = peers.slice(0, 4).map((id) => {
+        const n = attempts[id];
+        return n && n > 0 ? `${id}脳${n}` : id;
+    });
+    const more = peers.length > 4 ? ` +${peers.length - 4}` : '';
+    const head = isZh(lang) ? '鍗囩骇閲嶆姇' : 'Escalation retry';
+    return parts.length ? `${head}: ${parts.join(', ')}${more}` : head;
+}
+
+function approvalEscalationExhaustedText(instance: ApprovalInstanceView | undefined, lang?: string): string {
+    const peers = instance?.escalationExhaustedApprovers || [];
+    if (!peers.length) return '';
+    const head = isZh(lang) ? '绂荤嚎鑰楀敖' : 'Escalation exhausted';
+    const body = peers.slice(0, 4).join(', ') + (peers.length > 4 ? ` +${peers.length - 4}` : '');
+    return `${head}: ${body}`;
 }
 function approvalLaneFromEvidence(evidence: AppRunApprovalInstanceEvidence): ApprovalLaneFilter {
     const explicitLane = String(evidence.lane || '').trim();
@@ -9233,10 +9274,10 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         void persistDurableAppRunHistory(nextEntry).then((result) => {
             if (!result.ok) {
                 setValidationMessage((current) => {
-                    const detail = result.error || (isZh(lang) ? '持久化运行证据失败' : 'Failed to persist run evidence');
+                    const detail = result.error || (isZh(lang) ? '鎸佷箙鍖栬繍琛岃瘉鎹け璐? : 'Failed to persist run evidence');
                     if (current && current.includes(detail)) return current;
-                    const prefix = isZh(lang) ? '运行证据未写入本机存储' : 'Run evidence was not saved to durable store';
-                    return current ? `${current} · ${prefix}: ${detail}` : `${prefix}: ${detail}`;
+                    const prefix = isZh(lang) ? '杩愯璇佹嵁鏈啓鍏ユ湰鏈哄瓨鍌? : 'Run evidence was not saved to durable store';
+                    return current ? `${current} 路 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                 });
             }
         });
@@ -9512,7 +9553,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                         definitionHash,
                         outputMode: currentRunContext.outputMode,
                         inputSummary: currentRunContext.inputSummary,
-                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ · /, '') || text.skillRunCompleted,
+                        message: primaryResult.slice(0, 180) || skillRunOutputSuffix(status).replace(/^ 路 /, '') || text.skillRunCompleted,
                         artifactID,
                         artifactURI,
                         artifactName,
@@ -9531,15 +9572,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                 if (result?.durable_history_error) {
                                     setValidationMessage((current) => {
                                         const detail = String(result.durable_history_error);
-                                        const prefix = isZh(lang) ? 'Skill 证据已写入，但本机运行历史持久化失败' : 'Skill evidence saved, but durable run history failed';
-                                        return current ? `${current} · ${prefix}: ${detail}` : `${prefix}: ${detail}`;
+                                        const prefix = isZh(lang) ? 'Skill 璇佹嵁宸插啓鍏ワ紝浣嗘湰鏈鸿繍琛屽巻鍙叉寔涔呭寲澶辫触' : 'Skill evidence saved, but durable run history failed';
+                                        return current ? `${current} 路 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                                     });
                                 }
                             })
                             .catch((error: any) => {
                                 const detail = String(error?.message || error || '');
-                                const prefix = isZh(lang) ? '写入 Skill 运行证据失败' : 'Failed to record skill run evidence';
-                                setValidationMessage((current) => current ? `${current} · ${prefix}: ${detail}` : `${prefix}: ${detail}`);
+                                const prefix = isZh(lang) ? '鍐欏叆 Skill 杩愯璇佹嵁澶辫触' : 'Failed to record skill run evidence';
+                                setValidationMessage((current) => current ? `${current} 路 ${prefix}: ${detail}` : `${prefix}: ${detail}`);
                             });
                     }
                 } else if (lifecycle === 'error') {
@@ -9618,15 +9659,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     }).filter(Boolean).join(', ');
     const selectedFileLabel = selectedFiles.length > 1 ? (isZh(lang) ? `${selectedFiles.length} \u4e2a\u6587\u4ef6` : `${selectedFiles.length} files`) : fileName;
     const toolInputSummary = showFileInput && showParamInput
-        ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` · ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
+        ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` 路 ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
         : showParamInput
             ? (fieldSummary || toolParams.trim() || (isZh(lang) ? '\u672a\u586b\u5199\u53c2\u6570' : 'No parameters'))
             : (selectedFileLabel || text.noFile);
     const resultText = isTool
-        ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` · ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
+        ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` 路 ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
         : isAutomation
             ? (isZh(lang) ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002' : 'Automation console started. Agent will run and report by app definition.')
-            : `${text.submitted}: ${businessEntity || app.category} · ${businessAction} · ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
+            : `${text.submitted}: ${businessEntity || app.category} 路 ${businessAction} 路 ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
 	const markDirty = () => {
         if (runState === 'running') return;
 		setRunState('idle');
@@ -9660,7 +9701,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             try {
                 const packageJSON = JSON.stringify(appToManifest(app));
                 let dependencyPlan: BackendAppInstallPlan | null = runtimeDependencyPlan || activeRunDependencyPlanRef.current || null;
-                // Reuse open-time health/plan when already ready — avoid a second full Plan/Health round-trip.
+                // Reuse open-time health/plan when already ready 鈥?avoid a second full Plan/Health round-trip.
                 const canReuseReadyPlan = runtimeDependencyCheckState === 'ready'
                     && !!dependencyPlan
                     && !runtimeInstallPlanBlocked(dependencyPlan, app);
@@ -9832,7 +9873,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         if (isApproval) {
             const now = new Date().toISOString();
             const fallbackID = `appr-${Date.now().toString(36)}`;
-            const inputSummary = `${businessEntity || app.category} ·  ${businessAction || 'create'}`;
+            const inputSummary = `${businessEntity || app.category} 路  ${businessAction || 'create'}`;
             if (!workflowSkillID) {
                 setValidationMessage(text.missingRequiredDependency);
                 setRunState('error');
@@ -9880,7 +9921,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 datasrv_domain: app.manifest?.datasrv?.domain || '',
                 preferred_action: app.manifest?.datasrv?.preferredAction || '',
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
-                prompt: `Start MaClaw approval workflow: ${app.name} · ${inputSummary}`,
+                prompt: `Start MaClaw approval workflow: ${app.name} 路 ${inputSummary}`,
             };
             const fallbackPayload: BackendApprovalInstance = {
                 instance_id: fallbackID,
@@ -9894,18 +9935,18 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 object_role: approvalObjectRole || undefined,
                 dataset_id: approvalDatasetID || undefined,
                 blueprint_id: approvalBlueprintID || undefined,
-                title: `${businessEntity || app.category} · ${businessAction || 'create'}`,
+                title: `${businessEntity || app.category} 路 ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
-                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '经理审批' : 'Manager approval'),
+                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '缁忕悊瀹℃壒' : 'Manager approval'),
                 current_node_ids: [workflowMapping?.approvalNode || workflowSkillID].filter(Boolean) as string[],
-                owner: isZh(lang) ? '当前用户' : 'Current user',
-                applicant: isZh(lang) ? '当前用户' : 'Current user',
+                owner: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
+                applicant: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
                 approver: String(approvalObjectRole || '').trim() || (isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver'),
-                submitted_by: isZh(lang) ? '当前用户' : 'Current user',
-                current_assignee: isZh(lang) ? '审批人' : 'Approver',
+                submitted_by: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
+                current_assignee: isZh(lang) ? '瀹℃壒浜? : 'Approver',
                 current_assignee_type: 'user',
-                result: isZh(lang) ? '待审批' : 'Pending approval',
+                result: isZh(lang) ? '寰呭鎵? : 'Pending approval',
                 business_status: workflowMapping?.statusMapping?.pending || 'approval_pending',
                 result_status: 'pending',
                 from_status: 'submitted',
@@ -9915,7 +9956,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 business_action: businessAction || 'create',
                 business_note: businessNote,
                 result_payload: {
-                    text: businessNote || (isZh(lang) ? '待审批' : 'Pending approval'),
+                    text: businessNote || (isZh(lang) ? '寰呭鎵? : 'Pending approval'),
                     business_record: { id: fallbackID, status: workflowMapping?.statusMapping?.pending || 'approval_pending' },
                     business_payload: contractInputs.business_payload,
                     form_data: contractInputs,
@@ -9925,9 +9966,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 detail_url: '',
                 events: [{
                     at: now,
-                    actor: isZh(lang) ? '当前用户' : 'Current user',
+                    actor: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
                     node: workflowMapping?.submitNode,
-                    action: isZh(lang) ? '已提交' : 'Submitted',
+                    action: isZh(lang) ? '宸叉彁浜? : 'Submitted',
                     note: businessNote,
                 }, {
                     at: now,
@@ -10058,7 +10099,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             return;
         }
         if (isBusiness) {
-            const inputSummary = `${businessEntity || app.category} ·  ${businessActionRole || businessAction || 'execute'}`;
+            const inputSummary = `${businessEntity || app.category} 路  ${businessActionRole || businessAction || 'execute'}`;
             const businessPayload = {
                 _maclaw_app: true,
                 app_id: app.id,
@@ -10075,7 +10116,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 preferred_view: app.manifest?.datasrv?.preferredView || '',
                 preferred_report: app.manifest?.datasrv?.preferredReport || '',
                 preferred_dashboard: app.manifest?.datasrv?.preferredDashboard || '',
-                prompt: `Run MaClaw business app: ${app.name} ·  ${inputSummary}`,
+                prompt: `Run MaClaw business app: ${app.name} 路  ${inputSummary}`,
             };
             if (businessSkillID && app.source !== 'datasrv') {
                 setRunState('running');
@@ -10100,7 +10141,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             setBusinessResult(null);
             setCurrentRunContext({ inputSummary, outputMode: 'business' });
             try {
-                // Open right-pane AppView workspace (DataSrv → table/result_browser) while
+                // Open right-pane AppView workspace (DataSrv 鈫?table/result_browser) while
                 // still returning the same business operation result package for AppsPage UI.
                 const openWorkspace = typeof OpenMaclawAppBusinessWorkspace === 'function'
                     ? OpenMaclawAppBusinessWorkspace
@@ -10126,7 +10167,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
 				setValidationMessage('');
 				setRuntimeBusinessError(null);
 				setRunState('done');
-					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' ·  ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
+					recordRunHistory({ runID: `business-${Date.now().toString(36)}`, status: 'done', outputMode: 'business', inputSummary, message: text.runCompleted + ': ' + businessOperationResult.mode + ' 路  ' + businessOperationResult.status, ...businessOperationRunEvidence(businessOperationResult) });
 				return;
 			} catch (error: any) {
 				const message = setRuntimeError(error, text.skillRunFailed);
@@ -10188,7 +10229,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 business_payload: businessPayload,
             },
         };
-        const inputSummary = `${instance.title || businessEntity || app.category} ·  ${text.supplementContinue}`;
+        const inputSummary = `${instance.title || businessEntity || app.category} 路  ${text.supplementContinue}`;
         setRunState('running');
         setValidationMessage(text.supplementRunning);
         setRuntimeBusinessError(null);
@@ -10246,7 +10287,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     business_entity: instance.objectRole || businessEntity || app.category,
                     business_action: 'supplement',
                     business_note: note || text.supplementContinue,
-                    prompt: `Continue MaClaw approval workflow: ${app.name} ·  ${instance.title}`,
+                    prompt: `Continue MaClaw approval workflow: ${app.name} 路  ${instance.title}`,
                 },
             }) as { instance?: BackendApprovalInstance; approval_id?: string; workflow_run?: { ran?: boolean; workflow_skill_id?: string; instance?: BackendApprovalInstance; progress_instances?: BackendApprovalInstance[]; progressInstances?: BackendApprovalInstance[] } } | undefined;
             const workflowRunProgressInstances = (Array.isArray(started?.workflow_run?.progress_instances) ? started?.workflow_run?.progress_instances : Array.isArray(started?.workflow_run?.progressInstances) ? started?.workflow_run?.progressInstances : []) as BackendApprovalInstance[];
@@ -10504,7 +10545,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     // write failures were set but never rendered after a successful run.
     const runtimeStatusMessage = runState === 'done'
         ? (validationMessage
-            ? `${text.runCompleted} · ${validationMessage}`
+            ? `${text.runCompleted} 路 ${validationMessage}`
             : text.runCompleted)
         : runState === 'running'
             ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID)
@@ -10834,7 +10875,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const loadInstances = useCallback(async () => {
         setLoadingState('loading');
         try {
-            // Best-effort Hub↔local reconcile (also runs inside List…All).
+            // Best-effort Hub鈫攍ocal reconcile (also runs inside List鈥ll).
             try { await ReconcileMaclawAppApprovalProjections(); } catch { /* offline ok */ }
             const records = await ListMaclawAppApprovalInstancesAll('all', 200) as BackendApprovalInstance[];
             const remoteViews = (records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[];
@@ -11057,8 +11098,8 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                         <div className="apps-approval-manager__body">
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
-                                    <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length) ? 'pending' : ''} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
-                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} ·  {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? (isZh(lang) ? ' · Hub' : ' · Hub') : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` · hub:${item.hubInstanceID}` : ''} ·  {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '超时' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '紧急' : 'Critical') : (isZh(lang) ? '关注' : 'Attention')}</span> : null}{(item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length > 0)) ? <span className="apps-approval-row__escalation" title={(item.escalationApprovers || []).join(', ')}>{isZh(lang) ? '升级重投' : 'Escalation retry'}{(item.escalationApprovers && item.escalationApprovers.length) ? `: ${item.escalationApprovers.slice(0, 3).join(', ')}${item.escalationApprovers.length > 3 ? ` +${item.escalationApprovers.length - 3}` : ''}` : ''}</span> : null}{(item.escalationExhaustedApprovers && item.escalationExhaustedApprovers.length > 0) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={(item.escalationExhaustedApprovers || []).join(', ')}>{isZh(lang) ? '离线耗尽' : 'Escalation exhausted'}: {item.escalationExhaustedApprovers.slice(0, 3).join(', ')}{item.escalationExhaustedApprovers.length > 3 ? ` +${item.escalationExhaustedApprovers.length - 3}` : ''}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
+                                    <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length) ? 'pending' : ((item.escalationExhaustedApprovers && item.escalationExhaustedApprovers.length) ? 'exhausted' : '')} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} 璺? {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? (isZh(lang) ? ' 璺?Hub' : ' 璺?Hub') : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` 璺?hub:${item.hubInstanceID}` : ''} 璺? {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '鐡掑懏妞? : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '缁毖勨偓? : 'Critical') : (isZh(lang) ? '閸忚櫕鏁? : 'Attention')}</span> : null}{approvalEscalationRetryText(item, lang) ? <span className="apps-approval-row__escalation" title={approvalEscalationRetryText(item, lang)}>{approvalEscalationRetryText(item, lang)}</span> : null}{approvalEscalationExhaustedText(item, lang) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={approvalEscalationExhaustedText(item, lang)}>{approvalEscalationExhaustedText(item, lang)}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>
                                 ))}
@@ -11103,7 +11144,7 @@ const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSele
                         <button className="apps-datasrv-approval-summary__item" data-selected={selectedBucket?.key === bucket.key ? 'true' : 'false'} type="button" key={bucket.key} onClick={() => { setSelectedKey(bucket.key); onBucketSelect?.(bucket); }} aria-pressed={selectedBucket?.key === bucket.key}>
                             <span>{bucket.label}</span>
                             <strong>{bucket.count}</strong>
-                            <small>{bucket.apps.join(' ·  ') || '-'}</small>
+                            <small>{bucket.apps.join(' 路  ') || '-'}</small>
                         </button>
                         ))}
                     </div>
@@ -11125,7 +11166,7 @@ const DataSrvApprovalSummaryPanel = ({ summary, text, onBucketSelect, onItemSele
                                                 {(item.approvalID || item.workflowInstanceID || item.recordID) && <code>{[item.approvalID, item.workflowInstanceID, item.recordID].filter(Boolean).join(' / ')}</code>}
                                                 {(item.datasetID || item.objectRole) && <code>{[item.datasetID, item.objectRole].filter(Boolean).join(' / ')}</code>}
                                             </div>
-                                            <small>{[item.status || item.decision, item.resultTypes.slice(0, 3).join(', '), item.updatedAt].filter(Boolean).join(' · ') || '-'}</small>
+                                            <small>{[item.status || item.decision, item.resultTypes.slice(0, 3).join(', '), item.updatedAt].filter(Boolean).join(' 路 ') || '-'}</small>
                                         </button>
                                         <div className="apps-datasrv-approval-summary__row-actions">
                                             <button className="apps-link-button" type="button" disabled={!approvalURL} onClick={() => approvalURL && onOpenApproval?.(item)}>{text.openDataSrvApproval}</button>
@@ -11215,12 +11256,18 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
             </div>
             {instance ? (
                 <>
-                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {approvalCurrentNodeText(instance, lang)}{instance.currentNodeStatus ? ` · ${text.currentNodeStatus}: ${instance.currentNodeStatus}` : ''}</span></div>
+                    <div className="apps-approval-detail__head"><strong>{instance.title}</strong><span>{text.currentApprovalNode}: {approvalCurrentNodeText(instance, lang)}{instance.currentNodeStatus ? ` 路 ${text.currentNodeStatus}: ${instance.currentNodeStatus}` : ''}</span></div>
                     <dl className="apps-approval-facts">
                         <div><dt>{text.approvalApplicantLabel}</dt><dd>{approvalApplicantText(instance)}</dd></div><div><dt>{text.approvalApproverLabel}</dt><dd>{instance.approver}</dd></div><div><dt>{text.currentAssigneeLabel}</dt><dd>{approvalCurrentAssigneeText(instance)}</dd></div><div><dt>{text.assigneeTypeLabel}</dt><dd>{instance.currentAssigneeType || '-'}</dd></div><div><dt>{text.statusTransitionLabel}</dt><dd>{approvalStatusTransitionText(instance, lang)}</dd></div><div><dt>{text.approvalResult}</dt><dd>{instance.result}</dd></div>
                         <div><dt>{text.workflowSkill}</dt><dd>{[instance.workflowSkillID, instance.workflowVersion ? 'v' + instance.workflowVersion : ''].filter(Boolean).join(' @ ') || '-'}</dd></div><div><dt>{text.dataSrvRecord}</dt><dd>{instance.recordID || '-'}</dd></div><div><dt>{text.approvalObjectRoleLabel}</dt><dd>{instance.objectRole || '-'}</dd></div>
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
                         <div><dt>{text.currentNodeStatus}</dt><dd>{instance.currentNodeStatus || '-'}</dd></div><div><dt>{text.approvalNodeTasks}</dt><dd>{approvalNodeTaskCountText(instance, lang)}</dd></div>
+                        {(instance.escalationPending || (instance.escalationApprovers && instance.escalationApprovers.length > 0)) ? (
+                            <div><dt>{isZh(lang) ? '鍗囩骇閲嶆姇' : 'Escalation retry'}</dt><dd>{approvalEscalationRetryText(instance, lang) || '-'}</dd></div>
+                        ) : null}
+                        {(instance.escalationExhaustedApprovers && instance.escalationExhaustedApprovers.length > 0) ? (
+                            <div><dt>{isZh(lang) ? '绂荤嚎鑰楀敖' : 'Escalation exhausted'}</dt><dd>{approvalEscalationExhaustedText(instance, lang) || '-'}</dd></div>
+                        ) : null}
                     </dl>
 	                    {instance.detailURL && <div className="apps-approval-detail__links"><button className="apps-link-button" type="button" onClick={() => instance.detailURL && BrowserOpenURL(instance.detailURL)}>{text.viewFullWorkflow}</button></div>}
 	                    {resultContract && <ResultContractPreview contract={resultContract} lang={lang} />}
@@ -11232,9 +11279,9 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
                                 const kind = approvalOutputKind(output);
                                 const body = approvalOutputBody(output);
                                 const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
-                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' ·  ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
+                                return <div className="apps-approval-output" data-kind={kind} key={`${instance.id}-output-${index}-${approvalOutputTitle(output, text)}`}><div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' 路  ')}</span></div>{body && <pre>{body}</pre>}{artifactRef && <code>{artifactRef}</code>}</div>;
                             })}
-                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' ·  ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
+                            {selectedArtifacts.map((artifact, index) => <div className="apps-approval-artifact" key={`${instance.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}><div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' 路  ')}</span></div><code>{approvalArtifactReference(artifact)}</code></div>)}
                             {selectedPayloadEntries.length > 0 && <div className="apps-approval-payload"><strong>{text.approvalOutputData}</strong>{selectedPayloadEntries.map(([key, value]) => <div key={`${instance.id}-payload-${key}`}><span>{key}</span><pre>{formatApprovalResultValue(value)}</pre></div>)}</div>}
                         </section>
                     )}
@@ -11242,8 +11289,8 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
 
                     <div className="apps-approval-timeline">
                         {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' }, { node: approvalCurrentNodeText(instance, lang) }, { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
-                            const primary = [event.node, event.decision].filter(Boolean).join(' ·  ') || event.message || '-';
-                            const secondary = [event.actor, event.at].filter(Boolean).join(' ·  ');
+                            const primary = [event.node, event.decision].filter(Boolean).join(' 路  ') || event.message || '-';
+                            const secondary = [event.actor, event.at].filter(Boolean).join(' 路  ');
                             return <div key={`${instance.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>;
                         })}
                     </div>
@@ -11335,8 +11382,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                             <div>
                                 <strong>{item.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ? ` · ${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} · {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
-                                <small>{text.approvalInstanceId}: {item.id} · {item.updatedAt}</small>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ? ` 路 ${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} 路 {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
+                                <small>{text.approvalInstanceId}: {item.id} 路 {item.updatedAt}</small>
                                 <div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div>
                             </div>
                             <em>{approvalStatusLabel(item.status, lang)}</em>
@@ -11352,7 +11399,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <>
                             <div className="apps-approval-detail__head">
                                 <strong>{selected.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(selected, lang)}{selected.currentNodeStatus ? ` · ${text.currentNodeStatus}: ${selected.currentNodeStatus}` : ''}</span>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(selected, lang)}{selected.currentNodeStatus ? ` 路 ${text.currentNodeStatus}: ${selected.currentNodeStatus}` : ''}</span>
                             </div>
                             <dl className="apps-approval-facts">
                                 <div><dt>{text.approvalApplicantLabel}</dt><dd>{approvalApplicantText(selected)}</dd></div>
@@ -11386,7 +11433,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                         const artifactRef = output.artifact ? approvalArtifactReference(output.artifact) : '';
                                         return (
                                             <div className="apps-approval-output" data-kind={kind} key={`${selected.id}-output-${index}-${approvalOutputTitle(output, text)}`}>
-                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' · ')}</span></div>
+                                                <div><strong>{approvalOutputTitle(output, text)}</strong><span>{[kind, output.status].filter(Boolean).join(' 路 ')}</span></div>
                                                 {body && <pre>{body}</pre>}
                                                 {artifactRef && <code>{artifactRef}</code>}
                                             </div>
@@ -11394,7 +11441,7 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     })}
                                     {selectedArtifacts.map((artifact, index) => (
                                         <div className="apps-approval-artifact" key={`${selected.id}-artifact-${index}-${approvalArtifactReference(artifact)}`}>
-                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' · ')}</span></div>
+                                            <div><strong>{artifact.name || artifact.id || text.runArtifacts}</strong><span>{[artifact.status, artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ''].filter(Boolean).join(' 路 ')}</span></div>
                                             <code>{approvalArtifactReference(artifact)}</code>
                                         </div>
                                     ))}
@@ -11416,8 +11463,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                                     { node: approvalCurrentNodeText(selected, lang) },
                                     { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' },
                                 ] as ApprovalInstanceEventView[]).map((event, index) => {
-                                    const primary = [event.node, event.decision].filter(Boolean).join(' · ') || event.message || '-';
-                                    const secondary = [event.actor, event.at].filter(Boolean).join(' · ');
+                                    const primary = [event.node, event.decision].filter(Boolean).join(' 路 ') || event.message || '-';
+                                    const secondary = [event.actor, event.at].filter(Boolean).join(' 路 ');
                                     return (
                                         <div key={`${selected.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>
                                     );
@@ -11457,7 +11504,7 @@ const SkillRunEvidence = ({ status, runState, text }: { status: SkillRunStatusVi
                             <span className="apps-run-step__dot" />
                             <div>
                                 <strong>{compactStepLabel(step)}</strong>
-                                <span>{[step.status, step.duration_ms ? `${step.duration_ms}ms` : '', compactStepDetail(step)].filter(Boolean).join(' · ')}</span>
+                                <span>{[step.status, step.duration_ms ? `${step.duration_ms}ms` : '', compactStepDetail(step)].filter(Boolean).join(' 路 ')}</span>
                             </div>
                         </div>
                     ))}
@@ -11954,7 +12001,7 @@ function installSummaryMessage(installedCount: number, upgradedCount: number, sk
     const parts = [`${text.installedCount}: ${installedCount}`];
     if (upgradedCount > 0) parts.push(`${text.upgradedCount}: ${upgradedCount}`);
     parts.push(`${text.skippedCount}: ${skippedCount}`);
-    return parts.join(' · ');
+    return parts.join(' 路 ');
 }
 
 function formatHubInstallScopeSummary(sourceAppCount: number | undefined, installedAppCount: number | undefined, dependencyCount: number | undefined, text: typeof labels.zh) {
@@ -11968,7 +12015,7 @@ function formatHubInstallScopeSummary(sourceAppCount: number | undefined, instal
     if (Number.isFinite(dependencies) && dependencies > 0) {
         parts.push(text.hubInstallDependencySummary.replace('{count}', String(dependencies)));
     }
-    return parts.join(' · ');
+    return parts.join(' 路 ');
 }
 function dataSrvRegistrationNumber(value: unknown) {
     const numberValue = Number(value || 0);
@@ -11994,7 +12041,7 @@ function dataSrvRegistrationSummary(registration: BackendAppDataSrvRegistration 
     if (!status) return '';
     const ratio = `${status.syncedCount}/${status.eligibleCount}`;
     if (status.state === 'ready') return `${text.datasrvRegistrationReady}: ${ratio}`;
-    if (status.state === 'partial') return `${text.datasrvRegistrationPartial}: ${ratio}${status.reason ? ` · ${status.reason}` : ''}`;
+    if (status.state === 'partial') return `${text.datasrvRegistrationPartial}: ${ratio}${status.reason ? ` 路 ${status.reason}` : ''}`;
     if (status.state === 'failed') return `${text.datasrvRegistrationFailed}: ${status.reason || ratio}`;
     return `${text.datasrvRegistrationSkipped}: ${status.reason || ratio}`;
 }
@@ -12025,7 +12072,7 @@ function appHasDataSrvRegistrationCandidate(app: AppEntry) {
 function installDetailWithDataSrvRegistration(detail: string, registration: BackendAppDataSrvRegistration | undefined | null, appID: string | undefined, dataSrvCandidate: boolean | undefined, text: typeof labels.zh) {
     if (!appID || !dataSrvCandidate) return detail;
     const summary = dataSrvRegistrationSummaryForApp(registration, appID, text);
-    return summary ? `${detail} · ${summary}` : detail;
+    return summary ? `${detail} 路 ${summary}` : detail;
 }
 
 function backendDependencyMatchesAppIDs(dep: BackendAppInstallDependency, appIds: string[]) {
@@ -12191,20 +12238,20 @@ function backendDependencyTraceItems(dep: BackendAppInstallDependency, text: typ
         dep.install_ref_status ? `status:${dep.install_ref_status}` : '',
         installTarget ? `target:${installTarget}` : '',
         dep.install_ref_message || '',
-    ].filter(Boolean).join(' · '), dependencyTraceState(String(dep.install_ref_status || '').trim(), installRef ? 'ready' : 'unknown'));
+    ].filter(Boolean).join(' 路 '), dependencyTraceState(String(dep.install_ref_status || '').trim(), installRef ? 'ready' : 'unknown'));
     add(text.dependencyPreflightStage, [
         dep.preflight_status || '',
         dep.preflight_code ? `code:${dep.preflight_code}` : '',
         dep.preflight_stage ? `stage:${dep.preflight_stage}` : '',
         dep.preflight_message || '',
-    ].filter(Boolean).join(' · '), dependencyTraceState(String(dep.preflight_status || '').trim()));
+    ].filter(Boolean).join(' 路 '), dependencyTraceState(String(dep.preflight_status || '').trim()));
     add(text.dependencyDownloadStage, [
         dep.download_node ? `node:${dep.download_node}` : '',
         dep.resolved_download_url ? `resolved:${dep.resolved_download_url}` : '',
         dep.package_download_url ? (dep.download_node ? `preferred:${dep.package_download_url}` : 'available') : '',
         dep.package_sha256 || dep.package_checksum ? `sha:${dep.package_sha256 || dep.package_checksum}` : '',
         dep.package_signature ? 'signature:available' : '',
-    ].filter(Boolean).join(' · '), dep.download_node || dep.resolved_download_url || dep.package_download_url || dep.package_sha256 || dep.package_checksum || dep.package_signature
+    ].filter(Boolean).join(' 路 '), dep.download_node || dep.resolved_download_url || dep.package_download_url || dep.package_sha256 || dep.package_checksum || dep.package_signature
         ? (dep.install_error_code === 'download_failed' ? 'blocked' : 'ready')
         : undefined);
     add(text.dependencyIntegrityStage, [
@@ -12212,18 +12259,18 @@ function backendDependencyTraceItems(dep: BackendAppInstallDependency, text: typ
         dep.integrity_code ? `code:${dep.integrity_code}` : '',
         dep.integrity_stage ? `stage:${dep.integrity_stage}` : '',
         dep.integrity_message || '',
-    ].filter(Boolean).join(' · '), dependencyTraceState(String(dep.integrity_status || '').trim()));
+    ].filter(Boolean).join(' 路 '), dependencyTraceState(String(dep.integrity_status || '').trim()));
     add(text.dependencyInstallStage, [
         dep.action || '',
         dep.health ? `health:${dep.health}` : '',
         dep.installed_status ? `status:${dep.installed_status}` : '',
         dep.installed_version ? `installed:${dep.installed_version}` : '',
-    ].filter(Boolean).join(' · '), isBlockingBackendDependency(dep) ? 'blocked' : dep.installed ? 'ready' : dependencyTraceState(String(dep.action || '').trim()));
+    ].filter(Boolean).join(' 路 '), isBlockingBackendDependency(dep) ? 'blocked' : dep.installed ? 'ready' : dependencyTraceState(String(dep.action || '').trim()));
     add(text.dependencyErrorStage, [
         dep.install_error_code || '',
         dep.install_error_stage ? `stage:${dep.install_error_stage}` : '',
         dep.install_error_detail || '',
-    ].filter(Boolean).join(' · '), 'blocked');
+    ].filter(Boolean).join(' 路 '), 'blocked');
     return items;
 }
 
@@ -12249,8 +12296,8 @@ function installRecordDependencyStatus(dep: BackendAppInstallDependency, text: t
 
 function versionSnapshotSkillText(skill: BackendAppInstallSkillVersionSnapshot | undefined | null) {
     if (!skill?.id) return '';
-    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' · ');
-    return meta ? skill.id + ' · ' + meta : skill.id;
+    const meta = [skill.kind, skill.source, skill.version ? 'v' + skill.version : ''].filter(Boolean).join(' 路 ');
+    return meta ? skill.id + ' 路 ' + meta : skill.id;
 }
 
 function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot | undefined | null, text: typeof labels.zh) {
@@ -12265,7 +12312,7 @@ function installVersionSnapshotItems(snapshot: BackendAppInstallVersionSnapshot 
     });
     (snapshot.approval_bindings || []).forEach((binding) => {
         const workflow = [binding.workflow_skill_id, binding.workflow_version ? 'v' + binding.workflow_version : ''].filter(Boolean).join('@');
-        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' · ');
+        const value = [binding.event, binding.object_role, workflow].filter(Boolean).join(' 路 ');
         if (value) items.push({ label: text.approvalBinding, value });
     });
     return items;
@@ -12359,7 +12406,7 @@ function resultCoverageEvidenceSummary(coverage: Record<string, unknown> | undef
     ].filter(Boolean);
     if (parts.length === 0 && ok === undefined) return null;
     const state: DataSrvRegistrationState = ok === false || missing.length > 0 ? 'failed' : ok === true || shownCoveredCount > 0 ? 'ready' : 'partial';
-    return { value: parts.join(' · ') || (ok ? 'ok' : 'pending'), state };
+    return { value: parts.join(' 路 ') || (ok ? 'ok' : 'pending'), state };
 }
 
 function installRecordDependencyDiagnostics(record: BackendAppInstallRecord): { value: string; state: DataSrvRegistrationState } | null {
@@ -12372,7 +12419,7 @@ function installRecordDependencyDiagnostics(record: BackendAppInstallRecord): { 
             ...backendDependencyDiagnosticMeta(dep),
             ...backendDependencyDiagnosticItems(dep),
         ].filter(Boolean);
-        return parts.length > 1 ? parts.join(' · ') : '';
+        return parts.length > 1 ? parts.join(' 路 ') : '';
     }).filter(Boolean);
     if (diagnosticRows.length === 0) return null;
     const hasFailure = dependencies.some((dep) => {
@@ -12400,7 +12447,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
     const hubCapabilityID = installRecordString(submission.capability_id || submission.capabilityID || submission.hub_capability_id || submission.market_capability_id || submission.marketCapabilityID);
     const hubVersionKey = installRecordString(submission.version_key || submission.versionKey);
     const hubSubmissionID = installRecordString(submission.submission_id || submission.submissionID);
-    const hubValue = [hubStatus, hubCapabilityID, hubVersionKey || hubSubmissionID].filter(Boolean).join(' · ');
+    const hubValue = [hubStatus, hubCapabilityID, hubVersionKey || hubSubmissionID].filter(Boolean).join(' 路 ');
     if (hubValue) items.push({ label: text.marketSource, value: hubValue, state: publishReviewEvidenceState(hubStatus || hubValue) });
     const packageEvidence = appEvidenceRecord(record.package);
     const packageSignature = appEvidenceRecord(record.hub_package_signature)
@@ -12424,19 +12471,19 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         packageSignatureFingerprint,
         packageSignatureSignedBy,
         packageSignatureSignedAt,
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join(' 路 ');
     if (packageSignature || packageSignatureValue) {
         items.push({ label: text.packageSignature, value: packageSignatureValue || 'signed', state: 'ready' });
     }
     const layout = record.workspace_layout || {};
-    const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' · ');
+    const layoutValue = [layout.entry, layout.template, layout.density].map(installRecordString).filter(Boolean).join(' 路 ');
     if (layoutValue) items.push({ label: text.workspaceLayout, value: layoutValue });
     const contract = record.result_contract || {};
     const resultTypes = installRecordStringList(contract.types);
     const resultValue = [
         installRecordString(contract.primary),
         resultTypes.length ? `${resultTypes.length} types` : '',
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join(' 路 ');
     if (resultValue) items.push({ label: text.resultContract, value: resultValue });
     const evidence = record.test_evidence || {};
     const protocol = evidence.testProtocol && typeof evidence.testProtocol === 'object'
@@ -12447,7 +12494,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
     const evidenceValue = [
         installRecordString(evidence.runId || evidence.run_id),
         installRecordString(evidence.testProtocolFingerprint || evidence.test_protocol_fingerprint || protocol.fingerprint || protocol.hash),
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join(' 路 ');
     if (evidenceValue) items.push({ label: text.testEvidence, value: evidenceValue });
     const coverage = evidence.resultCoverage && typeof evidence.resultCoverage === 'object'
         ? evidence.resultCoverage as Record<string, unknown>
@@ -12465,7 +12512,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         installRecordString(approvalInstance.instanceId || approvalInstance.instance_id || approvalInstance.workflowInstanceID || approvalInstance.workflow_instance_id || approvalInstance.approvalID || approvalInstance.approval_id || approvalInstance.recordApprovalID || approvalInstance.record_approval_id),
         installRecordString(approvalInstance.status),
         installRecordString(approvalInstance.currentNode || approvalInstance.current_node),
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join(' 路 ');
     if (approvalInstanceValue) items.push({ label: text.approvalInstanceId, value: approvalInstanceValue });
     const outputCount = Array.isArray(evidence.outputs)
         ? evidence.outputs.length
@@ -12478,7 +12525,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
             ? ((evidence as Record<string, unknown>).artifact_files as unknown[]).length
             : 0;
     if (outputCount > 0 || artifactCount > 0) {
-        items.push({ label: text.approvalResultPackage, value: `${text.output}: ${outputCount} · ${text.runArtifacts}: ${artifactCount}` });
+        items.push({ label: text.approvalResultPackage, value: `${text.output}: ${outputCount} 路 ${text.runArtifacts}: ${artifactCount}` });
     }
     const resultPayload = evidence.resultPayload && typeof evidence.resultPayload === 'object'
         ? evidence.resultPayload as Record<string, unknown>
@@ -12501,7 +12548,7 @@ function installRecordEvidenceItems(record: BackendAppInstallRecord, text: typeo
         || record.has_missing_required;
     const blockingCount = blockingCountFromVerification || blockingCountFromRecord || (hasBlockingDependency ? 1 : 0);
     if (installRecordString(dependencyVerification.schema) || dependencyCount > 0 || blockingCount > 0) {
-        items.push({ label: text.dependencyVerification, value: `${text.skillDependencies}: ${dependencyCount} · ${text.missingDependencyCount}: ${blockingCount}` });
+        items.push({ label: text.dependencyVerification, value: `${text.skillDependencies}: ${dependencyCount} 路 ${text.missingDependencyCount}: ${blockingCount}` });
     }
     const dependencyDiagnostics = installRecordDependencyDiagnostics(record);
     if (dependencyDiagnostics) {
@@ -12677,7 +12724,7 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const suffix = records.length > 1 ? ` #${index + 1}` : '';
         const approvalStatus = appEvidenceString(record.approval_status, record.approvalStatus, record.status);
         if (appEvidenceBool(record.has_approval_instance, record.hasApprovalInstance) || approvalStatus) {
-            const approvalValue = [approvalStatus, appEvidenceString(record.current_node, record.currentNode)].filter(Boolean).join(' · ') || 'ready';
+            const approvalValue = [approvalStatus, appEvidenceString(record.current_node, record.currentNode)].filter(Boolean).join(' 路 ') || 'ready';
             items.push({ label: `${text.approval}${suffix}`, value: approvalValue, state: publishReviewEvidenceState(approvalStatus || approvalValue) });
         }
         const progressCount = appEvidenceNumber(record.progress_count, record.progressCount);
@@ -12696,7 +12743,7 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const layoutSaved = appEvidenceBool(record.workspace_saved_in_manifest, record.workspaceSavedInManifest, layoutRecord?.studio_saved_in_manifest, layoutRecord?.studioSavedInManifest, layoutStudio?.savedInManifest, layoutStudio?.saved_in_manifest);
         const layoutUpdatedBy = appEvidenceString(record.workspace_updated_by, record.workspaceUpdatedBy, layoutRecord?.studio_updated_by, layoutRecord?.studioUpdatedBy, layoutStudio?.updatedBy, layoutStudio?.updated_by);
         if (appEvidenceBool(record.has_workspace_layout, record.hasWorkspaceLayout) || layout || layoutSaved) {
-            const layoutValue = [layout || 'ready', layoutSaved ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' · ');
+            const layoutValue = [layout || 'ready', layoutSaved ? 'saved' : '', layoutUpdatedBy].filter(Boolean).join(' 路 ');
             items.push({ label: `${text.workspaceLayout}${suffix}`, value: layoutValue, state: 'ready' });
         }
         const dataSrvStatus = appEvidenceString(record.datasrv_registration_status, record.dataSrvRegistrationStatus, record.datasrvRegistrationStatus);
@@ -12711,13 +12758,13 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const resultPrimary = appEvidenceString(record.result_contract_primary, record.resultContractPrimary);
         const resultTypeCount = appEvidenceNumber(record.result_contract_type_count, record.resultContractTypeCount);
         if (appEvidenceBool(record.has_result_contract, record.hasResultContract) || resultPrimary || resultTypeCount !== undefined) {
-            const value = [resultPrimary || 'ready', resultTypeCount !== undefined ? `${resultTypeCount} types` : ''].filter(Boolean).join(' · ');
+            const value = [resultPrimary || 'ready', resultTypeCount !== undefined ? `${resultTypeCount} types` : ''].filter(Boolean).join(' 路 ');
             items.push({ label: `${text.resultContract}${suffix}`, value, state: 'ready' });
         }
         const runID = appEvidenceString(record.run_id, record.runId);
         const protocolFingerprint = appEvidenceString(record.test_protocol_fingerprint, record.testProtocolFingerprint);
         if (appEvidenceBool(record.has_test_protocol, record.hasTestProtocol) || protocolFingerprint || runID) {
-            items.push({ label: `${text.testEvidence}${suffix}`, value: [runID, protocolFingerprint || (!runID ? 'ready' : '')].filter(Boolean).join(' · '), state: 'ready' });
+            items.push({ label: `${text.testEvidence}${suffix}`, value: [runID, protocolFingerprint || (!runID ? 'ready' : '')].filter(Boolean).join(' 路 '), state: 'ready' });
         }
         const coverageSummary = resultCoverageEvidenceSummary({
             ok: firstAppEvidenceValue(record.result_coverage_ok, record.resultCoverageOK),
@@ -12732,7 +12779,7 @@ function publishReviewEvidenceItems(evidence: Record<string, unknown> | undefine
         const outputCount = appEvidenceNumber(record.output_count, record.outputCount);
         const artifactCount = appEvidenceNumber(record.artifact_count, record.artifactCount);
         if (outputCount !== undefined || artifactCount !== undefined) {
-            items.push({ label: `${text.approvalResultPackage}${suffix}`, value: `${text.output}: ${outputCount ?? 0} · ${text.runArtifacts}: ${artifactCount ?? 0}`, state: 'ready' });
+            items.push({ label: `${text.approvalResultPackage}${suffix}`, value: `${text.output}: ${outputCount ?? 0} 路 ${text.runArtifacts}: ${artifactCount ?? 0}`, state: 'ready' });
         }
     });
     return items;
@@ -12909,7 +12956,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text,
             <div className="apps-dependency-verification__head">
                 <strong>{text.dependencyVerification}</strong>
                 <span>{status}</span>
-                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` · ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` · ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
+                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} 路 {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` 路 ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` 路 ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
                 {hasDetailContent && state !== 'loading' && state !== 'repairing' && (
                     <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setDetailOpen((prev) => !prev)}>
                         {detailOpen ? text.installErrorHideDetail : text.installErrorShowDetail}
@@ -12976,8 +13023,8 @@ const InstallRecordDependencies = ({ dependencies, text }: { dependencies?: Back
                     backendDependencyInstallRef(dep) ? `ref:${backendDependencyInstallRef(dep)}` : '',
                     ...backendDependencyDiagnosticMeta(dep),
                     state !== 'ready' ? installedStatus || health : '',
-                ].filter(Boolean).join(' · ');
-                const summary = [backendDependencySummary(dep, text), ...diagnostics].filter(Boolean).join(' · ');
+                ].filter(Boolean).join(' 路 ');
+                const summary = [backendDependencySummary(dep, text), ...diagnostics].filter(Boolean).join(' 路 ');
                 return (
                     <div className="apps-install-record__dep" data-state={state} role="listitem" key={`${dep.id}-${dep.version || ''}-${index}`} title={summary}>
                         <span className="apps-install-record__dep-main">
@@ -13530,8 +13577,8 @@ const StudioSkillPicker = ({
                         }
                     }}
                     placeholder={placeholder || (mode === 'approvalWorkflow'
-                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 ·  Hub' : 'Search approval workflows ·  Hub')
-                        : (zh ? '\u641c\u5df2\u5b89\u88c5 ·  SkillMarket' : 'Search installed ·  SkillMarket'))}
+                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 路  Hub' : 'Search approval workflows 路  Hub')
+                        : (zh ? '\u641c\u5df2\u5b89\u88c5 路  SkillMarket' : 'Search installed 路  SkillMarket'))}
                     aria-label={label}
                 />
                 <button className="apps-secondary-button" type="button" disabled={!query.trim() || currentQueryIsSearching} onClick={() => void searchMarket()}>
@@ -13541,7 +13588,7 @@ const StudioSkillPicker = ({
             {selectedSummary && (
                 <div className="apps-skill-picker__selected">
                     <strong>{selectedSummary.name}</strong>
-                    <span>{selectedSummary.id} · {selectedSummary.sourceLabel}</span>
+                    <span>{selectedSummary.id} 路 {selectedSummary.sourceLabel}</span>
                 </div>
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
@@ -14421,7 +14468,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <section className="apps-layout-designer" aria-label={zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}>
                         <div className="apps-preview-title-row">
                             <div className="apps-definition__title">{zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}</div>
-                            <span className="apps-count">appSkill ·  workflow_skill</span>
+                            <span className="apps-count">appSkill 路  workflow_skill</span>
                         </div>
                         <div className="apps-capability-skill-grid">
                             <div className="apps-capability-skill-card">
@@ -14514,7 +14561,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                                     </div>
                                     <div className="apps-form-row">
                                         <label>{zh ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID ·  GitHub URL' : 'Capability ID ·  GitHub URL'} />
+                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID 路  GitHub URL' : 'Capability ID 路  GitHub URL'} />
                                     </div>
                                 </>
                             )}
@@ -15118,7 +15165,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                                     <div>
                                         <strong>{app.name}</strong>
-                                        <span>{app.category} · {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
+                                        <span>{app.category} 路 {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
                                     </div>
                                     <em>{submission ? submissionStatus : ready ? text.readyToSubmit : text.needsWork}</em>
                                 </div>
@@ -15146,7 +15193,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                 <div className="apps-publish-checks">
                                     <div className="apps-publish-checks__summary">
                                         {isZh(lang)
-                                            ? `检查项：${checks.filter(c => c.ok).length}/${checks.length} 通过`
+                                            ? `妫€鏌ラ」锛?{checks.filter(c => c.ok).length}/${checks.length} 閫氳繃`
                                             : `Checks: ${checks.filter(c => c.ok).length}/${checks.length} passed`}
                                     </div>
                                     {checks.map((check) => (
@@ -15248,14 +15295,14 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <div className="apps-publish-queue__row" key={item.submissionID}>
                                         <div className="apps-publish-queue__body">
                                             <strong>{item.submissionID}</strong>
-                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} · {item.channel || 'local'} · {item.status || 'submitted'}</span>
+                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} 路 {item.channel || 'local'} 路 {item.status || 'submitted'}</span>
                                             <small>
                                                 {item.submittedAt}
-                                                {item.packageSHA ? ` · sha256:${item.packageSHA.slice(0, 12)}` : ''}
-                                                {item.packageBytes ? ` · ${formatPackageBytes(item.packageBytes)}` : ''}
+                                                {item.packageSHA ? ` 路 sha256:${item.packageSHA.slice(0, 12)}` : ''}
+                                                {item.packageBytes ? ` 路 ${formatPackageBytes(item.packageBytes)}` : ''}
                                                 {dependencyCount ? ` | ${text.skillDependencies}:${dependencyCount} ${text.missingDependencyCount}:${missingDependencyCount}` : ''}
-                                                {item.eventCount ? ` · ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
-                                                {item.message ? ` · ${item.message}` : ''}
+                                                {item.eventCount ? ` 路 ${text.eventHistory}:${item.eventCount}${item.lastEventAt ? ` ${item.lastEventAt}` : ''}` : ''}
+                                                {item.message ? ` 路 ${item.message}` : ''}
                                             </small>
                                             {queuePackageErrorId === item.submissionID && <small>{text.queuePackageUnavailable}</small>}
                                             {queueSyncErrorId === item.submissionID && (
@@ -15368,7 +15415,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                                 {detailWorkspaceLayouts.length > 0 && <span>{text.workspaceLayout}: {detailWorkspaceLayouts.join(' | ')}</span>}
                                                 {item.reviewIssues.length > 0 && <span>{text.reviewIssues}: {reviewIssuesSummary(item.reviewIssues, text)}</span>}
                                                 <ReviewIssuesPanel issues={item.reviewIssues} text={text} compact />
-                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' ·  ')}</span>}
+                                                {detailEvents.length > 0 && <span>{text.queueDetailEvents}: {detailEvents.join(' 路  ')}</span>}
                                             </div>
                                         )}
                                     </div>
@@ -15528,7 +15575,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
     onAddDiscoveredApp: (app: AppEntry) => void;
     pendingEditAppId: string;
     onPendingEditConsumed: () => void;
-    /** After a successful edit save, jump to 审核/发布 so the user can submit. */
+    /** After a successful edit save, jump to 瀹℃牳/鍙戝竷 so the user can submit. */
     onAfterEditSave?: (appId: string) => void;
 }) => {
     const text = isZh(lang) ? labels.zh : labels.en;
@@ -15815,7 +15862,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             aboutInfo: updatedApp.aboutInfo,
             version: updatedApp.version,
             manifest: updatedApp.manifest,
-            // Editing in App Studio marks the app as studio-managed so it can enter 审核/发布.
+            // Editing in App Studio marks the app as studio-managed so it can enter 瀹℃牳/鍙戝竷.
             studioOrigin,
             importedRunEvidence: undefined,
             versionSnapshot: undefined,
@@ -15838,7 +15885,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             setEditSaveState('idle');
             setEditSaveMessage('');
             cancelEdit();
-            // Enter 审核/发布 with this app focused so the user can submit immediately.
+            // Enter 瀹℃牳/鍙戝竷 with this app focused so the user can submit immediately.
             onAfterEditSave?.(app.id);
         } catch (error) {
             setEditSaveState('error');
@@ -15898,8 +15945,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {manageFilterSummary && <div className="apps-filter-summary apps-filter-summary--manage" aria-live="polite">{manageFilterSummary}</div>}
             {skillDiscovery.status === 'error' && (
                 <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--error-color, #ef4444)' }}>
-                    {isZh(lang) ? '检查已安装能力时遇到问题' : 'Could not check installed capabilities'}
-                    {skillDiscovery.error && <span> · {skillDiscovery.error}</span>}
+                    {isZh(lang) ? '妫€鏌ュ凡瀹夎鑳藉姏鏃堕亣鍒伴棶棰? : 'Could not check installed capabilities'}
+                    {skillDiscovery.error && <span> 路 {skillDiscovery.error}</span>}
                 </div>
             )}
             {manageMatchCount === 0 && <div className="apps-empty">{text.noApps}</div>}
@@ -15913,8 +15960,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <div className="apps-manage-row">
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                        <div className="apps-manage-row__desc" title={`${app.category} · ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} · ${isZh(lang) ? '已加入面板' : 'In panel'}`}>
-                            {app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} · {isZh(lang) ? '已加入面板' : 'In panel'}
+                        <div className="apps-manage-row__desc" title={`${app.category} 路 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} 路 ${isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}`}>
+                            {app.category} 路 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} 路 {isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}
                         </div>
                         <div className="apps-manage-actions">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>{text.moveTopShort}</button>
@@ -15953,8 +16000,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                            <div className="apps-manage-row__desc" title={`${app.category} · ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}`}>
-                                {app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}
+                            <div className="apps-manage-row__desc" title={`${app.category} 路 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}`}>
+                                {app.category} 路 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
@@ -15966,15 +16013,15 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {filteredNotInPanelApps.length > 0 && (
                 <section className="apps-hidden-section">
                     <div className="apps-section__title-row">
-                        <h3 className="apps-section__title">{isZh(lang) ? '未加入面板' : 'Not in panel'}</h3>
+                        <h3 className="apps-section__title">{isZh(lang) ? '鏈姞鍏ラ潰鏉? : 'Not in panel'}</h3>
                         <span className="apps-count">{filteredNotInPanelApps.length}/{notInPanelApps.length}</span>
                     </div>
                     {filteredNotInPanelApps.map((app) => (
                         <div key={app.id} className="apps-manage-row apps-manage-row--not-in-panel">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                            <div className="apps-manage-row__desc" title={`${app.category} · ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}`}>
-                                {app.category} · {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}
+                            <div className="apps-manage-row__desc" title={`${app.category} 路 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}`}>
+                                {app.category} 路 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.addToPanel} onClick={() => onAddDiscoveredApp(app)}>{text.addToPanel}</button>
@@ -15990,7 +16037,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div className="apps-manage-edit-dialog__header">
                             <div>
                                 <div className="apps-definition__title" id="apps-manage-edit-title">{text.edit}</div>
-                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} · {editingApp.category}</div>
+                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} 路 {editingApp.category}</div>
                             </div>
                             <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
@@ -16214,7 +16261,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                             </div>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID ·  GitHub URL' : 'Capability ID ·  GitHub URL'} />
+                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID 路  GitHub URL' : 'Capability ID 路  GitHub URL'} />
                                             </div>
                                             <div className="apps-form-row">
                                                 <label>{isZh(lang) ? '\u5ba1\u6279\u4e8b\u4ef6' : 'Approval event'}</label>
@@ -16468,7 +16515,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 setMarketInstallFeedback({
                     appId: app.id,
                     state: 'done',
-                    message: scopeSummary ? `${text.alreadyInstalled} · ${scopeSummary}` : text.alreadyInstalled,
+                    message: scopeSummary ? `${text.alreadyInstalled} 路 ${scopeSummary}` : text.alreadyInstalled,
                     plan: dependencyInstallPlan || null,
                     appIDs: installedAppIDs.length > 0 ? installedAppIDs : [app.id],
                     dependencies: dependencyDetails,
@@ -16505,7 +16552,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 if (!discovered) {
                     throw new Error(
                         isZh(lang)
-                            ? '技能已下载，但未发现可安装的 MaClaw App 定义（缺少 maclaw.app.json）。'
+                            ? '鎶€鑳藉凡涓嬭浇锛屼絾鏈彂鐜板彲瀹夎鐨?MaClaw App 瀹氫箟锛堢己灏?maclaw.app.json锛夈€?
                             : 'Skill installed, but no installable MaClaw App definition was found (missing maclaw.app.json).',
                     );
                 }
@@ -16561,7 +16608,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
             try {
                 installAudit = await RecordMaclawAppInstall(installManifestText, auditSource) as BackendAppInstallRecord;
                 const dataSrvSummary = appHasDataSrvRegistrationCandidate(installTarget) ? dataSrvRegistrationSummary(installAudit?.datasrv_registration, text) : '';
-                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} · ${dataSrvSummary}`;
+                if (dataSrvSummary) installFeedbackMessage = `${installFeedbackMessage} 路 ${dataSrvSummary}`;
                 await refreshInstallRecords();
             } catch (error: any) {
                 if (isEnterpriseAppKind(installTarget.kind)) {
@@ -16755,7 +16802,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
 	                <div className="apps-preview-title-row">
 	                    <div>
 	                        <div className="apps-definition__title">{text.marketApps}</div>
-	                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} · {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
+	                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} 路 {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
 	                    </div>
 	                    {onManageApps && <button className="apps-secondary-button" type="button" onClick={onManageApps}>{text.manageTab}</button>}
 	                </div>
@@ -16789,7 +16836,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-market-row__main">
                                     <strong>{app.name}</strong>
                                     <span>{app.description}</span>
-                                    <small>{app.category} · {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} · {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
+                                    <small>{app.category} 路 {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} 路 {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
                                     {app.marketReviewEvidence && <PublishReviewEvidenceStrip evidence={app.marketReviewEvidence} text={text} />}
 	                                </div>
 	                                <div className="apps-actions">
@@ -16851,8 +16898,8 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-install-record" key={recordKey} data-missing={missingCount > 0 ? 'true' : 'false'}>
                                     <div className="apps-install-record__main">
                                         <strong>{appNames}</strong>
-                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} · {text.marketSource}: {record.source || '-'}</span>
-                                        <small>{text.packageSha}: {sha} · {text.skillDependencies}: {dependencyCount} · {text.missingDependencyCount}: {missingCount}</small>
+                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} 路 {text.marketSource}: {record.source || '-'}</span>
+                                        <small>{text.packageSha}: {sha} 路 {text.skillDependencies}: {dependencyCount} 路 {text.missingDependencyCount}: {missingCount}</small>
                                         <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordEvidenceSnapshot record={record} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
@@ -16924,7 +16971,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-install-preview__tools">
                                     <button className="apps-secondary-button" type="button" disabled={installableKeys.length === 0 || selectedInstallCount === installableKeys.length} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys(installableKeys); }}>{text.selectAll}</button>
                                     <button className="apps-secondary-button" type="button" disabled={selectedInstallCount === 0} onClick={() => { setConfirmHighRiskInstall(false); setSelectedInstallKeys([]); }}>{text.clearSelection}</button>
-                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} · ${text.upgradeableCount} ${upgradeableCount} · ${text.willSkip} ${skippedPreviewCount}`}</span>
+                                    <span className="apps-count">{`${text.installableCount} ${installableKeys.length - upgradeableCount} 路 ${text.upgradeableCount} ${upgradeableCount} 路 ${text.willSkip} ${skippedPreviewCount}`}</span>
                                     <span className="apps-count">{selectedInstallCount}/{installPlan.length}</span>
                                 </div>
                             </div>
@@ -16934,10 +16981,10 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                     const statusText = checked
                                         ? item.action === 'upgrade' ? `${text.willUpgrade} v${normalizeAppVersion(item.installed?.version)} -> v${normalizeAppVersion(item.app.version)}` : text.willInstall
                                         : item.action === 'installed'
-                                            ? `${text.willSkip} · ${text.alreadyInstalled}`
+                                            ? `${text.willSkip} 路 ${text.alreadyInstalled}`
                                             : item.action === 'duplicate'
-                                                ? `${text.willSkip} · ${text.duplicateApp}`
-                                                : `${text.willSkip} · ${text.notSelected}`;
+                                                ? `${text.willSkip} 路 ${text.duplicateApp}`
+                                                : `${text.willSkip} 路 ${text.notSelected}`;
                                     const backendDependencies = backendDependenciesForApp(backendInstallPlan, item.app.id);
                                     const workflowIssue = backendInstallPlanState === 'ready' ? workflowContractIssueForApp(backendInstallPlan, item.app) : undefined;
                                     const governanceIssue = backendInstallPlanState === 'ready' ? governanceReviewIssueForApp(backendInstallPlan, item.app) : undefined;
@@ -16945,7 +16992,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                     const dependencyText = backendInstallPlanState === 'ready' && backendDependencies.length > 0
                                         ? backendDependencies.map((dep) => backendDependencySummary(dep, text)).join(', ')
                                         : item.dependencies.map((dep) => dep.version ? `${dep.id}@${dep.version}` : dep.id).join(', ');
-                                    const checkboxLabel = `${item.app.name} · ${statusText}`;
+                                    const checkboxLabel = `${item.app.name} 路 ${statusText}`;
                                     return (
                                     <label className="apps-install-preview__row" key={item.key} data-action={checked ? 'install' : 'skip'} data-dependency-state={hasBlockingDependencies ? 'blocked' : undefined} title={statusText}>
                                         <input
@@ -16966,14 +17013,14 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                         <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><AppIcon icon={item.app.icon} customIconDataUrl={item.app.customIconDataUrl} /></span>
                                         <div>
                                             <strong>{item.app.name}</strong>
-                                            <span>{item.app.category} · {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
+                                            <span>{item.app.category} 路 {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
                                             {dependencyText && <small>{text.skillDependencies}: {dependencyText}</small>}
                                             {governanceIssue && <small>{text.reviewIssues}: {reviewIssueSummary(governanceIssue)}</small>}
                                             {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue)}</small>}
                                             {item.action === 'upgrade' && item.addedScopes.length > 0 && (
                                                 <small>
                                                     {text.permissionChanges}: +{item.addedScopes.join(', ')}
-                                                    {item.highRiskScopes.length > 0 ? ` · ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
+                                                    {item.highRiskScopes.length > 0 ? ` 路 ${text.highRiskPermission}: ${item.highRiskScopes.join(', ')}` : ''}
                                                 </small>
                                             )}
                                         </div>
