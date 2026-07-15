@@ -13,6 +13,7 @@ This directory contains architecture notes, design records, and operational guid
 - [Release-day checklist (~15 min)](approval-release-day-checklist-zh.md): one-click script + dual-desktop + empty-roles/Hub-jitter.
 - [Improvement plan](approval-maclaw-app-e2e-improvement-plan-zh.md): phase status and architecture principles.
 - One-click: `scripts/run-approval-e2e-checks.cmd` (or `.ps1`).
+- CI: `.github/workflows/approval-e2e.yml` (path-filtered contract gate on PR/main).
 
 ## Agent Dynamic UI & Enterprise MIS Replacement
 

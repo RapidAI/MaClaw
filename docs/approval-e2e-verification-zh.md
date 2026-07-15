@@ -3,9 +3,10 @@
 **关联**：[approval-maclaw-app-e2e-improvement-plan-zh.md](./approval-maclaw-app-e2e-improvement-plan-zh.md)  
 **发版当日 15 分钟清单**：[approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md)  
 **原则**：Hub WorkflowExecutor 为 SoT；桌面 registry / DataSrv 为投影。  
-**一键脚本**：`scripts\run-approval-e2e-checks.cmd`（或 `.ps1`）
+**一键脚本**：`scripts\run-approval-e2e-checks.cmd`（或 `.ps1`）  
+**CI**：`.github/workflows/approval-e2e.yml`（path filter：workflow / approval GUI / 本手册变更时触发）
 
-> **发版只做短清单时**：先跑 §1 一键自动，再按 [发版当日清单](./approval-release-day-checklist-zh.md) 勾 B1–B3。
+> **发版只做短清单时**：先跑 §1 一键自动（或看 CI Approval E2E Contract 绿），再按 [发版当日清单](./approval-release-day-checklist-zh.md) 勾 B1–B3。
 
 ---
 
@@ -20,6 +21,8 @@ scripts\run-approval-e2e-checks.cmd
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run-approval-e2e-checks.ps1
 ```
+
+GitHub Actions：`workflow_dispatch` 或 push/PR 触及审批相关路径时自动跑同一套契约（见 `.github/workflows/approval-e2e.yml`）。
 
 等价手工命令：
 

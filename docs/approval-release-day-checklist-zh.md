@@ -13,7 +13,9 @@
 scripts\run-approval-e2e-checks.cmd
 ```
 
-- [ ] 全部步骤 `OK` / `passed`
+或确认 GitHub Actions **Approval E2E Contract**（`approval-e2e.yml`）在目标 commit 上已绿。
+
+- [ ] 全部步骤 `OK` / `passed`（本地或 CI）
 - [ ] 失败则 **不要发版**，先修再重跑
 
 ---

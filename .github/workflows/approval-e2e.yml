@@ -1,0 +1,86 @@
+name: Approval E2E Contract
+
+# Lightweight gate for Hub-authoritative approval + escalation stack.
+# Mirrors scripts/run-approval-e2e-checks.cmd (Go packages + workflow-editor +
+# frontend display helpers). Does not build the full GUI release binary.
+
+on:
+  pull_request:
+    paths:
+      - 'hub/internal/workflow/**'
+      - 'hub/internal/httpapi/workflow_participant_notifier*.go'
+      - 'hub/internal/httpapi/router.go'
+      - 'hub/web/approval_workflow/**'
+      - 'gui/app_maclaw_app_approval*.go'
+      - 'gui/frontend/src/components/pages/AppsPage.tsx'
+      - 'gui/frontend/src/components/pages/AppsPage.css'
+      - 'gui/frontend/src/components/pages/approvalEscalationDisplay.ts'
+      - 'gui/frontend/src/components/pages/__tests__/approvalEscalationDisplay.test.ts'
+      - 'scripts/run-approval-e2e-checks.*'
+      - 'docs/approval-*.md'
+      - '.github/workflows/approval-e2e.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'hub/internal/workflow/**'
+      - 'hub/internal/httpapi/workflow_participant_notifier*.go'
+      - 'hub/internal/httpapi/router.go'
+      - 'hub/web/approval_workflow/**'
+      - 'gui/app_maclaw_app_approval*.go'
+      - 'gui/frontend/src/components/pages/AppsPage.tsx'
+      - 'gui/frontend/src/components/pages/AppsPage.css'
+      - 'gui/frontend/src/components/pages/approvalEscalationDisplay.ts'
+      - 'gui/frontend/src/components/pages/__tests__/approvalEscalationDisplay.test.ts'
+      - 'scripts/run-approval-e2e-checks.*'
+      - 'docs/approval-*.md'
+      - '.github/workflows/approval-e2e.yml'
+  workflow_dispatch: {}
+
+env:
+  GO_VERSION: '1.25.5'
+  NODE_VERSION: '22'
+
+jobs:
+  approval-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: gui/frontend/package-lock.json
+
+      - name: Hub workflow (executor / escalation / checklist / reconcile)
+        run: |
+          CGO_ENABLED=0 go test ./hub/internal/workflow/ -count=1 -timeout 180s \
+            -run "TestChecklist_|TestEscalation_|TestHandleTimeout|TestOnEscalation|TestReconcileEscalations|TestShouldDefer|TestPersistEscalation|TestEnqueueEscalation|TestStartInstance_"
+
+      - name: Hub httpapi (push / classify / escalation extras)
+        run: |
+          CGO_ENABLED=0 go test ./hub/internal/httpapi/ -count=1 -timeout 120s \
+            -run "TestHubWorkflowParticipantNotifier|TestClassifyWorkflowStatusEvent"
+
+      - name: GUI approval projection tests
+        run: |
+          # Pure registry/notifier projection tests; no Wails bindgen required.
+          CGO_ENABLED=0 go test ./gui/ -count=1 -timeout 180s \
+            -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
+
+      - name: Workflow editor empty-state + i18n
+        run: |
+          node hub/web/approval_workflow/workflow-editor.test.js
+          node hub/web/approval_workflow/i18n.test.js
+
+      - name: Frontend escalation display helpers
+        working-directory: gui/frontend
+        run: |
+          npm ci --cache ./.npm_cache
+          node node_modules/vitest/vitest.mjs run src/components/pages/__tests__/approvalEscalationDisplay.test.ts
