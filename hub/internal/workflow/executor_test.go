@@ -475,10 +475,16 @@ func TestOnEscalationFailed_LastPeerBlocks(t *testing.T) {
 }
 
 func TestOnEscalationFailed_PeerFailWhileOthersPending_RecordsExhausted(t *testing.T) {
-	// Multi-peer: human-a exhausts while human-b still queued — a must be marked
-	// exhausted so any-N capacity does not keep waiting on a dead peer.
+	// any-2-of-3: human-a exhausts while human-b still queued — a must be marked
+	// exhausted so capacity math does not wait on a dead peer; b remains queued.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b", "human-c"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 2,
+		TimeoutHours: 8,
+	})
 	graph := WorkflowGraph{
-		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "CS"}},
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON}},
 	}
 	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
 	wfStore := &mockWorkflowStoreWithVersion{version: ver}
@@ -515,7 +521,7 @@ func TestOnEscalationFailed_PeerFailWhileOthersPending_RecordsExhausted(t *testi
 	)
 	exec.onEscalationFailed(context.Background(), escA)
 	if instStore.updatedStatus == InstanceBlocked {
-		t.Fatal("must not block while human-b still pending")
+		t.Fatal("must not block while N still reachable via b+c")
 	}
 	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
 	if len(exh) != 1 || exh[0] != "human-a" {
@@ -527,6 +533,80 @@ func TestOnEscalationFailed_PeerFailWhileOthersPending_RecordsExhausted(t *testi
 	}
 	if !esc.HasPendingApprover(inst.ID, "approval-1", "human-b") {
 		t.Fatal("human-b should remain queued")
+	}
+}
+
+func TestOnEscalationFailed_PeerFailWhileOthersPending_BlocksWhenNUnreachable(t *testing.T) {
+	// any-2-of-2: A dies while B still queued → max possible is 1 → cancel B + block.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 2,
+		TimeoutHours: 8,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-peer-block", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	req := &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}
+	_ = esc.Escalate(context.Background(), req, "human-a")
+	_ = esc.Escalate(context.Background(), req, "human-b")
+	esc.mu.Lock()
+	var escA *EscalationRequest
+	for _, r := range esc.queue {
+		if r.HumanApprover == "human-a" {
+			escA = r
+			delete(esc.queue, r.ID)
+			break
+		}
+	}
+	esc.mu.Unlock()
+	if escA == nil {
+		t.Fatal("human-a missing")
+	}
+	escA.Attempts = 5
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), escA)
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked when N unreachable mid-queue", instStore.updatedStatus)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("PendingCount=%d want 0 (remaining retries cancelled)", esc.PendingCount())
+	}
+}
+
+func TestEnqueueEscalationOrBlock_SkipsAlreadyExhaustedPeer(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	inst := &WorkflowInstance{
+		ID: "inst-skip-exh", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_exhausted_approvers": []string{"human-a"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{version: ver}, instStore, &mockAuditStore{},
+		&mockDispatcherForTimeout{}, WithEscalationManager(esc))
+	node := &WorkflowNode{ID: "approval-1"}
+	req := &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: node.ID}
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-a", "unavailable", "dead"); err != nil {
+		t.Fatal(err)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("must not re-queue exhausted peer, PendingCount=%d", esc.PendingCount())
 	}
 }
 
