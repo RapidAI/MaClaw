@@ -62,6 +62,37 @@ const REQUIRED_MARKERS = [
 ];
 
 /**
+ * Every scenario tab ships as a 2 × 4 grid.  Keep this list in the release
+ * verification rather than checking one development-only card: a partial
+ * scenario-catalog update otherwise looks current while most tabs remain old.
+ */
+const SCENARIO_TAB_IDS = [
+  "business",
+  "dev",
+  "ops",
+  "research",
+  "academic-application",
+  "writing",
+  "knowledge",
+  "automation",
+  "data",
+];
+const SCENARIO_PROMPTS_PER_TAB = 8;
+
+/** One eighth-card marker from each category, proving every tab was updated. */
+const REQUIRED_EIGHTH_CARD_MARKERS = [
+  "Design pricing and packaging",
+  "Analyze remote logs/perf",
+  "Plan capacity and scaling",
+  "Organize references and citations",
+  "Draft midterm / final report framework",
+  "Write a job JD and interview outline",
+  "Write an incident postmortem",
+  "Design event-driven integration",
+  "Interpret an A/B test result",
+];
+
+/**
  * UI chrome markers that are only meaningful after the full welcome shell is
  * embedded into a GUI binary (not required in raw dist chunk scan alone —
  * they live in the same welcome module as the scenario cards).
@@ -137,6 +168,30 @@ function verifySource() {
       failures.push(`welcome source is missing required marker: ${JSON.stringify(marker)}`);
     }
   }
+  const scenarioSource = readUtf8Safe(path.join(
+    repoRoot,
+    "gui/frontend/src/components/ai/welcomeScenarioTasks.ts",
+  ));
+  for (const tabId of SCENARIO_TAB_IDS) {
+    const tabMatch = new RegExp(
+      `id:\\s*"${tabId}"[\\s\\S]*?prompts:\\s*\\[([\\s\\S]*?)\\n\\s*\\],\\n\\s*\\},`,
+    ).exec(scenarioSource);
+    if (!tabMatch) {
+      failures.push(`welcome source is missing scenario tab: ${JSON.stringify(tabId)}`);
+      continue;
+    }
+    const promptCount = (tabMatch[1].match(/\btextEn:\s*"/g) || []).length;
+    if (promptCount !== SCENARIO_PROMPTS_PER_TAB) {
+      failures.push(
+        `welcome source tab ${JSON.stringify(tabId)} has ${promptCount} prompts; expected ${SCENARIO_PROMPTS_PER_TAB}`,
+      );
+    }
+  }
+  for (const marker of REQUIRED_EIGHTH_CARD_MARKERS) {
+    if (!scenarioSource.includes(marker)) {
+      failures.push(`welcome source is missing eighth-card marker: ${JSON.stringify(marker)}`);
+    }
+  }
   for (const marker of BINARY_EXTRA_MARKERS) {
     if (!joined.includes(marker)) {
       failures.push(`welcome source is missing binary chrome marker: ${JSON.stringify(marker)}`);
@@ -169,7 +224,7 @@ function verifyDist(distDir) {
 
   // Per-file scan (no mega-string). Always scan every file for forbidden cards;
   // only required-marker lookup can stop early once all are found.
-  const missing = new Set(REQUIRED_MARKERS);
+  const missing = new Set([...REQUIRED_MARKERS, ...REQUIRED_EIGHTH_CARD_MARKERS]);
   const forbiddenHits = new Set();
   for (const file of files) {
     const text = readUtf8Safe(file);
@@ -215,10 +270,11 @@ function verifyBinary(binaryPath) {
   // Single Buffer scan (no latin1 string copy of ~80MB PE).
   const buf = fs.readFileSync(binaryPath);
   const binaryRequired = [
-    // At least one scenario title + dialog shell + welcome chrome.
+    // Full scenario catalog + dialog shell + welcome chrome.
     REQUIRED_MARKERS[0],
     "welcome-prompt-param-overlay",
     ...BINARY_EXTRA_MARKERS,
+    ...REQUIRED_EIGHTH_CARD_MARKERS,
   ];
   for (const marker of binaryRequired) {
     if (!bufferIncludesUtf8(buf, marker)) {

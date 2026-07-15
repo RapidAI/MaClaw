@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -138,16 +139,7 @@ func (m *EscalationManager) hasPending(instanceID, nodeID, approverID string) bo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, req := range m.queue {
-		if req == nil || req.Status != EscalationPending {
-			continue
-		}
-		if strings.TrimSpace(req.InstanceID) != instanceID {
-			continue
-		}
-		if nodeID != "" && strings.TrimSpace(req.NodeID) != nodeID {
-			continue
-		}
-		if approverID != "" && strings.TrimSpace(req.HumanApprover) != approverID {
+		if !pendingQueueMatch(req, instanceID, nodeID, approverID) {
 			continue
 		}
 		return true
@@ -155,22 +147,89 @@ func (m *EscalationManager) hasPending(instanceID, nodeID, approverID string) bo
 	return false
 }
 
+// PendingApprovers returns sorted human-approver ids still queued for the
+// instance/node. Used to keep instance_data.escalation_approvers in sync with
+// the live queue after deliver/fail hooks.
+func (m *EscalationManager) PendingApprovers(instanceID, nodeID string) []string {
+	if m == nil {
+		return nil
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	nodeID = strings.TrimSpace(nodeID)
+	if instanceID == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, req := range m.queue {
+		if !pendingQueueMatch(req, instanceID, nodeID, "") {
+			continue
+		}
+		a := strings.TrimSpace(req.HumanApprover)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func pendingQueueMatch(req *EscalationRequest, instanceID, nodeID, approverID string) bool {
+	if req == nil || req.Status != EscalationPending {
+		return false
+	}
+	if strings.TrimSpace(req.InstanceID) != instanceID {
+		return false
+	}
+	if nodeID != "" && strings.TrimSpace(req.NodeID) != nodeID {
+		return false
+	}
+	if approverID != "" && strings.TrimSpace(req.HumanApprover) != approverID {
+		return false
+	}
+	return true
+}
+
 // Escalate attempts to escalate a request to the configured human approver.
 // If the human approver is unavailable, the request is retained in the
 // pending-escalation queue and retried asynchronously.
+// Duplicate queue entries for the same instance+node+approver are coalesced
+// (no extra audit noise; retry loop owns redelivery).
 func (m *EscalationManager) Escalate(ctx context.Context, req *ApprovalRequest, humanApprover string) error {
+	humanApprover = strings.TrimSpace(humanApprover)
+	if req == nil || humanApprover == "" {
+		return fmt.Errorf("escalation request and human approver are required")
+	}
+	instanceID := strings.TrimSpace(req.InstanceID)
+	nodeID := strings.TrimSpace(req.NodeID)
+
+	// Already queued for this peer → leave the existing retry entry alone.
+	// Avoids duplicate audit "unavailable" rows and reset of Attempts.
+	if m.hasPending(instanceID, nodeID, humanApprover) {
+		return nil
+	}
+
 	// First attempt: try to dispatch immediately.
-	if m.checker.IsAvailable(ctx, humanApprover) {
-		if err := m.dispatcher.Dispatch(ctx, req, humanApprover); err == nil {
-			return nil
+	if m.checker != nil && m.checker.IsAvailable(ctx, humanApprover) {
+		if m.dispatcher != nil {
+			if err := m.dispatcher.Dispatch(ctx, req, humanApprover); err == nil {
+				return nil
+			}
 		}
 	}
 
 	// Human approver is unavailable — record in audit trail and queue for retry.
-	_ = m.auditStore.Append(ctx, &AuditEntry{
+	m.appendAudit(ctx, &AuditEntry{
 		ID:         generateID("audit"),
-		InstanceID: req.InstanceID,
-		NodeID:     req.NodeID,
+		InstanceID: instanceID,
+		NodeID:     nodeID,
 		EventType:  "escalation_unavailable",
 		ActorID:    humanApprover,
 		Details:    `{"reason":"human approver unavailable","attempt":1}`,
@@ -182,8 +241,8 @@ func (m *EscalationManager) Escalate(ctx context.Context, req *ApprovalRequest, 
 		ID:            generateID("esc"),
 		ApprovalReq:   req,
 		HumanApprover: humanApprover,
-		InstanceID:    req.InstanceID,
-		NodeID:        req.NodeID,
+		InstanceID:    instanceID,
+		NodeID:        nodeID,
 		Status:        EscalationPending,
 		Attempts:      1,
 		LastAttemptAt: now,
@@ -191,10 +250,25 @@ func (m *EscalationManager) Escalate(ctx context.Context, req *ApprovalRequest, 
 	}
 
 	m.mu.Lock()
+	// Re-check under lock: concurrent Escalate for the same peer.
+	for _, existing := range m.queue {
+		if pendingQueueMatch(existing, instanceID, nodeID, humanApprover) {
+			m.mu.Unlock()
+			return nil
+		}
+	}
 	m.queue[escReq.ID] = escReq
 	m.mu.Unlock()
 
 	return nil
+}
+
+// appendAudit is a nil-safe audit write used by retry/fail paths.
+func (m *EscalationManager) appendAudit(ctx context.Context, entry *AuditEntry) {
+	if m == nil || m.auditStore == nil || entry == nil {
+		return
+	}
+	_ = m.auditStore.Append(ctx, entry)
 }
 
 // Start begins the background retry loop. It periodically checks pending
@@ -273,7 +347,15 @@ func (m *EscalationManager) processPendingEscalations() {
 
 // retryEscalation attempts a single retry for an escalation request.
 func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *EscalationRequest) {
+	if m == nil || escReq == nil {
+		return
+	}
 	m.mu.Lock()
+	// Drop if another path already failed/delivered this entry.
+	if current, ok := m.queue[escReq.ID]; !ok || current == nil || current.Status != EscalationPending {
+		m.mu.Unlock()
+		return
+	}
 	escReq.Attempts++
 	escReq.LastAttemptAt = time.Now().UTC()
 	attempt := escReq.Attempts
@@ -281,15 +363,17 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 
 	// Check if human approver is now available and try to dispatch.
 	success := false
-	if m.checker.IsAvailable(ctx, escReq.HumanApprover) {
-		if err := m.dispatcher.Dispatch(ctx, escReq.ApprovalReq, escReq.HumanApprover); err == nil {
-			success = true
+	if m.checker != nil && m.checker.IsAvailable(ctx, escReq.HumanApprover) {
+		if m.dispatcher != nil {
+			if err := m.dispatcher.Dispatch(ctx, escReq.ApprovalReq, escReq.HumanApprover); err == nil {
+				success = true
+			}
 		}
 	}
 
 	if success {
 		// Escalation succeeded — remove from queue.
-		_ = m.auditStore.Append(ctx, &AuditEntry{
+		m.appendAudit(ctx, &AuditEntry{
 			ID:         generateID("audit"),
 			InstanceID: escReq.InstanceID,
 			NodeID:     escReq.NodeID,
@@ -309,7 +393,7 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 	}
 
 	// Still unavailable — record retry attempt in audit trail.
-	_ = m.auditStore.Append(ctx, &AuditEntry{
+	m.appendAudit(ctx, &AuditEntry{
 		ID:         generateID("audit"),
 		InstanceID: escReq.InstanceID,
 		NodeID:     escReq.NodeID,
@@ -328,6 +412,9 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 // markEscalationFailed marks an escalation request as failed after all retries are exhausted
 // and removes it from the queue to prevent memory leak.
 func (m *EscalationManager) markEscalationFailed(ctx context.Context, escReq *EscalationRequest) {
+	if m == nil || escReq == nil {
+		return
+	}
 	now := time.Now().UTC()
 
 	m.mu.Lock()
@@ -337,7 +424,7 @@ func (m *EscalationManager) markEscalationFailed(ctx context.Context, escReq *Es
 	delete(m.queue, escReq.ID)
 	m.mu.Unlock()
 
-	_ = m.auditStore.Append(ctx, &AuditEntry{
+	m.appendAudit(ctx, &AuditEntry{
 		ID:         generateID("audit"),
 		InstanceID: escReq.InstanceID,
 		NodeID:     escReq.NodeID,

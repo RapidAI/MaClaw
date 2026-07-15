@@ -305,6 +305,44 @@ func TestEscalation_MaxRetriesExhausted(t *testing.T) {
 	}
 }
 
+func TestEscalation_DedupSameApprover(t *testing.T) {
+	audit := &mockAuditStoreForEsc{}
+	mgr := NewEscalationManager(&mockDispatcherForEsc{}, audit, &mockHumanChecker{available: false})
+	req := &ApprovalRequest{ID: "r1", InstanceID: "inst-d", NodeID: "n1"}
+	_ = mgr.Escalate(context.Background(), req, "human-a")
+	_ = mgr.Escalate(context.Background(), req, "human-a")
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1 (deduped)", mgr.PendingCount())
+	}
+	if got := mgr.PendingApprovers("inst-d", "n1"); len(got) != 1 || got[0] != "human-a" {
+		t.Fatalf("PendingApprovers=%v", got)
+	}
+	// Coalesce must not spam a second escalation_unavailable audit row.
+	if n := audit.countByEventType("escalation_unavailable"); n != 1 {
+		t.Fatalf("unavailable audits=%d want 1 (no noise on dedupe)", n)
+	}
+}
+
+func TestEscalation_NilDepsDoNotPanic(t *testing.T) {
+	// Production always wires deps; unit/fuzz paths may construct a bare manager.
+	mgr := NewEscalationManager(nil, nil, nil)
+	req := &ApprovalRequest{ID: "r1", InstanceID: "inst-nil", NodeID: "n1"}
+	if err := mgr.Escalate(context.Background(), req, "human-a"); err != nil {
+		t.Fatalf("Escalate with nil deps: %v", err)
+	}
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1", mgr.PendingCount())
+	}
+	// Drive one retry cycle (due immediately). Nil checker/dispatcher must not panic;
+	// leave maxRetries high so the entry stays queued for further retries.
+	mgr.retryInterval = 0
+	mgr.maxRetries = 10
+	mgr.processPendingEscalations()
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("after retry PendingCount=%d want 1", mgr.PendingCount())
+	}
+}
+
 func TestEscalation_HasPendingApprover_DistinguishesPeers(t *testing.T) {
 	checker := &mockHumanChecker{available: false}
 	dispatcher := &mockDispatcherForEsc{}

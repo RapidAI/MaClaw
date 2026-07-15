@@ -1026,8 +1026,8 @@ func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *W
 		return e.markNodeBlocked(ctx, inst, node, reason, "escalation queue failed: "+qerr.Error())
 	}
 	// Escalate may redeliver immediately when the approver is now online. Only
-	// mark this approver pending when THEY are still in the queue — not when
-	// some other peer is pending on the same node (countersign multi-fail).
+	// mark pending when THIS approver is still in the queue — not when some
+	// other peer is pending on the same node (countersign multi-fail).
 	if !e.escalationMgr.HasPendingApprover(inst.ID, node.ID, approverID) {
 		return nil
 	}
@@ -1037,35 +1037,14 @@ func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *W
 			fmt.Sprintf("Node ID: %s, Approver: %s, Details: %s", node.ID, approverID, blockDetails),
 		)
 	}
-	if inst.InstanceData == nil {
-		inst.InstanceData = map[string]interface{}{}
+	// Live queue is SoT for approver lists (same path as deliver/fail hooks).
+	if !e.syncEscalationMarkersFromQueue(inst, node.ID) {
+		return nil
 	}
-	inst.InstanceData["escalation_pending"] = true
-	// Keep last-writer scalar for older consumers; also accumulate a unique list
-	// so countersign multi-failure doesn't lose earlier offline peers.
-	inst.InstanceData["escalation_approver"] = approverID
-	inst.InstanceData["escalation_approvers"] = appendUniqueStringList(
-		stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]),
-		approverID,
-	)
 	inst.InstanceData["escalation_reason"] = reason
 	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_instance_data_escalation_pending",
 		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
 	return nil
-}
-
-// appendUniqueStringList returns prev with value appended if not already present.
-func appendUniqueStringList(prev []string, value string) []string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return prev
-	}
-	for _, p := range prev {
-		if strings.TrimSpace(p) == value {
-			return prev
-		}
-	}
-	return append(prev, value)
 }
 
 // stringSliceFromInstanceData coerces instance-data list fields that may be
@@ -1183,6 +1162,33 @@ func (e *WorkflowExecutor) handlePartialMultiDispatchFailure(
 	return false, nil
 }
 
+// syncEscalationMarkersFromQueue rewrites instance_data escalation_* fields from
+// the live EscalationManager queue (source of truth after deliver/fail).
+// Returns whether any peers remain pending for this node.
+func (e *WorkflowExecutor) syncEscalationMarkersFromQueue(inst *WorkflowInstance, nodeID string) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.InstanceData == nil {
+		inst.InstanceData = map[string]interface{}{}
+	}
+	var remaining []string
+	if e.escalationMgr != nil {
+		remaining = e.escalationMgr.PendingApprovers(inst.ID, nodeID)
+	}
+	if len(remaining) == 0 {
+		delete(inst.InstanceData, "escalation_pending")
+		delete(inst.InstanceData, "escalation_reason")
+		delete(inst.InstanceData, "escalation_approvers")
+		delete(inst.InstanceData, "escalation_approver")
+		return false
+	}
+	inst.InstanceData["escalation_pending"] = true
+	inst.InstanceData["escalation_approvers"] = remaining
+	inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
+	return true
+}
+
 // onEscalationDelivered clears the delivered approver from instance-data lists.
 // When no pending peers remain and EscalationManager has no more queue items for
 // the instance, escalation_pending is cleared.
@@ -1194,36 +1200,8 @@ func (e *WorkflowExecutor) onEscalationDelivered(ctx context.Context, esc *Escal
 	if err != nil || inst == nil {
 		return
 	}
-	if inst.InstanceData == nil {
-		return
-	}
-	approver := strings.TrimSpace(esc.HumanApprover)
-	remaining := make([]string, 0)
-	for _, id := range stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]) {
-		if strings.TrimSpace(id) != approver {
-			remaining = append(remaining, id)
-		}
-	}
-	// Also drop scalar if it matches.
-	if s, _ := inst.InstanceData["escalation_approver"].(string); strings.TrimSpace(s) == approver {
-		delete(inst.InstanceData, "escalation_approver")
-	}
-	// Live queue is authoritative for whether retries remain.
-	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
-	if len(remaining) == 0 {
-		delete(inst.InstanceData, "escalation_approvers")
-	} else {
-		inst.InstanceData["escalation_approvers"] = remaining
-		inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
-	}
-	if peersStillPending {
-		inst.InstanceData["escalation_pending"] = true
-	} else {
-		delete(inst.InstanceData, "escalation_pending")
-		delete(inst.InstanceData, "escalation_reason")
-		delete(inst.InstanceData, "escalation_approvers")
-		delete(inst.InstanceData, "escalation_approver")
-	}
+	// Queue entry already removed; rebuild markers from remaining live peers.
+	_ = e.syncEscalationMarkersFromQueue(inst, esc.NodeID)
 	e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_delivered",
 		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
 }
@@ -1240,36 +1218,15 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 	if err != nil || inst == nil {
 		return
 	}
-	// Queue entry was already removed; drop this approver from instance markers.
-	// Peers still in the manager queue → keep instance running (countersign).
-	if inst.InstanceData == nil {
-		inst.InstanceData = map[string]interface{}{}
-	}
-	approver := strings.TrimSpace(esc.HumanApprover)
-	remaining := make([]string, 0)
-	for _, id := range stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]) {
-		if strings.TrimSpace(id) != approver {
-			remaining = append(remaining, id)
-		}
-	}
-	if s, _ := inst.InstanceData["escalation_approver"].(string); strings.TrimSpace(s) == approver {
-		delete(inst.InstanceData, "escalation_approver")
-	}
-	// Authority for "still retrying" is the live queue, not stale instance-data lists.
-	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
+	// Queue entry was already removed. Rebuild markers from live peers.
+	// Peers still queued → keep instance running (countersign).
+	peersStillPending := e.syncEscalationMarkersFromQueue(inst, esc.NodeID)
 	if peersStillPending {
-		if len(remaining) == 0 {
-			delete(inst.InstanceData, "escalation_approvers")
-		} else {
-			inst.InstanceData["escalation_approvers"] = remaining
-			inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
-		}
-		inst.InstanceData["escalation_pending"] = true
 		e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_peer_failed",
 			e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
 		if e.notifier != nil {
 			_ = e.notifier.NotifyInitiator(ctx, inst.ID,
-				fmt.Sprintf("escalation failed for approver %s (other peers still retrying)", approver),
+				fmt.Sprintf("escalation failed for approver %s (other peers still retrying)", strings.TrimSpace(esc.HumanApprover)),
 				fmt.Sprintf("node=%s attempts=%d", esc.NodeID, esc.Attempts),
 			)
 		}
