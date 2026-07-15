@@ -458,6 +458,10 @@ func TestMaclawAppApprovalInstanceFromHubDirectoryItem_EscalationApprovers(t *te
 		"urgency":              "normal",
 		"escalation_pending":   true,
 		"escalation_approvers": []any{"ve-a", "ve-c"},
+		"escalation_attempts": map[string]any{
+			"ve-a": float64(3),
+		},
+		"escalation_exhausted_approvers": []any{"ve-old"},
 	}, "my_requests")
 	if normalizeMaclawAppApprovalStatus(inst.Status) != "attention" || normalizeMaclawAppApprovalLane(inst.Lane) != "attention" {
 		t.Fatalf("status/lane=%s/%s", inst.Status, inst.Lane)
@@ -468,6 +472,41 @@ func TestMaclawAppApprovalInstanceFromHubDirectoryItem_EscalationApprovers(t *te
 	}
 	if pending, _ := inst.ResultPayload["escalation_pending"].(bool); !pending {
 		t.Fatal("expected escalation_pending")
+	}
+	exh := maclawAppStringSliceFromAny(inst.ResultPayload["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "ve-old" {
+		t.Fatalf("exhausted=%v", exh)
+	}
+	if att, ok := inst.ResultPayload["escalation_attempts"]; !ok || att == nil {
+		t.Fatalf("expected escalation_attempts in payload: %#v", inst.ResultPayload)
+	}
+}
+
+func TestMergeMaclawAppApprovalEscalationPayload_AttemptsAndExhausted(t *testing.T) {
+	t.Parallel()
+	dst := map[string]any{"title": "keep-me"}
+	mergeMaclawAppApprovalEscalationPayload(dst, map[string]any{
+		"escalation_pending":             true,
+		"escalation_approvers":           []any{"a1"},
+		"escalation_exhausted_approvers": []any{"b1"},
+		"escalation_attempts":            map[string]any{"a1": float64(2)},
+	})
+	if dst["title"] != "keep-me" {
+		t.Fatal("must preserve non-escalation keys")
+	}
+	if pending, _ := dst["escalation_pending"].(bool); !pending {
+		t.Fatal("expected pending")
+	}
+	if got := maclawAppStringSliceFromAny(dst["escalation_exhausted_approvers"]); len(got) != 1 || got[0] != "b1" {
+		t.Fatalf("exhausted=%v", got)
+	}
+	// Clear when hub no longer reports markers.
+	mergeMaclawAppApprovalEscalationPayload(dst, map[string]any{})
+	if _, ok := dst["escalation_pending"]; ok {
+		t.Fatalf("pending should clear: %#v", dst)
+	}
+	if _, ok := dst["escalation_exhausted_approvers"]; ok {
+		t.Fatalf("exhausted should clear: %#v", dst)
 	}
 }
 

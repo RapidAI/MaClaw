@@ -1,9 +1,9 @@
 # 审批工作流 × MaClaw App 端到端改进计划
 
-**状态**：Phase 0–18 完成（代码主链路闭环；仅剩实机验收）  
+**状态**：Phase 0–18 完成 + 升级栈硬化（CAS / 重启 reconcile / any-N / peer timeout / attempts UI）  
 **日期**：2026-07-15  
-**验证手册**：[approval-e2e-verification-zh.md](./approval-e2e-verification-zh.md)  
-**一键检查**：`scripts\run-approval-e2e-checks.cmd`
+**验证手册**：[approval-e2e-verification-zh.md](./approval-e2e-verification-zh.md)（含实机 #1–#10）  
+**一键检查**：`scripts\run-approval-e2e-checks.cmd`  
 **关联文档**：
 
 - [maclaw-app-technical-guide.md](./maclaw-app-technical-guide.md)

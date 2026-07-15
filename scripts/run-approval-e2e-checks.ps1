@@ -1,6 +1,6 @@
 # Runs automated approval E2E checklist suites (see docs/approval-e2e-verification-zh.md).
 # Usage (Windows PowerShell 5.1 or PowerShell 7+):
-#   powershell -File scripts/run-approval-e2e-checks.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts/run-approval-e2e-checks.ps1
 #   pwsh -File scripts/run-approval-e2e-checks.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -20,16 +20,16 @@ function Step {
     Write-Host "OK $Name" -ForegroundColor Green
 }
 
-Step -Name "Hub workflow (executor / escalation / checklist)" -ScriptBlock {
-    go test ./hub/internal/workflow/ -count=1 -timeout 180s -run "TestChecklist_|TestEscalation_|TestHandleTimeout|TestStartInstance_"
+Step -Name "Hub workflow (executor / escalation / checklist / reconcile)" -ScriptBlock {
+    go test ./hub/internal/workflow/ -count=1 -timeout 180s -run "TestChecklist_|TestEscalation_|TestHandleTimeout|TestOnEscalation|TestReconcileEscalations|TestShouldDefer|TestPersistEscalation|TestEnqueueEscalation|TestStartInstance_"
 }
 
-Step -Name "Hub httpapi (multi-machine push / classify)" -ScriptBlock {
+Step -Name "Hub httpapi (multi-machine push / classify / escalation extras)" -ScriptBlock {
     go test ./hub/internal/httpapi/ -count=1 -timeout 120s -run "TestHubWorkflowParticipantNotifier|TestClassifyWorkflowStatusEvent"
 }
 
-Step -Name "GUI (attention / directory / reconcile)" -ScriptBlock {
-    go test ./gui/ -count=1 -timeout 180s -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile"
+Step -Name "GUI (attention / directory / reconcile / escalation merge)" -ScriptBlock {
+    go test ./gui/ -count=1 -timeout 180s -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
 }
 
 Step -Name "Workflow editor empty-state" -ScriptBlock {
@@ -42,5 +42,6 @@ Step -Name "Workflow editor i18n" -ScriptBlock {
 
 Write-Host ""
 Write-Host "All automated approval E2E checks passed." -ForegroundColor Green
-Write-Host "Manual remaining: dual-desktop WS (#1), Admin empty roles UX (#4), Hub jitter (#5)." -ForegroundColor Yellow
-Write-Host "See docs/approval-e2e-verification-zh.md"
+Write-Host "Manual remaining (docs/approval-e2e-verification-zh.md):" -ForegroundColor Yellow
+Write-Host "  #1 dual-desktop WS  #4 empty roles UX  #5 Hub jitter" -ForegroundColor Yellow
+Write-Host "  #7 any-N exhaust (optional)  #8 Hub restart retry (optional)  #9 peer-aware timeout (optional)" -ForegroundColor Yellow

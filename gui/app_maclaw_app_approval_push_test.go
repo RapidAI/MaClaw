@@ -46,6 +46,10 @@ func TestApplyHubWorkflowStatusAttentionCreatesWhenMissing(t *testing.T) {
 	if err := app.applyHubWorkflowStatusAttention("hub-new", "n1", "Expense", "blocked", "", map[string]any{
 		"escalation_pending":   true,
 		"escalation_approvers": []string{"ve-a", "ve-c"},
+		"escalation_exhausted_approvers": []string{"ve-dead"},
+		"escalation_attempts": map[string]any{
+			"ve-a": float64(4),
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,5 +63,9 @@ func TestApplyHubWorkflowStatusAttentionCreatesWhenMissing(t *testing.T) {
 	approvers := maclawAppStringSliceFromAny(reg.Instances[0].ResultPayload["escalation_approvers"])
 	if len(approvers) != 2 {
 		t.Fatalf("escalation_approvers=%v", approvers)
+	}
+	exh := maclawAppStringSliceFromAny(reg.Instances[0].ResultPayload["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "ve-dead" {
+		t.Fatalf("exhausted=%v", exh)
 	}
 }
