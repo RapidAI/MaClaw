@@ -125,3 +125,30 @@ func TestCreateMobileAuthDesktopQRSessionRequiresBoundPhone(t *testing.T) {
 		t.Fatalf("error = %v, want bound phone requirement", err)
 	}
 }
+
+func TestMobileAuthBoundPhoneDigitsAcceptsMobileOrPhoneEmail(t *testing.T) {
+	if got := mobileAuthBoundPhoneDigits("199-0000-1111", ""); got != "19900001111" {
+		t.Fatalf("RemoteMobile digits = %q", got)
+	}
+	if got := mobileAuthBoundPhoneDigits("", "phone:19900001111"); got != "19900001111" {
+		t.Fatalf("phone email digits = %q", got)
+	}
+	if got := mobileAuthBoundPhoneDigits("", "dev@example.com"); got != "" {
+		t.Fatalf("email-only = %q, want empty", got)
+	}
+	if got := mobileAuthBoundPhoneDigits("123", ""); got != "" {
+		t.Fatalf("too short = %q, want empty", got)
+	}
+}
+
+func TestMobileAuthDesktopQRSessionHTTPErrorMapsHubCodes(t *testing.T) {
+	if err := mobileAuthDesktopQRSessionHTTPError(http.StatusUnauthorized, []byte(`{"code":"UNAUTHORIZED"}`)); err == nil || !strings.Contains(err.Error(), "Hub login is required") {
+		t.Fatalf("401 error = %v", err)
+	}
+	if err := mobileAuthDesktopQRSessionHTTPError(http.StatusForbidden, []byte(`{"code":"PHONE_IDENTITY_REQUIRED"}`)); err == nil || !strings.Contains(err.Error(), "bound phone number") {
+		t.Fatalf("403 error = %v", err)
+	}
+	if err := mobileAuthDesktopQRSessionHTTPError(http.StatusNotFound, []byte("404 page not found")); err == nil || !strings.Contains(err.Error(), "does not support mobile authentication QR") {
+		t.Fatalf("404 error = %v", err)
+	}
+}

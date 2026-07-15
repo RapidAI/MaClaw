@@ -333,7 +333,10 @@ describe('AboutPanel', () => {
 
         await waitFor(() => expect(CreateMobileAuthDesktopQRSession).toHaveBeenCalledTimes(1));
         expect(await screen.findByText('Mobile Authentication QR')).toBeTruthy();
-        expect(screen.getByText('Expires at 2026-07-05T12:00:00Z')).toBeTruthy();
+        const expiresLabel = await screen.findByText(/Expires at /);
+        expect(expiresLabel.textContent).toMatch(/Expires at /);
+        // Locale formatting may rewrite the ISO timestamp; keep the dialog usable either way.
+        expect(expiresLabel.textContent?.length || 0).toBeGreaterThan('Expires at '.length);
     });
 
     it('hides mobile auth QR action when registered account has no phone', () => {

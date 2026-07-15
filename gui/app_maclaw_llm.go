@@ -1331,13 +1331,7 @@ func (a *App) CreateMobileAuthDesktopQRSession() (MobileLLMQRCodeSession, error)
 	}
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	viewerToken := strings.TrimSpace(cfg.RemoteViewerToken)
-	mobile := strings.TrimSpace(cfg.RemoteMobile)
-	if mobile == "" {
-		email := strings.TrimSpace(cfg.RemoteEmail)
-		if strings.HasPrefix(strings.ToLower(email), "phone:") {
-			mobile = strings.TrimSpace(email[len("phone:"):])
-		}
-	}
+	mobile := mobileAuthBoundPhoneDigits(cfg.RemoteMobile, cfg.RemoteEmail)
 	if hubURL == "" || viewerToken == "" || strings.TrimSpace(cfg.RemoteMachineID) == "" || strings.TrimSpace(cfg.RemoteMachineToken) == "" {
 		return MobileLLMQRCodeSession{}, fmt.Errorf("MaClaw Hub registration is required before creating a mobile authentication QR code")
 	}
@@ -1358,7 +1352,7 @@ func (a *App) CreateMobileAuthDesktopQRSession() (MobileLLMQRCodeSession, error)
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return MobileLLMQRCodeSession{}, fmt.Errorf("create mobile authentication QR session failed: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return MobileLLMQRCodeSession{}, mobileAuthDesktopQRSessionHTTPError(resp.StatusCode, data)
 	}
 	var session MobileLLMQRCodeSession
 	if err := json.Unmarshal(data, &session); err != nil {
@@ -1368,6 +1362,45 @@ func (a *App) CreateMobileAuthDesktopQRSession() (MobileLLMQRCodeSession, error)
 		return MobileLLMQRCodeSession{}, fmt.Errorf("Hub did not return a mobile authentication QR payload")
 	}
 	return session, nil
+}
+
+// mobileAuthBoundPhoneDigits returns digits from a stored mobile field or a
+// phone-primary Hub email (phone:<digits>). Empty means no usable bound phone.
+func mobileAuthBoundPhoneDigits(remoteMobile, remoteEmail string) string {
+	if digits := mobileAuthPhoneDigits(remoteMobile); digits != "" {
+		return digits
+	}
+	email := strings.TrimSpace(remoteEmail)
+	if strings.HasPrefix(strings.ToLower(email), "phone:") {
+		return mobileAuthPhoneDigits(email[len("phone:"):])
+	}
+	return ""
+}
+
+func mobileAuthPhoneDigits(value string) string {
+	// Reuse enrollment phone normalization so GUI registration and auth QR agree.
+	digits := normalizeRemoteRegistrationPhoneNumber(value)
+	if len(digits) < 8 || len(digits) > 15 {
+		return ""
+	}
+	return digits
+}
+
+func mobileAuthDesktopQRSessionHTTPError(status int, body []byte) error {
+	raw := strings.TrimSpace(string(body))
+	switch {
+	case status == http.StatusUnauthorized:
+		return fmt.Errorf("MaClaw Hub login is required before creating a mobile authentication QR code")
+	case status == http.StatusForbidden && strings.Contains(raw, "PHONE_IDENTITY_REQUIRED"):
+		return fmt.Errorf("mobile authentication QR code requires a bound phone number")
+	case status == http.StatusNotFound:
+		return fmt.Errorf("create mobile authentication QR session failed: Hub does not support mobile authentication QR (HTTP 404). Update/redeploy Hub and try again")
+	default:
+		if raw == "" {
+			return fmt.Errorf("create mobile authentication QR session failed: HTTP %d", status)
+		}
+		return fmt.Errorf("create mobile authentication QR session failed: HTTP %d %s", status, raw)
+	}
 }
 
 func openAIModelsEndpointCandidates(baseURL, protocol string) []string {

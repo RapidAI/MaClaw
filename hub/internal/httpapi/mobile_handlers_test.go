@@ -409,6 +409,187 @@ func TestMobileLLMDesktopQRAuthorizationUpdatesBootstrap(t *testing.T) {
 	}
 }
 
+func TestMobileDesktopAuthQRSessionCreatesPayload(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, _ := issueViewerToken(t, identity, "phone:19900001111")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createReq.Host = "tenant-a.maclaw.top"
+	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	createRec := httptest.NewRecorder()
+
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
+	}
+	var createResponse map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResponse); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	sessionID, _ := createResponse["session_id"].(string)
+	if !strings.HasPrefix(sessionID, "maqr_") {
+		t.Fatalf("session_id = %q, want maqr_ prefix", sessionID)
+	}
+	qrPayload, _ := createResponse["qr_payload"].(string)
+	if qrPayload == "" || !strings.Contains(qrPayload, "maclaw_mobile_desktop_authorization") {
+		t.Fatalf("qr_payload = %q, want mobile desktop authorization payload", qrPayload)
+	}
+	if !strings.Contains(qrPayload, "tenant-a.maclaw.top") || !strings.Contains(qrPayload, sessionID) {
+		t.Fatalf("qr_payload = %q, want hub URL and session id", qrPayload)
+	}
+	if createResponse["expires_at"] == "" {
+		t.Fatalf("create response = %#v, want expires_at", createResponse)
+	}
+}
+
+func TestMobileDesktopAuthQRSessionRequiresViewerAuth(t *testing.T) {
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createReq.Header.Set("Authorization", "Bearer missing")
+	createRec := httptest.NewRecorder()
+	identity, _, _ := newHTTPAPITestServices(t)
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s, want 401", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestMobileDesktopAuthQRSessionRejectsNilIdentity(t *testing.T) {
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createRec := httptest.NewRecorder()
+	MobileDesktopAuthQRSessionHandler(nil).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusInternalServerError || !strings.Contains(createRec.Body.String(), "IDENTITY_UNAVAILABLE") {
+		t.Fatalf("status=%d body=%s, want IDENTITY_UNAVAILABLE", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestMobileDesktopAuthQRSessionRequiresRequestHost(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, _ := issueViewerToken(t, identity, "phone:19900003333")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createReq.Host = ""
+	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	createRec := httptest.NewRecorder()
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusInternalServerError || !strings.Contains(createRec.Body.String(), "Hub URL") {
+		t.Fatalf("status=%d body=%s, want Hub URL failure", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestMobileDesktopAuthQRSessionRequiresVerifiedPhoneIdentity(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, _ := issueViewerToken(t, identity, "desktop-owner@example.com")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	createRec := httptest.NewRecorder()
+
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusForbidden || !strings.Contains(createRec.Body.String(), "PHONE_IDENTITY_REQUIRED") {
+		t.Fatalf("status=%d body=%s, want phone identity requirement", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestMobileDesktopAuthQRSessionAllowsEmailUserWithBoundPhone(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, enroll := issueViewerToken(t, identity, "desktop-owner-bound@example.com")
+	user, err := identity.UsersRepo().GetByID(auth.WithTenant(context.Background(), enroll.TenantID), enroll.UserID)
+	if err != nil || user == nil {
+		t.Fatalf("GetByID user=%#v err=%v", user, err)
+	}
+	if err := identity.BindVerifiedPhoneToUser(auth.WithTenant(context.Background(), enroll.TenantID), user, "19900001111"); err != nil {
+		t.Fatalf("BindVerifiedPhoneToUser: %v", err)
+	}
+	createReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	createReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	createRec := httptest.NewRecorder()
+
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s, want 201", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestPruneExpiredMobileQRSessionsLocked(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	now := time.Now().UTC()
+	mobileLlmAuthorizations.Lock()
+	mobileLlmAuthorizations.qrSessions["expired"] = mobileLlmQRSessionRecord{
+		SessionID: "expired",
+		ExpiresAt: now.Add(-time.Minute),
+	}
+	mobileLlmAuthorizations.qrSessions["consumed"] = mobileLlmQRSessionRecord{
+		SessionID:  "consumed",
+		ExpiresAt:  now.Add(time.Minute),
+		ConsumedAt: now.Add(-time.Second),
+	}
+	mobileLlmAuthorizations.qrSessions["live"] = mobileLlmQRSessionRecord{
+		SessionID: "live",
+		ExpiresAt: now.Add(time.Minute),
+	}
+	pruneExpiredMobileQRSessionsLocked(now)
+	_, hasExpired := mobileLlmAuthorizations.qrSessions["expired"]
+	_, hasConsumed := mobileLlmAuthorizations.qrSessions["consumed"]
+	_, hasLive := mobileLlmAuthorizations.qrSessions["live"]
+	mobileLlmAuthorizations.Unlock()
+	if hasExpired || hasConsumed || !hasLive {
+		t.Fatalf("prune result expired=%v consumed=%v live=%v", hasExpired, hasConsumed, hasLive)
+	}
+}
+
+func TestMobileDesktopAuthQRSessionRefreshReplacesPriorSession(t *testing.T) {
+	clearMobileLLMAuthorizationsForTest(t)
+	identity, _, _ := newHTTPAPITestServices(t)
+	desktopViewerToken, enroll := issueViewerToken(t, identity, "phone:19900002222")
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	firstReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	firstRec := httptest.NewRecorder()
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("first create status=%d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+	var first map[string]any
+	if err := json.Unmarshal(firstRec.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	firstID, _ := first["session_id"].(string)
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/mobile/auth/desktop-qr-sessions", strings.NewReader(`{}`))
+	secondReq.Header.Set("Authorization", "Bearer "+desktopViewerToken)
+	secondRec := httptest.NewRecorder()
+	MobileDesktopAuthQRSessionHandler(identity).ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusCreated {
+		t.Fatalf("second create status=%d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	var second map[string]any
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode second: %v", err)
+	}
+	secondID, _ := second["session_id"].(string)
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("session ids first=%q second=%q, want distinct non-empty", firstID, secondID)
+	}
+
+	mobileLlmAuthorizations.Lock()
+	_, hasFirst := mobileLlmAuthorizations.qrSessions[firstID]
+	secondSession, hasSecond := mobileLlmAuthorizations.qrSessions[secondID]
+	authCount := 0
+	for _, session := range mobileLlmAuthorizations.qrSessions {
+		if session.OwnerID == enroll.UserID && session.Purpose == mobileQRSessionPurposeAuth {
+			authCount++
+		}
+	}
+	mobileLlmAuthorizations.Unlock()
+	if hasFirst || !hasSecond || authCount != 1 {
+		t.Fatalf("sessions first=%v second=%v authCount=%d owner=%s secondRec=%#v", hasFirst, hasSecond, authCount, enroll.UserID, secondSession)
+	}
+}
+
 func TestMobileLLMDesktopQRAuthorizationRejectsInvalidPayload(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "mobile-llm-invalid@example.com")

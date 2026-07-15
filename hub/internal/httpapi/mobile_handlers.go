@@ -315,8 +315,10 @@ type mobileDesktopLlmQRPayload struct {
 }
 
 const (
-	mobileDesktopLlmAuthorizationQRType = "maclaw_mobile_llm_authorization"
-	mobileQRSessionPurposeLLM           = "llm"
+	mobileDesktopLlmAuthorizationQRType  = "maclaw_mobile_llm_authorization"
+	mobileDesktopAuthAuthorizationQRType = "maclaw_mobile_desktop_authorization"
+	mobileQRSessionPurposeLLM            = "llm"
+	mobileQRSessionPurposeAuth           = "auth"
 )
 
 func mobileStatePath() string {
@@ -1395,6 +1397,11 @@ func MobileLLMDesktopQRSessionHandler(identity *auth.IdentityService) http.Handl
 			writeError(w, http.StatusBadRequest, "INVALID_LLM_PROVIDER", err.Error())
 			return
 		}
+		hubURL := strings.TrimSpace(mobileRequestBaseURL(r))
+		if hubURL == "" {
+			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to determine Hub URL for QR payload")
+			return
+		}
 		sessionID, err := newMobileLlmQRSessionID()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to create QR session")
@@ -1402,6 +1409,21 @@ func MobileLLMDesktopQRSessionHandler(identity *auth.IdentityService) http.Handl
 		}
 		now := time.Now().UTC()
 		expiresAt := now.Add(5 * time.Minute)
+		qrPayloadBytes, err := json.Marshal(mobileDesktopLlmQRPayload{
+			Version:   2,
+			Type:      mobileDesktopLlmAuthorizationQRType,
+			SessionID: sessionID,
+			HubURL:    hubURL,
+			ExpiresAt: expiresAt.Format(time.RFC3339),
+			Name:      payload.Name,
+			URL:       payload.URL,
+			Model:     payload.Model,
+			Protocol:  payload.Protocol,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to encode QR payload")
+			return
+		}
 		record := mobileLlmQRSessionRecord{
 			SessionID:    sessionID,
 			OwnerID:      principal.UserID,
@@ -1416,26 +1438,150 @@ func MobileLLMDesktopQRSessionHandler(identity *auth.IdentityService) http.Handl
 			ExpiresAt:    expiresAt,
 		}
 		mobileLlmAuthorizations.Lock()
+		pruneExpiredMobileQRSessionsLocked(now)
 		mobileLlmAuthorizations.qrSessions[sessionID] = record
 		mobileLlmAuthorizations.Unlock()
 
-		qrPayloadBytes, _ := json.Marshal(mobileDesktopLlmQRPayload{
-			Version:   2,
-			Type:      mobileDesktopLlmAuthorizationQRType,
-			SessionID: sessionID,
-			HubURL:    mobileRequestBaseURL(r),
-			ExpiresAt: expiresAt.Format(time.RFC3339),
-			Name:      payload.Name,
-			URL:       payload.URL,
-			Model:     payload.Model,
-			Protocol:  payload.Protocol,
-		})
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"status":     "created",
 			"session_id": sessionID,
 			"expires_at": expiresAt.Format(time.RFC3339),
 			"qr_payload": string(qrPayloadBytes),
 		})
+	}
+}
+
+// MobileDesktopAuthQRSessionHandler creates a one-time QR payload that lets a
+// MaClaw mobile app connect to the same already-registered Hub user (phone
+// identity required). The QR only carries a session id; credentials stay on Hub.
+func MobileDesktopAuthQRSessionHandler(identity *auth.IdentityService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if identity == nil {
+			writeError(w, http.StatusInternalServerError, "IDENTITY_UNAVAILABLE", "identity service is unavailable")
+			return
+		}
+		principal, err := authenticateViewerRequest(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		if !mobilePrincipalHasVerifiedPhoneIdentity(r.Context(), identity, principal) {
+			writeError(w, http.StatusForbidden, "PHONE_IDENTITY_REQUIRED", "Mobile authentication QR code requires a verified phone identity")
+			return
+		}
+		hubURL := strings.TrimSpace(mobileRequestBaseURL(r))
+		if hubURL == "" {
+			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to determine Hub URL for QR payload")
+			return
+		}
+		sessionID, err := newMobileAuthQRSessionID()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to create QR session")
+			return
+		}
+		now := time.Now().UTC()
+		expiresAt := now.Add(5 * time.Minute)
+		// Encode before publishing so a failed marshal never leaves an orphan session.
+		qrPayloadBytes, err := json.Marshal(mobileDesktopLlmQRPayload{
+			Version:   2,
+			Type:      mobileDesktopAuthAuthorizationQRType,
+			SessionID: sessionID,
+			HubURL:    hubURL,
+			ExpiresAt: expiresAt.Format(time.RFC3339),
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SESSION_CREATE_FAILED", "failed to encode QR payload")
+			return
+		}
+		record := mobileLlmQRSessionRecord{
+			SessionID: sessionID,
+			OwnerID:   principal.UserID,
+			TenantID:  principal.TenantID,
+			Purpose:   mobileQRSessionPurposeAuth,
+			CreatedAt: now,
+			ExpiresAt: expiresAt,
+		}
+		mobileLlmAuthorizations.Lock()
+		pruneExpiredMobileQRSessionsLocked(now)
+		// Keep only the latest auth QR per account (refresh invalidates prior codes).
+		removeMobileQRSessionsForOwnerLocked(principal.TenantID, principal.UserID, mobileQRSessionPurposeAuth)
+		mobileLlmAuthorizations.qrSessions[sessionID] = record
+		mobileLlmAuthorizations.Unlock()
+
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"status":     "created",
+			"session_id": sessionID,
+			"expires_at": expiresAt.Format(time.RFC3339),
+			"qr_payload": string(qrPayloadBytes),
+		})
+	}
+}
+
+// mobilePrincipalHasVerifiedPhoneIdentity reports whether the viewer may issue
+// a mobile authentication QR. Phone-primary accounts use email "phone:<digits>";
+// email accounts must have a verified phone identity binding.
+func mobilePrincipalHasVerifiedPhoneIdentity(ctx context.Context, identity *auth.IdentityService, principal *auth.ViewerPrincipal) bool {
+	if principal == nil || identity == nil {
+		return false
+	}
+	if mobilePhoneDigitsFromAccountEmail(principal.Email) != "" {
+		return true
+	}
+	repo := identity.UsersRepo()
+	if repo == nil {
+		return false
+	}
+	tenantCtx := auth.WithTenant(ctx, principal.TenantID)
+	user, err := repo.GetByID(tenantCtx, principal.UserID)
+	if err != nil || user == nil {
+		return false
+	}
+	phone, err := identity.BoundPhoneNumberForUser(tenantCtx, user)
+	return err == nil && strings.TrimSpace(phone) != ""
+}
+
+func mobilePhoneDigitsFromAccountEmail(email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if !strings.HasPrefix(email, "phone:") {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range email[len("phone:"):] {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	digits := b.String()
+	if len(digits) < 8 || len(digits) > 15 {
+		return ""
+	}
+	return digits
+}
+
+// pruneExpiredMobileQRSessionsLocked drops expired or already-consumed QR
+// sessions. Caller must hold mobileLlmAuthorizations.
+func pruneExpiredMobileQRSessionsLocked(now time.Time) {
+	for id, session := range mobileLlmAuthorizations.qrSessions {
+		if now.After(session.ExpiresAt) || !session.ConsumedAt.IsZero() {
+			delete(mobileLlmAuthorizations.qrSessions, id)
+		}
+	}
+}
+
+// removeMobileQRSessionsForOwnerLocked drops open QR sessions for one account
+// and purpose (e.g. replace prior auth QR on refresh). Caller must hold
+// mobileLlmAuthorizations.
+func removeMobileQRSessionsForOwnerLocked(tenantID, ownerID, purpose string) {
+	tenantID = strings.TrimSpace(tenantID)
+	ownerID = strings.TrimSpace(ownerID)
+	purpose = strings.TrimSpace(purpose)
+	if ownerID == "" || purpose == "" {
+		return
+	}
+	for id, session := range mobileLlmAuthorizations.qrSessions {
+		if session.OwnerID == ownerID && session.Purpose == purpose && session.TenantID == tenantID {
+			delete(mobileLlmAuthorizations.qrSessions, id)
+		}
 	}
 }
 
@@ -1619,11 +1765,19 @@ func mobileLlmAuthorizationFromQRSession(principal *auth.ViewerPrincipal, payloa
 }
 
 func newMobileLlmQRSessionID() (string, error) {
+	return newMobileQRSessionID("mlqr_")
+}
+
+func newMobileAuthQRSessionID() (string, error) {
+	return newMobileQRSessionID("maqr_")
+}
+
+func newMobileQRSessionID(prefix string) (string, error) {
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
-	return "mlqr_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+	return prefix + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func mobileDocumentDraftPayload(record mobileDocumentDraftRecord) map[string]any {

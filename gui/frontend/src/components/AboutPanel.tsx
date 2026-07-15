@@ -86,6 +86,24 @@ function registrationPhoneFromConfig(remoteMobile: unknown, remoteEmail: unknown
     return '';
 }
 
+/** Matches Hub/GUI bound-phone rules: 8–15 digits after stripping non-digits. */
+function registrationPhoneDigits(value: string): string {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length >= 8 && digits.length <= 15 ? digits : '';
+}
+
+function formatMobileAuthQRExpiresAt(value: string): string {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const parsed = Date.parse(raw);
+    if (Number.isNaN(parsed)) return raw;
+    try {
+        return new Date(parsed).toLocaleString();
+    } catch {
+        return raw;
+    }
+}
+
 function registrationProbeIdentityFromConfig(remoteEmail: unknown, remoteMobile: unknown): string {
     const account = String(remoteEmail || '').trim();
     if (account) return account;
@@ -268,7 +286,7 @@ export function AboutPanel({
     const remoteEmail = remoteEmailRaw || emptyValue;
     const remoteMobile = remoteMobileRaw || emptyValue;
     const machineID = String(config?.remote_machine_id || '').trim() || emptyValue;
-    const canCreateMobileAuthQR = hasRegisteredMachine && remoteMobileRaw.trim() !== '';
+    const canCreateMobileAuthQR = hasRegisteredMachine && registrationPhoneDigits(remoteMobileRaw) !== '';
     const [showMobileAuthQR, setShowMobileAuthQR] = useState(false);
     const [mobileAuthQRValue, setMobileAuthQRValue] = useState('');
     const [mobileAuthQRExpiresAt, setMobileAuthQRExpiresAt] = useState('');
@@ -802,7 +820,7 @@ export function AboutPanel({
                         </div>
                         {mobileAuthQRExpiresAt && (
                             <div className="about-mobile-auth-qr-dialog__expires">
-                                {t("aboutMobileAuthQRExpiresAt").replace("{time}", mobileAuthQRExpiresAt)}
+                                {t("aboutMobileAuthQRExpiresAt").replace("{time}", formatMobileAuthQRExpiresAt(mobileAuthQRExpiresAt))}
                             </div>
                         )}
                         {mobileAuthQRError && mobileAuthQRValue && (
