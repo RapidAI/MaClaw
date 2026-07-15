@@ -748,6 +748,143 @@ func ClearCodexThirdPartySettingsAt(codexDir string) error {
 	return firstErr
 }
 
+// RestoreCodexOpenAISettings switches Codex back to its built-in OpenAI
+// provider. Callers that know the TigerProxy API key should use
+// RestoreCodexOpenAISettingsWithProxyKey so only that proxy credential is
+// removed; this compatibility helper never removes auth.json. It also updates
+// local session metadata and the Desktop state cache so every existing
+// conversation is reopened with the OpenAI provider.
+func RestoreCodexOpenAISettings() error {
+	_, err := RestoreCodexOpenAISettingsWithProxyKey("")
+	return err
+}
+
+// RestoreCodexOpenAISettingsWithProxyKey restores Codex while retaining an
+// existing official OpenAI key. When proxyAPIKey matches auth.json's key, that
+// proxy credential is removed; otherwise auth.json is left untouched.
+func RestoreCodexOpenAISettingsWithProxyKey(proxyAPIKey string) (bool, error) {
+	return RestoreCodexOpenAISettingsAtWithProxyKey(filepath.Dir(CodexAuthPath()), proxyAPIKey)
+}
+
+// RestoreCodexOpenAISettingsAt is RestoreCodexOpenAISettings for a specific
+// Codex data directory. It is primarily useful for tests and local tooling.
+func RestoreCodexOpenAISettingsAt(codexDir string) error {
+	_, err := RestoreCodexOpenAISettingsAtWithProxyKey(codexDir, "")
+	return err
+}
+
+func RestoreCodexOpenAISettingsAtWithProxyKey(codexDir, proxyAPIKey string) (bool, error) {
+	if err := ensureCodexProcessesStopped(); err != nil {
+		return false, err
+	}
+	backup, err := snapshotCodexRestoreFiles(codexDir)
+	if err != nil {
+		return false, fmt.Errorf("snapshot codex state: %w", err)
+	}
+	authCleared, err := clearCodexAuthIfMatchesAt(codexDir, proxyAPIKey)
+	if err != nil {
+		return false, fmt.Errorf("clear codex auth: %w", err)
+	}
+	if err := clearCodexConfigProviderAt(codexDir); err != nil {
+		if rollbackErr := backup.restore(); rollbackErr != nil {
+			return false, fmt.Errorf("clear codex config: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return false, fmt.Errorf("clear codex config: %w", err)
+	}
+	// Use the literal provider ID expected by Codex Desktop's thread cache.
+	if err := updateCodexSessionJSONL(codexDir, "openai", "gpt-5.6"); err != nil {
+		if rollbackErr := backup.restore(); rollbackErr != nil {
+			return false, fmt.Errorf("sync codex sessions: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return false, fmt.Errorf("sync codex sessions: %w", err)
+	}
+	if err := updateCodexStateSQLitePaths(codexDir, "openai", "gpt-5.6", discoverAllCodexStateDBs); err != nil {
+		if rollbackErr := backup.restore(); rollbackErr != nil {
+			return false, fmt.Errorf("sync codex sessions: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return false, fmt.Errorf("sync codex sessions: %w", err)
+	}
+	return authCleared, nil
+}
+
+type codexRestoreFileSnapshot struct {
+	path   string
+	exists bool
+	data   []byte
+}
+
+type codexRestoreSnapshot []codexRestoreFileSnapshot
+
+func snapshotCodexRestoreFiles(codexDir string) (codexRestoreSnapshot, error) {
+	paths := []string{
+		filepath.Join(codexDir, "auth.json"),
+		filepath.Join(codexDir, "config.toml"),
+	}
+	for _, root := range []string{filepath.Join(codexDir, "sessions"), filepath.Join(codexDir, "archived_sessions")} {
+		if _, err := os.Stat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasPrefix(filepath.Base(path), "rollout-") && filepath.Ext(path) == ".jsonl" {
+				paths = append(paths, path)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	dbs, err := discoverAllCodexStateDBs(codexDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, dbPath := range dbs {
+		paths = append(paths, dbPath, dbPath+"-wal", dbPath+"-shm")
+	}
+
+	snapshot := make(codexRestoreSnapshot, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				snapshot = append(snapshot, codexRestoreFileSnapshot{path: path})
+				continue
+			}
+			return nil, err
+		}
+		snapshot = append(snapshot, codexRestoreFileSnapshot{path: path, exists: true, data: data})
+	}
+	return snapshot, nil
+}
+
+func (snapshot codexRestoreSnapshot) restore() error {
+	var errors []string
+	for _, file := range snapshot {
+		var err error
+		if file.exists {
+			err = AtomicWrite(file.path, file.data)
+		} else {
+			err = os.Remove(file.path)
+			if os.IsNotExist(err) {
+				err = nil
+			}
+		}
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", file.path, err))
+		}
+	}
+	if len(errors) > 0 {
+		return fmt.Errorf("restore snapshot: %s", strings.Join(errors, "; "))
+	}
+	return nil
+}
+
 func hasCodexThirdPartySettingsAt(codexDir string) (bool, error) {
 	authPath := filepath.Join(codexDir, "auth.json")
 	if _, err := os.Stat(authPath); err == nil {
@@ -788,7 +925,10 @@ func syncCodexSessionState(codexDir, providerName, modelID string) error {
 	if strings.TrimSpace(modelID) == "" {
 		modelID = "gpt-5.4"
 	}
+	return syncCodexSessionStateExact(codexDir, providerName, modelID)
+}
 
+func syncCodexSessionStateExact(codexDir, providerName, modelID string) error {
 	if err := updateCodexSessionJSONL(codexDir, providerName, modelID); err != nil {
 		return err
 	}
@@ -904,7 +1044,11 @@ func updateCodexSessionJSONLFile(path, providerName, modelID string) (bool, erro
 }
 
 func updateCodexStateSQLite(codexDir, providerName, modelID string) error {
-	dbs, err := discoverCodexStateDBs(codexDir)
+	return updateCodexStateSQLitePaths(codexDir, providerName, modelID, discoverCodexStateDBs)
+}
+
+func updateCodexStateSQLitePaths(codexDir, providerName, modelID string, discover func(string) ([]string, error)) error {
+	dbs, err := discover(codexDir)
 	if err != nil {
 		return err
 	}
@@ -938,6 +1082,18 @@ func updateCodexStateSQLite(codexDir, providerName, modelID string) error {
 }
 
 func discoverCodexStateDBs(codexDir string) ([]string, error) {
+	candidates, err := collectCodexStateDBs(codexDir)
+	if err != nil || len(candidates) == 0 {
+		return candidates, err
+	}
+	return candidates[:1], nil
+}
+
+func discoverAllCodexStateDBs(codexDir string) ([]string, error) {
+	return collectCodexStateDBs(codexDir)
+}
+
+func collectCodexStateDBs(codexDir string) ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(codexDir, "state_*.sqlite"))
 	if err != nil {
 		return nil, err
@@ -972,7 +1128,11 @@ func discoverCodexStateDBs(codexDir string) ([]string, error) {
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].modTime.After(candidates[j].modTime)
 	})
-	return []string{candidates[0].path}, nil
+	paths := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		paths = append(paths, candidate.path)
+	}
+	return paths, nil
 }
 
 func codexStateDBHasThreads(path string) (bool, error) {
@@ -999,6 +1159,32 @@ func clearCodexAuthAt(codexDir string) error {
 		return err
 	}
 	return nil
+}
+
+func clearCodexAuthIfMatchesAt(codexDir, proxyAPIKey string) (bool, error) {
+	proxyAPIKey = strings.TrimSpace(proxyAPIKey)
+	if proxyAPIKey == "" {
+		return false, nil
+	}
+	authPath := filepath.Join(codexDir, "auth.json")
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var auth map[string]string
+	if err := json.Unmarshal(data, &auth); err != nil {
+		return false, fmt.Errorf("parse auth.json: %w", err)
+	}
+	if auth["OPENAI_API_KEY"] != proxyAPIKey {
+		return false, nil
+	}
+	if err := clearCodexAuthAt(codexDir); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // clearCodexConfigProvider reads ~/.codex/config.toml, removes the
@@ -1299,9 +1485,6 @@ func parseCodexProcessLines(out string) []codexProcess {
 func isCodexProcessCandidate(name, commandLine string) bool {
 	cmd := strings.ToLower(commandLine)
 	normalized := strings.NewReplacer("\\", "/", "\"", " ", "'", " ").Replace(cmd)
-	if strings.Contains(normalized, "/windowsapps/openai.codex_") {
-		return false
-	}
 
 	base := strings.ToLower(filepath.Base(strings.TrimSpace(name)))
 	base = strings.TrimSuffix(base, ".exe")

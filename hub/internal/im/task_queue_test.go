@@ -70,7 +70,7 @@ func TestTaskDispatcher_BasicFlow(t *testing.T) {
 		}, nil
 	}
 
-	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {
+	delivery := func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
 		delivered.Store(resp.Body, true)
 	}
 
@@ -113,12 +113,35 @@ func TestTaskDispatcher_BasicFlow(t *testing.T) {
 	}
 }
 
+func TestTaskDispatcherPreservesReplyTarget(t *testing.T) {
+	delivered := make(chan string, 1)
+	d := NewIMTaskDispatcher(1,
+		func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
+			return &GenericResponse{StatusCode: 200, Body: "done"}, nil
+		},
+		func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
+			delivered <- replyTarget
+		},
+	)
+	defer d.Shutdown()
+	d.Enqueue(&IMTask{UserID: "user-1", PlatformName: "lansenger", PlatformUID: "user-1", ReplyTarget: "group-1", Text: "hello"})
+	select {
+	case got := <-delivered:
+		if got != "group-1" {
+			t.Fatalf("reply target = %q, want group-1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task delivery")
+	}
+}
+
 func TestTaskDispatcher_QueueFull(t *testing.T) {
 	executor := func(ctx context.Context, task *IMTask) (*GenericResponse, error) {
 		time.Sleep(200 * time.Millisecond)
 		return &GenericResponse{StatusCode: 200, Body: "done"}, nil
 	}
-	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {}
+	delivery := func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
+	}
 
 	d := NewIMTaskDispatcher(2, executor, delivery)
 	defer d.Shutdown()
@@ -148,7 +171,8 @@ func TestTaskDispatcher_PerUserIsolation(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		return &GenericResponse{StatusCode: 200, Body: "ok"}, nil
 	}
-	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {}
+	delivery := func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
+	}
 
 	d := NewIMTaskDispatcher(3, executor, delivery)
 	defer d.Shutdown()
@@ -184,7 +208,8 @@ func TestTaskDispatcher_PerTenantIsolation(t *testing.T) {
 		running.Add(-1)
 		return &GenericResponse{StatusCode: 200, Body: task.TenantID}, nil
 	}
-	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {}
+	delivery := func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
+	}
 
 	d := NewIMTaskDispatcher(3, executor, delivery)
 	defer d.Shutdown()
@@ -204,7 +229,8 @@ func TestTaskDispatcher_Stats(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		return &GenericResponse{StatusCode: 200, Body: "ok"}, nil
 	}
-	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {}
+	delivery := func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
+	}
 
 	d := NewIMTaskDispatcher(5, executor, delivery)
 	defer d.Shutdown()

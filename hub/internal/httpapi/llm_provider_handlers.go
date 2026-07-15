@@ -431,6 +431,13 @@ func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.Hand
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
 			return
 		}
+		if llmservice.EnsureSystemFreeServiceGroup(reg) {
+			if saveErr := llmservice.SaveRegistry(r.Context(), system, reg); saveErr != nil {
+				log.Printf("[llm-services] ensure system-free save failed: %v", saveErr)
+			} else {
+				invalidateLLMRuntimeCaches(system)
+			}
+		}
 		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -475,11 +482,17 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		if !grantsProvided && oldReg != nil {
 			req.Grants = append([]llmservice.Grant(nil), oldReg.Grants...)
 		}
+		// system-free is reserved: cannot delete; access_policy forced free;
+		// SystemDefaultServiceGroupID always pinned to system-free.
+		llmservice.ProtectSystemFreeOnSave(&req, oldReg)
 		req.Normalize()
 		// Cascade-clean orphaned references: when a service group definition is removed,
 		// automatically purge all bindings/grants/cards that still reference it.
 		// This prevents "ghost references" that silently fail at runtime.
 		req.PurgeOrphanedServiceGroupReferences()
+		// Protect again after purge in case cascade logic touched system-free refs.
+		llmservice.ProtectSystemFreeOnSave(&req, oldReg)
+		req.Normalize()
 		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())

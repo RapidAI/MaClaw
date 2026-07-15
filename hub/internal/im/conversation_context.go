@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 const (
@@ -197,10 +196,9 @@ func generateSummary(responseText string, llmCfg *HubLLMConfig, breaker *Circuit
 		map[string]string{"role": "user", "content": responseText},
 	}
 
-	maclawCfg := llmCfg.ToMaclawLLMConfig()
 	client := &http.Client{Timeout: summaryTimeout}
 
-	resp, err := agent.DoSimpleLLMRequest(maclawCfg, messages, client, summaryTimeout)
+	resp, err := DoSystemLLM(context.Background(), DefaultSystemLLMResolver(), llmCfg, messages, client, summaryTimeout)
 	if err != nil {
 		log.Printf("[ConversationContext] summary LLM error: %v", err)
 		breaker.RecordFailure()

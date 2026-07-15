@@ -406,9 +406,9 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 	}
 
 	resp := handler.HandleIMMessageWithProgress(IMUserMessage{
-		UserID:      strconv.FormatInt(msg.ChatID, 10),
-		Platform:    "telegram_local",
-		Text:        text,
+		UserID:   strconv.FormatInt(msg.ChatID, 10),
+		Platform: "telegram_local",
+		Text:     text,
 		// Prefer GUI interface language so IM tool/status text matches desktop settings.
 		Lang:        appUILang(m.app),
 		Attachments: attachments,
@@ -525,6 +525,7 @@ type GatewayReplyPayload struct {
 	FileName     string               `json:"file_name"`
 	MimeType     string               `json:"mime_type"`
 	ContextToken string               `json:"context_token,omitempty"`
+	ChatType     string               `json:"chat_type,omitempty"`
 	Extra        map[string]any       `json:"extra,omitempty"`
 }
 

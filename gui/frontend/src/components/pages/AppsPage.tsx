@@ -1448,7 +1448,7 @@ const labels = {
         refreshingQueue: 'Refreshing',
         syncQueueToHub: 'Sync to Hub',
         oneClickPublish: 'One-click publish',
-        oneClickPublishBusy: 'Publishing鈥?,
+        oneClickPublishBusy: 'Publishing...',
         oneClickPublishHint: 'Local queue + Enterprise Hub + SkillMarket/HubCenter (per config)',
         syncingQueueToHub: 'Syncing',
         refreshQueueFromHub: 'Refresh Hub Status',
@@ -4278,7 +4278,7 @@ function appContractTypeLabel(type: string, lang?: string) {
     const normalized = String(type || '').trim();
     const labels: Record<string, { zh: string; en: string }> = {
         approval_result: { zh: '瀹℃壒缁撴灉', en: 'Approval result' },
-        business_status: { zh: '涓氬姟鐘舵€?, en: 'Business status' },
+        business_status: { zh: '\u4e1a\u52a1\u72b6\u6001', en: 'Business status' },
         business_record: { zh: '涓氬姟璁板綍', en: 'Business record' },
         content: { zh: '鍐呭', en: 'Content' },
         text: { zh: '鏂囨湰', en: 'Text' },
@@ -4287,7 +4287,7 @@ function appContractTypeLabel(type: string, lang?: string) {
         document: { zh: '鏂囦欢', en: 'Document' },
         file: { zh: '鏂囦欢', en: 'File' },
         notification: { zh: '閫氱煡', en: 'Notification' },
-        workflow_result: { zh: '宸ヤ綔娴佺粨鏋?, en: 'Workflow result' },
+        workflow_result: { zh: '\u5de5\u4f5c\u6d41\u7ed3\u679c', en: 'Workflow result' },
         approval_instance: { zh: '瀹℃壒瀹炰緥', en: 'Approval instance' },
         outputs: { zh: '杈撳嚭', en: 'Outputs' },
     };
@@ -6186,7 +6186,7 @@ function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
     return {
         ok,
         detail: !evidence
-            ? (zh ? '璇峰厛杩愯褰撳墠搴旂敤鍐嶈瘎瀹? : 'Run the current app before review')
+            ? (zh ? '\u8bf7\u5148\u8fd0\u884c\u5f53\u524d\u5e94\u7528\u518d\u8bc4\u5ba1' : 'Run the current app before review')
             : !actualHash
                 ? (zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
                 : ok
@@ -6202,19 +6202,19 @@ function appRunEvidenceDesignConsistencyCheck(app: AppEntry, evidence: AppRunHis
     const actualProtocol = String(evidence?.testProtocolFingerprint || '').trim();
     const actualLayout = String(evidence?.workspaceLayoutFingerprint || '').trim();
     if (!evidence) {
-        return { ok: false, detail: zh ? '璇峰厛杩愯褰撳墠璁捐鐨勬祴璇曠敤渚? : 'Run the test case for the current design first' };
+        return { ok: false, detail: zh ? '\u8bf7\u5148\u8fd0\u884c\u5f53\u524d\u8bbe\u8ba1\u7684\u6d4b\u8bd5\u7528\u4f8b' : 'Run the test case for the current design first' };
     }
     if (!actualProtocol) {
         return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u6d4b\u8bd5\u534f\u8bae\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the test protocol fingerprint; rerun the test' };
     }
     if (actualProtocol !== expectedProtocol) {
-        return { ok: false, detail: zh ? '娴嬭瘯鍗忚宸插彉鏇达紱璇烽噸鏂拌繍琛屾祴璇? : 'Test protocol changed; rerun the test' };
+        return { ok: false, detail: zh ? '\u6d4b\u8bd5\u534f\u8bae\u5df2\u53d8\u66f4\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Test protocol changed; rerun the test' };
     }
     if (!actualLayout) {
         return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u754c\u9762\u5e03\u5c40\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the workspace layout fingerprint; rerun the test' };
     }
     if (actualLayout !== expectedLayout) {
-        return { ok: false, detail: zh ? '鐣岄潰甯冨眬宸插彉鏇达紱璇烽噸鏂拌繍琛屾祴璇? : 'Workspace layout changed; rerun the test' };
+        return { ok: false, detail: zh ? '\u754c\u9762\u5e03\u5c40\u5df2\u53d8\u66f4\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Workspace layout changed; rerun the test' };
     }
     return {
         ok: true,
@@ -8556,7 +8556,6 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
     };
 }
 
-}
 function approvalLaneFromEvidence(evidence: AppRunApprovalInstanceEvidence): ApprovalLaneFilter {
     const explicitLane = String(evidence.lane || '').trim();
     if (explicitLane === 'my_requests' || explicitLane === 'pending_my_approval' || explicitLane === 'handled' || explicitLane === 'attention') return explicitLane;
@@ -9254,9 +9253,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         void persistDurableAppRunHistory(nextEntry).then((result) => {
             if (!result.ok) {
                 setValidationMessage((current) => {
-                    const detail = result.error || (isZh(lang) ? '鎸佷箙鍖栬繍琛岃瘉鎹け璐? : 'Failed to persist run evidence');
+                    const detail = result.error || (isZh(lang) ? '\u6301\u4e45\u5316\u8fd0\u884c\u8bc1\u636e\u5931\u8d25' : 'Failed to persist run evidence');
                     if (current && current.includes(detail)) return current;
-                    const prefix = isZh(lang) ? '杩愯璇佹嵁鏈啓鍏ユ湰鏈哄瓨鍌? : 'Run evidence was not saved to durable store';
+                    const prefix = isZh(lang) ? '\u8fd0\u884c\u8bc1\u636e\u672a\u5199\u5165\u672c\u673a\u5b58\u50a8' : 'Run evidence was not saved to durable store';
                     return current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                 });
             }
@@ -9924,9 +9923,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 applicant: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
                 approver: String(approvalObjectRole || '').trim() || (isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver'),
                 submitted_by: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
-                current_assignee: isZh(lang) ? '瀹℃壒浜? : 'Approver',
+                current_assignee: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
                 current_assignee_type: 'user',
-                result: isZh(lang) ? '寰呭鎵? : 'Pending approval',
+                result: isZh(lang) ? '\u5f85\u5ba1\u6279' : 'Pending approval',
                 business_status: workflowMapping?.statusMapping?.pending || 'approval_pending',
                 result_status: 'pending',
                 from_status: 'submitted',
@@ -9936,7 +9935,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 business_action: businessAction || 'create',
                 business_note: businessNote,
                 result_payload: {
-                    text: businessNote || (isZh(lang) ? '寰呭鎵? : 'Pending approval'),
+                    text: businessNote || (isZh(lang) ? '\u5f85\u5ba1\u6279' : 'Pending approval'),
                     business_record: { id: fallbackID, status: workflowMapping?.statusMapping?.pending || 'approval_pending' },
                     business_payload: contractInputs.business_payload,
                     form_data: contractInputs,
@@ -9948,7 +9947,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     at: now,
                     actor: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
                     node: workflowMapping?.submitNode,
-                    action: isZh(lang) ? '宸叉彁浜? : 'Submitted',
+                    action: isZh(lang) ? '\u5df2\u63d0\u4ea4' : 'Submitted',
                     note: businessNote,
                 }, {
                     at: now,
@@ -15925,7 +15924,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {manageFilterSummary && <div className="apps-filter-summary apps-filter-summary--manage" aria-live="polite">{manageFilterSummary}</div>}
             {skillDiscovery.status === 'error' && (
                 <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--error-color, #ef4444)' }}>
-                    {isZh(lang) ? '妫€鏌ュ凡瀹夎鑳藉姏鏃堕亣鍒伴棶棰? : 'Could not check installed capabilities'}
+                    {isZh(lang) ? '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898' : 'Could not check installed capabilities'}
                     {skillDiscovery.error && <span> \u00b7 {skillDiscovery.error}</span>}
                 </div>
             )}
@@ -15940,8 +15939,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <div className="apps-manage-row">
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 ${isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}`}>
-                            {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 {isZh(lang) ? '宸插姞鍏ラ潰鏉? : 'In panel'}
+                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 ${isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}`}>
+                            {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 {isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}
                         </div>
                         <div className="apps-manage-actions">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>{text.moveTopShort}</button>
@@ -15993,7 +15992,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {filteredNotInPanelApps.length > 0 && (
                 <section className="apps-hidden-section">
                     <div className="apps-section__title-row">
-                        <h3 className="apps-section__title">{isZh(lang) ? '鏈姞鍏ラ潰鏉? : 'Not in panel'}</h3>
+                        <h3 className="apps-section__title">{isZh(lang) ? '\u672a\u52a0\u5165\u9762\u677f' : 'Not in panel'}</h3>
                         <span className="apps-count">{filteredNotInPanelApps.length}/{notInPanelApps.length}</span>
                     </div>
                     {filteredNotInPanelApps.map((app) => (
@@ -16532,7 +16531,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 if (!discovered) {
                     throw new Error(
                         isZh(lang)
-                            ? '鎶€鑳藉凡涓嬭浇锛屼絾鏈彂鐜板彲瀹夎鐨?MaClaw App 瀹氫箟锛堢己灏?maclaw.app.json锛夈€?
+                            ? '\u6280\u80fd\u5df2\u4e0b\u8f7d\uff0c\u4f46\u672a\u53d1\u73b0\u53ef\u5b89\u88c5\u7684 MaClaw App \u5b9a\u4e49\uff08\u7f3a\u5c11 maclaw.app.json\uff09\u3002'
                             : 'Skill installed, but no installable MaClaw App definition was found (missing maclaw.app.json).',
                     );
                 }

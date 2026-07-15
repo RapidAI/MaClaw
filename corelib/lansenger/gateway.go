@@ -6,7 +6,6 @@ package lansenger
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,9 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
+	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,15 +72,33 @@ func ParseToken(token string) (Config, error) {
 
 // IncomingMessage represents a message received from Lansenger.
 type IncomingMessage struct {
-	FromUserID  string // staffId of the sender
-	Text        string // text content
-	MessageID   string // platform message ID
-	MessageType string // "text", "formatText", "image", "file", etc.
-	ChatType    string // "p2p" or "group"
-	GroupID     string // group ID if group message
-	MediaType   string // "image", "video", "file", "voice" or ""
-	MediaData   []byte // downloaded media bytes (if any)
-	MediaName   string // media file name
+	FromUserID      string           // staffId of the sender
+	Text            string           // text content
+	MessageID       string           // platform message ID
+	MessageType     string           // "text", "formatText", "image", "file", etc.
+	ChatType        string           // "p2p" or "group"
+	GroupID         string           // group ID if group message
+	MediaType       string           // "image", "video", "file", "voice" or ""
+	MediaData       []byte           // downloaded media bytes (if any)
+	MediaName       string           // media file name
+	SenderName      string           // display name of the sender, when supplied by Lansenger
+	GroupName       string           // display name of the group, when supplied by Lansenger
+	ReferenceText   string           // quoted/referenced message rendered as plain text
+	MentionedStaffs []MentionedStaff // staff @mentioned in this message
+	MentionedBots   []MentionedBot   // bots @mentioned in this message
+}
+
+// MentionedStaff and MentionedBot preserve the mention metadata sent by the
+// current Lansenger gateway. They let downstream agents understand group
+// context without having to infer mentions from rendered text.
+type MentionedStaff struct {
+	ID   string `json:"staffId"`
+	Name string `json:"staffName"`
+}
+
+type MentionedBot struct {
+	ID   string `json:"botId"`
+	Name string `json:"botName"`
 }
 
 // OutgoingText is a plain text message to send.
@@ -135,7 +155,14 @@ func (tc *tokenCache) set(token string, expiresIn int) {
 	if margin < 30*time.Second {
 		margin = 30 * time.Second
 	}
-	tc.expiresAt = time.Now().Add(ttl - margin)
+	refreshIn := ttl - margin
+	// A malformed/non-positive expiresIn must never create an immediately
+	// expired cache entry (which otherwise causes every media operation to
+	// re-authenticate). Keep it short-lived, but usable.
+	if refreshIn <= 0 {
+		refreshIn = 30 * time.Second
+	}
+	tc.expiresAt = time.Now().Add(refreshIn)
 }
 
 func (tc *tokenCache) clear() {
@@ -153,15 +180,28 @@ func (tc *tokenCache) clear() {
 type Gateway struct {
 	config   Config
 	handler  MessageHandler
+	statusMu sync.RWMutex
 	statusCb StatusCallback
 	client   *http.Client
-	tokens   tokenCache
+	// mediaClient allows large uploads/downloads to use the same hardened
+	// transport and redirect policy without being constrained by the short API
+	// request timeout used for authentication and message sends.
+	mediaClient *http.Client
+	tokens      tokenCache
+	// tokenFetchSem prevents a burst of concurrent sends/media downloads from
+	// stampeding the app-token endpoint. A channel semaphore lets callers stop
+	// waiting promptly when their own context is cancelled.
+	tokenFetchSem chan struct{}
 
-	mu      sync.Mutex
-	ws      *websocket.Conn
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	running bool
+	mu sync.Mutex
+	// lifecycleMu serializes Start and Stop. In particular, a new Start must
+	// not overlap Stop waiting for the prior connection goroutine to finish.
+	lifecycleMu sync.Mutex
+	ws          *websocket.Conn
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	running     bool
+	runID       uint64
 }
 
 // NewGateway creates a new Lansenger gateway.
@@ -170,80 +210,137 @@ func NewGateway(config Config, handler MessageHandler) *Gateway {
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+	}
+	// Media transfers can legitimately take longer than ordinary API calls
+	// before the gateway starts returning a response body. Do not share the API
+	// transport here: its 30-second ResponseHeaderTimeout would otherwise defeat
+	// mediaClient's five-minute timeout.
+	mediaTransport := transport.Clone()
+	mediaTransport.ResponseHeaderTimeout = 5 * time.Minute
+	noRedirect := func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &Gateway{
-		config:  config,
-		handler: handler,
+		config:        config,
+		handler:       handler,
+		tokenFetchSem: make(chan struct{}, 1),
 		client: &http.Client{
 			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				Proxy:                 http.ProxyFromEnvironment,
-				DialContext:           dialer.DialContext,
-				TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   10,
-			},
+			// App tokens are sent as query parameters by the Lansenger API. Never
+			// follow a server-provided redirect, which could leak them to another
+			// origin. Callers receive the redirect response as an API error instead.
+			CheckRedirect: noRedirect,
+			Transport:     transport,
+		},
+		// The reference channel uses a five-minute window for media transfer.
+		// It is still bounded by the caller's context and the 50 MiB inbound cap.
+		mediaClient: &http.Client{
+			Timeout:       5 * time.Minute,
+			CheckRedirect: noRedirect,
+			Transport:     mediaTransport,
 		},
 	}
 }
 
 // SetStatusCallback sets the status change callback.
 func (g *Gateway) SetStatusCallback(cb StatusCallback) {
+	g.statusMu.Lock()
+	defer g.statusMu.Unlock()
 	g.statusCb = cb
 }
 
 func (g *Gateway) emitStatus(status string) {
-	if g.statusCb != nil {
-		g.statusCb(status)
+	g.statusMu.RLock()
+	cb := g.statusCb
+	g.statusMu.RUnlock()
+	if cb != nil {
+		cb(status)
 	}
 }
 
 // Start connects to Lansenger via WebSocket and begins receiving messages.
 func (g *Gateway) Start(ctx context.Context) error {
+	g.lifecycleMu.Lock()
 	g.mu.Lock()
 	if g.running {
 		g.mu.Unlock()
+		g.lifecycleMu.Unlock()
 		log.Printf("[lansenger] Start called but already running")
 		return nil
 	}
 	ctx2, cancel := context.WithCancel(ctx)
 	g.cancel = cancel
 	g.running = true
+	g.runID++
+	runID := g.runID
 	g.mu.Unlock()
+	g.lifecycleMu.Unlock()
 
 	log.Printf("[lansenger] starting gateway: appID=%s gateway=%s", g.config.AppID, g.config.ApiGatewayURL)
 
 	// Validate credentials by fetching an app token.
 	if _, err := g.getAppToken(ctx2); err != nil {
-		g.emitStatus("error")
+		g.lifecycleMu.Lock()
 		g.mu.Lock()
-		g.running = false
+		stillCurrent := g.running && g.runID == runID
+		if stillCurrent {
+			g.running = false
+			g.cancel = nil
+		}
 		g.mu.Unlock()
+		g.lifecycleMu.Unlock()
 		cancel()
+		// Cancellation is a normal lifecycle transition, not an authentication
+		// failure. In particular, Stop may cancel an in-flight Start.
+		if ctx2.Err() != nil {
+			return ctx2.Err()
+		}
+		g.emitStatus("error")
 		return fmt.Errorf("lansenger: auth failed: %w", err)
 	}
 
+	g.lifecycleMu.Lock()
+	g.mu.Lock()
+	stillCurrent := g.running && g.runID == runID
+	g.mu.Unlock()
+	if !stillCurrent {
+		g.lifecycleMu.Unlock()
+		cancel()
+		return ctx2.Err()
+	}
 	g.wg.Add(1)
-	go g.connectLoop(ctx2)
+	go g.connectLoop(ctx2, runID)
+	g.lifecycleMu.Unlock()
 	return nil
 }
 
 // Stop gracefully shuts down the gateway.
 func (g *Gateway) Stop() error {
+	g.lifecycleMu.Lock()
+	defer g.lifecycleMu.Unlock()
+
 	g.mu.Lock()
 	if !g.running {
 		g.mu.Unlock()
 		return nil
 	}
 	g.running = false
+	g.runID++
 	if g.cancel != nil {
 		g.cancel()
 	}
 	ws := g.ws
 	g.ws = nil
+	g.cancel = nil
 	g.mu.Unlock()
 
 	log.Printf("[lansenger] stopping gateway")
@@ -267,8 +364,8 @@ func (g *Gateway) IsRunning() bool {
 // WebSocket connection loop
 // ---------------------------------------------------------------------------
 
-func (g *Gateway) connectLoop(ctx context.Context) {
-	defer g.finishConnectLoop(ctx)
+func (g *Gateway) connectLoop(ctx context.Context, runID uint64) {
+	defer g.finishConnectLoop(ctx, runID)
 	attempt := 0
 	var lastConnectedAt time.Time
 
@@ -288,12 +385,11 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 			continue
 		}
 
-		log.Printf("[lansenger] dialing WebSocket (attempt %d): %s", attempt+1, wsURL)
+		log.Printf("[lansenger] dialing WebSocket (attempt %d): %s", attempt+1, redactWebSocketURL(wsURL))
 		g.emitStatus("connecting")
 
 		dialStart := time.Now()
 		dialer := websocket.Dialer{
-			TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
 			HandshakeTimeout: 30 * time.Second,
 			NetDialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
@@ -314,9 +410,18 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 			continue
 		}
 
+		// Stop may cancel the context just after DialContext succeeds. Never
+		// publish a late connection into the gateway after that point.
 		g.mu.Lock()
-		g.ws = conn
+		acceptConn := ctx.Err() == nil && g.running
+		if acceptConn {
+			g.ws = conn
+		}
 		g.mu.Unlock()
+		if !acceptConn {
+			_ = conn.Close()
+			return
+		}
 
 		lastConnectedAt = time.Now()
 		attempt = 0
@@ -333,7 +438,9 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 
 		uptime := time.Since(lastConnectedAt)
 		g.mu.Lock()
-		g.ws = nil
+		if g.ws == conn {
+			g.ws = nil
+		}
 		g.mu.Unlock()
 
 		g.emitStatus("reconnecting")
@@ -344,12 +451,17 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 	}
 }
 
-func (g *Gateway) finishConnectLoop(ctx context.Context) {
+func (g *Gateway) finishConnectLoop(ctx context.Context, runID uint64) {
 	g.mu.Lock()
-	wasRunning := g.running
-	g.running = false
-	ws := g.ws
-	g.ws = nil
+	current := g.runID == runID
+	wasRunning := current && g.running
+	var ws *websocket.Conn
+	if current {
+		g.running = false
+		ws = g.ws
+		g.ws = nil
+		g.cancel = nil
+	}
 	g.mu.Unlock()
 
 	if ws != nil {
@@ -525,7 +637,10 @@ func lansengerConnectionAgeExceeded(connectedAt, now time.Time) bool {
 // ---------------------------------------------------------------------------
 
 type wsEnvelope struct {
-	Events []wsEvent `json:"events"`
+	Events    []wsEvent       `json:"events"`
+	Type      string          `json:"type"`
+	EventType string          `json:"eventType"`
+	Data      json.RawMessage `json:"data"`
 }
 
 type wsEvent struct {
@@ -545,7 +660,30 @@ type wsEventData struct {
 	MsgData   json.RawMessage `json:"msgData"`
 	ChatType  string          `json:"chatType"`
 	GroupID   string          `json:"groupId"`
-	Data      *wsEventData    `json:"data"` // nested data
+	// ConversationID is the group/chat identifier used by the current
+	// Lansenger WebSocket payload.  Older payloads expose the same value as
+	// groupId, so keep both and prefer groupId when it is present.
+	ConversationID    string          `json:"conversationId"`
+	ConversationTitle string          `json:"conversationTitle"`
+	GroupName         string          `json:"groupName"`
+	SenderName        string          `json:"senderName"`
+	FromType          int             `json:"fromType"`
+	Reminder          wsReminder      `json:"reminder"`
+	ReferenceMsg      *wsReferenceMsg `json:"referenceMsg"`
+	Data              *wsEventData    `json:"data"` // nested data
+}
+
+type wsReminder struct {
+	Staffs []MentionedStaff `json:"staffs"`
+	Bots   []MentionedBot   `json:"bots"`
+}
+
+type wsReferenceMsg struct {
+	From         string          `json:"from"`
+	SenderName   string          `json:"senderName"`
+	MsgType      string          `json:"msgType"`
+	MsgData      json.RawMessage `json:"msgData"`
+	ReferenceMsg *wsReferenceMsg `json:"referenceMsg"`
 }
 
 func (g *Gateway) handleWSMessage(raw []byte) {
@@ -555,7 +693,13 @@ func (g *Gateway) handleWSMessage(raw []byte) {
 		return
 	}
 
-	for _, evt := range env.Events {
+	events := env.Events
+	// Some gateway callbacks are delivered as a single top-level event rather
+	// than an events array. Normalize that shape before processing.
+	if len(events) == 0 && len(env.Data) > 0 {
+		events = []wsEvent{{EventType: env.EventType, Type: env.Type, Data: env.Data}}
+	}
+	for _, evt := range events {
 		g.processEvent(evt)
 	}
 }
@@ -568,10 +712,7 @@ func (g *Gateway) processEvent(evt wsEvent) {
 	}
 
 	// Handle nested data structure.
-	actual := &data
-	if actual.Data != nil && actual.From == "" {
-		actual = actual.Data
-	}
+	actual := unwrapEventData(&data)
 
 	evtType := evt.EventType
 	if evtType == "" {
@@ -627,17 +768,130 @@ func (g *Gateway) processEvent(evt wsEvent) {
 	}
 
 	msg := IncomingMessage{
-		FromUserID:  from,
-		Text:        text,
-		MessageID:   msgID,
-		MessageType: msgType,
-		ChatType:    chatType,
-		GroupID:     actual.GroupID,
+		FromUserID:      from,
+		Text:            text,
+		MessageID:       msgID,
+		MessageType:     msgType,
+		ChatType:        chatType,
+		GroupID:         firstNonEmpty(actual.GroupID, actual.ConversationID),
+		SenderName:      actual.SenderName,
+		GroupName:       firstNonEmpty(actual.GroupName, actual.ConversationTitle),
+		MentionedStaffs: actual.Reminder.Staffs,
+		MentionedBots:   actual.Reminder.Bots,
+	}
+	msg.ReferenceText = extractReferenceText(actual.ReferenceMsg)
+	mediaCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	msg.MediaType, msg.MediaName, msg.MediaData = g.extractMedia(mediaCtx, actual.MsgData, msgType)
+	if msg.ReferenceText != "" {
+		msg.Text = joinMessageContext(msg.Text, msg.ReferenceText)
 	}
 
-	if g.handler != nil {
-		g.handler(msg)
+	g.dispatchIncomingMessage(msg)
+}
+
+// dispatchIncomingMessage keeps a faulty application callback from taking down
+// the WebSocket reader. Delivery remains synchronous so message order and the
+// existing per-conversation handling semantics are preserved.
+func (g *Gateway) dispatchIncomingMessage(msg IncomingMessage) {
+	if g.handler == nil {
+		return
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("[lansenger] message handler panic recovered: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	g.handler(msg)
+}
+
+func unwrapEventData(data *wsEventData) *wsEventData {
+	for data != nil && data.Data != nil && strings.TrimSpace(data.From) == "" {
+		inheritEventMetadata(data.Data, data)
+		data = data.Data
+	}
+	return data
+}
+
+// inheritEventMetadata preserves envelope-level fields when the actual message
+// payload is nested under data. Current Lansenger callbacks use both layouts,
+// and group metadata commonly lives on the outer envelope.
+func inheritEventMetadata(dst, src *wsEventData) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.EventType == "" {
+		dst.EventType = src.EventType
+	}
+	if dst.Type == "" {
+		dst.Type = src.Type
+	}
+	if dst.MessageID == "" {
+		dst.MessageID = src.MessageID
+	}
+	if dst.ID == "" {
+		dst.ID = src.ID
+	}
+	if dst.MsgType == "" {
+		dst.MsgType = src.MsgType
+	}
+	if len(dst.MsgData) == 0 {
+		dst.MsgData = src.MsgData
+	}
+	if dst.ChatType == "" {
+		dst.ChatType = src.ChatType
+	}
+	if dst.GroupID == "" {
+		dst.GroupID = src.GroupID
+	}
+	if dst.ConversationID == "" {
+		dst.ConversationID = src.ConversationID
+	}
+	if dst.ConversationTitle == "" {
+		dst.ConversationTitle = src.ConversationTitle
+	}
+	if dst.GroupName == "" {
+		dst.GroupName = src.GroupName
+	}
+	if dst.SenderName == "" {
+		dst.SenderName = src.SenderName
+	}
+	if len(dst.Reminder.Staffs) == 0 {
+		dst.Reminder.Staffs = src.Reminder.Staffs
+	}
+	if len(dst.Reminder.Bots) == 0 {
+		dst.Reminder.Bots = src.Reminder.Bots
+	}
+	if dst.ReferenceMsg == nil {
+		dst.ReferenceMsg = src.ReferenceMsg
+	}
+}
+
+func extractReferenceText(ref *wsReferenceMsg) string {
+	if ref == nil {
+		return ""
+	}
+	text := extractText(ref.MsgData, firstNonEmpty(ref.MsgType, "text"))
+	label := firstNonEmpty(ref.SenderName, ref.From)
+	if label != "" && text != "" {
+		text = "[引用 " + label + "] " + text
+	}
+	if nested := extractReferenceText(ref.ReferenceMsg); nested != "" {
+		if text != "" {
+			return text + "\n" + nested
+		}
+		return nested
+	}
+	return text
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func extractText(raw json.RawMessage, msgType string) string {
@@ -651,12 +905,19 @@ func extractText(raw json.RawMessage, msgType string) string {
 
 	switch msgType {
 	case "text":
-		if textObj, ok := wrapper["text"]; ok {
-			var t struct {
-				Content string `json:"content"`
+		// Current Lansenger clients also use text + mediaType/mediaIds for
+		// attachments. Keep the caption, and expose a useful label if absent.
+		var text struct {
+			Content   string   `json:"content"`
+			MediaType int      `json:"mediaType"`
+			MediaIDs  []string `json:"mediaIds"`
+		}
+		if textObj, ok := wrapper["text"]; ok && json.Unmarshal(textObj, &text) == nil {
+			if text.Content != "" {
+				return text.Content
 			}
-			if json.Unmarshal(textObj, &t) == nil {
-				return t.Content
+			if len(text.MediaIDs) > 0 {
+				return mediaLabel(mediaKindFromType(text.MediaType), text.MediaIDs, "")
 			}
 		}
 	case "formatText":
@@ -668,16 +929,117 @@ func extractText(raw json.RawMessage, msgType string) string {
 				return t.Text
 			}
 		}
-	case "image":
-		return "[图片]"
-	case "video":
-		return "[视频]"
-	case "file":
-		return "[文件]"
-	case "voice":
-		return "[语音]"
+	case "format":
+		if formatObj, ok := wrapper["format"]; ok {
+			var format struct {
+				Text    string `json:"text"`
+				Content string `json:"content"`
+			}
+			if json.Unmarshal(formatObj, &format) == nil {
+				return firstNonEmpty(format.Text, format.Content)
+			}
+		}
+	case "image", "video", "file", "voice":
+		var media struct {
+			Content  string   `json:"content"`
+			MediaIDs []string `json:"mediaIds"`
+		}
+		if mediaObj, ok := wrapper[msgType]; ok && json.Unmarshal(mediaObj, &media) == nil {
+			return mediaLabel(msgType, media.MediaIDs, media.Content)
+		}
+		return mediaLabel(msgType, nil, "")
+	case "position":
+		var position struct {
+			Name      string `json:"name"`
+			Address   string `json:"address"`
+			Latitude  any    `json:"latitude"`
+			Longitude any    `json:"longitude"`
+		}
+		if value, ok := wrapper["position"]; ok && json.Unmarshal(value, &position) == nil {
+			return strings.TrimSpace("[位置] " + strings.Join([]string{position.Name, position.Address}, " "))
+		}
+		return "[位置]"
 	}
-	return ""
+	return "[" + msgType + "]"
+}
+
+func joinMessageContext(text, context string) string {
+	text = strings.TrimSpace(text)
+	context = strings.TrimSpace(context)
+	if context == "" {
+		return text
+	}
+	if text == "" {
+		return context
+	}
+	return text + "\n\n" + context
+}
+
+func mediaKindFromType(mediaType int) string {
+	switch mediaType {
+	case 1:
+		return "video"
+	case 2:
+		return "image"
+	case 3:
+		return "file"
+	default:
+		return "attachment"
+	}
+}
+
+// mediaLabel preserves the media ID supplied by Lansenger.  It makes an
+// attachment actionable for downstream code even if its eager download failed
+// or only the first item was loaded (for example, a video cover image).
+func mediaLabel(kind string, mediaIDs []string, caption string) string {
+	label := "[" + kind
+	if len(mediaIDs) == 1 {
+		label += ": " + mediaIDs[0]
+	} else if len(mediaIDs) > 1 {
+		label += ": " + strings.Join(mediaIDs, ", ")
+	}
+	label += "]"
+	if caption = strings.TrimSpace(caption); caption != "" {
+		label += " " + caption
+	}
+	return label
+}
+
+// extractMedia follows the current Lansenger convention: attachments may use
+// their own msgType or a text payload containing mediaType and mediaIds.
+func (g *Gateway) extractMedia(ctx context.Context, raw json.RawMessage, msgType string) (string, string, []byte) {
+	var wrapper map[string]json.RawMessage
+	if json.Unmarshal(raw, &wrapper) != nil {
+		return "", "", nil
+	}
+	mediaKind := msgType
+	var payload struct {
+		MediaType int      `json:"mediaType"`
+		MediaIDs  []string `json:"mediaIds"`
+	}
+	value := wrapper[msgType]
+	if msgType == "text" {
+		value = wrapper["text"]
+	}
+	if len(value) == 0 || json.Unmarshal(value, &payload) != nil || len(payload.MediaIDs) == 0 {
+		return "", "", nil
+	}
+	if msgType == "text" {
+		switch payload.MediaType {
+		case 1:
+			mediaKind = "video"
+		case 2:
+			mediaKind = "image"
+		default:
+			mediaKind = "file"
+		}
+	}
+	data, name, err := g.downloadMedia(ctx, payload.MediaIDs[0])
+	if err != nil {
+		log.Printf("[lansenger] media download failed: mediaId=%s: %v", payload.MediaIDs[0], err)
+		return mediaKind, "", nil
+	}
+	return mediaKind, name, data
 }
 
 // ---------------------------------------------------------------------------
@@ -688,12 +1050,22 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 	if tok, ok := g.tokens.get(); ok {
 		return tok, nil
 	}
+	select {
+	case g.tokenFetchSem <- struct{}{}:
+		defer func() { <-g.tokenFetchSem }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	// Another caller may have refreshed the token while this caller waited.
+	if tok, ok := g.tokens.get(); ok {
+		return tok, nil
+	}
 
 	log.Printf("[lansenger] refreshing app token from %s", g.config.ApiGatewayURL)
 	url := fmt.Sprintf("%s/v1/apptoken/create?grant_type=client_credential&appid=%s&secret=%s",
 		strings.TrimRight(g.config.ApiGatewayURL, "/"),
-		g.config.AppID,
-		g.config.AppSecret,
+		url.QueryEscape(g.config.AppID),
+		url.QueryEscape(g.config.AppSecret),
 	)
 
 	var lastErr error
@@ -770,7 +1142,7 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 // getWebSocketURL creates a WebSocket endpoint via the API.
 func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 	apiBase := strings.TrimRight(g.config.ApiGatewayURL, "/")
-	url := apiBase + "/v1/ws/endpoint/create"
+	endpointURL := apiBase + "/v1/ws/endpoint/create"
 
 	body, _ := json.Marshal(map[string]string{
 		"appId":  g.config.AppID,
@@ -779,7 +1151,7 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 
 	var lastErr error
 	for attempt := 1; attempt <= lansengerAPIMaxRetry; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", endpointURL, bytes.NewReader(body))
 		if err != nil {
 			return "", err
 		}
@@ -837,8 +1209,12 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("ws endpoint error %d (took %v): %s", result.ErrCode, reqDuration, result.ErrMsg)
 		}
 		if result.Data.WsEndpoint != "" {
-			log.Printf("[lansenger] got WS endpoint (took %v): %s", reqDuration, result.Data.WsEndpoint)
-			return result.Data.WsEndpoint, nil
+			wsURL, err := validateWebSocketURL(result.Data.WsEndpoint)
+			if err != nil {
+				return "", fmt.Errorf("invalid WS endpoint: %w", err)
+			}
+			log.Printf("[lansenger] got WS endpoint (took %v): %s", reqDuration, redactWebSocketURL(wsURL))
+			return wsURL, nil
 		}
 		break
 	}
@@ -852,9 +1228,47 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 	wsBase = strings.TrimRight(wsBase, "/")
 	wsBase = strings.Replace(wsBase, "https://", "wss://", 1)
 	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	fallbackURL := fmt.Sprintf("%s/open-apis/im/v1/ws/%s", wsBase, g.config.AppID)
-	log.Printf("[lansenger] warning: WS endpoint API returned empty, using fallback: %s", fallbackURL)
+	fallbackRawURL := fmt.Sprintf("%s/open-apis/im/v1/ws/%s", wsBase, url.PathEscape(g.config.AppID))
+	fallbackURL, err := validateWebSocketURL(fallbackRawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid WS fallback URL: %w", err)
+	}
+	log.Printf("[lansenger] warning: WS endpoint API returned empty, using fallback: %s", redactWebSocketURL(fallbackURL))
 	return fallbackURL, nil
+}
+
+// validateWebSocketURL rejects malformed endpoint data before it reaches the
+// reconnect loop. The endpoint is gateway-controlled but still external input;
+// userinfo in particular must never be accepted or logged as part of a URL.
+func validateWebSocketURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return "", fmt.Errorf("unsupported scheme %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("missing host")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("userinfo is not allowed")
+	}
+	return u.String(), nil
+}
+
+// redactWebSocketURL removes query and fragment data before diagnostics. Some
+// Lansenger deployments return one-time connection credentials in the endpoint
+// query string, which must never be written to logs.
+func redactWebSocketURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[invalid websocket URL]"
+	}
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	return u.String()
 }
 
 // ---------------------------------------------------------------------------
@@ -867,6 +1281,12 @@ func (g *Gateway) apiURL(path string) string {
 
 // SendText sends a text message to a user or group.
 func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
+	if strings.TrimSpace(msg.ToUserID) == "" {
+		return fmt.Errorf("lansenger: recipient is required")
+	}
+	if strings.TrimSpace(msg.Text) == "" {
+		return nil
+	}
 	token, err := g.getAppToken(ctx)
 	if err != nil {
 		return err
@@ -938,6 +1358,9 @@ func isLansengerTokenExpiredError(err error) bool {
 // mediaType + mediaIds attachment. Per the Lansenger API docs, media is sent
 // via msgType="text" with mediaType (1=video, 2=image, 3=file) and mediaIds.
 func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
+	if strings.TrimSpace(msg.ToUserID) == "" {
+		return fmt.Errorf("lansenger: recipient is required")
+	}
 	if len(msg.FileData) == 0 {
 		return fmt.Errorf("lansenger: empty file data")
 	}
@@ -1011,19 +1434,19 @@ func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg Outg
 
 // uploadMedia uploads a file to Lansenger's media storage and returns the mediaId.
 func (g *Gateway) uploadMedia(ctx context.Context, appToken string, data []byte, fileName, mediaType string) (string, error) {
-	// Map media type to Lansenger's type parameter: 2=image, 1=video, 3=audio, default=2
-	typeParam := "2" // image
-	switch mediaType {
-	case "video":
-		typeParam = "1"
+	// The current /v1/app/medias/create API expects a descriptive upload type,
+	// rather than the numeric mediaType used later in a text message payload.
+	// Keep voice as an alias because callers use both names for audio files.
+	typeParam := "file"
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image", "video", "file":
+		typeParam = strings.ToLower(strings.TrimSpace(mediaType))
 	case "audio", "voice":
-		typeParam = "3"
-	case "file":
-		typeParam = "2" // files also use type=2 in the API
+		typeParam = "audio"
 	}
 
 	url := fmt.Sprintf("%s?type=%s&app_token=%s",
-		g.apiURL("/v1/medias/create"), typeParam, appToken)
+		g.apiURL("/v1/app/medias/create"), typeParam, url.QueryEscape(appToken))
 
 	// Build multipart form.
 	var buf bytes.Buffer
@@ -1058,7 +1481,7 @@ func (g *Gateway) uploadMedia(ctx context.Context, appToken string, data []byte,
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	resp, err := g.client.Do(req)
+	resp, err := g.mediaClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("upload request: %w", err)
 	}
@@ -1091,8 +1514,85 @@ func (g *Gateway) uploadMedia(ctx context.Context, appToken string, data []byte,
 	return result.Data.MediaID, nil
 }
 
+// downloadMedia retrieves an inbound attachment. The gateway returns the
+// original filename in Content-Disposition when available.
+func (g *Gateway) downloadMedia(ctx context.Context, mediaID string) ([]byte, string, error) {
+	if strings.TrimSpace(mediaID) == "" {
+		return nil, "", fmt.Errorf("empty mediaId")
+	}
+	token, err := g.getAppToken(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	url := fmt.Sprintf("%s/%s/fetch?app_token=%s", g.apiURL("/v1/medias"), url.PathEscape(mediaID), url.QueryEscape(token))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := g.mediaClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, "", fmt.Errorf("media download HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	const maxInboundMediaBytes = 50 << 20
+	if resp.ContentLength > maxInboundMediaBytes {
+		return nil, "", fmt.Errorf("media download exceeds %d byte limit", maxInboundMediaBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxInboundMediaBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > maxInboundMediaBytes {
+		return nil, "", fmt.Errorf("media download exceeds %d byte limit", maxInboundMediaBytes)
+	}
+	name := mediaFilename(resp.Header.Get("Content-Disposition"))
+	return data, name, nil
+}
+
+func mediaFilename(disposition string) string {
+	// RFC 5987 filename* takes precedence over the legacy filename parameter.
+	for _, part := range strings.Split(disposition, ";") {
+		part = strings.TrimSpace(part)
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(lower, "filename*=") {
+			name := strings.TrimSpace(part[len("filename*="):])
+			if pieces := strings.SplitN(name, "''", 2); len(pieces) == 2 {
+				if decoded, err := url.PathUnescape(pieces[1]); err == nil {
+					return safeMediaFilename(decoded)
+				}
+			}
+		}
+	}
+	for _, part := range strings.Split(disposition, ";") {
+		part = strings.TrimSpace(part)
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(lower, "filename=") {
+			name := strings.Trim(strings.TrimSpace(part[len("filename="):]), "\"")
+			return safeMediaFilename(name)
+		}
+	}
+	return ""
+}
+
+func safeMediaFilename(name string) string {
+	// Content-Disposition is remote input. Normalize both path separator styles
+	// before taking the base name, then reject the special directory names.
+	name = filepath.Base(strings.ReplaceAll(strings.TrimSpace(name), "\\", "/"))
+	if name == "." || name == string(filepath.Separator) {
+		return ""
+	}
+	return name
+}
+
 func (g *Gateway) sendPrivateMessage(ctx context.Context, token, userID, msgType string, msgData any) error {
-	url := fmt.Sprintf("%s?app_token=%s", g.apiURL("/v1/bot/messages/create"), token)
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("lansenger: private recipient is required")
+	}
+	url := fmt.Sprintf("%s?app_token=%s", g.apiURL("/v1/bot/messages/create"), url.QueryEscape(token))
 	body, _ := json.Marshal(map[string]any{
 		"userIdList": []string{userID},
 		"msgType":    msgType,
@@ -1102,7 +1602,10 @@ func (g *Gateway) sendPrivateMessage(ctx context.Context, token, userID, msgType
 }
 
 func (g *Gateway) sendGroupMessage(ctx context.Context, token, groupID, msgType string, msgData any) error {
-	url := fmt.Sprintf("%s?app_token=%s", g.apiURL("/v1/messages/group/create"), token)
+	if strings.TrimSpace(groupID) == "" {
+		return fmt.Errorf("lansenger: group recipient is required")
+	}
+	url := fmt.Sprintf("%s?app_token=%s", g.apiURL("/v1/messages/group/create"), url.QueryEscape(token))
 	body, _ := json.Marshal(map[string]any{
 		"groupId": groupID,
 		"msgType": msgType,

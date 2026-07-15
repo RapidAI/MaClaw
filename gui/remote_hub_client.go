@@ -1582,6 +1582,8 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileData:    reply.FileData,
 			FileName:    reply.FileName,
 			MimeType:    reply.MimeType,
+			ChatType:    reply.ChatType,
+			Extra:       reply.Extra,
 		})
 	case imGatewayPlatformWeixin:
 		wl := weixin.GetWxLog()
@@ -1618,6 +1620,8 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileData:    reply.FileData,
 			FileName:    reply.FileName,
 			MimeType:    reply.MimeType,
+			ChatType:    reply.ChatType,
+			Extra:       reply.Extra,
 		})
 	case imGatewayPlatformThirdParty:
 		if c.app.thirdPartyGateway == nil {

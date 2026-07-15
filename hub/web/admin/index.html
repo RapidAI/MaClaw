@@ -318,6 +318,64 @@
             <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewDEAuthLabel"></div><div id="overviewDEAuthStatus" style="margin-top:4px;font-size:14px"></div><div id="overviewDEAuthDetail" style="margin-top:6px;font-size:12px;color:var(--muted);white-space:pre-line"></div></div>
             <div class="item" style="padding:14px 16px"><div class="item-title" id="overviewComputeAuthLabel"></div><div id="overviewComputeAuthStatus" style="margin-top:4px;font-size:14px"></div><div id="overviewComputeAuthDetail" style="margin-top:6px;font-size:12px;color:var(--muted);white-space:pre-line"></div></div>
           </div>
+          <div id="overviewSystemFreePanel" class="item" style="margin-top:18px;padding:14px 16px">
+            <div class="item-head" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+              <div>
+                <div class="item-title" id="overviewSystemFreeTitle">system-free</div>
+                <div class="item-meta" id="overviewSystemFreeDesc" style="margin-top:4px"></div>
+              </div>
+              <div id="overviewSystemFreeBadge" style="font-size:12px;font-weight:700"></div>
+            </div>
+            <div class="item-meta mono" id="overviewSystemFreeDetail" style="margin-top:10px"></div>
+            <div class="actions" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+              <button class="btn-secondary" type="button" id="overviewSystemFreeTestBtn" onclick="typeof testTenantSystemFreeLLM==='function'&&testTenantSystemFreeLLM()">Test</button>
+              <button class="btn-ghost" type="button" id="overviewSystemFreeConfigBtn" onclick="typeof openTab==='function'&&openTab('modelservices')">Configure</button>
+            </div>
+          </div>
+          <!-- Config Assistant (NL plan → confirm → execute) -->
+          <div id="overviewConfigAgent" class="item" style="margin-top:18px;padding:14px 16px">
+            <div class="item-head" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px">
+              <div>
+                <div class="item-title" id="configAgentTitle">Config Assistant</div>
+                <div class="item-meta" id="configAgentSubtitle" style="margin-top:4px"></div>
+              </div>
+            </div>
+            <div id="configAgentChatLog" style="max-height:320px;overflow:auto;margin-bottom:10px">
+              <div class="item-meta" id="configAgentEmptyHint"></div>
+              <div id="configAgentExamples" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="test system-free">test system-free</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="invite user demo@example.com as member">invite user</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="generate 3 invitation codes">invite codes</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="bind user demo@example.com to system-free">bind system-free</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="list pending enrollments">pending enrollments</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="block email spam@example.com reason abuse">block email</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show wecom config">wecom</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show dingtalk config">dingtalk</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show content audit config">content audit</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show qqbot config">qqbot</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="list bridge channels">bridge channels</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show mail sender name">mail sender</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show smart route">smart route</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show migration settings">migration settings</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="set migration max to 200MB">migration 200MB</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show feishu auto enroll">feishu auto enroll</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show card store config">card store</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="list invitation codes">list invite codes</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="show invitation code required status">invite required?</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="list service groups">service groups</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="diagnose LLM service for demo@example.com">diagnose entitlement</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="export invitation codes">export invite codes</button>
+                <button type="button" class="btn-ghost" style="height:28px;font-size:11px;padding:0 10px" data-ca-example="unbind user demo@example.com from system-free">unbind system-free</button>
+              </div>
+              <div id="configAgentHistory" style="margin-top:12px"></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+              <div style="flex:1;min-width:220px">
+                <textarea id="configAgentInput" rows="2" style="width:100%;min-height:56px;resize:vertical" placeholder=""></textarea>
+              </div>
+              <button class="btn-primary" type="button" id="configAgentSendBtn" style="height:36px;padding:0 14px">Send</button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -632,10 +690,17 @@
             <button class="btn-ghost" onclick="loadTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsReloadBtn"></button>
           </div>
           <div class="grid2">
-            <div><label for="tenantSystemDefaultLLMServiceGroup" id="tenantSystemDefaultLLMServiceGroupLabel"></label><select id="tenantSystemDefaultLLMServiceGroup"></select></div>
+            <div>
+              <label for="tenantSystemDefaultLLMServiceGroup" id="tenantSystemDefaultLLMServiceGroupLabel"></label>
+              <select id="tenantSystemDefaultLLMServiceGroup" disabled></select>
+              <div id="tenantSystemFreeStatusBadge" class="item-meta" style="margin-top:6px;font-weight:600"></div>
+            </div>
             <div class="item-meta" id="tenantSystemLLMDefaultsHint" style="align-self:end"></div>
           </div>
-          <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsSaveBtn"></button></div>
+          <div class="actions" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+            <button class="btn-primary" onclick="saveTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsSaveBtn"></button>
+            <button class="btn-secondary" onclick="testTenantSystemFreeLLM()" id="tenantSystemFreeTestBtn"></button>
+          </div>
         </div>
         <!-- Admin profile -->
         <div class="item" style="margin-top:10px">
@@ -1420,6 +1485,7 @@
 <script src="/admin/notification-tab.js"></script>
 <script src="/admin/admin-module-health.js"></script>
 <script src="/admin/overview-tenant-info.js"></script>
+<script src="/admin/overview-config-agent.js"></script>
 <script src="/admin/admin-bootstrap.js"></script>
 </body>
 </html>

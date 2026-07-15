@@ -130,11 +130,20 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	pluginIdentity := im.NewPluginIdentityResolver(imAdapter)
 	imAdapter.SetIdentityResolver(pluginIdentity)
 
-	// Hub LLM Coordinator 闂?sits between Adapter and MessageRouter.
-	// Provides seamless smart mode when Hub LLM is configured.
-	llmConfigProvider := func(ctx context.Context) *im.HubLLMConfig {
-		return loadGlobalHubLLMConfig(ctx, st.System)
+	// Server-side IM LLM uses the reserved system-free service group.
+	// MaClaw official client is attached after InitMaClawModule below.
+	systemLLMResolver := &im.SystemLLMResolver{
+		System: st.System,
+		Scope: func(tenantID string, base store.SystemSettingsRepository) store.SystemSettingsRepository {
+			return scopedSystemSettingsForTenant(tenantID, base)
+		},
 	}
+	im.SetSystemLLMResolver(systemLLMResolver)
+	// Hub LLM Coordinator sits between Adapter and MessageRouter.
+	// Provides seamless smart mode when system-free (or legacy hub_llm_config) is available.
+	llmConfigProvider := systemLLMResolver.ConfigProvider(func(ctx context.Context) *im.HubLLMConfig {
+		return loadGlobalHubLLMConfig(ctx, st.System)
+	})
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
 
@@ -515,6 +524,8 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 			return hubID, loadCenterHubSecret(context.Background(), st.System)
 		})
 		httpapi.SetMaClawModule(maclawMod)
+		// Attach official client so IM system-free can forward when no local provider.
+		systemLLMResolver.MaClawClient = maclawMod.Client
 	}
 	ensureLLMRegistryBuiltinsForAllTenants(context.Background(), st.System, st.Tenants)
 

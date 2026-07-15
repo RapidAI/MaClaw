@@ -233,6 +233,19 @@ $("configCodexBtn").addEventListener("click", async () => {
     setBusy(btn, false);
   }
 });
+$("restoreCodexBtn").addEventListener("click", async () => {
+  const btn = $("restoreCodexBtn");
+  if (!window.confirm("将移除第三方服务商及代理密钥，并把所有 Codex 会话恢复为 OpenAI。下次启动 Codex 需要重新登录 OpenAI。是否继续？")) return;
+  setBusy(btn, true, "恢复中...");
+  try {
+    const msg = await api.RestoreCodex();
+    notify(msg || "Codex 已恢复为 OpenAI；所有会话已更新，请重新登录 OpenAI。");
+  } catch (err) {
+    notify(errorMessage(err), "error");
+  } finally {
+    setBusy(btn, false);
+  }
+});
 $("installCodexBtn").addEventListener("click", async () => {
   const btn = $("installCodexBtn");
   if (btn.dataset.installing) return; // double-click guard

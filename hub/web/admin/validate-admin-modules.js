@@ -34,6 +34,7 @@ const expectedScripts = [
   'notification-tab.js',
   'admin-module-health.js',
   'overview-tenant-info.js',
+  'overview-config-agent.js',
   'admin-bootstrap.js'
 ];
 const removedLegacyFiles = [
@@ -225,7 +226,7 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js is missing tenant migration settings marker: ' + marker);
     }
   });
-  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'tenantSystemLLMProviderIDs', 'tenantSystemLLMProviderIsConfigured', 'tenantSystemLLMModelProviderIDs', 'provider_configs', 'system_default_service_group_id', '/api/admin/llm/services?include_cards=false', '/api/admin/llm/providers'].forEach(function(marker) {
+  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'tenantSystemLLMProviderIDs', 'tenantSystemLLMProviderIsConfigured', 'tenantSystemLLMModelProviderIDs', 'provider_configs', '/api/admin/llm/system-free', '/api/admin/llm/providers', 'testTenantSystemFreeLLM'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant system LLM default marker: ' + marker);
     }
@@ -236,9 +237,9 @@ function assertTenantAdminUIHooks() {
   if (system.includes("toLowerCase() === 'default'")) {
     fail('system-tab.js must not hard-code exclude the default service group; model/provider availability should decide usability.');
   }
-  ['provider_configs || []', 'cfg && cfg.provider_id', '.some(tenantSystemLLMProviderIsConfigured)', 'value="\' + escapeHtml(id) + \'"', 'noUsableGroups', 'hasServiceGroups'].forEach(function(marker) {
+  ['tenantSystemFreeStatusCache', 'system-free', 'noUsableGroups', 'testTenantSystemFreeLLM', 'renderTenantSystemLLMDefaultOptions'].forEach(function(marker) {
     if (!system.includes(marker)) {
-      fail('system-tab.js is missing robust tenant system LLM option rendering marker: ' + marker);
+      fail('system-tab.js is missing robust tenant system-free LLM marker: ' + marker);
     }
   });
   const bootstrap = read('admin-bootstrap.js');
@@ -909,6 +910,76 @@ assertSecurityDefaultGroupUsesName();
 assertSecurityTenantSchemaGuards();
 assertSecurityCapabilityComplianceExportHooks();
 assertApprovalRolesHooks();
+assertConfigAgentHooks();
+
+function assertConfigAgentHooks() {
+  const html = read('index.html');
+  const ca = read('overview-config-agent.js');
+  [
+    'id="overviewConfigAgent"',
+    'id="configAgentChatLog"',
+    'id="configAgentInput"',
+    'id="configAgentSendBtn"',
+    'id="configAgentExamples"',
+    'id="configAgentHistory"',
+    'src="/admin/overview-config-agent.js"'
+  ].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing config agent marker: ' + marker);
+    }
+  });
+  [
+    'initConfigAgent',
+    'submitConfigAgent',
+    'formatSupportPackJSON',
+    'downloadSupportPackJson',
+    'formatSupportHandoffText',
+    'renderDiagnoseWizardStrip',
+    'renderMissingFieldsPanel',
+    'setSessionFromPlanResponse',
+    'clearConfigAgentSession',
+    'showToolCatalog',
+    'filterCatalogTools',
+    'buildCatalogSectionsHtml',
+    'showShortcutsHelp',
+    'toggleFavoriteCommand',
+    'rememberRecentCommand',
+    'exportCommandPrefs',
+    'importCommandPrefsFromObject',
+    'historyGroupBySession',
+    'groupHistoryBySession',
+    '/api/admin/config-agent/plan',
+    '/api/admin/config-agent/execute',
+    '/api/admin/config-agent/history',
+    '/api/admin/config-agent/catalog',
+    'session_turns',
+    'session_expires_at',
+    'data-ca-catalog-fav',
+    'config-agent-diagnose-support-pack',
+    'config-agent-command-prefs'
+  ].forEach(function(marker) {
+    if (!ca.includes(marker)) {
+      fail('overview-config-agent.js is missing marker: ' + marker);
+    }
+  });
+  // ASCII-only source (CJK via \\u escapes). File header requires this.
+  for (var i = 0; i < ca.length; i++) {
+    if (ca.charCodeAt(i) > 127) {
+      fail('overview-config-agent.js must stay ASCII-only (use \\u escapes); non-ASCII at offset ' + i);
+      break;
+    }
+  }
+  // Ensure critical globals are exported for bootstrap.
+  ['global.initConfigAgent', 'global.submitConfigAgent', 'global.maybeShowSystemFreeGate'].forEach(function(marker) {
+    if (!ca.includes(marker)) {
+      fail('overview-config-agent.js must export runtime hook: ' + marker);
+    }
+  });
+  // Guard against accidental double-binding of catalog search without debounce flag.
+  if (!ca.includes('catalogSearchTimer') || !ca.includes('lastCatalogExampleByName')) {
+    fail('overview-config-agent.js is missing catalog filter performance helpers');
+  }
+}
 
 if (!process.exitCode) {
   console.log('Admin module validation passed.');

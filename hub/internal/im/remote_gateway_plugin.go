@@ -77,7 +77,22 @@ type RemoteGatewayPlugin struct {
 	// Stored per platformUID so replies can carry the token back.
 	ctxTokenMu sync.RWMutex
 	ctxTokens  map[string]string // platformUID -> context_token
+
+	// replyRoutes retains transport metadata that is not represented by the
+	// generic UserTarget. Lansenger needs this to choose its group endpoint for
+	// Hub-originated replies, including replies emitted before a client can
+	// rebuild its own route cache.
+	routeMu     sync.RWMutex
+	replyRoutes map[string]remoteGatewayReplyRoute
 }
+
+type remoteGatewayReplyRoute struct {
+	target   string
+	chatType string
+	seenAt   time.Time
+}
+
+const maxRemoteGatewayReplyRoutes = 1000
 
 type pendingRemoteBind struct {
 	TenantID  string
@@ -91,14 +106,15 @@ type pendingRemoteBind struct {
 // platform name (e.g. "qqbot", "telegram").
 func NewRemoteGatewayPlugin(platform string, sender MachineMessageSender, users store.UserRepository, system store.SystemSettingsRepository) *RemoteGatewayPlugin {
 	p := &RemoteGatewayPlugin{
-		platform:  platform,
-		sender:    sender,
-		users:     users,
-		system:    system,
-		owners:    make(map[string]*gatewayOwner),
-		bindings:  make(map[string]string),
-		pending:   make(map[string]*pendingRemoteBind),
-		ctxTokens: make(map[string]string),
+		platform:    platform,
+		sender:      sender,
+		users:       users,
+		system:      system,
+		owners:      make(map[string]*gatewayOwner),
+		bindings:    make(map[string]string),
+		pending:     make(map[string]*pendingRemoteBind),
+		ctxTokens:   make(map[string]string),
+		replyRoutes: make(map[string]remoteGatewayReplyRoute),
 	}
 	p.loadBindings()
 	return p
@@ -121,6 +137,27 @@ func (p *RemoteGatewayPlugin) SendText(ctx context.Context, target UserTarget, t
 		"platform_uid": target.PlatformUID,
 		"text":         text,
 	})
+}
+
+// SuppressGroupIMDetail reports whether process/status messages should remain
+// internal.  Lansenger groups must never receive agent progress, regardless
+// of any user-level progress visibility setting.  Normal replies continue to
+// use SendText and are intentionally unaffected.
+func (p *RemoteGatewayPlugin) SuppressGroupIMDetail(ctx context.Context, target UserTarget) bool {
+	if p == nil || !strings.EqualFold(strings.TrimSpace(p.platform), "lansenger") {
+		return false
+	}
+	return strings.EqualFold(p.replyRoute(TenantIDFromContext(ctx), target.PlatformUID).chatType, "group")
+}
+
+// SuppressGroupIdentityPrompt reports whether an identity/binding prompt
+// would be broadcast to a Lansenger group. Binding must only happen in a
+// private conversation, so the Adapter drops such prompts at their source.
+func (p *RemoteGatewayPlugin) SuppressGroupIdentityPrompt(ctx context.Context, target UserTarget) bool {
+	if p == nil || !strings.EqualFold(strings.TrimSpace(p.platform), "lansenger") {
+		return false
+	}
+	return strings.EqualFold(p.replyRoute(TenantIDFromContext(ctx), target.PlatformUID).chatType, "group")
 }
 
 func (p *RemoteGatewayPlugin) SendCard(ctx context.Context, target UserTarget, card OutgoingMessage) error {
@@ -336,6 +373,8 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		Text         string              `json:"text"`
 		MessageType  string              `json:"message_type"`
 		MessageID    string              `json:"message_id"`
+		ChatType     string              `json:"chat_type,omitempty"`
+		ReplyTarget  string              `json:"reply_target,omitempty"`
 		ContextToken string              `json:"context_token"`
 		Attachments  []MessageAttachment `json:"attachments,omitempty"`
 	}
@@ -344,6 +383,7 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		return
 	}
 	tenantID := normalizeRemoteTenantID(msg.TenantID)
+	replyTarget := remoteGatewayReplyTarget(msg.PlatformUID, msg.ReplyTarget, msg.ChatType)
 
 	p.mu.RLock()
 	owner := p.ownerForTenantLocked(tenantID)
@@ -360,14 +400,15 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		log.Printf("[remote-gw/%s] REJECTED: tenant=%s message from non-owner machine=%s (owner=%s)", p.platform, tenantID, machineID, ownerID)
 		// Notify the client so it can fall back to local processing instead of
 		// silently dropping the user's message.
-		if msg.PlatformUID != "" {
+		if replyTarget != "" {
 			_ = p.sender.SendToMachine(machineID, map[string]any{
 				"type": "im.gateway_reply",
 				"payload": map[string]any{
 					"platform": p.platform,
 					"payload": map[string]any{
 						"reply_type":   "text",
-						"platform_uid": msg.PlatformUID,
+						"platform_uid": replyTarget,
+						"chat_type":    msg.ChatType,
 						"text":         fmt.Sprintf("Hub 未识别此 %s 网关的所有权，消息被拒绝。请尝试重启连接或切回单机模式。", p.platform),
 					},
 				},
@@ -377,14 +418,15 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 	}
 	if handler == nil {
 		log.Printf("[remote-gw/%s] REJECTED: no message handler registered", p.platform)
-		if msg.PlatformUID != "" {
+		if replyTarget != "" {
 			_ = p.sender.SendToMachine(machineID, map[string]any{
 				"type": "im.gateway_reply",
 				"payload": map[string]any{
 					"platform": p.platform,
 					"payload": map[string]any{
 						"reply_type":   "text",
-						"platform_uid": msg.PlatformUID,
+						"platform_uid": replyTarget,
+						"chat_type":    msg.ChatType,
 						"text":         "Hub IM 处理器未就绪，请稍后重试。",
 					},
 				},
@@ -409,6 +451,8 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		}
 		p.ctxTokenMu.Unlock()
 	}
+	p.rememberReplyRoute(tenantID, msg.PlatformUID, replyTarget, msg.ChatType)
+	isLansengerGroup := strings.EqualFold(strings.TrimSpace(p.platform), "lansenger") && strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
 
 	log.Printf("[remote-gw/%s] dispatching: tenant=%s uid=%s type=%s text_len=%d attachments=%d has_ctx_token=%v", p.platform, tenantID, msg.PlatformUID, msg.MessageType, len(msg.Text), len(msg.Attachments), msg.ContextToken != "")
 
@@ -416,10 +460,12 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 	// the gateway owner's machine, automatically bind this platformUID to
 	// the owner's email. This removes the need for manual email verification
 	// when the gateway owner chats via their own WeChat account.
-	p.tryAutoBindOwner(msg.PlatformUID, owner)
+	if !isLansengerGroup {
+		p.tryAutoBindOwner(msg.PlatformUID, owner)
+	}
 
 	// Check if this is a binding flow message (email or verify code).
-	if p.handleBindingFlow(tenantID, msg.PlatformUID, msg.Text) {
+	if !isLansengerGroup && p.handleBindingFlow(tenantID, msg.PlatformUID, msg.Text) {
 		return
 	}
 
@@ -432,6 +478,7 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		TenantID:     tenantID,
 		PlatformName: p.platform,
 		PlatformUID:  msg.PlatformUID,
+		ReplyTarget:  replyTarget,
 		MessageID:    msg.MessageID,
 		MessageType:  msgType,
 		Text:         msg.Text,
@@ -439,6 +486,18 @@ func (p *RemoteGatewayPlugin) HandleGatewayMessage(machineID string, payload jso
 		RawPayload:   payload,
 		Timestamp:    time.Now(),
 	})
+}
+
+func remoteGatewayReplyTarget(platformUID, replyTarget, chatType string) string {
+	platformUID = strings.TrimSpace(platformUID)
+	replyTarget = strings.TrimSpace(replyTarget)
+	if strings.EqualFold(strings.TrimSpace(chatType), "group") {
+		return replyTarget
+	}
+	if replyTarget != "" {
+		return replyTarget
+	}
+	return platformUID
 }
 
 // ---------------------------------------------------------------------------
@@ -459,11 +518,17 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(ctx context.Context, replyType 
 	// Inject cached context_token so the client can deliver the reply
 	// without relying on its own local cache (fixes Hub-mode WeChat replies).
 	if uid, _ := payload["platform_uid"].(string); uid != "" {
+		if route := p.replyRoute(tenantID, uid); route.target != "" {
+			payload["platform_uid"] = route.target
+		}
 		p.ctxTokenMu.RLock()
 		if ct := p.ctxTokens[remoteTenantPlatformKey(tenantID, uid)]; ct != "" {
 			payload["context_token"] = ct
 		}
 		p.ctxTokenMu.RUnlock()
+		if route := p.replyRoute(tenantID, uid); route.chatType != "" {
+			payload["chat_type"] = route.chatType
+		}
 	}
 
 	msg := map[string]any{
@@ -481,6 +546,51 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(ctx context.Context, replyType 
 		log.Printf("[remote-gw/%s] sendToGatewayOwner OK: tenant=%s machine=%s reply_type=%s", p.platform, tenantID, owner.MachineID, replyType)
 	}
 	return err
+}
+
+func (p *RemoteGatewayPlugin) rememberReplyRoute(tenantID, platformUID, target, chatType string) {
+	platformUID = strings.TrimSpace(platformUID)
+	target = strings.TrimSpace(target)
+	chatType = strings.ToLower(strings.TrimSpace(chatType))
+	if platformUID == "" || target == "" || chatType == "" {
+		return
+	}
+	p.routeMu.Lock()
+	defer p.routeMu.Unlock()
+	keys := []string{remoteTenantPlatformKey(tenantID, platformUID)}
+	if targetKey := remoteTenantPlatformKey(tenantID, target); targetKey != keys[0] {
+		keys = append(keys, targetKey)
+	}
+	newKeys := 0
+	for _, key := range keys {
+		if _, exists := p.replyRoutes[key]; !exists {
+			newKeys++
+		}
+	}
+	if len(p.replyRoutes)+newKeys > maxRemoteGatewayReplyRoutes {
+		var oldestKey string
+		var oldest time.Time
+		for len(p.replyRoutes)+newKeys > maxRemoteGatewayReplyRoutes {
+			oldestKey = ""
+			for candidate, route := range p.replyRoutes {
+				if oldestKey == "" || route.seenAt.Before(oldest) {
+					oldestKey, oldest = candidate, route.seenAt
+				}
+			}
+			delete(p.replyRoutes, oldestKey)
+		}
+	}
+	route := remoteGatewayReplyRoute{target: target, chatType: chatType, seenAt: time.Now()}
+	for _, key := range keys {
+		p.replyRoutes[key] = route
+	}
+}
+
+func (p *RemoteGatewayPlugin) replyRoute(tenantID, platformUID string) remoteGatewayReplyRoute {
+	p.routeMu.RLock()
+	route := p.replyRoutes[remoteTenantPlatformKey(tenantID, strings.TrimSpace(platformUID))]
+	p.routeMu.RUnlock()
+	return route
 }
 
 func (p *RemoteGatewayPlugin) sendBindingText(ctx context.Context, platformUID, text string) {

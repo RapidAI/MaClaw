@@ -78,9 +78,13 @@ const MaxAttachmentSize = 10 * 1024 * 1024
 
 // IncomingMessage represents a standardized inbound message from any IM platform.
 type IncomingMessage struct {
-	TenantID      string              `json:"tenant_id,omitempty"`   // Hub tenant hint for multi-tenant webhook adapters
-	PlatformName  string              `json:"platform_name"`         // IM platform name (e.g. "feishu", "qbot")
-	PlatformUID   string              `json:"platform_uid"`          // Platform-specific user ID (e.g. Feishu open_id)
+	TenantID     string `json:"tenant_id,omitempty"` // Hub tenant hint for multi-tenant webhook adapters
+	PlatformName string `json:"platform_name"`       // IM platform name (e.g. "feishu", "qbot")
+	PlatformUID  string `json:"platform_uid"`        // Platform-specific user ID (e.g. Feishu open_id)
+	// ReplyTarget is an optional conversation identifier used after identity
+	// resolution. Remote group gateways keep PlatformUID as the human sender
+	// while sending the final reply back to the group conversation.
+	ReplyTarget   string              `json:"reply_target,omitempty"`
 	UnifiedUserID string              `json:"unified_user_id"`       // Unified internal user ID (populated by IM Adapter)
 	MessageID     string              `json:"message_id,omitempty"`  // Platform message ID for dedup (optional)
 	MessageType   string              `json:"message_type"`          // "text", "image", "file", "audio", "interactive"

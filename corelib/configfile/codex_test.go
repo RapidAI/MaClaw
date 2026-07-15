@@ -665,6 +665,147 @@ responses_websockets_v2 = true
 	}
 }
 
+func TestRestoreCodexOpenAISettingsPreservesAuthAndUpdatesAllSessions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(filepath.Join(codexDir, "sessions"), 0755); err != nil {
+		t.Fatalf("create codex sessions: %v", err)
+	}
+	if err := AtomicWriteJSON(filepath.Join(codexDir, "auth.json"), map[string]string{"OPENAI_API_KEY": "sk-openai"}); err != nil {
+		t.Fatalf("seed auth: %v", err)
+	}
+	config := `model_provider = "tigerproxy"
+model = "gpt-5.6-terra"
+
+[model_providers.tigerproxy]
+name = "TigerProxy"
+base_url = "http://127.0.0.1:18086/v1"
+
+[features]
+js_repl = false
+`
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte(config)); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	jsonl := strings.Join([]string{
+		`{"type":"session_meta","payload":{"model_provider":"tigerproxy"}}`,
+		`{"type":"turn_context","payload":{"model":"gpt-5.6-terra","collaboration_mode":{"settings":{"model":"gpt-5.6-terra"}}}}`,
+	}, "\n") + "\n"
+	jsonlPath := filepath.Join(codexDir, "sessions", "rollout-test.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(jsonl), 0644); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	dbPath := filepath.Join(codexDir, "state_5.sqlite")
+	createCodexStateDB(t, dbPath, "tigerproxy", "gpt-5.6-terra")
+	archivedDir := filepath.Join(codexDir, "archived_sessions")
+	if err := os.MkdirAll(archivedDir, 0755); err != nil {
+		t.Fatalf("create archived sessions: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archivedDir, "rollout-archived.jsonl"), []byte(jsonl), 0644); err != nil {
+		t.Fatalf("seed archived session: %v", err)
+	}
+	olderDBPath := filepath.Join(codexDir, "state_4.sqlite")
+	createCodexStateDB(t, olderDBPath, "tigerproxy", "gpt-5.6-terra")
+
+	cleared, err := RestoreCodexOpenAISettingsWithProxyKey("sk-openai")
+	if err != nil {
+		t.Fatalf("RestoreCodexOpenAISettingsWithProxyKey: %v", err)
+	}
+	if !cleared {
+		t.Fatal("proxy auth should have been cleared")
+	}
+
+	if _, err := os.Stat(filepath.Join(codexDir, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("proxy auth should be removed, got: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(codexDir, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(content), "tigerproxy") || !strings.Contains(string(content), "js_repl = false") {
+		t.Fatalf("unexpected restored config:\n%s", content)
+	}
+	data, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if !strings.Contains(string(data), `"model_provider":"openai"`) || !strings.Contains(string(data), `"model":"gpt-5.6"`) {
+		t.Fatalf("session was not restored:\n%s", data)
+	}
+	assertCodexStateRow(t, dbPath, "openai", "gpt-5.6")
+	assertCodexStateRow(t, olderDBPath, "openai", "gpt-5.6")
+	archivedData, err := os.ReadFile(filepath.Join(archivedDir, "rollout-archived.jsonl"))
+	if err != nil {
+		t.Fatalf("read archived session: %v", err)
+	}
+	if !strings.Contains(string(archivedData), `"model_provider":"openai"`) {
+		t.Fatalf("archived session was not restored:\n%s", archivedData)
+	}
+}
+
+func TestRestoreCodexOpenAISettingsWithProxyKeyPreservesDifferentOpenAIAuth(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	if err := AtomicWriteJSON(filepath.Join(codexDir, "auth.json"), map[string]string{"OPENAI_API_KEY": "sk-official"}); err != nil {
+		t.Fatalf("seed auth: %v", err)
+	}
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = \"tigerproxy\"\n")); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cleared, err := RestoreCodexOpenAISettingsWithProxyKey("tigerproxy-local-key")
+	if err != nil {
+		t.Fatalf("RestoreCodexOpenAISettingsWithProxyKey: %v", err)
+	}
+	if cleared {
+		t.Fatal("official OpenAI auth must not be cleared")
+	}
+	data, err := os.ReadFile(filepath.Join(codexDir, "auth.json"))
+	if err != nil || !strings.Contains(string(data), "sk-official") {
+		t.Fatalf("official auth should be preserved: %q, %v", data, err)
+	}
+}
+
+func TestCodexRestoreSnapshotRestoresExistingAndNewFiles(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing.txt")
+	newFile := filepath.Join(dir, "new.txt")
+	if err := os.WriteFile(existing, []byte("before"), 0644); err != nil {
+		t.Fatalf("seed existing: %v", err)
+	}
+	snapshot := codexRestoreSnapshot{
+		{path: existing, exists: true, data: []byte("before")},
+		{path: newFile, exists: false},
+	}
+	if err := os.WriteFile(existing, []byte("after"), 0644); err != nil {
+		t.Fatalf("change existing: %v", err)
+	}
+	if err := os.WriteFile(newFile, []byte("new"), 0644); err != nil {
+		t.Fatalf("create new: %v", err)
+	}
+
+	if err := snapshot.restore(); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	data, err := os.ReadFile(existing)
+	if err != nil || string(data) != "before" {
+		t.Fatalf("existing = %q, %v; want before", data, err)
+	}
+	if _, err := os.Stat(newFile); !os.IsNotExist(err) {
+		t.Fatalf("new file should be removed, got %v", err)
+	}
+}
+
 func TestWriteCodexConfigPreservesNonTargetSectionsAndUpdatesProvider(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -1148,7 +1289,7 @@ func TestIsCodexProcessCandidateMatchesCLIButNotIncidentalNames(t *testing.T) {
 		{name: "codex.exe", cmd: "codex exec --json", want: true},
 		{name: "node.exe", cmd: `node C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js exec`, want: true},
 		{name: "powershell.exe", cmd: `powershell -Command codex exec --json`, want: true},
-		{name: "Codex.exe", cmd: `"C:\Program Files\WindowsApps\OpenAI.Codex_26.623.13972.0_x64__2p2nqsd0c76g0\app\Codex.exe"`, want: false},
+		{name: "Codex.exe", cmd: `"C:\Program Files\WindowsApps\OpenAI.Codex_26.623.13972.0_x64__2p2nqsd0c76g0\app\Codex.exe"`, want: true},
 		{name: "openai.exe", cmd: `openai api request`, want: false},
 		{name: "codex.test.exe", cmd: "go test ./corelib/configfile", want: false},
 		{name: "notcodex.exe", cmd: "unrelated", want: false},

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // ReplyMerger uses LLM to merge multiple device replies into a single
@@ -126,8 +125,7 @@ func (rm *ReplyMerger) llmMerge(ctx context.Context, replies []DeviceReply, cfg 
 		map[string]string{"role": "user", "content": b.String()},
 	}
 
-	llmCfg := cfg.ToMaclawLLMConfig()
-	resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, rm.client, 10*time.Second)
+	resp, err := DoSystemLLM(ctx, DefaultSystemLLMResolver(), cfg, messages, rm.client, 10*time.Second)
 	if err != nil {
 		log.Printf("[ReplyMerger] LLM merge error: %v", err)
 		rm.breaker.RecordFailure()

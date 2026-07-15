@@ -696,7 +696,6 @@ func (c *Coordinator) hubDirectAnswer(
 		map[string]string{"role": "user", "content": text},
 	}
 
-	llmCfg := cfg.ToMaclawLLMConfig()
 	client := &http.Client{Timeout: hubDirectAnswerTimeout}
 
 	answerCtx, cancel := context.WithTimeout(ctx, hubDirectAnswerTimeout)
@@ -716,7 +715,8 @@ func (c *Coordinator) hubDirectAnswer(
 			return
 		}
 		defer sem.Release()
-		r, e := agent.DoSimpleLLMRequest(llmCfg, messages, client, hubDirectAnswerTimeout)
+		// Server-side direct answers use the reserved system-free group.
+		r, e := DoSystemLLM(answerCtx, DefaultSystemLLMResolver(), cfg, messages, client, hubDirectAnswerTimeout)
 		ch <- llmResult{r, e}
 	}()
 

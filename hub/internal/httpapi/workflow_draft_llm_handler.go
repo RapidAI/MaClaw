@@ -220,12 +220,15 @@ func generateWorkflowDraftWithLLM(r *http.Request, system store.SystemSettingsRe
 	if err != nil {
 		return nil, err
 	}
-	serviceGroupID := strings.TrimSpace(serviceReg.SystemDefaultServiceGroupID)
-	if serviceGroupID == "" {
-		return nil, fmt.Errorf("system default LLM service group is not configured")
+	// Server-side LLM always uses the reserved free system group.
+	if llmservice.EnsureSystemFreeServiceGroup(serviceReg) {
+		if saveErr := llmservice.SaveRegistry(r.Context(), system, serviceReg); saveErr != nil {
+			log.Printf("[workflow-draft] ensure system-free save failed: %v", saveErr)
+		}
 	}
+	serviceGroupID := serviceReg.SystemDefaultServiceGroupIDOrFree()
 	if serviceReg.FindModelServiceGroup(serviceGroupID) == nil {
-		return nil, fmt.Errorf("system default LLM service group %q was not found", serviceGroupID)
+		return nil, fmt.Errorf("system free LLM service group %q was not found", serviceGroupID)
 	}
 	models, _ := llmservice.BuildAuthorizedModelsForServiceGroups(serviceReg, []string{serviceGroupID})
 	models = filterAuthorizedModelsForConfiguredProviders(models, providerReg)

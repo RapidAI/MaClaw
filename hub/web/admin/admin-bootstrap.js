@@ -62,6 +62,13 @@
       : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);
+    // After login/refresh: soft-block when system-free is not ready.
+    if (typeof global.maybeShowSystemFreeGate === 'function') {
+      try { await global.maybeShowSystemFreeGate(false); } catch (_) {}
+    }
+    if (typeof global.applyConfigAgentI18n === 'function') {
+      try { global.applyConfigAgentI18n(); } catch (_) {}
+    }
   };
 
   try {

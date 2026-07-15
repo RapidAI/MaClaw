@@ -339,9 +339,78 @@
     }
 
     renderOverviewTenantInfo(tenantData, centerData, computeData);
+    loadOverviewSystemFreeStatus();
+  }
+
+  function systemFreeI18n(key) {
+    var zh = global.currentLang === 'zh';
+    var map = zh ? {
+      title: 'system-free \u7cfb\u7edf\u514d\u8d39 LLM',
+      desc: 'Hub / MaClawSrv \u670d\u52a1\u7aef Agent \u9ed8\u8ba4\u4f7f\u7528\u6b64\u7ec4\uff08\u514d\u5145\u503c\uff0c\u4e0d\u53ef\u5220\uff09',
+      ready: '\u5df2\u5c31\u7eea',
+      notReady: '\u672a\u5c31\u7eea \u2014 \u8bf7\u914d\u7f6e\u670d\u52a1\u5546\u5e76\u6d4b\u8bd5',
+      test: '\u6d4b\u8bd5 system-free',
+      config: '\u524d\u5f80\u6a21\u578b\u670d\u52a1',
+      providers: '\u670d\u52a1\u5546: '
+    } : {
+      title: 'system-free (server LLM)',
+      desc: 'Default free group for Hub/MaClawSrv server-side agents (no recharge, not deletable)',
+      ready: 'Ready',
+      notReady: 'Not ready - configure providers and test',
+      test: 'Test system-free',
+      config: 'Open Model Services',
+      providers: 'Providers: '
+    };
+    return map[key] || key;
+  }
+
+  async function loadOverviewSystemFreeStatus() {
+    var panel = byID('overviewSystemFreePanel');
+    if (!panel) return;
+    // Only meaningful for tenant-scoped admins / after login with tenant context.
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    if (!profile) {
+      panel.classList.add('hidden');
+      return;
+    }
+    panel.classList.remove('hidden');
+    var title = byID('overviewSystemFreeTitle');
+    var desc = byID('overviewSystemFreeDesc');
+    var badge = byID('overviewSystemFreeBadge');
+    var detail = byID('overviewSystemFreeDetail');
+    var testBtn = byID('overviewSystemFreeTestBtn');
+    var configBtn = byID('overviewSystemFreeConfigBtn');
+    if (title) title.textContent = systemFreeI18n('title');
+    if (desc) desc.textContent = systemFreeI18n('desc');
+    if (testBtn) testBtn.textContent = systemFreeI18n('test');
+    if (configBtn) configBtn.textContent = systemFreeI18n('config');
+    try {
+      var st = await global.api('/api/admin/llm/system-free');
+      global.tenantSystemFreeStatusCache = st || {};
+      var ready = !!(st && st.ready);
+      if (badge) {
+        badge.textContent = ready ? systemFreeI18n('ready') : systemFreeI18n('notReady');
+        badge.style.color = ready ? '#1f7a3f' : '#b42318';
+      }
+      var ids = (st && st.provider_ids || []).join(', ') || '-';
+      var reasons = (st && st.reasons || []).join(', ');
+      if (detail) {
+        detail.textContent = systemFreeI18n('providers') + ids + (reasons ? ' | ' + reasons : '');
+      }
+      // Soft gate: keep panel visible and highlight when not ready.
+      panel.style.borderColor = ready ? '' : 'rgba(180,35,24,.35)';
+      panel.style.background = ready ? '' : 'rgba(180,35,24,.04)';
+    } catch (err) {
+      if (badge) {
+        badge.textContent = systemFreeI18n('notReady');
+        badge.style.color = '#b42318';
+      }
+      if (detail) detail.textContent = String(err && err.message || err || 'load failed');
+    }
   }
 
   global.loadOverviewTenantInfo = loadOverviewTenantInfo;
   global.renderOverviewTenantInfo = renderOverviewTenantInfo;
+  global.loadOverviewSystemFreeStatus = loadOverviewSystemFreeStatus;
 
 })(window);

@@ -26,6 +26,7 @@ type IMTask struct {
 	UserID       string
 	PlatformName string
 	PlatformUID  string
+	ReplyTarget  string
 	MessageType  string
 	Text         string
 	Attachments  []MessageAttachment
@@ -135,14 +136,14 @@ type IMTaskDispatcher struct {
 	executor TaskExecutor
 
 	// resultDelivery pushes the final response to the user via IM.
-	resultDelivery func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse)
+	resultDelivery func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse)
 
 	// idleTimeout controls how long an empty queue's worker stays alive.
 	idleTimeout time.Duration
 }
 
 // NewIMTaskDispatcher creates a dispatcher with the given per-user capacity.
-func NewIMTaskDispatcher(capacity int, executor TaskExecutor, delivery func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse)) *IMTaskDispatcher {
+func NewIMTaskDispatcher(capacity int, executor TaskExecutor, delivery func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse)) *IMTaskDispatcher {
 	if capacity <= 0 {
 		capacity = DefaultQueueCapacity
 	}
@@ -306,7 +307,7 @@ func (d *IMTaskDispatcher) executeTask(task *IMTask) {
 		return
 	}
 
-	d.resultDelivery(ctx, task.UserID, task.PlatformName, task.PlatformUID, resp)
+	d.resultDelivery(ctx, task.UserID, task.PlatformName, task.PlatformUID, task.ReplyTarget, resp)
 }
 
 // Shutdown stops all worker goroutines.

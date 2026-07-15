@@ -44,22 +44,27 @@ func InitMaClawModule(hubCenterURL, hubID, machineToken string, tenantIDsFunc fu
 	}
 }
 
-// EnsureRegistryBuiltins injects the MaClaw Official provider and service group
-// into the registry if not already present. Should be called on Hub startup
-// and after registry loads.
+// EnsureRegistryBuiltins injects the MaClaw Official provider/group and the
+// reserved system-free service group if missing or invalid. Called on Hub
+// startup and for each tenant registry.
 func EnsureRegistryBuiltins(ctx context.Context, system SystemSettingsRepository) {
 	reg, err := LoadRegistry(ctx, system)
 	if err != nil {
 		log.Printf("[maclaw-init] failed to load registry: %v", err)
 		return
 	}
-	if EnsureBuiltinProvider(reg) {
-		if err := SaveRegistry(ctx, system, reg); err != nil {
-			log.Printf("[maclaw-init] failed to save registry with builtins: %v", err)
-		} else {
-			log.Printf("[maclaw-init] injected MaClaw Official builtin provider + service group")
-		}
+	changed := EnsureBuiltinProvider(reg)
+	if EnsureSystemFreeServiceGroup(reg) {
+		changed = true
 	}
+	if !changed {
+		return
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		log.Printf("[maclaw-init] failed to save registry with builtins: %v", err)
+		return
+	}
+	log.Printf("[maclaw-init] ensured MaClaw Official + system-free service groups")
 }
 
 // Shutdown stops background processes.

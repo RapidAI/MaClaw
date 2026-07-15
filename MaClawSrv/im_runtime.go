@@ -217,8 +217,11 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 			MediaData:     msg.MediaData,
 			MediaBytes:    len(msg.MediaData),
 			Extra: map[string]string{
-				"chat_type": msg.ChatType,
-				"group_id":  msg.GroupID,
+				"chat_type":   msg.ChatType,
+				"group_id":    msg.GroupID,
+				"sender_name": msg.SenderName,
+				"group_name":  msg.GroupName,
+				"reference":   msg.ReferenceText,
 			},
 			Reply: func(ctx context.Context, text string) error {
 				return gw.SendText(ctx, lansenger.OutgoingText{ToUserID: contactID, Text: text, IsGroup: msg.ChatType == "group"})

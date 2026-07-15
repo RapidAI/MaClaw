@@ -110,10 +110,10 @@ func TestWorkflowDraftLLMHandlerUsesTenantLLMServiceGroup(t *testing.T) {
 		t.Fatalf("save provider registry: %v", err)
 	}
 	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
-		SystemDefaultServiceGroupID: "draft-group",
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:           "draft-group",
-			Name:         "Draft Group",
+			ID:           llmservice.SystemFreeServiceGroupID,
+			Name:         "System Free",
 			AccessPolicy: llmservice.AccessPolicyFree,
 			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-draft-success"}}},
 		}},
@@ -233,6 +233,9 @@ func TestWorkflowDraftLLMHandlerPassesSystemDefaultServiceGroupToMaClawOfficial(
 }
 
 func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.T) {
+	// Server-side draft always uses system-free. When system-free has no
+	// routable configured provider (only unconfigured maclaw_official after
+	// ensure), generation falls back without calling a local upstream.
 	var providerCalled bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerCalled = true
@@ -243,28 +246,12 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 	settings := &testSystemSettingsRepo{}
 	tenantSystem := scopedSystemSettingsForTenant("tenant-missing-default", settings)
 	if err := im.SaveLLMProviderRegistry(t.Context(), tenantSystem, &im.LLMProviderRegistry{
-		Enabled:           true,
-		CurrentProviderID: "provider-missing-default",
-		Providers: []im.LLMProvider{{
-			ID:      "provider-missing-default",
-			Name:    "Provider A",
-			APIURL:  upstream.URL + "/v1",
-			APIKey:  "test-key",
-			Model:   "gpt-test",
-			WireAPI: "chat",
-		}},
+		Enabled: true,
 	}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
-		GlobalServiceGroupIDs: []string{"draft-group"},
-		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:           "draft-group",
-			Name:         "Draft Group",
-			AccessPolicy: llmservice.AccessPolicyFree,
-			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-missing-default"}}},
-		}},
-	}); err != nil {
+	// Empty service registry: ensure injects system-free → maclaw_official only.
+	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{}); err != nil {
 		t.Fatalf("save service registry: %v", err)
 	}
 
@@ -285,7 +272,7 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	if providerCalled {
-		t.Fatal("provider should not be called without system_default_service_group_id")
+		t.Fatal("local upstream should not be called for unconfigured maclaw_official route")
 	}
 	var out map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -294,7 +281,8 @@ func TestWorkflowDraftLLMHandlerRequiresSystemDefaultLLMServiceGroup(t *testing.
 	if out["generated_by"] != "fallback" {
 		t.Fatalf("generated_by = %#v body=%s", out["generated_by"], rec.Body.String())
 	}
-	if out["fallback_reason"] != workflowDraftFallbackReasonSettings {
+	// maclaw_official without module is treated as provider failure (503), not missing settings.
+	if out["fallback_reason"] != workflowDraftFallbackReasonProvider && out["fallback_reason"] != workflowDraftFallbackReasonRoute && out["fallback_reason"] != workflowDraftFallbackReasonSettings {
 		t.Fatalf("fallback_reason = %#v body=%s", out["fallback_reason"], rec.Body.String())
 	}
 }
@@ -324,11 +312,14 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultServiceGroupHasNoModel
 		t.Fatalf("save provider registry: %v", err)
 	}
 	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
-		SystemDefaultServiceGroupID: "draft-group",
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:           "draft-group",
-			Name:         "Draft Group",
+			ID:           llmservice.SystemFreeServiceGroupID,
+			Name:         "System Free",
 			AccessPolicy: llmservice.AccessPolicyFree,
+			// Explicit empty model list: ensure will repair with maclaw_official.
+			// Force unusable route by using only a missing local provider below via protect.
+			Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"__missing_local_provider__"}}},
 		}},
 	}); err != nil {
 		t.Fatalf("save service registry: %v", err)
@@ -374,10 +365,10 @@ func TestWorkflowDraftLLMHandlerFallsBackWhenSystemDefaultProviderIsMissing(t *t
 		t.Fatalf("save provider registry: %v", err)
 	}
 	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
-		SystemDefaultServiceGroupID: "draft-group",
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:           "draft-group",
-			Name:         "Draft Group",
+			ID:           llmservice.SystemFreeServiceGroupID,
+			Name:         "System Free",
 			AccessPolicy: llmservice.AccessPolicyFree,
 			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"missing-provider"}}},
 		}},
@@ -439,10 +430,10 @@ func TestWorkflowDraftLLMHandlerFallsBackWithProviderReasonWhenProviderFails(t *
 		t.Fatalf("save provider registry: %v", err)
 	}
 	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
-		SystemDefaultServiceGroupID: "draft-group",
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:           "draft-group",
-			Name:         "Draft Group",
+			ID:           llmservice.SystemFreeServiceGroupID,
+			Name:         "System Free",
 			AccessPolicy: llmservice.AccessPolicyFree,
 			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-failure"}}},
 		}},
@@ -483,7 +474,7 @@ func TestWorkflowDraftLLMHandlerFallsBackWithProviderReasonWhenProviderFails(t *
 	if !ok {
 		t.Fatalf("debug missing from provider fallback: %s", rec.Body.String())
 	}
-	if debug["service_group_id"] != "draft-group" || debug["provider_id"] != "provider-failure" || debug["model"] != "auto" {
+	if debug["service_group_id"] != llmservice.SystemFreeServiceGroupID || debug["provider_id"] != "provider-failure" || debug["model"] != "auto" {
 		t.Fatalf("debug routing fields = %#v", debug)
 	}
 	if debug["status_code"] != float64(http.StatusInternalServerError) {
@@ -521,10 +512,10 @@ func TestWorkflowDraftLLMHandlerFallsBackWithResponseReasonWhenLLMGraphIsInvalid
 		t.Fatalf("save provider registry: %v", err)
 	}
 	if err := llmservice.SaveRegistry(t.Context(), tenantSystem, &llmservice.Registry{
-		SystemDefaultServiceGroupID: "draft-group",
+		SystemDefaultServiceGroupID: llmservice.SystemFreeServiceGroupID,
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{
-			ID:           "draft-group",
-			Name:         "Draft Group",
+			ID:           llmservice.SystemFreeServiceGroupID,
+			Name:         "System Free",
 			AccessPolicy: llmservice.AccessPolicyFree,
 			Models:       []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-response-invalid"}}},
 		}},

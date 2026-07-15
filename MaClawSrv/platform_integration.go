@@ -25,14 +25,32 @@ import (
 const (
 	platformHubLLMProviderName   = "hub-llm"
 	platformHubLLMModel          = "auto"
-	platformAvatarImageMaxBytes  = 1024 * 1024
-	platformAvatarDataURLMaxSize = len("data:image/jpeg;base64,") + ((platformAvatarImageMaxBytes+2)/3)*4
-	platformJSONBodyMaxBytes     = int64(platformAvatarDataURLMaxSize + 512*1024)
-	platformAttachmentMaxBytes   = int64(50 * 1024 * 1024)
-	platformAttachmentNameMaxLen = 160
-	platformAttachmentMaxCount   = 20
-	platformAttachmentTimeout    = 60 * time.Second
+	// platformDefaultLLMServiceGroupID is the Hub reserved free group used by
+	// all server-side MaClawSrv agents when no explicit business group is set.
+	platformDefaultLLMServiceGroupID = "system-free"
+	platformAvatarImageMaxBytes      = 1024 * 1024
+	platformAvatarDataURLMaxSize     = len("data:image/jpeg;base64,") + ((platformAvatarImageMaxBytes+2)/3)*4
+	platformJSONBodyMaxBytes         = int64(platformAvatarDataURLMaxSize + 512*1024)
+	platformAttachmentMaxBytes       = int64(50 * 1024 * 1024)
+	platformAttachmentNameMaxLen     = 160
+	platformAttachmentMaxCount       = 20
+	platformAttachmentTimeout        = 60 * time.Second
 )
+
+func platformLLMServiceGroupID(values ...string) string {
+	for _, v := range values {
+		id := strings.TrimSpace(v)
+		if id == "" {
+			continue
+		}
+		// Normalize legacy Hub VE alias to the reserved free system group.
+		if strings.EqualFold(id, "ve-service") {
+			return platformDefaultLLMServiceGroupID
+		}
+		return id
+	}
+	return platformDefaultLLMServiceGroupID
+}
 
 func (s *HTTPServer) withPlatformAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -994,7 +1012,7 @@ func (s *HTTPServer) handlePlatformUpdateVirtualEmployeeConfig(w http.ResponseWr
 	principal := agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}
 	llmURL := strings.TrimSpace(in.HubLLMEndpoint)
 	llmKey := firstPlatformNonEmpty(in.HubLLMViewerToken, in.ViewerToken, in.AccessToken, in.HubLLMAPIKey)
-	llmGroupID := firstPlatformNonEmpty(in.LLMServiceGroupID, in.DefaultLLM)
+	llmGroupID := platformLLMServiceGroupID(in.LLMServiceGroupID, in.DefaultLLM)
 	llmModel := strings.TrimSpace(in.LLMModel)
 	if llmModel == "" && (llmURL != "" || llmGroupID != "") {
 		llmModel = platformHubLLMModel
@@ -2342,7 +2360,7 @@ func platformInstanceMetadata(in platformVirtualEmployeeRequest) map[string]stri
 		"ve_hub_tenant_id":      strings.TrimSpace(in.TenantID),
 		"ve_tenant_code":        strings.TrimSpace(in.TenantCode),
 		"ve_hub_tenant_code":    strings.TrimSpace(in.HubTenantCode),
-		"llm_service_group_id":  firstPlatformNonEmpty(in.LLMServiceGroupID, in.DefaultLLM),
+		"llm_service_group_id":  platformLLMServiceGroupID(in.LLMServiceGroupID, in.DefaultLLM),
 	})
 }
 

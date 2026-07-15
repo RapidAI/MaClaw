@@ -495,6 +495,24 @@ func (a *App) ConfigureCodex() (string, error) {
 	return "Codex 配置已写入 ~/.codex/", nil
 }
 
+// RestoreCodex removes TigerProxy or other third-party provider settings and
+// returns every saved Codex conversation to the built-in OpenAI provider.
+// The proxy API key is removed; Codex will prompt for OpenAI sign-in next time.
+func (a *App) RestoreCodex() (string, error) {
+	s, err := loadSettings()
+	if err != nil {
+		return "", fmt.Errorf("load settings: %w", err)
+	}
+	authCleared, err := configfile.RestoreCodexOpenAISettingsWithProxyKey(s.APIKey)
+	if err != nil {
+		return "", err
+	}
+	if !authCleared {
+		return "Codex 已恢复为 OpenAI；所有会话已更新，已保留现有 OpenAI 登录。", nil
+	}
+	return "Codex 已恢复为 OpenAI；所有会话已更新，请重新登录 OpenAI。", nil
+}
+
 // IsCodexInstalled checks whether Codex Desktop is available on the system.
 // Checks both the CLI in PATH and common Desktop app installation paths.
 // Avoids slow external commands (winget) — only uses fast filesystem checks.

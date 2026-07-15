@@ -775,6 +775,22 @@ func IsBuiltinModelServiceGroupID(id string) bool {
 	return strings.EqualFold(strings.TrimSpace(id), DefaultModelServiceGroupID)
 }
 
+// SystemDefaultServiceGroupIDOrFree returns the effective system default group
+// id, always preferring the reserved system-free group when present.
+func (r *Registry) SystemDefaultServiceGroupIDOrFree() string {
+	if r == nil {
+		return SystemFreeServiceGroupID
+	}
+	if r.FindModelServiceGroup(SystemFreeServiceGroupID) != nil {
+		return SystemFreeServiceGroupID
+	}
+	id := strings.TrimSpace(r.SystemDefaultServiceGroupID)
+	if id != "" && r.FindModelServiceGroup(id) != nil {
+		return id
+	}
+	return SystemFreeServiceGroupID
+}
+
 func (r *Registry) FindModelServiceGroup(id string) *ModelServiceGroup {
 	id = strings.TrimSpace(id)
 	if id == "" {

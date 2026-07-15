@@ -130,6 +130,28 @@ func TestPlatformVirtualEmployeeConfigUpdatesAvatarMetadata(t *testing.T) {
 	}
 }
 
+func TestPlatformLLMServiceGroupIDDefaultsToSystemFree(t *testing.T) {
+	if got := platformLLMServiceGroupID("", ""); got != "system-free" {
+		t.Fatalf("empty default = %q, want system-free", got)
+	}
+	if got := platformLLMServiceGroupID("ve-service"); got != "system-free" {
+		t.Fatalf("ve-service alias = %q, want system-free", got)
+	}
+	if got := platformLLMServiceGroupID("  VE-Service  "); got != "system-free" {
+		t.Fatalf("ve-service case = %q, want system-free", got)
+	}
+	if got := platformLLMServiceGroupID("group-legal"); got != "group-legal" {
+		t.Fatalf("explicit group = %q, want group-legal", got)
+	}
+	if got := platformLLMServiceGroupID("", "group-from-default"); got != "group-from-default" {
+		t.Fatalf("fallback default_llm = %q", got)
+	}
+	meta := platformInstanceMetadata(platformVirtualEmployeeRequest{EmployeeID: "e1", Name: "n"})
+	if meta["llm_service_group_id"] != "system-free" {
+		t.Fatalf("metadata default group = %q", meta["llm_service_group_id"])
+	}
+}
+
 func TestPlatformVirtualEmployeeConfigRefreshesHubLLM(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

@@ -264,40 +264,54 @@ const TENANT_MIGRATION_SETTINGS_I18N = {
 const tmgx = (key, vars = {}) => ((TENANT_MIGRATION_SETTINGS_I18N[currentLang] || TENANT_MIGRATION_SETTINGS_I18N.en)[key] || TENANT_MIGRATION_SETTINGS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
   en: {
-    title: 'System Default LLM Service Group',
-    desc: 'Approval workflow draft generation and other Hub system features use this service group.',
+    title: 'System Free LLM (system-free)',
+    desc: 'Reserved free service group for all server-side Hub/MaClawSrv agents. Cannot be deleted; no recharge required. Change providers in Model Services.',
     reload: 'Reload',
-    label: 'Default service group',
-    emptyOption: 'Select a service group',
-    noGroups: 'No model service groups found. Create a model service group first.',
-    noUsableGroups: 'Model service groups exist, but none have a usable LLM route. Add a configured provider route in Model Services first.',
-    hint: 'Used by approval workflow natural-language draft generation. It is independent from new-user benefits.',
-    invalidSelected: 'Current setting is unavailable: {id}. Select another usable service group.',
-    invalidSelectedOption: 'Current setting unavailable ({id})',
-    save: 'Save Default LLM',
-    saving: 'Saving...',
-    saved: 'System default LLM service group saved.',
-    required: 'Select a system default LLM service group first.',
-    loadFailed: 'Load system default LLM service group failed: {error}',
-    saveFailed: 'Save system default LLM service group failed: {error}'
+    label: 'System free service group',
+    emptyOption: 'system-free',
+    noGroups: 'system-free is missing and could not be created automatically.',
+    noUsableGroups: 'system-free exists but has no usable provider route. Open Model Services to attach MaClaw Official or a local provider.',
+    hint: 'Pinned as the system default. Used by workflow draft, IM system LLM, config agents, and MaClawSrv agents.',
+    invalidSelected: 'system-free is not ready: {id}',
+    invalidSelectedOption: 'system-free not ready',
+    save: 'Open Model Services',
+    saving: 'Working...',
+    saved: 'Opened Model Services. Edit system-free providers there.',
+    required: 'system-free must be ready before server-side agents can call LLM.',
+    loadFailed: 'Load system-free status failed: {error}',
+    saveFailed: 'Open model services failed: {error}',
+    test: 'Test system-free',
+    testing: 'Testing...',
+    testOk: 'system-free is available ({ms} ms, provider={provider})',
+    testFail: 'system-free test failed: {error}',
+    ready: 'Ready',
+    notReady: 'Not ready',
+    providers: 'Providers: {ids}'
   },
   zh: {
-    title: '\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4',
-    desc: '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8349\u7a3f\u751f\u6210\u7b49 Hub \u7cfb\u7edf\u80fd\u529b\u4f7f\u7528\u8fd9\u4e2a\u670d\u52a1\u7ec4\u3002',
+    title: '\u7cfb\u7edf\u514d\u8d39 LLM\uff08system-free\uff09',
+    desc: '\u4f9b Hub / MaClawSrv \u6240\u6709\u670d\u52a1\u7aef Agent \u4f7f\u7528\u7684\u4fdd\u7559\u514d\u8d39\u670d\u52a1\u7ec4\u3002\u4e0d\u53ef\u5220\u9664\u3001\u4e0d\u9700\u5145\u503c\uff1b\u53ef\u5728\u300c\u6a21\u578b\u670d\u52a1\u300d\u4e2d\u4fee\u6539\u670d\u52a1\u5546\u3002',
     reload: '\u5237\u65b0',
-    label: '\u9ed8\u8ba4\u670d\u52a1\u7ec4',
-    emptyOption: '\u9009\u62e9\u670d\u52a1\u7ec4',
-    noGroups: '\u6682\u65e0\u6a21\u578b\u670d\u52a1\u7ec4\u3002\u8bf7\u5148\u521b\u5efa\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
-    noUsableGroups: '\u5df2\u6709\u6a21\u578b\u670d\u52a1\u7ec4\uff0c\u4f46\u6ca1\u6709\u53ef\u7528\u7684 LLM \u8def\u7531\u3002\u8bf7\u5148\u5728\u6a21\u578b\u670d\u52a1\u4e2d\u6dfb\u52a0\u5df2\u914d\u7f6e\u7684\u63d0\u4f9b\u5546\u8def\u7531\u3002',
-    hint: '\u7528\u4e8e\u5ba1\u6279\u5de5\u4f5c\u6d41\u81ea\u7136\u8bed\u8a00\u8349\u7a3f\u751f\u6210\uff0c\u4e0e\u65b0\u7528\u6237\u798f\u5229\u4e92\u76f8\u72ec\u7acb\u3002',
-    invalidSelected: '\u5f53\u524d\u914d\u7f6e\u4e0d\u53ef\u7528\uff1a{id}\u3002\u8bf7\u6539\u9009\u5176\u4ed6\u53ef\u7528\u670d\u52a1\u7ec4\u3002',
-    invalidSelectedOption: '\u5f53\u524d\u914d\u7f6e\u4e0d\u53ef\u7528 ({id})',
-    save: '\u4fdd\u5b58\u9ed8\u8ba4 LLM',
-    saving: '\u4fdd\u5b58\u4e2d...',
-    saved: '\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5df2\u4fdd\u5b58\u3002',
-    required: '\u8bf7\u5148\u9009\u62e9\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u3002',
-    loadFailed: '\u52a0\u8f7d\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5931\u8d25: {error}',
-    saveFailed: '\u4fdd\u5b58\u7cfb\u7edf\u9ed8\u8ba4 LLM \u670d\u52a1\u7ec4\u5931\u8d25: {error}'
+    label: '\u7cfb\u7edf\u514d\u8d39\u670d\u52a1\u7ec4',
+    emptyOption: 'system-free',
+    noGroups: 'system-free \u7f3a\u5931\u4e14\u65e0\u6cd5\u81ea\u52a8\u521b\u5efa\u3002',
+    noUsableGroups: 'system-free \u5df2\u5b58\u5728\u4f46\u6ca1\u6709\u53ef\u7528\u670d\u52a1\u5546\u8def\u7531\u3002\u8bf7\u5728\u6a21\u578b\u670d\u52a1\u4e2d\u7ed1\u5b9a MaClaw \u5b98\u65b9\u6216\u672c\u5730\u670d\u52a1\u5546\u3002',
+    hint: '\u56fa\u5b9a\u4e3a\u7cfb\u7edf\u9ed8\u8ba4\u3002\u7528\u4e8e\u5de5\u4f5c\u6d41\u8349\u7a3f\u3001IM \u7cfb\u7edf LLM\u3001\u914d\u7f6e\u52a9\u624b\u4e0e MaClawSrv Agent\u3002',
+    invalidSelected: 'system-free \u672a\u5c31\u7eea\uff1a{id}',
+    invalidSelectedOption: 'system-free \u672a\u5c31\u7eea',
+    save: '\u6253\u5f00\u6a21\u578b\u670d\u52a1',
+    saving: '\u5904\u7406\u4e2d...',
+    saved: '\u5df2\u6253\u5f00\u6a21\u578b\u670d\u52a1\uff0c\u8bf7\u7f16\u8f91 system-free \u670d\u52a1\u5546\u3002',
+    required: '\u670d\u52a1\u7aef Agent \u8c03\u7528 LLM \u524d\uff0csystem-free \u5fc5\u987b\u5c31\u7eea\u3002',
+    loadFailed: '\u52a0\u8f7d system-free \u72b6\u6001\u5931\u8d25: {error}',
+    saveFailed: '\u6253\u5f00\u6a21\u578b\u670d\u52a1\u5931\u8d25: {error}',
+    test: '\u6d4b\u8bd5 system-free',
+    testing: '\u6d4b\u8bd5\u4e2d...',
+    testOk: 'system-free \u53ef\u7528\uff08{ms} ms\uff0c\u670d\u52a1\u5546={provider}\uff09',
+    testFail: 'system-free \u6d4b\u8bd5\u5931\u8d25: {error}',
+    ready: '\u5df2\u5c31\u7eea',
+    notReady: '\u672a\u5c31\u7eea',
+    providers: '\u670d\u52a1\u5546: {ids}'
   }
 };
 const tslx = (key, vars = {}) => ((TENANT_SYSTEM_LLM_DEFAULTS_I18N[currentLang] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en)[key] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
@@ -331,6 +345,7 @@ function applyTenantSystemLLMDefaultsI18n() {
   _s('tenantSystemDefaultLLMServiceGroupLabel', 'textContent', tslx('label'));
   _s('tenantSystemLLMDefaultsHint', 'textContent', tslx('hint'));
   _s('tenantSystemLLMDefaultsSaveBtn', 'textContent', tslx('save'));
+  _s('tenantSystemFreeTestBtn', 'textContent', tslx('test'));
   renderTenantSystemLLMDefaultOptions();
 }
 function tenantMigrationBytesToMB(value) {
@@ -624,45 +639,47 @@ function tenantSystemLLMUsableGroups(data) {
     });
   });
 }
+let tenantSystemFreeStatusCache = null;
 function renderTenantSystemLLMDefaultOptions() {
   const select = document.getElementById('tenantSystemDefaultLLMServiceGroup');
   if (!select) return;
-  const data = tenantSystemLLMDefaultsCache || {};
-  const selected = String(data.system_default_service_group_id || '').trim();
-  const groups = tenantSystemLLMUsableGroups(data);
-  const hasServiceGroups = (data.model_service_groups || []).some(function(group) { return group && String(group.id || '').trim(); });
-  const selectedUsable = !!selected && groups.some(function(group) { return String(group && group.id || '').trim() === selected; });
-  if (!groups.length) {
-    const emptyMessage = hasServiceGroups ? tslx('noUsableGroups') : tslx('noGroups');
-    select.innerHTML = '<option value="">' + escapeHtml(selected ? tslx('invalidSelectedOption', { id: selected }) : emptyMessage) + '</option>';
-    select.disabled = true;
-    _s('tenantSystemLLMDefaultsHint', 'textContent', selected ? tslx('invalidSelected', { id: selected }) : emptyMessage);
-    return;
+  const st = tenantSystemFreeStatusCache || {};
+  const ready = !!st.ready;
+  const providers = (st.provider_ids || []).join(', ') || '-';
+  select.disabled = true;
+  select.innerHTML = '<option value="system-free" selected>system-free (' + escapeHtml(ready ? tslx('ready') : tslx('notReady')) + ')</option>';
+  const reasons = (st.reasons || []).join(', ');
+  const hintParts = [tslx('hint'), tslx('providers', { ids: providers })];
+  if (!ready) {
+    hintParts.push(reasons ? tslx('invalidSelected', { id: reasons }) : tslx('noUsableGroups'));
   }
-  select.disabled = false;
-  _s('tenantSystemLLMDefaultsHint', 'textContent', selected && !selectedUsable ? tslx('invalidSelected', { id: selected }) : tslx('hint'));
-  select.innerHTML = '<option value="">' + escapeHtml(selected && !selectedUsable ? tslx('invalidSelectedOption', { id: selected }) : tslx('emptyOption')) + '</option>' + groups.map(function(group) {
-    const id = String(group.id || '').trim();
-    const name = String(group.name || id).trim();
-    const label = name === id ? id : name + ' (' + id + ')';
-    return '<option value="' + escapeHtml(id) + '"' + (id === selected ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
-  }).join('');
+  _s('tenantSystemLLMDefaultsHint', 'textContent', hintParts.join(' | '));
+  const statusEl = document.getElementById('tenantSystemFreeStatusBadge');
+  if (statusEl) {
+    statusEl.textContent = ready ? tslx('ready') : tslx('notReady');
+    statusEl.style.color = ready ? '#1f7a3f' : '#b42318';
+  }
 }
 async function loadTenantSystemLLMDefaults() {
   applyTenantSystemLLMDefaultsI18n();
   try {
     const results = await Promise.all([
-      api('/api/admin/llm/services?include_cards=false'),
-      api('/api/admin/llm/providers')
+      api('/api/admin/llm/system-free'),
+      api('/api/admin/llm/services?include_cards=false').catch(function() { return null; }),
+      api('/api/admin/llm/providers').catch(function() { return { providers: [] }; })
     ]);
-    tenantSystemLLMDefaultsCache = results[0];
+    tenantSystemFreeStatusCache = results[0] || {};
+    tenantSystemLLMDefaultsCache = results[1] || { system_default_service_group_id: 'system-free' };
     tenantSystemLLMProviderIDs = {};
-    (results[1] && results[1].providers || []).forEach(function(provider) {
+    (results[2] && results[2].providers || []).forEach(function(provider) {
       const id = String(provider && provider.id || '').trim().toLowerCase();
       if (id) tenantSystemLLMProviderIDs[id] = true;
     });
     renderTenantSystemLLMDefaultOptions();
-    return tenantSystemLLMDefaultsCache || {};
+    if (typeof window !== 'undefined') {
+      window.tenantSystemFreeStatusCache = tenantSystemFreeStatusCache;
+    }
+    return tenantSystemFreeStatusCache || {};
   } catch (err) {
     const msg = tslx('loadFailed', { error: err.message });
     setOutput(msg);
@@ -671,40 +688,60 @@ async function loadTenantSystemLLMDefaults() {
   }
 }
 async function saveTenantSystemLLMDefaults() {
-  const select = document.getElementById('tenantSystemDefaultLLMServiceGroup');
-  const serviceGroupID = String(select && select.value || '').trim();
-  if (!serviceGroupID) {
-    const msg = tslx('required');
-    setOutput(msg);
-    showToast(msg, 'error');
-    return;
-  }
-  if (!tenantSystemLLMDefaultsCache) {
-    try {
-      await loadTenantSystemLLMDefaults();
-    } catch (err) {
-      return;
-    }
-  }
-  const btn = document.getElementById('tenantSystemLLMDefaultsSaveBtn');
-  const previousLabel = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = tslx('saving'); }
+  // system-free is fixed; guide admin to Model Services to edit providers.
   try {
-    const payload = Object.assign({}, tenantSystemLLMDefaultsCache || {}, { system_default_service_group_id: serviceGroupID });
-    tenantSystemLLMDefaultsCache = await api('/api/admin/llm/services?include_cards=false', { method: 'PUT', body: JSON.stringify(payload) });
-    renderTenantSystemLLMDefaultOptions();
+    if (typeof openTab === 'function') openTab('modelservices');
+    else if (typeof window.openTab === 'function') window.openTab('modelservices');
     const msg = tslx('saved');
     setOutput(msg);
     showToast(msg, 'success');
-    return tenantSystemLLMDefaultsCache || {};
   } catch (err) {
     const msg = tslx('saveFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
+  }
+}
+async function testTenantSystemFreeLLM() {
+  const btn = document.getElementById('tenantSystemFreeTestBtn');
+  const previousLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = tslx('testing'); }
+  try {
+    const data = await api('/api/admin/llm/system-free/test', { method: 'POST', body: '{}' });
+    if (data && (data.ok || data.success)) {
+      const msg = tslx('testOk', {
+        ms: String(data.latency_ms || 0),
+        provider: String(data.provider_id || '-')
+      });
+      setOutput(msg);
+      showToast(msg, 'success');
+      if (data.status) {
+        tenantSystemFreeStatusCache = data.status;
+        renderTenantSystemLLMDefaultOptions();
+      } else {
+        await loadTenantSystemLLMDefaults();
+      }
+      return data;
+    }
+    const errMsg = tslx('testFail', { error: (data && data.error) || 'unknown' });
+    setOutput(errMsg);
+    showToast(errMsg, 'error');
+    if (data && data.status) {
+      tenantSystemFreeStatusCache = data.status;
+      renderTenantSystemLLMDefaultOptions();
+    }
+    return data;
+  } catch (err) {
+    const msg = tslx('testFail', { error: err.message });
+    setOutput(msg);
+    showToast(msg, 'error');
     throw err;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = previousLabel || tslx('save'); }
+    if (btn) { btn.disabled = false; btn.textContent = previousLabel || tslx('test'); }
   }
+}
+if (typeof window !== 'undefined') {
+  window.testTenantSystemFreeLLM = testTenantSystemFreeLLM;
+  window.loadTenantSystemLLMDefaults = loadTenantSystemLLMDefaults;
 }
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }

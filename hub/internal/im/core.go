@@ -287,13 +287,16 @@ func (a *Adapter) InitTaskDispatcher(capacity int) {
 		return a.messageRouter.RouteToAgent(ctx, task.UserID, task.PlatformName, task.PlatformUID, task.Text)
 	}
 
-	delivery := func(ctx context.Context, userID, platformName, platformUID string, resp *GenericResponse) {
+	delivery := func(ctx context.Context, userID, platformName, platformUID, replyTarget string, resp *GenericResponse) {
 		plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), platformName)
 		if plugin == nil {
 			log.Printf("[TaskDispatcher] no plugin for platform %q, cannot deliver result", platformName)
 			return
 		}
 		target := UserTarget{PlatformUID: platformUID, UnifiedUserID: userID}
+		if strings.TrimSpace(replyTarget) != "" {
+			target.PlatformUID = replyTarget
+		}
 		a.sendResponse(ctx, plugin, target, resp)
 	}
 
@@ -443,6 +446,11 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	tenantID, unifiedID, err := resolveIdentity(ctx, a.identity, msg.PlatformName, msg.PlatformUID)
 	if err != nil {
 		log.Printf("[IM Adapter] ResolveUser FAILED: platform=%s uid=%s err=%v", msg.PlatformName, msg.PlatformUID, err)
+		if suppressor, ok := plugin.(interface {
+			SuppressGroupIdentityPrompt(context.Context, UserTarget) bool
+		}); ok && suppressor.SuppressGroupIdentityPrompt(ctx, target) {
+			return
+		}
 		a.sendResponse(ctx, plugin, target, &GenericResponse{
 			StatusCode: 403,
 			StatusIcon: "info",
@@ -460,6 +468,9 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	msg.TenantID = tenantID
 	msg.UnifiedUserID = unifiedID
 	target.UnifiedUserID = unifiedID
+	if replyTarget := strings.TrimSpace(msg.ReplyTarget); replyTarget != "" {
+		target.PlatformUID = replyTarget
+	}
 
 	// Mark user as active for device notifications.
 	if a.deviceNotifier != nil {
@@ -975,6 +986,7 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 			UserID:       unifiedID,
 			PlatformName: msg.PlatformName,
 			PlatformUID:  msg.PlatformUID,
+			ReplyTarget:  msg.ReplyTarget,
 			MessageType:  msg.MessageType,
 			Text:         text,
 			Attachments:  msg.Attachments,
@@ -1036,6 +1048,14 @@ func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, pla
 	plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), platformName)
 	if plugin == nil {
 		log.Printf("[IM Adapter] DeliverProgress: no plugin for platform %q", platformName)
+		return
+	}
+	// A gateway may know that this target is a group even though UserTarget is
+	// intentionally transport-agnostic.  Let it suppress process detail while
+	// keeping the progress event available to refresh the request timeout.
+	if suppressor, ok := plugin.(interface {
+		SuppressGroupIMDetail(context.Context, UserTarget) bool
+	}); ok && suppressor.SuppressGroupIMDetail(ctx, UserTarget{PlatformUID: platformUID, UnifiedUserID: userID}) {
 		return
 	}
 

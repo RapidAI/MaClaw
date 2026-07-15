@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // DiscussionConductor orchestrates multi-device discussions using LLM to
@@ -349,8 +348,6 @@ func (dc *DiscussionConductor) decideNextAction(ctx context.Context, state *Cond
 		map[string]string{"role": "user", "content": b.String()},
 	}
 
-	llmCfg := cfg.ToMaclawLLMConfig()
-
 	// Acquire LLM semaphore for the decision call.
 	sem := dc.router.LLMSemaphore()
 	if !sem.Acquire(ctx) {
@@ -359,7 +356,7 @@ func (dc *DiscussionConductor) decideNextAction(ctx context.Context, state *Cond
 	}
 	defer sem.Release()
 
-	resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, dc.client, 10*time.Second)
+	resp, err := DoSystemLLM(ctx, DefaultSystemLLMResolver(), cfg, messages, dc.client, 10*time.Second)
 	if err != nil {
 		log.Printf("[DiscussionConductor] LLM error: %v", err)
 		dc.breaker.RecordFailure()
@@ -409,8 +406,6 @@ func (dc *DiscussionConductor) generateFinalSummary(ctx context.Context, state *
 		map[string]string{"role": "user", "content": b.String()},
 	}
 
-	llmCfg := cfg.ToMaclawLLMConfig()
-
 	// Acquire LLM semaphore for the summary call.
 	sem := dc.router.LLMSemaphore()
 	if !sem.Acquire(ctx) {
@@ -419,7 +414,7 @@ func (dc *DiscussionConductor) generateFinalSummary(ctx context.Context, state *
 	}
 	defer sem.Release()
 
-	resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, dc.client, 15*time.Second)
+	resp, err := DoSystemLLM(ctx, DefaultSystemLLMResolver(), cfg, messages, dc.client, 15*time.Second)
 	if err != nil {
 		log.Printf("[DiscussionConductor] summary LLM error: %v", err)
 		return dc.fallbackSummary(state)

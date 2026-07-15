@@ -397,6 +397,27 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/llm/maclaw-compute-status", requireAdmin(MaClawComputeStatusHandler(centerSvc, GetMaClawAccessControl())))
 	mux.HandleFunc("GET /api/admin/llm/services", requireTenantAdmin(GetLLMServicesAdminHandler(system)))
 	mux.HandleFunc("PUT /api/admin/llm/services", requireTenantAdmin(UpdateLLMServicesAdminHandler(system, securitySvc, adminAudit)))
+	mux.HandleFunc("GET /api/admin/llm/system-free", requireTenantAdmin(GetSystemFreeLLMHandler(system)))
+	mux.HandleFunc("PUT /api/admin/llm/system-free", requireTenantAdmin(UpdateSystemFreeLLMHandler(system, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/system-free/test", requireTenantAdmin(TestSystemFreeLLMHandler(system)))
+	configAgentDeps := ConfigAgentDeps{
+		System:    system,
+		Audit:     adminAudit,
+		Invites:   emailInviteRepo,
+		Identity:  identity,
+		Codes:     invitationSvc,
+		Security:  securitySvc,
+		Feishu:    feishuNotifier,
+		WeCom:     wecomPlugin,
+		DingTalk:  dingtalkPlugin,
+		QQBot:     qqbotPlugin,
+		IMRuntime: tenantIMRuntimeReloader,
+		BridgeDir: bridgeDir,
+	}
+	mux.HandleFunc("POST /api/admin/config-agent/plan", requireTenantAdmin(ConfigAgentPlanHandler(configAgentDeps)))
+	mux.HandleFunc("POST /api/admin/config-agent/execute", requireTenantAdmin(ConfigAgentExecuteHandler(configAgentDeps)))
+	mux.HandleFunc("GET /api/admin/config-agent/history", requireTenantAdmin(ConfigAgentHistoryHandler(adminAudit)))
+	mux.HandleFunc("GET /api/admin/config-agent/catalog", requireTenantAdmin(ConfigAgentCatalogHandler()))
 	mux.HandleFunc("POST /api/admin/llm/service-cards", requireTenantAdmin(CreateLLMServiceCardHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/service-cards", requireTenantAdmin(ListLLMServiceCardsHandler(system)))
 	mux.HandleFunc("GET /api/admin/llm/service-cards/export", requireTenantAdmin(ExportLLMServiceCardsHandler(system)))

@@ -106,8 +106,6 @@ func (ic *IntentClassifier) Classify(
 		map[string]string{"role": "user", "content": prompt},
 	}
 
-	llmCfg := cfg.ToMaclawLLMConfig()
-
 	// Use a sub-context with 5s timeout.
 	classifyCtx, cancel := context.WithTimeout(ctx, classifyTimeout)
 	defer cancel()
@@ -128,7 +126,8 @@ func (ic *IntentClassifier) Classify(
 			return
 		}
 		defer ic.llmSem.Release()
-		resp, err := agent.DoSimpleLLMRequest(llmCfg, messages, ic.client, classifyTimeout)
+		// Server-side IM LLM always prefers system-free.
+		resp, err := DoSystemLLM(classifyCtx, DefaultSystemLLMResolver(), cfg, messages, ic.client, classifyTimeout)
 		ch <- llmResult{resp, err}
 	}()
 

@@ -159,6 +159,90 @@ func TestRemoteGatewayClaimsAndRepliesAreTenantScoped(t *testing.T) {
 	}
 }
 
+func TestRemoteGatewayReplyCarriesCachedChatType(t *testing.T) {
+	sender := &remoteGatewayTestSender{}
+	plugin := NewRemoteGatewayPlugin("lansenger", sender, tenantEmailTestUsers{}, nil)
+	if ok, reason, _ := plugin.ClaimGatewayForTenant("tenant_a", "machine-a", "user-a"); !ok {
+		t.Fatalf("claim failed: %s", reason)
+	}
+	plugin.rememberReplyRoute("tenant_a", "group-1", "group-1", "group")
+
+	if err := plugin.SendText(WithTenant(context.Background(), "tenant_a"), UserTarget{PlatformUID: "group-1"}, "hello group"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("reply count = %d, want 1", len(sender.messages))
+	}
+	payload, _ := sender.messages[0]["payload"].(map[string]any)
+	inner, _ := payload["payload"].(map[string]any)
+	if got, _ := inner["chat_type"].(string); got != "group" {
+		t.Fatalf("reply chat_type = %q, want group", got)
+	}
+}
+
+func TestRemoteGatewayGroupReplyUsesConversationTargetNotSenderIdentity(t *testing.T) {
+	sender := &remoteGatewayTestSender{}
+	plugin := NewRemoteGatewayPlugin("lansenger", sender, tenantEmailTestUsers{}, nil)
+	if ok, reason, _ := plugin.ClaimGatewayForTenant("tenant_a", "machine-a", "user-a"); !ok {
+		t.Fatalf("claim failed: %s", reason)
+	}
+	plugin.rememberReplyRoute("tenant_a", "user-1", "group-1", "group")
+
+	if err := plugin.SendText(WithTenant(context.Background(), "tenant_a"), UserTarget{PlatformUID: "user-1"}, "hello group"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	payload, _ := sender.messages[0]["payload"].(map[string]any)
+	inner, _ := payload["payload"].(map[string]any)
+	if got, _ := inner["platform_uid"].(string); got != "group-1" {
+		t.Fatalf("reply target = %q, want group-1", got)
+	}
+	if got, _ := inner["chat_type"].(string); got != "group" {
+		t.Fatalf("reply chat_type = %q, want group", got)
+	}
+}
+
+func TestRemoteGatewayReplyTargetRejectsGroupFallbackToSender(t *testing.T) {
+	if got := remoteGatewayReplyTarget("user-1", "", "group"); got != "" {
+		t.Fatalf("group target = %q, want empty", got)
+	}
+	if got := remoteGatewayReplyTarget("user-1", "", "p2p"); got != "user-1" {
+		t.Fatalf("private target = %q, want user-1", got)
+	}
+}
+
+func TestRemoteGatewayGroupReplyRouteIsAvailableByConversationTarget(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("lansenger", &remoteGatewayTestSender{}, tenantEmailTestUsers{}, nil)
+	plugin.rememberReplyRoute("tenant_a", "user-1", "group-1", "group")
+	if route := plugin.replyRoute("tenant_a", "group-1"); route.target != "group-1" || route.chatType != "group" {
+		t.Fatalf("group conversation route = %#v", route)
+	}
+}
+
+func TestRemoteGatewayLansengerGroupSuppressesIMDetail(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("lansenger", &remoteGatewayTestSender{}, tenantEmailTestUsers{}, nil)
+	plugin.rememberReplyRoute("tenant_a", "group-1", "group-1", "group")
+
+	ctx := WithTenant(context.Background(), "tenant_a")
+	if !plugin.SuppressGroupIMDetail(ctx, UserTarget{PlatformUID: "group-1"}) {
+		t.Fatal("Lansenger group must suppress IM detail")
+	}
+	if plugin.SuppressGroupIMDetail(ctx, UserTarget{PlatformUID: "user-1"}) {
+		t.Fatal("private target must not suppress IM detail")
+	}
+}
+
+func TestRemoteGatewayLansengerGroupSuppressesIdentityPrompt(t *testing.T) {
+	plugin := NewRemoteGatewayPlugin("lansenger", &remoteGatewayTestSender{}, tenantEmailTestUsers{}, nil)
+	plugin.rememberReplyRoute("tenant_a", "user-1", "group-1", "group")
+	ctx := WithTenant(context.Background(), "tenant_a")
+	if !plugin.SuppressGroupIdentityPrompt(ctx, UserTarget{PlatformUID: "user-1"}) {
+		t.Fatal("group identity prompt must be suppressed")
+	}
+	if plugin.SuppressGroupIdentityPrompt(ctx, UserTarget{PlatformUID: "user-2"}) {
+		t.Fatal("private identity prompt must not be suppressed")
+	}
+}
+
 func TestRemoteGatewayReleaseIsTenantScoped(t *testing.T) {
 	plugin := NewRemoteGatewayPlugin("telegram", &remoteGatewayTestSender{}, tenantEmailTestUsers{}, nil)
 

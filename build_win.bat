@@ -248,6 +248,7 @@ set "CC="
 set "CXX="
 
 REM -- Create NSIS Installer --
+if /i "%~1"=="compile-only" goto copy_binaries
 echo [Step 12/14] Creating NSIS installer...
 if not exist "%NSIS_PATH%" goto nsis_missing
 
@@ -301,6 +302,8 @@ if exist "%OUTPUT_DIR%\maclaw-data-srv-Setup.exe" (
 )
 
 REM -- Copy/Rename Main Binaries for convenience --
+:copy_binaries
+if /i "%~1"=="compile-only" echo [INFO] Compile-only mode: skipping NSIS installers.
 echo   - Creating main executable copies (amd64)...
 copy /Y "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" "%OUTPUT_DIR%\%APP_NAME%.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-tui_amd64.exe" "%OUTPUT_DIR%\maclaw-tui.exe" >nul

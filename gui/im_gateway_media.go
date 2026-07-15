@@ -57,6 +57,14 @@ func saveMediaToTempDir(subDir, namePrefix, userID, mediaType string, mediaData 
 	if name == "" {
 		ext := mediaExtension(mediaType)
 		name = namePrefix + userID + "_" + time.Now().Format("20060102_150405.000") + ext
+	} else {
+		// Inbound file names are supplied by remote IM gateways. Normalize both
+		// separator styles so they cannot escape the channel temp directory.
+		name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			ext := mediaExtension(mediaType)
+			name = namePrefix + userID + "_" + time.Now().Format("20060102_150405.000") + ext
+		}
 	}
 	p := filepath.Join(dir, name)
 	if err := os.WriteFile(p, mediaData, 0o644); err != nil {

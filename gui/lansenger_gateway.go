@@ -24,8 +24,12 @@ import (
 //   - Hub / 多机 mode (LansengerLocalMode=false): forwards messages to Hub
 //     via im.gateway_message, receives replies via im.gateway_reply.
 type lansengerGatewayManager struct {
-	app          *App
-	mu           sync.Mutex
+	app *App
+	mu  sync.Mutex
+	// syncMu serializes config reconciliation with Stop. Gateway Stop may wait
+	// for its connection goroutine, so keep it outside mu while still ensuring a
+	// concurrent sync cannot publish or stop the same gateway out of order.
+	syncMu       sync.Mutex
 	gateway      *lansenger.Gateway
 	status       gatewayConnectionStatus
 	statusSince  time.Time
@@ -33,15 +37,27 @@ type lansengerGatewayManager struct {
 	lastToken    string
 	healthCancel context.CancelFunc
 	hubClaimSent bool // true after first successful claim in hub mode
+	// replyRoutes retains the chat kind for conversations forwarded to Hub.
+	// Hub replies identify only platform_uid, so without this local routing hint
+	// a group reply would be incorrectly sent through the private-message API.
+	replyRoutes map[string]lansengerReplyRoute
 
 	localHandler *IMMessageHandler
 }
+
+type lansengerReplyRoute struct {
+	isGroup bool
+	seenAt  time.Time
+}
+
+const maxLansengerReplyRoutes = 1024
 
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
 	return &lansengerGatewayManager{
 		app:         app,
 		status:      gatewayConnectionStatusDisconnected,
 		statusSince: time.Now(),
+		replyRoutes: make(map[string]lansengerReplyRoute),
 	}
 }
 
@@ -57,6 +73,9 @@ func (m *lansengerGatewayManager) Restart() {
 }
 
 func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		return
@@ -76,6 +95,8 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 		m.statusSince = time.Now()
 		m.lastToken = ""
 		m.healthCancel = nil
+		m.hubClaimSent = false
+		clear(m.replyRoutes)
 		m.mu.Unlock()
 		if healthCancel != nil {
 			healthCancel()
@@ -97,6 +118,10 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 	}
 
 	oldGw := m.gateway
+	// Remove the previous gateway before waiting for it to stop. This prevents
+	// status callbacks or a concurrent read path from treating an obsolete
+	// connection as the active one during a restart.
+	m.gateway = nil
 	m.mu.Unlock()
 	if oldGw != nil {
 		_ = oldGw.Stop()
@@ -134,12 +159,17 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 
 // Stop shuts down the gateway.
 func (m *lansengerGatewayManager) Stop() {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
 	m.status = gatewayConnectionStatusDisconnected
 	m.statusSince = time.Now()
 	m.lastToken = ""
+	m.hubClaimSent = false
+	clear(m.replyRoutes)
 	healthCancel := m.healthCancel
 	m.healthCancel = nil
 	lh := m.localHandler
@@ -293,14 +323,22 @@ func (m *lansengerGatewayManager) resetLocalHandler() {
 // ---------------------------------------------------------------------------
 
 func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessage) {
-	if isPassthroughSlashText(msg.Text) {
-		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
-		m.handleLocalMessage(msg)
-		return
-	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		log.Printf("[lansenger-mgr] LoadConfig error: %v", err)
+		return
+	}
+	// Groups are intentionally mention-gated.  BlueX's group configuration
+	// defines requireMention as the switch that keeps a bot from responding to
+	// every conversation in the group.  Apply the gate before slash-command,
+	// local, fallback, and Hub routing so no path can bypass it.
+	if isLansengerGroupMessage(msg) && !lansengerGroupMessageMentionsBot(msg, cfg.LansengerAppID) {
+		log.Printf("[lansenger-mgr] ignoring non-mentioned group message: group=%s user=%s", msg.GroupID, msg.FromUserID)
+		return
+	}
+	if isPassthroughSlashText(msg.Text) {
+		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
+		m.handleLocalMessage(msg)
 		return
 	}
 
@@ -309,8 +347,8 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	hubNil := hubClient == nil
 	hubConn := !hubNil && hubClient.IsConnected()
 
-	log.Printf("[lansenger-mgr] incoming: user=%s local=%v hub_nil=%v hub_conn=%v text_len=%d",
-		msg.FromUserID, isLocal, hubNil, hubConn, len(msg.Text))
+	log.Printf("[lansenger-mgr] incoming: user=%s chat_type=%s group=%s local=%v hub_nil=%v hub_conn=%v text_len=%d",
+		msg.FromUserID, msg.ChatType, msg.GroupID, isLocal, hubNil, hubConn, len(msg.Text))
 
 	if isLocal {
 		m.handleLocalMessage(msg)
@@ -327,6 +365,33 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	m.forwardToHub(msg)
 }
 
+func isLansengerGroupMessage(msg lansenger.IncomingMessage) bool {
+	return strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
+}
+
+// lansengerGroupMessageMentionsBot matches the structured mention metadata
+// emitted by the Lansenger gateway. App IDs are commonly composite values
+// (for example, organization-bot), while reminder.botId may contain the
+// complete bot component after the organization prefix, so accept both forms.
+// Do not infer mentions from free text: that would let ordinary conversation
+// accidentally invoke the bot.
+func lansengerGroupMessageMentionsBot(msg lansenger.IncomingMessage, appID string) bool {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return false
+	}
+	candidates := map[string]struct{}{strings.ToLower(appID): {}}
+	if separator := strings.IndexAny(appID, "-_:."); separator >= 0 && separator+1 < len(appID) {
+		candidates[strings.ToLower(strings.TrimSpace(appID[separator+1:]))] = struct{}{}
+	}
+	for _, mentioned := range msg.MentionedBots {
+		if _, ok := candidates[strings.ToLower(strings.TrimSpace(mentioned.ID))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMessage) {
 	m.mu.Lock()
 	gw := m.gateway
@@ -335,8 +400,9 @@ func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMes
 		return
 	}
 	_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-		ToUserID: msg.FromUserID,
+		ToUserID: lansengerReplyTarget(msg),
 		Text:     "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。",
+		IsGroup:  msg.ChatType == "group",
 	})
 }
 
@@ -367,16 +433,76 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 		m.mu.Unlock()
 	}
 
+	msgType := "text"
+	if msg.MediaType != "" && len(msg.MediaData) > 0 {
+		msgType = msg.MediaType
+	}
+	replyTarget := lansengerReplyTarget(msg)
+	m.rememberReplyRoute(replyTarget, msg.ChatType == "group")
 	payload := map[string]any{
+		// platform_uid remains the human sender for Hub identity, binding and
+		// per-user routing. The separate reply target preserves group delivery.
 		"platform_uid": msg.FromUserID,
+		"reply_target": replyTarget,
 		"text":         msg.Text,
-		"message_type": "text",
+		"message_type": msgType,
+		"chat_type":    msg.ChatType,
+		"group_id":     msg.GroupID,
+	}
+	if attachment := buildMediaAttachment(msg.MediaType, msg.MediaData, msg.MediaName, ""); attachment != nil {
+		payload["attachments"] = []map[string]any{attachment}
+	}
+	if msg.SenderName != "" {
+		payload["sender_name"] = msg.SenderName
+	}
+	if msg.GroupName != "" {
+		payload["group_name"] = msg.GroupName
 	}
 
 	if err := hubClient.SendIMGatewayMessage(imGatewayPlatformLansenger, payload); err != nil {
 		log.Printf("[lansenger-mgr] forwardToHub error: %v, falling back to local", err)
 		m.handleLocalMessage(msg)
 	}
+}
+
+// lansengerReplyTarget selects the conversation ID for replies.  Group events
+// carry a sender ID and a group ID; sending to the sender would turn a group
+// reply into a private message.
+func lansengerReplyTarget(msg lansenger.IncomingMessage) string {
+	if msg.ChatType == "group" && strings.TrimSpace(msg.GroupID) != "" {
+		return msg.GroupID
+	}
+	return msg.FromUserID
+}
+
+func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.replyRoutes == nil {
+		m.replyRoutes = make(map[string]lansengerReplyRoute)
+	}
+	if len(m.replyRoutes) >= maxLansengerReplyRoutes {
+		var oldestKey string
+		var oldest time.Time
+		for key, route := range m.replyRoutes {
+			if oldestKey == "" || route.seenAt.Before(oldest) {
+				oldestKey, oldest = key, route.seenAt
+			}
+		}
+		delete(m.replyRoutes, oldestKey)
+	}
+	m.replyRoutes[target] = lansengerReplyRoute{isGroup: isGroup, seenAt: time.Now()}
+}
+
+func (m *lansengerGatewayManager) isGroupReplyTarget(target string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	route, ok := m.replyRoutes[strings.TrimSpace(target)]
+	return ok && route.isGroup
 }
 
 // ---------------------------------------------------------------------------
@@ -471,8 +597,9 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 				reply = "(no output)"
 			}
 			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-				ToUserID: msg.FromUserID,
+				ToUserID: lansengerReplyTarget(msg),
 				Text:     reply,
+				IsGroup:  msg.ChatType == "group",
 			})
 		}
 		return
@@ -483,8 +610,9 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		m.mu.Unlock()
 		if gw != nil {
 			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-				ToUserID: msg.FromUserID,
+				ToUserID: lansengerReplyTarget(msg),
 				Text:     i18n.T(i18n.MsgLLMNotConfigured, "zh"),
+				IsGroup:  msg.ChatType == "group",
 			})
 		}
 		return
@@ -531,6 +659,12 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	var lastProgress time.Time
 	var lastProgressText string
 	onProgress := func(progressText string) {
+		// Progress is IM implementation detail.  In a group it would expose
+		// agent activity to every member, so never publish it (including the
+		// first progress update that the generic visibility filter permits).
+		if !shouldSendLansengerIMDetail(msg.ChatType) {
+			return
+		}
 		if !progressFilter.ShouldSendProgress(progressText) {
 			return
 		}
@@ -545,8 +679,9 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		lastProgress = now
 		lastProgressText = stripped
 		_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-			ToUserID: msg.FromUserID,
+			ToUserID: lansengerReplyTarget(msg),
 			Text:     i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + stripped,
+			IsGroup:  msg.ChatType == "group",
 		})
 	}
 
@@ -562,11 +697,20 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		return
 	}
 
-	m.sendAgentResponse(gw, msg.FromUserID, resp)
+	m.sendAgentResponse(gw, msg, resp)
 }
 
-func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUserID string, resp *IMAgentResponse) {
+// shouldSendLansengerIMDetail controls process/status messages only.  Final
+// agent replies must still be delivered to groups; they are conversation
+// content rather than implementation detail.
+func shouldSendLansengerIMDetail(chatType string) bool {
+	return !strings.EqualFold(strings.TrimSpace(chatType), "group")
+}
+
+func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg lansenger.IncomingMessage, resp *IMAgentResponse) {
 	ctx := context.Background()
+	toUserID := lansengerReplyTarget(msg)
+	isGroup := msg.ChatType == "group"
 
 	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
@@ -595,6 +739,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 		if err := gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
 			Text:     text,
+			IsGroup:  isGroup,
 		}); err != nil {
 			log.Printf("[lansenger-mgr] SendText error: %v", err)
 		}
@@ -607,6 +752,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
 			Text:     text,
+			IsGroup:  isGroup,
 		})
 	}
 
@@ -614,6 +760,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
 			Text:     "" + textutil.StripMarkdown(resp.Error),
+			IsGroup:  isGroup,
 		})
 	}
 
@@ -624,6 +771,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 				ToUserID:  toUserID,
 				FileData:  imgData,
 				MediaType: "image",
+				IsGroup:   isGroup,
 			})
 		}
 	}
@@ -636,6 +784,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 				FileData:  fileBytes,
 				FileName:  resp.FileName,
 				MediaType: "file",
+				IsGroup:   isGroup,
 			})
 		}
 	}
@@ -650,15 +799,16 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, toUse
 			FileData:  voiceBytes,
 			FileName:  resp.VoiceFileName,
 			MediaType: "file",
+			IsGroup:   isGroup,
 		}); err != nil {
 			log.Printf("[lansenger-mgr] SendMedia voice file failed (to=%s): %v", toUserID, err)
 		}
 	}
 
-	m.sendLocalFiles(gw, toUserID, resp)
+	m.sendLocalFiles(gw, toUserID, isGroup, resp)
 }
 
-func (m *lansengerGatewayManager) sendLocalFiles(gw *lansenger.Gateway, toUserID string, resp *IMAgentResponse) {
+func (m *lansengerGatewayManager) sendLocalFiles(gw *lansenger.Gateway, toUserID string, isGroup bool, resp *IMAgentResponse) {
 	paths := resp.LocalFilePaths
 	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
 		paths = append([]string{resp.LocalFilePath}, paths...)
@@ -680,6 +830,7 @@ func (m *lansengerGatewayManager) sendLocalFiles(gw *lansenger.Gateway, toUserID
 			FileData:  data,
 			FileName:  name,
 			MediaType: mediaType,
+			IsGroup:   isGroup,
 		}); err != nil {
 			log.Printf("[lansenger-mgr] SendMedia local file failed (to=%s file=%s): %v", toUserID, p, err)
 		}
@@ -701,11 +852,13 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 	}
 
 	ctx := context.Background()
+	isGroup := strings.EqualFold(strings.TrimSpace(reply.ChatType), "group") || m.isGroupReplyTarget(reply.PlatformUID)
 	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
 	case gatewayReplyTypeText:
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: reply.PlatformUID,
 			Text:     textutil.StripMarkdown(reply.Text),
+			IsGroup:  isGroup,
 		})
 	case gatewayReplyTypeImage:
 		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
@@ -716,6 +869,7 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
 			MediaType: imMediaImage.String(),
+			IsGroup:   isGroup,
 		})
 	case gatewayReplyTypeFile:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
@@ -727,6 +881,7 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			FileData:  data,
 			FileName:  reply.FileName,
 			MediaType: imMediaFile.String(),
+			IsGroup:   isGroup,
 		})
 	case gatewayReplyTypeVoice:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
@@ -738,6 +893,7 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			FileData:  data,
 			FileName:  reply.FileName,
 			MediaType: imMediaFile.String(),
+			IsGroup:   isGroup,
 		})
 	}
 }
