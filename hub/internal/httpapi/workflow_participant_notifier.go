@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -197,6 +198,8 @@ func (n *HubWorkflowParticipantNotifier) resolveRecipientMachines(ctx context.Co
 	for id := range ids {
 		out = append(out, id)
 	}
+	// Stable order for logs/tests (map iteration is randomized).
+	sort.Strings(out)
 	return out
 }
 
@@ -205,18 +208,14 @@ func (n *HubWorkflowParticipantNotifier) machinesForIdentity(ctx context.Context
 	if identity == "" || n.devices == nil {
 		return nil
 	}
-	// If it already looks like a machine id (no @, no uuid-only assumption), try as-is via online check.
+	// Online machine id can be delivered as-is.
 	if !strings.Contains(identity, "@") && n.devices.IsMachineOnline(identity) {
 		return []string{identity}
 	}
 	userID := ""
-	if n.identity != nil && strings.Contains(identity, "@") {
-		// List users is heavy; use email→user via ListUsersForTenant when tenant on context.
-		// Best-effort: iterate is ok for small tenants; production may optimize later.
-		// Tenant may be in context from store.WithTenant.
-		// Fallback: treat identity as user id for ListMachines.
-	}
 	// Prefer ListMachines by user id when identity is not email.
+	// Offline bare ids are treated as userIDs (machine ids that are offline and not
+	// also a user id simply yield an empty ListMachines result — soft fail).
 	if !strings.Contains(identity, "@") {
 		userID = identity
 	} else if n.identity != nil {

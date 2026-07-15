@@ -35,6 +35,7 @@ import { AssistantWelcomeView, type WelcomePromptSubmitMeta } from "./AssistantW
 import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
 import {
     loadRemoteSSHPassword,
+    remoteSSHPasswordVaultKey,
     saveRemoteSSHPassword,
     saveWelcomeCustomTemplate,
     shouldOfferWelcomeTemplateSave,
@@ -369,6 +370,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const remoteAutoReconnectKeyRef = useRef("");
     /** Prevent concurrent PrepareRemoteCodingEnvironment calls (auto + manual / double effect). */
     const remoteReconnectInFlightRef = useRef(false);
+    /**
+     * Identity (`user@host:port`) the current form password is bound to.
+     * Used so blur/status can detect real host switches vs same-target edits.
+     */
+    const remotePasswordBoundIdentityRef = useRef("");
     /** Latest reconnect form snapshot — keeps reconnect handler identity stable. */
     const remoteReconnectRef = useRef(remoteReconnect);
     remoteReconnectRef.current = remoteReconnect;
@@ -901,6 +907,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!isRemote) {
                 remoteAutoReconnectKeyRef.current = "";
                 remoteReconnectInFlightRef.current = false;
+                remotePasswordBoundIdentityRef.current = "";
                 setRemoteReconnect(prev => (prev.needsReconnect || prev.host || prev.password
                     ? { needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" }
                     : prev));
@@ -910,28 +917,32 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const user = String(st.remote_user || "").trim();
                 const port = Number(st.remote_port) > 0 ? Number(st.remote_port) : 22;
                 const workDir = String(st.remote_work_dir || "").trim();
-                // Read vault outside setState (setState updater must stay pure).
-                const rememberedPassword = needs && host && user
-                    ? loadRemoteSSHPassword(host, user, port)
-                    : "";
+                // Vault + identity binding outside setState (updater must stay pure).
                 if (!needs) {
                     remoteAutoReconnectKeyRef.current = "";
                     remoteReconnectInFlightRef.current = false;
-                }
-                setRemoteReconnect(prev => {
-                    const nextHost = host || prev.host || "";
-                    const nextUser = user || prev.user || "";
-                    const nextPort = host || user ? port : (prev.port || 22);
-                    const nextWorkDir = workDir || prev.workDir || "";
-                    const identityChanged = !!(
-                        (host && prev.host && host !== prev.host)
-                        || (user && prev.user && user !== prev.user)
-                        || (host && user && Number(st.remote_port) > 0 && prev.port > 0 && port !== prev.port)
-                    );
-                    // Never clobber in-progress typing / mid-connect password.
-                    // Only hydrate from vault when empty, or when server identity changed.
-                    let nextPassword = "";
-                    if (needs) {
+                    remotePasswordBoundIdentityRef.current = "";
+                    setRemoteReconnect(prev => ({
+                        ...prev,
+                        needsReconnect: false,
+                        host: host || prev.host || "",
+                        user: user || prev.user || "",
+                        port: (host || user) ? port : (prev.port || 22),
+                        workDir: workDir || prev.workDir || "",
+                        password: "",
+                        sessionPlan: plan || prev.sessionPlan,
+                        error: "",
+                        success: prev.success,
+                        connecting: false,
+                    }));
+                } else if (host && user) {
+                    const rememberedPassword = loadRemoteSSHPassword(host, user, port);
+                    const nextBoundKey = remoteSSHPasswordVaultKey(host, user, port);
+                    const boundKey = remotePasswordBoundIdentityRef.current;
+                    const identityChanged = !!(boundKey && nextBoundKey !== boundKey);
+                    remotePasswordBoundIdentityRef.current = nextBoundKey;
+                    setRemoteReconnect(prev => {
+                        let nextPassword = "";
                         if (prev.connecting) {
                             nextPassword = prev.password;
                         } else if (identityChanged) {
@@ -939,21 +950,32 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         } else {
                             nextPassword = prev.password || rememberedPassword || "";
                         }
-                    }
-                    return {
+                        return {
+                            ...prev,
+                            needsReconnect: true,
+                            host: host || prev.host || "",
+                            user: user || prev.user || "",
+                            port: port || prev.port || 22,
+                            workDir: workDir || prev.workDir || "",
+                            password: nextPassword,
+                            sessionPlan: plan || prev.sessionPlan,
+                            error: prev.error || "",
+                            success: "",
+                            connecting: prev.connecting,
+                        };
+                    });
+                } else {
+                    // Server has not yet filled host/user — keep form, mark needs only.
+                    setRemoteReconnect(prev => ({
                         ...prev,
-                        needsReconnect: needs,
-                        host: nextHost,
-                        user: nextUser,
-                        port: nextPort,
-                        workDir: nextWorkDir,
-                        password: nextPassword,
+                        needsReconnect: true,
+                        workDir: workDir || prev.workDir || "",
                         sessionPlan: plan || prev.sessionPlan,
-                        error: needs ? (prev.error || "") : "",
-                        success: needs ? "" : prev.success,
-                        connecting: needs ? prev.connecting : false,
-                    };
-                });
+                        error: prev.error || "",
+                        success: "",
+                        connecting: prev.connecting,
+                    }));
+                }
             }
             try {
                 void GetCodingWorkbenchCheckpointSidecarStats(projectPath).then((ss) => {
@@ -1066,7 +1088,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }));
             return;
         }
-        const autoKey = `${projectPath}|${user}@${host}:${port}`;
+        const autoKey = `${projectPath}|${remoteSSHPasswordVaultKey(host, user, port)}`;
         if (opts?.auto) {
             // Reserve only after validation so a skipped attempt cannot block a later one.
             if (remoteAutoReconnectKeyRef.current === autoKey) return;
@@ -1089,6 +1111,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 saveRemoteSSHPassword(host, user, password, port, workDir);
                 // Allow a future auto-reconnect after a later disconnect.
                 remoteAutoReconnectKeyRef.current = "";
+                remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
+            } else {
+                // Password shown on failure is bound to this target.
+                remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
             }
             setRemoteReconnect(prev => ({
                 ...prev,
@@ -1127,33 +1153,34 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [activeTab?.projectPath, activeTab?.type, lang]);
     /**
      * On identity-field blur: trim values and recall vault password only when the
-     * target actually changed — never clobber a password the user is editing for
-     * the same host/user/port.
+     * bound target actually changed — never clobber a password the user is editing
+     * for the same host/user/port.
      */
     const hydrateRemoteReconnectIdentity = useCallback(() => {
         const snap = remoteReconnectRef.current;
         const host = snap.host.trim();
         const user = snap.user.trim();
         const port = snap.port > 0 ? snap.port : 22;
-        const nextIdentityKey = `${user}@${host}:${port}`;
-        const prevIdentityKey = `${snap.user.trim()}@${snap.host.trim()}:${snap.port > 0 ? snap.port : 22}`;
-        // Whitespace-only edits share the same identity key (both sides trim).
-        const targetChanged = prevIdentityKey !== nextIdentityKey;
-        const remembered = (host && user) ? loadRemoteSSHPassword(host, user, port) : "";
-        if (remembered && targetChanged) {
-            const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
-            const nextAutoKey = `${projectPath}|${nextIdentityKey}`;
-            // New target with a known password may auto once after blur commit.
-            if (remoteAutoReconnectKeyRef.current !== nextAutoKey) {
-                remoteAutoReconnectKeyRef.current = "";
+        const nextBoundKey = (host && user) ? remoteSSHPasswordVaultKey(host, user, port) : "";
+        const boundKey = remotePasswordBoundIdentityRef.current;
+        // First commit (bound empty) or real host/user/port switch.
+        const targetChanged = !!nextBoundKey && nextBoundKey !== boundKey;
+        const remembered = nextBoundKey ? loadRemoteSSHPassword(host, user, port) : "";
+        if (targetChanged) {
+            remotePasswordBoundIdentityRef.current = nextBoundKey;
+            if (remembered) {
+                const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+                const nextAutoKey = `${projectPath}|${nextBoundKey}`;
+                // New target with a known password may auto once after blur commit.
+                if (remoteAutoReconnectKeyRef.current !== nextAutoKey) {
+                    remoteAutoReconnectKeyRef.current = "";
+                }
             }
         }
         setRemoteReconnect(prev => {
-            const prevKey = `${prev.user.trim()}@${prev.host.trim()}:${prev.port > 0 ? prev.port : 22}`;
-            const changed = prevKey !== nextIdentityKey;
-            const nextPassword = changed
+            const nextPassword = targetChanged
                 ? (remembered || "")
-                : prev.password; // same target: keep whatever the user typed
+                : prev.password; // same bound target: keep whatever the user typed
             if (
                 prev.host === host
                 && prev.user === user
@@ -1184,8 +1211,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!loadRemoteSSHPassword(host, user, port)) return;
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
-        const autoKey = `${projectPath}|${user}@${host}:${port}`;
+        const autoKey = `${projectPath}|${remoteSSHPasswordVaultKey(host, user, port)}`;
         if (remoteAutoReconnectKeyRef.current === autoKey) return;
+        // Bind form password identity to the auto target (vault password will be used).
+        remotePasswordBoundIdentityRef.current = remoteSSHPasswordVaultKey(host, user, port);
         void handleRemoteCodingReconnect({ auto: true });
     }, [
         remoteReconnect.needsReconnect,

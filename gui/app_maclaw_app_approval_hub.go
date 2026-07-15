@@ -1070,12 +1070,13 @@ func maclawAppApprovalResultPayloadEscalationChanged(local, hub map[string]any) 
 	if len(localApprovers) != len(hubApprovers) {
 		return true
 	}
+	// Order-independent set compare (Hub/list order is not stable).
 	seen := map[string]struct{}{}
 	for _, a := range localApprovers {
-		seen[a] = struct{}{}
+		seen[strings.TrimSpace(a)] = struct{}{}
 	}
 	for _, a := range hubApprovers {
-		if _, ok := seen[a]; !ok {
+		if _, ok := seen[strings.TrimSpace(a)]; !ok {
 			return true
 		}
 	}

@@ -378,6 +378,86 @@ export function loadWelcomeCodingEnv(): WelcomeStoredCodingEnv {
     return normalizeWelcomeStoredCodingEnv(raw) || {};
 }
 
+// --- Multi-host SSH password vault (local only; reconnect form recall) ---
+// Defined before saveWelcomeCodingEnv so dual-write / identity checks stay in one place.
+
+/** localStorage map of `user@host:port` → password for remote coding reconnect. */
+export const REMOTE_SSH_PASSWORD_VAULT_KEY = "maclaw:remote-ssh-passwords";
+/** Soft cap so the vault cannot grow without bound across many one-off hosts. */
+export const REMOTE_SSH_PASSWORD_VAULT_MAX = 40;
+
+/** Stable identity key for vault + form binding (host lowercased). */
+export function remoteSSHPasswordVaultKey(host: string, user: string, port?: number): string {
+    const h = String(host || "").trim().toLowerCase();
+    const u = String(user || "").trim();
+    const p = normalizeWelcomeSshPort(port);
+    return `${u}@${h}:${p}`;
+}
+
+/** Host is case-insensitive; user is exact; port is normalized (0/invalid → 22). */
+function sameRemoteSSHTarget(
+    aHost: string,
+    aUser: string,
+    aPort: number | undefined,
+    bHost: string,
+    bUser: string,
+    bPort: number | undefined,
+): boolean {
+    return (
+        String(aHost || "").trim().toLowerCase() === String(bHost || "").trim().toLowerCase()
+        && String(aUser || "").trim() === String(bUser || "").trim()
+        && normalizeWelcomeSshPort(aPort) === normalizeWelcomeSshPort(bPort)
+    );
+}
+
+function readRemoteSSHPasswordVault(): Record<string, string> {
+    const raw = readJson<Record<string, unknown> | null>(REMOTE_SSH_PASSWORD_VAULT_KEY, null);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw)) {
+        const key = String(k || "").trim();
+        const pw = normalizeWelcomeSshPassword(v);
+        if (key && pw) out[key] = pw;
+    }
+    return out;
+}
+
+/** Insert/update one vault entry (LRU by re-append). No-op on empty identity/password. */
+function upsertRemoteSSHPasswordVaultEntry(
+    host: string,
+    user: string,
+    password: string,
+    port?: number,
+): void {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    const pw = normalizeWelcomeSshPassword(password);
+    if (!h || !u || !pw) return;
+    const key = remoteSSHPasswordVaultKey(h, u, port);
+    const map = readRemoteSSHPasswordVault();
+    // Move key to "most recent" by re-inserting last (object key order is insertion order).
+    if (key in map) delete map[key];
+    map[key] = pw;
+    const keys = Object.keys(map);
+    if (keys.length > REMOTE_SSH_PASSWORD_VAULT_MAX) {
+        for (const d of keys.slice(0, keys.length - REMOTE_SSH_PASSWORD_VAULT_MAX)) {
+            delete map[d];
+        }
+    }
+    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+}
+
+function removeRemoteSSHPasswordVaultEntry(host: string, user: string, port?: number): void {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    if (!h || !u) return;
+    const key = remoteSSHPasswordVaultKey(h, u, port);
+    const map = readRemoteSSHPasswordVault();
+    if (!(key in map)) return;
+    delete map[key];
+    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+}
+
 export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
     const prev = loadWelcomeCodingEnv();
     const next: WelcomeStoredCodingEnv = { ...prev };
@@ -453,85 +533,6 @@ export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
             vaultWrite.port,
         );
     }
-}
-
-// --- Multi-host SSH password vault (local only; reconnect form recall) ---
-
-/** localStorage map of `user@host:port` → password for remote coding reconnect. */
-export const REMOTE_SSH_PASSWORD_VAULT_KEY = "maclaw:remote-ssh-passwords";
-/** Soft cap so the vault cannot grow without bound across many one-off hosts. */
-export const REMOTE_SSH_PASSWORD_VAULT_MAX = 40;
-
-/** Stable vault key for a remote SSH identity (host is lowercased). */
-export function remoteSSHPasswordVaultKey(host: string, user: string, port?: number): string {
-    const h = String(host || "").trim().toLowerCase();
-    const u = String(user || "").trim();
-    const p = normalizeWelcomeSshPort(port);
-    return `${u}@${h}:${p}`;
-}
-
-/** Host is case-insensitive; user is exact; port is normalized (0/invalid → 22). */
-function sameRemoteSSHTarget(
-    aHost: string,
-    aUser: string,
-    aPort: number | undefined,
-    bHost: string,
-    bUser: string,
-    bPort: number | undefined,
-): boolean {
-    return (
-        aHost.toLowerCase() === bHost.toLowerCase()
-        && aUser === bUser
-        && normalizeWelcomeSshPort(aPort) === normalizeWelcomeSshPort(bPort)
-    );
-}
-
-function readRemoteSSHPasswordVault(): Record<string, string> {
-    const raw = readJson<Record<string, unknown> | null>(REMOTE_SSH_PASSWORD_VAULT_KEY, null);
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw)) {
-        const key = String(k || "").trim();
-        const pw = normalizeWelcomeSshPassword(v);
-        if (key && pw) out[key] = pw;
-    }
-    return out;
-}
-
-/** Insert/update one vault entry (LRU by re-append). No-op on empty identity/password. */
-function upsertRemoteSSHPasswordVaultEntry(
-    host: string,
-    user: string,
-    password: string,
-    port?: number,
-): void {
-    const h = String(host || "").trim();
-    const u = String(user || "").trim();
-    const pw = normalizeWelcomeSshPassword(password);
-    if (!h || !u || !pw) return;
-    const key = remoteSSHPasswordVaultKey(h, u, port);
-    const map = readRemoteSSHPasswordVault();
-    // Move key to "most recent" by re-inserting last (object key order is insertion order).
-    if (key in map) delete map[key];
-    map[key] = pw;
-    const keys = Object.keys(map);
-    if (keys.length > REMOTE_SSH_PASSWORD_VAULT_MAX) {
-        for (const d of keys.slice(0, keys.length - REMOTE_SSH_PASSWORD_VAULT_MAX)) {
-            delete map[d];
-        }
-    }
-    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
-}
-
-function removeRemoteSSHPasswordVaultEntry(host: string, user: string, port?: number): void {
-    const h = String(host || "").trim();
-    const u = String(user || "").trim();
-    if (!h || !u) return;
-    const key = remoteSSHPasswordVaultKey(h, u, port);
-    const map = readRemoteSSHPasswordVault();
-    if (!(key in map)) return;
-    delete map[key];
-    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
 }
 
 /**
