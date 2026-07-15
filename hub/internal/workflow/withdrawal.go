@@ -31,6 +31,7 @@ type WithdrawalHandler struct {
 	auditStore      AuditStore
 	notifDispatcher *NotificationDispatcher
 	confirmTracker  *ConfirmationTracker
+	escalationMgr   *EscalationManager // optional: cancel offline-peer retries on withdraw
 }
 
 // NewWithdrawalHandler creates a new WithdrawalHandler with the given dependencies.
@@ -46,6 +47,16 @@ func NewWithdrawalHandler(
 		notifDispatcher: notifDispatcher,
 		confirmTracker:  confirmTracker,
 	}
+}
+
+// SetEscalationManager wires optional EscalationManager cleanup on withdraw.
+// Returns the handler for fluent wiring in the Hub router.
+func (wh *WithdrawalHandler) SetEscalationManager(m *EscalationManager) *WithdrawalHandler {
+	if wh == nil {
+		return nil
+	}
+	wh.escalationMgr = m
+	return wh
 }
 
 // Withdraw cancels a running workflow instance.
@@ -97,6 +108,12 @@ func (wh *WithdrawalHandler) Withdraw(ctx context.Context, instanceID, userID st
 		if exec.InstanceID == instanceID && exec.Status == NodePending {
 			_ = wh.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeSkipped, nil, "withdrawn by initiator")
 		}
+	}
+
+	// 4b. Drop EscalationManager retries so withdrawn instances cannot re-dispatch
+	// or later markNodeBlocked after max retries.
+	if wh.escalationMgr != nil {
+		_ = wh.escalationMgr.CancelForInstance(instanceID, "")
 	}
 
 	// 5. Atomically set instance status to "withdrawn".

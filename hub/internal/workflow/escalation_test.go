@@ -323,6 +323,28 @@ func TestEscalation_DedupSameApprover(t *testing.T) {
 	}
 }
 
+func TestEscalation_CancelForInstance(t *testing.T) {
+	mgr := NewEscalationManager(&mockDispatcherForEsc{}, &mockAuditStoreForEsc{}, &mockHumanChecker{available: false})
+	_ = mgr.Escalate(context.Background(), &ApprovalRequest{ID: "r1", InstanceID: "inst-c", NodeID: "n1"}, "human-a")
+	_ = mgr.Escalate(context.Background(), &ApprovalRequest{ID: "r2", InstanceID: "inst-c", NodeID: "n2"}, "human-b")
+	_ = mgr.Escalate(context.Background(), &ApprovalRequest{ID: "r3", InstanceID: "other", NodeID: "n1"}, "human-c")
+	if n := mgr.CancelForInstance("inst-c", "n1"); n != 1 {
+		t.Fatalf("CancelForInstance node n1 removed=%d want 1", n)
+	}
+	if mgr.HasPendingApprover("inst-c", "n1", "human-a") {
+		t.Fatal("human-a on n1 should be cancelled")
+	}
+	if !mgr.HasPendingApprover("inst-c", "n2", "human-b") {
+		t.Fatal("human-b on n2 should remain after node-scoped cancel")
+	}
+	if n := mgr.CancelForInstance("inst-c", ""); n != 1 {
+		t.Fatalf("CancelForInstance whole inst removed=%d want 1", n)
+	}
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1 (other instance remains)", mgr.PendingCount())
+	}
+}
+
 func TestEscalation_OpportunisticRedeliverWhenPeerComesOnline(t *testing.T) {
 	checker := &mockHumanChecker{available: false}
 	dispatcher := &mockDispatcherForEsc{}

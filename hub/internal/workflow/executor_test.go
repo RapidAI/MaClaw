@@ -474,6 +474,104 @@ func TestOnEscalationFailed_LastPeerBlocks(t *testing.T) {
 	}
 }
 
+func TestOnEscalationFailed_TerminalInstanceDoesNotReblock(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-done", VersionID: "ver-1", Status: InstanceCompleted,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-late"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), &EscalationRequest{
+		InstanceID: inst.ID, NodeID: "approval-1", HumanApprover: "human-late", Attempts: 5,
+	})
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("must not re-block a completed instance")
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending {
+		t.Fatalf("escalation markers should clear on terminal fail: %#v", inst.InstanceData)
+	}
+}
+
+func TestMarkInstanceCompleted_CancelsEscalationQueue(t *testing.T) {
+	inst := &WorkflowInstance{
+		ID: "inst-complete", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "n1"}, "human-a")
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithEscalationManager(esc),
+	)
+	if err := exec.markInstanceCompleted(context.Background(), inst); err != nil {
+		t.Fatal(err)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("PendingCount=%d want 0 after complete", esc.PendingCount())
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending {
+		t.Fatalf("markers should clear: %#v", inst.InstanceData)
+	}
+}
+
+func TestPersistEscalationMarkers_CASPreservesConcurrentApprovalState(t *testing.T) {
+	// First CAS conflicts: concurrent writer committed an approval vote.
+	// Retry must re-apply escalation markers without dropping that vote.
+	store := &casConflictMockInstanceStore{
+		version: 1,
+		persisted: map[string]interface{}{
+			"title":                "purchase",
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a", "human-b"},
+		},
+		concurrentData: map[string]interface{}{
+			"title":                "purchase",
+			"approval_node_state":  map[string]interface{}{"human-b": "approve"},
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a", "human-b"},
+		},
+	}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	// Only human-a still queued after b was delivered.
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: "inst-1", NodeID: "approval-1"}, "human-a")
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, store, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithEscalationManager(esc),
+	)
+	inst := &WorkflowInstance{
+		ID: "inst-1", Status: InstanceRunning, RowVersion: 1,
+		InstanceData: deepCopyMap(store.persisted),
+	}
+	exec.persistEscalationMarkers(context.Background(), inst, "approval-1", "partial_dispatch", "test_cas")
+	if store.casCalls < 2 {
+		t.Fatalf("casCalls=%d want >=2 (conflict + retry)", store.casCalls)
+	}
+	if _, ok := store.persisted["approval_node_state"]; !ok {
+		t.Fatalf("lost concurrent approval_node_state: %#v", store.persisted)
+	}
+	list := stringSliceFromInstanceData(store.persisted["escalation_approvers"])
+	if len(list) != 1 || list[0] != "human-a" {
+		t.Fatalf("approvers=%v want [human-a]", list)
+	}
+	if reason, _ := store.persisted["escalation_reason"].(string); reason != "partial_dispatch" {
+		t.Fatalf("escalation_reason=%q", reason)
+	}
+}
+
 func TestEnqueueEscalationOrBlock_ImmediateDeliverDoesNotMarkOtherPeerPending(t *testing.T) {
 	// human-a is offline (queued); human-b comes online and Escalate delivers
 	// immediately — must not append human-b to escalation_approvers.

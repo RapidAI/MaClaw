@@ -723,17 +723,28 @@ func (e *WorkflowExecutor) processSequentialMode(ctx context.Context, inst *Work
 
 // markInstanceFailed marks the workflow instance as failed and records the event.
 func (e *WorkflowExecutor) markInstanceFailed(ctx context.Context, inst *WorkflowInstance, reason string) error {
+	e.cancelEscalations(inst.ID, "")
+
 	if err := e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceFailed); err != nil {
 		return fmt.Errorf("mark instance failed: %w", err)
 	}
 	inst.Status = InstanceFailed
+
+	if inst.InstanceData != nil {
+		if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending ||
+			len(stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])) > 0 {
+			e.patchInstanceData(ctx, inst, "", "update_instance_data_failed_clear_escalation", func(data map[string]interface{}) {
+				clearEscalationMarkersInData(data)
+			})
+		}
+	}
 
 	e.surfaceWriteError(ctx, inst.ID, "", "audit_instance_failed",
 		e.auditStore.Append(ctx, &AuditEntry{
 			ID:         generateID("audit"),
 			InstanceID: inst.ID,
 			EventType:  "instance_failed",
-			Details:    fmt.Sprintf(`{"reason":"%s"}`, reason),
+			Details:    fmt.Sprintf(`{"reason":"%s"}`, escapeJSON(reason)),
 			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
 		}))
 	return nil
@@ -1044,14 +1055,115 @@ func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *W
 			fmt.Sprintf("Node ID: %s, Approver: %s, Details: %s", node.ID, approverID, blockDetails),
 		)
 	}
-	// Live queue is SoT for approver lists (same path as deliver/fail hooks).
-	if !e.syncEscalationMarkersFromQueue(inst, node.ID) {
-		return nil
-	}
-	inst.InstanceData["escalation_reason"] = reason
-	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_instance_data_escalation_pending",
-		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+	// Live queue is SoT; CAS merge so concurrent approval votes are not clobbered.
+	e.persistEscalationMarkers(ctx, inst, node.ID, reason, "update_instance_data_escalation_pending")
 	return nil
+}
+
+// cancelEscalations drops live queue entries for an instance (optional node).
+func (e *WorkflowExecutor) cancelEscalations(instanceID, nodeID string) {
+	if e == nil || e.escalationMgr == nil {
+		return
+	}
+	_ = e.escalationMgr.CancelForInstance(instanceID, nodeID)
+}
+
+// cloneInstanceDataMap shallow-copies top-level instance_data keys so mutators
+// can set/delete escalation fields without mutating the Get snapshot until CAS wins.
+func cloneInstanceDataMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return map[string]interface{}{}
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func clearEscalationMarkersInData(data map[string]interface{}) {
+	if data == nil {
+		return
+	}
+	delete(data, "escalation_pending")
+	delete(data, "escalation_reason")
+	delete(data, "escalation_approvers")
+	delete(data, "escalation_approver")
+}
+
+func writeEscalationMarkersInData(data map[string]interface{}, remaining []string, reason string) {
+	if data == nil {
+		return
+	}
+	if len(remaining) == 0 {
+		clearEscalationMarkersInData(data)
+		return
+	}
+	data["escalation_pending"] = true
+	data["escalation_approvers"] = remaining
+	data["escalation_approver"] = remaining[len(remaining)-1]
+	if strings.TrimSpace(reason) != "" {
+		data["escalation_reason"] = reason
+	}
+}
+
+// patchInstanceData applies mutator to a working copy of InstanceData and persists
+// with CAS when the store supports it, re-reading on version conflict so concurrent
+// ResumeInstance votes are not overwritten by escalation marker updates.
+func (e *WorkflowExecutor) patchInstanceData(ctx context.Context, inst *WorkflowInstance, nodeID, op string, mutator func(data map[string]interface{})) {
+	if e == nil || inst == nil || mutator == nil || e.instanceStore == nil {
+		return
+	}
+	cas, hasCAS := e.instanceStore.(OptimisticInstanceDataUpdater)
+	for attempt := 0; attempt < maxResumeDecisionCASRetries; attempt++ {
+		working := cloneInstanceDataMap(inst.InstanceData)
+		mutator(working)
+		if !hasCAS {
+			err := e.instanceStore.UpdateInstanceData(ctx, inst.ID, working)
+			e.surfaceWriteError(ctx, inst.ID, nodeID, op, err)
+			if err == nil {
+				inst.InstanceData = working
+			}
+			return
+		}
+		newVer, err := cas.UpdateInstanceDataCAS(ctx, inst.ID, inst.RowVersion, working)
+		if err == nil {
+			inst.InstanceData = working
+			inst.RowVersion = newVer
+			return
+		}
+		if !errors.Is(err, ErrInstanceVersionConflict) {
+			e.surfaceWriteError(ctx, inst.ID, nodeID, op, err)
+			return
+		}
+		fresh, gerr := e.instanceStore.Get(ctx, inst.ID)
+		if gerr != nil || fresh == nil {
+			if gerr == nil {
+				gerr = fmt.Errorf("instance %s missing after CAS conflict", inst.ID)
+			}
+			e.surfaceWriteError(ctx, inst.ID, nodeID, op+"_reload", gerr)
+			return
+		}
+		inst.InstanceData = fresh.InstanceData
+		inst.RowVersion = fresh.RowVersion
+		inst.Status = fresh.Status
+	}
+	e.surfaceWriteError(ctx, inst.ID, nodeID, op,
+		fmt.Errorf("exhausted %d optimistic-lock retries", maxResumeDecisionCASRetries))
+}
+
+// persistEscalationMarkers rewrites escalation_* from the live queue (CAS-safe).
+func (e *WorkflowExecutor) persistEscalationMarkers(ctx context.Context, inst *WorkflowInstance, nodeID, reason, op string) {
+	if e == nil || inst == nil {
+		return
+	}
+	e.patchInstanceData(ctx, inst, nodeID, op, func(data map[string]interface{}) {
+		var remaining []string
+		if e.escalationMgr != nil {
+			remaining = e.escalationMgr.PendingApprovers(inst.ID, nodeID)
+		}
+		writeEscalationMarkersInData(data, remaining, reason)
+	})
 }
 
 // stringSliceFromInstanceData coerces instance-data list fields that may be
@@ -1172,6 +1284,7 @@ func (e *WorkflowExecutor) handlePartialMultiDispatchFailure(
 // syncEscalationMarkersFromQueue rewrites instance_data escalation_* fields from
 // the live EscalationManager queue (source of truth after deliver/fail).
 // Returns whether any peers remain pending for this node.
+// In-memory only — callers that need durable persistence use persistEscalationMarkers.
 func (e *WorkflowExecutor) syncEscalationMarkersFromQueue(inst *WorkflowInstance, nodeID string) bool {
 	if inst == nil {
 		return false
@@ -1183,17 +1296,8 @@ func (e *WorkflowExecutor) syncEscalationMarkersFromQueue(inst *WorkflowInstance
 	if e.escalationMgr != nil {
 		remaining = e.escalationMgr.PendingApprovers(inst.ID, nodeID)
 	}
-	if len(remaining) == 0 {
-		delete(inst.InstanceData, "escalation_pending")
-		delete(inst.InstanceData, "escalation_reason")
-		delete(inst.InstanceData, "escalation_approvers")
-		delete(inst.InstanceData, "escalation_approver")
-		return false
-	}
-	inst.InstanceData["escalation_pending"] = true
-	inst.InstanceData["escalation_approvers"] = remaining
-	inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
-	return true
+	writeEscalationMarkersInData(inst.InstanceData, remaining, "")
+	return len(remaining) > 0
 }
 
 // onEscalationDelivered clears the delivered approver from instance-data lists.
@@ -1207,10 +1311,8 @@ func (e *WorkflowExecutor) onEscalationDelivered(ctx context.Context, esc *Escal
 	if err != nil || inst == nil {
 		return
 	}
-	// Queue entry already removed; rebuild markers from remaining live peers.
-	_ = e.syncEscalationMarkersFromQueue(inst, esc.NodeID)
-	e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_delivered",
-		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+	// Queue entry already removed; rebuild markers from remaining live peers (CAS).
+	e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_delivered")
 }
 
 // onEscalationFailed is the EscalationManager max-retries hook.
@@ -1225,12 +1327,17 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 	if err != nil || inst == nil {
 		return
 	}
+	// Instance already terminal (completed / withdrawn / blocked) — never re-block;
+	// just drop leftover markers. Queue entry is already removed by markEscalationFailed.
+	if inst.Status != InstanceRunning {
+		e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_failed_terminal")
+		return
+	}
 	// Queue entry was already removed. Rebuild markers from live peers.
 	// Peers still queued → keep instance running (countersign).
-	peersStillPending := e.syncEscalationMarkersFromQueue(inst, esc.NodeID)
+	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
 	if peersStillPending {
-		e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_peer_failed",
-			e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+		e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_peer_failed")
 		if e.notifier != nil {
 			_ = e.notifier.NotifyInitiator(ctx, inst.ID,
 				fmt.Sprintf("escalation failed for approver %s (other peers still retrying)", strings.TrimSpace(esc.HumanApprover)),
@@ -1256,6 +1363,13 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 // markNodeBlocked marks an approval node as "blocked", updates the instance status,
 // notifies the workflow initiator, and records the event in the audit trail.
 func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, reason, details string) error {
+	// Stop any remaining delivery retries for this node (or whole instance if node empty).
+	if node != nil {
+		e.cancelEscalations(inst.ID, node.ID)
+	} else {
+		e.cancelEscalations(inst.ID, "")
+	}
+
 	// Update node execution status to blocked.
 	// We look up the node execution by instance+node ID.
 	pendingExecs, _ := e.instanceStore.GetPendingApprovals(ctx, "")
@@ -1275,21 +1389,16 @@ func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowIn
 		e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
 	inst.Status = InstanceBlocked
 
-	// Persist blocked reason on instance data so desktop reconcile / directory
-	// projections can surface attention without relying only on status.
-	if inst.InstanceData == nil {
-		inst.InstanceData = map[string]interface{}{}
-	}
-	inst.InstanceData["blocked_reason"] = reason
-	inst.InstanceData["blocked_details"] = details
-	inst.InstanceData["blocked_node_id"] = node.ID
-	inst.InstanceData["blocked_at"] = time.Now().UTC().Format(time.RFC3339)
-	delete(inst.InstanceData, "escalation_pending")
-	delete(inst.InstanceData, "escalation_approver")
-	delete(inst.InstanceData, "escalation_approvers")
-	delete(inst.InstanceData, "escalation_reason")
-	e.surfaceWriteError(ctx, inst.ID, node.ID, "update_instance_data_blocked",
-		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+	// Persist blocked reason + clear escalation markers via CAS merge so we do not
+	// clobber concurrent approval_state votes that may have landed mid-failure.
+	blockedAt := time.Now().UTC().Format(time.RFC3339)
+	e.patchInstanceData(ctx, inst, node.ID, "update_instance_data_blocked", func(data map[string]interface{}) {
+		data["blocked_reason"] = reason
+		data["blocked_details"] = details
+		data["blocked_node_id"] = node.ID
+		data["blocked_at"] = blockedAt
+		clearEscalationMarkersInData(data)
+	})
 
 	// Record blocked event in audit trail.
 	e.surfaceWriteError(ctx, inst.ID, node.ID, "audit_node_blocked",
@@ -2051,10 +2160,24 @@ func buildFormDataSummary(instanceData map[string]interface{}) string {
 
 // markInstanceCompleted marks the workflow instance as completed and records the event.
 func (e *WorkflowExecutor) markInstanceCompleted(ctx context.Context, inst *WorkflowInstance) error {
+	// Drop any offline-peer retries so any-N-of-M completion cannot re-dispatch
+	// or later block a finished instance.
+	e.cancelEscalations(inst.ID, "")
+
 	if err := e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceCompleted); err != nil {
 		return fmt.Errorf("mark instance completed: %w", err)
 	}
 	inst.Status = InstanceCompleted
+
+	// Clear stale escalation markers if present (CAS merge).
+	if inst.InstanceData != nil {
+		if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending ||
+			len(stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])) > 0 {
+			e.patchInstanceData(ctx, inst, "", "update_instance_data_completed_clear_escalation", func(data map[string]interface{}) {
+				clearEscalationMarkersInData(data)
+			})
+		}
+	}
 
 	e.surfaceWriteError(ctx, inst.ID, "", "audit_instance_completed",
 		e.auditStore.Append(ctx, &AuditEntry{

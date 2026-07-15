@@ -157,6 +157,30 @@ func TestWithdraw_Success_RunningInstance(t *testing.T) {
 	}
 }
 
+func TestWithdraw_CancelsEscalationQueue(t *testing.T) {
+	instStore := &withdrawalMockInstanceStore{
+		instance: &WorkflowInstance{
+			ID:     "inst-001",
+			Status: InstanceRunning,
+			InstanceData: map[string]interface{}{
+				"initiator_id": "user-alice",
+			},
+		},
+	}
+	esc := NewEscalationManager(&mockDispatcherForEsc{}, &mockAuditStoreForEsc{}, &mockHumanChecker{available: false})
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: "inst-001", NodeID: "n1"}, "human-a")
+	if esc.PendingCount() != 1 {
+		t.Fatalf("setup PendingCount=%d", esc.PendingCount())
+	}
+	wh := NewWithdrawalHandler(instStore, nil, nil, nil).SetEscalationManager(esc)
+	if err := wh.Withdraw(context.Background(), "inst-001", "user-alice"); err != nil {
+		t.Fatalf("Withdraw: %v", err)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("PendingCount=%d want 0 after withdraw", esc.PendingCount())
+	}
+}
+
 func TestWithdraw_ErrNotInitiator(t *testing.T) {
 	instStore := &withdrawalMockInstanceStore{
 		instance: &WorkflowInstance{

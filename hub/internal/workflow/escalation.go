@@ -390,6 +390,38 @@ func (m *EscalationManager) PendingCount() int {
 	return count
 }
 
+// CancelForInstance drops pending escalations for the instance (and optional node).
+// Empty nodeID cancels all nodes for the instance. Does not fire delivered/failed
+// hooks — callers own instance_data cleanup and terminal status transitions.
+// Returns how many queue entries were removed.
+func (m *EscalationManager) CancelForInstance(instanceID, nodeID string) int {
+	if m == nil {
+		return 0
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	nodeID = strings.TrimSpace(nodeID)
+	if instanceID == "" {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	removed := 0
+	for id, req := range m.queue {
+		if req == nil || req.Status != EscalationPending {
+			continue
+		}
+		if strings.TrimSpace(req.InstanceID) != instanceID {
+			continue
+		}
+		if nodeID != "" && strings.TrimSpace(req.NodeID) != nodeID {
+			continue
+		}
+		delete(m.queue, id)
+		removed++
+	}
+	return removed
+}
+
 // GetRequest returns an escalation request by ID, or nil if not found.
 func (m *EscalationManager) GetRequest(id string) *EscalationRequest {
 	m.mu.Lock()

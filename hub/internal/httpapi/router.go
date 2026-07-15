@@ -839,7 +839,10 @@ func NewRouter(
 		// unchanged (Preservation 3.5).
 		runtimeExec := newHubRuntimeExecutorAdapter(executor)
 		runtimeAPI := workflow.NewRuntimeAPI(runtimeExec, instStore, auditStore, &workflow.FormValidator{}, wfStore)
-		runtimeAPI.SetWithdrawalHandler(workflow.NewWithdrawalHandler(instStore, auditStore, nil, nil))
+		runtimeAPI.SetWithdrawalHandler(
+				workflow.NewWithdrawalHandler(instStore, auditStore, nil, nil).
+					SetEscalationManager(escalationMgr),
+			)
 		runtimeAPI.SetDirectoryService(workflow.NewDirectoryService(instStore, confirmStore, newHubNodeExecStoreAdapter(instStore)))
 		runtimeAPI.RegisterRoutes(mux, workflowUserAuth)
 
