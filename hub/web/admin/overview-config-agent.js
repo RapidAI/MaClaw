@@ -1767,6 +1767,12 @@
     return false;
   }
 
+  function latestChatRow(log) {
+    if (!log) return null;
+    var rows = log.querySelectorAll('[data-ca-chat-row]');
+    return rows.length ? rows[rows.length - 1] : null;
+  }
+
   function appendChat(role, html) {
     var log = byID('configAgentChatLog');
     if (!log) return;
@@ -3123,7 +3129,7 @@
             + '<div class="item-meta mono" style="margin-top:4px">' + esc(action) + ' @ ' + esc(item.created_at || '') + '</div>'
             + body);
           var log = byID('configAgentChatLog');
-          var row = log && log.lastChild;
+          var row = latestChatRow(log);
           if (execPayload) bindExecuteResultActions(row, execPayload);
           if (plan && row) {
             bindHistoryPlanActions(row, plan);
@@ -3402,7 +3408,7 @@
         + '<div id="configAgentCatalogSections">' + sections + '</div>'
         + groupSection + ex);
       var log = byID('configAgentChatLog');
-      var row = log && log.querySelector('[data-ca-chat-row]:last-of-type');
+      var row = latestChatRow(log);
       bindCatalogRowActions(row);
       var searchFocus = row && row.querySelector('#configAgentCatalogSearch');
       if (searchFocus) searchFocus.focus();
@@ -3589,9 +3595,9 @@
       });
       // Remove planning bubble (prefer marked node).
       var log = byID('configAgentChatLog');
-      if (!removeMarkedChatBubble(log, '[data-ca-planning]') && log && log.lastChild
-          && log.lastChild.getAttribute && log.lastChild.getAttribute('data-ca-chat-row')) {
-        try { log.removeChild(log.lastChild); } catch (_) {}
+      var latestPlanRow = latestChatRow(log);
+      if (!removeMarkedChatBubble(log, '[data-ca-planning]') && latestPlanRow) {
+        try { log.removeChild(latestPlanRow); } catch (_) {}
       }
       if (data) setSessionFromPlanResponse(data);
       if (!data || !data.ok || !data.plan) {
@@ -3668,9 +3674,9 @@
       }
     } catch (err) {
       var log2 = byID('configAgentChatLog');
-      if (!removeMarkedChatBubble(log2, '[data-ca-planning]') && log2 && log2.lastChild
-          && log2.lastChild.getAttribute && log2.lastChild.getAttribute('data-ca-chat-row')) {
-        try { log2.removeChild(log2.lastChild); } catch (_) {}
+      var latestPlanErrorRow = latestChatRow(log2);
+      if (!removeMarkedChatBubble(log2, '[data-ca-planning]') && latestPlanErrorRow) {
+        try { log2.removeChild(latestPlanErrorRow); } catch (_) {}
       }
       appendChat('assistant', '<div class="item-meta" style="color:#b42318">' + esc(cat('failed') + ': ' + (err && err.message || err)) + '</div>');
       pendingPlan = null;
@@ -3684,8 +3690,8 @@
 
   function bindPlanActions() {
     var log = byID('configAgentChatLog');
-    if (!log || !log.lastChild) return;
-    var row = log.lastChild;
+    var row = latestChatRow(log);
+    if (!row) return;
     // Snapshot the plan bound to this card so older cards cannot act on a newer pendingPlan.
     var boundPlan = pendingPlan ? Object.assign({}, pendingPlan) : null;
     var boundPlanId = boundPlan && boundPlan.plan_id ? String(boundPlan.plan_id) : '';
@@ -3877,16 +3883,16 @@
         planExpiresAtMs = 0;
       }
       var log = byID('configAgentChatLog');
-      if (!removeMarkedChatBubble(log, '[data-ca-executing]') && log && log.lastChild
-          && log.lastChild.getAttribute && log.lastChild.getAttribute('data-ca-chat-row')) {
-        try { log.removeChild(log.lastChild); } catch (_) {}
+      var latestExecuteRow = latestChatRow(log);
+      if (!removeMarkedChatBubble(log, '[data-ca-executing]') && latestExecuteRow) {
+        try { log.removeChild(latestExecuteRow); } catch (_) {}
       }
       var ok = !!(data && data.ok);
       if (data && !data.intent && plannedIntent) data.intent = plannedIntent;
       pushPlanHistory({ intent: data && data.intent, summary: ok ? 'executed' : 'execute failed', plan_id: data && data.plan_id || planId }, ok ? 'executed' : 'failed');
       var rendered = renderExecuteResult(data);
       appendChat('assistant', rendered.html);
-      var resRow = log && log.lastChild;
+      var resRow = latestChatRow(log);
       bindExecuteResultActions(resRow, rendered);
       // Refresh status bar (email / recent groups / diagnose quick actions).
       updateSelectedBar();
@@ -3915,9 +3921,9 @@
         planExpiresAtMs = 0;
       }
       var logErr = byID('configAgentChatLog');
-      if (!removeMarkedChatBubble(logErr, '[data-ca-executing]') && logErr && logErr.lastChild
-          && logErr.lastChild.getAttribute && logErr.lastChild.getAttribute('data-ca-chat-row')) {
-        try { logErr.removeChild(logErr.lastChild); } catch (_) {}
+      var latestExecuteErrorRow = latestChatRow(logErr);
+      if (!removeMarkedChatBubble(logErr, '[data-ca-executing]') && latestExecuteErrorRow) {
+        try { logErr.removeChild(latestExecuteErrorRow); } catch (_) {}
       }
       appendChat('assistant', '<div class="item-meta" style="color:#b42318">' + esc(cat('failed') + ': ' + (err && err.message || err)) + '</div>');
       updateSelectedBar();
