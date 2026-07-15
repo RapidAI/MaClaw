@@ -85,33 +85,19 @@ describe("fillWelcomeTemplate", () => {
     });
 });
 
-describe("welcome scenario task templates", () => {
-    it("every template with slots needs params and has at most 4 fields", () => {
-        for (const tab of SCENARIO_TABS) {
-            for (const prompt of tab.prompts) {
-                for (const template of [prompt.template, prompt.templateEn]) {
-                    if (!template) continue;
-                    const fields = extractWelcomeTemplateFields(template);
-                    if (fields.length === 0) {
-                        expect(welcomeTemplateNeedsParams(template)).toBe(false);
-                        continue;
-                    }
-                    expect(welcomeTemplateNeedsParams(template)).toBe(true);
-                    expect(fields.length).toBeLessThanOrEqual(4);
-                    expect(fields.every((f) => f.label.trim().length > 0)).toBe(true);
-                    expect(fields.every((f) => Array.isArray(f.chips))).toBe(true);
-                }
+describe("welcome scenario task templates (parser smoke)", () => {
+    it("catalog templates parse with labeled fields and chips arrays", () => {
+        // Full structural rules live in welcomeScenarioCatalogGuards / audit tests.
+        // Here we only smoke-check the field parser against real catalog text.
+        const sample = SCENARIO_TABS.flatMap((t) => t.prompts).slice(0, 12);
+        for (const prompt of sample) {
+            for (const template of [prompt.template, prompt.templateEn]) {
+                if (!template) continue;
+                const fields = extractWelcomeTemplateFields(template);
+                expect(welcomeTemplateNeedsParams(template)).toBe(fields.length > 0);
+                expect(fields.every((f) => f.label.trim().length > 0)).toBe(true);
+                expect(fields.every((f) => Array.isArray(f.chips))).toBe(true);
             }
-        }
-    });
-
-    it("dev tab keeps alternating local/remote agent modes", () => {
-        const dev = SCENARIO_TABS.find((t) => t.id === "dev");
-        expect(dev).toBeTruthy();
-        const modes = dev!.prompts.map((p) => p.agentMode);
-        expect(modes.length).toBeGreaterThanOrEqual(6);
-        for (let i = 0; i < modes.length; i++) {
-            expect(modes[i]).toBe(i % 2 === 0 ? "coding_dev" : "remote_coding_dev");
         }
     });
 });

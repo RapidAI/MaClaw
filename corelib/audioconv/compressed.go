@@ -27,7 +27,7 @@ func nativeCompressedAudioToWAV(data []byte, format string) ([]byte, error) {
 	case FormatMP3, "mpeg", "audio/mpeg", "audio/mp3":
 		return mp3ToWAV(data)
 	case FormatM4A, "mp4", "audio/mp4", "audio/x-m4a", FormatAAC, "audio/aac":
-		return nil, fmt.Errorf("audioconv: native %s decode is not supported", strings.TrimSpace(format))
+		return nil, NewNativeDecodeUnsupported(format)
 	default:
 		return nil, fmt.Errorf("audioconv: unsupported compressed format %q", format)
 	}

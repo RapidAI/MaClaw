@@ -295,6 +295,18 @@ func (h *IMMessageHandler) rearmStickyRemoteCodingEnvironment(userID string, rem
 	if userID == "" || strings.TrimSpace(remoteCtx.SessionID) == "" {
 		return
 	}
+	// A continuation may have recreated an expired SSH session. Prefer the
+	// latest durable remote context so this re-arm never puts the removed ID
+	// back into the next turn's pending template.
+	if mem := h.getStickyCodingWorkbenchMemory(userID); mem.Kind == "remote" && strings.TrimSpace(mem.RemoteSessionID) != "" {
+		remoteCtx.SessionID = strings.TrimSpace(mem.RemoteSessionID)
+		if strings.TrimSpace(mem.RemoteWorkDir) != "" {
+			remoteCtx.WorkDir = strings.TrimSpace(mem.RemoteWorkDir)
+		}
+		if strings.TrimSpace(mem.RemoteProjectDir) != "" {
+			remoteCtx.ProjectDir = strings.TrimSpace(mem.RemoteProjectDir)
+		}
+	}
 	h.pendingTemplateCodingProjectPath.Delete(userID)
 	h.pendingV2SubAgentExecution.Store(userID, true)
 	h.pendingTemplateRemoteCoding.Store(userID, remoteCtx)

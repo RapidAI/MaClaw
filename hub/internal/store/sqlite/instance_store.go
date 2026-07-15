@@ -188,13 +188,16 @@ func (s *instanceStore) GetPendingApprovals(ctx context.Context, approverID stri
 	// For now, return all pending nodes -the caller will filter by approver.
 	_ = approverID // reserved for future use when approver info is denormalized
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT ne.id, ne.instance_id, ne.node_id, ne.node_type, ne.status, ne.started_at, ne.completed_at, ne.result_json, ne.fail_reason
+	query := `SELECT ne.id, ne.instance_id, wi.tenant_id, ne.node_id, ne.node_type, ne.status, ne.started_at, ne.completed_at, ne.result_json, ne.fail_reason
 		 FROM node_executions ne INNER JOIN workflow_instances wi ON wi.id = ne.instance_id
-		 WHERE ne.status = 'running' AND ne.node_type = 'approval' AND wi.tenant_id = ?
-		 ORDER BY ne.started_at ASC`,
-		store.TenantIDFromContext(ctx),
-	)
+		 WHERE ne.status = 'running' AND ne.node_type = 'approval'`
+	args := []any{}
+	if tenantID, scoped := store.TenantIDFromContextIfPresent(ctx); scoped {
+		query += ` AND wi.tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY ne.started_at ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -543,6 +546,7 @@ func scanNodeExecution(rows *sql.Rows) (*workflow.NodeExecution, error) {
 	if err := rows.Scan(
 		&exec.ID,
 		&exec.InstanceID,
+		&exec.TenantID,
 		&exec.NodeID,
 		&nodeType,
 		&status,

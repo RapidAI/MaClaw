@@ -17,8 +17,26 @@ const installSelectedMaclawAppPackageFromHubMock = vi.hoisted(() => vi.fn());
 const installMixedSkillMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppInstallMock = vi.hoisted(() => vi.fn());
 const planMaclawAppInstallMock = vi.hoisted(() => vi.fn());
+const checkMaclawAppRuntimeHealthMock = vi.hoisted(() => vi.fn(async (packageJSON: string, appID: string) => {
+    const plan = await planMaclawAppInstallMock(packageJSON);
+    const blocked = !!(plan?.has_missing_required || plan?.has_blocking_dependency || plan?.has_workflow_contract_issue);
+    return {
+        schema: 'maclaw.app.runtime_health.v1',
+        ok: !blocked,
+        blocked,
+        message: blocked ? 'runtime dependencies blocked' : 'runtime dependencies ready',
+        plan,
+        app_id: appID,
+        has_missing_required: !!plan?.has_missing_required,
+        has_blocking_dependency: !!plan?.has_blocking_dependency,
+        has_workflow_contract_issue: !!plan?.has_workflow_contract_issue,
+    };
+}));
 const saveMaclawAppDefinitionForSkillMock = vi.hoisted(() => vi.fn());
 const recordMaclawAppRunEvidenceForSkillMock = vi.hoisted(() => vi.fn());
+const recordMaclawAppRunHistoryMock = vi.hoisted(() => vi.fn<(entry: any) => Promise<any>>(async (entry) => entry));
+const listMaclawAppRunHistoryMock = vi.hoisted(() => vi.fn<(appID: string, limit: number) => Promise<any[]>>(async () => []));
+const clearMaclawAppRunHistoryMock = vi.hoisted(() => vi.fn<(appID: string) => Promise<boolean>>(async () => true));
 const uploadNLSkillToMarketMock = vi.hoisted(() => vi.fn());
 const searchMixedSkillsMock = vi.hoisted(() => vi.fn());
 const loadConfigMock = vi.hoisted(() => vi.fn());
@@ -58,6 +76,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InstallMixedSkill: (...args: unknown[]) => installMixedSkillMock(...args),
     PlanMaclawAppInstall: (...args: unknown[]) => planMaclawAppInstallMock(...args),
     RecordMaclawAppInstall: (...args: unknown[]) => recordMaclawAppInstallMock(...args),
+    RecordMaclawAppRunHistory: (entry: unknown) => recordMaclawAppRunHistoryMock(entry),
+    ListMaclawAppRunHistory: (appID: string, limit: number) => listMaclawAppRunHistoryMock(appID, limit),
+    ClearMaclawAppRunHistory: (appID: string) => clearMaclawAppRunHistoryMock(appID),
+    // Prefers runtime health API; default implementation wraps PlanMaclawAppInstall mocks.
+    CheckMaclawAppRuntimeHealth: (...args: unknown[]) => checkMaclawAppRuntimeHealthMock(...(args as [string, string])),
     // Keep approval/business workspace openers undefined so runtime falls back to
     // StartMaclawAppApprovalWorkflow / ExecuteMaclawAppBusinessOperation in tests.
     OpenMaclawAppApprovalWorkspace: undefined,
@@ -898,6 +921,24 @@ describe('AppsPage', () => {
         installMixedSkillMock.mockReset().mockResolvedValue(undefined);
         recordMaclawAppInstallMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.installs.v1', app_count: 1 });
         planMaclawAppInstallMock.mockReset().mockResolvedValue({ schema: 'maclaw.app.install_plan.v1', apps: [], dependencies: [], has_missing_required: false });
+        checkMaclawAppRuntimeHealthMock.mockReset().mockImplementation(async (packageJSON: string, appID: string) => {
+            const plan = await planMaclawAppInstallMock(packageJSON);
+            const blocked = !!(plan?.has_missing_required || plan?.has_blocking_dependency || plan?.has_workflow_contract_issue);
+            return {
+                schema: 'maclaw.app.runtime_health.v1',
+                ok: !blocked,
+                blocked,
+                message: blocked ? 'runtime dependencies blocked' : 'runtime dependencies ready',
+                plan,
+                app_id: appID,
+                has_missing_required: !!plan?.has_missing_required,
+                has_blocking_dependency: !!plan?.has_blocking_dependency,
+                has_workflow_contract_issue: !!plan?.has_workflow_contract_issue,
+            };
+        });
+        recordMaclawAppRunHistoryMock.mockReset().mockImplementation(async (entry: any) => entry);
+        listMaclawAppRunHistoryMock.mockReset().mockResolvedValue([]);
+        clearMaclawAppRunHistoryMock.mockReset().mockResolvedValue(true);
         saveMaclawAppDefinitionForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
         recordMaclawAppRunEvidenceForSkillMock.mockReset().mockResolvedValue({ app_definition_file: 'maclaw.app.json' });
         uploadNLSkillToMarketMock.mockReset().mockResolvedValue('submission-app-1');
@@ -6900,6 +6941,12 @@ describe('AppsPage', () => {
         expect(installedApp.customIconDataUrl).toBe(customIconDataUrl);
         const expectedDefinitionHash = testAppDefinitionFingerprint(installedApp);
         await waitFor(() => expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalledWith('run-tools', 'skill-app-run-tools-run-tool', expectedDefinitionHash, 'run-test-1', '', expect.any(String)));
+        // Durable backend store is authoritative for publish evidence.
+        await waitFor(() => expect(recordMaclawAppRunHistoryMock).toHaveBeenCalledWith(expect.objectContaining({
+            runID: 'run-test-1',
+            appID: 'skill-app-run-tools-run-tool',
+            status: 'done',
+        })));
 
         unmount();
         render(<AppsPage lang="zh-Hans" />);
@@ -6909,6 +6956,195 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('清空历史'));
         expect(screen.getByText('暂无运行记录')).not.toBeNull();
         expect(screen.queryByText(/run-test-1/)).toBeNull();
+        await waitFor(() => expect(clearMaclawAppRunHistoryMock).toHaveBeenCalledWith('skill-app-run-tools-run-tool'));
+    });
+
+    it('surfaces durable run-history persistence failures after a successful skill run', async () => {
+        recordMaclawAppRunHistoryMock.mockRejectedValueOnce(new Error('disk full'));
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        {
+                            id: 'run-tool-durable-fail',
+                            skill_id: 'run-tools',
+                            name: '持久化失败工具',
+                            description: 'Run fields',
+                            category: '工具',
+                            icon: 'sheet',
+                            input_mode: 'form',
+                            output_modes: ['json'],
+                            fields: [
+                                { name: 'title', label: '标题', type: 'text', required: true },
+                            ],
+                        },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('\u5173\u95ed'));
+        fireEvent.click(screen.getAllByText('持久化失败工具')[0]);
+        fireEvent.change(screen.getByLabelText('标题'), { target: { value: '报告' } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalled());
+        await waitFor(() => expect(recordMaclawAppRunHistoryMock).toHaveBeenCalled());
+        await waitFor(() => {
+            expect(document.body.textContent || '').toMatch(/disk full/);
+            expect(document.body.textContent || '').toMatch(/运行证据未写入本机存储|Run evidence was not saved to durable store/);
+        });
+    });
+
+    it('merges backend durable history rows when opening an app runtime tab', async () => {
+        listMaclawAppRunHistoryMock.mockResolvedValue([
+            {
+                runID: 'durable-run-9',
+                appID: 'skill-app-run-tools-run-tool',
+                status: 'done',
+                outputMode: 'json',
+                inputSummary: 'from durable',
+                message: 'durable history item',
+                at: '2026-07-15T10:00:00.000Z',
+            },
+        ]);
+        // Pre-install app via market so id is stable.
+        render(<AppsPage lang="zh-Hans" />);
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        {
+                            id: 'run-tool',
+                            skill_id: 'run-tools',
+                            name: '运行工具',
+                            description: 'Run fields',
+                            category: '工具',
+                            icon: 'sheet',
+                            input_mode: 'form',
+                            output_modes: ['json'],
+                            fields: [{ name: 'title', label: '标题', type: 'text', required: true }],
+                        },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('\u5173\u95ed'));
+        fireEvent.click(screen.getAllByText('运行工具')[0]);
+
+        await waitFor(() => expect(listMaclawAppRunHistoryMock).toHaveBeenCalledWith('skill-app-run-tools-run-tool', 8));
+        await waitFor(() => {
+            expect(screen.getAllByText(/durable history item/).length).toBeGreaterThan(0);
+            expect(screen.getAllByText(/durable-run-9/).length).toBeGreaterThan(0);
+        });
+    });
+
+    it('surfaces skill governance evidence write failures instead of swallowing them', async () => {
+        recordMaclawAppRunEvidenceForSkillMock.mockRejectedValueOnce(new Error('skill dir locked'));
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        {
+                            id: 'run-tool-evidence-fail',
+                            skill_id: 'run-tools',
+                            name: '证据失败工具',
+                            description: 'Run fields',
+                            category: '工具',
+                            icon: 'sheet',
+                            input_mode: 'form',
+                            output_modes: ['json'],
+                            fields: [{ name: 'title', label: '标题', type: 'text', required: true }],
+                        },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('\u5173\u95ed'));
+        fireEvent.click(screen.getAllByText('证据失败工具')[0]);
+        fireEvent.change(screen.getByLabelText('标题'), { target: { value: '报告' } });
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => expect(recordMaclawAppRunEvidenceForSkillMock).toHaveBeenCalled());
+        await waitFor(() => {
+            expect(document.body.textContent || '').toMatch(/skill dir locked/);
+            expect(document.body.textContent || '').toMatch(/写入 Skill 运行证据失败|Failed to record skill run evidence/);
+        });
+    });
+
+    it('prefers CheckMaclawAppRuntimeHealth over PlanMaclawAppInstall when blocking a run', async () => {
+        const blockedHealth = {
+            schema: 'maclaw.app.runtime_health.v1',
+            ok: false,
+            blocked: true,
+            message: 'required skill dependencies are missing or unavailable: health-skill',
+            plan: {
+                schema: 'maclaw.app.install_plan.v1',
+                apps: [{ id: 'skill-app-health-skill-health-tool', name: '健康检查工具', kind: 'tool_app' }],
+                dependencies: [{
+                    id: 'health-skill',
+                    kind: 'runtime_skill',
+                    source: 'hub',
+                    required: true,
+                    installed: false,
+                    health: 'missing',
+                    action: 'blocked',
+                    app_ids: ['skill-app-health-skill-health-tool'],
+                }],
+                has_missing_required: true,
+                has_blocking_dependency: true,
+            },
+            app_id: 'skill-app-health-skill-health-tool',
+            has_missing_required: true,
+            has_blocking_dependency: true,
+            has_workflow_contract_issue: false,
+        };
+        // Stable for open-time auto check + run-time check (not Once).
+        checkMaclawAppRuntimeHealthMock.mockResolvedValue(blockedHealth);
+        planMaclawAppInstallMock.mockClear();
+
+        render(<AppsPage lang="zh-Hans" />);
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        { id: 'health-tool', skill_id: 'health-skill', name: '健康检查工具', description: 'Health API check', category: '工具', icon: 'sheet', input_mode: 'form', output_modes: ['json'] },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        await waitFor(() => expect(screen.getByText('已安装: 1 · 已跳过: 0')).not.toBeNull());
+        fireEvent.click(screen.getByText('\u5173\u95ed'));
+        fireEvent.click(screen.getAllByText('健康检查工具')[0]);
+        await waitFor(() => expect(checkMaclawAppRuntimeHealthMock).toHaveBeenCalled());
+        fireEvent.click(screen.getByText('执行'));
+
+        await waitFor(() => {
+            expect(document.body.textContent || '').toMatch(/health-skill|required skill dependencies are missing|暂不可用/);
+        });
+        expect(runNLSkillAsyncMock).not.toHaveBeenCalled();
+        // Health path should be preferred; Plan may still be used by default wrapper in other tests,
+        // but this mock returns plan inline without calling Plan.
+        expect(checkMaclawAppRuntimeHealthMock.mock.calls.length).toBeGreaterThan(0);
     });
 
     it('falls back to the registry path when opening a stale run-history artifact', async () => {
@@ -7012,6 +7248,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('执行'));
 
+        await waitFor(() => expect(checkMaclawAppRuntimeHealthMock).toHaveBeenCalled());
         await waitFor(() => expect(screen.getAllByText('运行依赖工具暂不可用：disabled-runtime-tool 未安装或已停用。').length).toBeGreaterThan(0));
         const runtimeStatus = document.querySelector('.apps-runtime-status') as HTMLElement;
         const dependencyList = runtimeStatus.querySelector('.apps-install-record__deps') as HTMLElement;

@@ -62,18 +62,42 @@ export function welcomeCloudLocalFingerprint(input: {
         agentMode?: string;
         sourceKey?: string;
         sourceTabId?: string;
+        /** Non-secret coding env (password must not be fingerprinted for cloud). */
+        codingEnv?: {
+            workingDir?: string;
+            remote?: { host?: string; port?: number; user?: string; workDir?: string; password?: string };
+        };
     }>;
     userRole?: string;
     recent: Array<{ tabId?: string; textEn?: string; usedAt?: number }>;
 }): string {
-    const templates = (input.templates || []).map((t) => ({
-        id: t.id || "",
-        title: t.title || "",
-        body: t.body || "",
-        agentMode: t.agentMode || "",
-        sourceKey: t.sourceKey || "",
-        sourceTabId: t.sourceTabId || "",
-    }));
+    const templates = (input.templates || []).map((t) => {
+        const remote = t.codingEnv?.remote;
+        // Fingerprint non-secret env only so host/workdir changes re-sync,
+        // without embedding passwords in the fingerprint payload.
+        const codingEnv = t.codingEnv
+            ? {
+                workingDir: t.codingEnv.workingDir || "",
+                remote: remote
+                    ? {
+                        host: remote.host || "",
+                        port: Number(remote.port) || 22,
+                        user: remote.user || "",
+                        workDir: remote.workDir || "",
+                    }
+                    : undefined,
+            }
+            : undefined;
+        return {
+            id: t.id || "",
+            title: t.title || "",
+            body: t.body || "",
+            agentMode: t.agentMode || "",
+            sourceKey: t.sourceKey || "",
+            sourceTabId: t.sourceTabId || "",
+            codingEnv,
+        };
+    });
     const recent = (input.recent || []).map((r) => ({
         tabId: r.tabId || "",
         textEn: r.textEn || "",

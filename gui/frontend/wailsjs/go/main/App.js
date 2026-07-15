@@ -2754,6 +2754,26 @@ export function RecordMaclawAppRunEvidenceForSkill(arg1, arg2, arg3, arg4, arg5,
   return window['go']['main']['App']['RecordMaclawAppRunEvidenceForSkill'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function RecordMaclawAppRunHistory(arg1) {
+  return window['go']['main']['App']['RecordMaclawAppRunHistory'](arg1);
+}
+
+export function ListMaclawAppRunHistory(arg1, arg2) {
+  return window['go']['main']['App']['ListMaclawAppRunHistory'](arg1, arg2);
+}
+
+export function ListAllMaclawAppRunHistory(arg1) {
+  return window['go']['main']['App']['ListAllMaclawAppRunHistory'](arg1);
+}
+
+export function ClearMaclawAppRunHistory(arg1) {
+  return window['go']['main']['App']['ClearMaclawAppRunHistory'](arg1);
+}
+
+export function CheckMaclawAppRuntimeHealth(arg1, arg2) {
+  return window['go']['main']['App']['CheckMaclawAppRuntimeHealth'](arg1, arg2);
+}
+
 // Digital Employee bindings
 export function ListVirtualEmployees() {
   return window['go']['main']['App']['ListVirtualEmployees']();

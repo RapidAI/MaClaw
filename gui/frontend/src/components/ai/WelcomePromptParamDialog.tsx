@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CSSProperties, FormEvent, KeyboardEvent, Ref } from "react";
 import { SelectWorkingDir } from "../../../wailsjs/go/main/App";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import {
     extractWelcomeTemplateFields,
@@ -13,9 +13,13 @@ import {
     loadWelcomeCodingEnv,
     loadWelcomeFieldValues,
     loadWelcomePreviewOpen,
+    mergeWelcomeStoredCodingEnv,
+    normalizeWelcomeSshPassword,
+    normalizeWelcomeSshPort,
     saveWelcomeCodingEnv,
     saveWelcomeFieldValues,
     saveWelcomePreviewOpen,
+    type WelcomeStoredCodingEnv,
 } from "./welcomeTaskMemory";
 
 /** Above app chrome (~50k–99k); below create-task dialog (100000). */
@@ -97,8 +101,19 @@ export interface WelcomePromptParamDialogProps {
     /**
      * Optional: save the assembled prompt as a custom template without closing.
      * Returns true when save succeeded.
+     * codingEnv may include SSH password for local-only storage.
      */
-    onSaveTemplate?: (filledPrompt: string, title: string) => boolean;
+    onSaveTemplate?: (
+        filledPrompt: string,
+        title: string,
+        codingEnv?: WelcomeStoredCodingEnv,
+    ) => boolean;
+    /**
+     * Prefer this coding environment when the dialog opens (e.g. per-template
+     * snapshot from "save as favorite"). Falls back to the global last-used env.
+     * May restore local-stored SSH password.
+     */
+    initialCodingEnv?: WelcomeStoredCodingEnv;
     /** When false, hide the direct-send button (e.g. hub not ready). Default true for chat. */
     canSend?: boolean;
 }
@@ -169,6 +184,7 @@ export function WelcomePromptParamDialog({
     submitMode = "chat",
     onSubmit,
     onSaveTemplate,
+    initialCodingEnv,
     canSend = true,
 }: WelcomePromptParamDialogProps) {
     const isZh = !lang?.startsWith("en");
@@ -202,16 +218,18 @@ export function WelcomePromptParamDialog({
     });
 
     const resetCodingEnvFromMemory = useCallback(() => {
-        const saved = loadWelcomeCodingEnv();
+        // Prefer per-template snapshot (from "save as favorite"), then global last-used.
+        // Password is only reused across sources when host+user match.
+        const saved = mergeWelcomeStoredCodingEnv(initialCodingEnv, loadWelcomeCodingEnv()) || {};
         setWorkingDir(saved.workingDir || "");
         setRemoteHost(saved.remote?.host || "");
         setRemotePort(String(saved.remote?.port || 22));
         setRemoteUser(saved.remote?.user || "");
-        setRemotePassword("");
+        setRemotePassword(saved.remote?.password || "");
         setRemoteWorkDir(saved.remote?.workDir || "");
         setEnvError("");
         setSelectingDir(false);
-    }, []);
+    }, [initialCodingEnv]);
 
     useEffect(() => {
         if (!open) {
@@ -225,6 +243,8 @@ export function WelcomePromptParamDialog({
         setPreviewOpen(loadWelcomePreviewOpen(false));
         setSaveNote("");
         resetCodingEnvFromMemory();
+        // Prefer first template field; for "no params" remote tasks focus password when
+        // host/user already restored (common one-click path), else host.
         const timer = window.setTimeout(() => {
             firstFieldRef.current?.focus();
         }, 30);
@@ -308,6 +328,35 @@ export function WelcomePromptParamDialog({
         }
     }, [selectingDir, submitting]);
 
+    /**
+     * Coding env snapshot for "save as favorite".
+     * Always includes `password` (possibly "") when remote fields are set so an
+     * empty password is an explicit clear rather than "omit / keep previous".
+     */
+    const collectStoredCodingEnv = useCallback((): WelcomeStoredCodingEnv | undefined => {
+        if (!isCoding) return undefined;
+        if (isRemote) {
+            const host = remoteHost.trim();
+            const user = remoteUser.trim();
+            const workDir = remoteWorkDir.trim();
+            const password = normalizeWelcomeSshPassword(remotePassword);
+            const port = normalizeWelcomeSshPort(remotePort);
+            if (!host && !user && !workDir && !password) return undefined;
+            return {
+                remote: {
+                    host,
+                    port,
+                    user,
+                    workDir,
+                    // Always set: "" clears stored password on re-save.
+                    password,
+                },
+            };
+        }
+        const dir = workingDir.trim();
+        return dir ? { workingDir: dir } : undefined;
+    }, [isCoding, isRemote, remoteHost, remoteUser, remoteWorkDir, remotePort, remotePassword, workingDir]);
+
     const handleSaveTemplate = useCallback(() => {
         if (!onSaveTemplate || submitting) return;
         const filled = fillWelcomeTemplate(template, fields, values).trim();
@@ -315,13 +364,26 @@ export function WelcomePromptParamDialog({
             setSaveNote(isZh ? "内容为空，无法保存" : "Nothing to save");
             return;
         }
-        const ok = onSaveTemplate(filled, title);
+        const codingEnv = collectStoredCodingEnv();
+        const ok = onSaveTemplate(filled, title, codingEnv);
+        const hasEnv = !!(codingEnv?.remote || codingEnv?.workingDir);
+        const hasPassword = !!codingEnv?.remote?.password;
         setSaveNote(
             ok
-                ? (isZh ? "已保存到「我的模板」" : "Saved to My templates")
+                ? (isZh
+                    ? (hasPassword
+                        ? "已保存到「我的模板」（含运行环境与密码，仅本机）"
+                        : hasEnv
+                            ? "已保存到「我的模板」（含运行环境，仅本机）"
+                            : "已保存到「我的模板」")
+                    : (hasPassword
+                        ? "Saved to My templates (env + password, this device only)"
+                        : hasEnv
+                            ? "Saved to My templates (env, this device only)"
+                            : "Saved to My templates"))
                 : (isZh ? "保存失败" : "Save failed"),
         );
-    }, [onSaveTemplate, submitting, template, fields, values, title, isZh]);
+    }, [onSaveTemplate, submitting, template, fields, values, title, isZh, collectStoredCodingEnv]);
 
     const commit = useCallback((action: WelcomePromptParamAction) => {
         if (submitLockRef.current) return;
@@ -336,9 +398,8 @@ export function WelcomePromptParamDialog({
                 const host = remoteHost.trim();
                 const user = remoteUser.trim();
                 const workDir = remoteWorkDir.trim();
-                const password = remotePassword;
-                const portNum = Number.parseInt(remotePort.trim() || "22", 10);
-                const port = Number.isFinite(portNum) && portNum > 0 && portNum < 65536 ? portNum : 22;
+                const password = normalizeWelcomeSshPassword(remotePassword);
+                const port = normalizeWelcomeSshPort(remotePort);
                 if (!host || !user || !password || !workDir) {
                     setEnvError(
                         isZh
@@ -352,7 +413,7 @@ export function WelcomePromptParamDialog({
                     remote: { host, port, user, password, workDir },
                 };
                 saveWelcomeCodingEnv({
-                    remote: { host, port, user, workDir },
+                    remote: { host, port, user, workDir, password },
                 });
             } else {
                 const dir = workingDir.trim();
@@ -508,12 +569,15 @@ export function WelcomePromptParamDialog({
         whiteSpace: "nowrap",
     };
 
+    // sendBtn* pair with luminance-safe ink (never white-on-light btnColor accent)
+    const primaryFilled = resolvePrimaryFilledColors(t);
     const primaryBtnStyle: CSSProperties = {
         padding: "7px 14px",
         borderRadius: 8,
-        border: `1px solid ${t.sendBtnBorder || t.sendBtnBg}`,
-        background: t.sendBtnBg || t.btnColor,
-        color: t.sendBtnColor || "#fff",
+        border: "none",
+        boxShadow: `inset 0 0 0 1px ${t.sendBtnBorder || primaryFilled.bg}`,
+        background: primaryFilled.bg,
+        color: primaryFilled.fg,
         fontSize: 13,
         fontWeight: 600,
         cursor: "pointer",
@@ -704,12 +768,12 @@ export function WelcomePromptParamDialog({
                                                         style={{
                                                             padding: "3px 8px",
                                                             borderRadius: 999,
-                                                            border: `1px solid ${active ? (t.sendBtnBorder || t.sendBtnBg) : t.fieldBorder}`,
+                                                            border: `1px solid ${active ? (t.sendBtnBorder || primaryFilled.bg) : t.fieldBorder}`,
                                                             background: active
-                                                                ? (t.sendBtnBg || t.btnColor)
+                                                                ? primaryFilled.bg
                                                                 : t.inputBarBg || t.bg,
                                                             color: active
-                                                                ? (t.sendBtnColor || "#fff")
+                                                                ? primaryFilled.fg
                                                                 : t.text,
                                                             fontSize: 11,
                                                             lineHeight: 1.3,
@@ -757,6 +821,12 @@ export function WelcomePromptParamDialog({
                                             <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "主机" : "Host"}</span>
                                             <input
                                                 data-testid="welcome-remote-host"
+                                                ref={
+                                                    fields.length === 0
+                                                        && !(remoteHost.trim() && remoteUser.trim() && !remotePassword)
+                                                        ? (firstFieldRef as Ref<HTMLInputElement>)
+                                                        : undefined
+                                                }
                                                 value={remoteHost}
                                                 onChange={(e) => setRemoteHost(e.target.value)}
                                                 placeholder="192.168.1.10"
@@ -792,6 +862,14 @@ export function WelcomePromptParamDialog({
                                             <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "密码" : "Password"}</span>
                                             <input
                                                 data-testid="welcome-remote-password"
+                                                ref={
+                                                    fields.length === 0
+                                                        && !!remoteHost.trim()
+                                                        && !!remoteUser.trim()
+                                                        && !remotePassword
+                                                        ? (firstFieldRef as Ref<HTMLInputElement>)
+                                                        : undefined
+                                                }
                                                 type="password"
                                                 value={remotePassword}
                                                 onChange={(e) => setRemotePassword(e.target.value)}

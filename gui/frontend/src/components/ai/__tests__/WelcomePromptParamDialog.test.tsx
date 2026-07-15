@@ -168,7 +168,7 @@ describe("WelcomePromptParamDialog", () => {
 
     it("saves template without submitting", () => {
         const onSubmit = vi.fn();
-        const onSaveTemplate = vi.fn<(filledPrompt: string, title: string) => boolean>(() => true);
+        const onSaveTemplate = vi.fn<(filledPrompt: string, title: string, codingEnv?: unknown) => boolean>(() => true);
         render(
             <WelcomePromptParamDialog
                 open
@@ -188,8 +188,70 @@ describe("WelcomePromptParamDialog", () => {
         expect(onSaveTemplate).toHaveBeenCalledTimes(1);
         expect(onSaveTemplate.mock.calls[0][0]).toContain("Alpha");
         expect(onSaveTemplate.mock.calls[0][1]).toBe("周报");
+        expect(onSaveTemplate.mock.calls[0][2]).toBeUndefined();
         expect(onSubmit).not.toHaveBeenCalled();
         expect(screen.getByTestId("welcome-prompt-save-note").textContent).toMatch(/已保存|Saved/);
+    });
+
+    it("saves remote coding env with password and restores it from initialCodingEnv", () => {
+        const onSaveTemplate = vi.fn<(filledPrompt: string, title: string, codingEnv?: unknown) => boolean>(() => true);
+        const { rerender } = render(
+            <WelcomePromptParamDialog
+                open
+                onClose={() => {}}
+                lang="zh"
+                theme={lightTheme}
+                title="驱网状态"
+                template={"现象：[用户看到什么]"}
+                submitMode="remote_coding_dev"
+                onSubmit={() => {}}
+                onSaveTemplate={onSaveTemplate}
+            />,
+        );
+        fireEvent.change(screen.getByTestId("welcome-remote-host"), { target: { value: "192.168.1.10" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-user"), { target: { value: "ubuntu" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-password"), { target: { value: "secret" } });
+        fireEvent.change(screen.getByTestId("welcome-remote-workdir"), { target: { value: "/home/ubuntu/app" } });
+        fireEvent.change(screen.getByLabelText("现象"), { target: { value: "查看服务器上的运行状态" } });
+        fireEvent.click(screen.getByTestId("welcome-prompt-save-template"));
+        expect(onSaveTemplate).toHaveBeenCalledTimes(1);
+        expect(onSaveTemplate.mock.calls[0][2]).toEqual({
+            remote: {
+                host: "192.168.1.10",
+                port: 22,
+                user: "ubuntu",
+                workDir: "/home/ubuntu/app",
+                password: "secret",
+            },
+        });
+        expect(screen.getByTestId("welcome-prompt-save-note").textContent).toMatch(/密码|password/i);
+
+        // Re-open with the saved coding env prefills host/user/workdir/password.
+        rerender(
+            <WelcomePromptParamDialog
+                open
+                onClose={() => {}}
+                lang="zh"
+                theme={lightTheme}
+                title="驱网状态"
+                template={"在远程环境排查并修复线上故障\n现象：查看服务器上的运行状态"}
+                submitMode="remote_coding_dev"
+                initialCodingEnv={{
+                    remote: {
+                        host: "192.168.1.10",
+                        port: 22,
+                        user: "ubuntu",
+                        workDir: "/home/ubuntu/app",
+                        password: "secret",
+                    },
+                }}
+                onSubmit={() => {}}
+            />,
+        );
+        expect((screen.getByTestId("welcome-remote-host") as HTMLInputElement).value).toBe("192.168.1.10");
+        expect((screen.getByTestId("welcome-remote-user") as HTMLInputElement).value).toBe("ubuntu");
+        expect((screen.getByTestId("welcome-remote-workdir") as HTMLInputElement).value).toBe("/home/ubuntu/app");
+        expect((screen.getByTestId("welcome-remote-password") as HTMLInputElement).value).toBe("secret");
     });
 
     it("prefills local workdir from remembered coding env", () => {

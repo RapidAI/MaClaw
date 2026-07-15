@@ -2876,8 +2876,9 @@ func (a *App) RecordMaclawAppRunEvidenceForSkill(skillName string, appID string,
 		return nil, err
 	}
 	artifactName := ""
-	if trimmed := strings.TrimSpace(artifactPath); trimmed != "" {
-		artifactName = filepath.Base(trimmed)
+	artifactPath = strings.TrimSpace(artifactPath)
+	if artifactPath != "" {
+		artifactName = filepath.Base(artifactPath)
 	}
 	evidence := map[string]any{
 		"runId":           strings.TrimSpace(runID),
@@ -2887,18 +2888,51 @@ func (a *App) RecordMaclawAppRunEvidenceForSkill(skillName string, appID string,
 		"artifactName":    artifactName,
 	}
 	preferredEntry := readMaclawAppEntryFromSkillYAML(skillDir)
-	if preferredEntry == "maclaw.apps.json" {
-		return recordMaclawAppsRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+	var result map[string]any
+	switch {
+	case preferredEntry == "maclaw.apps.json":
+		result, err = recordMaclawAppsRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+	case preferredEntry == "maclaw.app.json":
+		result, err = recordMaclawSingleAppRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+	default:
+		if _, statErr := os.Stat(filepath.Join(skillDir, "maclaw.app.json")); statErr == nil {
+			result, err = recordMaclawSingleAppRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("stat maclaw app definition: %w", statErr)
+		} else {
+			result, err = recordMaclawAppsRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+		}
 	}
-	if preferredEntry == "maclaw.app.json" {
-		return recordMaclawSingleAppRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(skillDir, "maclaw.app.json")); err == nil {
-		return recordMaclawSingleAppRunEvidence(skillName, skillDir, appID, evidence, artifactName)
-	} else if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("stat maclaw app definition: %w", err)
+
+	// Also persist to the durable run-history store so publish evidence survives
+	// browser localStorage clears. Durable write failure is returned as a soft
+	// field (governance write already succeeded) so the UI can surface it.
+	historyEntry := maclawAppRunHistoryEntry{
+		RunID:          strings.TrimSpace(runID),
+		AppID:          strings.TrimSpace(appID),
+		Status:         "done",
+		DefinitionHash: strings.TrimSpace(definitionHash),
+		ArtifactName:   artifactName,
+		ArtifactPath:   artifactPath,
+		SkillName:      skillName,
+		Source:         "skill_governance",
+		At:             strings.TrimSpace(verifiedAt),
+		Message:        "skill governance testEvidence recorded",
+		GovernanceRecorded: true,
 	}
-	return recordMaclawAppsRunEvidence(skillName, skillDir, appID, evidence, artifactName)
+	if historyEntry.AppID == "" {
+		historyEntry.AppID = skillName
+	}
+	if durableErr := a.recordMaclawAppRunHistoryBestEffort(historyEntry); durableErr != nil {
+		result["durable_history_error"] = durableErr.Error()
+		result["durable_history_recorded"] = false
+	} else {
+		result["durable_history_recorded"] = true
+	}
+	return result, nil
 }
 
 func recordMaclawSingleAppRunEvidence(skillName string, skillDir string, appID string, evidence map[string]any, artifactName string) (map[string]any, error) {

@@ -164,8 +164,8 @@ export const darkTheme: Theme = {
     userColor: "#c7d7e8",
     divider: "#1e293b",
     fieldBg: "#111827",
-    fieldBorder: "#334155",
-    fieldLabel: "#a8b8c8",
+    fieldBorder: "#475569",
+    fieldLabel: "#cbd5e1",
     errorText: "#e07a72",
     errorBg: "rgba(196, 61, 52, 0.10)",
     errorBorder: "#b95b52",
@@ -403,6 +403,115 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
             )}
         </svg>
     );
+}
+
+/** Parse #rgb / #rrggbb (ignores alpha / non-hex). Returns null if unparseable. */
+export function parseCssHexColor(input: string | undefined | null): { r: number; g: number; b: number } | null {
+    if (!input) return null;
+    const s = input.trim();
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s);
+    if (!m) return null;
+    let h = m[1];
+    if (h.length === 3) {
+        h = h.split("").map((c) => c + c).join("");
+    }
+    const n = parseInt(h, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/** Relative luminance 0–1 (sRGB, WCAG). Non-hex colors return null. */
+export function relativeLuminance(cssColor: string | undefined | null): number | null {
+    const rgb = parseCssHexColor(cssColor);
+    if (!rgb) return null;
+    const lin = (c: number) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    const R = lin(rgb.r);
+    const G = lin(rgb.g);
+    const B = lin(rgb.b);
+    return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+}
+
+/**
+ * Pick ink color for a solid fill so label stays readable.
+ * Light fills (graphite sendBtn) → dark ink; dark fills → white ink.
+ */
+export function contrastingInkOnFill(fillCss: string, preferred?: string): string {
+    if (preferred) {
+        // If preferred is also hex, ensure contrast ≥ ~3:1 for large/bold UI text; else keep preferred.
+        const Lbg = relativeLuminance(fillCss);
+        const Lfg = relativeLuminance(preferred);
+        if (Lbg != null && Lfg != null) {
+            const lighter = Math.max(Lbg, Lfg);
+            const darker = Math.min(Lbg, Lfg);
+            const ratio = (lighter + 0.05) / (darker + 0.05);
+            if (ratio >= 3) return preferred;
+        } else {
+            return preferred; // non-hex preferred (e.g. currentColor) — trust caller
+        }
+    }
+    const L = relativeLuminance(fillCss);
+    // Threshold ~0.45: mid-light fills get dark ink (graphite #d4d4d4 ≈ 0.64)
+    if (L == null) return "#ffffff";
+    return L > 0.45 ? "#111111" : "#ffffff";
+}
+
+/**
+ * Resolve filled-CTA background + foreground from theme tokens.
+ * Prefer sendBtn* pair; never paint light `btnColor` accent with forced white text.
+ */
+export function resolvePrimaryFilledColors(
+    t: Pick<Theme, "sendBtnBg" | "sendBtnColor" | "btnColor">,
+): { bg: string; fg: string } {
+    const bg = (t.sendBtnBg && t.sendBtnBg.trim()) || t.btnColor || "#2f5f98";
+    const preferredFg = (t.sendBtnColor && t.sendBtnColor.trim()) || undefined;
+    // If caller only has light btnColor as bg (no sendBtn), auto-ink prevents white-on-light.
+    const fg = contrastingInkOnFill(bg, preferredFg);
+    return { bg, fg };
+}
+
+/**
+ * Filled primary CTA styles (Reconnect, Save, Submit, etc.).
+ *
+ * Dark schemes use light `btnColor` as an *accent/foreground* (links, outlines).
+ * Never use `btnColor` as a solid button background with white text — that is
+ * the low-contrast failure on graphite/classic/aurora dark modes.
+ * Always pair sendBtnBg (fill) + sendBtnColor (label).
+ */
+export function primaryFilledButtonStyle(
+    t: Pick<Theme, "sendBtnBg" | "sendBtnColor" | "sendBtnBorder" | "btnColor">,
+    extras: React.CSSProperties = {},
+): React.CSSProperties {
+    const { bg, fg } = resolvePrimaryFilledColors(t);
+    return {
+        border: "none",
+        background: bg,
+        color: fg,
+        boxShadow: `inset 0 0 0 1px ${t.sendBtnBorder || bg}`,
+        ...extras,
+    };
+}
+
+/** Form field label color with dark-mode-safe contrast (≥ muted body ink). */
+export function formFieldLabelColor(t: Pick<Theme, "fieldLabel" | "textMuted" | "text">): string {
+    // Prefer dedicated fieldLabel; fall back to text (not emptyHint / ultra-muted).
+    return t.fieldLabel || t.textMuted || t.text || "#c4c4c4";
+}
+
+/** Shared input chrome for forms inside dark/light assistant surfaces. */
+export function formFieldInputStyle(
+    t: Pick<Theme, "fieldBorder" | "fieldBg" | "text" | "inputText">,
+    extras: React.CSSProperties = {},
+): React.CSSProperties {
+    return {
+        border: `1px solid ${t.fieldBorder}`,
+        background: t.fieldBg,
+        color: t.inputText || t.text,
+        // Stronger outline on focus is set by callers; default keeps visible edge on dark mixes.
+        outline: "none",
+        ...extras,
+    };
 }
 
 export function getInputActionButtonStyle(

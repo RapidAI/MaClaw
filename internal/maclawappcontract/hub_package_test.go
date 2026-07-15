@@ -67,6 +67,38 @@ func TestValidateGUIInstallHubPackageRejectsBlockingDependencyVerification(t *te
 	}
 }
 
+func TestValidateGUIInstallHubPackageSynthesizesMissingResolvedDependencies(t *testing.T) {
+	pkg := validGUIInstallHubPackage()
+	delete(pkg, "resolved_dependencies")
+
+	if err := ValidateGUIInstallHubPackage(pkg, "cap-approval-ready-app"); err != nil {
+		t.Fatalf("legacy package without resolved_dependencies should validate after synthesis: %v", err)
+	}
+	deps := anySlice(pkg["resolved_dependencies"])
+	if len(deps) == 0 {
+		t.Fatalf("expected synthesized resolved_dependencies, got %#v", pkg["resolved_dependencies"])
+	}
+	compat := anyMap(pkg["compatibility"])
+	if compat["resolved_dependencies_synthesized"] != true {
+		t.Fatalf("expected compatibility.resolved_dependencies_synthesized marker, got %#v", compat)
+	}
+	first := anyMap(deps[0])
+	if strings.TrimSpace(stringValue(first["id"])) != "approval-workflow" {
+		t.Fatalf("synthesized dep id = %#v", first)
+	}
+	if strings.TrimSpace(stringValue(first["install_ref"])) == "" {
+		t.Fatalf("synthesized dep missing install_ref: %#v", first)
+	}
+}
+
+func TestNormalizeGUIInstallHubPackageNoopWhenResolvedPresent(t *testing.T) {
+	pkg := validGUIInstallHubPackage()
+	synthesized, notes := NormalizeGUIInstallHubPackage(pkg)
+	if synthesized {
+		t.Fatalf("expected no synthesis when resolved_dependencies already present, notes=%v", notes)
+	}
+}
+
 func TestDownloadGUIInstallHubPackageFetchesAndValidatesPackage(t *testing.T) {
 	var gotPath string
 	var gotAuth string

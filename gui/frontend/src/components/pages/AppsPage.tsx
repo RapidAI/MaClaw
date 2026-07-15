@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
-import { CancelNLSkillRun, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
+import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import {
     clearWorkspaceLaunchIssue,
@@ -5249,6 +5249,86 @@ function loadAppRunHistory(appID: string): AppRunHistoryEntry[] {
     }
 }
 
+function normalizeDurableRunHistoryEntry(raw: any, fallbackAppID = ''): AppRunHistoryEntry | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const runID = String(raw.runID || raw.run_id || raw.runId || '').trim();
+    const appID = String(raw.appID || raw.app_id || raw.appId || fallbackAppID || '').trim();
+    const statusRaw = String(raw.status || '').trim().toLowerCase();
+    const status = statusRaw === 'done' || statusRaw === 'error' || statusRaw === 'cancelled'
+        ? statusRaw as AppRunHistoryEntry['status']
+        : (statusRaw === 'success' || statusRaw === 'ok' || statusRaw === 'completed'
+            ? 'done'
+            : (statusRaw === 'fail' || statusRaw === 'failed' ? 'error' : (statusRaw === 'cancel' || statusRaw === 'canceled' ? 'cancelled' : '')));
+    if (!runID || !appID || !status) return null;
+    return {
+        runID,
+        appID,
+        status,
+        definitionHash: String(raw.definitionHash || raw.definition_hash || '').trim() || undefined,
+        testProtocolFingerprint: String(raw.testProtocolFingerprint || raw.test_protocol_fingerprint || '').trim() || undefined,
+        workspaceLayoutFingerprint: String(raw.workspaceLayoutFingerprint || raw.workspace_layout_fingerprint || '').trim() || undefined,
+        outputMode: String(raw.outputMode || raw.output_mode || '').trim(),
+        inputSummary: String(raw.inputSummary || raw.input_summary || '').trim(),
+        message: String(raw.message || '').trim(),
+        artifactID: String(raw.artifactID || raw.artifact_id || '').trim() || undefined,
+        artifactURI: String(raw.artifactURI || raw.artifact_uri || '').trim() || undefined,
+        artifactName: String(raw.artifactName || raw.artifact_name || '').trim() || undefined,
+        artifactPath: String(raw.artifactPath || raw.artifact_path || '').trim() || undefined,
+        artifactDownloadState: String(raw.artifactDownloadState || raw.artifact_download_state || '').trim() || undefined,
+        artifacts: Array.isArray(raw.artifacts) ? raw.artifacts as SkillRunArtifactView[] : undefined,
+        resultPayload: raw.resultPayload && typeof raw.resultPayload === 'object' ? raw.resultPayload as Record<string, unknown> : (raw.result_payload && typeof raw.result_payload === 'object' ? raw.result_payload as Record<string, unknown> : undefined),
+        outputs: Array.isArray(raw.outputs) ? normalizeApprovalOutputs(raw.outputs) : undefined,
+        resultCoverage: raw.resultCoverage && typeof raw.resultCoverage === 'object' ? raw.resultCoverage as Record<string, unknown> : (raw.result_coverage && typeof raw.result_coverage === 'object' ? raw.result_coverage as Record<string, unknown> : undefined),
+        dependencyVerification: normalizeAppRunEvidenceDependencyVerification(raw.dependencyVerification || raw.dependency_verification),
+        approvalInstance: normalizeAppRunApprovalInstanceEvidence(raw.approvalInstance || raw.approval_instance),
+        at: String(raw.at || raw.verifiedAt || raw.verified_at || new Date().toISOString()).trim(),
+    };
+}
+
+function mergeAppRunHistoryEntries(...groups: Array<AppRunHistoryEntry[] | null | undefined>): AppRunHistoryEntry[] {
+    const next: AppRunHistoryEntry[] = [];
+    const seen = new Set<string>();
+    groups.forEach((group) => {
+        (group || []).forEach((item) => {
+            const runID = String(item?.runID || '').trim();
+            if (!runID || seen.has(runID)) return;
+            seen.add(runID);
+            next.push(item);
+        });
+    });
+    return next
+        .sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))
+        .slice(0, 8);
+}
+
+async function loadDurableAppRunHistory(appID: string): Promise<AppRunHistoryEntry[]> {
+    if (!appID || typeof ListMaclawAppRunHistory !== 'function') return [];
+    try {
+        const rows = await ListMaclawAppRunHistory(appID, 8);
+        return (Array.isArray(rows) ? rows : [])
+            .map((row) => normalizeDurableRunHistoryEntry(row, appID))
+            .filter(Boolean) as AppRunHistoryEntry[];
+    } catch {
+        return [];
+    }
+}
+
+async function persistDurableAppRunHistory(entry: AppRunHistoryEntry): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
+    if (!entry?.appID || !entry?.runID) {
+        return { ok: false, error: 'appID and runID are required' };
+    }
+    // Older GUI binaries / unit mocks may not expose the durable API yet.
+    if (typeof RecordMaclawAppRunHistory !== 'function') {
+        return { ok: true, skipped: true };
+    }
+    try {
+        await RecordMaclawAppRunHistory(entry);
+        return { ok: true };
+    } catch (error: any) {
+        return { ok: false, error: String(error?.message || error || 'failed to persist run history') };
+    }
+}
+
 function loadAllAppRunHistory(): AppRunHistoryEntry[] {
     if (typeof window === 'undefined') return [];
     try {
@@ -5278,7 +5358,10 @@ function clearAppRunHistory(appID: string) {
         delete parsed[appID];
         window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(parsed));
     } catch {
-        // History is nice-to-have; ignore storage failures.
+        // localStorage cache is best-effort.
+    }
+    if (typeof ClearMaclawAppRunHistory === 'function') {
+        void ClearMaclawAppRunHistory(appID).catch(() => undefined);
     }
 }
 
@@ -8977,6 +9060,17 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         approvalRunContextRef.current = shouldRestoreActiveRun && activeSession?.approvalInstance ? { instance: activeSession.approvalInstance } : null;
         activeRunDependencyPlanRef.current = null;
         setRunHistory(appSeedRunHistory(app));
+        if (app?.id) {
+            const seededAppID = app.id;
+            void loadDurableAppRunHistory(seededAppID).then((durable) => {
+                if (!durable.length) return;
+                setRunHistory((current) => {
+                    const merged = mergeAppRunHistoryEntries(durable, current, appSeedRunHistory(app));
+                    saveAppRunHistory(seededAppID, merged);
+                    return merged;
+                });
+            });
+        }
         const restoredApprovalView = app && shouldRestoreActiveRun && activeSession?.approvalInstance
             ? backendApprovalInstanceToView(activeSession.approvalInstance, lang)
             : null;
@@ -8995,7 +9089,21 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         setRuntimeDependencyCheckState('checking');
         const checkDependencies = async () => {
             try {
-                const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
+                const packageJSON = JSON.stringify(appToManifest(app));
+                // Prefer the dedicated runtime health API (plan + install-record cross-check).
+                if (typeof CheckMaclawAppRuntimeHealth === 'function') {
+                    const health = await CheckMaclawAppRuntimeHealth(packageJSON, app.id) as any;
+                    if (disposed) return;
+                    const dependencyPlan = (health?.plan || null) as BackendAppInstallPlan | null;
+                    setRuntimeDependencyPlan(dependencyPlan);
+                    activeRunDependencyPlanRef.current = dependencyPlan;
+                    // Plan semantics are authoritative for installable missing deps (action=install).
+                    // health.blocked is hard-only after backend alignment; keep OR as belt-and-suspenders.
+                    const blocked = runtimeInstallPlanBlocked(dependencyPlan, app) || !!health?.blocked;
+                    setRuntimeDependencyCheckState(blocked ? 'blocked' : 'ready');
+                    return;
+                }
+                const dependencyPlan = await PlanMaclawAppInstall(packageJSON);
                 if (disposed) return;
                 setRuntimeDependencyPlan(dependencyPlan || null);
                 activeRunDependencyPlanRef.current = dependencyPlan || null;
@@ -9058,6 +9166,17 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             const next = [nextEntry, ...current.filter((item) => item.runID !== nextEntry.runID)].slice(0, 8);
             saveAppRunHistory(appID, next);
             return next;
+        });
+        // Durable backend is authoritative for publish evidence; surface failures.
+        void persistDurableAppRunHistory(nextEntry).then((result) => {
+            if (!result.ok) {
+                setValidationMessage((current) => {
+                    const detail = result.error || (isZh(lang) ? '持久化运行证据失败' : 'Failed to persist run evidence');
+                    if (current && current.includes(detail)) return current;
+                    const prefix = isZh(lang) ? '运行证据未写入本机存储' : 'Run evidence was not saved to durable store';
+                    return current ? `${current} · ${prefix}: ${detail}` : `${prefix}: ${detail}`;
+                });
+            }
         });
     };
     const rememberActiveRun = (runKind: AppActiveRunKind, activeRunID: string, inputSummary: string, activeOutputMode: string, approvalInstance?: BackendApprovalInstance) => {
@@ -9345,7 +9464,21 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     });
                     const evidenceSkillID = appRunnableSkillID(app, activeRunDependencyPlanRef.current || runtimeDependencyPlan || runtimeInstallEvidencePlan || null);
                     if (app?.source === 'skill' && evidenceSkillID) {
-                        void RecordMaclawAppRunEvidenceForSkill(evidenceSkillID, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt).catch(() => undefined);
+                        void RecordMaclawAppRunEvidenceForSkill(evidenceSkillID, app.id, definitionHash || '', runID, artifactPath || artifactName || artifactURI, verifiedAt)
+                            .then((result: any) => {
+                                if (result?.durable_history_error) {
+                                    setValidationMessage((current) => {
+                                        const detail = String(result.durable_history_error);
+                                        const prefix = isZh(lang) ? 'Skill 证据已写入，但本机运行历史持久化失败' : 'Skill evidence saved, but durable run history failed';
+                                        return current ? `${current} · ${prefix}: ${detail}` : `${prefix}: ${detail}`;
+                                    });
+                                }
+                            })
+                            .catch((error: any) => {
+                                const detail = String(error?.message || error || '');
+                                const prefix = isZh(lang) ? '写入 Skill 运行证据失败' : 'Failed to record skill run evidence';
+                                setValidationMessage((current) => current ? `${current} · ${prefix}: ${detail}` : `${prefix}: ${detail}`);
+                            });
                     }
                 } else if (lifecycle === 'error') {
                     const businessError = structuredBusinessErrorFromUnknown(skillRunErrorMessage(status));
@@ -9463,15 +9596,49 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 return;
             }
             try {
-                setRuntimeDependencyCheckState('checking');
-                const dependencyPlan = await PlanMaclawAppInstall(JSON.stringify(appToManifest(app)));
-                setRuntimeDependencyPlan(dependencyPlan || null);
-                activeRunDependencyPlanRef.current = dependencyPlan || null;
-                if (runtimeInstallPlanBlocked(dependencyPlan, app)) {
-                    setRuntimeDependencyCheckState('blocked');
-                    setValidationMessage(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
-                    setRunState('error');
-                    return;
+                const packageJSON = JSON.stringify(appToManifest(app));
+                let dependencyPlan: BackendAppInstallPlan | null = runtimeDependencyPlan || activeRunDependencyPlanRef.current || null;
+                // Reuse open-time health/plan when already ready — avoid a second full Plan/Health round-trip.
+                const canReuseReadyPlan = runtimeDependencyCheckState === 'ready'
+                    && !!dependencyPlan
+                    && !runtimeInstallPlanBlocked(dependencyPlan, app);
+                if (!canReuseReadyPlan) {
+                    setRuntimeDependencyCheckState('checking');
+                    if (typeof CheckMaclawAppRuntimeHealth === 'function') {
+                        const health = await CheckMaclawAppRuntimeHealth(packageJSON, app.id) as any;
+                        dependencyPlan = (health?.plan || null) as BackendAppInstallPlan | null;
+                        setRuntimeDependencyPlan(dependencyPlan);
+                        activeRunDependencyPlanRef.current = dependencyPlan;
+                        if (health?.blocked || runtimeInstallPlanBlocked(dependencyPlan, app)) {
+                            // If health says blocked only because deps are installable, fall through to auto-install.
+                            const canAutoInstall = (dependencyPlan?.dependencies || []).some((dep: any) => {
+                                const appIDs = appDependencyVerificationAppIDs(app);
+                                if (!backendDependencyMatchesAppIDs(dep, appIDs)) return false;
+                                return !dep.installed && String(dep.action || '').trim() === 'install' && dep.required !== false;
+                            });
+                            if (!canAutoInstall) {
+                                setRuntimeDependencyCheckState('blocked');
+                                // Prefer plan-derived UX copy (localized, skill-specific); fall back to health.message.
+                                const planMessage = runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang);
+                                const healthMessage = String(health?.message || '').trim();
+                                setValidationMessage(planMessage || healthMessage);
+                                setRunState('error');
+                                return;
+                            }
+                        }
+                    } else {
+                        dependencyPlan = await PlanMaclawAppInstall(packageJSON);
+                        setRuntimeDependencyPlan(dependencyPlan || null);
+                        activeRunDependencyPlanRef.current = dependencyPlan || null;
+                        if (runtimeInstallPlanBlocked(dependencyPlan, app)) {
+                            setRuntimeDependencyCheckState('blocked');
+                            setValidationMessage(runtimeInstallPlanBlockMessage(app, dependencyPlan, text, lang));
+                            setRunState('error');
+                            return;
+                        }
+                    }
+                } else {
+                    activeRunDependencyPlanRef.current = dependencyPlan;
                 }
                 // Auto-install uninstalled dependencies (action="install") before running.
                 // Without this, the plan says "installable" but no install is triggered,
@@ -9483,7 +9650,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 });
                 if (needsAutoInstall) {
                     setValidationMessage(text.installingDependencies);
-                    const installResult = await InstallMaclawAppDependencies(JSON.stringify(appToManifest(app)));
+                    const installResult = await InstallMaclawAppDependencies(packageJSON);
                     setRuntimeDependencyPlan(installResult || null);
                     activeRunDependencyPlanRef.current = installResult || null;
                     if (runtimeInstallPlanBlocked(installResult, app)) {
@@ -10270,8 +10437,13 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     ? 'ready'
                     : 'idle';
     const showRunButton = runState === 'idle' && dependencyRepairState !== 'installing';
+    // Keep post-success evidence/persistence warnings visible even when runState is done.
+    // Previously validationMessage was only shown for error, so durable/skill evidence
+    // write failures were set but never rendered after a successful run.
     const runtimeStatusMessage = runState === 'done'
-        ? text.runCompleted
+        ? (validationMessage
+            ? `${text.runCompleted} · ${validationMessage}`
+            : text.runCompleted)
         : runState === 'running'
             ? skillRunProgressMessage(skillRunStatus, text.skillRunRunning, runID)
             : runState === 'error'

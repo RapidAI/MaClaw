@@ -337,6 +337,45 @@ func TestRearmStickyRemoteCodingEnvironment(t *testing.T) {
 	}
 }
 
+func TestRearmStickyRemoteCodingEnvironmentKeepsRecreatedSession(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	oldCtx := remoteCodingTemplateContext{
+		SessionID:  "ssh_stale_1",
+		WorkDir:    "/home/u/app",
+		ProjectDir: "/home/u/app",
+	}
+	h.bindStickyRemoteCodingContext(userID, remoteCodingTemplateContext{
+		SessionID:  "ssh_fresh_2",
+		WorkDir:    "/home/u/app",
+		ProjectDir: "/home/u/app",
+	}, "example.test", "root", 22)
+
+	h.rearmStickyRemoteCodingEnvironment(userID, oldCtx)
+	raw, ok := h.pendingTemplateRemoteCoding.Load(userID)
+	if !ok {
+		t.Fatal("pendingTemplateRemoteCoding missing")
+	}
+	got, _ := raw.(remoteCodingTemplateContext)
+	if got.SessionID != "ssh_fresh_2" {
+		t.Fatalf("rearmed session = %q, want recreated session", got.SessionID)
+	}
+}
+
+func TestRecoverStickyRemoteCodingSSHSessionRequiresReconnectMetadata(t *testing.T) {
+	h := &IMMessageHandler{}
+	ctx := remoteCodingTemplateContext{SessionID: "ssh_stale_1", WorkDir: "/home/u/app", ProjectDir: "/home/u/app"}
+	userID := stickyTestUserID(t)
+	h.bindStickyRemoteCodingContext(userID, ctx, "", "", 0)
+	got, errText := h.recoverStickyRemoteCodingSSHSession(userID, ctx)
+	if got != ctx {
+		t.Fatalf("context changed without recoverable metadata: %+v", got)
+	}
+	if !strings.Contains(errText, "没有可用于自动重建的主机信息") {
+		t.Fatalf("unexpected recovery error: %q", errText)
+	}
+}
+
 func TestClearStickyCodingEnvironmentDropsMemoryAndPending(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

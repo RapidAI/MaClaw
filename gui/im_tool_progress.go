@@ -132,6 +132,9 @@ func toolProgressActionKeyDetail(toolName string, args map[string]any) (actionKe
 		actionKey = i18n.MsgToolActionScreenshot
 	case "tts":
 		actionKey = i18n.MsgToolActionTTS
+	case "asr":
+		actionKey = i18n.MsgToolActionASR
+		detail = shortPathForProgress(firstStringArg(args, "path", "file", "file_path", "audio_path"))
 	case "browser":
 		actionKey = i18n.MsgToolActionBrowser
 		detail = browserProgressDetail(args)

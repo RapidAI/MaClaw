@@ -3371,7 +3371,7 @@
 }
 
 .apps-run-history__details dt {
-    color: var(--theme-text-tertiary);
+    color: var(--theme-text-tertiary, var(--theme-text-muted));
 }
 
 .apps-run-history__details dd {

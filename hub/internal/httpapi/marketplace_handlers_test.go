@@ -637,6 +637,8 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 		Status        string           `json:"status"`
 		PackageSHA256 string           `json:"package_sha256"`
 		AppCount      int              `json:"app_count"`
+		SubmissionID  string           `json:"submission_id"`
+		CapabilityID  string           `json:"capability_id"`
 		Submissions   []map[string]any `json:"submissions"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &submitResp); err != nil {
@@ -644,6 +646,15 @@ func TestCapabilityMaclawAppSubmitCreatesPendingReviewCapability(t *testing.T) {
 	}
 	if submitResp.Schema != "maclaw.app.hub_submission.v1" || submitResp.Status != "pending_review" || submitResp.AppCount != 1 || submitResp.PackageSHA256 == "" || len(submitResp.Submissions) != 1 {
 		t.Fatalf("unexpected submit response: %+v", submitResp)
+	}
+	if strings.TrimSpace(submitResp.SubmissionID) == "" || strings.TrimSpace(submitResp.CapabilityID) == "" {
+		t.Fatalf("submit response missing top-level submission_id/capability_id: %+v", submitResp)
+	}
+	if submitResp.SubmissionID == submitResp.PackageSHA256 {
+		t.Fatalf("submission_id must not equal package_sha256: %+v", submitResp)
+	}
+	if submitResp.SubmissionID != stringFromAny(submitResp.Submissions[0]["submission_id"]) {
+		t.Fatalf("top-level submission_id should match submissions[0]: %+v", submitResp)
 	}
 	items, err := svc.List(capability.WithTenant(context.Background(), "tenant_a"), corelib.CapabilityTypeSkill)
 	if err != nil || len(items) != 1 {

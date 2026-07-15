@@ -15,8 +15,8 @@ func TestSSHHostConfig_Defaults(t *testing.T) {
 	if cfg.ConnectTimeout != 10*time.Second {
 		t.Errorf("expected 10s timeout, got %v", cfg.ConnectTimeout)
 	}
-	if cfg.KeepaliveInterval != 30*time.Second {
-		t.Errorf("expected 30s keepalive, got %v", cfg.KeepaliveInterval)
+	if cfg.KeepaliveInterval != 15*time.Second {
+		t.Errorf("expected 15s keepalive, got %v", cfg.KeepaliveInterval)
 	}
 	if cfg.AuthMethod != "key" {
 		t.Errorf("expected auth_method=key, got %s", cfg.AuthMethod)
@@ -103,5 +103,54 @@ func TestSplitSSHOutputLines(t *testing.T) {
 	lines = splitSSHOutputLines([]byte("no newline"))
 	if len(lines) != 1 || lines[0] != "no newline" {
 		t.Errorf("unexpected lines: %v", lines)
+	}
+}
+
+func TestSplitCompleteSSHLines(t *testing.T) {
+	complete, rem := splitCompleteSSHLines("hello\nworld\nEXIT: 0")
+	if len(complete) != 2 || complete[0] != "hello" || complete[1] != "world" {
+		t.Fatalf("complete=%v", complete)
+	}
+	if rem != "EXIT: 0" {
+		t.Fatalf("remainder=%q", rem)
+	}
+
+	// CRLF
+	complete, rem = splitCompleteSSHLines("a\r\nb\r\n")
+	if len(complete) != 2 || complete[0] != "a" || complete[1] != "b" || rem != "" {
+		t.Fatalf("crlf complete=%v rem=%q", complete, rem)
+	}
+
+	// half-line only
+	complete, rem = splitCompleteSSHLines("partial")
+	if len(complete) != 0 || rem != "partial" {
+		t.Fatalf("half complete=%v rem=%q", complete, rem)
+	}
+}
+
+func TestHasCommandExitMarker(t *testing.T) {
+	if !hasCommandExitMarker([]string{"output", "EXIT: 0"}) {
+		t.Fatal("expected EXIT: 0 detected")
+	}
+	if !hasCommandExitMarker([]string{"EXIT:127"}) {
+		t.Fatal("expected EXIT:127 detected")
+	}
+	if hasCommandExitMarker([]string{"no exit here", "price EXIT: never"}) {
+		t.Fatal("should not match non-numeric EXIT")
+	}
+	if hasCommandExitMarker([]string{"just output"}) {
+		t.Fatal("should not match without EXIT")
+	}
+	if hasCommandExitMarker([]string{"EXIT: 0xdead"}) {
+		t.Fatal("should reject non-decimal EXIT codes")
+	}
+	// only inspect tail
+	old := make([]string, 20)
+	for i := range old {
+		old[i] = "noise"
+	}
+	old = append(old, "EXIT: 0")
+	if !hasCommandExitMarker(old) {
+		t.Fatal("expected tail EXIT detected")
 	}
 }

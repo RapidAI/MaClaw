@@ -9,8 +9,9 @@
 //   - mp3:             Common browser and gateway audio
 //   - wav:            Already WAV, returned as-is (or resampled if needed)
 //
-// M4A/AAC are recognized so callers get a precise unsupported-format error,
-// but they are not decoded until a native decoder is wired.
+// M4A/AAC are recognized so callers get a precise unsupported-format error
+// (ErrNativeDecodeUnsupported). Wrong extensions that actually contain a
+// supported format are re-detected from magic bytes before failing.
 package audioconv
 
 import (
@@ -34,35 +35,38 @@ const (
 	FormatAAC  = "aac"
 )
 
-const maxNativeAudioInputBytes = 32 << 20
-
 // ToWAV converts voice audio data to 16kHz mono 16-bit WAV.
 // The format parameter hints at the source format ("silk", "ogg", "opus", "wav", "mp3", "m4a", "aac").
-// M4A/AAC hints are rejected with a native-decoder-not-supported error.
+// M4A/AAC hints are rejected with ErrNativeDecodeUnsupported (typed).
 // If format is empty, auto-detection is attempted.
 func ToWAV(data []byte, format string) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("audioconv: empty input data")
 	}
-	if len(data) > maxNativeAudioInputBytes {
+	if len(data) > MaxNativeAudioInputBytes {
 		return nil, fmt.Errorf("audioconv: input audio too large")
 	}
 
+	format = NormalizeFormatHint(format)
 	if format == "" {
 		format = detectFormat(data)
 	}
 
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case FormatSilk, "silk_v3":
+	switch format {
+	case FormatSilk:
 		return silkToWAV(data)
-	case FormatOGG, FormatOpus, "oga":
+	case FormatOGG, FormatOpus:
 		return opusToWAV(data)
 	case FormatWAV:
 		return ensureWAVFormat(data)
-	case FormatMP3, "mpeg", "audio/mpeg", "audio/mp3":
+	case FormatMP3:
 		return compressedAudioToWAV(data, format)
-	case FormatM4A, "mp4", "audio/mp4", "audio/x-m4a", FormatAAC, "audio/aac":
-		return nil, fmt.Errorf("audioconv: native %s decode is not supported", strings.TrimSpace(format))
+	case FormatM4A, FormatAAC:
+		// Wrong extension safety: if bytes are actually a supported format, decode that.
+		if auto := detectFormat(data); auto != "" && auto != FormatM4A && auto != FormatAAC {
+			return ToWAV(data, auto)
+		}
+		return nil, NewNativeDecodeUnsupported(format)
 	default:
 		return nil, fmt.Errorf("audioconv: unsupported format %q", format)
 	}

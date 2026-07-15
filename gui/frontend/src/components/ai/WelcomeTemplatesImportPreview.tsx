@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import type { CSSProperties } from "react";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import type { WelcomeTemplatesImportPreview } from "./welcomeTaskMemory";
 
 export type WelcomeTemplatesImportPreviewPanelProps = {
@@ -167,17 +167,14 @@ export function WelcomeTemplatesImportPreviewPanel({
                     data-testid="welcome-import-preview-confirm"
                     onClick={onConfirm}
                     disabled={preview.toAdd.length === 0 && !preview.hasExtras}
-                    style={{
+                    style={primaryFilledButtonStyle(t, {
                         padding: "5px 12px",
                         borderRadius: 6,
-                        border: `1px solid ${t.sendBtnBorder || t.sendBtnBg}`,
-                        background: t.sendBtnBg || t.btnColor,
-                        color: t.sendBtnColor || "#fff",
                         fontSize: 12,
                         fontWeight: 600,
                         cursor: preview.toAdd.length === 0 && !preview.hasExtras ? "default" : "pointer",
                         opacity: preview.toAdd.length === 0 && !preview.hasExtras ? 0.45 : 1,
-                    }}
+                    })}
                 >
                     {isZh ? "确认导入" : "Confirm import"}
                 </button>

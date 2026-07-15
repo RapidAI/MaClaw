@@ -342,9 +342,13 @@ func (p *ProjectTabSessionPersist) cleanupOrphanedFiles(index *TabIndex) {
 
 // atomicWriteFile writes data to a temporary file then renames it to the
 // target path, ensuring the file is never partially written.
+// On platforms where rename-over-existing fails, falls back to remove+rename.
 func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp_session_*")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create parent dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp_atomic_*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -366,8 +370,12 @@ func atomicWriteFile(path string, data []byte) error {
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename temp to target: %w", err)
+		// Windows (and some network FS) may refuse rename onto an existing file.
+		_ = os.Remove(path)
+		if err2 := os.Rename(tmpPath, path); err2 != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("rename temp to target: %w", err)
+		}
 	}
 
 	return nil

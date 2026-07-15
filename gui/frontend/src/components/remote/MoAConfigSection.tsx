@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { GetMoAConfig, GetMoASessionState, GetMoAStats, SaveMoAConfig, SetMoASticky } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
@@ -146,6 +146,67 @@ function buildConfig(state: SimpleState, isZh: boolean, existing?: MoAConfig | n
     };
 }
 
+/** Normalize unknown throw values (Wails may reject with string or Error). */
+export function moaErrorMessage(e: unknown): string {
+    if (e instanceof Error) return e.message.trim();
+    if (typeof e === "string") return e.trim();
+    if (e && typeof e === "object" && "message" in e) {
+        const m = (e as { message?: unknown }).message;
+        if (typeof m === "string" && m.trim()) return m.trim();
+    }
+    const s = String(e ?? "").trim();
+    return s === "[object Object]" ? "unknown error" : s;
+}
+
+type MoATranslate = (en: string, zhHans: string, zhHant?: string) => string;
+
+/**
+ * Map known backend MoA detail strings to localized, actionable UI copy.
+ * Match exact backend tokens from gui/moa_session.go — avoid broad substrings.
+ */
+export function localizeMoAError(raw: string, t: MoATranslate): string {
+    const msg = String(raw || "").trim();
+    const lower = msg.toLowerCase();
+    if (lower.includes("enable multi-model in llm settings")) {
+        return t(
+            "Turn on multi-model above and click Save first.",
+            "请先勾选「开启」，并点击「保存」后再试。",
+            "請先勾選「開啟」，並點擊「保存」後再試。",
+        );
+    }
+    if (
+        lower.includes("configure other models in multi-model settings") ||
+        lower.includes("no usable other models")
+    ) {
+        return t(
+            "Pick at least one usable other model, then Save.",
+            "请至少选择一个可用的「其他模型」并保存。",
+            "請至少選擇一個可用的「其他模型」並保存。",
+        );
+    }
+    if (lower.includes("maclaw_moa=off") || lower.includes("kill switch")) {
+        return t(
+            "Multi-model is blocked by MACLAW_MOA=off.",
+            "环境变量 MACLAW_MOA=off 已紧急关闭多模型会诊。",
+            "環境變數 MACLAW_MOA=off 已緊急關閉多模型會診。",
+        );
+    }
+    if (lower.includes("configure a primary llm first")) {
+        return t(
+            "Configure the primary LLM above first.",
+            "请先在上方配置当前主模型。",
+            "請先在上方配置當前主模型。",
+        );
+    }
+    if (lower.includes("agent not ready") || lower.includes("app not ready")) {
+        return t("App is still starting, try again in a moment.", "应用仍在启动，请稍后再试。");
+    }
+    if (lower.includes("load config failed")) {
+        return t("Failed to load settings.", "加载配置失败。", "載入配置失敗。");
+    }
+    return msg;
+}
+
 interface Props {
     lang?: string;
     providers: LLMProvider[];
@@ -178,6 +239,8 @@ export function MoAConfigSection({ lang, providers }: Props) {
     const [sticky, setSticky] = useState(false);
     const [stickyBusy, setStickyBusy] = useState(false);
     const [statsLine, setStatsLine] = useState<string | null>(null);
+    /** Bumps on unmount / superseding load so stale async results are ignored. */
+    const loadGenRef = useRef(0);
 
     const patch = (partial: Partial<SimpleState>) => {
         setState((s) => ({ ...s, ...partial }));
@@ -193,44 +256,67 @@ export function MoAConfigSection({ lang, providers }: Props) {
         setSavedOk(false);
     };
 
-    const load = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const cfg = (await GetMoAConfig()) as MoAConfig;
-            setBaseCfg(cfg);
-            setState(loadState(cfg));
-            try {
-                const sess = (await GetMoASessionState()) as { sticky?: boolean };
-                setSticky(!!sess?.sticky);
-            } catch {
-                setSticky(false);
-            }
-            try {
-                const st = (await GetMoAStats()) as MoAStatsSnapshot;
-                if (st && (st.fanouts || 0) > 0) {
-                    const last =
-                        st.last_preset || st.last_ms
-                            ? ` · last=${st.last_preset || "?"} ${st.last_ms || 0}ms ${st.last_ref_ok || 0}ok/${st.last_ref_fail || 0}fail`
-                            : "";
-                    setStatsLine(
-                        `fanouts=${st.fanouts} ref_ok=${st.ref_ok || 0} ref_fail=${st.ref_fail || 0}${last}`,
-                    );
-                } else {
-                    setStatsLine(null);
-                }
-            } catch {
-                setStatsLine(null);
-            }
-        } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : String(e));
-        } finally {
-            setLoading(false);
+    const applyStats = useCallback((st: MoAStatsSnapshot | null | undefined) => {
+        if (st && (st.fanouts || 0) > 0) {
+            const last =
+                st.last_preset || st.last_ms
+                    ? ` · last=${st.last_preset || "?"} ${st.last_ms || 0}ms ${st.last_ref_ok || 0}ok/${st.last_ref_fail || 0}fail`
+                    : "";
+            setStatsLine(
+                `fanouts=${st.fanouts} ref_ok=${st.ref_ok || 0} ref_fail=${st.ref_fail || 0}${last}`,
+            );
+        } else {
+            setStatsLine(null);
         }
     }, []);
 
+    const load = useCallback(
+        async (opts?: { soft?: boolean; quiet?: boolean }) => {
+            const soft = !!opts?.soft;
+            const quiet = !!opts?.quiet;
+            const gen = ++loadGenRef.current;
+            if (!soft) {
+                setLoading(true);
+                setError(null);
+            }
+            try {
+                const cfg = (await GetMoAConfig()) as MoAConfig;
+                if (gen !== loadGenRef.current) return;
+                setBaseCfg(cfg);
+                setState(loadState(cfg));
+                try {
+                    const sess = (await GetMoASessionState()) as { sticky?: boolean };
+                    if (gen !== loadGenRef.current) return;
+                    setSticky(!!sess?.sticky);
+                } catch {
+                    // Soft/quiet: keep sticky checkbox; hard load: assume off.
+                    if (gen !== loadGenRef.current) return;
+                    if (!soft) setSticky(false);
+                }
+                try {
+                    const st = (await GetMoAStats()) as MoAStatsSnapshot;
+                    if (gen !== loadGenRef.current) return;
+                    applyStats(st);
+                } catch {
+                    if (gen !== loadGenRef.current) return;
+                    if (!soft) setStatsLine(null);
+                }
+            } catch (e: unknown) {
+                if (gen !== loadGenRef.current) return;
+                // After a successful Save, quiet soft-reload must not look like save failed.
+                if (!quiet) setError(localizeMoAError(moaErrorMessage(e), t));
+            } finally {
+                if (!soft && gen === loadGenRef.current) setLoading(false);
+            }
+        },
+        [applyStats, t],
+    );
+
     useEffect(() => {
         void load();
+        return () => {
+            loadGenRef.current += 1;
+        };
     }, [load]);
 
     useEffect(() => {
@@ -244,15 +330,34 @@ export function MoAConfigSection({ lang, providers }: Props) {
         };
     }, []);
 
+    /**
+     * Sticky arms backend session state — only after config is actually saved enabled.
+     * Turning sticky OFF is always allowed (even if UI enable was toggled off and not saved).
+     */
+    const savedEnabled = !!baseCfg?.enabled;
+    const canArmSticky = savedEnabled && state.enabled;
+
     const toggleSticky = async (next: boolean) => {
+        if (next && !canArmSticky) {
+            setError(
+                t(
+                    "Turn on multi-model above and click Save first.",
+                    "请先勾选「开启」，并点击「保存」后再试。",
+                    "請先勾選「開啟」，並點擊「保存」後再試。",
+                ),
+            );
+            return;
+        }
         setStickyBusy(true);
         setError(null);
         try {
             await SetMoASticky(next);
             setSticky(next);
         } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : String(e));
-            setSticky(false);
+            setError(localizeMoAError(moaErrorMessage(e), t));
+            // Only clear local sticky when an arm attempt failed. A failed disarm
+            // must keep sticky=true so the user can retry turning it off.
+            if (next) setSticky(false);
         } finally {
             setStickyBusy(false);
         }
@@ -269,15 +374,27 @@ export function MoAConfigSection({ lang, providers }: Props) {
                 const refs = next.presets?.[editId]?.reference_models || [];
                 if (refs.length === 0) {
                     setError(t("Pick at least one other model.", "请至少选择一个「其他模型」。"));
-                    setSaving(false);
                     return;
                 }
             }
             await SaveMoAConfig(next);
+            // Optimistic: unlock sticky arm immediately (canArmSticky) without waiting for reload.
+            setBaseCfg(next);
+            // Disabling MoA should also clear session sticky arm.
+            if (!next.enabled && sticky) {
+                try {
+                    await SetMoASticky(false);
+                    setSticky(false);
+                } catch {
+                    // Config is saved; sticky clear is best-effort.
+                }
+            }
             setSavedOk(true);
-            await load();
+            // Soft reload for server-normalized config; keep form mounted.
+            // quiet: reload failure must not clobber the successful-save UX.
+            await load({ soft: true, quiet: true });
         } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : String(e));
+            setError(localizeMoAError(moaErrorMessage(e), t));
         } finally {
             setSaving(false);
         }
@@ -426,36 +543,6 @@ export function MoAConfigSection({ lang, providers }: Props) {
                         </div>
                     )}
 
-                    <label
-                        style={{
-                            display: "flex",
-                            alignItems: "flex-start",
-                            gap: 8,
-                            marginTop: 12,
-                            fontSize: "0.75rem",
-                            cursor: stickyBusy ? "wait" : "pointer",
-                            lineHeight: 1.4,
-                        }}
-                    >
-                        <input
-                            type="checkbox"
-                            data-testid="moa-sticky-toggle"
-                            checked={sticky}
-                            disabled={stickyBusy || !state.enabled}
-                            onChange={(e) => void toggleSticky(e.target.checked)}
-                            style={{ marginTop: 2 }}
-                        />
-                        <span>
-                            <strong>{t("Keep multi-model on for this session", "本会话保持多模型会诊")}</strong>
-                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: 2 }}>
-                                {t(
-                                    "Every message uses multi-model until you turn this off or switch the main provider.",
-                                    "开启后每条消息都先问其他模型；关闭此项或切换主服务商后恢复普通模式。",
-                                )}
-                            </div>
-                        </span>
-                    </label>
-
                     <button
                         type="button"
                         data-testid="moa-advanced-toggle"
@@ -550,6 +637,64 @@ export function MoAConfigSection({ lang, providers }: Props) {
                 </div>
             )}
 
+            {/* Sticky lives outside enabled-only block so it can be turned OFF after unchecking 开启. */}
+            {(state.enabled || sticky) && (
+                <label
+                    style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 8,
+                        marginTop: 12,
+                        fontSize: "0.75rem",
+                        cursor: stickyBusy || saving ? "wait" : "pointer",
+                        lineHeight: 1.4,
+                    }}
+                >
+                    <input
+                        type="checkbox"
+                        data-testid="moa-sticky-toggle"
+                        checked={sticky}
+                        // Always allow turning OFF; only arming requires saved+enabled config.
+                        // Block during save so arm doesn't race with config write.
+                        disabled={stickyBusy || saving || (!sticky && !canArmSticky)}
+                        onChange={(e) => void toggleSticky(e.target.checked)}
+                        style={{ marginTop: 2 }}
+                        title={
+                            stickyBusy || saving
+                                ? t("Please wait…", "请稍候…")
+                                : sticky || canArmSticky
+                                  ? undefined
+                                  : t(
+                                        "Save multi-model settings first",
+                                        "请先保存多模型会诊设置",
+                                        "請先保存多模型會診設置",
+                                    )
+                        }
+                    />
+                    <span>
+                        <strong>{t("Keep multi-model on for this session", "本会话保持多模型会诊")}</strong>
+                        <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginTop: 2 }}>
+                            {!state.enabled && sticky
+                                ? t(
+                                      "Session multi-model is still on. Turn this off, or re-enable and Save multi-model settings.",
+                                      "本会话多模型仍在生效。可关闭此项，或重新开启并保存多模型设置。",
+                                      "本會話多模型仍在生效。可關閉此項，或重新開啟並保存多模型設置。",
+                                  )
+                                : state.enabled && !savedEnabled
+                                  ? t(
+                                        "Click Save below first, then you can keep multi-model on for this session.",
+                                        "请先点击下方「保存」，保存成功后才能开启本会话保持。",
+                                        "請先點擊下方「保存」，保存成功後才能開啟本會話保持。",
+                                    )
+                                  : t(
+                                        "Every message uses multi-model until you turn this off or switch the main provider.",
+                                        "开启后每条消息都先问其他模型；关闭此项或切换主服务商后恢复普通模式。",
+                                    )}
+                        </div>
+                    </span>
+                </label>
+            )}
+
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
                 <button
                     type="button"
@@ -558,10 +703,12 @@ export function MoAConfigSection({ lang, providers }: Props) {
                     onClick={() => void handleSave()}
                     style={{
                         fontSize: "0.75rem",
-                        border: "none",
+                        fontWeight: 600,
+                        border: "1px solid var(--theme-primary-strong, #183b63)",
                         borderRadius: 6,
-                        background: "var(--theme-primary, #2f5f98)",
-                        color: "#fff",
+                        /* primary-strong + on-primary: dark mode primary alone is too light for white text */
+                        background: "var(--theme-primary-strong, #183b63)",
+                        color: "var(--theme-on-primary, #ffffff)",
                         padding: "6px 14px",
                         cursor: saving ? "wait" : "pointer",
                         opacity: saving ? 0.7 : 1,
@@ -570,7 +717,10 @@ export function MoAConfigSection({ lang, providers }: Props) {
                     {saving ? t("Saving…", "保存中…") : t("Save", "保存")}
                 </button>
                 {savedOk && (
-                    <span style={{ fontSize: "0.72rem", color: "#15803d" }} data-testid="moa-config-saved">
+                    <span
+                        style={{ fontSize: "0.72rem", color: "var(--theme-success, #15803d)", fontWeight: 600 }}
+                        data-testid="moa-config-saved"
+                    >
                         {t("Saved", "已保存")}
                     </span>
                 )}

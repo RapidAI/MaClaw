@@ -728,13 +728,20 @@ func CapabilityMaclawAppSubmitHandler(svc *capability.Service, identity viewerAu
 				"version_key":   item.CurrentVersionKey,
 			})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"schema":         "maclaw.app.hub_submission.v1",
 			"status":         "pending_review",
 			"package_sha256": checksum,
 			"app_count":      len(entries),
 			"submissions":    submissions,
-		})
+		}
+		// Primary package-level identity fields for GUI clients. submission_id is
+		// mandatory for queue rewrites and must never be the package checksum.
+		if len(submissions) > 0 {
+			resp["submission_id"] = submissions[0]["submission_id"]
+			resp["capability_id"] = submissions[0]["capability_id"]
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 

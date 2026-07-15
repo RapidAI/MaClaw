@@ -59,6 +59,7 @@ var CoreToolNames = map[string]bool{
 	"async_wait":       true,
 	"compress_context": true,
 	"tts":              true,
+	"asr":              true,
 }
 
 type conditionalKeepRule struct {
@@ -1034,7 +1035,7 @@ func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]
 		return 3
 	case "list_sessions", "get_session_output", "get_session_events":
 		return 4
-	case "screenshot", "web_fetch", "set_nickname", "tts":
+	case "screenshot", "web_fetch", "set_nickname", "tts", "asr":
 		return 5
 	case "manage_skill", "discover_tool", "call_mcp_tool":
 		return 6

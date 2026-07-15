@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import { localizeText } from "./aiAssistantI18n";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import { isFormFieldTarget, isInsideAriaHidden } from "./codingUiGuards";
 import { detectLanguage, tokenizeLine, type HighlightToken } from "./syntaxHighlight";
 import { darkCodePreviewTheme, lightCodePreviewTheme, type CodePreviewTheme } from "./CodePreviewPanel";
@@ -212,13 +212,15 @@ export function CodingConflictSidePanel({
             borderLeft: `1px solid ${t.divider || t.titleBarBorder}`,
         };
 
+    const primaryFilled = resolvePrimaryFilledColors(t);
     const btnSm = (opts?: { primary?: boolean; danger?: boolean; muted?: boolean }): CSSProperties => ({
         height: 24,
         padding: "0 8px",
         borderRadius: 4,
         border: opts?.primary ? "none" : `1px solid ${opts?.danger ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.3)")}`,
-        background: opts?.primary ? (t.btnColor || "#2f5f98") : "transparent",
-        color: opts?.primary ? "#fff" : (opts?.danger ? "#dc2626" : (opts?.muted ? (t.textMuted || t.promptColor) : t.text)),
+        // Primary CTAs use sendBtn* pair (dark btnColor is light accent, not a fill)
+        background: opts?.primary ? primaryFilled.bg : "transparent",
+        color: opts?.primary ? primaryFilled.fg : (opts?.danger ? "#dc2626" : (opts?.muted ? (t.fieldLabel || t.textMuted || t.promptColor) : t.text)),
         fontSize: 11,
         cursor: busy ? "wait" : "pointer",
         opacity: busy ? 0.7 : 1,

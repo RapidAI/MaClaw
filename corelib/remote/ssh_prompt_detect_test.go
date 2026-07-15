@@ -93,6 +93,17 @@ func TestLooksLikeShellPrompt(t *testing.T) {
 			lines:  []string{"~$ "},
 			expect: true,
 		},
+		{
+			// bash PS2 continuation prompt must NOT complete WaitForOutput mid multi-line script
+			name:   "bare greater-than is PS2 not completion",
+			lines:  []string{">"},
+			expect: false,
+		},
+		{
+			name:   "bare greater-than with space is PS2 not completion",
+			lines:  []string{"> "},
+			expect: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -9,7 +9,7 @@ import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
 import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
-import { lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
+import { formFieldInputStyle, formFieldLabelColor, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
 import { getAssistantLightScheme } from "./assistantLightSchemes";
 import "./ensureAIAssistantPanelStyles";
@@ -4026,13 +4026,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: "none", background: "transparent", color: t.text, opacity: 0.62, cursor: savingTask ? "default" : "pointer", fontSize: 14, lineHeight: 1 }}>x</button>
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "14px" }}>
-                            <label htmlFor="save-task-name" style={{ fontSize: 12, fontWeight: 700, color: t.promptColor }}>{localizeText(lang, "Task name", "\u4efb\u52a1\u540d\u79f0", "\u4efb\u52d9\u540d\u7a31")}</label>
-                            <input id="save-task-name" autoFocus value={saveTaskName} disabled={savingTask} onChange={event => setSaveTaskName(event.target.value)} onKeyDown={event => { if (event.key === "Escape" && !savingTask) setSaveTaskDialogOpen(false); }} style={{ width: "100%", boxSizing: "border-box", border: `1px solid ${t.fieldBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, fontSize: 13, padding: "7px 9px", outline: "none", fontFamily: "inherit" }} />
-                            <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.45, color: t.promptColor }}>{localizeText(lang, "The current main conversation history and task context will be saved. Double-click it in Task Management to continue in a separate tab.", "\u5c06\u4fdd\u5b58\u5f53\u524d\u4e3b\u5bf9\u8bdd\u5386\u53f2\u548c\u4efb\u52a1\u4e0a\u4e0b\u6587\u3002\u4e4b\u540e\u53ef\u5728\u4efb\u52a1\u7ba1\u7406\u4e2d\u53cc\u51fb\uff0c\u4ee5\u72ec\u7acb Tab \u7ee7\u7eed\u3002", "\u5c07\u4fdd\u5b58\u76ee\u524d\u4e3b\u5c0d\u8a71\u6b77\u53f2\u548c\u4efb\u52d9\u4e0a\u4e0b\u6587\u3002\u4e4b\u5f8c\u53ef\u5728\u4efb\u52d9\u7ba1\u7406\u4e2d\u96d9\u64ca\uff0c\u4ee5\u7368\u7acb Tab \u7e7c\u7e8c\u3002")}</p>
+                            <label htmlFor="save-task-name" style={{ fontSize: 12, fontWeight: 700, color: formFieldLabelColor(t) }}>{localizeText(lang, "Task name", "\u4efb\u52a1\u540d\u79f0", "\u4efb\u52d9\u540d\u7a31")}</label>
+                            <input id="save-task-name" autoFocus value={saveTaskName} disabled={savingTask} onChange={event => setSaveTaskName(event.target.value)} onKeyDown={event => { if (event.key === "Escape" && !savingTask) setSaveTaskDialogOpen(false); }} style={{ width: "100%", boxSizing: "border-box", borderRadius: 6, fontSize: 13, padding: "7px 9px", fontFamily: "inherit", ...formFieldInputStyle(t) }} />
+                            <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.45, color: formFieldLabelColor(t) }}>{localizeText(lang, "The current main conversation history and task context will be saved. Double-click it in Task Management to continue in a separate tab.", "\u5c06\u4fdd\u5b58\u5f53\u524d\u4e3b\u5bf9\u8bdd\u5386\u53f2\u548c\u4efb\u52a1\u4e0a\u4e0b\u6587\u3002\u4e4b\u540e\u53ef\u5728\u4efb\u52a1\u7ba1\u7406\u4e2d\u53cc\u51fb\uff0c\u4ee5\u72ec\u7acb Tab \u7ee7\u7eed\u3002", "\u5c07\u4fdd\u5b58\u76ee\u524d\u4e3b\u5c0d\u8a71\u6b77\u53f2\u548c\u4efb\u52d9\u4e0a\u4e0b\u6587\u3002\u4e4b\u5f8c\u53ef\u5728\u4efb\u52d9\u7ba1\u7406\u4e2d\u96d9\u64ca\uff0c\u4ee5\u7368\u7acb Tab \u7e7c\u7e8c\u3002")}</p>
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px 12px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: `1px solid ${t.titleBarBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, cursor: savingTask ? "default" : "pointer", fontSize: 12, padding: "5px 12px" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88")}</button>
-                            <button type="submit" disabled={savingTask || !saveTaskName.trim()} style={{ border: `1px solid ${t.btnBorder}`, borderRadius: 6, background: t.sendBtnBg, color: t.sendBtnColor, cursor: savingTask || !saveTaskName.trim() ? "default" : "pointer", opacity: savingTask || !saveTaskName.trim() ? 0.62 : 1, fontSize: 12, padding: "5px 12px" }}>{savingTask ? localizeText(lang, "Saving...", "\u4fdd\u5b58\u4e2d...", "\u4fdd\u5b58\u4e2d...") : localizeText(lang, "Save", "\u4fdd\u5b58", "\u4fdd\u5b58")}</button>
+                            <button type="submit" disabled={savingTask || !saveTaskName.trim()} style={primaryFilledButtonStyle(t, { borderRadius: 6, cursor: savingTask || !saveTaskName.trim() ? "default" : "pointer", opacity: savingTask || !saveTaskName.trim() ? 0.62 : 1, fontSize: 12, padding: "5px 12px" })}>{savingTask ? localizeText(lang, "Saving...", "\u4fdd\u5b58\u4e2d...", "\u4fdd\u5b58\u4e2d...") : localizeText(lang, "Save", "\u4fdd\u5b58", "\u4fdd\u5b58")}</button>
                         </div>
                     </form>
                 </div>
@@ -4081,35 +4081,35 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                     {localizeText(lang, "Reconnect remote SSH", "重新连接远程 SSH", "重新連線遠端 SSH")}
                                 </div>
                                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
                                         {localizeText(lang, "Host", "主机", "主機")}
                                         <input
                                             data-testid="remote-reconnect-host"
                                             value={remoteReconnect.host}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, host: e.target.value }))}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
                                         {localizeText(lang, "User", "用户名", "使用者")}
                                         <input
                                             data-testid="remote-reconnect-user"
                                             value={remoteReconnect.user}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, user: e.target.value }))}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
                                         {localizeText(lang, "Port", "端口", "連接埠")}
                                         <input
                                             data-testid="remote-reconnect-port"
                                             type="number"
                                             value={remoteReconnect.port || 22}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, port: Number(e.target.value) || 22 }))}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
                                         {localizeText(lang, "Password", "密码", "密碼")}
                                         <input
                                             data-testid="remote-reconnect-password"
@@ -4118,21 +4118,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                             value={remoteReconnect.password}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, password: e.target.value }))}
                                             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleRemoteCodingReconnect(); } }}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
                                 </div>
-                                <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, color: t.textMuted }}>
+                                <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
                                     {localizeText(lang, "Remote work directory", "远程工作目录", "遠端工作目錄")}
                                     <input
                                         data-testid="remote-reconnect-workdir"
                                         value={remoteReconnect.workDir}
                                         onChange={(e) => setRemoteReconnect(prev => ({ ...prev, workDir: e.target.value }))}
-                                        style={{ height: 28, padding: "0 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12 }}
+                                        style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                     />
                                 </label>
                                 {remoteReconnect.sessionPlan && (
-                                    <div style={{ fontSize: 11, color: t.textMuted, opacity: 0.9 }}>
+                                    <div style={{ fontSize: 11, color: formFieldLabelColor(t), lineHeight: 1.45 }}>
                                         {localizeText(lang, "Continuing session plan: ", "将延续会话目标：", "將延續工作階段目標：")}
                                         {remoteReconnect.sessionPlan.length > 160 ? `${remoteReconnect.sessionPlan.slice(0, 160)}…` : remoteReconnect.sessionPlan}
                                     </div>
@@ -4146,18 +4146,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         data-testid="remote-reconnect-submit"
                                         disabled={remoteReconnect.connecting}
                                         onClick={() => { void handleRemoteCodingReconnect(); }}
-                                        style={{
+                                        style={primaryFilledButtonStyle(t, {
                                             height: 28,
                                             padding: "0 14px",
                                             borderRadius: 4,
-                                            border: "none",
-                                            background: t.btnColor || "#2f5f98",
-                                            color: "#fff",
                                             fontSize: 12,
                                             fontWeight: 600,
                                             cursor: remoteReconnect.connecting ? "wait" : "pointer",
-                                            opacity: remoteReconnect.connecting ? 0.7 : 1,
-                                        }}
+                                            opacity: remoteReconnect.connecting ? 0.75 : 1,
+                                        })}
                                     >
                                         {remoteReconnect.connecting
                                             ? localizeText(lang, "Connecting…", "连接中…", "連線中…")
@@ -4643,7 +4640,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                             data-testid="coding-plan-edit-save"
                                                             disabled={codingPendingPlanSaving || !codingPendingPlanDraft.trim()}
                                                             onClick={() => { void handleSavePendingPlanEdit(); }}
-                                                            style={{ height: 20, padding: "0 8px", borderRadius: 4, border: "none", background: t.btnColor || "#2f5f98", color: "#fff", fontSize: 10, cursor: (codingPendingPlanSaving || !codingPendingPlanDraft.trim()) ? "not-allowed" : "pointer", opacity: codingPendingPlanDraft.trim() ? 1 : 0.5 }}
+                                                            style={primaryFilledButtonStyle(t, { height: 20, padding: "0 8px", borderRadius: 4, fontSize: 10, cursor: (codingPendingPlanSaving || !codingPendingPlanDraft.trim()) ? "not-allowed" : "pointer", opacity: codingPendingPlanDraft.trim() ? 1 : 0.5 })}
                                                         >
                                                             {codingPendingPlanSaving
                                                                 ? localizeText(lang, "Saving…", "保存中…", "儲存中…")

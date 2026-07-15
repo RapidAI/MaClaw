@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- Mock stores for timeout/fallback tests ---
@@ -215,6 +216,43 @@ func TestHandleTimeout_WithFallback_DispatchesToFallback(t *testing.T) {
 	// Verify no notification was sent (fallback succeeded).
 	if len(notifier.notifications) != 0 {
 		t.Errorf("expected no notifications, got %d", len(notifier.notifications))
+	}
+}
+
+func TestHandleTimeout_FallbackIsPersistedAndNotRedispatched(t *testing.T) {
+	graph := buildTimeoutTestGraph("ve-fallback")
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	instStore := &mockInstanceStoreForTimeout{
+		instance: &WorkflowInstance{ID: "inst-1", VersionID: "ver-1", Status: InstanceRunning, InstanceData: map[string]interface{}{}},
+		nodeExecs: []NodeExecution{{
+			ID: "exec-1", InstanceID: "inst-1", NodeID: "approval-1", NodeType: NodeApproval,
+			Status: NodeRunning, StartedAt: time.Now().UTC().Add(-25 * time.Hour), Result: json.RawMessage(`{"timeout_hours":24}`),
+		}},
+	}
+	auditStore := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{}
+	executor := NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+
+	if err := executor.HandleTimeout(context.Background(), "inst-1", "approval-1"); err != nil {
+		t.Fatalf("first HandleTimeout: %v", err)
+	}
+	if len(dispatcher.fallbackDispatched) != 1 {
+		t.Fatalf("first timeout dispatched %d fallbacks, want 1", len(dispatcher.fallbackDispatched))
+	}
+	if len(instStore.nodeUpdates) != 1 || instStore.nodeUpdates[0].Status != NodeRunning {
+		t.Fatalf("fallback state was not persisted: %+v", instStore.nodeUpdates)
+	}
+	instStore.nodeExecs[0].Result = json.RawMessage(`{"timeout_hours":24,"fallback_active":true,"fallback_approver":"ve-fallback","approver_ids":["ve-fallback"]}`)
+
+	if err := executor.HandleTimeout(context.Background(), "inst-1", "approval-1"); err != nil {
+		t.Fatalf("second HandleTimeout: %v", err)
+	}
+	if len(dispatcher.fallbackDispatched) != 1 {
+		t.Fatalf("fallback was redispatched: %+v", dispatcher.fallbackDispatched)
+	}
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("fallback timeout status = %q, want %q", instStore.updatedStatus, InstanceBlocked)
 	}
 }
 

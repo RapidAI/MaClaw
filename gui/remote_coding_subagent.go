@@ -1054,11 +1054,13 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	}
 
 	// Inject knowledge from coding experience store + general knowledge store.
-	if sections := c.buildRemoteKnowledgePromptSections(); sections != "" {
-		prompt += sections
+	if c != nil {
+		if sections := c.buildRemoteKnowledgePromptSections(); sections != "" {
+			prompt += sections
+		}
 	}
 	// Skills/MCP for root + nested workers only (inspection roles stay lean).
-	if !inspectionRole {
+	if !inspectionRole && c != nil {
 		prompt += "\n## 本地扩展能力\n远程改码通过 SSH 工具完成；本机 Skill / MCP 仍可调用（manage_skill / call_mcp_tool），用于文档、浏览器自动化等辅助能力。\n"
 		c.ensureLocalWorkbenchExtensions()
 		if section := buildCodingSubAgentSkillSection(c.localExtSkills); section != "" {
@@ -1105,6 +1107,11 @@ func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbac
 
 func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interface{} {
 	tools := remoteCodingToolDefinitions()
+	if c == nil {
+		// Keep the callback contract nil-safe. This is used by lightweight
+		// prompt/tool-surface checks before a concrete remote agent is bound.
+		return append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+	}
 
 	// Append knowledge search tools when stores are available.
 	if c != nil && c.agent != nil && c.agent.codingKB != nil {
@@ -1233,6 +1240,10 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		}
 	}()
 
+	if c == nil || c.agent == nil {
+		return "remote coding subagent: agent unavailable"
+	}
+
 	normalizedArgsJSON = normalizeCodingSubAgentToolArguments(argsJSON)
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(normalizedArgsJSON), &args); err != nil {
@@ -1245,10 +1256,6 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 		}
 	}
 
-	if c == nil || c.agent == nil {
-		result = "remote coding subagent: agent unavailable"
-		return result
-	}
 	// Nested role policy (explorer/reviewer) enforced at execution time too.
 	toolCheckName := canonicalName
 	if toolCheckName == "" {
@@ -1368,10 +1375,93 @@ func remoteCodingToolOutcome(result string) string {
 	if remoteCodingToolResultLooksBlocked(result) {
 		return "blocked"
 	}
+	// Instrumented remote bash prints "EXIT: N". That marker is authoritative:
+	// a successful grep/tail of error logs may contain "error:" / "panic:" / "失败"
+	// in the log body while the command itself exited 0.
+	if code, ok := remoteCodingParseExitMarker(result); ok {
+		if code != 0 {
+			return "failed"
+		}
+		return "success"
+	}
 	if remoteCodingToolResultLooksFailed(result) {
 		return "failed"
 	}
 	return "success"
+}
+
+// remoteCodingParseExitMarker extracts the last "EXIT: N" marker from tool output.
+// Returns (code, true) when a numeric exit marker is present.
+// Scans from the end so a successful command's marker wins over earlier echo noise.
+func remoteCodingParseExitMarker(result string) (int, bool) {
+	lines := strings.Split(result, "\n")
+	// Prefer tail: instrumented EXIT is near the end; avoid scanning multi-MB dumps fully
+	// more than once from the back.
+	for i := len(lines) - 1; i >= 0; i-- {
+		raw := strings.TrimSpace(strings.TrimRight(lines[i], "\r"))
+		// Strip common CSI color codes so colored EXIT markers still parse.
+		raw = remoteCodingStripSimpleANSI(raw)
+		if len(raw) < 6 {
+			continue
+		}
+		if !strings.EqualFold(raw[:5], "EXIT:") {
+			continue
+		}
+		rest := strings.TrimSpace(raw[5:])
+		if rest == "" {
+			continue
+		}
+		// Leading integer token only ("0", "127"); reject "0xdead"
+		end := 0
+		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+			end++
+		}
+		if end == 0 {
+			continue
+		}
+		if end < len(rest) {
+			c := rest[end]
+			if c != ' ' && c != '\t' {
+				continue
+			}
+		}
+		n, err := strconv.Atoi(rest[:end])
+		if err != nil {
+			continue
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// remoteCodingStripSimpleANSI removes common CSI sequences (e.g. \x1b[0m) so
+// EXIT markers remain parseable when a remote shell colors output.
+func remoteCodingStripSimpleANSI(s string) string {
+	if !strings.Contains(s, "\x1b") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\x1b' {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		if i >= len(s) {
+			break
+		}
+		if s[i] == '[' {
+			i++
+			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7E) {
+				i++
+			}
+			// skip terminator if present
+			continue
+		}
+		// skip single-char escape
+	}
+	return b.String()
 }
 
 func remoteCodingToolResultLooksBlocked(result string) bool {
@@ -1462,7 +1552,18 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
-	if strings.HasPrefix(text, "错误") || strings.Contains(text, "失败") || strings.Contains(text, "参数解析失败") {
+
+	// Framework / transport failures (structural Chinese phrases — not bare "失败",
+	// which appears constantly inside application logs being grepped).
+	if strings.HasPrefix(text, "错误") ||
+		strings.Contains(text, "参数解析失败") ||
+		remoteCodingToolResultHasStructuralChineseFailure(text) {
+		return true
+	}
+	// Explicit maclaw SSH timeout / hang recovery messages
+	if strings.Contains(text, "[maclaw] 命令执行超时") ||
+		strings.Contains(text, "连续") && strings.Contains(text, "无响应") ||
+		strings.Contains(lower, "handler unavailable") {
 		return true
 	}
 	if remoteCodingToolResultHasFailedTaskStatus(lower) || remoteCodingToolResultHasFailedExitCode(lower) {
@@ -1471,6 +1572,10 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 	if remoteCodingToolResultHasFailedExitPhrase(lower) {
 		return true
 	}
+	// Content heuristics: only apply to the "command/tool diagnostic" region,
+	// not the full body of a log dump. Prefer the status header + first lines
+	// and the tail (where EXIT / shell errors usually appear).
+	diagnostic := remoteCodingToolResultDiagnosticSlice(lower)
 	for _, pattern := range []string{
 		"error:",
 		"traceback",
@@ -1484,11 +1589,65 @@ func remoteCodingToolResultLooksFailed(result string) bool {
 		"unknown tool",
 		"ninja: build stopped: subcommand failed",
 	} {
-		if strings.Contains(lower, pattern) {
+		if strings.Contains(diagnostic, pattern) {
 			return true
 		}
 	}
 	return false
+}
+
+// remoteCodingToolResultHasStructuralChineseFailure matches MaClaw/SSH framework
+// failure phrases without treating arbitrary log lines that merely contain "失败".
+func remoteCodingToolResultHasStructuralChineseFailure(text string) bool {
+	// Keep this list MaClaw/SSH-tool specific. Generic phrases like "连接失败"
+	// / "执行失败" appear constantly inside application logs under diagnosis.
+	phrases := []string{
+		"写入失败",
+		"发送命令失败",
+		"自动重连失败",
+		"上传失败",
+		"下载失败",
+		"检查任务失败",
+		"终止任务失败",
+		"提交后台任务失败",
+		"SSH 连接失败",
+		"ssh 连接失败",
+		"SSH会话已断开，自动重连失败",
+		"SSH 会话已断开，自动重连失败",
+	}
+	for _, p := range phrases {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteCodingToolResultDiagnosticSlice returns a shortened view of tool output
+// used for keyword failure heuristics. Full log bodies (e.g. grepping nginx/hub
+// error logs) would otherwise trip on "error:" / "exception" in content.
+func remoteCodingToolResultDiagnosticSlice(lower string) string {
+	lines := strings.Split(lower, "\n")
+	if len(lines) <= 24 {
+		return lower
+	}
+	const headN = 12
+	const tailN = 12
+	var b strings.Builder
+	for i := 0; i < headN && i < len(lines); i++ {
+		b.WriteString(lines[i])
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n")
+	start := len(lines) - tailN
+	if start < headN {
+		start = headN
+	}
+	for i := start; i < len(lines); i++ {
+		b.WriteString(lines[i])
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func remoteCodingToolResultHasFailedExitPhrase(lower string) bool {

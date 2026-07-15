@@ -35,6 +35,8 @@
     --theme-text-primary: #1a202c;
     --theme-text-secondary: #5a6577;
     --theme-text-muted: #8b95a5;
+    /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
+    --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
     --theme-border: #e1e4e8;
     --theme-border-subtle: #edf2f7;
     --theme-success: #4f7f6f;
@@ -46,6 +48,41 @@
     --theme-link-color: #2f5f98;
     --theme-info-bg: #f3f7fb;
     --theme-on-primary: #ffffff;
+    /*
+     * Shared iOS-style switch chrome. Off-track uses text-muted mixed into
+     * surface so it stays readable when surface-muted ≈ surface (default dark).
+     * Thumb stays white in both themes (do not use --theme-on-primary: dark
+     * schemes set that for soft primary buttons, which would hide the knob).
+     *
+     * NOTE: Derived tokens that reference other theme vars must be re-declared
+     * on every theme root (see block below). Custom properties inherit their
+     * computed value; a formula only on :root would freeze light-theme mixes.
+     */
+    --theme-switch-track-off: color-mix(in srgb, var(--theme-text-muted) 42%, var(--theme-surface));
+    --theme-switch-thumb: #ffffff;
+    --theme-switch-thumb-shadow: 0 1px 3px rgba(15, 23, 42, 0.28), 0 0 0 1px rgba(15, 23, 42, 0.06);
+    /* Nested wells/chips on cards — slightly lifted vs surface in dark mode. */
+    --theme-control-well: color-mix(in srgb, var(--theme-text-muted) 15%, var(--theme-surface));
+}
+
+/*
+ * Re-bind derived theme tokens on every node that may override surface/muted.
+ * Keep formulas identical to :root so scheme switches recompute correctly.
+ */
+:is(
+    :root,
+    #App,
+    .main-container,
+    .sidebar,
+    .global-action-bar,
+    .app-loading-shell,
+    .modal-backdrop,
+    [data-ai-theme],
+    [data-ai-light-scheme]
+) {
+    --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
+    --theme-switch-track-off: color-mix(in srgb, var(--theme-text-muted) 42%, var(--theme-surface));
+    --theme-control-well: color-mix(in srgb, var(--theme-text-muted) 15%, var(--theme-surface));
 }
 
 .about-page {
@@ -5302,24 +5339,27 @@ body {
     width: 44px;
     height: 26px;
     border-radius: 999px;
-    background: var(--theme-border);
-    transition: background var(--transition-fast), box-shadow var(--transition-fast);
+    background: var(--theme-switch-track-off);
+    border: 1px solid var(--theme-border);
+    box-sizing: border-box;
+    transition: background var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
 }
 
 .pet-switch-track span {
     position: absolute;
-    top: 3px;
-    left: 3px;
+    top: 2px;
+    left: 2px;
     width: 20px;
     height: 20px;
     border-radius: 999px;
-    background: var(--theme-surface);
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
     transition: transform var(--transition-fast);
 }
 
 .pet-switch-row[data-enabled="true"] .pet-switch-track {
     background: var(--theme-primary);
+    border-color: var(--theme-primary);
     box-shadow: 0 0 0 3px var(--theme-primary-soft);
 }
 
@@ -6204,7 +6244,13 @@ body {
     .pet-sound-option,
     .pet-switch-track,
     .pet-switch-track span,
-    .pet-segmented-control button {
+    .pet-segmented-control button,
+    .prog-tools__switch-slider,
+    .prog-tools__switch-slider::before,
+    .prog-tools__tool-chip,
+    .prog-tools__mode-btn,
+    .proxy-settings-switch span,
+    .proxy-settings-switch span::after {
         animation: none !important;
         transition-duration: 0.01ms !important;
     }
@@ -10319,9 +10365,9 @@ body {
     position: absolute;
     inset: 0;
     border-radius: 999px;
-    background: var(--theme-surface-muted);
+    background: var(--theme-switch-track-off);
     border: 1px solid var(--theme-border);
-    transition: background-color 0.2s, border-color 0.2s;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .prog-tools__switch-slider::before {
@@ -10332,8 +10378,9 @@ body {
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--theme-text-tertiary);
-    transition: transform 0.2s, background-color 0.2s;
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast), background-color var(--transition-fast);
 }
 
 .prog-tools__switch input:checked + .prog-tools__switch-slider {
@@ -10343,7 +10390,7 @@ body {
 
 .prog-tools__switch input:checked + .prog-tools__switch-slider::before {
     transform: translateX(16px);
-    background: #fff;
+    background: var(--theme-switch-thumb);
 }
 
 .prog-tools__switch input:focus-visible + .prog-tools__switch-slider {
@@ -10365,12 +10412,12 @@ body {
     padding: 6px 12px;
     border-radius: 8px;
     border: 1px solid var(--theme-border);
-    background: var(--theme-surface-muted);
+    background: var(--theme-control-well);
     color: var(--theme-text-secondary);
     cursor: pointer;
     font-size: 0.78rem;
     font-weight: 600;
-    transition: all 0.15s ease;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
     user-select: none;
 }
 
@@ -10400,8 +10447,8 @@ body {
     gap: 2px;
     padding: 3px;
     border-radius: 10px;
-    background: var(--theme-surface-muted);
-    border: 1px solid var(--theme-border-subtle);
+    background: var(--theme-control-well);
+    border: 1px solid var(--theme-border);
 }
 
 .prog-tools__mode-btn {
@@ -12824,25 +12871,28 @@ body {
     width: 100%;
     height: 100%;
     border-radius: 999px;
-    background: var(--theme-border);
-    transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+    box-sizing: border-box;
+    background: var(--theme-switch-track-off);
+    border: 1px solid var(--theme-border);
+    transition: background-color var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
 }
 
 .proxy-settings-switch span::after {
     content: "";
     position: absolute;
-    top: 3px;
-    left: 3px;
+    top: 2px;
+    left: 2px;
     width: 20px;
     height: 20px;
     border-radius: 999px;
-    background: var(--theme-surface);
-    box-shadow: var(--shadow-sm);
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
     transition: transform var(--transition-fast);
 }
 
 .proxy-settings-switch input:checked + span {
     background: var(--theme-primary);
+    border-color: var(--theme-primary);
 }
 
 .proxy-settings-switch input:checked + span::after {

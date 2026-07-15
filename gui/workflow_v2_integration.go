@@ -2420,6 +2420,17 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if userText == "" {
 		userText = "执行远程编程任务"
 	}
+	// SSHSessionManager only retains live sessions in memory. A sticky remote
+	// workbench, however, is persisted and can therefore outlive that manager
+	// (for example after a timeout removes the session or after app restart).
+	// Recreate a missing session from the stored non-secret coordinates before
+	// reporting a project-directory error. sshConnect will use a configured key
+	// or SSH agent when available; passwords deliberately remain non-persistent.
+	var reconnectErr string
+	remoteCtx, reconnectErr = h.recoverStickyRemoteCodingSSHSession(userID, remoteCtx)
+	if reconnectErr != "" {
+		return &IMAgentResponse{Text: reconnectErr}
+	}
 	if strings.TrimSpace(remoteCtx.SessionID) == "" {
 		return &IMAgentResponse{Text: "远程编程无法启动：缺少 SSH 会话。请先连接远程服务器。"}
 	}
@@ -2812,6 +2823,76 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		resp.RouteReason = memAfter.LastRouteReason
 	}
 	return resp
+}
+
+// recoverStickyRemoteCodingSSHSession creates a fresh managed SSH session when
+// the sticky session ID is no longer present. It intentionally uses only
+// persisted non-secret coordinates and any configured key/agent auth; a missing
+// password must be supplied through the normal connection UI instead of being
+// stored in a workbench file.
+func (h *IMMessageHandler) recoverStickyRemoteCodingSSHSession(userID string, remoteCtx remoteCodingTemplateContext) (remoteCodingTemplateContext, string) {
+	if h == nil || strings.TrimSpace(remoteCtx.SessionID) == "" {
+		return remoteCtx, ""
+	}
+	if _, ok := h.ensureSSHManager().Get(remoteCtx.SessionID); ok {
+		return remoteCtx, ""
+	}
+
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	// Only recover a session that actually belongs to this persisted sticky
+	// workbench. Ad-hoc/template contexts may intentionally supply a session ID
+	// through a test or an external runtime and must retain their existing
+	// execution path instead of being replaced with a reconnect prompt.
+	if mem.Kind != "remote" || strings.TrimSpace(mem.RemoteSessionID) != strings.TrimSpace(remoteCtx.SessionID) {
+		return remoteCtx, ""
+	}
+	host := strings.TrimSpace(mem.RemoteHost)
+	user := strings.TrimSpace(mem.RemoteUser)
+	port := mem.RemotePort
+	if host == "" || user == "" {
+		return remoteCtx, fmt.Sprintf("远程 SSH 会话 %s 已失效，且没有可用于自动重建的主机信息。请重新连接后继续。", remoteCtx.SessionID)
+	}
+	if port <= 0 || port >= 65536 {
+		port = 22
+	}
+
+	args := map[string]interface{}{
+		"host": host,
+		"user": user,
+		"port": float64(port),
+	}
+	// Reuse non-secret configured authentication metadata when this host has a
+	// profile. Password and passphrase are intentionally not copied here.
+	for _, entry := range h.loadSSHHosts() {
+		entryPort := entry.Port
+		if entryPort <= 0 {
+			entryPort = 22
+		}
+		if strings.EqualFold(strings.TrimSpace(entry.Host), host) && strings.EqualFold(strings.TrimSpace(entry.User), user) && entryPort == port {
+			if value := strings.TrimSpace(entry.Label); value != "" {
+				args["label"] = value
+			}
+			if value := strings.TrimSpace(entry.AuthMethod); value != "" {
+				args["auth_method"] = value
+			}
+			if value := strings.TrimSpace(entry.KeyPath); value != "" {
+				args["key_path"] = value
+			}
+			break
+		}
+	}
+
+	connectResult := h.sshConnect(args)
+	newSessionID := extractSSHSessionIDFromConnectResult(connectResult)
+	if newSessionID == "" {
+		return remoteCtx, fmt.Sprintf("远程 SSH 会话 %s 已失效，已尝试自动新建 %s@%s:%d，但未能建立连接。请在远程连接面板重新认证后继续。\n\n%s", remoteCtx.SessionID, user, host, port, truncateRunesV2(connectResult, 500))
+	}
+
+	oldSessionID := remoteCtx.SessionID
+	remoteCtx.SessionID = newSessionID
+	h.bindStickyRemoteCodingContext(userID, remoteCtx, host, user, port)
+	log.Printf("[workflow-v2] recreated missing sticky SSH session old=%s new=%s host=%s", oldSessionID, newSessionID, fmt.Sprintf("%s@%s:%d", user, host, port))
+	return remoteCtx, ""
 }
 
 // codingSubAgentActivityTraceCount maps SubAgent work into IMAgentResponse.TraceEventCount

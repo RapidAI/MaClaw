@@ -2691,6 +2691,8 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 		`{"state": "cancelled", "returncode": null}`,
 		"exit code: 137\nkilled by oom",
 		"return_code = 2\npytest failed",
+		"[maclaw] 命令执行超时，已发送 Ctrl+C 中断",
+		"SSH 会话 ssh_x 连续 3 次执行无响应，shell 可能被挂起的进程锁住。",
 	}
 	for _, result := range failures {
 		if got := remoteCodingToolOutcome(result); got != "failed" {
@@ -2711,11 +2713,33 @@ func TestRemoteCodingToolOutcomeDetectsCommonFailureText(t *testing.T) {
 		"command exited with code 0\nall checks passed",
 		"exit status 0\nall checks passed",
 		"exit=0 accuracy=91.5",
+		// Successful grep of error logs: body contains error/panic/失败 but EXIT: 0 wins
+		"[ssh_root@host:22_1] 状态: running\n$ grep -i error /var/log/app.log\n2026/06/07 error: connection reset\npanic: nil pointer\nworkflow 失败: timeout\nEXIT: 0\nroot@host:~# ",
+		// Bare "失败" in application log without structural phrase should not trip
+		"status ok\nprocessed 12 items\nnote: 上次失败已恢复\nall good",
 	}
 	for _, result := range successes {
 		if got := remoteCodingToolOutcome(result); got != "success" {
 			t.Fatalf("remoteCodingToolOutcome(%q) = %q, want success", result, got)
 		}
+	}
+
+	// EXIT marker is authoritative over log-body keywords
+	if got := remoteCodingToolOutcome("error: something in log\npanic: fake\nEXIT: 0"); got != "success" {
+		t.Fatalf("EXIT: 0 should override log keywords, got %q", got)
+	}
+	if got := remoteCodingToolOutcome("all green\nEXIT: 2"); got != "failed" {
+		t.Fatalf("EXIT: 2 should force failed, got %q", got)
+	}
+}
+
+func TestRemoteCodingCallbacksNilSafeToolSurfaceAndExecution(t *testing.T) {
+	var cb *remoteCodingCallbacks
+	if tools := cb.BuildTools("diagnose"); len(tools) == 0 {
+		t.Fatal("nil callback should expose the base remote tool surface")
+	}
+	if got := cb.ExecuteTool("ssh_list_dir", "{not valid json}"); !strings.Contains(got, "agent unavailable") {
+		t.Fatalf("nil callback execution = %q, want unavailable-agent error", got)
 	}
 }
 

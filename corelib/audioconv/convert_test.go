@@ -54,7 +54,7 @@ func TestToWAVRejectsInvalidMP3Natively(t *testing.T) {
 }
 
 func TestToWAVRejectsOversizedInputBeforeDecode(t *testing.T) {
-	_, err := ToWAV(make([]byte, maxNativeAudioInputBytes+1), FormatWAV)
+	_, err := ToWAV(make([]byte, MaxNativeAudioInputBytes+1), FormatWAV)
 	if err == nil || !strings.Contains(err.Error(), "input audio too large") {
 		t.Fatalf("oversized input err = %v", err)
 	}
@@ -187,8 +187,11 @@ func TestToWAVRejectsZeroSampleRateWAV(t *testing.T) {
 func TestToWAVRejectsM4AAndAACWithoutFFmpegFallback(t *testing.T) {
 	for _, format := range []string{FormatM4A, FormatAAC} {
 		_, err := ToWAV([]byte("compressed"), format)
-		if err == nil || !strings.Contains(err.Error(), "native "+format+" decode is not supported") {
+		if err == nil || !IsNativeDecodeUnsupported(err) {
 			t.Fatalf("ToWAV(%s) err = %v", format, err)
+		}
+		if got := NativeDecodeUnsupportedFormat(err); got != format {
+			t.Fatalf("ToWAV(%s) format label = %q", format, got)
 		}
 	}
 }

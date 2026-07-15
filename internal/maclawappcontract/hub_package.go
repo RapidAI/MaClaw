@@ -5,9 +5,111 @@ import (
 	"strings"
 )
 
+// NormalizeGUIInstallHubPackage repairs legacy published packages so GUI install
+// can consume them without hard-failing on missing package-level
+// resolved_dependencies. It synthesizes resolved_dependencies from:
+//  1. existing package-level resolved_dependencies (pass-through)
+//  2. entry-level resolved_dependencies
+//  3. governance.dependencyVerification.dependencies / skills
+//
+// Mutates pkg in place. Returns whether synthesis ran and human-readable notes.
+func NormalizeGUIInstallHubPackage(pkg map[string]any) (synthesized bool, notes []string) {
+	if len(pkg) == 0 {
+		return false, nil
+	}
+	existing := anySlice(pkg["resolved_dependencies"])
+	if len(existing) > 0 {
+		return false, nil
+	}
+
+	// Prefer entry-level resolved lists first (newer Hub storage model).
+	collected := make([]any, 0)
+	seen := map[string]struct{}{}
+	addDep := func(raw any, appID string) {
+		dep := anyMap(raw)
+		if len(dep) == 0 {
+			return
+		}
+		id := strings.TrimSpace(firstString(dep["id"], dep["skill_id"], dep["skillId"], dep["name"]))
+		if id == "" {
+			return
+		}
+		// Merge key: id + install_ref so distinct refs for same skill stay distinct.
+		ref := strings.TrimSpace(firstString(dep["install_ref"], dep["installRef"], dep["runtime_skill_ref"], dep["runtimeSkillRef"]))
+		key := strings.ToLower(id) + "\x00" + strings.ToLower(ref)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		// Clone so we do not mutate source verification maps unexpectedly.
+		out := map[string]any{}
+		for k, v := range dep {
+			out[k] = v
+		}
+		if strings.TrimSpace(stringValue(out["id"])) == "" {
+			out["id"] = id
+		}
+		if appID != "" {
+			appIDs := stringSliceFromAny(firstAny(out["app_ids"], out["appIDs"]))
+			if !containsStringFold(appIDs, appID) {
+				appIDs = append(appIDs, appID)
+			}
+			out["app_ids"] = appIDs
+		}
+		// install_ref is preferred for deterministic installs; fall back to id.
+		if strings.TrimSpace(firstString(out["install_ref"], out["installRef"])) == "" {
+			if ref != "" {
+				out["install_ref"] = ref
+			} else {
+				out["install_ref"] = id
+			}
+		}
+		collected = append(collected, out)
+	}
+
+	for _, raw := range anySlice(pkg["apps"]) {
+		entry := anyMap(raw)
+		if len(entry) == 0 {
+			continue
+		}
+		app := anyMap(entry["app"])
+		appID := strings.TrimSpace(firstString(app["id"], app["name"]))
+		for _, dep := range anySlice(entry["resolved_dependencies"]) {
+			addDep(dep, appID)
+		}
+		governance := anyMap(app["governance"])
+		verification := anyMap(firstAny(governance["dependencyVerification"], governance["dependency_verification"]))
+		for _, dep := range anySlice(firstAny(verification["dependencies"], verification["skills"])) {
+			addDep(dep, appID)
+		}
+	}
+
+	if len(collected) == 0 {
+		// No skill deps declared anywhere — leave empty; Validate will allow it
+		// when dependency_verification lists are also empty (no-app-dep packages).
+		notes = append(notes, "package has no resolved_dependencies and no synthesizable dependency details")
+		return false, notes
+	}
+
+	pkg["resolved_dependencies"] = collected
+	compat := anyMap(pkg["compatibility"])
+	if compat == nil {
+		compat = map[string]any{}
+	}
+	compat["resolved_dependencies_synthesized"] = true
+	compat["resolved_dependencies_source"] = "dependency_verification_or_entry"
+	pkg["compatibility"] = compat
+	notes = append(notes, fmt.Sprintf("synthesized %d resolved_dependencies from legacy package metadata", len(collected)))
+	return true, notes
+}
+
 // ValidateGUIInstallHubPackage verifies the cross-service fields that the GUI
 // install entrypoint depends on when consuming a published Enterprise Hub
 // MaClaw App download package.
+//
+// Legacy packages that omit package-level resolved_dependencies are normalized
+// in place from entry-level lists or dependency_verification before the
+// resolved_dependencies presence check.
 func ValidateGUIInstallHubPackage(pkg map[string]any, capabilityID string) error {
 	if len(pkg) == 0 {
 		return fmt.Errorf("downloaded maclaw app package from enterprise Hub is empty")
@@ -105,10 +207,84 @@ func ValidateGUIInstallHubPackage(pkg map[string]any, capabilityID string) error
 			return err
 		}
 	}
-	if deps := anySlice(pkg["resolved_dependencies"]); len(deps) == 0 {
-		return fmt.Errorf("downloaded maclaw app package from enterprise Hub is missing resolved_dependencies")
+	// Soft-repair legacy packages, then require resolved_dependencies only when
+	// the package actually declares skill/workflow dependencies.
+	_, _ = NormalizeGUIInstallHubPackage(pkg)
+	if deps := anySlice(pkg["resolved_dependencies"]); len(deps) == 0 && packageDeclaresSkillDependencies(pkg) {
+		return fmt.Errorf("downloaded maclaw app package from enterprise Hub is missing resolved_dependencies and dependency_verification could not synthesize them")
 	}
 	return nil
+}
+
+func packageDeclaresSkillDependencies(pkg map[string]any) bool {
+	for _, raw := range anySlice(pkg["apps"]) {
+		entry := anyMap(raw)
+		if len(entry) == 0 {
+			continue
+		}
+		if len(anySlice(entry["resolved_dependencies"])) > 0 {
+			return true
+		}
+		app := anyMap(entry["app"])
+		governance := anyMap(app["governance"])
+		verification := anyMap(firstAny(governance["dependencyVerification"], governance["dependency_verification"]))
+		if len(anySlice(firstAny(verification["dependencies"], verification["skills"]))) > 0 {
+			return true
+		}
+		// Binding-level skill refs also count as declared dependencies.
+		for _, holder := range []map[string]any{anyMap(app["binding"]), app} {
+			if holder == nil {
+				continue
+			}
+			if skill := anyMap(holder["skill"]); len(skill) > 0 && strings.TrimSpace(firstString(skill["id"], skill["name"])) != "" {
+				return true
+			}
+			deps := anyMap(holder["dependencies"])
+			if len(anySlice(firstAny(deps["skills"], deps["skill"]))) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringSliceFromAny(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(item); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(stringValue(item)); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		if text := strings.TrimSpace(stringValue(value)); text != "" {
+			return []string{text}
+		}
+		return nil
+	}
+}
+
+func containsStringFold(values []string, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateDependencyVerification(appID string, governance map[string]any) error {

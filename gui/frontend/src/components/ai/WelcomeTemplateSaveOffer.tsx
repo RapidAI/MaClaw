@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 
 /** Default auto-dismiss for the post-send save offer (ms). */
 export const WELCOME_TEMPLATE_OFFER_AUTO_DISMISS_MS = 12_000;
@@ -159,16 +159,13 @@ export function WelcomeTemplateSaveOfferBanner({
                         type="button"
                         data-testid="welcome-template-save-offer-confirm"
                         onClick={onSave}
-                        style={{
+                        style={primaryFilledButtonStyle(t, {
                             padding: "5px 12px",
                             borderRadius: 6,
-                            border: `1px solid ${t.sendBtnBorder || t.sendBtnBg}`,
-                            background: t.sendBtnBg || t.btnColor,
-                            color: t.sendBtnColor || "#fff",
                             fontSize: 12,
                             fontWeight: 600,
                             cursor: "pointer",
-                        }}
+                        })}
                     >
                         {isZh ? "保存" : "Save"}
                     </button>
@@ -188,7 +185,7 @@ export function WelcomeTemplateSaveOfferBanner({
                             height: "100%",
                             width: "100%",
                             transformOrigin: "left center",
-                            background: t.sendBtnBg || t.btnColor,
+                            background: t.sendBtnBg || t.sendBtnBorder || t.btnColor,
                             opacity: 0.55,
                             animation: `welcomeTemplateOfferShrink ${autoDismissMs}ms linear forwards`,
                             animationPlayState: paused ? "paused" : "running",

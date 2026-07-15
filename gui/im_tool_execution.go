@@ -947,7 +947,7 @@ func toolAcceptsRuntimePolicyOwnerArg(name string) bool {
 		"manage_skill", "run_skill", "install_skill_hub", "search_and_install_skill",
 		"memory", "compress_context", "delegate_task", "agent_status", "async_wait", "set_max_iterations",
 		"group_discussion", "screenshot", "call_mcp_tool",
-		"browser", "browser_session_start", "browser_connect", "ssh", "tts":
+		"browser", "browser_session_start", "browser_connect", "ssh", "tts", "asr":
 		return true
 	default:
 		return false

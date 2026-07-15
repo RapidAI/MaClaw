@@ -27,6 +27,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	storesqlite "github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 	"github.com/RapidAI/CodeClaw/hub/internal/ve"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
@@ -710,7 +711,7 @@ func NewRouter(
 
 	// Workflow admin review API
 	{
-		workflowReviewSvc := workflow.NewAdminReviewService(workflow.NewPGWorkflowStore(hubDB), capabilitySvc)
+		workflowReviewSvc := workflow.NewAdminReviewService(storesqlite.NewWorkflowStore(hubDB), capabilitySvc)
 		mux.HandleFunc("GET /api/v1/admin/reviews", requireTenantAdmin(WorkflowAdminReviewListHandler(workflowReviewSvc)))
 		mux.HandleFunc("GET /api/v1/admin/reviews/{id}", requireTenantAdmin(WorkflowAdminReviewDetailHandler(workflowReviewSvc)))
 		mux.HandleFunc("POST /api/v1/admin/reviews/{id}/approve", requireTenantAdmin(WorkflowAdminReviewApproveHandler(workflowReviewSvc)))
@@ -744,7 +745,7 @@ func NewRouter(
 
 	// Workflow CRUD API (user-facing)
 	{
-		wfStore := workflow.NewPGWorkflowStore(hubDB)
+		wfStore := storesqlite.NewWorkflowStore(hubDB)
 		vm := workflow.NewVersionManager(wfStore)
 		wfAPI := workflow.NewWorkflowAPI(wfStore, vm)
 		wfAPI.RegisterRoutes(mux, workflowUserAuth)
@@ -752,9 +753,13 @@ func NewRouter(
 
 	// Workflow Instance API
 	{
-		wfStore := workflow.NewPGWorkflowStore(hubDB)
-		instStore := workflow.NewPgInstanceStore(hubDB)
-		auditStore := workflow.NewPgAuditStore(hubDB)
+		// Hub bootstraps a SQLite database.  These stores must therefore use
+		// the SQLite schema (not the legacy PostgreSQL table names such as
+		// workflow_node_executions), otherwise the timeout ticker logs an error
+		// every five minutes and approvals cannot be inspected.
+		wfStore := storesqlite.NewWorkflowStore(hubDB)
+		instStore := storesqlite.NewInstanceStore(hubDB)
+		auditStore := storesqlite.NewAuditStore(hubDB)
 		confirmStore := workflow.NewPgConfirmationStore(hubDB)
 
 		// ConfirmationTracker: the post-completion confirmation subsystem
@@ -859,14 +864,14 @@ func NewRouter(
 
 	// Workflow audit trail query API
 	{
-		auditStore := workflow.NewPgAuditStore(hubDB)
+		auditStore := storesqlite.NewAuditStore(hubDB)
 		auditAPI := workflow.NewAuditAPI(auditStore)
 		auditAPI.RegisterRoutes(mux, workflowUserAuth)
 	}
 
 	// Review notification background service
 	{
-		wfStore := workflow.NewPGWorkflowStore(hubDB)
+		wfStore := storesqlite.NewWorkflowStore(hubDB)
 		// Use Hub's notification sender if available, otherwise graceful degradation (log only).
 		notifier := workflow.NewHubReviewNotifier(nil)
 		reviewNotifSvc := workflow.NewReviewNotificationService(notifier, wfStore, workflow.ReviewNotificationConfig{

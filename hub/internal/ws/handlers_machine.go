@@ -3,8 +3,10 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -459,7 +461,7 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 		var msg Envelope
 		if err := conn.ReadJSON(&msg); err != nil {
-			log.Printf("[ws] HandleWS: ReadJSON error (role=%s machine_id=%s): %v", ctx.Role, ctx.MachineID, err)
+			logWebSocketReadError(ctx, err)
 			return
 		}
 
@@ -586,6 +588,31 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 			_ = writeWSError(conn, "UNKNOWN_MESSAGE", "Unsupported message type")
 		}
 	}
+}
+
+// logWebSocketReadError keeps normal WebSocket disconnects and idle timeouts
+// distinguishable from protocol failures. A timeout still closes the connection
+// (so the client can reconnect), but it is an expected outcome for an
+// unavailable machine rather than evidence of a Hub application error.
+func logWebSocketReadError(ctx *ConnContext, err error) {
+	role, machineID := "", ""
+	if ctx != nil {
+		role = ctx.Role
+		machineID = ctx.MachineID
+	}
+
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		log.Printf("[ws] HandleWS: connection closed (role=%s machine_id=%s): %v", role, machineID, err)
+		return
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		log.Printf("[ws] HandleWS: connection idle timeout; closing for reconnect (role=%s machine_id=%s): %v", role, machineID, err)
+		return
+	}
+
+	log.Printf("[ws] HandleWS: ReadJSON error (role=%s machine_id=%s): %v", role, machineID, err)
 }
 
 func (g *Gateway) HandleSessionEvent(event session.Event) {

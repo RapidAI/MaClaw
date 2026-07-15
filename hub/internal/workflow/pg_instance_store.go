@@ -139,9 +139,13 @@ func (s *PgInstanceStore) UpdateNodeExecution(ctx context.Context, id string, st
 }
 
 func (s *PgInstanceStore) GetPendingApprovals(ctx context.Context, approverID string) ([]NodeExecution, error) {
-	query := `SELECT wne.id, wne.instance_id, wne.node_id, wne.node_type, wne.status, wne.started_at, wne.completed_at, wne.result, wne.fail_reason
-		 FROM workflow_node_executions wne INNER JOIN workflow_instances wi ON wi.id = wne.instance_id WHERE wne.status = $1 AND wi.tenant_id = $2 AND wne.node_type = $3`
-	args := []any{string(NodeRunning), store.TenantIDFromContext(ctx), string(NodeApproval)}
+	query := `SELECT wne.id, wne.instance_id, wi.tenant_id, wne.node_id, wne.node_type, wne.status, wne.started_at, wne.completed_at, wne.result, wne.fail_reason
+		 FROM workflow_node_executions wne INNER JOIN workflow_instances wi ON wi.id = wne.instance_id WHERE wne.status = $1 AND wne.node_type = $2`
+	args := []any{string(NodeRunning), string(NodeApproval)}
+	if tenantID, scoped := store.TenantIDFromContextIfPresent(ctx); scoped {
+		query += ` AND wi.tenant_id = $3`
+		args = append(args, tenantID)
+	}
 
 	if approverID != "" {
 		// When approverID is provided, filter by instances assigned to that approver.
@@ -161,7 +165,7 @@ func (s *PgInstanceStore) GetPendingApprovals(ctx context.Context, approverID st
 		var exec NodeExecution
 		var completedAt sql.NullTime
 		var nodeType sql.NullString
-		err := rows.Scan(&exec.ID, &exec.InstanceID, &exec.NodeID, &nodeType, &exec.Status,
+		err := rows.Scan(&exec.ID, &exec.InstanceID, &exec.TenantID, &exec.NodeID, &nodeType, &exec.Status,
 			&exec.StartedAt, &completedAt, &exec.Result, &exec.FailReason)
 		if err != nil {
 			return nil, err

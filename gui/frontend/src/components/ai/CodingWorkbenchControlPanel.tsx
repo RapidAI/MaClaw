@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { localizeText } from "./aiAssistantI18n";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import { isFormFieldTarget, isVisibleCodingConflictPanelPresent } from "./codingUiGuards";
 
 export { isFormFieldTarget } from "./codingUiGuards";
@@ -28,18 +28,22 @@ export const CODING_BANNER_LOCAL_DARK_ACCENT_STRONG = "#9db8a8";
 type BuildCodingBannerChromeOpts = {
     isDark: boolean;
     remote: boolean;
-    theme: Pick<Theme, "btnColor" | "titleBarBg" | "bg" | "titleBarBorder" | "fieldBorder" | "fieldBg" | "textMuted" | "promptColor">;
+    theme: Pick<Theme, "btnColor" | "sendBtnBg" | "sendBtnColor" | "titleBarBg" | "bg" | "titleBarBorder" | "fieldBorder" | "fieldBg" | "textMuted" | "promptColor" | "fieldLabel" | "text">;
 };
 
 /**
  * Build float-panel chrome for local/remote × light/dark.
  * Dark local deliberately avoids bright greens so the panel does not cast green over dark UI.
+ *
+ * Primary filled buttons MUST use sendBtnBg/sendBtnColor — dark `btnColor` is a light
+ * accent (foreground), not a fill. White-on-btnColor fails WCAG badly on graphite/etc.
  */
 export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodingBannerChromeOpts): CodingBannerChrome {
-    const productBlue = t.btnColor || "#2f5f98";
+    const accentFallback = isDark ? "#5f89b8" : "#2f5f98";
+    const productAccent = t.btnColor || accentFallback;
     const accent = remote
         ? (isDark ? "#38bdf8" : "#0284c7")
-        : (isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : productBlue);
+        : (isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : productAccent);
     const accentStrong = remote
         ? (isDark ? "#7dd3fc" : "#0c4a6e")
         : (isDark ? CODING_BANNER_LOCAL_DARK_ACCENT_STRONG : "#1e4a7a");
@@ -53,12 +57,16 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
         ? `color-mix(in srgb, ${accent} 14%, transparent)`
         : "rgba(47, 95, 152, 0.10)";
     const chipIdleBg = isDark ? "transparent" : "#ffffff";
-    const chipIdleBorder = t.fieldBorder || (isDark ? "rgba(148,163,184,0.35)" : "#d8dee8");
+    // Stronger idle border on dark so chip outlines remain visible
+    const chipIdleBorder = t.fieldBorder || (isDark ? "rgba(180,190,205,0.42)" : "#d8dee8");
     const iconWellBg = isDark
         ? `color-mix(in srgb, ${accent} 14%, transparent)`
         : "rgba(47, 95, 152, 0.08)";
     const insetBg = isDark ? (t.fieldBg || "transparent") : "#ffffff";
-    const muted = t.textMuted || t.promptColor || (isDark ? "#a8b8c8" : "#64748b");
+    // Labels / secondary text: prefer fieldLabel, keep ≥ readable slate (not washed gray)
+    const muted = t.fieldLabel || t.textMuted || t.promptColor || (isDark ? "#c4cdd8" : "#64748b");
+    // Filled CTA pair: sendBtn* with luminance-safe ink (graphite light fill → dark text)
+    const filled = resolvePrimaryFilledColors(t);
     return {
         accent,
         accentStrong,
@@ -70,8 +78,8 @@ export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodin
         iconWellBg,
         insetBg,
         muted,
-        btnPrimaryBg: productBlue,
-        btnPrimaryFg: "#ffffff",
+        btnPrimaryBg: filled.bg,
+        btnPrimaryFg: filled.fg,
     };
 }
 

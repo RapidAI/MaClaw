@@ -49,6 +49,7 @@ import {
     WELCOME_ROLE_DEFAULT_TAB,
     type WelcomeCustomTemplate,
     type WelcomeRecentEntry,
+    type WelcomeStoredCodingEnv,
     type WelcomeTemplatesImportPreview,
     type WelcomeUserRole,
 } from "./welcomeTaskMemory";
@@ -99,6 +100,7 @@ function requestCreateCodingTask(
 /** Multi-path professional icons (24×24) for scenario cards — not single-stroke “AI slop” glyphs. */
 function WelcomePromptIcon({ name, color }: { name: string; color: string }) {
     const s = { fill: "none", stroke: color, strokeWidth: 1.55, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+    // Keys must stay in sync with WELCOME_PROMPT_ICON_NAMES (welcomeScenarioCatalogGuards).
     const paths: Record<string, React.ReactNode> = {
         ppt: (<><rect {...s} x="4" y="4" width="16" height="12" rx="1.5" /><path {...s} d="M8 20h8" /><path {...s} d="M12 16v4" /><path {...s} d="M8 8h4v4H8z" /><path {...s} d="M14 9h3M14 12h2" /></>),
         plan: (<><path {...s} d="M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" /><path {...s} d="M14 3v4h4" /><path {...s} d="M9 11h7M9 14h7M9 17h4" /></>),
@@ -274,6 +276,8 @@ export function AssistantWelcomeView({
         textEn: string;
         clipboardPrefill?: string;
         clipboardPrefillLabel?: string | null;
+        /** Per-template coding env (from "save as favorite"); may include local password. */
+        initialCodingEnv?: WelcomeStoredCodingEnv;
     };
     const [paramDialog, setParamDialog] = useState<ParamDialogState | null>(null);
     const [recentEntries, setRecentEntries] = useState<WelcomeRecentEntry[]>(() => loadWelcomeRecentEntries());
@@ -454,7 +458,11 @@ export function AssistantWelcomeView({
     const openPrompt = useCallback((
         prompt: WelcomePrompt,
         tabId: string,
-        options?: { clipboardPrefill?: string; taskKeyOverride?: string },
+        options?: {
+            clipboardPrefill?: string;
+            taskKeyOverride?: string;
+            initialCodingEnv?: WelcomeStoredCodingEnv;
+        },
     ) => {
         const text = isZh ? (prompt.template || prompt.text) : (prompt.templateEn || prompt.textEn);
         const title = isZh ? prompt.text : prompt.textEn;
@@ -478,6 +486,7 @@ export function AssistantWelcomeView({
             textEn: prompt.textEn,
             clipboardPrefill: clip || undefined,
             clipboardPrefillLabel: clip ? pickClipboardPrefillLabel(text) : null,
+            initialCodingEnv: options?.initialCodingEnv,
         });
     }, [isZh]);
 
@@ -579,7 +588,11 @@ export function AssistantWelcomeView({
         onPromptSelect(text, submitMeta);
     }, [paramDialog, onPromptSelect, onPromptSend, touchRecent]);
 
-    const handleSaveTemplate = useCallback((filledPrompt: string, title: string) => {
+    const handleSaveTemplate = useCallback((
+        filledPrompt: string,
+        title: string,
+        codingEnv?: WelcomeStoredCodingEnv,
+    ) => {
         const meta = paramDialog;
         const { templates, saved } = saveWelcomeCustomTemplate({
             title: title || (isZh ? "未命名模板" : "Untitled"),
@@ -590,6 +603,7 @@ export function AssistantWelcomeView({
                 meta?.submitMode === "coding_dev" || meta?.submitMode === "remote_coding_dev"
                     ? meta.submitMode
                     : undefined,
+            codingEnv,
         });
         setCustomTemplates(templates);
         return !!saved;
@@ -599,7 +613,10 @@ export function AssistantWelcomeView({
         if (renamingTemplateId === tpl.id) return;
         setCustomTemplates(touchWelcomeCustomTemplate(tpl.id));
         const prompt = customTemplateToWelcomePrompt(tpl);
-        openPrompt(prompt, "custom", { taskKeyOverride: `custom-id::${tpl.id}` });
+        openPrompt(prompt, "custom", {
+            taskKeyOverride: `custom-id::${tpl.id}`,
+            initialCodingEnv: tpl.codingEnv,
+        });
     }, [openPrompt, renamingTemplateId]);
 
     const removeCustomTemplate = useCallback((id: string, event: React.MouseEvent) => {
@@ -1990,16 +2007,17 @@ export function AssistantWelcomeView({
                                             data-testid={`welcome-custom-${tpl.id}`}
                                             aria-label={
                                                 isZh
-                                                    ? `打开模板 ${tpl.title}。F2 重命名，Alt+左右键排序`
-                                                    : `Open template ${tpl.title}. F2 rename, Alt+arrows reorder`
+                                                    ? `打开模板 ${tpl.title}。F2 或铅笔重命名，Alt+左右键排序`
+                                                    : `Open template ${tpl.title}. F2 or pencil to rename, Alt+arrows reorder`
                                             }
                                             title={
                                                 isZh
-                                                    ? `${tpl.body.slice(0, 100)}\n（双击/F2 重命名 · Alt+←/→ 排序）`
-                                                    : `${tpl.body.slice(0, 100)}\n(Double-click/F2 rename · Alt+←/→ reorder)`
+                                                    ? `${tpl.body.slice(0, 100)}\n（单击打开 · F2/✎ 重命名 · Alt+←/→ 排序）`
+                                                    : `${tpl.body.slice(0, 100)}\n(Click to open · F2/✎ rename · Alt+←/→ reorder)`
                                             }
+                                            // Single click opens. Rename via F2 or ✎ only —
+                                            // double-click used to race open+rename and looked like "data lost".
                                             onClick={() => openCustomTemplate(tpl)}
-                                            onDoubleClick={(e) => beginRenameCustomTemplate(tpl, e)}
                                             onKeyDown={(e) => {
                                                 if (e.key === "F2") {
                                                     beginRenameCustomTemplate(tpl, e);
@@ -2299,6 +2317,7 @@ export function AssistantWelcomeView({
                 clipboardPrefill={paramDialog?.clipboardPrefill}
                 clipboardPrefillLabel={paramDialog?.clipboardPrefillLabel}
                 submitMode={paramDialog?.submitMode || "chat"}
+                initialCodingEnv={paramDialog?.initialCodingEnv}
                 canSend={cp.ready && !cp.inputLocked && !!onPromptSend}
                 onSubmit={handleParamSubmit}
                 onSaveTemplate={handleSaveTemplate}

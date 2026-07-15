@@ -35,16 +35,19 @@ describe("welcome custom templates", () => {
     });
 
     it("saves, dedups by body, and loads newest first", () => {
-        expect(saveWelcomeCustomTemplate({ title: "A", body: "hello world task" }).saved).toBeTruthy();
+        const first = saveWelcomeCustomTemplate({ title: "A", body: "hello world task" });
+        expect(first.saved).toBeTruthy();
         saveWelcomeCustomTemplate({ title: "B", body: "other body text here" });
-        // Same body → replace/refresh as newest
+        // Same body → replace/refresh as newest, keep stable id
         const third = saveWelcomeCustomTemplate({ title: "A2", body: "hello world task" });
 
         const list = loadWelcomeCustomTemplates();
         expect(list).toHaveLength(2);
         expect(list[0].title).toBe("A2");
         expect(list[0].body).toBe("hello world task");
+        expect(list[0].id).toBe(first.saved!.id);
         expect(third.saved?.title).toBe("A2");
+        expect(third.saved?.id).toBe(first.saved!.id);
         expect(localStorage.getItem(WELCOME_CUSTOM_TEMPLATES_KEY)).toBeTruthy();
     });
 
@@ -77,6 +80,78 @@ describe("welcome custom templates", () => {
         expect(prompt.template).toContain("实现登录页");
         expect(prompt.agentMode).toBe("coding_dev");
         expect(prompt.icon).toBe("spark");
+    });
+
+    it("persists codingEnv including password on the local template", () => {
+        const codingEnv = {
+            remote: {
+                host: "192.168.1.10",
+                port: 22,
+                user: "ubuntu",
+                workDir: "/home/ubuntu/app",
+                password: "s3cret!",
+            },
+        };
+        const { saved } = saveWelcomeCustomTemplate({
+            title: "驱网状态",
+            body: "在远程环境排查并修复线上故障\n现象：查看服务器上的运行状态",
+            agentMode: "remote_coding_dev",
+            codingEnv,
+        });
+        expect(saved?.codingEnv).toEqual(codingEnv);
+        const reloaded = loadWelcomeCustomTemplates();
+        expect(reloaded[0].codingEnv).toEqual(codingEnv);
+        const raw = localStorage.getItem(WELCOME_CUSTOM_TEMPLATES_KEY) || "";
+        expect(raw).toContain("192.168.1.10");
+        expect(raw).toContain("s3cret!");
+        // Portable export strips password by default (cloud / share-safe).
+        const exported = buildWelcomeTemplatesExport(reloaded);
+        expect(exported.templates[0].codingEnv).toEqual({
+            remote: {
+                host: "192.168.1.10",
+                port: 22,
+                user: "ubuntu",
+                workDir: "/home/ubuntu/app",
+            },
+        });
+        // Explicit full local backup may keep password.
+        const full = buildWelcomeTemplatesExport(reloaded, { includePasswords: true });
+        expect(full.templates[0].codingEnv).toEqual(codingEnv);
+
+        // Re-save same body without password key keeps previous password for same host+user.
+        const again = saveWelcomeCustomTemplate({
+            title: "驱网状态",
+            body: "在远程环境排查并修复线上故障\n现象：查看服务器上的运行状态",
+            agentMode: "remote_coding_dev",
+            codingEnv: {
+                remote: {
+                    host: "192.168.1.10",
+                    port: 22,
+                    user: "ubuntu",
+                    workDir: "/home/ubuntu/app",
+                },
+            },
+        });
+        expect(again.saved?.id).toBe(saved!.id);
+        expect(again.saved?.codingEnv?.remote?.password).toBe("s3cret!");
+
+        // Explicit empty password clears stored password.
+        const cleared = saveWelcomeCustomTemplate({
+            title: "驱网状态",
+            body: "在远程环境排查并修复线上故障\n现象：查看服务器上的运行状态",
+            agentMode: "remote_coding_dev",
+            codingEnv: {
+                remote: {
+                    host: "192.168.1.10",
+                    port: 22,
+                    user: "ubuntu",
+                    workDir: "/home/ubuntu/app",
+                    password: "",
+                },
+            },
+        });
+        expect(cleared.saved?.id).toBe(saved!.id);
+        expect(cleared.saved?.codingEnv?.remote?.password).toBeUndefined();
     });
 
     it("rejects empty title or body", () => {

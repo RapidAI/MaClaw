@@ -370,3 +370,37 @@ func TestInstanceStore_TenantIsolation(t *testing.T) {
 		t.Fatalf("tenant A pending approvals leaked: %+v", pendingA)
 	}
 }
+
+func TestInstanceStore_GetPendingApprovalsWithoutTenantListsAllTenants(t *testing.T) {
+	db := setupInstanceStoreTestDB(t)
+	instanceStore := NewInstanceStore(db)
+	now := time.Now().UTC().Truncate(time.Second)
+	ctxA := storepkg.WithTenant(context.Background(), "tenant_a")
+	ctxB := storepkg.WithTenant(context.Background(), "tenant_b")
+
+	for _, item := range []struct {
+		ctx                     context.Context
+		instanceID, executionID string
+	}{
+		{ctxA, "inst-a", "exec-a"},
+		{ctxB, "inst-b", "exec-b"},
+	} {
+		if err := instanceStore.Create(item.ctx, &workflow.WorkflowInstance{ID: item.instanceID, WorkflowID: "wf", VersionID: "ver", Status: workflow.InstanceRunning, InstanceData: map[string]interface{}{}, CreatedAt: now}); err != nil {
+			t.Fatalf("create instance %s: %v", item.instanceID, err)
+		}
+		if err := instanceStore.CreateNodeExecution(item.ctx, &workflow.NodeExecution{ID: item.executionID, InstanceID: item.instanceID, NodeID: "approval", NodeType: workflow.NodeApproval, Status: workflow.NodeRunning, StartedAt: now}); err != nil {
+			t.Fatalf("create node execution %s: %v", item.executionID, err)
+		}
+	}
+
+	pending, err := instanceStore.GetPendingApprovals(context.Background(), "")
+	if err != nil {
+		t.Fatalf("GetPendingApprovals without tenant: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("global pending count = %d, want 2", len(pending))
+	}
+	if pending[0].TenantID != "tenant_a" || pending[1].TenantID != "tenant_b" {
+		t.Fatalf("global pending tenant ids = %q, %q", pending[0].TenantID, pending[1].TenantID)
+	}
+}

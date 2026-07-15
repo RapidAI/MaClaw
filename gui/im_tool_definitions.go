@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -240,6 +241,12 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字，超出自动截断到句子边界）"},
 			}, []string{"text"}),
+		// --- 语音识别工具 ---
+		toolDef("asr", audioconv.ASRToolDescription(),
+			map[string]interface{}{
+				"path":   map[string]string{"type": "string", "description": "本地音频文件路径"},
+				"format": map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+			}, []string{"path"}),
 		// --- Long-term memory (unified) ---
 		func() map[string]interface{} {
 			def := corememory.ToolDefinitionSchema()

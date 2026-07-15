@@ -765,6 +765,12 @@ func (e *WorkflowExecutor) HandleTimeout(ctx context.Context, instanceID, nodeID
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
 	}
+	// A fallback is dispatched only once. Its routing state is persisted on the
+	// running node execution so the next timeout check blocks the instance
+	// instead of sending the same approval to the fallback approver again.
+	if e.fallbackAlreadyDispatched(ctx, instanceID, nodeID) {
+		return e.markNodeBlocked(ctx, inst, node, "timeout", "fallback approver timed out")
+	}
 
 	return e.handleFallbackRouting(ctx, inst, node, &cfg, "timeout")
 }
@@ -867,6 +873,13 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 		return e.markNodeBlocked(ctx, inst, node, reason, "no fallback approver configured")
 	}
 
+	// Persist the active assignee before delivery. This closes the crash window
+	// between sending a fallback request and recording it: a restarted timeout
+	// ticker must not send the same approval every five minutes.
+	if err := e.markFallbackDispatched(ctx, inst.ID, node.ID, cfg.FallbackApprover); err != nil {
+		return err
+	}
+
 	// Build the approval request for the fallback approver (same payload as primary).
 	req := e.buildApprovalRequestFromInstance(inst, node)
 
@@ -901,6 +914,55 @@ func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *Work
 			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
 		}))
 
+	return nil
+}
+
+func (e *WorkflowExecutor) fallbackAlreadyDispatched(ctx context.Context, instanceID, nodeID string) bool {
+	pendingExecs, err := e.instanceStore.GetPendingApprovals(ctx, "")
+	if err != nil {
+		e.surfaceWriteError(ctx, instanceID, nodeID, "get_pending_approvals_for_fallback_state", err)
+		return false
+	}
+	for _, exec := range pendingExecs {
+		if exec.InstanceID != instanceID || exec.NodeID != nodeID {
+			continue
+		}
+		var metadata struct {
+			FallbackActive bool `json:"fallback_active"`
+		}
+		return json.Unmarshal(exec.Result, &metadata) == nil && metadata.FallbackActive
+	}
+	return false
+}
+
+func (e *WorkflowExecutor) markFallbackDispatched(ctx context.Context, instanceID, nodeID, fallbackApprover string) error {
+	pendingExecs, err := e.instanceStore.GetPendingApprovals(ctx, "")
+	if err != nil {
+		return fmt.Errorf("query node execution for fallback state: %w", err)
+	}
+	for _, exec := range pendingExecs {
+		if exec.InstanceID != instanceID || exec.NodeID != nodeID {
+			continue
+		}
+		metadata := make(map[string]interface{})
+		if len(exec.Result) > 0 && json.Unmarshal(exec.Result, &metadata) != nil {
+			return fmt.Errorf("parse node execution metadata for fallback state")
+		}
+		metadata["fallback_active"] = true
+		metadata["fallback_approver"] = fallbackApprover
+		metadata["approver_ids"] = []string{fallbackApprover}
+		result, err := json.Marshal(metadata)
+		if err != nil {
+			return fmt.Errorf("marshal fallback state: %w", err)
+		}
+		if err := e.instanceStore.UpdateNodeExecution(ctx, exec.ID, NodeRunning, result, ""); err != nil {
+			return fmt.Errorf("persist fallback state: %w", err)
+		}
+		return nil
+	}
+	// Some lightweight InstanceStore implementations only model instance state
+	// and do not retain node executions. Keep fallback delivery compatible with
+	// them; production SQLite stores always find the durable execution above.
 	return nil
 }
 

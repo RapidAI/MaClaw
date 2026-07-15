@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 export { safeAvatarDataURL } from "./virtualEmployeeAvatar";
@@ -744,7 +744,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700 }}>
                                 {isZh ? "\u53d6\u6d88" : "Cancel"}
                             </button>
-                            <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.sendBtnBg || theme.btnBorder || theme.divider}`, background: theme.sendBtnBg || "#2f5f98", color: theme.sendBtnColor || "#fff", font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55 }}>
+                            <button type="submit" disabled={!renameValue.trim() || renameSaving} data-testid="ve-rename-save" style={primaryFilledButtonStyle(theme, { minWidth: 72, minHeight: 40, borderRadius: 8, font: "inherit", fontWeight: 700, opacity: renameValue.trim() && !renameSaving ? 1 : 0.55, cursor: renameValue.trim() && !renameSaving ? "pointer" : "default" })}>
                                 {isZh ? "\u4fdd\u5b58" : "Save"}
                             </button>
                         </div>

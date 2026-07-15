@@ -30,7 +30,9 @@ type SSHPTYSession struct {
 func NewSSHPTYSession(client *ssh.Client, hostID string) *SSHPTYSession {
 	return &SSHPTYSession{
 		client:   client,
-		outputCh: make(chan []byte, 64),
+		// 较大缓冲：高吞吐命令（ps/grep/du）短时突发输出时减少丢包。
+		// 仍满时 readLoop 优先丢弃旧数据，保留最新（含 EXIT/prompt）。
+		outputCh: make(chan []byte, 256),
 		exitCh:   make(chan PTYExit, 1),
 		hostID:   hostID,
 		stopKA:   make(chan struct{}),
@@ -199,6 +201,7 @@ func (s *SSHPTYSession) Close() error {
 // sessionKeepalive 定期通过底层 ssh.Client 发送 keepalive 请求，
 // 防止 SSH channel 因空闲被服务端或中间网络设备断开。
 // 与 SSHPool 的连接级 keepalive 互补：pool 保活 TCP 连接，这里保活 session channel。
+// SendRequest 带 5s 超时：半开 TCP 上可能阻塞 30–120s，超时计为一次失败。
 func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 	if interval <= 0 {
 		interval = 15 * time.Second
@@ -218,8 +221,20 @@ func (s *SSHPTYSession) sessionKeepalive(interval time.Duration) {
 			if closed || client == nil {
 				return
 			}
-			// SendRequest 在连接级别发心跳，同时也能保持 channel 活跃
-			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			// 带超时的 keepalive，避免半开连接拖死整个会话探测
+			ch := make(chan error, 1)
+			go func() {
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+				ch <- err
+			}()
+			var err error
+			select {
+			case <-s.stopKA:
+				return
+			case err = <-ch:
+			case <-time.After(5 * time.Second):
+				err = fmt.Errorf("session keepalive timeout")
+			}
 			if err != nil {
 				failCount++
 				// 连续 3 次失败才放弃，避免瞬时网络抖动误判
@@ -241,10 +256,20 @@ func (s *SSHPTYSession) readLoop(r io.Reader) {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			// 优先投递最新数据。通道满时丢弃最旧 chunk，保留最新
+			// （EXIT 标记 / prompt 通常在输出尾部）。
 			select {
 			case s.outputCh <- chunk:
 			default:
-				// 输出通道满，丢弃旧数据避免阻塞
+				select {
+				case <-s.outputCh: // 丢弃最旧
+				default:
+				}
+				select {
+				case s.outputCh <- chunk:
+				default:
+					// 极端并发下仍满则放弃本次（极少见）
+				}
 			}
 		}
 		if err != nil {

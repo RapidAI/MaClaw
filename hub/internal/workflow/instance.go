@@ -55,8 +55,11 @@ const (
 
 // NodeExecution tracks the state of a single node within an instance.
 type NodeExecution struct {
-	ID          string          `json:"id"`
-	InstanceID  string          `json:"instance_id"`
+	ID         string `json:"id"`
+	InstanceID string `json:"instance_id"`
+	// TenantID is populated when executions are listed across tenants by a
+	// background worker. It is omitted from normal API responses.
+	TenantID    string          `json:"-"`
 	NodeID      string          `json:"node_id"`
 	NodeType    NodeType        `json:"node_type"`
 	Status      NodeStatus      `json:"status"`

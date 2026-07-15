@@ -1366,6 +1366,11 @@ export function UpdateMaclawAppPackageSubmissionStatus(arg1:string,arg2:any):Pro
 export function SaveMaclawAppDefinitionForSkill(arg1:string,arg2:string):Promise<any>;
 
 export function RecordMaclawAppRunEvidenceForSkill(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<any>;
+export function RecordMaclawAppRunHistory(arg1:any):Promise<any>;
+export function ListMaclawAppRunHistory(arg1:string,arg2:number):Promise<Array<any>>;
+export function ListAllMaclawAppRunHistory(arg1:number):Promise<Array<any>>;
+export function ClearMaclawAppRunHistory(arg1:string):Promise<boolean>;
+export function CheckMaclawAppRuntimeHealth(arg1:string,arg2:string):Promise<any>;
 
 // Digital Employee bindings
 export function ListVirtualEmployees():Promise<Array<any>>;

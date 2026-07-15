@@ -26,14 +26,18 @@ const chrome = {
 };
 
 const darkThemeStub = {
-    btnColor: "#2f5f98",
+    btnColor: "#b7d3ef", // accent/foreground — must NOT be used as filled CTA bg
+    sendBtnBg: "#2f5f98",
+    sendBtnColor: "#ffffff",
     titleBarBg: "#1a1d24",
     bg: "#12141a",
     titleBarBorder: "#2a2f3a",
     fieldBorder: "rgba(148,163,184,0.35)",
     fieldBg: "#1e222b",
     textMuted: "#a8b8c8",
+    fieldLabel: "#cbd5e1",
     promptColor: "#a8b8c8",
+    text: "#e2e8f0",
 };
 
 afterEach(() => cleanup());
@@ -55,8 +59,39 @@ describe("buildCodingBannerChrome", () => {
         const remoteDark = buildCodingBannerChrome({ isDark: true, remote: true, theme: darkThemeStub });
         expect(remoteDark.accent).toBe("#38bdf8");
         const localLight = buildCodingBannerChrome({ isDark: false, remote: false, theme: darkThemeStub });
-        expect(localLight.accent).toBe("#2f5f98");
+        // Light local accent uses product blue fallback when btnColor is a light accent swatch
+        expect(localLight.accent).toBe(darkThemeStub.btnColor);
         expect(localLight.surface).toBe("#f5f8fc");
+    });
+
+    it("uses sendBtnBg/sendBtnColor for primary filled CTAs (not light btnColor)", () => {
+        const c = buildCodingBannerChrome({ isDark: true, remote: true, theme: darkThemeStub });
+        expect(c.btnPrimaryBg).toBe("#2f5f98");
+        expect(c.btnPrimaryFg).toBe("#ffffff");
+        expect(c.btnPrimaryBg).not.toBe(darkThemeStub.btnColor);
+        // Labels remain readable (fieldLabel preferred over washed textMuted alone)
+        expect(c.muted).toBe("#cbd5e1");
+    });
+
+    it("falls back safely when sendBtn pair is missing", () => {
+        const c = buildCodingBannerChrome({
+            isDark: true,
+            remote: false,
+            theme: { ...darkThemeStub, sendBtnBg: undefined as unknown as string, sendBtnColor: undefined as unknown as string },
+        });
+        // Missing sendBtn → uses light btnColor fill with auto dark ink (not white-on-light)
+        expect(c.btnPrimaryBg).toBe("#b7d3ef");
+        expect(c.btnPrimaryFg).toBe("#111111");
+    });
+
+    it("uses dark ink on graphite-like light send fills", () => {
+        const c = buildCodingBannerChrome({
+            isDark: true,
+            remote: true,
+            theme: { ...darkThemeStub, sendBtnBg: "#d4d4d4", sendBtnColor: "#111111" },
+        });
+        expect(c.btnPrimaryBg).toBe("#d4d4d4");
+        expect(c.btnPrimaryFg).toBe("#111111");
     });
 });
 

@@ -448,6 +448,21 @@ var BuiltinEnrichments = map[string][]string{
 		"show me what's on screen",
 		"grab a screenshot of the desktop",
 	},
+	"asr": {
+		"transcribe this audio file to text",
+		"speech to text local asr",
+		"将音频文件转录为文本",
+		"语音识别 录音转写",
+		"convert voice message to text without whisper",
+		"转写 m4a wav mp3 语音",
+	},
+	"tts": {
+		"convert text to speech",
+		"speak this message",
+		"文字转语音",
+		"generate a voice reply",
+		"播放语音消息",
+	},
 	"call_mcp_tool": {
 		"call an MCP server tool",
 		"use an external tool via MCP",

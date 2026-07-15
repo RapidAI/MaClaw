@@ -410,6 +410,7 @@ const (
 	MsgToolActionSSH              = "msg.tool_action_ssh"
 	MsgToolActionScreenshot       = "msg.tool_action_screenshot"
 	MsgToolActionTTS              = "msg.tool_action_tts"
+	MsgToolActionASR              = "msg.tool_action_asr"
 	MsgToolActionBrowser          = "msg.tool_action_browser"
 	MsgToolActionCraft            = "msg.tool_action_craft"
 	MsgToolActionOpen             = "msg.tool_action_open"
@@ -816,6 +817,7 @@ var translations = map[string]map[string]string{
 		MsgToolActionSSH:             "远程操作",
 		MsgToolActionScreenshot:      "截取屏幕",
 		MsgToolActionTTS:             "生成语音",
+		MsgToolActionASR:             "语音转写",
 		MsgToolActionBrowser:         "操作浏览器",
 		MsgToolActionCraft:           "生成脚本",
 		MsgToolActionOpen:            "打开",
@@ -1207,6 +1209,7 @@ var translations = map[string]map[string]string{
 		MsgToolActionSSH:             "Remote operation",
 		MsgToolActionScreenshot:      "Screenshot",
 		MsgToolActionTTS:             "Generate speech",
+		MsgToolActionASR:             "Transcribe audio",
 		MsgToolActionBrowser:         "Browser",
 		MsgToolActionCraft:           "Generate script",
 		MsgToolActionOpen:            "Open",

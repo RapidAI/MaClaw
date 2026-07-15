@@ -10,6 +10,7 @@ package agent
 import (
 	"context"
 
+	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -464,6 +465,17 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		},
 		Required: []string{"text"},
 		Handler:  extraHandler(deps, "tts", "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS 并等待模型下载完成。"),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "asr",
+		Description: audioconv.ASRToolDescription(),
+		Properties: map[string]interface{}{
+			"path":   map[string]string{"type": "string", "description": "本地音频文件路径"},
+			"format": map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+		},
+		Required: []string{"path"},
+		Handler:  extraHandler(deps, "asr", "语音识别不可用（ASR 模型未加载）。请在设置中启用 ASR 并等待模型下载完成。"),
 	})
 
 	r.Register(ToolEntry{

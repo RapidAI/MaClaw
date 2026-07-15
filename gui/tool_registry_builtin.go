@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -479,6 +480,15 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"text": map[string]string{"type": "string", "description": "要转换为语音的文本内容（中文，最长 300 字）"},
 		}, []string{"text"},
 		func(args map[string]interface{}) string { return h.toolTTS(args) })
+
+	// --- ASR speech recognition (local SenseVoice) ---
+	reg("asr", audioconv.ASRToolDescription(),
+		ToolCategoryBuiltin, []string{"asr", "transcribe", "transcription", "speech", "audio", "voice", "语音", "转写", "转录", "语音识别", "录音"},
+		map[string]interface{}{
+			"path":   map[string]string{"type": "string", "description": "本地音频文件路径"},
+			"format": map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认按扩展名与文件头自动检测）"},
+		}, []string{"path"},
+		func(args map[string]interface{}) string { return h.toolASR(args) })
 
 	// --- Long-term memory (unified) ---
 	memoryTool := corememory.ToolDefinitionSchema()

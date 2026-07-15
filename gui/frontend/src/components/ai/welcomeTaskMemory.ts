@@ -252,7 +252,10 @@ export function saveWelcomePreviewOpen(open: boolean): void {
     } catch { /* ignore */ }
 }
 
-/** Last-used coding environment (password never stored). */
+/**
+ * Last-used coding environment, kept in localStorage only.
+ * Remote password may be stored for local convenience (never intended for cloud/share export).
+ */
 export const WELCOME_CODING_ENV_KEY = "maclaw:welcome-coding-env";
 
 export type WelcomeStoredCodingEnv = {
@@ -262,32 +265,117 @@ export type WelcomeStoredCodingEnv = {
         port: number;
         user: string;
         workDir: string;
+        /** Optional local-only SSH password. */
+        password?: string;
     };
 };
 
-export function loadWelcomeCodingEnv(): WelcomeStoredCodingEnv {
-    const raw = readJson<WelcomeStoredCodingEnv | null>(WELCOME_CODING_ENV_KEY, null);
-    if (!raw || typeof raw !== "object") return {};
+/** Cap local-stored SSH password length (localStorage safety). */
+export const WELCOME_SSH_PASSWORD_MAX_LEN = 512;
+
+/** Clamp SSH port to a valid TCP port; invalid values become 22. */
+export function normalizeWelcomeSshPort(port: unknown): number {
+    const n = Number(port);
+    return Number.isFinite(n) && n > 0 && n < 65536 ? Math.trunc(n) : 22;
+}
+
+/** Clamp password for local storage (no interior trim — spaces may be significant). */
+export function normalizeWelcomeSshPassword(password: unknown): string {
+    if (typeof password !== "string" || !password) return "";
+    return password.slice(0, WELCOME_SSH_PASSWORD_MAX_LEN);
+}
+
+/** Normalize a coding-env snapshot; drops empty/invalid values. Keeps non-empty password. */
+export function normalizeWelcomeStoredCodingEnv(
+    raw: unknown,
+): WelcomeStoredCodingEnv | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const src = raw as Record<string, unknown>;
     const out: WelcomeStoredCodingEnv = {};
-    if (typeof raw.workingDir === "string" && raw.workingDir.trim()) {
-        out.workingDir = raw.workingDir.trim();
+    if (typeof src.workingDir === "string" && src.workingDir.trim()) {
+        out.workingDir = src.workingDir.trim();
     }
-    const r = raw.remote;
+    const r = src.remote;
     if (r && typeof r === "object") {
-        const host = String(r.host || "").trim();
-        const user = String(r.user || "").trim();
-        const workDir = String(r.workDir || "").trim();
-        const port = Number(r.port) || 22;
+        const remote = r as Record<string, unknown>;
+        const host = String(remote.host || "").trim();
+        const user = String(remote.user || "").trim();
+        const workDir = String(remote.workDir || "").trim();
+        const port = normalizeWelcomeSshPort(remote.port);
+        const password = normalizeWelcomeSshPassword(remote.password);
+        // Require at least one connection field; never store an orphan password alone.
         if (host || user || workDir) {
-            out.remote = {
-                host,
-                user,
-                workDir,
-                port: port > 0 && port < 65536 ? port : 22,
-            };
+            out.remote = { host, user, workDir, port };
+            // Attach password only when host or user is known (what the password unlocks).
+            if (password && (host || user)) {
+                out.remote.password = password;
+            }
         }
     }
+    if (!out.workingDir && !out.remote) return undefined;
     return out;
+}
+
+/** Drop password for portable export / cloud sync (localStorage keeps it). */
+export function stripCodingEnvPassword(
+    env: WelcomeStoredCodingEnv | undefined,
+): WelcomeStoredCodingEnv | undefined {
+    const n = normalizeWelcomeStoredCodingEnv(env);
+    if (!n?.remote?.password) return n;
+    const { password: _pw, ...remote } = n.remote;
+    return { ...n, remote };
+}
+
+/**
+ * Merge preferred env over fallback. Password from preferred wins;
+ * if preferred remote has no password, reuse fallback password only when
+ * host+user match (never attach credentials to a different server).
+ */
+export function mergeWelcomeStoredCodingEnv(
+    preferred?: WelcomeStoredCodingEnv | null,
+    fallback?: WelcomeStoredCodingEnv | null,
+): WelcomeStoredCodingEnv | undefined {
+    const a = normalizeWelcomeStoredCodingEnv(preferred);
+    const b = normalizeWelcomeStoredCodingEnv(fallback);
+    if (!a && !b) return undefined;
+    const workingDir = a?.workingDir || b?.workingDir;
+    let remote = a?.remote || b?.remote;
+    if (
+        a?.remote
+        && !a.remote.password
+        && b?.remote?.password
+        && a.remote.host === b.remote.host
+        && a.remote.user === b.remote.user
+    ) {
+        remote = { ...a.remote, password: b.remote.password };
+    }
+    return normalizeWelcomeStoredCodingEnv({ workingDir, remote });
+}
+
+/**
+ * Resolve coding env when saving a custom template.
+ * - `input` omitted → keep `previous` (e.g. post-send "save as template" offer)
+ * - `input.remote.password` is a string (incl. "") → treat as explicit; "" clears
+ * - `input.remote.password` omitted → merge password from previous when host+user match
+ */
+export function resolveWelcomeCodingEnvForSave(
+    input?: WelcomeStoredCodingEnv | null,
+    previous?: WelcomeStoredCodingEnv | null,
+): WelcomeStoredCodingEnv | undefined {
+    if (input == null) {
+        return normalizeWelcomeStoredCodingEnv(previous);
+    }
+    const passwordExplicit = typeof input.remote?.password === "string";
+    if (passwordExplicit) {
+        // normalize drops empty password → explicit clear.
+        return normalizeWelcomeStoredCodingEnv(input);
+    }
+    return mergeWelcomeStoredCodingEnv(input, previous);
+}
+
+export function loadWelcomeCodingEnv(): WelcomeStoredCodingEnv {
+    const raw = readJson<WelcomeStoredCodingEnv | null>(WELCOME_CODING_ENV_KEY, null);
+    return normalizeWelcomeStoredCodingEnv(raw) || {};
 }
 
 export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
@@ -297,12 +385,46 @@ export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
         next.workingDir = env.workingDir.trim() || undefined;
     }
     if (env.remote) {
-        next.remote = {
-            host: env.remote.host.trim(),
-            user: env.remote.user.trim(),
-            workDir: env.remote.workDir.trim(),
-            port: env.remote.port > 0 && env.remote.port < 65536 ? env.remote.port : 22,
-        };
+        const hasPasswordField = typeof env.remote.password === "string";
+        // Build remote via normalize so host/port/user rules stay single-sourced.
+        // Temporarily inject a placeholder password when explicit empty, so remote
+        // structure is kept even if host-only fields would otherwise normalize fine.
+        const normalized = normalizeWelcomeStoredCodingEnv({
+            remote: {
+                host: env.remote.host,
+                port: env.remote.port,
+                user: env.remote.user,
+                workDir: env.remote.workDir,
+                // Use a one-shot marker only when we need structure; real password handled below.
+                password: hasPasswordField && env.remote.password
+                    ? env.remote.password
+                    : undefined,
+            },
+        });
+        if (!normalized?.remote) {
+            // Invalid/empty remote payload — leave previous remote untouched.
+        } else {
+            const host = normalized.remote.host;
+            const user = normalized.remote.user;
+            next.remote = {
+                host,
+                user,
+                workDir: normalized.remote.workDir,
+                port: normalized.remote.port,
+            };
+            if (hasPasswordField && env.remote.password === "") {
+                // Explicit clear.
+            } else if (normalized.remote.password) {
+                next.remote.password = normalized.remote.password;
+            } else if (
+                prev.remote?.password
+                && prev.remote.host === host
+                && prev.remote.user === user
+            ) {
+                // Partial update for the same host+user keeps the previous password.
+                next.remote.password = prev.remote.password;
+            }
+        }
     }
     writeJson(WELCOME_CODING_ENV_KEY, next);
 }
@@ -322,6 +444,11 @@ export type WelcomeCustomTemplate = {
     sourceKey?: string;
     sourceTabId?: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
+    /**
+     * Coding environment captured when the user saved this as a favorite.
+     * Stored in localStorage only (may include SSH password for local convenience).
+     */
+    codingEnv?: WelcomeStoredCodingEnv;
     createdAt: number;
     usedAt: number;
 };
@@ -346,6 +473,7 @@ export function loadWelcomeCustomTemplates(): WelcomeCustomTemplate[] {
                 t.agentMode === "coding_dev" || t.agentMode === "remote_coding_dev"
                     ? t.agentMode
                     : undefined,
+            codingEnv: normalizeWelcomeStoredCodingEnv(t.codingEnv),
             createdAt: Number(t.createdAt) || 0,
             usedAt: Number(t.usedAt) || 0,
         }))
@@ -358,6 +486,7 @@ export function saveWelcomeCustomTemplate(input: {
     sourceKey?: string;
     sourceTabId?: string;
     agentMode?: "coding_dev" | "remote_coding_dev";
+    codingEnv?: WelcomeStoredCodingEnv;
 }): { templates: WelcomeCustomTemplate[]; saved: WelcomeCustomTemplate | null } {
     const title = (input.title || "").trim().slice(0, 80);
     const body = (input.body || "").trim().slice(0, 8000);
@@ -366,20 +495,38 @@ export function saveWelcomeCustomTemplate(input: {
     }
 
     const prev = loadWelcomeCustomTemplates();
-    // Dedup by identical body (move to front / refresh metadata).
+    // Dedup by identical body (move to front / refresh metadata). Prefer latest codingEnv.
+    const prevSame = prev.find((t) => t.body === body);
     const withoutDup = prev.filter((t) => t.body !== body);
+    const codingEnv = resolveWelcomeCodingEnvForSave(input.codingEnv, prevSame?.codingEnv);
+    const passwordExplicitClear =
+        typeof input.codingEnv?.remote?.password === "string"
+        && input.codingEnv.remote.password === "";
     const entry: WelcomeCustomTemplate = {
-        id: newCustomTemplateId(),
+        // Reuse id so open-by-id chips and task keys stay stable across re-saves.
+        id: prevSame?.id || newCustomTemplateId(),
         title,
         body,
-        sourceKey: input.sourceKey,
-        sourceTabId: input.sourceTabId,
-        agentMode: input.agentMode,
-        createdAt: Date.now(),
+        sourceKey: input.sourceKey ?? prevSame?.sourceKey,
+        sourceTabId: input.sourceTabId ?? prevSame?.sourceTabId,
+        agentMode: input.agentMode ?? prevSame?.agentMode,
+        codingEnv,
+        createdAt: prevSame?.createdAt || Date.now(),
         usedAt: Date.now(),
     };
     const templates = [entry, ...withoutDup].slice(0, WELCOME_CUSTOM_TEMPLATES_MAX);
     writeJson(WELCOME_CUSTOM_TEMPLATES_KEY, templates);
+    // Also refresh the global last-used env so other coding cards benefit.
+    if (codingEnv) {
+        if (passwordExplicitClear && codingEnv.remote) {
+            // Propagate explicit password clear to the global last-used env.
+            saveWelcomeCodingEnv({
+                remote: { ...codingEnv.remote, password: "" },
+            });
+        } else {
+            saveWelcomeCodingEnv(codingEnv);
+        }
+    }
     return { templates, saved: entry };
 }
 
@@ -478,6 +625,8 @@ export type WelcomeTemplatesExportPayload = {
         sourceKey?: string;
         sourceTabId?: string;
         agentMode?: "coding_dev" | "remote_coding_dev";
+        /** Coding env; portable/cloud export strips password by default. */
+        codingEnv?: WelcomeStoredCodingEnv;
     }>;
     /** Optional v2 full-backup fields */
     userRole?: WelcomeUserRole;
@@ -616,9 +765,16 @@ export function buildWelcomeTemplatesExport(
         userRole?: WelcomeUserRole;
         recent?: WelcomeRecentEntry[];
         lastScenarioTab?: string | null;
+        /**
+         * When true, include SSH passwords in the export file.
+         * Default false so cloud sync / shared JSON never carry secrets.
+         * LocalStorage templates still keep passwords independently.
+         */
+        includePasswords?: boolean;
     },
 ): WelcomeTemplatesExportPayload {
     const includeExtras = options?.includeExtras !== false;
+    const includePasswords = options?.includePasswords === true;
     const payload: WelcomeTemplatesExportPayload = {
         version: WELCOME_TEMPLATES_EXPORT_VERSION,
         kind: WELCOME_TEMPLATES_EXPORT_KIND,
@@ -629,6 +785,9 @@ export function buildWelcomeTemplatesExport(
             sourceKey: t.sourceKey,
             sourceTabId: t.sourceTabId,
             agentMode: t.agentMode,
+            codingEnv: includePasswords
+                ? t.codingEnv
+                : stripCodingEnvPassword(t.codingEnv),
         })),
     };
     if (includeExtras) {
@@ -725,12 +884,14 @@ export function parseWelcomeTemplatesImport(raw: string): {
             r.agentMode === "coding_dev" || r.agentMode === "remote_coding_dev"
                 ? r.agentMode
                 : undefined;
+        const codingEnv = normalizeWelcomeStoredCodingEnv(r.codingEnv);
         items.push({
             title,
             body,
             sourceKey: typeof r.sourceKey === "string" ? r.sourceKey : undefined,
             sourceTabId: typeof r.sourceTabId === "string" ? r.sourceTabId : undefined,
             agentMode,
+            codingEnv,
         });
     }
     // Allow extras-only restore? Require at least templates for a valid file.
@@ -797,6 +958,7 @@ export function importWelcomeCustomTemplates(
         sourceKey: item.sourceKey,
         sourceTabId: item.sourceTabId,
         agentMode: item.agentMode,
+        codingEnv: item.codingEnv,
         // Preserve relative order from the file (first in file → front).
         createdAt: now + (parsed.items.length - index),
         usedAt: now + (parsed.items.length - index),
