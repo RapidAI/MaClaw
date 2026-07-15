@@ -137,10 +137,30 @@ synthesize.exe
 tts_asr_test.exe
 tui.exe
 cpu.prof
+*.prof
 tmp_gguf_tensors.txt
 _tmptest/
 _tmp_*.py
 *.pptx
+TigerProxy.exe
+TigerProxy/
+$prof
+*.gguf
+asr_bench.exe
+knowledge.test
+hub/maclaw-hub.linux
+hubcenter/maclaw-hubcenter.linux
+hubcenter/maclaw-hubcenter.new.exe
+build/deploy-hub-bin/
+nsis_stderr.log
+nsis_stdout.log
+pip_err.txt
+pip_install.log
+pip_out.txt
+rs_err.txt
+rs_out.txt
+rs_result.txt
+datasrv/test_final.txt
 
 # Property test rapid cache
 corelib/memory/testdata/rapid/

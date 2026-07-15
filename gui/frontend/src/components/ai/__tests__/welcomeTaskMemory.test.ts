@@ -11,6 +11,7 @@ import {
     resolveWelcomeCodingEnvForSave,
     resolveWelcomeRecentPrompts,
     REMOTE_SSH_PASSWORD_VAULT_KEY,
+    REMOTE_SSH_PASSWORD_VAULT_MAX,
     remoteSSHPasswordVaultKey,
     saveRemoteSSHPassword,
     saveWelcomeCodingEnv,
@@ -166,6 +167,57 @@ describe("welcomeTaskMemory", () => {
         expect(localStorage.getItem(REMOTE_SSH_PASSWORD_VAULT_KEY)).toContain("legacy-pw");
         localStorage.removeItem(WELCOME_CODING_ENV_KEY);
         expect(loadRemoteSSHPassword("legacy.example", "dev", 22)).toBe("legacy-pw");
+    });
+
+    it("evicts oldest vault entries when max capacity is exceeded", () => {
+        const max = REMOTE_SSH_PASSWORD_VAULT_MAX;
+        for (let i = 0; i < max + 3; i++) {
+            saveRemoteSSHPassword(`h${i}.example`, "u", `pw-${i}`, 22, "/w");
+        }
+        // Drop last-used env so loadRemoteSSHPassword cannot re-promote an older host.
+        localStorage.removeItem(WELCOME_CODING_ENV_KEY);
+        const vault = JSON.parse(localStorage.getItem(REMOTE_SSH_PASSWORD_VAULT_KEY) || "{}") as Record<string, string>;
+        expect(Object.keys(vault).length).toBe(max);
+        // Oldest three should be gone; newest remain.
+        expect(loadRemoteSSHPassword("h0.example", "u", 22)).toBe("");
+        expect(loadRemoteSSHPassword("h1.example", "u", 22)).toBe("");
+        expect(loadRemoteSSHPassword("h2.example", "u", 22)).toBe("");
+        expect(loadRemoteSSHPassword(`h${max + 2}.example`, "u", 22)).toBe(`pw-${max + 2}`);
+    });
+
+    it("does not reuse a password across different SSH ports", () => {
+        saveRemoteSSHPassword("db.example", "root", "port22-secret", 22, "/home");
+        expect(loadRemoteSSHPassword("db.example", "root", 22)).toBe("port22-secret");
+        expect(loadRemoteSSHPassword("db.example", "root", 2222)).toBe("");
+        saveRemoteSSHPassword("db.example", "root", "port2222-secret", 2222, "/home");
+        expect(loadRemoteSSHPassword("db.example", "root", 22)).toBe("port22-secret");
+        expect(loadRemoteSSHPassword("db.example", "root", 2222)).toBe("port2222-secret");
+        // Welcome-env fallback must also require port match.
+        localStorage.removeItem(REMOTE_SSH_PASSWORD_VAULT_KEY);
+        localStorage.setItem(WELCOME_CODING_ENV_KEY, JSON.stringify({
+            remote: { host: "db.example", port: 22, user: "root", workDir: "/home", password: "only-22" },
+        }));
+        expect(loadRemoteSSHPassword("db.example", "root", 22)).toBe("only-22");
+        expect(loadRemoteSSHPassword("db.example", "root", 2222)).toBe("");
+    });
+
+    it("does not keep last-used password when only host+user match but port differs", () => {
+        saveWelcomeCodingEnv({
+            remote: { host: "svc.example", port: 22, user: "root", workDir: "/a", password: "p22" },
+        });
+        // Partial update switches port without password — must NOT inherit :22 secret.
+        saveWelcomeCodingEnv({
+            remote: { host: "svc.example", port: 2222, user: "root", workDir: "/b" },
+        });
+        expect(loadWelcomeCodingEnv().remote).toEqual({
+            host: "svc.example",
+            port: 2222,
+            user: "root",
+            workDir: "/b",
+        });
+        expect(loadWelcomeCodingEnv().remote?.password).toBeUndefined();
+        expect(loadRemoteSSHPassword("svc.example", "root", 22)).toBe("p22");
+        expect(loadRemoteSSHPassword("svc.example", "root", 2222)).toBe("");
     });
 
     it("resolveWelcomeCodingEnvForSave distinguishes omit vs explicit clear", () => {

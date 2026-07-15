@@ -418,10 +418,16 @@ export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
                 next.remote.password = normalized.remote.password;
             } else if (
                 prev.remote?.password
-                && prev.remote.host === host
-                && prev.remote.user === user
+                && sameRemoteSSHTarget(
+                    prev.remote.host,
+                    prev.remote.user,
+                    prev.remote.port,
+                    host,
+                    user,
+                    next.remote.port,
+                )
             ) {
-                // Partial update for the same host+user keeps the previous password.
+                // Partial update for the same host+user+port keeps the previous password.
                 next.remote.password = prev.remote.password;
             }
             // Dual-write vault so reconnect can recall after last-used env rotates hosts.
@@ -464,13 +470,20 @@ export function remoteSSHPasswordVaultKey(host: string, user: string, port?: num
     return `${u}@${h}:${p}`;
 }
 
-function sameRemoteIdentity(
+/** Host is case-insensitive; user is exact; port is normalized (0/invalid → 22). */
+function sameRemoteSSHTarget(
     aHost: string,
     aUser: string,
+    aPort: number | undefined,
     bHost: string,
     bUser: string,
+    bPort: number | undefined,
 ): boolean {
-    return aHost.toLowerCase() === bHost.toLowerCase() && aUser === bUser;
+    return (
+        aHost.toLowerCase() === bHost.toLowerCase()
+        && aUser === bUser
+        && normalizeWelcomeSshPort(aPort) === normalizeWelcomeSshPort(bPort)
+    );
 }
 
 function readRemoteSSHPasswordVault(): Record<string, string> {
@@ -523,8 +536,8 @@ function removeRemoteSSHPasswordVaultEntry(host: string, user: string, port?: nu
 
 /**
  * Load a remembered SSH password for remote coding reconnect.
- * Prefers multi-host vault; falls back to last-used welcome coding env when host+user match.
- * Lazy-promotes welcome-env fallback into the vault (one-time migrate).
+ * Prefers multi-host vault; falls back to last-used welcome coding env when
+ * host+user+port match. Lazy-promotes welcome-env fallback into the vault.
  */
 export function loadRemoteSSHPassword(host: string, user: string, port?: number): string {
     const h = String(host || "").trim();
@@ -538,9 +551,11 @@ export function loadRemoteSSHPassword(host: string, user: string, port?: number)
     const env = loadWelcomeCodingEnv();
     const rh = String(env.remote?.host || "").trim();
     const ru = String(env.remote?.user || "").trim();
+    const rp = env.remote?.port;
+    // Port must match — never hand a :22 password to a :2222 reconnect.
     if (
         env.remote?.password
-        && sameRemoteIdentity(rh, ru, h, u)
+        && sameRemoteSSHTarget(rh, ru, rp, h, u, p)
     ) {
         const pw = normalizeWelcomeSshPassword(env.remote.password);
         if (pw) {
@@ -574,8 +589,15 @@ export function saveRemoteSSHPassword(
     const prev = loadWelcomeCodingEnv();
     const prevHost = String(prev.remote?.host || "").trim();
     const prevUser = String(prev.remote?.user || "").trim();
-    if (prev.remote && !sameRemoteIdentity(prevHost, prevUser, h, u)) {
-        // Different host is active in last-used env — vault-only is enough.
+    const prevPort = prev.remote?.port;
+    // Update last-used only for same target or when last-used remote is empty.
+    // Same host+user on a different port still updates last-used (single slot).
+    if (
+        prev.remote
+        && !sameRemoteSSHTarget(prevHost, prevUser, prevPort, h, u, p)
+        && !(prevHost.toLowerCase() === h.toLowerCase() && prevUser === u)
+    ) {
+        // Different host/user is active in last-used env — vault-only is enough.
         return;
     }
     // Direct write of last-used env (skip saveWelcomeCodingEnv to avoid a second vault upsert).
@@ -591,8 +613,8 @@ export function saveRemoteSSHPassword(
 }
 
 /**
- * Remove a remembered password for one host+user.
- * Also strips password from last-used welcome env when identity matches.
+ * Remove a remembered password for one host+user+port.
+ * Also strips password from last-used welcome env when the full target matches.
  */
 export function clearRemoteSSHPassword(host: string, user: string, port?: number): void {
     const h = String(host || "").trim();
@@ -603,7 +625,14 @@ export function clearRemoteSSHPassword(host: string, user: string, port?: number
     const prev = loadWelcomeCodingEnv();
     if (
         prev.remote?.password
-        && sameRemoteIdentity(String(prev.remote.host || "").trim(), String(prev.remote.user || "").trim(), h, u)
+        && sameRemoteSSHTarget(
+            String(prev.remote.host || "").trim(),
+            String(prev.remote.user || "").trim(),
+            prev.remote.port,
+            h,
+            u,
+            p,
+        )
     ) {
         const { password: _drop, ...remote } = prev.remote;
         writeJson(WELCOME_CODING_ENV_KEY, { ...prev, remote });

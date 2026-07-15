@@ -2131,6 +2131,47 @@ describe('AIAssistantPanel property tests', () => {
         });
         await waitFor(() => expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy());
         expect(queryByTestId('remote-coding-reconnect-form')).toBeNull();
+        // Auto uses vault only — typing into the password field must not re-fire Prepare.
+        prepareRemoteCodingEnvironmentMock.mockClear();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('does not auto-reconnect while the user is typing a password (vault empty)', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 1,
+            remote_host: '10.0.0.5',
+            remote_user: 'ops',
+            remote_port: 22,
+            remote_work_dir: '/app',
+            session_plan: 'Manual only',
+        });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-no-auto-type',
+                taskTitle: 'No auto while typing',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.5',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'p' } });
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'pa' } });
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'partial' } });
+        // Give effects a tick — must not auto-call Prepare with a half-typed password.
+        await act(async () => { await Promise.resolve(); });
+        expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
