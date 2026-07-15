@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -852,6 +853,11 @@ func NewRouter(
 		// timeout conditions can route to fallback/escalation (Finding 1.4 / 2.4).
 		// EscalationManager and HandleUnavailable/HandleTimeout/HandleQueueFull are
 		// unchanged; only the availability source changes (Preservation 3.6).
+		// Rebuild in-memory escalation queue from durable instance_data markers
+		// left by a previous Hub process (restart recovery). Then start the ticker.
+		if n := executor.ReconcileEscalations(context.Background()); n > 0 {
+			log.Printf("[hub-router] escalation reconcile restored %d peer(s)", n)
+		}
 		// Background retry loop for EscalationManager (wired on executor above).
 		escalationMgr.Start()
 

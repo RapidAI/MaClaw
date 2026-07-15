@@ -1068,6 +1068,113 @@ func (e *WorkflowExecutor) cancelEscalations(instanceID, nodeID string) {
 	_ = e.escalationMgr.CancelForInstance(instanceID, nodeID)
 }
 
+// ReconcileEscalations rebuilds the in-memory EscalationManager queue from durable
+// instance_data markers on running approval nodes. Call after Hub restart (before
+// or right after EscalationManager.Start) so offline-peer retries resume without
+// waiting for a new dispatch failure.
+//
+// Source of truth for "who still needs retry": instance_data.escalation_approvers
+// (and scalar escalation_approver), written by enqueue/deliver/fail paths.
+// Returns how many peer entries were restored into the live queue.
+func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
+	if e == nil || e.escalationMgr == nil || e.instanceStore == nil {
+		return 0
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pendingExecs, err := e.instanceStore.GetPendingApprovals(ctx, "")
+	if err != nil {
+		log.Printf("[workflow-escalation] reconcile: list pending approvals: %v", err)
+		return 0
+	}
+	instCache := make(map[string]*WorkflowInstance)
+	// Dedupe instance|node|approver across multi-exec edge cases.
+	seen := make(map[string]struct{})
+	restored := 0
+	for _, exec := range pendingExecs {
+		instanceID := strings.TrimSpace(exec.InstanceID)
+		nodeID := strings.TrimSpace(exec.NodeID)
+		if instanceID == "" || nodeID == "" {
+			continue
+		}
+		inst, ok := instCache[instanceID]
+		if !ok {
+			got, gerr := e.instanceStore.Get(ctx, instanceID)
+			if gerr != nil {
+				log.Printf("[workflow-escalation] reconcile: get instance %s: %v", instanceID, gerr)
+				instCache[instanceID] = nil
+				continue
+			}
+			inst = got
+			instCache[instanceID] = inst
+		}
+		if inst == nil || inst.Status != InstanceRunning {
+			continue
+		}
+		approvers := escalationApproversFromInstanceData(inst.InstanceData)
+		if len(approvers) == 0 {
+			continue
+		}
+		// Build one shared payload per instance+node for restored peers.
+		node := &WorkflowNode{ID: nodeID, Label: nodeID}
+		req := e.buildApprovalRequestFromInstance(inst, node)
+		req.NodeID = nodeID
+		req.InstanceID = instanceID
+		for _, approver := range approvers {
+			key := deliverKey(instanceID, nodeID, approver)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			if e.escalationMgr.RestorePending(req, approver, nodeID) {
+				restored++
+			}
+		}
+	}
+	if restored > 0 {
+		// Drive one immediate retry pass for due-now restored entries (peer may
+		// already be online after the restart window).
+		e.escalationMgr.processPendingEscalations()
+		log.Printf("[workflow-escalation] reconcile: restored %d pending peer(s) into retry queue", restored)
+	}
+	return restored
+}
+
+// escalationApproversFromInstanceData reads durable escalation peer lists written
+// by enqueue/deliver/fail hooks.
+func escalationApproversFromInstanceData(data map[string]interface{}) []string {
+	if data == nil {
+		return nil
+	}
+	// Prefer explicit pending flag; still accept non-empty lists (older rows).
+	pending, _ := data["escalation_pending"].(bool)
+	list := stringSliceFromInstanceData(data["escalation_approvers"])
+	if len(list) == 0 {
+		if one := strings.TrimSpace(fmt.Sprint(data["escalation_approver"])); one != "" && one != "<nil>" {
+			list = []string{one}
+		}
+	}
+	if !pending && len(list) == 0 {
+		return nil
+	}
+	// Dedupe while preserving order.
+	seen := make(map[string]struct{}, len(list))
+	out := make([]string, 0, len(list))
+	for _, a := range list {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	return out
+}
+
 // cloneInstanceDataMap shallow-copies top-level instance_data keys so mutators
 // can set/delete escalation fields without mutating the Get snapshot until CAS wins.
 func cloneInstanceDataMap(in map[string]interface{}) map[string]interface{} {

@@ -529,6 +529,74 @@ func TestMarkInstanceCompleted_CancelsEscalationQueue(t *testing.T) {
 	}
 }
 
+func TestReconcileEscalations_RestoresFromInstanceMarkers(t *testing.T) {
+	// Simulates Hub restart: empty EscalationManager + durable markers on a
+	// running approval node → ReconcileEscalations rebuilds the live queue.
+	inst := &WorkflowInstance{
+		ID: "inst-restart", Status: InstanceRunning, VersionID: "ver-1",
+		InstanceData: map[string]interface{}{
+			"title":                "expense",
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a", "human-b"},
+			"escalation_reason":    "partial_dispatch",
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{
+		instance: inst,
+		nodeExecs: []NodeExecution{
+			{ID: "ne1", InstanceID: inst.ID, NodeID: "approval-1", NodeType: NodeApproval, Status: NodeRunning},
+		},
+	}
+	// Checker offline so processPending after restore does not deliver+drop.
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	esc.retryInterval = time.Minute
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithEscalationManager(esc),
+	)
+	if esc.PendingCount() != 0 {
+		t.Fatal("queue should start empty (post-restart)")
+	}
+	n := exec.ReconcileEscalations(context.Background())
+	if n != 2 {
+		t.Fatalf("restored=%d want 2", n)
+	}
+	if esc.PendingCount() != 2 {
+		t.Fatalf("PendingCount=%d want 2", esc.PendingCount())
+	}
+	if !esc.HasPendingApprover(inst.ID, "approval-1", "human-a") || !esc.HasPendingApprover(inst.ID, "approval-1", "human-b") {
+		t.Fatal("both peers should be pending after reconcile")
+	}
+	// Idempotent second reconcile.
+	if n2 := exec.ReconcileEscalations(context.Background()); n2 != 0 {
+		t.Fatalf("second reconcile restored=%d want 0", n2)
+	}
+}
+
+func TestReconcileEscalations_SkipsNonRunningAndNoMarkers(t *testing.T) {
+	done := &WorkflowInstance{
+		ID: "inst-done", Status: InstanceCompleted,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-x"},
+		},
+	}
+	// completed instance should not be restored even if stale markers remain.
+	// Use a store that returns completed for Get but still lists a "pending" exec.
+	instStore := &mockInstanceStoreForTimeout{
+		instance: done,
+		nodeExecs: []NodeExecution{
+			{ID: "ne1", InstanceID: done.ID, NodeID: "approval-1", NodeType: NodeApproval, Status: NodeRunning},
+		},
+	}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithEscalationManager(esc),
+	)
+	if n := exec.ReconcileEscalations(context.Background()); n != 0 {
+		t.Fatalf("restored=%d want 0 for completed instance", n)
+	}
+}
+
 func TestPersistEscalationMarkers_CASPreservesConcurrentApprovalState(t *testing.T) {
 	// First CAS conflicts: concurrent writer committed an approval vote.
 	// Retry must re-apply escalation markers without dropping that vote.

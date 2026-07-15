@@ -345,6 +345,33 @@ func TestEscalation_CancelForInstance(t *testing.T) {
 	}
 }
 
+func TestEscalation_RestorePending_NoAuditAndDue(t *testing.T) {
+	audit := &mockAuditStoreForEsc{}
+	mgr := NewEscalationManager(&mockDispatcherForEsc{}, audit, &mockHumanChecker{available: false})
+	mgr.retryInterval = time.Minute
+	req := &ApprovalRequest{ID: "r1", InstanceID: "inst-r", NodeID: "n1"}
+	if !mgr.RestorePending(req, "human-a", "n1") {
+		t.Fatal("expected RestorePending to add entry")
+	}
+	if mgr.RestorePending(req, "human-a", "n1") {
+		t.Fatal("duplicate RestorePending should return false")
+	}
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1", mgr.PendingCount())
+	}
+	if audit.countByEventType("escalation_unavailable") != 0 {
+		t.Fatal("restore must not write unavailable audit")
+	}
+	// Due immediately for processPending.
+	got := mgr.findPending("inst-r", "n1", "human-a")
+	if got == nil {
+		t.Fatal("missing restored entry")
+	}
+	if time.Since(got.LastAttemptAt) < time.Second {
+		t.Fatalf("LastAttemptAt should be in the past for due retry, got %v", got.LastAttemptAt)
+	}
+}
+
 func TestEscalation_OpportunisticRedeliverWhenPeerComesOnline(t *testing.T) {
 	checker := &mockHumanChecker{available: false}
 	dispatcher := &mockDispatcherForEsc{}

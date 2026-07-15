@@ -58,6 +58,9 @@ type EscalationDeliveredHook func(ctx context.Context, esc *EscalationRequest)
 type EscalationManager struct {
 	mu             sync.Mutex
 	queue          map[string]*EscalationRequest // keyed by escalation request ID
+	// delivering tracks in-flight tryDeliverPending keys (instance|node|approver)
+	// so concurrent opportunistic + ticker paths do not double-Dispatch.
+	delivering     map[string]struct{}
 	dispatcher     ApprovalDispatcher
 	auditStore     AuditStore
 	checker        HumanApproverChecker
@@ -74,6 +77,7 @@ type EscalationManager struct {
 func NewEscalationManager(dispatcher ApprovalDispatcher, auditStore AuditStore, checker HumanApproverChecker) *EscalationManager {
 	return &EscalationManager{
 		queue:         make(map[string]*EscalationRequest),
+		delivering:    make(map[string]struct{}),
 		dispatcher:    dispatcher,
 		auditStore:    auditStore,
 		checker:       checker,
@@ -323,7 +327,23 @@ func (m *EscalationManager) tryDeliverPending(ctx context.Context, escReq *Escal
 	req := current.ApprovalReq
 	approver := current.HumanApprover
 	attempt := current.Attempts
+	instanceID := current.InstanceID
+	nodeID := current.NodeID
+	dkey := deliverKey(instanceID, nodeID, approver)
+	if m.delivering == nil {
+		m.delivering = make(map[string]struct{})
+	}
+	if _, busy := m.delivering[dkey]; busy {
+		m.mu.Unlock()
+		return false // another path is already Dispatching this peer
+	}
+	m.delivering[dkey] = struct{}{}
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.delivering, dkey)
+		m.mu.Unlock()
+	}()
 
 	if !m.tryDispatch(ctx, req, approver) {
 		return false
@@ -420,6 +440,61 @@ func (m *EscalationManager) CancelForInstance(instanceID, nodeID string) int {
 		removed++
 	}
 	return removed
+}
+
+// deliverKey builds the in-flight dispatch key for an escalation peer.
+func deliverKey(instanceID, nodeID, approverID string) string {
+	return strings.TrimSpace(instanceID) + "|" + strings.TrimSpace(nodeID) + "|" + strings.TrimSpace(approverID)
+}
+
+// RestorePending re-enqueues a peer after Hub restart without an immediate
+// dispatch attempt and without writing a new "unavailable" audit row.
+// LastAttemptAt is set in the past so the next processPending cycle is due.
+// Returns true when a new queue entry was created.
+func (m *EscalationManager) RestorePending(req *ApprovalRequest, humanApprover, nodeID string) bool {
+	if m == nil || req == nil {
+		return false
+	}
+	humanApprover = strings.TrimSpace(humanApprover)
+	instanceID := strings.TrimSpace(req.InstanceID)
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		nodeID = strings.TrimSpace(req.NodeID)
+	}
+	if humanApprover == "" || instanceID == "" || nodeID == "" {
+		return false
+	}
+	if m.hasPending(instanceID, nodeID, humanApprover) {
+		return false
+	}
+	now := time.Now().UTC()
+	// Due immediately on the next processPendingEscalations pass.
+	lastAttempt := now
+	if m.retryInterval > 0 {
+		lastAttempt = now.Add(-m.retryInterval)
+	} else {
+		lastAttempt = now.Add(-time.Second)
+	}
+	escReq := &EscalationRequest{
+		ID:            generateID("esc"),
+		ApprovalReq:   req,
+		HumanApprover: humanApprover,
+		InstanceID:    instanceID,
+		NodeID:        nodeID,
+		Status:        EscalationPending,
+		Attempts:      1,
+		LastAttemptAt: lastAttempt,
+		CreatedAt:     now,
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.queue {
+		if pendingQueueMatch(existing, instanceID, nodeID, humanApprover) {
+			return false
+		}
+	}
+	m.queue[escReq.ID] = escReq
+	return true
 }
 
 // GetRequest returns an escalation request by ID, or nil if not found.
