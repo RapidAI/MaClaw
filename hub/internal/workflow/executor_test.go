@@ -517,6 +517,88 @@ func TestEnqueueEscalationOrBlock_ImmediateDeliverDoesNotMarkOtherPeerPending(t 
 	}
 }
 
+func TestEnqueueEscalationOrBlock_RequeueSamePeerDoesNotRenotify(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-renotify", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	audit := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{}
+	checker := &mockHumanChecker{available: false}
+	esc := NewEscalationManager(dispatcher, audit, checker)
+	notifier := &mockNotifier{}
+	exec := NewWorkflowExecutor(wfStore, instStore, audit, dispatcher,
+		WithNotifier(notifier),
+		WithEscalationManager(esc),
+	)
+	node := &WorkflowNode{ID: "approval-1", Label: "A"}
+	req := &ApprovalRequest{ID: "areq", InstanceID: inst.ID, NodeID: node.ID}
+
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-a", "unavailable", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.notifications) != 1 {
+		t.Fatalf("notify after first enqueue=%d want 1", len(notifier.notifications))
+	}
+	// Same offline peer re-enqueued (e.g. timeout / unavailable loop) — no second push.
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-a", "unavailable", "again"); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.notifications) != 1 {
+		t.Fatalf("notify after requeue=%d want 1 (no spam)", len(notifier.notifications))
+	}
+	if esc.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1", esc.PendingCount())
+	}
+}
+
+func TestEnqueueEscalationOrBlock_OpportunisticDeliverClearsMarkers(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-opp", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	audit := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{}
+	checker := &mockHumanChecker{available: false}
+	esc := NewEscalationManager(dispatcher, audit, checker)
+	exec := NewWorkflowExecutor(wfStore, instStore, audit, dispatcher, WithEscalationManager(esc))
+	node := &WorkflowNode{ID: "approval-1", Label: "A"}
+	req := &ApprovalRequest{ID: "areq", InstanceID: inst.ID, NodeID: node.ID}
+
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-a", "unavailable", "down"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); !pending {
+		t.Fatal("expected escalation_pending after queue")
+	}
+	checker.setAvailable(true)
+	// Re-enqueue same peer once online → opportunistic deliver + deliveredHook clears markers.
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-a", "unavailable", "up"); err != nil {
+		t.Fatal(err)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("queue should be empty, PendingCount=%d", esc.PendingCount())
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending {
+		t.Fatalf("escalation_pending should clear after opportunistic deliver: %#v", inst.InstanceData)
+	}
+	if _, ok := inst.InstanceData["escalation_approvers"]; ok {
+		t.Fatalf("escalation_approvers should clear: %#v", inst.InstanceData)
+	}
+}
+
 func TestStartInstance_CountersignMultiFailure_AccumulatesApproversList(t *testing.T) {
 	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
 		ApproverIDs:  []string{"ve-a", "ve-b", "ve-c"},

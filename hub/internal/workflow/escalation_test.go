@@ -323,6 +323,41 @@ func TestEscalation_DedupSameApprover(t *testing.T) {
 	}
 }
 
+func TestEscalation_OpportunisticRedeliverWhenPeerComesOnline(t *testing.T) {
+	checker := &mockHumanChecker{available: false}
+	dispatcher := &mockDispatcherForEsc{}
+	audit := &mockAuditStoreForEsc{}
+	hookCalls := 0
+	mgr := NewEscalationManager(dispatcher, audit, checker)
+	mgr.SetDeliveredHook(func(ctx context.Context, esc *EscalationRequest) {
+		hookCalls++
+	})
+	req := &ApprovalRequest{ID: "r1", InstanceID: "inst-op", NodeID: "n1"}
+	_ = mgr.Escalate(context.Background(), req, "human-a")
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1 after offline escalate", mgr.PendingCount())
+	}
+	// Peer comes online; re-Escalate should deliver without waiting for ticker.
+	checker.setAvailable(true)
+	_ = mgr.Escalate(context.Background(), req, "human-a")
+	if mgr.PendingCount() != 0 {
+		t.Fatalf("PendingCount=%d want 0 after opportunistic deliver", mgr.PendingCount())
+	}
+	if dispatcher.dispatchCount() != 1 {
+		t.Fatalf("dispatchCount=%d want 1", dispatcher.dispatchCount())
+	}
+	if audit.countByEventType("escalation_delivered") != 1 {
+		t.Fatalf("delivered audits=%d want 1", audit.countByEventType("escalation_delivered"))
+	}
+	if hookCalls != 1 {
+		t.Fatalf("deliveredHook calls=%d want 1", hookCalls)
+	}
+	// Attempts must not have been reset/spammed via a second queue entry.
+	if n := audit.countByEventType("escalation_unavailable"); n != 1 {
+		t.Fatalf("unavailable audits=%d want 1", n)
+	}
+}
+
 func TestEscalation_NilDepsDoNotPanic(t *testing.T) {
 	// Production always wires deps; unit/fuzz paths may construct a bare manager.
 	mgr := NewEscalationManager(nil, nil, nil)

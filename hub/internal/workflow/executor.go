@@ -1022,13 +1022,20 @@ func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *W
 	if req == nil {
 		req = e.buildApprovalRequestFromInstance(inst, node)
 	}
+	// Snapshot before Escalate: coalesced re-queue must not re-notify / rewrite.
+	alreadyPending := e.escalationMgr.HasPendingApprover(inst.ID, node.ID, approverID)
 	if qerr := e.escalationMgr.Escalate(ctx, req, approverID); qerr != nil {
 		return e.markNodeBlocked(ctx, inst, node, reason, "escalation queue failed: "+qerr.Error())
 	}
-	// Escalate may redeliver immediately when the approver is now online. Only
-	// mark pending when THIS approver is still in the queue — not when some
-	// other peer is pending on the same node (countersign multi-fail).
+	// Escalate may redeliver immediately (including opportunistic redelivery of a
+	// previously queued peer). Only mark pending when THIS approver is still queued.
 	if !e.escalationMgr.HasPendingApprover(inst.ID, node.ID, approverID) {
+		// Opportunistic deliver of an already-tracked peer: deliveredHook rebuilds
+		// markers. Fresh immediate deliver never set markers — nothing to clear.
+		return nil
+	}
+	if alreadyPending {
+		// Still offline and already tracked — skip notify spam + redundant writes.
 		return nil
 	}
 	if e.notifier != nil {

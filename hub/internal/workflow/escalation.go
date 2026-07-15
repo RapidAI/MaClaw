@@ -201,7 +201,8 @@ func pendingQueueMatch(req *EscalationRequest, instanceID, nodeID, approverID st
 // If the human approver is unavailable, the request is retained in the
 // pending-escalation queue and retried asynchronously.
 // Duplicate queue entries for the same instance+node+approver are coalesced
-// (no extra audit noise; retry loop owns redelivery).
+// (no extra audit noise). If the peer is already queued but now available,
+// Escalate tries one opportunistic redelivery instead of waiting for the ticker.
 func (m *EscalationManager) Escalate(ctx context.Context, req *ApprovalRequest, humanApprover string) error {
 	humanApprover = strings.TrimSpace(humanApprover)
 	if req == nil || humanApprover == "" {
@@ -210,19 +211,22 @@ func (m *EscalationManager) Escalate(ctx context.Context, req *ApprovalRequest, 
 	instanceID := strings.TrimSpace(req.InstanceID)
 	nodeID := strings.TrimSpace(req.NodeID)
 
-	// Already queued for this peer → leave the existing retry entry alone.
-	// Avoids duplicate audit "unavailable" rows and reset of Attempts.
-	if m.hasPending(instanceID, nodeID, humanApprover) {
+	// Already queued for this peer → opportunistic redelivery if online now;
+	// otherwise leave the existing retry entry (do not reset Attempts / re-audit).
+	if existing := m.findPending(instanceID, nodeID, humanApprover); existing != nil {
+		// Prefer the latest approval payload when re-dispatching (under lock).
+		m.mu.Lock()
+		if cur, ok := m.queue[existing.ID]; ok && cur != nil && cur.Status == EscalationPending && req != nil {
+			cur.ApprovalReq = req
+		}
+		m.mu.Unlock()
+		_ = m.tryDeliverPending(ctx, existing, "opportunistic")
 		return nil
 	}
 
 	// First attempt: try to dispatch immediately.
-	if m.checker != nil && m.checker.IsAvailable(ctx, humanApprover) {
-		if m.dispatcher != nil {
-			if err := m.dispatcher.Dispatch(ctx, req, humanApprover); err == nil {
-				return nil
-			}
-		}
+	if m.tryDispatch(ctx, req, humanApprover) {
+		return nil
 	}
 
 	// Human approver is unavailable — record in audit trail and queue for retry.
@@ -261,6 +265,92 @@ func (m *EscalationManager) Escalate(ctx context.Context, req *ApprovalRequest, 
 	m.mu.Unlock()
 
 	return nil
+}
+
+// findPending returns the live queue entry for instance+node+approver, or nil.
+func (m *EscalationManager) findPending(instanceID, nodeID, approverID string) *EscalationRequest {
+	if m == nil {
+		return nil
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	nodeID = strings.TrimSpace(nodeID)
+	approverID = strings.TrimSpace(approverID)
+	if instanceID == "" || approverID == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, req := range m.queue {
+		if pendingQueueMatch(req, instanceID, nodeID, approverID) {
+			return req
+		}
+	}
+	return nil
+}
+
+// tryDispatch performs a one-shot availability check + Dispatch.
+func (m *EscalationManager) tryDispatch(ctx context.Context, req *ApprovalRequest, humanApprover string) bool {
+	if m == nil || req == nil || strings.TrimSpace(humanApprover) == "" {
+		return false
+	}
+	if m.checker == nil || !m.checker.IsAvailable(ctx, humanApprover) {
+		return false
+	}
+	if m.dispatcher == nil {
+		return false
+	}
+	return m.dispatcher.Dispatch(ctx, req, humanApprover) == nil
+}
+
+// tryDeliverPending attempts one immediate redelivery for a queued escalation.
+// On success it removes the entry, audits delivery, and fires deliveredHook.
+// path is recorded in the audit details (e.g. "opportunistic", "retry").
+func (m *EscalationManager) tryDeliverPending(ctx context.Context, escReq *EscalationRequest, path string) bool {
+	if m == nil || escReq == nil {
+		return false
+	}
+	if path == "" {
+		path = "deliver"
+	}
+	// Still must be pending in the map (another path may have failed/delivered).
+	m.mu.Lock()
+	current, ok := m.queue[escReq.ID]
+	if !ok || current == nil || current.Status != EscalationPending {
+		m.mu.Unlock()
+		return false
+	}
+	// Snapshot for dispatch outside the lock.
+	req := current.ApprovalReq
+	approver := current.HumanApprover
+	attempt := current.Attempts
+	m.mu.Unlock()
+
+	if !m.tryDispatch(ctx, req, approver) {
+		return false
+	}
+
+	m.mu.Lock()
+	// Re-validate after I/O: do not resurrect a failed/removed entry.
+	if cur, still := m.queue[escReq.ID]; !still || cur == nil || cur.Status != EscalationPending {
+		m.mu.Unlock()
+		return true // already cleaned up; treat as delivered for callers
+	}
+	delete(m.queue, escReq.ID)
+	m.mu.Unlock()
+
+	m.appendAudit(ctx, &AuditEntry{
+		ID:         generateID("audit"),
+		InstanceID: escReq.InstanceID,
+		NodeID:     escReq.NodeID,
+		EventType:  "escalation_delivered",
+		ActorID:    escReq.HumanApprover,
+		Details:    fmt.Sprintf(`{"attempt":%d,"path":"%s"}`, attempt, path),
+		Timestamp:  NormalizeAuditTimestamp(time.Time{}),
+	})
+	if m.deliveredHook != nil {
+		m.deliveredHook(ctx, escReq)
+	}
+	return true
 }
 
 // appendAudit is a nil-safe audit write used by retry/fail paths.
@@ -361,34 +451,8 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 	attempt := escReq.Attempts
 	m.mu.Unlock()
 
-	// Check if human approver is now available and try to dispatch.
-	success := false
-	if m.checker != nil && m.checker.IsAvailable(ctx, escReq.HumanApprover) {
-		if m.dispatcher != nil {
-			if err := m.dispatcher.Dispatch(ctx, escReq.ApprovalReq, escReq.HumanApprover); err == nil {
-				success = true
-			}
-		}
-	}
-
-	if success {
-		// Escalation succeeded — remove from queue.
-		m.appendAudit(ctx, &AuditEntry{
-			ID:         generateID("audit"),
-			InstanceID: escReq.InstanceID,
-			NodeID:     escReq.NodeID,
-			EventType:  "escalation_delivered",
-			ActorID:    escReq.HumanApprover,
-			Details:    fmt.Sprintf(`{"attempt":%d}`, attempt),
-			Timestamp:  NormalizeAuditTimestamp(time.Time{}),
-		})
-
-		m.mu.Lock()
-		delete(m.queue, escReq.ID)
-		m.mu.Unlock()
-		if m.deliveredHook != nil {
-			m.deliveredHook(ctx, escReq)
-		}
+	// Shared deliver path (also used by opportunistic Escalate redelivery).
+	if m.tryDeliverPending(ctx, escReq, "retry") {
 		return
 	}
 
