@@ -1200,7 +1200,7 @@ func (e *WorkflowExecutor) onEscalationDelivered(ctx context.Context, esc *Escal
 	approver := strings.TrimSpace(esc.HumanApprover)
 	remaining := make([]string, 0)
 	for _, id := range stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]) {
-		if id != approver {
+		if strings.TrimSpace(id) != approver {
 			remaining = append(remaining, id)
 		}
 	}
@@ -1208,23 +1208,30 @@ func (e *WorkflowExecutor) onEscalationDelivered(ctx context.Context, esc *Escal
 	if s, _ := inst.InstanceData["escalation_approver"].(string); strings.TrimSpace(s) == approver {
 		delete(inst.InstanceData, "escalation_approver")
 	}
+	// Live queue is authoritative for whether retries remain.
+	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
 	if len(remaining) == 0 {
 		delete(inst.InstanceData, "escalation_approvers")
-		// Only clear pending when manager also has no other retries for this instance.
-		if e.escalationMgr == nil || !e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID) {
-			delete(inst.InstanceData, "escalation_pending")
-			delete(inst.InstanceData, "escalation_reason")
-		}
 	} else {
 		inst.InstanceData["escalation_approvers"] = remaining
 		inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
+	}
+	if peersStillPending {
+		inst.InstanceData["escalation_pending"] = true
+	} else {
+		delete(inst.InstanceData, "escalation_pending")
+		delete(inst.InstanceData, "escalation_reason")
+		delete(inst.InstanceData, "escalation_approvers")
+		delete(inst.InstanceData, "escalation_approver")
 	}
 	e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_delivered",
 		e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
 }
 
-// onEscalationFailed is the EscalationManager max-retries hook: mark the node
-// blocked and clear escalation_pending so desktop reconcile / directory align.
+// onEscalationFailed is the EscalationManager max-retries hook.
+// For multi-approver nodes, only this peer is exhausted — drop them from the
+// pending list and keep the instance running while other peers still retry.
+// Mark the node blocked only when no escalations remain for this node.
 func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *EscalationRequest) {
 	if e == nil || esc == nil || strings.TrimSpace(esc.InstanceID) == "" {
 		return
@@ -1233,6 +1240,42 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 	if err != nil || inst == nil {
 		return
 	}
+	// Queue entry was already removed; drop this approver from instance markers.
+	// Peers still in the manager queue → keep instance running (countersign).
+	if inst.InstanceData == nil {
+		inst.InstanceData = map[string]interface{}{}
+	}
+	approver := strings.TrimSpace(esc.HumanApprover)
+	remaining := make([]string, 0)
+	for _, id := range stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"]) {
+		if strings.TrimSpace(id) != approver {
+			remaining = append(remaining, id)
+		}
+	}
+	if s, _ := inst.InstanceData["escalation_approver"].(string); strings.TrimSpace(s) == approver {
+		delete(inst.InstanceData, "escalation_approver")
+	}
+	// Authority for "still retrying" is the live queue, not stale instance-data lists.
+	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
+	if peersStillPending {
+		if len(remaining) == 0 {
+			delete(inst.InstanceData, "escalation_approvers")
+		} else {
+			inst.InstanceData["escalation_approvers"] = remaining
+			inst.InstanceData["escalation_approver"] = remaining[len(remaining)-1]
+		}
+		inst.InstanceData["escalation_pending"] = true
+		e.surfaceWriteError(ctx, inst.ID, esc.NodeID, "update_instance_data_escalation_peer_failed",
+			e.instanceStore.UpdateInstanceData(ctx, inst.ID, inst.InstanceData))
+		if e.notifier != nil {
+			_ = e.notifier.NotifyInitiator(ctx, inst.ID,
+				fmt.Sprintf("escalation failed for approver %s (other peers still retrying)", approver),
+				fmt.Sprintf("node=%s attempts=%d", esc.NodeID, esc.Attempts),
+			)
+		}
+		return
+	}
+	// No remaining retries for this node — block.
 	var node *WorkflowNode
 	if e.store != nil && strings.TrimSpace(inst.VersionID) != "" {
 		if ver, verr := e.store.GetVersion(ctx, inst.VersionID); verr == nil && ver != nil {
@@ -1240,7 +1283,6 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 		}
 	}
 	if node == nil {
-		// Minimal node so markNodeBlocked can still update instance status / notify.
 		node = &WorkflowNode{ID: firstNonEmptyString(esc.NodeID, inst.CurrentNodeID), Label: esc.NodeID}
 	}
 	details := fmt.Sprintf("escalation max retries exhausted for approver %s (attempts=%d)", esc.HumanApprover, esc.Attempts)

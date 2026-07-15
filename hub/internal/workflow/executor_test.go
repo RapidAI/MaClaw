@@ -377,6 +377,103 @@ func TestStartInstance_CountersignPartialFailure_QueuesEscalationAndContinues(t 
 	}
 }
 
+func TestOnEscalationFailed_PeerExhaustedKeepsInstanceRunning(t *testing.T) {
+	// Two peers queued; first exhausts max retries — instance must stay running
+	// while the second peer remains pending.
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "CS"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-multi-fail", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a", "human-b"},
+			"escalation_approver":  "human-b",
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	audit := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{}
+	checker := &mockHumanChecker{available: false}
+	esc := NewEscalationManager(dispatcher, audit, checker)
+	esc.maxRetries = 2
+	esc.retryInterval = time.Millisecond
+	notifier := &mockNotifier{}
+	exec := NewWorkflowExecutor(wfStore, instStore, audit, dispatcher,
+		WithNotifier(notifier),
+		WithEscalationManager(esc),
+	)
+	// Seed both peers into the queue.
+	req := &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}
+	_ = esc.Escalate(context.Background(), req, "human-a")
+	_ = esc.Escalate(context.Background(), req, "human-b")
+	// Exhaust only human-a by driving processPending until a is gone but b remains.
+	// Both have same attempts; process both — set maxRetries high and manually fail a.
+	// Simpler: call onEscalationFailed directly for human-a while b still queued.
+	esc.mu.Lock()
+	var escA *EscalationRequest
+	for _, r := range esc.queue {
+		if r.HumanApprover == "human-a" {
+			escA = r
+			delete(esc.queue, r.ID) // simulate markEscalationFailed queue removal
+			break
+		}
+	}
+	esc.mu.Unlock()
+	if escA == nil {
+		t.Fatal("human-a not in queue")
+	}
+	escA.Attempts = 5
+	exec.onEscalationFailed(context.Background(), escA)
+
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("must not block while human-b still pending")
+	}
+	list := stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])
+	for _, id := range list {
+		if id == "human-a" {
+			t.Fatalf("human-a should be removed from approvers: %v", list)
+		}
+	}
+	if !esc.HasPendingApprover(inst.ID, "approval-1", "human-b") {
+		t.Fatal("human-b should still be pending in manager")
+	}
+	if len(notifier.notifications) < 1 {
+		t.Fatal("expected peer-failed notify")
+	}
+}
+
+func TestOnEscalationFailed_LastPeerBlocks(t *testing.T) {
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-last", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-only"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	audit := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{}
+	esc := NewEscalationManager(dispatcher, audit, &mockHumanChecker{available: false})
+	exec := NewWorkflowExecutor(wfStore, instStore, audit, dispatcher,
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), &EscalationRequest{
+		InstanceID: inst.ID, NodeID: "approval-1", HumanApprover: "human-only", Attempts: 5,
+	})
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked when last peer fails", instStore.updatedStatus)
+	}
+}
+
 func TestEnqueueEscalationOrBlock_ImmediateDeliverDoesNotMarkOtherPeerPending(t *testing.T) {
 	// human-a is offline (queued); human-b comes online and Escalate delivers
 	// immediately — must not append human-b to escalation_approvers.
