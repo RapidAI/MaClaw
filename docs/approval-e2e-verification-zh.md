@@ -1,8 +1,11 @@
 # 审批工作流 × MaClaw E2E 验证手册
 
 **关联**：[approval-maclaw-app-e2e-improvement-plan-zh.md](./approval-maclaw-app-e2e-improvement-plan-zh.md)  
+**发版当日 15 分钟清单**：[approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md)  
 **原则**：Hub WorkflowExecutor 为 SoT；桌面 registry / DataSrv 为投影。  
 **一键脚本**：`scripts\run-approval-e2e-checks.cmd`（或 `.ps1`）
+
+> **发版只做短清单时**：先跑 §1 一键自动，再按 [发版当日清单](./approval-release-day-checklist-zh.md) 勾 B1–B3。
 
 ---
 
@@ -135,9 +138,11 @@ critical write dropped
 
 ## 5. 通过标准（发布前）
 
+短清单模板：[approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md)
+
 - [x] 一键自动化全部绿（`scripts\run-approval-e2e-checks.cmd`）  
-- [ ] 实机 #1 双机至少验证一次  
-- [ ] 实机 #4 或 #5 至少验证一项  
+- [ ] 实机 #1 双机至少验证一次（发版必做）  
+- [ ] 实机 #4 或 #5 至少验证一项（发版至少一项）  
 - [ ] 建议：#7 any-N 或 #8 Hub 重启至少一项  
 - [ ] 无回归：`approval_engine=local` 演示路径仍可决策  
 
@@ -148,8 +153,9 @@ critical write dropped
 | 项 | 状态 |
 | --- | --- |
 | 审批 E2E 主栈 | 已合入 `origin/main` |
-| 近期相关提交（节选） | `c75cb8c2` UI 文案/exhausted 样式；`0d4dfad4` attempts/exhausted 推送与展示；`ce41a713` attempts 持久化；`e65086af` any-N + peer timeout；`f67e8b9c` 重启 reconcile；`8076b1d9` CAS + 终态清队列 |
+| 发版短清单 | [approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md) |
+| 近期相关提交（节选） | `ae142b38` E2E 手册扩展；`c75cb8c2` UI 文案/exhausted 样式；`0d4dfad4` attempts/exhausted 推送；`ce41a713` attempts 持久化；`e65086af` any-N + peer timeout；`f67e8b9c` 重启 reconcile |
 | 分支 | `main` 与 `origin/main` 对齐（本手册更新后以 push 为准） |
 | 远程 | https://github.com/RapidAI/MaClaw |
 
-> 手工清单 #1/#4/#5/#7/#8 为产品验收项，代码侧已有对应自动化契约，不阻塞合并，但发版前应勾选。
+> 手工清单 #1/#4/#5/#7/#8 为产品验收项，代码侧已有对应自动化契约，不阻塞合并，但发版前应按短清单勾选。

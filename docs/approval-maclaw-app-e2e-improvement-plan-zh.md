@@ -3,6 +3,7 @@
 **状态**：Phase 0–18 完成 + 升级栈硬化（CAS / 重启 reconcile / any-N / peer timeout / attempts UI）  
 **日期**：2026-07-15  
 **验证手册**：[approval-e2e-verification-zh.md](./approval-e2e-verification-zh.md)（含实机 #1–#10）  
+**发版短清单**：[approval-release-day-checklist-zh.md](./approval-release-day-checklist-zh.md)（约 15 分钟）  
 **一键检查**：`scripts\run-approval-e2e-checks.cmd`  
 **关联文档**：
 

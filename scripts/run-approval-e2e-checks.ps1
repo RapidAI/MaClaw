@@ -42,6 +42,7 @@ Step -Name "Workflow editor i18n" -ScriptBlock {
 
 Write-Host ""
 Write-Host "All automated approval E2E checks passed." -ForegroundColor Green
-Write-Host "Manual remaining (docs/approval-e2e-verification-zh.md):" -ForegroundColor Yellow
-Write-Host "  #1 dual-desktop WS  #4 empty roles UX  #5 Hub jitter" -ForegroundColor Yellow
-Write-Host "  #7 any-N exhaust (optional)  #8 Hub restart retry (optional)  #9 peer-aware timeout (optional)" -ForegroundColor Yellow
+Write-Host "Next (release day, ~15 min): docs/approval-release-day-checklist-zh.md" -ForegroundColor Cyan
+Write-Host "Full manual matrix: docs/approval-e2e-verification-zh.md" -ForegroundColor Yellow
+Write-Host "  Required: #1 dual-desktop WS; #4 empty roles OR #5 Hub jitter" -ForegroundColor Yellow
+Write-Host "  Optional: #7 any-N  #8 Hub restart  #9 peer-aware timeout" -ForegroundColor Yellow

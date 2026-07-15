@@ -31,7 +31,8 @@ if errorlevel 1 exit /b 1
 
 echo.
 echo All automated approval E2E checks passed.
-echo Manual remaining: #1 dual-desktop WS, #4 empty roles, #5 Hub jitter;
-echo   optional #7 any-N, #8 Hub restart, #9 peer-aware timeout.
-echo See docs/approval-e2e-verification-zh.md
+echo Next (release day, ~15 min): docs\approval-release-day-checklist-zh.md
+echo Full manual matrix: docs\approval-e2e-verification-zh.md
+echo   Required: #1 dual-desktop WS; #4 empty roles OR #5 Hub jitter
+echo   Optional: #7 any-N, #8 Hub restart, #9 peer-aware timeout
 exit /b 0
