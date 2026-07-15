@@ -23,6 +23,7 @@ import type { HistoryDiscussionSummary } from './components/layout/SidebarHistor
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
+import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
 import { readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
 import { useAIAssistant } from './components/ai/useAIAssistant';
@@ -2374,6 +2375,14 @@ function App() {
                     remote.password,
                     remote.workDir.trim(),
                     remote.port || 22,
+                );
+                // Remember password on this device for later SSH reconnect in the control panel.
+                saveRemoteSSHPassword(
+                    remoteHost,
+                    remote.user.trim(),
+                    remote.password,
+                    remote.port || 22,
+                    remote.workDir.trim(),
                 );
             } else if (mode === 'coding_dev') {
                 agentMode = 'coding_dev';

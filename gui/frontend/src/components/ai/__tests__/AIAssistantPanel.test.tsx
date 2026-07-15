@@ -2026,6 +2026,7 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('shows remote SSH reconnect form when coding workbench needs reconnect', async () => {
+        window.localStorage.clear();
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);
         getCodingWorkbenchStatusMock.mockResolvedValue({
             kind: 'remote',
@@ -2060,11 +2061,81 @@ describe('AIAssistantPanel property tests', () => {
             expect((getByTestId('remote-reconnect-user') as HTMLInputElement).value).toBe('deploy');
             expect((getByTestId('remote-reconnect-workdir') as HTMLInputElement).value).toBe('/var/app');
         });
+        // No remembered password → field stays empty and no auto reconnect.
+        expect((getByTestId('remote-reconnect-password') as HTMLInputElement).value).toBe('');
+        expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
         expect(getByTestId('remote-coding-reconnect-form').textContent || '').toMatch(/Ship payment fix|payment fix/i);
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
+    it('prefills remembered password and auto-reconnects remote SSH', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.0.0.7', 'root', 'remembered-secret', 22, '/home');
+
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => {
+            if (rearmed) {
+                return {
+                    kind: 'remote',
+                    armed: true,
+                    needs_reconnect: false,
+                    turn_count: 1,
+                    remote_host: '10.0.0.7',
+                    remote_user: 'root',
+                    remote_port: 22,
+                    remote_work_dir: '/home',
+                    session_plan: 'Fix prod',
+                };
+            }
+            return {
+                kind: 'remote',
+                armed: false,
+                needs_reconnect: true,
+                turn_count: 1,
+                remote_host: '10.0.0.7',
+                remote_user: 'root',
+                remote_port: 22,
+                remote_work_dir: '/home',
+                session_plan: 'Fix prod',
+            };
+        });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => {
+            rearmed = true;
+        });
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-auto-reconnect',
+                taskTitle: 'Auto reconnect',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.7',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => {
+            expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledWith(
+                'D:/tasks/remote-coding-auto-reconnect',
+                '10.0.0.7',
+                'root',
+                'remembered-secret',
+                '/home',
+                22,
+            );
+        });
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy());
+        expect(queryByTestId('remote-coding-reconnect-form')).toBeNull();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
     it('shows reconnect success and allows editing session plan after remote rearm', async () => {
+        window.localStorage.clear();
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);
         getCodingWorkbenchStatusMock.mockResolvedValue({
             kind: 'remote',

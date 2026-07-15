@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+    clearRemoteSSHPassword,
+    loadRemoteSSHPassword,
     loadWelcomeCodingEnv,
     loadWelcomeFieldValues,
     loadWelcomeRecentEntries,
@@ -8,6 +10,9 @@ import {
     recordWelcomeRecent,
     resolveWelcomeCodingEnvForSave,
     resolveWelcomeRecentPrompts,
+    REMOTE_SSH_PASSWORD_VAULT_KEY,
+    remoteSSHPasswordVaultKey,
+    saveRemoteSSHPassword,
     saveWelcomeCodingEnv,
     saveWelcomeFieldValues,
     stripCodingEnvPassword,
@@ -114,6 +119,30 @@ describe("welcomeTaskMemory", () => {
         })?.remote?.password).toBeUndefined();
         expect(stripCodingEnvPassword(sameHost)?.remote?.password).toBeUndefined();
         expect(stripCodingEnvPassword(sameHost)?.remote?.host).toBe("192.168.1.10");
+    });
+
+    it("remembers SSH passwords per host+user for reconnect (vault survives last-used env rotation)", () => {
+        saveWelcomeCodingEnv({
+            remote: { host: "a.example", port: 22, user: "root", workDir: "/home", password: "pw-a" },
+        });
+        expect(loadRemoteSSHPassword("a.example", "root", 22)).toBe("pw-a");
+        expect(localStorage.getItem(REMOTE_SSH_PASSWORD_VAULT_KEY)).toContain("pw-a");
+
+        // Rotating last-used env to another host must not drop vault entry for A.
+        saveWelcomeCodingEnv({
+            remote: { host: "b.example", port: 22, user: "ops", workDir: "/srv", password: "pw-b" },
+        });
+        expect(loadRemoteSSHPassword("a.example", "root", 22)).toBe("pw-a");
+        expect(loadRemoteSSHPassword("b.example", "ops", 22)).toBe("pw-b");
+        expect(loadWelcomeCodingEnv().remote?.host).toBe("b.example");
+
+        saveRemoteSSHPassword("a.example", "root", "pw-a2", 22, "/home2");
+        expect(loadRemoteSSHPassword("A.example", "root", 22)).toBe("pw-a2"); // host case-insensitive
+        expect(remoteSSHPasswordVaultKey("A.example", "root", 22)).toBe("root@a.example:22");
+
+        clearRemoteSSHPassword("a.example", "root", 22);
+        expect(loadRemoteSSHPassword("a.example", "root", 22)).toBe("");
+        expect(loadRemoteSSHPassword("b.example", "ops", 22)).toBe("pw-b");
     });
 
     it("resolveWelcomeCodingEnvForSave distinguishes omit vs explicit clear", () => {

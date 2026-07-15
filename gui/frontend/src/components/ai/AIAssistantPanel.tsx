@@ -34,6 +34,8 @@ import { InlineChatCard } from "./InlineChatCard";
 import { AssistantWelcomeView, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
 import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
 import {
+    loadRemoteSSHPassword,
+    saveRemoteSSHPassword,
     saveWelcomeCustomTemplate,
     shouldOfferWelcomeTemplateSave,
     type WelcomeTemplateSaveOffer,
@@ -350,7 +352,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [savingTask, setSavingTask] = useState(false);
     const [workflowEnabled, setWorkflowEnabled] = useState(false);
     const [permissionMode, setPermissionMode] = useState<AssistantPermissionMode>("request");
-    /** Remote coding SSH reconnect form (password never persisted). */
+    /** Remote coding SSH reconnect form. Password is recalled from localStorage vault only. */
     const [remoteReconnect, setRemoteReconnect] = useState<{
         needsReconnect: boolean;
         host: string;
@@ -363,6 +365,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         success: string;
         sessionPlan: string;
     }>({ needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" });
+    /** Avoid auto-reconnect loops: key = projectPath|user@host:port after one attempt (success or fail). */
+    const remoteAutoReconnectKeyRef = useRef("");
+    /** Prevent concurrent PrepareRemoteCodingEnvironment calls (auto + manual / double effect). */
+    const remoteReconnectInFlightRef = useRef(false);
     /** Pure coding session plan editor (local + remote). */
     const [codingSessionPlan, setCodingSessionPlan] = useState("");
     const [codingExecutionPlan, setCodingExecutionPlan] = useState("");
@@ -890,23 +896,59 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Apply remote reconnect fields before optional follow-up RPCs so a
             // missing/throwing sidecar binding cannot skip SSH form hydration.
             if (!isRemote) {
+                remoteAutoReconnectKeyRef.current = "";
+                remoteReconnectInFlightRef.current = false;
                 setRemoteReconnect(prev => (prev.needsReconnect || prev.host || prev.password
                     ? { needsReconnect: false, host: "", user: "", port: 22, workDir: "", password: "", connecting: false, error: "", success: "", sessionPlan: "" }
                     : prev));
             } else {
                 const needs = !!st.needs_reconnect;
-                setRemoteReconnect(prev => ({
-                    ...prev,
-                    needsReconnect: needs,
-                    host: String(st.remote_host || activeTab.remoteHost || prev.host || "").trim(),
-                    user: String(st.remote_user || prev.user || "").trim(),
-                    port: Number(st.remote_port) > 0 ? Number(st.remote_port) : (prev.port || 22),
-                    workDir: String(st.remote_work_dir || prev.workDir || "").trim(),
-                    sessionPlan: plan || prev.sessionPlan,
-                    error: needs ? (prev.error || "") : "",
-                    success: needs ? "" : prev.success,
-                    connecting: false,
-                }));
+                const host = String(st.remote_host || activeTab.remoteHost || "").trim();
+                const user = String(st.remote_user || "").trim();
+                const port = Number(st.remote_port) > 0 ? Number(st.remote_port) : 22;
+                const workDir = String(st.remote_work_dir || "").trim();
+                // Read vault outside setState (setState updater must stay pure).
+                const rememberedPassword = needs && host && user
+                    ? loadRemoteSSHPassword(host, user, port)
+                    : "";
+                if (!needs) {
+                    remoteAutoReconnectKeyRef.current = "";
+                    remoteReconnectInFlightRef.current = false;
+                }
+                setRemoteReconnect(prev => {
+                    const nextHost = host || prev.host || "";
+                    const nextUser = user || prev.user || "";
+                    const nextPort = host || user ? port : (prev.port || 22);
+                    const nextWorkDir = workDir || prev.workDir || "";
+                    const identityChanged = (
+                        (host && prev.host && host !== prev.host)
+                        || (user && prev.user && user !== prev.user)
+                        || (host && user && Number(st.remote_port) > 0 && prev.port > 0 && port !== prev.port)
+                    );
+                    // Prefer remembered password for this identity; keep in-progress typing only if identity stable.
+                    let nextPassword = "";
+                    if (needs) {
+                        if (rememberedPassword) {
+                            nextPassword = rememberedPassword;
+                        } else if (!identityChanged) {
+                            nextPassword = prev.password;
+                        }
+                    }
+                    return {
+                        ...prev,
+                        needsReconnect: needs,
+                        host: nextHost,
+                        user: nextUser,
+                        port: nextPort,
+                        workDir: nextWorkDir,
+                        password: nextPassword,
+                        sessionPlan: plan || prev.sessionPlan,
+                        // Preserve error only while still disconnected and not mid-connect.
+                        error: needs && prev.connecting ? prev.error : (needs ? (prev.error || "") : ""),
+                        success: needs ? "" : prev.success,
+                        connecting: needs ? prev.connecting : false,
+                    };
+                });
             }
             try {
                 void GetCodingWorkbenchCheckpointSidecarStats(projectPath).then((ss) => {
@@ -996,15 +1038,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         return () => { if (typeof off === "function") off(); };
     }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
-    const handleRemoteCodingReconnect = useCallback(async () => {
+    const handleRemoteCodingReconnect = useCallback(async (opts?: { auto?: boolean }) => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
+        if (remoteReconnectInFlightRef.current) return;
         const host = remoteReconnect.host.trim();
         const user = remoteReconnect.user.trim();
         const workDir = remoteReconnect.workDir.trim();
-        const password = remoteReconnect.password;
         const port = remoteReconnect.port > 0 ? remoteReconnect.port : 22;
+        // Auto path may race before state password is set — load vault as fallback.
+        const password = remoteReconnect.password || (opts?.auto ? loadRemoteSSHPassword(host, user, port) : "");
         if (!host || !user || !workDir || !password) {
+            if (opts?.auto) return;
             setRemoteReconnect(prev => ({
                 ...prev,
                 error: localizeText(lang, "Host, user, password and remote work directory are required", "主机、用户名、密码和远程工作目录均为必填", "主機、使用者名稱、密碼和遠端工作目錄均為必填"),
@@ -1012,15 +1057,39 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }));
             return;
         }
-        setRemoteReconnect(prev => ({ ...prev, connecting: true, error: "", success: "" }));
+        const autoKey = `${projectPath}|${user}@${host}:${port}`;
+        if (opts?.auto) {
+            // Caller (effect) should have reserved autoKey; double-check here.
+            if (remoteAutoReconnectKeyRef.current && remoteAutoReconnectKeyRef.current !== autoKey) {
+                // Another identity already attempted this cycle — skip.
+            }
+            if (remoteAutoReconnectKeyRef.current === autoKey) {
+                // Already attempted this identity; only proceed if effect just reserved it
+                // and we are not mid-flight (first entry).
+            } else {
+                remoteAutoReconnectKeyRef.current = autoKey;
+            }
+        }
+        remoteReconnectInFlightRef.current = true;
+        setRemoteReconnect(prev => ({ ...prev, connecting: true, error: "", success: "", password: prev.password || password }));
         try {
             await PrepareRemoteCodingEnvironment(projectPath, host, user, password, workDir, port);
             const st = await GetCodingWorkbenchStatus(projectPath);
             const ok = !st?.needs_reconnect && !!st?.armed;
+            if (ok) {
+                // Remember password locally so the next reconnect does not require re-typing.
+                saveRemoteSSHPassword(host, user, password, port, workDir);
+                // Allow a future auto-reconnect after a later disconnect.
+                remoteAutoReconnectKeyRef.current = "";
+            } else if (opts?.auto) {
+                // Keep autoKey so we do not loop on a bad/stale password.
+                remoteAutoReconnectKeyRef.current = autoKey;
+            }
             setRemoteReconnect(prev => ({
                 ...prev,
                 connecting: false,
-                password: "", // never keep password in React state after success
+                // Keep password filled on failure so user can retry/edit; clear only after success.
+                password: ok ? "" : (prev.password || password),
                 needsReconnect: !ok,
                 error: ok ? "" : (st?.message || localizeText(lang, "Reconnect incomplete", "重连未完成", "重連未完成")),
                 success: ok
@@ -1033,16 +1102,57 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 setCodingSessionPlanDraft(String(st.session_plan));
             }
             if (ok) {
-                // Drop user back into the composer for continuous multi-turn coding.
                 requestAnimationFrame(() => {
                     inputRef.current?.focus();
                 });
             }
         } catch (err) {
+            if (opts?.auto) {
+                remoteAutoReconnectKeyRef.current = autoKey;
+            }
             const msg = err instanceof Error ? err.message : String(err || "reconnect failed");
-            setRemoteReconnect(prev => ({ ...prev, connecting: false, error: msg, success: "" }));
+            setRemoteReconnect(prev => ({
+                ...prev,
+                connecting: false,
+                error: msg,
+                success: "",
+                password: prev.password || password,
+            }));
+        } finally {
+            remoteReconnectInFlightRef.current = false;
         }
     }, [activeTab?.projectPath, activeTab?.type, remoteReconnect.host, remoteReconnect.user, remoteReconnect.workDir, remoteReconnect.password, remoteReconnect.port, lang]);
+    // When SSH drops, try one silent reconnect using the remembered local password.
+    useEffect(() => {
+        if (!remoteReconnect.needsReconnect || remoteReconnect.connecting) return;
+        if (remoteReconnectInFlightRef.current) return;
+        const host = remoteReconnect.host.trim();
+        const user = remoteReconnect.user.trim();
+        const workDir = remoteReconnect.workDir.trim();
+        const port = remoteReconnect.port > 0 ? remoteReconnect.port : 22;
+        if (!host || !user || !workDir) return;
+        // Only auto-reconnect when a password is already known (state or vault).
+        const password = remoteReconnect.password || loadRemoteSSHPassword(host, user, port);
+        if (!password) return;
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        if (!projectPath) return;
+        const autoKey = `${projectPath}|${user}@${host}:${port}`;
+        // Reserve before async so Strict Mode / re-renders cannot double-fire.
+        if (remoteAutoReconnectKeyRef.current === autoKey) return;
+        remoteAutoReconnectKeyRef.current = autoKey;
+        void handleRemoteCodingReconnect({ auto: true });
+    }, [
+        remoteReconnect.needsReconnect,
+        remoteReconnect.connecting,
+        remoteReconnect.host,
+        remoteReconnect.user,
+        remoteReconnect.workDir,
+        remoteReconnect.port,
+        remoteReconnect.password,
+        activeTab?.projectPath,
+        activeTab?.type,
+        handleRemoteCodingReconnect,
+    ]);
     const handleSaveCodingSessionPlan = useCallback(async () => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
         if (!projectPath) return;
@@ -2954,7 +3064,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (!isPureCodingEnvironment) return "";
         if (isRemoteCodingDevEnvironment) {
             if (remoteReconnect.needsReconnect) {
-                return localizeText(lang, "SSH session is not connected. Enter password below to reconnect and continue multi-turn remote coding.", "SSH 未连接或已断开。请在下方输入密码重连，以继续多轮远程编程。", "SSH 未連線或已中斷。請在下方輸入密碼重連，以繼續多輪遠端程式開發。");
+                return localizeText(lang, "SSH session is not connected. Reconnect below (password is remembered on this device) to continue multi-turn remote coding.", "SSH 未连接或已断开。请在下方重连（本机已记忆密码时会自动填充/重连）以继续多轮远程编程。", "SSH 未連線或已中斷。請在下方重連（本機已記憶密碼時會自動填入/重連）以繼續多輪遠端程式開發。");
             }
             if (activeProjectPreparing && activeProjectPrepareMode === "new-agent") {
                 return localizeText(lang, "Connecting SSH and preparing full remote coding workbench (source preview + local Skill/MCP)…", "正在连接 SSH 并建立全功能远程编程工作台（源码预览 + 本机 Skill/MCP）…", "正在連線 SSH 並建立全功能遠端程式工作台（原始碼預覽 + 本機 Skill/MCP）…");
@@ -4114,10 +4224,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         <input
                                             data-testid="remote-reconnect-password"
                                             type="password"
-                                            autoComplete="new-password"
+                                            autoComplete="current-password"
                                             value={remoteReconnect.password}
                                             onChange={(e) => setRemoteReconnect(prev => ({ ...prev, password: e.target.value }))}
-                                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleRemoteCodingReconnect(); } }}
+                                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleRemoteCodingReconnect({}); } }}
+                                            placeholder={localizeText(lang, "Remembered on this device", "本机记忆，下次自动填充", "本機記憶，下次自動填入")}
                                             style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
@@ -4145,7 +4256,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         type="button"
                                         data-testid="remote-reconnect-submit"
                                         disabled={remoteReconnect.connecting}
-                                        onClick={() => { void handleRemoteCodingReconnect(); }}
+                                        onClick={() => { void handleRemoteCodingReconnect({}); }}
                                         style={primaryFilledButtonStyle(t, {
                                             height: 28,
                                             padding: "0 14px",

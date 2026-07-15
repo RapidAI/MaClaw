@@ -384,18 +384,17 @@ export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
     if (typeof env.workingDir === "string") {
         next.workingDir = env.workingDir.trim() || undefined;
     }
+    let vaultWrite: { host: string; user: string; password: string; port: number } | null = null;
+    let vaultClear: { host: string; user: string; port: number } | null = null;
     if (env.remote) {
         const hasPasswordField = typeof env.remote.password === "string";
         // Build remote via normalize so host/port/user rules stay single-sourced.
-        // Temporarily inject a placeholder password when explicit empty, so remote
-        // structure is kept even if host-only fields would otherwise normalize fine.
         const normalized = normalizeWelcomeStoredCodingEnv({
             remote: {
                 host: env.remote.host,
                 port: env.remote.port,
                 user: env.remote.user,
                 workDir: env.remote.workDir,
-                // Use a one-shot marker only when we need structure; real password handled below.
                 password: hasPasswordField && env.remote.password
                     ? env.remote.password
                     : undefined,
@@ -413,7 +412,8 @@ export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
                 port: normalized.remote.port,
             };
             if (hasPasswordField && env.remote.password === "") {
-                // Explicit clear.
+                // Explicit clear — drop vault entry after last-used env is written.
+                vaultClear = { host, user, port: next.remote.port };
             } else if (normalized.remote.password) {
                 next.remote.password = normalized.remote.password;
             } else if (
@@ -424,9 +424,190 @@ export function saveWelcomeCodingEnv(env: WelcomeStoredCodingEnv): void {
                 // Partial update for the same host+user keeps the previous password.
                 next.remote.password = prev.remote.password;
             }
+            // Dual-write vault so reconnect can recall after last-used env rotates hosts.
+            if (next.remote.password) {
+                vaultWrite = {
+                    host,
+                    user,
+                    password: next.remote.password,
+                    port: next.remote.port,
+                };
+            }
         }
     }
     writeJson(WELCOME_CODING_ENV_KEY, next);
+    // Vault updates after last-used env so a failed vault write never leaves env/vault inverted.
+    if (vaultClear) {
+        removeRemoteSSHPasswordVaultEntry(vaultClear.host, vaultClear.user, vaultClear.port);
+    } else if (vaultWrite) {
+        upsertRemoteSSHPasswordVaultEntry(
+            vaultWrite.host,
+            vaultWrite.user,
+            vaultWrite.password,
+            vaultWrite.port,
+        );
+    }
+}
+
+// --- Multi-host SSH password vault (local only; reconnect form recall) ---
+
+/** localStorage map of `user@host:port` → password for remote coding reconnect. */
+export const REMOTE_SSH_PASSWORD_VAULT_KEY = "maclaw:remote-ssh-passwords";
+/** Soft cap so the vault cannot grow without bound across many one-off hosts. */
+export const REMOTE_SSH_PASSWORD_VAULT_MAX = 40;
+
+/** Stable vault key for a remote SSH identity (host is lowercased). */
+export function remoteSSHPasswordVaultKey(host: string, user: string, port?: number): string {
+    const h = String(host || "").trim().toLowerCase();
+    const u = String(user || "").trim();
+    const p = normalizeWelcomeSshPort(port);
+    return `${u}@${h}:${p}`;
+}
+
+function sameRemoteIdentity(
+    aHost: string,
+    aUser: string,
+    bHost: string,
+    bUser: string,
+): boolean {
+    return aHost.toLowerCase() === bHost.toLowerCase() && aUser === bUser;
+}
+
+function readRemoteSSHPasswordVault(): Record<string, string> {
+    const raw = readJson<Record<string, unknown> | null>(REMOTE_SSH_PASSWORD_VAULT_KEY, null);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw)) {
+        const key = String(k || "").trim();
+        const pw = normalizeWelcomeSshPassword(v);
+        if (key && pw) out[key] = pw;
+    }
+    return out;
+}
+
+/** Insert/update one vault entry (LRU by re-append). No-op on empty identity/password. */
+function upsertRemoteSSHPasswordVaultEntry(
+    host: string,
+    user: string,
+    password: string,
+    port?: number,
+): void {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    const pw = normalizeWelcomeSshPassword(password);
+    if (!h || !u || !pw) return;
+    const key = remoteSSHPasswordVaultKey(h, u, port);
+    const map = readRemoteSSHPasswordVault();
+    // Move key to "most recent" by re-inserting last (object key order is insertion order).
+    if (key in map) delete map[key];
+    map[key] = pw;
+    const keys = Object.keys(map);
+    if (keys.length > REMOTE_SSH_PASSWORD_VAULT_MAX) {
+        for (const d of keys.slice(0, keys.length - REMOTE_SSH_PASSWORD_VAULT_MAX)) {
+            delete map[d];
+        }
+    }
+    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+}
+
+function removeRemoteSSHPasswordVaultEntry(host: string, user: string, port?: number): void {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    if (!h || !u) return;
+    const key = remoteSSHPasswordVaultKey(h, u, port);
+    const map = readRemoteSSHPasswordVault();
+    if (!(key in map)) return;
+    delete map[key];
+    writeJson(REMOTE_SSH_PASSWORD_VAULT_KEY, map);
+}
+
+/**
+ * Load a remembered SSH password for remote coding reconnect.
+ * Prefers multi-host vault; falls back to last-used welcome coding env when host+user match.
+ * Lazy-promotes welcome-env fallback into the vault (one-time migrate).
+ */
+export function loadRemoteSSHPassword(host: string, user: string, port?: number): string {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    if (!h || !u) return "";
+    const p = normalizeWelcomeSshPort(port);
+    const fromVault = normalizeWelcomeSshPassword(
+        readRemoteSSHPasswordVault()[remoteSSHPasswordVaultKey(h, u, p)],
+    );
+    if (fromVault) return fromVault;
+    const env = loadWelcomeCodingEnv();
+    const rh = String(env.remote?.host || "").trim();
+    const ru = String(env.remote?.user || "").trim();
+    if (
+        env.remote?.password
+        && sameRemoteIdentity(rh, ru, h, u)
+    ) {
+        const pw = normalizeWelcomeSshPassword(env.remote.password);
+        if (pw) {
+            // Promote legacy single-env password into multi-host vault.
+            upsertRemoteSSHPasswordVaultEntry(h, u, pw, p);
+            return pw;
+        }
+    }
+    return "";
+}
+
+/**
+ * Remember an SSH password for reconnect (localStorage only).
+ * Always writes the multi-host vault; updates last-used welcome env only when
+ * identity matches or last-used remote is unset (avoids clobbering another host).
+ */
+export function saveRemoteSSHPassword(
+    host: string,
+    user: string,
+    password: string,
+    port?: number,
+    workDir?: string,
+): void {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    const pw = normalizeWelcomeSshPassword(password);
+    if (!h || !u || !pw) return;
+    const p = normalizeWelcomeSshPort(port);
+    upsertRemoteSSHPasswordVaultEntry(h, u, pw, p);
+
+    const prev = loadWelcomeCodingEnv();
+    const prevHost = String(prev.remote?.host || "").trim();
+    const prevUser = String(prev.remote?.user || "").trim();
+    if (prev.remote && !sameRemoteIdentity(prevHost, prevUser, h, u)) {
+        // Different host is active in last-used env — vault-only is enough.
+        return;
+    }
+    // Direct write of last-used env (skip saveWelcomeCodingEnv to avoid a second vault upsert).
+    const next: WelcomeStoredCodingEnv = { ...prev };
+    next.remote = {
+        host: h,
+        user: u,
+        port: p,
+        workDir: String(workDir || prev.remote?.workDir || "").trim(),
+        password: pw,
+    };
+    writeJson(WELCOME_CODING_ENV_KEY, next);
+}
+
+/**
+ * Remove a remembered password for one host+user.
+ * Also strips password from last-used welcome env when identity matches.
+ */
+export function clearRemoteSSHPassword(host: string, user: string, port?: number): void {
+    const h = String(host || "").trim();
+    const u = String(user || "").trim();
+    if (!h || !u) return;
+    const p = normalizeWelcomeSshPort(port);
+    removeRemoteSSHPasswordVaultEntry(h, u, p);
+    const prev = loadWelcomeCodingEnv();
+    if (
+        prev.remote?.password
+        && sameRemoteIdentity(String(prev.remote.host || "").trim(), String(prev.remote.user || "").trim(), h, u)
+    ) {
+        const { password: _drop, ...remote } = prev.remote;
+        writeJson(WELCOME_CODING_ENV_KEY, { ...prev, remote });
+    }
 }
 
 // --- Custom saved templates (user "save as favorite") ---
