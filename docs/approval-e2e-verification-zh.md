@@ -105,6 +105,6 @@ dispatch_partial_failure
 | 本地提交 | `14eb9550 feat: close Hub-authoritative approval E2E path` |
 | 分支 | `main`（相对 `origin/main` **ahead 4**） |
 | 同栈其它本地提交 | mobile QR / version bump / app workflows+SSH（非本专题） |
-| 推送 | **未推送**（需确认是否 `git push origin main`，或只挑审批提交另开 PR） |
+| 推送 | **已推送** `origin/main`（`5d72ed9c..e7c0b58d`，含审批 E2E 整栈 5 提交） |
 
-> 说明：远程 `origin/main` 与本地在审批相关文件历史上有差异（曾尝试 cherry-pick 至 origin 出现 modify/delete 冲突）。优先在**当前本地 main**上整栈推送或先对齐远程策略，再推。  
+> 远程：https://github.com/RapidAI/MaClaw/commit/14eb9550 （审批主提交）  
