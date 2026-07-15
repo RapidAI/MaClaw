@@ -920,18 +920,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     const nextUser = user || prev.user || "";
                     const nextPort = host || user ? port : (prev.port || 22);
                     const nextWorkDir = workDir || prev.workDir || "";
-                    const identityChanged = (
+                    const identityChanged = !!(
                         (host && prev.host && host !== prev.host)
                         || (user && prev.user && user !== prev.user)
                         || (host && user && Number(st.remote_port) > 0 && prev.port > 0 && port !== prev.port)
                     );
-                    // Prefer remembered password for this identity; keep in-progress typing only if identity stable.
+                    // Never clobber in-progress typing / mid-connect password.
+                    // Only hydrate from vault when empty, or when server identity changed.
                     let nextPassword = "";
                     if (needs) {
-                        if (rememberedPassword) {
-                            nextPassword = rememberedPassword;
-                        } else if (!identityChanged) {
+                        if (prev.connecting) {
                             nextPassword = prev.password;
+                        } else if (identityChanged) {
+                            nextPassword = rememberedPassword || "";
+                        } else {
+                            nextPassword = prev.password || rememberedPassword || "";
                         }
                     }
                     return {
@@ -943,8 +946,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         workDir: nextWorkDir,
                         password: nextPassword,
                         sessionPlan: plan || prev.sessionPlan,
-                        // Preserve error only while still disconnected and not mid-connect.
-                        error: needs && prev.connecting ? prev.error : (needs ? (prev.error || "") : ""),
+                        error: needs ? (prev.error || "") : "",
                         success: needs ? "" : prev.success,
                         connecting: needs ? prev.connecting : false,
                     };
@@ -1058,18 +1060,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return;
         }
         const autoKey = `${projectPath}|${user}@${host}:${port}`;
-        if (opts?.auto) {
-            // Caller (effect) should have reserved autoKey; double-check here.
-            if (remoteAutoReconnectKeyRef.current && remoteAutoReconnectKeyRef.current !== autoKey) {
-                // Another identity already attempted this cycle — skip.
-            }
-            if (remoteAutoReconnectKeyRef.current === autoKey) {
-                // Already attempted this identity; only proceed if effect just reserved it
-                // and we are not mid-flight (first entry).
-            } else {
-                remoteAutoReconnectKeyRef.current = autoKey;
-            }
-        }
         remoteReconnectInFlightRef.current = true;
         setRemoteReconnect(prev => ({ ...prev, connecting: true, error: "", success: "", password: prev.password || password }));
         try {
@@ -4196,7 +4186,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         <input
                                             data-testid="remote-reconnect-host"
                                             value={remoteReconnect.host}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, host: e.target.value }))}
+                                            onChange={(e) => {
+                                                const host = e.target.value;
+                                                const user = remoteReconnect.user.trim();
+                                                const port = remoteReconnect.port || 22;
+                                                const remembered = loadRemoteSSHPassword(host.trim(), user, port);
+                                                remoteAutoReconnectKeyRef.current = "";
+                                                setRemoteReconnect(prev => ({
+                                                    ...prev,
+                                                    host,
+                                                    password: remembered || (host.trim() === prev.host.trim() ? prev.password : ""),
+                                                    error: "",
+                                                }));
+                                            }}
                                             style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
@@ -4205,7 +4207,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         <input
                                             data-testid="remote-reconnect-user"
                                             value={remoteReconnect.user}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, user: e.target.value }))}
+                                            onChange={(e) => {
+                                                const user = e.target.value;
+                                                const host = remoteReconnect.host.trim();
+                                                const port = remoteReconnect.port || 22;
+                                                const remembered = loadRemoteSSHPassword(host, user.trim(), port);
+                                                remoteAutoReconnectKeyRef.current = "";
+                                                setRemoteReconnect(prev => ({
+                                                    ...prev,
+                                                    user,
+                                                    password: remembered || (user.trim() === prev.user.trim() ? prev.password : ""),
+                                                    error: "",
+                                                }));
+                                            }}
                                             style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
@@ -4215,7 +4229,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                             data-testid="remote-reconnect-port"
                                             type="number"
                                             value={remoteReconnect.port || 22}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, port: Number(e.target.value) || 22 }))}
+                                            onChange={(e) => {
+                                                const port = Number(e.target.value) || 22;
+                                                const host = remoteReconnect.host.trim();
+                                                const user = remoteReconnect.user.trim();
+                                                const remembered = loadRemoteSSHPassword(host, user, port);
+                                                remoteAutoReconnectKeyRef.current = "";
+                                                setRemoteReconnect(prev => ({
+                                                    ...prev,
+                                                    port,
+                                                    password: remembered || (port === prev.port ? prev.password : ""),
+                                                    error: "",
+                                                }));
+                                            }}
                                             style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
                                         />
                                     </label>
