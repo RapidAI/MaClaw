@@ -474,6 +474,138 @@ func TestOnEscalationFailed_LastPeerBlocks(t *testing.T) {
 	}
 }
 
+func TestOnEscalationFailed_AnyNofM_KeepsRunningWhenStillSatisfiable(t *testing.T) {
+	// any-2-of-3: human-a permanently offline; b and c can still approve.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b", "human-c"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 2,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-anyn", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	notifier := &mockNotifier{}
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(notifier),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), &EscalationRequest{
+		InstanceID: inst.ID, NodeID: "approval-1", HumanApprover: "human-a", Attempts: 5,
+	})
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("any-N-of-M must not block when N is still reachable")
+	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "human-a" {
+		t.Fatalf("exhausted=%v want [human-a]", exh)
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending {
+		t.Fatal("escalation_pending should clear when queue empty")
+	}
+	if len(notifier.notifications) < 1 {
+		t.Fatal("expected initiator notify")
+	}
+}
+
+func TestOnEscalationFailed_AnyNofM_BlocksWhenNUnreachable(t *testing.T) {
+	// any-2-of-2: both must effectively approve; one exhausted → block.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 2,
+		TimeoutHours: 24,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-anyn-block", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), &EscalationRequest{
+		InstanceID: inst.ID, NodeID: "approval-1", HumanApprover: "human-a", Attempts: 5,
+	})
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked when N unreachable", instStore.updatedStatus)
+	}
+}
+
+func TestShouldDeferForEscalationRetries_PartialMultiPeer(t *testing.T) {
+	// human-a queued; human-b already delivered (undecided, not queued) → do NOT defer timeout.
+	inst := &WorkflowInstance{
+		ID: "inst-to", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}, "human-a")
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, &mockInstanceStoreForTimeout{instance: inst},
+		&mockAuditStore{}, &mockDispatcherForTimeout{}, WithEscalationManager(esc))
+	cfg := &ApprovalNodeConfig{
+		ApproverIDs: []string{"human-a", "human-b"},
+		Mode:        ModeCountersign,
+	}
+	if exec.shouldDeferForEscalationRetries(inst, "approval-1", cfg) {
+		t.Fatal("must not defer when human-b is undecided and not in escalation queue")
+	}
+	// Both peers queued → defer.
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r2", InstanceID: inst.ID, NodeID: "approval-1"}, "human-b")
+	if !exec.shouldDeferForEscalationRetries(inst, "approval-1", cfg) {
+		t.Fatal("must defer when all undecided peers are in escalation queue")
+	}
+}
+
+func TestHandleTimeout_DoesNotDeferWhenPeerAlreadyDelivered(t *testing.T) {
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeCountersign,
+		TimeoutHours: 1,
+		// no fallback → will block when not deferred
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "CS", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-timeout", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	// Only human-a offline/queued; human-b already has the request.
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}, "human-a")
+	exec := NewWorkflowExecutor(wfStore, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	if err := exec.HandleTimeout(context.Background(), inst.ID, "approval-1"); err != nil {
+		t.Fatal(err)
+	}
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked (timeout must proceed for delivered peer)", instStore.updatedStatus)
+	}
+}
+
 func TestOnEscalationFailed_TerminalInstanceDoesNotReblock(t *testing.T) {
 	graph := WorkflowGraph{
 		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A"}},

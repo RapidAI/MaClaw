@@ -590,6 +590,8 @@ func (e *WorkflowExecutor) processCountersignMode(ctx context.Context, inst *Wor
 //   - Track approval count; advance when N approvals are reached.
 //   - Reject when it becomes impossible to reach N approvals
 //     (i.e., rejections > M - N, meaning not enough remaining approvers can reach N).
+//   - Approvers listed in escalation_exhausted_approvers cannot cast future votes
+//     (delivery permanently failed), so they do not count as remaining capacity.
 func (e *WorkflowExecutor) processAnyNofMMode(ctx context.Context, inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, response ApprovalResponse) (bool, bool, error) {
 	if response.Decision == approvalDecisionEscalate {
 		return false, false, nil
@@ -610,25 +612,37 @@ func (e *WorkflowExecutor) processAnyNofMMode(ctx context.Context, inst *Workflo
 			rejectionCount++
 		}
 	}
+	_ = rejectionCount // kept for audit/debug symmetry with historical logic
 
 	// Determine N (required approvals) and M (total approvers)
 	requiredApprovals := cfg.MinApprovals
 	if requiredApprovals <= 0 {
 		requiredApprovals = 1
 	}
-	totalApprovers := len(cfg.ApproverIDs)
 
 	// Advance when N approvals reached
 	if approvalCount >= requiredApprovals {
 		return true, false, nil
 	}
 
-	// Reject when it's impossible to reach N:
-	// remaining = totalApprovers - len(state.Decisions)
-	// maxPossibleApprovals = approvalCount + remaining
-	// If maxPossibleApprovals < requiredApprovals, reject.
-	remaining := totalApprovers - len(state.Decisions)
-	maxPossibleApprovals := approvalCount + remaining
+	// Reject when it's impossible to reach N. Remaining capacity excludes
+	// exhausted peers (permanent delivery failure) and anyone who already decided.
+	exhausted := exhaustedApproverSet(inst.InstanceData)
+	remainingCapable := 0
+	for _, id := range cfg.ApproverIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, decided := state.Decisions[id]; decided {
+			continue
+		}
+		if _, exh := exhausted[id]; exh {
+			continue
+		}
+		remainingCapable++
+	}
+	maxPossibleApprovals := approvalCount + remainingCapable
 	if maxPossibleApprovals < requiredApprovals {
 		return false, true, nil
 	}
@@ -798,8 +812,10 @@ func (e *WorkflowExecutor) HandleTimeout(ctx context.Context, instanceID, nodeID
 	if err := e.resolveApprovalNodeConfig(ctx, &cfg); err != nil {
 		return err
 	}
-	// EscalationManager already owns delivery retries for this node — wait for it.
-	if e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(instanceID, nodeID) {
+	// Defer only when every still-needed undecided peer is in the escalation
+	// queue (delivery retries own the path). Peers who already received the
+	// request must still be subject to node timeout / fallback.
+	if e.shouldDeferForEscalationRetries(inst, nodeID, &cfg) {
 		return nil
 	}
 	// A fallback is dispatched only once. Its routing state is persisted on the
@@ -911,10 +927,10 @@ func (e *WorkflowExecutor) HandleQueueFull(ctx context.Context, instanceID, node
 // unavailability, and queue-full handlers.
 // reason is one of: "timeout", "unavailable", "queue_full".
 func (e *WorkflowExecutor) handleFallbackRouting(ctx context.Context, inst *WorkflowInstance, node *WorkflowNode, cfg *ApprovalNodeConfig, reason string) error {
-	// Primary or fallback delivery already in EscalationManager retry — do not
-	// double-route or block until the queue exhausts (onEscalationFailed).
-	if e.escalationMgr != nil && inst != nil && node != nil &&
-		e.escalationMgr.HasPendingForInstance(inst.ID, node.ID) {
+	// Defer only when escalation owns every still-needed undecided peer.
+	// Partial multi-fail (some peers queued, others already delivered) must not
+	// suppress node-level timeout/fallback forever.
+	if inst != nil && node != nil && e.shouldDeferForEscalationRetries(inst, node.ID, cfg) {
 		return nil
 	}
 	if cfg.FallbackApprover == "" {
@@ -1198,6 +1214,13 @@ func clearEscalationMarkersInData(data map[string]interface{}) {
 	delete(data, "escalation_approver")
 }
 
+func clearExhaustedApproversInData(data map[string]interface{}) {
+	if data == nil {
+		return
+	}
+	delete(data, "escalation_exhausted_approvers")
+}
+
 func writeEscalationMarkersInData(data map[string]interface{}, remaining []string, reason string) {
 	if data == nil {
 		return
@@ -1425,7 +1448,9 @@ func (e *WorkflowExecutor) onEscalationDelivered(ctx context.Context, esc *Escal
 // onEscalationFailed is the EscalationManager max-retries hook.
 // For multi-approver nodes, only this peer is exhausted — drop them from the
 // pending list and keep the instance running while other peers still retry.
-// Mark the node blocked only when no escalations remain for this node.
+// When the live queue for the node is empty:
+//   - any-N-of-M: block only if N is no longer reachable given exhausted peers;
+//   - countersign / single / sequential: block (required peer permanently offline).
 func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *EscalationRequest) {
 	if e == nil || esc == nil || strings.TrimSpace(esc.InstanceID) == "" {
 		return
@@ -1441,7 +1466,7 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 		return
 	}
 	// Queue entry was already removed. Rebuild markers from live peers.
-	// Peers still queued → keep instance running (countersign).
+	// Peers still queued → keep instance running (countersign multi-fail).
 	peersStillPending := e.escalationMgr != nil && e.escalationMgr.HasPendingForInstance(esc.InstanceID, esc.NodeID)
 	if peersStillPending {
 		e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_peer_failed")
@@ -1453,18 +1478,214 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 		}
 		return
 	}
-	// No remaining retries for this node — block.
+
 	var node *WorkflowNode
+	var cfg *ApprovalNodeConfig
 	if e.store != nil && strings.TrimSpace(inst.VersionID) != "" {
 		if ver, verr := e.store.GetVersion(ctx, inst.VersionID); verr == nil && ver != nil {
 			node = findNodeByID(&ver.Graph, esc.NodeID)
+			if node != nil && len(node.Config) > 0 {
+				var parsed ApprovalNodeConfig
+				if uerr := json.Unmarshal(node.Config, &parsed); uerr == nil {
+					cfg = &parsed
+					_ = e.resolveApprovalNodeConfig(ctx, cfg)
+				}
+			}
 		}
 	}
 	if node == nil {
 		node = &WorkflowNode{ID: firstNonEmptyString(esc.NodeID, inst.CurrentNodeID), Label: esc.NodeID}
 	}
+
+	// any-N-of-M: peer permanently offline may still leave N reachable via others.
+	if cfg != nil && e.approvalStillSatisfiable(inst, esc.NodeID, cfg, esc.HumanApprover) {
+		failedPeer := strings.TrimSpace(esc.HumanApprover)
+		e.patchInstanceData(ctx, inst, esc.NodeID, "update_instance_data_escalation_exhausted_keep_running", func(data map[string]interface{}) {
+			data["escalation_exhausted_approvers"] = appendUniqueStringList(
+				stringSliceFromInstanceData(data["escalation_exhausted_approvers"]),
+				failedPeer,
+			)
+			clearEscalationMarkersInData(data)
+		})
+		if e.notifier != nil {
+			_ = e.notifier.NotifyInitiator(ctx, inst.ID,
+				fmt.Sprintf("escalation failed for approver %s (approval still satisfiable)", failedPeer),
+				fmt.Sprintf("node=%s attempts=%d mode=%s", esc.NodeID, esc.Attempts, cfg.Mode),
+			)
+		}
+		return
+	}
+
+	// Required peer(s) cannot complete the node — block.
 	details := fmt.Sprintf("escalation max retries exhausted for approver %s (attempts=%d)", esc.HumanApprover, esc.Attempts)
 	_ = e.markNodeBlocked(ctx, inst, node, "escalation_failed", details)
+}
+
+// exhaustedApproverSet reads durable peers who exhausted escalation retries.
+func exhaustedApproverSet(data map[string]interface{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	if data == nil {
+		return out
+	}
+	for _, a := range stringSliceFromInstanceData(data["escalation_exhausted_approvers"]) {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			out[a] = struct{}{}
+		}
+	}
+	return out
+}
+
+// appendUniqueStringList returns prev with value appended if not already present.
+func appendUniqueStringList(prev []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return prev
+	}
+	for _, p := range prev {
+		if strings.TrimSpace(p) == value {
+			return prev
+		}
+	}
+	return append(prev, value)
+}
+
+// approvalStillSatisfiable reports whether the approval node can still complete
+// successfully after treating extraExhausted as permanently offline (and any
+// peers already listed in escalation_exhausted_approvers).
+func (e *WorkflowExecutor) approvalStillSatisfiable(inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig, extraExhausted string) bool {
+	if inst == nil || cfg == nil {
+		return false
+	}
+	exhausted := exhaustedApproverSet(inst.InstanceData)
+	if a := strings.TrimSpace(extraExhausted); a != "" {
+		exhausted[a] = struct{}{}
+	}
+	state := getApprovalNodeState(inst, nodeID)
+
+	switch cfg.Mode {
+	case ModeAnyNofM:
+		required := cfg.MinApprovals
+		if required <= 0 {
+			required = 1
+		}
+		approvals := 0
+		for _, d := range state.Decisions {
+			if d == approvalDecisionApprove {
+				approvals++
+			}
+		}
+		if approvals >= required {
+			return true
+		}
+		capable := 0
+		for _, id := range cfg.ApproverIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, exh := exhausted[id]; exh {
+				continue
+			}
+			if d, ok := state.Decisions[id]; ok {
+				// Already decided and not an open future approve.
+				_ = d
+				continue
+			}
+			capable++
+		}
+		return approvals+capable >= required
+
+	case ModeCountersign:
+		// Every approver must approve; any exhausted peer without approve fails.
+		for _, id := range cfg.ApproverIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if state.Decisions[id] == approvalDecisionApprove {
+				continue
+			}
+			if _, exh := exhausted[id]; exh {
+				return false
+			}
+		}
+		// Remaining non-exhausted peers can still respond.
+		return true
+
+	default:
+		// single / sequential: required hop permanently offline → not satisfiable.
+		return false
+	}
+}
+
+// shouldDeferForEscalationRetries reports whether timeout/fallback must wait
+// because every still-needed undecided peer is currently in the escalation queue
+// (delivery retries own recovery). If any undecided, non-exhausted peer is NOT
+// queued, they already received the request — allow normal timeout/fallback.
+func (e *WorkflowExecutor) shouldDeferForEscalationRetries(inst *WorkflowInstance, nodeID string, cfg *ApprovalNodeConfig) bool {
+	if e == nil || e.escalationMgr == nil || inst == nil {
+		return false
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	queued := e.escalationMgr.PendingApprovers(inst.ID, nodeID)
+	if len(queued) == 0 {
+		return false
+	}
+	// No config / empty approver list: legacy behavior — any pending → defer.
+	if cfg == nil || len(cfg.ApproverIDs) == 0 {
+		return true
+	}
+	queuedSet := make(map[string]struct{}, len(queued))
+	for _, a := range queued {
+		queuedSet[strings.TrimSpace(a)] = struct{}{}
+	}
+	exhausted := exhaustedApproverSet(inst.InstanceData)
+	state := getApprovalNodeState(inst, nodeID)
+
+	// Sequential: only the current step matters.
+	if cfg.Mode == ModeSequential {
+		order := cfg.ApproverOrder
+		if len(order) == 0 {
+			order = cfg.ApproverIDs
+		}
+		for _, id := range order {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if state.Decisions[id] == approvalDecisionApprove {
+				continue
+			}
+			if _, exh := exhausted[id]; exh {
+				return false
+			}
+			_, inQ := queuedSet[id]
+			return inQ
+		}
+		return false
+	}
+
+	undecidedQueued := 0
+	undecidedNotQueued := 0
+	for _, id := range cfg.ApproverIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if d, ok := state.Decisions[id]; ok && (d == approvalDecisionApprove || d == approvalDecisionReject) {
+			continue
+		}
+		if _, exh := exhausted[id]; exh {
+			continue
+		}
+		if _, inQ := queuedSet[id]; inQ {
+			undecidedQueued++
+		} else {
+			undecidedNotQueued++
+		}
+	}
+	return undecidedQueued > 0 && undecidedNotQueued == 0
 }
 
 // markNodeBlocked marks an approval node as "blocked", updates the instance status,
@@ -1505,6 +1726,7 @@ func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowIn
 		data["blocked_node_id"] = node.ID
 		data["blocked_at"] = blockedAt
 		clearEscalationMarkersInData(data)
+		clearExhaustedApproversInData(data)
 	})
 
 	// Record blocked event in audit trail.
@@ -2276,12 +2498,15 @@ func (e *WorkflowExecutor) markInstanceCompleted(ctx context.Context, inst *Work
 	}
 	inst.Status = InstanceCompleted
 
-	// Clear stale escalation markers if present (CAS merge).
+	// Clear stale escalation / exhausted markers if present (CAS merge).
 	if inst.InstanceData != nil {
-		if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending ||
-			len(stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])) > 0 {
+		pending, _ := inst.InstanceData["escalation_pending"].(bool)
+		if pending ||
+			len(stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])) > 0 ||
+			len(stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])) > 0 {
 			e.patchInstanceData(ctx, inst, "", "update_instance_data_completed_clear_escalation", func(data map[string]interface{}) {
 				clearEscalationMarkersInData(data)
+				clearExhaustedApproversInData(data)
 			})
 		}
 	}
