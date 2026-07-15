@@ -1777,7 +1777,9 @@
     row.setAttribute('data-ca-chat-row', '1');
     row.style.cssText = 'margin-bottom:8px;padding:10px 12px;' + (role === 'user' ? 'background:#f4f7ff;border-color:rgba(47,128,237,.2)' : '');
     row.innerHTML = html;
-    log.appendChild(row);
+    var historyDisclosure = log.querySelector('.overview-assistant-history-disclosure');
+    if (historyDisclosure) log.insertBefore(row, historyDisclosure);
+    else log.appendChild(row);
     // Cap chat DOM growth; keep structural nodes (examples/history/empty).
     var rows = log.querySelectorAll('[data-ca-chat-row]');
     var overflow = rows.length - MAX_CHAT_ROWS;
@@ -3400,7 +3402,7 @@
         + '<div id="configAgentCatalogSections">' + sections + '</div>'
         + groupSection + ex);
       var log = byID('configAgentChatLog');
-      var row = log && log.lastChild;
+      var row = log && log.querySelector('[data-ca-chat-row]:last-of-type');
       bindCatalogRowActions(row);
       var searchFocus = row && row.querySelector('#configAgentCatalogSearch');
       if (searchFocus) searchFocus.focus();
