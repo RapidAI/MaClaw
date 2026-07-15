@@ -139,10 +139,33 @@ describe("welcomeTaskMemory", () => {
         saveRemoteSSHPassword("a.example", "root", "pw-a2", 22, "/home2");
         expect(loadRemoteSSHPassword("A.example", "root", 22)).toBe("pw-a2"); // host case-insensitive
         expect(remoteSSHPasswordVaultKey("A.example", "root", 22)).toBe("root@a.example:22");
+        // Different host is last-used (b) — vault update for a must not clobber b in last-used env.
+        expect(loadWelcomeCodingEnv().remote?.host).toBe("b.example");
+        expect(loadWelcomeCodingEnv().remote?.password).toBe("pw-b");
 
         clearRemoteSSHPassword("a.example", "root", 22);
         expect(loadRemoteSSHPassword("a.example", "root", 22)).toBe("");
         expect(loadRemoteSSHPassword("b.example", "ops", 22)).toBe("pw-b");
+
+        // Explicit clear of last-used also drops vault + last-used password.
+        saveWelcomeCodingEnv({
+            remote: { host: "b.example", port: 22, user: "ops", workDir: "/srv", password: "" },
+        });
+        expect(loadRemoteSSHPassword("b.example", "ops", 22)).toBe("");
+        expect(loadWelcomeCodingEnv().remote?.password).toBeUndefined();
+    });
+
+    it("promotes legacy welcome-env password into the multi-host vault on load", () => {
+        // Simulate pre-vault install: only last-used env has the password.
+        localStorage.setItem(WELCOME_CODING_ENV_KEY, JSON.stringify({
+            remote: { host: "legacy.example", port: 22, user: "dev", workDir: "/app", password: "legacy-pw" },
+        }));
+        expect(localStorage.getItem(REMOTE_SSH_PASSWORD_VAULT_KEY)).toBeNull();
+        expect(loadRemoteSSHPassword("legacy.example", "dev", 22)).toBe("legacy-pw");
+        // Second read should hit vault (promoted).
+        expect(localStorage.getItem(REMOTE_SSH_PASSWORD_VAULT_KEY)).toContain("legacy-pw");
+        localStorage.removeItem(WELCOME_CODING_ENV_KEY);
+        expect(loadRemoteSSHPassword("legacy.example", "dev", 22)).toBe("legacy-pw");
     });
 
     it("resolveWelcomeCodingEnvForSave distinguishes omit vs explicit clear", () => {
