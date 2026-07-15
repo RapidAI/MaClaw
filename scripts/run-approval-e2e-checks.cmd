@@ -30,6 +30,20 @@ node hub/web/approval_workflow/i18n.test.js
 if errorlevel 1 exit /b 1
 
 echo.
+echo === Frontend escalation display helpers ===
+if exist "gui\frontend\node_modules\vitest\vitest.mjs" (
+  pushd gui\frontend
+  node node_modules\vitest\vitest.mjs run src\components\pages\__tests__\approvalEscalationDisplay.test.ts
+  if errorlevel 1 (
+    popd
+    exit /b 1
+  )
+  popd
+) else (
+  echo vitest not installed under gui\frontend; skip
+)
+
+echo.
 echo All automated approval E2E checks passed.
 echo Next (release day, ~15 min): docs\approval-release-day-checklist-zh.md
 echo Full manual matrix: docs\approval-e2e-verification-zh.md

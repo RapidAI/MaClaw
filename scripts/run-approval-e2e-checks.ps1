@@ -40,6 +40,19 @@ Step -Name "Workflow editor i18n" -ScriptBlock {
     node hub/web/approval_workflow/i18n.test.js
 }
 
+Step -Name "Frontend escalation display helpers" -ScriptBlock {
+    Push-Location (Join-Path $root "gui/frontend")
+    try {
+        if (-not (Test-Path "node_modules/vitest/vitest.mjs")) {
+            Write-Host "vitest not installed under gui/frontend; skip (run npm install there to enable)" -ForegroundColor Yellow
+            return
+        }
+        node node_modules/vitest/vitest.mjs run src/components/pages/__tests__/approvalEscalationDisplay.test.ts
+    } finally {
+        Pop-Location
+    }
+}
+
 Write-Host ""
 Write-Host "All automated approval E2E checks passed." -ForegroundColor Green
 Write-Host "Next (release day, ~15 min): docs/approval-release-day-checklist-zh.md" -ForegroundColor Cyan

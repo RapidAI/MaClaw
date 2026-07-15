@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { approvalEscalationDataAttr, approvalEscalationExhaustedText, approvalEscalationRetryText } from './approvalEscalationDisplay';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { CancelNLSkillRun, CheckMaclawAppRuntimeHealth, ClearMaclawAppRunHistory, DownloadSkillRunArtifact, ExecuteMaclawAppBusinessOperation, OpenMaclawAppBusinessWorkspace, OpenMaclawAppApprovalWorkspace, OpenMaclawAppWorkspaceFromInstall, GetMISDataConfig, GetNLSkillRunStatus, GetSkillRunArtifact, InstallMixedSkill, ListMaclawAppApprovalInstances, ListMaclawAppApprovalInstancesAll, ListMaclawAppInstalls, ListMaclawAppRunHistory, ListNLSkills, ListSkillAppManifests, LoadConfig, OpenFileOrShowInFolder, InstallMaclawAppDependencies, InstallMaclawAppPackageFromHub, InstallSelectedMaclawAppPackageFromHub, PlanMaclawAppInstall, RecordMaclawAppApprovalInstance, RecordMaclawAppInstall, RecordMaclawAppRunHistory, StartMaclawAppApprovalWorkflow, SyncMaclawAppApprovalInstanceToDataSrv, DecideMaclawAppApprovalInstance, ReconcileMaclawAppApprovalProjections, OpenSkillRunArtifact, RecordMaclawAppRunEvidenceForSkill, RevealSkillRunArtifact, RunNLSkillAsync, SaveMaclawAppDefinitionForSkill, SearchMixedSkills, ShowItemInFolder, StageSkillAppInputFile, UploadNLSkillToMarket } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
@@ -8555,29 +8556,6 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
     };
 }
 
-/** Format Hub escalation retry line for list/detail (pending peers + attempts). */
-function approvalEscalationRetryText(instance: ApprovalInstanceView | undefined, lang?: string): string {
-    if (!instance) return '';
-    const peers = instance.escalationApprovers || [];
-    if (!instance.escalationPending && peers.length === 0) return '';
-    const attempts = instance.escalationAttempts || {};
-    const parts = peers.slice(0, 4).map((id) => {
-        const n = attempts[id];
-        return n && n > 0 ? `${id}\u00d7${n}` : id;
-    });
-    const more = peers.length > 4 ? ` +${peers.length - 4}` : '';
-    // 升级重投 — use \u escapes (file historically suffered mojibake from shell rewrites)
-    const head = isZh(lang) ? '\u5347\u7ea7\u91cd\u6295' : 'Escalation retry';
-    return parts.length ? `${head}: ${parts.join(', ')}${more}` : head;
-}
-
-function approvalEscalationExhaustedText(instance: ApprovalInstanceView | undefined, lang?: string): string {
-    const peers = instance?.escalationExhaustedApprovers || [];
-    if (!peers.length) return '';
-    // 离线耗尽
-    const head = isZh(lang) ? '\u79bb\u7ebf\u8017\u5c3d' : 'Escalation exhausted';
-    const body = peers.slice(0, 4).join(', ') + (peers.length > 4 ? ` +${peers.length - 4}` : '');
-    return `${head}: ${body}`;
 }
 function approvalLaneFromEvidence(evidence: AppRunApprovalInstanceEvidence): ApprovalLaneFilter {
     const explicitLane = String(evidence.lane || '').trim();
@@ -11100,7 +11078,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                         <div className="apps-approval-manager__body">
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
-                                    <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length) ? 'pending' : ((item.escalationExhaustedApprovers && item.escalationExhaustedApprovers.length) ? 'exhausted' : '')} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
+                                    <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={approvalEscalationDataAttr(item)} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                                         <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} {'\u00b7'} {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? ` ${'\u00b7'} Hub` : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` ${'\u00b7'} hub:${item.hubInstanceID}` : ''} {'\u00b7'} {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '\u8d85\u65f6' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '\u7d27\u6025' : 'Critical') : (isZh(lang) ? '\u5173\u6ce8' : 'Attention')}</span> : null}{approvalEscalationRetryText(item, lang) ? <span className="apps-approval-row__escalation" title={approvalEscalationRetryText(item, lang)}>{approvalEscalationRetryText(item, lang)}</span> : null}{approvalEscalationExhaustedText(item, lang) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={approvalEscalationExhaustedText(item, lang)}>{approvalEscalationExhaustedText(item, lang)}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>

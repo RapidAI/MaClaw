@@ -7,6 +7,13 @@ This directory contains architecture notes, design records, and operational guid
 - [Ops cheat sheet](adaptive-prompt-and-shared-loop-ops.md): light/full prompt, shared loop strangler, light tools, misroute upgrade, quality A/B, CLI export/merge, Hub metrics.
 - [Track summary](adaptive-prompt-track-summary.md): what shipped, env knobs, package map.
 
+## Hub approval × MaClaw App (E2E)
+
+- [E2E verification handbook](approval-e2e-verification-zh.md): automated + manual matrix (#1–#10), SoT notes, log greps.
+- [Release-day checklist (~15 min)](approval-release-day-checklist-zh.md): one-click script + dual-desktop + empty-roles/Hub-jitter.
+- [Improvement plan](approval-maclaw-app-e2e-improvement-plan-zh.md): phase status and architecture principles.
+- One-click: `scripts/run-approval-e2e-checks.cmd` (or `.ps1`).
+
 ## Agent Dynamic UI & Enterprise MIS Replacement
 
 - [Agent dynamic UI runtime design](agent-dynamic-ui-runtime-design-zh.md): AG-UI event protocol, Skill/Tool/Business Object non-invasive adapters, right-side Task Panel, structured input validation, and business data persistence.
