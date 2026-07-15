@@ -377,6 +377,49 @@ func TestStartInstance_CountersignPartialFailure_QueuesEscalationAndContinues(t 
 	}
 }
 
+func TestEnqueueEscalationOrBlock_ImmediateDeliverDoesNotMarkOtherPeerPending(t *testing.T) {
+	// human-a is offline (queued); human-b comes online and Escalate delivers
+	// immediately — must not append human-b to escalation_approvers.
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "CS"}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	wfStore := &mockWorkflowStoreWithVersion{version: ver}
+	inst := &WorkflowInstance{
+		ID: "inst-peer", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	audit := &mockAuditStore{}
+	dispatcher := &mockDispatcherForTimeout{}
+	// Checker toggled per Escalate: start false so first queues.
+	checker := &mockHumanChecker{available: false}
+	esc := NewEscalationManager(dispatcher, audit, checker)
+	exec := NewWorkflowExecutor(wfStore, instStore, audit, dispatcher, WithEscalationManager(esc))
+	node := &WorkflowNode{ID: "approval-1", Label: "CS"}
+	req := &ApprovalRequest{ID: "areq", InstanceID: inst.ID, NodeID: node.ID}
+
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-a", "partial_dispatch", "a down"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); !pending {
+		t.Fatal("expected pending after human-a queue")
+	}
+	checker.setAvailable(true)
+	if err := exec.enqueueEscalationOrBlock(context.Background(), inst, node, req, "human-b", "partial_dispatch", "b ok"); err != nil {
+		t.Fatal(err)
+	}
+	list := stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])
+	for _, id := range list {
+		if id == "human-b" {
+			t.Fatalf("human-b delivered immediately but listed in approvers: %v", list)
+		}
+	}
+	if len(list) != 1 || list[0] != "human-a" {
+		t.Fatalf("approvers=%v want only human-a", list)
+	}
+}
+
 func TestStartInstance_CountersignMultiFailure_AccumulatesApproversList(t *testing.T) {
 	approvalCfg, _ := json.Marshal(ApprovalNodeConfig{
 		ApproverIDs:  []string{"ve-a", "ve-b", "ve-c"},

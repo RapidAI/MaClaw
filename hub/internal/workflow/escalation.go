@@ -115,11 +115,23 @@ func (m *EscalationManager) SetDeliveredHook(h EscalationDeliveredHook) *Escalat
 // given instance (and optional node). Used by timeout handling to avoid
 // short-circuiting EscalationManager retries with an early markNodeBlocked.
 func (m *EscalationManager) HasPendingForInstance(instanceID, nodeID string) bool {
+	return m.hasPending(instanceID, nodeID, "")
+}
+
+// HasPendingApprover reports whether a specific human approver is still queued
+// for the instance/node. Used after Escalate so immediate redelivery is not
+// mistaken for a queue entry when another approver is already pending.
+func (m *EscalationManager) HasPendingApprover(instanceID, nodeID, approverID string) bool {
+	return m.hasPending(instanceID, nodeID, approverID)
+}
+
+func (m *EscalationManager) hasPending(instanceID, nodeID, approverID string) bool {
 	if m == nil {
 		return false
 	}
 	instanceID = strings.TrimSpace(instanceID)
 	nodeID = strings.TrimSpace(nodeID)
+	approverID = strings.TrimSpace(approverID)
 	if instanceID == "" {
 		return false
 	}
@@ -133,6 +145,9 @@ func (m *EscalationManager) HasPendingForInstance(instanceID, nodeID string) boo
 			continue
 		}
 		if nodeID != "" && strings.TrimSpace(req.NodeID) != nodeID {
+			continue
+		}
+		if approverID != "" && strings.TrimSpace(req.HumanApprover) != approverID {
 			continue
 		}
 		return true

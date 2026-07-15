@@ -1025,9 +1025,10 @@ func (e *WorkflowExecutor) enqueueEscalationOrBlock(ctx context.Context, inst *W
 	if qerr := e.escalationMgr.Escalate(ctx, req, approverID); qerr != nil {
 		return e.markNodeBlocked(ctx, inst, node, reason, "escalation queue failed: "+qerr.Error())
 	}
-	// Escalate may redeliver immediately when the approver is now online; only
-	// mark pending when a queue entry remains for this instance/node.
-	if !e.escalationMgr.HasPendingForInstance(inst.ID, node.ID) {
+	// Escalate may redeliver immediately when the approver is now online. Only
+	// mark this approver pending when THEY are still in the queue — not when
+	// some other peer is pending on the same node (countersign multi-fail).
+	if !e.escalationMgr.HasPendingApprover(inst.ID, node.ID, approverID) {
 		return nil
 	}
 	if e.notifier != nil {

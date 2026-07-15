@@ -305,6 +305,27 @@ func TestEscalation_MaxRetriesExhausted(t *testing.T) {
 	}
 }
 
+func TestEscalation_HasPendingApprover_DistinguishesPeers(t *testing.T) {
+	checker := &mockHumanChecker{available: false}
+	dispatcher := &mockDispatcherForEsc{}
+	audit := &mockAuditStoreForEsc{}
+	mgr := NewEscalationManager(dispatcher, audit, checker)
+	req := &ApprovalRequest{ID: "r1", InstanceID: "inst-x", NodeID: "n1"}
+	_ = mgr.Escalate(context.Background(), req, "human-a")
+	// human-b is available → immediate dispatch success, not queued.
+	checker.setAvailable(true)
+	_ = mgr.Escalate(context.Background(), req, "human-b")
+	if !mgr.HasPendingApprover("inst-x", "n1", "human-a") {
+		t.Fatal("human-a should still be pending")
+	}
+	if mgr.HasPendingApprover("inst-x", "n1", "human-b") {
+		t.Fatal("human-b was delivered immediately; must not report pending")
+	}
+	if !mgr.HasPendingForInstance("inst-x", "n1") {
+		t.Fatal("instance still has pending escalations")
+	}
+}
+
 func TestEscalation_MaxRetries_FailedHookSkipsDirectNotify(t *testing.T) {
 	// When failedHook is wired (production executor path), manager must not also
 	// NotifyInitiator — markNodeBlocked owns the single desktop push.
