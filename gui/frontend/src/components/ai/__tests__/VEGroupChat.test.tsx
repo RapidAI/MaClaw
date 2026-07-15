@@ -856,7 +856,27 @@ describe("VEGroupChatView", () => {
         const bubble = screen.getByTestId("group-msg-content-wrap-msg") as HTMLElement;
         expect(bubble.style.overflowWrap).toBe("anywhere");
         expect(bubble.style.whiteSpace).toBe("pre-wrap");
+        const tail = screen.getByTestId("group-msg-content-wrap-msg-tail");
+        expect(tail.getAttribute("data-side")).toBe("left");
+        expect(tail.style.top).toBe("-6px");
+        expect(tail.style.left).toBe("13px");
         expect(screen.getByText("second line")).toBeTruthy();
+    });
+
+    it("puts a top-right name-pointing tail on local-user group bubbles", () => {
+        render(
+            <GroupMessageBubble
+                message={{ id: "u1", fromId: "me", fromName: "Me", content: "你好", timestamp: 1 }}
+                participantIndex={0}
+                theme={testTheme}
+                isUser
+            />
+        );
+        const tail = screen.getByTestId("group-msg-content-u1-tail");
+        expect(tail.getAttribute("data-side")).toBe("right");
+        // Same geometry as AI assistant user bubbles (points up at the name).
+        expect(tail.style.top).toBe("-6px");
+        expect(tail.style.right).toBe("13px");
     });
 
     it("aligns configured local-user messages to the right", () => {

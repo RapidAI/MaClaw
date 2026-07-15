@@ -7,6 +7,11 @@ import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { IconCheck, IconCross, IconDocument, IconEdit, IconHourglass, IconPaperclip, StatusGlyph } from "./WorkbenchIcons";
 import { AppViewShell } from "./AppViewShell";
+import {
+    formValidationFields,
+    visibleFormFields as computeVisibleFormFields,
+    visibleInteractiveFormFields,
+} from "./agentViewFieldVisibility";
 
 interface AgentTaskPanelProps {
     view: AgentView;
@@ -376,17 +381,14 @@ function activeVariantFor(view: AgentView, variantId?: string): AgentViewVariant
     return view.variants.find((variant) => variant.id === variantId) || view.variants[0];
 }
 
-function visibleFormFields(view: AgentView, variant?: AgentViewVariant): AgentViewField[] {
-    if (view.type !== "form") return [];
-    return [...view.fields, ...(variant?.fields || [])];
-}
-
 function formSubmissionPayload(fields: AgentViewField[], data: Record<string, unknown>, variant?: AgentViewVariant): Record<string, unknown> {
     const payload: Record<string, unknown> = {};
     if (variant) {
         payload._agent_view_variant = variant.id;
     }
     for (const field of fields) {
+        // Skip interactive fields that are currently hidden (do not send stale host/password).
+        // Hidden-type routing fields are still included by the caller when present in `fields`.
         if (Object.prototype.hasOwnProperty.call(data, field.name)) {
             payload[field.name] = data[field.name];
         }
@@ -1237,17 +1239,28 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, onToggleMaximiz
         setDismissing(false);
     }, [view]);
     const activeVariant = activeVariantFor(view, activeVariantId);
-    const renderedFields = visibleFormFields(view, activeVariant);
+    // Include hidden routing fields for submit; interactive list is filtered by visibleWhen.
+    const renderedFields = useMemo(
+        () => (view.type === "form" ? computeVisibleFormFields(view, activeVariant, formData) : []),
+        [activeVariant, formData, view],
+    );
+    const interactiveFields = useMemo(
+        () => (view.type === "form" ? visibleInteractiveFormFields(view, activeVariant, formData) : []),
+        [activeVariant, formData, view],
+    );
+    const validationFields = useMemo(
+        () => (view.type === "form" ? formValidationFields(view, activeVariant, formData) : []),
+        [activeVariant, formData, view],
+    );
     const activeWizardStep = view.type === "wizard" ? view.steps[Math.min(wizardStepIndex, Math.max(0, view.steps.length - 1))] : undefined;
 
     const validationErrors = useMemo(() => {
         if (view.type !== "form") return [];
-        const fields = visibleFormFields(view, activeVariant);
         return [
-            ...fields.flatMap((field) => fieldValidationErrors(field, formData[field.name], s)),
-            ...dependentRequiredErrors(fields, formData, { ...(view.dependentRequired || {}), ...(activeVariant?.dependentRequired || {}) }, s),
+            ...validationFields.flatMap((field) => fieldValidationErrors(field, formData[field.name], s)),
+            ...dependentRequiredErrors(validationFields, formData, { ...(view.dependentRequired || {}), ...(activeVariant?.dependentRequired || {}) }, s),
         ];
-    }, [activeVariant, formData, s, view]);
+    }, [activeVariant, formData, s, validationFields, view]);
     const wizardValidationErrors = useMemo(() => {
         if (view.type !== "wizard" || !activeWizardStep) return [];
         return [
@@ -1462,7 +1475,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 {activeVariant?.description && <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.4 }}>{activeVariant.description}</div>}
                             </div>
                         )}
-                        {renderedFields.map((field) => renderField(field, formData[field.name], setFieldValue, theme, s))}
+                        {interactiveFields.map((field) => renderField(field, formData[field.name], setFieldValue, theme, s))}
                         {validationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.5 }}>
                                 {s.pleaseFix}{validationErrors.join(", ")}

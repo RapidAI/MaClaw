@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
@@ -504,31 +505,32 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     fontSize: 11,
                     fontWeight: 600,
                     color,
-                    marginBottom: 2,
+                    marginBottom: CHAT_SPEAKER_LABEL_GAP,
                     paddingLeft: isUser ? 0 : 4,
                     paddingRight: isUser ? 4 : 0,
                 }}
             >
                 {displayName || message.fromName}
             </div>
-            {/* Message content */}
-            {(hasContent || !hasAttachments) && <div
-                data-testid={`group-msg-content-${message.id}`}
-                style={{
-                    padding: "8px 12px",
-                    borderRadius: 8,
-                    background: isUser ? `${theme.sendBtnBg}15` : theme.fieldBg,
-                    border: `1px solid ${isUser ? theme.borderLeft : theme.fieldBorder}`,
-                    fontSize: 13,
-                    color: theme.text,
-                    wordBreak: "break-word",
-                    overflowWrap: "anywhere",
-                    whiteSpace: "pre-wrap",
-                    maxWidth: "82%",
-                }}
-            >
-                <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
-            </div>}
+            {/* Message content — top tail points at speaker name (AI assistant style) */}
+            {(hasContent || !hasAttachments) && (
+                <ChatBubbleFrame
+                    side={isUser ? "right" : "left"}
+                    background={isUser ? userChatBubbleBackground(theme.sendBtnBg, theme.fieldBg) : theme.fieldBg}
+                    borderColor={isUser ? theme.sendBtnBorder : theme.fieldBorder}
+                    data-testid={`group-msg-content-${message.id}`}
+                    style={{
+                        fontSize: 13,
+                        color: theme.text,
+                        wordBreak: "break-word",
+                        overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
+                        maxWidth: "82%",
+                    }}
+                >
+                    <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
+                </ChatBubbleFrame>
+            )}
             {/* Attachments */}
             {hasAttachments && (
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: isUser ? 0 : 4, paddingRight: isUser ? 4 : 0, justifyContent: horizontalAlign, maxWidth: "82%" }}>

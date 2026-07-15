@@ -205,6 +205,11 @@ describe("VEConversationView", () => {
         expect(bubble.style.overflowWrap).toBe("anywhere");
         expect(bubble.style.whiteSpace).toBe("pre-wrap");
         expect(screen.getByText("第二行")).toBeTruthy();
+        // Top-pointing tail under the speaker name (same as AI assistant).
+        const tail = screen.getByTestId("ve-msg-content-wrap-1-tail");
+        expect(tail.getAttribute("data-side")).toBe("left");
+        expect(tail.style.top).toBe("-6px");
+        expect(tail.style.left).toBe("13px");
     });
 
     it("renders compact markdown headings in digital employee replies as separate lines", () => {
@@ -1771,6 +1776,15 @@ describe("VEConversationView", () => {
             expect(bubble.style.overflowWrap).toBe("anywhere");
             expect(bubble.style.whiteSpace).toBe("pre-wrap");
             expect(screen.getByText("second line")).toBeTruthy();
+            // Name sits above the bubble; top tail points at the speaker (AI assistant style).
+            const tail = screen.getByTestId("ve-streaming-content-tail");
+            expect(tail.getAttribute("data-side")).toBe("left");
+            expect(tail.style.top).toBe("-6px");
+            expect(tail.style.left).toBe("13px");
+            const indicator = screen.getByTestId("ve-streaming-indicator");
+            const nameRow = indicator.firstElementChild as HTMLElement | null;
+            expect(nameRow).toBeTruthy();
+            expect(nameRow!.compareDocumentPosition(bubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         });
 
         it("normalizes compact emoji headings while streaming", async () => {

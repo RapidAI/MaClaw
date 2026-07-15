@@ -6,7 +6,7 @@ import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
-import { agentModeFromTaskTags, isPureCodingTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
+import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
 
 interface ProjectSearchItem {
     id: string;
@@ -223,6 +223,7 @@ function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVa
     const pureCoding = isPureCodingTaskTags(item.tags);
     const remoteCoding = agentModeFromTaskTags(item.tags) === "remote_coding_dev";
     const remoteHost = remoteHostFromTaskTags(item.tags);
+    const fromCodingWorkflow = isCodingWorkflowSourceTags(item.tags);
     const kindLabel = item.archived
         ? "ARC"
         : remoteCoding
@@ -237,6 +238,7 @@ function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVa
             <span style={{ minWidth: "26px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: pureCoding ? (remoteCoding ? "#0284c7" : "#15803d") : t.textMuted, border: pureCoding ? `1px solid ${remoteCoding ? "color-mix(in srgb, #0ea5e9 48%, transparent)" : "color-mix(in srgb, #22c55e 48%, transparent)"}` : `1px solid ${t.titleBarBorder}`, borderRadius: "4px", padding: "1px 4px", flexShrink: 0 }} title={pureCoding ? (remoteCoding ? localizeText(lang, "Remote pure coding", "远程纯编程") : localizeText(lang, "Local pure coding", "本地纯编程")) : undefined}>{kindLabel}</span>
             {renamingPath === item.project_path ? <input autoFocus value={renameVal} onChange={event => setRenameVal(event.target.value)} onBlur={async () => { const trimmed = renameVal.trim(); if (trimmed && trimmed !== item.name) { await RenameTask(item.project_path, trimmed); refreshResults(); } setRenamingPath(null); }} onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenamingPath(null); }} onClick={event => event.stopPropagation()} style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: t.text, background: t.codeBlockBg, border: `1px solid ${t.headingColor}`, borderRadius: "3px", padding: "2px 6px", outline: "none", minWidth: 0, fontFamily: "inherit" }} /> : <span style={{ fontSize: "13px", fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.name || item.project_path}</span>}
             {pureCoding && <span data-testid={remoteCoding ? "search-remote-coding-badge" : "search-coding-badge"} style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: remoteCoding ? "color-mix(in srgb, #0ea5e9 12%, transparent)" : "color-mix(in srgb, #22c55e 12%, transparent)", color: remoteCoding ? "#0284c7" : "#15803d", border: remoteCoding ? "1px solid color-mix(in srgb, #0ea5e9 48%, transparent)" : "1px solid color-mix(in srgb, #22c55e 48%, transparent)", flexShrink: 0, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{remoteCoding ? (remoteHost ? `${localizeText(lang, "Remote coding", "远程编程")} · ${remoteHost}` : localizeText(lang, "Remote coding", "远程编程")) : localizeText(lang, "Pure coding", "纯编程")}</span>}
+            {fromCodingWorkflow && <span data-testid="search-coding-workflow-source-badge" style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "color-mix(in srgb, #8b5cf6 12%, transparent)", color: "#7c3aed", border: "1px solid color-mix(in srgb, #8b5cf6 48%, transparent)", flexShrink: 0 }} title={localizeText(lang, "Created from coding workflow", "由编程工作流创建")}>{localizeText(lang, "Workflow", "工作流")}</span>}
             {item.workflow_type && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(47,95,152,0.10)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{formatWorkflowType(item.workflow_type, lang)}</span>}
             {item.archived && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(100,116,139,0.10)", color: t.textMuted, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{localizeText(lang, "Archived", "\u5df2\u5f52\u6863")}</span>}
             <button type="button" onClick={event => { event.stopPropagation(); void onShowSceneDetail(item); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: sceneLoading ? 0.35 : 0.7, width: "20px", height: "20px", cursor: sceneLoading ? "default" : "pointer", flexShrink: 0, fontSize: "12px" }} disabled={sceneLoading} title={localizeText(lang, "Scene details", "任务证据详情")}>{sceneLoading ? "..." : <ProjectSearchIcon name="info" />}</button>

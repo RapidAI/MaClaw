@@ -7,6 +7,7 @@ import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssist
 import { buildMarkdownTableModel, isMarkdownTableRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
 import { localizeText } from "./aiAssistantI18n";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
+import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
@@ -1018,37 +1019,24 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
         case "user":
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={lang === "en" ? "Your message" : "我的消息"} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "10px 0" }}>
-                    <span style={{ margin: "0 4px 3px", color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "You" : "我"}</span>
-                    <div style={{
-                        maxWidth: "76%",
-                        boxSizing: "border-box",
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        position: "relative",
-                        background: `color-mix(in srgb, ${t.sendBtnBg} 12%, ${t.fieldBg})`,
-                        border: `1px solid ${t.sendBtnBorder}`,
-                        color: t.text,
-                        fontWeight: 400,
-                        lineHeight: 1.55,
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                    }}>
-                        <span aria-hidden="true" data-testid={`assistant-chat-tail-user-${msg.id}`} style={{
-                            position: "absolute",
-                            top: "-6px",
-                            right: "13px",
-                            width: "10px",
-                            height: "10px",
-                            boxSizing: "border-box",
-                            background: `color-mix(in srgb, ${t.sendBtnBg} 12%, ${t.fieldBg})`,
-                            borderTop: `1px solid ${t.sendBtnBorder}`,
-                            borderLeft: `1px solid ${t.sendBtnBorder}`,
-                            transform: "rotate(45deg)",
-                            borderRadius: "1px 0 0 0",
-                            pointerEvents: "none",
-                        }} />
+                    <span style={{ margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "You" : "我"}</span>
+                    <ChatBubbleFrame
+                        side="right"
+                        background={userChatBubbleBackground(t.sendBtnBg, t.fieldBg)}
+                        borderColor={t.sendBtnBorder}
+                        data-testid={`assistant-chat-user-bubble-${msg.id}`}
+                        tailTestId={`assistant-chat-tail-user-${msg.id}`}
+                        style={{
+                            maxWidth: "76%",
+                            color: t.text,
+                            fontWeight: 400,
+                            lineHeight: 1.55,
+                            overflowWrap: "anywhere",
+                            whiteSpace: "pre-wrap",
+                        }}
+                    >
                         {msg.content}
-                    </div>
+                    </ChatBubbleFrame>
                 </div>
             );
         case "assistant": {
@@ -1064,113 +1052,101 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     justifyContent: "flex-start",
                     margin: "10px 0",
                 }}>
-                    <span style={{ margin: "0 4px 3px", color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "AI Assistant" : "AI 助手"}</span>
-                    <div style={{
-                        width: "fit-content",
-                        maxWidth: "84%",
-                        minWidth: 0,
-                        boxSizing: "border-box",
-                        padding: "9px 12px",
-                        borderRadius: "8px",
-                        position: "relative",
-                        background: t.fieldBg,
-                        border: `1px solid ${t.fieldBorder}`,
-                        color: t.text,
-                        lineHeight: 1.55,
-                        overflowWrap: "anywhere",
-                    }}>
-                    <span aria-hidden="true" data-testid={`assistant-chat-tail-ai-${msg.id}`} style={{
-                        position: "absolute",
-                        top: "-6px",
-                        left: "13px",
-                        width: "10px",
-                        height: "10px",
-                        boxSizing: "border-box",
-                        background: t.fieldBg,
-                        borderTop: `1px solid ${t.fieldBorder}`,
-                        borderLeft: `1px solid ${t.fieldBorder}`,
-                        transform: "rotate(45deg)",
-                        borderRadius: "1px 0 0 0",
-                        pointerEvents: "none",
-                    }} />
-                    {/* Streaming: show thinking indicator on the last assistant message placeholder */}
-                    {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
-                        <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
-                            {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
-                        </span>
-                    )}
-                    {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
-                    {/* Reasoning/thinking content from reasoning models —
-                        expanded while streaming (agent still working), collapsed once streaming ends (final result ready).
-                        key changes when open-state flips so React remounts and the browser respects the new open value. */}
-                    {msg.reasoning && (() => {
-                        const shouldOpen = isLastAssistant && isStreaming;
-                        const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
-                        // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
-                        const displayReasoning = truncateRolePrefixForDisplay(msg.reasoning || "");
-                        if (!displayReasoning.trim()) return null;
-                        return (
-                            <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
-                                <summary style={{ cursor: "pointer", opacity: 0.8 }}>{reasoningLabel}</summary>
-                                <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
-                                    {renderContentWithCodeBlocks(displayReasoning, t)}
-                                </div>
-                            </details>
-                        );
-                    })()}
-                    {(() => {
-                        // Strip line-leading pictographs once up front so /btw heading match
-                        // works on legacy history that still prefixes decorative marks.
-                        // renderContentWithCodeBlocks re-strips after compact-heading normalize
-                        // (idempotent; that second pass catches "### <pictograph> …").
-                        const rawFormattedContent = prepareChatBodyForDisplay(
-                            formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang),
-                        );
-                        // /btw side query results are collapsible to reduce space.
-                        // Detection: requestId starts with "btw-" (set by sendBtwMessage)
-                        // OR content starts with the backend prefix (fallback for history reload).
-                        // Prefer requestId; content may still carry a legacy "/btw result" heading from history.
-                        const btwHeadingMatch = rawFormattedContent?.match(
-                            /^\*\*\/btw (?:查询结果|query result)\*\*\n\n/u,
-                        );
-                        const matchedBtwPrefix = btwHeadingMatch?.[0];
-                        const isBtwResult = msg.requestId?.startsWith("btw-") || !!matchedBtwPrefix;
-                        if (isBtwResult && rawFormattedContent) {
-                            const rawBtwBody = matchedBtwPrefix ? rawFormattedContent.slice(matchedBtwPrefix.length) : rawFormattedContent;
-                            const btwBody = stripRolePrefixForDisplay(rawBtwBody);
-                            // Extract first non-empty line as preview in the collapsed summary.
-                            const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
-                            // Strip markdown formatting for plain-text summary display.
-                            const plainFirstLine = firstLine.replace(/\*\*/g, '').replace(/[*_`#]/g, '');
-                            const preview = plainFirstLine.length > 60 ? plainFirstLine.slice(0, 60) + '…' : plainFirstLine;
+                    <span style={{ margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{lang === "en" ? "AI Assistant" : "AI 助手"}</span>
+                    <ChatBubbleFrame
+                        side="left"
+                        background={t.fieldBg}
+                        borderColor={t.fieldBorder}
+                        data-testid={`assistant-chat-ai-bubble-${msg.id}`}
+                        tailTestId={`assistant-chat-tail-ai-${msg.id}`}
+                        style={{
+                            width: "fit-content",
+                            maxWidth: "84%",
+                            minWidth: 0,
+                            padding: "9px 12px",
+                            color: t.text,
+                            lineHeight: 1.55,
+                            overflowWrap: "anywhere",
+                        }}
+                    >
+                        {/* Streaming: show thinking indicator on the last assistant message placeholder */}
+                        {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
+                            <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
+                                {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
+                            </span>
+                        )}
+                        {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, openFileInFolder, t)}
+                        {/* Reasoning/thinking content from reasoning models —
+                            expanded while streaming (agent still working), collapsed once streaming ends (final result ready).
+                            key changes when open-state flips so React remounts and the browser respects the new open value. */}
+                        {msg.reasoning && (() => {
+                            const shouldOpen = isLastAssistant && isStreaming;
+                            const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
+                            // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
+                            const displayReasoning = truncateRolePrefixForDisplay(msg.reasoning || "");
+                            if (!displayReasoning.trim()) return null;
                             return (
-                                <details open style={{ margin: "2px 0 4px 0" }}>
-                                    <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                                        <IconSearch size={12} color="currentColor" /> <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
-                                    </summary>
-                                    <div style={{ padding: "4px 0 0 0" }}>
-                                        {renderContentWithCodeBlocks(btwBody, t)}
+                                <details key={shouldOpen ? "reasoning-open" : "reasoning-closed"} open={shouldOpen || undefined} style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
+                                    <summary style={{ cursor: "pointer", opacity: 0.8 }}>{reasoningLabel}</summary>
+                                    <div style={{ padding: "4px 8px", color: t.text, opacity: 0.75, maxHeight: "400px", overflow: "auto" }}>
+                                        {renderContentWithCodeBlocks(displayReasoning, t)}
                                     </div>
                                 </details>
                             );
-                        }
-                        const formattedContent = stripRolePrefixForDisplay(rawFormattedContent);
-                        // Use incremental renderer when provided (streaming long messages)
-                        // to avoid O(content.length) full re-parse every 33ms token flush.
-                        if (incrementalContentRenderer && formattedContent) {
-                            return incrementalContentRenderer(formattedContent);
-                        }
-                        return renderContentWithCodeBlocks(formattedContent, t);
-                    })()}
-                    {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
-                    {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
-                    {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
-                    {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => (
-                        <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{savedFileLabel}: {fp}</a></div>
-                    ))}</div>}
-                    {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
-                    {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
-                    </div>
+                        })()}
+                        {(() => {
+                            // Strip line-leading pictographs once up front so /btw heading match
+                            // works on legacy history that still prefixes decorative marks.
+                            // renderContentWithCodeBlocks re-strips after compact-heading normalize
+                            // (idempotent; that second pass catches "### <pictograph> …").
+                            const rawFormattedContent = prepareChatBodyForDisplay(
+                                formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang),
+                            );
+                            // /btw side query results are collapsible to reduce space.
+                            // Detection: requestId starts with "btw-" (set by sendBtwMessage)
+                            // OR content starts with the backend prefix (fallback for history reload).
+                            // Prefer requestId; content may still carry a legacy "/btw result" heading from history.
+                            const btwHeadingMatch = rawFormattedContent?.match(
+                                /^\*\*\/btw (?:查询结果|query result)\*\*\n\n/u,
+                            );
+                            const matchedBtwPrefix = btwHeadingMatch?.[0];
+                            const isBtwResult = msg.requestId?.startsWith("btw-") || !!matchedBtwPrefix;
+                            if (isBtwResult && rawFormattedContent) {
+                                const rawBtwBody = matchedBtwPrefix ? rawFormattedContent.slice(matchedBtwPrefix.length) : rawFormattedContent;
+                                const btwBody = stripRolePrefixForDisplay(rawBtwBody);
+                                // Extract first non-empty line as preview in the collapsed summary.
+                                const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
+                                // Strip markdown formatting for plain-text summary display.
+                                const plainFirstLine = firstLine.replace(/\*\*/g, '').replace(/[*_`#]/g, '');
+                                const preview = plainFirstLine.length > 60 ? plainFirstLine.slice(0, 60) + '…' : plainFirstLine;
+                                return (
+                                    <details open style={{ margin: "2px 0 4px 0" }}>
+                                        <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                            <IconSearch size={12} color="currentColor" /> <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
+                                        </summary>
+                                        <div style={{ padding: "4px 0 0 0" }}>
+                                            {renderContentWithCodeBlocks(btwBody, t)}
+                                        </div>
+                                    </details>
+                                );
+                            }
+                            const formattedContent = stripRolePrefixForDisplay(rawFormattedContent);
+                            // Use incremental renderer when provided (streaming long messages)
+                            // to avoid O(content.length) full re-parse every 33ms token flush.
+                            if (incrementalContentRenderer && formattedContent) {
+                                return incrementalContentRenderer(formattedContent);
+                            }
+                            return renderContentWithCodeBlocks(formattedContent, t);
+                        })()}
+                        {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
+                        {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
+                        {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
+                        {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => (
+                            <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{savedFileLabel}: {fp}</a></div>
+                        ))}</div>}
+                        {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
+                        {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
+                    </ChatBubbleFrame>
                 </div>
             );
         }

@@ -174,3 +174,75 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 .mp-card-btn-link:hover{border-color:var(--primary);background:var(--primary-soft)}
 .mp-card-btn-danger{border-color:rgba(220,38,38,.15);color:#dc2626}
 .mp-card-btn-danger:hover{border-color:rgba(220,38,38,.4);background:rgba(220,38,38,.04)}
+
+/* Tenant overview: keep the operational data available, but let the assistant own the page. */
+#tab-overview{max-width:1240px}
+#tab-overview .head{margin-bottom:14px}
+.overview-workspace{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.85fr);gap:16px;align-items:start}
+.overview-assistant-column{min-width:0}
+.overview-assistant-card{padding:18px!important;gap:14px!important;border-color:var(--line)!important;box-shadow:none!important;background:var(--panel-strong)!important}
+.overview-assistant-head{display:flex;align-items:center;gap:11px;padding-bottom:13px;border-bottom:1px solid var(--line)}
+.overview-assistant-head .item-title::before{display:none}
+.overview-assistant-mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#35465f;color:#fff;font-size:11px;font-weight:850;letter-spacing:.04em}
+.overview-assistant-head .item-meta{margin-top:3px}
+.overview-assistant-chat{min-height:250px;max-height:520px;overflow:auto;padding:2px 2px 0;margin:0!important;overscroll-behavior:contain}
+.overview-assistant-chat #configAgentEmptyHint{margin:4px 0 0;padding:12px 14px;border:1px dashed #d9e1ec;border-radius:9px;background:#f8fafc;line-height:1.55}
+.overview-assistant-chat>[data-ca-chat-row]{border-radius:10px!important;box-shadow:none!important}
+.overview-assistant-chat>[data-ca-chat-row] .item-title::before{display:none}
+.overview-assistant-chat>[data-ca-chat-row] .actions button:disabled{cursor:wait;opacity:.66;transform:none}
+.overview-assistant-chat .config-agent-message{width:min(92%,760px);padding:11px 13px!important;margin-bottom:9px!important;border-radius:10px!important}
+.overview-assistant-chat .config-agent-message-user{margin-left:auto;background:#eef5ff!important;border-color:#cfe0ff!important}
+.overview-assistant-chat .config-agent-message-assistant{margin-right:auto;background:#fff!important}
+.config-agent-message-role{font-size:10px;font-weight:800;letter-spacing:.04em;color:#42668f;text-transform:uppercase}
+.config-agent-message-body{margin-top:5px;overflow-wrap:anywhere;line-height:1.55;color:var(--text)}
+.overview-assistant-prompts{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px!important}
+.overview-assistant-prompts>.btn-ghost,.overview-more-prompts .btn-ghost{height:30px!important;padding:0 10px!important;border-radius:8px!important;font-size:11px!important;color:var(--text)!important;background:var(--panel-strong)!important;white-space:nowrap}
+.overview-assistant-prompts>.btn-ghost:hover,.overview-more-prompts .btn-ghost:hover{border-color:#bac5d4!important;background:var(--soft)!important}
+.overview-more-prompts{width:100%;margin-top:2px}
+.overview-more-prompts summary{width:max-content;cursor:pointer;color:#657083;font-size:11px;font-weight:700;list-style:none}
+.overview-more-prompts summary::-webkit-details-marker{display:none}
+.overview-more-prompts summary::after{content:" +";margin-left:3px}
+.overview-more-prompts[open] summary{margin-bottom:7px}
+.overview-more-prompts[open] summary::after{content:" -"}
+.overview-more-prompts .btn-ghost{margin:0 5px 6px 0}
+.overview-assistant-history{margin-top:12px!important}
+.overview-assistant-history-disclosure{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.overview-assistant-history-disclosure summary{display:flex;align-items:center;width:max-content;cursor:pointer;color:#526174;font-size:12px;font-weight:800;list-style:none}
+.overview-assistant-history-disclosure summary::-webkit-details-marker{display:none}
+.overview-assistant-history-disclosure summary::after{content:"+";margin-left:7px;color:#78879a;font-size:15px;font-weight:500}
+.overview-assistant-history-disclosure[open] summary{margin-bottom:2px}
+.overview-assistant-history-disclosure[open] summary::after{content:"-"}
+.overview-assistant-history-disclosure summary:focus-visible{outline:3px solid rgba(53,70,95,.3);outline-offset:3px}
+.overview-assistant-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:stretch;padding-top:15px;border-top:1px solid var(--line)}
+.overview-assistant-composer textarea{min-height:126px!important;resize:vertical;border-radius:10px!important;max-height:260px;padding:15px!important;font-size:14px!important;line-height:1.55}
+.overview-assistant-composer[aria-busy="true"] textarea{background:#f7f9fc;color:#64748b}
+.overview-assistant-composer[aria-busy="true"]{cursor:progress}
+.overview-assistant-composer .btn-primary{min-width:60px;width:60px;min-height:126px;height:auto;padding:0;border-radius:10px;background:#35465f;box-shadow:none;gap:0}
+.overview-assistant-composer .btn-primary:hover{background:#27384e;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14)}
+.overview-assistant-composer .btn-primary:disabled{background:#8792a2;color:#fff;cursor:wait;transform:none}
+.config-agent-send-icon{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.overview-assistant-composer .btn-primary[aria-busy="true"] .config-agent-send-icon{display:none}
+.overview-assistant-composer .btn-primary[aria-busy="true"]::after{content:"";width:18px;height:18px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:overview-spin .7s linear infinite}
+.overview-assistant-composer .btn-primary #configAgentSendLabel{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.overview-assistant-prompts>.btn-ghost:focus-visible,.overview-more-prompts summary:focus-visible,.overview-assistant-composer textarea:focus-visible,.overview-assistant-composer .btn-primary:focus-visible{outline:3px solid rgba(53,70,95,.3);outline-offset:2px}
+.overview-context-column{display:grid;gap:12px;min-width:0}
+.overview-context-grid{display:grid;gap:10px}
+.overview-context-grid .hint,.overview-endpoint{min-height:0;margin:0;padding:14px!important;border-radius:11px!important;box-shadow:none!important}
+.overview-endpoint .mono{margin-top:6px;color:var(--text)}
+.overview-tenant-summary{padding-top:2px}
+.overview-tenant-summary h4{margin:10px 0 8px;font-size:12px;font-weight:800;color:#4f5969;letter-spacing:.02em}
+.overview-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.overview-summary-grid .item{min-height:86px;padding:11px!important;border-radius:10px!important;box-shadow:none!important;gap:5px;min-width:0}
+.overview-summary-grid .item-title{font-size:12px}
+.overview-summary-grid .item-title::before{display:none}
+.overview-summary-grid .mono,#overviewTenantNameValue,#overviewTenantStatusValue,#overviewDEAuthStatus,#overviewComputeAuthStatus{margin-top:1px!important;color:var(--text)!important;font-size:12px!important;font-weight:700!important;overflow-wrap:anywhere}
+#overviewDEAuthDetail,#overviewComputeAuthDetail{margin-top:2px!important;color:var(--muted)!important;font-size:11px!important;line-height:1.45;white-space:pre-line}
+.overview-system-free{margin:0!important;padding:14px!important;border-radius:11px!important;box-shadow:none!important}
+.overview-system-free .item-title::before{display:none}
+.overview-system-free .actions{margin-top:10px!important}
+.overview-system-free .actions button{height:32px!important;font-size:12px!important}
+@media (min-width:1021px){.overview-context-column{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto;padding-right:2px}.overview-context-column::-webkit-scrollbar{width:8px}.overview-context-column::-webkit-scrollbar-thumb{background:#d7dee8;border-radius:999px}}
+@media (max-width:1020px){.overview-workspace{grid-template-columns:1fr}.overview-context-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.overview-tenant-summary{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.overview-tenant-summary h4{grid-column:1 / -1}.overview-auth-grid{grid-column:1 / -1}}
+@media (max-width:640px){.overview-context-grid,.overview-summary-grid{grid-template-columns:1fr}.overview-tenant-summary{display:block}.overview-assistant-composer{grid-template-columns:minmax(0,1fr) 56px;gap:8px}.overview-assistant-composer textarea{min-height:148px!important}.overview-assistant-composer .btn-primary{width:56px;min-width:56px;min-height:148px}.overview-assistant-prompts>.btn-ghost,.overview-more-prompts .btn-ghost{min-height:36px}.overview-assistant-chat{min-height:220px;max-height:440px}}
+@media (prefers-reduced-motion:reduce){.overview-assistant-card,.overview-assistant-prompts>.btn-ghost,.overview-more-prompts .btn-ghost{transition:none!important}}
+@media (prefers-reduced-motion:no-preference){@keyframes overview-spin{to{transform:rotate(360deg)}}}

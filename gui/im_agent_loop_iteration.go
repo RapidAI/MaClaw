@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/progress"
@@ -37,11 +38,26 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 			milestoneTracker.Tick()
 		}
 	}
+	conversation, injectedText := h.appendPendingSteerInjections(userID, conversation, iteration)
+	return conversation, false, injectedText
+}
+
+// appendPendingSteerInjections drains mid-loop pendingInjection and pre-loop
+// guide launches into the conversation. Shared by the main agent loop and pure
+// coding SubAgents (local CodingSubAgent / remote RemoteCodingSubAgent), which
+// otherwise never see buffer-queue guide launches.
+//
+// Returns the (possibly extended) conversation and a non-empty injectedText
+// summary when anything was applied.
+func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversation []interface{}, iteration int) ([]interface{}, string) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return conversation, ""
+	}
 	var injectedText string
 	if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
-		injectedText, _ = injected.(string)
-		if injectedText != "" {
-			if isGuideLaunchReferenceInjection(injectedText) {
+		raw, _ := injected.(string)
+		if raw != "" {
+			if isGuideLaunchReferenceInjection(raw) {
 				// Guide reference (from buffer queue fire button): always inject
 				// as user-role message regardless of iteration. This matches
 				// Codex's "steer" behavior — the user's steering text lands as
@@ -49,30 +65,35 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 				// The guide is a supplement/correction to the current task, NOT
 				// a cancellation — the agent should complete the original
 				// request while incorporating this additional guidance.
-				guideUserText := stripInjectionPrefix(injectedText)
+				guideUserText := stripInjectionPrefix(raw)
 				if guideUserText != "" {
 					conversation = append(conversation, map[string]string{
 						"role":    "user",
 						"content": "[用户补充/纠正] " + guideUserText + "\n（请在完成当前任务的基础上，一并处理以上补充内容）",
 					})
+					// Return the user-facing text (not the English wrapper) so
+					// callers that gate on injectedText see real steering content.
+					injectedText = guideUserText
 					log.Printf("[injection] user=%s guide reference as user-role (iteration=%d): %s", userID, iteration, truncateForLog(guideUserText, 50))
+				} else {
+					log.Printf("[injection] user=%s discarded empty guide reference wrapper (iteration=%d)", userID, iteration)
 				}
 			} else {
 				// Non-guide injections (e.g. inline interrupt, agent view
 				// submit) keep the system-role behavior.
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": injectedText,
+					"content": raw,
 				})
-				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(injectedText, 50))
+				injectedText = raw
+				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(raw, 50))
 			}
 		}
 	}
 	// Pre-loop guide: guide-launch text that arrived before the agent loop
-	// started (during preflight/intent-classification). Inject as user-role
-	// supplement at iteration 0 so LLM treats it as additional user intent
-	// rather than a mid-task replan directive. Discard if too old (stale from
-	// a previous message that didn't start a loop).
+	// started (during preflight/intent-classification), or during pure coding
+	// before session loopCtx was registered. Inject as user-role supplement.
+	// Discard if too old (stale from a previous message that didn't start a loop).
 	if preGuide, ok := h.pendingPreLoopGuide.LoadAndDelete(userID); ok {
 		if entry, isEntry := preGuide.(*preLoopGuideEntry); isEntry && entry != nil && entry.Text != "" {
 			if time.Since(entry.CreatedAt) <= preLoopGuideMaxAge {
@@ -91,5 +112,5 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 			}
 		}
 	}
-	return conversation, false, injectedText
+	return conversation, injectedText
 }

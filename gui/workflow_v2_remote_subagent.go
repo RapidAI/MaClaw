@@ -216,17 +216,20 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 
 // --- Helper functions ---
 
-// extractSSHInfoFromWorkflowState gets SSH credentials from the first phase's FormData.
+// extractSSHInfoFromWorkflowState gets SSH credentials from phase FormData.
+// Supports paper_reproduction (ssh_host/work_dir) and coding remote
+// (remote_host/remote_user/remote_port/remote_workdir). Password may already be
+// scrubbed; callers should fall back to session-only codingWorkflowRemoteCreds.
 func extractSSHInfoFromWorkflowState(state *v2.WorkflowState) (sshHost, sshPassword, workDir string) {
 	if state == nil || len(state.Phases) == 0 {
 		return
 	}
-	// Look in paper_analysis phase (first phase with FormData containing SSH info)
 	for _, phase := range state.Phases {
 		if phase.FormData == nil {
 			continue
 		}
-		if host, ok := phase.FormData["ssh_host"].(string); ok && host != "" {
+		// Paper reproduction style: user@host[:port] in ssh_host
+		if host, ok := phase.FormData["ssh_host"].(string); ok && strings.TrimSpace(host) != "" {
 			sshHost = strings.TrimSpace(host)
 			if pw, ok := phase.FormData["ssh_password"].(string); ok {
 				sshPassword = pw
@@ -236,8 +239,128 @@ func extractSSHInfoFromWorkflowState(state *v2.WorkflowState) (sshHost, sshPassw
 			}
 			return
 		}
+		// Coding workflow remote style
+		host := strings.TrimSpace(fmt.Sprint(phase.FormData[workflowFormRemoteHostField]))
+		user := strings.TrimSpace(fmt.Sprint(phase.FormData[workflowFormRemoteUserField]))
+		if host != "" && host != "<nil>" && user != "" && user != "<nil>" {
+			port := formDataPort(phase.FormData, workflowFormRemotePortField, 22)
+			sshHost = fmt.Sprintf("%s@%s:%d", user, host, port)
+			if pw := formDataTrimString(phase.FormData, workflowFormSSHPasswordField); pw != "" {
+				sshPassword = pw
+			}
+			workDir = formDataTrimString(phase.FormData, workflowFormRemoteWorkDir)
+			if workDir == "" {
+				workDir = formDataTrimString(phase.FormData, "work_dir")
+			}
+			return
+		}
 	}
 	return
+}
+
+// ensureCodingWorkflowRemoteSSHSession connects using FormData + session-only
+// codingWorkflowRemoteCreds (password/key). Used by coding workflow implementation.
+func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, state *v2.WorkflowState) (sessionID, workDir string, errMsg string) {
+	if h == nil || state == nil {
+		return "", "", "工作流状态不可用"
+	}
+	host, user, workDir, port, ok := codingWorkflowRemoteEnvFromState(state)
+	if !ok {
+		return "", "", "未找到远程执行环境（请在需求表单选择远程编程并填写主机与工作目录）"
+	}
+	if port <= 0 {
+		port = 22
+	}
+	password := ""
+	keyPath := ""
+	label := ""
+	if creds, ok := h.loadCodingWorkflowRemoteCreds(userID); ok {
+		if strings.TrimSpace(creds.Password) != "" {
+			password = strings.TrimSpace(creds.Password)
+		}
+		if strings.TrimSpace(creds.KeyPath) != "" {
+			keyPath = strings.TrimSpace(creds.KeyPath)
+		}
+		if strings.TrimSpace(creds.Profile) != "" && creds.Profile != workflowFormSSHProfileNew {
+			label = strings.TrimSpace(creds.Profile)
+		}
+		// Prefer session vault host if FormData was scrubbed oddly.
+		if host == "" {
+			host = strings.TrimSpace(creds.Host)
+		}
+		if user == "" {
+			user = strings.TrimSpace(creds.User)
+		}
+		if workDir == "" {
+			workDir = strings.TrimSpace(creds.WorkDir)
+		}
+		if creds.Port > 0 {
+			port = creds.Port
+		}
+	}
+	// Also pull key path left in FormData (non-secret).
+	for _, phase := range state.Phases {
+		if phase.FormData == nil {
+			continue
+		}
+		if keyPath == "" {
+			keyPath = formDataTrimString(phase.FormData, workflowFormSSHKeyPathField)
+		}
+		if label == "" {
+			if p := formDataTrimString(phase.FormData, workflowFormSSHProfileField); p != "" && p != workflowFormSSHProfileNew {
+				label = p
+			}
+		}
+	}
+	if h.ensureSSHManager() == nil {
+		return "", "", "SSH 会话管理器不可用"
+	}
+	sessionID = h.findOrCreateSSHSessionWithAuth(user, host, port, password, keyPath, label)
+	if sessionID == "" {
+		return "", "", fmt.Sprintf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据", user, host, port)
+	}
+	// Refresh sticky session id for multi-turn remote continuity.
+	h.bindStickyRemoteCodingContext(userID, remoteCodingTemplateContext{
+		SessionID:  sessionID,
+		WorkDir:    workDir,
+		ProjectDir: workDir,
+	}, host, user, port)
+	return sessionID, workDir, ""
+}
+
+// findOrCreateSSHSessionWithAuth connects with password and/or key_path/label.
+func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, port int, password, keyPath, label string) string {
+	if h == nil {
+		return ""
+	}
+	if port <= 0 {
+		port = 22
+	}
+	args := map[string]interface{}{
+		"action": "connect",
+		"host":   host,
+		"port":   float64(port),
+		"user":   user,
+	}
+	if password != "" {
+		args["password"] = password
+		args["auth_method"] = "password"
+	}
+	if keyPath != "" {
+		args["key_path"] = keyPath
+		if password == "" {
+			args["auth_method"] = "key"
+		}
+	}
+	if label != "" {
+		args["label"] = label
+	}
+	result := h.sshConnect(args)
+	if match := extractSSHSessionIDFromConnectResult(result); match != "" {
+		return match
+	}
+	log.Printf("[workflow-v2-remote] SSH connect with auth failed to extract session_id: %s", truncateRunesV2(result, 200))
+	return ""
 }
 
 // parseSSHHostString parses "user@host:port" into components.
@@ -305,22 +428,7 @@ func parseSSHPort(portStr string) (int, bool) {
 // findOrCreateSSHSession finds an existing SSH session to the target host,
 // or creates a new one using the provided credentials.
 func (h *IMMessageHandler) findOrCreateSSHSession(user, host string, port int, password string) string {
-	// Use the ssh tool's connect action directly via the handler's sshConnect
-	args := map[string]interface{}{
-		"action":   "connect",
-		"host":     host,
-		"port":     float64(port),
-		"user":     user,
-		"password": password,
-	}
-	result := h.sshConnect(args)
-
-	if match := extractSSHSessionIDFromConnectResult(result); match != "" {
-		return match
-	}
-
-	log.Printf("[workflow-v2-remote] SSH connect result (failed to extract session_id): %s", truncateRunesV2(result, 200))
-	return ""
+	return h.findOrCreateSSHSessionWithAuth(user, host, port, password, "", "")
 }
 
 func extractSSHSessionIDFromConnectResult(result string) string {

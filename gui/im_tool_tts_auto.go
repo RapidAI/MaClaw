@@ -41,7 +41,20 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 		return
 	}
 
-	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, resp.Text, 300)
+	// Auto-summary must stay short (IM latency / payload limits). Explicit tts tool
+	// handles true long-form reading. Voice-input replies may be a bit longer.
+	speak := resp.Text
+	if !voiceReply {
+		speak = tts.CapSpeechText(resp.Text, tts.AutoSpeechMaxRunes)
+	} else {
+		// Full long-form with a soft platform safety cap.
+		speak = tts.CapSpeechText(resp.Text, tts.MaxLongFormSpeechRunes)
+	}
+	if speak == "" {
+		log.Printf("[tts-auto] skip reason=empty_after_clean platform=%s voice_reply=%v", platform, voiceReply)
+		return
+	}
+	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, speak, 0)
 	amr := synthesizeAMRForPlatform(platform, wav)
 	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav, amr)
 	if voiceData != nil {

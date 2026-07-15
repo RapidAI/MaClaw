@@ -8267,6 +8267,29 @@ func TestSummarizeSubAgentVerification(t *testing.T) {
 	}
 }
 
+func TestSummarizeSubAgentVerificationAcceptsPythonPyCompile(t *testing.T) {
+	// Regression: remote CLI tools often only run `python3 -m py_compile` after
+	// edits. That must count as verification so the banner is not "远程编程未完成"
+	// when the work actually succeeded.
+	status, summary := summarizeSubAgentVerification([]string{"/home/sysinfo/sysinfo.py"}, []CodingSubAgentCommandResult{
+		{Command: "python3 -m py_compile sysinfo.py", Succeeded: true, Summary: "", seq: 2},
+		{Command: "ls -la", Succeeded: true, Summary: "sysinfo.py", seq: 1},
+	}, 1)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("python3 -m py_compile should satisfy verification, got (%q, %q)", status, summary)
+	}
+	if !strings.Contains(summary, "py_compile") {
+		t.Fatalf("summary should mention py_compile: %q", summary)
+	}
+
+	status, summary = summarizeSubAgentVerification([]string{"/home/sysinfo/sysinfo.py"}, []CodingSubAgentCommandResult{
+		{Command: "python3 -m compileall .", Succeeded: true, Summary: "(无输出)", seq: 3},
+	}, 0)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("python3 -m compileall should satisfy verification with silent success, got (%q, %q)", status, summary)
+	}
+}
+
 func TestSummarizeSubAgentVerificationRejectsEmptySuccessfulOutput(t *testing.T) {
 	status, summary := summarizeSubAgentVerification([]string{"main.py"}, []CodingSubAgentCommandResult{
 		{Command: "pytest tests", Succeeded: true, Summary: "================ no tests collected in 0.01s ================"},
@@ -8550,6 +8573,10 @@ func TestIsSubAgentVerificationCommand(t *testing.T) {
 		"corepack npx eslint .",
 		"corepack npx --yes eslint .",
 		"npx tsc --noEmit",
+		"python3 -m py_compile sysinfo.py",
+		"python -m py_compile ./app/main.py",
+		"python3 -m compileall .",
+		"py -m py_compile tool.py",
 		"npx turbo run test",
 		"pnpm exec turbo run build --filter web",
 		"yarn dlx turbo run lint typecheck",

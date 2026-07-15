@@ -411,6 +411,58 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	return loopCtx
 }
 
+// beginPureCodingRuntime registers a pure local/remote coding SubAgent turn as
+// the active session loop so guide-launch inject, cancel, and cancel-wait work
+// the same way as the main agent loop. Returns a no-op when ctx is nil.
+//
+// Any pre-loop guide accumulated while the previous turn was ending (or during
+// plan-approve wait) is promoted into pendingInjection so it is not lost to the
+// short pre-loop TTL before the SubAgent's first TransformConversation drain.
+func (h *IMMessageHandler) beginPureCodingRuntime(ctx *LoopContext, userID, userText string) func() {
+	if h == nil || ctx == nil {
+		return func() {}
+	}
+	h.promotePreLoopGuideToPendingInjection(userID)
+	platform := strings.TrimSpace(ctx.Platform)
+	if platform == "" {
+		platform = "desktop"
+	}
+	return h.beginAgentLoopRuntime(ctx, userID, userText, platform)
+}
+
+// promotePreLoopGuideToPendingInjection moves a pending pre-loop guide into the
+// mid-loop injection bag (guide-launch format) so pure-coding SubAgents can
+// consume it on the next LLM round without the 30s pre-loop expiry race.
+func (h *IMMessageHandler) promotePreLoopGuideToPendingInjection(userID string) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	raw, ok := h.pendingPreLoopGuide.LoadAndDelete(userID)
+	if !ok {
+		return
+	}
+	entry, isEntry := raw.(*preLoopGuideEntry)
+	if !isEntry || entry == nil {
+		return
+	}
+	text := strings.TrimSpace(entry.Text)
+	if text == "" {
+		return
+	}
+	// Keep a generous window so plan-approve waits still promote; drop only
+	// clearly abandoned guides (far beyond the active-session accept window).
+	if !entry.CreatedAt.IsZero() && time.Since(entry.CreatedAt) > 2*time.Minute {
+		log.Printf("[injection] user=%s dropped stale pre-loop guide on pure-coding start (age=%v)", userID, time.Since(entry.CreatedAt).Round(time.Second))
+		return
+	}
+	injection := buildGuideLaunchInjection(text)
+	if injection == "" {
+		return
+	}
+	h.accumulateInjection(userID, injection)
+	log.Printf("[injection] user=%s promoted pre-loop guide to pendingInjection for pure coding", userID)
+}
+
 func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userText, platform string) func() {
 	requestID := ""
 	loopID := ""

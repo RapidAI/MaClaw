@@ -32,7 +32,9 @@ const (
 
 	srvASRModelFilename           = asr.DefaultModelFilename
 	srvASRModelDefaultURL         = asr.DefaultModelDownloadURL
-	srvTTSMaxRunes                = 300
+	// Per-chunk budget for long-form TTS (clamped further inside tts.SplitSpeechChunks).
+	// Total reply length is no longer hard-truncated — semantic chunks are concatenated.
+	srvTTSMaxRunes                = tts.DefaultSpeechChunkRunes
 	srvASRAudioBodyMaxBytes int64 = 32 << 20
 )
 
@@ -745,7 +747,10 @@ func (m *srvAIModelManager) synthesizeText(ctx context.Context, cfg corelib.AppC
 	}
 	mgr := m.ttsMgr
 	m.mu.Unlock()
-	wav, err := mgr.SynthesizeText(text)
+	// Long-form: semantic chunk + concatenate (no silent mid-text truncate).
+	// Soft-cap pathological inputs; srvTTSMaxRunes is per-chunk budget.
+	text = tts.CapSpeechText(text, tts.MaxLongFormSpeechRunes)
+	wav, _, err := tts.SynthesizeSpeechLongWAV(mgr, text, srvTTSMaxRunes)
 	if err != nil {
 		return nil, voiceID, err
 	}
@@ -753,14 +758,8 @@ func (m *srvAIModelManager) synthesizeText(ctx context.Context, cfg corelib.AppC
 }
 
 func cleanSrvTTSReplyText(text string) string {
-	text = tts.CleanForSpeech(text)
-	if text == "" {
-		return ""
-	}
-	if len([]rune(text)) > srvTTSMaxRunes {
-		text = tts.TruncateRunesSmart(text, srvTTSMaxRunes)
-	}
-	return text
+	// Clean only — length is handled by semantic chunking / CapSpeechText.
+	return tts.CleanForSpeech(text)
 }
 
 func (m *srvAIModelManager) synthesizeTextMP3(ctx context.Context, cfg corelib.AppConfig, text string) ([]byte, string, error) {

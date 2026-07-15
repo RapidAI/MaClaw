@@ -39,6 +39,8 @@ const (
 	taskRemoteUserTagPrefix = "remote_user:"
 	taskRemotePortTagPrefix = "remote_port:"
 	taskRemoteWorkDirTagPrefix = "remote_workdir:"
+	// taskSourceCodingWorkflowTag marks remote/local tasks created from the multi-phase coding workflow form.
+	taskSourceCodingWorkflowTag = taskSourceTagPrefix + "coding_workflow"
 )
 
 // NormalizeCreateTaskMode maps free-form mode strings from the UI/API to a
@@ -949,10 +951,67 @@ func (a *App) TestRemoteSSHConnection(sshHost, sshUser, sshPassword, workDir str
 	return fmt.Sprintf("SSH 连接成功：%s@%s:%d", user, host, sshPort), nil
 }
 
+// normalizeRemoteWorkDirKey normalizes remote workdirs for equality checks.
+func normalizeRemoteWorkDirKey(workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return ""
+	}
+	// Remote paths are almost always POSIX; still trim both separators.
+	workDir = strings.TrimRight(workDir, "/\\")
+	return workDir
+}
+
+// FindRemoteCodingTaskByMeta returns the most recent remote_coding_dev task whose
+// non-secret SSH tags match host+user+workdir. Port is ignored for matching so
+// reconnects after port changes still merge. Empty result if none.
+func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) ProjectSearchResult {
+	if a == nil {
+		return ProjectSearchResult{}
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	wantWD := normalizeRemoteWorkDirKey(workDir)
+	if host == "" || user == "" || wantWD == "" {
+		return ProjectSearchResult{}
+	}
+	a.ensureMemoryStore()
+	tasks := a.ListTasks(80)
+	for _, task := range tasks {
+		if !projectRecordHasTagLike(task.Tags, taskRemoteCodingDevTag) {
+			continue
+		}
+		th, tu, tw, _ := a.remoteCodingMetaFromTaskTags(task.ProjectPath)
+		if !strings.EqualFold(normalizeSSHHostInput(th), host) {
+			continue
+		}
+		if !strings.EqualFold(sanitizeTaskMetadataTagValue(tu), user) {
+			continue
+		}
+		if normalizeRemoteWorkDirKey(tw) != wantWD {
+			continue
+		}
+		return task
+	}
+	return ProjectSearchResult{}
+}
+
+// projectRecordHasTagLike reports whether tags contain exact tag (trimmed).
+func projectRecordHasTagLike(tags []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, tag := range tags {
+		if strings.TrimSpace(tag) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // CreateRemoteCodingTask creates a remote-coding task record with non-sensitive
 // SSH metadata tags (host/user/port/workdir). The password is never persisted;
 // call PrepareRemoteCodingEnvironment to connect and arm one-shot execution.
-func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int) ProjectSearchResult {
+// extraTags may include origin markers such as source:coding_workflow.
+func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
 		return ProjectSearchResult{}
@@ -972,6 +1031,13 @@ func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, ssh
 		taskRemoteCodingDevTag,
 	}
 	tags = append(tags, buildRemoteCodingMetaTags(host, user, remoteWorkDir, sshPort)...)
+	for _, t := range extraTags {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		tags = append(tags, t)
+	}
 	return a.createTaskRecordWithWorkingDir(taskName, "", tags, "", false)
 }
 

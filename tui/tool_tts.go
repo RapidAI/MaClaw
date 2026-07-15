@@ -15,7 +15,7 @@ import (
 )
 
 // newTTSHandler returns a TTS tool handler for the TUI.
-// It synthesizes speech and plays the WAV file using the system default player.
+// Long text is split into semantic chunks, synthesized, concatenated, then played.
 func newTTSHandler(app *TUIApp) agent.ToolHandler {
 	return func(args map[string]interface{}) string {
 		text, _ := args["text"].(string)
@@ -27,18 +27,13 @@ func newTTSHandler(app *TUIApp) agent.ToolHandler {
 			return "语音合成不可用（TTS 模型未加载）。请确认 TTS 模型已下载。"
 		}
 
-		// Clean and truncate.
-		cleaned := tts.CleanForSpeech(text)
-		if cleaned == "" {
+		chunks := tts.PrepareSpeechChunks(text, tts.MaxLongFormSpeechRunes, 0)
+		if len(chunks) == 0 {
 			return "文本清理后为空，无法合成语音"
 		}
-		const maxRunes = 300
-		if utf8.RuneCountInString(cleaned) > maxRunes {
-			cleaned = tts.TruncateRunesSmart(cleaned, maxRunes)
-		}
 
-		// Synthesize WAV.
-		wav, err := app.ttsManager.SynthesizeText(cleaned)
+		// Synthesize pre-split parts (semantic chunks + silence gaps).
+		wav, nChunks, err := tts.SynthesizeSpeechParts(app.ttsManager, chunks)
 		if err != nil {
 			log.Printf("[tts-tool] synthesize error: %v", err)
 			return fmt.Sprintf("语音合成失败: %v", err)
@@ -66,7 +61,14 @@ func newTTSHandler(app *TUIApp) agent.ToolHandler {
 		}
 		go cmd.Wait()
 
-		return fmt.Sprintf("语音已合成并播放（%d 字符 → %s）", utf8.RuneCountInString(cleaned), tmpFile)
+		totalRunes := 0
+		for _, c := range chunks {
+			totalRunes += utf8.RuneCountInString(c)
+		}
+		if nChunks <= 1 {
+			return fmt.Sprintf("语音已合成并播放（%d 字符 → %s）", totalRunes, tmpFile)
+		}
+		return fmt.Sprintf("语音已分段合成并播放（%d 段 / %d 字符 → %s）", nChunks, totalRunes, tmpFile)
 	}
 }
 

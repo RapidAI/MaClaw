@@ -12,6 +12,10 @@
       subtitle: 'Describe tenant settings in natural language. Review plan and confirm before apply.',
       placeholder: 'e.g. Add LLM provider DeepSeek, url https://..., model deepseek-chat, key sk-...',
       send: 'Send',
+      sending: 'Sending...',
+      you: 'You',
+      noPlan: 'No active plan to execute',
+      moreActions: 'More actions',
       confirm: 'Confirm execute',
       cancel: 'Cancel plan',
       empty: 'Examples: add LLM provider | set system-free provider | test system-free',
@@ -158,6 +162,10 @@
       subtitle: '\u7528\u81ea\u7136\u8bed\u8a00\u63cf\u8ff0\u79df\u6237\u914d\u7f6e\u3002\u5148\u770b\u65b9\u6848\u4e0e\u6a21\u62df\uff0c\u786e\u8ba4\u540e\u518d\u6267\u884c\u3002',
       placeholder: '\u4f8b\u5982\uff1a\u6dfb\u52a0 LLM \u670d\u52a1\u5546 DeepSeek\uff0c\u5730\u5740 https://...\uff0c\u6a21\u578b deepseek-chat\uff0ckey sk-...',
       send: '\u53d1\u9001',
+      sending: '\u6b63\u5728\u53d1\u9001...',
+      you: '\u4f60',
+      noPlan: '\u6ca1\u6709\u53ef\u6267\u884c\u7684\u5f53\u524d\u65b9\u6848',
+      moreActions: '\u66f4\u591a\u64cd\u4f5c',
       confirm: '\u786e\u8ba4\u6267\u884c',
       cancel: '\u53d6\u6d88\u65b9\u6848',
       empty: '\u793a\u4f8b\uff1a\u6dfb\u52a0 LLM \u670d\u52a1\u5546 | \u4fee\u6539 system-free \u670d\u52a1\u5546 | \u6d4b\u8bd5 system-free',
@@ -1121,6 +1129,26 @@
     if (!opts.skipBar) updateSelectedBar();
   }
 
+  function setConfigAgentComposerBusy(busy) {
+    var composer = byID('configAgentComposer');
+    var input = byID('configAgentInput');
+    var send = byID('configAgentSendBtn');
+    if (composer) composer.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (input) input.disabled = !!busy;
+    if (send) {
+      send.disabled = !!busy;
+      if (busy) {
+        send.setAttribute('aria-busy', 'true');
+        send.setAttribute('aria-label', cat('sending'));
+        send.setAttribute('title', cat('sending'));
+      } else {
+        send.removeAttribute('aria-busy');
+        send.setAttribute('aria-label', cat('send'));
+        send.setAttribute('title', cat('send'));
+      }
+    }
+  }
+
   function renderDiagnoseWizardStrip(opts) {
     opts = opts || {};
     var step = opts.step || 1; // 1 diagnose done, 2 bind available, 3 recheck after bind
@@ -1742,8 +1770,10 @@
   function appendChat(role, html) {
     var log = byID('configAgentChatLog');
     if (!log) return;
+    var empty = byID('configAgentEmptyHint');
+    if (empty) empty.style.display = 'none';
     var row = document.createElement('div');
-    row.className = 'item';
+    row.className = 'item config-agent-message config-agent-message-' + (role === 'user' ? 'user' : 'assistant');
     row.setAttribute('data-ca-chat-row', '1');
     row.style.cssText = 'margin-bottom:8px;padding:10px 12px;' + (role === 'user' ? 'background:#f4f7ff;border-color:rgba(47,128,237,.2)' : '');
     row.innerHTML = html;
@@ -3543,11 +3573,12 @@
       return;
     }
     submitConfigAgent._busy = true;
+    setConfigAgentComposerBusy(true);
     var em = extractEmailFromText(text);
     if (em) rememberEmail(em);
     if (input) input.value = '';
     updateSelectedBar();
-    appendChat('user', '<div class="item-meta"><strong>You</strong></div><div style="margin-top:4px">' + esc(text) + '</div>');
+    appendChat('user', '<div class="config-agent-message-role">' + esc(cat('you')) + '</div><div class="config-agent-message-body">' + esc(text) + '</div>');
     appendChat('assistant', '<div class="item-meta" data-ca-planning="1">' + esc(cat('planning')) + '</div>');
     try {
       var data = await global.api('/api/admin/config-agent/plan', {
@@ -3645,6 +3676,7 @@
       planExpiresAtMs = 0;
     } finally {
       submitConfigAgent._busy = false;
+      setConfigAgentComposerBusy(!!executePendingPlan._busy);
     }
   }
 
@@ -3673,6 +3705,10 @@
           if (typeof global.showToast === 'function') global.showToast(cat('planSuperseded'), 'error');
           return;
         }
+        if (configAgentIsBusy()) return;
+        confirmBtn.disabled = true;
+        confirmBtn.setAttribute('aria-busy', 'true');
+        if (cancelBtn) cancelBtn.disabled = true;
         executePendingPlan(true);
       };
     }
@@ -3795,7 +3831,7 @@
 
   async function executePendingPlan(runOptional) {
     if (!pendingPlan || !pendingPlan.plan_id || !pendingPlan.confirm_token) {
-      appendChat('assistant', '<div class="item-meta">' + esc(cat('failed')) + ': no plan</div>');
+      appendChat('assistant', '<div class="item-meta">' + esc(cat('noPlan')) + '</div>');
       return;
     }
     if (planExpiresAtMs && planExpiresAtMs <= Date.now()) {
@@ -3814,6 +3850,7 @@
       return;
     }
     executePendingPlan._busy = true;
+    setConfigAgentComposerBusy(true);
     // Snapshot plan so a concurrent successful plan response cannot be wiped on finish.
     var planSnap = pendingPlan;
     var planId = String(planSnap.plan_id || '');
@@ -3884,6 +3921,7 @@
       updateSelectedBar();
     } finally {
       executePendingPlan._busy = false;
+      setConfigAgentComposerBusy(!!submitConfigAgent._busy);
     }
   }
 
@@ -3928,6 +3966,7 @@
     var s = byID('configAgentSubtitle');
     var input = byID('configAgentInput');
     var send = byID('configAgentSendBtn');
+    var sendLabel = byID('configAgentSendLabel');
     if (t) t.textContent = cat('title');
     if (s) s.textContent = cat('subtitle');
     if (input) {
@@ -3937,7 +3976,15 @@
         try { global._s('configAgentInput', 'placeholder', cat('placeholder')); } catch (_) {}
       }
     }
-    if (send) send.textContent = cat('send');
+    if (send) {
+      send.setAttribute('aria-label', cat('send'));
+      send.setAttribute('title', cat('send'));
+    }
+    if (sendLabel) sendLabel.textContent = cat('send');
+    var morePrompts = byID('configAgentMorePrompts');
+    if (morePrompts) morePrompts.textContent = cat('moreActions');
+    var historySummary = byID('configAgentHistorySummary');
+    if (historySummary) historySummary.textContent = cat('recentPlans');
     var empty = byID('configAgentEmptyHint');
     if (empty) empty.textContent = cat('empty');
   }
@@ -4052,14 +4099,26 @@
     var typing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
     var inAgent = isConfigAgentContext(e.target);
 
-    // Esc: close help first, else cancel pending plan.
+    // Help remains dismissible while a request is in flight; it is purely local UI.
     if (e.key === 'Escape' || e.key === 'Esc') {
-      var helpOv = byID('configAgentShortcutsOverlay');
-      if (helpOv && helpOv.style.display === 'flex') {
+      var activeHelpOverlay = byID('configAgentShortcutsOverlay');
+      if (activeHelpOverlay && activeHelpOverlay.style.display === 'flex') {
         e.preventDefault();
         hideShortcutsHelp();
         return;
       }
+    }
+
+    if (configAgentIsBusy()) {
+      if (inAgent && ((e.ctrlKey || e.metaKey) && (e.key === 'Enter' || e.key === 'k' || e.key === 'K'))) {
+        e.preventDefault();
+      }
+      if (inAgent && (e.key === 'Escape' || e.key === 'Esc')) e.preventDefault();
+      return;
+    }
+
+    // Esc: close help first, else cancel pending plan.
+    if (e.key === 'Escape' || e.key === 'Esc') {
       if (!(pendingPlan && pendingPlan.confirm_token)) return;
       if (!inAgent && typing) return; // don't steal Esc from other forms
       e.preventDefault();

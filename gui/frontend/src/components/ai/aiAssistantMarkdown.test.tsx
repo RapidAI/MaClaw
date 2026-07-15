@@ -988,16 +988,19 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
 
-        const userBubble = screen.getByTestId("assistant-chat-user-user-bubble");
-        expect(userBubble.getAttribute("role")).toBe("group");
-        expect(userBubble.getAttribute("aria-label")).toBe("Your message");
-        expect(userBubble.style.alignItems).toBe("flex-end");
+        const userGroup = screen.getByTestId("assistant-chat-user-user-bubble");
+        expect(userGroup.getAttribute("role")).toBe("group");
+        expect(userGroup.getAttribute("aria-label")).toBe("Your message");
+        expect(userGroup.style.alignItems).toBe("flex-end");
         expect(screen.getByText("You")).toBeTruthy();
-        expect(userBubble.firstElementChild?.nextElementSibling?.getAttribute("style")).toContain("color-mix(in srgb");
+        const userBubble = screen.getByTestId("assistant-chat-user-bubble-user-bubble") as HTMLElement;
+        expect(userBubble.style.background).toContain("color-mix(in srgb");
         const userTail = screen.getByTestId("assistant-chat-tail-user-user-bubble");
         expect(userTail.getAttribute("aria-hidden")).toBe("true");
         expect(userTail.style.right).toBe("13px");
+        expect(userTail.style.top).toBe("-6px");
         expect(userTail.style.transform).toBe("rotate(45deg)");
+        expect(userTail.style.background).toBe(userBubble.style.background);
 
         rerender(<div>{renderMessage({
             id: "ai-bubble",
@@ -1006,15 +1009,18 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
 
-        const assistantBubble = screen.getByTestId("assistant-chat-ai-ai-bubble");
-        expect(assistantBubble.getAttribute("role")).toBe("group");
-        expect(assistantBubble.getAttribute("aria-label")).toBe("AI assistant message");
-        expect(assistantBubble.style.alignItems).toBe("flex-start");
+        const assistantGroup = screen.getByTestId("assistant-chat-ai-ai-bubble");
+        expect(assistantGroup.getAttribute("role")).toBe("group");
+        expect(assistantGroup.getAttribute("aria-label")).toBe("AI assistant message");
+        expect(assistantGroup.style.alignItems).toBe("flex-start");
         expect(screen.getByText("AI Assistant")).toBeTruthy();
+        const assistantBubble = screen.getByTestId("assistant-chat-ai-bubble-ai-bubble") as HTMLElement;
         const assistantTail = screen.getByTestId("assistant-chat-tail-ai-ai-bubble");
         expect(assistantTail.getAttribute("aria-hidden")).toBe("true");
         expect(assistantTail.style.left).toBe("13px");
+        expect(assistantTail.style.top).toBe("-6px");
         expect(assistantTail.style.transform).toBe("rotate(45deg)");
+        expect(assistantTail.style.background).toBe(assistantBubble.style.background);
     });
 
     it("keeps the assistant bubble tail visually paired with the active theme", () => {
@@ -1026,9 +1032,15 @@ describe("renderMessage assistant display guard", () => {
         }, vi.fn(), darkTheme, false, "Saved file", "en", false)}</div>);
 
         const tail = screen.getByTestId("assistant-chat-tail-ai-dark-ai-bubble");
-        expect(tail.style.background).toBe("rgb(17, 24, 39)");
-        expect(tail.style.borderTop).toContain("rgb(51, 65, 85)");
+        // Pair against live theme tokens (jsdom normalizes hex → rgb).
+        const probe = document.createElement("div");
+        probe.style.background = darkTheme.fieldBg;
+        probe.style.color = darkTheme.fieldBorder;
+        expect(tail.style.background).toBe(probe.style.background);
+        expect(tail.style.borderTop).toContain(probe.style.color);
         expect(tail.style.pointerEvents).toBe("none");
+        expect(tail.style.top).toBe("-6px");
+        expect(tail.style.left).toBe("13px");
     });
 
     it("keeps failures compact and announced within the message flow", () => {

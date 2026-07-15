@@ -4,7 +4,7 @@ import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessa
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { normalizeASRText, shouldDispatchASRText } from "./asrTextUtils";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
-import { cloneCodePreviewState, useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
+import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
@@ -102,6 +102,69 @@ export function shouldShowSourcePreviewForWorkflow(workflowType: string): boolea
 /** Pure coding environments (local/remote agentMode) always allow the right-hand source panel. */
 export function shouldShowSourcePreviewForAgentMode(agentMode?: string | null): boolean {
     return agentMode === "coding_dev" || agentMode === "remote_coding_dev";
+}
+
+/**
+ * After tab switch / localStorage restore, keep the right-hand source panel open when
+ * there is still open file content and the user did not manually close it.
+ * Without this, a snapshot with active=false (or a restore race) leaves the panel
+ * hidden until the next forceOpen code:file_update event.
+ *
+ * Identity-preserving: returns the same object when no change is needed.
+ */
+export function withCodePreviewVisibleIfContent(state: CodePreviewUIState): CodePreviewUIState {
+    if (state.userClosed || state.active || state.files.size === 0) {
+        return state;
+    }
+    return { ...state, active: true };
+}
+
+/** Preview mode label for persistence / tab snapshots. */
+export function codePreviewModeFromState(state: Pick<CodePreviewUIState, "active" | "files" | "userClosed">): "workflow" | "code" {
+    return state.active || (state.files.size > 0 && !state.userClosed) ? "code" : "workflow";
+}
+
+/**
+ * Apply a saved code-preview snapshot: repair visibility, deep-clone into the live ref,
+ * and push into React state. Returns the clone for optional map persistence.
+ */
+function commitRestoredCodePreview(
+    snapshot: CodePreviewUIState,
+    restoreCodePreviewState: (state: CodePreviewUIState) => void,
+    codePreviewStateRef: { current: CodePreviewUIState },
+): CodePreviewUIState {
+    const clone = cloneCodePreviewState(withCodePreviewVisibleIfContent(snapshot));
+    codePreviewStateRef.current = clone;
+    restoreCodePreviewState(clone);
+    return clone;
+}
+
+/**
+ * Whether a localStorage-restored source/workflow preview snapshot may be painted
+ * onto the currently active tab.
+ *
+ * Tab switches reassign `previewOwnerTabRef` to the active tab *before* the
+ * restore effect runs. Without project-path (or original tab-id) identity checks,
+ * a pending snapshot from an old project would incorrectly fill a brand-new
+ * remote/local coding tab that has no content yet.
+ */
+export function shouldApplyRestoredAssistantPreview(args: {
+    restoredOwnerTabId: string;
+    restoredOwnerProjectPath?: string;
+    activeTabId: string;
+    activeTabType?: string | null;
+    activeTabProjectPath?: string | null;
+}): boolean {
+    const restoredPath = normalizeProjectSessionPath(args.restoredOwnerProjectPath);
+    const activePath = normalizeProjectSessionPath(args.activeTabProjectPath);
+    if (restoredPath) {
+        // Snapshot belongs to a specific project — only apply when that project is active.
+        if (args.activeTabType !== "project") return false;
+        return activePath === restoredPath && activePath !== "";
+    }
+    // No project path: only apply to the original tab id (typically "local").
+    // Never paint onto a newly created project tab that merely claimed ownership.
+    return args.activeTabId === args.restoredOwnerTabId;
 }
 
 const ASSISTANT_PREVIEW_STATE_KEY = "ai_assistant_preview_state_v1";
@@ -2112,6 +2175,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const previewOwnerTabRef = useRef<string>(restoredPreviewStateRef.current?.ownerTabId || (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.id : "local"));
     const previewOwnerResetPendingRef = useRef(false);
     const agentViewOwnerTabRef = useRef<string>(activeTab.id);
+    // Declared early so the tab-switch effect can snapshot/restore without TDZ issues.
+    // Updated after useCodePreviewState below.
+    const codePreviewStateRef = useRef<CodePreviewUIState>(
+        restoredPreviewStateRef.current
+            ? cloneCodePreviewState(restoredPreviewStateRef.current.code)
+            : initialCodePreviewState(),
+    );
+    const autoOpenedCodePreviewTabRef = useRef<string | null>(null);
     useEffect(() => {
         const prevTabId = prevActiveTabIdRef.current;
         const currentTabId = activeTab.id;
@@ -2119,15 +2190,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const multipleTabsExist = tabState.tabs.length > 1;
         if (multipleTabsExist) {
             const currentTabCanOwnPreview = canShowAssistantCodingPreviewForTab(activeTab);
-            const currentPreviewMode: "workflow" | "code" = codePreviewState.active ? "code" : "workflow";
+            // Ref is synced every render after useCodePreviewState; effect deps only
+            // list activeTab.id, so read the ref for the latest open files/active flag.
+            const liveCode = codePreviewStateRef.current;
             const ownerTabId = previewOwnerTabRef.current;
             const ownerTab = tabState.tabs.find(t => t.id === ownerTabId);
+            const leavingTab = tabState.tabs.find(t => t.id === prevTabId);
 
-            if (canShowAssistantCodingPreviewForTab(ownerTab) && ownerTabId !== currentTabId) {
-                previewStateMapRef.current.set(ownerTabId, {
+            // Prefer snapshotting the tab we leave; fall back to the preview owner when
+            // leaving a non-owning tab (e.g. VE) while path-scoped events still updated live state.
+            const snapshotTabId =
+                canShowAssistantCodingPreviewForTab(leavingTab) && prevTabId !== currentTabId
+                    ? prevTabId
+                    : (canShowAssistantCodingPreviewForTab(ownerTab) && ownerTabId !== currentTabId
+                        ? ownerTabId
+                        : null);
+            if (snapshotTabId) {
+                previewStateMapRef.current.set(snapshotTabId, {
                     workflow: getWorkflowSnapshot(),
-                    code: cloneCodePreviewState(codePreviewState),
-                    previewMode: currentPreviewMode,
+                    code: cloneCodePreviewState(liveCode),
+                    previewMode: codePreviewModeFromState(liveCode),
                 });
             }
 
@@ -2135,15 +2217,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 const savedState = previewStateMapRef.current.get(currentTabId);
                 if (savedState) {
                     restoreWorkflowState(savedState.workflow);
-                    restoreCodePreviewState(savedState.code);
+                    // Sync ref + map before setState flushes so same-tick pure-coding
+                    // auto-open / persist see restored userClosed and active.
+                    const codeClone = commitRestoredCodePreview(
+                        savedState.code,
+                        restoreCodePreviewState,
+                        codePreviewStateRef,
+                    );
+                    previewStateMapRef.current.set(currentTabId, {
+                        ...savedState,
+                        code: codeClone,
+                        previewMode: codePreviewModeFromState(codeClone),
+                    });
                 } else {
                     resetWorkflowState();
                     resetCodePreviewState();
+                    codePreviewStateRef.current = initialCodePreviewState();
                 }
                 previewOwnerTabRef.current = currentTabId;
+                // Do not clear autoOpenedCodePreviewTabRef: reopen would wipe userClosed.
                 // Re-emit full workflow state from backend for the new active tab.
-                // Background agent loops emit events that were rejected by the inactive
-                // tab's event filter — this refresh bridges that gap.
                 if (activeTab.type === "project" && activeTab.projectPath) {
                     RefreshWorkflowV2StateForTab(activeTab.projectPath, activeTab.id).catch(() => {});
                 }
@@ -2819,18 +2912,26 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         || shouldShowSourcePreviewForAgentMode(activeTab.agentMode);
     const { state: codePreviewState, closePanel: closeCodePreview, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, closeFile: closeCodeFile, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFiles, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed);
     useEffect(() => {
-        if (!previewOwnerResetPendingRef.current) return; previewOwnerResetPendingRef.current = false;
+        if (!previewOwnerResetPendingRef.current) return;
+        previewOwnerResetPendingRef.current = false;
         const state = previewStateMapRef.current.get("local");
-        if (state) { restoreWorkflowState(state.workflow); restoreCodePreviewState(state.code); }
-        else { resetWorkflowState(); resetCodePreviewState(); }
+        if (state) {
+            restoreWorkflowState(state.workflow);
+            commitRestoredCodePreview(state.code, restoreCodePreviewState, codePreviewStateRef);
+        } else {
+            resetWorkflowState();
+            resetCodePreviewState();
+            codePreviewStateRef.current = initialCodePreviewState();
+        }
     }, [activeTab.id, restoreWorkflowState, restoreCodePreviewState, resetWorkflowState, resetCodePreviewState]);
     useEffect(() => {
         const restored = restoredPreviewStateRef.current;
         if (!restored) return;
         const currentOwner = tabState.tabs.find(tab => tab.id === previewOwnerTabRef.current);
         if (!canShowAssistantCodingPreviewForTab(currentOwner)) {
-            const ownerTab = restored.ownerProjectPath
-                ? tabState.tabs.find(tab => tab.type === "project" && tab.projectPath === restored.ownerProjectPath)
+            const restoredPath = normalizeProjectSessionPath(restored.ownerProjectPath);
+            const ownerTab = restoredPath
+                ? tabState.tabs.find(tab => tab.type === "project" && normalizeProjectSessionPath(tab.projectPath) === restoredPath)
                 : tabState.tabs.find(tab => tab.id === "local");
             if (!ownerTab) return;
             const nextOwnerTabId = ownerTab.id;
@@ -2844,17 +2945,36 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
         }
         if (previewOwnerTabRef.current !== activeTab.id) return;
+        // Guard against painting a pending old-project snapshot onto a brand-new
+        // coding tab that reassigned preview ownership on tab switch.
+        if (!shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: restored.ownerTabId,
+            restoredOwnerProjectPath: restored.ownerProjectPath,
+            activeTabId: activeTab.id,
+            activeTabType: activeTab.type,
+            activeTabProjectPath: activeTab.projectPath,
+        })) {
+            return;
+        }
         restoredPreviewApplyingRef.current = true;
         restoredPreviewStateRef.current = null;
         restoredPreviewOwnerProjectPathRef.current = undefined;
-        workflowStateRef.current = cloneWorkflowUIState(restored.workflow);
-        codePreviewStateRef.current = cloneCodePreviewState(restored.code);
+        const workflowClone = cloneWorkflowUIState(restored.workflow);
+        workflowStateRef.current = workflowClone;
+        const codeClone = commitRestoredCodePreview(
+            restored.code,
+            restoreCodePreviewState,
+            codePreviewStateRef,
+        );
+        previewStateMapRef.current.set(previewOwnerTabRef.current, {
+            workflow: workflowClone,
+            code: codeClone,
+            previewMode: codePreviewModeFromState(codeClone),
+        });
         restoreWorkflowState(restored.workflow);
-        restoreCodePreviewState(restored.code);
-    }, [activeTab.id, tabState.tabs, restoreWorkflowState, restoreCodePreviewState]);
+    }, [activeTab.id, activeTab.type, activeTab.projectPath, tabState.tabs, restoreWorkflowState, restoreCodePreviewState]);
     const workflowStateRef = useRef(workflowState);
     workflowStateRef.current = workflowState;
-    const codePreviewStateRef = useRef(codePreviewState);
     codePreviewStateRef.current = codePreviewState;
     const currentPreviewModeRef = useRef<"workflow" | "code">("workflow");
     const persistPreviewStateRef = useRef<number | null>(null);
@@ -2916,27 +3036,42 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         if (!sourcePreviewAllowed && (codePreviewState.active || codePreviewState.files.size > 0)) {
             resetCodePreviewState();
+            codePreviewStateRef.current = initialCodePreviewState();
         }
     }, [sourcePreviewAllowed, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
-    // Local / remote pure coding environments always open the right-hand source
-    // preview panel (empty until files arrive). Track auto-open per tab so a
-    // deliberate user close is not immediately reopened on re-render; re-open
-    // only when the tab first enters pure coding mode.
-    const autoOpenedCodePreviewTabRef = useRef<string | null>(null);
+    // Pure coding: open empty right-hand source panel once per tab. After that,
+    // only recover when files remain and the user did not close (activatePassive
+    // preserves userClosed; reopen would clear it).
     useEffect(() => {
         if (!isPureCodingEnvironment || !codingPreviewAllowed || !sourcePreviewAllowed) {
-            // Leaving coding mode for this tab allows a future re-entry to open again.
             if (autoOpenedCodePreviewTabRef.current === activeTab.id) {
                 autoOpenedCodePreviewTabRef.current = null;
             }
             return;
         }
         if (autoOpenedCodePreviewTabRef.current === activeTab.id) {
+            // Prefer ref: same-tick tab restore updates the ref before setState flushes.
+            const cp = codePreviewStateRef.current;
+            if (!cp.active && !cp.userClosed && cp.files.size > 0) {
+                activateCodePreviewPassive();
+            }
             return;
         }
         autoOpenedCodePreviewTabRef.current = activeTab.id;
-        reopenCodePreview();
-    }, [isPureCodingEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, reopenCodePreview]);
+        // First pure-coding open: drop orphan files from another project when we
+        // own the panel and have no per-tab snapshot (including localStorage owner).
+        if (
+            previewOwnerTabRef.current === activeTab.id
+            && !previewStateMapRef.current.has(activeTab.id)
+            && codePreviewStateRef.current.files.size > 0
+        ) {
+            resetCodePreviewState();
+            codePreviewStateRef.current = initialCodePreviewState();
+        }
+        if (!codePreviewStateRef.current.userClosed) {
+            reopenCodePreview();
+        }
+    }, [isPureCodingEnvironment, codingPreviewAllowed, sourcePreviewAllowed, activeTab.id, codePreviewState.active, codePreviewState.files.size, codePreviewState.userClosed, activateCodePreviewPassive, reopenCodePreview, resetCodePreviewState]);
     const showCodePreview = codingPreviewAllowed && sourcePreviewAllowed && codePreviewState.active;
     // Isolation conflicts open a dedicated right-hand side panel (not the float popover).
     const showCodingConflictPanel = isPureCodingEnvironment && codingConflictOpen && codingConflictCount > 0;

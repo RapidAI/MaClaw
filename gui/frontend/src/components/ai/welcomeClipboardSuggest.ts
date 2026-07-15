@@ -42,7 +42,8 @@ const RULES: Rule[] = [
                 && /line \d+|:\d+:\d+|file "|\.go:\d+|\.ts:\d+|\.py:\d+/.test(lower)
             ),
         tabIds: ["ops", "dev"],
-        textEnIncludes: ["fail", "incident", "log", "bug", "start", "timeout", "5xx"],
+        // ops: fail/start/timeout; dev: Hotfix / logs / bug (incident card was replaced by greenfield)
+        textEnIncludes: ["fail", "Hotfix", "log", "bug", "start", "timeout", "5xx"],
     },
     {
         id: "http_errors",
@@ -52,7 +53,7 @@ const RULES: Rule[] = [
         test: (_t, lower) =>
             /\b(5\d\d|4\d\d)\b/.test(lower) && /(timeout|timed out|gateway|upstream|status|http|request|response|接口|超时)/.test(lower),
         tabIds: ["ops", "dev"],
-        textEnIncludes: ["timeout", "5xx", "incident", "log", "API"],
+        textEnIncludes: ["timeout", "5xx", "Hotfix", "log", "API"],
     },
     {
         id: "disk_ops",
@@ -65,6 +66,16 @@ const RULES: Rule[] = [
         textEnIncludes: ["disk", "full", "backup", "security", "rollback"],
     },
     {
+        id: "new_project",
+        reason: "新建项目",
+        reasonEn: "New project",
+        weight: 9,
+        test: (_t, lower) =>
+            /(新建项目|开发新项目|初始化项目|从零(开始|搭建)|脚手架|create (a )?new (project|app|repo)|scaffold(ing)? (a )?(new )?(project|app)|greenfield|hello.?world app)/.test(lower),
+        tabIds: ["dev"],
+        textEnIncludes: ["new project", "Develop a new"],
+    },
+    {
         id: "code",
         reason: "代码片段",
         reasonEn: "Code snippet",
@@ -74,6 +85,7 @@ const RULES: Rule[] = [
             || /\b(function|const|class|import |package |def |func |public class|fn )\b/.test(lower)
             || /\.(ts|tsx|js|go|py|java|rs|cpp)\b/.test(lower),
         tabIds: ["dev"],
+        // First catalog match wins; "Implement" is intentional default for raw snippets.
         textEnIncludes: ["Implement", "Fix a bug", "Review", "refactor", "feature"],
     },
     {

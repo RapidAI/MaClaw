@@ -689,11 +689,23 @@ func (c *codingSubAgentCallbacks) RouteTurn(userText string) (corelib.MaclawLLMC
 }
 
 func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
+	var loopCtx *LoopContext
+	if c != nil && c.subagent != nil {
+		loopCtx = c.subagent.loopCtx
+	}
+	return codingLoopLLMRequestContext(loopCtx, "coding-subagent", iteration)
+}
+
+// codingLoopLLMRequestContext builds a per-round LLM context with cancel linkage,
+// request tracing, and scheduler lease — shared by local and remote coding SubAgents.
+func codingLoopLLMRequestContext(loopCtx *LoopContext, caller string, iteration int) (context.Context, func(error), error) {
 	baseCtx := context.Background()
 	baseCancel := func() {}
-	trace := llm.RequestTrace{Caller: "coding-subagent", Iteration: iteration}
-	if c != nil && c.subagent != nil && c.subagent.loopCtx != nil {
-		loopCtx := c.subagent.loopCtx
+	trace := llm.RequestTrace{Caller: caller, Iteration: iteration}
+	if loopCtx != nil {
+		if loopCtx.IsCancelled() {
+			return nil, nil, fmt.Errorf("cancelled")
+		}
 		baseCtx, baseCancel = loopCtx.Context()
 		trace.OwnerID = strings.TrimSpace(loopCtx.Runtime.PolicyOwnerID)
 		if trace.OwnerID == "" {
@@ -5116,6 +5128,11 @@ func subAgentVerificationOutputLooksEmpty(cmd CodingSubAgentCommandResult) bool 
 	if !isSubAgentVerificationCommand(cmd.Command) {
 		return false
 	}
+	// Compilers like `python -m py_compile` emit no stdout on success; empty
+	// output must not be treated as "no tests ran".
+	if cmd.Succeeded && subAgentVerificationAllowsSilentSuccess(cmd.Command) {
+		return false
+	}
 	summary := strings.ToLower(strings.Join(strings.Fields(cmd.Summary), " "))
 	if summary == "" || summary == "(无输出)" {
 		return true
@@ -8545,8 +8562,40 @@ func nxTargetIsVerification(value string) bool {
 }
 func isVerificationRunner(name string) bool {
 	switch commandNameBase(name) {
-	case "pytest", "unittest", "tox", "nox", "jest", "vitest", "eslint", "tsc", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop", "cucumber":
+	case "pytest", "unittest", "tox", "nox", "jest", "vitest", "eslint", "tsc", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop", "cucumber",
+		// Syntax/type compile checks commonly used for small CLI/script projects
+		// without a formal test suite (remote pure-coding workbench).
+		"py_compile", "compileall":
 		return true
+	}
+	return false
+}
+
+// subAgentVerificationAllowsSilentSuccess reports verifiers that intentionally
+// produce no stdout when they succeed (exit code is the signal).
+func subAgentVerificationAllowsSilentSuccess(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		cmd := commandNameBase(segment[0])
+		args := segment[1:]
+		switch cmd {
+		case "python", "python3", "py":
+			if len(args) >= 2 && args[0] == "-m" {
+				mod := commandNameBase(args[1])
+				if mod == "py_compile" || mod == "compileall" {
+					return true
+				}
+			}
+		case "py_compile", "compileall":
+			return true
+		}
 	}
 	return false
 }

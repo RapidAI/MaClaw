@@ -50,3 +50,12 @@ export function remoteCodingMetaFromTaskTags(tags?: string[] | null): RemoteCodi
 export function isPureCodingTaskTags(tags?: string[] | null): boolean {
     return agentModeFromTaskTags(tags) != null;
 }
+
+/** True when the task was created from the multi-phase coding workflow form. */
+export function isCodingWorkflowSourceTags(tags?: string[] | null): boolean {
+    if (!tags?.length) return false;
+    return tags.some((t) => {
+        const s = String(t || "").trim();
+        return s === "source:coding_workflow" || s.startsWith("source:coding_workflow");
+    });
+}

@@ -251,23 +251,50 @@ func estimateConversationTokensForSubAgent(conversation []interface{}) int {
 	return (totalBytes*10 + 24) / 25
 }
 
-// codingSubAgentHooks implements agent.LoopHooks with mid-task compaction support.
+// codingSubAgentHooks implements agent.LoopHooks with mid-task compaction and
+// live guide-launch / supplementary injection support for pure coding loops.
 type codingSubAgentHooks struct {
 	agent.DefaultLoopHooks
 	compactor *SubAgentCompactor
+	handler   *IMMessageHandler
+	userID    string
+	iteration int
 }
 
 func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) []interface{} {
-	if h.compactor == nil {
+	out := conversation
+	changed := false
+	if h != nil && h.handler != nil && strings.TrimSpace(h.userID) != "" {
+		// Prefer length growth over injected payload text: a drained-but-empty
+		// guide wrapper should not force a no-op conversation rewrite.
+		next, _ := h.handler.appendPendingSteerInjections(h.userID, out, h.iteration)
+		if len(next) > len(out) {
+			out = next
+			changed = true
+		}
+	}
+	if h != nil {
+		h.iteration++
+	}
+	if h != nil && h.compactor != nil && h.compactor.ShouldCompact(out) {
+		if compacted := h.compactor.Compact(out); compacted != nil {
+			return compacted
+		}
+	}
+	if !changed {
 		return nil
 	}
-	if !h.compactor.ShouldCompact(conversation) {
-		return nil
-	}
-	return h.compactor.Compact(conversation)
+	return out
 }
 
-// buildLoopHooks creates LoopHooks for the SubAgent with compaction support.
+func codingSubAgentOwnerUserID(loopCtx *LoopContext) string {
+	if loopCtx == nil {
+		return ""
+	}
+	return strings.TrimSpace(loopCtx.UserID)
+}
+
+// buildLoopHooks creates LoopHooks for the SubAgent with compaction + steer injection.
 func (s *CodingSubAgent) buildLoopHooks(cb *codingSubAgentCallbacks) *codingSubAgentHooks {
 	contextWindow := s.cfg.EffectiveContextTokens()
 	if contextWindow <= 0 {
@@ -281,7 +308,29 @@ func (s *CodingSubAgent) buildLoopHooks(cb *codingSubAgentCallbacks) *codingSubA
 		func() []CodingSubAgentCommandResult { return cb.getCommandsRun() },
 	)
 
+	var handler *IMMessageHandler
+	var loopCtx *LoopContext
+	if s != nil {
+		handler = s.handler
+		loopCtx = s.loopCtx
+	}
 	return &codingSubAgentHooks{
 		compactor: compactor,
+		handler:   handler,
+		userID:    codingSubAgentOwnerUserID(loopCtx),
+	}
+}
+
+// buildRemoteCodingLoopHooks wires guide-launch injection for pure remote coding.
+func (r *RemoteCodingSubAgent) buildRemoteCodingLoopHooks() *codingSubAgentHooks {
+	var handler *IMMessageHandler
+	var loopCtx *LoopContext
+	if r != nil {
+		handler = r.handler
+		loopCtx = r.loopCtx
+	}
+	return &codingSubAgentHooks{
+		handler: handler,
+		userID:  codingSubAgentOwnerUserID(loopCtx),
 	}
 }

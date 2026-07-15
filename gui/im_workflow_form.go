@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -14,20 +16,46 @@ const (
 	workflowFormWorkflowIDField  = "_workflow_id"
 	workflowFormEventScopeField  = "_workflow_event_scope_id"
 	workflowFormProjectPathField = "project_path"
+	workflowFormSSHProfileField  = "ssh_profile"
+	workflowFormRemoteWorkDir    = "remote_workdir"
+	workflowFormRemoteHostField  = "remote_host"
+	workflowFormRemoteUserField  = "remote_user"
+	workflowFormRemotePortField  = "remote_port"
+	workflowFormSSHPasswordField = "ssh_password"
+	workflowFormSSHKeyPathField  = "ssh_key_path"
+	workflowFormRemoteTaskPath   = "remote_task_path"
+	workflowFormExecLocal        = "local"
+	workflowFormExecRemote       = "remote"
+	workflowFormSSHProfileNew    = "__new__"
 )
+
+// codingWorkflowRemoteCreds is session-only auth for coding workflow remote runs.
+type codingWorkflowRemoteCreds struct {
+	Password string
+	KeyPath  string
+	Host     string
+	User     string
+	Port     int
+	WorkDir  string
+	Profile  string
+}
 
 // emitWorkflowPhaseForm builds an AgentView form from the phase's InputSchema
 // and emits it to the frontend via the standard AG UI lifecycle protocol.
 // The form appears in the right-side task panel (AgentTaskPanel).
 func (h *IMMessageHandler) emitWorkflowPhaseForm(userID string, workflowID string, schema *v2.PhaseInputSchemaSpec, phaseID string) {
-	if h == nil || h.app == nil || schema == nil || len(schema.Fields) == 0 {
+	if h == nil || h.app == nil || schema == nil {
+		return
+	}
+	if len(schema.Fields) == 0 && len(schema.Variants) == 0 {
 		return
 	}
 	schema = localizeWorkflowPhaseInputSchema(schema, h.getWorkflowLang())
 
 	view := buildWorkflowPhaseFormAgentView(userID, workflowID, h.app.getEventScopeID(userID), phaseID, schema)
+	injectSSHProfileOptionsIntoAgentView(view, h.app.sshHostEntries())
 	h.app.emitAgentView(view)
-	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d", phaseID, len(schema.Fields))
+	log.Printf("[workflow-form] emitted AG UI form: phase=%s fields=%d variants=%d", phaseID, len(schema.Fields), len(schema.Variants))
 }
 
 func buildWorkflowPhaseFormAgentView(userID, workflowID, eventScopeID, phaseID string, schema *v2.PhaseInputSchemaSpec) map[string]interface{} {
@@ -36,46 +64,7 @@ func buildWorkflowPhaseFormAgentView(userID, workflowID, eventScopeID, phaseID s
 	}
 	fields := make([]map[string]interface{}, 0, len(schema.Fields)+4)
 	for _, f := range schema.Fields {
-		field := map[string]interface{}{
-			"name":  f.Name,
-			"label": f.Label,
-			"type":  f.Type,
-		}
-		if f.Required {
-			field["required"] = true
-		}
-		if f.Description != "" {
-			field["description"] = f.Description
-		}
-		if f.Placeholder != "" {
-			field["placeholder"] = f.Placeholder
-		}
-		if len(f.Options) > 0 {
-			opts := make([]map[string]string, len(f.Options))
-			for i, o := range f.Options {
-				opts[i] = map[string]string{"label": o.Label, "value": o.Value}
-			}
-			field["options"] = opts
-		}
-		if f.Default != nil {
-			field["value"] = f.Default
-		}
-		if f.Min != nil {
-			field["min"] = *f.Min
-		}
-		if f.Max != nil {
-			field["max"] = *f.Max
-		}
-		if f.MinLength != nil {
-			field["minLength"] = *f.MinLength
-		}
-		if f.MaxLength != nil {
-			field["maxLength"] = *f.MaxLength
-		}
-		if f.Pattern != "" {
-			field["pattern"] = f.Pattern
-		}
-		fields = append(fields, field)
+		fields = append(fields, phaseInputFieldSpecToAgentViewField(f))
 	}
 
 	// Hidden fields carrying stable workflow routing. The agent loop clears
@@ -117,7 +106,566 @@ func buildWorkflowPhaseFormAgentView(userID, workflowID, eventScopeID, phaseID s
 			"phase_id": phaseID,
 		},
 	}
+	if len(schema.Variants) > 0 {
+		variants := make([]map[string]interface{}, 0, len(schema.Variants))
+		for _, v := range schema.Variants {
+			variantFields := make([]map[string]interface{}, 0, len(v.Fields))
+			for _, f := range v.Fields {
+				variantFields = append(variantFields, phaseInputFieldSpecToAgentViewField(f))
+			}
+			variants = append(variants, map[string]interface{}{
+				"id":     v.ID,
+				"label":  v.Label,
+				"fields": variantFields,
+			})
+		}
+		view["variants"] = variants
+	}
 	return view
+}
+
+func phaseInputFieldSpecToAgentViewField(f v2.PhaseInputFieldSpec) map[string]interface{} {
+	field := map[string]interface{}{
+		"name":  f.Name,
+		"label": f.Label,
+		"type":  f.Type,
+	}
+	if f.Required {
+		field["required"] = true
+	}
+	if f.Sensitive {
+		field["sensitive"] = true
+	}
+	if f.Description != "" {
+		field["description"] = f.Description
+	}
+	if f.Placeholder != "" {
+		field["placeholder"] = f.Placeholder
+	}
+	if len(f.Options) > 0 {
+		opts := make([]map[string]string, len(f.Options))
+		for i, o := range f.Options {
+			opts[i] = map[string]string{"label": o.Label, "value": o.Value}
+		}
+		field["options"] = opts
+	}
+	if f.Default != nil {
+		field["value"] = f.Default
+	}
+	if f.Min != nil {
+		field["min"] = *f.Min
+	}
+	if f.Max != nil {
+		field["max"] = *f.Max
+	}
+	if f.MinLength != nil {
+		field["minLength"] = *f.MinLength
+	}
+	if f.MaxLength != nil {
+		field["maxLength"] = *f.MaxLength
+	}
+	if f.Pattern != "" {
+		field["pattern"] = f.Pattern
+	}
+	return field
+}
+
+// sshHostProfileOptions builds select options from configured SSH hosts.
+// Value is the host Label (fallback: host) so submit can resolve the profile.
+// Always appends "新建连接" so users can enter host/user/password inline.
+func sshHostProfileOptions(hosts []corelib.SSHHostEntry) []map[string]string {
+	opts := make([]map[string]string, 0, len(hosts)+1)
+	for _, h := range hosts {
+		value := strings.TrimSpace(h.Label)
+		if value == "" {
+			value = strings.TrimSpace(h.Host)
+		}
+		if value == "" {
+			continue
+		}
+		user := strings.TrimSpace(h.User)
+		host := strings.TrimSpace(h.Host)
+		port := h.Port
+		if port <= 0 {
+			port = 22
+		}
+		label := value
+		if host != "" {
+			if user != "" {
+				label = fmt.Sprintf("%s (%s@%s:%d)", value, user, host, port)
+			} else {
+				label = fmt.Sprintf("%s (%s:%d)", value, host, port)
+			}
+		}
+		opts = append(opts, map[string]string{"label": label, "value": value})
+	}
+	opts = append(opts, map[string]string{
+		"label": "新建连接…",
+		"value": workflowFormSSHProfileNew,
+	})
+	return opts
+}
+
+// injectSSHProfileOptionsIntoAgentView fills ssh_profile select options from
+// configured SSH hosts. Mutates only the agent-view payload, not the template.
+// Attaches visibleWhen:
+//   - host/user/port/key → only for 新建连接
+//   - password → whenever a profile is selected (optional override / new auth)
+func injectSSHProfileOptionsIntoAgentView(view map[string]interface{}, hosts []corelib.SSHHostEntry) {
+	if view == nil {
+		return
+	}
+	opts := sshHostProfileOptions(hosts)
+	newOnlyFields := map[string]bool{
+		workflowFormRemoteHostField: true,
+		workflowFormRemoteUserField: true,
+		workflowFormRemotePortField: true,
+		workflowFormSSHKeyPathField: true,
+	}
+	inject := func(fields []map[string]interface{}) {
+		for _, field := range fields {
+			name := fmt.Sprint(field["name"])
+			if name == workflowFormSSHProfileField {
+				field["options"] = opts
+				field["type"] = "select"
+			}
+			if newOnlyFields[name] {
+				field["visibleWhen"] = map[string]interface{}{
+					"field":  workflowFormSSHProfileField,
+					"equals": workflowFormSSHProfileNew,
+				}
+			}
+			if name == workflowFormSSHPasswordField {
+				// Show for any selected profile (including __new__) so users can
+				// optionally override stored credentials for this session only.
+				field["visibleWhen"] = map[string]interface{}{
+					"field":    workflowFormSSHProfileField,
+					"notEmpty": true,
+				}
+				// Never block submit when using a saved profile without typing password.
+				field["required"] = false
+			}
+		}
+	}
+	if raw, ok := view["fields"].([]map[string]interface{}); ok {
+		inject(raw)
+	}
+	if rawVariants, ok := view["variants"].([]map[string]interface{}); ok {
+		for _, variant := range rawVariants {
+			if fields, ok := variant["fields"].([]map[string]interface{}); ok {
+				inject(fields)
+			}
+		}
+	}
+}
+
+// resolveCodingWorkflowRemoteFormData expands ssh_profile / new-connection fields
+// into non-secret remote meta. Sensitive values stay in data only long enough for
+// the submit path to copy them into session-only codingWorkflowRemoteCreds.
+func resolveCodingWorkflowRemoteFormData(hosts []corelib.SSHHostEntry, data map[string]interface{}) error {
+	if data == nil {
+		return nil
+	}
+	variant := strings.TrimSpace(fmt.Sprint(data["_agent_view_variant"]))
+	if variant != workflowFormExecRemote {
+		return nil
+	}
+	workDir := formDataTrimString(data, workflowFormRemoteWorkDir)
+	if workDir == "" {
+		return fmt.Errorf("远程工作目录不能为空")
+	}
+	profile := formDataTrimString(data, workflowFormSSHProfileField)
+	if profile == "" {
+		return fmt.Errorf("请选择 SSH 主机或「新建连接」")
+	}
+
+	password := formDataTrimString(data, workflowFormSSHPasswordField)
+	keyPath := formDataTrimString(data, workflowFormSSHKeyPathField)
+	host := formDataTrimString(data, workflowFormRemoteHostField)
+	user := formDataTrimString(data, workflowFormRemoteUserField)
+	port := formDataPort(data, workflowFormRemotePortField, 22)
+
+	if profile != workflowFormSSHProfileNew {
+		entry, ok := findSSHHostEntryByProfile(hosts, profile)
+		if !ok {
+			return fmt.Errorf("未找到 SSH 主机「%s」，请在 SSH 面板检查配置，或选「新建连接」", profile)
+		}
+		if host == "" {
+			host = strings.TrimSpace(entry.Host)
+		}
+		if user == "" {
+			user = strings.TrimSpace(entry.User)
+		}
+		if port <= 0 || formDataTrimString(data, workflowFormRemotePortField) == "" {
+			if entry.Port > 0 {
+				port = entry.Port
+			} else {
+				port = 22
+			}
+		}
+		if keyPath == "" {
+			keyPath = strings.TrimSpace(entry.KeyPath)
+		}
+		// Prefer session password from form; fall back to in-memory host password
+		// when present (Hub vault injects; disk config usually empty).
+		if password == "" {
+			password = strings.TrimSpace(entry.Password)
+		}
+		if strings.TrimSpace(entry.Label) != "" {
+			data[workflowFormSSHProfileField] = strings.TrimSpace(entry.Label)
+		}
+	}
+
+	host = normalizeSSHHostInput(host)
+	user = sanitizeTaskMetadataTagValue(user)
+	workDir = sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" {
+		return fmt.Errorf("远程主机和用户名不能为空（选择已有主机或填写新建连接信息）")
+	}
+	if port <= 0 || port >= 65536 {
+		port = 22
+	}
+	// New connection must supply password or key. Profile may rely on SSH agent
+	// or a configured key_path without re-entering secrets here.
+	if profile == workflowFormSSHProfileNew && password == "" && keyPath == "" {
+		return fmt.Errorf("新建连接请填写密码或私钥路径")
+	}
+
+	data[workflowFormRemoteHostField] = host
+	data[workflowFormRemoteUserField] = user
+	data[workflowFormRemotePortField] = port
+	data[workflowFormRemoteWorkDir] = workDir
+	if keyPath != "" {
+		data[workflowFormSSHKeyPathField] = keyPath
+	}
+	// Keep password in data temporarily for session vault capture; scrub removes it later.
+	if password != "" {
+		data[workflowFormSSHPasswordField] = password
+	}
+	return nil
+}
+
+func formDataTrimString(data map[string]interface{}, key string) string {
+	if data == nil {
+		return ""
+	}
+	v, ok := data[key]
+	if !ok || v == nil {
+		return ""
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" || s == "<nil>" {
+		return ""
+	}
+	return s
+}
+
+func formDataPort(data map[string]interface{}, key string, def int) int {
+	if data == nil {
+		return def
+	}
+	v, ok := data[key]
+	if !ok || v == nil {
+		return def
+	}
+	switch n := v.(type) {
+	case int:
+		if n > 0 && n < 65536 {
+			return n
+		}
+	case int64:
+		if n > 0 && n < 65536 {
+			return int(n)
+		}
+	case float64:
+		if n > 0 && n < 65536 {
+			return int(n)
+		}
+	case string:
+		s := strings.TrimSpace(n)
+		if s == "" {
+			return def
+		}
+		p, err := strconv.Atoi(s)
+		if err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return def
+}
+
+func findSSHHostEntryByProfile(hosts []corelib.SSHHostEntry, profile string) (corelib.SSHHostEntry, bool) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" || profile == workflowFormSSHProfileNew {
+		return corelib.SSHHostEntry{}, false
+	}
+	// Prefer exact label match, then host match.
+	for _, h := range hosts {
+		if strings.TrimSpace(h.Label) == profile {
+			return h, true
+		}
+	}
+	for _, h := range hosts {
+		if strings.TrimSpace(h.Host) == profile {
+			return h, true
+		}
+	}
+	return corelib.SSHHostEntry{}, false
+}
+
+func captureCodingWorkflowRemoteCreds(data map[string]interface{}) codingWorkflowRemoteCreds {
+	port := formDataPort(data, workflowFormRemotePortField, 22)
+	return codingWorkflowRemoteCreds{
+		Password: formDataTrimString(data, workflowFormSSHPasswordField),
+		KeyPath:  formDataTrimString(data, workflowFormSSHKeyPathField),
+		Host:     formDataTrimString(data, workflowFormRemoteHostField),
+		User:     formDataTrimString(data, workflowFormRemoteUserField),
+		Port:     port,
+		WorkDir:  formDataTrimString(data, workflowFormRemoteWorkDir),
+		Profile:  formDataTrimString(data, workflowFormSSHProfileField),
+	}
+}
+
+func (h *IMMessageHandler) storeCodingWorkflowRemoteCreds(userID string, creds codingWorkflowRemoteCreds) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	if strings.TrimSpace(creds.Host) == "" || strings.TrimSpace(creds.User) == "" {
+		return
+	}
+	if creds.Port <= 0 {
+		creds.Port = 22
+	}
+	h.codingWorkflowRemoteCreds.Store(userID, creds)
+}
+
+func (h *IMMessageHandler) loadCodingWorkflowRemoteCreds(userID string) (codingWorkflowRemoteCreds, bool) {
+	if h == nil {
+		return codingWorkflowRemoteCreds{}, false
+	}
+	raw, ok := h.codingWorkflowRemoteCreds.Load(strings.TrimSpace(userID))
+	if !ok {
+		return codingWorkflowRemoteCreds{}, false
+	}
+	creds, ok := raw.(codingWorkflowRemoteCreds)
+	return creds, ok
+}
+
+func (h *IMMessageHandler) clearCodingWorkflowRemoteCreds(userID string) {
+	if h == nil {
+		return
+	}
+	h.codingWorkflowRemoteCreds.Delete(strings.TrimSpace(userID))
+}
+
+// codingWorkflowRemoteEnvFromState reads non-secret remote execution target from
+// any phase FormData (typically requirements).
+func codingWorkflowRemoteEnvFromState(state *v2.WorkflowState) (host, user, workDir string, port int, ok bool) {
+	if state == nil {
+		return "", "", "", 0, false
+	}
+	for i := range state.Phases {
+		fd := state.Phases[i].FormData
+		if fd == nil {
+			continue
+		}
+		variant := formDataTrimString(fd, "_agent_view_variant")
+		if variant == workflowFormExecLocal {
+			continue
+		}
+		// Require explicit remote marker when present.
+		if variant != "" && variant != workflowFormExecRemote {
+			continue
+		}
+		host = formDataTrimString(fd, workflowFormRemoteHostField)
+		user = formDataTrimString(fd, workflowFormRemoteUserField)
+		workDir = formDataTrimString(fd, workflowFormRemoteWorkDir)
+		if workDir == "" {
+			workDir = formDataTrimString(fd, "work_dir")
+		}
+		port = formDataPort(fd, workflowFormRemotePortField, 22)
+		if host != "" && user != "" && workDir != "" && (variant == workflowFormExecRemote || formDataTrimString(fd, workflowFormSSHProfileField) != "") {
+			return host, user, workDir, port, true
+		}
+	}
+	return "", "", "", 0, false
+}
+
+func isCodingWorkflowRemoteExecution(state *v2.WorkflowState) bool {
+	_, _, _, _, ok := codingWorkflowRemoteEnvFromState(state)
+	return ok
+}
+
+// bindCodingWorkflowRemoteSticky mirrors non-secret remote coords into sticky
+// coding memory so reopen/reconnect can reuse the same host without passwords.
+func (h *IMMessageHandler) bindCodingWorkflowRemoteSticky(userID string, creds codingWorkflowRemoteCreds) {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return
+	}
+	if strings.TrimSpace(creds.Host) == "" || strings.TrimSpace(creds.User) == "" {
+		return
+	}
+	port := creds.Port
+	if port <= 0 {
+		port = 22
+	}
+	workDir := strings.TrimSpace(creds.WorkDir)
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		if mem.Kind != "" && mem.Kind != "remote" {
+			// Do not clobber an active local pure-coding sticky session.
+			return
+		}
+		mem.Kind = "remote"
+		mem.RemoteHost = strings.TrimSpace(creds.Host)
+		mem.RemoteUser = strings.TrimSpace(creds.User)
+		mem.RemotePort = port
+		if workDir != "" {
+			mem.RemoteWorkDir = workDir
+			mem.RemoteProjectDir = workDir
+		}
+	})
+}
+
+// syncCodingWorkflowRemoteTask creates or updates a left-sidebar remote_coding_dev
+// task with non-secret SSH meta tags. Stores remote_task_path into form data.
+// Password is never written to tags or task.md.
+func (h *IMMessageHandler) syncCodingWorkflowRemoteTask(userID string, data map[string]interface{}, state *v2.WorkflowState) {
+	if h == nil || h.app == nil || data == nil {
+		return
+	}
+	if formDataTrimString(data, "_agent_view_variant") != workflowFormExecRemote {
+		return
+	}
+	host := formDataTrimString(data, workflowFormRemoteHostField)
+	user := formDataTrimString(data, workflowFormRemoteUserField)
+	workDir := formDataTrimString(data, workflowFormRemoteWorkDir)
+	port := formDataPort(data, workflowFormRemotePortField, 22)
+	if host == "" || user == "" || workDir == "" {
+		return
+	}
+	if port <= 0 || port >= 65536 {
+		port = 22
+	}
+
+	taskName := formDataTrimString(data, "project_name")
+	if taskName == "" && state != nil {
+		taskName = strings.TrimSpace(state.Summary)
+	}
+	if taskName == "" {
+		taskName = "远程编程任务"
+	}
+	// Prefix so sidebar can distinguish workflow-linked remote tasks.
+	if !strings.Contains(taskName, "远程") && !strings.Contains(strings.ToLower(taskName), "remote") {
+		taskName = "远程 · " + taskName
+	}
+
+	existing := formDataTrimString(data, workflowFormRemoteTaskPath)
+	// Prefer explicit path, then state, then sticky project path, then meta match.
+	if existing == "" && state != nil {
+		existing = remoteTaskPathFromWorkflowState(state)
+	}
+	if existing == "" {
+		if mem := h.getStickyCodingWorkbenchMemory(userID); mem.Kind == "remote" {
+			if p := normalizeProjectSessionPath(mem.ProjectPath); p != "" {
+				// Only reuse sticky path when coords still match.
+				th, tu, tw, _ := h.app.remoteCodingMetaFromTaskTags(p)
+				if strings.EqualFold(normalizeSSHHostInput(th), normalizeSSHHostInput(host)) &&
+					strings.EqualFold(sanitizeTaskMetadataTagValue(tu), sanitizeTaskMetadataTagValue(user)) &&
+					normalizeRemoteWorkDirKey(tw) == normalizeRemoteWorkDirKey(workDir) {
+					existing = p
+				}
+			}
+		}
+	}
+	if existing == "" {
+		if matched := h.app.FindRemoteCodingTaskByMeta(host, user, workDir); strings.TrimSpace(matched.ProjectPath) != "" {
+			existing = normalizeProjectSessionPath(matched.ProjectPath)
+			log.Printf("[workflow-remote-task] reusing existing task by meta path=%s", existing)
+		}
+	}
+
+	if existing != "" {
+		if err := h.app.UpdateRemoteCodingTaskMeta(existing, host, user, workDir, port); err != nil {
+			log.Printf("[workflow-remote-task] update meta failed path=%s err=%v — will try create", existing, err)
+		} else {
+			data[workflowFormRemoteTaskPath] = normalizeProjectSessionPath(existing)
+			h.bindCodingWorkflowRemoteTaskSticky(userID, existing, host, user, workDir, port)
+			log.Printf("[workflow-remote-task] updated task path=%s host=%s@%s:%d", existing, user, host, port)
+			return
+		}
+	}
+
+	created := h.app.CreateRemoteCodingTask(taskName, host, user, workDir, port, taskSourceCodingWorkflowTag)
+	if strings.TrimSpace(created.ProjectPath) == "" {
+		log.Printf("[workflow-remote-task] CreateRemoteCodingTask returned empty path name=%s", taskName)
+		return
+	}
+	taskPath := normalizeProjectSessionPath(created.ProjectPath)
+	data[workflowFormRemoteTaskPath] = taskPath
+	h.bindCodingWorkflowRemoteTaskSticky(userID, taskPath, host, user, workDir, port)
+	log.Printf("[workflow-remote-task] created task path=%s host=%s@%s:%d workdir=%s", taskPath, user, host, port, workDir)
+}
+
+// bindCodingWorkflowRemoteTaskSticky links workflow session sticky memory to the
+// local task artifact path (for hooks/reopen) while keeping remote SSH coords.
+func (h *IMMessageHandler) bindCodingWorkflowRemoteTaskSticky(userID, taskPath, host, user, workDir string, port int) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	taskPath = normalizeProjectSessionPath(taskPath)
+	if userID == "" || taskPath == "" {
+		return
+	}
+	if port <= 0 {
+		port = 22
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		if mem.Kind != "" && mem.Kind != "remote" {
+			return
+		}
+		mem.Kind = "remote"
+		mem.ProjectPath = taskPath
+		mem.RemoteHost = strings.TrimSpace(host)
+		mem.RemoteUser = strings.TrimSpace(user)
+		mem.RemotePort = port
+		if wd := strings.TrimSpace(workDir); wd != "" {
+			mem.RemoteWorkDir = wd
+			mem.RemoteProjectDir = wd
+		}
+	})
+	// Also seed the task-tab owner session so opening the task continues remote.
+	taskOwner := projectSessionOwnerID(taskPath)
+	if taskOwner != "" && taskOwner != userID {
+		h.updateStickyCodingWorkbenchMemory(taskOwner, func(mem *stickyCodingWorkbenchMemory) {
+			mem.Kind = "remote"
+			mem.ProjectPath = taskPath
+			mem.RemoteHost = strings.TrimSpace(host)
+			mem.RemoteUser = strings.TrimSpace(user)
+			mem.RemotePort = port
+			if wd := strings.TrimSpace(workDir); wd != "" {
+				mem.RemoteWorkDir = wd
+				mem.RemoteProjectDir = wd
+			}
+		})
+	}
+}
+
+// remoteTaskPathFromWorkflowState returns remote_task_path from form data if any.
+func remoteTaskPathFromWorkflowState(state *v2.WorkflowState) string {
+	if state == nil {
+		return ""
+	}
+	for i := range state.Phases {
+		if p := formDataTrimString(state.Phases[i].FormData, workflowFormRemoteTaskPath); p != "" {
+			return normalizeProjectSessionPath(p)
+		}
+	}
+	return ""
 }
 
 // handleWorkflowFormAgentViewSubmit processes the user's form submission from
@@ -203,7 +751,7 @@ func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[
 		}
 	}
 
-	// Validate project_path before mutating state.
+	// Validate project_path before mutating state (local execution).
 	if pp := workflowFormStringField(data, workflowFormProjectPathField); pp != "" {
 		_, _, err := normalizeWorkflowProjectPath(pp)
 		if err != nil {
@@ -216,12 +764,44 @@ func (a *App) handleWorkflowFormV1EngineSubmit(userID, phaseID string, data map[
 	}
 
 	// Strip hidden routing fields from form data before storing.
+	// Preserve _agent_view_variant for local/remote execution target.
 	cleanData := make(map[string]interface{}, len(data))
 	for k, v := range data {
-		if k == workflowFormUserIDField || k == workflowFormWorkflowIDField || k == workflowFormPhaseField {
+		if k == workflowFormUserIDField || k == workflowFormWorkflowIDField || k == workflowFormPhaseField || k == workflowFormEventScopeField {
+			continue
+		}
+		if k != "" && k[0] == '_' && k != "_agent_view_variant" {
 			continue
 		}
 		cleanData[k] = v
+	}
+	if err := resolveCodingWorkflowRemoteFormData(a.sshHostEntries(), cleanData); err != nil {
+		return &IMAgentResponse{
+			Text:           err.Error(),
+			Error:          err.Error(),
+			ResponseSource: imResponseSourceAgentViewSubmit.String(),
+		}
+	}
+	if formDataTrimString(cleanData, "_agent_view_variant") == workflowFormExecRemote {
+		if hub := a.ensureHubClient(); hub != nil {
+			if handler := hub.ensureIMHandler(); handler != nil {
+				creds := captureCodingWorkflowRemoteCreds(cleanData)
+				handler.storeCodingWorkflowRemoteCreds(userID, creds)
+				handler.bindCodingWorkflowRemoteSticky(userID, creds)
+				delete(cleanData, workflowFormSSHPasswordField)
+				var st *v2.WorkflowState
+				if handler.isWorkflowV2Active(userID) {
+					if wf := handler.getWorkflowV2(); wf != nil {
+						st = wf.machine.GetActive(userID)
+					}
+				}
+				handler.syncCodingWorkflowRemoteTask(userID, cleanData, st)
+			} else {
+				delete(cleanData, workflowFormSSHPasswordField)
+			}
+		} else {
+			delete(cleanData, workflowFormSSHPasswordField)
+		}
 	}
 
 	// Submit form data through the WorkflowEngine adapter.

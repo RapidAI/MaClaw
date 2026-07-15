@@ -237,11 +237,12 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 
 	userText := taskDescription
 	userContent := remoteCodingUserContent(r, userText)
+	hooks := r.buildRemoteCodingLoopHooks()
 	var result agent.LoopResult
 	if userContent != nil && userContent != userText {
-		result = agent.RunLoopWithUserContent(cb, userText, userContent, nil, r.httpClient)
+		result = agent.RunLoopWithUserContent(cb, userText, userContent, nil, r.httpClient, hooks)
 	} else {
-		result = agent.RunLoop(cb, userText, nil, r.httpClient)
+		result = agent.RunLoop(cb, userText, nil, r.httpClient, hooks)
 	}
 	if r.handler != nil {
 		accumulateLoopResultUsage(r.handler.app, r.cfg, result)
@@ -1193,12 +1194,14 @@ func (c *remoteCodingCallbacks) ShouldStop() bool {
 	return false
 }
 
-// LLMRequestContext implements LLMRequestContextProvider for cancellation support.
+// LLMRequestContext implements LLMRequestContextProvider for cancellation,
+// scheduler leases, and request tracing (same posture as local CodingSubAgent).
 func (c *remoteCodingCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
-	if c != nil && c.agent != nil && c.agent.loopCtx != nil && c.agent.loopCtx.IsCancelled() {
-		return nil, nil, fmt.Errorf("cancelled")
+	var loopCtx *LoopContext
+	if c != nil && c.agent != nil {
+		loopCtx = c.agent.loopCtx
 	}
-	return context.Background(), func(error) {}, nil
+	return codingLoopLLMRequestContext(loopCtx, "remote-coding-subagent", iteration)
 }
 
 // --- Tool Execution ---

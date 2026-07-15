@@ -1,5 +1,11 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import {
+    ChatBubbleFrame,
+    CHAT_SPEAKER_LABEL_GAP,
+    localIntroChatBubbleBackground,
+    userChatBubbleBackground,
+} from "./ChatBubbleFrame";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantInputStack } from "./AssistantInputStack";
@@ -1702,26 +1708,59 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     />
                 ))}
 
-                {/* Awaiting visible response */}
+                {/* Awaiting visible response — status chip, no speaker name → no name tail */}
                 {awaitingReplyVisible && !state.streaming && (
                     <div data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
-                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8, background: theme.fieldBg, border: `1px solid ${theme.fieldBorder}`, fontSize: 13, color: theme.textMuted || theme.text }}>
+                        <ChatBubbleFrame
+                            side="left"
+                            background={theme.fieldBg}
+                            borderColor={theme.fieldBorder}
+                            showTail={false}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: theme.textMuted || theme.text }}
+                        >
                             <span>{isZh ? "思考中" : "Thinking"}</span>
                             <span className="ve-cursor-blink">...</span>
-                        </div>
+                        </ChatBubbleFrame>
                     </div>
                 )}
 
-                {/* Streaming Indicator */}
+                {/* Streaming — name above bubble so the top tail points at the speaker */}
                 {state.streaming && (
-                    <div data-testid="ve-streaming-indicator" style={{ marginTop: 8 }}>
+                    <div
+                        data-testid="ve-streaming-indicator"
+                        style={{ marginTop: 8, display: "flex", flexDirection: "column", alignItems: "flex-start" }}
+                    >
                         <div
+                            style={{
+                                maxWidth: "80%",
+                                marginBottom: CHAT_SPEAKER_LABEL_GAP,
+                                padding: "0 4px",
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: participantColorById(participants, state.streamFromId, theme.responseBorderLeft),
+                                whiteSpace: "normal",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 5,
+                            }}
+                        >
+                            {streamingFromPrimaryAssistant && assistantAvatar && (
+                                <img
+                                    data-testid="ve-streaming-avatar"
+                                    src={assistantAvatar}
+                                    alt=""
+                                    style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                                />
+                            )}
+                            <span>{readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}</span>
+                        </div>
+                        <ChatBubbleFrame
+                            side="left"
+                            background={theme.fieldBg}
+                            borderColor={theme.fieldBorder}
                             data-testid="ve-streaming-content"
                             style={{
-                                padding: "8px 12px",
-                                borderRadius: 8,
-                                background: theme.fieldBg,
-                                border: `1px solid ${theme.fieldBorder}`,
+                                maxWidth: "80%",
                                 fontSize: 13,
                                 color: theme.text,
                                 wordBreak: "break-word",
@@ -1729,17 +1768,6 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 whiteSpace: "pre-wrap",
                             }}
                         >
-                            <div style={{ fontSize: 11, fontWeight: 600, color: participantColorById(participants, state.streamFromId, theme.responseBorderLeft), marginBottom: 2, whiteSpace: "normal", display: "flex", alignItems: "center", gap: 5 }}>
-                                {streamingFromPrimaryAssistant && assistantAvatar && (
-                                    <img
-                                        data-testid="ve-streaming-avatar"
-                                        src={assistantAvatar}
-                                        alt=""
-                                        style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
-                                    />
-                                )}
-                                <span>{readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}</span>
-                            </div>
                             {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} />}
                             {state.streamAttachments.length > 0 && (
                                 <div style={{ marginTop: state.streamContent ? 6 : 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -1749,7 +1777,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                 </div>
                             )}
                             <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>{"|"}</span>
-                        </div>
+                        </ChatBubbleFrame>
                     </div>
                 )}
 
@@ -2019,7 +2047,8 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                 data-testid={`ve-msg-label-${message.id}`}
                 style={{
                     maxWidth: "80%",
-                    marginBottom: 2,
+                    // Match AI assistant name→bubble gap so the top tail points cleanly at the label.
+                    marginBottom: CHAT_SPEAKER_LABEL_GAP,
                     padding: "0 4px",
                     color: theme.textMuted,
                     fontSize: 11,
@@ -2060,14 +2089,19 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                 <span>{speakerName}</span>
             </div>
             {shouldRenderContent && (
-                <div
+                <ChatBubbleFrame
+                    side={isUser ? "right" : "left"}
+                    background={
+                        isUser
+                            ? userChatBubbleBackground(theme.sendBtnBg, theme.fieldBg)
+                            : isLocalIntro
+                                ? localIntroChatBubbleBackground(theme.sendBtnBg, theme.fieldBg)
+                                : theme.fieldBg
+                    }
+                    borderColor={isUser ? theme.sendBtnBorder : theme.fieldBorder}
                     data-testid={message.localOnly ? `ve-local-msg-content-${message.id}` : `ve-msg-content-${message.id}`}
                     style={{
                         maxWidth: "80%",
-                        padding: "8px 12px",
-                        borderRadius: 8,
-                        background: isUser ? theme.sendBtnBg + "15" : (isLocalIntro ? theme.sendBtnBg + "0D" : theme.fieldBg),
-                        border: `1px solid ${isUser ? theme.borderLeft : theme.fieldBorder}`,
                         fontSize: 13,
                         color: theme.text,
                         wordBreak: "break-word",
@@ -2084,7 +2118,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                             {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
                         </span>
                     )}
-                </div>
+                </ChatBubbleFrame>
             )}
 
             {hasAttachments && (

@@ -41,6 +41,20 @@ export interface AgentViewTableColumn {
     format?: string;
 }
 
+/** Conditional display rule for a form field (evaluated against current form data). */
+export interface AgentViewVisibleWhen {
+    /** Name of another field whose value controls visibility. */
+    field: string;
+    /** Visible when the control field equals this value (or any of these values). */
+    equals?: string | string[];
+    /** Visible when the control field is not equal to this value (or any of these). */
+    notEquals?: string | string[];
+    /** Visible when the control field is empty / missing. */
+    empty?: boolean;
+    /** Visible when the control field is non-empty. */
+    notEmpty?: boolean;
+}
+
 export interface AgentViewField {
     name: string;
     label?: string;
@@ -69,6 +83,8 @@ export interface AgentViewField {
     pattern?: string;
     format?: string;
     dependentRequired?: AgentViewDependentRequired;
+    /** When set, field is only rendered/validated if the rule matches form data. */
+    visibleWhen?: AgentViewVisibleWhen;
     // Prefill provenance (set by workflow form prefill system)
     prefill_source?: "context" | "memory" | "knowledge" | "web";
     prefill_detail?: string;

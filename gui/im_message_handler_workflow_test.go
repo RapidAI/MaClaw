@@ -1472,6 +1472,9 @@ func TestConsumePendingTemplateCodingSubAgentExecutionClearsState(t *testing.T) 
 func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "template-remote-coding-consume-user"
+	// Drop durable sticky residue so recoverStickyRemoteCodingSSHSession does not
+	// treat a previous run's session id as a reconnectable sticky workbench.
+	handler.clearStickyCodingEnvironment(userID)
 	remoteCtx := remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app"}
 	handler.pendingV2SubAgentExecution.Store(userID, true)
 	handler.pendingTemplateRemoteCoding.Store(userID, remoteCtx)
@@ -1514,6 +1517,7 @@ func TestConsumePendingTemplateRemoteCodingExecutionClearsState(t *testing.T) {
 func TestConsumePendingTemplateRemoteCodingExecutionShowsFailureReason(t *testing.T) {
 	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	userID := "template-remote-coding-failure-reason-user"
+	handler.clearStickyCodingEnvironment(userID)
 	remoteCtx := remoteCodingTemplateContext{SessionID: "ssh-test", WorkDir: "/srv/app", ProjectDir: "/srv/app"}
 	handler.pendingV2SubAgentExecution.Store(userID, true)
 	handler.pendingTemplateRemoteCoding.Store(userID, remoteCtx)
@@ -2048,6 +2052,7 @@ func TestWorkflowFormSubmitContinuesSameWorkflowUser(t *testing.T) {
 	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: engine.GetActiveWorkflow(userID).ID,
+		"_agent_view_variant":       "local",
 		"project_name":              "snake",
 		"tech_stack":                "cpp",
 		"description":               "graphical game",
@@ -2090,6 +2095,9 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 	if schema == nil {
 		t.Fatal("coding requirements phase missing input schema")
 	}
+	if len(schema.Variants) < 2 {
+		t.Fatalf("coding form should have local/remote variants, got %#v", schema.Variants)
+	}
 
 	view := buildWorkflowPhaseFormAgentView("desktop-user:C:/Users/ma139", "wf-1", "proj-scope-1", v2.PhaseCodingRequirements, schema)
 	fields, ok := view["fields"].([]map[string]interface{})
@@ -2103,14 +2111,95 @@ func TestBuildWorkflowPhaseFormAgentViewPreservesCodingDirectoryField(t *testing
 			byName[name] = field
 		}
 	}
-	if byName["project_path"]["type"] != "directory" {
-		t.Fatalf("coding project_path must reach AG UI as directory field, got %#v", byName["project_path"])
+	// Common fields stay top-level; project_path lives in the local variant.
+	if byName["project_name"] == nil || byName["description"] == nil {
+		t.Fatalf("coding common fields missing from AG UI form: %#v", byName)
+	}
+	if byName["project_path"] != nil {
+		t.Fatalf("project_path should be in local variant, not top-level fields: %#v", byName["project_path"])
+	}
+	variants, ok := view["variants"].([]map[string]interface{})
+	if !ok || len(variants) < 2 {
+		t.Fatalf("coding form variants missing: %#v", view["variants"])
+	}
+	localFields, _ := variants[0]["fields"].([]map[string]interface{})
+	localByName := map[string]map[string]interface{}{}
+	for _, field := range localFields {
+		localByName[fmt.Sprint(field["name"])] = field
+	}
+	if localByName["project_path"]["type"] != "directory" {
+		t.Fatalf("coding project_path must reach AG UI as directory field, got %#v", localByName["project_path"])
+	}
+	remoteFields, _ := variants[1]["fields"].([]map[string]interface{})
+	remoteByName := map[string]map[string]interface{}{}
+	for _, field := range remoteFields {
+		remoteByName[fmt.Sprint(field["name"])] = field
+	}
+	if remoteByName["ssh_profile"]["type"] != "select" {
+		t.Fatalf("remote ssh_profile must be select, got %#v", remoteByName["ssh_profile"])
+	}
+	if remoteByName["remote_workdir"] == nil {
+		t.Fatalf("remote_workdir missing from remote variant: %#v", remoteByName)
 	}
 	if byName[workflowFormWorkflowIDField]["value"] != "wf-1" {
 		t.Fatalf("workflow hidden id field not preserved: %#v", byName[workflowFormWorkflowIDField])
 	}
 	if byName[workflowFormEventScopeField]["value"] != "proj-scope-1" {
 		t.Fatalf("workflow hidden event scope field not preserved: %#v", byName[workflowFormEventScopeField])
+	}
+
+	// Inject SSH options into remote variant.
+	injectSSHProfileOptionsIntoAgentView(view, []corelib.SSHHostEntry{
+		{Label: "prod-web", Host: "10.0.0.8", User: "ubuntu", Port: 22},
+	})
+	remoteFields, _ = variants[1]["fields"].([]map[string]interface{})
+	var sshField map[string]interface{}
+	for _, f := range remoteFields {
+		if fmt.Sprint(f["name"]) == "ssh_profile" {
+			sshField = f
+			break
+		}
+	}
+	if sshField == nil {
+		t.Fatal("ssh_profile field missing after inject")
+	}
+	opts, _ := sshField["options"].([]map[string]string)
+	if len(opts) != 2 || opts[0]["value"] != "prod-web" || opts[1]["value"] != workflowFormSSHProfileNew {
+		t.Fatalf("ssh_profile options not injected: %#v", sshField["options"])
+	}
+	// New-connection fields should carry visibleWhen for the frontend.
+	hostField := remoteByName["remote_host"]
+	// Re-read after inject — remoteByName is stale; scan again.
+	var hostAfter map[string]interface{}
+	for _, f := range remoteFields {
+		if fmt.Sprint(f["name"]) == "remote_host" {
+			hostAfter = f
+			break
+		}
+	}
+	if hostAfter == nil {
+		t.Fatal("remote_host missing after inject")
+	}
+	vw, _ := hostAfter["visibleWhen"].(map[string]interface{})
+	if vw == nil || fmt.Sprint(vw["field"]) != "ssh_profile" || fmt.Sprint(vw["equals"]) != workflowFormSSHProfileNew {
+		t.Fatalf("remote_host visibleWhen = %#v, hostField=%#v", hostAfter["visibleWhen"], hostField)
+	}
+	var pwAfter map[string]interface{}
+	for _, f := range remoteFields {
+		if fmt.Sprint(f["name"]) == "ssh_password" {
+			pwAfter = f
+			break
+		}
+	}
+	if pwAfter == nil {
+		t.Fatal("ssh_password missing after inject")
+	}
+	pwWhen, _ := pwAfter["visibleWhen"].(map[string]interface{})
+	if pwWhen == nil || fmt.Sprint(pwWhen["field"]) != "ssh_profile" || pwWhen["notEmpty"] != true {
+		t.Fatalf("ssh_password visibleWhen = %#v (want notEmpty for session override)", pwAfter["visibleWhen"])
+	}
+	if req, _ := pwAfter["required"].(bool); req {
+		t.Fatal("ssh_password must not be required after inject")
 	}
 }
 
@@ -2175,6 +2264,7 @@ func TestWorkflowFormSubmitProjectPathUpdatesWorkflowWithoutCreatingDirectory(t 
 	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: state.ID,
+		"_agent_view_variant":       "local",
 		"project_name":              "snake",
 		"tech_stack":                "cpp",
 		"description":               "graphical game",
@@ -2221,6 +2311,7 @@ func TestWorkflowFormSubmitInvalidProjectPathRejectsBeforeFormMutation(t *testin
 	resp := app.handleWorkflowFormAgentViewSubmit(v2.PhaseCodingRequirements, map[string]interface{}{
 		workflowFormUserIDField:     userID,
 		workflowFormWorkflowIDField: state.ID,
+		"_agent_view_variant":       "local",
 		"project_name":              "snake",
 		"tech_stack":                "cpp",
 		"description":               "graphical game",

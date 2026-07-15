@@ -133,6 +133,82 @@ describe("AgentTaskPanel", () => {
         expect(onSubmit).toHaveBeenCalledWith("sensitive-test", { ssh_password: "secret" });
     });
 
+    it("hides coding remote new-connection fields until ssh_profile is __new__", async () => {
+        const onSubmit = vi.fn();
+        const view: AgentView = {
+            type: "form",
+            id: "coding-remote-visibility",
+            title: "项目基本信息",
+            fields: [
+                { name: "project_name", label: "项目名称", type: "text", required: true, value: "demo" },
+                { name: "description", label: "项目描述", type: "textarea", required: true, value: "desc" },
+            ],
+            variants: [
+                {
+                    id: "remote",
+                    label: "远程编程",
+                    fields: [
+                        {
+                            name: "ssh_profile",
+                            label: "SSH 主机",
+                            type: "select",
+                            required: true,
+                            value: "prod",
+                            options: [
+                                { label: "prod", value: "prod" },
+                                { label: "新建连接…", value: "__new__" },
+                            ],
+                        },
+                        {
+                            name: "remote_host",
+                            label: "主机 IP/域名",
+                            type: "text",
+                            required: true,
+                            visibleWhen: { field: "ssh_profile", equals: "__new__" },
+                        },
+                        {
+                            name: "ssh_password",
+                            label: "密码（可选）",
+                            type: "text",
+                            sensitive: true,
+                            required: false,
+                            visibleWhen: { field: "ssh_profile", notEmpty: true },
+                        },
+                        {
+                            name: "remote_workdir",
+                            label: "远程工作目录",
+                            type: "text",
+                            required: true,
+                            value: "/home/app",
+                        },
+                    ],
+                },
+            ],
+            submitLabel: "提交",
+        };
+
+        render(<AgentTaskPanel view={view} onSubmit={onSubmit} theme={lightTheme} lang="zh-Hans" />);
+
+        // Saved profile: host hidden; optional password still shown for session override.
+        expect(screen.queryByLabelText(/主机 IP\/域名/)).toBeNull();
+        expect(screen.getByLabelText(/密码/)).toBeTruthy();
+        expect(screen.getByLabelText(/远程工作目录/)).toBeTruthy();
+
+        // Switch to 新建连接 → host + password appear.
+        fireEvent.change(screen.getByLabelText(/SSH 主机/), { target: { value: "__new__" } });
+        expect(screen.getByLabelText(/主机 IP\/域名/)).toBeTruthy();
+        expect(screen.getByLabelText(/密码/)).toBeTruthy();
+
+        // Optional password must not block submit with a saved profile.
+        fireEvent.change(screen.getByLabelText(/SSH 主机/), { target: { value: "prod" } });
+        fireEvent.click(screen.getByRole("button", { name: "提交" }));
+        await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+        const payload = onSubmit.mock.calls[0][1] as Record<string, unknown>;
+        expect(payload._agent_view_variant).toBe("remote");
+        expect(payload.ssh_profile).toBe("prod");
+        expect(payload.remote_workdir).toBe("/home/app");
+    });
+
     it("lets directory fields use the native directory picker", async () => {
         const onSubmit = vi.fn();
         SelectWorkingDirMock.mockResolvedValue("D:\\workprj\\demo");

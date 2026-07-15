@@ -539,6 +539,69 @@ func (m *StateMachine) RecordOutput(userID, output string) error {
 	return nil
 }
 
+// SaveExecutionProgress stores intermediate execution output without completing
+// or advancing the phase. Used when coding implementation is cancelled or still
+// has failed tasks so the user can resume / 重试失败.
+func (m *StateMachine) SaveExecutionProgress(userID, output string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil {
+		return fmt.Errorf("no active workflow for user %s", userID)
+	}
+	if state.Status != StatusActive {
+		return fmt.Errorf("workflow for user %s is no longer active (status=%s)", userID, state.Status)
+	}
+	phase := state.ActivePhase()
+	if phase == nil {
+		return fmt.Errorf("no active phase")
+	}
+	previous := *state
+	previous.Phases = append([]Phase(nil), state.Phases...)
+	sanitized := SanitizePhaseOutputWithKind(phase.ID, phase.Kind, output)
+	if strings.TrimSpace(sanitized) == "" {
+		sanitized = strings.TrimSpace(output)
+	}
+	phase.Output = sanitized
+	// Keep phase open for resume/retry. Executing signals "implementation in progress/paused".
+	phase.Status = PhaseExecuting
+	state.UpdatedAt = time.Now()
+	if err := m.store.Save(state); err != nil {
+		*state = previous
+		return err
+	}
+	return nil
+}
+
+// MarkPhaseExecuting sets the active phase status to executing without changing
+// output. Prefer this over writing the store without the machine lock.
+func (m *StateMachine) MarkPhaseExecuting(userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.store.Load(userID)
+	if err != nil || state == nil {
+		return fmt.Errorf("no active workflow for user %s", userID)
+	}
+	if state.Status != StatusActive {
+		return fmt.Errorf("workflow for user %s is no longer active (status=%s)", userID, state.Status)
+	}
+	phase := state.ActivePhase()
+	if phase == nil {
+		return fmt.Errorf("no active phase")
+	}
+	previous := *state
+	previous.Phases = append([]Phase(nil), state.Phases...)
+	phase.Status = PhaseExecuting
+	state.UpdatedAt = time.Now()
+	if err := m.store.Save(state); err != nil {
+		*state = previous
+		return err
+	}
+	return nil
+}
+
 func validatePhaseOutputForCompletion(workflowType, phaseID, output string) error {
 	output = strings.TrimSpace(output)
 	if output == "" {

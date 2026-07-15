@@ -248,6 +248,19 @@ type IMMessageHandler struct {
 	// (remote_coding_dev) arms SSH; the next agent loop runs RemoteCodingSubAgent.
 	pendingTemplateRemoteCoding sync.Map
 
+	// codingWorkflowRemoteCreds holds session-only SSH secrets for coding
+	// workflow remote variant (password/key). Keyed by userID; never persisted.
+	// Non-secret host/user/port/workdir live in phase FormData + sticky memory.
+	codingWorkflowRemoteCreds sync.Map
+
+	// codingExecCheckpoint stores last coding implementation results so the user
+	// can 重试失败 / 继续执行 after cancel or partial failure. Keyed by userID.
+	codingExecCheckpoint sync.Map
+
+	// pendingCodingExecRetryAction is set when the user asks to retry failed or
+	// resume incomplete coding tasks. Values: "failed" | "resume". Keyed by userID.
+	pendingCodingExecRetryAction sync.Map
+
 	// stickyCodingWorkbenchMemory holds multi-turn plan/result context for pure
 	// coding environments (create-task local/remote) so follow-up messages share
 	// prior summaries and touched files.

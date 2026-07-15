@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
-import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow } from '../AIAssistantPanel';
+import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
+import { initialState as initialCodePreviewState } from '../useCodePreviewState';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import type { ChatMessage, CancelAIAssistantResult, NewsCardData, ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
@@ -57,6 +58,70 @@ describe('shouldShowSourcePreviewForAgentMode', () => {
         expect(shouldShowSourcePreviewForAgentMode('remote_coding_dev')).toBe(true);
         expect(shouldShowSourcePreviewForAgentMode(undefined)).toBe(false);
         expect(shouldShowSourcePreviewForAgentMode('')).toBe(false);
+    });
+});
+
+describe('withCodePreviewVisibleIfContent', () => {
+    const sampleFile = {
+        filePath: '/src/main.go',
+        fileName: 'main.go',
+        content: 'package main',
+        opType: 'create' as const,
+        language: 'go',
+        updatedAt: 1,
+    };
+
+    it('re-opens the panel when files remain and the user did not close it', () => {
+        const files = new Map([['/src/main.go', sampleFile]]);
+        const hidden = {
+            ...initialCodePreviewState(),
+            active: false,
+            userClosed: false,
+            files,
+            activeFilePath: '/src/main.go',
+        };
+        const next = withCodePreviewVisibleIfContent(hidden);
+        expect(next.active).toBe(true);
+        expect(next.files.size).toBe(1);
+        expect(next.userClosed).toBe(false);
+        // Does not allocate when already visible.
+        const visible = { ...hidden, active: true };
+        expect(withCodePreviewVisibleIfContent(visible)).toBe(visible);
+    });
+
+    it('does not override an explicit user close', () => {
+        const files = new Map([['/src/main.go', sampleFile]]);
+        const closed = {
+            ...initialCodePreviewState(),
+            active: false,
+            userClosed: true,
+            files,
+            activeFilePath: '/src/main.go',
+        };
+        expect(withCodePreviewVisibleIfContent(closed)).toBe(closed);
+        expect(withCodePreviewVisibleIfContent(closed).active).toBe(false);
+    });
+
+    it('leaves empty inactive state alone', () => {
+        const empty = initialCodePreviewState();
+        expect(withCodePreviewVisibleIfContent(empty)).toBe(empty);
+    });
+});
+
+describe('codePreviewModeFromState', () => {
+    it('reports code when panel is active or has unreclosed files', () => {
+        expect(codePreviewModeFromState({ active: true, files: new Map(), userClosed: false })).toBe('code');
+        const files = new Map([['/a.ts', {
+            filePath: '/a.ts',
+            fileName: 'a.ts',
+            content: 'x',
+            opType: 'create' as const,
+            language: 'ts',
+            updatedAt: 1,
+        }]]);
+        expect(codePreviewModeFromState({ active: false, files, userClosed: false })).toBe('code');
+        expect(codePreviewModeFromState({ active: false, files, userClosed: true })).toBe('workflow');
+        expect(codePreviewModeFromState({ active: false, files: new Map(), userClosed: false })).toBe('workflow');
     });
 });
 
@@ -269,6 +334,41 @@ describe('AIAssistantPanel property tests', () => {
         expect(canShowAssistantCodingPreviewForTab({ type: 'project' })).toBe(true);
         expect(canShowAssistantCodingPreviewForTab({ type: 've' })).toBe(false);
         expect(canShowAssistantCodingPreviewForTab({ type: 'group' })).toBe(false);
+    });
+
+    it('does not apply a stored code-preview snapshot from an old project onto a new remote coding tab', () => {
+        // Repro: localStorage still holds verification_report from previous remote session;
+        // user creates a brand-new remote coding task whose project has no files yet.
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'proj-old-remote',
+            restoredOwnerProjectPath: 'C:/Users/me/.maclaw/projects/old-remote-task',
+            activeTabId: 'proj-new-remote',
+            activeTabType: 'project',
+            activeTabProjectPath: 'C:/Users/me/.maclaw/projects/new-remote-task',
+        })).toBe(false);
+
+        // Same project (path match, possibly different slash/case) may restore.
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'proj-old-remote',
+            restoredOwnerProjectPath: 'C:\\Users\\me\\.maclaw\\projects\\same-task',
+            activeTabId: 'proj-same-task-reopened',
+            activeTabType: 'project',
+            activeTabProjectPath: 'C:/Users/me/.maclaw/projects/same-task',
+        })).toBe(true);
+
+        // Local-only snapshot must not spill into a project tab.
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'local',
+            activeTabId: 'proj-new-remote',
+            activeTabType: 'project',
+            activeTabProjectPath: 'C:/Users/me/.maclaw/projects/new-remote-task',
+        })).toBe(false);
+
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'local',
+            activeTabId: 'local',
+            activeTabType: 'local',
+        })).toBe(true);
     });
 
     it('saves the current main conversation as a task from the title bar', async () => {

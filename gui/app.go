@@ -4595,6 +4595,29 @@ func (a *App) LoadConfig() (corelib.AppConfig, error) {
 	return config, nil
 }
 
+// sshHostEntries returns configured SSH hosts for form option injection.
+// Never returns passwords to callers that only need profile metadata.
+func (a *App) sshHostEntries() []corelib.SSHHostEntry {
+	if a == nil {
+		return nil
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil
+	}
+	if len(cfg.SSHHosts) == 0 {
+		return nil
+	}
+	out := make([]corelib.SSHHostEntry, len(cfg.SSHHosts))
+	copy(out, cfg.SSHHosts)
+	// Strip secrets so form helpers cannot accidentally persist them.
+	for i := range out {
+		out[i].Password = ""
+		out[i].Passphrase = ""
+	}
+	return out
+}
+
 func (a *App) invalidateConfigCacheLocked() {
 	a.configCache = corelib.AppConfig{}
 	a.configCacheValid = false

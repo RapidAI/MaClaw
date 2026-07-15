@@ -377,12 +377,90 @@ func CodingTemplate() *WorkflowTemplate {
 		Phases: []PhaseTemplate{
 			{ID: "requirements", Name: "需求文档", NeedsConfirm: true, ToolPolicy: ToolPolicyDocOnly, Kind: PhaseKindDocumentPlanning, MutationScope: MutationScopeWorkflowDoc,
 				InputSchema: &PhaseInputSchema{
-					Title: "项目基本信息",
+					Title:       "项目基本信息",
+					Description: "填写项目信息，并选择在本地还是远程环境执行后续编码。",
+					// Common project facts; execution target lives in variants.
 					Fields: []PhaseInputField{
 						{Name: "project_name", Label: "项目名称", Type: "text", Required: true, Placeholder: "例如：贪吃蛇游戏"},
 						{Name: "tech_stack", Label: "技术栈", Type: "text", Placeholder: "例如：Go + React / C++ / Python"},
 						{Name: "description", Label: "项目描述", Type: "textarea", Required: true, Placeholder: "简要描述你想实现的功能与目标"},
-						{Name: "project_path", Label: "项目目录", Type: "directory", Placeholder: "选择项目目录（可新建但不会自动创建）"},
+					},
+					// local: local project directory
+					// remote: SSH profile and/or new connection + remote workdir.
+					// Password is Sensitive and scrubbed after use; prefer SSH panel profiles.
+					Variants: []PhaseInputVariant{
+						{
+							ID:    "local",
+							Label: "本地编程",
+							Fields: []PhaseInputField{
+								{
+									Name:        "project_path",
+									Label:       "项目目录",
+									Type:        "directory",
+									Placeholder: "选择本机项目目录（可新建但不会自动创建）",
+									Description: "后续编码、编译、测试均在此本机目录执行",
+								},
+							},
+						},
+						{
+							ID:    "remote",
+							Label: "远程编程",
+							Fields: []PhaseInputField{
+								{
+									Name:        "ssh_profile",
+									Label:       "SSH 主机",
+									Type:        "select",
+									Required:    true,
+									Placeholder: "选择已配置主机，或「新建连接」",
+									Description: "优先复用 SSH 面板主机；选「新建连接」时填写下方主机信息",
+									// Options injected at emit time from AppConfig.SSHHosts + __new__.
+								},
+								{
+									Name:        "remote_host",
+									Label:       "主机 IP/域名",
+									Type:        "text",
+									Placeholder: "例如：10.0.0.8 或 dev.example.com",
+									Description: "仅在「新建连接」时必填；选择已有主机时可留空",
+								},
+								{
+									Name:        "remote_port",
+									Label:       "端口",
+									Type:        "number",
+									Default:     22,
+									Placeholder: "默认 22",
+								},
+								{
+									Name:        "remote_user",
+									Label:       "用户名",
+									Type:        "text",
+									Placeholder: "例如：ubuntu / root",
+									Description: "仅在「新建连接」时必填",
+								},
+								{
+									Name:        "ssh_password",
+									Label:       "密码（可选）",
+									Type:        "text",
+									Sensitive:   true,
+									Placeholder: "新建连接时建议填写；已有主机可留空或临时覆盖",
+									Description: "仅本机会话使用，不写入工作流/任务。已配置密钥或 agent 的主机可留空",
+								},
+								{
+									Name:        "ssh_key_path",
+									Label:       "私钥路径",
+									Type:        "text",
+									Placeholder: "例如：C:\\Users\\me\\.ssh\\id_ed25519",
+									Description: "仅「新建连接」时使用；与密码二选一。已有主机用面板配置",
+								},
+								{
+									Name:        "remote_workdir",
+									Label:       "远程工作目录",
+									Type:        "text",
+									Required:    true,
+									Placeholder: "例如：/home/ubuntu/projects/snake",
+									Description: "远程机上的项目根目录",
+								},
+							},
+						},
 					},
 				},
 			},

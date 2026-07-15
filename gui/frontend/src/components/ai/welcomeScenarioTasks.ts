@@ -155,16 +155,18 @@ export const SCENARIO_TABS: ScenarioTab[] = [
                     "Implement a feature in this local project\nRequirement: [goal + key points]\nAcceptance: [what done looks like]\nConstraints: [API compatible / no large refactor / other]\nInspect structure and style first, then implement. Output: summary, files touched, check/test results.",
             },
             {
-                text: "排查修复线上故障",
-                textEn: "Fix a production incident",
-                desc: "现象 → 根因 → 验证",
-                descEn: "Symptom → root cause → verify",
-                icon: "bug",
+                text: "在远程开发新项目",
+                textEn: "Develop a new project remotely",
+                desc: "初始化、实现、远端验收",
+                descEn: "Scaffold, implement, verify",
+                icon: "install",
                 agentMode: "remote_coding_dev",
+                // Workdir/SSH are collected in the param dialog; ask only for project intent here.
+                // Hints stay free-form (no / · 、) so the param dialog does not invent junk chips.
                 template:
-                    "在远程环境排查并修复线上故障\n现象：[用户/监控看到什么]\n影响与线索：[服务、是否持续、报错/请求 ID]\n期望结果：[修复后应如何]\n请优先只读诊断。请输出：根因、最小修复方案、验证步骤；高风险操作先说明再执行，并在远端验证。",
+                    "在远程工作目录下开发新项目\n项目目标：[一句话目标与使用场景]\n技术栈与项目名：[如 Go 与 my-cli]\n验收标准：[怎样算编译运行通过]\n请先检查远端环境与工作目录，再初始化并实现；勿覆盖已有重要文件。请输出：项目结构、关键命令、验收结果。",
                 templateEn:
-                    "Troubleshoot and fix a production incident on the remote host\nSymptom: [what users/monitors see]\nImpact & clues: [service, ongoing?, error/request id]\nExpected: [correct behavior after fix]\nPrefer read-only diagnosis first. Output: root cause, minimal fix, verification; confirm high-risk steps before acting; verify remotely.",
+                    "Develop a new project under the remote workdir\nGoal: [goal and audience]\nStack & project name: [e.g. Go my-cli]\nAcceptance: [build or run criteria]\nInspect remote env and workdir first, then scaffold and implement; do not overwrite important existing files. Output: project layout, key commands, verification results.",
             },
             {
                 text: "修复一个 Bug",

@@ -189,6 +189,9 @@ func (h *IMMessageHandler) prefillWorkflowFormFields(userID string, phase *v2.Ph
 		result = v2.PrefillFromRecall(ctx, phase.InputSchema, result, provider)
 	}
 
+	// Phase 3: Coding remote sticky / last remote task (non-secret only).
+	result = h.prefillCodingRemoteEnvFields(userID, phase, result)
+
 	if len(result) > 0 {
 		totalFields := len(phase.InputSchema.Fields)
 		for _, v := range phase.InputSchema.Variants {
@@ -198,6 +201,140 @@ func (h *IMMessageHandler) prefillWorkflowFormFields(userID string, phase *v2.Ph
 			len(result), totalFields, phase.ID)
 	}
 	return result
+}
+
+// prefillCodingRemoteEnvFields fills remote coding workflow fields from sticky
+// session memory or the latest matching remote task. Never prefills passwords.
+func (h *IMMessageHandler) prefillCodingRemoteEnvFields(userID string, phase *v2.Phase, result map[string]*v2.PrefilledValue) map[string]*v2.PrefilledValue {
+	if h == nil || phase == nil || phase.InputSchema == nil {
+		return result
+	}
+	if !codingSchemaHasRemoteVariant(phase.InputSchema) {
+		return result
+	}
+	if result == nil {
+		result = map[string]*v2.PrefilledValue{}
+	}
+
+	host, user, workDir := "", "", ""
+	port := 22
+	profile := ""
+	sourceDetail := ""
+
+	if mem := h.getStickyCodingWorkbenchMemory(userID); mem.Kind == "remote" {
+		host = strings.TrimSpace(mem.RemoteHost)
+		user = strings.TrimSpace(mem.RemoteUser)
+		workDir = strings.TrimSpace(mem.RemoteWorkDir)
+		if workDir == "" {
+			workDir = strings.TrimSpace(mem.RemoteProjectDir)
+		}
+		if mem.RemotePort > 0 {
+			port = mem.RemotePort
+		}
+		sourceDetail = "来自上次远程编程会话"
+	}
+
+	// If sticky incomplete, try most recent remote task meta.
+	if (host == "" || user == "" || workDir == "") && h.app != nil {
+		for _, task := range h.app.ListTasks(20) {
+			if !projectRecordHasTagLike(task.Tags, taskRemoteCodingDevTag) {
+				continue
+			}
+			th, tu, tw, tp := h.app.remoteCodingMetaFromTaskTags(task.ProjectPath)
+			if th == "" || tu == "" || tw == "" {
+				continue
+			}
+			if host == "" {
+				host = th
+			}
+			if user == "" {
+				user = tu
+			}
+			if workDir == "" {
+				workDir = tw
+			}
+			if port <= 0 && tp > 0 {
+				port = tp
+			}
+			if sourceDetail == "" {
+				sourceDetail = "来自最近的远程编程任务"
+			}
+			break
+		}
+	}
+
+	if host == "" && user == "" && workDir == "" {
+		return result
+	}
+	if port <= 0 {
+		port = 22
+	}
+
+	// Match SSH profile label when configured hosts include this target.
+	if h.app != nil {
+		for _, entry := range h.app.sshHostEntries() {
+			entryPort := entry.Port
+			if entryPort <= 0 {
+				entryPort = 22
+			}
+			if strings.EqualFold(normalizeSSHHostInput(entry.Host), normalizeSSHHostInput(host)) &&
+				strings.EqualFold(strings.TrimSpace(entry.User), user) &&
+				entryPort == port {
+				if label := strings.TrimSpace(entry.Label); label != "" {
+					profile = label
+				} else {
+					profile = strings.TrimSpace(entry.Host)
+				}
+				break
+			}
+		}
+	}
+
+	setIfEmpty := func(name string, value interface{}) {
+		if name == "" || value == nil {
+			return
+		}
+		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
+			return
+		}
+		if cur, ok := result[name]; ok && cur != nil && cur.Value != nil {
+			if s := strings.TrimSpace(fmt.Sprint(cur.Value)); s != "" && s != "<nil>" {
+				return
+			}
+		}
+		result[name] = &v2.PrefilledValue{
+			Value:        value,
+			Source:       "memory",
+			SourceDetail: sourceDetail,
+			Confidence:   0.85,
+		}
+	}
+
+	setIfEmpty(workflowFormRemoteHostField, host)
+	setIfEmpty(workflowFormRemoteUserField, user)
+	setIfEmpty(workflowFormRemoteWorkDir, workDir)
+	setIfEmpty(workflowFormRemotePortField, port)
+	if profile != "" {
+		setIfEmpty(workflowFormSSHProfileField, profile)
+	}
+	return result
+}
+
+func codingSchemaHasRemoteVariant(schema *v2.PhaseInputSchema) bool {
+	if schema == nil {
+		return false
+	}
+	for _, v := range schema.Variants {
+		if v.ID == workflowFormExecRemote {
+			return true
+		}
+		for _, f := range v.Fields {
+			if f.Name == workflowFormSSHProfileField || f.Name == workflowFormRemoteWorkDir {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildRecallProvider constructs the recall provider with available memory and knowledge stores.

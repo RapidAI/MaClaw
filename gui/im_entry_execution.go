@@ -178,7 +178,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			wf := h.getWorkflowV2()
 			if wf != nil {
 				if state := wf.machine.GetActive(msg.UserID); state != nil {
-					execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken)
+					execResp := h.handleWorkflowV2ExecutionPhaseWithProgress(msg.UserID, state, opts.OnProgress, opts.OnToken, loopCtx)
 					if execResp != nil {
 						return h.finalizeIMAgentLoopResponse(msg, loopCtx, execResp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)
 					}
@@ -226,6 +226,18 @@ func (h *IMMessageHandler) consumePendingTemplateSubAgentExecution(msg IMUserMes
 	}
 	if _, pending := h.pendingV2SubAgentExecution.Load(msg.UserID); !pending {
 		return nil, false
+	}
+	// Coding-workflow implementation / checkpoint retry must win over pure sticky
+	// coding. Otherwise multi-turn remote/local pure coding steals "继续" / "重试失败".
+	if _, retryPending := h.pendingCodingExecRetryAction.Load(msg.UserID); retryPending {
+		return nil, false
+	}
+	if wf := h.getWorkflowV2(); wf != nil {
+		if state := wf.machine.GetActive(msg.UserID); state != nil &&
+			state.IsExecutionPhase() && strings.EqualFold(strings.TrimSpace(state.Type), "coding") {
+			// Active coding-workflow implementation owns this SubAgent turn.
+			return nil, false
+		}
 	}
 	if remoteRaw, isRemoteCodingTemplate := h.pendingTemplateRemoteCoding.LoadAndDelete(msg.UserID); isRemoteCodingTemplate {
 		h.pendingV2SubAgentExecution.Delete(msg.UserID)
@@ -328,6 +340,21 @@ func (h *IMMessageHandler) clearStickyCodingEnvironment(userID string) {
 	h.pendingTemplateCodingProjectPath.Delete(userID)
 	h.pendingTemplateRemoteCoding.Delete(userID)
 	h.clearStickyCodingWorkbenchMemory(userID)
+}
+
+// clearPendingPureCodingTemplateExecution drops pure local/remote coding template
+// markers so a coding-workflow SubAgent turn is not stolen. Durable sticky memory
+// is left intact for reopen after the workflow finishes.
+func (h *IMMessageHandler) clearPendingPureCodingTemplateExecution(userID string) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	h.pendingTemplateCodingProjectPath.Delete(userID)
+	h.pendingTemplateRemoteCoding.Delete(userID)
 }
 
 func sanitizeWorkflowDocPhaseResponseText(resp *IMAgentResponse, loopCtx *LoopContext, phaseID string) bool {

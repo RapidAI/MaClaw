@@ -22,6 +22,15 @@ RuntimeError: boom
         expect(hits.some((h) => h.tabId === "ops" || h.tabId === "dev")).toBe(true);
         expect(hits[0].score).toBeGreaterThan(0);
         expect(hits[0].reason).toBeTruthy();
+        // Must not route incidents to the greenfield remote project card.
+        expect(hits.every((h) => !/new project/i.test(h.prompt.textEn))).toBe(true);
+    });
+
+    it("suggests the remote new-project card for greenfield intent", () => {
+        const text = "请在远程服务器上新建项目，用 Go 写一个 hello world CLI，脚手架初始化后编译运行验收。";
+        const hits = matchWelcomeTasksFromClipboard(text, 3);
+        expect(hits.some((h) => h.prompt.textEn === "Develop a new project remotely")).toBe(true);
+        expect(hits.some((h) => h.reason === "新建项目")).toBe(true);
     });
 
     it("suggests data tasks for CSV-like content", () => {

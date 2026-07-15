@@ -490,6 +490,11 @@ func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string
 		}
 	}
 
+	// Coding implementation resume: 重试失败 / 继续执行 (before review / router).
+	if retryRoute := h.tryQueueCodingExecRetryCommand(msg.UserID, trimmed); retryRoute != nil {
+		return *retryRoute
+	}
+
 	// Review replies must be handled before generic router matching. Otherwise
 	// short confirms like "继续推进" or implementation requests at the coding
 	// task-breakdown gate can be misrouted as a fresh task or a new workflow.
@@ -578,6 +583,7 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 	if prevState := wf.machine.GetActive(msg.UserID); prevState != nil {
 		wf.machine.Cancel(msg.UserID)
 		h.workflowV2Adapters.Delete(msg.UserID)
+		h.clearCodingExecCheckpoint(msg.UserID)
 		emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
 			"id":             prevState.ID,
 			"status":         string(v2.StatusCancelled),
@@ -589,6 +595,9 @@ func (h *IMMessageHandler) startNewWorkflowV2(msg IMUserMessage, routeResult *v2
 			"event_scope_id": h.app.getEventScopeID(prevState.UserID),
 		})
 		log.Printf("[workflow-v2] cancelled previous workflow before starting new one: user=%s", msg.UserID)
+	} else {
+		// No active workflow, but a durable checkpoint may still linger from a prior run.
+		h.clearCodingExecCheckpoint(msg.UserID)
 	}
 
 	// Resolve working directory with the same chain as ProjectDirBar / tools /
@@ -652,13 +661,17 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 			switch hr.Phase.ExecMode {
 			case v2.ExecModeSubAgent:
 				log.Printf("[workflow-v2] ActionRunPhase: ExecMode=subagent for phase=%s", hr.Phase.ID)
-				if wf := h.getWorkflowV2(); wf != nil && hr.State != nil {
-					if phase := hr.State.ActivePhase(); phase != nil {
-						phase.Status = v2.PhaseExecuting
-						_ = wf.store.Save(hr.State)
+				if wf := h.getWorkflowV2(); wf != nil {
+					if err := wf.machine.MarkPhaseExecuting(msg.UserID); err != nil {
+						log.Printf("[workflow-v2] MarkPhaseExecuting failed: %v", err)
+					}
+					if fresh := wf.machine.GetActive(msg.UserID); fresh != nil {
+						hr.State = fresh
 					}
 				}
 				h.emitWorkflowV2Progress(msg.UserID, hr.State)
+				// Pure sticky coding must not steal the workflow implementation turn.
+				h.clearPendingPureCodingTemplateExecution(msg.UserID)
 				h.pendingV2SubAgentExecution.Store(msg.UserID, true)
 				h.workflowOriginalRequest.Store(msg.UserID, "执行编码任务")
 				h.workflowAgentLoopMarker.Store(msg.UserID, true)
@@ -689,6 +702,7 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "所有阶段已完成！工作流结束。"}}
 	case v2.ActionCancelled:
 		h.workflowV2Adapters.Delete(msg.UserID)
+		h.clearCodingExecCheckpoint(msg.UserID)
 		if hr.State != nil {
 			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{"id": hr.State.ID, "status": string(v2.StatusCancelled), "type": hr.State.Type, "project_path": workflowEventProjectPath(hr.State), "event_scope_id": h.app.getEventScopeID(hr.State.UserID)})
 		} else {
@@ -698,6 +712,7 @@ func (h *IMMessageHandler) handleWorkflowV2Action(msg IMUserMessage, hr *v2.Hand
 		return workflowIMRouteResult{Response: &IMAgentResponse{Text: "工作流已取消"}}
 	case v2.ActionCancelAndExecute:
 		h.workflowV2Adapters.Delete(msg.UserID)
+		h.clearCodingExecCheckpoint(msg.UserID)
 		originalRequest := ""
 		if hr.State != nil {
 			originalRequest = hr.State.Summary
@@ -1106,6 +1121,10 @@ func (h *IMMessageHandler) emitWorkflowV2PhaseForm(userID string, state *v2.Work
 		}
 		view["variants"] = variants
 	}
+	// Coding remote variant: inject SSH host options after variants exist.
+	if h.app != nil {
+		injectSSHProfileOptionsIntoAgentView(view, h.app.sshHostEntries())
+	}
 	h.app.emitAgentView(view)
 	log.Printf("[workflow-v2] emitted AG UI form: phase=%s fields=%d variants=%d prefilled=%d", phase.ID, len(schema.Fields), len(schema.Variants), len(prefilled))
 }
@@ -1309,6 +1328,35 @@ func (h *IMMessageHandler) handleWorkflowV2FormSubmit(userID, phaseID string, da
 		}
 	}
 
+	// Coding remote variant: resolve SSH profile / new connection → host/user/port.
+	if h.app != nil {
+		if err := resolveCodingWorkflowRemoteFormData(h.app.sshHostEntries(), cleanData); err != nil {
+			return &IMAgentResponse{Text: err.Error(), Error: err.Error()}
+		}
+	}
+
+	// Session-only remote creds (password/key) + sticky non-secret meta +
+	// left-sidebar remote_coding_dev task (tags only; no password).
+	if formDataTrimString(cleanData, "_agent_view_variant") == workflowFormExecRemote {
+		creds := captureCodingWorkflowRemoteCreds(cleanData)
+		h.storeCodingWorkflowRemoteCreds(userID, creds)
+		h.bindCodingWorkflowRemoteSticky(userID, creds)
+		// Strip secrets before durable FormData / task sync.
+		delete(cleanData, workflowFormSSHPasswordField)
+		// Sync after secret strip; may write remote_task_path into cleanData.
+		stateForSync := wf.machine.GetActive(userID)
+		h.syncCodingWorkflowRemoteTask(userID, cleanData, stateForSync)
+	}
+
+	// Local project_path validation (remote uses remote_workdir, not local paths).
+	if pp := strings.TrimSpace(fmt.Sprint(cleanData[workflowFormProjectPathField])); pp != "" && pp != "<nil>" {
+		if normalized, _, err := normalizeWorkflowProjectPath(pp); err != nil {
+			return &IMAgentResponse{Text: fmt.Sprintf("项目路径无效: %v", err), Error: err.Error()}
+		} else {
+			cleanData[workflowFormProjectPathField] = normalized
+		}
+	}
+
 	if err := wf.machine.SubmitForm(userID, cleanData); err != nil {
 		log.Printf("[workflow-v2] SubmitForm failed: user=%s phase=%s err=%v", userID, phaseID, err)
 		return &IMAgentResponse{Text: "表单提交失败: " + err.Error(), Error: err.Error()}
@@ -1496,6 +1544,7 @@ func (h *IMMessageHandler) cancelWorkflowV2(userID string) {
 	// Read state before Cancel() so we can emit a targeted reset event.
 	state := wf.machine.GetActive(userID)
 	wf.machine.Cancel(userID)
+	h.clearCodingExecCheckpoint(userID)
 	// Emit targeted reset: include workflow_id and project_path so only
 	// the matching tab clears its preview panel.
 	if state != nil {
@@ -1524,153 +1573,48 @@ func (h *IMMessageHandler) isWorkflowV2Active(userID string) bool {
 }
 
 // handleWorkflowV2ExecutionPhase handles the implementation phase using TaskRunner + SubAgent.
-// Tasks run synchronously for now (each task gets its own SubAgent call).
-// Returns nil to fall through to normal agent loop if tasks can't be parsed.
+// Delegates to the progress-aware path so cancel / failed-retry / checkpoint stay consistent.
 func (h *IMMessageHandler) handleWorkflowV2ExecutionPhase(userID string, state *v2.WorkflowState) *IMAgentResponse {
-	if state == nil || !state.IsExecutionPhase() {
-		return nil
-	}
-
-	// Parse tasks from the task breakdown phase output
-	tasksPhaseOutput := getPhaseOutput(state, "tasks")
-	if tasksPhaseOutput == "" {
-		// Also try loading fresh state from store in case of stale reference
-		if wf := h.getWorkflowV2(); wf != nil {
-			if fresh := wf.machine.GetActive(userID); fresh != nil {
-				tasksPhaseOutput = getPhaseOutput(fresh, "tasks")
-				if tasksPhaseOutput != "" {
-					log.Printf("[workflow-v2] execution phase: tasks output was empty in passed state but found in fresh load (len=%d)", len(tasksPhaseOutput))
-					state = fresh
-				}
-			}
-		}
-	}
-	if tasksPhaseOutput == "" {
-		log.Printf("[workflow-v2] execution phase but no task breakdown output (phase outputs: %v), falling back to agent loop", listPhaseIDs(state))
-		return nil
-	}
-
-	tasks := v2.ParseTaskList(tasksPhaseOutput)
-	if len(tasks) == 0 {
-		log.Printf("[workflow-v2] no tasks parsed from breakdown (output_len=%d), falling back to agent loop. First 200 chars: %s",
-			len(tasksPhaseOutput), truncateRunesV2(tasksPhaseOutput, 200))
-		return nil
-	}
-
-	// Ensure project directory exists
-	if err := v2.EnsureProjectDir(state.ProjectPath); err != nil {
-		log.Printf("[workflow-v2] failed to ensure project dir %s: %v", state.ProjectPath, err)
-	}
-
-	reqCtx := truncateRunesV2(getPhaseOutput(state, "requirements"), 500)
-	designCtx := truncateRunesV2(getPhaseOutput(state, "design"), 500)
-
-	log.Printf("[workflow-v2] starting execution: %d tasks, project=%s", len(tasks), state.ProjectPath)
-
-	// Mark phase as executing so subsequent messages pass through
-	wf := h.getWorkflowV2()
-	if wf != nil {
-		if phase := state.ActivePhase(); phase != nil {
-			phase.Status = v2.PhaseExecuting
-			wf.store.Save(state)
-		}
-	}
-	// Notify frontend that we've entered the execution phase.
-	h.emitWorkflowV2Progress(userID, state)
-
-	// Build SubAgent bridge: TaskItem → RunTaskWithSubAgent
-	cfg := h.getMaclawLLMConfig()
-	httpClient := h.client
-	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, onToken func(string), onProgress func(string)) *v2.TaskRunResult {
-		v1Task := &TaskItem{
-			Index:       task.Index,
-			Title:       task.Title,
-			Description: task.Description,
-			Files:       task.Files,
-			DependsOn:   task.DependsOn,
-		}
-		var fn subAgentTaskFunc
-		if runTaskWithSubAgent != nil {
-			fn = runTaskWithSubAgent
-		} else {
-			fn = RunTaskWithSubAgent
-		}
-		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, config.RequirementsCtx, config.DesignCtx, nil, nil, onToken, onProgress)
-		if v1Result == nil {
-			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
-		}
-		status := v2.TaskFailed
-		switch v1Result.Status {
-		case TaskExecPassed:
-			status = v2.TaskPassed
-		case TaskExecSkipped:
-			status = v2.TaskSkipped
-		}
-		return &v2.TaskRunResult{
-			TaskIndex:     task.Index,
-			Title:         task.Title,
-			Status:        status,
-			Summary:       v1Result.Summary,
-			FilesCreated:  v1Result.FilesCreated,
-			FilesModified: v1Result.FilesModified,
-			Error:         v1Result.Error,
-		}
-	}
-
-	config := v2.TaskRunnerConfig{
-		ProjectPath:     state.ProjectPath,
-		RequirementsCtx: reqCtx,
-		DesignCtx:       designCtx,
-		MaxRetries:      2,
-		TDDMode:         true,
-	}
-
-	// Run tasks synchronously — keeps the frontend spinner active until completion.
-	// SubAgent execution may take several minutes for complex projects.
-	runner := v2.NewTaskRunner(config, subAgentFn)
-	runner.RunAll(context.Background(), tasks, nil, func(progress string) {
-		log.Printf("[workflow-v2-exec] %s", progress)
-		// Send progress to the frontend spinner area via the standard progress event.
-		// The frontend's useAIAssistant hook listens to this and shows it below the spinner.
-		if h.app != nil && h.app.ctx != nil {
-			h.app.emitEvent("ai-assistant-progress", progress)
-		}
-	})
-	report := runner.FinalReport()
-	if wf := h.getWorkflowV2(); wf != nil {
-		wf.machine.RecordOutput(userID, report)
-		// Auto-complete next phase if it's ExecModeAutoFromPrev
-		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
-			if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
-				log.Printf("[workflow-v2] auto-completing phase=%s (ExecMode=auto_from_prev)", nextPhase.ID)
-				wf.machine.RecordOutput(userID, report)
-			}
-		}
-		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
-			h.emitWorkflowV2Progress(userID, updatedState)
-		} else {
-			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":             state.ID,
-				"status":         "completed",
-				"type":           state.Type,
-				"project_path":   workflowEventProjectPath(state),
-				"event_scope_id": h.app.getEventScopeID(userID),
-			})
-		}
-	}
-	log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
-
-	return &IMAgentResponse{
-		Text: fmt.Sprintf("执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
-			len(tasks), state.ProjectPath, formatTaskListBrief(tasks), report),
-	}
+	return h.handleWorkflowV2ExecutionPhaseWithProgress(userID, state, nil, nil, nil)
 }
 
 // handleWorkflowV2ExecutionPhaseWithProgress wraps handleWorkflowV2ExecutionPhase
 // but uses the provided onProgress callback (which carries request_id context)
 // instead of raw runtime.EventsEmit. This ensures progress events reach the frontend
 // with the correct request_id for the active round.
-func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID string, state *v2.WorkflowState, onProgress func(string), onToken func(string)) *IMAgentResponse {
+func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID string, state *v2.WorkflowState, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	// Manual 重试失败 / 继续执行 — consume before the phase gate so a stale
+	// marker is never left orphaned when the phase is no longer executable.
+	if raw, ok := h.pendingCodingExecRetryAction.LoadAndDelete(userID); ok {
+		if action, _ := raw.(string); action != "" {
+			if state == nil || !state.IsExecutionPhase() {
+				return &IMAgentResponse{Text: codingExecText(
+					"Not in the coding execution phase — cannot retry. Please re-enter coding execution in the programming workflow.",
+					"当前不在编码执行阶段，无法重试。请重新进入编程工作流的编码执行阶段。",
+					"目前不在編碼執行階段，無法重試。請重新進入程式設計工作流的編碼執行階段。",
+				)}
+			}
+			if resp := h.runCodingExecFromCheckpoint(userID, action, state, onProgress, onToken, parentLoop); resp != nil {
+				return resp
+			}
+		}
+	}
+
+	if state == nil || !state.IsExecutionPhase() {
+		return nil
+	}
+
+	// Coding workflow remote variant: execute tasks via RemoteCodingSubAgent/SSH.
+	if isCodingWorkflowRemoteExecution(state) {
+		return h.handleWorkflowV2RemoteExecutionPhaseWithProgress(userID, state, onProgress, onToken, parentLoop)
+	}
+
+	return h.handleWorkflowV2LocalExecutionPhaseWithProgress(userID, state, onProgress, onToken, parentLoop)
+}
+
+// handleWorkflowV2LocalExecutionPhaseWithProgress runs local CodingSubAgent tasks
+// with cancel support, one automatic failed-only retry, and resume checkpoint.
+func (h *IMMessageHandler) handleWorkflowV2LocalExecutionPhaseWithProgress(userID string, state *v2.WorkflowState, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
 	if state == nil || !state.IsExecutionPhase() {
 		return nil
 	}
@@ -1703,23 +1647,50 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 
 	reqCtx := truncateRunesV2(getPhaseOutput(state, "requirements"), 500)
 	designCtx := truncateRunesV2(getPhaseOutput(state, "design"), 500)
+	totalTasks := len(tasks)
 
-	log.Printf("[workflow-v2] starting execution (with progress): %d tasks, project=%s", len(tasks), state.ProjectPath)
+	log.Printf("[workflow-v2] starting local execution: %d tasks, project=%s", totalTasks, state.ProjectPath)
 
+	if wf := h.getWorkflowV2(); wf != nil {
+		if err := wf.machine.MarkPhaseExecuting(userID); err != nil {
+			log.Printf("[workflow-v2] MarkPhaseExecuting failed: %v", err)
+		}
+		if fresh := wf.machine.GetActive(userID); fresh != nil {
+			state = fresh
+		}
+	}
 	h.emitWorkflowV2Progress(userID, state)
 
-	// Send initial progress so frontend shows "coding started"
-	if onProgress != nil {
-		onProgress(fmt.Sprintf("开始编码执行：%d 个任务", len(tasks)))
+	emitProgress := func(msg string) {
+		if onProgress != nil && strings.TrimSpace(msg) != "" {
+			onProgress(msg)
+		}
+	}
+	emitProgress(fmt.Sprintf(codingExecText(
+		"① Local coding execution: %d tasks @ %s",
+		"① 本机编码执行：共 %d 个任务 @ %s",
+		"① 本機編碼執行：共 %d 個任務 @ %s",
+	), totalTasks, state.ProjectPath))
+
+	loopCtx := parentLoop
+	ownLoop := false
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("workflow-local-coding-exec", h.getMaclawAgentMaxIterations(), h.client)
+		ownLoop = true
+	}
+	ensureLoopCtxUserID(loopCtx, userID)
+	runCtx, cancelRun := loopCtx.Context()
+	defer cancelRun()
+	if ownLoop {
+		defer func() {
+			loopCtx.Cancel()
+			loopCtx.Done()
+		}()
 	}
 
-	// Wrap onToken to route SubAgent text output to the reasoning/thinking UI
-	// (collapsible panel). Frontend uses \x01 prefix to distinguish reasoning
-	// tokens from content tokens — they render in a collapsed "thinking" area.
 	reasoningToken := onToken
 	if onToken != nil {
 		reasoningToken = func(delta string) {
-			// Strip Browser: role prefix hallucination from reasoning output
 			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
 				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
 				delta = strings.TrimLeft(delta, " ")
@@ -1730,7 +1701,16 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
-	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, onToken func(string), onProgressFn func(string)) *v2.TaskRunResult {
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
+		if task == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if progressCB != nil {
+			progressCB(fmt.Sprintf(codingExecText("② Local task %d/%d: %s", "② 本机任务 %d/%d：%s", "② 本機任務 %d/%d：%s"), task.Index, totalTasks, task.Title))
+		}
 		v1Task := &TaskItem{
 			Index:       task.Index,
 			Title:       task.Title,
@@ -1744,7 +1724,10 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 		} else {
 			fn = RunTaskWithSubAgent
 		}
-		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, config.RequirementsCtx, config.DesignCtx, nil, nil, onToken, onProgressFn)
+		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, config.RequirementsCtx, config.DesignCtx, nil, loopCtx, tokenCB, progressCB)
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
 		if v1Result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
 		}
@@ -1754,6 +1737,16 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 			status = v2.TaskPassed
 		case TaskExecSkipped:
 			status = v2.TaskSkipped
+		}
+		if progressCB != nil {
+			switch status {
+			case v2.TaskPassed:
+				progressCB(fmt.Sprintf(codingExecText("✓ Local task %d/%d done: %s", "✓ 本机任务 %d/%d 完成：%s", "✓ 本機任務 %d/%d 完成：%s"), task.Index, totalTasks, task.Title))
+			case v2.TaskSkipped:
+				progressCB(fmt.Sprintf(codingExecText("⊘ Local task %d/%d skipped: %s", "⊘ 本机任务 %d/%d 跳过：%s", "⊘ 本機任務 %d/%d 跳過：%s"), task.Index, totalTasks, task.Title))
+			default:
+				progressCB(fmt.Sprintf(codingExecText("❌ Local task %d/%d failed: %s", "❌ 本机任务 %d/%d 失败：%s", "❌ 本機任務 %d/%d 失敗：%s"), task.Index, totalTasks, task.Title))
+			}
 		}
 		return &v2.TaskRunResult{
 			TaskIndex:     task.Index,
@@ -1775,49 +1768,947 @@ func (h *IMMessageHandler) handleWorkflowV2ExecutionPhaseWithProgress(userID str
 	}
 
 	runner := v2.NewTaskRunner(config, subAgentFn)
-	runner.RunAll(context.Background(), tasks, reasoningToken, func(progress string) {
+	allResults := runner.RunAll(runCtx, tasks, reasoningToken, func(progress string) {
 		log.Printf("[workflow-v2-exec] %s", progress)
-		// Use the onProgress callback which carries request_id context
-		if onProgress != nil {
-			onProgress(progress)
-		}
+		emitProgress(progress)
 	})
-	report := runner.FinalReport()
 
-	// Push the final report through regular onToken (NOT reasoning) so it appears
-	// as visible content, not hidden in the collapsed thinking panel.
+	allResults = autoRetryFailedCodingTasks(runCtx, loopCtx, config, subAgentFn, tasks, allResults, reasoningToken, emitProgress, "local")
+
+	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
+	report := formatTaskRunResultsReportEx(allResults, cancelled)
 	if onToken != nil {
 		onToken("\n\n" + report)
 	}
 
-	if wf := h.getWorkflowV2(); wf != nil {
-		wf.machine.RecordOutput(userID, report)
-		// If the next phase has ExecMode=auto_from_prev, auto-complete it with this report.
-		// This eliminates the need for a separate execution step — the prior phase's
-		// output IS the next phase's output (e.g. SubAgent report includes verification results).
-		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
-			if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
-				log.Printf("[workflow-v2] auto-completing phase=%s (ExecMode=auto_from_prev) with prior output", nextPhase.ID)
-				wf.machine.RecordOutput(userID, report)
+	return h.finalizeCodingImplementation(userID, state, tasks, allResults, report, cancelled, false, codingExecCheckpoint{
+		IsRemote:        false,
+		Tasks:           tasks,
+		Results:         allResults,
+		RequirementsCtx: reqCtx,
+		DesignCtx:       designCtx,
+		ProjectPath:     state.ProjectPath,
+		Cancelled:       cancelled,
+	}, onProgress)
+}
+
+// handleWorkflowV2RemoteExecutionPhaseWithProgress runs coding workflow
+// implementation tasks on a remote host via SSH + RemoteCodingSubAgent.
+// parentLoop (when non-nil) shares cancellation with the AI assistant turn so
+// the user can stop remote execution via the normal cancel control.
+func (h *IMMessageHandler) handleWorkflowV2RemoteExecutionPhaseWithProgress(userID string, state *v2.WorkflowState, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	if state == nil || !state.IsExecutionPhase() {
+		return nil
+	}
+
+	tasksPhaseOutput := getPhaseOutput(state, "tasks")
+	if tasksPhaseOutput == "" {
+		if wf := h.getWorkflowV2(); wf != nil {
+			if fresh := wf.machine.GetActive(userID); fresh != nil {
+				tasksPhaseOutput = getPhaseOutput(fresh, "tasks")
+				if tasksPhaseOutput != "" {
+					state = fresh
+				}
 			}
 		}
-		if updatedState := wf.machine.GetActive(userID); updatedState != nil {
-			h.emitWorkflowV2Progress(userID, updatedState)
-		} else {
-			emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
-				"id":             state.ID,
-				"status":         "completed",
-				"type":           state.Type,
-				"project_path":   workflowEventProjectPath(state),
-				"event_scope_id": h.app.getEventScopeID(userID),
-			})
+	}
+	if tasksPhaseOutput == "" {
+		log.Printf("[workflow-v2-remote-exec] no task breakdown output, falling back")
+		return nil
+	}
+	tasks := v2.ParseTaskList(tasksPhaseOutput)
+	if len(tasks) == 0 {
+		log.Printf("[workflow-v2-remote-exec] no tasks parsed, falling back")
+		return nil
+	}
+
+	host, user, _, port, _ := codingWorkflowRemoteEnvFromState(state)
+	if port <= 0 {
+		port = 22
+	}
+	totalTasks := len(tasks)
+	emitRemoteProgress := func(msg string) {
+		if onProgress != nil && strings.TrimSpace(msg) != "" {
+			onProgress(msg)
 		}
 	}
-	log.Printf("[workflow-v2] execution complete: user=%s\n%s", userID, report)
 
+	// Cancellation: prefer the assistant turn's LoopContext so Stop cancels SSH work.
+	loopCtx := parentLoop
+	ownLoop := false
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("workflow-remote-coding-exec", h.getMaclawAgentMaxIterations(), h.client)
+		ownLoop = true
+	}
+	ensureLoopCtxUserID(loopCtx, userID)
+	runCtx, cancelRun := loopCtx.Context()
+	defer cancelRun()
+	if ownLoop {
+		defer func() {
+			loopCtx.Cancel()
+			loopCtx.Done()
+		}()
+	}
+
+	if loopCtx.IsCancelled() || runCtx.Err() != nil {
+		return &IMAgentResponse{Text: codingExecText(
+			"Remote coding cancelled",
+			"远程编码已取消",
+			"遠端編碼已取消",
+		)}
+	}
+
+	emitRemoteProgress(fmt.Sprintf(codingExecText(
+		"① Connecting to remote %s@%s:%d …",
+		"① 正在连接远程服务器 %s@%s:%d …",
+		"① 正在連線遠端伺服器 %s@%s:%d …",
+	), user, host, port))
+
+	sessionID, remoteWorkDir, errMsg := h.ensureCodingWorkflowRemoteSSHSession(userID, state)
+	if errMsg != "" {
+		emitRemoteProgress(codingExecText("❌ Remote connection failed: ", "❌ 远程连接失败: ", "❌ 遠端連線失敗: ") + errMsg)
+		return &IMAgentResponse{Text: errMsg, Error: errMsg}
+	}
+	if loopCtx.IsCancelled() || runCtx.Err() != nil {
+		emitRemoteProgress(codingExecText(
+			"⏹ Cancelled after SSH connect — no coding tasks started",
+			"⏹ 远程连接后已取消，未开始编码任务",
+			"⏹ 遠端連線後已取消，未開始編碼任務",
+		))
+		return &IMAgentResponse{Text: codingExecText(
+			"Remote coding cancelled (SSH connected but no tasks ran)",
+			"远程编码已取消（SSH 已连接但未执行任务）",
+			"遠端編碼已取消（SSH 已連線但未執行任務）",
+		)}
+	}
+	emitRemoteProgress(fmt.Sprintf(codingExecText(
+		"② SSH connected %s@%s:%d, work dir %s, %d coding tasks",
+		"② SSH 已连接 %s@%s:%d，工作目录 %s，共 %d 个编码任务",
+		"② SSH 已連線 %s@%s:%d，工作目錄 %s，共 %d 個編碼任務",
+	), user, host, port, remoteWorkDir, totalTasks))
+
+	// Mark phase executing (locked path)
+	if wf := h.getWorkflowV2(); wf != nil {
+		if err := wf.machine.MarkPhaseExecuting(userID); err != nil {
+			log.Printf("[workflow-v2-remote-exec] MarkPhaseExecuting failed: %v", err)
+		}
+		if fresh := wf.machine.GetActive(userID); fresh != nil {
+			state = fresh
+		}
+	}
+	h.emitWorkflowV2Progress(userID, state)
+
+	reqCtx := truncateRunesV2(getPhaseOutput(state, "requirements"), 500)
+	designCtx := truncateRunesV2(getPhaseOutput(state, "design"), 500)
+	log.Printf("[workflow-v2-remote-exec] starting: %d tasks session=%s workdir=%s", totalTasks, sessionID, remoteWorkDir)
+
+	reasoningToken := onToken
+	if onToken != nil {
+		reasoningToken = func(delta string) {
+			if strings.HasPrefix(delta, "Browser:") || strings.HasPrefix(delta, "Browser：") {
+				delta = strings.TrimPrefix(strings.TrimPrefix(delta, "Browser:"), "Browser：")
+				delta = strings.TrimLeft(delta, " ")
+			}
+			onToken("\x01" + delta)
+		}
+	}
+
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+
+	// 1-based ordinal for user-facing progress (TaskItem.Index may already be 1-based).
+	taskOrdinal := func(task *v2.TaskItem, fallback int) int {
+		if task != nil && task.Index > 0 {
+			return task.Index
+		}
+		return fallback
+	}
+
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
+		if task == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		ord := taskOrdinal(task, 0)
+		title := strings.TrimSpace(task.Title)
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			if progressCB != nil {
+				progressCB(codingExecRemoteTaskProgress("cancel", ord, totalTasks, title, ""))
+			}
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if progressCB != nil {
+			progressCB(codingExecRemoteTaskProgress("start", ord, totalTasks, title, ""))
+		}
+
+		desc, taskContext := buildCodingRemoteTaskPrompt(task, config.RequirementsCtx, config.DesignCtx)
+
+		// Nest agent progress under the current task banner.
+		nestedProgress := progressCB
+		if progressCB != nil {
+			nestedProgress = func(msg string) {
+				msg = strings.TrimSpace(msg)
+				if msg == "" {
+					return
+				}
+				progressCB(fmt.Sprintf("   · T%d %s", ord, msg))
+			}
+		}
+
+		agent := NewRemoteCodingSubAgent(h, cfg, httpClient, sessionID, remoteWorkDir, remoteWorkDir, loopCtx)
+		agent.SetCallbacks(tokenCB, nestedProgress)
+		agent.SetSourcePreviewEnabled(true)
+		if h.app != nil {
+			codingKB := h.app.ensureCodingKnowledgeStore()
+			generalKB := getAutoRecallStoreForApp(h.app, false)
+			agent.SetKnowledgeStores(codingKB, generalKB)
+		}
+		result := agent.ExecuteTask(desc, taskContext)
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			if progressCB != nil {
+				progressCB(codingExecRemoteTaskProgress("cancel", ord, totalTasks, title, ""))
+			}
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if result == nil {
+			if progressCB != nil {
+				progressCB(codingExecRemoteTaskProgress("fail_nil", ord, totalTasks, title, ""))
+			}
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: title, Status: v2.TaskFailed, Error: "RemoteCodingSubAgent returned nil"}
+		}
+		status := mapRemoteCodingSubAgentStatus(result.Status)
+		if progressCB != nil {
+			switch status {
+			case v2.TaskPassed:
+				progressCB(codingExecRemoteTaskProgress("pass", ord, totalTasks, title, ""))
+			case v2.TaskSkipped:
+				if isCodingExecCancelError(result.Error) || strings.Contains(strings.ToLower(result.Status), "cancel") {
+					progressCB(codingExecRemoteTaskProgress("cancel", ord, totalTasks, title, ""))
+				} else {
+					progressCB(codingExecRemoteTaskProgress("skip", ord, totalTasks, title, ""))
+				}
+			default:
+				errBrief := strings.TrimSpace(result.Error)
+				if errBrief == "" {
+					errBrief = result.Status
+				}
+				progressCB(codingExecRemoteTaskProgress("fail", ord, totalTasks, title, truncateRunesV2(errBrief, 80)))
+			}
+		}
+		return &v2.TaskRunResult{
+			TaskIndex:     task.Index,
+			Title:         title,
+			Status:        status,
+			Summary:       result.Summary,
+			FilesCreated:  result.FilesCreated,
+			FilesModified: result.FilesModified,
+			Error:         result.Error,
+		}
+	}
+
+	// ProjectPath for TaskRunner is local workspace for docs; remote agent uses remoteWorkDir.
+	config := v2.TaskRunnerConfig{
+		ProjectPath:     state.ProjectPath,
+		RequirementsCtx: reqCtx,
+		DesignCtx:       designCtx,
+		MaxRetries:      2,
+		TDDMode:         true,
+	}
+	runner := v2.NewTaskRunner(config, subAgentFn)
+	allResults := runner.RunAll(runCtx, tasks, reasoningToken, func(progress string) {
+		log.Printf("[workflow-v2-remote-exec] %s", progress)
+		emitRemoteProgress(progress)
+	})
+
+	allResults = autoRetryFailedCodingTasks(runCtx, loopCtx, config, subAgentFn, tasks, allResults, reasoningToken, emitRemoteProgress, "remote")
+
+	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
+	report := formatTaskRunResultsReportEx(allResults, cancelled)
+	emitRemoteProgress(fmt.Sprintf(codingExecText(
+		"④ Remote coding phase finished (%d tasks), summarizing…",
+		"④ 远程编码阶段结束（%d 个任务），正在汇总…",
+		"④ 遠端編碼階段結束（%d 個任務），正在彙總…",
+	), totalTasks))
+	if onToken != nil {
+		onToken("\n\n" + report)
+	}
+
+	cp := codingExecCheckpoint{
+		IsRemote:        true,
+		Tasks:           tasks,
+		Results:         allResults,
+		RequirementsCtx: reqCtx,
+		DesignCtx:       designCtx,
+		ProjectPath:     state.ProjectPath,
+		RemoteSessionID: sessionID,
+		RemoteWorkDir:   remoteWorkDir,
+		RemoteHost:      host,
+		RemoteUser:      user,
+		RemotePort:      port,
+		Cancelled:       cancelled,
+	}
+	resp := h.finalizeCodingImplementation(userID, state, tasks, allResults, report, cancelled, true, cp, onProgress)
+	// On full success, re-arm pure remote coding for continued chat
+	// (including cancel-after-last-task races where all results already Passed).
+	if resp != nil && allCodingTasksPassed(tasks, allResults) && sessionID != "" {
+		remoteCtx := remoteCodingTemplateContext{
+			SessionID:  sessionID,
+			WorkDir:    remoteWorkDir,
+			ProjectDir: remoteWorkDir,
+		}
+		h.rearmStickyRemoteCodingEnvironment(userID, remoteCtx)
+		if taskPath := remoteTaskPathFromWorkflowState(state); taskPath != "" {
+			h.bindCodingWorkflowRemoteTaskSticky(userID, taskPath, host, user, remoteWorkDir, port)
+			taskOwner := projectSessionOwnerID(taskPath)
+			if taskOwner != "" && taskOwner != userID {
+				h.rearmStickyRemoteCodingEnvironment(taskOwner, remoteCtx)
+				h.bindCodingWorkflowRemoteTaskSticky(taskOwner, taskPath, host, user, remoteWorkDir, port)
+			}
+		}
+	}
+	return resp
+}
+
+// finalizeCodingImplementation records success (advance) or saves checkpoint for resume.
+func (h *IMMessageHandler) finalizeCodingImplementation(
+	userID string,
+	state *v2.WorkflowState,
+	tasks []*v2.TaskItem,
+	results []v2.TaskRunResult,
+	report string,
+	cancelled bool,
+	isRemote bool,
+	cp codingExecCheckpoint,
+	onProgress func(string),
+) *IMAgentResponse {
+	passed, failed, skipped := countTaskRunStatuses(results)
+	// Advance only when every task has a Passed result. A cancel that races
+	// after the last task still advances; empty/partial results never do.
+	allOK := allCodingTasksPassed(tasks, results)
+
+	if allOK {
+		h.clearCodingExecCheckpoint(userID)
+		if wf := h.getWorkflowV2(); wf != nil {
+			_ = wf.machine.RecordOutput(userID, report)
+			if updatedState := wf.machine.GetActive(userID); updatedState != nil {
+				if nextPhase := updatedState.ActivePhase(); nextPhase != nil && nextPhase.ExecMode == v2.ExecModeAutoFromPrev {
+					if onProgress != nil {
+						onProgress(codingExecText(
+							"⑤ Auto-advancing to acceptance…",
+							"⑤ 自动进入验收阶段…",
+							"⑤ 自動進入驗收階段…",
+						))
+					}
+					log.Printf("[workflow-v2-exec] auto-completing phase=%s", nextPhase.ID)
+					_ = wf.machine.RecordOutput(userID, report)
+				}
+			}
+			if updatedState := wf.machine.GetActive(userID); updatedState != nil {
+				h.emitWorkflowV2Progress(userID, updatedState)
+			} else if state != nil {
+				emitWorkflowV2Event(h.app, "workflow:phase_update", map[string]interface{}{
+					"id":             state.ID,
+					"status":         "completed",
+					"type":           state.Type,
+					"project_path":   workflowEventProjectPath(state),
+					"event_scope_id": h.app.getEventScopeID(userID),
+				})
+			}
+		}
+		if onProgress != nil {
+			if isRemote {
+				onProgress(codingExecText(
+					"✅ Workflow remote execution completed",
+					"✅ 工作流远程执行全部完成",
+					"✅ 工作流遠端執行全部完成",
+				))
+			} else {
+				onProgress(codingExecText(
+					"✅ Workflow local execution completed",
+					"✅ 工作流本机执行全部完成",
+					"✅ 工作流本機執行全部完成",
+				))
+			}
+		}
+		var b strings.Builder
+		if isRemote {
+			fmt.Fprintf(&b, codingExecText(
+				"Remote execution finished %d coding tasks\n",
+				"远程执行完成 %d 个编码任务\n",
+				"遠端執行完成 %d 個編碼任務\n",
+			), len(tasks))
+			if cp.RemoteHost != "" {
+				fmt.Fprintf(&b, codingExecText(
+					"Remote dir: %s@%s:%d %s\n",
+					"远程目录：%s@%s:%d %s\n",
+					"遠端目錄：%s@%s:%d %s\n",
+				), cp.RemoteUser, cp.RemoteHost, cp.RemotePort, cp.RemoteWorkDir)
+			}
+		} else {
+			fmt.Fprintf(&b, codingExecText(
+				"Local execution finished %d coding tasks\n",
+				"本机执行完成 %d 个编码任务\n",
+				"本機執行完成 %d 個編碼任務\n",
+			), len(tasks))
+		}
+		if state != nil {
+			fmt.Fprintf(&b, codingExecText(
+				"Local workflow path: %s\n",
+				"本机工作流路径：%s\n",
+				"本機工作流路徑：%s\n",
+			), state.ProjectPath)
+		}
+		if p := remoteTaskPathFromWorkflowState(state); p != "" {
+			fmt.Fprintf(&b, codingExecText(
+				"Task record: %s\n",
+				"任务管理记录：%s\n",
+				"任務管理記錄：%s\n",
+			), p)
+		}
+		b.WriteString(codingExecText(
+			"\nWorkflow advanced to the next phase or completed.\n\n",
+			"\n工作流已进入下一阶段或已完成。\n\n",
+			"\n工作流已進入下一階段或已完成。\n\n",
+		))
+		b.WriteString(formatTaskListBrief(tasks))
+		b.WriteString("\n\n")
+		b.WriteString(report)
+		return &IMAgentResponse{Text: b.String()}
+	}
+
+	// Partial / cancelled: keep phase open and store checkpoint.
+	cp.Results = results
+	cp.Cancelled = cancelled
+	cp.IsRemote = isRemote
+	if state != nil {
+		cp.WorkflowID = state.ID
+		if strings.TrimSpace(cp.ProjectPath) == "" {
+			cp.ProjectPath = state.ProjectPath
+		}
+	}
+	h.storeCodingExecCheckpoint(userID, cp)
+	if wf := h.getWorkflowV2(); wf != nil {
+		if err := wf.machine.SaveExecutionProgress(userID, report); err != nil {
+			log.Printf("[workflow-v2-exec] SaveExecutionProgress failed: %v", err)
+		}
+		if updated := wf.machine.GetActive(userID); updated != nil {
+			h.emitWorkflowV2Progress(userID, updated)
+		}
+	}
+	if onProgress != nil {
+		if cancelled {
+			onProgress(codingExecText(
+				"⏹ Coding paused — workflow stays on coding execution (retry failed / continue)",
+				"⏹ 编码已暂停，工作流停在「编码执行」— 可 重试失败 / 继续执行",
+				"⏹ 編碼已暫停，工作流停在「編碼執行」— 可 重試失敗 / 繼續執行",
+			))
+		} else if failed > 0 {
+			onProgress(fmt.Sprintf(codingExecText(
+				"⚠ %d failed tasks remain — workflow stays on coding execution",
+				"⚠ 仍有 %d 个失败任务，工作流停在「编码执行」",
+				"⚠ 仍有 %d 個失敗任務，工作流停在「編碼執行」",
+			), failed))
+		} else {
+			onProgress(fmt.Sprintf(codingExecText(
+				"⚠ Coding incomplete (%d skipped) — workflow stays on coding execution",
+				"⚠ 编码未全部完成（跳过 %d），工作流停在「编码执行」",
+				"⚠ 編碼未全部完成（跳過 %d），工作流停在「編碼執行」",
+			), skipped))
+		}
+	}
+	var b strings.Builder
+	b.WriteString(codingExecResumeGuidance(cp, isRemote))
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, codingExecText(
+		"Stats: passed %d · failed %d · skipped %d\n\n",
+		"统计：通过 %d · 失败 %d · 跳过 %d\n\n",
+		"統計：通過 %d · 失敗 %d · 跳過 %d\n\n",
+	), passed, failed, skipped)
+	b.WriteString(formatTaskListBrief(tasks))
+	b.WriteString("\n\n")
+	b.WriteString(report)
 	return &IMAgentResponse{
-		Text: fmt.Sprintf("执行完成 %d 个编码任务\n项目路径：%s\n\n%s\n\n%s",
-			len(tasks), state.ProjectPath, formatTaskListBrief(tasks), report),
+		Text:    b.String(),
+		Actions: codingExecResumeActions(cp),
+	}
+}
+
+// runCodingExecFromCheckpoint re-runs failed or incomplete tasks from a checkpoint.
+func (h *IMMessageHandler) runCodingExecFromCheckpoint(userID, action string, state *v2.WorkflowState, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	cp, ok := h.loadCodingExecCheckpoint(userID)
+	if !ok || len(cp.Tasks) == 0 {
+		return &IMAgentResponse{Text: codingExecText(
+			"No coding checkpoint to retry. Please re-enter the coding execution phase.",
+			"没有可重试的编码检查点。请重新进入编码执行阶段。",
+			"沒有可重試的編碼檢查點。請重新進入編碼執行階段。",
+		)}
+	}
+	// Prefer live state path/env.
+	if state == nil {
+		if wf := h.getWorkflowV2(); wf != nil {
+			state = wf.machine.GetActive(userID)
+		}
+	}
+	if !codingExecCheckpointMatchesActive(cp, state) {
+		h.clearCodingExecCheckpoint(userID)
+		return &IMAgentResponse{Text: codingExecText(
+			"The coding checkpoint expired or does not match the current workflow and was cleared. Please re-enter coding execution.",
+			"编码检查点已过期或与当前工作流不匹配，已清除。请重新进入编码执行阶段。",
+			"編碼檢查點已過期或與目前工作流不符，已清除。請重新進入編碼執行階段。",
+		)}
+	}
+	var targets []*v2.TaskItem
+	switch action {
+	case codingExecRetryActionFailed:
+		targets = failedTaskItemsFromResults(cp.Tasks, cp.Results)
+	case codingExecRetryActionResume:
+		targets = incompleteTaskItemsFromResults(cp.Tasks, cp.Results)
+	default:
+		return &IMAgentResponse{Text: codingExecText(
+			fmt.Sprintf("Unknown retry action. Send “%s” or “%s”.", codingExecCmdRetryFailed(), codingExecCmdResume()),
+			fmt.Sprintf("未知重试动作。请发送「%s」或「%s」。", codingExecCmdRetryFailed(), codingExecCmdResume()),
+			fmt.Sprintf("未知重試動作。請傳送「%s」或「%s」。", codingExecCmdRetryFailed(), codingExecCmdResume()),
+		)}
+	}
+	if len(targets) == 0 {
+		return &IMAgentResponse{Text: codingExecText(
+			"No tasks need retry.",
+			"没有需要重试的任务。",
+			"沒有需要重試的任務。",
+		)}
+	}
+	// Subset re-run must not re-evaluate DependsOn against an incomplete result set.
+	targets = tasksForSubsetRerun(targets)
+	if onProgress != nil {
+		label := codingExecCmdRetryFailed()
+		if action == codingExecRetryActionResume {
+			label = codingExecCmdResume()
+		}
+		onProgress(fmt.Sprintf(codingExecText(
+			"▶ %s: %d tasks…",
+			"▶ %s：%d 个任务…",
+			"▶ %s：%d 個任務…",
+		), label, len(targets)))
+	}
+	// Keep phase status consistent with first-run execution.
+	if wf := h.getWorkflowV2(); wf != nil {
+		if err := wf.machine.MarkPhaseExecuting(userID); err != nil {
+			log.Printf("[coding-exec-retry] MarkPhaseExecuting failed: %v", err)
+		}
+		if fresh := wf.machine.GetActive(userID); fresh != nil {
+			state = fresh
+		}
+	}
+
+	if cp.IsRemote || isCodingWorkflowRemoteExecution(state) {
+		return h.runCodingExecTargetsRemote(userID, state, cp, targets, onProgress, onToken, parentLoop)
+	}
+	return h.runCodingExecTargetsLocal(userID, state, cp, targets, onProgress, onToken, parentLoop)
+}
+
+func (h *IMMessageHandler) runCodingExecTargetsLocal(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, targets []*v2.TaskItem, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	projectPath := cp.ProjectPath
+	if state != nil && state.ProjectPath != "" {
+		projectPath = state.ProjectPath
+	}
+	loopCtx := parentLoop
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("workflow-local-coding-retry", h.getMaclawAgentMaxIterations(), h.client)
+		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
+	}
+	ensureLoopCtxUserID(loopCtx, userID)
+	runCtx, cancelRun := loopCtx.Context()
+	defer cancelRun()
+
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+	total := len(targets)
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
+		if task == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if progressCB != nil {
+			progressCB(fmt.Sprintf(codingExecText("Local retry %d/%d: %s", "本机重试 %d/%d：%s", "本機重試 %d/%d：%s"), task.Index, total, task.Title))
+		}
+		v1Task := &TaskItem{Index: task.Index, Title: task.Title, Description: task.Description, Files: task.Files, DependsOn: task.DependsOn}
+		fn := RunTaskWithSubAgent
+		if runTaskWithSubAgent != nil {
+			fn = runTaskWithSubAgent
+		}
+		v1Result := fn(h, cfg, httpClient, v1Task, config.ProjectPath, config.RequirementsCtx, config.DesignCtx, nil, loopCtx, tokenCB, progressCB)
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if v1Result == nil {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "SubAgent returned nil"}
+		}
+		status := v2.TaskFailed
+		switch v1Result.Status {
+		case TaskExecPassed:
+			status = v2.TaskPassed
+		case TaskExecSkipped:
+			status = v2.TaskSkipped
+		}
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: v1Result.Summary, FilesCreated: v1Result.FilesCreated, FilesModified: v1Result.FilesModified, Error: v1Result.Error}
+	}
+	config := v2.TaskRunnerConfig{ProjectPath: projectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
+	runner := v2.NewTaskRunner(config, subAgentFn)
+	retryResults := runner.RunAll(runCtx, targets, onToken, onProgress)
+	merged := mergeTaskRunResultsByIndex(cp.Results, retryResults)
+	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
+	report := formatTaskRunResultsReportEx(merged, cancelled)
+	if onToken != nil {
+		onToken("\n\n" + report)
+	}
+	cp.Results = merged
+	cp.Cancelled = cancelled
+	return h.finalizeCodingImplementation(userID, state, cp.Tasks, merged, report, cancelled, false, cp, onProgress)
+}
+
+func (h *IMMessageHandler) runCodingExecTargetsRemote(userID string, state *v2.WorkflowState, cp codingExecCheckpoint, targets []*v2.TaskItem, onProgress func(string), onToken func(string), parentLoop *LoopContext) *IMAgentResponse {
+	// Refresh SSH session if needed.
+	sessionID := cp.RemoteSessionID
+	workDir := cp.RemoteWorkDir
+	host, user, port := cp.RemoteHost, cp.RemoteUser, cp.RemotePort
+	if state != nil {
+		if h2, u2, w2, p2, ok := codingWorkflowRemoteEnvFromState(state); ok {
+			host, user, workDir, port = h2, u2, w2, p2
+		}
+	}
+	if port <= 0 {
+		port = 22
+	}
+	if onProgress != nil {
+		onProgress(fmt.Sprintf(codingExecText(
+			"① Checking remote connection %s@%s:%d before retry…",
+			"① 重试前检查远程连接 %s@%s:%d …",
+			"① 重試前檢查遠端連線 %s@%s:%d …",
+		), user, host, port))
+	}
+	if sid, wd, errMsg := h.ensureCodingWorkflowRemoteSSHSession(userID, state); errMsg == "" {
+		sessionID, workDir = sid, wd
+	} else if sessionID == "" {
+		return &IMAgentResponse{Text: codingExecText(
+			"Remote retry failed: cannot connect SSH — ",
+			"远程重试失败：无法连接 SSH — ",
+			"遠端重試失敗：無法連線 SSH — ",
+		) + errMsg, Error: errMsg}
+	}
+
+	loopCtx := parentLoop
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("workflow-remote-coding-retry", h.getMaclawAgentMaxIterations(), h.client)
+		defer func() { loopCtx.Cancel(); loopCtx.Done() }()
+	}
+	ensureLoopCtxUserID(loopCtx, userID)
+	runCtx, cancelRun := loopCtx.Context()
+	defer cancelRun()
+
+	cfg := h.getMaclawLLMConfig()
+	httpClient := h.client
+	total := len(targets)
+	subAgentFn := func(ctx context.Context, task *v2.TaskItem, config v2.TaskRunnerConfig, tokenCB func(string), progressCB func(string)) *v2.TaskRunResult {
+		if task == nil {
+			return &v2.TaskRunResult{Status: v2.TaskFailed, Error: "nil task"}
+		}
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if progressCB != nil {
+			progressCB(fmt.Sprintf(codingExecText("Remote retry %d/%d: %s", "远程重试 %d/%d：%s", "遠端重試 %d/%d：%s"), task.Index, total, task.Title))
+		}
+		desc, taskContext := buildCodingRemoteTaskPrompt(task, config.RequirementsCtx, config.DesignCtx)
+		agent := NewRemoteCodingSubAgent(h, cfg, httpClient, sessionID, workDir, workDir, loopCtx)
+		agent.SetCallbacks(tokenCB, progressCB)
+		agent.SetSourcePreviewEnabled(true)
+		if h.app != nil {
+			codingKB := h.app.ensureCodingKnowledgeStore()
+			generalKB := getAutoRecallStoreForApp(h.app, false)
+			agent.SetKnowledgeStores(codingKB, generalKB)
+		}
+		result := agent.ExecuteTask(desc, taskContext)
+		if ctx.Err() != nil || loopCtx.IsCancelled() {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskSkipped, Error: "cancelled"}
+		}
+		if result == nil {
+			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "RemoteCodingSubAgent returned nil"}
+		}
+		status := mapRemoteCodingSubAgentStatus(result.Status)
+		return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: status, Summary: result.Summary, FilesCreated: result.FilesCreated, FilesModified: result.FilesModified, Error: result.Error}
+	}
+	config := v2.TaskRunnerConfig{ProjectPath: cp.ProjectPath, RequirementsCtx: cp.RequirementsCtx, DesignCtx: cp.DesignCtx, MaxRetries: 1, TDDMode: true}
+	runner := v2.NewTaskRunner(config, subAgentFn)
+	retryResults := runner.RunAll(runCtx, targets, onToken, onProgress)
+	merged := mergeTaskRunResultsByIndex(cp.Results, retryResults)
+	cancelled := runCtx.Err() != nil || loopCtx.IsCancelled()
+	report := formatTaskRunResultsReportEx(merged, cancelled)
+	if onToken != nil {
+		onToken("\n\n" + report)
+	}
+	cp.Results = merged
+	cp.RemoteSessionID = sessionID
+	cp.RemoteWorkDir = workDir
+	cp.RemoteHost = host
+	cp.RemoteUser = user
+	cp.RemotePort = port
+	cp.Cancelled = cancelled
+	cp.IsRemote = true
+	return h.finalizeCodingImplementation(userID, state, cp.Tasks, merged, report, cancelled, true, cp, onProgress)
+}
+
+
+// buildCodingRemoteTaskPrompt builds the remote SubAgent task description and
+// requirements/design context (shared by first-run and checkpoint retry paths).
+func buildCodingRemoteTaskPrompt(task *v2.TaskItem, reqCtx, designCtx string) (desc, taskContext string) {
+	if task != nil {
+		desc = strings.TrimSpace(task.Title)
+		if d := strings.TrimSpace(task.Description); d != "" {
+			if desc != "" {
+				desc = desc + "\n\n" + d
+			} else {
+				desc = d
+			}
+		}
+		if len(task.Files) > 0 {
+			desc += "\n\n相关文件: " + strings.Join(task.Files, ", ")
+		}
+	}
+	var parts []string
+	if strings.TrimSpace(reqCtx) != "" {
+		parts = append(parts, "需求摘要:\n"+reqCtx)
+	}
+	if strings.TrimSpace(designCtx) != "" {
+		parts = append(parts, "设计摘要:\n"+designCtx)
+	}
+	return desc, strings.Join(parts, "\n\n")
+}
+
+
+// autoRetryFailedCodingTasks runs one automatic failed-only subset pass shared by
+// local and remote first-run coding execution. DependsOn is stripped so TaskRunner
+// does not false-skip subset tasks.
+func autoRetryFailedCodingTasks(
+	runCtx context.Context,
+	loopCtx *LoopContext,
+	config v2.TaskRunnerConfig,
+	subAgentFn v2.SubAgentFunc,
+	tasks []*v2.TaskItem,
+	allResults []v2.TaskRunResult,
+	onToken func(string),
+	onProgress func(string),
+	envLabel string,
+) []v2.TaskRunResult {
+	cancelled := runCtx != nil && runCtx.Err() != nil
+	if !cancelled && loopCtx != nil && loopCtx.IsCancelled() {
+		cancelled = true
+	}
+	if cancelled {
+		if onProgress != nil {
+			// envLabel is "local" or "remote" (stable key).
+			switch envLabel {
+			case "remote":
+				onProgress(codingExecText(
+					"⏹ Remote coding cancelled — skip automatic failed retry",
+					"⏹ 远程编码已取消，跳过自动失败重试",
+					"⏹ 遠端編碼已取消，跳過自動失敗重試",
+				))
+			default:
+				onProgress(codingExecText(
+					"⏹ Local coding cancelled — skip automatic failed retry",
+					"⏹ 本机编码已取消，跳过自动失败重试",
+					"⏹ 本機編碼已取消，跳過自動失敗重試",
+				))
+			}
+		}
+		return allResults
+	}
+	failedTasks := tasksForSubsetRerun(failedTaskItemsFromResults(tasks, allResults))
+	if len(failedTasks) == 0 {
+		return allResults
+	}
+	if onProgress != nil {
+		onProgress(fmt.Sprintf(codingExecText(
+			"↻ Found %d failed tasks — retrying failures only…",
+			"↻ 发现 %d 个失败任务，正在仅重试失败项…",
+			"↻ 發現 %d 個失敗任務，正在僅重試失敗項…",
+		), len(failedTasks)))
+	}
+	retryConfig := config
+	retryConfig.MaxRetries = 1
+	retryRunner := v2.NewTaskRunner(retryConfig, subAgentFn)
+	retryResults := retryRunner.RunAll(runCtx, failedTasks, onToken, func(progress string) {
+		if onProgress != nil {
+			onProgress("↻ " + progress)
+		}
+	})
+	merged := mergeTaskRunResultsByIndex(allResults, retryResults)
+	if onProgress != nil {
+		onProgress(fmt.Sprintf(codingExecText(
+			"↻ Failed-task retry finished (%d items)",
+			"↻ 失败项重试结束（%d 项）",
+			"↻ 失敗項重試結束（%d 項）",
+		), len(failedTasks)))
+	}
+	return merged
+}
+
+// mapRemoteCodingSubAgentStatus normalizes RemoteCodingSubAgent status strings.
+func mapRemoteCodingSubAgentStatus(status string) v2.TaskRunStatus {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "passed", "success", "ok", "completed", "done":
+		return v2.TaskPassed
+	case "skipped", "cancelled", "canceled":
+		return v2.TaskSkipped
+	default:
+		return v2.TaskFailed
+	}
+}
+
+// failedTaskItemsFromResults returns original task items whose matching result failed.
+func failedTaskItemsFromResults(tasks []*v2.TaskItem, results []v2.TaskRunResult) []*v2.TaskItem {
+	if len(tasks) == 0 || len(results) == 0 {
+		return nil
+	}
+	byIndex := make(map[int]v2.TaskRunStatus, len(results))
+	for _, r := range results {
+		byIndex[r.TaskIndex] = r.Status
+	}
+	var failed []*v2.TaskItem
+	for _, t := range tasks {
+		if t == nil {
+			continue
+		}
+		if byIndex[t.Index] == v2.TaskFailed {
+			failed = append(failed, t)
+		}
+	}
+	return failed
+}
+
+// mergeTaskRunResultsByIndex replaces results with the same TaskIndex from updates.
+func mergeTaskRunResultsByIndex(base, updates []v2.TaskRunResult) []v2.TaskRunResult {
+	if len(updates) == 0 {
+		return base
+	}
+	out := append([]v2.TaskRunResult(nil), base...)
+	for _, u := range updates {
+		replaced := false
+		for i := range out {
+			if out[i].TaskIndex == u.TaskIndex {
+				out[i] = u
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// formatTaskRunResultsReport builds a summary report from task run results.
+func formatTaskRunResultsReport(results []v2.TaskRunResult) string {
+	return formatTaskRunResultsReportEx(results, false)
+}
+
+// formatTaskRunResultsReportEx builds a summary report; cancelled uses a single title
+// (avoids prepending a second "## …" header).
+func formatTaskRunResultsReportEx(results []v2.TaskRunResult, cancelled bool) string {
+	var sb strings.Builder
+	if cancelled {
+		sb.WriteString(codingExecText("## Execution report (cancelled)\n\n", "## 执行报告（已取消）\n\n", "## 執行報告（已取消）\n\n"))
+	} else {
+		sb.WriteString(codingExecText("## Execution report\n\n", "## 执行报告\n\n", "## 執行報告\n\n"))
+	}
+	passed, failed, skipped := 0, 0, 0
+	for _, result := range results {
+		switch result.Status {
+		case v2.TaskPassed:
+			passed++
+		case v2.TaskFailed:
+			failed++
+		case v2.TaskSkipped:
+			skipped++
+		}
+	}
+	sb.WriteString(fmt.Sprintf(codingExecText(
+		"- Passed: %d\n- Failed: %d\n- Skipped: %d\n\n",
+		"- 通过: %d\n- 失败: %d\n- 跳过: %d\n\n",
+		"- 通過: %d\n- 失敗: %d\n- 跳過: %d\n\n",
+	), passed, failed, skipped))
+	for _, result := range results {
+		mark := "·"
+		switch result.Status {
+		case v2.TaskPassed:
+			mark = "✓"
+		case v2.TaskFailed:
+			mark = "✗"
+		case v2.TaskSkipped:
+			mark = "⊘"
+		}
+		line := fmt.Sprintf("%s T%d %s — %s", mark, result.TaskIndex, result.Title, codingExecStatusLabel(result.Status))
+		if result.Error != "" {
+			line += " (" + result.Error + ")"
+		}
+		sb.WriteString(line + "\n")
+		if s := strings.TrimSpace(result.Summary); s != "" {
+			sb.WriteString("  " + truncateRunesV2(s, 200) + "\n")
+		}
+	}
+	return sb.String()
+}
+
+// codingExecRemoteTaskProgress localizes remote first-run task progress banners.
+func codingExecRemoteTaskProgress(kind string, ord, total int, title, detail string) string {
+	switch kind {
+	case "start":
+		if strings.TrimSpace(title) != "" {
+			return fmt.Sprintf(codingExecText(
+				"③ Remote task %d/%d: %s",
+				"③ 远程任务 %d/%d：%s",
+				"③ 遠端任務 %d/%d：%s",
+			), ord, total, title)
+		}
+		return fmt.Sprintf(codingExecText(
+			"③ Remote task %d/%d",
+			"③ 远程任务 %d/%d",
+			"③ 遠端任務 %d/%d",
+		), ord, total)
+	case "cancel":
+		return fmt.Sprintf(codingExecText(
+			"⏹ Remote task %d/%d cancelled: %s",
+			"⏹ 远程任务 %d/%d 已取消：%s",
+			"⏹ 遠端任務 %d/%d 已取消：%s",
+		), ord, total, title)
+	case "pass":
+		return fmt.Sprintf(codingExecText(
+			"✓ Remote task %d/%d done: %s",
+			"✓ 远程任务 %d/%d 完成：%s",
+			"✓ 遠端任務 %d/%d 完成：%s",
+		), ord, total, title)
+	case "skip":
+		return fmt.Sprintf(codingExecText(
+			"⊘ Remote task %d/%d skipped: %s",
+			"⊘ 远程任务 %d/%d 已跳过：%s",
+			"⊘ 遠端任務 %d/%d 已跳過：%s",
+		), ord, total, title)
+	case "fail_nil":
+		return fmt.Sprintf(codingExecText(
+			"❌ Remote task %d/%d failed: SubAgent returned nothing",
+			"❌ 远程任务 %d/%d 失败：SubAgent 无返回",
+			"❌ 遠端任務 %d/%d 失敗：SubAgent 無返回",
+		), ord, total)
+	case "fail":
+		return fmt.Sprintf(codingExecText(
+			"❌ Remote task %d/%d failed: %s — %s",
+			"❌ 远程任务 %d/%d 失败：%s — %s",
+			"❌ 遠端任務 %d/%d 失敗：%s — %s",
+		), ord, total, title, detail)
+	default:
+		return title
 	}
 }
 
@@ -1890,6 +2781,11 @@ func workflowEventProjectPath(state *v2.WorkflowState) string {
 // Plan mode "approve" pauses after planning until /plan approve.
 func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPath string, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	ensureLoopCtxUserID(loopCtx, userID)
+	// Register after cancel check, before planning, so guide-launch during plan
+	// LLM uses pendingInjection (not the 30s pre-loop bag). Plan-approve early
+	// return still cleans up via defer; clearNonGuidePendingInjection keeps guides.
+	cleanupPureCodingRuntime := func() {}
+	defer func() { cleanupPureCodingRuntime() }()
 	if err := v2.EnsureProjectDir(projectPath); err != nil {
 		log.Printf("[workflow-v2] pure coding: failed to ensure project dir %s: %v", projectPath, err)
 	}
@@ -1908,6 +2804,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	if loopCtx != nil && loopCtx.IsCancelled() {
 		return &IMAgentResponse{Text: "编码任务已取消", TraceEventCount: 0}
 	}
+	cleanupPureCodingRuntime = h.beginPureCodingRuntime(loopCtx, userID, userText)
 
 	// One-shot approved plan from /plan approve.
 	var tasks []*v2.TaskItem
@@ -2420,6 +3317,9 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if userText == "" {
 		userText = "执行远程编程任务"
 	}
+	// SSH/cancel preflight first; register before planning (see below).
+	cleanupPureCodingRuntime := func() {}
+	defer func() { cleanupPureCodingRuntime() }()
 	// SSHSessionManager only retains live sessions in memory. A sticky remote
 	// workbench, however, is persisted and can therefore outlive that manager
 	// (for example after a timeout removes the session or after app restart).
@@ -2444,6 +3344,17 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if loopCtx != nil && loopCtx.IsCancelled() {
 		return &IMAgentResponse{Text: "远程编程任务已取消"}
 	}
+	// After SSH is healthy: register before planning so guide-launch mid-plan
+	// lands in pendingInjection. Plan-approve pause cleans up via defer.
+	if loopCtx == nil {
+		loopCtx = NewLoopContext("template-remote-coding-subagent", h.getMaclawAgentMaxIterations(), h.client)
+		defer func() {
+			loopCtx.Cancel()
+			loopCtx.Done()
+		}()
+		ensureLoopCtxUserID(loopCtx, userID)
+	}
+	cleanupPureCodingRuntime = h.beginPureCodingRuntime(loopCtx, userID, userText)
 	sessionMem := h.getStickyCodingWorkbenchMemory(userID)
 	// Remote may not have local AGENTS.md; still try project dir if mirrored locally.
 	// Hooks also load from the local task project path (.maclaw/hooks.json), not the SSH tree.
@@ -2549,13 +3460,6 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
-	if loopCtx == nil {
-		loopCtx = NewLoopContext("template-remote-coding-subagent", h.getMaclawAgentMaxIterations(), httpClient)
-		defer func() {
-			loopCtx.Cancel()
-			loopCtx.Done()
-		}()
-	}
 	runner := remoteCodingTemplateRunner
 	if runner == nil {
 		runner = defaultRemoteCodingTemplateRunner

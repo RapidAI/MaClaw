@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     agentModeFromTaskTags,
+    isCodingWorkflowSourceTags,
     isPureCodingTaskTags,
     remoteCodingMetaFromTaskTags,
     remoteHostFromTaskTags,
@@ -13,6 +14,12 @@ describe("codingTaskMode", () => {
         expect(agentModeFromTaskTags(["task_management"])).toBeUndefined();
         expect(isPureCodingTaskTags(["coding_dev"])).toBe(true);
         expect(isPureCodingTaskTags([])).toBe(false);
+    });
+
+    it("detects coding workflow source tag", () => {
+        expect(isCodingWorkflowSourceTags(["remote_coding_dev", "source:coding_workflow"])).toBe(true);
+        expect(isCodingWorkflowSourceTags(["coding_dev"])).toBe(false);
+        expect(isCodingWorkflowSourceTags([])).toBe(false);
     });
 
     it("extracts remote host from tags", () => {
