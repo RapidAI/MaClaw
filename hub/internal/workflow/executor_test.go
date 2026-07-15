@@ -1124,6 +1124,85 @@ func TestOnEscalationFailed_FinalBlockRecordsExhaustedPeer(t *testing.T) {
 	}
 }
 
+func TestProcessApprovalResponse_RejectsExhaustedApproverVote(t *testing.T) {
+	// any-1-of-2: exhausted peer must not count as a valid approve.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 1,
+	})
+	var cfg ApprovalNodeConfig
+	_ = json.Unmarshal(cfgJSON, &cfg)
+	inst := &WorkflowInstance{
+		ID: "inst-vote-exh", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_exhausted_approvers": []string{"human-a"},
+		},
+	}
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, &mockInstanceStoreForTimeout{instance: inst},
+		&mockAuditStore{}, &mockDispatcherForTimeout{})
+	_, _, _, err := exec.processApprovalResponse(context.Background(), inst, "approval-1", &cfg, ApprovalResponse{
+		ApproverID: "human-a", Decision: approvalDecisionApprove,
+	})
+	if err == nil {
+		t.Fatal("expected error for exhausted approver vote")
+	}
+	// Live peer still allowed.
+	adv, rej, _, err := exec.processApprovalResponse(context.Background(), inst, "approval-1", &cfg, ApprovalResponse{
+		ApproverID: "human-b", Decision: approvalDecisionApprove,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !adv || rej {
+		t.Fatalf("human-b approve should advance: adv=%v rej=%v", adv, rej)
+	}
+}
+
+func TestResumeInstance_AdvanceCancelsEscalationQueue(t *testing.T) {
+	// any-1-of-2: human-b offline/queued; human-a approves → node advances and
+	// must cancel human-b retries (no zombie re-dispatch).
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 1,
+	})
+	// Terminal after approval so ResumeInstance completes without extra nodes.
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{
+			{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON},
+		},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	inst := &WorkflowInstance{
+		ID: "inst-adv-cancel", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-b"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	_ = esc.Escalate(context.Background(), &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "approval-1"}, "human-b")
+	if esc.PendingCount() != 1 {
+		t.Fatalf("setup PendingCount=%d", esc.PendingCount())
+	}
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{version: ver}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithEscalationManager(esc),
+	)
+	if err := exec.ResumeInstance(context.Background(), inst.ID, "approval-1", ApprovalResponse{
+		ApproverID: "human-a", Decision: approvalDecisionApprove,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("PendingCount=%d want 0 after any-N advance", esc.PendingCount())
+	}
+	if pending, _ := inst.InstanceData["escalation_pending"].(bool); pending {
+		t.Fatalf("escalation_pending should clear on advance: %#v", inst.InstanceData)
+	}
+}
+
 func TestPersistEscalationMarkers_CASPreservesConcurrentApprovalState(t *testing.T) {
 	// First CAS conflicts: concurrent writer committed an approval vote.
 	// Retry must re-apply escalation markers without dropping that vote.

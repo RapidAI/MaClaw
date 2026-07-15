@@ -380,6 +380,33 @@ func TestEscalation_RestorePending_NoAuditAndDue(t *testing.T) {
 	}
 }
 
+func TestEscalation_RetryUsesMaxRetriesHelperWhenFieldZero(t *testing.T) {
+	// maxRetries field left at 0 must fall back to EscalationMaxRetries, not
+	// fail on the first retry (attempt >= 0).
+	checker := &mockHumanChecker{available: false}
+	audit := &mockAuditStoreForEsc{}
+	mgr := NewEscalationManager(&mockDispatcherForEsc{}, audit, checker)
+	mgr.maxRetries = 0
+	mgr.retryInterval = 0
+	req := &ApprovalRequest{ID: "r0", InstanceID: "inst-z", NodeID: "n1"}
+	_ = mgr.Escalate(context.Background(), req, "human-a")
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1", mgr.PendingCount())
+	}
+	// One retry pass: attempt 1→2, still below default max (5).
+	mgr.processPendingEscalations()
+	if mgr.PendingCount() != 1 {
+		t.Fatalf("PendingCount=%d want 1 after first retry with zero maxRetries field", mgr.PendingCount())
+	}
+	got := mgr.findPending("inst-z", "n1", "human-a")
+	if got == nil || got.Attempts != 2 {
+		t.Fatalf("Attempts=%v want 2", got)
+	}
+	if mgr.MaxRetries() != EscalationMaxRetries {
+		t.Fatalf("MaxRetries()=%d want %d", mgr.MaxRetries(), EscalationMaxRetries)
+	}
+}
+
 func TestEscalation_OpportunisticRedeliverWhenPeerComesOnline(t *testing.T) {
 	checker := &mockHumanChecker{available: false}
 	dispatcher := &mockDispatcherForEsc{}

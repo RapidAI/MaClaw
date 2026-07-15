@@ -637,7 +637,7 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 	})
 
 	// Check if max retries exhausted.
-	if attempt >= m.maxRetries {
+	if attempt >= m.MaxRetries() {
 		m.markEscalationFailed(ctx, escReq)
 		return
 	}

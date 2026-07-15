@@ -354,6 +354,22 @@ func (e *WorkflowExecutor) ResumeInstance(ctx context.Context, instanceID string
 		return nil
 	}
 
+	// Node settled (e.g. any-N reached while some peers still offline). Drop live
+	// delivery retries so EscalationManager cannot re-dispatch after the decision
+	// window closed, and clear durable markers for this approval hop.
+	e.cancelEscalations(inst.ID, nodeID)
+	if inst.InstanceData != nil {
+		pending, _ := inst.InstanceData["escalation_pending"].(bool)
+		if pending ||
+			len(stringSliceFromInstanceData(inst.InstanceData["escalation_approvers"])) > 0 ||
+			len(stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])) > 0 {
+			e.patchInstanceData(ctx, inst, nodeID, "update_instance_data_approval_advanced_clear_escalation", func(data map[string]interface{}) {
+				clearEscalationMarkersInData(data)
+				clearExhaustedApproversInData(data)
+			})
+		}
+	}
+
 	// Record node completion
 	_ = e.auditStore.Append(ctx, &AuditEntry{
 		ID:         generateID("audit"),
@@ -492,6 +508,11 @@ func (e *WorkflowExecutor) processApprovalResponse(ctx context.Context, inst *Wo
 	}
 	if !isConfiguredApprover(cfg, response.ApproverID) {
 		return false, false, nil, fmt.Errorf("approver %q is not assigned to approval node %s", response.ApproverID, nodeID)
+	}
+	// Peers who exhausted delivery retries never received the request; reject
+	// late/forged votes so they cannot inflate any-N counts or countersign tallies.
+	if _, dead := exhaustedApproverSet(inst.InstanceData)[strings.TrimSpace(response.ApproverID)]; dead {
+		return false, false, nil, fmt.Errorf("approver %q is permanently offline (escalation exhausted) for node %s", response.ApproverID, nodeID)
 	}
 
 	switch cfg.Mode {
