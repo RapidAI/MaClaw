@@ -1160,6 +1160,10 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 			continue
 		}
 		attemptsMap := escalationAttemptsFromInstanceData(inst.InstanceData)
+		// Peers already marked permanently offline must not be re-queued or
+		// re-failed (stale escalation_approvers can still list them after a
+		// crash between queue removal and marker rewrite).
+		exhausted := exhaustedApproverSet(inst.InstanceData)
 		// Build one shared payload per instance+node for restored peers.
 		node := &WorkflowNode{ID: nodeID, Label: nodeID}
 		req := e.buildApprovalRequestFromInstance(inst, node)
@@ -1171,6 +1175,9 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 				continue
 			}
 			seen[key] = struct{}{}
+			if _, dead := exhausted[approver]; dead {
+				continue
+			}
 			att := attemptsMap[approver]
 			if att < 1 {
 				att = 1
@@ -1184,10 +1191,11 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 					HumanApprover: approver,
 					Attempts:      att,
 				})
-				// Status may have flipped to blocked; refresh cache.
+				// Status may have flipped to blocked; refresh cache + exhausted set.
 				if fresh, gerr := e.instanceStore.Get(ctx, instanceID); gerr == nil && fresh != nil {
 					instCache[instanceID] = fresh
 					inst = fresh
+					exhausted = exhaustedApproverSet(inst.InstanceData)
 				}
 				continue
 			}
@@ -1652,7 +1660,10 @@ func (e *WorkflowExecutor) onEscalationFailed(ctx context.Context, esc *Escalati
 		return
 	}
 
-	// Required peer(s) cannot complete the node — block.
+	// Required peer(s) cannot complete the node — block. Record the dead peer
+	// first so blocked instances retain an ops-visible exhausted list (markNodeBlocked
+	// clears live pending markers but keeps escalation_exhausted_approvers).
+	e.recordExhaustedPeerAndSyncMarkers(ctx, inst, esc.NodeID, failedPeer, "update_instance_data_escalation_failed_block")
 	details := fmt.Sprintf("escalation max retries exhausted for approver %s (attempts=%d)", esc.HumanApprover, esc.Attempts)
 	_ = e.markNodeBlocked(ctx, inst, node, "escalation_failed", details)
 }
@@ -1904,8 +1915,10 @@ func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowIn
 		e.instanceStore.UpdateStatus(ctx, inst.ID, InstanceBlocked))
 	inst.Status = InstanceBlocked
 
-	// Persist blocked reason + clear escalation markers via CAS merge so we do not
-	// clobber concurrent approval_state votes that may have landed mid-failure.
+	// Persist blocked reason + clear live escalation markers via CAS merge so we
+	// do not clobber concurrent approval_state votes that may have landed mid-failure.
+	// Keep escalation_exhausted_approvers for ops/UI forensics on blocked instances
+	// (directory, App projection, desktop payload). Completed path clears them.
 	blockedAt := time.Now().UTC().Format(time.RFC3339)
 	e.patchInstanceData(ctx, inst, node.ID, "update_instance_data_blocked", func(data map[string]interface{}) {
 		data["blocked_reason"] = reason
@@ -1913,7 +1926,6 @@ func (e *WorkflowExecutor) markNodeBlocked(ctx context.Context, inst *WorkflowIn
 		data["blocked_node_id"] = node.ID
 		data["blocked_at"] = blockedAt
 		clearEscalationMarkersInData(data)
-		clearExhaustedApproversInData(data)
 	})
 
 	// Record blocked event in audit trail.

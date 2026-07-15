@@ -583,6 +583,10 @@ func TestOnEscalationFailed_PeerFailWhileOthersPending_BlocksWhenNUnreachable(t 
 	if esc.PendingCount() != 0 {
 		t.Fatalf("PendingCount=%d want 0 (remaining retries cancelled)", esc.PendingCount())
 	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "human-a" {
+		t.Fatalf("exhausted retained on block=%v want [human-a]", exh)
+	}
 }
 
 func TestEnqueueEscalationOrBlock_SkipsAlreadyExhaustedPeer(t *testing.T) {
@@ -770,6 +774,10 @@ func TestOnEscalationFailed_AnyNofM_BlocksWhenNUnreachable(t *testing.T) {
 	})
 	if instStore.updatedStatus != InstanceBlocked {
 		t.Fatalf("status=%s want blocked when N unreachable", instStore.updatedStatus)
+	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "human-a" {
+		t.Fatalf("exhausted retained on block=%v want [human-a]", exh)
 	}
 }
 
@@ -1022,6 +1030,97 @@ func TestReconcileEscalations_SkipsNonRunningAndNoMarkers(t *testing.T) {
 	)
 	if n := exec.ReconcileEscalations(context.Background()); n != 0 {
 		t.Fatalf("restored=%d want 0 for completed instance", n)
+	}
+}
+
+func TestReconcileEscalations_SkipsAlreadyExhaustedPeers(t *testing.T) {
+	// Stale escalation_approvers still lists a permanently offline peer after
+	// crash mid-marker-rewrite. Reconcile must restore only live peers.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a", "human-b"},
+		Mode:         ModeAnyNofM,
+		MinApprovals: 1,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "AnyN", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	inst := &WorkflowInstance{
+		ID: "inst-recon-exh", Status: InstanceRunning, VersionID: "ver-1",
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a", "human-b"},
+			"escalation_exhausted_approvers": []string{"human-a"},
+			"escalation_attempts": map[string]interface{}{
+				"human-a": float64(5),
+				"human-b": float64(2),
+			},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{
+		instance: inst,
+		nodeExecs: []NodeExecution{
+			{ID: "ne1", InstanceID: inst.ID, NodeID: "approval-1", NodeType: NodeApproval, Status: NodeRunning},
+		},
+	}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	esc.retryInterval = time.Minute
+	esc.maxRetries = 5
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{version: ver}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	n := exec.ReconcileEscalations(context.Background())
+	if n != 1 {
+		t.Fatalf("restored=%d want 1 (only human-b)", n)
+	}
+	if esc.HasPendingApprover(inst.ID, "approval-1", "human-a") {
+		t.Fatal("exhausted human-a must not be restored")
+	}
+	if !esc.HasPendingApprover(inst.ID, "approval-1", "human-b") {
+		t.Fatal("human-b should be restored")
+	}
+	if instStore.updatedStatus == InstanceBlocked {
+		t.Fatal("must not re-fail/block already-exhausted peer during reconcile")
+	}
+}
+
+func TestOnEscalationFailed_FinalBlockRecordsExhaustedPeer(t *testing.T) {
+	// Single-mode last peer dies with empty queue — block and retain exhausted list.
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a"},
+		Mode:         ModeSingle,
+		TimeoutHours: 8,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	inst := &WorkflowInstance{
+		ID: "inst-final-exh", VersionID: "ver-1", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a"},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{version: ver}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	exec.onEscalationFailed(context.Background(), &EscalationRequest{
+		InstanceID: inst.ID, NodeID: "approval-1", HumanApprover: "human-a", Attempts: 5,
+	})
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked", instStore.updatedStatus)
+	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "human-a" {
+		t.Fatalf("exhausted on final block=%v want [human-a]", exh)
+	}
+	if _, ok := inst.InstanceData["escalation_pending"]; ok {
+		t.Fatalf("live markers should clear: %#v", inst.InstanceData)
 	}
 }
 

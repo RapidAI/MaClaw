@@ -244,8 +244,9 @@ func TestChecklist_AnyNofM_ExhaustedPeerKeepsRunningWithMarkers(t *testing.T) {
 	}
 }
 
-// Checklist #5-related contract — markNodeBlocked clears escalation markers so
-// reconcile does not see stale escalation_pending after terminal block.
+// Checklist #5-related contract — markNodeBlocked clears live escalation markers
+// so reconcile does not see stale escalation_pending after terminal block, but
+// retains exhausted peers for ops/UI forensics.
 func TestChecklist_MarkBlocked_ClearsEscalationMarkers(t *testing.T) {
 	graph := buildTimeoutTestGraph("")
 	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
@@ -253,10 +254,11 @@ func TestChecklist_MarkBlocked_ClearsEscalationMarkers(t *testing.T) {
 	inst := &WorkflowInstance{
 		ID: "inst-chk-5", VersionID: "ver-1", Status: InstanceRunning,
 		InstanceData: map[string]interface{}{
-			"escalation_pending":   true,
-			"escalation_approver":  "ve-x",
-			"escalation_approvers": []string{"ve-x", "ve-y"},
-			"escalation_reason":    "partial_dispatch",
+			"escalation_pending":             true,
+			"escalation_approver":            "ve-x",
+			"escalation_approvers":           []string{"ve-x", "ve-y"},
+			"escalation_reason":              "partial_dispatch",
+			"escalation_exhausted_approvers": []string{"ve-dead"},
 		},
 	}
 	instStore := &mockInstanceStoreForTimeout{instance: inst}
@@ -271,6 +273,10 @@ func TestChecklist_MarkBlocked_ClearsEscalationMarkers(t *testing.T) {
 	}
 	if _, ok := inst.InstanceData["escalation_approvers"]; ok {
 		t.Fatalf("escalation_approvers should be cleared: %#v", inst.InstanceData)
+	}
+	exh := stringSliceFromInstanceData(inst.InstanceData["escalation_exhausted_approvers"])
+	if len(exh) != 1 || exh[0] != "ve-dead" {
+		t.Fatalf("exhausted should be retained on block: %#v", inst.InstanceData)
 	}
 	if inst.InstanceData["blocked_reason"] != "timeout" {
 		t.Fatalf("blocked_reason=%v", inst.InstanceData["blocked_reason"])
