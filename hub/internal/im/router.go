@@ -639,8 +639,13 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 		}, nil
 	}
 
-	// 5. Wait for Agent response with resettable timeout.
-	timer := time.NewTimer(pending.Timeout)
+	// 5. Wait for Agent response with resettable timeout. Read the timeout while
+	// holding the pending-request lock so test/runtime configuration changes do
+	// not race with timer creation.
+	r.mu.Lock()
+	timeout := pending.Timeout
+	r.mu.Unlock()
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	var progressTexts []string
@@ -688,7 +693,10 @@ func (r *MessageRouter) routeToSingleMachine(ctx context.Context, userID, platfo
 				default:
 				}
 			}
-			timer.Reset(pending.Timeout)
+			r.mu.Lock()
+			timeout := pending.Timeout
+			r.mu.Unlock()
+			timer.Reset(timeout)
 
 			// Silent heartbeat — only resets the timer, never delivered to user.
 			if progressText == progressHeartbeat {

@@ -117,6 +117,12 @@ func TestLansengerGroupRequiresStructuredBotMention(t *testing.T) {
 	if lansengerGroupMessageMentionsBot(base, "org-bot-1") {
 		t.Fatal("mentioning another bot must not trigger")
 	}
+	base.MentionedBots = nil
+	base.IsAtMe = true
+	if !lansengerGroupMessageMentionsBot(base, "unrelated-app-id") {
+		t.Fatal("Lansenger's explicit isAtMe signal must trigger regardless of ID format")
+	}
+	base.IsAtMe = false
 	base.MentionedBots = []lansenger.MentionedBot{{ID: "1"}}
 	if lansengerGroupMessageMentionsBot(base, "org-bot-1") {
 		t.Fatal("a trailing App ID fragment must not be accepted as a bot ID")

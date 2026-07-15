@@ -86,6 +86,8 @@ type IncomingMessage struct {
 	ReferenceText   string           // quoted/referenced message rendered as plain text
 	MentionedStaffs []MentionedStaff // staff @mentioned in this message
 	MentionedBots   []MentionedBot   // bots @mentioned in this message
+	IsAtMe          bool             // true when Lansenger marks this bot as explicitly @mentioned
+	IsAtAll         bool             // true when the message @mentions all members
 }
 
 // MentionedStaff and MentionedBot preserve the mention metadata sent by the
@@ -674,8 +676,10 @@ type wsEventData struct {
 }
 
 type wsReminder struct {
-	Staffs []MentionedStaff `json:"staffs"`
-	Bots   []MentionedBot   `json:"bots"`
+	Staffs  []MentionedStaff `json:"staffs"`
+	Bots    []MentionedBot   `json:"bots"`
+	IsAtMe  bool             `json:"isAtMe"`
+	IsAtAll bool             `json:"isAtAll"`
 }
 
 type wsReferenceMsg struct {
@@ -778,6 +782,8 @@ func (g *Gateway) processEvent(evt wsEvent) {
 		GroupName:       firstNonEmpty(actual.GroupName, actual.ConversationTitle),
 		MentionedStaffs: actual.Reminder.Staffs,
 		MentionedBots:   actual.Reminder.Bots,
+		IsAtMe:          actual.Reminder.IsAtMe,
+		IsAtAll:         actual.Reminder.IsAtAll,
 	}
 	msg.ReferenceText = extractReferenceText(actual.ReferenceMsg)
 	mediaCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -861,6 +867,12 @@ func inheritEventMetadata(dst, src *wsEventData) {
 	}
 	if len(dst.Reminder.Bots) == 0 {
 		dst.Reminder.Bots = src.Reminder.Bots
+	}
+	if !dst.Reminder.IsAtMe {
+		dst.Reminder.IsAtMe = src.Reminder.IsAtMe
+	}
+	if !dst.Reminder.IsAtAll {
+		dst.Reminder.IsAtAll = src.Reminder.IsAtAll
 	}
 	if dst.ReferenceMsg == nil {
 		dst.ReferenceMsg = src.ReferenceMsg

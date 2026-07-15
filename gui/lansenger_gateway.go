@@ -376,6 +376,12 @@ func isLansengerGroupMessage(msg lansenger.IncomingMessage) bool {
 // Do not infer mentions from free text: that would let ordinary conversation
 // accidentally invoke the bot.
 func lansengerGroupMessageMentionsBot(msg lansenger.IncomingMessage, appID string) bool {
+	// Lansenger emits isAtMe specifically for the current bot. It is the
+	// authoritative signal and avoids coupling the gateway to how App IDs and
+	// bot IDs are formatted in a particular deployment.
+	if msg.IsAtMe {
+		return true
+	}
 	appID = strings.TrimSpace(appID)
 	if appID == "" {
 		return false

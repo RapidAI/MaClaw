@@ -48,7 +48,9 @@ func TestRouteToAgent_ProgressResetsTimeout(t *testing.T) {
 	}
 
 	// Override timeout to 200ms for testing.
+	router.mu.Lock()
 	pending.Timeout = 200 * time.Millisecond
+	router.mu.Unlock()
 
 	// Send a progress update after 100ms (before timeout).
 	time.Sleep(100 * time.Millisecond)
@@ -177,7 +179,9 @@ func TestRouteToAgent_TimeoutWithProgressInfo(t *testing.T) {
 	}
 
 	// Set very short timeout.
+	router.mu.Lock()
 	pending.Timeout = 150 * time.Millisecond
+	router.mu.Unlock()
 
 	// Send progress.
 	time.Sleep(50 * time.Millisecond)
@@ -297,7 +301,9 @@ func TestRouteToAgent_ProgressDedup(t *testing.T) {
 		t.Fatal("expected a pending request")
 	}
 
+	router.mu.Lock()
 	pending.Timeout = 5 * time.Second
+	router.mu.Unlock()
 
 	// All messages arrive within the 10s throttle window.
 	// Intermediate status messages are suppressed entirely — they only

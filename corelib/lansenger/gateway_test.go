@@ -102,6 +102,24 @@ func TestNestedEventInheritsOuterGroupMetadata(t *testing.T) {
 	}
 }
 
+func TestGroupEventPreservesExplicitBotMentionFlag(t *testing.T) {
+	var got IncomingMessage
+	gw := NewGateway(Config{}, func(msg IncomingMessage) { got = msg })
+	gw.handleWSMessage([]byte(`{"events":[{"type":"bot_group_message","data":{"conversationId":"group-1","from":"user-1","reminder":{"isAtMe":true,"isAtAll":false,"bots":[{"botId":"runtime-bot","botName":"Bot"}]},"msgType":"text","msgData":{"text":{"content":"@Bot hello"}}}}]}`))
+	if !got.IsAtMe || got.IsAtAll || len(got.MentionedBots) != 1 {
+		t.Fatalf("mention metadata = %#v", got)
+	}
+}
+
+func TestNestedGroupEventInheritsExplicitBotMentionFlag(t *testing.T) {
+	var got IncomingMessage
+	gw := NewGateway(Config{}, func(msg IncomingMessage) { got = msg })
+	gw.handleWSMessage([]byte(`{"events":[{"type":"bot_group_message","data":{"conversationId":"group-1","reminder":{"isAtMe":true},"data":{"from":"user-1","msgType":"text","msgData":{"text":{"content":"@Bot hello"}}}}}]}`))
+	if !got.IsAtMe {
+		t.Fatalf("nested mention metadata = %#v", got)
+	}
+}
+
 func TestHandlerPanicDoesNotStopSubsequentMessages(t *testing.T) {
 	var calls atomic.Int32
 	gw := NewGateway(Config{}, func(IncomingMessage) {
