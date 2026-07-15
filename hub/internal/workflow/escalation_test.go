@@ -350,10 +350,10 @@ func TestEscalation_RestorePending_NoAuditAndDue(t *testing.T) {
 	mgr := NewEscalationManager(&mockDispatcherForEsc{}, audit, &mockHumanChecker{available: false})
 	mgr.retryInterval = time.Minute
 	req := &ApprovalRequest{ID: "r1", InstanceID: "inst-r", NodeID: "n1"}
-	if !mgr.RestorePending(req, "human-a", "n1") {
+	if !mgr.RestorePending(req, "human-a", "n1", 3) {
 		t.Fatal("expected RestorePending to add entry")
 	}
-	if mgr.RestorePending(req, "human-a", "n1") {
+	if mgr.RestorePending(req, "human-a", "n1", 3) {
 		t.Fatal("duplicate RestorePending should return false")
 	}
 	if mgr.PendingCount() != 1 {
@@ -367,8 +367,16 @@ func TestEscalation_RestorePending_NoAuditAndDue(t *testing.T) {
 	if got == nil {
 		t.Fatal("missing restored entry")
 	}
+	if got.Attempts != 3 {
+		t.Fatalf("Attempts=%d want 3 (restored budget)", got.Attempts)
+	}
 	if time.Since(got.LastAttemptAt) < time.Second {
 		t.Fatalf("LastAttemptAt should be in the past for due retry, got %v", got.LastAttemptAt)
+	}
+	// Already at max — reject restore so caller can treat as exhausted.
+	mgr.maxRetries = 5
+	if mgr.RestorePending(req, "human-b", "n1", 5) {
+		t.Fatal("RestorePending at maxRetries should return false")
 	}
 }
 

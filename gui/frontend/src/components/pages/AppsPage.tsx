@@ -653,6 +653,8 @@ type ApprovalInstanceView = {
     /** Hub EscalationManager peers still awaiting redelivery. */
     escalationApprovers?: string[];
     escalationPending?: boolean;
+    /** Peers that permanently failed redelivery (any-N may still complete). */
+    escalationExhaustedApprovers?: string[];
 };
 
 type BackendApprovalInstance = {
@@ -761,6 +763,7 @@ type BackendApprovalInstance = {
     escalationApprovers?: string[];
     escalation_approver?: string;
     escalationApprover?: string;
+    escalation_exhausted_approvers?: string[];     escalationExhaustedApprovers?: string[];
 };
 
 type ApprovalRunContext = {
@@ -8523,6 +8526,14 @@ function backendApprovalInstanceToView(instance: BackendApprovalInstance, lang?:
             || instance.escalation_pending
             || instance.escalationPending
         ),
+        escalationExhaustedApprovers: (() => {
+            const raw = (resultPayload && (resultPayload.escalation_exhausted_approvers || resultPayload.escalationExhaustedApprovers))
+                || instance.escalation_exhausted_approvers
+                || instance.escalationExhaustedApprovers;
+            if (!Array.isArray(raw)) return undefined;
+            const list = raw.map((v) => String(v || '').trim()).filter(Boolean);
+            return list.length ? list : undefined;
+        })(),
     };
 }
 function approvalLaneFromEvidence(evidence: AppRunApprovalInstanceEvidence): ApprovalLaneFilter {
@@ -11047,7 +11058,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
                                     <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length) ? 'pending' : ''} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
-                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} ·  {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? (isZh(lang) ? ' · Hub' : ' · Hub') : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` · hub:${item.hubInstanceID}` : ''} ·  {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '超时' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '紧急' : 'Critical') : (isZh(lang) ? '关注' : 'Attention')}</span> : null}{(item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length > 0)) ? <span className="apps-approval-row__escalation" title={(item.escalationApprovers || []).join(', ')}>{isZh(lang) ? '升级重投' : 'Escalation retry'}{(item.escalationApprovers && item.escalationApprovers.length) ? `: ${item.escalationApprovers.slice(0, 3).join(', ')}${item.escalationApprovers.length > 3 ? ` +${item.escalationApprovers.length - 3}` : ''}` : ''}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} ·  {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? (isZh(lang) ? ' · Hub' : ' · Hub') : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` · hub:${item.hubInstanceID}` : ''} ·  {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '超时' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '紧急' : 'Critical') : (isZh(lang) ? '关注' : 'Attention')}</span> : null}{(item.escalationPending || (item.escalationApprovers && item.escalationApprovers.length > 0)) ? <span className="apps-approval-row__escalation" title={(item.escalationApprovers || []).join(', ')}>{isZh(lang) ? '升级重投' : 'Escalation retry'}{(item.escalationApprovers && item.escalationApprovers.length) ? `: ${item.escalationApprovers.slice(0, 3).join(', ')}${item.escalationApprovers.length > 3 ? ` +${item.escalationApprovers.length - 3}` : ''}` : ''}</span> : null}{(item.escalationExhaustedApprovers && item.escalationExhaustedApprovers.length > 0) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={(item.escalationExhaustedApprovers || []).join(', ')}>{isZh(lang) ? '离线耗尽' : 'Escalation exhausted'}: {item.escalationExhaustedApprovers.slice(0, 3).join(', ')}{item.escalationExhaustedApprovers.length > 3 ? ` +${item.escalationExhaustedApprovers.length - 3}` : ''}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>
                                 ))}

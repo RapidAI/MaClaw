@@ -564,6 +564,10 @@ func maclawAppApprovalInstanceFromHubDirectoryItem(item map[string]any, requeste
 			escApprovers = []string{one}
 		}
 	}
+	escExhausted := maclawAppStringSliceFromAny(item["escalation_exhausted_approvers"])
+	if len(escExhausted) == 0 {
+		escExhausted = maclawAppStringSliceFromAny(item["escalationExhaustedApprovers"])
+	}
 	if escPending || len(escApprovers) > 0 {
 		payload["escalation_pending"] = true
 		if len(escApprovers) > 0 {
@@ -575,6 +579,17 @@ func maclawAppApprovalInstanceFromHubDirectoryItem(item map[string]any, requeste
 			lane = "attention"
 			if result == "" || result == hubStatus || result == urgency {
 				result = "escalation pending"
+			}
+		}
+	}
+	if len(escExhausted) > 0 {
+		payload["escalation_exhausted_approvers"] = escExhausted
+		if status == "pending" && !escPending && len(escApprovers) == 0 {
+			// Partial permanent failure (any-N still running) — mild attention.
+			status = "attention"
+			lane = "attention"
+			if result == "" || result == hubStatus || result == urgency {
+				result = "escalation partial failure"
 			}
 		}
 	}
@@ -938,6 +953,7 @@ func (a *App) applyHubWorkflowStatusAttention(hubInstanceID, hubNodeID, workflow
 		}
 	}
 	var escApprovers []string
+	var escExhausted []string
 	escPending := false
 	if extras != nil {
 		escApprovers = maclawAppStringSliceFromAny(extras["escalation_approvers"])
@@ -945,6 +961,10 @@ func (a *App) applyHubWorkflowStatusAttention(hubInstanceID, hubNodeID, workflow
 			if one := strings.TrimSpace(fmt.Sprint(extras["escalation_approver"])); one != "" && one != "<nil>" {
 				escApprovers = []string{one}
 			}
+		}
+		escExhausted = maclawAppStringSliceFromAny(extras["escalation_exhausted_approvers"])
+		if len(escExhausted) == 0 {
+			escExhausted = maclawAppStringSliceFromAny(extras["escalationExhaustedApprovers"])
 		}
 		if v, ok := extras["escalation_pending"].(bool); ok {
 			escPending = v
@@ -972,6 +992,9 @@ func (a *App) applyHubWorkflowStatusAttention(hubInstanceID, hubNodeID, workflow
 		}
 		if len(escApprovers) > 0 {
 			payload["escalation_approvers"] = escApprovers
+		}
+		if len(escExhausted) > 0 {
+			payload["escalation_exhausted_approvers"] = escExhausted
 		}
 		return payload
 	}
@@ -1037,6 +1060,8 @@ func mergeMaclawAppApprovalEscalationPayload(dst, hub map[string]any) {
 		delete(dst, "escalation_pending")
 		delete(dst, "escalation_approvers")
 		delete(dst, "escalation_approver")
+		delete(dst, "escalation_exhausted_approvers")
+		delete(dst, "escalation_attempts")
 		return
 	}
 	approvers := maclawAppStringSliceFromAny(hub["escalation_approvers"])
@@ -1045,17 +1070,41 @@ func mergeMaclawAppApprovalEscalationPayload(dst, hub map[string]any) {
 			approvers = []string{one}
 		}
 	}
+	exhausted := maclawAppStringSliceFromAny(hub["escalation_exhausted_approvers"])
+	if len(exhausted) == 0 {
+		exhausted = maclawAppStringSliceFromAny(hub["escalationExhaustedApprovers"])
+	}
 	pending, _ := hub["escalation_pending"].(bool)
-	if !pending && len(approvers) == 0 {
+	if !pending && len(approvers) == 0 && len(exhausted) == 0 {
 		delete(dst, "escalation_pending")
 		delete(dst, "escalation_approvers")
 		delete(dst, "escalation_approver")
+		delete(dst, "escalation_exhausted_approvers")
+		delete(dst, "escalation_attempts")
 		return
 	}
-	dst["escalation_pending"] = true
+	if pending || len(approvers) > 0 {
+		dst["escalation_pending"] = true
+	} else {
+		delete(dst, "escalation_pending")
+	}
 	if len(approvers) > 0 {
 		dst["escalation_approvers"] = approvers
 		dst["escalation_approver"] = approvers[len(approvers)-1]
+	} else {
+		delete(dst, "escalation_approvers")
+		delete(dst, "escalation_approver")
+	}
+	if len(exhausted) > 0 {
+		dst["escalation_exhausted_approvers"] = exhausted
+	} else {
+		delete(dst, "escalation_exhausted_approvers")
+	}
+	// Optional attempt map for ops debugging / restart continuity display.
+	if att, ok := hub["escalation_attempts"]; ok && att != nil {
+		dst["escalation_attempts"] = att
+	} else {
+		delete(dst, "escalation_attempts")
 	}
 }
 

@@ -64,6 +64,9 @@ type DirectoryItem struct {
 	EscalationPending bool `json:"escalation_pending,omitempty"`
 	// EscalationApprovers lists machine/user IDs awaiting redelivery (multi-failure).
 	EscalationApprovers []string `json:"escalation_approvers,omitempty"`
+	// EscalationExhaustedApprovers lists peers that permanently failed redelivery
+	// (any-N-of-M may still complete without them).
+	EscalationExhaustedApprovers []string `json:"escalation_exhausted_approvers,omitempty"`
 }
 
 // DirectoryResponse is the paginated response for directory queries.
@@ -337,10 +340,11 @@ func extractStringFromInstanceData(data map[string]interface{}, key string) stri
 }
 
 // extractEscalationFieldsFromInstanceData reads EscalationManager markers written by
-// WorkflowExecutor (escalation_pending / escalation_approvers / escalation_approver).
-func extractEscalationFieldsFromInstanceData(data map[string]interface{}) (pending bool, approvers []string) {
+// WorkflowExecutor (escalation_pending / escalation_approvers / escalation_approver /
+// escalation_exhausted_approvers).
+func extractEscalationFieldsFromInstanceData(data map[string]interface{}) (pending bool, approvers, exhausted []string) {
 	if data == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	switch v := data["escalation_pending"].(type) {
 	case bool:
@@ -354,10 +358,11 @@ func extractEscalationFieldsFromInstanceData(data map[string]interface{}) (pendi
 			approvers = []string{s}
 		}
 	}
+	exhausted = stringSliceFromInstanceData(data["escalation_exhausted_approvers"])
 	if len(approvers) > 0 {
 		pending = true
 	}
-	return pending, approvers
+	return pending, approvers, exhausted
 }
 
 // ApplyEscalationFieldsToDirectoryItem copies escalation markers from instance
@@ -366,16 +371,21 @@ func ApplyEscalationFieldsToDirectoryItem(item *DirectoryItem, data map[string]i
 	if item == nil {
 		return
 	}
-	pending, approvers := extractEscalationFieldsFromInstanceData(data)
-	if !pending && len(approvers) == 0 {
+	pending, approvers, exhausted := extractEscalationFieldsFromInstanceData(data)
+	if !pending && len(approvers) == 0 && len(exhausted) == 0 {
 		return
 	}
 	item.EscalationPending = pending || len(approvers) > 0
 	if len(approvers) > 0 {
 		item.EscalationApprovers = approvers
 	}
+	if len(exhausted) > 0 {
+		item.EscalationExhaustedApprovers = exhausted
+	}
 	if item.EscalationPending && strings.TrimSpace(item.Result) == "" {
 		item.Result = "escalation pending"
+	} else if !item.EscalationPending && len(exhausted) > 0 && strings.TrimSpace(item.Result) == "" {
+		item.Result = "escalation partial failure"
 	}
 	// Soft elevate so ops lists surface retry pressure without pretending overdue.
 	if item.EscalationPending && (item.Urgency == "" || item.Urgency == UrgencyNormal) {

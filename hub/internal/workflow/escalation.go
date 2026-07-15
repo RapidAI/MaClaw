@@ -54,6 +54,10 @@ type EscalationFailedHook func(ctx context.Context, esc *EscalationRequest)
 // dispatched so the executor can clear per-approver pending markers.
 type EscalationDeliveredHook func(ctx context.Context, esc *EscalationRequest)
 
+// EscalationProgressHook is invoked after a failed retry attempt while the peer
+// remains pending (attempts < maxRetries). Used to persist attempt counts.
+type EscalationProgressHook func(ctx context.Context, esc *EscalationRequest)
+
 // EscalationManager manages the pending-escalation queue and retry logic.
 type EscalationManager struct {
 	mu             sync.Mutex
@@ -67,6 +71,7 @@ type EscalationManager struct {
 	notifier       WorkflowNotifier // optional: push ve:workflow_status when escalation fails
 	failedHook     EscalationFailedHook
 	deliveredHook  EscalationDeliveredHook
+	progressHook   EscalationProgressHook
 	retryInterval  time.Duration
 	maxRetries     int
 	stopCh         chan struct{}
@@ -114,6 +119,54 @@ func (m *EscalationManager) SetDeliveredHook(h EscalationDeliveredHook) *Escalat
 	}
 	m.deliveredHook = h
 	return m
+}
+
+// SetProgressHook registers a callback after a failed retry that leaves the peer pending.
+func (m *EscalationManager) SetProgressHook(h EscalationProgressHook) *EscalationManager {
+	if m == nil {
+		return nil
+	}
+	m.progressHook = h
+	return m
+}
+
+// MaxRetries returns the configured max attempt budget (defaults to EscalationMaxRetries).
+func (m *EscalationManager) MaxRetries() int {
+	if m == nil || m.maxRetries <= 0 {
+		return EscalationMaxRetries
+	}
+	return m.maxRetries
+}
+
+// PendingAttempts returns human-approver -> Attempts for pending peers on the node.
+func (m *EscalationManager) PendingAttempts(instanceID, nodeID string) map[string]int {
+	if m == nil {
+		return nil
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	nodeID = strings.TrimSpace(nodeID)
+	if instanceID == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]int{}
+	for _, req := range m.queue {
+		if !pendingQueueMatch(req, instanceID, nodeID, "") {
+			continue
+		}
+		a := strings.TrimSpace(req.HumanApprover)
+		if a == "" {
+			continue
+		}
+		if prev, ok := out[a]; !ok || req.Attempts > prev {
+			out[a] = req.Attempts
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // HasPendingForInstance reports whether any pending escalation targets the
@@ -449,9 +502,11 @@ func deliverKey(instanceID, nodeID, approverID string) string {
 
 // RestorePending re-enqueues a peer after Hub restart without an immediate
 // dispatch attempt and without writing a new "unavailable" audit row.
+// attempts restores the durable attempt budget (from instance_data); values
+// already at MaxRetries are rejected (caller should treat as exhausted).
 // LastAttemptAt is set in the past so the next processPending cycle is due.
 // Returns true when a new queue entry was created.
-func (m *EscalationManager) RestorePending(req *ApprovalRequest, humanApprover, nodeID string) bool {
+func (m *EscalationManager) RestorePending(req *ApprovalRequest, humanApprover, nodeID string, attempts int) bool {
 	if m == nil || req == nil {
 		return false
 	}
@@ -462,6 +517,13 @@ func (m *EscalationManager) RestorePending(req *ApprovalRequest, humanApprover, 
 		nodeID = strings.TrimSpace(req.NodeID)
 	}
 	if humanApprover == "" || instanceID == "" || nodeID == "" {
+		return false
+	}
+	if attempts < 1 {
+		attempts = 1
+	}
+	maxR := m.MaxRetries()
+	if attempts >= maxR {
 		return false
 	}
 	if m.hasPending(instanceID, nodeID, humanApprover) {
@@ -482,7 +544,7 @@ func (m *EscalationManager) RestorePending(req *ApprovalRequest, humanApprover, 
 		InstanceID:    instanceID,
 		NodeID:        nodeID,
 		Status:        EscalationPending,
-		Attempts:      1,
+		Attempts:      attempts,
 		LastAttemptAt: lastAttempt,
 		CreatedAt:     now,
 	}
@@ -577,6 +639,11 @@ func (m *EscalationManager) retryEscalation(ctx context.Context, escReq *Escalat
 	// Check if max retries exhausted.
 	if attempt >= m.maxRetries {
 		m.markEscalationFailed(ctx, escReq)
+		return
+	}
+	// Persist attempt progress so Hub restart can continue the budget.
+	if m.progressHook != nil {
+		m.progressHook(ctx, escReq)
 	}
 }
 

@@ -671,6 +671,10 @@ func TestReconcileEscalations_RestoresFromInstanceMarkers(t *testing.T) {
 			"escalation_pending":   true,
 			"escalation_approvers": []string{"human-a", "human-b"},
 			"escalation_reason":    "partial_dispatch",
+			"escalation_attempts": map[string]interface{}{
+				"human-a": float64(3),
+				"human-b": float64(1),
+			},
 		},
 	}
 	instStore := &mockInstanceStoreForTimeout{
@@ -682,6 +686,7 @@ func TestReconcileEscalations_RestoresFromInstanceMarkers(t *testing.T) {
 	// Checker offline so processPending after restore does not deliver+drop.
 	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
 	esc.retryInterval = time.Minute
+	esc.maxRetries = 5
 	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
 		WithEscalationManager(esc),
 	)
@@ -698,9 +703,77 @@ func TestReconcileEscalations_RestoresFromInstanceMarkers(t *testing.T) {
 	if !esc.HasPendingApprover(inst.ID, "approval-1", "human-a") || !esc.HasPendingApprover(inst.ID, "approval-1", "human-b") {
 		t.Fatal("both peers should be pending after reconcile")
 	}
+	// Restored with attempts=3 then processPendingEscalations bumps once → 4.
+	if a := esc.findPending(inst.ID, "approval-1", "human-a"); a == nil || a.Attempts != 4 {
+		t.Fatalf("human-a attempts=%v want 4 (restored 3 + one reconcile retry)", a)
+	}
 	// Idempotent second reconcile.
 	if n2 := exec.ReconcileEscalations(context.Background()); n2 != 0 {
 		t.Fatalf("second reconcile restored=%d want 0", n2)
+	}
+}
+
+func TestReconcileEscalations_PreExhaustedPeerFailsWithoutRestore(t *testing.T) {
+	cfgJSON, _ := json.Marshal(ApprovalNodeConfig{
+		ApproverIDs:  []string{"human-a"},
+		Mode:         ModeSingle,
+		TimeoutHours: 8,
+	})
+	graph := WorkflowGraph{
+		Nodes: []WorkflowNode{{ID: "approval-1", Type: NodeApproval, Label: "A", Config: cfgJSON}},
+	}
+	ver := &WorkflowVersion{ID: "ver-1", Graph: graph}
+	inst := &WorkflowInstance{
+		ID: "inst-pre-exh", Status: InstanceRunning, VersionID: "ver-1",
+		InstanceData: map[string]interface{}{
+			"escalation_pending":   true,
+			"escalation_approvers": []string{"human-a"},
+			"escalation_attempts":  map[string]interface{}{"human-a": float64(5)},
+		},
+	}
+	instStore := &mockInstanceStoreForTimeout{
+		instance: inst,
+		nodeExecs: []NodeExecution{
+			{ID: "ne1", InstanceID: inst.ID, NodeID: "approval-1", NodeType: NodeApproval, Status: NodeRunning},
+		},
+	}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	esc.maxRetries = 5
+	exec := NewWorkflowExecutor(&mockWorkflowStoreWithVersion{version: ver}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithNotifier(&mockNotifier{}),
+		WithEscalationManager(esc),
+	)
+	if n := exec.ReconcileEscalations(context.Background()); n != 0 {
+		t.Fatalf("restored=%d want 0 for pre-exhausted peer", n)
+	}
+	if esc.PendingCount() != 0 {
+		t.Fatalf("queue must stay empty, PendingCount=%d", esc.PendingCount())
+	}
+	if instStore.updatedStatus != InstanceBlocked {
+		t.Fatalf("status=%s want blocked for single-mode pre-exhausted peer", instStore.updatedStatus)
+	}
+}
+
+func TestOnEscalationProgress_PersistsAttempts(t *testing.T) {
+	inst := &WorkflowInstance{
+		ID: "inst-prog", Status: InstanceRunning,
+		InstanceData: map[string]interface{}{},
+	}
+	instStore := &mockInstanceStoreForTimeout{instance: inst}
+	esc := NewEscalationManager(&mockDispatcherForTimeout{}, &mockAuditStore{}, &mockHumanChecker{available: false})
+	esc.retryInterval = 0
+	esc.maxRetries = 5
+	// Wire progress hook via executor option (side effect on esc).
+	_ = NewWorkflowExecutor(&mockWorkflowStoreWithVersion{}, instStore, &mockAuditStore{}, &mockDispatcherForTimeout{},
+		WithEscalationManager(esc),
+	)
+	req := &ApprovalRequest{ID: "r", InstanceID: inst.ID, NodeID: "n1"}
+	_ = esc.Escalate(context.Background(), req, "human-a")
+	// Drive one retry cycle (attempt 1→2, still pending).
+	esc.processPendingEscalations()
+	att := escalationAttemptsFromInstanceData(inst.InstanceData)
+	if att["human-a"] < 2 {
+		t.Fatalf("escalation_attempts=%v want human-a >= 2", att)
 	}
 }
 

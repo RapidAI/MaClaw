@@ -123,6 +123,7 @@ func WithEscalationManager(mgr *EscalationManager) ExecutorOption {
 		if mgr != nil {
 			mgr.SetFailedHook(e.onEscalationFailed)
 			mgr.SetDeliveredHook(e.onEscalationDelivered)
+			mgr.SetProgressHook(e.onEscalationProgress)
 		}
 	}
 }
@@ -1091,6 +1092,8 @@ func (e *WorkflowExecutor) cancelEscalations(instanceID, nodeID string) {
 //
 // Source of truth for "who still needs retry": instance_data.escalation_approvers
 // (and scalar escalation_approver), written by enqueue/deliver/fail paths.
+// Attempt counts come from instance_data.escalation_attempts so restarts continue
+// the same budget instead of resetting to 1.
 // Returns how many peer entries were restored into the live queue.
 func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 	if e == nil || e.escalationMgr == nil || e.instanceStore == nil {
@@ -1108,6 +1111,8 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 	// Dedupe instance|node|approver across multi-exec edge cases.
 	seen := make(map[string]struct{})
 	restored := 0
+	preExhausted := 0
+	maxR := e.escalationMgr.MaxRetries()
 	for _, exec := range pendingExecs {
 		instanceID := strings.TrimSpace(exec.InstanceID)
 		nodeID := strings.TrimSpace(exec.NodeID)
@@ -1132,6 +1137,7 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 		if len(approvers) == 0 {
 			continue
 		}
+		attemptsMap := escalationAttemptsFromInstanceData(inst.InstanceData)
 		// Build one shared payload per instance+node for restored peers.
 		node := &WorkflowNode{ID: nodeID, Label: nodeID}
 		req := e.buildApprovalRequestFromInstance(inst, node)
@@ -1143,7 +1149,27 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 				continue
 			}
 			seen[key] = struct{}{}
-			if e.escalationMgr.RestorePending(req, approver, nodeID) {
+			att := attemptsMap[approver]
+			if att < 1 {
+				att = 1
+			}
+			// Already at budget before restart — apply failure semantics immediately.
+			if att >= maxR {
+				preExhausted++
+				e.onEscalationFailed(ctx, &EscalationRequest{
+					InstanceID:    instanceID,
+					NodeID:        nodeID,
+					HumanApprover: approver,
+					Attempts:      att,
+				})
+				// Status may have flipped to blocked; refresh cache.
+				if fresh, gerr := e.instanceStore.Get(ctx, instanceID); gerr == nil && fresh != nil {
+					instCache[instanceID] = fresh
+					inst = fresh
+				}
+				continue
+			}
+			if e.escalationMgr.RestorePending(req, approver, nodeID, att) {
 				restored++
 			}
 		}
@@ -1152,7 +1178,9 @@ func (e *WorkflowExecutor) ReconcileEscalations(ctx context.Context) int {
 		// Drive one immediate retry pass for due-now restored entries (peer may
 		// already be online after the restart window).
 		e.escalationMgr.processPendingEscalations()
-		log.Printf("[workflow-escalation] reconcile: restored %d pending peer(s) into retry queue", restored)
+	}
+	if restored > 0 || preExhausted > 0 {
+		log.Printf("[workflow-escalation] reconcile: restored=%d pre_exhausted=%d", restored, preExhausted)
 	}
 	return restored
 }
@@ -1212,6 +1240,7 @@ func clearEscalationMarkersInData(data map[string]interface{}) {
 	delete(data, "escalation_reason")
 	delete(data, "escalation_approvers")
 	delete(data, "escalation_approver")
+	delete(data, "escalation_attempts")
 }
 
 func clearExhaustedApproversInData(data map[string]interface{}) {
@@ -1235,6 +1264,80 @@ func writeEscalationMarkersInData(data map[string]interface{}, remaining []strin
 	if strings.TrimSpace(reason) != "" {
 		data["escalation_reason"] = reason
 	}
+}
+
+// writeEscalationAttemptsInData stores per-approver attempt counts for restart continuity.
+func writeEscalationAttemptsInData(data map[string]interface{}, attempts map[string]int) {
+	if data == nil {
+		return
+	}
+	if len(attempts) == 0 {
+		delete(data, "escalation_attempts")
+		return
+	}
+	out := make(map[string]interface{}, len(attempts))
+	for k, v := range attempts {
+		k = strings.TrimSpace(k)
+		if k == "" || v < 1 {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		delete(data, "escalation_attempts")
+		return
+	}
+	data["escalation_attempts"] = out
+}
+
+// escalationAttemptsFromInstanceData reads durable per-peer attempt counts.
+func escalationAttemptsFromInstanceData(data map[string]interface{}) map[string]int {
+	if data == nil {
+		return nil
+	}
+	raw, ok := data["escalation_attempts"]
+	if !ok || raw == nil {
+		return nil
+	}
+	out := map[string]int{}
+	switch m := raw.(type) {
+	case map[string]int:
+		for k, v := range m {
+			k = strings.TrimSpace(k)
+			if k != "" && v > 0 {
+				out[k] = v
+			}
+		}
+	case map[string]interface{}:
+		for k, v := range m {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			switch n := v.(type) {
+			case int:
+				if n > 0 {
+					out[k] = n
+				}
+			case int64:
+				if n > 0 {
+					out[k] = int(n)
+				}
+			case float64:
+				if n >= 1 {
+					out[k] = int(n)
+				}
+			case json.Number:
+				if i, err := n.Int64(); err == nil && i > 0 {
+					out[k] = int(i)
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // patchInstanceData applies mutator to a working copy of InstanceData and persists
@@ -1289,11 +1392,27 @@ func (e *WorkflowExecutor) persistEscalationMarkers(ctx context.Context, inst *W
 	}
 	e.patchInstanceData(ctx, inst, nodeID, op, func(data map[string]interface{}) {
 		var remaining []string
+		var attempts map[string]int
 		if e.escalationMgr != nil {
 			remaining = e.escalationMgr.PendingApprovers(inst.ID, nodeID)
+			attempts = e.escalationMgr.PendingAttempts(inst.ID, nodeID)
 		}
 		writeEscalationMarkersInData(data, remaining, reason)
+		writeEscalationAttemptsInData(data, attempts)
 	})
+}
+
+// onEscalationProgress persists attempt counts after a failed retry while the
+// peer remains queued (Hub restart can continue the same budget).
+func (e *WorkflowExecutor) onEscalationProgress(ctx context.Context, esc *EscalationRequest) {
+	if e == nil || esc == nil || strings.TrimSpace(esc.InstanceID) == "" {
+		return
+	}
+	inst, err := e.instanceStore.Get(ctx, esc.InstanceID)
+	if err != nil || inst == nil || inst.Status != InstanceRunning {
+		return
+	}
+	e.persistEscalationMarkers(ctx, inst, esc.NodeID, "", "update_instance_data_escalation_progress")
 }
 
 // stringSliceFromInstanceData coerces instance-data list fields that may be
