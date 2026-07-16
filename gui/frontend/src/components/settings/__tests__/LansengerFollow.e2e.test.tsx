@@ -1,0 +1,373 @@
+/**
+ * End-to-end style integration tests for:
+ * Settings → IM → 蓝信 → 关注 (Follow / watch people)
+ *
+ * Uses vitest + testing-library (project has no Playwright browser suite).
+ * Exercises real LansengerSettings + UtilitiesWatchPanel with mocked Wails APIs.
+ */
+// @vitest-environment jsdom
+import { useState } from 'react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LansengerSettings } from '../LansengerSettings';
+import { IMSettingsPanel } from '../IMSettingsPanel';
+import type { IMSubTab } from '../IMSubTabs';
+import { UtilitiesPage } from '../../pages/UtilitiesPage';
+
+type WatchJob = {
+    id?: string;
+    name: string;
+    enabled: boolean;
+    group_id: string;
+    group_name?: string;
+    target_staff_ids: string[];
+    target_names?: Record<string, string>;
+    record_all: boolean;
+    keyword_scope?: string;
+    forward_on_target_speech?: boolean;
+    forward_channels?: string[];
+    keywords: Array<{ keywords: string[]; record_on_match: boolean; reply_text?: string }>;
+};
+
+const jobsStore: WatchJob[] = [];
+
+const ListLansengerGroupsMock = vi.fn();
+const ListLansengerWatchJobsMock = vi.fn();
+const UpsertLansengerWatchJobMock = vi.fn();
+const DeleteLansengerWatchJobMock = vi.fn();
+const ListLansengerWatchRosterMock = vi.fn();
+const ListLansengerWatchChannelsMock = vi.fn();
+const GetLansengerWatchStorePathMock = vi.fn();
+const ListLansengerWatchTranscriptsMock = vi.fn();
+const AddLansengerWatchMemberMock = vi.fn();
+const RestartLansengerMock = vi.fn();
+const SetLansengerLocalModeMock = vi.fn();
+const LoadConfigMock = vi.fn();
+const SetLansengerGroupIgnoredMock = vi.fn();
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    LoadConfig: (...args: unknown[]) => LoadConfigMock(...args),
+    RestartLansenger: (...args: unknown[]) => RestartLansengerMock(...args),
+    SetLansengerLocalMode: (...args: unknown[]) => SetLansengerLocalModeMock(...args),
+    ListLansengerGroups: (...args: unknown[]) => ListLansengerGroupsMock(...args),
+    SetLansengerGroupIgnored: (...args: unknown[]) => SetLansengerGroupIgnoredMock(...args),
+    ListLansengerWatchJobs: (...args: unknown[]) => ListLansengerWatchJobsMock(...args),
+    UpsertLansengerWatchJob: (...args: unknown[]) => UpsertLansengerWatchJobMock(...args),
+    DeleteLansengerWatchJob: (...args: unknown[]) => DeleteLansengerWatchJobMock(...args),
+    ListLansengerWatchRoster: (...args: unknown[]) => ListLansengerWatchRosterMock(...args),
+    ListLansengerWatchChannels: (...args: unknown[]) => ListLansengerWatchChannelsMock(...args),
+    GetLansengerWatchStorePath: (...args: unknown[]) => GetLansengerWatchStorePathMock(...args),
+    ListLansengerWatchTranscripts: (...args: unknown[]) => ListLansengerWatchTranscriptsMock(...args),
+    AddLansengerWatchMember: (...args: unknown[]) => AddLansengerWatchMemberMock(...args),
+    ListSurveys: vi.fn(async () => JSON.stringify({ surveys: [] })),
+    RestartQQBot: vi.fn(async () => 'disconnected'),
+    SetQQBotLocalMode: vi.fn(async () => undefined),
+    RestartTelegramBot: vi.fn(async () => 'disconnected'),
+    SetTelegramLocalMode: vi.fn(async () => undefined),
+    StopWeixin: vi.fn(),
+    SetWeixinLocalMode: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: () => () => {},
+    EventsOff: () => {},
+    BrowserOpenURL: vi.fn(),
+}));
+
+vi.mock('../../remote/IMAuditPanel', () => ({
+    IMAuditPanel: ({ platform, onClose }: { platform: string; onClose: () => void }) => (
+        <div data-testid="im-audit-panel" data-platform={platform}>
+            <button type="button" onClick={onClose}>
+                close-audit
+            </button>
+        </div>
+    ),
+}));
+
+function lansengerBaseProps(overrides: Record<string, unknown> = {}) {
+    return {
+        config: {
+            lansenger_enabled: true,
+            lansenger_app_id: 'app-id',
+            lansenger_app_secret: 'secret',
+            lansenger_gateway_url: 'https://apigw.lx.qianxin.com',
+            im_progress_nudge_enabled: true,
+        } as any,
+        setConfig: vi.fn(),
+        lang: 'zh-Hans',
+        saveRemoteConfigField: vi.fn(),
+        lansengerStatus: 'connected',
+        setLansengerStatus: vi.fn(),
+        lansengerLocalMode: true,
+        setLansengerLocalModeState: vi.fn(),
+        setIMAuditPlatform: vi.fn(),
+        ...overrides,
+    };
+}
+
+function seedWatchMocks() {
+    jobsStore.length = 0;
+    ListLansengerGroupsMock.mockResolvedValue({
+        total: 1,
+        groups: [{ group_id: 'g1', name: '产品群', total_members: 3 }],
+    });
+    ListLansengerWatchJobsMock.mockImplementation(async () => JSON.stringify([...jobsStore]));
+    UpsertLansengerWatchJobMock.mockImplementation(async (raw: string) => {
+        const job = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!job.id) job.id = `job-${jobsStore.length + 1}`;
+        const idx = jobsStore.findIndex((j) => j.id === job.id);
+        if (idx >= 0) jobsStore[idx] = job;
+        else jobsStore.push(job);
+        return JSON.stringify(job);
+    });
+    DeleteLansengerWatchJobMock.mockImplementation(async (id: string) => {
+        const idx = jobsStore.findIndex((j) => j.id === id);
+        if (idx >= 0) jobsStore.splice(idx, 1);
+    });
+    ListLansengerWatchRosterMock.mockResolvedValue(
+        JSON.stringify({
+            members: [
+                { staff_id: 'u1', name: '张三' },
+                { staff_id: 'u2', name: '李四' },
+            ],
+        }),
+    );
+    ListLansengerWatchChannelsMock.mockResolvedValue(
+        JSON.stringify([
+            { id: 'lansenger', label: '蓝信', online: true },
+            { id: 'weixin', label: '微信', online: false },
+        ]),
+    );
+    GetLansengerWatchStorePathMock.mockResolvedValue('C:\\data\\watch');
+    ListLansengerWatchTranscriptsMock.mockResolvedValue(JSON.stringify([]));
+    AddLansengerWatchMemberMock.mockResolvedValue(undefined);
+    RestartLansengerMock.mockResolvedValue('connected');
+    SetLansengerLocalModeMock.mockResolvedValue(undefined);
+    LoadConfigMock.mockResolvedValue({ lansenger_enabled: true });
+}
+
+async function openFollowPanel() {
+    render(<LansengerSettings {...lansengerBaseProps()} />);
+    fireEvent.click(screen.getByTestId('lansenger-follow-button'));
+    return screen.findByTestId('watch-page');
+}
+
+describe('Lansenger Follow e2e', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        seedWatchMocks();
+        document.body.style.overflow = '';
+    });
+
+    it('hides Follow when disconnected and shows it after 监看 when connected', () => {
+        const { rerender } = render(
+            <LansengerSettings {...lansengerBaseProps({ lansengerStatus: 'disconnected' })} />,
+        );
+        expect(screen.queryByTestId('lansenger-follow-button')).toBeNull();
+        expect(screen.getByRole('button', { name: '监看' })).toBeTruthy();
+
+        rerender(<LansengerSettings {...lansengerBaseProps({ lansengerStatus: 'connected' })} />);
+        const follow = screen.getByTestId('lansenger-follow-button');
+        const watchBtn = screen.getByRole('button', { name: '监看' });
+        expect(follow.textContent).toBe('关注');
+        expect(watchBtn.compareDocumentPosition(follow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('opens Follow dialog, creates a job, saves via backend APIs', async () => {
+        const page = await openFollowPanel();
+        expect(page.classList.contains('utilities-page--compact')).toBe(true);
+
+        // Dialog shell from LansengerSettings
+        expect(screen.getByRole('dialog', { name: '关注' })).toBeTruthy();
+        expect(document.body.style.overflow).toBe('hidden');
+
+        // Wait for lazy panel + initial load
+        await waitFor(() => {
+            expect(ListLansengerWatchJobsMock).toHaveBeenCalled();
+            expect(ListLansengerGroupsMock).toHaveBeenCalled();
+        });
+
+        fireEvent.click(within(page).getByRole('button', { name: '新建任务' }));
+        await waitFor(() => {
+            expect(within(page).getByDisplayValue('关注任务')).toBeTruthy();
+        });
+
+        // Name
+        const nameInput = within(page).getByDisplayValue('关注任务');
+        fireEvent.change(nameInput, { target: { value: '盯产品同学' } });
+
+        // Select group (first combobox is 蓝信群; second is keyword scope)
+        const groupSelect = within(page).getAllByRole('combobox')[0] as HTMLSelectElement;
+        fireEvent.change(groupSelect, { target: { value: 'g1' } });
+
+        // Roster is debounced 250ms
+        await waitFor(
+            () => {
+                expect(ListLansengerWatchRosterMock).toHaveBeenCalled();
+                expect(within(page).getByText('张三')).toBeTruthy();
+            },
+            { timeout: 2000 },
+        );
+
+        fireEvent.click(within(page).getByText('张三'));
+
+        fireEvent.click(within(page).getByRole('button', { name: '保存' }));
+
+        await waitFor(() => {
+            expect(UpsertLansengerWatchJobMock).toHaveBeenCalled();
+        });
+
+        const savedPayload = JSON.parse(UpsertLansengerWatchJobMock.mock.calls[0][0] as string);
+        expect(savedPayload.name).toBe('盯产品同学');
+        expect(savedPayload.group_id).toBe('g1');
+        expect(savedPayload.target_staff_ids).toContain('u1');
+        expect(jobsStore).toHaveLength(1);
+
+        await waitFor(() => {
+            expect(within(page).getByText('已保存')).toBeTruthy();
+            // Job appears in list after reload
+            expect(within(page).getByText('盯产品同学')).toBeTruthy();
+        });
+    });
+
+    it('closes Follow via Escape and restores body scroll', async () => {
+        await openFollowPanel();
+        await waitFor(() => expect(screen.getByTestId('watch-page')).toBeTruthy());
+        expect(document.body.style.overflow).toBe('hidden');
+
+        fireEvent.keyDown(window, { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByTestId('watch-page')).toBeNull());
+        expect(document.body.style.overflow).toBe('');
+    });
+
+    it('closes Follow when Lansenger disconnects mid-session', async () => {
+        const { rerender } = render(<LansengerSettings {...lansengerBaseProps()} />);
+        fireEvent.click(screen.getByTestId('lansenger-follow-button'));
+        await waitFor(() => expect(screen.getByTestId('watch-page')).toBeTruthy());
+
+        rerender(<LansengerSettings {...lansengerBaseProps({ lansengerStatus: 'disconnected' })} />);
+        await waitFor(() => {
+            expect(screen.queryByTestId('watch-page')).toBeNull();
+            expect(screen.queryByTestId('lansenger-follow-button')).toBeNull();
+        });
+    });
+
+    it('does not open Follow on Escape during IME composition', async () => {
+        await openFollowPanel();
+        fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
+        expect(screen.getByTestId('watch-page')).toBeTruthy();
+        fireEvent.keyDown(window, { key: 'Escape', keyCode: 229 });
+        expect(screen.getByTestId('watch-page')).toBeTruthy();
+    });
+});
+
+describe('IM settings → 蓝信 → 关注 e2e', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        seedWatchMocks();
+    });
+
+    function IMHarness({
+        showLansenger,
+        lansengerStatus,
+        initialTab = 'qq' as IMSubTab,
+    }: {
+        showLansenger: boolean;
+        lansengerStatus: string;
+        initialTab?: IMSubTab;
+    }) {
+        const [imSubTab, setImSubTab] = useState<IMSubTab>(initialTab);
+        const [imAuditPlatform, setIMAuditPlatform] = useState<string | null>(null);
+        return (
+            <IMSettingsPanel
+                config={
+                    {
+                        lansenger_enabled: true,
+                        lansenger_app_id: 'app',
+                        lansenger_app_secret: 'sec',
+                        im_progress_nudge_enabled: true,
+                    } as any
+                }
+                setConfig={vi.fn()}
+                lang="zh-Hans"
+                imSubTab={imSubTab}
+                setImSubTab={setImSubTab}
+                imAuditPlatform={imAuditPlatform}
+                setIMAuditPlatform={setIMAuditPlatform}
+                saveRemoteConfigField={vi.fn()}
+                showToastMessage={vi.fn()}
+                qqBotStatus="disconnected"
+                setQQBotStatus={vi.fn()}
+                qqBotLocalMode
+                setQQBotLocalModeState={vi.fn()}
+                telegramStatus="disconnected"
+                setTelegramStatus={vi.fn()}
+                telegramLocalMode
+                setTelegramLocalModeState={vi.fn()}
+                weixinStatus="disconnected"
+                setWeixinStatus={vi.fn()}
+                weixinLocalMode
+                setWeixinLocalModeState={vi.fn()}
+                thirdPartyGatewayStatus="disconnected"
+                setThirdPartyGatewayStatus={vi.fn()}
+                thirdPartyGatewayLocalMode
+                setThirdPartyGatewayLocalModeState={vi.fn()}
+                showLansenger={showLansenger}
+                lansengerStatus={lansengerStatus}
+                setLansengerStatus={vi.fn()}
+                lansengerLocalMode
+                setLansengerLocalModeState={vi.fn()}
+                weixinQRCode=""
+                setWeixinQRCode={vi.fn()}
+                weixinQRLoading={false}
+                setWeixinQRLoading={vi.fn()}
+                weixinQRWaiting={false}
+                setWeixinQRWaiting={vi.fn()}
+                weixinQRError=""
+                setWeixinQRError={vi.fn()}
+            />
+        );
+    }
+
+    it('does not show 蓝信 tab when showLansenger is false (MaClaw)', () => {
+        render(<IMHarness showLansenger={false} lansengerStatus="connected" />);
+        expect(screen.queryByRole('tab', { name: '蓝信' })).toBeNull();
+        expect(screen.queryByTestId('lansenger-follow-button')).toBeNull();
+    });
+
+    it('navigates IM → 蓝信 → 关注 when Lansenger is connected (TigerClaw)', async () => {
+        render(<IMHarness showLansenger lansengerStatus="connected" initialTab="qq" />);
+
+        fireEvent.click(screen.getByRole('tab', { name: '蓝信' }));
+        expect(screen.getByTestId('lansenger-follow-button')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('lansenger-follow-button'));
+        const page = await screen.findByTestId('watch-page');
+        expect(page).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: '关注' })).toBeTruthy();
+
+        await waitFor(() => expect(ListLansengerWatchJobsMock).toHaveBeenCalled());
+    });
+
+    it('shows 蓝信 but hides Follow when not connected', () => {
+        render(<IMHarness showLansenger lansengerStatus="disconnected" initialTab="lansenger" />);
+        expect(screen.getByRole('tab', { name: '蓝信' })).toBeTruthy();
+        expect(screen.queryByTestId('lansenger-follow-button')).toBeNull();
+    });
+});
+
+describe('Utilities page no longer hosts Follow/盯人', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('home grid has survey only — no watch card or entry', async () => {
+        render(<UtilitiesPage lang="zh-Hans" />);
+        expect(screen.getByTestId('utilities-page')).toBeTruthy();
+        expect(screen.getByTestId('utilities-survey-card')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-watch-card')).toBeNull();
+        expect(screen.queryByText('盯人')).toBeNull();
+        expect(screen.queryByText('关注')).toBeNull();
+        expect(screen.queryByTestId('watch-page')).toBeNull();
+    });
+});

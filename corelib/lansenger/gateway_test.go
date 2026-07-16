@@ -3,6 +3,7 @@ package lansenger
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -310,7 +311,7 @@ func TestAPIClientDoesNotFollowRedirectsWithToken(t *testing.T) {
 	}))
 	defer api.Close()
 	gw := NewGateway(Config{ApiGatewayURL: api.URL}, nil)
-	if err := gw.sendPrivateMessage(context.Background(), "sensitive-token", "user", "text", map[string]any{}); err == nil {
+	if err := gw.sendPrivateMessage(context.Background(), "sensitive-token", "user", "text", map[string]any{}, nil); err == nil {
 		t.Fatal("expected redirect to be returned as an API error")
 	}
 	if redirectTargetHit.Load() {
@@ -543,6 +544,52 @@ func TestSendTextSkipsBlankContent(t *testing.T) {
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("API requests = %d, want 0", got)
+	}
+}
+
+
+func TestSendTextIncludesReminderAndRefMsgID(t *testing.T) {
+	var body []byte
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/v1/apptoken/create"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data":    map[string]any{"appToken": "tok", "expiresIn": 7200},
+			})
+		case strings.Contains(r.URL.Path, "/v1/messages/group/create"):
+			body, _ = io.ReadAll(r.Body)
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{ApiGatewayURL: api.URL, AppID: "a", AppSecret: "s"}, nil)
+	err := gw.SendText(context.Background(), OutgoingText{
+		ToUserID: "group-1",
+		Text:     "answer",
+		IsGroup:  true,
+		Reminder: &OutgoingReminder{UserIDs: []string{"staff-1"}},
+		RefMsgID: "msg-99",
+	})
+	if err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode body: %v body=%s", err, body)
+	}
+	if payload["refMsgId"] != "msg-99" {
+		t.Fatalf("refMsgId = %#v", payload["refMsgId"])
+	}
+	msgData, _ := payload["msgData"].(map[string]any)
+	ft, _ := msgData["formatText"].(map[string]any)
+	rem, _ := ft["reminder"].(map[string]any)
+	ids, _ := rem["userIds"].([]any)
+	if len(ids) != 1 || ids[0] != "staff-1" {
+		t.Fatalf("reminder = %#v", rem)
 	}
 }
 

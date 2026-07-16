@@ -8,11 +8,20 @@ import {
 
 const {
     COMPACT_CHUNK_THRESHOLD,
+    COMPACT_MAX_HEAD_BYTES,
+    LIVE_MAX_QUEUED_FLUSHES,
+    LIVE_STREAM_FLUSH_BYTES,
+    UPLOAD_CHUNK_BYTES,
     compactInt16Chunks,
     encodeWAVFromChunks,
     encodeWAVFromInt16,
     formatDuration,
+    formatRecordingSaveError,
+    isLikelyNetworkFetchError,
     mergeInt16Chunks,
+    splitPcmForUpload,
+    takePendingPCM,
+    takePendingInt16AsBytes,
     toBase64,
 } = __recordAudioTestUtils;
 
@@ -65,10 +74,14 @@ describe("RecordingSessionCard helpers", () => {
         expect(view.getUint16(22, true)).toBe(1);
     });
 
-    it("toBase64 round-trips small buffers", () => {
+    it("toBase64 round-trips small buffers and Uint8Array views", () => {
         const raw = new Uint8Array([1, 2, 3, 4, 255]).buffer;
         const b64 = toBase64(raw);
         expect(b64).toBe(btoa(String.fromCharCode(1, 2, 3, 4, 255)));
+        // View into a larger buffer must encode only the view range.
+        const bigger = new Uint8Array([0, 0, 10, 20, 30, 0]);
+        const view = bigger.subarray(2, 5);
+        expect(toBase64(view)).toBe(btoa(String.fromCharCode(10, 20, 30)));
     });
 
     it("mergeInt16Chunks concatenates in order", () => {
@@ -87,6 +100,114 @@ describe("RecordingSessionCard helpers", () => {
         expect(compacted.length).toBeLessThan(many.length);
         const flat = mergeInt16Chunks(compacted, many.length);
         expect(Array.from(flat)).toEqual(many.map((_, i) => i));
+    });
+
+    it("compactInt16Chunks caps each head under COMPACT_MAX_HEAD_BYTES", () => {
+        // Simulate many capture slabs that would formerly merge into one multi-MB head.
+        const many: Int16Array[] = [];
+        const samplesPer = 8000; // 16kB each
+        for (let i = 0; i < COMPACT_CHUNK_THRESHOLD; i++) {
+            const slab = new Int16Array(samplesPer);
+            slab.fill(i);
+            many.push(slab);
+        }
+        const totalSamples = many.reduce((n, c) => n + c.length, 0);
+        const compacted = compactInt16Chunks(many, COMPACT_MAX_HEAD_BYTES);
+        for (const c of compacted) {
+            expect(c.byteLength).toBeLessThanOrEqual(COMPACT_MAX_HEAD_BYTES);
+        }
+        const flat = mergeInt16Chunks(compacted, totalSamples);
+        expect(flat.length).toBe(totalSamples);
+        // First sample of first source slab preserved.
+        expect(flat[0]).toBe(0);
+        // Last sample of last head slab (before keepTail) preserved.
+        expect(flat[totalSamples - 1]).toBe(COMPACT_CHUNK_THRESHOLD - 1);
+    });
+
+    it("splitPcmForUpload slices compacted multi-MB heads under maxBytes", () => {
+        // ~43s mono 16kHz 16-bit ≈ 1.34 MiB — exceeds backend 512 KiB limit if sent whole.
+        const samples = Math.floor(43 * 16000);
+        const big = new Int16Array(samples);
+        for (let i = 0; i < samples; i++) big[i] = i & 0xffff;
+        const maxBytes = 256 * 1024;
+        const slabs = splitPcmForUpload([big], maxBytes);
+        expect(slabs.length).toBeGreaterThan(1);
+        for (const s of slabs) {
+            expect(s.byteLength).toBeLessThanOrEqual(maxBytes);
+            // Even slab sizes (except possibly last if odd total — total is even).
+            expect(s.byteLength % 2).toBe(0);
+        }
+        const total = slabs.reduce((n, s) => n + s.byteLength, 0);
+        expect(total).toBe(samples * 2);
+        // Round-trip: first/last sample bytes preserved across splits.
+        const first = new DataView(slabs[0].buffer, slabs[0].byteOffset, slabs[0].byteLength);
+        expect(first.getInt16(0, true)).toBe(big[0]);
+        const lastSlab = slabs[slabs.length - 1];
+        const last = new DataView(lastSlab.buffer, lastSlab.byteOffset, lastSlab.byteLength);
+        expect(last.getInt16(lastSlab.byteLength - 2, true)).toBe(big[samples - 1]);
+    });
+
+    it("splitPcmForUpload keeps small chunks under UPLOAD_CHUNK_BYTES", () => {
+        const a = new Int16Array(100);
+        const b = new Int16Array(50);
+        const slabs = splitPcmForUpload([a, b], UPLOAD_CHUNK_BYTES);
+        expect(slabs.length).toBe(1);
+        expect(slabs[0].byteLength).toBe((100 + 50) * 2);
+    });
+
+    it("UPLOAD_CHUNK_BYTES stays within backend 512 KiB limit", () => {
+        expect(UPLOAD_CHUNK_BYTES).toBeLessThanOrEqual(512 * 1024);
+        expect(UPLOAD_CHUNK_BYTES % 2).toBe(0);
+        expect(COMPACT_MAX_HEAD_BYTES % 2).toBe(0);
+        expect(COMPACT_MAX_HEAD_BYTES).toBe(UPLOAD_CHUNK_BYTES);
+    });
+
+    it("takePendingPCM merges and clears pending list", () => {
+        const a = new Uint8Array([1, 2]);
+        const b = new Uint8Array([3, 4, 5]);
+        const pending = [a, b];
+        const out = takePendingPCM(pending, 5);
+        expect(Array.from(out)).toEqual([1, 2, 3, 4, 5]);
+        expect(pending.length).toBe(0);
+    });
+
+    it("takePendingInt16AsBytes merges Int16 slabs to LE bytes", () => {
+        const a = new Int16Array([0x0102, 0x0304]);
+        const b = new Int16Array([0x0506]);
+        const pending = [a, b];
+        const out = takePendingInt16AsBytes(pending, 3);
+        expect(pending.length).toBe(0);
+        expect(out.byteLength).toBe(6);
+        const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+        expect(view.getInt16(0, true)).toBe(0x0102);
+        expect(view.getInt16(2, true)).toBe(0x0304);
+        expect(view.getInt16(4, true)).toBe(0x0506);
+    });
+
+    it("isLikelyNetworkFetchError detects transport failures only", () => {
+        expect(isLikelyNetworkFetchError(new TypeError("Failed to fetch"))).toBe(true);
+        expect(isLikelyNetworkFetchError(new Error("upload session not found"))).toBe(false);
+        expect(isLikelyNetworkFetchError(new Error("chunk too large"))).toBe(false);
+    });
+
+    it("live flush constants stay within backend chunk and queue caps", () => {
+        expect(LIVE_STREAM_FLUSH_BYTES).toBeLessThanOrEqual(UPLOAD_CHUNK_BYTES);
+        expect(LIVE_STREAM_FLUSH_BYTES % 2).toBe(0);
+        expect(LIVE_MAX_QUEUED_FLUSHES).toBeGreaterThan(0);
+        expect(LIVE_STREAM_FLUSH_BYTES * LIVE_MAX_QUEUED_FLUSHES).toBeLessThanOrEqual(4 * 1024 * 1024);
+    });
+
+    it("formatRecordingSaveError maps chunk too large for zh/en", () => {
+        expect(formatRecordingSaveError(new Error("chunk too large: 900000 bytes (max 524288)"), true)).toContain(
+            "分片过大",
+        );
+        expect(formatRecordingSaveError(new Error("chunk too large"), false).toLowerCase()).toContain("chunk too large");
+        expect(formatRecordingSaveError(new Error("upload session not found"), true)).toContain("会话");
+        // Disk permission must not be mislabeled as microphone permission.
+        const diskDenied = formatRecordingSaveError(new Error("open recordings: access denied"), true);
+        expect(diskDenied).toContain("access denied");
+        expect(diskDenied).not.toContain("麦克风");
+        expect(formatRecordingSaveError(new Error("NotAllowedError: microphone"), true)).toContain("麦克风");
     });
 
     it("encodeWAVFromChunks matches encodeWAVFromInt16", () => {

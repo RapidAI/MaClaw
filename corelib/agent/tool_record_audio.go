@@ -25,21 +25,31 @@ const recordAudioMarkerPrefix = "__RECORD_AUDIO__"
 // deliver the file).
 func ToolRecordAudio(args map[string]interface{}) string {
 	title, _ := args["title"].(string)
-	title = strings.TrimSpace(title)
+	purpose, _ := args["purpose"].(string)
+	hint, _ := args["hint"].(string)
+	return FormatRecordAudioMarker(&RecordAudioRequest{
+		Title:   strings.TrimSpace(title),
+		Purpose: strings.TrimSpace(purpose),
+		Hint:    strings.TrimSpace(hint),
+	})
+}
+
+// FormatRecordAudioMarker encodes a RecordAudioRequest as the interactive tool
+// result marker (used by hosts that re-enter handle paths after RunLoop pause).
+func FormatRecordAudioMarker(req *RecordAudioRequest) string {
+	if req == nil {
+		req = &RecordAudioRequest{}
+	}
+	title := strings.TrimSpace(req.Title)
 	if title == "" {
 		title = "录音"
 	}
-	purpose, _ := args["purpose"].(string)
-	purpose = strings.TrimSpace(purpose)
-	hint, _ := args["hint"].(string)
-	hint = strings.TrimSpace(hint)
-
-	req := RecordAudioRequest{
+	payload := RecordAudioRequest{
 		Title:   title,
-		Purpose: purpose,
-		Hint:    hint,
+		Purpose: strings.TrimSpace(req.Purpose),
+		Hint:    strings.TrimSpace(req.Hint),
 	}
-	data, _ := json.Marshal(req)
+	data, _ := json.Marshal(payload)
 	return fmt.Sprintf("%s%s", recordAudioMarkerPrefix, string(data))
 }
 

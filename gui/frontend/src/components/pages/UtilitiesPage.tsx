@@ -38,9 +38,11 @@ import {
     type EditorQuestion,
     type SurveyListSort,
 } from './utilitiesSurveyEditor';
-import { UtilitiesWatchPanel } from './UtilitiesWatchPanel';
+import { parseWailsJSON } from './utilitiesParse';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'watch';
+export { parseWailsJSON } from './utilitiesParse';
+
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results';
 
 type SurveySummary = {
     id: string;
@@ -82,23 +84,6 @@ type SurveyDetail = SurveySummary & {
     /** Present when publish requested announce and some groups failed. */
     announce_failures?: string[];
 };
-
-/** Go Wails methods return JSON as string; objects may already be parsed in some runtimes. */
-export function parseWailsJSON<T = any>(value: unknown): T {
-    if (value == null) {
-        return value as T;
-    }
-    if (typeof value === 'string') {
-        const s = value.trim();
-        if (!s) return null as T;
-        try {
-            return JSON.parse(s) as T;
-        } catch (e) {
-            throw new Error(`invalid JSON from backend: ${(e as Error)?.message || e}`);
-        }
-    }
-    return value as T;
-}
 
 async function getApp(): Promise<any | null> {
     try {
@@ -954,30 +939,9 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                         </div>
                         <span className="utilities-tool-card__cta">{t.open}</span>
                     </button>
-                    <button
-                        type="button"
-                        className="utilities-tool-card"
-                        data-testid="utilities-watch-card"
-                        onClick={() => setView('watch')}
-                    >
-                        <div className="utilities-tool-card__icon" aria-hidden>👀</div>
-                        <div className="utilities-tool-card__body">
-                            <div className="utilities-tool-card__title">{isZh ? '盯人' : 'Watch people'}</div>
-                            <div className="utilities-tool-card__desc">
-                                {isZh
-                                    ? '记录指定成员发言；关键字触发固定回复或 CLI，stdout 回群'
-                                    : 'Record targets; keyword reply or CLI stdout back to chat'}
-                            </div>
-                        </div>
-                        <span className="utilities-tool-card__cta">{t.open}</span>
-                    </button>
                 </div>
             </div>
         );
-    }
-
-    if (view === 'watch') {
-        return <UtilitiesWatchPanel isZh={isZh} onBack={() => setView('home')} />;
     }
 
     if (view === 'survey-list') {
@@ -1032,7 +996,7 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                         >{t.batchArchive}{archivableSelected.length ? ` (${archivableSelected.length})` : ''}</button>
                         <button
                             type="button"
-                            className="utilities-btn"
+                            className="utilities-btn utilities-btn--danger"
                             data-testid="survey-batch-delete"
                             disabled={busy || deletableSelected.length === 0}
                             onClick={() => void batchDelete()}
@@ -1456,18 +1420,24 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
 
     return (
         <div className="utilities-page" data-testid="survey-edit-page">
-            <button type="button" className="utilities-link" onClick={() => { setSelected(null); setView('survey-list'); }}>{t.back}</button>
-            <h1 className="utilities-page__title">{selected?.title || t.create}</h1>
-            {(!selected || selected.status === 'draft') && (
-                <p className="utilities-meta utilities-shortcut-hint" data-testid="survey-shortcut-hint">{t.shortcutSave}</p>
-            )}
-            <div className="utilities-actions" style={{ marginTop: 0 }}>
+            <header className="utilities-survey-editor__header">
+                <div>
+                    <button type="button" className="utilities-link" onClick={() => { setSelected(null); setView('survey-list'); }}>{t.back}</button>
+                    <h1 className="utilities-page__title">{selected?.title || t.create}</h1>
+                    {(!selected || selected.status === 'draft') && (
+                        <p className="utilities-meta utilities-shortcut-hint" data-testid="survey-shortcut-hint">{t.shortcutSave}</p>
+                    )}
+                </div>
                 <button
                     type="button"
-                    className="utilities-btn"
+                    className="utilities-btn utilities-btn--ghost"
                     data-testid="survey-help-toggle-edit"
                     onClick={() => setShowHelp((v) => !v)}
                 >{showHelp ? t.hideHelp : t.help}</button>
+            </header>
+            <div className="utilities-survey-editor__feedback">
+                {copyHint && <p className="utilities-meta">{copyHint}</p>}
+                {error && <div className="utilities-error">{error}</div>}
             </div>
             {showHelp && (
                 <div className="utilities-help" data-testid="survey-help-panel">
@@ -1503,10 +1473,8 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                     >{t.copyCmd}</button>
                 </p>
             )}
-            {copyHint && <p className="utilities-meta">{copyHint}</p>}
-            {error && <div className="utilities-error">{error}</div>}
             {selected && (
-                <div className="utilities-actions">
+                <div className="utilities-actions utilities-survey-editor__actions">
                     {selected.status === 'draft' && (
                         <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void saveDraft()}>{t.save}</button>
                     )}
@@ -1521,7 +1489,7 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                     <button type="button" className="utilities-btn" disabled={busy || selected.status !== 'closed'} onClick={() => void reopenSurvey()}>{t.reopen}</button>
                     <button type="button" className="utilities-btn" disabled={busy || (selected.status !== 'draft' && selected.status !== 'closed')} onClick={() => void archiveSurvey()}>{t.archive}</button>
                     <button type="button" className="utilities-btn" disabled={busy} onClick={() => void duplicateSurvey()}>{t.duplicate}</button>
-                    <button type="button" className="utilities-btn" disabled={busy || (selected.status !== 'draft' && selected.status !== 'archived')} onClick={() => void deleteSurvey()}>{t.delete}</button>
+                    <button type="button" className="utilities-btn utilities-btn--danger" disabled={busy || (selected.status !== 'draft' && selected.status !== 'archived')} onClick={() => void deleteSurvey()}>{t.delete}</button>
                     <button type="button" className="utilities-btn" disabled={busy || selected.status !== 'published'} onClick={() => void announce()}>{t.announce}</button>
                     <button type="button" className="utilities-btn" disabled={busy} onClick={() => void openResults()}>{t.results}</button>
                     <button type="button" className="utilities-btn" disabled={busy} onClick={() => void exportXlsx(false)}>{t.export}</button>
@@ -1531,35 +1499,44 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             {/* Draft / new survey form */}
             {(!selected || selected.status === 'draft') && (
                 <div className="utilities-create-panel utilities-create-panel--wide">
-                    <label>{isZh ? '标题' : 'Title'}<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} /></label>
-                    <label>{isZh ? '说明' : 'Description'}<input value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)} /></label>
-                    <label className="utilities-check">
-                        <input type="checkbox" checked={draftAnonymous} onChange={(e) => setDraftAnonymous(e.target.checked)} disabled={!!selected && selected.status !== 'draft'} />
-                        {isZh ? '匿名收集（默认不匿名；发布后不可改）' : 'Anonymous (default off; locked after publish)'}
-                    </label>
-                    <label className="utilities-check">
-                        <input type="checkbox" checked={draftAllowUpdate} onChange={(e) => setDraftAllowUpdate(e.target.checked)} />
-                        {isZh ? '允许修改已提交答卷' : 'Allow update after submit'}
-                    </label>
-                    <label className="utilities-check">
-                        <input
-                            type="checkbox"
-                            data-testid="survey-allow-p2p"
-                            checked={draftAllowP2P}
-                            onChange={(e) => setDraftAllowP2P(e.target.checked)}
-                        />
-                        {t.allowP2P}
-                    </label>
-                    <label>{t.deadline}
+                    <section className="utilities-survey-section utilities-survey-section--details">
+                        <div className="utilities-survey-section__heading">
+                            <h2>{isZh ? '基本信息' : 'Details'}</h2>
+                        </div>
+                        <div className="utilities-survey-fields">
+                            <label>{isZh ? '标题' : 'Title'}<input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} /></label>
+                            <label>{isZh ? '说明' : 'Description'}<input value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)} /></label>
+                        </div>
+                    </section>
+                    <section className="utilities-survey-section">
+                        <div className="utilities-survey-section__heading">
+                            <h2>{isZh ? '收集设置' : 'Collection settings'}</h2>
+                        </div>
+                        <div className="utilities-survey-settings">
+                            <label className="utilities-check">
+                                <input type="checkbox" checked={draftAnonymous} onChange={(e) => setDraftAnonymous(e.target.checked)} disabled={!!selected && selected.status !== 'draft'} />
+                                {isZh ? '匿名收集（发布后不可改）' : 'Anonymous (locked after publish)'}
+                            </label>
+                            <label className="utilities-check">
+                                <input type="checkbox" checked={draftAllowUpdate} onChange={(e) => setDraftAllowUpdate(e.target.checked)} />
+                                {isZh ? '允许修改已提交答卷' : 'Allow update after submit'}
+                            </label>
+                            <label className="utilities-check">
+                                <input type="checkbox" data-testid="survey-allow-p2p" checked={draftAllowP2P} onChange={(e) => setDraftAllowP2P(e.target.checked)} />
+                                {t.allowP2P}
+                            </label>
+                        </div>
+                        <div className="utilities-survey-fields utilities-survey-fields--schedule">
+                            <label>{t.deadline}
                         <input
                             type="datetime-local"
                             value={draftDeadlineLocal}
                             onChange={(e) => setDraftDeadlineLocal(e.target.value)}
                         />
                         <span className="utilities-meta">{isZh ? '留空表示不截止；仅在提交时校验' : 'Empty = no deadline; checked on submit only'}</span>
-                    </label>
+                            </label>
                     {draftDeadlineLocal && (
-                        <button type="button" className="utilities-btn" onClick={() => setDraftDeadlineLocal('')}>
+                        <button type="button" className="utilities-btn utilities-btn--ghost utilities-deadline-clear" onClick={() => setDraftDeadlineLocal('')}>
                             {isZh ? '清除截止时间' : 'Clear deadline'}
                         </button>
                     )}
@@ -1572,8 +1549,14 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                             onChange={(e) => setDraftTargetCount(e.target.value)}
                         />
                     </label>
+                        </div>
+                    </section>
 
-                    <h3>{isZh ? '题目' : 'Questions'}</h3>
+                    <section className="utilities-survey-section utilities-survey-section--questions">
+                    <div className="utilities-survey-section__heading">
+                        <h2>{isZh ? '题目' : 'Questions'} <span>{editQuestions.length}</span></h2>
+                    </div>
+                    <div className="utilities-question-list">
                     {editQuestions.map((q, qi) => (
                         <div key={q.id} className="utilities-q-card" data-testid={`survey-q-${qi}`}>
                             <div className="utilities-q-card__row">
@@ -1688,12 +1671,14 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                             )}
                         </div>
                     ))}
-                    <div className="utilities-actions">
+                    </div>
+                    <div className="utilities-actions utilities-question-add-actions">
                         <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('single_choice', prev)])}>{t.addQ} · {isZh ? '单选' : 'choice'}</button>
                         <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('text', prev)])}>{t.addQ} · {isZh ? '文本' : 'text'}</button>
                         <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('rating', prev)])}>{t.addQ} · {isZh ? '评分' : 'rating'}</button>
                         <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('multi_choice', prev)])}>{t.addQ} · {isZh ? '多选' : 'multi'}</button>
                     </div>
+                    </section>
                     {!selected && (
                         <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void createSurvey()}>{t.create}</button>
                     )}

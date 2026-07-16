@@ -30,6 +30,28 @@ func TestToolRecordAudioMarkerRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFormatRecordAudioMarkerRoundTrip(t *testing.T) {
+	raw := FormatRecordAudioMarker(&RecordAudioRequest{
+		Title:   "  会  ",
+		Purpose: "纪要",
+		Hint:    "结束后整理",
+	})
+	req, ok := ParseRecordAudioResult(raw)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if req.Title != "会" {
+		t.Fatalf("title = %q", req.Title)
+	}
+	if req.Purpose != "纪要" || req.Hint != "结束后整理" {
+		t.Fatalf("req = %#v", req)
+	}
+	// Nil request still yields a valid marker with default title.
+	if _, ok := ParseRecordAudioResult(FormatRecordAudioMarker(nil)); !ok {
+		t.Fatal("nil marker should parse")
+	}
+}
+
 func TestToolRecordAudioDefaultTitle(t *testing.T) {
 	raw := ToolRecordAudio(map[string]interface{}{})
 	req, ok := ParseRecordAudioResult(raw)

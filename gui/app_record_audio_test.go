@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,6 +178,155 @@ func TestChunkedRecordedAudioUpload(t *testing.T) {
 	if _, err := app.FinishRecordedAudioUpload(sid); err == nil {
 		t.Fatal("expected finish on missing session to fail")
 	}
+}
+
+func TestLiveRecordedAudioUploadPCMThenFinish(t *testing.T) {
+	tmp := t.TempDir()
+	app := &App{testHomeDir: tmp}
+	prev := corelib.IsLogDetailEnabled()
+	corelib.SetLogDetailEnabled(false)
+	t.Cleanup(func() { corelib.SetLogDetailEnabled(prev) })
+
+	begin, err := app.BeginLiveRecordedAudioUpload("现场录音")
+	if err != nil {
+		t.Fatalf("BeginLive: %v", err)
+	}
+	sid, _ := begin["session_id"].(string)
+	if sid == "" {
+		t.Fatal("empty session_id")
+	}
+	if live, _ := begin["live"].(bool); !live {
+		t.Fatal("expected live=true")
+	}
+	// 0.5s mono 16kHz PCM16
+	pcm := make([]byte, 16000)
+	for i := 0; i < len(pcm); i += 2 {
+		pcm[i] = byte(i)
+		pcm[i+1] = byte(i >> 8)
+	}
+	const chunk = 4096
+	for off := 0; off < len(pcm); off += chunk {
+		end := off + chunk
+		if end > len(pcm) {
+			end = len(pcm)
+		}
+		if err := app.appendRecordedAudioRaw(sid, pcm[off:end]); err != nil {
+			t.Fatalf("append pcm: %v", err)
+		}
+	}
+	info, err := app.FinishRecordedAudioUpload(sid)
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	path, _ := info["path"].(string)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 44+len(pcm) {
+		t.Fatalf("size=%d want %d", len(got), 44+len(pcm))
+	}
+	if string(got[0:4]) != "RIFF" || string(got[8:12]) != "WAVE" {
+		t.Fatalf("bad header tags")
+	}
+	// data chunk size at offset 40
+	dataSize := int(got[40]) | int(got[41])<<8 | int(got[42])<<16 | int(got[43])<<24
+	if dataSize != len(pcm) {
+		t.Fatalf("data size field=%d want %d", dataSize, len(pcm))
+	}
+	// PCM payload follows header
+	for i := 0; i < len(pcm); i++ {
+		if got[44+i] != pcm[i] {
+			t.Fatalf("pcm mismatch at %d", i)
+		}
+	}
+}
+
+func TestLiveAppendRejectsOddPCMLength(t *testing.T) {
+	tmp := t.TempDir()
+	app := &App{testHomeDir: tmp}
+	begin, err := app.BeginLiveRecordedAudioUpload("odd")
+	if err != nil {
+		t.Fatalf("BeginLive: %v", err)
+	}
+	sid, _ := begin["session_id"].(string)
+	err = app.appendRecordedAudioRaw(sid, []byte{1, 2, 3}) // odd
+	if err == nil || !strings.Contains(err.Error(), "even") {
+		t.Fatalf("expected even-length error, got %v", err)
+	}
+	_ = app.CancelRecordedAudioUpload(sid)
+}
+
+func TestRecordAudioAppendHTTP(t *testing.T) {
+	tmp := t.TempDir()
+	app := &App{testHomeDir: tmp}
+	begin, err := app.BeginLiveRecordedAudioUpload("http-append")
+	if err != nil {
+		t.Fatalf("BeginLive: %v", err)
+	}
+	sid, _ := begin["session_id"].(string)
+	pcm := make([]byte, 800)
+	for i := range pcm {
+		pcm[i] = byte(i)
+	}
+	req := httptest.NewRequest(http.MethodPost, recordAudioHTTPPath+"?session_id="+sid, bytes.NewReader(pcm))
+	rr := httptest.NewRecorder()
+	handleRecordAudioAppendHTTP(app, rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	info, err := app.FinishRecordedAudioUpload(sid)
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	path, _ := info["path"].(string)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 44+len(pcm) {
+		t.Fatalf("size=%d want %d", len(got), 44+len(pcm))
+	}
+}
+
+func TestAppendRecordedAudioBase64RejectsOversizedChunk(t *testing.T) {
+	tmp := t.TempDir()
+	app := &App{testHomeDir: tmp}
+	begin, err := app.BeginRecordedAudioUpload("oversized")
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	sid, _ := begin["session_id"].(string)
+	// One byte over the binary chunk limit.
+	raw := make([]byte, maxRecordedAudioChunkBytes+1)
+	b64 := base64.StdEncoding.EncodeToString(raw)
+	err = app.AppendRecordedAudioBase64(sid, b64)
+	if err == nil {
+		t.Fatal("expected oversized chunk to fail")
+	}
+	if !strings.Contains(err.Error(), "chunk too large") {
+		t.Fatalf("error = %v, want chunk too large", err)
+	}
+	_ = app.CancelRecordedAudioUpload(sid)
+}
+
+func TestAppendRecordedAudioBase64AcceptsExactLimit(t *testing.T) {
+	tmp := t.TempDir()
+	app := &App{testHomeDir: tmp}
+	begin, err := app.BeginRecordedAudioUpload("exact-limit")
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	sid, _ := begin["session_id"].(string)
+	// Exactly at the binary chunk limit must succeed (FE targets half; BE allows full).
+	raw := make([]byte, maxRecordedAudioChunkBytes)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	if err := app.AppendRecordedAudioBase64(sid, base64.StdEncoding.EncodeToString(raw)); err != nil {
+		t.Fatalf("exact-limit Append: %v", err)
+	}
+	_ = app.CancelRecordedAudioUpload(sid)
 }
 
 func TestCancelRecordedAudioUpload(t *testing.T) {

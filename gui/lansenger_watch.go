@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -385,28 +386,127 @@ func (a *App) DeleteLansengerWatchJob(jobID string) error {
 	return nil
 }
 
-// ListLansengerWatchRoster returns learned/manual members for a group (optional filter).
+// ListLansengerWatchRoster fetches the current Lansenger group directory so the
+// UI can offer real members as watch targets. It also merges local entries
+// learned from inbound messages, which keeps recently seen display names usable
+// when the directory is temporarily unavailable.
 func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 	svc := a.watchService()
 	if svc == nil || svc.store == nil {
-		return "[]", nil
+		// Keep the Wails payload shape stable: the UI always expects a roster
+		// object, including when the local watch store is not available yet.
+		return `{"members":[],"directory_available":false,"note":"关注成员服务暂不可用。"}`, nil
 	}
 	roster, err := svc.store.LoadRoster(groupID)
 	if err != nil {
 		return "", err
 	}
-	members := lansengerwatch.FilterMembers(roster.Members, query)
+
+	membersByID := make(map[string]lansengerwatch.Member, len(roster.Members))
+	for _, member := range roster.Members {
+		id := lansengerwatch.NormalizeStaffID(member.StaffID)
+		if id == "" {
+			continue
+		}
+		member.StaffID = id
+		membersByID[id] = member
+	}
+
+	// The documented group-member endpoint is paginated at 100 members. Load
+	// enough pages for a practical picker while keeping this Wails call bounded.
+	const pageSize = 100
+	const maxMembers = 2000
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	gw, gwErr := a.lansengerGatewayForWatch()
+	if gwErr == nil {
+		for offset := 0; offset < maxMembers; offset += pageSize {
+			page, pageErr := gw.GetGroupMembers(ctx, groupID, offset, pageSize)
+			if pageErr != nil {
+				gwErr = pageErr
+				break
+			}
+			for _, member := range page.Members {
+				// Bots are returned by the directory too, but cannot be a watch
+				// target for a person's speech.
+				if member.FromType != 0 {
+					continue
+				}
+				id := lansengerwatch.NormalizeStaffID(member.StaffID)
+				if id == "" {
+					continue
+				}
+				membersByID[id] = lansengerwatch.Member{StaffID: id, Name: member.Name, Source: "directory"}
+			}
+			if len(page.Members) < pageSize || offset+pageSize >= page.TotalMembers {
+				break
+			}
+		}
+	}
+
+	members := make([]lansengerwatch.Member, 0, len(membersByID))
+	for _, member := range membersByID {
+		members = append(members, member)
+	}
+	// Map iteration order is intentionally randomized. A stable order keeps the
+	// picker from jumping between refreshes and makes the first rendered page
+	// predictable for large groups.
+	sort.SliceStable(members, func(i, j int) bool {
+		left := strings.TrimSpace(members[i].Name)
+		right := strings.TrimSpace(members[j].Name)
+		if left == right {
+			return members[i].StaffID < members[j].StaffID
+		}
+		if left == "" {
+			return false
+		}
+		if right == "" {
+			return true
+		}
+		return left < right
+	})
+	members = lansengerwatch.FilterMembers(members, query)
+	note := "成员由蓝信群成员目录提供。"
+	if gwErr != nil {
+		note = "蓝信群成员目录暂不可用，正在显示本地已学习成员。"
+	}
 	data, err := json.Marshal(map[string]any{
-		"group_id":   roster.GroupID,
-		"group_name": roster.GroupName,
-		"members":    members,
-		"updated_at": roster.UpdatedAt,
-		"note":       "成员来自历史消息学习或手动添加。蓝信若仅推送 @机器人 的消息，列表会不完整；完整盯人需平台下发群内全量消息。",
+		"group_id":            roster.GroupID,
+		"group_name":          roster.GroupName,
+		"members":             members,
+		"updated_at":          roster.UpdatedAt,
+		"directory_available": gwErr == nil,
+		"note":                note,
 	})
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func (a *App) lansengerGatewayForWatch() (*lansenger.Gateway, error) {
+	if a == nil {
+		return nil, fmt.Errorf("蓝信服务不可用")
+	}
+	if a.lansengerGateway != nil {
+		a.lansengerGateway.mu.Lock()
+		gw := a.lansengerGateway.gateway
+		a.lansengerGateway.mu.Unlock()
+		if gw != nil {
+			return gw, nil
+		}
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.LansengerAppID) == "" || strings.TrimSpace(cfg.LansengerAppSecret) == "" || strings.TrimSpace(cfg.LansengerApiGatewayURL()) == "" {
+		return nil, fmt.Errorf("请先填写蓝信 App ID、App Secret 和网关地址")
+	}
+	return lansenger.NewGateway(lansenger.Config{
+		AppID: cfg.LansengerAppID, AppSecret: cfg.LansengerAppSecret,
+		ApiGatewayURL: cfg.LansengerApiGatewayURL(), WebSocketBaseURL: cfg.LansengerWebSocketGatewayURL(),
+	}, nil), nil
 }
 
 // AddLansengerWatchMember manually adds a staff id to the group roster.

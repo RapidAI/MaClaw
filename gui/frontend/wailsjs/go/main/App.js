@@ -2142,8 +2142,16 @@ export function BeginRecordedAudioUpload(arg1) {
   return window['go']['main']['App']['BeginRecordedAudioUpload'](arg1);
 }
 
+export function BeginLiveRecordedAudioUpload(arg1) {
+  return window['go']['main']['App']['BeginLiveRecordedAudioUpload'](arg1);
+}
+
 export function AppendRecordedAudioBase64(arg1, arg2) {
   return window['go']['main']['App']['AppendRecordedAudioBase64'](arg1, arg2);
+}
+
+export function AppendRecordedAudioBytes(arg1, arg2) {
+  return window['go']['main']['App']['AppendRecordedAudioBytes'](arg1, arg2);
 }
 
 export function FinishRecordedAudioUpload(arg1) {

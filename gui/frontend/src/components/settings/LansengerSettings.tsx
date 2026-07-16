@@ -1,8 +1,29 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { ListLansengerGroups, LoadConfig, RestartLansenger, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
-import { channelModeLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+import { channelModeLabel, followLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
+
+/** Lazy so settings/IM does not eagerly pull the full watch editor + survey CSS. */
+const UtilitiesWatchPanel = lazy(() =>
+    import('../pages/UtilitiesWatchPanel')
+        .then((m) => ({ default: m.UtilitiesWatchPanel }))
+        .catch(() => ({
+            default: function WatchPanelLoadFailed({
+                isZh,
+            }: {
+                isZh: boolean;
+                onBack: () => void;
+                compactHeader?: boolean;
+            }) {
+                return (
+                    <p className="im-groups-modal__status" role="alert">
+                        {isZh ? '加载关注面板失败，请重试' : 'Failed to load Follow panel'}
+                    </p>
+                );
+            },
+        })),
+);
 
 type LansengerSettingsProps = {
     config: main.AppConfig | null;
@@ -63,10 +84,36 @@ export const LansengerSettings = ({
     const [groups, setGroups] = useState<LansengerGroupRow[]>([]);
     const [groupsTotal, setGroupsTotal] = useState(0);
     const [ignoreBusyID, setIgnoreBusyID] = useState('');
+    const [watchOpen, setWatchOpen] = useState(false);
     const loadGenRef = useRef(0);
+    const watchDialogRef = useRef<HTMLDivElement | null>(null);
+    const watchCloseBtnRef = useRef<HTMLButtonElement | null>(null);
+    const followBtnRef = useRef<HTMLButtonElement | null>(null);
+    const hadWatchOpenRef = useRef(false);
+    const isZh = !lang || lang.startsWith('zh');
+    const lansengerConnected = lansengerStatus === 'connected';
+
+    const closeGroupInfo = useCallback(() => {
+        // Invalidate in-flight responses so they cannot overwrite a later open.
+        loadGenRef.current += 1;
+        setGroupsOpen(false);
+        setGroupsLoading(false);
+        setGroupsError('');
+        setIgnoreBusyID('');
+    }, []);
+
+    const closeWatch = useCallback(() => setWatchOpen(false), []);
+
+    const openWatch = useCallback(() => {
+        if (lansengerStatus !== 'connected') return;
+        // Mutual exclusivity with group-info dialog.
+        closeGroupInfo();
+        setWatchOpen(true);
+    }, [closeGroupInfo, lansengerStatus]);
 
     const loadGroups = useCallback(() => {
         const gen = ++loadGenRef.current;
+        setWatchOpen(false);
         setGroupsOpen(true);
         setGroupsLoading(true);
         setGroupsError('');
@@ -116,26 +163,59 @@ export const LansengerSettings = ({
             .finally(() => setIgnoreBusyID((cur) => (cur === id ? '' : cur)));
     }, [lang, setConfig]);
 
-    const closeGroupInfo = useCallback(() => {
-        // Invalidate in-flight responses so they cannot overwrite a later open.
-        loadGenRef.current += 1;
-        setGroupsOpen(false);
-        setGroupsLoading(false);
-        setGroupsError('');
-        setIgnoreBusyID('');
-    }, []);
-
+    // One Escape handler for whichever sheet is open (watch stacks above groups).
+    // Capture phase so nested inputs / other listeners do not swallow Escape first.
     useEffect(() => {
-        if (!groupsOpen) return;
+        if (!groupsOpen && !watchOpen) return;
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                closeGroupInfo();
+            if (e.key !== 'Escape') return;
+            // Do not dismiss while IME is composing (common for zh input).
+            if (e.isComposing || e.keyCode === 229) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (watchOpen) {
+                closeWatch();
+                return;
             }
+            closeGroupInfo();
         };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-    }, [groupsOpen, closeGroupInfo]);
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }, [groupsOpen, watchOpen, closeGroupInfo, closeWatch]);
+
+    // Lock page scroll while either sheet is open (fixed overlay still lets body scroll underneath).
+    useEffect(() => {
+        if (!groupsOpen && !watchOpen) return;
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = prev;
+        };
+    }, [groupsOpen, watchOpen]);
+
+    // Hide entry and unmount panel if connection drops.
+    useEffect(() => {
+        if (!lansengerConnected) {
+            setWatchOpen(false);
+        }
+    }, [lansengerConnected]);
+
+    // Focus close control on open; restore to Follow button on close (when still connected).
+    useEffect(() => {
+        if (watchOpen) {
+            hadWatchOpenRef.current = true;
+            const id = requestAnimationFrame(() => {
+                (watchCloseBtnRef.current || watchDialogRef.current)?.focus();
+            });
+            return () => cancelAnimationFrame(id);
+        }
+        if (hadWatchOpenRef.current) {
+            hadWatchOpenRef.current = false;
+            requestAnimationFrame(() => {
+                followBtnRef.current?.focus();
+            });
+        }
+    }, [watchOpen]);
 
     return (
         <section className="im-settings-card im-settings-channel">
@@ -178,6 +258,26 @@ export const LansengerSettings = ({
                 <button type="button" className="im-settings-button im-settings-button--audit" onClick={() => setIMAuditPlatform('lansenger')}>
                     {watchLabel(lang)}
                 </button>
+                {lansengerConnected && (
+                    <button
+                        ref={followBtnRef}
+                        type="button"
+                        className="im-settings-button"
+                        data-testid="lansenger-follow-button"
+                        aria-label={followLabel(lang)}
+                        aria-haspopup="dialog"
+                        aria-expanded={watchOpen}
+                        onClick={openWatch}
+                        title={textForLang(
+                            lang,
+                            'Follow members: log speech, keyword replies or CLI',
+                            '关注：记录指定成员发言，关键字固定回复或 CLI',
+                            '關注：記錄指定成員發言，關鍵字固定回覆或 CLI',
+                        )}
+                    >
+                        {followLabel(lang)}
+                    </button>
+                )}
             </div>
             <div className="im-settings-mode-row">
                 <span>{channelModeLabel(lang)}</span>
@@ -223,6 +323,63 @@ export const LansengerSettings = ({
                     <input type="text" value={(config as any)?.lansenger_wss_url || ''} onChange={(e) => saveRemoteConfigField({ lansenger_wss_url: e.target.value } as any)} placeholder={textForLang(lang, 'Optional, usually blank', '\u53ef\u9009\uff0c\u901a\u5e38\u7559\u7a7a', '\u53ef\u9078\uff0c\u901a\u5e38\u7559\u7a7a')} spellCheck={false} />
                 </label>
             </div>
+
+            {(config as any)?.lansenger_enabled && (
+                <div className="im-settings-grid im-settings-grid--two" style={{ marginTop: 12 }}>
+                    <label className="im-settings-field">
+                        <span>{textForLang(lang, 'Group policy', '\u7fa4\u804a\u7b56\u7565', '\u7fa4\u804a\u7b56\u7565')}</span>
+                        <select
+                            value={(config as any)?.lansenger_group_policy || 'open'}
+                            onChange={(e) => saveRemoteConfigField({ lansenger_group_policy: e.target.value } as any)}
+                            aria-label={textForLang(lang, 'Group policy', '\u7fa4\u804a\u7b56\u7565', '\u7fa4\u804a\u7b56\u7565')}
+                        >
+                            <option value="open">{textForLang(lang, 'Open (all groups)', '\u5f00\u653e\uff08\u6240\u6709\u7fa4\uff09', '\u958b\u653e\uff08\u6240\u6709\u7fa4\uff09')}</option>
+                            <option value="allowlist">{textForLang(lang, 'Allowlist only', '\u4ec5\u5141\u8bb8\u5217\u8868', '\u50c5\u5141\u8a31\u5217\u8868')}</option>
+                            <option value="disabled">{textForLang(lang, 'Disabled', '\u7981\u7528\u7fa4\u804a', '\u7981\u7528\u7fa4\u804a')}</option>
+                        </select>
+                    </label>
+                    <label className="im-settings-toggle" style={{ alignSelf: 'end' }}>
+                        <input
+                            type="checkbox"
+                            checked={(config as any)?.lansenger_require_mention !== false}
+                            onChange={(e) => saveRemoteConfigField({ lansenger_require_mention: e.target.checked } as any)}
+                        />
+                        <span title={textForLang(lang, 'Only respond when @mentioned in groups', '\u7fa4\u804a\u4ec5\u5728 @\u673a\u5668\u4eba \u65f6\u56de\u590d', '\u7fa4\u804a\u50c5\u5728 @\u6a5f\u5668\u4eba \u6642\u56de\u8986')}>
+                            {textForLang(lang, 'Require @mention', '\u9700\u8981 @\u63d0\u53ca', '\u9700\u8981 @\u63d0\u53ca')}
+                        </span>
+                    </label>
+                    <label className="im-settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!(config as any)?.lansenger_respond_to_at_all}
+                            onChange={(e) => saveRemoteConfigField({ lansenger_respond_to_at_all: e.target.checked } as any)}
+                        />
+                        <span title={textForLang(lang, 'Also respond to @all when require-mention is on', '\u9700\u8981@\u65f6\u4e5f\u54cd\u5e94 @\u6240\u6709\u4eba', '\u9700\u8981@\u6642\u4e5f\u97ff\u61c9 @\u6240\u6709\u4eba')}>
+                            {textForLang(lang, 'Respond to @all', '\u54cd\u5e94 @\u6240\u6709\u4eba', '\u97ff\u61c9 @\u6240\u6709\u4eba')}
+                        </span>
+                    </label>
+                    <label className="im-settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!(config as any)?.lansenger_auto_mention_reply}
+                            onChange={(e) => saveRemoteConfigField({ lansenger_auto_mention_reply: e.target.checked } as any)}
+                        />
+                        <span title={textForLang(lang, 'Auto @ the asker in replies (native reminder API)', '\u56de\u590d\u65f6\u81ea\u52a8 @\u53d1\u9001\u8005\uff08\u539f\u751f reminder\uff09', '\u56de\u8986\u6642\u81ea\u52d5 @\u767c\u9001\u8005')}>
+                            {textForLang(lang, 'Auto @ reply', '\u56de\u590d\u81ea\u52a8 @', '\u56de\u8986\u81ea\u52d5 @')}
+                        </span>
+                    </label>
+                    <label className="im-settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={!!(config as any)?.lansenger_auto_quote_reply}
+                            onChange={(e) => saveRemoteConfigField({ lansenger_auto_quote_reply: e.target.checked } as any)}
+                        />
+                        <span title={textForLang(lang, 'Native quote via refMsgId (preferred over text quote)', '\u4f7f\u7528\u539f\u751f\u5f15\u7528\u56de\u590d\uff08refMsgId\uff09', '\u4f7f\u7528\u539f\u751f\u5f15\u7528\u56de\u8986\uff08refMsgId\uff09')}>
+                            {textForLang(lang, 'Auto quote reply', '\u81ea\u52a8\u5f15\u7528\u56de\u590d', '\u81ea\u52d5\u5f15\u7528\u56de\u8986')}
+                        </span>
+                    </label>
+                </div>
+            )}
 
             {groupsOpen && (
                 <div className="im-groups-modal-overlay" role="presentation" onClick={closeGroupInfo}>
@@ -356,6 +513,48 @@ export const LansengerSettings = ({
                             </button>
                         </div>
                     </section>
+                </div>
+            )}
+
+            {watchOpen && lansengerConnected && (
+                <div
+                    className="im-groups-modal-overlay"
+                    role="presentation"
+                    onClick={closeWatch}
+                >
+                    <div
+                        ref={watchDialogRef}
+                        className="im-groups-modal im-watch-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="lansenger-follow-dialog-title"
+                        tabIndex={-1}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="im-groups-modal__header im-watch-modal__header">
+                            <strong id="lansenger-follow-dialog-title">{followLabel(lang)}</strong>
+                            <button
+                                ref={watchCloseBtnRef}
+                                type="button"
+                                className="im-groups-modal__close"
+                                aria-label={textForLang(lang, 'Close', '关闭', '關閉')}
+                                onClick={closeWatch}
+                            >
+                                ×
+                            </button>
+                        </div>
+                        <div className="im-watch-modal__body">
+                            <Suspense
+                                fallback={
+                                    <p className="im-groups-modal__status">
+                                        {textForLang(lang, 'Loading…', '加载中…', '載入中…')}
+                                    </p>
+                                }
+                            >
+                                <UtilitiesWatchPanel isZh={isZh} onBack={closeWatch} compactHeader />
+                            </Suspense>
+                        </div>
+                    </div>
                 </div>
             )}
         </section>

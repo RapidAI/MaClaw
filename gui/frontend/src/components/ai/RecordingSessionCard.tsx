@@ -2,15 +2,17 @@
  * Interactive long-form recording UI (waveform + pause/stop).
  * Used when the agent opens a record_audio session.
  *
- * Memory notes:
+ * Memory / IPC notes:
  * - Capture prefers AudioWorklet (ScriptProcessor fallback).
- * - PCM is stored as Int16 (half of Float32) in growing chunks.
- * - Waveform state updates are throttled to ~10 Hz to avoid React thrash.
- * - Upload streams header+PCM slabs (no full multi-hour WAV/base64 string).
+ * - Live mode (preferred): BeginLive on mic open → stream PCM to disk during
+ *   capture via binary HTTP POST (no base64, no multi-hour JS heap).
+ * - Fallback: hold Int16 slabs in memory, bulk-upload on stop (base64 chunks).
+ * - Waveform updates throttled to ~10 Hz.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
     AppendRecordedAudioBase64,
+    BeginLiveRecordedAudioUpload,
     BeginRecordedAudioUpload,
     CancelRecordedAudioUpload,
     FinishRecordedAudioUpload,
@@ -25,10 +27,31 @@ const WAVEFORM_BARS = 48;
 const MAX_DURATION_SEC = 3 * 60 * 60; // 3 hours hard cap
 const WAVEFORM_MIN_INTERVAL_MS = 100;
 const MIN_RECORD_SEC = 0.3;
-/** Compact many small capture slabs into larger arrays (less GC pressure). */
+/** Compact many small capture slabs into larger arrays (memory fallback only). */
 const COMPACT_CHUNK_THRESHOLD = 48;
-/** Binary chunk size for streaming upload (~256 KiB → ~350 KiB base64). */
+/**
+ * Classic stop-time upload chunk (~256 KiB binary → ~350 KiB base64).
+ * Must stay ≤ backend maxRecordedAudioChunkBytes (512 KiB).
+ */
 const UPLOAD_CHUNK_BYTES = 256 * 1024;
+/**
+ * Live capture flush size for binary HTTP append (PCM only).
+ * Smaller than UPLOAD_CHUNK_BYTES so disk stays close to the mic timeline.
+ */
+const LIVE_STREAM_FLUSH_BYTES = 128 * 1024;
+/**
+ * Max number of in-flight/queued live flush jobs (~128KiB each).
+ * Caps JS memory if disk/IPC is slower than realtime capture.
+ */
+const LIVE_MAX_QUEUED_FLUSHES = 16; // ≤ ~2 MiB of PCM in the upload pipeline
+/**
+ * Max size of one compacted PCM head during capture (memory fallback).
+ * Matches UPLOAD_CHUNK_BYTES so stop/save rarely needs to re-slice heads.
+ */
+const COMPACT_MAX_HEAD_BYTES = UPLOAD_CHUNK_BYTES;
+/** Shared empty slab for progressive GC during upload (avoid per-chunk alloc). */
+const EMPTY_I16 = new Int16Array(0);
+const DEFAULT_LIVE_APPEND_PATH = "/maclaw-record/v1/append";
 
 /** Console detail logs only when settings → 日志详情 is enabled. */
 function recordDebug(event: string, detail?: Record<string, unknown>, enabled = false) {
@@ -143,39 +166,335 @@ function downsampleToInt16(buf: Float32Array, srcRate: number, dstRate: number):
     return out;
 }
 
-/** Merge leading micro-chunks when the list grows large (long recordings). */
-function compactInt16Chunks(chunks: Int16Array[]): Int16Array[] {
+/**
+ * Merge leading micro-chunks when the list grows large (long recordings).
+ * Heads are packed into slabs of at most COMPACT_MAX_HEAD_BYTES so a multi-hour
+ * session never collapses into one multi-MB TypedArray (GC + upload risk).
+ */
+function compactInt16Chunks(
+    chunks: Int16Array[],
+    maxHeadBytes: number = COMPACT_MAX_HEAD_BYTES,
+): Int16Array[] {
     if (chunks.length < COMPACT_CHUNK_THRESHOLD) return chunks;
     const keepTail = 8;
     const headCount = chunks.length - keepTail;
     if (headCount <= 1) return chunks;
-    let headSamples = 0;
-    for (let i = 0; i < headCount; i++) headSamples += chunks[i].length;
-    const head = new Int16Array(headSamples);
-    let off = 0;
+
+    // Even sample count: Int16 → 2 bytes/sample. Floor so maxBytes is never exceeded.
+    const maxSamples = Math.max(1, Math.floor(Math.max(2, maxHeadBytes) / 2));
+    let remaining = 0;
+    for (let i = 0; i < headCount; i++) remaining += chunks[i].length;
+
+    const packed: Int16Array[] = [];
+    let buf: Int16Array | null = null;
+    let used = 0;
+    let capacity = 0;
+
+    const flushBuf = () => {
+        if (!buf || used <= 0) {
+            buf = null;
+            used = 0;
+            capacity = 0;
+            return;
+        }
+        packed.push(used === buf.length ? buf : buf.slice(0, used));
+        buf = null;
+        used = 0;
+        capacity = 0;
+    };
+
     for (let i = 0; i < headCount; i++) {
-        head.set(chunks[i], off);
-        off += chunks[i].length;
+        const src = chunks[i];
+        if (!src || src.length === 0) continue;
+        let off = 0;
+        while (off < src.length) {
+            if (!buf) {
+                // Size to remaining work, capped by maxSamples — avoid large alloc for tiny heads.
+                const leftHere = src.length - off;
+                const plan = remaining > 0 ? remaining : leftHere;
+                capacity = Math.max(1, Math.min(maxSamples, plan));
+                buf = new Int16Array(capacity);
+                used = 0;
+            }
+            const take = Math.min(src.length - off, capacity - used);
+            if (take <= 0) {
+                // Defensive: avoid infinite loop if capacity tracking ever desyncs.
+                flushBuf();
+                continue;
+            }
+            buf.set(src.subarray(off, off + take), used);
+            used += take;
+            off += take;
+            remaining -= take;
+            if (used >= capacity) flushBuf();
+        }
     }
-    return [head, ...chunks.slice(headCount)];
+    flushBuf();
+    return packed.length === 0 ? chunks.slice(headCount) : packed.concat(chunks.slice(headCount));
 }
 
 /**
  * Chunked base64 without spreading large typed arrays.
- * Uses apply on fixed-size windows (faster than per-byte string concat).
+ * Accepts ArrayBuffer or a Uint8Array view (encodes only the view range).
  */
-function toBase64(buf: ArrayBuffer): string {
-    const bytes = new Uint8Array(buf);
+function toBase64(buf: ArrayBuffer | Uint8Array): string {
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    // Keep windows under typical apply() argument limits (~64k).
     const chunk = 0x8000;
     const parts: string[] = [];
     for (let i = 0; i < bytes.length; i += chunk) {
-        const slice = bytes.subarray(i, Math.min(i + chunk, bytes.length));
-        // Array.from is slower; manual push into apply-friendly array of codes.
-        const codes = new Array(slice.length);
-        for (let j = 0; j < slice.length; j++) codes[j] = slice[j];
+        const end = Math.min(i + chunk, bytes.length);
+        // Build a dense number[] for apply (typed-array apply is not portable).
+        const codes: number[] = new Array(end - i);
+        for (let j = i, k = 0; j < end; j++, k++) codes[k] = bytes[j];
         parts.push(String.fromCharCode.apply(null, codes));
     }
     return btoa(parts.join(""));
+}
+
+/** Even binary limit so 16-bit PCM frames never split mid-sample. */
+function uploadByteLimit(maxBytes: number): number {
+    if (maxBytes <= 0) {
+        throw new Error("maxBytes must be positive");
+    }
+    return maxBytes >= 2 ? maxBytes - (maxBytes % 2) : maxBytes;
+}
+
+/**
+ * Drive PCM into ≤ maxBytes slabs using one fill buffer.
+ * onSlab receives a view into the fill buffer; it must fully consume the bytes
+ * (copy or encode) before returning — the buffer is reused after onSlab resolves.
+ */
+async function forEachPcmUploadSlab(
+    chunks: Int16Array[],
+    maxBytes: number,
+    releaseSource: boolean,
+    onSlab: (view: Uint8Array) => void | Promise<void>,
+): Promise<number> {
+    const limit = uploadByteLimit(maxBytes);
+    const work = new Uint8Array(limit);
+    let filled = 0;
+    let slabs = 0;
+
+    const flush = async () => {
+        if (filled <= 0) return;
+        const len = filled;
+        filled = 0;
+        // View valid until onSlab returns (caller must encode/copy synchronously
+        // before any await that lets this function resume and overwrite work).
+        await onSlab(work.subarray(0, len));
+        slabs++;
+    };
+
+    for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        if (!c || c.length === 0) {
+            if (releaseSource) chunks[i] = EMPTY_I16;
+            continue;
+        }
+        let bytes = new Uint8Array(c.buffer, c.byteOffset, c.byteLength);
+        while (bytes.length > 0) {
+            const take = Math.min(bytes.length, limit - filled);
+            work.set(bytes.subarray(0, take), filled);
+            filled += take;
+            bytes = bytes.subarray(take);
+            if (filled >= limit) await flush();
+        }
+        if (releaseSource) chunks[i] = EMPTY_I16;
+    }
+    await flush();
+    return slabs;
+}
+
+/**
+ * Yield PCM upload payloads each ≤ maxBytes (sync generator for tests).
+ * Each yield is an independent copy safe to hold across awaits.
+ */
+function* iteratePcmUploadSlabs(
+    chunks: Int16Array[],
+    maxBytes: number = UPLOAD_CHUNK_BYTES,
+    releaseSource = false,
+): Generator<Uint8Array, void, void> {
+    const limit = uploadByteLimit(maxBytes);
+    const work = new Uint8Array(limit);
+    let filled = 0;
+
+    for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        if (!c || c.length === 0) {
+            if (releaseSource) chunks[i] = EMPTY_I16;
+            continue;
+        }
+        let bytes = new Uint8Array(c.buffer, c.byteOffset, c.byteLength);
+        while (bytes.length > 0) {
+            const take = Math.min(bytes.length, limit - filled);
+            work.set(bytes.subarray(0, take), filled);
+            filled += take;
+            bytes = bytes.subarray(take);
+            if (filled >= limit) {
+                yield work.slice(0, filled);
+                filled = 0;
+            }
+        }
+        if (releaseSource) chunks[i] = EMPTY_I16;
+    }
+    if (filled > 0) yield work.slice(0, filled);
+}
+
+/**
+ * Stream PCM to backend: encode base64 from the fill-buffer view (sync), then
+ * await Append. No extra PCM copy per slab; source chunks released as consumed.
+ */
+async function appendPcmUploadSlabs(
+    sessionId: string,
+    chunks: Int16Array[],
+    maxBytes: number = UPLOAD_CHUNK_BYTES,
+): Promise<number> {
+    return forEachPcmUploadSlab(chunks, maxBytes, true, async (view) => {
+        // Encode synchronously first so the fill buffer may be reused after await.
+        const b64 = toBase64(view);
+        await AppendRecordedAudioBase64(sessionId, b64);
+    });
+}
+
+/** Collect all upload slabs (tests / small clips only). */
+function splitPcmForUpload(chunks: Int16Array[], maxBytes: number = UPLOAD_CHUNK_BYTES): Uint8Array[] {
+    return Array.from(iteratePcmUploadSlabs(chunks, maxBytes));
+}
+
+function isLikelyNetworkFetchError(err: unknown): boolean {
+    if (err instanceof TypeError) return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    return /failed to fetch|networkerror|load failed|econnrefused|network request failed/i.test(msg);
+}
+
+/**
+ * True binary PCM append via AssetServer (no base64).
+ * Falls back to Wails base64 binding only when the binary route is missing
+ * (404/405) or the fetch transport itself fails — not on app-level errors
+ * (session closed, chunk too large, etc.).
+ */
+async function appendLivePCM(
+    sessionId: string,
+    data: Uint8Array,
+    appendPath: string = DEFAULT_LIVE_APPEND_PATH,
+): Promise<"binary" | "base64"> {
+    if (!sessionId || data.length === 0) return "binary";
+    const path = appendPath || DEFAULT_LIVE_APPEND_PATH;
+    const body =
+        data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+            ? data
+            : data.slice();
+
+    try {
+        const url = `${path}?session_id=${encodeURIComponent(sessionId)}`;
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body,
+        });
+        if (res.ok || res.status === 204) return "binary";
+        // Route missing (older build without middleware) → base64 binding.
+        if (res.status === 404 || res.status === 405) {
+            await AppendRecordedAudioBase64(sessionId, toBase64(data));
+            return "base64";
+        }
+        const text = (await res.text().catch(() => "")).trim();
+        throw new Error(text || `append failed: HTTP ${res.status}`);
+    } catch (err) {
+        if (!isLikelyNetworkFetchError(err)) {
+            throw err;
+        }
+        // Transport failure only (middleware never reached).
+        await AppendRecordedAudioBase64(sessionId, toBase64(data));
+        return "base64";
+    }
+}
+
+/** Merge pending PCM byte chunks into one tight buffer and clear the list. */
+function takePendingPCM(pending: Uint8Array[], pendingBytes: number): Uint8Array {
+    if (pendingBytes <= 0 || pending.length === 0) return new Uint8Array(0);
+    if (pending.length === 1 && pending[0].byteLength === pendingBytes) {
+        const only = pending[0];
+        pending.length = 0;
+        return only;
+    }
+    const buf = new Uint8Array(pendingBytes);
+    let off = 0;
+    for (const p of pending) {
+        buf.set(p, off);
+        off += p.length;
+    }
+    pending.length = 0;
+    return buf;
+}
+
+/**
+ * Merge owned Int16 PCM slabs into one little-endian byte buffer (single copy).
+ * Clears `pending` so capture can reuse the array.
+ */
+function takePendingInt16AsBytes(pending: Int16Array[], totalSamples: number): Uint8Array {
+    if (totalSamples <= 0 || pending.length === 0) {
+        pending.length = 0;
+        return new Uint8Array(0);
+    }
+    if (pending.length === 1 && pending[0].length === totalSamples) {
+        const only = pending[0];
+        pending.length = 0;
+        return new Uint8Array(only.buffer, only.byteOffset, only.byteLength);
+    }
+    const out = new Int16Array(totalSamples);
+    let off = 0;
+    for (const p of pending) {
+        out.set(p, off);
+        off += p.length;
+    }
+    pending.length = 0;
+    return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
+}
+
+/** Drain upload promise chain without surfacing rejections (cancel / teardown). */
+async function settleLiveUploadChain(chain: Promise<unknown>): Promise<void> {
+    try {
+        await chain;
+    } catch {
+        /* errors recorded on liveStreamErrorRef by the chain */
+    }
+}
+
+/** Map backend/IPC errors to short user-facing text. */
+function formatRecordingSaveError(err: unknown, zh: boolean): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    const lower = raw.toLowerCase();
+    if (lower.includes("chunk too large")) {
+        return zh
+            ? "录音分片过大，请重试；若反复失败请升级到最新版本"
+            : "Recording chunk too large; please retry or update the app";
+    }
+    if (lower.includes("upload session") || lower.includes("session_id missing")) {
+        return zh ? "录音上传会话失效，请重试" : "Recording upload session lost; please retry";
+    }
+    if (lower.includes("too many concurrent")) {
+        return zh ? "同时进行的录音过多，请稍后再试" : "Too many concurrent recordings; try again later";
+    }
+    if (lower.includes("audio data too large") || lower.includes("upload size mismatch")) {
+        return zh ? "录音过长或数据不完整，已超出上限" : "Recording exceeds the maximum size or is incomplete";
+    }
+    if (lower.includes("buffer overrun") || lower.includes("disk/ipc too slow")) {
+        return zh
+            ? "录音写入跟不上采集速度，请重试或关闭其他占用磁盘的程序"
+            : "Recording could not keep up with capture; please retry";
+    }
+    // Mic permission only — do not match generic OS "access denied" on disk paths.
+    if (
+        lower.includes("notallowed") ||
+        lower.includes("not allowed") ||
+        lower.includes("permission dismissed") ||
+        (lower.includes("microphone") && (lower.includes("permission") || lower.includes("denied")))
+    ) {
+        return zh ? "无法访问麦克风，请检查系统权限" : "Microphone permission denied";
+    }
+    return raw || (zh ? "保存录音失败" : "Failed to save recording");
 }
 
 /** Exported for unit tests. */
@@ -187,7 +506,21 @@ export const __recordAudioTestUtils = {
     downsampleToInt16,
     mergeInt16Chunks,
     compactInt16Chunks,
+    splitPcmForUpload,
+    iteratePcmUploadSlabs,
+    forEachPcmUploadSlab,
+    appendPcmUploadSlabs,
+    appendLivePCM,
+    formatRecordingSaveError,
     COMPACT_CHUNK_THRESHOLD,
+    COMPACT_MAX_HEAD_BYTES,
+    UPLOAD_CHUNK_BYTES,
+    LIVE_STREAM_FLUSH_BYTES,
+    LIVE_MAX_QUEUED_FLUSHES,
+    DEFAULT_LIVE_APPEND_PATH,
+    isLikelyNetworkFetchError,
+    takePendingPCM,
+    takePendingInt16AsBytes,
 };
 
 function formatDuration(sec: number): string {
@@ -228,6 +561,7 @@ export function RecordingSessionCard({
     const [error, setError] = useState<string | null>(null);
 
     const captureRef = useRef<RecordCaptureHandle | null>(null);
+    /** Memory-fallback PCM slabs (unused when live disk stream is active). */
     const chunksRef = useRef<Int16Array[]>([]);
     const samplesRef = useRef(0);
     const pausedRef = useRef(false);
@@ -238,6 +572,17 @@ export function RecordingSessionCard({
     const startWallRef = useRef(0);
     const elapsedBeforePauseRef = useRef(0);
     const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    /** Live-to-disk session (preferred): PCM written during capture. */
+    const liveSessionIdRef = useRef("");
+    const liveAppendPathRef = useRef(DEFAULT_LIVE_APPEND_PATH);
+    /** Owned Int16 slabs awaiting flush (no per-frame byte copy). */
+    const livePendingPcmRef = useRef<Int16Array[]>([]);
+    const livePendingSamplesRef = useRef(0);
+    const liveUploadChainRef = useRef(Promise.resolve());
+    const liveQueuedFlushesRef = useRef(0);
+    const liveStreamErrorRef = useRef<Error | null>(null);
+    const liveUsedBinaryRef = useRef(true);
+    const liveFailOnceRef = useRef(false);
     const lastWaveformAtRef = useRef(0);
     const onCompleteRef = useRef(onComplete);
     onCompleteRef.current = onComplete;
@@ -311,18 +656,94 @@ export function RecordingSessionCard({
         void finishWithResult(r);
     };
 
+    const markLiveStreamError = useCallback((err: unknown) => {
+        if (liveStreamErrorRef.current) return;
+        liveStreamErrorRef.current = err instanceof Error ? err : new Error(String(err));
+        // Fail the card once (don't leave the user recording into a dead session).
+        if (!liveFailOnceRef.current && !finishedRef.current && !savingRef.current) {
+            liveFailOnceRef.current = true;
+            void stopAndSaveRef.current();
+        }
+    }, []);
+
+    const flushLivePending = useCallback(async () => {
+        const samples = livePendingSamplesRef.current;
+        if (samples <= 0) return;
+        const buf = takePendingInt16AsBytes(livePendingPcmRef.current, samples);
+        livePendingSamplesRef.current = 0;
+        const sid = liveSessionIdRef.current;
+        if (!sid || buf.length === 0) return;
+        const mode = await appendLivePCM(sid, buf, liveAppendPathRef.current);
+        if (mode === "base64") liveUsedBinaryRef.current = false;
+    }, []);
+
+    /** Enqueue owned Int16 PCM from downsample (no intermediate byte copy per frame). */
+    const enqueueLivePCM = useCallback(
+        (pcm: Int16Array) => {
+            if (pcm.length === 0 || !liveSessionIdRef.current || liveStreamErrorRef.current) return;
+            livePendingPcmRef.current.push(pcm);
+            livePendingSamplesRef.current += pcm.length;
+            const pendingBytes = livePendingSamplesRef.current * 2;
+            if (pendingBytes < LIVE_STREAM_FLUSH_BYTES) return;
+
+            // Backpressure: refuse unbounded queue if IPC/disk lags realtime.
+            if (liveQueuedFlushesRef.current >= LIVE_MAX_QUEUED_FLUSHES) {
+                markLiveStreamError(
+                    new Error(
+                        "recording buffer overrun (disk/IPC too slow); try a shorter take",
+                    ),
+                );
+                return;
+            }
+
+            const samples = livePendingSamplesRef.current;
+            const buf = takePendingInt16AsBytes(livePendingPcmRef.current, samples);
+            livePendingSamplesRef.current = 0;
+            liveQueuedFlushesRef.current += 1;
+            liveUploadChainRef.current = liveUploadChainRef.current
+                .then(async () => {
+                    if (liveStreamErrorRef.current) return;
+                    const sid = liveSessionIdRef.current;
+                    if (!sid || buf.length === 0) return;
+                    const mode = await appendLivePCM(sid, buf, liveAppendPathRef.current);
+                    if (mode === "base64") liveUsedBinaryRef.current = false;
+                })
+                .catch((err: unknown) => {
+                    markLiveStreamError(err);
+                })
+                .finally(() => {
+                    liveQueuedFlushesRef.current = Math.max(0, liveQueuedFlushesRef.current - 1);
+                });
+        },
+        [markLiveStreamError],
+    );
+
+    const abortLiveSession = useCallback(async (sessionId: string) => {
+        // Let in-flight appends finish or fail before Cancel removes the session,
+        // avoiding noisy "not found" races on the upload chain.
+        await settleLiveUploadChain(liveUploadChainRef.current);
+        livePendingPcmRef.current = [];
+        livePendingSamplesRef.current = 0;
+        try {
+            await CancelRecordedAudioUpload(sessionId);
+        } catch {
+            /* ignore */
+        }
+    }, []);
+
     const stopAndSave = useCallback(async () => {
         if (finishedRef.current || savingRef.current) return;
         savingRef.current = true;
         setPhase("saving");
         pausedRef.current = true;
-        // Drain residual worklet frames before we snapshot chunks.
+        // Drain residual worklet frames before we snapshot / final flush.
         drainingRef.current = true;
         await cleanupAudio();
         drainingRef.current = false;
 
         const totalSamples = samplesRef.current;
         const durationSec = totalSamples / TARGET_SAMPLE_RATE;
+        const liveSid = liveSessionIdRef.current;
         recordDebug(
             "stop requested",
             {
@@ -330,13 +751,36 @@ export function RecordingSessionCard({
                 samples: totalSamples,
                 durationSec: Number(durationSec.toFixed(3)),
                 chunks: chunksRef.current.length,
+                live: !!liveSid,
             },
             logDetailRef.current,
         );
 
+        // Prefer a real stream error over "too short" (e.g. fail in first 300ms).
+        if (liveStreamErrorRef.current && liveSid) {
+            const err = liveStreamErrorRef.current;
+            liveSessionIdRef.current = "";
+            await abortLiveSession(liveSid);
+            const msg = formatRecordingSaveError(err, zh);
+            setError(msg);
+            finishWithResult({
+                status: "error",
+                title: titleRef.current,
+                durationSec,
+                error: msg,
+            });
+            return;
+        }
+
         if (totalSamples < TARGET_SAMPLE_RATE * MIN_RECORD_SEC) {
             chunksRef.current = [];
             samplesRef.current = 0;
+            livePendingPcmRef.current = [];
+            livePendingSamplesRef.current = 0;
+            if (liveSid) {
+                liveSessionIdRef.current = "";
+                await abortLiveSession(liveSid);
+            }
             finishWithResult({
                 status: "cancelled",
                 title: titleRef.current,
@@ -346,24 +790,87 @@ export function RecordingSessionCard({
             return;
         }
 
+        // ── Live path: PCM already (mostly) on disk ──────────────────────────
+        if (liveSid) {
+            let uploadSessionId = liveSid;
+            try {
+                if (liveStreamErrorRef.current) {
+                    throw liveStreamErrorRef.current;
+                }
+                // Serialize: wait prior flushes, then drain tail pending.
+                await settleLiveUploadChain(liveUploadChainRef.current);
+                if (liveStreamErrorRef.current) {
+                    throw liveStreamErrorRef.current;
+                }
+                await flushLivePending();
+                const info = (await FinishRecordedAudioUpload(uploadSessionId)) as {
+                    path?: string;
+                    size_bytes?: number;
+                    duration_sec?: number;
+                    format?: string;
+                };
+                liveSessionIdRef.current = "";
+                uploadSessionId = "";
+                samplesRef.current = 0;
+                chunksRef.current = [];
+                recordDebug(
+                    "live save result",
+                    {
+                        path: info?.path,
+                        size_bytes: info?.size_bytes,
+                        binary: liveUsedBinaryRef.current,
+                    },
+                    logDetailRef.current,
+                );
+                finishWithResult({
+                    status: "stopped",
+                    path: info?.path || "",
+                    durationSec: typeof info?.duration_sec === "number" ? info.duration_sec : durationSec,
+                    sizeBytes: typeof info?.size_bytes === "number" ? info.size_bytes : undefined,
+                    format: info?.format || "wav",
+                    title: titleRef.current,
+                });
+            } catch (err: unknown) {
+                liveSessionIdRef.current = "";
+                if (uploadSessionId) {
+                    await abortLiveSession(uploadSessionId);
+                }
+                const raw = err instanceof Error ? err.message : String(err);
+                const msg = formatRecordingSaveError(err, zh);
+                recordDebug("live save failed", { error: raw, display: msg }, true);
+                setError(msg);
+                finishWithResult({
+                    status: "error",
+                    title: titleRef.current,
+                    durationSec,
+                    error: msg,
+                });
+            }
+            return;
+        }
+
+        // ── Memory fallback: bulk upload on stop ─────────────────────────────
         const chunks = chunksRef.current;
         chunksRef.current = [];
         samplesRef.current = 0;
 
         let uploadSessionId = "";
         try {
-            // Stream WAV as header + PCM slabs — never allocate a full multi-hour WAV buffer
-            // or a full base64 string in the JS heap.
             let actualSamples = 0;
-            for (const c of chunks) actualSamples += c.length;
+            for (const c of chunks) {
+                if (c && c.length > 0) actualSamples += c.length;
+            }
             if (actualSamples <= 0) actualSamples = totalSamples;
+            if (actualSamples <= 0) {
+                throw new Error(zh ? "没有可保存的录音数据" : "No audio samples to save");
+            }
             const dataBytes = actualSamples * 2;
             const wavBytes = 44 + dataBytes;
             const header = new ArrayBuffer(44);
             writeWavHeader(header, dataBytes, TARGET_SAMPLE_RATE);
 
             recordDebug(
-                "saving wav (header+pcm stream)",
+                "saving wav (memory fallback header+pcm)",
                 {
                     title: titleRef.current,
                     wavBytes,
@@ -379,60 +886,17 @@ export function RecordingSessionCard({
                 throw new Error("upload session_id missing");
             }
             await AppendRecordedAudioBase64(uploadSessionId, toBase64(header));
-
-            // Upload PCM in groups of slabs so each IPC payload stays ~UPLOAD_CHUNK_BYTES.
-            let pending: Uint8Array[] = [];
-            let pendingBytes = 0;
-            const flushPending = async () => {
-                if (pendingBytes === 0) return;
-                const buf = new Uint8Array(pendingBytes);
-                let off = 0;
-                for (const p of pending) {
-                    buf.set(p, off);
-                    off += p.length;
-                }
-                pending = [];
-                pendingBytes = 0;
-                // Use exact view slice — buf.buffer may be larger only if mis-created; here length matches.
-                const ab = buf.byteOffset === 0 && buf.byteLength === buf.buffer.byteLength
-                    ? buf.buffer
-                    : buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-                await AppendRecordedAudioBase64(uploadSessionId, toBase64(ab));
-            };
-            for (const c of chunks) {
-                const bytes = new Uint8Array(c.buffer, c.byteOffset, c.byteLength);
-                pending.push(bytes);
-                pendingBytes += bytes.length;
-                if (pendingBytes >= UPLOAD_CHUNK_BYTES) {
-                    await flushPending();
-                }
-            }
-            await flushPending();
-            // Release PCM slabs for GC ASAP.
+            const slabCount = await appendPcmUploadSlabs(uploadSessionId, chunks, UPLOAD_CHUNK_BYTES);
             chunks.length = 0;
+            recordDebug("pcm upload done", { slabs: slabCount, wavBytes }, logDetailRef.current);
 
             const info = (await FinishRecordedAudioUpload(uploadSessionId)) as {
                 path?: string;
                 size_bytes?: number;
                 duration_sec?: number;
                 format?: string;
-                meta_path?: string;
-                debug_dump_path?: string;
-                debug_dump_index?: string;
             };
             uploadSessionId = "";
-            recordDebug(
-                "save result",
-                {
-                    path: info?.path,
-                    size_bytes: info?.size_bytes,
-                    duration_sec: info?.duration_sec,
-                    meta_path: info?.meta_path,
-                    debug_dump_path: info?.debug_dump_path,
-                    debug_dump_index: info?.debug_dump_index,
-                },
-                logDetailRef.current,
-            );
             finishWithResult({
                 status: "stopped",
                 path: info?.path || "",
@@ -449,8 +913,9 @@ export function RecordingSessionCard({
                     /* ignore cancel errors */
                 }
             }
-            const msg = err instanceof Error ? err.message : String(err);
-            recordDebug("save failed", { error: msg }, true);
+            const raw = err instanceof Error ? err.message : String(err);
+            const msg = formatRecordingSaveError(err, zh);
+            recordDebug("save failed", { error: raw, display: msg }, true);
             setError(msg);
             finishWithResult({
                 status: "error",
@@ -459,7 +924,7 @@ export function RecordingSessionCard({
                 error: msg,
             });
         }
-    }, [cleanupAudio, finishWithResult, zh]);
+    }, [abortLiveSession, cleanupAudio, finishWithResult, flushLivePending, zh]);
 
     stopAndSaveRef.current = stopAndSave;
 
@@ -487,11 +952,18 @@ export function RecordingSessionCard({
             if (finishedRef.current) return;
             // During normal pause/save, drop live frames — except residual flush from worklet stop.
             if ((pausedRef.current || savingRef.current) && !drainingRef.current) return;
+            if (liveStreamErrorRef.current) return;
             const pcm = downsampleToInt16(input, sampleRate || TARGET_SAMPLE_RATE, TARGET_SAMPLE_RATE);
-            chunksRef.current.push(pcm);
             samplesRef.current += pcm.length;
-            if (chunksRef.current.length >= COMPACT_CHUNK_THRESHOLD) {
-                chunksRef.current = compactInt16Chunks(chunksRef.current);
+
+            if (liveSessionIdRef.current) {
+                // Live-to-disk: hand off owned Int16 slabs (downsample allocates fresh).
+                enqueueLivePCM(pcm);
+            } else {
+                chunksRef.current.push(pcm);
+                if (chunksRef.current.length >= COMPACT_CHUNK_THRESHOLD) {
+                    chunksRef.current = compactInt16Chunks(chunksRef.current);
+                }
             }
 
             const now = Date.now();
@@ -521,12 +993,45 @@ export function RecordingSessionCard({
 
         const start = async () => {
             try {
+                // Prefer live disk session so long recordings never fill the JS heap.
+                try {
+                    const live = (await BeginLiveRecordedAudioUpload(titleRef.current)) as {
+                        session_id?: string;
+                        append_path?: string;
+                    };
+                    const sid = String(live?.session_id || "").trim();
+                    if (sid) {
+                        liveSessionIdRef.current = sid;
+                        liveAppendPathRef.current = String(live?.append_path || DEFAULT_LIVE_APPEND_PATH);
+                        liveStreamErrorRef.current = null;
+                        liveFailOnceRef.current = false;
+                        liveUsedBinaryRef.current = true;
+                        livePendingPcmRef.current = [];
+                        livePendingSamplesRef.current = 0;
+                        liveQueuedFlushesRef.current = 0;
+                        liveUploadChainRef.current = Promise.resolve();
+                        recordDebug("live upload session", { session_id: sid }, logDetailRef.current);
+                    }
+                } catch (liveErr) {
+                    recordDebug(
+                        "live session unavailable; memory fallback",
+                        { error: liveErr instanceof Error ? liveErr.message : String(liveErr) },
+                        true,
+                    );
+                    liveSessionIdRef.current = "";
+                }
+
                 const handle = await startRecordCapture(
                     { onPCM: ingestPCM },
                     { sampleRate: TARGET_SAMPLE_RATE },
                 );
                 if (cancelled) {
                     handle.stop();
+                    if (liveSessionIdRef.current) {
+                        const sid = liveSessionIdRef.current;
+                        liveSessionIdRef.current = "";
+                        void CancelRecordedAudioUpload(sid);
+                    }
                     return;
                 }
                 captureRef.current = handle;
@@ -540,6 +1045,7 @@ export function RecordingSessionCard({
                         purpose,
                         mode: handle.mode,
                         sampleRate: handle.sampleRate,
+                        live: !!liveSessionIdRef.current,
                         targetSampleRate: TARGET_SAMPLE_RATE,
                     },
                     logDetailRef.current,
@@ -574,8 +1080,15 @@ export function RecordingSessionCard({
             }
             recordDebug("unmount cancel", { samples: samplesRef.current }, logDetailRef.current);
             chunksRef.current = [];
+            livePendingPcmRef.current = [];
+            livePendingSamplesRef.current = 0;
             const dur = samplesRef.current / TARGET_SAMPLE_RATE;
             samplesRef.current = 0;
+            if (liveSessionIdRef.current) {
+                const sid = liveSessionIdRef.current;
+                liveSessionIdRef.current = "";
+                void abortLiveSession(sid);
+            }
             finishWithResultRef.current({
                 status: "cancelled",
                 title: titleRef.current,
@@ -584,7 +1097,7 @@ export function RecordingSessionCard({
             });
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [active]);
+    }, [active, enqueueLivePCM, abortLiveSession]);
 
     const statusLabel = (() => {
         switch (phase) {

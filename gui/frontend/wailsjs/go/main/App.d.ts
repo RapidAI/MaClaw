@@ -1095,7 +1095,11 @@ export function SaveRecordedAudioBase64(arg1:string,arg2:string):Promise<Record<
 
 export function BeginRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
 
+export function BeginLiveRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
+
 export function AppendRecordedAudioBase64(arg1:string,arg2:string):Promise<void>;
+
+export function AppendRecordedAudioBytes(arg1:string,arg2:string):Promise<void>;
 
 export function FinishRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
 

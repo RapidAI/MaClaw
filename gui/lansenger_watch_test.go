@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +120,57 @@ func TestListWatchChannelsJSON(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"id":"weixin"`) || !strings.Contains(raw, `"id":"hub"`) {
 		t.Fatalf("channels: %s", raw)
+	}
+}
+
+func TestListWatchRosterStableLocalFallbackOrder(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	svc := app.watchService()
+	if err := svc.store.NoteMember("g", "", "z-id", "张三", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.NoteMember("g", "", "a-id", "Alice", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.NoteMember("g", "", "no-name", "", "manual"); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.DirectoryAvailable {
+		t.Fatal("directory must be unavailable without Lansenger credentials")
+	}
+	if len(payload.Members) != 3 || payload.Members[0].StaffID != "a-id" || payload.Members[1].StaffID != "z-id" || payload.Members[2].StaffID != "no-name" {
+		t.Fatalf("members must be deterministic and unnamed entries last: %+v", payload.Members)
+	}
+}
+
+func TestListWatchRosterUnavailableServiceKeepsObjectContract(t *testing.T) {
+	var app *App
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Members            []lansengerwatch.Member `json:"members"`
+		DirectoryAvailable bool                    `json:"directory_available"`
+		Note               string                  `json:"note"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("roster response must stay an object: %q: %v", raw, err)
+	}
+	if payload.DirectoryAvailable || len(payload.Members) != 0 || payload.Note == "" {
+		t.Fatalf("unexpected unavailable payload: %+v", payload)
 	}
 }
 

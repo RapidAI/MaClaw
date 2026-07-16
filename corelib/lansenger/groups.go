@@ -47,6 +47,24 @@ type groupStaffRef struct {
 	Name    string `json:"name"`
 }
 
+// GroupMember is one person or bot returned by the group member directory.
+// FromType is 0 for a person and 1 for a bot; the watch UI only offers people
+// as targets.
+type GroupMember struct {
+	StaffID   string `json:"staff_id"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	OrgName   string `json:"org_name,omitempty"`
+	Role      int    `json:"role"`
+	FromType  int    `json:"from_type"`
+}
+
+// GroupMembersResult is one page of the Lansenger group-member directory.
+type GroupMembersResult struct {
+	TotalMembers int           `json:"total_members"`
+	Members      []GroupMember `json:"members"`
+}
+
 // QueryGroups lists group IDs the bot has joined (paginated).
 // API: GET /v2/groups/fetch
 func (g *Gateway) QueryGroups(ctx context.Context, pageOffset, pageSize int) (total int, groupIDs []string, err error) {
@@ -158,6 +176,73 @@ func (g *Gateway) getGroupInfoOnce(ctx context.Context, groupID string) (*GroupI
 		info.Name = groupID
 	}
 	return info, nil
+}
+
+// GetGroupMembers returns one page of group members.
+// API: GET /v2/groups/{groupId}/members/fetch
+func (g *Gateway) GetGroupMembers(ctx context.Context, groupID string, pageOffset, pageSize int) (*GroupMembersResult, error) {
+	result, err := g.getGroupMembersOnce(ctx, groupID, pageOffset, pageSize)
+	if err != nil && isLansengerTokenExpiredError(err) {
+		g.tokens.clear()
+		return g.getGroupMembersOnce(ctx, groupID, pageOffset, pageSize)
+	}
+	return result, err
+}
+
+func (g *Gateway) getGroupMembersOnce(ctx context.Context, groupID string, pageOffset, pageSize int) (*GroupMembersResult, error) {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil, fmt.Errorf("lansenger: groupId is required")
+	}
+	if pageOffset < 0 {
+		pageOffset = 0
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 100
+	}
+	token, err := g.getAppToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("%s?app_token=%s&page_offset=%d&page_size=%d",
+		g.apiURL("/v2/groups/"+url.PathEscape(groupID)+"/members/fetch"),
+		url.QueryEscape(token),
+		pageOffset,
+		pageSize,
+	)
+	var result struct {
+		ErrCode int    `json:"errCode"`
+		ErrMsg  string `json:"errMsg"`
+		Data    struct {
+			TotalMembers int `json:"totalMembers"`
+			Members      []struct {
+				StaffID   string `json:"staffId"`
+				Name      string `json:"name"`
+				AvatarURL string `json:"avatarUrl"`
+				OrgName   string `json:"orgName"`
+				Role      int    `json:"role"`
+				FromType  int    `json:"fromType"`
+			} `json:"members"`
+		} `json:"data"`
+	}
+	if err := g.doGetJSON(ctx, endpoint, &result); err != nil {
+		return nil, err
+	}
+	if result.ErrCode != 0 {
+		return nil, &APIError{Code: result.ErrCode, Msg: result.ErrMsg}
+	}
+	members := make([]GroupMember, 0, len(result.Data.Members))
+	for _, item := range result.Data.Members {
+		id := strings.TrimSpace(item.StaffID)
+		if id == "" {
+			continue
+		}
+		members = append(members, GroupMember{
+			StaffID: id, Name: strings.TrimSpace(item.Name), AvatarURL: strings.TrimSpace(item.AvatarURL),
+			OrgName: strings.TrimSpace(item.OrgName), Role: item.Role, FromType: item.FromType,
+		})
+	}
+	return &GroupMembersResult{TotalMembers: result.Data.TotalMembers, Members: members}, nil
 }
 
 // ListJoinedGroups pages through all groups the bot has joined and enriches

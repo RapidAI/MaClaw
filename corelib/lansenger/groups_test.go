@@ -116,6 +116,46 @@ func TestQueryGroupsPermissionDenied(t *testing.T) {
 	}
 }
 
+func TestGetGroupMembersPaginatesAndSkipsEmptyIDs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/apptoken/create", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data":    map[string]any{"appToken": "tok", "expiresIn": 3600},
+		})
+	})
+	mux.HandleFunc("/v2/groups/group-1/members/fetch", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("app_token") != "tok" || r.URL.Query().Get("page_offset") != "100" || r.URL.Query().Get("page_size") != "100" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data": map[string]any{
+				"totalMembers": 202,
+				"members": []map[string]any{
+					{"staffId": "staff-1", "name": "Alice", "fromType": 0, "role": 2},
+					{"staffId": "", "name": "ignored", "fromType": 0},
+					{"staffId": "bot-1", "name": "Robot", "fromType": 1},
+				},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	gw := NewGateway(Config{AppID: "app", AppSecret: "sec", ApiGatewayURL: srv.URL}, nil)
+	page, err := gw.GetGroupMembers(context.Background(), "group-1", 100, 0)
+	if err != nil {
+		t.Fatalf("GetGroupMembers: %v", err)
+	}
+	if page.TotalMembers != 202 || len(page.Members) != 2 {
+		t.Fatalf("GetGroupMembers = %#v", page)
+	}
+	if page.Members[0].StaffID != "staff-1" || page.Members[0].Name != "Alice" || page.Members[0].Role != 2 {
+		t.Fatalf("unexpected first member: %#v", page.Members[0])
+	}
+}
+
 func TestListJoinedGroupsPaginatesAndToleratesInfoFailure(t *testing.T) {
 	// 105 IDs => 2 pages with page_size=100
 	const n = 105

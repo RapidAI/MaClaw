@@ -202,7 +202,26 @@ func srvLansengerRuntimeConfigKey(cfg corelib.AppConfig) (string, bool) {
 		}
 	}
 	sort.Strings(ignored)
-	return strings.Join([]string{appID, secret, baseURL, wssURL, strings.Join(ignored, ",")}, "\x00"), true
+	allowed := make([]string, 0, len(cfg.LansengerAllowedGroupIDs))
+	for _, id := range cfg.LansengerAllowedGroupIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed = append(allowed, id)
+		}
+	}
+	sort.Strings(allowed)
+	requireMention := "1"
+	if !cfg.IsLansengerRequireMention() {
+		requireMention = "0"
+	}
+	policyBits := []string{
+		cfg.EffectiveLansengerGroupPolicy(),
+		requireMention,
+		fmt.Sprintf("%v", cfg.LansengerRespondToAtAll),
+		fmt.Sprintf("%v", cfg.LansengerAutoMentionReply),
+		fmt.Sprintf("%v", cfg.LansengerAutoQuoteReply),
+		strings.Join(allowed, ","),
+	}
+	return strings.Join([]string{appID, secret, baseURL, wssURL, strings.Join(ignored, ","), strings.Join(policyBits, "|")}, "\x00"), true
 }
 
 func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
@@ -211,10 +230,22 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 	baseURL := strings.TrimSpace(cfg.LansengerApiGatewayURL())
 	wssURL := strings.TrimSpace(cfg.LansengerWebSocketGatewayURL())
 	var gw *lansenger.Gateway
+	groupOpts := lansenger.GroupChatOptions{
+		Policy:           cfg.EffectiveLansengerGroupPolicy(),
+		RequireMention:   cfg.IsLansengerRequireMention(),
+		RespondToAtAll:   cfg.LansengerRespondToAtAll,
+		AutoMentionReply: cfg.LansengerAutoMentionReply,
+		AutoQuoteReply:   cfg.LansengerAutoQuoteReply,
+		AllowedGroupIDs:  append([]string(nil), cfg.LansengerAllowedGroupIDs...),
+		IgnoredGroupIDs:  append([]string(nil), cfg.LansengerIgnoredGroupIDs...),
+		AppID:            appID,
+	}
 	gw = lansenger.NewGateway(lansenger.Config{AppID: appID, AppSecret: secret, ApiGatewayURL: baseURL, WebSocketBaseURL: wssURL}, func(msg lansenger.IncomingMessage) {
-		if strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") && cfg.IsLansengerGroupIgnored(msg.GroupID) {
-			log.Printf("[im-runtime/lansenger] ignoring configured group: group=%s user=%s", msg.GroupID, msg.FromUserID)
-			return
+		if strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
+			if ok, reason := lansenger.GroupMessageAllowed(msg, groupOpts); !ok {
+				log.Printf("[im-runtime/lansenger] ignoring group message: group=%s user=%s reason=%s", msg.GroupID, msg.FromUserID, reason)
+				return
+			}
 		}
 		contactID := msg.FromUserID
 		if msg.ChatType == "group" && strings.TrimSpace(msg.GroupID) != "" {
@@ -255,11 +286,18 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 			},
 			Reply: func(ctx context.Context, text string) error {
 				isGroup := strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
-				// Group replies prepend "{staffId}问：问题" so interleaved answers
-				// stay attributable to the asker (FromUserID is Lansenger staffId).
-				// Quote the original user text, not the agent-enriched prefix.
-				text = lansenger.MaybeFormatGroupReplyWithQuote(isGroup, msg.FromUserID, msg.Text, text)
-				return gw.SendText(ctx, lansenger.OutgoingText{ToUserID: contactID, Text: text, IsGroup: isGroup})
+				reminder, refMsgID := lansenger.BuildReplyDecorations(msg, groupOpts)
+				if isGroup && !lansenger.PreferNativeGroupQuote(groupOpts, refMsgID) {
+					// Text quote when native quote is off; use original user text.
+					text = lansenger.MaybeFormatGroupReplyWithQuote(true, msg.FromUserID, msg.Text, text)
+				}
+				return gw.SendText(ctx, lansenger.OutgoingText{
+					ToUserID: contactID,
+					Text:     text,
+					IsGroup:  isGroup,
+					Reminder: reminder,
+					RefMsgID: refMsgID,
+				})
 			},
 			ReplyMedia: func(ctx context.Context, data []byte, fileName, mediaType, mimeType string) error {
 				isGroup := strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")

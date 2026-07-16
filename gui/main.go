@@ -184,8 +184,11 @@ func main() {
 			},
 		},
 		AssetServer: &assetserver.Options{
-			Assets:     assets,
-			Middleware: noStoreAssetMiddleware,
+			Assets: assets,
+			// Binary live-record append (POST /maclaw-record/v1/append) + no-store static assets.
+			Middleware: func(next http.Handler) http.Handler {
+				return recordAudioAssetMiddleware(app, noStoreAssetMiddleware(next))
+			},
 		},
 		BackgroundColour: bgColour,
 		Bind: []interface{}{

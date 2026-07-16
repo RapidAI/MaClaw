@@ -29,18 +29,25 @@ const maxRecordedAudioChunkBytes = 512 * 1024
 // Abandon incomplete streaming uploads older than this (abandoned tab / crash).
 const recordedUploadSessionTTL = 4 * time.Hour
 
-// recordedUploadSession streams a WAV from the frontend in base64 chunks so
-// the process never holds a multi-hour base64 string + full decoded buffer.
+// recordedUploadSession streams a WAV from the frontend so the process never
+// holds a multi-hour base64 string + full decoded buffer.
+//
+// Two modes:
+//   - classic: client appends a complete WAV (header+PCM) in chunks
+//   - live:    server writes a placeholder header at Begin; client streams PCM
+//     only during capture; Finish patches the real RIFF sizes
 type recordedUploadSession struct {
-	mu        sync.Mutex
-	id        string
-	title     string
-	path      string // final destination path
-	partPath  string // temp .part while appending
-	file      *os.File
-	written   int64
-	createdAt time.Time
-	closed    bool
+	mu         sync.Mutex
+	id         string
+	title      string
+	path       string // final destination path
+	partPath   string // temp .part while appending
+	file       *os.File
+	written    int64
+	createdAt  time.Time
+	closed     bool
+	live       bool // true → PCM-only appends; header patched on Finish
+	sampleRate int  // live mode sample rate (default 16000)
 }
 
 var (
@@ -75,12 +82,26 @@ func (a *App) SaveRecordedAudioBase64(wavBase64 string, title string) (map[strin
 	return a.finalizeRecordedWAV(wavData, title, time.Now())
 }
 
-// BeginRecordedAudioUpload starts a streaming upload session. Returns session_id.
+// BeginRecordedAudioUpload starts a classic streaming upload (client sends full WAV).
 func (a *App) BeginRecordedAudioUpload(title string) (map[string]interface{}, error) {
+	return a.beginRecordedAudioUpload(title, false, 16000)
+}
+
+// BeginLiveRecordedAudioUpload starts a live capture session: server writes a
+// placeholder WAV header immediately; client streams PCM only during recording
+// (binary HTTP or AppendRecordedAudioBytes). Finish patches RIFF sizes.
+func (a *App) BeginLiveRecordedAudioUpload(title string) (map[string]interface{}, error) {
+	return a.beginRecordedAudioUpload(title, true, 16000)
+}
+
+func (a *App) beginRecordedAudioUpload(title string, live bool, sampleRate int) (map[string]interface{}, error) {
 	if a == nil {
 		return nil, fmt.Errorf("app is nil")
 	}
 	title = strings.TrimSpace(title)
+	if sampleRate <= 0 {
+		sampleRate = 16000
+	}
 	dir := filepath.Join(a.GetDataDir(), "recordings")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create recordings dir: %w", err)
@@ -93,18 +114,31 @@ func (a *App) BeginRecordedAudioUpload(title string) (map[string]interface{}, er
 	finalPath := filepath.Join(dir, name)
 	partPath := finalPath + ".part"
 
-	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// RDWR so live sessions can Seek(0) and patch the WAV header on Finish.
+	f, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("create upload part: %w", err)
 	}
 	id := uuid.NewString()
 	sess := &recordedUploadSession{
-		id:        id,
-		title:     title,
-		path:      finalPath,
-		partPath:  partPath,
-		file:      f,
-		createdAt: now,
+		id:         id,
+		title:      title,
+		path:       finalPath,
+		partPath:   partPath,
+		file:       f,
+		createdAt:  now,
+		live:       live,
+		sampleRate: sampleRate,
+	}
+	if live {
+		// Placeholder header (data size 0); rewritten on Finish with real PCM length.
+		hdr := makeWAVHeaderBytes(0, sampleRate)
+		if _, err := f.Write(hdr); err != nil {
+			_ = f.Close()
+			_ = os.Remove(partPath)
+			return nil, fmt.Errorf("write placeholder wav header: %w", err)
+		}
+		sess.written = int64(len(hdr))
 	}
 	recordedUploadMu.Lock()
 	pruneStaleRecordedUploadsLocked(time.Now())
@@ -119,12 +153,17 @@ func (a *App) BeginRecordedAudioUpload(title string) (map[string]interface{}, er
 	recordedUploadMu.Unlock()
 
 	if recordDetailEnabled() {
-		log.Printf("[record-audio] upload begin session=%s title=%q part=%s", id, title, partPath)
+		log.Printf("[record-audio] upload begin session=%s live=%v title=%q part=%s", id, live, title, partPath)
 	}
-	return map[string]interface{}{
-		"session_id": id,
-		"title":      title,
-	}, nil
+	out := map[string]interface{}{
+		"session_id":  id,
+		"title":       title,
+		"live":        live,
+		"sample_rate": sampleRate,
+		// FE uses this path for true binary POST (no base64).
+		"append_path": "/maclaw-record/v1/append",
+	}
+	return out, nil
 }
 
 // AppendRecordedAudioBase64 appends one base64-encoded binary chunk to an upload.
@@ -137,18 +176,37 @@ func (a *App) AppendRecordedAudioBase64(sessionID, chunkBase64 string) error {
 	if sessionID == "" || chunkBase64 == "" {
 		return fmt.Errorf("session_id and chunk required")
 	}
-	if len(chunkBase64) > maxRecordedAudioChunkBytes*4/3+1024 {
-		return fmt.Errorf("chunk too large")
+	// Base64 expands ~4/3; reject oversized payloads before decode to bound peak memory.
+	maxB64 := maxRecordedAudioChunkBytes*4/3 + 1024
+	if len(chunkBase64) > maxB64 {
+		return fmt.Errorf("chunk too large: base64 len %d (max %d ≈ %d binary bytes)",
+			len(chunkBase64), maxB64, maxRecordedAudioChunkBytes)
 	}
 	raw, err := base64.StdEncoding.DecodeString(chunkBase64)
 	if err != nil {
 		return fmt.Errorf("decode chunk: %w", err)
 	}
+	return a.appendRecordedAudioRaw(sessionID, raw)
+}
+
+// AppendRecordedAudioBytes appends raw bytes (Wails maps []byte ↔ base64 string).
+// Prefer the binary HTTP append endpoint for large live PCM to avoid base64 overhead.
+func (a *App) AppendRecordedAudioBytes(sessionID string, data []byte) error {
+	if a == nil {
+		return fmt.Errorf("app is nil")
+	}
+	return a.appendRecordedAudioRaw(strings.TrimSpace(sessionID), data)
+}
+
+func (a *App) appendRecordedAudioRaw(sessionID string, raw []byte) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id required")
+	}
 	if len(raw) == 0 {
 		return nil
 	}
 	if len(raw) > maxRecordedAudioChunkBytes {
-		return fmt.Errorf("chunk too large")
+		return fmt.Errorf("chunk too large: %d bytes (max %d)", len(raw), maxRecordedAudioChunkBytes)
 	}
 
 	sess := lookupRecordedUpload(sessionID)
@@ -160,14 +218,27 @@ func (a *App) AppendRecordedAudioBase64(sessionID, chunkBase64 string) error {
 	if sess.closed || sess.file == nil {
 		return fmt.Errorf("upload session closed")
 	}
+	// Live mode streams PCM16 only — odd lengths would desync the sample stream.
+	if sess.live && len(raw)%2 != 0 {
+		return fmt.Errorf("live pcm chunk length must be even (got %d)", len(raw))
+	}
 	if sess.written+int64(len(raw)) > maxRecordedAudioBytes {
 		return fmt.Errorf("audio data too large (max %d bytes)", maxRecordedAudioBytes)
 	}
-	n, err := sess.file.Write(raw)
-	if err != nil {
-		return fmt.Errorf("write chunk: %w", err)
+	// Write full chunk (os.File.Write may be short without error on some platforms).
+	for off := 0; off < len(raw); {
+		n, err := sess.file.Write(raw[off:])
+		if n > 0 {
+			off += n
+			sess.written += int64(n)
+		}
+		if err != nil {
+			return fmt.Errorf("write chunk: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("write chunk: short write with no progress")
+		}
 	}
-	sess.written += int64(n)
 	return nil
 }
 
@@ -190,12 +261,59 @@ func (a *App) FinishRecordedAudioUpload(sessionID string) (map[string]interface{
 	}
 	sess.closed = true
 	if sess.file != nil {
-		_ = sess.file.Close()
+		// Live sessions streamed PCM only — patch RIFF header with final sizes.
+		if sess.live {
+			if sess.written < 44 {
+				_ = sess.file.Close()
+				sess.file = nil
+				_ = os.Remove(sess.partPath)
+				return nil, fmt.Errorf("audio data too short")
+			}
+			dataBytes := sess.written - 44
+			sr := sess.sampleRate
+			if sr <= 0 {
+				sr = 16000
+			}
+			if _, err := sess.file.Seek(0, io.SeekStart); err != nil {
+				_ = sess.file.Close()
+				sess.file = nil
+				_ = os.Remove(sess.partPath)
+				return nil, fmt.Errorf("seek wav header: %w", err)
+			}
+			hdr := makeWAVHeaderBytes(dataBytes, sr)
+			if _, err := sess.file.Write(hdr); err != nil {
+				_ = sess.file.Close()
+				sess.file = nil
+				_ = os.Remove(sess.partPath)
+				return nil, fmt.Errorf("patch wav header: %w", err)
+			}
+			// written already counts header+pcm; sizes only changed in-place.
+		}
+		// Flush to stable storage before rename so a crash mid-finalize
+		// cannot leave a truncated product file that looks complete.
+		if err := sess.file.Sync(); err != nil {
+			_ = sess.file.Close()
+			sess.file = nil
+			_ = os.Remove(sess.partPath)
+			return nil, fmt.Errorf("sync upload part: %w", err)
+		}
+		if err := sess.file.Close(); err != nil {
+			sess.file = nil
+			_ = os.Remove(sess.partPath)
+			return nil, fmt.Errorf("close upload part: %w", err)
+		}
 		sess.file = nil
 	}
 	if sess.written < 44 {
 		_ = os.Remove(sess.partPath)
 		return nil, fmt.Errorf("audio data too short")
+	}
+	if fi, err := os.Stat(sess.partPath); err != nil {
+		_ = os.Remove(sess.partPath)
+		return nil, fmt.Errorf("stat upload part: %w", err)
+	} else if fi.Size() != sess.written {
+		_ = os.Remove(sess.partPath)
+		return nil, fmt.Errorf("upload size mismatch: disk %d tracked %d", fi.Size(), sess.written)
 	}
 
 	// Move to final path first (rename is O(1) on same volume).
@@ -544,6 +662,50 @@ func writeRecordDumpIndex(meta map[string]interface{}, safeTitle, stamp string) 
 		return "", err
 	}
 	return path, nil
+}
+
+// putLE32u writes v as little-endian uint32 at b[off:].
+func putLE32u(b []byte, off int, v uint32) {
+	b[off] = byte(v)
+	b[off+1] = byte(v >> 8)
+	b[off+2] = byte(v >> 16)
+	b[off+3] = byte(v >> 24)
+}
+
+// makeWAVHeaderBytes builds a 44-byte mono PCM16 LE WAV header.
+func makeWAVHeaderBytes(dataBytes int64, sampleRate int) []byte {
+	if sampleRate <= 0 {
+		sampleRate = 16000
+	}
+	if dataBytes < 0 {
+		dataBytes = 0
+	}
+	// RIFF size field is uint32; clamp to avoid wrap on pathological lengths.
+	const maxU32 = int64(^uint32(0))
+	riffSize := int64(36) + dataBytes
+	if riffSize > maxU32 {
+		riffSize = maxU32
+	}
+	db := dataBytes
+	if db > maxU32 {
+		db = maxU32
+	}
+	b := make([]byte, 44)
+	copy(b[0:], []byte("RIFF"))
+	putLE32u(b, 4, uint32(riffSize))
+	copy(b[8:], []byte("WAVE"))
+	copy(b[12:], []byte("fmt "))
+	putLE32u(b, 16, 16) // PCM fmt chunk size
+	// format=1 PCM, channels=1, sampleRate, byteRate=sr*2, blockAlign=2, bits=16
+	b[20], b[21] = 1, 0
+	b[22], b[23] = 1, 0
+	putLE32u(b, 24, uint32(sampleRate))
+	putLE32u(b, 28, uint32(sampleRate*2))
+	b[32], b[33] = 2, 0
+	b[34], b[35] = 16, 0
+	copy(b[36:], []byte("data"))
+	putLE32u(b, 40, uint32(db))
+	return b
 }
 
 type recordWAVHeaderInfo struct {

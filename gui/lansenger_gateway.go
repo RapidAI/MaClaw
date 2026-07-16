@@ -72,10 +72,11 @@ const (
 )
 
 type lansengerReplyRoute struct {
-	isGroup  bool
-	senderID string // Lansenger staffId of the asker (group replies)
-	question string // original user question text (group replies)
-	seenAt   time.Time
+	isGroup   bool
+	senderID  string // Lansenger staffId of the asker (group replies)
+	question  string // original user question text (group replies)
+	messageID string // platform message id for native refMsgId quote
+	seenAt    time.Time
 }
 
 const maxLansengerReplyRoutes = 1024
@@ -358,12 +359,7 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		log.Printf("[lansenger-mgr] LoadConfig error: %v", err)
 		return
 	}
-	// Per-group ignore list: bot stays in the Lansenger group but never answers.
-	// Applied before mention gating so ignored groups generate no local/Hub work.
-	if isLansengerGroupMessage(msg) && cfg.IsLansengerGroupIgnored(msg.GroupID) {
-		log.Printf("[lansenger-mgr] ignoring configured group: group=%s user=%s", msg.GroupID, msg.FromUserID)
-		return
-	}
+	groupOpts := lansengerGroupChatOptionsFromConfig(&cfg)
 	// Remember last private peer so proactive self-notify can reach "my" 蓝信会话.
 	if !isLansengerGroupMessage(msg) {
 		if uid := strings.TrimSpace(msg.FromUserID); uid != "" {
@@ -380,12 +376,13 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 			svc.processMessage(msg)
 		}
 	}
-	// Groups are intentionally mention-gated for agent/survey routing.  BlueX's
-	// group configuration defines requireMention as the switch that keeps a bot
-	// from responding to every conversation in the group.
-	if isLansengerGroupMessage(msg) && !lansengerGroupMessageMentionsBot(msg, cfg.LansengerAppID) {
-		log.Printf("[lansenger-mgr] ignoring non-mentioned group message (agent): group=%s user=%s", msg.GroupID, msg.FromUserID)
-		return
+	// Group policy + mention gate (OpenClaw / 蓝信文档: groupPolicy, requireMention,
+	// respondToAtAll, allowlist, ignore list). Watch above intentionally runs first.
+	if isLansengerGroupMessage(msg) {
+		if ok, reason := lansenger.GroupMessageAllowed(msg, groupOpts); !ok {
+			log.Printf("[lansenger-mgr] ignoring group message (agent): group=%s user=%s reason=%s", msg.GroupID, msg.FromUserID, reason)
+			return
+		}
 	}
 	// Survey intercept: after mention gate, before passthrough / local agent / Hub LLM.
 	if m.tryHandleSurveyMessage(msg) {
@@ -490,33 +487,50 @@ func (m *lansengerGatewayManager) lookupGroupInfo(groupID string) *lansenger.Gro
 	return info
 }
 
-// lansengerGroupMessageMentionsBot matches the structured mention metadata
-// emitted by the Lansenger gateway. App IDs are commonly composite values
-// (for example, organization-bot), while reminder.botId may contain the
-// complete bot component after the organization prefix, so accept both forms.
-// Do not infer mentions from free text: that would let ordinary conversation
-// accidentally invoke the bot.
+// lansengerGroupMessageMentionsBot is a thin wrapper kept for existing tests.
 func lansengerGroupMessageMentionsBot(msg lansenger.IncomingMessage, appID string) bool {
-	// Lansenger emits isAtMe specifically for the current bot. It is the
-	// authoritative signal and avoids coupling the gateway to how App IDs and
-	// bot IDs are formatted in a particular deployment.
-	if msg.IsAtMe {
-		return true
+	return lansenger.GroupMessageMentionsBot(msg, appID)
+}
+
+// lansengerGroupChatOptionsFromConfig maps AppConfig to package-level options.
+func lansengerGroupChatOptionsFromConfig(cfg *corelib.AppConfig) lansenger.GroupChatOptions {
+	if cfg == nil {
+		return lansenger.GroupChatOptions{RequireMention: true, Policy: lansenger.GroupPolicyOpen}
 	}
-	appID = strings.TrimSpace(appID)
-	if appID == "" {
-		return false
+	return lansenger.GroupChatOptions{
+		Policy:           cfg.EffectiveLansengerGroupPolicy(),
+		RequireMention:   cfg.IsLansengerRequireMention(),
+		RespondToAtAll:   cfg.LansengerRespondToAtAll,
+		AutoMentionReply: cfg.LansengerAutoMentionReply,
+		AutoQuoteReply:   cfg.LansengerAutoQuoteReply,
+		AllowedGroupIDs:  append([]string(nil), cfg.LansengerAllowedGroupIDs...),
+		IgnoredGroupIDs:  append([]string(nil), cfg.LansengerIgnoredGroupIDs...),
+		AppID:            strings.TrimSpace(cfg.LansengerAppID),
 	}
-	candidates := map[string]struct{}{strings.ToLower(appID): {}}
-	if separator := strings.IndexAny(appID, "-_:."); separator >= 0 && separator+1 < len(appID) {
-		candidates[strings.ToLower(strings.TrimSpace(appID[separator+1:]))] = struct{}{}
+}
+
+// buildLansengerOutgoingText builds a reply with optional native @mention and quote.
+// When AutoQuoteReply is on and MessageID is present, text-based "xx问：" quotes are
+// skipped to avoid double-quoting. systemNotice disables @/native-quote (status text).
+func buildLansengerOutgoingText(msg lansenger.IncomingMessage, text string, opts lansenger.GroupChatOptions) lansenger.OutgoingText {
+	return buildLansengerOutgoingTextEx(msg, text, opts, false)
+}
+
+func buildLansengerOutgoingTextEx(msg lansenger.IncomingMessage, text string, opts lansenger.GroupChatOptions, systemNotice bool) lansenger.OutgoingText {
+	reminder, refMsgID := lansenger.BuildReplyDecorationsEx(msg, opts, systemNotice)
+	isGroup := isLansengerGroupMessage(msg)
+	// System notices still get a plain text attribution in groups so members know
+	// which ask failed; native refMsgId is skipped for systemNotice.
+	if isGroup && !lansenger.PreferNativeGroupQuote(opts, refMsgID) {
+		text = lansenger.MaybeFormatGroupReplyWithQuote(true, msg.FromUserID, msg.Text, text)
 	}
-	for _, mentioned := range msg.MentionedBots {
-		if _, ok := candidates[strings.ToLower(strings.TrimSpace(mentioned.ID))]; ok {
-			return true
-		}
+	return lansenger.OutgoingText{
+		ToUserID: lansengerReplyTarget(msg),
+		Text:     text,
+		IsGroup:  isGroup,
+		Reminder: reminder,
+		RefMsgID: refMsgID,
 	}
-	return false
 }
 
 func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMessage) {
@@ -526,11 +540,8 @@ func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMes
 	if gw == nil {
 		return
 	}
-	_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-		ToUserID: lansengerReplyTarget(msg),
-		Text:     m.groupReplyText(msg, "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。"),
-		IsGroup:  isLansengerGroupMessage(msg),
-	})
+	_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+		msg, "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。", m.currentGroupOpts(), true))
 }
 
 func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
@@ -565,9 +576,9 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 		msgType = msg.MediaType
 	}
 	replyTarget := lansengerReplyTarget(msg)
-	// Cache the original user question for group reply quotes — not the
-	// agent-enriched text that may include group metadata prefixes.
-	m.rememberReplyRoute(replyTarget, isLansengerGroupMessage(msg), msg.FromUserID, msg.Text)
+	// Cache the original user question + message id for group reply quotes —
+	// not the agent-enriched text that may include group metadata prefixes.
+	m.rememberReplyRoute(replyTarget, isLansengerGroupMessage(msg), msg.FromUserID, msg.Text, msg.MessageID)
 	payload := map[string]any{
 		// platform_uid remains the human sender for Hub identity, binding and
 		// per-user routing. The separate reply target preserves group delivery.
@@ -604,7 +615,7 @@ func lansengerReplyTarget(msg lansenger.IncomingMessage) string {
 	return msg.FromUserID
 }
 
-func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool, senderID, question string) {
+func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool, senderID, question, messageID string) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return
@@ -628,6 +639,7 @@ func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool
 	if isGroup {
 		route.senderID = strings.TrimSpace(senderID)
 		route.question = strings.TrimSpace(question)
+		route.messageID = strings.TrimSpace(messageID)
 	}
 	m.replyRoutes[target] = route
 }
@@ -639,20 +651,36 @@ func (m *lansengerGatewayManager) isGroupReplyTarget(target string) bool {
 	return ok && route.isGroup
 }
 
-func (m *lansengerGatewayManager) groupReplyQuote(target string) (senderID, question string, ok bool) {
+func (m *lansengerGatewayManager) groupReplyQuote(target string) (senderID, question, messageID string, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	route, found := m.replyRoutes[strings.TrimSpace(target)]
 	if !found || !route.isGroup {
-		return "", "", false
+		return "", "", "", false
 	}
-	return route.senderID, route.question, true
+	return route.senderID, route.question, route.messageID, true
 }
 
 // groupReplyText prefixes group replies with "{staffId}问：问题" so interleaved
 // group answers remain attributable. Private replies are unchanged.
+// Prefer native RefMsgID quotes when AutoQuoteReply is enabled.
 func (m *lansengerGatewayManager) groupReplyText(msg lansenger.IncomingMessage, reply string) string {
+	opts := m.currentGroupOpts()
+	if lansenger.PreferNativeGroupQuote(opts, msg.MessageID) {
+		return strings.TrimSpace(reply)
+	}
 	return lansenger.MaybeFormatGroupReplyWithQuote(isLansengerGroupMessage(msg), msg.FromUserID, msg.Text, reply)
+}
+
+func (m *lansengerGatewayManager) currentGroupOpts() lansenger.GroupChatOptions {
+	if m == nil || m.app == nil {
+		return lansenger.GroupChatOptions{RequireMention: true, Policy: lansenger.GroupPolicyOpen}
+	}
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		return lansenger.GroupChatOptions{RequireMention: true, Policy: lansenger.GroupPolicyOpen}
+	}
+	return lansengerGroupChatOptionsFromConfig(&cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -746,11 +774,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 			if reply == "" {
 				reply = "(no output)"
 			}
-			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-				ToUserID: lansengerReplyTarget(msg),
-				Text:     m.groupReplyText(msg, reply),
-				IsGroup:  isLansengerGroupMessage(msg),
-			})
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingText(msg, reply, m.currentGroupOpts()))
 		}
 		return
 	}
@@ -759,11 +783,8 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		gw := m.gateway
 		m.mu.Unlock()
 		if gw != nil {
-			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
-				ToUserID: lansengerReplyTarget(msg),
-				Text:     m.groupReplyText(msg, i18n.T(i18n.MsgLLMNotConfigured, "zh")),
-				IsGroup:  isLansengerGroupMessage(msg),
-			})
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingText(
+				msg, i18n.T(i18n.MsgLLMNotConfigured, "zh"), m.currentGroupOpts()))
 		}
 		return
 	}
@@ -891,15 +912,9 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
-		// Quote the original question first so group members can tell which ask
-		// this answer belongs to; applied after Markdown strip so the quote
-		// markers are not removed.
-		text = m.groupReplyText(msg, text)
-		if err := gw.SendText(ctx, lansenger.OutgoingText{
-			ToUserID: toUserID,
-			Text:     text,
-			IsGroup:  isGroup,
-		}); err != nil {
+		// Quote / @mention: native refMsgId + reminder when configured; else text quote.
+		opts := m.currentGroupOpts()
+		if err := gw.SendText(ctx, buildLansengerOutgoingText(msg, text, opts)); err != nil {
 			log.Printf("[lansenger-mgr] SendText error: %v", err)
 		}
 	} else if len(resp.Actions) > 0 {
@@ -908,19 +923,11 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		_ = gw.SendText(ctx, lansenger.OutgoingText{
-			ToUserID: toUserID,
-			Text:     m.groupReplyText(msg, text),
-			IsGroup:  isGroup,
-		})
+		_ = gw.SendText(ctx, buildLansengerOutgoingText(msg, text, m.currentGroupOpts()))
 	}
 
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
-		_ = gw.SendText(ctx, lansenger.OutgoingText{
-			ToUserID: toUserID,
-			Text:     m.groupReplyText(msg, textutil.StripMarkdown(resp.Error)),
-			IsGroup:  isGroup,
-		})
+		_ = gw.SendText(ctx, buildLansengerOutgoingTextEx(msg, textutil.StripMarkdown(resp.Error), m.currentGroupOpts(), true))
 	}
 
 	if resp.ImageKey != "" {
@@ -1015,19 +1022,36 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
 	case gatewayReplyTypeText:
 		text := textutil.StripMarkdown(reply.Text)
+		opts := m.currentGroupOpts()
+		var reminder *lansenger.OutgoingReminder
+		var refMsgID string
 		if isGroup {
 			// Hub replies only identify the conversation; recover the original
-			// question from the route cache populated when the message arrived.
-			// FormatGroupReplyWithQuote is idempotent so multi-chunk hub replies
-			// that already carry a quote are left alone.
-			if sender, question, ok := m.groupReplyQuote(reply.PlatformUID); ok {
-				text = lansenger.FormatGroupReplyWithQuote(sender, question, text)
+			// question / message id from the route cache.
+			if sender, question, msgID, ok := m.groupReplyQuote(reply.PlatformUID); ok {
+				refMsgID = msgID
+				if !lansenger.PreferNativeGroupQuote(opts, refMsgID) {
+					text = lansenger.FormatGroupReplyWithQuote(sender, question, text)
+				}
+				if opts.AutoMentionReply && strings.TrimSpace(sender) != "" {
+					reminder = &lansenger.OutgoingReminder{UserIDs: []string{sender}}
+				}
+				if opts.AutoQuoteReply {
+					refMsgID = strings.TrimSpace(msgID)
+				}
+			}
+		} else if opts.AutoMentionReply {
+			// DM auto-@ is rarely needed for personal bots but supported by the doc.
+			if uid := strings.TrimSpace(reply.PlatformUID); uid != "" {
+				reminder = &lansenger.OutgoingReminder{UserIDs: []string{uid}}
 			}
 		}
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: reply.PlatformUID,
 			Text:     text,
 			IsGroup:  isGroup,
+			Reminder: reminder,
+			RefMsgID: refMsgID,
 		})
 	case gatewayReplyTypeImage:
 		data, err := base64.StdEncoding.DecodeString(reply.ImageData)

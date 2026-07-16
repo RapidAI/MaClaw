@@ -70,8 +70,8 @@ func TestLansengerRestartCooldown(t *testing.T) {
 
 func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
-	m.rememberReplyRoute("group-1", true, "staff-abc", "今天天气？")
-	m.rememberReplyRoute("user-1", false, "", "")
+	m.rememberReplyRoute("group-1", true, "staff-abc", "今天天气？", "mid-1")
+	m.rememberReplyRoute("user-1", false, "", "", "")
 	if !m.isGroupReplyTarget("group-1") {
 		t.Fatal("group reply route was not retained")
 	}
@@ -81,11 +81,11 @@ func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 	if m.isGroupReplyTarget("unknown") {
 		t.Fatal("unknown reply route must default to private")
 	}
-	sender, question, ok := m.groupReplyQuote("group-1")
-	if !ok || sender != "staff-abc" || question != "今天天气？" {
-		t.Fatalf("group quote cache = (%q, %q, %v)", sender, question, ok)
+	sender, question, msgID, ok := m.groupReplyQuote("group-1")
+	if !ok || sender != "staff-abc" || question != "今天天气？" || msgID != "mid-1" {
+		t.Fatalf("group quote cache = (%q, %q, %q, %v)", sender, question, msgID, ok)
 	}
-	if _, _, ok := m.groupReplyQuote("user-1"); ok {
+	if _, _, _, ok := m.groupReplyQuote("user-1"); ok {
 		t.Fatal("private route must not expose a group quote")
 	}
 }
@@ -93,7 +93,7 @@ func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 func TestLansengerReplyRouteHasBoundedCache(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
 	for i := 0; i < maxLansengerReplyRoutes+1; i++ {
-		m.rememberReplyRoute(fmt.Sprintf("target-%d", i), i%2 == 0, "", "")
+		m.rememberReplyRoute(fmt.Sprintf("target-%d", i), i%2 == 0, "", "", "")
 	}
 	if got := len(m.replyRoutes); got != maxLansengerReplyRoutes {
 		t.Fatalf("reply route cache size = %d, want %d", got, maxLansengerReplyRoutes)
@@ -102,7 +102,7 @@ func TestLansengerReplyRouteHasBoundedCache(t *testing.T) {
 
 func TestLansengerReplyRoutesCanBeClearedOnLifecycleReset(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
-	m.rememberReplyRoute("group-1", true, "A", "q")
+	m.rememberReplyRoute("group-1", true, "A", "q", "m1")
 	clear(m.replyRoutes)
 	if m.isGroupReplyTarget("group-1") {
 		t.Fatal("cleared reply route was retained")

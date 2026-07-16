@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseWailsJSON } from '../UtilitiesPage';
+import { parseWailsJSON } from '../utilitiesParse';
 
 describe('parseWailsJSON', () => {
     it('parses Hub list string into surveys array', () => {

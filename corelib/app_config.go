@@ -197,6 +197,20 @@ type AppConfig struct {
 	// LansengerIgnoredGroupIDs lists group IDs the bot should not respond to.
 	// The bot remains in the group on the platform; only local handling is suppressed.
 	LansengerIgnoredGroupIDs []string `json:"lansenger_ignored_group_ids,omitempty"`
+	// Lansenger group-chat policy (aligned with OpenClaw 蓝信频道文档):
+	// open | allowlist | disabled. Empty defaults to open.
+	LansengerGroupPolicy string `json:"lansenger_group_policy,omitempty"`
+	// LansengerAllowedGroupIDs is used when group policy is allowlist.
+	LansengerAllowedGroupIDs []string `json:"lansenger_allowed_group_ids,omitempty"`
+	// LansengerRequireMention: when true (default), group messages must @ the bot.
+	// Nil means default true. Set false to answer every group message.
+	LansengerRequireMention *bool `json:"lansenger_require_mention,omitempty"`
+	// LansengerRespondToAtAll: when require-mention is on, also treat @所有人 as a trigger.
+	LansengerRespondToAtAll bool `json:"lansenger_respond_to_at_all,omitempty"`
+	// LansengerAutoMentionReply: replies @ the original sender via platform reminder API.
+	LansengerAutoMentionReply bool `json:"lansenger_auto_mention_reply,omitempty"`
+	// LansengerAutoQuoteReply: replies attach refMsgId for a native platform quote.
+	LansengerAutoQuoteReply bool `json:"lansenger_auto_quote_reply,omitempty"`
 	// IM 闂?local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode     *bool `json:"qqbot_local_mode,omitempty"`     // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode  *bool `json:"telegram_local_mode,omitempty"`  // nil = auto-detect, true = local, false = hub
@@ -1236,8 +1250,35 @@ func (c *AppConfig) IsLansengerGroupIgnored(groupID string) bool {
 	return false
 }
 
-// MaxLansengerIgnoredGroups caps how many groups can be locally silenced.
+// IsLansengerRequireMention returns whether group messages must @ the bot.
+// Default true when unset (OpenClaw / 蓝信文档 default).
+func (c *AppConfig) IsLansengerRequireMention() bool {
+	if c == nil || c.LansengerRequireMention == nil {
+		return true
+	}
+	return *c.LansengerRequireMention
+}
+
+// EffectiveLansengerGroupPolicy returns open | allowlist | disabled.
+func (c *AppConfig) EffectiveLansengerGroupPolicy() string {
+	if c == nil {
+		return "open"
+	}
+	switch strings.ToLower(strings.TrimSpace(c.LansengerGroupPolicy)) {
+	case "allowlist", "allow", "whitelist":
+		return "allowlist"
+	case "disabled", "off", "none":
+		return "disabled"
+	default:
+		return "open"
+	}
+}
+
+// MaxLansengerIgnoredGroups caps how many groups can be locally silenced / allowlisted.
 const MaxLansengerIgnoredGroups = 500
+
+// MaxLansengerAllowedGroups caps the allowlist size (same order of magnitude as ignore).
+const MaxLansengerAllowedGroups = MaxLansengerIgnoredGroups
 
 // SetLansengerGroupIgnored adds or removes groupID from the ignore list.
 // Returns true when the list changed.
@@ -1245,25 +1286,60 @@ func (c *AppConfig) SetLansengerGroupIgnored(groupID string, ignored bool) bool 
 	if c == nil {
 		return false
 	}
+	return setLansengerIDList(&c.LansengerIgnoredGroupIDs, groupID, ignored, MaxLansengerIgnoredGroups)
+}
+
+// IsLansengerGroupAllowed reports whether groupID is on the allowlist
+// (used when group policy is allowlist).
+func (c *AppConfig) IsLansengerGroupAllowed(groupID string) bool {
+	if c == nil {
+		return false
+	}
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return false
 	}
-	if ignored {
-		if c.IsLansengerGroupIgnored(groupID) {
-			return false
+	for _, id := range c.LansengerAllowedGroupIDs {
+		if strings.TrimSpace(id) == groupID {
+			return true
 		}
-		if len(c.LansengerIgnoredGroupIDs) >= MaxLansengerIgnoredGroups {
-			// Drop oldest entry so the newest ignore still applies.
-			c.LansengerIgnoredGroupIDs = append([]string(nil), c.LansengerIgnoredGroupIDs[1:]...)
+	}
+	return false
+}
+
+// SetLansengerGroupAllowed adds or removes groupID from the allowlist.
+// Returns true when the list changed.
+func (c *AppConfig) SetLansengerGroupAllowed(groupID string, allowed bool) bool {
+	if c == nil {
+		return false
+	}
+	return setLansengerIDList(&c.LansengerAllowedGroupIDs, groupID, allowed, MaxLansengerAllowedGroups)
+}
+
+func setLansengerIDList(list *[]string, groupID string, present bool, maxN int) bool {
+	if list == nil {
+		return false
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return false
+	}
+	if present {
+		for _, id := range *list {
+			if strings.TrimSpace(id) == groupID {
+				return false
+			}
 		}
-		// Copy-on-write so callers holding an older config snapshot are unaffected.
-		c.LansengerIgnoredGroupIDs = append(append([]string(nil), c.LansengerIgnoredGroupIDs...), groupID)
+		cur := *list
+		if maxN > 0 && len(cur) >= maxN {
+			cur = append([]string(nil), cur[1:]...)
+		}
+		*list = append(append([]string(nil), cur...), groupID)
 		return true
 	}
-	out := make([]string, 0, len(c.LansengerIgnoredGroupIDs))
+	out := make([]string, 0, len(*list))
 	changed := false
-	for _, id := range c.LansengerIgnoredGroupIDs {
+	for _, id := range *list {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
@@ -1278,9 +1354,9 @@ func (c *AppConfig) SetLansengerGroupIgnored(groupID string, ignored bool) bool 
 		return false
 	}
 	if len(out) == 0 {
-		c.LansengerIgnoredGroupIDs = nil
+		*list = nil
 	} else {
-		c.LansengerIgnoredGroupIDs = out
+		*list = out
 	}
 	return true
 }

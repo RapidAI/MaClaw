@@ -12092,6 +12092,35 @@ body {
     overflow: hidden;
 }
 
+/* Lansenger Follow panel — wider sheet for job editor layout */
+.im-watch-modal {
+    width: min(1100px, 100%);
+    max-height: min(88vh, 900px);
+    outline: none; /* focused via tabIndex for a11y, no ugly ring on container */
+}
+
+.im-watch-modal:focus-visible {
+    box-shadow:
+        var(--shadow-lg, 0 18px 48px rgba(0, 0, 0, 0.22)),
+        0 0 0 2px color-mix(in srgb, var(--theme-primary) 55%, transparent);
+}
+
+.im-watch-modal__header {
+    flex-shrink: 0;
+}
+
+.im-watch-modal__body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px 12px 16px;
+    -webkit-overflow-scrolling: touch;
+}
+
+.im-watch-modal__body .utilities-page {
+    min-height: 0;
+}
+
 .im-groups-modal__header,
 .im-groups-modal__footer {
     display: flex;
@@ -12259,6 +12288,10 @@ body {
         padding: 10px;
     }
     .im-groups-modal {
+        max-height: calc(100vh - 20px);
+    }
+    .im-watch-modal {
+        width: 100%;
         max-height: calc(100vh - 20px);
     }
     .im-groups-table__desc {

@@ -103,11 +103,24 @@ type MentionedBot struct {
 	Name string `json:"botName"`
 }
 
+// OutgoingReminder is the Lansenger "reminder" payload used to @mention members.
+// The platform auto-prepends @姓名; message text does not need to include names.
+// Matches OpenClaw / 蓝信 open API: { all, userIds, botIds }.
+type OutgoingReminder struct {
+	All     bool     `json:"all,omitempty"`
+	UserIDs []string `json:"userIds,omitempty"`
+	BotIDs  []string `json:"botIds,omitempty"`
+}
+
 // OutgoingText is a plain text message to send.
 type OutgoingText struct {
 	ToUserID string
 	Text     string
 	IsGroup  bool
+	// Reminder optionally @mentions users/bots (or @all) when sending.
+	Reminder *OutgoingReminder
+	// RefMsgID attaches a native quote/reply to an inbound platform message ID.
+	RefMsgID string
 }
 
 // OutgoingMedia is a media message to send.
@@ -1292,6 +1305,8 @@ func (g *Gateway) apiURL(path string) string {
 }
 
 // SendText sends a text message to a user or group.
+// Optional Reminder (@mention) and RefMsgID (native quote) follow the蓝信 open
+// API / OpenClaw Lansenger channel contract.
 func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 	if strings.TrimSpace(msg.ToUserID) == "" {
 		return fmt.Errorf("lansenger: recipient is required")
@@ -1303,42 +1318,96 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 	if err != nil {
 		return err
 	}
-
-	send := func(tok string) error {
-		if msg.IsGroup {
-			return g.sendGroupMessage(ctx, tok, msg.ToUserID, "formatText", map[string]any{
-				"formatText": map[string]any{"formatType": 1, "text": msg.Text},
-			})
-		}
-		return g.sendPrivateMessage(ctx, tok, msg.ToUserID, "formatText", map[string]any{
-			"formatText": map[string]any{"formatType": 1, "text": msg.Text},
-		})
-	}
-
-	if err := send(token); err != nil {
-		if isLansengerTokenExpiredError(err) {
-			log.Printf("[lansenger] token expired while sending text, refreshing and retrying once")
-			g.tokens.clear()
-			freshToken, tokenErr := g.getAppToken(ctx)
-			if tokenErr != nil {
-				return tokenErr
-			}
-			return send(freshToken)
-		}
-		return err
-	}
-	return nil
+	return g.sendTextRetrying(ctx, token, msg)
 }
 
-func (g *Gateway) sendTextWithToken(ctx context.Context, token string, msg OutgoingText) error {
-	if msg.IsGroup {
-		return g.sendGroupMessage(ctx, token, msg.ToUserID, "formatText", map[string]any{
-			"formatText": map[string]any{"formatType": 1, "text": msg.Text},
-		})
+// sendTextRetrying sends once, refreshes an expired token, and drops reminder
+// once if the deployment rejects formatText+reminder.
+func (g *Gateway) sendTextRetrying(ctx context.Context, token string, msg OutgoingText) error {
+	err := g.sendTextWithToken(ctx, token, msg, true)
+	if err == nil {
+		return nil
 	}
-	return g.sendPrivateMessage(ctx, token, msg.ToUserID, "formatText", map[string]any{
-		"formatText": map[string]any{"formatType": 1, "text": msg.Text},
-	})
+	if isLansengerTokenExpiredError(err) {
+		log.Printf("[lansenger] token expired while sending text, refreshing and retrying once")
+		g.tokens.clear()
+		freshToken, tokenErr := g.getAppToken(ctx)
+		if tokenErr != nil {
+			return tokenErr
+		}
+		err = g.sendTextWithToken(ctx, freshToken, msg, true)
+		if err == nil {
+			return nil
+		}
+		token = freshToken
+	}
+	// Some private deployments reject formatText+reminder; strip @ and retry once.
+	if msg.Reminder != nil {
+		log.Printf("[lansenger] SendText with reminder failed (%v), retrying without reminder", err)
+		if retryErr := g.sendTextWithToken(ctx, token, msg, false); retryErr == nil {
+			return nil
+		} else {
+			return retryErr
+		}
+	}
+	return err
+}
+
+func (g *Gateway) sendTextWithToken(ctx context.Context, token string, msg OutgoingText, withReminder bool) error {
+	fmtData := map[string]any{"formatType": 1, "text": msg.Text}
+	if withReminder {
+		if rem := reminderPayload(msg.Reminder); rem != nil {
+			fmtData["reminder"] = rem
+		}
+	}
+	msgData := map[string]any{"formatText": fmtData}
+	var extra map[string]any
+	if id := strings.TrimSpace(msg.RefMsgID); id != "" {
+		extra = map[string]any{"refMsgId": id}
+	}
+	if msg.IsGroup {
+		return g.sendGroupMessage(ctx, token, msg.ToUserID, "formatText", msgData, extra)
+	}
+	return g.sendPrivateMessage(ctx, token, msg.ToUserID, "formatText", msgData, extra)
+}
+
+func reminderPayload(r *OutgoingReminder) map[string]any {
+	if r == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if r.All {
+		out["all"] = true
+	}
+	userIDs := compactNonEmpty(r.UserIDs)
+	botIDs := compactNonEmpty(r.BotIDs)
+	if len(userIDs) > 0 {
+		out["userIds"] = userIDs
+	}
+	if len(botIDs) > 0 {
+		out["botIds"] = botIDs
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func compactNonEmpty(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // APIError is a structured Lansenger REST error (errCode/errMsg).
@@ -1443,9 +1512,9 @@ func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg Outg
 	}
 
 	if msg.IsGroup {
-		return g.sendGroupMessage(ctx, token, msg.ToUserID, "text", msgData)
+		return g.sendGroupMessage(ctx, token, msg.ToUserID, "text", msgData, nil)
 	}
-	return g.sendPrivateMessage(ctx, token, msg.ToUserID, "text", msgData)
+	return g.sendPrivateMessage(ctx, token, msg.ToUserID, "text", msgData, nil)
 }
 
 // uploadMedia uploads a file to Lansenger's media storage and returns the mediaId.
@@ -1604,29 +1673,43 @@ func safeMediaFilename(name string) string {
 	return name
 }
 
-func (g *Gateway) sendPrivateMessage(ctx context.Context, token, userID, msgType string, msgData any) error {
+func (g *Gateway) sendPrivateMessage(ctx context.Context, token, userID, msgType string, msgData any, extra map[string]any) error {
 	if strings.TrimSpace(userID) == "" {
 		return fmt.Errorf("lansenger: private recipient is required")
 	}
 	url := fmt.Sprintf("%s?app_token=%s", g.apiURL("/v1/bot/messages/create"), url.QueryEscape(token))
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"userIdList": []string{userID},
 		"msgType":    msgType,
 		"msgData":    msgData,
-	})
+	}
+	for k, v := range extra {
+		if k == "" || v == nil {
+			continue
+		}
+		payload[k] = v
+	}
+	body, _ := json.Marshal(payload)
 	return g.doPost(ctx, url, body)
 }
 
-func (g *Gateway) sendGroupMessage(ctx context.Context, token, groupID, msgType string, msgData any) error {
+func (g *Gateway) sendGroupMessage(ctx context.Context, token, groupID, msgType string, msgData any, extra map[string]any) error {
 	if strings.TrimSpace(groupID) == "" {
 		return fmt.Errorf("lansenger: group recipient is required")
 	}
 	url := fmt.Sprintf("%s?app_token=%s", g.apiURL("/v1/messages/group/create"), url.QueryEscape(token))
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"groupId": groupID,
 		"msgType": msgType,
 		"msgData": msgData,
-	})
+	}
+	for k, v := range extra {
+		if k == "" || v == nil {
+			continue
+		}
+		payload[k] = v
+	}
+	body, _ := json.Marshal(payload)
 	return g.doPost(ctx, url, body)
 }
 
