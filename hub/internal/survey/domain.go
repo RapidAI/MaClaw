@@ -102,13 +102,14 @@ func NormalizeQuestions(qs []Question) []Question {
 }
 
 const (
-	MaxQuestionsPerSurvey  = 50
-	MaxOptionsPerQuestion  = 30
-	MaxQuestionTitleRunes  = 500
-	MaxOptionLabelRunes    = 200
-	MaxTargetCount         = 1_000_000
-	MaxGroupIDRunes        = 128
-	MaxGroupNameRunes      = 200
+	MaxQuestionsPerSurvey = 50
+	MaxOptionsPerQuestion = 30
+	MaxQuestionTitleRunes = 500
+	MaxOptionLabelRunes   = 200
+	MaxTargetCount        = 1_000_000
+	MaxGroupIDRunes       = 128
+	MaxGroupNameRunes     = 200
+	MaxBindingsPerRequest = 50
 )
 
 func ValidateDraftQuestions(qs []Question) error {
@@ -202,9 +203,23 @@ func ValidateSettingsIn(s SettingsIn) error {
 	return nil
 }
 
+// normalizeFullwidthDigits maps ０-９ → 0-9 so mobile IM fullwidth input parses.
+func normalizeFullwidthDigits(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= '０' && r <= '９' {
+			b.WriteRune(r - '０' + '0')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // ParseChoiceToken maps user input to a single option id.
 func ParseChoiceToken(q Question, token string) (string, error) {
-	token = strings.TrimSpace(token)
+	token = strings.TrimSpace(normalizeFullwidthDigits(token))
 	if token == "" {
 		return "", fmt.Errorf("empty answer")
 	}
@@ -232,7 +247,7 @@ func ParseChoiceToken(q Question, token string) (string, error) {
 }
 
 func ParseMultiChoice(q Question, text string) ([]string, error) {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(normalizeFullwidthDigits(text))
 	if text == "" {
 		return nil, fmt.Errorf("empty answer")
 	}
@@ -260,7 +275,7 @@ func ParseMultiChoice(q Question, text string) ([]string, error) {
 }
 
 func ParseRating(q Question, text string) (int, error) {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(normalizeFullwidthDigits(text))
 	n, err := strconv.Atoi(text)
 	if err != nil {
 		return 0, fmt.Errorf("rating must be an integer")

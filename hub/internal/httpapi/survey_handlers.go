@@ -116,6 +116,15 @@ func surveyPathID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return id, true
 }
 
+// writeSurveyMutateError maps missing surveys to 404; other domain errors stay 400.
+func writeSurveyMutateError(w http.ResponseWriter, code string, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "SURVEY_NOT_FOUND", "survey not found")
+		return
+	}
+	writeError(w, http.StatusBadRequest, code, err.Error())
+}
+
 func (h *SurveyHandler) get(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
 	id, ok := surveyPathID(w, r)
 	if !ok {
@@ -141,7 +150,7 @@ func (h *SurveyHandler) update(w http.ResponseWriter, r *http.Request, p *auth.M
 	}
 	sv, err := h.Store.Update(r.Context(), p.TenantID, id, in)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_UPDATE_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_UPDATE_FAILED", err)
 		return
 	}
 	sv.Redact()
@@ -154,7 +163,7 @@ func (h *SurveyHandler) delete(w http.ResponseWriter, r *http.Request, p *auth.M
 		return
 	}
 	if err := h.Store.Delete(r.Context(), p.TenantID, id); err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_DELETE_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_DELETE_FAILED", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -167,7 +176,7 @@ func (h *SurveyHandler) publish(w http.ResponseWriter, r *http.Request, p *auth.
 	}
 	sv, err := h.Store.Publish(r.Context(), p.TenantID, id)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_PUBLISH_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_PUBLISH_FAILED", err)
 		return
 	}
 	sv.Redact()
@@ -181,7 +190,7 @@ func (h *SurveyHandler) close(w http.ResponseWriter, r *http.Request, p *auth.Ma
 	}
 	sv, err := h.Store.Close(r.Context(), p.TenantID, id)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_CLOSE_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_CLOSE_FAILED", err)
 		return
 	}
 	sv.Redact()
@@ -195,7 +204,7 @@ func (h *SurveyHandler) reopen(w http.ResponseWriter, r *http.Request, p *auth.M
 	}
 	sv, err := h.Store.Reopen(r.Context(), p.TenantID, id)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_REOPEN_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_REOPEN_FAILED", err)
 		return
 	}
 	sv.Redact()
@@ -209,7 +218,7 @@ func (h *SurveyHandler) archive(w http.ResponseWriter, r *http.Request, p *auth.
 	}
 	sv, err := h.Store.Archive(r.Context(), p.TenantID, id)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_ARCHIVE_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_ARCHIVE_FAILED", err)
 		return
 	}
 	sv.Redact()
@@ -223,7 +232,7 @@ func (h *SurveyHandler) duplicate(w http.ResponseWriter, r *http.Request, p *aut
 	}
 	sv, err := h.Store.Duplicate(r.Context(), p.TenantID, id, p.UserID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_DUPLICATE_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_DUPLICATE_FAILED", err)
 		return
 	}
 	sv.Redact()
@@ -242,7 +251,7 @@ func (h *SurveyHandler) bind(w http.ResponseWriter, r *http.Request, p *auth.Mac
 		return
 	}
 	if err := h.Store.Bind(r.Context(), p.TenantID, id, body.Bindings); err != nil {
-		writeError(w, http.StatusBadRequest, "SURVEY_BIND_FAILED", err.Error())
+		writeSurveyMutateError(w, "SURVEY_BIND_FAILED", err)
 		return
 	}
 	sv, err := h.Store.Get(r.Context(), p.TenantID, id)

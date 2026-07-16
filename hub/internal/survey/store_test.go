@@ -846,6 +846,25 @@ func TestFinalizeSubmitRejectsClosed(t *testing.T) {
 	}
 }
 
+func TestFullwidthDigitsParse(t *testing.T) {
+	q := Question{
+		ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+		Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+	}
+	id, err := ParseChoiceToken(q, "１") // fullwidth 1
+	if err != nil || id != "a" {
+		t.Fatalf("choice id=%q err=%v", id, err)
+	}
+	ids, err := ParseMultiChoice(q, "１，２")
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("multi ids=%v err=%v", ids, err)
+	}
+	n, err := ParseRating(Question{ID: "r", Type: "rating", Title: "R", Required: true}, "５")
+	if err != nil || n != 5 {
+		t.Fatalf("rating n=%d err=%v", n, err)
+	}
+}
+
 func TestNormalizeShortCodeCrockfordConfusables(t *testing.T) {
 	// O→0, I/L→1 so users retyping codes still match.
 	// A3 O I 1 L → A3 0 1 1 1

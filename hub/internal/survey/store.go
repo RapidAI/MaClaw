@@ -437,6 +437,9 @@ func (s *Store) Bind(ctx context.Context, tenantID, id string, bindings []Bindin
 	if len(bindings) == 0 {
 		return fmt.Errorf("bindings required")
 	}
+	if len(bindings) > MaxBindingsPerRequest {
+		return fmt.Errorf("too many bindings (max %d)", MaxBindingsPerRequest)
+	}
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
