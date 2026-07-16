@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -91,7 +92,13 @@ func (c *surveyHubClient) do(ctx context.Context, method, path string, body any,
 func (c *surveyHubClient) List(ctx context.Context, status string) (json.RawMessage, error) {
 	path := "/api/v1/surveys"
 	if s := strings.TrimSpace(status); s != "" && s != "all" {
-		path += "?status=" + s
+		// Whitelist expected values client-side; Hub also validates.
+		switch s {
+		case "draft", "published", "closed", "archived":
+			path += "?status=" + url.QueryEscape(s)
+		default:
+			return nil, fmt.Errorf("invalid status filter")
+		}
 	}
 	var raw json.RawMessage
 	err := c.do(ctx, http.MethodGet, path, nil, &raw)

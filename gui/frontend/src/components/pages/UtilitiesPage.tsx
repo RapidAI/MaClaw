@@ -797,22 +797,33 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
     };
 
     // Live refresh when IM gateway emits survey-updated after a submission.
+    // Debounce burst submits (rate-limit window / multi-user) into one refresh.
     useEffect(() => {
         let off: (() => void) | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let pendingSid: string | undefined;
+        const flush = () => {
+            timer = undefined;
+            const sid = pendingSid;
+            pendingSid = undefined;
+            void loadList();
+            if (viewRef.current === 'survey-results' && sid && sid === selectedIdRef.current) {
+                void openResults({ soft: true });
+                setCopyHint(isZh ? '有新答卷，已自动刷新' : 'New response — refreshed');
+                setTimeout(() => setCopyHint(''), 2500);
+            }
+        };
         try {
             off = EventsOn(EVENT_SURVEY_UPDATED, (payload?: { survey_id?: string }) => {
-                const sid = payload?.survey_id;
-                void loadList();
-                if (viewRef.current === 'survey-results' && sid && sid === selectedIdRef.current) {
-                    void openResults({ soft: true });
-                    setCopyHint(isZh ? '有新答卷，已自动刷新' : 'New response — refreshed');
-                    setTimeout(() => setCopyHint(''), 2500);
-                }
+                if (payload?.survey_id) pendingSid = payload.survey_id;
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(flush, 400);
             });
         } catch {
             // Browser dev without Wails runtime
         }
         return () => {
+            if (timer) clearTimeout(timer);
             if (typeof off === 'function') off();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps -- openResults uses refs for soft refresh
@@ -883,8 +894,9 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             const msg = path
                 ? (isZh ? `已导出：${path}${piiTail}` : `Exported: ${path}${piiTail}`)
                 : '';
+            // Success path uses exportHint only — do not paint success as utilities-error.
             setExportHint(msg);
-            setError(msg);
+            setError('');
         } catch (e: any) {
             setExportHint('');
             setError(String(e?.message || e));

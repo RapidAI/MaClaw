@@ -623,3 +623,35 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestListRejectsInvalidStatus(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	_, err := st.List(ctx, "t", "not-a-status")
+	if err == nil {
+		t.Fatal("expected invalid status filter error")
+	}
+}
+
+func TestUpdateRejectsBadQuestions(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	sv, err := st.Create(ctx, "t", "u", CreateInput{
+		Title: "T",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := []Question{{
+		ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+		Options: []Option{{ID: "a", Label: "A"}},
+	}}
+	_, err = st.Update(ctx, "t", sv.ID, UpdateInput{Questions: &bad})
+	if err == nil {
+		t.Fatal("expected validation error for choice with one option")
+	}
+}

@@ -51,20 +51,29 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 		return false
 	}
 
-	// Design §9: ~2 msg/s per user — claim with throttle text so traffic never reaches LLM.
 	if m.surveyRate == nil {
 		m.surveyRate = newSurveyUserRateLimit()
 	}
 	rk := surveyRateKey("lansenger", msg.FromUserID)
-	if !m.surveyRate.allow(rk, time.Now()) {
-		_ = m.replySurveyText(msg, "操作过快，请稍后再试")
-		return true
+	now := time.Now()
+	isCmd := looksLikeSurveyCommand(text)
+
+	// Design §9: ~2 msg/s. Only *claim* the message on throttle for explicit
+	// survey commands — speculative session-like replies must never steal chat
+	// from the LLM with a throttle notice.
+	if isCmd {
+		if !m.surveyRate.allow(rk, now) {
+			_ = m.replySurveyText(msg, "操作过快，请稍后再试")
+			return true
+		}
+	} else if !m.surveyRate.wouldAllow(rk, now) {
+		return false
 	}
 
 	client, err := m.app.newSurveyHubClient()
 	if err != nil {
 		// Hub offline: if it looks like a survey command, claim and apologize.
-		if looksLikeSurveyCommand(text) {
+		if isCmd {
 			_ = m.replySurveyText(msg, "问卷服务暂不可用（Hub 未连接），请稍后重试。")
 			return true
 		}
@@ -86,7 +95,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	out, err := client.IMHandle(ctx, body)
 	if err != nil {
 		log.Printf("[survey-im] im/handle error: %v", err)
-		if looksLikeSurveyCommand(text) {
+		if isCmd {
 			_ = m.replySurveyText(msg, "问卷服务暂时出错，请稍后重试。")
 			return true
 		}
@@ -95,6 +104,10 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	handled, _ := out["handled"].(bool)
 	if !handled {
 		return false
+	}
+	// Speculative path recorded only after Hub confirmed survey ownership.
+	if !isCmd {
+		m.surveyRate.record(rk, now)
 	}
 	reply, _ := out["reply_text"].(string)
 	if strings.TrimSpace(reply) != "" {

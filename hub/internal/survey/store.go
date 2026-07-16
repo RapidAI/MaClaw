@@ -102,6 +102,11 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 		return nil, fmt.Errorf("title required")
 	}
 	qs := NormalizeQuestions(in.Questions)
+	if len(qs) > 0 {
+		if err := ValidateDraftQuestions(qs); err != nil {
+			return nil, err
+		}
+	}
 	salt, err := NewAnonymitySalt()
 	if err != nil {
 		return nil, err
@@ -226,9 +231,15 @@ func (s *Store) GetByCode(ctx context.Context, tenantID, code string) (*Survey, 
 func (s *Store) List(ctx context.Context, tenantID, status string) ([]Survey, error) {
 	q := `SELECT id,tenant_id,short_code,title,description,status,settings_json,created_by,created_at,updated_at,published_at FROM surveys WHERE tenant_id=?`
 	args := []any{tenantID}
-	if status != "" {
-		q += ` AND status=?`
-		args = append(args, status)
+	status = strings.TrimSpace(status)
+	if status != "" && status != "all" {
+		switch status {
+		case StatusDraft, StatusPublished, StatusClosed, StatusArchived:
+			q += ` AND status=?`
+			args = append(args, status)
+		default:
+			return nil, fmt.Errorf("invalid status filter")
+		}
 	}
 	q += ` ORDER BY updated_at DESC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -346,6 +357,9 @@ func (s *Store) Update(ctx context.Context, tenantID, id string, in UpdateInput)
 	}
 	if in.Questions != nil {
 		qs := NormalizeQuestions(*in.Questions)
+		if err := ValidateDraftQuestions(qs); err != nil {
+			return nil, err
+		}
 		if err := insertQuestions(ctx, tx, id, qs); err != nil {
 			return nil, err
 		}
