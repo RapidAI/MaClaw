@@ -111,11 +111,19 @@ func parseCommand(text string) (cmd string, args string) {
 	t := strings.TrimSpace(text)
 	low := strings.ToLower(t)
 
-	// /survey ... (case-insensitive command; ASCII prefix length is fixed)
+	// /survey ... (case-insensitive; require end or whitespace after prefix so
+	// "/surveys" / "/surveyhelp" are not treated as survey commands).
 	if strings.HasPrefix(low, "/survey") {
-		// Slice by rune-safe ASCII length of "/survey" (7).
 		rest := ""
-		if len(t) >= 7 {
+		if len(t) == 7 {
+			// bare "/survey"
+			return "help", ""
+		}
+		if len(t) > 7 {
+			if !isASCIISpace(t[7]) {
+				// e.g. /surveys — not our command
+				goto notSlashSurvey
+			}
 			rest = strings.TrimSpace(t[7:])
 		}
 		if rest == "" {
@@ -139,6 +147,7 @@ func parseCommand(text string) (cmd string, args string) {
 			return "start", rest
 		}
 	}
+notSlashSurvey:
 
 	// 问卷 CODE / 调查 CODE — must have code token (ASCII or fullwidth space)
 	for _, prefix := range []string{"问卷", "调查"} {
@@ -152,6 +161,10 @@ func parseCommand(text string) (cmd string, args string) {
 		}
 	}
 	return "", ""
+}
+
+func isASCIISpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f' || b == '\v'
 }
 
 func helpText() string {

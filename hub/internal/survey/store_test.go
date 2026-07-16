@@ -908,6 +908,71 @@ func TestConcurrentPublishOnlyOneWins(t *testing.T) {
 	}
 }
 
+func TestDeleteDoesNotWipePublished(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{Title: "T", Questions: sampleQuestions()})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	if _, err := st.Publish(ctx, "t", sv.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Delete(ctx, "t", sv.ID); err == nil {
+		t.Fatal("expected delete of published to fail")
+	}
+	got, err := st.Get(ctx, "t", sv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusPublished {
+		t.Fatalf("status=%s", got.Status)
+	}
+}
+
+func TestUnbindLastPublishedBindingRejected(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{Title: "T", Questions: sampleQuestions()})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{
+		{Platform: PlatformLansenger, GroupID: "g1"},
+		{Platform: PlatformLansenger, GroupID: "g2"},
+	})
+	if _, err := st.Publish(ctx, "t", sv.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Unbind(ctx, "t", sv.ID, PlatformLansenger, "g1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Unbind(ctx, "t", sv.ID, PlatformLansenger, "g2"); err == nil {
+		t.Fatal("expected last unbind to fail")
+	}
+	got, err := st.Get(ctx, "t", sv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Bindings) != 1 {
+		t.Fatalf("bindings=%d", len(got.Bindings))
+	}
+}
+
+func TestParseCommandRequiresSurveyWordBoundary(t *testing.T) {
+	cmd, args := parseCommand("/surveys foo")
+	if cmd != "" {
+		t.Fatalf("cmd=%q args=%q want empty", cmd, args)
+	}
+	cmd, args = parseCommand("/surveyhelp")
+	if cmd != "" {
+		t.Fatalf("cmd=%q args=%q want empty", cmd, args)
+	}
+	cmd, args = parseCommand("/survey")
+	if cmd != "help" {
+		t.Fatalf("bare /survey want help got %q %q", cmd, args)
+	}
+	cmd, args = parseCommand("/survey list")
+	if cmd != "list" {
+		t.Fatalf("want list got %q %q", cmd, args)
+	}
+}
+
 func TestPlatformNormalizedOnHandle(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

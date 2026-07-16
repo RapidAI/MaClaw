@@ -211,8 +211,18 @@ func stripLansengerBotMentions(msg lansenger.IncomingMessage) string {
 func looksLikeSurveyCommand(text string) bool {
 	t := strings.TrimSpace(text)
 	low := strings.ToLower(t)
+	// Require end or whitespace after "/survey" so "/surveys" is not claimed.
 	if strings.HasPrefix(low, "/survey") {
-		return true
+		if len(t) == 7 {
+			return true
+		}
+		if len(t) > 7 {
+			c := t[7]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				return true
+			}
+		}
+		return false
 	}
 	if strings.HasPrefix(t, "问卷 ") || strings.HasPrefix(t, "调查 ") {
 		return true

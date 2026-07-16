@@ -23,6 +23,9 @@ func TestLooksLikeSurveyCommand(t *testing.T) {
 	if !looksLikeSurveyCommand("/survey A3F9K2") {
 		t.Fatal("expected command")
 	}
+	if !looksLikeSurveyCommand("/survey") {
+		t.Fatal("bare /survey")
+	}
 	if !looksLikeSurveyCommand("问卷 A3F9K2") {
 		t.Fatal("expected chinese start")
 	}
@@ -31,6 +34,13 @@ func TestLooksLikeSurveyCommand(t *testing.T) {
 	}
 	if looksLikeSurveyCommand("hello") {
 		t.Fatal("normal chat")
+	}
+	// Must not claim unrelated slash commands that share the prefix.
+	if looksLikeSurveyCommand("/surveys") {
+		t.Fatal("/surveys must not match")
+	}
+	if looksLikeSurveyCommand("/surveyhelp") {
+		t.Fatal("/surveyhelp must not match")
 	}
 }
 

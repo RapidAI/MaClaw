@@ -461,8 +461,14 @@ func (s *Store) Bind(ctx context.Context, tenantID, id string, bindings []Bindin
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE surveys SET updated_at=? WHERE id=?`, now.Format(time.RFC3339), id); err != nil {
+	// CAS: refuse bind if status left draft|published (e.g. concurrent close/archive).
+	res, err := tx.ExecContext(ctx, `UPDATE surveys SET updated_at=? WHERE id=? AND tenant_id=? AND status IN (?,?)`,
+		now.Format(time.RFC3339), id, tenantID, StatusDraft, StatusPublished)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("cannot bind in current status")
 	}
 	return tx.Commit()
 }
@@ -475,18 +481,31 @@ func (s *Store) Unbind(ctx context.Context, tenantID, id, platform, groupID stri
 	if sv.Status == StatusClosed || sv.Status == StatusArchived {
 		return fmt.Errorf("cannot unbind in status %s", sv.Status)
 	}
-	if sv.Status == StatusPublished {
-		count := 0
-		for _, b := range sv.Bindings {
-			if !(b.Platform == platform && b.GroupID == groupID) {
-				count++
-			}
-		}
-		if count == 0 {
-			return fmt.Errorf("已发布问卷至少保留一个群绑定")
-		}
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if platform == "" {
+		platform = PlatformLansenger
 	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM survey_bindings WHERE survey_id=? AND platform=? AND group_id=?`, id, platform, groupID)
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return fmt.Errorf("group_id required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Re-read status under the write transaction.
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM surveys WHERE id=? AND tenant_id=?`, id, tenantID).Scan(&status); err != nil {
+		return err
+	}
+	if status == StatusClosed || status == StatusArchived {
+		return fmt.Errorf("cannot unbind in status %s", status)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM survey_bindings WHERE survey_id=? AND platform=? AND group_id=?`, id, platform, groupID)
 	if err != nil {
 		return err
 	}
@@ -494,8 +513,17 @@ func (s *Store) Unbind(ctx context.Context, tenantID, id, platform, groupID stri
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE surveys SET updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339), id)
-	return nil
+	if status == StatusPublished {
+		var remaining int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM survey_bindings WHERE survey_id=?`, id).Scan(&remaining); err != nil {
+			return err
+		}
+		if remaining == 0 {
+			return fmt.Errorf("已发布问卷至少保留一个群绑定")
+		}
+	}
+	_, _ = tx.ExecContext(ctx, `UPDATE surveys SET updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339), id)
+	return tx.Commit()
 }
 
 func (s *Store) Publish(ctx context.Context, tenantID, id string) (*Survey, error) {
@@ -611,6 +639,7 @@ func (s *Store) Archive(ctx context.Context, tenantID, id string) (*Survey, erro
 }
 
 func (s *Store) Delete(ctx context.Context, tenantID, id string) error {
+	// Pre-check for clearer errors; real safety is CAS delete of the survey row first.
 	sv, err := s.Get(ctx, tenantID, id)
 	if err != nil {
 		return err
@@ -623,21 +652,23 @@ func (s *Store) Delete(ctx context.Context, tenantID, id string) error {
 		return err
 	}
 	defer tx.Rollback()
+	// CAS first: never wipe children of a concurrent published/closed survey.
+	res, err := tx.ExecContext(ctx, `DELETE FROM surveys WHERE id=? AND tenant_id=? AND status IN (?,?)`,
+		id, tenantID, StatusDraft, StatusArchived)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("only draft or archived can delete")
+	}
 	for _, q := range []string{
 		`DELETE FROM survey_sessions WHERE survey_id=?`,
 		`DELETE FROM survey_responses WHERE survey_id=?`,
 		`DELETE FROM survey_bindings WHERE survey_id=?`,
 		`DELETE FROM survey_questions WHERE survey_id=?`,
-		`DELETE FROM surveys WHERE id=? AND tenant_id=?`,
 	} {
-		if q == `DELETE FROM surveys WHERE id=? AND tenant_id=?` {
-			if _, err := tx.ExecContext(ctx, q, id, tenantID); err != nil {
-				return err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, q, id); err != nil {
-				return err
-			}
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()
