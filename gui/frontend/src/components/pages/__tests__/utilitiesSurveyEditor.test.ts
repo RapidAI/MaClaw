@@ -55,6 +55,14 @@ describe('utilitiesSurveyEditor', () => {
         ).toThrow('choice_needs_two_options');
     });
 
+    it('normalize rejects rating min > max', () => {
+        expect(() =>
+            normalizeQuestionsForSave([
+                { id: 'q1', type: 'rating', title: 'Score', required: true, min: 5, max: 1 },
+            ]),
+        ).toThrow('rating_min_max');
+    });
+
     it('buildUpdateSurveyPayload multi-question payload', () => {
         const payload = buildUpdateSurveyPayload({
             title: '午餐',

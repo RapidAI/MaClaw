@@ -400,9 +400,13 @@ func (s *Store) Update(ctx context.Context, tenantID, id string, in UpdateInput)
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE surveys SET title=?, description=?, settings_json=?, updated_at=? WHERE id=? AND tenant_id=?`,
-		sv.Title, sv.Description, string(settingsJSON), now.Format(time.RFC3339), id, tenantID); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE surveys SET title=?, description=?, settings_json=?, updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
+		sv.Title, sv.Description, string(settingsJSON), now.Format(time.RFC3339), id, tenantID, StatusDraft)
+	if err != nil {
 		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("only draft surveys can be edited")
 	}
 	if in.Questions != nil {
 		qs := NormalizeQuestions(*in.Questions)
@@ -499,14 +503,11 @@ func (s *Store) Publish(ctx context.Context, tenantID, id string) (*Survey, erro
 	if err != nil {
 		return nil, err
 	}
-	if sv.Status != StatusDraft && sv.Status != StatusClosed {
-		// closed uses Reopen
-		if sv.Status != StatusDraft {
-			return nil, fmt.Errorf("cannot publish from status %s", sv.Status)
-		}
-	}
 	if sv.Status == StatusClosed {
 		return nil, fmt.Errorf("use reopen for closed surveys")
+	}
+	if sv.Status != StatusDraft {
+		return nil, fmt.Errorf("cannot publish from status %s", sv.Status)
 	}
 	if err := ValidateDraftQuestions(sv.Questions); err != nil {
 		return nil, err
@@ -518,9 +519,22 @@ func (s *Store) Publish(ctx context.Context, tenantID, id string) (*Survey, erro
 		return nil, fmt.Errorf("missing anonymity salt")
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, published_at=?, updated_at=? WHERE id=? AND tenant_id=?`,
-		StatusPublished, now.Format(time.RFC3339), now.Format(time.RFC3339), id, tenantID); err != nil {
+	// CAS: only draft → published wins; concurrent second publish fails cleanly.
+	res, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, published_at=?, updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
+		StatusPublished, now.Format(time.RFC3339), now.Format(time.RFC3339), id, tenantID, StatusDraft)
+	if err != nil {
 		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		cur, gerr := s.Get(ctx, tenantID, id)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if cur.Status == StatusClosed {
+			return nil, fmt.Errorf("use reopen for closed surveys")
+		}
+		return nil, fmt.Errorf("cannot publish from status %s", cur.Status)
 	}
 	return s.Get(ctx, tenantID, id)
 }
@@ -534,9 +548,14 @@ func (s *Store) Close(ctx context.Context, tenantID, id string) (*Survey, error)
 		return nil, fmt.Errorf("only published can close")
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, updated_at=? WHERE id=? AND tenant_id=?`,
-		StatusClosed, now.Format(time.RFC3339), id, tenantID); err != nil {
+	res, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
+		StatusClosed, now.Format(time.RFC3339), id, tenantID, StatusPublished)
+	if err != nil {
 		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, fmt.Errorf("only published can close")
 	}
 	// Drop in-flight sessions so IM stops treating replies as survey answers.
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM survey_sessions WHERE survey_id=?`, id)
@@ -555,9 +574,14 @@ func (s *Store) Reopen(ctx context.Context, tenantID, id string) (*Survey, error
 		return nil, fmt.Errorf("cannot reopen without bindings")
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, published_at=COALESCE(published_at,?), updated_at=? WHERE id=? AND tenant_id=?`,
-		StatusPublished, now.Format(time.RFC3339), now.Format(time.RFC3339), id, tenantID); err != nil {
+	res, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, published_at=COALESCE(published_at,?), updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
+		StatusPublished, now.Format(time.RFC3339), now.Format(time.RFC3339), id, tenantID, StatusClosed)
+	if err != nil {
 		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, fmt.Errorf("only closed can reopen")
 	}
 	return s.Get(ctx, tenantID, id)
 }
@@ -571,9 +595,15 @@ func (s *Store) Archive(ctx context.Context, tenantID, id string) (*Survey, erro
 		return nil, fmt.Errorf("only draft or closed can archive")
 	}
 	now := time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, updated_at=? WHERE id=? AND tenant_id=?`,
-		StatusArchived, now.Format(time.RFC3339), id, tenantID); err != nil {
+	// CAS: only the pre-checked status may transition (avoids archive racing publish/close).
+	res, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
+		StatusArchived, now.Format(time.RFC3339), id, tenantID, sv.Status)
+	if err != nil {
 		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, fmt.Errorf("only draft or closed can archive")
 	}
 	// Drop any leftover sessions (e.g. draft never published but session created in tests, or race).
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM survey_sessions WHERE survey_id=?`, id)

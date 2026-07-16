@@ -451,6 +451,8 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         if (code === 'at_least_one_question') return isZh ? '至少一道题' : 'Need at least one question';
         if (code === 'invalid_deadline') return isZh ? '截止时间无效' : 'Invalid deadline';
         if (code === 'invalid_target_count') return isZh ? '目标回收数无效' : 'Invalid target count';
+        if (code === 'rating_min_max') return isZh ? '评分题 min 不能大于 max' : 'Rating min cannot exceed max';
+        if (code === 'invalid_max_length') return isZh ? '文本最大字数无效' : 'Invalid max length';
         return code;
     };
 

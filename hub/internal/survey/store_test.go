@@ -839,6 +839,75 @@ func TestListRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestPublishIsIdempotentRaceSafe(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{Title: "T", Questions: sampleQuestions()})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	if _, err := st.Publish(ctx, "t", sv.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Second publish must fail (CAS on status=draft).
+	if _, err := st.Publish(ctx, "t", sv.ID); err == nil {
+		t.Fatal("expected second publish to fail")
+	}
+}
+
+func TestConcurrentPublishOnlyOneWins(t *testing.T) {
+	// Shared-cache in-memory DB so concurrent connections see the same data
+	// (plain ":memory:" is per-connection and would make every publish fail).
+	db, err := sql.Open("sqlite", "file:survey_concur_pub?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(8)
+	_, _ = db.Exec(`PRAGMA busy_timeout=5000`)
+	st := NewStore(db)
+	ctx := context.Background()
+	if err := st.InitSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sv, err := st.Create(ctx, "t", "u", CreateInput{Title: "T", Questions: sampleQuestions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			_, err := st.Publish(ctx, "t", sv.ID)
+			errs <- err
+		}()
+	}
+	ok, fail := 0, 0
+	var firstFail error
+	for i := 0; i < n; i++ {
+		if err := <-errs; err == nil {
+			ok++
+		} else {
+			fail++
+			if firstFail == nil {
+				firstFail = err
+			}
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("expected exactly 1 successful publish, got ok=%d fail=%d firstFail=%v", ok, fail, firstFail)
+	}
+	got, err := st.Get(ctx, "t", sv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusPublished {
+		t.Fatalf("status=%s", got.Status)
+	}
+}
+
 func TestPlatformNormalizedOnHandle(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

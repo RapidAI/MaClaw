@@ -270,7 +270,13 @@ func (h *SurveyHandler) imHandle(w http.ResponseWriter, r *http.Request, p *auth
 	}
 	out, err := h.Runtime.Handle(r.Context(), p.TenantID, req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "SURVEY_IM_HANDLE_FAILED", err.Error())
+		// Client input problems (missing user_id, etc.) → 400; domain faults → 500.
+		msg := err.Error()
+		if msg == "user_id required" {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", msg)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "SURVEY_IM_HANDLE_FAILED", msg)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
