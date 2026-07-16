@@ -300,6 +300,16 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"question"},
 		func(args map[string]interface{}) string { return h.toolAskUser(args) })
 
+	// --- Long-form interactive recording (meeting / discussion capture) ---
+	reg("record_audio", "【仅桌面】打开交互式长时录音界面（波形+暂停/停止）并等待用户结束录音。IM 通道不支持会议/长时录音（平台语音过短）。用户当前消息已明确要求开始录音/会议录音时立即调用，不要二次确认、不要搜已有音频文件。仅当意图含糊时再澄清。用户停止后，下一条消息会带上音频路径与时长等摘要，再继续转写/纪要或投递音频文件。若生成会议纪要，必须同时 send_file 投递原始音频（可点击路径，便于用户备份）。",
+		ToolCategoryBuiltin, []string{"record", "audio", "meeting", "minutes", "voice", "录音", "会议"},
+		map[string]interface{}{
+			"title":   map[string]string{"type": "string", "description": "录音会话短标题（如会议名称）"},
+			"purpose": map[string]string{"type": "string", "description": "可选：录音用途说明"},
+			"hint":    map[string]string{"type": "string", "description": "可选：给用户的额外提示"},
+		}, nil,
+		func(args map[string]interface{}) string { return h.toolRecordAudio(args) })
+
 	// --- Task management tool ---
 	reg("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度、依赖关系和子任务分配。",
 		ToolCategoryBuiltin, []string{"task", "todo", "plan", "track", "progress"},
@@ -426,23 +436,23 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("list_directory", "列出本机目录内容",
 		ToolCategoryBuiltin, []string{"file", "directory", "list"},
 		map[string]interface{}{
-			"path": map[string]string{"type": "string", "description": "目录路径（可选，默认为用户主目录）"},
+			"path": map[string]string{"type": "string", "description": "目录路径（可选；省略或相对路径时基于当前 Project directory / 工作目录，不要默认用户主目录）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolListDirectory(args) })
 
-	reg("send_file", "读取本机文件并在当前桌面对话中展示（默认不转发 IM）",
+	reg("send_file", "读取本机文件并交付：桌面端默认展示在当前对话；已在微信/飞书通道中则发回本对话即等于发到该通道",
 		ToolCategoryBuiltin, []string{"file", "send", "share"},
 		map[string]interface{}{
 			"path":          map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
 			"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）。工作流交付文档请使用稳定 ASCII 文件名，本地化文本放在文档标题或消息正文中。"},
 			"phase_id":      map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
 			"doc_type":      map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
-			"destination":   map[string]string{"type": "string", "description": "chat/desktop 或 im/wechat/feishu/qq/dingtalk 等"},
-			"forward_to_im": map[string]string{"type": "boolean", "description": "是否转发到 IM；发到 IM 更推荐 send_to_im"},
+			"destination":   map[string]string{"type": "string", "description": "chat/desktop 或 im/wechat/feishu/qq/dingtalk 等；已在 IM 通道中可不设"},
+			"forward_to_im": map[string]string{"type": "boolean", "description": "桌面端是否转发到 IM；已在微信/飞书通道中无需设置"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolSendFile(args) })
 
-	reg("send_to_im", "把本机文件发送到用户绑定的 IM（微信/飞书/QQ/钉钉）。用户要求发到微信时用本工具",
+	reg("send_to_im", "桌面端把文件发到绑定 IM；已在微信/飞书通道中时用 send_file 发回本对话即可，勿报发送器未配置",
 		ToolCategoryBuiltin, []string{"file", "send", "share", "wechat", "im", "feishu"},
 		map[string]interface{}{
 			"path":        map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},

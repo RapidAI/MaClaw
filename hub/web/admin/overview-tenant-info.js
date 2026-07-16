@@ -350,7 +350,7 @@
       ready: '\u5df2\u5c31\u7eea',
       notReady: '\u672a\u5c31\u7eea \u2014 \u8bf7\u914d\u7f6e\u670d\u52a1\u5546\u5e76\u6d4b\u8bd5',
       test: '\u6d4b\u8bd5 system-free',
-      config: '\u524d\u5f80\u6a21\u578b\u670d\u52a1',
+      config: '\u914d\u7f6e system-free',
       providers: '\u670d\u52a1\u5546: '
     } : {
       title: 'system-free (server LLM)',
@@ -358,16 +358,15 @@
       ready: 'Ready',
       notReady: 'Not ready - configure providers and test',
       test: 'Test system-free',
-      config: 'Open Model Services',
+      config: 'Configure system-free',
       providers: 'Providers: '
     };
     return map[key] || key;
   }
 
-  async function loadOverviewSystemFreeStatus() {
+  function applyOverviewSystemFreeStatus(st, opts) {
     var panel = byID('overviewSystemFreePanel');
     if (!panel) return;
-    // Only meaningful for tenant-scoped admins / after login with tenant context.
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     if (!profile) {
       panel.classList.add('hidden');
@@ -384,23 +383,47 @@
     if (desc) desc.textContent = systemFreeI18n('desc');
     if (testBtn) testBtn.textContent = systemFreeI18n('test');
     if (configBtn) configBtn.textContent = systemFreeI18n('config');
-    try {
-      var st = await global.api('/api/admin/llm/system-free');
+    if (typeof global.setTenantSystemFreeCache === 'function') {
+      st = global.setTenantSystemFreeCache(st || {});
+    } else {
       global.tenantSystemFreeStatusCache = st || {};
-      var ready = !!(st && st.ready);
-      if (badge) {
-        badge.textContent = ready ? systemFreeI18n('ready') : systemFreeI18n('notReady');
-        badge.style.color = ready ? '#1f7a3f' : '#b42318';
-      }
-      var ids = (st && st.provider_ids || []).join(', ') || '-';
-      var reasons = (st && st.reasons || []).join(', ');
-      if (detail) {
-        detail.textContent = systemFreeI18n('providers') + ids + (reasons ? ' | ' + reasons : '');
-      }
-      // Soft gate: keep panel visible and highlight when not ready.
-      panel.style.borderColor = ready ? '' : 'rgba(180,35,24,.35)';
-      panel.style.background = ready ? '' : 'rgba(180,35,24,.04)';
+      st = global.tenantSystemFreeStatusCache;
+    }
+    var ready = !!(st && st.ready);
+    if (badge) {
+      badge.textContent = ready ? systemFreeI18n('ready') : systemFreeI18n('notReady');
+      badge.style.color = ready ? '#1f7a3f' : '#b42318';
+    }
+    var ids = (st && st.provider_ids || []).join(', ') || '-';
+    var reasons = (st && st.reasons || []).join(', ');
+    if (detail) {
+      detail.textContent = systemFreeI18n('providers') + ids + (reasons ? ' | ' + reasons : '');
+    }
+    panel.style.borderColor = ready ? '' : 'rgba(180,35,24,.35)';
+    panel.style.background = ready ? '' : 'rgba(180,35,24,.04)';
+    // Peer paint (system settings card) unless caller already painted it.
+    if (!(opts && opts.skipPeer) && typeof global.renderTenantSystemFreeStatus === 'function') {
+      try { global.renderTenantSystemFreeStatus(); } catch (_) { /* non-fatal */ }
+    }
+  }
+
+  async function loadOverviewSystemFreeStatus() {
+    var panel = byID('overviewSystemFreePanel');
+    if (!panel) return;
+    var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
+    if (!profile) {
+      panel.classList.add('hidden');
+      return;
+    }
+    try {
+      var st = typeof global.fetchTenantSystemFreeStatus === 'function'
+        ? await global.fetchTenantSystemFreeStatus()
+        : await global.api('/api/admin/llm/system-free');
+      applyOverviewSystemFreeStatus(st);
     } catch (err) {
+      panel.classList.remove('hidden');
+      var badge = byID('overviewSystemFreeBadge');
+      var detail = byID('overviewSystemFreeDetail');
       if (badge) {
         badge.textContent = systemFreeI18n('notReady');
         badge.style.color = '#b42318';
@@ -412,5 +435,6 @@
   global.loadOverviewTenantInfo = loadOverviewTenantInfo;
   global.renderOverviewTenantInfo = renderOverviewTenantInfo;
   global.loadOverviewSystemFreeStatus = loadOverviewSystemFreeStatus;
+  global.applyOverviewSystemFreeStatus = applyOverviewSystemFreeStatus;
 
 })(window);

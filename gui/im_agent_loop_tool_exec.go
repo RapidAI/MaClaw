@@ -333,6 +333,16 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			return result
 		}
 
+		recordAudioResult := h.handleAgentLoopRecordAudioToolResult(opts.UserID, opts.Platform, opts.MessageContent, rawResult, opts.GateActive, tc.ID, result.Conversation, result.History, result.ToolResults, opts.RecordToolResult)
+		rawResult = recordAudioResult.Result
+		result.Conversation = recordAudioResult.Conversation
+		result.History = recordAudioResult.History
+		result.ToolResults = recordAudioResult.ToolResults
+		if recordAudioResult.Response != nil {
+			result.Response = recordAudioResult.Response
+			return result
+		}
+
 		if IsSubAgentContext(rawResult) {
 			rawResult = ExtractSubAgentContext(rawResult)
 		}
@@ -380,7 +390,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		}
 
 		stageStartedAt = time.Now()
-		payloadObservation := parseToolPayloadResult(rawResult)
+		payloadObservation := parseToolPayloadResultForPlatformLang(rawResult, opts.Platform, h.imUILangOrZh())
 		traceResult := payloadObservation.TraceResult
 		toolContent := payloadObservation.ToolContent
 		if opts.StreamDone {

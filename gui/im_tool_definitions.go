@@ -180,16 +180,16 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			map[string]interface{}{
 				"path": map[string]string{"type": "string", "description": "目录路径（绝对路径或相对于 Project directory 的相对路径）"},
 			}, nil),
-		toolDef("send_file", "读取本机文件并在当前桌面对话中展示。默认不转发到微信/飞书。用户要求发到 IM 时请改用 send_to_im（推荐），或在此工具设 destination/forward_to_im。",
+		toolDef("send_file", "读取本机文件并交付给用户。在桌面端默认只展示在当前桌面对话；在微信/飞书等 IM 通道中，发到当前对话即等于发到该通道（用户说「发微信」时直接用本工具即可）。桌面端要推到微信/飞书时请改用 send_to_im，或设 destination/forward_to_im。",
 			map[string]interface{}{
 				"path":          map[string]string{"type": "string", "description": "文件的绝对路径或相对于 Project directory 的路径"},
 				"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）。工作流交付文档请使用稳定 ASCII 文件名，本地化文本放在文档标题或消息正文中。"},
 				"phase_id":      map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
 				"doc_type":      map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
-				"destination":   map[string]string{"type": "string", "description": "交付目标：chat/desktop=仅桌面对话；im/wechat/weixin/feishu/lark/qq/dingtalk/telegram=转发到对应 IM。与 forward_to_im 二选一即可"},
-				"forward_to_im": map[string]string{"type": "boolean", "description": "是否转发到用户已绑定的 IM。true 等价于 destination=im。优先推荐用 send_to_im 工具"},
+				"destination":   map[string]string{"type": "string", "description": "交付目标：chat/desktop=仅桌面对话；im/wechat/weixin/feishu/lark/qq/dingtalk/telegram=转发到对应 IM。与 forward_to_im 二选一即可。已在 IM 通道中时可不设。"},
+				"forward_to_im": map[string]string{"type": "boolean", "description": "是否从桌面转发到用户已绑定的 IM。true 等价于 destination=im。已在微信/飞书通道中时无需设置。"},
 			}, []string{"path"}),
-		toolDef("send_to_im", "把本机文件发送到用户绑定的 IM（微信/飞书/QQ/钉钉等）。用户说「发到微信」「放到飞书」时必须用本工具，不要用 send_file。调用即转发，无需再设 forward_to_im。",
+		toolDef("send_to_im", "把本机文件发送到 IM。桌面端用户说「发到微信」「放到飞书」时用本工具。若当前对话本身已是微信/飞书通道，用 send_file 发回本对话即可，不要再说发送器未配置。",
 			map[string]interface{}{
 				"path":        map[string]string{"type": "string", "description": "文件的绝对路径或相对于 Project directory 的路径"},
 				"file_name":   map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）"},
@@ -217,6 +217,13 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"context":    map[string]string{"type": "string", "description": "可选：问题的背景说明，帮助用户理解为什么需要这个信息"},
 				"input_type": map[string]string{"type": "string", "description": "期望的回答类型: choice（从选项中选择）/text（自由文本）/confirm（是/否确认）。默认 text"},
 			}, []string{"question"}),
+		// --- 长时交互录音 ---
+		toolDef("record_audio", "打开交互式长时录音界面（波形+暂停/停止）并等待用户结束录音。用户当前消息已明确要求开始录音/会议录音时，立即调用本工具，不要再二次确认，也不要去目录里找已有音频。仅当意图含糊时再澄清。用户停止后，下一条消息会带上音频路径与时长等摘要，再继续转写/纪要或投递音频文件。若生成会议纪要，必须同时 send_file 投递原始音频（可点击路径，便于用户备份）。",
+			map[string]interface{}{
+				"title":   map[string]string{"type": "string", "description": "录音会话短标题（如会议名称）"},
+				"purpose": map[string]string{"type": "string", "description": "可选：录音用途说明"},
+				"hint":    map[string]string{"type": "string", "description": "可选：给用户的额外提示"},
+			}, nil),
 		// --- 任务管理工具 ---
 		toolDef("task", "管理任务（action: create/update/complete/fail/list/delegate/delete）。用于跟踪复杂任务的进度、依赖关系和子任务分配。当任务涉及多个步骤时，先用 create 拆分任务，再逐个执行并用 complete/fail 更新状态。",
 			map[string]interface{}{

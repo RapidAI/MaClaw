@@ -247,6 +247,15 @@ set "CGO_ENABLED="
 set "CC="
 set "CXX="
 
+REM -- Build Computer Use UIA sidecar (precompiled for installers / portable) --
+echo [Step 11b/14] Building maclaw-uia-sidecar.exe...
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build_uia_sidecar.ps1" -OutDir "%OUTPUT_DIR%"
+if !errorlevel! neq 0 (
+    echo [WARN] UIA sidecar build failed — runtime will fall back to PowerShell / on-demand csc.
+) else (
+    echo [SUCCESS] UIA sidecar: %OUTPUT_DIR%\maclaw-uia-sidecar.exe
+)
+
 REM -- Create NSIS Installer --
 if /i "%~1"=="compile-only" goto copy_binaries
 echo [Step 12/14] Creating NSIS installer...

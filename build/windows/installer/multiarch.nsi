@@ -395,6 +395,10 @@ Section
         Abort
     ${EndIf}
 
+    # Computer Use: prebuilt Windows UIA sidecar (AnyCPU). Optional if build skipped.
+    DetailPrint "Installing Computer Use UIA sidecar (if present in dist)..."
+    File /nonfatal "/oname=maclaw-uia-sidecar.exe" "..\..\..\dist\maclaw-uia-sidecar.exe"
+
     # Install other assets if any (e.g., from wails.json assets or specific files)
     # File "..\..\frontend\dist\..." # Frontend is embedded in binary
 

@@ -71,6 +71,8 @@ export interface AIAssistantPanelHookActions {
     cancelSession: () => Promise<CancelAIAssistantResult>;
     submitAgentView: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     dismissAgentView: (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => void | Promise<void>;
+    /** Mark a record_audio card inactive so the mic UI does not re-open. */
+    deactivateRecordingSession: (messageId: string) => void;
 }
 
 export interface AIAssistantPanelAppActions {

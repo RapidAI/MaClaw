@@ -32,6 +32,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 
 	// Pending interaction state.
 	h.pendingAskUser.Delete(userID)
+	h.pendingRecordAudio.Delete(userID)
 	if _, preservePendingReply := h.suppressPendingUserReplyUpdate.Load(userID); !preservePendingReply {
 		h.pendingUserReply.Delete(userID)
 	}

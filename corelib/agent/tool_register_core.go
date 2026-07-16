@@ -306,6 +306,22 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
+		Name: "record_audio",
+		Description: "Desktop only: open an interactive long-form audio recording session (waveform + pause/stop) and wait until the user stops. " +
+			"Not available on IM channels — if the user asks to record a meeting on IM, tell them to use the desktop app; do not improvise with short voice notes. " +
+			"When the user's current message already asks to start meeting/long-form recording, call this immediately — do not re-confirm and do not search disks for existing audio. " +
+			"After the user stops, the saved audio path is returned in the next user message so you can offer transcription/minutes or deliver the audio file. " +
+			"When generating meeting minutes, always also send_file the original audio so the user gets a clickable backup link.",
+		Properties: map[string]interface{}{
+			"title":   map[string]string{"type": "string", "description": "Short label for the recording session (e.g. meeting name)"},
+			"purpose": map[string]string{"type": "string", "description": "Optional purpose shown in the recording UI"},
+			"hint":    map[string]string{"type": "string", "description": "Optional extra guidance for the user"},
+		},
+		Required: []string{},
+		Handler:  func(args map[string]interface{}) string { return ToolRecordAudio(args) },
+	})
+
+	r.Register(ToolEntry{
 		Name:        "task",
 		Description: "Manage the internal task checklist with actions such as create, update, complete, fail, list, and delete.",
 		Properties: map[string]interface{}{

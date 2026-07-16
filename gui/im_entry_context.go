@@ -96,6 +96,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	} else {
 		h.pendingUserReply.Delete(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
+		h.pendingRecordAudio.Delete(msg.UserID)
 	}
 	pendingReplyElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
@@ -158,6 +159,24 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	lastPhaseAt = time.Now()
 
 	result.AskUserContext, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
+	if recordCtx, hasRecord := h.consumePendingRecordAudioAnswer(msg.UserID, trimmed, result.EntriesBeforeClear); hasRecord {
+		if result.AskUserContext != "" {
+			result.AskUserContext = result.AskUserContext + "\n\n" + recordCtx
+		} else {
+			result.AskUserContext = recordCtx
+		}
+		result.HasPendingAskUser = true
+	} else if h.hasActivePendingRecordAudio(msg.UserID, result.EntriesBeforeClear) {
+		// Recording UI still open: force TaskContinue so casual chat cannot
+		// archive/clear the session and wipe pendingRecordAudio.
+		result.HasPendingAskUser = true
+		soft := "[Context hint] An interactive recording session is still open (desktop mic UI; input is locked on the client). Do not call record_audio again. The user has not finished recording until a structured [Recording completed] report arrives. Answer their current message briefly if needed without ending the recording session."
+		if result.AskUserContext != "" {
+			result.AskUserContext = result.AskUserContext + "\n\n" + soft
+		} else {
+			result.AskUserContext = soft
+		}
+	}
 	askUserElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
 	var taskContextClearUI bool
@@ -172,6 +191,17 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.FreshTask,
 		result.HasPendingAskUser || result.HasPendingUserReply,
 	)
+	// Defensive: a preset FreshTask / slot switch must not win over an open mic session.
+	// clearPerUserSessionState would wipe pendingRecordAudio and strand the UI.
+	if h.hasActivePendingRecordAudio(msg.UserID, result.EntriesBeforeClear) {
+		if result.FreshTask || taskContextClearUI {
+			log.Printf("[record-audio] suppressing FreshTask/clearUI while recording active user=%s fresh=%v clearUI=%v",
+				msg.UserID, result.FreshTask, taskContextClearUI)
+		}
+		result.FreshTask = false
+		taskContextClearUI = false
+		result.HasPendingAskUser = true
+	}
 	result.ClearUIAfterContextSwitch = taskContextClearUI
 	taskContextElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()

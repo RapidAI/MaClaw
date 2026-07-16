@@ -3,6 +3,13 @@ import type { RemoteSessionView } from "./types";
 import { SendRemoteSessionInput, SendRemoteSessionRawInput, SendRemoteSessionImage, CaptureRemoteScreenshot, CaptureRemoteWindowScreenshot, InterruptRemoteSession, SetFullscreen } from "../../../wailsjs/go/main/App";
 import { IconBolt, IconCheck, IconChevronRight, IconCross, IconFolder, StatusGlyph } from "../ai/WorkbenchIcons";
 import {
+    leadingIndentColumns,
+    leadingIndentText,
+    orderedListIndentPadding,
+    orderedListMarkerLayoutStyle,
+    parseOrderedListLine,
+} from "../ai/orderedListMarkdown";
+import {
     isPathLine,
     isUserPromptLine,
     legacyMarkVisual,
@@ -334,21 +341,27 @@ function renderMarkdownLine(text: string, key: string | number): React.ReactNode
 
     // List item: - text or * text
     if (/^[-*]\s/.test(trimmed)) {
+        const indentPad = orderedListIndentPadding(leadingIndentColumns(text));
         return (
-            <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em" }}>
+            <div key={key} style={{
+                paddingLeft: indentPad ? `calc(1em + ${indentPad})` : "1em",
+                textIndent: "-0.7em",
+                minHeight: "1.4em",
+            }}>
                 <span style={{ color: "#94a3b8" }}>-</span>{" "}
                 {renderInlineMarkdown(trimmed.slice(2))}
             </div>
         );
     }
 
-    // Numbered list: 1. text
-    const numMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
-    if (numMatch) {
+    // Numbered list: keep multi-digit markers on one line; preserve "." vs ")" + indent
+    const ordered = parseOrderedListLine(text);
+    if (ordered) {
+        const indentPad = orderedListIndentPadding(ordered.indentCols);
         return (
-            <div key={key} style={{ display: "flex", minHeight: "1.4em" }}>
-                <span style={{ color: "#94a3b8", flexShrink: 0, width: "2.2em", textAlign: "right", paddingRight: "0.5em" }}>{numMatch[1]}.</span>
-                <span style={{ flex: 1, overflowWrap: "anywhere", wordBreak: "break-word", minWidth: 0 }}>{renderInlineMarkdown(numMatch[2])}</span>
+            <div key={key} style={{ display: "flex", minHeight: "1.4em", minWidth: 0, paddingLeft: indentPad }}>
+                <span style={{ color: "#94a3b8", ...orderedListMarkerLayoutStyle }}>{ordered.marker}</span>
+                <span style={{ flex: 1, overflowWrap: "anywhere", wordBreak: "break-word", minWidth: 0 }}>{renderInlineMarkdown(ordered.body)}</span>
             </div>
         );
     }
@@ -923,10 +936,11 @@ export function RemoteSessionConsole(props: Props) {
                         // List items: buffer for continuation merging (SDK streaming
                         // may split "- Image analysis" into "- Image" + "analysis")
                         const listMatch = trimmed.match(/^[-*]\s(.*)$/);
-                        const numMatch = !listMatch ? trimmed.match(/^(\d+)[.)]\s+(.+)$/) : null;
-                        if (listMatch || numMatch) {
+                        // Parse from original `line` so nested indent is not dropped on merge.
+                        const orderedParsed = !listMatch ? parseOrderedListLine(line) : null;
+                        if (listMatch || orderedParsed) {
                             // Look ahead: merge subsequent plain-text continuation lines
-                            let itemText = listMatch ? listMatch[1] : numMatch![2];
+                            let itemText = listMatch ? listMatch[1] : orderedParsed!.body;
                             while (i + 1 < merged.length) {
                                 const nextLine = merged[i + 1];
                                 const nextTrimmed = nextLine.trimStart();
@@ -935,9 +949,14 @@ export function RemoteSessionConsole(props: Props) {
                                 i++;
                             }
                             if (listMatch) {
-                                responseLines.push(renderMarkdownLine("- " + itemText, `line-${i}`));
+                                const lead = leadingIndentText(line);
+                                responseLines.push(renderMarkdownLine(`${lead}- ${itemText}`, `line-${i}`));
                             } else {
-                                responseLines.push(renderMarkdownLine(numMatch![1] + ". " + itemText, `line-${i}`));
+                                // Preserve indent + original "." / ")" (not rewritten to "10. item")
+                                responseLines.push(renderMarkdownLine(
+                                    `${orderedParsed!.indentText}${orderedParsed!.marker} ${itemText}`,
+                                    `line-${i}`,
+                                ));
                             }
                         } else {
                             responseLines.push(renderMarkdownLine(line, `line-${i}`));

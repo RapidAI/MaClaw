@@ -16,9 +16,14 @@ export const PRESERVED_INLINE_MARK_CLASS = `${LEGACY_STREAM_MARK_CLASS}\u2B50`;
 
 const LEGACY_STREAM_MARK = new RegExp(`^([${LEGACY_STREAM_MARK_CLASS}])\\uFE0F?\\s*`);
 
-/** Shared detector for markdown flush + list continuation (no global flag — safe for .test()). */
+/**
+ * Shared detector for markdown flush + list continuation (no global flag — safe for .test()).
+ * - Optional leading indent (aligned with parseOrderedListLine)
+ * - Ordered markers allow bare "10." / "10)" (streaming) as well as "10. body"
+ * - Do not match decimals like "1.0" (after "." / ")" need space or EOL)
+ */
 export const SPECIAL_LINE_PREFIX = new RegExp(
-    `^(#{1,4}\\s|>\\s|[-*]\\s|\\d+[.)]\\s|[${LEGACY_STREAM_MARK_CLASS}]|[A-Za-z]:\\\\|~\\/|\\/[^/\\s]+\\/)`,
+    `^\\s*(#{1,4}\\s|>\\s|[-*]\\s|\\d+[.)](?:\\s|$)|[${LEGACY_STREAM_MARK_CLASS}]|[A-Za-z]:\\\\|~\\/|\\/[^/\\s]+\\/)`,
 );
 
 /** Claude Code / SDK user prompt prefix (legacy). */

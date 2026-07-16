@@ -701,7 +701,13 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	exec := c.handler.executeToolDetailedWithUserText(name, argsJSON, c.userText, toolProgress)
 	// Materialize [file_base64|…|im] before truncating: shared RunLoop has no
 	// post-tool artifact branch, so this is the only place desktop→WeChat runs.
-	mat := c.handler.materializeToolFilePayloadIfNeeded(exec.Text)
+	// Pass originating platform so WeChat/Feishu channel turns report channel
+	// delivery success (LocalFilePaths) instead of false "sender unconfigured".
+	platform := ""
+	if c.loopCtx != nil {
+		platform = runtimePlatformFromLoopContext(c.loopCtx)
+	}
+	mat := c.handler.materializeToolFilePayloadForPlatform(exec.Text, platform)
 	if mat.Handled {
 		c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, mat.LocalPaths...)
 		c.fileMaterializeNanos += mat.MaterializeNanos

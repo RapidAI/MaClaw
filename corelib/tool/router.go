@@ -60,6 +60,10 @@ var CoreToolNames = map[string]bool{
 	"compress_context": true,
 	"tts":              true,
 	"asr":              true,
+	// Desktop long-form / meeting recording. Always expose so hybrid budget
+	// contention cannot hide it when the user asks to start recording.
+	// On IM channels the tool itself returns a desktop-only message.
+	"record_audio": true,
 }
 
 type conditionalKeepRule struct {
@@ -1033,7 +1037,9 @@ func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]
 	switch name {
 	case "task", "async_wait", "compress_context", "memory":
 		return 3
-	case "list_sessions", "get_session_output", "get_session_events":
+	case "list_sessions", "get_session_output", "get_session_events",
+		// Prefer keeping recording surface when core set is trimmed for budget.
+		"record_audio":
 		return 4
 	case "screenshot", "web_fetch", "set_nickname", "tts", "asr":
 		return 5
@@ -1067,6 +1073,11 @@ func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, sessionTools
 
 // Route selects the most relevant tools for userMessage from allTools.
 func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
+	return r.RouteWithOptions(userMessage, allTools, RouteOptions{})
+}
+
+// RouteWithOptions is Route plus optional intent rewrite pins / search query.
+func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts RouteOptions) []map[string]interface{} {
 	var condKeep map[string]bool
 	var condFilterOut map[string]bool
 	var cachedICResult *IntentResult
@@ -1075,6 +1086,15 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	suppressedTools := map[string]bool{}
 	skillInstallEligible := true
 	localStoredInfoQuery := IsLocalStoredInfoQuery(userMessage)
+	routeIntent := opts.Intent
+	if routeIntent != nil && !routeIntent.Usable() {
+		routeIntent = nil
+	}
+	availableNames := availableToolNameSet(allTools)
+	searchQuery := userMessage
+	if routeIntent != nil {
+		searchQuery = routeIntent.SearchQuery(userMessage)
+	}
 
 	if r.unifiedClassifier != nil {
 		// UIC path: use UnifiedIntentClassifier to determine which conditional
@@ -1222,6 +1242,57 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		suppressedTools["call_mcp_tool"] = true
 	}
 	explicitScreenshotRequest := isExplicitScreenshotRequest(userMessage)
+	explicitRecordAudioRequest := isExplicitRecordAudioRequest(userMessage)
+	explicitGitRequest := isExplicitGitRequest(userMessage)
+	// Explicit start-recording intents must never lose record_audio to budget
+	// pressure (also in CoreToolNames; pin keeps session continuity if core set changes).
+	if explicitRecordAudioRequest {
+		condKeep["record_audio"] = true
+		delete(condFilterOut, "record_audio")
+		delete(suppressedTools, "record_audio")
+	}
+	// Explicit screenshot/git must be pinned: with score-floor candidate selection
+	// they can otherwise lose remaining slots to noise or land at score 0.
+	if explicitScreenshotRequest {
+		condKeep["screenshot"] = true
+		delete(condFilterOut, "screenshot")
+		delete(suppressedTools, "screenshot")
+	}
+	if explicitGitRequest {
+		condKeep["git_commit"] = true
+		condKeep["git_push"] = true
+		delete(condFilterOut, "git_commit")
+		delete(condFilterOut, "git_push")
+		delete(suppressedTools, "git_commit")
+		delete(suppressedTools, "git_push")
+	}
+	// LLM / structured intent rewrite: pin families and suppress excludes.
+	if routeIntent != nil {
+		intentPins := routeIntent.ExpandPins(availableNames)
+		intentExcludes := routeIntent.ExpandExcludes(availableNames)
+		for _, name := range intentPins {
+			condKeep[name] = true
+			delete(condFilterOut, name)
+			delete(suppressedTools, name)
+		}
+		for _, name := range intentExcludes {
+			// Do not suppress something we just pinned for this turn.
+			if condKeep[name] {
+				continue
+			}
+			suppressedTools[name] = true
+			delete(condKeep, name)
+			condFilterOut[name] = true
+		}
+		if routeIntent.QueryForRoute != "" || len(intentPins) > 0 {
+			q := routeIntent.QueryForRoute
+			if rs := []rune(q); len(rs) > 80 {
+				q = string(rs[:80]) + "..."
+			}
+			log.Printf("[RouteIntent] intent=%q confidence=%.2f query=%q pins=%v excludes=%v families=%v",
+				routeIntent.Intent, routeIntent.Confidence, q, intentPins, intentExcludes, routeIntent.ToolFamilies)
+		}
+	}
 	browserSessionActive := condKeep["browser"] || r.sessionTools["browser"]
 
 	// When the user explicitly asks for a desktop screenshot and browser was
@@ -1366,13 +1437,15 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 	r.bm25Index.RebuildIfChanged(docs)
 
-	// Tokenize user message once; reused for BM25 scoring AND experience matching below.
-	queryTokens := bm25.Tokenize(userMessage)
+	// Tokenize retrieval query (rewritten intent when present). Experience
+	// signals still use the original user tokens so personal patterns stick.
+	queryTokens := bm25.Tokenize(searchQuery)
+	userTokens := bm25.Tokenize(userMessage)
 	scores := r.bm25Index.ScoreWithTokens(queryTokens)
 
 	// Fuse with vector scores when hybrid retrieval is active.
 	if r.hybrid != nil {
-		scores = r.hybrid.FuseScores(userMessage, scores, embeddingTexts)
+		scores = r.hybrid.FuseScores(searchQuery, scores, embeddingTexts)
 
 		// Debug log top-5 tools with fused scores.
 		type debugEntry struct {
@@ -1408,11 +1481,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		retrievalScore := normScores[name]
 		var expScore float64
 		if r.tracker != nil {
-			expScore = r.tracker.ExperienceScore(name, queryTokens)
+			expScore = r.tracker.ExperienceScore(name, userTokens)
 		}
 		var outcomeScore float64
 		if r.tracker != nil {
-			outcomeScore = r.tracker.ContextOutcomeScore(name, queryTokens)
+			outcomeScore = r.tracker.ContextOutcomeScore(name, userTokens)
 		}
 		var priorityBonus float64
 		if r.registry != nil {
@@ -1422,7 +1495,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 		var routingHintAdjustment float64
 		if r.tracker != nil {
-			routingHintAdjustment = r.tracker.RoutingHintAdjustment(name, queryTokens)
+			routingHintAdjustment = r.tracker.RoutingHintAdjustment(name, userTokens)
 		}
 
 		// Skill match bonus: only applies to manage_skill tool.
@@ -1477,7 +1550,8 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			}
 		}
 
-		reranked, err := r.reranker.Rerank(userMessage, summaries, 5)
+		// Prefer rewritten search query so listwise rerank aligns with hybrid retrieval.
+		reranked, err := r.reranker.Rerank(searchQuery, summaries, 5)
 		if err != nil || len(reranked) == 0 {
 			if err != nil {
 				log.Printf("[Router] WARN: reranker failed: %v, falling back to fused scores", err)
@@ -1522,26 +1596,36 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	for _, t := range result {
 		resultNames[ExtractToolName(t)] = true
 	}
+	rerankedKeep := make(map[string]bool, len(rerankerResult))
+	for _, name := range rerankerResult {
+		rerankedKeep[name] = true
+	}
 
 	for _, s := range scoredList {
 		if len(result) >= MaxToolBudget {
 			break
 		}
-		if suppressedTools[candidateNames[s.index]] {
+		name := candidateNames[s.index]
+		// Do not pad the budget with zero-score noise (e.g. computer_* at 0),
+		// unless the listwise reranker explicitly promoted the tool.
+		if s.score < MinCandidateRouteScore && !rerankedKeep[name] {
 			continue
 		}
-		if !r.isBuiltin(candidateNames[s.index]) {
+		if suppressedTools[name] {
+			continue
+		}
+		if !r.isBuiltin(name) {
 			dynamicCount++
 			if dynamicCount > MaxDynamicRouted {
 				continue
 			}
 		}
 		result = append(result, candidates[s.index])
-		resultNames[candidateNames[s.index]] = true
+		resultNames[name] = true
 	}
 
 	if r.recommender != nil && skillInstallEligible {
-		if hint := r.matchRecommendations(bm25.Tokenize(userMessage)); hint != nil {
+		if hint := r.matchRecommendations(userTokens); hint != nil {
 			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] {
 				result = append(result, hint)
 				resultNames[name] = true
@@ -1620,6 +1704,153 @@ func isExplicitScreenshotRequest(userMessage string) bool {
 		if strings.Contains(msg, marker) {
 			return true
 		}
+	}
+	return false
+}
+
+// recordingStopMarkers are unambiguous stop/cancel/refuse phrases. Checked
+// before start markers so "不要帮我录音" (contains "帮我录音") is not treated
+// as a start request.
+var recordingStopMarkers = []string{
+	"停止录音", "停止錄音", "停止录制", "停止錄製",
+	"结束录音", "結束錄音", "结束录制", "結束錄製",
+	"取消录音", "取消錄音", "取消录制", "取消錄製",
+	"关闭录音", "關閉錄音", "关掉录音", "關掉錄音",
+	"不要录音", "不要錄音", "别录音", "別錄音", "别录了", "別錄了",
+	"不要帮我录音", "不要幫我錄音", "别帮我录音", "別幫我錄音",
+	"不用录音", "不用錄音", "无需录音", "無需錄音",
+	"stop recording", "cancel recording", "end recording", "stop the recording",
+	"don't record", "do not record", "dont record",
+}
+
+// recordingStartMarkers are strong start-recording phrases (substring match).
+var recordingStartMarkers = []string{
+	"record_audio",
+	"start recording", "start a recording", "begin recording",
+	"record the meeting", "record meeting", "meeting recording",
+	"record this meeting", "long-form recording", "long form recording",
+	"open the recorder", "open recorder", "start the recorder",
+	"会议录音", "開始錄音", "开始录音", "打开录音", "打開錄音",
+	"开始录制", "開始錄製", "打开录制", "打開錄製",
+	"录一下", "錄一下", "帮我录音", "幫我錄音", "给我录音", "給我錄音",
+	"现场录音", "現場錄音", "长时录音", "長時錄音", "长时录制", "長時錄製",
+	"讨论录制", "討論錄製", "访谈录制", "訪談錄製", "访谈录音", "訪談錄音",
+	"录个音", "錄個音", "录制会议", "錄製會議", "录音会议", "錄音會議",
+}
+
+// isExplicitRecordAudioRequest detects clear user intent to START interactive
+// long-form / meeting recording (not "transcribe an existing audio file",
+// and not stop/cancel recording).
+func isExplicitRecordAudioRequest(userMessage string) bool {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" {
+		return false
+	}
+	// Hard stop/cancel always wins (even if a start substring is nested).
+	if looksLikeHardStopRecordingRequest(msg) {
+		return false
+	}
+	// Strong start phrases win over co-occurring 转写/路径 talk
+	// (e.g. "不要转写，开始录音"), but not over "整理会议录音纪要".
+	if hasStrongStartRecordingPhrase(msg) && !looksLikeProcessExistingMeetingRecording(msg) {
+		return true
+	}
+	if looksLikeStopOrNegateRecordingRequest(msg) ||
+		looksLikeExistingAudioTranscriptionRequest(msg) ||
+		looksLikeProcessExistingMeetingRecording(msg) {
+		return false
+	}
+	// Bare "录音" / "录制" only for short messages (e.g. "录音", "帮我录一下"),
+	// not long narrative that merely mentions recording as a topic.
+	runeCount := len([]rune(msg))
+	if runeCount > 0 && runeCount <= 16 &&
+		(strings.Contains(msg, "录音") || strings.Contains(msg, "錄音") ||
+			strings.Contains(msg, "录制") || strings.Contains(msg, "錄製") ||
+			containsASCIIToken(msg, "record") || containsASCIIToken(msg, "recording")) {
+		return true
+	}
+	return false
+}
+
+func hasStrongStartRecordingPhrase(msg string) bool {
+	for _, marker := range recordingStartMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeHardStopRecordingRequest matches unambiguous stop/cancel/refuse phrases.
+func looksLikeHardStopRecordingRequest(msg string) bool {
+	for _, marker := range recordingStopMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeExistingAudioTranscriptionRequest is true when the user is asking to
+// transcribe/process an existing audio file rather than start a new recording.
+func looksLikeExistingAudioTranscriptionRequest(msg string) bool {
+	for _, marker := range []string{
+		"转写", "轉寫", "转录", "轉錄", "asr", "whisper",
+		"音频文件", "音頻文件", "录音文件", "錄音文件",
+		".wav", ".mp3", ".m4a", ".ogg", ".opus", ".silk", ".aac",
+		"path=", "路径", "路徑",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeProcessExistingMeetingRecording is true when the user wants to
+// process/summarize an existing meeting recording, not open the mic UI.
+// Example: "把会议录音整理成纪要" (contains "会议录音" but is not a start intent).
+func looksLikeProcessExistingMeetingRecording(msg string) bool {
+	hasMeetingAudio := strings.Contains(msg, "会议录音") || strings.Contains(msg, "會議錄音") ||
+		strings.Contains(msg, "meeting recording") || strings.Contains(msg, "recording of the meeting")
+	if !hasMeetingAudio {
+		return false
+	}
+	// Explicit start verbs still mean "start recording (and maybe summarize later)".
+	for _, start := range []string{
+		"开始", "開始", "打开", "打開", "帮我录", "幫我錄", "给我录", "給我錄",
+		"start ", "begin ", "open ",
+	} {
+		if strings.Contains(msg, start) {
+			return false
+		}
+	}
+	for _, process := range []string{
+		"整理", "纪要", "紀要", "总结", "總結", "摘要", "转成", "轉成",
+		"写成", "寫成", "生成", "summar", "minutes", "notes",
+	} {
+		if strings.Contains(msg, process) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeStopOrNegateRecordingRequest is true when the user is stopping,
+// cancelling, or refusing recording — not asking to start it.
+func looksLikeStopOrNegateRecordingRequest(msg string) bool {
+	if looksLikeHardStopRecordingRequest(msg) {
+		return true
+	}
+	// Soft negate only for short messages ("不要录音啊") so we do not kill
+	// compound intents like "不要转写，开始录音".
+	runeCount := len([]rune(msg))
+	if runeCount > 0 && runeCount <= 20 &&
+		(strings.Contains(msg, "不要") || strings.Contains(msg, "别") || strings.Contains(msg, "別") ||
+			strings.Contains(msg, "不用") || strings.Contains(msg, "无需") || strings.Contains(msg, "無需")) &&
+		(strings.Contains(msg, "录音") || strings.Contains(msg, "錄音") ||
+			strings.Contains(msg, "录制") || strings.Contains(msg, "錄製")) {
+		return true
 	}
 	return false
 }

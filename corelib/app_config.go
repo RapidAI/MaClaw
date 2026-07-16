@@ -127,6 +127,18 @@ type AppConfig struct {
 	NetworkLevel                       string                 `json:"network_level,omitempty"`         // "none", "intranet", "allowlist", "full" (default)
 	NetworkAllowlist                   []string               `json:"network_allowlist,omitempty"`     // hostnames/IPs allowed when network_level="allowlist"
 	YoloModeAllowed                    bool                   `json:"yolo_mode_allowed"`               // default true
+	// ComputerUseEnabled controls desktop Computer Use tools/playbook injection.
+	// Nil means default true. Independent of ScreenParsingEnabled (OmniParser YOLO weights).
+	ComputerUseEnabled *bool `json:"computer_use_enabled,omitempty"`
+	// ComputerUseLogKeepNewest is how many newest diag/csv files to keep per kind when pruning.
+	// Nil/0 means default 10.
+	ComputerUseLogKeepNewest *int `json:"computer_use_log_keep_newest,omitempty"`
+	// ComputerUseLogMaxAgeDays deletes Computer Use log artifacts older than this many days when pruning.
+	// Nil/0 means age is ignored (only keep-newest applies).
+	ComputerUseLogMaxAgeDays *int `json:"computer_use_log_max_age_days,omitempty"`
+	// ComputerUseLogAutoPrune runs prune on GUI startup using keep/max-age policy.
+	// Nil/false means off (default).
+	ComputerUseLogAutoPrune *bool `json:"computer_use_log_auto_prune,omitempty"`
 	SmartRouteEnabled                  bool                   `json:"smart_route_enabled"`             // default true (Hub smart routing allowed)
 	GossipEnabled                      bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
 	FileOutboundEnabled                bool                   `json:"file_outbound_enabled"`           // default true
@@ -182,6 +194,9 @@ type AppConfig struct {
 	LansengerAppSecret  string `json:"lansenger_app_secret,omitempty"`
 	LansengerGatewayURL string `json:"lansenger_gateway_url,omitempty"` // API gateway base URL, default https://apigw.lx.qianxin.com
 	LansengerWSSURL     string `json:"lansenger_wss_url,omitempty"`     // optional WebSocket gateway override
+	// LansengerIgnoredGroupIDs lists group IDs the bot should not respond to.
+	// The bot remains in the group on the platform; only local handling is suppressed.
+	LansengerIgnoredGroupIDs []string `json:"lansenger_ignored_group_ids,omitempty"`
 	// IM 闂?local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode     *bool `json:"qqbot_local_mode,omitempty"`     // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode  *bool `json:"telegram_local_mode,omitempty"`  // nil = auto-detect, true = local, false = hub
@@ -921,6 +936,7 @@ func AppConfigDefaults() AppConfig {
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,
 		ScreenParsingEnabled:       boolPtrValue(true),
+		ComputerUseEnabled:         boolPtrValue(true),
 		IMProgressNudgeEnabled:     boolPtrValue(true),
 		KnowledgeAutoRecallEnabled: boolPtrValue(true),
 		WorkflowEnabled:            boolPtrValue(false),
@@ -1200,6 +1216,73 @@ func (c *AppConfig) IsLansengerLocalMode() bool {
 // SetLansengerLocal sets the LansengerLocalMode pointer field.
 func (c *AppConfig) SetLansengerLocal(v bool) {
 	c.LansengerLocalMode = &v
+}
+
+// IsLansengerGroupIgnored reports whether groupID is on the ignore list.
+// Matching is case-sensitive after trim (Lansenger group IDs are opaque tokens).
+func (c *AppConfig) IsLansengerGroupIgnored(groupID string) bool {
+	if c == nil {
+		return false
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return false
+	}
+	for _, id := range c.LansengerIgnoredGroupIDs {
+		if strings.TrimSpace(id) == groupID {
+			return true
+		}
+	}
+	return false
+}
+
+// MaxLansengerIgnoredGroups caps how many groups can be locally silenced.
+const MaxLansengerIgnoredGroups = 500
+
+// SetLansengerGroupIgnored adds or removes groupID from the ignore list.
+// Returns true when the list changed.
+func (c *AppConfig) SetLansengerGroupIgnored(groupID string, ignored bool) bool {
+	if c == nil {
+		return false
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return false
+	}
+	if ignored {
+		if c.IsLansengerGroupIgnored(groupID) {
+			return false
+		}
+		if len(c.LansengerIgnoredGroupIDs) >= MaxLansengerIgnoredGroups {
+			// Drop oldest entry so the newest ignore still applies.
+			c.LansengerIgnoredGroupIDs = append([]string(nil), c.LansengerIgnoredGroupIDs[1:]...)
+		}
+		// Copy-on-write so callers holding an older config snapshot are unaffected.
+		c.LansengerIgnoredGroupIDs = append(append([]string(nil), c.LansengerIgnoredGroupIDs...), groupID)
+		return true
+	}
+	out := make([]string, 0, len(c.LansengerIgnoredGroupIDs))
+	changed := false
+	for _, id := range c.LansengerIgnoredGroupIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if id == groupID {
+			changed = true
+			continue
+		}
+		out = append(out, id)
+	}
+	if !changed {
+		return false
+	}
+	if len(out) == 0 {
+		c.LansengerIgnoredGroupIDs = nil
+	} else {
+		c.LansengerIgnoredGroupIDs = out
+	}
+	return true
 }
 
 // IsThirdPartyGatewayLocalMode returns the effective third-party gateway local mode setting.

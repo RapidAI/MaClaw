@@ -18,9 +18,20 @@ import {
     textMayContainPictograph,
     type InlineMarkVisual,
 } from "./aiAssistantProgressUtils";
+import {
+    leadingIndentColumns,
+    orderedListIndentPadding,
+    orderedListMarkerLayoutStyle,
+    parseOrderedListLine,
+} from "./orderedListMarkdown";
 import { IconBolt, IconSearch, IconStar, StatusGlyph } from "./WorkbenchIcons";
+import {
+    RecordingSessionCard,
+    type RecordingCompleteResult,
+} from "./RecordingSessionCard";
 
 export type { Theme } from "./aiAssistantPanelTheme";
+export type { RecordingCompleteResult } from "./RecordingSessionCard";
 /* Themed inline markdown rendering */
 const pathQuoteCharsPattern = /[`'"\u2018\u2019\u201c\u201d]/;
 const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
@@ -381,20 +392,34 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     }
 
     if (/^[-*]\s/.test(trimmed)) {
+        const indentPad = orderedListIndentPadding(leadingIndentColumns(text));
         return (
-            <div key={key} style={{ paddingLeft: "1em", textIndent: "-0.7em", minHeight: "1.4em", ...blockWrapStyle }}>
+            <div key={key} style={{
+                paddingLeft: indentPad ? `calc(1em + ${indentPad})` : "1em",
+                textIndent: "-0.7em",
+                minHeight: "1.4em",
+                ...blockWrapStyle,
+            }}>
                 <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
                 {renderInlineMarkdown(trimmed.slice(2), t)}
             </div>
         );
     }
 
-    const numMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
-    if (numMatch) {
+    const ordered = parseOrderedListLine(text);
+    if (ordered) {
+        // Keep wrap styles off the marker span (and off the flex row) so indices never
+        // inherit word-break from prose and reflow mid-number. Preserve "." vs ")".
+        const indentPad = orderedListIndentPadding(ordered.indentCols);
         return (
-            <div key={key} style={{ display: "flex", minHeight: "1.4em", ...blockWrapStyle }}>
-                <span style={{ color: t.bulletColor, flexShrink: 0, width: "2.2em", textAlign: "right", paddingRight: "0.5em" }}>{numMatch[1]}.</span>
-                <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(numMatch[2], t)}</span>
+            <div key={key} style={{
+                display: "flex",
+                minHeight: "1.4em",
+                minWidth: 0,
+                paddingLeft: indentPad,
+            }}>
+                <span style={{ color: t.bulletColor, ...orderedListMarkerLayoutStyle }}>{ordered.marker}</span>
+                <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(ordered.body, t)}</span>
             </div>
         );
     }
@@ -1014,7 +1039,17 @@ function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
 
 /* Render a single ChatMessage */
 
-export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en", isStreaming = false, incrementalContentRenderer?: (formattedContent: string) => React.ReactNode[]): React.ReactNode {
+export function renderMessage(
+    msg: ChatMessage,
+    executeAction: (cmd: string) => void,
+    t: Theme,
+    isLastAssistant: boolean,
+    savedFileLabel: string,
+    lang = "en",
+    isStreaming = false,
+    incrementalContentRenderer?: (formattedContent: string) => React.ReactNode[],
+    onRecordingComplete?: (result: RecordingCompleteResult, messageId: string) => void,
+): React.ReactNode {
     switch (msg.role) {
         case "user":
             return (
@@ -1141,11 +1176,31 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                         {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
                         {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                         {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
+                        {msg.recordingSession && (
+                            <RecordingSessionCard
+                                title={msg.recordingSession.title}
+                                purpose={msg.recordingSession.purpose}
+                                theme={t}
+                                lang={lang}
+                                active={!!msg.recordingSession.active && isLastAssistant && !isStreaming}
+                                onComplete={(result) => {
+                                    if (onRecordingComplete) {
+                                        onRecordingComplete(result, msg.id);
+                                    }
+                                }}
+                            />
+                        )}
                         {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => (
                             <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={fp}>{savedFileLabel}: {fp}</a></div>
                         ))}</div>}
-                        {msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
-                        {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
+                        {(() => {
+                            const visibleFields = (msg.fields || []).filter((f) => {
+                                const label = String(f?.label || "").toLowerCase();
+                                return label !== "recording_title" && label !== "recording_purpose";
+                            });
+                            return visibleFields.length > 0 ? renderFields(visibleFields, t) : null;
+                        })()}
+                        {!msg.confirmation && !msg.recordingSession && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
                     </ChatBubbleFrame>
                 </div>
             );

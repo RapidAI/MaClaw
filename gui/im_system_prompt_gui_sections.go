@@ -22,7 +22,8 @@ import (
 // When suppressCodingContract is true (V2 workflow agent loop), the multi-phase
 // coding workflow contract is omitted to prevent the LLM from self-confirming
 // and re-emitting documents within a single response.
-func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool, suppressCodingContract bool) {
+// platform is the originating conversation platform (desktop / weixin / feishu / …).
+func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isProMode bool, trialReflectEnabled bool, suppressCodingContract bool, platform string) {
 	b.WriteString(`
 ## 上下文管理（长程任务优化）
 - 当 context 较大（连续执行了 10+ 轮工具调用）或切换工作方向时，调用 compress_context 压缩之前的详细工具调用历史为一段摘要。
@@ -61,12 +62,8 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 - During workflow-driven coding execution, use those local tools to create directories, write files, edit files, build, and test.
 - Do not tell the user that bash/write_file/edit_file are unavailable merely because simplified mode is active.
 - If a tool is not in the current tool list, choose another available local path or ask for a mode/provider change only for external coding sessions.
-
-## 文件发到微信/飞书（桌面端）
-- send_file：默认只在当前桌面对话展示，不会到微信。
-- send_to_im：专用「发到 IM」工具，调用即转发到微信/飞书等。用户说「发到微信」「放到飞书」时必须用 send_to_im，不要用 send_file。
-- 不要只在回复文字里写「已发到微信」却未调用 send_to_im；若工具结果提示未转发，立刻用 send_to_im 重试。
 `)
+	appendFileDeliveryChannelRules(b, platform)
 
 	if trialReflectEnabled {
 		b.WriteString(`
@@ -79,6 +76,31 @@ func (h *IMMessageHandler) appendGUIPostCorePrinciples(b *strings.Builder, isPro
 - 如果最近一轮已经证明某种做法无效，下一轮优先换方法、换参数或补充证据。
 `)
 	}
+}
+
+// appendFileDeliveryChannelRules tells the model how send_file / send_to_im map
+// to the current conversation platform. On WeChat/Feishu channels, the current
+// chat IS the destination — do not claim the sender is unconfigured.
+func appendFileDeliveryChannelRules(b *strings.Builder, platform string) {
+	if b == nil {
+		return
+	}
+	kind := normalizeIMMessagePlatformKind(platform)
+	if kind.IsIMChannel() {
+		b.WriteString(`
+## 文件发送（当前为 IM 通道）
+- 当前对话就是微信/飞书/QQ 通道本身。
+- 用户说「发微信」时直接 send_file；工具结果写「已发到当前 IM 通道」即成功。
+- 禁止说「发送器未配置 / 需要客户端登录 / 无法发到微信」；不要让用户手动转发，也不要对同一文件再调 send_to_im。
+`)
+		return
+	}
+	b.WriteString(`
+## 文件发到微信/飞书（桌面端）
+- send_file：默认只在当前桌面对话展示，不会到微信。
+- send_to_im：专用「发到 IM」工具，调用即转发到微信/飞书等。用户说「发到微信」「放到飞书」时必须用 send_to_im，不要用 send_file。
+- 不要只在回复文字里写「已发到微信」却未调用 send_to_im；若工具结果提示未转发，立刻用 send_to_im 重试。
+`)
 }
 
 // appendGUIPostSSHRules injects GUI-only content after SSH rules:
@@ -269,6 +291,11 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string, eventContext lifecycle.EventContext, userID string, history []agent.ConversationEntry) {
 	epilogueStart := time.Now()
 	userID = strings.TrimSpace(userID)
+
+	// Computer Use playbook for text-only models (OmniParser local vision).
+	if section := computerUsePlaybookSection(h.shouldActivateComputerUse(msg)); section != "" {
+		b.WriteString(section)
+	}
 
 	// OpenHuman-inspired: inject situation report (active tasks, SSH sessions, etc.)
 	if report := h.buildSituationReport(userID); report != "" {

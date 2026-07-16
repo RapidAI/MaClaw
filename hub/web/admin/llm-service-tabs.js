@@ -2429,6 +2429,31 @@ window.ensureLLMProviderRuntimeUI = ensureLLMProviderRuntimeUI;
 window.loadLLMServiceModelRuntime = loadLLMServiceModelRuntime;
 window.triggerLLMServiceModelDownload = triggerLLMServiceModelDownload;
 window.openLlmServiceGroupTab = function() { if (typeof openTab === 'function') openTab('modelservices'); };
+// Deep-link: open Model Services and focus the reserved system-free group editor.
+window.openSystemFreeServiceGroup = async function openSystemFreeServiceGroup() {
+  if (typeof openTab === 'function') openTab('modelservices');
+  llmServiceSelectedGroupID = SYSTEM_FREE_LLM_SERVICE_GROUP_ID;
+  try {
+    var groups = llmServiceAdminCache && llmServiceAdminCache.model_service_groups || [];
+    var found = groups.some(function(g) { return isSystemFreeLLMServiceGroup(g && g.id); });
+    if (!found && typeof loadLLMServiceAdmin === 'function') {
+      await loadLLMServiceAdmin();
+    }
+    var opened = await openLLMServiceGroupDialog('edit', SYSTEM_FREE_LLM_SERVICE_GROUP_ID);
+    if (opened === false) {
+      var missing = new Error('system-free service group not found');
+      missing.systemFreeConfigToasted = true; // dialog already toasted
+      throw missing;
+    }
+  } catch (err) {
+    if (err && err.systemFreeConfigToasted) throw err;
+    var msg = String(err && err.message || err || 'open system-free failed');
+    if (typeof showToast === 'function') showToast(msg, 'error');
+    var wrapped = err instanceof Error ? err : new Error(msg);
+    wrapped.systemFreeConfigToasted = true;
+    throw wrapped;
+  }
+};
 registerLLMServiceTabs();
 ensureLLMServiceAdminUI();
 ensureLLMServiceCardsTab();
@@ -2653,10 +2678,17 @@ function llsProviderOptions() {
 async function openLLMServiceGroupDialog(mode, id) {
   ensureLLMServiceGroupModalUI();
   await refreshLLMServiceProviderOptions();
-  var g = mode === 'edit' ? ((llmServiceAdminCache && llmServiceAdminCache.model_service_groups || []).find(function(x) { return x.id === id; }) || null) : null;
-  if (mode === 'edit' && (!g || isBuiltinLLMServiceGroup(g.id))) {
+  var wantKey = llmServiceGroupIDKey(id);
+  var g = mode === 'edit' ? ((llmServiceAdminCache && llmServiceAdminCache.model_service_groups || []).find(function(x) {
+    return llmServiceGroupIDKey(x && x.id) === wantKey;
+  }) || null) : null;
+  if (mode === 'edit' && !g) {
+    showToast(isSystemFreeLLMServiceGroup(id) ? 'system-free service group not found' : lsx('groupIdNameRequired'), 'error');
+    return false;
+  }
+  if (mode === 'edit' && isBuiltinLLMServiceGroup(g.id)) {
     showToast(lsx('builtInDefaultReadOnly'), 'info');
-    return;
+    return false;
   }
   llmServiceGroupDialogMode = mode === 'edit' ? 'edit' : 'create';
   llmServiceSelectedGroupID = g && g.id || '';
@@ -2665,6 +2697,7 @@ async function openLLMServiceGroupDialog(mode, id) {
   var o = document.getElementById('llmServiceGroupModalOverlay');
   if (o) o.classList.add('show');
   setTimeout(function() { var first = document.getElementById('llsGroupId'); if (first && typeof first.focus === 'function') first.focus(); }, 0);
+  return true;
 }
 function closeLLMServiceGroupDialog() {
   closeLLSProviderDialog();
@@ -2908,6 +2941,45 @@ function llsRemoveProvider(i, id) { var m = llmServiceGroupDraft && llmServiceGr
 async function llsRemoveGroupById(id) { if (!llmServiceAdminCache || !id) return; if (isProtectedLLMServiceGroup(id)) { showToast(isSystemFreeLLMServiceGroup(id) ? 'system-free cannot be removed' : lsx('builtInDefaultCannotRemove'), 'info'); return; } var key = llmServiceGroupIDKey(id); var keep = function(x) { return llmServiceGroupIDKey(x) !== key; }; var snapshot = JSON.parse(JSON.stringify(llmServiceAdminCache)); snapshot.model_service_groups = (snapshot.model_service_groups || []).filter(function(g) { return keep(g && g.id); }); snapshot.global_service_group_ids = (snapshot.global_service_group_ids || []).filter(keep); snapshot.default_new_user_service_groups = (snapshot.default_new_user_service_groups || []).filter(keep); if (!(snapshot.default_new_user_service_groups || []).length) snapshot.default_new_user_service_groups = [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID]; snapshot.group_bindings = (snapshot.group_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; }); snapshot.user_bindings = (snapshot.user_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; }); try { var data = await api('/api/admin/llm/services?include_cards=false', { method: 'PUT', body: JSON.stringify(snapshot) }); llmServiceAdminCache = data || snapshot; if (llmServiceGroupIDKey(llmServiceSelectedGroupID) === key) llmServiceSelectedGroupID = ''; renderLLMServiceAdmin(); showToast(lsx('saveDone'), 'success'); } catch (err) { showToast(lsx('saveFailed', { error: err.message }), 'error'); } }
 function llsToggleProviderFeature(i, providerID, f, on) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var cfg = llsProviderConfig(m, providerID); if (!cfg) return; var s = new Set(cfg.capability_tags || []); if (on) s.add(f); else s.delete(f); cfg.capability_tags = Array.from(s); llsSyncModelProviderState(m); }
 function llsSetProviderExtra(i, providerID, v) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var cfg = llsProviderConfig(m, providerID); if (!cfg) return; var p = (cfg.capability_tags || []).filter(function(x) { return llmServiceCapabilityOptions.indexOf(x) >= 0; }); cfg.capability_tags = Array.from(new Set(p.concat(parseCSV(v).filter(function(x) { return llmServiceCapabilityOptions.indexOf(x) < 0; })))); llsSyncModelProviderState(m); }
-async function saveLLMServiceGroupDialog() { if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] }; var n = llsCloneGroup(llmServiceGroupDraft || llsEmptyGroup()); if (!n.id || !n.name) { showToast(lsx('groupIdNameRequired'), 'error'); return; } n.access_policy = llsNormalizeAccessPolicy(n.access_policy); if (isSystemFreeLLMServiceGroup(n.id) || isSystemFreeLLMServiceGroup(llmServiceSelectedGroupID)) { n.id = SYSTEM_FREE_LLM_SERVICE_GROUP_ID; n.access_policy = 'free'; } if ((isBuiltinLLMServiceGroup(n.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) && !isSystemFreeLLMServiceGroup(n.id)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return; } var routeNameSeen = {}; for (var i = 0; i < (n.models || []).length; i++) { n.models[i].name = String(n.models[i].name || '').trim() || 'auto'; if (!(n.models[i].provider_ids || []).length) { showToast(llsX('routeNeedsProvider'), 'error'); return; } var routeNameKey = String(n.models[i].name || '').trim().toLowerCase(); if (routeNameSeen[routeNameKey]) { showToast(llsX('duplicateRouteAlias', { name: n.models[i].name }), 'error'); return; } routeNameSeen[routeNameKey] = true; } var gs = llmServiceAdminCache.model_service_groups || [], si = gs.findIndex(function(g) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(llmServiceSelectedGroupID); }), oldID = si >= 0 ? gs[si].id : '', di = gs.findIndex(function(g, idx) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(n.id) && idx !== si; }); if (di >= 0) { showToast(lsx('duplicateGroupId', { id: n.id }), 'error'); return; } if (si >= 0 && llmServiceGroupIDKey(oldID) !== llmServiceGroupIDKey(n.id)) { showToast(lsx('groupIdImmutable'), 'error'); return; } if (si >= 0) gs[si] = n; else gs.push(n); llmServiceAdminCache.model_service_groups = gs; llmServiceSelectedGroupID = n.id; closeLLMServiceGroupDialog(); renderLLMServiceAdmin(); await saveLLMServiceAdmin(); }
+async function saveLLMServiceGroupDialog() {
+  if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
+  var n = llsCloneGroup(llmServiceGroupDraft || llsEmptyGroup());
+  if (!n.id || !n.name) { showToast(lsx('groupIdNameRequired'), 'error'); return; }
+  n.access_policy = llsNormalizeAccessPolicy(n.access_policy);
+  var editingSystemFree = isSystemFreeLLMServiceGroup(n.id) || isSystemFreeLLMServiceGroup(llmServiceSelectedGroupID);
+  if (editingSystemFree) { n.id = SYSTEM_FREE_LLM_SERVICE_GROUP_ID; n.access_policy = 'free'; }
+  if ((isBuiltinLLMServiceGroup(n.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) && !isSystemFreeLLMServiceGroup(n.id)) {
+    showToast(lsx('builtInDefaultReadOnly'), 'info');
+    return;
+  }
+  var routeNameSeen = {};
+  for (var i = 0; i < (n.models || []).length; i++) {
+    n.models[i].name = String(n.models[i].name || '').trim() || 'auto';
+    if (!(n.models[i].provider_ids || []).length) { showToast(llsX('routeNeedsProvider'), 'error'); return; }
+    var routeNameKey = String(n.models[i].name || '').trim().toLowerCase();
+    if (routeNameSeen[routeNameKey]) { showToast(llsX('duplicateRouteAlias', { name: n.models[i].name }), 'error'); return; }
+    routeNameSeen[routeNameKey] = true;
+  }
+  var gs = llmServiceAdminCache.model_service_groups || [];
+  var si = gs.findIndex(function(g) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(llmServiceSelectedGroupID); });
+  var oldID = si >= 0 ? gs[si].id : '';
+  var di = gs.findIndex(function(g, idx) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(n.id) && idx !== si; });
+  if (di >= 0) { showToast(lsx('duplicateGroupId', { id: n.id }), 'error'); return; }
+  if (si >= 0 && llmServiceGroupIDKey(oldID) !== llmServiceGroupIDKey(n.id)) { showToast(lsx('groupIdImmutable'), 'error'); return; }
+  if (si >= 0) gs[si] = n; else gs.push(n);
+  llmServiceAdminCache.model_service_groups = gs;
+  llmServiceSelectedGroupID = n.id;
+  closeLLMServiceGroupDialog();
+  renderLLMServiceAdmin();
+  await saveLLMServiceAdmin();
+  // Keep system-free readiness panels in sync after provider edits.
+  if (editingSystemFree && typeof window !== 'undefined' && typeof window.fetchTenantSystemFreeStatus === 'function') {
+    try {
+      var st = await window.fetchTenantSystemFreeStatus();
+      if (typeof window.applyTenantSystemFreeStatusUI === 'function') window.applyTenantSystemFreeStatusUI(st);
+      else if (typeof window.applyOverviewSystemFreeStatus === 'function') window.applyOverviewSystemFreeStatus(st);
+    } catch (_) { /* non-fatal */ }
+  }
+}
 
 var _renderLLMServiceAdmin=renderLLMServiceAdmin;renderLLMServiceAdmin=function(){ensureLLMServiceGroupModalUI();ensureLLMServiceProviderModalUI();_renderLLMServiceAdmin();syncLLMServiceLegacyEditor()};

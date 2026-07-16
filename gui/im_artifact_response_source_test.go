@@ -153,6 +153,212 @@ func TestPopulateDesktopFileArtifactResponseMarksFileDeliverySource(t *testing.T
 	}
 }
 
+func TestPopulateFileArtifactResponseOnWeixinChannelWithoutSender(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var senderCalls int
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	handler.imFileSender = func(b64Data, fileName, mimeType, message string) error {
+		senderCalls++
+		return nil
+	}
+	resp := &IMAgentResponse{}
+	n := handler.populateFileArtifactResponse(resp, []pendingFile{{
+		name:      "工作邀请.pdf",
+		mimeType:  "application/pdf",
+		data:      "JVBERi0xLjQK",
+		forwardIM: true,
+	}}, "weixin")
+	if n != 0 || senderCalls != 0 {
+		t.Fatalf("imFileSender must not run on weixin channel (n=%d calls=%d)", n, senderCalls)
+	}
+	if len(resp.LocalFilePaths) != 1 {
+		t.Fatalf("expected local path, got %v", resp.LocalFilePaths)
+	}
+	if strings.Contains(resp.Text, "无法转发") || strings.Contains(resp.Text, "Could not forward") {
+		t.Fatalf("weixin channel must not report forward failure, got %q", resp.Text)
+	}
+	if !strings.Contains(resp.Text, "当前 IM 通道") {
+		t.Fatalf("expected channel delivery success text, got %q", resp.Text)
+	}
+}
+
+func TestBuildFileArtifactStatusTextChannelVsDesktop(t *testing.T) {
+	zh := "zh"
+	channel := buildFileArtifactStatusText(zh, true, []string{`C:\tmp\a.pdf`}, nil, 0, "")
+	if !strings.Contains(channel, "当前 IM 通道") {
+		t.Fatalf("channel status = %q", channel)
+	}
+	desktop := buildFileArtifactStatusText(zh, false, []string{`C:\tmp\a.pdf`}, nil, 0, "")
+	if !strings.Contains(desktop, "send_to_im") {
+		t.Fatalf("desktop status should mention send_to_im, got %q", desktop)
+	}
+	// Workflow caption wins when no forward failures.
+	caption := buildFileArtifactStatusText(zh, true, []string{`C:\tmp\a.pdf`}, nil, 0, "需求文档已生成")
+	if caption != "需求文档已生成" {
+		t.Fatalf("caption = %q", caption)
+	}
+	// Partial batch: failures + successful saves keep both sides.
+	partial := buildFileArtifactStatusText(zh, true, []string{`C:\tmp\ok.pdf`}, []string{"保存 bad.pdf 失败：空"}, 0, "")
+	if !strings.Contains(partial, "保存 bad.pdf") || !strings.Contains(partial, "当前 IM 通道") {
+		t.Fatalf("partial status should include fail + channel ready, got %q", partial)
+	}
+}
+
+func TestHandleAgentLoopFileArtifactsEmptyMessageOnWeixinGetsChannelStatus(t *testing.T) {
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	result := handler.handleAgentLoopFileArtifacts(
+		"user",
+		"weixin_local",
+		[]pendingFile{{
+			name:     "工作邀请.pdf",
+			mimeType: "application/pdf",
+			data:     "JVBERi0xLjQK",
+		}},
+		"",
+		"",
+		"",
+		nil,
+		true,
+		func(r *IMAgentResponse) {},
+	)
+	if result.Response == nil {
+		t.Fatal("expected response")
+	}
+	if result.Response.FileData == "" || result.Response.FileName != "工作邀请.pdf" {
+		t.Fatalf("file fields: %+v", result.Response)
+	}
+	if !strings.Contains(result.Response.Text, "当前 IM 通道") {
+		t.Fatalf("empty caption on weixin must still report channel success, got %q", result.Response.Text)
+	}
+	if strings.Contains(result.Response.Text, "无法转发") {
+		t.Fatalf("must not report forward failure, got %q", result.Response.Text)
+	}
+}
+
+func TestHandleAgentLoopFileArtifactsStripsLegacyCaptionOnWeixin(t *testing.T) {
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	result := handler.handleAgentLoopFileArtifacts(
+		"user",
+		"weixin_local",
+		[]pendingFile{{
+			name:     "report.pdf",
+			mimeType: "application/pdf",
+			data:     "JVBERi0xLjQK",
+			message:  "Please send report.pdf to the user.",
+		}},
+		"",
+		"",
+		"",
+		nil,
+		true,
+		func(r *IMAgentResponse) {},
+	)
+	if result.Response == nil {
+		t.Fatal("expected response")
+	}
+	if strings.Contains(result.Response.Text, "Please send") {
+		t.Fatalf("legacy bot caption must not reach WeChat user, got %q", result.Response.Text)
+	}
+	if !strings.Contains(result.Response.Text, "当前 IM 通道") {
+		t.Fatalf("want channel ready after stripping legacy caption, got %q", result.Response.Text)
+	}
+}
+
+func TestHandleAgentLoopFileArtifactsEmptyDataOnWeixin(t *testing.T) {
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	result := handler.handleAgentLoopFileArtifacts(
+		"user",
+		"weixin_local",
+		[]pendingFile{{
+			name:     "empty.pdf",
+			mimeType: "application/pdf",
+			data:     "",
+		}},
+		"",
+		"",
+		"",
+		nil,
+		true,
+		func(r *IMAgentResponse) {},
+	)
+	if result.Response == nil {
+		t.Fatal("expected response")
+	}
+	if result.Response.FileData != "" {
+		t.Fatalf("empty payload must not set FileData")
+	}
+	if !strings.Contains(result.Response.Text, "为空") && !strings.Contains(result.Response.Text, "empty") {
+		t.Fatalf("want empty-payload error, got %q", result.Response.Text)
+	}
+}
+
+func TestParseToolPayloadResultForPlatformLangEnglish(t *testing.T) {
+	obs := parseToolPayloadResultForPlatformLang("[file_base64|shot.png|image/png]AAAA", "weixin", "en")
+	if obs.File == nil {
+		t.Fatal("expected file")
+	}
+	if !strings.Contains(obs.ToolContent, "IM channel") && !strings.Contains(obs.ToolContent, "current IM") {
+		t.Fatalf("en channel staged text = %q", obs.ToolContent)
+	}
+	if strings.Contains(obs.ToolContent, "未转发") {
+		t.Fatalf("en text must not use zh not-forwarded copy, got %q", obs.ToolContent)
+	}
+}
+
+func TestHandleAgentLoopFileArtifactsMultiFileOnWeixinUsesLocalPathsOnly(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	result := handler.handleAgentLoopFileArtifacts(
+		"user",
+		"weixin_local",
+		[]pendingFile{
+			{name: "a.pdf", mimeType: "application/pdf", data: "JVBERi0xLjQK"},
+			{name: "b.pdf", mimeType: "application/pdf", data: "JVBERi0xLjQK"},
+		},
+		"",
+		"",
+		"",
+		nil,
+		true,
+		func(r *IMAgentResponse) {},
+	)
+	if result.Response == nil {
+		t.Fatal("expected response")
+	}
+	// Multi-file must not use FileData (would double-send last with LocalFilePaths).
+	if result.Response.FileData != "" {
+		t.Fatalf("multi-file weixin path must not set FileData, got name=%q data_len=%d", result.Response.FileName, len(result.Response.FileData))
+	}
+	if len(result.Response.LocalFilePaths) != 2 {
+		t.Fatalf("want 2 local paths, got %v", result.Response.LocalFilePaths)
+	}
+	if !strings.Contains(result.Response.Text, "当前 IM 通道") {
+		t.Fatalf("multi-file channel status = %q", result.Response.Text)
+	}
+}
+
+func TestAppendFileDeliveryChannelRulesForWeixin(t *testing.T) {
+	var b strings.Builder
+	appendFileDeliveryChannelRules(&b, "weixin")
+	got := b.String()
+	if !strings.Contains(got, "当前为 IM 通道") {
+		t.Fatalf("want IM channel rules, got %q", got)
+	}
+	if strings.Contains(got, "桌面端") && strings.Contains(got, "不会到微信") {
+		t.Fatalf("weixin rules must not use desktop-only guidance, got %q", got)
+	}
+	if !strings.Contains(got, "发送器未配置") {
+		// Rules should explicitly forbid claiming unconfigured sender.
+		t.Fatalf("want explicit forbid of 发送器未配置 claim, got %q", got)
+	}
+}
+
 func TestPopulateDesktopFileArtifactResponseForwardsToIM(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

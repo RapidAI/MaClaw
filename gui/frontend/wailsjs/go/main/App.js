@@ -1986,6 +1986,54 @@ export function SetLansengerLocalMode(arg1) {
   return window['go']['main']['App']['SetLansengerLocalMode'](arg1);
 }
 
+export function ListLansengerGroups() {
+  return window['go']['main']['App']['ListLansengerGroups']();
+}
+
+export function ListLansengerWatchJobs() {
+  return window['go']['main']['App']['ListLansengerWatchJobs']();
+}
+
+export function UpsertLansengerWatchJob(arg1) {
+  return window['go']['main']['App']['UpsertLansengerWatchJob'](arg1);
+}
+
+export function DeleteLansengerWatchJob(arg1) {
+  return window['go']['main']['App']['DeleteLansengerWatchJob'](arg1);
+}
+
+export function ListLansengerWatchRoster(arg1, arg2) {
+  return window['go']['main']['App']['ListLansengerWatchRoster'](arg1, arg2);
+}
+
+export function AddLansengerWatchMember(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AddLansengerWatchMember'](arg1, arg2, arg3);
+}
+
+export function ListLansengerWatchTranscripts(arg1) {
+  return window['go']['main']['App']['ListLansengerWatchTranscripts'](arg1);
+}
+
+export function ReadLansengerWatchTranscript(arg1) {
+  return window['go']['main']['App']['ReadLansengerWatchTranscript'](arg1);
+}
+
+export function GetLansengerWatchStorePath() {
+  return window['go']['main']['App']['GetLansengerWatchStorePath']();
+}
+
+export function ListLansengerWatchChannels() {
+  return window['go']['main']['App']['ListLansengerWatchChannels']();
+}
+
+export function GetLansengerIgnoredGroups() {
+  return window['go']['main']['App']['GetLansengerIgnoredGroups']();
+}
+
+export function SetLansengerGroupIgnored(arg1, arg2) {
+  return window['go']['main']['App']['SetLansengerGroupIgnored'](arg1, arg2);
+}
+
 export function GetThirdPartyGatewayStatus() {
   return window['go']['main']['App']['GetThirdPartyGatewayStatus']();
 }
@@ -2086,6 +2134,26 @@ export function TranscribeAudioBase64(arg1) {
   return window['go']['main']['App']['TranscribeAudioBase64'](arg1);
 }
 
+export function SaveRecordedAudioBase64(arg1, arg2) {
+  return window['go']['main']['App']['SaveRecordedAudioBase64'](arg1, arg2);
+}
+
+export function BeginRecordedAudioUpload(arg1) {
+  return window['go']['main']['App']['BeginRecordedAudioUpload'](arg1);
+}
+
+export function AppendRecordedAudioBase64(arg1, arg2) {
+  return window['go']['main']['App']['AppendRecordedAudioBase64'](arg1, arg2);
+}
+
+export function FinishRecordedAudioUpload(arg1) {
+  return window['go']['main']['App']['FinishRecordedAudioUpload'](arg1);
+}
+
+export function CancelRecordedAudioUpload(arg1) {
+  return window['go']['main']['App']['CancelRecordedAudioUpload'](arg1);
+}
+
 export function NormalizeVoiceCommand(arg1) {
   return window['go']['main']['App']['NormalizeVoiceCommand'](arg1);
 }
@@ -2104,6 +2172,138 @@ export function GetScreenParsingEnabled() {
 
 export function SetScreenParsingEnabled(arg1) {
   return window['go']['main']['App']['SetScreenParsingEnabled'](arg1);
+}
+
+export function GetComputerUseEnabled() {
+  return window['go']['main']['App']['GetComputerUseEnabled']();
+}
+
+export function SetComputerUseEnabled(arg1) {
+  return window['go']['main']['App']['SetComputerUseEnabled'](arg1);
+}
+
+export function GetComputerUseStatus() {
+  return window['go']['main']['App']['GetComputerUseStatus']();
+}
+
+export function ComputerUsePause() {
+  return window['go']['main']['App']['ComputerUsePause']();
+}
+
+export function ComputerUseResume() {
+  return window['go']['main']['App']['ComputerUseResume']();
+}
+
+export function ComputerUseStop() {
+  return window['go']['main']['App']['ComputerUseStop']();
+}
+
+export function ComputerUseReset() {
+  return window['go']['main']['App']['ComputerUseReset']();
+}
+
+export function ComputerUseSelfCheck() {
+  return window['go']['main']['App']['ComputerUseSelfCheck']();
+}
+
+export function GetComputerUseLastWarmup() {
+  return window['go']['main']['App']['GetComputerUseLastWarmup']();
+}
+
+export function GetComputerUseReadiness() {
+  return window['go']['main']['App']['GetComputerUseReadiness']();
+}
+
+export function GetComputerUseLastError() {
+  return window['go']['main']['App']['GetComputerUseLastError']();
+}
+
+export function GetComputerUseLastObserveMetrics() {
+  return window['go']['main']['App']['GetComputerUseLastObserveMetrics']();
+}
+
+export function GetComputerUseObserveHistory() {
+  return window['go']['main']['App']['GetComputerUseObserveHistory']();
+}
+
+export function ComputerUseSmokeCheck() {
+  return window['go']['main']['App']['ComputerUseSmokeCheck']();
+}
+
+export function ComputerUseE2ESmoke() {
+  return window['go']['main']['App']['ComputerUseE2ESmoke']();
+}
+
+export function ComputerUseE2EInteract() {
+  return window['go']['main']['App']['ComputerUseE2EInteract']();
+}
+
+export function ExportComputerUseDiagnostics() {
+  return window['go']['main']['App']['ExportComputerUseDiagnostics']();
+}
+
+export function ExportComputerUseObserveHistoryCSV() {
+  return window['go']['main']['App']['ExportComputerUseObserveHistoryCSV']();
+}
+
+export function GetComputerUseLastE2E() {
+  return window['go']['main']['App']['GetComputerUseLastE2E']();
+}
+
+export function OpenComputerUseLogsFolder() {
+  return window['go']['main']['App']['OpenComputerUseLogsFolder']();
+}
+
+export function OpenComputerUseLastDiagnostics() {
+  return window['go']['main']['App']['OpenComputerUseLastDiagnostics']();
+}
+
+export function OpenComputerUseLastHistoryCSV() {
+  return window['go']['main']['App']['OpenComputerUseLastHistoryCSV']();
+}
+
+export function CopyComputerUsePath(arg1) {
+  return window['go']['main']['App']['CopyComputerUsePath'](arg1);
+}
+
+export function ListComputerUseLogArtifacts(arg1, arg2) {
+  return window['go']['main']['App']['ListComputerUseLogArtifacts'](arg1, arg2);
+}
+
+export function PruneComputerUseLogArtifacts(arg1, arg2) {
+  return window['go']['main']['App']['PruneComputerUseLogArtifacts'](arg1, arg2);
+}
+
+export function GetComputerUseLogPrunePolicy() {
+  return window['go']['main']['App']['GetComputerUseLogPrunePolicy']();
+}
+
+export function SetComputerUseLogPrunePolicy(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetComputerUseLogPrunePolicy'](arg1, arg2, arg3);
+}
+
+export function SetComputerUseLogAutoPrune(arg1) {
+  return window['go']['main']['App']['SetComputerUseLogAutoPrune'](arg1);
+}
+
+export function OpenComputerUseLogArtifact(arg1) {
+  return window['go']['main']['App']['OpenComputerUseLogArtifact'](arg1);
+}
+
+export function DeleteComputerUseLogArtifact(arg1) {
+  return window['go']['main']['App']['DeleteComputerUseLogArtifact'](arg1);
+}
+
+export function BatchDeleteComputerUseLogArtifacts(arg1) {
+  return window['go']['main']['App']['BatchDeleteComputerUseLogArtifacts'](arg1);
+}
+
+export function OpenComputerUsePermissionSettings(arg1) {
+  return window['go']['main']['App']['OpenComputerUsePermissionSettings'](arg1);
+}
+
+export function OpenComputerUsePermissionSettingsDefault() {
+  return window['go']['main']['App']['OpenComputerUsePermissionSettingsDefault']();
 }
 
 export function CheckYOLOModel() {
@@ -2975,55 +3175,67 @@ export function SyncMaclawAppApprovalInstanceToDataSrv(arg1) {
 export function ListSurveys(arg1) {
   return window['go']['main']['App']['ListSurveys'](arg1);
 }
+
 export function GetSurvey(arg1) {
   return window['go']['main']['App']['GetSurvey'](arg1);
 }
+
 export function CreateSurvey(arg1) {
   return window['go']['main']['App']['CreateSurvey'](arg1);
 }
+
 export function PublishSurvey(arg1, arg2) {
   return window['go']['main']['App']['PublishSurvey'](arg1, arg2);
 }
+
 export function CloseSurvey(arg1) {
   return window['go']['main']['App']['CloseSurvey'](arg1);
 }
+
 export function BindSurveyGroups(arg1, arg2) {
   return window['go']['main']['App']['BindSurveyGroups'](arg1, arg2);
 }
+
 export function GetSurveyStats(arg1) {
   return window['go']['main']['App']['GetSurveyStats'](arg1);
 }
+
 export function ExportSurveyXLSX(arg1) {
   return window['go']['main']['App']['ExportSurveyXLSX'](arg1);
 }
+
 export function AnnounceSurveyToBoundGroups(arg1) {
   return window['go']['main']['App']['AnnounceSurveyToBoundGroups'](arg1);
 }
+
 export function ReopenSurvey(arg1) {
   return window['go']['main']['App']['ReopenSurvey'](arg1);
 }
+
 export function ArchiveSurvey(arg1) {
   return window['go']['main']['App']['ArchiveSurvey'](arg1);
 }
+
 export function DuplicateSurvey(arg1) {
   return window['go']['main']['App']['DuplicateSurvey'](arg1);
 }
+
 export function DeleteSurvey(arg1) {
   return window['go']['main']['App']['DeleteSurvey'](arg1);
 }
+
 export function UpdateSurvey(arg1, arg2) {
   return window['go']['main']['App']['UpdateSurvey'](arg1, arg2);
 }
+
 export function UnbindSurveyGroup(arg1, arg2, arg3) {
   return window['go']['main']['App']['UnbindSurveyGroup'](arg1, arg2, arg3);
 }
+
 export function ListSurveyResponses(arg1) {
   return window['go']['main']['App']['ListSurveyResponses'](arg1);
 }
+
 export function ExportSurveyXLSXFiltered(arg1, arg2) {
   return window['go']['main']['App']['ExportSurveyXLSXFiltered'](arg1, arg2);
 }
-export function ListLansengerGroups() {
-  return window['go']['main']['App']['ListLansengerGroups']();
-}
-

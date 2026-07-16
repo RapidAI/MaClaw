@@ -42,6 +42,18 @@ const (
 	EventSkillExecutionFailed = "skill:execution_failed"
 	EventSkillIndexRefreshed  = "skill:index_refreshed"
 
+	// Computer Use operator preview (local OmniParser loop; not multimodal screenshots).
+	EventComputerUseObserve = "computer-use:observe"
+	EventComputerUseAction  = "computer-use:action"
+	// Operator control (pause/resume/stop/reset) status broadcast.
+	EventComputerUseControl = "computer-use:control"
+	// Background warmup / self-check finished.
+	EventComputerUseWarmup = "computer-use:warmup"
+	// Observe/action pipeline error with operator guidance (permissions, display, …).
+	EventComputerUseError = "computer-use:error"
+	// Log lifecycle (prune / delete / batch-delete) for settings + operator refresh.
+	EventComputerUseLogs = "computer-use:logs"
+
 	// EventSurveyUpdated is emitted after an IM survey response is submitted
 	// (or other survey mutations that should refresh the Utilities results UI).
 	// Payload: map with survey_id (string) and optional event (string).

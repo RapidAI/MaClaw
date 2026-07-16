@@ -163,6 +163,47 @@ func (s *RapidOCRSidecar) IsAvailable() bool {
 	return st.Available
 }
 
+// Installed reports whether the OCR server script is on disk (pip target done).
+func (s *RapidOCRSidecar) Installed() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	scriptPath := filepath.Join(s.ocrDir, "ocr_server.py")
+	_, err := os.Stat(scriptPath)
+	return err == nil
+}
+
+// Ready reports whether the long-lived OCR process is running.
+func (s *RapidOCRSidecar) Ready() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready
+}
+
+// Warm starts the OCR sidecar if already installed. Does not run pip install
+// (that stays on first Recognize). Used by Computer Use startup warmup.
+func (s *RapidOCRSidecar) Warm() error {
+	if s == nil {
+		return fmt.Errorf("OCR sidecar nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ready {
+		s.resetIdleTimer()
+		return nil
+	}
+	scriptPath := filepath.Join(s.ocrDir, "ocr_server.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return fmt.Errorf("OCR not installed yet (will install on first use)")
+	}
+	return s.startLocked()
+}
+
 // Close implements OCRProvider.
 func (s *RapidOCRSidecar) Close() {
 	s.mu.Lock()

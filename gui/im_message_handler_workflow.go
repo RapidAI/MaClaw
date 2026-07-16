@@ -1803,8 +1803,9 @@ func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
 	}
 	// Always cancel workflow regardless of engine adapter state.
 	h.cancelWorkflowV2(userID)
-	// Clear any pending ask_user state.
+	// Clear any pending ask_user / recording state.
 	h.pendingAskUser.Delete(userID)
+	h.pendingRecordAudio.Delete(userID)
 }
 
 // applyWorkflowToolFilter restricts the tool list based on the current

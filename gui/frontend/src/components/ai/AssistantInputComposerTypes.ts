@@ -35,6 +35,11 @@ export interface AssistantInputComposerProps {
     handleVoicePointerLeave: (event: PointerEvent<HTMLButtonElement>) => void;
     inputAreaHeight: number | null;
     inputLocked: boolean;
+    /**
+     * Stronger lock than inputLocked: disables the textarea itself (no type-ahead).
+     * Used while an interactive record_audio session is live.
+     */
+    hardLockInput?: boolean;
     inputBarTestId?: string;
     inputRef: Ref<HTMLTextAreaElement>;
     inputOverlay?: ReactNode;

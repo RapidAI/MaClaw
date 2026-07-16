@@ -78,6 +78,210 @@
     font-weight: 600;
 }
 
+.utilities-watch-layout {
+    display: grid;
+    grid-template-columns: minmax(200px, 280px) 1fr;
+    gap: 16px;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .utilities-watch-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.utilities-watch-list,
+.utilities-watch-editor {
+    background: var(--theme-surface, #fff);
+    border: 1px solid var(--theme-border, #e2e5ea);
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.utilities-watch-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    background: transparent;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    cursor: pointer;
+}
+
+.utilities-watch-item.is-active,
+.utilities-watch-item:hover {
+    border-color: var(--theme-primary, #3b82f6);
+    background: rgba(59, 130, 246, 0.06);
+}
+
+.utilities-watch-item__title {
+    font-weight: 600;
+    font-size: 0.92rem;
+}
+
+.utilities-watch-item__meta {
+    font-size: 0.78rem;
+    color: var(--theme-text-secondary, #666);
+}
+
+.utilities-watch-section {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border, #e2e5ea);
+}
+
+.utilities-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+    font-size: 0.85rem;
+}
+
+.utilities-field--row {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+.utilities-field__row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.utilities-field input,
+.utilities-field select,
+.utilities-field textarea,
+.utilities-input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--theme-border, #e2e5ea);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    background: var(--theme-page-bg, #fff);
+    color: inherit;
+}
+
+.utilities-member-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 220px;
+    overflow: auto;
+    margin: 8px 0;
+}
+
+.utilities-member {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    text-align: left;
+    border: 1px solid var(--theme-border, #e2e5ea);
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: transparent;
+    cursor: pointer;
+}
+
+.utilities-member.is-on {
+    border-color: var(--theme-primary, #3b82f6);
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.utilities-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.utilities-chip {
+    border-radius: 999px;
+    border: 1px solid var(--theme-border, #e2e5ea);
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    background: #fff;
+    cursor: pointer;
+}
+
+.utilities-chip.is-on {
+    border-color: var(--theme-primary, #3b82f6);
+    color: var(--theme-primary, #3b82f6);
+}
+
+.utilities-kw-card {
+    border: 1px dashed var(--theme-border, #e2e5ea);
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.utilities-log-list {
+    padding-left: 18px;
+    font-size: 0.8rem;
+}
+
+.utilities-log-view {
+    margin-top: 10px;
+    max-height: 280px;
+    overflow: auto;
+    padding: 10px;
+    border-radius: 8px;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+}
+
+.utilities-btn {
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    background: var(--theme-primary, #3b82f6);
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.utilities-btn--ghost {
+    background: transparent;
+    color: var(--theme-primary, #3b82f6);
+    border: 1px solid var(--theme-border, #e2e5ea);
+}
+
+.utilities-btn--danger {
+    background: #dc2626;
+}
+
+.utilities-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.utilities-error {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: #fef2f2;
+    color: #b91c1c;
+    font-size: 0.85rem;
+}
+
+.utilities-hint {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: #ecfdf5;
+    color: #047857;
+    font-size: 0.85rem;
+}
+
 .utilities-actions {
     display: flex;
     flex-wrap: wrap;

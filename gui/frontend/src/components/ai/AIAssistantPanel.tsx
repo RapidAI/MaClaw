@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { Fragment, lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ClipboardEvent, type DragEvent } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey, forgetAIAssistantSessionRounds, buildGuideReferenceAcceptedNotice, buildGuideReferenceRejectedNotice } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
@@ -8,6 +8,12 @@ import { cloneCodePreviewState, initialState as initialCodePreviewState, useCode
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
+import {
+    formatRecordingCompletionDisplay,
+    formatRecordingCompletionMessage,
+    isRecordingInputLocked,
+    type RecordingCompleteResult,
+} from "./RecordingSessionCard";
 import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
 import { formFieldInputStyle, formFieldLabelColor, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
@@ -67,7 +73,7 @@ import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
 import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
@@ -76,6 +82,9 @@ import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_PROJECT_TASK_CLOSED } from "../../constants/events";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
+import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
+import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
+import { ComputerUseReadinessBanner } from "./ComputerUseReadinessBanner";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
@@ -401,7 +410,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const actions = props.actions || props;
     const panelWindow = props.window || props;
     const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, agentView = null } = state;
-    const { browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView } = actions;
+    const { browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
@@ -2103,7 +2112,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteReconnect.needsReconnect]);
     const showChatUI = isLocalTabActive || isProjectTabActive;
     const activeSessionKey = isProjectTabActive && activeTab.projectPath ? `desktop-user:${activeTab.projectPath}` : 'desktop-user';
-    const { handlePaste, handleDragOver, handleDrop, pendingAttachments, setPendingAttachments } = usePastedImageAttachments(activeSessionKey, { disabled: !ready || cancelPending });
+    const {
+        handlePaste: handlePasteBase,
+        handleDragOver: handleDragOverBase,
+        handleDrop: handleDropBase,
+        pendingAttachments,
+        setPendingAttachments,
+    } = usePastedImageAttachments(activeSessionKey, { disabled: !ready || cancelPending });
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, extractEntry } = useBufferQueue(activeSessionKey);
     const firingEntryIdsRef = useRef<Set<string>>(new Set());
     const drainingEntryIdsRef = useRef<Set<string>>(new Set());
@@ -3289,7 +3304,38 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return localizeText(lang, "Full coding workbench (Claude Code / Codex–level intent). Tools, Skill/MCP, web research, multi-turn session memory, and source preview are active. Follow-up messages continue in this coding environment.", "全功能编程工作台（对齐 Claude Code / Codex）。工具、Skill/MCP、联网检索、多轮会话记忆与源码预览已启用；后续消息仍在本编程环境中续写。", "全功能程式工作台（對齊 Claude Code / Codex）。工具、Skill/MCP、聯網檢索、多輪工作階段記憶與原始碼預覽已啟用；後續訊息仍在本程式環境中續寫。");
     }, [isPureCodingEnvironment, isRemoteCodingDevEnvironment, remoteReconnect.needsReconnect, activeProjectPreparing, activeProjectPrepareMode, lang]);
-    const inputLocked = isBusy || cancelPending || activeProjectPreparing;
+    // Live record_audio card: hard-lock composer (no type-ahead / no queue) so the
+    // user only uses pause/stop on the recording card until it finishes.
+    const recordingActive = useMemo(
+        () => isRecordingInputLocked(displayMessages, activeSessionIsStreaming),
+        [activeSessionIsStreaming, displayMessages],
+    );
+    // Block paste/drop attachments while mic is live (composer hard-lock alone is not enough).
+    const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
+        if (recordingActive) {
+            event.preventDefault();
+            return;
+        }
+        handlePasteBase(event);
+    }, [handlePasteBase, recordingActive]);
+    const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+        if (recordingActive) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "none";
+            return;
+        }
+        handleDragOverBase(event);
+    }, [handleDragOverBase, recordingActive]);
+    const handleDrop = useCallback((event: DragEvent<HTMLElement>) => {
+        if (recordingActive) {
+            event.preventDefault();
+            return;
+        }
+        handleDropBase(event);
+    }, [handleDropBase, recordingActive]);
+    const inputLocked = isBusy || cancelPending || activeProjectPreparing || recordingActive;
+    // Busy agent allows type-ahead queue; live mic does not — keep submitLocked true
+    // for lock UI, but send paths hard-return when recordingActive.
     const submitLocked = inputLocked;
     const prevSubmitLockedRef = useRef(submitLocked);
     const prevShowChatUIRef = useRef(showChatUI);
@@ -3476,7 +3522,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         : (lang === "en" ? "Restoring task context... type ahead, Enter will wait" : "正在恢复任务上下文… 可预输入，Enter 会等待");
     const placeholderText = !ready
         ? initLabel
-        : activeProjectPreparing
+        : recordingActive
+            ? (lang === "en"
+                ? "Recording in progress — use Pause / Stop on the card above"
+                : "录音进行中 — 请使用上方录音卡片的暂停/停止")
+            : activeProjectPreparing
             ? preparingPlaceholderText
             : workflowAwaitingForm
             ? (workflowFormGeneratingDocument
@@ -3500,7 +3550,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         setDraftInputValue?.(nextValue);
     }, [activeTab.id, activeTab.type, saveTabState, setDraftInputValue]);
-    const canSend = ready && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
+    const canSend = ready && !recordingActive && (!!inputValue.trim() || pendingAttachments.length > 0 || selectedFilePaths.length > 0);
     const [welcomeTemplateOffer, setWelcomeTemplateOffer] = useState<WelcomeTemplateSaveOffer | null>(null);
     // Drop the save-offer when switching tabs.
     useEffect(() => {
@@ -3729,6 +3779,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             handleWelcomePromptSelect(trimmed, meta);
             return;
         }
+        // Live mic: do not queue — user must finish via the recording card.
+        if (recordingActive) return;
         // Busy: queue like voice input so the message is not dropped.
         if (inputLocked || submitLocked) {
             addEntry(trimmed, [], { autoDrain: true });
@@ -3761,6 +3813,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [
         ready,
+        recordingActive,
         inputLocked,
         submitLocked,
         addEntry,
@@ -3804,6 +3857,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return;
         }
+        // Live mic: never queue voice as chat (would fight the recording session).
+        if (recordingActive) return;
         // If agent is busy (inputLocked), queue the transcription for later delivery
         // instead of dropping it. The buffer queue auto-drains when the agent becomes idle.
         if (inputLocked) {
@@ -3822,7 +3877,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [addEntry, clearComposerDraft, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, sendBtwMessage, sendMessageForTab, updateInputValue]);
+    }, [addEntry, clearComposerDraft, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, recordingActive, sendBtwMessage, sendMessageForTab, updateInputValue]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');
     const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
         inputRef,
@@ -3832,6 +3887,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         voiceInput,
     });
     const handleSend = useCallback(async () => {
+        // Live mic session: do not send or queue — user must stop via the card.
+        if (recordingActive) return;
         // Prevent duplicate submits before the session reports busy, but keep
         // the type-ahead queue usable while an existing session is running.
         if (sendInFlightRef.current && !submitLocked && !queueEditDraftActive) return;
@@ -3916,7 +3973,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainRef.current = false;
@@ -4105,6 +4162,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const previousInputValue = inputValue;
         setCancelPending(true);
         try {
+            // If Computer Use is active, hard-stop it together with generation cancel
+            // so desktop click/type loops do not continue after the user hits stop.
+            try {
+                const cu: any = await GetComputerUseStatus();
+                if (cu && (cu.session_active || cu.paused || (cu.step_count ?? 0) > 0) && !cu.stopped) {
+                    await ComputerUseStop();
+                }
+            } catch {
+                /* ignore CU stop failures */
+            }
             const { canceledText } = await cancelSession();
             if (cancelRestoreSeqRef.current !== restoreSeq) return;
             if (draftInputValue === previousInputValue) {
@@ -4175,6 +4242,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // internally calls sendMessage with proper options.
         return executeAction(command);
     }, [activeTab.id, activeTab.projectPath, executeAction, isProjectTabActive]);
+
+    const handleRecordingComplete = useCallback((result: RecordingCompleteResult, messageId: string) => {
+        // Deactivate before sending completion so input unlocks and the card
+        // does not re-arm if the list re-renders mid-upload.
+        try {
+            deactivateRecordingSession?.(messageId);
+        } catch {
+            /* ignore */
+        }
+        const payload = formatRecordingCompletionMessage(result);
+        const display = formatRecordingCompletionDisplay(result, lang);
+        void sendMessage(payload, { uiAction: true, displayText: display });
+    }, [deactivateRecordingSession, lang, sendMessage]);
+
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
 
     // Per-message render cache: avoids re-rendering unchanged messages during
@@ -4215,7 +4296,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // isBusy is included only for the last assistant (affects <details open>).
             // Use -1 for undefined content to distinguish from empty string (length 0).
             const contentLen = msg.content == null ? -1 : msg.content.length;
-            const contentKey = `${contentLen}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}`;
+            const contentKey = `${contentLen}|${msg.reasoning?.length ?? 0}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.thumbnailBase64 ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -4236,14 +4317,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.state = createIncrementalRenderState();
                     }
                     return renderContentIncremental(formattedContent, t, incRef.state);
-                });
+                }, handleRecordingComplete);
             } else {
                 // Reset incremental state when streaming ends (isBusy becomes false)
                 // so the final render is a clean full parse (100% correct).
                 if (isLast && msg.role === 'assistant' && incrementalStateRef.current.messageId === msg.id && !isBusy) {
                     incrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy);
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isBusy, undefined, handleRecordingComplete);
             }
             cache.set(msg.id, { contentKey, node });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -4283,7 +4364,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return node;
         });
-    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, branchPointByDisplayIndex]);
+    }, [otherMessages, panelExecuteAction, t, lastAssistantIdx, savedFileLabel, lang, isBusy, branchPointByDisplayIndex, handleRecordingComplete]);
     const chatProgressMessages = useMemo(
         () => activeSessionHasWork ? displayProgressMessages.filter((msg: ChatMessage) => !isToolProgressMessage(msg)) : displayProgressMessages,
         [activeSessionHasWork, displayProgressMessages],
@@ -5169,7 +5250,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onDismiss={handleWelcomeTemplateOfferDismiss}
                     />
                 )}
-                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
+                {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
+                {!showWelcomeView && <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </div>
             )}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
@@ -5272,6 +5355,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     />
                 </Suspense>
             ) : null}
+            <ComputerUseOperatorPanel lang={lang} />
             </div>
         </div>
     );

@@ -65,6 +65,24 @@ func (p *YOLOScreenParser) Loaded() bool {
 	return p.mm.Loaded()
 }
 
+// Warm loads the model weights into memory without running detection.
+// Used by Computer Use startup warmup / self-check so the first observe is faster.
+// Safe to call repeatedly; schedules the usual idle unload timer after return.
+func (p *YOLOScreenParser) Warm() error {
+	if p == nil || p.mm == nil {
+		return fmt.Errorf("YOLO parser not configured")
+	}
+	if !p.IsAvailable() {
+		return fmt.Errorf("YOLO weights not available at %s", p.modelPath)
+	}
+	_, done, err := p.mm.Acquire()
+	if err != nil {
+		return err
+	}
+	done()
+	return nil
+}
+
 // Parse implements taskengine.ScreenParser.
 // Loads the model on demand and schedules auto-unload after idle timeout.
 func (p *YOLOScreenParser) Parse(pngBase64 string) ([]taskengine.UIElement, error) {

@@ -9,6 +9,7 @@ const (
 	imResponseSourceFileDelivery     imResponseSourceKind = "file_delivery"
 	imResponseSourceScreenshot       imResponseSourceKind = "screenshot"
 	imResponseSourceAskUser          imResponseSourceKind = "ask_user"
+	imResponseSourceRecordAudio      imResponseSourceKind = "record_audio"
 	imResponseSourceCancel           imResponseSourceKind = "cancel"
 	imResponseSourceAgentLoop        imResponseSourceKind = "agent_loop"
 	imResponseSourceAgentViewSubmit  imResponseSourceKind = "agent_view_submit"
@@ -28,6 +29,7 @@ func (k imResponseSourceKind) IsKnownPreservedSource() bool {
 	case imResponseSourceFileDelivery,
 		imResponseSourceScreenshot,
 		imResponseSourceAskUser,
+		imResponseSourceRecordAudio,
 		imResponseSourceCancel,
 		imResponseSourceAgentViewSubmit,
 		imResponseSourceAgentViewDismiss:
@@ -50,6 +52,8 @@ func canonicalIMResponseSourceKind(source string) imResponseSourceKind {
 		return imResponseSourceScreenshot
 	case "askuser":
 		return imResponseSourceAskUser
+	case "recordaudio", "recordingsession":
+		return imResponseSourceRecordAudio
 	case "cancel", "cancelled", "canceled":
 		return imResponseSourceCancel
 	case "agentloop":

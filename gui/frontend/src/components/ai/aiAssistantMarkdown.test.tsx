@@ -97,6 +97,47 @@ describe("renderContentWithCodeBlocks", () => {
         expect(numbered.style.overflowWrap).toBe("anywhere");
     });
 
+    it("keeps multi-digit ordered list markers intact and non-wrapping", () => {
+        const { container } = render(
+            <div>
+                {renderContentWithCodeBlocks(
+                    "9. 第九条\n10. 世界杯决赛对阵图来了\n11. 查尔斯国王\n100. 百项\n10) paren form\n完成。1. 第一步\n1. a 2. b 10. c\n  12. nested",
+                    lightTheme,
+                )}
+            </div>
+        );
+
+        const markers10 = screen.getAllByText("10.") as HTMLElement[];
+        const marker10 = markers10[0];
+        const marker11 = screen.getByText("11.") as HTMLElement;
+        const marker100 = screen.getByText("100.") as HTMLElement;
+        const marker10Paren = screen.getByText("10)") as HTMLElement;
+        expect(markers10.length).toBe(2); // line-start "10." + compact-line expanded "10."
+        expect(marker10.style.whiteSpace).toBe("nowrap");
+        expect(marker10.style.wordBreak).toBe("normal");
+        expect(marker10.style.overflowWrap).toBe("normal");
+        expect(marker10.style.fontVariantNumeric).toBe("tabular-nums");
+        expect(marker10.style.width).toBe("");
+        expect(marker11.style.whiteSpace).toBe("nowrap");
+        expect(marker100.style.whiteSpace).toBe("nowrap");
+        // ")" form must not be rewritten to "."
+        expect(marker10Paren.textContent).toBe("10)");
+        // Normalize must not peel the leading digit into its own line ("1" + "0.").
+        expect(screen.queryByText(/^0\./)).toBeNull();
+        expect(container.textContent).toContain("10.世界杯决赛对阵图来了");
+        expect(container.textContent).toContain("100.百项");
+        expect(container.textContent).toContain("10)paren form");
+        // Mid-line single-digit glue still becomes a real list row.
+        expect(screen.getAllByText("1.").length).toBeGreaterThanOrEqual(1);
+        expect(container.textContent).toContain("第一步");
+        // Compact multi-item line expands; two-digit item renders as its own marker.
+        expect(container.textContent).toContain("10.c");
+        expect(screen.getByText("2.")).toBeTruthy();
+        // Nested indent is preserved as padding on the row.
+        const marker12 = screen.getByText("12.") as HTMLElement;
+        expect(marker12.parentElement?.style.paddingLeft).toBe("1em");
+    });
+
     it("wraps long inline code and link text within the message width", () => {
         const codeText = "ThisIsAVeryLongInlineCodeTokenThatShouldWrapInsideTheAssistantPanel";
         const linkText = "ThisIsAVeryLongMarkdownLinkTextThatShouldWrapInsideTheAssistantPanel";

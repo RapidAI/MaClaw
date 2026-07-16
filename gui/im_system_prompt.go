@@ -261,7 +261,11 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 	// because it describes the full multi-phase pipeline and causes the LLM to
 	// self-confirm and re-emit documents within a single response.
 	deps.PostCorePrinciples = func(b *strings.Builder) {
-		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressV2CodingRules)
+		platform := ""
+		if loopCtx != nil {
+			platform = runtimePlatformFromLoopContext(loopCtx)
+		}
+		h.appendGUIPostCorePrinciples(b, isProMode, trialReflectEnabled, suppressV2CodingRules, platform)
 	}
 
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.
@@ -692,6 +696,13 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 		// the authoritative source — contextResolver.ResolveProject() returns
 		// the global current project which may differ from the Tab's project.
 		projectPath = projectPathFromUserID(userID)
+	}
+	// Local tab (and any non-strict owner): align recall scope with the same
+	// working directory tools/system-prompt use. Do NOT fall back to
+	// ResolveProject()/Projects list or user home — that is what made agents
+	// "ignore" the top-bar directory and chase Pictures from memory.
+	if projectPath == "" && h.app != nil {
+		projectPath = strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(userID))
 	}
 	if projectPath == "" && h.contextResolver != nil {
 		projectPath, _ = h.contextResolver.ResolveProject()

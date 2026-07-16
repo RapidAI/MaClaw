@@ -211,11 +211,14 @@ function assertTenantAdminUIHooks() {
   if (!admin.includes("normalized === 'system'") || !admin.includes("String(profile.scope || '').toLowerCase() === 'tenant'") || !admin.includes('openDefaultImSub')) {
     fail('admin.js must avoid global-only system loads for tenant admins.');
   }
-  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemDefaultLLMServiceGroup'].forEach(function(marker) {
+  ['id="mailConfigCard"', 'id="tenantMailSenderCard"', 'tenantMailFromName', 'id="tenantMigrationSettingsCard"', 'tenantMigrationMaxMB', 'id="tenantSystemLLMDefaultsCard"', 'tenantSystemFreeStatusBadge', 'tenantSystemFreeTestBtn', 'tenantSystemLLMDefaultsSaveBtn'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant-safe mail settings marker: ' + marker);
     }
   });
+  if (html.includes('tenantSystemDefaultLLMServiceGroup')) {
+    fail('index.html must not expose a system-free service-group select; system-free is fixed.');
+  }
   ['loadTenantMailSenderName', 'saveTenantMailSenderName', 'TENANT_MAIL_SENDER_MAX_RUNES', 'normalizeTenantMailSenderName', '/api/admin/mail/sender-name'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant sender-name marker: ' + marker);
@@ -226,18 +229,30 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js is missing tenant migration settings marker: ' + marker);
     }
   });
-  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'tenantSystemLLMProviderIDs', 'tenantSystemLLMProviderIsConfigured', 'tenantSystemLLMModelProviderIDs', 'provider_configs', '/api/admin/llm/system-free', '/api/admin/llm/providers', 'testTenantSystemFreeLLM'].forEach(function(marker) {
+  ['loadTenantSystemLLMDefaults', 'saveTenantSystemLLMDefaults', 'getTenantSystemFreeCache', 'setTenantSystemFreeCache', 'fetchTenantSystemFreeStatus', 'formatTenantSystemFreeDetail', 'renderTenantSystemFreeStatus', 'applyTenantSystemFreeStatusUI', '/api/admin/llm/system-free', '/api/admin/llm/system-free/test', 'testTenantSystemFreeLLM', 'openSystemFreeServiceGroup', 'skipPeer', 'systemFreeConfigToasted', 'tenantSystemFreeTestInflight'].forEach(function(marker) {
     if (!system.includes(marker)) {
-      fail('system-tab.js is missing tenant system LLM default marker: ' + marker);
+      fail('system-tab.js is missing tenant system-free LLM marker: ' + marker);
     }
   });
+  const llmServices = read('llm-service-tabs.js');
+  ['openSystemFreeServiceGroup', 'SYSTEM_FREE_LLM_SERVICE_GROUP_ID', "openLLMServiceGroupDialog('edit', SYSTEM_FREE_LLM_SERVICE_GROUP_ID)", 'editingSystemFree', 'fetchTenantSystemFreeStatus'].forEach(function(marker) {
+    if (!llmServices.includes(marker)) {
+      fail('llm-service-tabs.js is missing system-free deep-link marker: ' + marker);
+    }
+  });
+  const overviewTenant = read('overview-tenant-info.js');
+  ['applyOverviewSystemFreeStatus', 'setTenantSystemFreeCache', 'loadOverviewSystemFreeStatus'].forEach(function(marker) {
+    if (!overviewTenant.includes(marker)) {
+      fail('overview-tenant-info.js is missing system-free status marker: ' + marker);
+    }
+  });
+  if (system.includes("api('/api/admin/llm/services?include_cards=false')") && /async function loadTenantSystemLLMDefaults[\s\S]*?api\('\/api\/admin\/llm\/services\?include_cards=false'\)/.test(system)) {
+    fail('loadTenantSystemLLMDefaults must only fetch system-free status, not model service groups.');
+  }
   if (system.includes('escapeAttr(')) {
     fail('system-tab.js must not call escapeAttr; it is local to other admin modules. Use escapeHtml for option attributes.');
   }
-  if (system.includes("toLowerCase() === 'default'")) {
-    fail('system-tab.js must not hard-code exclude the default service group; model/provider availability should decide usability.');
-  }
-  ['tenantSystemFreeStatusCache', 'system-free', 'noUsableGroups', 'testTenantSystemFreeLLM', 'renderTenantSystemLLMDefaultOptions'].forEach(function(marker) {
+  ['tenantSystemFreeStatusCache', 'system-free', 'noUsableGroups', 'testTenantSystemFreeLLM', 'renderTenantSystemFreeStatus'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing robust tenant system-free LLM marker: ' + marker);
     }
@@ -335,24 +350,39 @@ function assertTenantAdminUIHooks() {
 
 function assertTenantSystemLLMDefaultBehavior() {
   const system = read('system-tab.js');
+  // system-free is a fixed reserved group: no service-group picker, status-only card.
+  if (system.includes('tenantSystemDefaultLLMServiceGroup') || system.includes('tenantSystemLLMUsableGroups')) {
+    fail('system-tab.js must not keep a service-group picker for system-free.');
+  }
+  const tslxFn = 'function tslx(key, vars) { vars = vars || {}; var map = {'
+    + 'hint:"HINT", providers:"Providers: {ids}", notReadyDetail:"not ready: {id}", noUsableGroups:"NO_ROUTE",'
+    + 'ready:"Ready", notReady:"Not ready"'
+    + '}; var s = map[key] || key; return s.replace(/\\{(\\w+)\\}/g, function(_, n) { return vars[n] == null ? "" : vars[n]; }); }';
   const code = [
-    'var tenantSystemLLMProviderIDs = { "provider-a": true };',
-    extractNamedFunction(system, 'tenantSystemLLMProviderIsConfigured'),
-    extractNamedFunction(system, 'tenantSystemLLMModelProviderIDs'),
-    extractNamedFunction(system, 'tenantSystemLLMUsableGroups'),
-    'var groups = tenantSystemLLMUsableGroups({ model_service_groups: [',
-    '  { id: "default", name: "Default (No Model Access)", models: [] },',
-    '  { id: "default", name: "Default With Route", models: [{ name: "auto", provider_configs: [{ provider_id: "provider-a" }] }] },',
-    '  { id: "official", name: "Official", models: [{ name: "auto", provider_ids: ["maclaw_official"] }] },',
-    '  { id: "missing", name: "Missing", models: [{ name: "auto", provider_configs: [{ provider_id: "missing-provider" }] }] }',
-    ']});',
-    'var ids = groups.map(function(group) { return group.id + ":" + group.name; }).join("|");',
-    'if (ids !== "default:Default With Route|official:Official") throw new Error("unexpected usable groups: " + ids);'
+    tslxFn,
+    'var tenantSystemFreeStatusCache = null;',
+    'var window = {};',
+    extractNamedFunction(system, 'getTenantSystemFreeCache'),
+    extractNamedFunction(system, 'setTenantSystemFreeCache'),
+    extractNamedFunction(system, 'formatTenantSystemFreeDetail'),
+    'var st = setTenantSystemFreeCache({ ready: true, provider_ids: ["maclaw_official"] });',
+    'if (!st.ready || window.tenantSystemFreeStatusCache !== st) throw new Error("cache sync failed");',
+    'if (getTenantSystemFreeCache() !== st) throw new Error("get cache mismatch");',
+    'tenantSystemFreeStatusCache = null;',
+    'window.tenantSystemFreeStatusCache = { ready: false, provider_ids: ["local"], reasons: ["x"] };',
+    'var fromWindow = getTenantSystemFreeCache();',
+    'if (!fromWindow || fromWindow.reasons[0] !== "x") throw new Error("window fallback failed");',
+    'var readyDetail = formatTenantSystemFreeDetail(st);',
+    'if (readyDetail.indexOf("maclaw_official") < 0 || readyDetail.indexOf("NO_ROUTE") >= 0) throw new Error("ready detail: " + readyDetail);',
+    'var notReady = formatTenantSystemFreeDetail({ ready: false, provider_ids: [], reasons: ["no_provider"] });',
+    'if (notReady.indexOf("no_provider") < 0) throw new Error("not-ready detail: " + notReady);',
+    'var empty = formatTenantSystemFreeDetail({ ready: false });',
+    'if (empty.indexOf("NO_ROUTE") < 0) throw new Error("empty not-ready detail: " + empty);'
   ].join('\n');
   try {
-    new vm.Script(code, { filename: 'system-tab-tenant-llm-default-behavior.js' }).runInNewContext({});
+    new vm.Script(code, { filename: 'system-tab-tenant-system-free-behavior.js' }).runInNewContext({});
   } catch (err) {
-    fail('system-tab.js tenant system LLM default behavior regression: ' + err.message);
+    fail('system-tab.js tenant system-free behavior regression: ' + err.message);
   }
 }
 

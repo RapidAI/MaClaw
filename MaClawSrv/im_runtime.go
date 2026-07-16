@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -192,7 +193,16 @@ func srvLansengerRuntimeConfigKey(cfg corelib.AppConfig) (string, bool) {
 	if !cfg.LansengerEnabled || appID == "" || secret == "" || baseURL == "" {
 		return "", false
 	}
-	return strings.Join([]string{appID, secret, baseURL, wssURL}, "\x00"), true
+	// Include ignore list so SyncPrincipal rebuilds the gateway when the
+	// operator toggles "do not respond" for a group (cfg is captured at New).
+	ignored := make([]string, 0, len(cfg.LansengerIgnoredGroupIDs))
+	for _, id := range cfg.LansengerIgnoredGroupIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			ignored = append(ignored, id)
+		}
+	}
+	sort.Strings(ignored)
+	return strings.Join([]string{appID, secret, baseURL, wssURL, strings.Join(ignored, ",")}, "\x00"), true
 }
 
 func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMIncomingMessage)) srvIMGateway {
@@ -202,15 +212,35 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 	wssURL := strings.TrimSpace(cfg.LansengerWebSocketGatewayURL())
 	var gw *lansenger.Gateway
 	gw = lansenger.NewGateway(lansenger.Config{AppID: appID, AppSecret: secret, ApiGatewayURL: baseURL, WebSocketBaseURL: wssURL}, func(msg lansenger.IncomingMessage) {
+		if strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") && cfg.IsLansengerGroupIgnored(msg.GroupID) {
+			log.Printf("[im-runtime/lansenger] ignoring configured group: group=%s user=%s", msg.GroupID, msg.FromUserID)
+			return
+		}
 		contactID := msg.FromUserID
 		if msg.ChatType == "group" && strings.TrimSpace(msg.GroupID) != "" {
 			contactID = msg.GroupID
+		}
+		// Enrich agent-facing text with group metadata; keep msg.Text for reply quotes.
+		agentText := msg.Text
+		if strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
+			var info *lansenger.GroupInfo
+			if gid := strings.TrimSpace(msg.GroupID); gid != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				fetched, err := gw.GetGroupInfo(ctx, gid)
+				cancel()
+				if err != nil {
+					log.Printf("[im-runtime/lansenger] GetGroupInfo %s: %v", gid, err)
+				} else {
+					info = fetched
+				}
+			}
+			agentText = lansenger.WithAgentGroupContext(msg.Text, msg, info)
 		}
 		handler(srvIMIncomingMessage{
 			Platform:      "lansenger",
 			ContactID:     contactID,
 			Title:         "Lansenger " + contactID,
-			Text:          msg.Text,
+			Text:          agentText,
 			ClientEventID: firstNonEmptyString(msg.MessageID, srvIMMessageID("lansenger", contactID, time.Now(), msg.Text, msg.MediaType, msg.MediaName, len(msg.MediaData))),
 			MediaType:     firstNonEmptyString(msg.MediaType, msg.MessageType),
 			MediaName:     msg.MediaName,
@@ -224,10 +254,16 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 				"reference":   msg.ReferenceText,
 			},
 			Reply: func(ctx context.Context, text string) error {
-				return gw.SendText(ctx, lansenger.OutgoingText{ToUserID: contactID, Text: text, IsGroup: msg.ChatType == "group"})
+				isGroup := strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
+				// Group replies prepend "{staffId}问：问题" so interleaved answers
+				// stay attributable to the asker (FromUserID is Lansenger staffId).
+				// Quote the original user text, not the agent-enriched prefix.
+				text = lansenger.MaybeFormatGroupReplyWithQuote(isGroup, msg.FromUserID, msg.Text, text)
+				return gw.SendText(ctx, lansenger.OutgoingText{ToUserID: contactID, Text: text, IsGroup: isGroup})
 			},
 			ReplyMedia: func(ctx context.Context, data []byte, fileName, mediaType, mimeType string) error {
-				return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: contactID, FileData: data, FileName: fileName, MediaType: normalizeSrvIMMediaType(mediaType), IsGroup: msg.ChatType == "group"})
+				isGroup := strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
+				return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: contactID, FileData: data, FileName: fileName, MediaType: normalizeSrvIMMediaType(mediaType), IsGroup: isGroup})
 			},
 		})
 	})

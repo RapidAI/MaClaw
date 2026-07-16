@@ -108,6 +108,15 @@ type pendingAskUserState struct {
 	Timestamp time.Time
 }
 
+// pendingRecordAudioState tracks an interactive recording session waiting for
+// the user to stop. Stored in IMMessageHandler.pendingRecordAudio keyed by userID.
+type pendingRecordAudioState struct {
+	Title     string
+	Purpose   string
+	History   []agent.ConversationEntry
+	Timestamp time.Time
+}
+
 // pendingUserReplyState binds a plain-text assistant question to the
 // conversation snapshot that produced it. It covers normal prose follow-ups
 // such as "which model should I deploy?" that do not use the ask_user tool.
@@ -356,4 +365,126 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	)
 	log.Printf("[AskUser] consumed pending ask_user for user %s, question_len=%d answer_len=%d", userID, len([]rune(pending.Question)), len([]rune(trimmed)))
 	return context, true
+}
+
+func pendingRecordAudioForCurrentHistory(raw interface{}, entries []agent.ConversationEntry) (*pendingRecordAudioState, bool) {
+	pending, ok := raw.(*pendingRecordAudioState)
+	if !ok || pending == nil || time.Since(pending.Timestamp) >= pendingReplyTTL {
+		return nil, false
+	}
+	return pending, isPendingReplyBoundToCurrentHistory(pending.History, entries, pending.Title)
+}
+
+// hasActivePendingRecordAudio reports whether the user still has a live
+// interactive recording session waiting for a structured stop/save report.
+func (h *IMMessageHandler) hasActivePendingRecordAudio(userID string, entries []agent.ConversationEntry) bool {
+	if h == nil {
+		return false
+	}
+	raw, ok := h.pendingRecordAudio.Load(userID)
+	if !ok {
+		return false
+	}
+	_, fresh := pendingRecordAudioForCurrentHistory(raw, entries)
+	return fresh
+}
+
+func (h *IMMessageHandler) consumePendingRecordAudioAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, bool) {
+	if h == nil {
+		return "", false
+	}
+	// Peek first — casual chat while the mic UI is open must NOT clear pending.
+	raw, ok := h.pendingRecordAudio.Load(userID)
+	if !ok {
+		return "", false
+	}
+	pending, pendingFresh := pendingRecordAudioForCurrentHistory(raw, entries)
+	if !pendingFresh {
+		// Stale binding / TTL: drop so it cannot block forever.
+		h.pendingRecordAudio.Delete(userID)
+		if pending != nil && recordDetailEnabled() {
+			log.Printf("[record-audio] discarded stale pending recording user=%s currentLen=%d boundLen=%d answer_len=%d title=%q age=%s",
+				userID, len(entries), len(pending.History), len([]rune(trimmed)), pending.Title, time.Since(pending.Timestamp).Round(time.Second))
+		}
+		return "", false
+	}
+	if !isRecordAudioCompletionReport(trimmed) {
+		if recordDetailEnabled() {
+			log.Printf("[record-audio] keep pending (non-completion message) user=%s title=%q answer_len=%d",
+				userID, pending.Title, len([]rune(trimmed)))
+		}
+		return "", false
+	}
+	h.pendingRecordAudio.Delete(userID)
+
+	context := fmt.Sprintf(
+		"[Context hint] The user finished an interactive recording session started via record_audio, not a new request.\nRecording title: %s\nUser report: %s\n"+
+			"If the report includes a saved audio path and the user has not yet been asked, ask whether they want transcription + meeting minutes. "+
+			"If they decline minutes, deliver the audio with send_file and show a short summary (duration, size, path). "+
+			"If they accept, call asr(path=...) then write a minutes document, and ALWAYS send_file BOTH the original audio (backup) and the minutes document so the user gets clickable file links for both. "+
+			"If status is cancelled/error or path is missing, acknowledge and do not invent a transcript.",
+		pending.Title, trimmed,
+	)
+	if recordDetailEnabled() {
+		pathHint := extractRecordedPathFromReport(trimmed)
+		statusHint := extractRecordingFieldFromReport(trimmed, "status")
+		durationHint := extractRecordingFieldFromReport(trimmed, "duration_sec")
+		log.Printf("[record-audio] consumed pending recording user=%s title=%q purpose=%q status=%q path=%q duration=%q answer_len=%d session_age=%s",
+			userID, pending.Title, pending.Purpose, statusHint, pathHint, durationHint, len([]rune(trimmed)), time.Since(pending.Timestamp).Round(time.Millisecond))
+	}
+	return context, true
+}
+
+// isRecordAudioCompletionReport reports whether the user message is the structured
+// stop/save payload from the desktop recording card, as opposed to casual chat.
+func isRecordAudioCompletionReport(trimmed string) bool {
+	t := strings.TrimSpace(trimmed)
+	if t == "" {
+		return false
+	}
+	// Canonical payload from RecordingSessionCard / formatRecordingCompletionMessage.
+	if strings.Contains(t, "[Recording completed]") {
+		return true
+	}
+	// Fallback: status plus at least one other structured field (path/error/title/duration).
+	// Bare "status: stopped" alone is too easy to false-positive in normal chat.
+	status := strings.ToLower(extractRecordingFieldFromReport(t, "status"))
+	switch status {
+	case "stopped", "cancelled", "canceled", "error":
+		if extractRecordingFieldFromReport(t, "path") != "" ||
+			extractRecordingFieldFromReport(t, "error") != "" ||
+			extractRecordingFieldFromReport(t, "title") != "" ||
+			extractRecordingFieldFromReport(t, "duration_sec") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func extractRecordedPathFromReport(report string) string {
+	return extractRecordingFieldFromReport(report, "path")
+}
+
+func extractRecordingFieldFromReport(report, key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" || report == "" {
+		return ""
+	}
+	for _, line := range strings.Split(report, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Split on first ':' so values may contain colons (Windows paths).
+		idx := strings.IndexByte(line, ':')
+		if idx <= 0 {
+			continue
+		}
+		field := strings.ToLower(strings.TrimSpace(line[:idx]))
+		if field != key {
+			continue
+		}
+		return strings.TrimSpace(line[idx+1:])
+	}
+	return ""
 }

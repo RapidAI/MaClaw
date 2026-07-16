@@ -310,6 +310,12 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *pendingAskUserState.
 	pendingAskUser sync.Map
 
+	// pendingRecordAudio tracks interactive record_audio sessions waiting for
+	// the user to stop recording. The next user message carries the saved path
+	// and duration summary and is treated as a continuation of the same task.
+	// Keyed by userID, value is *pendingRecordAudioState.
+	pendingRecordAudio sync.Map
+
 	// pendingUserReply tracks plain-text assistant questions that expect the
 	// next user message to continue the same task. Keyed by userID, value is
 	// *pendingUserReplyState.
@@ -887,7 +893,10 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		router.SetUnifiedClassifier(uic)
 	}
-	routed := router.Route(userMessage, allTools)
+	// Optional lightweight LLM rewrite → structured pins + retrieval query.
+	// Failures degrade silently to original-message routing.
+	routeOpts := tool.RouteOptions{Intent: h.rewriteRouteIntentForTools(userMessage)}
+	routed := router.RouteWithOptions(userMessage, allTools, routeOpts)
 	if isExplicitNicknameRequest(userMessage) {
 		return routed
 	}

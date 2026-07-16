@@ -1,4 +1,5 @@
 import { PRESERVED_INLINE_MARK_CLASS } from "../remote/remoteStreamMarks";
+import { splitMidLineOrderedListMarkers } from "./orderedListMarkdown";
 
 const escapedNewlinePattern = /\\r\\n|\\n|\\r/g;
 // Older digital-employee copy used pictographs as list markers.
@@ -119,8 +120,9 @@ export function normalizeInlineListMarkers(content: string): string {
                 .replace(/(^|\n)(#{2,6})(?=[^#\s])/g, "$1$2 ")
                 .replace(/([\uff1a:])\s*(-\s+)/g, "$1\n$2")
                 // A dash after a table-cell delimiter is cell content, not an inline list.
-                .replace(/([^\n\s|])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
-                .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2")
+                .replace(/([^\n\s|])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2");
+            out = splitMidLineOrderedListMarkers(out);
+            out = out
                 // Rewrite capability pictograph markers to plain list dashes (no emoji in UI).
                 .replace(capabilityIconAfterPunctuationPattern, "$1\n- ");
             if (denseCapabilityList) {

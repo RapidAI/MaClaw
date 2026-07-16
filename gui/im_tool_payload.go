@@ -2,8 +2,9 @@ package main
 
 import (
 	"encoding/base64"
-	"fmt"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 type pendingFile struct {
@@ -54,6 +55,21 @@ func (a *agentLoopPendingToolArtifacts) ApplyObservation(obs toolPayloadObservat
 }
 
 func parseToolPayloadResult(result string) toolPayloadObservation {
+	return parseToolPayloadResultForPlatformLang(result, "", "zh")
+}
+
+// parseToolPayloadResultForPlatform is like parseToolPayloadResult but uses the
+// originating platform so interim tool text is honest on WeChat/Feishu channels.
+func parseToolPayloadResultForPlatform(result, platform string) toolPayloadObservation {
+	return parseToolPayloadResultForPlatformLang(result, platform, "zh")
+}
+
+// parseToolPayloadResultForPlatformLang is the platform + language aware parser.
+// lang should be an imUILang tag (zh/en); empty falls back to zh.
+func parseToolPayloadResultForPlatformLang(result, platform, lang string) toolPayloadObservation {
+	if strings.TrimSpace(lang) == "" {
+		lang = "zh"
+	}
 	payload := classifyToolPayloadResult(result)
 	obs := toolPayloadObservation{
 		TraceResult: result,
@@ -102,7 +118,7 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 		}
 		// Leave empty default captions unset here. Caption language is resolved
 		// at send time via resolveIMProactiveCaption(imUILang(), …) so GUI en/zh
-		// is applied correctly (parse path has no access to App language).
+		// is applied correctly when the caller has no language yet.
 		obs.File = &pendingFile{
 			name:      parts[0],
 			mimeType:  mimeType,
@@ -110,13 +126,14 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 			forwardIM: forwardIM,
 			message:   message,
 		}
-		if forwardIM {
-			// Future tense only as interim; shared/legacy materialize replaces this
-			// with the real forward result (success or 无法转发…).
-			obs.ToolContent = fmt.Sprintf("文件 %s 已编码为 IM 交付载荷（forward_to_im）。最终是否到达微信以交付结果为准，勿仅凭本句声称已成功。", parts[0])
+		// Interim observation for the model (materialize may replace with final status).
+		onIMChannel := normalizeIMMessagePlatformKind(platform).IsIMChannel()
+		if onIMChannel {
+			obs.ToolContent = i18n.Tf(i18n.MsgIMFileChannelStagedOne, lang, parts[0])
+		} else if forwardIM {
+			obs.ToolContent = i18n.Tf(i18n.MsgIMFileForwardStagedOne, lang, parts[0])
 		} else {
-			// Be explicit so the model does not claim "已发到微信" after a desktop-only stage.
-			obs.ToolContent = fmt.Sprintf("文件 %s 已准备好在当前对话中交付（未转发到微信/飞书等 IM）。若用户要求发到微信/飞书/QQ，请调用 send_to_im(path=...)；不要只用文字声称已发送。", parts[0])
+			obs.ToolContent = i18n.Tf(i18n.MsgIMFileDesktopStagedOne, lang, parts[0])
 		}
 		obs.TraceResult = obs.ToolContent
 		return obs

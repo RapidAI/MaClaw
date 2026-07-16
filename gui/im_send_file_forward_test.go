@@ -178,6 +178,92 @@ func TestParseToolPayloadResultNoForwardMessageIsHonest(t *testing.T) {
 	}
 }
 
+func TestParseToolPayloadResultOnWeixinChannelIsChannelSuccess(t *testing.T) {
+	obs := parseToolPayloadResultForPlatform("[file_base64|shot.png|image/png]AAAA", "weixin")
+	if obs.File == nil {
+		t.Fatal("expected file payload")
+	}
+	if strings.Contains(obs.ToolContent, "未转发") {
+		t.Fatalf("weixin channel must not claim not-forwarded, got %q", obs.ToolContent)
+	}
+	if !strings.Contains(obs.ToolContent, "当前 IM 通道") && !strings.Contains(obs.ToolContent, "本对话") {
+		t.Fatalf("weixin channel content should say current channel delivery, got %q", obs.ToolContent)
+	}
+	// Must not be the failure template (允许在成功文案中写「不要声称发送器未配置」).
+	if strings.Contains(obs.ToolContent, "无法转发") || strings.HasPrefix(obs.ToolContent, "无法") {
+		t.Fatalf("must not be a failure status, got %q", obs.ToolContent)
+	}
+}
+
+func TestMaterializeOnWeixinChannelWithoutSenderIsSuccess(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h := &IMMessageHandler{}
+	// No imFileSender — on WeChat channel LocalFilePaths are delivered by gateway.
+	got := h.materializeToolFilePayloadForPlatform("[file_base64|工作邀请.pdf|application/pdf]iVBORw0KGgo=", "weixin")
+	if !got.Handled {
+		t.Fatalf("expected handled, got %#v", got)
+	}
+	if !got.Forwarded {
+		t.Fatalf("weixin channel local save should count as delivery success, got %#v", got)
+	}
+	if len(got.LocalPaths) != 1 {
+		t.Fatalf("expected local path, got %v", got.LocalPaths)
+	}
+	if strings.Contains(got.Text, "未转发") || strings.Contains(got.Text, "无法转发") {
+		t.Fatalf("must not claim not-forwarded on weixin channel, got %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "当前 IM 通道") {
+		t.Fatalf("expected channel success text, got %q", got.Text)
+	}
+}
+
+func TestMaterializeOnWeixinChannelForwardFlagWithoutSenderIsSuccess(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	h := &IMMessageHandler{}
+	// forwardIM=true but no sender: desktop would fail; active weixin channel must succeed.
+	got := h.materializeToolFilePayloadForPlatform("[file_base64|shot.png|image/png|im]iVBORw0KGgo=", "weixin_local")
+	if !got.Handled || !got.Forwarded {
+		t.Fatalf("expected handled+forwarded on weixin_local, got %#v", got)
+	}
+	if strings.Contains(got.Text, "无法转发") || strings.Contains(got.Text, "Could not forward") {
+		t.Fatalf("active channel must not report forward failure, got %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "当前 IM 通道") {
+		t.Fatalf("expected channel success text, got %q", got.Text)
+	}
+}
+
+func TestMaterializeOnWeixinChannelSkipsImFileSenderToAvoidDoubleSend(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	var calls int
+	h := &IMMessageHandler{}
+	h.imFileSender = func(b64Data, fileName, mimeType, message string) error {
+		calls++
+		return nil
+	}
+	// Even with forwardIM + configured sender, active IM channel must not call
+	// imFileSender (gateway already delivers LocalFilePaths → would double-send).
+	got := h.materializeToolFilePayloadForPlatform("[file_base64|shot.png|image/png|im]iVBORw0KGgo=", "weixin")
+	if !got.Handled || !got.Forwarded {
+		t.Fatalf("expected handled+forwarded, got %#v", got)
+	}
+	if calls != 0 {
+		t.Fatalf("imFileSender calls=%d, want 0 on active weixin channel (avoid double send)", calls)
+	}
+	if len(got.LocalPaths) != 1 {
+		t.Fatalf("expected local path for gateway delivery, got %v", got.LocalPaths)
+	}
+}
+
 func TestMaterializeToolFilePayloadForwardsOnSharedPath(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

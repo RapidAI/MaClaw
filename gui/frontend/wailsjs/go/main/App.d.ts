@@ -1011,6 +1011,30 @@ export function GetLansengerLocalMode():Promise<boolean>;
 
 export function SetLansengerLocalMode(arg1:boolean):Promise<void>;
 
+export function ListLansengerGroups():Promise<any>;
+
+export function GetLansengerIgnoredGroups():Promise<Array<string>>;
+
+export function SetLansengerGroupIgnored(arg1:string,arg2:boolean):Promise<void>;
+
+export function ListLansengerWatchJobs():Promise<string>;
+
+export function UpsertLansengerWatchJob(arg1:string):Promise<string>;
+
+export function DeleteLansengerWatchJob(arg1:string):Promise<void>;
+
+export function ListLansengerWatchRoster(arg1:string,arg2:string):Promise<string>;
+
+export function AddLansengerWatchMember(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function ListLansengerWatchTranscripts(arg1:string):Promise<string>;
+
+export function ReadLansengerWatchTranscript(arg1:string):Promise<string>;
+
+export function GetLansengerWatchStorePath():Promise<string>;
+
+export function ListLansengerWatchChannels():Promise<string>;
+
 export function GetThirdPartyGatewayStatus():Promise<string>;
 
 export function RestartThirdPartyGateway():Promise<string>;
@@ -1067,6 +1091,16 @@ export function DownloadASRModel():Promise<void>;
 
 export function TranscribeAudioBase64(arg1:string):Promise<string>;
 
+export function SaveRecordedAudioBase64(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function BeginRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
+
+export function AppendRecordedAudioBase64(arg1:string,arg2:string):Promise<void>;
+
+export function FinishRecordedAudioUpload(arg1:string):Promise<Record<string, any>>;
+
+export function CancelRecordedAudioUpload(arg1:string):Promise<void>;
+
 export function NormalizeVoiceCommand(arg1:string):Promise<main.VoiceCommandNormalizationResult>;
 
 export function CorrectASRText(arg1:string):Promise<string>;
@@ -1079,6 +1113,73 @@ export function GetScreenParsingEnabled():Promise<boolean>;
 export function SetScreenParsingEnabled(arg1:boolean):Promise<void>;
 
 export function CheckYOLOModel():Promise<{[key:string]:any}>;
+
+// Computer Use (text-primary desktop control)
+export function GetComputerUseEnabled():Promise<boolean>;
+
+export function SetComputerUseEnabled(arg1:boolean):Promise<void>;
+
+export function GetComputerUseStatus():Promise<{[key:string]:any}>;
+
+export function ComputerUsePause():Promise<void>;
+
+export function ComputerUseResume():Promise<void>;
+
+export function ComputerUseStop():Promise<void>;
+
+export function ComputerUseReset():Promise<void>;
+
+export function ComputerUseSelfCheck():Promise<{[key:string]:any}>;
+
+export function GetComputerUseLastWarmup():Promise<{[key:string]:any}>;
+
+export function GetComputerUseReadiness():Promise<{[key:string]:any}>;
+
+export function GetComputerUseLastError():Promise<{[key:string]:any}>;
+
+export function GetComputerUseLastObserveMetrics():Promise<{[key:string]:any}>;
+
+export function GetComputerUseObserveHistory():Promise<{[key:string]:any}>;
+
+export function ComputerUseSmokeCheck():Promise<{[key:string]:any}>;
+
+export function ComputerUseE2ESmoke():Promise<{[key:string]:any}>;
+
+export function ComputerUseE2EInteract():Promise<{[key:string]:any}>;
+
+export function ExportComputerUseDiagnostics():Promise<{[key:string]:any}>;
+
+export function ExportComputerUseObserveHistoryCSV():Promise<{[key:string]:any}>;
+
+export function GetComputerUseLastE2E():Promise<{[key:string]:any}>;
+
+export function OpenComputerUseLogsFolder():Promise<{[key:string]:any}>;
+
+export function OpenComputerUseLastDiagnostics():Promise<{[key:string]:any}>;
+
+export function OpenComputerUseLastHistoryCSV():Promise<{[key:string]:any}>;
+
+export function CopyComputerUsePath(arg1:string):Promise<{[key:string]:any}>;
+
+export function ListComputerUseLogArtifacts(arg1:string,arg2:number):Promise<{[key:string]:any}>;
+
+export function PruneComputerUseLogArtifacts(arg1:number,arg2:number):Promise<{[key:string]:any}>;
+
+export function GetComputerUseLogPrunePolicy():Promise<{[key:string]:any}>;
+
+export function SetComputerUseLogPrunePolicy(arg1:number,arg2:number,arg3:number):Promise<{[key:string]:any}>;
+
+export function SetComputerUseLogAutoPrune(arg1:boolean):Promise<{[key:string]:any}>;
+
+export function OpenComputerUseLogArtifact(arg1:string):Promise<{[key:string]:any}>;
+
+export function DeleteComputerUseLogArtifact(arg1:string):Promise<{[key:string]:any}>;
+
+export function BatchDeleteComputerUseLogArtifacts(arg1:Array<string>):Promise<{[key:string]:any}>;
+
+export function OpenComputerUsePermissionSettings(arg1:string):Promise<{[key:string]:any}>;
+
+export function OpenComputerUsePermissionSettingsDefault():Promise<{[key:string]:any}>;
 
 export function DownloadYOLOModel():Promise<void>;
 
@@ -1463,6 +1564,7 @@ export function KnowledgeDeepCrawlCancel():Promise<any>;
 export function KnowledgeGetImageAssetPaths(arg1:string):Promise<{[key:string]:string}>;
 
 export function KnowledgeOpenImageFile(arg1:string):Promise<void>;
+
 export function ListSurveys(arg1:string):Promise<string>;
 export function GetSurvey(arg1:string):Promise<string>;
 export function CreateSurvey(arg1:string):Promise<string>;
@@ -1480,5 +1582,3 @@ export function UpdateSurvey(arg1:string,arg2:string):Promise<string>;
 export function UnbindSurveyGroup(arg1:string,arg2:string,arg3:string):Promise<void>;
 export function ListSurveyResponses(arg1:string):Promise<string>;
 export function ExportSurveyXLSXFiltered(arg1:string,arg2:string):Promise<string>;
-export function ListLansengerGroups():Promise<any>;
-

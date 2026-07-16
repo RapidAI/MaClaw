@@ -70,8 +70,21 @@ func runPS(script string) (string, error) {
 // EnumElements returns the accessibility tree for the window matching the given title.
 // If the window is not found or has no accessibility info, returns (nil, nil).
 func (b *windowsBridge) EnumElements(windowTitle string) ([]Element, error) {
-	// PowerShell script that uses UI Automation to enumerate the element tree.
-	// We limit depth to 3 levels to avoid huge trees.
+	// Prefer long-lived UIA sidecar (loads assemblies once).
+	depth := 3
+	if strings.TrimSpace(windowTitle) == "" {
+		depth = 1
+	}
+	if els, err := globalUIASidecar.enum(windowTitle, depth); err == nil {
+		// Sidecar always returns a non-nil slice; normalize empty → nil so
+		// callers/tests match the historical PowerShell "no window" contract.
+		if len(els) == 0 {
+			return nil, nil
+		}
+		return els, nil
+	}
+
+	// Fallback: one-shot PowerShell (cold start).
 	script := fmt.Sprintf(`
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -140,6 +153,10 @@ if ($tree) {
 // FindElement searches for an element by role and name in the given window.
 // Returns (nil, nil) if not found — allows callers to degrade to other strategies.
 func (b *windowsBridge) FindElement(windowTitle, role, name string) (*Element, error) {
+	if el, err := globalUIASidecar.find(windowTitle, role, name); err == nil {
+		return el, nil
+	}
+
 	script := fmt.Sprintf(`
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes

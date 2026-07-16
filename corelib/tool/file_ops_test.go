@@ -29,6 +29,23 @@ func TestResolveFileToolPath_Absolute(t *testing.T) {
 	}
 }
 
+func TestResolveFileToolPath_EmptyUsesProjectDir(t *testing.T) {
+	project := filepath.Clean("/tmp/project-root")
+	got, err := ResolveFileToolPath("", func() string { return project })
+	if err != nil {
+		t.Fatalf("ResolveFileToolPath empty error: %v", err)
+	}
+	if got != project {
+		t.Fatalf("empty path = %q, want project dir %q", got, project)
+	}
+}
+
+func TestResolveFileToolPath_EmptyWithoutProjectErrors(t *testing.T) {
+	if _, err := ResolveFileToolPath("", nil); err == nil {
+		t.Fatal("expected error when empty path and no project resolver")
+	}
+}
+
 func TestWriteTextFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "note.md")

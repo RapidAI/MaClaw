@@ -92,7 +92,8 @@ var veBlockedTools = map[string]bool{
 	"switch_provider": true,
 
 	// --- Coding tool gate / workflow ---
-	"ask_user": true,
+	"ask_user":      true,
+	"record_audio":  true,
 
 	// --- Background task management ---
 	"async_wait": true,

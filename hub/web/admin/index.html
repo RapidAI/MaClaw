@@ -375,18 +375,18 @@
               </div>
             </div>
             <div id="overviewSystemFreePanel" class="item overview-system-free">
-            <div class="item-head" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
-              <div>
-                <div class="item-title" id="overviewSystemFreeTitle">system-free</div>
-                <div class="item-meta" id="overviewSystemFreeDesc" style="margin-top:4px"></div>
+              <div class="item-head" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+                <div>
+                  <div class="item-title" id="overviewSystemFreeTitle">system-free</div>
+                  <div class="item-meta" id="overviewSystemFreeDesc" style="margin-top:4px"></div>
+                </div>
+                <div id="overviewSystemFreeBadge" style="font-size:12px;font-weight:700"></div>
               </div>
-              <div id="overviewSystemFreeBadge" style="font-size:12px;font-weight:700"></div>
-            </div>
-            <div class="item-meta mono" id="overviewSystemFreeDetail" style="margin-top:10px"></div>
-            <div class="actions" style="margin-top:12px;gap:8px;flex-wrap:wrap">
-              <button class="btn-secondary" type="button" id="overviewSystemFreeTestBtn" onclick="typeof testTenantSystemFreeLLM==='function'&&testTenantSystemFreeLLM()">Test</button>
-              <button class="btn-ghost" type="button" id="overviewSystemFreeConfigBtn" onclick="typeof openTab==='function'&&openTab('modelservices')">Configure</button>
-            </div>
+              <div class="item-meta mono" id="overviewSystemFreeDetail" style="margin-top:10px"></div>
+              <div class="actions" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+                <button class="btn-secondary" type="button" id="overviewSystemFreeTestBtn" onclick="typeof testTenantSystemFreeLLM==='function'&&testTenantSystemFreeLLM()">Test</button>
+                <button class="btn-ghost" type="button" id="overviewSystemFreeConfigBtn" onclick="typeof openSystemFreeServiceGroup==='function'?openSystemFreeServiceGroup():(typeof openTab==='function'&&openTab('modelservices'))">Configure</button>
+              </div>
             </div>
           </aside>
         </div>
@@ -699,20 +699,19 @@
         </div>
         <div class="item hidden" id="tenantSystemLLMDefaultsCard" style="margin-top:10px">
           <div class="head" style="margin-bottom:10px">
-            <div><div class="item-title" id="tenantSystemLLMDefaultsTitle"></div><div class="item-meta" id="tenantSystemLLMDefaultsDesc"></div></div>
-            <button class="btn-ghost" onclick="loadTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsReloadBtn"></button>
-          </div>
-          <div class="grid2">
             <div>
-              <label for="tenantSystemDefaultLLMServiceGroup" id="tenantSystemDefaultLLMServiceGroupLabel"></label>
-              <select id="tenantSystemDefaultLLMServiceGroup" disabled></select>
-              <div id="tenantSystemFreeStatusBadge" class="item-meta" style="margin-top:6px;font-weight:600"></div>
+              <div class="item-title" id="tenantSystemLLMDefaultsTitle"></div>
+              <div class="item-meta" id="tenantSystemLLMDefaultsDesc"></div>
             </div>
-            <div class="item-meta" id="tenantSystemLLMDefaultsHint" style="align-self:end"></div>
+            <button class="btn-ghost" type="button" onclick="loadTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsReloadBtn"></button>
           </div>
-          <div class="actions" style="margin-top:10px;gap:8px;flex-wrap:wrap">
-            <button class="btn-primary" onclick="saveTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsSaveBtn"></button>
-            <button class="btn-secondary" onclick="testTenantSystemFreeLLM()" id="tenantSystemFreeTestBtn"></button>
+          <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+            <div class="item-meta mono" id="tenantSystemLLMDefaultsHint"></div>
+            <div id="tenantSystemFreeStatusBadge" class="item-meta" style="font-weight:700;white-space:nowrap"></div>
+          </div>
+          <div class="actions" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+            <button class="btn-secondary" type="button" onclick="testTenantSystemFreeLLM()" id="tenantSystemFreeTestBtn"></button>
+            <button class="btn-primary" type="button" onclick="saveTenantSystemLLMDefaults()" id="tenantSystemLLMDefaultsSaveBtn"></button>
           </div>
         </div>
         <!-- Admin profile -->

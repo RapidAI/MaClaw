@@ -1,0 +1,554 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/lansenger"
+	"github.com/RapidAI/CodeClaw/corelib/lansengerwatch"
+)
+
+// lansengerWatchService is the desktop-side watch engine (jobs + roster + logs).
+type lansengerWatchService struct {
+	mu     sync.Mutex
+	app    *App
+	store  *lansengerwatch.Store
+	engine *lansengerwatch.Engine
+	// jobsCache avoids reading config.json on every IM message.
+	jobsCache   []lansengerwatch.Job
+	jobsCacheAt time.Time
+	// jobsGen bumps on invalidate so a slow ListJobs cannot repopulate stale data.
+	jobsGen uint64
+	// replyDedupe limits identical group auto-replies (key -> last sent).
+	replyDedupe map[string]time.Time
+}
+
+const (
+	// Max time the gateway goroutine may spend in watch Process (CLI+I/O).
+	lansengerWatchProcessTimeout = 25 * time.Second
+	// Suppress identical group replies within this window.
+	lansengerWatchReplyDedupeTTL = 30 * time.Second
+)
+
+func (a *App) watchService() *lansengerWatchService {
+	if a == nil {
+		return nil
+	}
+	a.lansengerWatchOnce.Do(func() {
+		base := a.getMaclawBaseDir()
+		store := lansengerwatch.NewStore(base)
+		a.lansengerWatch = &lansengerWatchService{
+			app:         a,
+			store:       store,
+			engine:      &lansengerwatch.Engine{Store: store},
+			replyDedupe: make(map[string]time.Time),
+		}
+	})
+	return a.lansengerWatch
+}
+
+func (s *lansengerWatchService) invalidateCache() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.jobsCache = nil
+	s.jobsCacheAt = time.Time{}
+	s.jobsGen++
+	s.mu.Unlock()
+}
+
+func (s *lansengerWatchService) listJobsCached() []lansengerwatch.Job {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.jobsCache != nil && time.Since(s.jobsCacheAt) < 2*time.Second {
+		out := make([]lansengerwatch.Job, len(s.jobsCache))
+		copy(out, s.jobsCache)
+		s.mu.Unlock()
+		return out
+	}
+	gen := s.jobsGen
+	s.mu.Unlock()
+
+	// Disk I/O outside service lock so invalidate/UI upserts are not stalled.
+	jobs, err := s.store.ListJobs()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		log.Printf("[lansenger-watch] list jobs: %v", err)
+		if s.jobsCache == nil {
+			return nil
+		}
+		out := make([]lansengerwatch.Job, len(s.jobsCache))
+		copy(out, s.jobsCache)
+		return out
+	}
+	// Drop stale load if a writer invalidated while we were on disk.
+	if gen != s.jobsGen {
+		// Prefer a fresh read next call; still return latest disk snapshot we got.
+		out := make([]lansengerwatch.Job, len(jobs))
+		copy(out, jobs)
+		return out
+	}
+	s.jobsCache = jobs
+	s.jobsCacheAt = time.Now()
+	out := make([]lansengerwatch.Job, len(jobs))
+	copy(out, jobs)
+	return out
+}
+
+// processMessage is the IM hot path: roster + record + keyword reply/CLI + private forward.
+// It never claims the message for the agent; caller decides routing.
+func (s *lansengerWatchService) processMessage(msg lansenger.IncomingMessage) {
+	if s == nil || s.store == nil || s.engine == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[lansenger-watch] processMessage panic: %v", r)
+		}
+	}()
+	if !isLansengerGroupMessage(msg) {
+		return
+	}
+	groupID := strings.TrimSpace(msg.GroupID)
+	speakerID := strings.TrimSpace(msg.FromUserID)
+	if groupID == "" || speakerID == "" {
+		return
+	}
+	jobs := s.listJobsCached()
+	// Fast exit when 盯人 is unused or this group has no enabled job.
+	if !lansengerwatch.AnyActiveWatchForGroup(jobs, groupID) {
+		return
+	}
+	// Learn roster only for groups with active watch jobs.
+	// NoteMember skips redundant disk writes for frequent chatters.
+	if err := s.store.NoteMember(groupID, msg.GroupName, speakerID, msg.SenderName, "message"); err != nil {
+		log.Printf("[lansenger-watch] roster note: %v", err)
+	}
+	// Include keyword-scope=anyone jobs even when speaker is not a watch target.
+	if !lansengerwatch.GroupNeedsWatchMessage(jobs, groupID, speakerID) {
+		return
+	}
+
+	text := strings.TrimSpace(msg.Text)
+	// Prefer text without self-@ noise when present.
+	if stripped := stripLansengerBotMentions(msg); strings.TrimSpace(stripped) != "" {
+		text = strings.TrimSpace(stripped)
+	}
+	if text == "" {
+		return
+	}
+
+	// Bound work on the gateway path so a slow CLI cannot stall all IM traffic.
+	ctx, cancel := context.WithTimeout(context.Background(), lansengerWatchProcessTimeout)
+	defer cancel()
+	res := s.engine.Process(ctx, jobs, lansengerwatch.Incoming{
+		IsGroup:     true,
+		GroupID:     groupID,
+		GroupName:   msg.GroupName,
+		SpeakerID:   speakerID,
+		SpeakerName: msg.SenderName,
+		Text:        text,
+		MessageID:   msg.MessageID,
+		ReceivedAt:  time.Now(),
+	})
+	for _, line := range res.CLILogs {
+		log.Printf("[lansenger-watch] %s", line)
+	}
+	// Group replies (static text / CLI stdout) go back to the source group.
+	for _, reply := range res.Replies {
+		reply = strings.TrimSpace(reply)
+		if reply == "" || s.recentGroupReply(groupID, reply) {
+			continue
+		}
+		if err := s.sendWatchGroupText(msg, reply); err != nil {
+			log.Printf("[lansenger-watch] group reply: %v", err)
+			continue
+		}
+		// Only mark after a successful send so a failed delivery can retry.
+		s.rememberGroupReply(groupID, reply)
+	}
+	// Forwards to owner IM channels — parallel; do not block gateway forever.
+	s.deliverForwardsParallel(res.Forwards)
+}
+
+// recentGroupReply reports whether the same reply was sent recently (check only).
+func (s *lansengerWatchService) recentGroupReply(groupID, reply string) bool {
+	if s == nil {
+		return false
+	}
+	key := strings.TrimSpace(groupID) + "\x00" + reply
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.replyDedupe == nil {
+		return false
+	}
+	t, ok := s.replyDedupe[key]
+	return ok && now.Sub(t) < lansengerWatchReplyDedupeTTL
+}
+
+func (s *lansengerWatchService) rememberGroupReply(groupID, reply string) {
+	if s == nil {
+		return
+	}
+	key := strings.TrimSpace(groupID) + "\x00" + reply
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.replyDedupe == nil {
+		s.replyDedupe = make(map[string]time.Time)
+	}
+	if len(s.replyDedupe) > 256 {
+		for k, t := range s.replyDedupe {
+			if now.Sub(t) > lansengerWatchReplyDedupeTTL {
+				delete(s.replyDedupe, k)
+			}
+		}
+	}
+	s.replyDedupe[key] = now
+}
+
+const lansengerWatchForwardBudget = 8 * time.Second
+
+func (s *lansengerWatchService) deliverForwardsParallel(forwards []lansengerwatch.ForwardRequest) {
+	if len(forwards) == 0 {
+		return
+	}
+	// Collapse hub+local duplicates: if any concrete local channel is selected,
+	// still send both (user may want hub for other platforms), but drop exact
+	// channel+body duplicates across jobs.
+	seen := make(map[string]struct{}, len(forwards))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3)
+	for _, fwd := range forwards {
+		body := strings.TrimSpace(fwd.Text)
+		ch := lansengerwatch.NormalizeForwardChannel(fwd.Channel)
+		if body == "" || ch == "" {
+			continue
+		}
+		key := ch + "\x00" + body
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		// Capture for goroutine (explicit params avoid loop-variable pitfalls).
+		jobID, reason, chSend, bodySend := fwd.JobID, fwd.Reason, ch, body
+		wg.Add(1)
+		go func(jobID, reason, chSend, bodySend string) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[lansenger-watch] forward panic channel=%s: %v", chSend, r)
+				}
+			}()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := s.deliverToOwnerChannel(chSend, bodySend); err != nil {
+				log.Printf("[lansenger-watch] forward job=%s reason=%s channel=%s: %v", jobID, reason, chSend, err)
+			} else {
+				log.Printf("[lansenger-watch] forward job=%s reason=%s channel=%s ok", jobID, reason, chSend)
+			}
+		}(jobID, reason, chSend, bodySend)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(lansengerWatchForwardBudget):
+		log.Printf("[lansenger-watch] forward delivery budget exceeded (%v), continuing async", lansengerWatchForwardBudget)
+	}
+}
+
+func (s *lansengerWatchService) sendWatchGroupText(msg lansenger.IncomingMessage, text string) error {
+	if s == nil || s.app == nil || s.app.lansengerGateway == nil {
+		return fmt.Errorf("lansenger gateway unavailable")
+	}
+	m := s.app.lansengerGateway
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return fmt.Errorf("lansenger gateway not running")
+	}
+	return gw.SendText(context.Background(), lansenger.OutgoingText{
+		ToUserID: lansengerReplyTarget(msg),
+		Text:     text,
+		IsGroup:  true,
+	})
+}
+
+// deliverToOwnerChannel pushes text onto one of the owner's IM pathways.
+func (s *lansengerWatchService) deliverToOwnerChannel(channel, text string) error {
+	if s == nil || s.app == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("empty text")
+	}
+	switch channel {
+	case lansengerwatch.ChannelWeixin:
+		s.app.ensureWeixinGateway()
+		if s.app.weixinGateway == nil {
+			return fmt.Errorf("weixin gateway unavailable")
+		}
+		return s.app.weixinGateway.SendProactiveText(text)
+	case lansengerwatch.ChannelLansenger:
+		s.app.ensureLansengerGateway()
+		if s.app.lansengerGateway == nil {
+			return fmt.Errorf("lansenger gateway unavailable")
+		}
+		return s.app.lansengerGateway.SendProactiveText(text)
+	case lansengerwatch.ChannelTelegram, lansengerwatch.ChannelQQ, lansengerwatch.ChannelHub:
+		// Portable owner-channel path: Hub proactive → last active bound IM.
+		hc := s.app.hubClient()
+		if hc == nil || !hc.IsConnected() {
+			// Try ensure for hub channel only
+			if channel == lansengerwatch.ChannelHub {
+				hc = s.app.ensureHubClient()
+			}
+		}
+		if hc == nil || !hc.IsConnected() {
+			return fmt.Errorf("%s requires Hub connection", channel)
+		}
+		return hc.SendIMProactiveMessage(text)
+	default:
+		return fmt.Errorf("unknown channel %q", channel)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Wails bindings
+// ---------------------------------------------------------------------------
+
+// ListLansengerWatchJobs returns watch jobs JSON.
+func (a *App) ListLansengerWatchJobs() (string, error) {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return "[]", nil
+	}
+	jobs, err := svc.store.ListJobs()
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(jobs)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// UpsertLansengerWatchJob creates or updates a job from JSON.
+func (a *App) UpsertLansengerWatchJob(jobJSON string) (string, error) {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return "", fmt.Errorf("watch service unavailable")
+	}
+	var job lansengerwatch.Job
+	if err := json.Unmarshal([]byte(jobJSON), &job); err != nil {
+		return "", fmt.Errorf("invalid job json: %w", err)
+	}
+	saved, err := svc.store.UpsertJob(job)
+	if err != nil {
+		return "", err
+	}
+	svc.invalidateCache()
+	data, err := json.Marshal(saved)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// DeleteLansengerWatchJob removes a job by id.
+func (a *App) DeleteLansengerWatchJob(jobID string) error {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return fmt.Errorf("watch service unavailable")
+	}
+	if err := svc.store.DeleteJob(jobID); err != nil {
+		return err
+	}
+	svc.invalidateCache()
+	return nil
+}
+
+// ListLansengerWatchRoster returns learned/manual members for a group (optional filter).
+func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return "[]", nil
+	}
+	roster, err := svc.store.LoadRoster(groupID)
+	if err != nil {
+		return "", err
+	}
+	members := lansengerwatch.FilterMembers(roster.Members, query)
+	data, err := json.Marshal(map[string]any{
+		"group_id":   roster.GroupID,
+		"group_name": roster.GroupName,
+		"members":    members,
+		"updated_at": roster.UpdatedAt,
+		"note":       "成员来自历史消息学习或手动添加。蓝信若仅推送 @机器人 的消息，列表会不完整；完整盯人需平台下发群内全量消息。",
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// AddLansengerWatchMember manually adds a staff id to the group roster.
+func (a *App) AddLansengerWatchMember(groupID, staffID, name string) error {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return fmt.Errorf("watch service unavailable")
+	}
+	staffID = lansengerwatch.NormalizeStaffID(staffID)
+	if strings.TrimSpace(groupID) == "" || staffID == "" {
+		return fmt.Errorf("group_id and staff_id required")
+	}
+	return svc.store.NoteMember(groupID, "", staffID, name, "manual")
+}
+
+// ListLansengerWatchTranscripts lists log file paths for a job.
+func (a *App) ListLansengerWatchTranscripts(jobID string) (string, error) {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return "[]", nil
+	}
+	files, err := svc.store.ListTranscriptFiles(jobID)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(files)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ReadLansengerWatchTranscript returns file content (path must be under watch store).
+func (a *App) ReadLansengerWatchTranscript(path string) (string, error) {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return "", fmt.Errorf("watch service unavailable")
+	}
+	return svc.store.ReadTranscriptFile(path)
+}
+
+// GetLansengerWatchStorePath returns the on-disk root for watch data.
+func (a *App) GetLansengerWatchStorePath() string {
+	svc := a.watchService()
+	if svc == nil || svc.store == nil {
+		return ""
+	}
+	return svc.store.Root()
+}
+
+// WatchIMChannel is one selectable owner IM pathway for 盯人 forward.
+type WatchIMChannel struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Online  bool   `json:"online"`
+	Detail  string `json:"detail,omitempty"`
+	Enabled bool   `json:"enabled,omitempty"` // configured/on in app settings
+}
+
+// ListLansengerWatchChannels returns IM channels that can receive self-forwards.
+func (a *App) ListLansengerWatchChannels() (string, error) {
+	cfg, _ := a.LoadConfig()
+	hubOK := false
+	if hc := a.hubClient(); hc != nil && hc.IsConnected() {
+		hubOK = true
+	}
+
+	wxStatus := "disconnected"
+	wxOnline := false
+	if a.weixinGateway != nil {
+		wxStatus = a.weixinGateway.Status()
+		wxOnline = strings.EqualFold(wxStatus, "connected")
+	}
+	lsStatus := "disconnected"
+	lsOnline := false
+	if a.lansengerGateway != nil {
+		lsStatus = a.lansengerGateway.Status()
+		lsOnline = strings.EqualFold(lsStatus, "connected")
+	}
+	tgStatus := "disconnected"
+	if a.telegramGateway != nil {
+		tgStatus = a.telegramGateway.Status()
+	}
+	qqStatus := "disconnected"
+	if a.qqBotGateway != nil {
+		qqStatus = a.qqBotGateway.Status()
+	}
+
+	wxEnabled := cfg.WeixinEnabled
+	lsEnabled := cfg.LansengerEnabled
+	tgEnabled := cfg.TelegramBotEnabled
+	qqEnabled := cfg.QQBotEnabled
+
+	channels := []WatchIMChannel{
+		{
+			ID: lansengerwatch.ChannelWeixin, Label: "微信",
+			Enabled: wxEnabled, Online: wxEnabled && wxOnline,
+			Detail: statusDetail(wxEnabled, wxStatus, "需有与机器人的活跃私聊会话"),
+		},
+		{
+			ID: lansengerwatch.ChannelLansenger, Label: "蓝信",
+			Enabled: lsEnabled, Online: lsEnabled && lsOnline,
+			Detail: statusDetail(lsEnabled, lsStatus, "需先用蓝信私聊机器人一次"),
+		},
+		{
+			ID: lansengerwatch.ChannelTelegram, Label: "Telegram",
+			Enabled: tgEnabled, Online: tgEnabled && hubOK,
+			Detail: statusDetail(tgEnabled, tgStatus, "当前经 Hub 主动推送"),
+		},
+		{
+			ID: lansengerwatch.ChannelQQ, Label: "QQ",
+			Enabled: qqEnabled, Online: qqEnabled && hubOK,
+			Detail: statusDetail(qqEnabled, qqStatus, "当前经 Hub 主动推送"),
+		},
+		{
+			ID: lansengerwatch.ChannelHub, Label: "Hub（最近活跃 IM）",
+			Enabled: true, Online: hubOK,
+			Detail: func() string {
+				if hubOK {
+					return "推到账号最近活跃的绑定 IM"
+				}
+				return "Hub 未连接"
+			}(),
+		},
+	}
+	data, err := json.Marshal(channels)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func statusDetail(enabled bool, status, hint string) string {
+	if !enabled {
+		return "未在设置中启用"
+	}
+	st := strings.TrimSpace(status)
+	if st == "" {
+		st = "unknown"
+	}
+	if strings.EqualFold(st, "connected") {
+		return "在线 · " + hint
+	}
+	return "状态:" + st + " · " + hint
+}

@@ -51,6 +51,37 @@ func setupTrayNative(app *App, appOptions *options.App) {
 			},
 		)
 
+		// Computer Use tray actions (submenu wired in tray_tahoe_darwin.m).
+		tahoeCUPauseCallback = func() {
+			_ = app.ComputerUsePause()
+			if UpdateComputerUseTray != nil {
+				UpdateComputerUseTray()
+			}
+		}
+		tahoeCUResumeCallback = func() {
+			_ = app.ComputerUseResume()
+			if UpdateComputerUseTray != nil {
+				UpdateComputerUseTray()
+			}
+		}
+		tahoeCUStopCallback = func() {
+			_ = app.ComputerUseStop()
+			if UpdateComputerUseTray != nil {
+				UpdateComputerUseTray()
+			}
+		}
+		tahoeCUResetCallback = func() {
+			_ = app.ComputerUseReset()
+			if UpdateComputerUseTray != nil {
+				UpdateComputerUseTray()
+			}
+		}
+
+		UpdateComputerUseTray = func() {
+			menuTitle, status, pause, resume, stop, reset, pe, re, se, xe := computerUseTrayLabels(app)
+			updateTahoeComputerUseMenu(menuTitle, status, pause, resume, stop, reset, pe, re, se, xe)
+		}
+
 		UpdateTrayMenu = func(lang string) {
 			tr := trayTranslations()
 			t, ok := tr[lang]
@@ -58,6 +89,9 @@ func setupTrayNative(app *App, appOptions *options.App) {
 				t = tr["en"]
 			}
 			updateTahoeTrayMenu(t["title"], t["show"], t["quit"])
+			if UpdateComputerUseTray != nil {
+				UpdateComputerUseTray()
+			}
 		}
 
 		OnConfigChanged = func(cfg corelib.AppConfig) {
@@ -82,6 +116,8 @@ func setupTrayNative(app *App, appOptions *options.App) {
 
 		if app.CurrentLanguage != "" {
 			UpdateTrayMenu(app.CurrentLanguage)
+		} else if UpdateComputerUseTray != nil {
+			UpdateComputerUseTray()
 		}
 	}
 }

@@ -38,8 +38,9 @@ import {
     type EditorQuestion,
     type SurveyListSort,
 } from './utilitiesSurveyEditor';
+import { UtilitiesWatchPanel } from './UtilitiesWatchPanel';
 
-type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results';
+type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results' | 'watch';
 
 type SurveySummary = {
     id: string;
@@ -953,9 +954,30 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                         </div>
                         <span className="utilities-tool-card__cta">{t.open}</span>
                     </button>
+                    <button
+                        type="button"
+                        className="utilities-tool-card"
+                        data-testid="utilities-watch-card"
+                        onClick={() => setView('watch')}
+                    >
+                        <div className="utilities-tool-card__icon" aria-hidden>👀</div>
+                        <div className="utilities-tool-card__body">
+                            <div className="utilities-tool-card__title">{isZh ? '盯人' : 'Watch people'}</div>
+                            <div className="utilities-tool-card__desc">
+                                {isZh
+                                    ? '记录指定成员发言；关键字触发固定回复或 CLI，stdout 回群'
+                                    : 'Record targets; keyword reply or CLI stdout back to chat'}
+                            </div>
+                        </div>
+                        <span className="utilities-tool-card__cta">{t.open}</span>
+                    </button>
                 </div>
             </div>
         );
+    }
+
+    if (view === 'watch') {
+        return <UtilitiesWatchPanel isZh={isZh} onBack={() => setView('home')} />;
     }
 
     if (view === 'survey-list') {
@@ -1052,7 +1074,7 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                         <button
                             type="button"
                             className="utilities-btn utilities-btn--primary"
-                            disabled={busy || hubOk === false}
+                            disabled={busy || !hubOk}
                             onClick={startNewDraft}
                         >{t.create}</button>
                     </div>
@@ -1502,7 +1524,7 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                     <button type="button" className="utilities-btn" disabled={busy || (selected.status !== 'draft' && selected.status !== 'archived')} onClick={() => void deleteSurvey()}>{t.delete}</button>
                     <button type="button" className="utilities-btn" disabled={busy || selected.status !== 'published'} onClick={() => void announce()}>{t.announce}</button>
                     <button type="button" className="utilities-btn" disabled={busy} onClick={() => void openResults()}>{t.results}</button>
-                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void exportXlsx()}>{t.export}</button>
+                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void exportXlsx(false)}>{t.export}</button>
                 </div>
             )}
 

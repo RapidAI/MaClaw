@@ -149,6 +149,9 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		if IsAskUserResult(toolResult) {
 			toolResult = "ask_user is unavailable in background tasks; choose the next action directly."
 		}
+		if agent.IsRecordAudioResult(toolResult) {
+			toolResult = "record_audio is unavailable in background tasks; choose the next action directly."
+		}
 		if IsSubAgentContext(toolResult) {
 			toolResult = ExtractSubAgentContext(toolResult)
 		}

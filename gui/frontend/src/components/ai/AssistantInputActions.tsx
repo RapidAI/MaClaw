@@ -451,7 +451,19 @@ export function AssistantInputActionsLeft({
 
 export function AssistantInputActionsRight({ canSend, cancelSession, handleCancel, handleClearInput, handleSend, inputValue, isBusy, lang, showBusySpinner, theme: t, themeMode, sendButtonTestId, sendButtonStyle }: Pick<AssistantInputActionsProps, "canSend" | "cancelSession" | "handleCancel" | "handleClearInput" | "handleSend" | "inputValue" | "isBusy" | "lang" | "ready" | "showBusySpinner" | "theme" | "themeMode" | "sendButtonTestId" | "sendButtonStyle">) {
     return isBusy && cancelSession ? (
-        <button type="button" onClick={handleCancel} data-testid="ai-cancel-progress" style={getInputActionButtonStyle(t, themeMode, "cancel")} title={localizeText(lang, "Cancel", "\u53d6\u6d88")} aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}>
+        <button
+            type="button"
+            onClick={handleCancel}
+            data-testid="ai-cancel-progress"
+            style={getInputActionButtonStyle(t, themeMode, "cancel")}
+            title={localizeText(
+                lang,
+                "Stop generation (also stops desktop Computer Use if active)",
+                "停止生成（若桌面 Computer Use 进行中会一并停止）",
+                "停止生成（若桌面 Computer Use 進行中會一併停止）",
+            )}
+            aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}
+        >
             {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : "rgba(47, 95, 152, 0.18)"}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
             <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
         </button>

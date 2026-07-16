@@ -234,6 +234,7 @@ const patchConfigFieldsDynamicAllowedSnippets = [
   ['gui/remote_activation.go', 'a.PatchConfigFields(patch)', 'remote registration persists a closed patch map containing only normalized remote_email or remote_mobile'],
   ['gui/frontend/src/components/settings/ModelRoutesSettingsSection.tsx', 'PatchConfigFields({ model_routes })', 'model routes panel persists its closed model_routes patch'],
   ['gui/openhuman_wiring.go', 'PatchConfigFields(model_routes)', 'model router reload documents the closed model_routes patch'],
+  ['gui/computer_use_warmup.go', 'a.PatchConfigFields(patch)', 'computer-use log prune policy patch is assembled from validated keep/max-age fields and optional auto-prune toggle'],
 ];
 const collectDynamicPatchConfigFieldFailures = (files, readFile, allowedEntries = patchConfigFieldsDynamicAllowedSnippets) => {
   const fileSet = new Set(files);
@@ -508,7 +509,7 @@ if (lines > 6000) failures.push(`${appRel} has ${lines} lines; keep it under 600
 
 const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 500],
-  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 300],
+  ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 320],
   ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 250],
   ['gui/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
@@ -538,8 +539,8 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 5300],
-  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1250],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 5400],
+  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1280],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 650],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
   ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 280],

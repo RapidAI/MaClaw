@@ -37,6 +37,11 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 	if raw, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
 		_, hasPendingAskUser = pendingAskUserForCurrentHistory(raw, h.memory.Load(msg.UserID))
 	}
+	if !hasPendingAskUser {
+		if raw, loaded := h.pendingRecordAudio.Load(msg.UserID); loaded {
+			_, hasPendingAskUser = pendingRecordAudioForCurrentHistory(raw, h.memory.Load(msg.UserID))
+		}
+	}
 
 	if platformKind := normalizeIMMessagePlatformKind(msg.Platform); (platformKind.IsKnown() || msg.Platform != "") && !platformKind.IsDesktop() {
 		imConfirmKey := msg.Platform + ":" + msg.UserID

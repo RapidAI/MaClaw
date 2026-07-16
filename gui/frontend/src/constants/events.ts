@@ -44,10 +44,25 @@ export const EVENT_SKILL_EXECUTION_FAILED = "skill:execution_failed";
 /** Skill indexes refreshed after mutation (repair/install). */
 export const EVENT_SKILL_INDEX_REFRESHED = "skill:index_refreshed";
 
+/** Computer Use local observe (SoM text + element summary for operator UI). */
+export const EVENT_COMPUTER_USE_OBSERVE = "computer-use:observe";
+
+/** Computer Use action audit (click/type/key/…). */
+export const EVENT_COMPUTER_USE_ACTION = "computer-use:action";
+
+/** Computer Use operator control state (pause/resume/stop). */
+export const EVENT_COMPUTER_USE_CONTROL = "computer-use:control";
+
+/** Computer Use background warmup / self-check finished. */
+export const EVENT_COMPUTER_USE_WARMUP = "computer-use:warmup";
+
+/** Computer Use observe/pipeline error with operator guidance. */
+export const EVENT_COMPUTER_USE_ERROR = "computer-use:error";
+/** Log lifecycle: prune / delete / batch-delete (refresh file lists). */
+export const EVENT_COMPUTER_USE_LOGS = "computer-use:logs";
 
 /** Survey list/results should refresh after IM submit (or local mutation). Payload: { survey_id, event? }. */
 export const EVENT_SURVEY_UPDATED = "survey-updated";
-
 
 /** App config patched/saved (backend EventsEmit after PatchConfigFields). */
 export const EVENT_CONFIG_CHANGED = "config-changed";

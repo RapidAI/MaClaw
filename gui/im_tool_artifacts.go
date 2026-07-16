@@ -121,18 +121,37 @@ func (h *IMMessageHandler) handleAgentLoopFileArtifacts(
 	result.PostStreamReturnPrepTime = streamDone
 	attachLLMTelemetry(resp)
 	h.saveConversationHistoryTimed(userID, history, resp)
-	if normalizeIMMessagePlatformKind(platform).IsDesktop() {
-		h.populateDesktopFileArtifactResponse(resp, pendingFiles)
+	platformKind := normalizeIMMessagePlatformKind(platform)
+	if platformKind.IsDesktop() {
+		h.populateFileArtifactResponse(resp, pendingFiles, platform)
 		attachVoiceArtifact(resp, voiceData, voiceFileName, voiceMimeType)
 		result.Response = resp
 		return result
 	}
-	last := pendingFiles[len(pendingFiles)-1]
+	// Multi-file on IM/other channels: deliver via LocalFilePaths only.
+	// Gateways already send LocalFilePaths; using FileData for the last file
+	// as well would double-send that file.
+	if len(pendingFiles) > 1 {
+		h.populateFileArtifactResponse(resp, pendingFiles, platform)
+		attachVoiceArtifact(resp, voiceData, voiceFileName, voiceMimeType)
+		result.Response = resp
+		return result
+	}
+	// Single file: inline FileData (no disk hop). Active channel gateways send it
+	// on the reply; do not also set LocalFilePaths here.
+	last := pendingFiles[0]
 	resp.ResponseSource = imResponseSourceFileDelivery.String()
-	resp.Text = last.message
+	if strings.TrimSpace(last.data) == "" {
+		// Match materialize/populate: refuse empty payloads instead of a blank bubble.
+		resp.Text = i18n.Tf(i18n.MsgIMFileEmptyPayload, h.imUILangOrZh(), strings.TrimSpace(last.name))
+		attachVoiceArtifact(resp, voiceData, voiceFileName, voiceMimeType)
+		result.Response = resp
+		return result
+	}
 	resp.FileData = last.data
 	resp.FileName = last.name
 	resp.FileMimeType = last.mimeType
+	resp.Text = fileDeliveryVisibleMessage(last.message, platformKind.IsIMChannel(), h.imUILangOrZh(), last.name)
 	attachVoiceArtifact(resp, voiceData, voiceFileName, voiceMimeType)
 	result.Response = resp
 	return result
@@ -145,7 +164,9 @@ type toolFileMaterializeResult struct {
 	Text string
 	// Handled is true when raw was a file payload and materialize ran.
 	Handled bool
-	// Forwarded is true when at least one file was sent via imFileSender.
+	// Forwarded is true when the file is considered delivered to the user:
+	// desktop→IM via imFileSender, or active IM channel via LocalFilePaths
+	// (gateway sendLocalFiles / FileData on the reply).
 	Forwarded bool
 	// LocalPaths are absolute paths written under ~/.maclaw/data/files.
 	LocalPaths []string
@@ -160,22 +181,29 @@ type toolFileMaterializeResult struct {
 //
 // Non-file payloads return Handled=false with Text=raw.
 func (h *IMMessageHandler) materializeToolFilePayloadIfNeeded(raw string) toolFileMaterializeResult {
+	return h.materializeToolFilePayloadForPlatform(raw, "")
+}
+
+// materializeToolFilePayloadForPlatform is like materializeToolFilePayloadIfNeeded
+// but uses the originating conversation platform so status text is honest when the
+// user is already on WeChat/Feishu (LocalFilePaths are delivered by that gateway).
+func (h *IMMessageHandler) materializeToolFilePayloadForPlatform(raw, platform string) toolFileMaterializeResult {
 	trimmed := strings.TrimSpace(raw)
 	if h == nil || !strings.HasPrefix(trimmed, toolPayloadFilePrefix) {
 		return toolFileMaterializeResult{Text: raw}
 	}
-	obs := parseToolPayloadResult(trimmed)
+	lang := h.imUILangOrZh()
+	obs := parseToolPayloadResultForPlatformLang(trimmed, platform, lang)
 	if obs.File == nil {
 		return toolFileMaterializeResult{Text: raw}
 	}
-	lang := h.imUILang()
 	if strings.TrimSpace(obs.File.data) == "" {
 		msg := i18n.Tf(i18n.MsgIMFileEmptyPayload, lang, obs.File.name)
 		log.Printf("[file-delivery] shared/materialize empty payload name=%q", obs.File.name)
 		return toolFileMaterializeResult{Text: msg, Handled: true}
 	}
 	resp := &IMAgentResponse{}
-	forwardedCount := h.populateDesktopFileArtifactResponse(resp, []pendingFile{*obs.File})
+	forwardedCount := h.populateFileArtifactResponse(resp, []pendingFile{*obs.File}, platform)
 	text := strings.TrimSpace(resp.Text)
 	if text == "" {
 		text = strings.TrimSpace(obs.ToolContent)
@@ -183,9 +211,11 @@ func (h *IMMessageHandler) materializeToolFilePayloadIfNeeded(raw string) toolFi
 	if text == "" {
 		text = i18n.T(i18n.MsgIMProactiveFileCaptionBare, lang)
 	}
-	forwarded := forwardedCount > 0
-	log.Printf("[file-delivery] shared/materialize name=%q forwardIM=%v forwarded=%v paths=%d text=%q",
-		obs.File.name, obs.File.forwardIM, forwarded, len(resp.LocalFilePaths), truncateRunes(text, 120))
+	// Delivered: desktop→IM sender, or IM-channel local paths (gateway will send).
+	onIMChannel := normalizeIMMessagePlatformKind(platform).IsIMChannel()
+	forwarded := forwardedCount > 0 || (onIMChannel && len(resp.LocalFilePaths) > 0)
+	log.Printf("[file-delivery] shared/materialize name=%q platform=%q forwardIM=%v forwarded=%v paths=%d text=%q",
+		obs.File.name, platform, obs.File.forwardIM, forwarded, len(resp.LocalFilePaths), truncateRunes(text, 120))
 	return toolFileMaterializeResult{
 		Text:             text,
 		Handled:          true,
@@ -198,13 +228,24 @@ func (h *IMMessageHandler) materializeToolFilePayloadIfNeeded(raw string) toolFi
 // populateDesktopFileArtifactResponse saves pending files locally and optionally
 // forwards them via imFileSender. Returns how many files were successfully forwarded.
 func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResponse, pendingFiles []pendingFile) int {
+	return h.populateFileArtifactResponse(resp, pendingFiles, "")
+}
+
+// populateFileArtifactResponse saves pending files and optionally forwards them.
+//
+// platform:
+//   - IM channel (weixin/feishu/…): save only. The channel gateway delivers
+//     LocalFilePaths / FileData on the reply. Never call imFileSender here —
+//     that path is desktop→IM and would double-send into the same chat.
+//   - desktop / unknown: when forwardIM is set, push via imFileSender.
+//
+// Returns how many files were successfully pushed via imFileSender (0 on IM channels).
+func (h *IMMessageHandler) populateFileArtifactResponse(resp *IMAgentResponse, pendingFiles []pendingFile, platform string) int {
 	if resp == nil {
 		return 0
 	}
-	lang := "zh"
-	if h != nil {
-		lang = h.imUILang()
-	}
+	lang := h.imUILangOrZh()
+	onIMChannel := normalizeIMMessagePlatformKind(platform).IsIMChannel()
 	fileMaterializeStartedAt := time.Now()
 	var savedPaths []string
 	var failLines []string
@@ -224,10 +265,12 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 		if strings.TrimSpace(pf.message) != "" && !isLegacyBotFileInstruction(pf.message) && !isAutoProactiveCaption(pf.message) {
 			deliveryMessage = strings.TrimSpace(pf.message)
 		}
-		if !pf.forwardIM {
+		// Active IM session: gateway will send LocalFilePaths. Skip imFileSender
+		// entirely to avoid duplicate media in the same WeChat/Feishu chat.
+		if onIMChannel || !pf.forwardIM {
 			continue
 		}
-		if h.imFileSender == nil {
+		if h == nil || h.imFileSender == nil {
 			failLines = append(failLines, i18n.Tf(i18n.MsgIMFileSenderNotConfigured, lang, pf.name))
 			continue
 		}
@@ -241,9 +284,54 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 		log.Printf("[IMMessageHandler] IM forward OK name=%s mime=%s caption=%q", pf.name, pf.mimeType, truncateRunes(caption, 80))
 		imForwardedCount++
 	}
-	text := strings.Join(failLines, "\n")
+	resp.Text = buildFileArtifactStatusText(lang, onIMChannel, savedPaths, failLines, imForwardedCount, deliveryMessage)
+	resp.ResponseSource = imResponseSourceFileDelivery.String()
+	resp.LocalFilePaths = savedPaths
+	resp.FileMaterializeNanos = time.Since(fileMaterializeStartedAt).Nanoseconds()
+	if len(savedPaths) > 0 {
+		resp.LocalFilePath = savedPaths[0]
+	}
+	return imForwardedCount
+}
+
+func (h *IMMessageHandler) imUILangOrZh() string {
+	if h == nil {
+		return "zh"
+	}
+	if lang := strings.TrimSpace(h.imUILang()); lang != "" {
+		return lang
+	}
+	return "zh"
+}
+
+func imChannelFileReadyText(lang, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "file"
+	}
+	return i18n.Tf(i18n.MsgIMFileChannelReadyOne, lang, name)
+}
+
+// fileDeliveryVisibleMessage picks end-user / model-facing delivery text.
+// Drops legacy bot placeholders and auto-proactive captions (same filter as
+// populateFileArtifactResponse) so IM channels get an honest channel-ready line.
+func fileDeliveryVisibleMessage(rawMessage string, onIMChannel bool, lang, fileName string) string {
+	msg := strings.TrimSpace(rawMessage)
+	if msg != "" && !isLegacyBotFileInstruction(msg) && !isAutoProactiveCaption(msg) {
+		return msg
+	}
+	if onIMChannel {
+		return imChannelFileReadyText(lang, fileName)
+	}
+	return ""
+}
+
+// buildFileArtifactStatusText composes model/UI status after save (+ optional desktop forward).
+func buildFileArtifactStatusText(lang string, onIMChannel bool, savedPaths, failLines []string, imForwardedCount int, deliveryMessage string) string {
+	failText := strings.TrimSpace(strings.Join(failLines, "\n"))
+	text := failText
 	if text == "" && imForwardedCount == 0 {
-		text = deliveryMessage
+		text = strings.TrimSpace(deliveryMessage)
 	}
 	if imForwardedCount > 0 {
 		imNote := i18n.Tf(i18n.MsgIMFileForwardedCount, lang, imForwardedCount)
@@ -253,22 +341,31 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 			text = imNote
 		}
 	}
-	// Desktop-only stage with no caption: still give the model/UI a clear status.
-	if strings.TrimSpace(text) == "" && len(savedPaths) > 0 && imForwardedCount == 0 {
+	ready := fileArtifactReadyStatus(lang, onIMChannel, savedPaths)
+	if text == "" {
+		return ready
+	}
+	// Partial batch: some saves failed, some succeeded — keep both sides honest.
+	if failText != "" && ready != "" && imForwardedCount == 0 {
+		return text + "\n" + ready
+	}
+	return text
+}
+
+func fileArtifactReadyStatus(lang string, onIMChannel bool, savedPaths []string) string {
+	if len(savedPaths) == 0 {
+		return ""
+	}
+	if onIMChannel {
 		if len(savedPaths) == 1 {
-			text = i18n.Tf(i18n.MsgIMFileDesktopReadyOne, lang, filepath.Base(savedPaths[0]))
-		} else {
-			text = i18n.Tf(i18n.MsgIMFileDesktopReadyMany, lang, len(savedPaths))
+			return imChannelFileReadyText(lang, filepath.Base(savedPaths[0]))
 		}
+		return i18n.Tf(i18n.MsgIMFileChannelReadyMany, lang, len(savedPaths))
 	}
-	resp.Text = text
-	resp.ResponseSource = imResponseSourceFileDelivery.String()
-	resp.LocalFilePaths = savedPaths
-	resp.FileMaterializeNanos = time.Since(fileMaterializeStartedAt).Nanoseconds()
-	if len(savedPaths) > 0 {
-		resp.LocalFilePath = savedPaths[0]
+	if len(savedPaths) == 1 {
+		return i18n.Tf(i18n.MsgIMFileDesktopReadyOne, lang, filepath.Base(savedPaths[0]))
 	}
-	return imForwardedCount
+	return i18n.Tf(i18n.MsgIMFileDesktopReadyMany, lang, len(savedPaths))
 }
 
 func attachVoiceArtifact(resp *IMAgentResponse, voiceData, voiceFileName, voiceMimeType string) {

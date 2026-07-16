@@ -52,6 +52,13 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 			profile.Layer, profile.PromptProfile, profile.TaskType, requestID, userID, profile.Confidence, profile.Reason, profile.ToolBudget, profile.IterationBudget, beforeProfileFilter, len(tools), executionProfileToolNames(tools))
 	}
 
+	// Computer Use: when intent/session active, force computer_* tools and
+	// demote raw gui_click/type (text-primary OmniParser path).
+	cuActive := h.shouldActivateComputerUse(userText)
+	if cuActive {
+		tools = ensureComputerUseTools(tools, allTools, true)
+	}
+
 	browserBeforeWF := len(browserDiagExtractNames(tools))
 	beforeWorkflowFilter := len(tools)
 	workflowFilterPolicy := workflowToolFilterNone

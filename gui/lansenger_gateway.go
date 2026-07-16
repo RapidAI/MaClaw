@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -50,21 +50,43 @@ type lansengerGatewayManager struct {
 	// surveyHints remembers users mid-survey so free-text answers can hit Hub
 	// without probing every short chat message.
 	surveyHints *surveySessionHint
+
+	// groupInfoCache avoids hammering GetGroupInfo on every group message.
+	groupInfoCache map[string]lansengerGroupInfoCacheEntry
+
+	// lastPrivateUserID is the most recent p2p peer (owner talking to the bot).
+	// Used for 盯人 self-forward onto the Lansenger private channel.
+	lastPrivateUserID string
 }
 
+type lansengerGroupInfoCacheEntry struct {
+	info *lansenger.GroupInfo
+	err  bool // true when last fetch failed (negative cache)
+	at   time.Time
+}
+
+const (
+	lansengerGroupInfoCacheTTL    = 5 * time.Minute
+	lansengerGroupInfoCacheNegTTL = 30 * time.Second
+	lansengerGroupInfoFetchTimeout = 2 * time.Second
+)
+
 type lansengerReplyRoute struct {
-	isGroup bool
-	seenAt  time.Time
+	isGroup  bool
+	senderID string // Lansenger staffId of the asker (group replies)
+	question string // original user question text (group replies)
+	seenAt   time.Time
 }
 
 const maxLansengerReplyRoutes = 1024
 
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
 	return &lansengerGatewayManager{
-		app:         app,
-		status:      gatewayConnectionStatusDisconnected,
-		statusSince: time.Now(),
-		replyRoutes: make(map[string]lansengerReplyRoute),
+		app:            app,
+		status:         gatewayConnectionStatusDisconnected,
+		statusSince:    time.Now(),
+		replyRoutes:    make(map[string]lansengerReplyRoute),
+		groupInfoCache: make(map[string]lansengerGroupInfoCacheEntry),
 	}
 }
 
@@ -104,6 +126,7 @@ func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 		m.healthCancel = nil
 		m.hubClaimSent = false
 		clear(m.replyRoutes)
+		clear(m.groupInfoCache)
 		m.mu.Unlock()
 		if healthCancel != nil {
 			healthCancel()
@@ -335,21 +358,40 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		log.Printf("[lansenger-mgr] LoadConfig error: %v", err)
 		return
 	}
-	// Groups are intentionally mention-gated.  BlueX's group configuration
-	// defines requireMention as the switch that keeps a bot from responding to
-	// every conversation in the group.  Apply the gate before slash-command,
-	// local, fallback, and Hub routing so no path can bypass it.
-	if isLansengerGroupMessage(msg) && !lansengerGroupMessageMentionsBot(msg, cfg.LansengerAppID) {
-		log.Printf("[lansenger-mgr] ignoring non-mentioned group message: group=%s user=%s", msg.GroupID, msg.FromUserID)
+	// Per-group ignore list: bot stays in the Lansenger group but never answers.
+	// Applied before mention gating so ignored groups generate no local/Hub work.
+	if isLansengerGroupMessage(msg) && cfg.IsLansengerGroupIgnored(msg.GroupID) {
+		log.Printf("[lansenger-mgr] ignoring configured group: group=%s user=%s", msg.GroupID, msg.FromUserID)
 		return
 	}
-
+	// Remember last private peer so proactive self-notify can reach "my" 蓝信会话.
+	if !isLansengerGroupMessage(msg) {
+		if uid := strings.TrimSpace(msg.FromUserID); uid != "" {
+			m.mu.Lock()
+			m.lastPrivateUserID = uid
+			m.mu.Unlock()
+		}
+	}
+	// Watch (盯人): record / keyword / CLI / auto-reply runs for delivered group
+	// messages even when the bot is not @mentioned — so full speech capture works
+	// when the platform pushes non-@ events. Does not claim the message for LLM.
+	if isLansengerGroupMessage(msg) {
+		if svc := m.app.watchService(); svc != nil {
+			svc.processMessage(msg)
+		}
+	}
+	// Groups are intentionally mention-gated for agent/survey routing.  BlueX's
+	// group configuration defines requireMention as the switch that keeps a bot
+	// from responding to every conversation in the group.
+	if isLansengerGroupMessage(msg) && !lansengerGroupMessageMentionsBot(msg, cfg.LansengerAppID) {
+		log.Printf("[lansenger-mgr] ignoring non-mentioned group message (agent): group=%s user=%s", msg.GroupID, msg.FromUserID)
+		return
+	}
 	// Survey intercept: after mention gate, before passthrough / local agent / Hub LLM.
 	if m.tryHandleSurveyMessage(msg) {
 		log.Printf("[lansenger-mgr] survey intercept handled: user=%s group=%s", msg.FromUserID, msg.GroupID)
 		return
 	}
-
 	if isPassthroughSlashText(msg.Text) {
 		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
 		m.handleLocalMessage(msg)
@@ -381,6 +423,71 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 
 func isLansengerGroupMessage(msg lansenger.IncomingMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
+}
+
+// agentTextWithGroupContext prepends platform group metadata for LLM turns.
+// Original msg.Text must stay unchanged so group reply quotes quote the user.
+func (m *lansengerGatewayManager) agentTextWithGroupContext(msg lansenger.IncomingMessage, text string) string {
+	if !isLansengerGroupMessage(msg) {
+		return text
+	}
+	info := m.lookupGroupInfo(msg.GroupID)
+	return lansenger.WithAgentGroupContext(text, msg, info)
+}
+
+// lookupGroupInfo returns cached or freshly fetched group metadata. Failures
+// degrade to nil so message-level context is still injected.
+func (m *lansengerGatewayManager) lookupGroupInfo(groupID string) *lansenger.GroupInfo {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return nil
+	}
+
+	now := time.Now()
+	m.mu.Lock()
+	if m.groupInfoCache == nil {
+		m.groupInfoCache = make(map[string]lansengerGroupInfoCacheEntry)
+	}
+	if ent, ok := m.groupInfoCache[groupID]; ok {
+		ttl := lansengerGroupInfoCacheTTL
+		if ent.err {
+			ttl = lansengerGroupInfoCacheNegTTL
+		}
+		if now.Sub(ent.at) < ttl {
+			info := ent.info
+			m.mu.Unlock()
+			return info
+		}
+	}
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), lansengerGroupInfoFetchTimeout)
+	defer cancel()
+	info, err := gw.GetGroupInfo(ctx, groupID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.groupInfoCache == nil {
+		m.groupInfoCache = make(map[string]lansengerGroupInfoCacheEntry)
+	}
+	if err != nil {
+		log.Printf("[lansenger-mgr] GetGroupInfo %s: %v", groupID, err)
+		m.groupInfoCache[groupID] = lansengerGroupInfoCacheEntry{err: true, at: now}
+		return nil
+	}
+	// Cap cache size to avoid unbounded growth across many groups.
+	if len(m.groupInfoCache) >= 256 {
+		// Drop one arbitrary entry (map iteration order is random).
+		for k := range m.groupInfoCache {
+			delete(m.groupInfoCache, k)
+			break
+		}
+	}
+	m.groupInfoCache[groupID] = lansengerGroupInfoCacheEntry{info: info, at: now}
+	return info
 }
 
 // lansengerGroupMessageMentionsBot matches the structured mention metadata
@@ -421,8 +528,8 @@ func (m *lansengerGatewayManager) notifyHubUnavailable(msg lansenger.IncomingMes
 	}
 	_ = gw.SendText(context.Background(), lansenger.OutgoingText{
 		ToUserID: lansengerReplyTarget(msg),
-		Text:     "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。",
-		IsGroup:  msg.ChatType == "group",
+		Text:     m.groupReplyText(msg, "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。"),
+		IsGroup:  isLansengerGroupMessage(msg),
 	})
 }
 
@@ -458,13 +565,15 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 		msgType = msg.MediaType
 	}
 	replyTarget := lansengerReplyTarget(msg)
-	m.rememberReplyRoute(replyTarget, msg.ChatType == "group")
+	// Cache the original user question for group reply quotes — not the
+	// agent-enriched text that may include group metadata prefixes.
+	m.rememberReplyRoute(replyTarget, isLansengerGroupMessage(msg), msg.FromUserID, msg.Text)
 	payload := map[string]any{
 		// platform_uid remains the human sender for Hub identity, binding and
 		// per-user routing. The separate reply target preserves group delivery.
 		"platform_uid": msg.FromUserID,
 		"reply_target": replyTarget,
-		"text":         msg.Text,
+		"text":         m.agentTextWithGroupContext(msg, msg.Text),
 		"message_type": msgType,
 		"chat_type":    msg.ChatType,
 		"group_id":     msg.GroupID,
@@ -489,13 +598,13 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 // carry a sender ID and a group ID; sending to the sender would turn a group
 // reply into a private message.
 func lansengerReplyTarget(msg lansenger.IncomingMessage) string {
-	if msg.ChatType == "group" && strings.TrimSpace(msg.GroupID) != "" {
+	if isLansengerGroupMessage(msg) && strings.TrimSpace(msg.GroupID) != "" {
 		return msg.GroupID
 	}
 	return msg.FromUserID
 }
 
-func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool) {
+func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool, senderID, question string) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return
@@ -515,7 +624,12 @@ func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool
 		}
 		delete(m.replyRoutes, oldestKey)
 	}
-	m.replyRoutes[target] = lansengerReplyRoute{isGroup: isGroup, seenAt: time.Now()}
+	route := lansengerReplyRoute{isGroup: isGroup, seenAt: time.Now()}
+	if isGroup {
+		route.senderID = strings.TrimSpace(senderID)
+		route.question = strings.TrimSpace(question)
+	}
+	m.replyRoutes[target] = route
 }
 
 func (m *lansengerGatewayManager) isGroupReplyTarget(target string) bool {
@@ -523,6 +637,22 @@ func (m *lansengerGatewayManager) isGroupReplyTarget(target string) bool {
 	defer m.mu.Unlock()
 	route, ok := m.replyRoutes[strings.TrimSpace(target)]
 	return ok && route.isGroup
+}
+
+func (m *lansengerGatewayManager) groupReplyQuote(target string) (senderID, question string, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	route, found := m.replyRoutes[strings.TrimSpace(target)]
+	if !found || !route.isGroup {
+		return "", "", false
+	}
+	return route.senderID, route.question, true
+}
+
+// groupReplyText prefixes group replies with "{staffId}问：问题" so interleaved
+// group answers remain attributable. Private replies are unchanged.
+func (m *lansengerGatewayManager) groupReplyText(msg lansenger.IncomingMessage, reply string) string {
+	return lansenger.MaybeFormatGroupReplyWithQuote(isLansengerGroupMessage(msg), msg.FromUserID, msg.Text, reply)
 }
 
 // ---------------------------------------------------------------------------
@@ -618,8 +748,8 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 			}
 			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
 				ToUserID: lansengerReplyTarget(msg),
-				Text:     reply,
-				IsGroup:  msg.ChatType == "group",
+				Text:     m.groupReplyText(msg, reply),
+				IsGroup:  isLansengerGroupMessage(msg),
 			})
 		}
 		return
@@ -631,8 +761,8 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		if gw != nil {
 			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
 				ToUserID: lansengerReplyTarget(msg),
-				Text:     i18n.T(i18n.MsgLLMNotConfigured, "zh"),
-				IsGroup:  msg.ChatType == "group",
+				Text:     m.groupReplyText(msg, i18n.T(i18n.MsgLLMNotConfigured, "zh")),
+				IsGroup:  isLansengerGroupMessage(msg),
 			})
 		}
 		return
@@ -647,6 +777,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		return
 	}
 
+	// Keep msg.Text pristine for group reply quotes (staffId问：原问题).
 	text := msg.Text
 
 	// Pass images/files as attachments, matching the pattern used by
@@ -670,6 +801,10 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 			}
 		}
 	}
+
+	// Inject structured group metadata + anti-hallucination rules so the agent
+	// can reason about the room without inventing member/bot rosters.
+	text = m.agentTextWithGroupContext(msg, text)
 
 	if text == "" && len(attachments) == 0 {
 		return
@@ -730,7 +865,7 @@ func shouldSendLansengerIMDetail(chatType string) bool {
 func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg lansenger.IncomingMessage, resp *IMAgentResponse) {
 	ctx := context.Background()
 	toUserID := lansengerReplyTarget(msg)
-	isGroup := msg.ChatType == "group"
+	isGroup := isLansengerGroupMessage(msg)
 
 	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
@@ -756,6 +891,10 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
+		// Quote the original question first so group members can tell which ask
+		// this answer belongs to; applied after Markdown strip so the quote
+		// markers are not removed.
+		text = m.groupReplyText(msg, text)
 		if err := gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
 			Text:     text,
@@ -771,7 +910,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 		}
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
-			Text:     text,
+			Text:     m.groupReplyText(msg, text),
 			IsGroup:  isGroup,
 		})
 	}
@@ -779,7 +918,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: toUserID,
-			Text:     "" + textutil.StripMarkdown(resp.Error),
+			Text:     m.groupReplyText(msg, textutil.StripMarkdown(resp.Error)),
 			IsGroup:  isGroup,
 		})
 	}
@@ -875,9 +1014,19 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 	isGroup := strings.EqualFold(strings.TrimSpace(reply.ChatType), "group") || m.isGroupReplyTarget(reply.PlatformUID)
 	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
 	case gatewayReplyTypeText:
+		text := textutil.StripMarkdown(reply.Text)
+		if isGroup {
+			// Hub replies only identify the conversation; recover the original
+			// question from the route cache populated when the message arrived.
+			// FormatGroupReplyWithQuote is idempotent so multi-chunk hub replies
+			// that already carry a quote are left alone.
+			if sender, question, ok := m.groupReplyQuote(reply.PlatformUID); ok {
+				text = lansenger.FormatGroupReplyWithQuote(sender, question, text)
+			}
+		}
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: reply.PlatformUID,
-			Text:     textutil.StripMarkdown(reply.Text),
+			Text:     text,
 			IsGroup:  isGroup,
 		})
 	case gatewayReplyTypeImage:
@@ -946,6 +1095,45 @@ func (a *App) GetLansengerStatus() string {
 	return a.lansengerGateway.Status()
 }
 
+// SendProactiveText pushes text to the owner's last Lansenger private session.
+func (m *lansengerGatewayManager) SendProactiveText(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("empty proactive text")
+	}
+	if m == nil {
+		return fmt.Errorf("lansenger gateway manager is nil")
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	to := strings.TrimSpace(m.lastPrivateUserID)
+	// Prefer last private peer; otherwise newest non-group reply route.
+	if to == "" {
+		var newest time.Time
+		for target, route := range m.replyRoutes {
+			if route.isGroup {
+				continue
+			}
+			if newest.IsZero() || route.seenAt.After(newest) {
+				newest = route.seenAt
+				to = strings.TrimSpace(target)
+			}
+		}
+	}
+	m.mu.Unlock()
+	if gw == nil {
+		return fmt.Errorf("lansenger gateway not running")
+	}
+	if to == "" {
+		return fmt.Errorf("no active lansenger private session (先用蓝信私聊机器人一次)")
+	}
+	return gw.SendText(context.Background(), lansenger.OutgoingText{
+		ToUserID: to,
+		Text:     text,
+		IsGroup:  false,
+	})
+}
+
 func (a *App) RestartLansenger() string {
 	a.ensureLansengerGateway()
 	if a.lansengerGateway == nil {
@@ -1001,8 +1189,7 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 	return nil
 }
 
-
-// LansengerGroupListEntry is one group in ListLansengerGroups.
+// LansengerGroupListEntry is one row in the settings group dialog.
 type LansengerGroupListEntry struct {
 	GroupID      string `json:"group_id"`
 	Name         string `json:"name"`
@@ -1014,6 +1201,11 @@ type LansengerGroupListEntry struct {
 	TotalMembers int    `json:"total_members"`
 	MaxMembers   int    `json:"max_members,omitempty"`
 	IsPublic     bool   `json:"is_public,omitempty"`
+	// Ignored means the bot will not answer messages from this group.
+	Ignored bool `json:"ignored"`
+	// Orphan means this row comes only from the local ignore list (not the
+	// platform group fetch). Used by the UI to drop the row after "Resume".
+	Orphan bool `json:"orphan,omitempty"`
 }
 
 // LansengerGroupListResult is the Wails payload for ListLansengerGroups.
@@ -1090,8 +1282,52 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			TotalMembers: g.TotalMembers,
 			MaxMembers:   g.MaxMembers,
 			IsPublic:     g.IsPublic,
+			Ignored:      cfg.IsLansengerGroupIgnored(g.GroupID),
+		})
+	}
+	// Surface ignore-list entries that are no longer returned by the platform
+	// (or failed to load) so the user can still re-enable them.
+	for _, id := range cfg.LansengerIgnoredGroupIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		entries = append(entries, LansengerGroupListEntry{
+			GroupID: id,
+			Name:    id,
+			Ignored: true,
+			Orphan:  true,
 		})
 	}
 	return &LansengerGroupListResult{Total: list.Total, Groups: entries}, nil
 }
 
+// GetLansengerIgnoredGroups returns group IDs the bot will not respond to.
+func (a *App) GetLansengerIgnoredGroups() []string {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(cfg.LansengerIgnoredGroupIDs))
+	for _, id := range cfg.LansengerIgnoredGroupIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// SetLansengerGroupIgnored marks or unmarks a group so the bot does not respond
+// there. The bot is not removed from the Lansenger group on the server.
+func (a *App) SetLansengerGroupIgnored(groupID string, ignored bool) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return fmt.Errorf("group id is required")
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetLansengerGroupIgnored(groupID, ignored)
+	})
+}

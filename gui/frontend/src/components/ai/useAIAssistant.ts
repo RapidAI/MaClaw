@@ -387,6 +387,14 @@ interface AIAssistantPreferences {
     showTraceEntry: boolean;
 }
 
+/** Interactive long-form recording session opened via record_audio. */
+export interface ChatRecordingSession {
+    title: string;
+    purpose?: string;
+    /** True while the mic UI is live for this message. */
+    active: boolean;
+}
+
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
@@ -400,6 +408,8 @@ export interface ChatMessage {
     confirmation?: ChatConfirmation;
     unfinishedSlot?: ChatUnfinishedSlot;
     recoverableSession?: ChatRecoverableSession;
+    /** Interactive recording card (record_audio tool). */
+    recordingSession?: ChatRecordingSession;
     localFilePath?: string;
     localFilePaths?: string[];
     thumbnailBase64?: string;
@@ -1774,7 +1784,7 @@ function hasRenderableTerminalPayload(response: any): boolean {
 
 /** Sources whose response.text is semantically unrelated to streamed content. */
 const SPECIAL_RESPONSE_SOURCES: ReadonlySet<string> = new Set([
-    'ask_user', 'cancel', 'file_delivery', 'screenshot',
+    'ask_user', 'record_audio', 'cancel', 'file_delivery', 'screenshot',
 ]);
 
 function canonicalResponseSource(source: unknown): string {
@@ -1790,6 +1800,9 @@ function canonicalResponseSource(source: unknown): string {
             return 'screenshot';
         case 'askuser':
             return 'ask_user';
+        case 'recordaudio':
+        case 'recordingsession':
+            return 'record_audio';
         case 'cancel':
         case 'cancelled':
         case 'canceled':
@@ -1803,6 +1816,28 @@ function canonicalResponseSource(source: unknown): string {
         default:
             return trimmed.toLowerCase();
     }
+}
+
+function extractRecordingSessionFromResponse(response: any): ChatRecordingSession | undefined {
+    const source = resolveResponseSource(response);
+    if (source !== 'record_audio') return undefined;
+    const fields = Array.isArray(response?.fields) ? response.fields : (Array.isArray(response?.Fields) ? response.Fields : []);
+    let title = '';
+    let purpose = '';
+    for (const field of fields) {
+        const label = String(field?.label ?? field?.Label ?? '').trim().toLowerCase();
+        const value = String(field?.value ?? field?.Value ?? '').trim();
+        if (!value) continue;
+        if (label === 'recording_title' || label === 'title') title = value;
+        if (label === 'recording_purpose' || label === 'purpose') purpose = value;
+    }
+    if (!title) {
+        const text = typeof response?.text === 'string' ? response.text : (typeof response?.Text === 'string' ? response.Text : '');
+        const match = text.match(/录音中[：:]\s*(.+)/) || text.match(/Recording[:：]\s*(.+)/i);
+        if (match?.[1]) title = match[1].split('\n')[0].trim();
+    }
+    if (!title) title = '录音';
+    return { title, purpose: purpose || undefined, active: true };
 }
 
 function resolveResponseSource(response: any): string {
@@ -1997,6 +2032,7 @@ function hasStructuredResponsePayload(response: any): boolean {
     if (response.Confirmation || response.UnfinishedSlot || response.UnfinishedTask || response.RecoverableSession) return true;
     if (Array.isArray(response.actions) && response.actions.length > 0) return true;
     if (Array.isArray(response.Actions) && response.Actions.length > 0) return true;
+    if (resolveResponseSource(response) === 'record_audio') return true;
     return false;
 }
 
@@ -2046,7 +2082,8 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         } = responseArtifactPayload(response);
         const nextUnfinishedSlot = (response as any).unfinished_slot;
         const nextRecoverableSession = (response as any).recoverable_session;
-        if (!nextContent && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
+        const nextRecordingSession = extractRecordingSessionFromResponse(response);
+        if (!nextContent && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextRecordingSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
             return null;
         }
         return {
@@ -2058,6 +2095,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             confirmation: response.confirmation,
             unfinishedSlot: nextUnfinishedSlot,
             recoverableSession: nextRecoverableSession,
+            recordingSession: nextRecordingSession || message.recordingSession,
             localFilePath: nextLocalFilePath || undefined,
             localFilePaths: nextLocalFilePaths,
             thumbnailBase64: nextThumbnailBase64,
@@ -5164,6 +5202,18 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         agentView,
     }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView]);
 
+    const deactivateRecordingSession = useCallback((messageId: string) => {
+        const id = String(messageId || "").trim();
+        if (!id) return;
+        setMessages(prev =>
+            prev.map((m) =>
+                m.id === id && m.recordingSession
+                    ? { ...m, recordingSession: { ...m.recordingSession, active: false } }
+                    : m,
+            ),
+        );
+    }, []);
+
     const panelActions: AIAssistantPanelHookActions = useMemo(() => ({
         browseFile,
         clearSelectedFile,
@@ -5181,7 +5231,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         cancelSession,
         submitAgentView,
         dismissAgentView,
-    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView]);
+        deactivateRecordingSession,
+    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession]);
 
     return { messages, submittedPrompts, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

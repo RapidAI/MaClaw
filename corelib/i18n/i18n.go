@@ -46,6 +46,11 @@ const (
 	MsgIMFileSaveEmpty            = "msg.im_file_save_empty"             // %s name
 	MsgIMFileDesktopReadyOne      = "msg.im_file_desktop_ready_one"      // %s name
 	MsgIMFileDesktopReadyMany     = "msg.im_file_desktop_ready_many"     // %d count
+	MsgIMFileChannelReadyOne      = "msg.im_file_channel_ready_one"      // %s name — already on WeChat/Feishu/etc.
+	MsgIMFileChannelReadyMany     = "msg.im_file_channel_ready_many"     // %d count
+	MsgIMFileChannelStagedOne     = "msg.im_file_channel_staged_one"     // %s name — interim tool observation on IM channel
+	MsgIMFileDesktopStagedOne     = "msg.im_file_desktop_staged_one"     // %s name — interim desktop-only observation
+	MsgIMFileForwardStagedOne     = "msg.im_file_forward_staged_one"     // %s name — interim forward_to_im observation
 	MsgIMFileEmptyPayload         = "msg.im_file_empty_payload"          // %s name
 
 	// Local WeChat gateway proactive-send errors (GUI language).
@@ -469,6 +474,11 @@ var translations = map[string]map[string]string{
 		MsgIMFileSaveEmpty:                    "保存 %s 失败：文件数据为空",
 		MsgIMFileDesktopReadyOne:              "文件已在当前对话中准备好：%s（未转发到微信/IM；若需发送请用 send_to_im）。",
 		MsgIMFileDesktopReadyMany:             "已在当前对话中准备好 %d 个文件（未转发到微信/IM；若需发送请用 send_to_im）。",
+		MsgIMFileChannelReadyOne:              "文件已发到当前 IM 通道：%s。本对话即微信/飞书通道，发送成功。",
+		MsgIMFileChannelReadyMany:             "已发到当前 IM 通道：%d 个文件。本对话即微信/飞书通道，发送成功。",
+		MsgIMFileChannelStagedOne:             "文件 %s 已通过当前 IM 通道（本对话）交付；本对话即微信/飞书，勿声称发送器未配置。",
+		MsgIMFileDesktopStagedOne:             "文件 %s 已准备好在当前对话中交付（未转发到微信/飞书等 IM）。若用户要求发到微信/飞书/QQ，请调用 send_to_im(path=...)；不要只用文字声称已发送。",
+		MsgIMFileForwardStagedOne:             "文件 %s 已编码为 IM 交付载荷（forward_to_im）。最终是否到达微信以交付结果为准，勿仅凭本句声称已成功。",
 		MsgIMFileEmptyPayload:                 "文件 %s 数据为空，无法保存或转发到微信/IM。",
 		MsgWeixinGatewayNotRunning:            "本地微信网关未运行（请确认微信机器人已登录并启动）",
 		MsgWeixinFileDecodeFailed:             "文件数据解码失败",
@@ -861,6 +871,11 @@ var translations = map[string]map[string]string{
 		MsgIMFileSaveEmpty:                    "Failed to save %s: empty file data",
 		MsgIMFileDesktopReadyOne:              "File ready in this chat: %s (not sent to WeChat/IM; use send_to_im if needed).",
 		MsgIMFileDesktopReadyMany:             "%d file(s) ready in this chat (not sent to WeChat/IM; use send_to_im if needed).",
+		MsgIMFileChannelReadyOne:              "File sent on the current IM channel: %s. This chat is the WeChat/Feishu channel; delivery succeeded.",
+		MsgIMFileChannelReadyMany:             "%d file(s) sent on the current IM channel. This chat is the WeChat/Feishu channel; delivery succeeded.",
+		MsgIMFileChannelStagedOne:             "File %s is delivered on the current IM channel (this chat). This chat is WeChat/Feishu; do not claim the sender is unconfigured.",
+		MsgIMFileDesktopStagedOne:             "File %s is ready in this chat (not forwarded to WeChat/IM). If the user wants WeChat/Feishu/QQ, call send_to_im(path=...); do not only claim it was sent.",
+		MsgIMFileForwardStagedOne:             "File %s is encoded for IM delivery (forward_to_im). Whether it reaches WeChat depends on the final delivery result; do not claim success from this line alone.",
 		MsgIMFileEmptyPayload:                 "File %s has empty data; cannot save or forward to WeChat/IM.",
 		MsgWeixinGatewayNotRunning:            "Local WeChat gateway is not running (sign in and start the WeChat bot first)",
 		MsgWeixinFileDecodeFailed:             "Failed to decode file data",

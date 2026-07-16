@@ -1002,6 +1002,60 @@ func truncateForLog(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
+// SendProactiveText delivers a plain text push to the owner's active local WeChat
+// session (last-active first). Used by 盯人 forward and similar self-notify paths.
+func (m *weixinGatewayManager) SendProactiveText(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("empty proactive text")
+	}
+	if m == nil {
+		return fmt.Errorf("weixin gateway manager is nil")
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil || !gw.IsRunning() {
+		return fmt.Errorf("weixin gateway not running")
+	}
+	type session struct{ uid, tok string }
+	var candidates []session
+	seen := map[string]bool{}
+	if last := strings.TrimSpace(gw.LastActiveUserID()); last != "" {
+		if tok := strings.TrimSpace(gw.GetContextToken(last)); tok != "" {
+			candidates = append(candidates, session{uid: last, tok: tok})
+			seen[last] = true
+		}
+	}
+	for _, pair := range gw.ContextSessionsByRecency() {
+		uid, tok := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+		if uid == "" || tok == "" || seen[uid] {
+			continue
+		}
+		candidates = append(candidates, session{uid: uid, tok: tok})
+		seen[uid] = true
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("no active weixin session")
+	}
+	var lastErr error
+	for _, c := range candidates {
+		if err := gw.SendText(context.Background(), weixin.OutgoingText{
+			ToUserID:     c.uid,
+			Text:         text,
+			ContextToken: c.tok,
+		}); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("weixin proactive text failed")
+	}
+	return lastErr
+}
+
 // SendProactiveFile delivers a file/image from the desktop AI assistant to the
 // active local WeChat session (does not go through Hub). Prefers the last active
 // user, then other sessions newest-first, until one SendMedia succeeds.

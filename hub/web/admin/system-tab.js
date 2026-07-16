@@ -267,19 +267,12 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     title: 'System Free LLM (system-free)',
     desc: 'Reserved free service group for all server-side Hub/MaClawSrv agents. Cannot be deleted; no recharge required. Change providers in Model Services.',
     reload: 'Reload',
-    label: 'System free service group',
-    emptyOption: 'system-free',
-    noGroups: 'system-free is missing and could not be created automatically.',
     noUsableGroups: 'system-free exists but has no usable provider route. Open Model Services to attach MaClaw Official or a local provider.',
     hint: 'Pinned as the system default. Used by workflow draft, IM system LLM, config agents, and MaClawSrv agents.',
-    invalidSelected: 'system-free is not ready: {id}',
-    invalidSelectedOption: 'system-free not ready',
-    save: 'Open Model Services',
-    saving: 'Working...',
-    saved: 'Opened Model Services. Edit system-free providers there.',
-    required: 'system-free must be ready before server-side agents can call LLM.',
+    notReadyDetail: 'system-free is not ready: {id}',
+    config: 'Configure system-free',
+    configFailed: 'Open system-free config failed: {error}',
     loadFailed: 'Load system-free status failed: {error}',
-    saveFailed: 'Open model services failed: {error}',
     test: 'Test system-free',
     testing: 'Testing...',
     testOk: 'system-free is available ({ms} ms, provider={provider})',
@@ -292,19 +285,12 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
     title: '\u7cfb\u7edf\u514d\u8d39 LLM\uff08system-free\uff09',
     desc: '\u4f9b Hub / MaClawSrv \u6240\u6709\u670d\u52a1\u7aef Agent \u4f7f\u7528\u7684\u4fdd\u7559\u514d\u8d39\u670d\u52a1\u7ec4\u3002\u4e0d\u53ef\u5220\u9664\u3001\u4e0d\u9700\u5145\u503c\uff1b\u53ef\u5728\u300c\u6a21\u578b\u670d\u52a1\u300d\u4e2d\u4fee\u6539\u670d\u52a1\u5546\u3002',
     reload: '\u5237\u65b0',
-    label: '\u7cfb\u7edf\u514d\u8d39\u670d\u52a1\u7ec4',
-    emptyOption: 'system-free',
-    noGroups: 'system-free \u7f3a\u5931\u4e14\u65e0\u6cd5\u81ea\u52a8\u521b\u5efa\u3002',
     noUsableGroups: 'system-free \u5df2\u5b58\u5728\u4f46\u6ca1\u6709\u53ef\u7528\u670d\u52a1\u5546\u8def\u7531\u3002\u8bf7\u5728\u6a21\u578b\u670d\u52a1\u4e2d\u7ed1\u5b9a MaClaw \u5b98\u65b9\u6216\u672c\u5730\u670d\u52a1\u5546\u3002',
     hint: '\u56fa\u5b9a\u4e3a\u7cfb\u7edf\u9ed8\u8ba4\u3002\u7528\u4e8e\u5de5\u4f5c\u6d41\u8349\u7a3f\u3001IM \u7cfb\u7edf LLM\u3001\u914d\u7f6e\u52a9\u624b\u4e0e MaClawSrv Agent\u3002',
-    invalidSelected: 'system-free \u672a\u5c31\u7eea\uff1a{id}',
-    invalidSelectedOption: 'system-free \u672a\u5c31\u7eea',
-    save: '\u6253\u5f00\u6a21\u578b\u670d\u52a1',
-    saving: '\u5904\u7406\u4e2d...',
-    saved: '\u5df2\u6253\u5f00\u6a21\u578b\u670d\u52a1\uff0c\u8bf7\u7f16\u8f91 system-free \u670d\u52a1\u5546\u3002',
-    required: '\u670d\u52a1\u7aef Agent \u8c03\u7528 LLM \u524d\uff0csystem-free \u5fc5\u987b\u5c31\u7eea\u3002',
+    notReadyDetail: 'system-free \u672a\u5c31\u7eea\uff1a{id}',
+    config: '\u914d\u7f6e system-free',
+    configFailed: '\u6253\u5f00 system-free \u914d\u7f6e\u5931\u8d25: {error}',
     loadFailed: '\u52a0\u8f7d system-free \u72b6\u6001\u5931\u8d25: {error}',
-    saveFailed: '\u6253\u5f00\u6a21\u578b\u670d\u52a1\u5931\u8d25: {error}',
     test: '\u6d4b\u8bd5 system-free',
     testing: '\u6d4b\u8bd5\u4e2d...',
     testOk: 'system-free \u53ef\u7528\uff08{ms} ms\uff0c\u670d\u52a1\u5546={provider}\uff09',
@@ -317,8 +303,10 @@ const TENANT_SYSTEM_LLM_DEFAULTS_I18N = {
 const tslx = (key, vars = {}) => ((TENANT_SYSTEM_LLM_DEFAULTS_I18N[currentLang] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en)[key] || TENANT_SYSTEM_LLM_DEFAULTS_I18N.en[key] || key).replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
 const TENANT_MIGRATION_MIN_MB = 100;
 const TENANT_MIGRATION_MAX_MB = 1024;
-let tenantSystemLLMDefaultsCache = null;
-let tenantSystemLLMProviderIDs = {};
+// Declared early: applyTenantSystemLLMDefaultsI18n() runs at script load and renders status from this cache.
+let tenantSystemFreeStatusCache = null;
+let tenantSystemFreeStatusInflight = null;
+let tenantSystemFreeTestInflight = false;
 function normalizeTenantMailSenderName(value) {
   return Array.from(String(value || '').trim()).slice(0, TENANT_MAIL_SENDER_MAX_RUNES).join('');
 }
@@ -342,11 +330,9 @@ function applyTenantSystemLLMDefaultsI18n() {
   _s('tenantSystemLLMDefaultsTitle', 'textContent', tslx('title'));
   _s('tenantSystemLLMDefaultsDesc', 'textContent', tslx('desc'));
   _s('tenantSystemLLMDefaultsReloadBtn', 'textContent', tslx('reload'));
-  _s('tenantSystemDefaultLLMServiceGroupLabel', 'textContent', tslx('label'));
-  _s('tenantSystemLLMDefaultsHint', 'textContent', tslx('hint'));
-  _s('tenantSystemLLMDefaultsSaveBtn', 'textContent', tslx('save'));
+  _s('tenantSystemLLMDefaultsSaveBtn', 'textContent', tslx('config'));
   _s('tenantSystemFreeTestBtn', 'textContent', tslx('test'));
-  renderTenantSystemLLMDefaultOptions();
+  renderTenantSystemFreeStatus();
 }
 function tenantMigrationBytesToMB(value) {
   const n = Number(value || 0);
@@ -613,73 +599,88 @@ async function loadTenantMailSenderName() { applyTenantMailSenderI18n(); try { c
 async function saveTenantMailSenderName() { try { const input = document.getElementById('tenantMailFromName'); const fromName = normalizeTenantMailSenderName(input ? input.value : ''); if (input) input.value = fromName; const data = await api('/api/admin/mail/sender-name', { method: 'POST', body: JSON.stringify({ from_name: fromName }) }); if (input) input.value = (data && data.from_name) || fromName; const msg = tmsx('saved'); setOutput(msg); showToast(msg, 'success'); return data || { from_name: fromName }; } catch (err) { const msg = tmsx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } }
 async function loadTenantMigrationSettings() { applyTenantMigrationSettingsI18n(); try { const data = await api('/api/admin/migration/settings'); const input = document.getElementById('tenantMigrationMaxMB'); if (input) { input.min = String(tenantMigrationBytesToMB(data && data.min_bytes) || TENANT_MIGRATION_MIN_MB); input.max = String(tenantMigrationBytesToMB(data && data.max_bytes) || TENANT_MIGRATION_MAX_MB); input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); } return data || {}; } catch (err) { const msg = tmgx('loadFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }
 async function saveTenantMigrationSettings() { const input = document.getElementById('tenantMigrationMaxMB'); const valueMB = normalizeTenantMigrationMB(input ? input.value : 0); if (valueMB < TENANT_MIGRATION_MIN_MB || valueMB > TENANT_MIGRATION_MAX_MB) { const msg = tmgx('invalid'); setOutput(msg); showToast(msg, 'error'); return; } const btn = document.getElementById('tenantMigrationSettingsSaveBtn'); const previousLabel = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = tmgx('saving'); } try { const data = await api('/api/admin/migration/settings', { method: 'PUT', body: JSON.stringify({ max_compressed_bytes: valueMB * 1024 * 1024 }) }); if (input) input.value = String(tenantMigrationBytesToMB(data && data.max_compressed_bytes)); const msg = tmgx('saved'); setOutput(msg); showToast(msg, 'success'); return data || {}; } catch (err) { const msg = tmgx('saveFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); throw err; } finally { if (btn) { btn.disabled = false; btn.textContent = previousLabel || tmgx('save'); } } }
-function tenantSystemLLMProviderIsConfigured(id) {
-  const key = String(id || '').trim().toLowerCase();
-  if (!key) return false;
-  if (key === 'maclaw_official') return true;
-  return !!tenantSystemLLMProviderIDs[key];
-}
-function tenantSystemLLMModelProviderIDs(model) {
-  const ids = [];
-  (model && model.provider_ids || []).forEach(function(id) {
-    id = String(id || '').trim();
-    if (id) ids.push(id);
-  });
-  (model && model.provider_configs || []).forEach(function(cfg) {
-    const id = String(cfg && cfg.provider_id || '').trim();
-    if (id) ids.push(id);
-  });
-  return ids;
-}
-function tenantSystemLLMUsableGroups(data) {
-  return (data && data.model_service_groups || []).filter(function(group) {
-    if (!group || !String(group.id || '').trim()) return false;
-    return Array.isArray(group.models) && group.models.some(function(model) {
-      return String(model && model.name || '').trim() && tenantSystemLLMModelProviderIDs(model).some(tenantSystemLLMProviderIsConfigured);
-    });
-  });
-}
-let tenantSystemFreeStatusCache = null;
-function renderTenantSystemLLMDefaultOptions() {
-  const select = document.getElementById('tenantSystemDefaultLLMServiceGroup');
-  if (!select) return;
-  const st = tenantSystemFreeStatusCache || {};
-  const ready = !!st.ready;
-  const providers = (st.provider_ids || []).join(', ') || '-';
-  select.disabled = true;
-  select.innerHTML = '<option value="system-free" selected>system-free (' + escapeHtml(ready ? tslx('ready') : tslx('notReady')) + ')</option>';
-  const reasons = (st.reasons || []).join(', ');
-  const hintParts = [tslx('hint'), tslx('providers', { ids: providers })];
-  if (!ready) {
-    hintParts.push(reasons ? tslx('invalidSelected', { id: reasons }) : tslx('noUsableGroups'));
+function getTenantSystemFreeCache() {
+  if (tenantSystemFreeStatusCache) return tenantSystemFreeStatusCache;
+  if (typeof window !== 'undefined' && window.tenantSystemFreeStatusCache) {
+    tenantSystemFreeStatusCache = window.tenantSystemFreeStatusCache;
+    return tenantSystemFreeStatusCache;
   }
-  _s('tenantSystemLLMDefaultsHint', 'textContent', hintParts.join(' | '));
+  return null;
+}
+function setTenantSystemFreeCache(st) {
+  tenantSystemFreeStatusCache = st || {};
+  if (typeof window !== 'undefined') {
+    window.tenantSystemFreeStatusCache = tenantSystemFreeStatusCache;
+  }
+  return tenantSystemFreeStatusCache;
+}
+// Dedupe parallel GETs (bootstrap runs overview + system tab refresh together).
+async function fetchTenantSystemFreeStatus() {
+  if (tenantSystemFreeStatusInflight) return tenantSystemFreeStatusInflight;
+  tenantSystemFreeStatusInflight = Promise.resolve()
+    .then(function() { return api('/api/admin/llm/system-free'); })
+    .then(function(st) { return setTenantSystemFreeCache(st); })
+    .finally(function() { tenantSystemFreeStatusInflight = null; });
+  return tenantSystemFreeStatusInflight;
+}
+function formatTenantSystemFreeDetail(st) {
+  const status = st || {};
+  const providers = (status.provider_ids || []).join(', ') || '-';
+  const reasons = (status.reasons || []).join(', ');
+  const parts = [tslx('hint'), tslx('providers', { ids: providers })];
+  if (!status.ready) {
+    parts.push(reasons ? tslx('notReadyDetail', { id: reasons }) : tslx('noUsableGroups'));
+  }
+  return parts.join(' | ');
+}
+function renderTenantSystemFreeStatus() {
+  const card = document.getElementById('tenantSystemLLMDefaultsCard');
   const statusEl = document.getElementById('tenantSystemFreeStatusBadge');
+  const st = getTenantSystemFreeCache();
+  if (!st) {
+    if (card) {
+      card.style.borderColor = '';
+      card.style.background = '';
+    }
+    _s('tenantSystemLLMDefaultsHint', 'textContent', tslx('hint'));
+    if (statusEl) {
+      statusEl.textContent = '';
+      statusEl.style.color = '';
+    }
+    return;
+  }
+  const ready = !!st.ready;
+  if (card) {
+    card.style.borderColor = ready ? '' : 'rgba(180,35,24,.35)';
+    card.style.background = ready ? '' : 'rgba(180,35,24,.04)';
+  }
+  _s('tenantSystemLLMDefaultsHint', 'textContent', formatTenantSystemFreeDetail(st));
   if (statusEl) {
     statusEl.textContent = ready ? tslx('ready') : tslx('notReady');
     statusEl.style.color = ready ? '#1f7a3f' : '#b42318';
   }
 }
+function tenantSystemFreeTestButtons() {
+  return [
+    document.getElementById('tenantSystemFreeTestBtn'),
+    document.getElementById('overviewSystemFreeTestBtn'),
+    document.getElementById('systemFreeGateTestBtn')
+  ].filter(Boolean);
+}
+function applyTenantSystemFreeStatusUI(st) {
+  if (st) setTenantSystemFreeCache(st);
+  renderTenantSystemFreeStatus();
+  // Paint overview from cache; skipPeer avoids re-entering this path.
+  if (typeof window !== 'undefined' && typeof window.applyOverviewSystemFreeStatus === 'function') {
+    try { window.applyOverviewSystemFreeStatus(getTenantSystemFreeCache(), { skipPeer: true }); } catch (_) { /* non-fatal */ }
+  }
+}
 async function loadTenantSystemLLMDefaults() {
   applyTenantSystemLLMDefaultsI18n();
   try {
-    const results = await Promise.all([
-      api('/api/admin/llm/system-free'),
-      api('/api/admin/llm/services?include_cards=false').catch(function() { return null; }),
-      api('/api/admin/llm/providers').catch(function() { return { providers: [] }; })
-    ]);
-    tenantSystemFreeStatusCache = results[0] || {};
-    tenantSystemLLMDefaultsCache = results[1] || { system_default_service_group_id: 'system-free' };
-    tenantSystemLLMProviderIDs = {};
-    (results[2] && results[2].providers || []).forEach(function(provider) {
-      const id = String(provider && provider.id || '').trim().toLowerCase();
-      if (id) tenantSystemLLMProviderIDs[id] = true;
-    });
-    renderTenantSystemLLMDefaultOptions();
-    if (typeof window !== 'undefined') {
-      window.tenantSystemFreeStatusCache = tenantSystemFreeStatusCache;
-    }
-    return tenantSystemFreeStatusCache || {};
+    const st = await fetchTenantSystemFreeStatus();
+    applyTenantSystemFreeStatusUI(st);
+    return getTenantSystemFreeCache() || {};
   } catch (err) {
     const msg = tslx('loadFailed', { error: err.message });
     setOutput(msg);
@@ -688,25 +689,44 @@ async function loadTenantSystemLLMDefaults() {
   }
 }
 async function saveTenantSystemLLMDefaults() {
-  // system-free is fixed; guide admin to Model Services to edit providers.
+  // system-free is fixed; open Model Services focused on that group.
   try {
+    if (typeof window !== 'undefined' && typeof window.openSystemFreeServiceGroup === 'function') {
+      await window.openSystemFreeServiceGroup();
+      return;
+    }
     if (typeof openTab === 'function') openTab('modelservices');
-    else if (typeof window.openTab === 'function') window.openTab('modelservices');
-    const msg = tslx('saved');
-    setOutput(msg);
-    showToast(msg, 'success');
+    else if (typeof window !== 'undefined' && typeof window.openTab === 'function') window.openTab('modelservices');
+    else throw new Error('openTab unavailable');
   } catch (err) {
-    const msg = tslx('saveFailed', { error: err.message });
+    // openSystemFreeServiceGroup already toasts; only toast for bare openTab fallback.
+    if (err && err.systemFreeConfigToasted) return;
+    const msg = tslx('configFailed', { error: err.message });
     setOutput(msg);
     showToast(msg, 'error');
   }
 }
 async function testTenantSystemFreeLLM() {
-  const btn = document.getElementById('tenantSystemFreeTestBtn');
-  const previousLabel = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = tslx('testing'); }
+  if (tenantSystemFreeTestInflight) return null;
+  const buttons = tenantSystemFreeTestButtons();
+  if (!buttons.length) return null;
+  tenantSystemFreeTestInflight = true;
+  const previousLabels = buttons.map(function(btn) { return btn.textContent; });
+  buttons.forEach(function(btn) {
+    btn.disabled = true;
+    btn.textContent = tslx('testing');
+  });
   try {
     const data = await api('/api/admin/llm/system-free/test', { method: 'POST', body: '{}' });
+    if (data && data.status) {
+      applyTenantSystemFreeStatusUI(data.status);
+    } else if (data && (data.ok || data.success)) {
+      // Quiet refresh: avoid loadTenantSystemLLMDefaults toasts stacking on test result.
+      try {
+        const st = await fetchTenantSystemFreeStatus();
+        applyTenantSystemFreeStatusUI(st);
+      } catch (_) { /* keep prior status */ }
+    }
     if (data && (data.ok || data.success)) {
       const msg = tslx('testOk', {
         ms: String(data.latency_ms || 0),
@@ -714,21 +734,11 @@ async function testTenantSystemFreeLLM() {
       });
       setOutput(msg);
       showToast(msg, 'success');
-      if (data.status) {
-        tenantSystemFreeStatusCache = data.status;
-        renderTenantSystemLLMDefaultOptions();
-      } else {
-        await loadTenantSystemLLMDefaults();
-      }
       return data;
     }
     const errMsg = tslx('testFail', { error: (data && data.error) || 'unknown' });
     setOutput(errMsg);
     showToast(errMsg, 'error');
-    if (data && data.status) {
-      tenantSystemFreeStatusCache = data.status;
-      renderTenantSystemLLMDefaultOptions();
-    }
     return data;
   } catch (err) {
     const msg = tslx('testFail', { error: err.message });
@@ -736,12 +746,22 @@ async function testTenantSystemFreeLLM() {
     showToast(msg, 'error');
     throw err;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = previousLabel || tslx('test'); }
+    tenantSystemFreeTestInflight = false;
+    buttons.forEach(function(btn, i) {
+      btn.disabled = false;
+      btn.textContent = previousLabels[i] || tslx('test');
+    });
   }
 }
 if (typeof window !== 'undefined') {
+  window.getTenantSystemFreeCache = getTenantSystemFreeCache;
+  window.setTenantSystemFreeCache = setTenantSystemFreeCache;
+  window.fetchTenantSystemFreeStatus = fetchTenantSystemFreeStatus;
   window.testTenantSystemFreeLLM = testTenantSystemFreeLLM;
   window.loadTenantSystemLLMDefaults = loadTenantSystemLLMDefaults;
+  window.saveTenantSystemLLMDefaults = saveTenantSystemLLMDefaults;
+  window.renderTenantSystemFreeStatus = renderTenantSystemFreeStatus;
+  window.applyTenantSystemFreeStatusUI = applyTenantSystemFreeStatusUI;
 }
 // Machines runtime moved to machines-tab.js
 async function sendTestMail() { try { const email = document.getElementById('testMailEmail').value.trim(); if (!email) { const msg = tr('testRecipientRequired'); setOutput(msg); showToast(msg, 'error'); return; } await saveMailConfig(); const data = await api('/api/admin/mail/test', { method: 'POST', body: JSON.stringify({ email }) }); const msg = data.message || tr('mailSent'); setOutput(msg); showToast(msg, 'success'); } catch (err) { const msg = tr('mailFailed', { error: err.message }); setOutput(msg); showToast(msg, 'error'); } }

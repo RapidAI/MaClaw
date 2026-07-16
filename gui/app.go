@@ -204,6 +204,8 @@ type App struct {
 	telegramGateway                   *telegramGatewayManager
 	weixinGateway                     *weixinGatewayManager
 	lansengerGateway                  *lansengerGatewayManager
+	lansengerWatch                    *lansengerWatchService
+	lansengerWatchOnce                sync.Once
 	thirdPartyGateway                 *thirdPartyGatewayManager
 	imGatewaySyncMu                   sync.Mutex
 	passthroughRegistry               *PassthroughRegistry
@@ -342,6 +344,9 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 var OnConfigChanged func(corelib.AppConfig) = func(corelib.AppConfig) {}
 var UpdateTrayMenu func(string) = func(string) {}
 var UpdateTrayVisibility func(bool) = func(bool) {}
+// UpdateComputerUseTray refreshes tray Computer Use submenu labels/enabled state.
+// Set by platform tray setup (Windows); no-op elsewhere.
+var UpdateComputerUseTray func() = func() {}
 
 // ShowNotification displays a system tray balloon/toast notification.
 // title is the notification title, message is the body text.
@@ -1626,6 +1631,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		handler.SetBackgroundLoopManager(blm)
 		// Register GUI automation tools with async background replay support.
 		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
+		// Text-primary Computer Use (OmniParser + OCR SoM for non-vision models).
+		bindComputerUseYOLOGate(a)
+		registerComputerUseTools(handler.registry)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
 		// Keep local knowledge tools available after late tool registration rebuilds.
@@ -1884,6 +1892,9 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		handler.SetBackgroundLoopManager(blm)
 		// Register GUI automation tools with async background replay support.
 		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
+		// Text-primary Computer Use (OmniParser + OCR SoM for non-vision models).
+		bindComputerUseYOLOGate(a)
+		registerComputerUseTools(handler.registry)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
 		// Keep local knowledge tools available after late tool registration rebuilds.
@@ -2053,6 +2064,8 @@ func (a *App) startup(ctx context.Context) {
 		// Ensure local AI models are ready for features the user has not
 		// explicitly disabled. Missing assets are downloaded and then enabled.
 		go a.ensureConfiguredAIModels()
+		// Computer Use: pre-start UIA sidecar / seed csharp exe in background.
+		go a.backgroundWarmupComputerUse()
 
 		// Keep the AI assistant in a lightweight "connecting" state until the
 		// user actually opens or uses it; avoid pre-warming the full interaction
@@ -6598,6 +6611,43 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.LansengerWSSURL = strings.TrimSpace(v)
 			imGatewayChanged = true
+		case "lansenger_ignored_group_ids":
+			// Accept []any / []string from the settings UI.
+			switch raw := value.(type) {
+			case nil:
+				cfg.LansengerIgnoredGroupIDs = nil
+			case []string:
+				ids := make([]string, 0, len(raw))
+				for _, id := range raw {
+					if id = strings.TrimSpace(id); id != "" {
+						ids = append(ids, id)
+					}
+				}
+				if len(ids) == 0 {
+					cfg.LansengerIgnoredGroupIDs = nil
+				} else {
+					cfg.LansengerIgnoredGroupIDs = ids
+				}
+			case []any:
+				ids := make([]string, 0, len(raw))
+				for _, item := range raw {
+					id, ok := item.(string)
+					if !ok {
+						continue
+					}
+					if id = strings.TrimSpace(id); id != "" {
+						ids = append(ids, id)
+					}
+				}
+				if len(ids) == 0 {
+					cfg.LansengerIgnoredGroupIDs = nil
+				} else {
+					cfg.LansengerIgnoredGroupIDs = ids
+				}
+			default:
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("lansenger_ignored_group_ids must be a string array")
+			}
 		case "thirdparty_gateway_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -6755,8 +6805,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
-			bv := v
-			cfg.ShowWorkflowEntry = &bv
+			cfg.ShowWorkflowEntry = &v
 		case "show_utilities_entry":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7061,6 +7110,46 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ScreenParsingEnabled = &v
+		case "computer_use_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ComputerUseEnabled = &v
+		case "computer_use_log_keep_newest":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 100 {
+				v = 100
+			}
+			cfg.ComputerUseLogKeepNewest = &v
+		case "computer_use_log_max_age_days":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 3650 {
+				v = 3650
+			}
+			cfg.ComputerUseLogMaxAgeDays = &v
+		case "computer_use_log_auto_prune":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ComputerUseLogAutoPrune = &v
 		case "asr_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

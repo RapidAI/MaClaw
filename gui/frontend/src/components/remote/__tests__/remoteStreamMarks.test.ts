@@ -38,6 +38,17 @@ describe("remoteStreamMarks", () => {
         expect(SPECIAL_LINE_PREFIX.test("/Users/me/src")).toBe(true);
         expect(SPECIAL_LINE_PREFIX.test("hello")).toBe(false);
 
+        // Ordered list: full body, multi-digit, bare streaming frames, indented
+        expect(SPECIAL_LINE_PREFIX.test("1. item")).toBe(true);
+        expect(SPECIAL_LINE_PREFIX.test("10. 世界杯")).toBe(true);
+        expect(SPECIAL_LINE_PREFIX.test("10.")).toBe(true);
+        expect(SPECIAL_LINE_PREFIX.test("11)")).toBe(true);
+        expect(SPECIAL_LINE_PREFIX.test("  10. nested")).toBe(true);
+        expect(SPECIAL_LINE_PREFIX.test("\t11) tabbed")).toBe(true);
+        // Decimals / versions must not look like ordered markers
+        expect(SPECIAL_LINE_PREFIX.test("1.0")).toBe(false);
+        expect(SPECIAL_LINE_PREFIX.test("v2.0. 3")).toBe(false);
+
         expect(isPathLine("C:\\Users\\me")).toBe(true);
         expect(isPathLine("d:\\work\\app")).toBe(true);
         expect(isPathLine("~/src/app")).toBe(true);

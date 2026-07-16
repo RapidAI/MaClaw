@@ -3,11 +3,11 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
 	stdruntime "runtime"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/energye/systray"
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -55,9 +55,50 @@ func setupTray(app *App, appOptions *options.App) {
 
 			mShow := systray.AddMenuItem("Show", "Show Main Window")
 			systray.AddSeparator()
+			// Computer Use operator controls (desktop automation safety).
+			mCU := systray.AddMenuItem("Computer Use", "Desktop Computer Use")
+			mCUStatus := mCU.AddSubMenuItem("Status: idle", "Computer Use status")
+			mCUStatus.Disable()
+			mCUPause := mCU.AddSubMenuItem("Pause desktop actions", "Pause click/type")
+			mCUResume := mCU.AddSubMenuItem("Resume desktop actions", "Resume after pause")
+			mCUStop := mCU.AddSubMenuItem("Stop desktop control", "Hard stop + cancel agent")
+			mCUReset := mCU.AddSubMenuItem("Reset control state", "Clear stop/pause")
+			systray.AddSeparator()
 			mQuit := systray.AddMenuItem("Quit", "Quit Application")
 
 			isVisible := !app.IsAutoStart
+
+			refreshCUTray := func() {
+				menuTitle, statusLabel, pause, resume, stop, reset, pe, re, se, xe := computerUseTrayLabels(app)
+				mCU.SetTitle(menuTitle)
+				mCUStatus.SetTitle(statusLabel)
+				mCUPause.SetTitle(pause)
+				mCUResume.SetTitle(resume)
+				mCUStop.SetTitle(stop)
+				mCUReset.SetTitle(reset)
+				if pe {
+					mCUPause.Enable()
+				} else {
+					mCUPause.Disable()
+				}
+				if re {
+					mCUResume.Enable()
+				} else {
+					mCUResume.Disable()
+				}
+				if se {
+					mCUStop.Enable()
+				} else {
+					mCUStop.Disable()
+				}
+				if xe {
+					mCUReset.Enable()
+				} else {
+					mCUReset.Disable()
+				}
+			}
+
+			UpdateComputerUseTray = refreshCUTray
 
 			UpdateTrayMenu = func(lang string) {
 				tr := trayTranslations()
@@ -73,6 +114,7 @@ func setupTray(app *App, appOptions *options.App) {
 					mShow.SetTitle(t["show"])
 				}
 				mQuit.SetTitle(t["quit"])
+				refreshCUTray()
 			}
 
 			UpdateTrayVisibility = func(visible bool) {
@@ -114,6 +156,31 @@ func setupTray(app *App, appOptions *options.App) {
 				}()
 			})
 
+			mCUPause.Click(func() {
+				go func() {
+					_ = app.ComputerUsePause()
+					refreshCUTray()
+				}()
+			})
+			mCUResume.Click(func() {
+				go func() {
+					_ = app.ComputerUseResume()
+					refreshCUTray()
+				}()
+			})
+			mCUStop.Click(func() {
+				go func() {
+					_ = app.ComputerUseStop()
+					refreshCUTray()
+				}()
+			})
+			mCUReset.Click(func() {
+				go func() {
+					_ = app.ComputerUseReset()
+					refreshCUTray()
+				}()
+			})
+
 			mQuit.Click(func() {
 				go func() {
 					if app.ctx == nil {
@@ -128,6 +195,8 @@ func setupTray(app *App, appOptions *options.App) {
 
 			if app.CurrentLanguage != "" {
 				UpdateTrayMenu(app.CurrentLanguage)
+			} else {
+				refreshCUTray()
 			}
 		}, func() {
 			os.Exit(0)

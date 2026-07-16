@@ -24,6 +24,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleClearInput, handleDragOver, handleDrop, handlePaste,
         handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp, handleVoiceClick,
         handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId = "ai-input-bar", inputLocked,
+        hardLockInput = false,
         inputOverlay, inputRef, inputRowTestId = "ai-input-row", inputValue, inline, isBusy, isSelectionCollapsedAtBoundary,
         lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, permissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
@@ -49,7 +50,8 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         requestAnimationFrame(() => resizeInput());
     }, [rememberHistoryEdit, resizeInput, updateInputValue]);
 
-    const autocompleteDisabled = !ready || cancelPending || isComposing;
+    const inputHardDisabled = !ready || cancelPending || hardLockInput;
+    const autocompleteDisabled = inputHardDisabled || isComposing;
     const autocomplete = useInputHistoryAutocomplete({
         inputValue,
         submittedPrompts,
@@ -101,10 +103,10 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                 <textarea
                     ref={inputRef}
                     data-testid={textareaTestId}
-                    disabled={!ready || cancelPending}
-                    readOnly={cancelPending}
+                    disabled={inputHardDisabled}
+                    readOnly={cancelPending || hardLockInput}
                     aria-label={textareaAriaLabel || placeholderText}
-                    aria-readonly={cancelPending}
+                    aria-readonly={cancelPending || hardLockInput}
                     aria-autocomplete="list"
                     aria-expanded={autocompleteOpen}
                     aria-controls={autocompleteOpen ? historyListboxId : undefined}

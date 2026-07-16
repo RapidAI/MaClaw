@@ -42,6 +42,8 @@ interface AssistantInputStackProps {
     inputAreaHeight: number | null;
     inputBarTestId?: string;
     inputLocked: boolean;
+    /** Disables the textarea (no type-ahead), e.g. while record_audio is live. */
+    hardLockInput?: boolean;
     inputOverlay?: React.ReactNode;
     allowInputOverflow?: boolean;
     inputRef: React.Ref<HTMLTextAreaElement>;
@@ -92,7 +94,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         handleSaveEdit, handleFireEntry, handleSend, handleTextareaClick, handleTextareaKeyDownBefore, handleTextareaKeyUp,
         handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputBarTestId,
         isEntryInFlight,
-        inputLocked, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
+        inputLocked, hardLockInput = false, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, permissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
         showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
@@ -182,6 +184,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     inputAreaHeight={inputAreaHeight}
                     inputBarTestId={inputBarTestId}
                     inputLocked={inputLocked}
+                    hardLockInput={hardLockInput}
                     inputOverlay={inputOverlay}
                     inputRef={inputRef}
                     inputRowTestId={inputRowTestId}

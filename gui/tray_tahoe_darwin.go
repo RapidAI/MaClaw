@@ -19,6 +19,10 @@ import (
 // tahoeShowCallback and tahoeQuitCallback are set by setupTahoeTray.
 var tahoeShowCallback func()
 var tahoeQuitCallback func()
+var tahoeCUPauseCallback func()
+var tahoeCUResumeCallback func()
+var tahoeCUStopCallback func()
+var tahoeCUResetCallback func()
 
 //export tahoeOnShowClicked
 func tahoeOnShowClicked() {
@@ -31,6 +35,34 @@ func tahoeOnShowClicked() {
 func tahoeOnQuitClicked() {
 	if tahoeQuitCallback != nil {
 		go tahoeQuitCallback()
+	}
+}
+
+//export tahoeOnCUPauseClicked
+func tahoeOnCUPauseClicked() {
+	if tahoeCUPauseCallback != nil {
+		go tahoeCUPauseCallback()
+	}
+}
+
+//export tahoeOnCUResumeClicked
+func tahoeOnCUResumeClicked() {
+	if tahoeCUResumeCallback != nil {
+		go tahoeCUResumeCallback()
+	}
+}
+
+//export tahoeOnCUStopClicked
+func tahoeOnCUStopClicked() {
+	if tahoeCUStopCallback != nil {
+		go tahoeCUStopCallback()
+	}
+}
+
+//export tahoeOnCUResetClicked
+func tahoeOnCUResetClicked() {
+	if tahoeCUResetCallback != nil {
+		go tahoeCUResetCallback()
 	}
 }
 
@@ -68,6 +100,37 @@ func updateTahoeTrayMenu(tooltip, showLabel, quitLabel string) {
 	C.free(unsafe.Pointer(cTooltip))
 	C.free(unsafe.Pointer(cShow))
 	C.free(unsafe.Pointer(cQuit))
+}
+
+// updateTahoeComputerUseMenu pushes CU submenu labels and enable flags.
+func updateTahoeComputerUseMenu(menuTitle, status, pause, resume, stop, reset string,
+	pauseOn, resumeOn, stopOn, resetOn bool) {
+	cMenu := C.CString(menuTitle)
+	cStatus := C.CString(status)
+	cPause := C.CString(pause)
+	cResume := C.CString(resume)
+	cStop := C.CString(stop)
+	cReset := C.CString(reset)
+	pe, re, se, xe := C.int(0), C.int(0), C.int(0), C.int(0)
+	if pauseOn {
+		pe = 1
+	}
+	if resumeOn {
+		re = 1
+	}
+	if stopOn {
+		se = 1
+	}
+	if resetOn {
+		xe = 1
+	}
+	C.TahoeUpdateComputerUseMenu(cMenu, cStatus, cPause, pe, cResume, re, cStop, se, cReset, xe)
+	C.free(unsafe.Pointer(cMenu))
+	C.free(unsafe.Pointer(cStatus))
+	C.free(unsafe.Pointer(cPause))
+	C.free(unsafe.Pointer(cResume))
+	C.free(unsafe.Pointer(cStop))
+	C.free(unsafe.Pointer(cReset))
 }
 
 // tahoeDockBounce bounces the dock icon to draw user attention.

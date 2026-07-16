@@ -47,6 +47,11 @@ func (r *ToolRouter) Route(userMessage string, allTools []map[string]interface{}
 	return r.inner.Route(userMessage, allTools)
 }
 
+// RouteWithOptions delegates to corelib/tool.Router.RouteWithOptions.
+func (r *ToolRouter) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts tool.RouteOptions) []map[string]interface{} {
+	return r.inner.RouteWithOptions(userMessage, allTools, opts)
+}
+
 // SetEmbedder delegates to corelib/tool.Router.SetEmbedder.
 func (r *ToolRouter) SetEmbedder(emb embedding.Embedder) {
 	r.inner.SetEmbedder(emb)

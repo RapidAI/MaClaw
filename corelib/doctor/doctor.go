@@ -432,6 +432,14 @@ func Run(in Input) Report {
 	}
 
 	// --- feature flags (info) ---
+	cuFlag := true
+	if cfg.ComputerUseEnabled != nil {
+		cuFlag = *cfg.ComputerUseEnabled
+	}
+	spFlag := true
+	if cfg.ScreenParsingEnabled != nil {
+		spFlag = *cfg.ScreenParsingEnabled
+	}
 	add(Check{
 		ID:      "features.flags",
 		Status:  StatusInfo,
@@ -443,8 +451,15 @@ func Run(in Input) Report {
 			"memory_compress":  cfg.MemoryAutoCompress,
 			"local_needle":     cfg.LocalNeedleEnabled,
 			"daily_budget_usd": cfg.DailyLLMBudgetUSD,
+			"computer_use":     cuFlag,
+			"screen_parsing":   spFlag,
 		},
 	})
+
+	// --- Computer Use (desktop control) ---
+	for _, c := range ComputerUseChecks(cfg, baseDir) {
+		add(c)
+	}
 
 	// --- caller-supplied probes ---
 	for _, c := range in.ExtraChecks {

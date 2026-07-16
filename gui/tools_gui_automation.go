@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/accessibility"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/taskengine"
@@ -346,12 +347,18 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 	// analogous to browser_observe for web pages. Returns accessibility
 	// tree elements, focused element info, and OCR text — all as structured
 	// text, no screenshot, no LLM vision cost.
-	guiObserver := guiautomation.NewGUIStateObserver(bridge, nil, screenshotFn, func(msg string) {
+	// OCR via RapidOCR (same sidecar as browser) so text_contains / labels work
+	// without multimodal LLM vision.
+	ocrForGUI := &taskOCRFromBrowser{inner: browser.NewRapidOCRSidecar(func(msg string) {
+		log.Printf("[gui-ocr] %s", msg)
+	})}
+	guiObserver := guiautomation.NewGUIStateObserver(bridge, ocrForGUI, screenshotFn, func(msg string) {
 		log.Printf("[gui-observe] %s", msg)
 	})
 
 	// Inject YOLO-based ScreenParser for vision-based UI element detection.
 	// The model is lazily loaded on first use — no startup cost if not needed.
+	// Prefer YOLO as primary visual path (not only a11y fallback) when weights exist.
 	yoloWeightsPath := findYOLOWeights()
 	if yoloWeightsPath != "" {
 		yoloParser := guiautomation.NewYOLOScreenParser(yoloWeightsPath, 0.3, 0.5)

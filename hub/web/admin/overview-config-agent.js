@@ -1776,6 +1776,10 @@
   function appendChat(role, html) {
     var log = byID('configAgentChatLog');
     if (!log) return;
+    // Follow the conversation only when the operator was already at its end.
+    // This preserves their reading position when they scroll back, and avoids
+    // landing in the expanded history disclosure that follows the chat rows.
+    var followConversation = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
     var empty = byID('configAgentEmptyHint');
     if (empty) empty.style.display = 'none';
     var row = document.createElement('div');
@@ -1794,7 +1798,10 @@
         try { log.removeChild(rows[i]); } catch (_) {}
       }
     }
-    log.scrollTop = log.scrollHeight;
+    if (followConversation) {
+      var rowBottom = row.offsetTop + row.offsetHeight;
+      log.scrollTop = Math.max(0, rowBottom - log.clientHeight + 12);
+    }
   }
 
   function renderPlanCard(plan) {
@@ -4017,12 +4024,21 @@
     document.body.appendChild(overlay);
     byID('systemFreeGateTestBtn').onclick = function() {
       if (typeof global.testTenantSystemFreeLLM === 'function') {
-        global.testTenantSystemFreeLLM().then(function() { maybeShowSystemFreeGate(true); }).catch(function() {});
+        global.testTenantSystemFreeLLM().then(function(data) {
+          // Prefer cache from test payload; force network only when status was absent.
+          return maybeShowSystemFreeGate(!(data && data.status));
+        }).catch(function() {
+          maybeShowSystemFreeGate(true);
+        });
       }
     };
     byID('systemFreeGateConfigBtn').onclick = function() {
       hideGateModal();
-      if (typeof global.openTab === 'function') global.openTab('modelservices');
+      if (typeof global.openSystemFreeServiceGroup === 'function') {
+        Promise.resolve(global.openSystemFreeServiceGroup()).catch(function() {});
+      } else if (typeof global.openTab === 'function') {
+        global.openTab('modelservices');
+      }
     };
     byID('systemFreeGateLaterBtn').onclick = function() {
       gateDismissedAt = Date.now();
@@ -4067,10 +4083,22 @@
       return;
     }
     try {
-      var st = forceRefresh || !global.tenantSystemFreeStatusCache
-        ? await global.api('/api/admin/llm/system-free')
+      var cached = typeof global.getTenantSystemFreeCache === 'function'
+        ? global.getTenantSystemFreeCache()
         : global.tenantSystemFreeStatusCache;
-      global.tenantSystemFreeStatusCache = st || {};
+      var st;
+      if (forceRefresh || !cached) {
+        st = typeof global.fetchTenantSystemFreeStatus === 'function'
+          ? await global.fetchTenantSystemFreeStatus()
+          : await global.api('/api/admin/llm/system-free');
+      } else {
+        st = cached;
+      }
+      if (typeof global.setTenantSystemFreeCache === 'function') {
+        st = global.setTenantSystemFreeCache(st || {});
+      } else {
+        global.tenantSystemFreeStatusCache = st || {};
+      }
       if (st && st.ready) {
         hideGateModal();
         return;

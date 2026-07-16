@@ -19,10 +19,16 @@ const DefaultWriteMode = string(WriteModeOverwrite)
 type PathResolver func() string
 
 func ResolveFileToolPath(path string, projectDirResolver PathResolver) (string, error) {
-	if strings.TrimSpace(path) == "" {
+	p := strings.TrimSpace(path)
+	// Empty path → current Project directory / workspace (not user home).
+	if p == "" {
+		if projectDirResolver != nil {
+			if base := strings.TrimSpace(projectDirResolver()); base != "" {
+				return filepath.Clean(base), nil
+			}
+		}
 		return "", fmt.Errorf("缺少 path 参数")
 	}
-	p := strings.TrimSpace(path)
 	if strings.HasPrefix(p, "~") {
 		home, err := os.UserHomeDir()
 		if err != nil {

@@ -482,6 +482,88 @@ func TestRouter_ScreenshotIsNotAlwaysOnCoreTool(t *testing.T) {
 	}
 }
 
+func TestRouter_RecordAudioIsAlwaysOnCoreTool(t *testing.T) {
+	if !CoreToolNames["record_audio"] {
+		t.Fatal("record_audio must be a core always-on tool so meeting-recording intents cannot lose it to budget contention")
+	}
+}
+
+func TestRouter_RecordAudioAlwaysRoutedEvenUnderBudgetPressure(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	// Extra candidates to force tight MaxToolBudget selection.
+	for i := 0; i < 40; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool for budget pressure"))
+	}
+
+	result := router.Route("hello", tools)
+	if !routedToolNames(result)["record_audio"] {
+		t.Fatalf("record_audio must remain routed under budget pressure, got: %v", result)
+	}
+}
+
+func TestRouter_ExplicitMeetingRecordRequestKeepsRecordAudio(t *testing.T) {
+	router := NewRouter(nil)
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	for i := 0; i < 40; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	for _, msg := range []string{"会议录音", "开始录音", "record meeting", "帮我录音"} {
+		result := router.Route(msg, tools)
+		if !routedToolNames(result)["record_audio"] {
+			t.Fatalf("explicit recording request %q must route record_audio, got: %v", msg, result)
+		}
+	}
+}
+
+func TestIsExplicitRecordAudioRequest(t *testing.T) {
+	positives := []string{
+		"会议录音",
+		"开始录音",
+		"打开录音",
+		"帮我录音",
+		"录音",
+		"不要转写，开始录音",
+		"开始会议录音并整理纪要",
+		"record meeting",
+		"start recording",
+		"访谈录制",
+	}
+	for _, msg := range positives {
+		if !isExplicitRecordAudioRequest(msg) {
+			t.Fatalf("expected explicit record intent for %q", msg)
+		}
+	}
+	negatives := []string{
+		"把这段录音文件转写一下",
+		"asr path=C:\\a.wav",
+		"音频文件.mp3 转录",
+		"不是已经好了吗？",
+		"整理会议纪要文档",
+		"把会议录音整理成纪要",
+		"根据会议录音写摘要",
+		"停止录音",
+		"不要录音",
+		"不要帮我录音",
+		"取消录音",
+		"昨天录音效果不好，我们讨论一下怎么优化产品文档",
+		"stop recording",
+		"don't record this",
+	}
+	for _, msg := range negatives {
+		if isExplicitRecordAudioRequest(msg) {
+			t.Fatalf("did not expect explicit record intent for %q", msg)
+		}
+	}
+}
+
 func TestRouter_ExplicitScreenshotRequestStillRoutesScreenshot(t *testing.T) {
 	router := NewRouter(nil)
 	var tools []map[string]interface{}
