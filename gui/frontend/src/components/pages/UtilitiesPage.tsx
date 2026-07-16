@@ -749,7 +749,8 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             if (res.failures && res.failures.length > 0) {
                 setError((isZh ? '部分群公告失败：' : 'Some announces failed: ') + res.failures.join('; '));
             } else {
-                setError(isZh ? '已向绑定群发送公告' : 'Announced to bound groups');
+                setCopyHint(isZh ? '已向绑定群发送公告' : 'Announced to bound groups');
+                setTimeout(() => setCopyHint(''), 2500);
             }
         } catch (e: any) {
             setError(String(e?.message || e));

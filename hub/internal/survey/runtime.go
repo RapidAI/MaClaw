@@ -254,16 +254,24 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
 	}
 
-	// Resume same survey in progress instead of wiping answers.
-	if existing != nil && existing.SurveyID == sv.ID && existing.Phase == PhaseAnswering {
-		cur := existing.Cursor
-		if cur < 0 || cur >= len(sv.Questions) {
-			cur = 0
+	// Resume same survey in progress instead of wiping answers / re-prompting.
+	if existing != nil && existing.SurveyID == sv.ID {
+		switch existing.Phase {
+		case PhaseAnswering:
+			cur := existing.Cursor
+			if cur < 0 || cur >= len(sv.Questions) {
+				cur = 0
+			}
+			return IMHandleResponse{
+				Handled:   true,
+				ReplyText: fmt.Sprintf("继续填写《%s》\n\n%s", sv.Title, FormatQuestionPrompt(sv.Questions[cur], cur, len(sv.Questions))),
+			}, nil
+		case PhaseConfirmUpdate:
+			return IMHandleResponse{
+				Handled:   true,
+				ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出",
+			}, nil
 		}
-		return IMHandleResponse{
-			Handled:   true,
-			ReplyText: fmt.Sprintf("继续填写《%s》\n\n%s", sv.Title, FormatQuestionPrompt(sv.Questions[cur], cur, len(sv.Questions))),
-		}, nil
 	}
 
 	key, err := ComputeRespondentKey(sv.Settings.Anonymous, sv.Settings.AnonymitySalt, userID)
@@ -309,6 +317,9 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 				if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, answers); err != nil {
 					if errors.Is(err, ErrAlreadySubmitted) {
 						return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
+					}
+					if errors.Is(err, ErrDeadlinePassed) {
+						return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 					}
 					return IMHandleResponse{}, err
 				}
@@ -408,6 +419,10 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 		return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 	}
+	if len(sv.Questions) == 0 {
+		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+		return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
+	}
 
 	if ctrl == "prev" {
 		if sess.Cursor > 0 {
@@ -420,7 +435,9 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		}
 		sess.ExpiresAt = r.now().Add(SessionTTL)
 		sess.UpdatedAt = r.now()
-		_ = r.Store.SaveSession(ctx, sess)
+		if err := r.Store.SaveSession(ctx, sess); err != nil {
+			return IMHandleResponse{}, err
+		}
 		return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[sess.Cursor], sess.Cursor, len(sv.Questions))}, nil
 	}
 
@@ -450,6 +467,10 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 			if errors.Is(err, ErrAlreadySubmitted) {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 				return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
+			}
+			if errors.Is(err, ErrDeadlinePassed) {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+				return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 			}
 			return IMHandleResponse{}, err
 		}
@@ -482,7 +503,7 @@ func looksLikeAnswer(text string) bool {
 
 func (r *Runtime) finalizeSubmit(ctx context.Context, tenantID string, sv *Survey, platform, userID, userName, groupID string, answers map[string]any) error {
 	if DeadlinePassed(sv.Settings, r.now()) {
-		return fmt.Errorf("问卷已截止")
+		return ErrDeadlinePassed
 	}
 	key, err := ComputeRespondentKey(sv.Settings.Anonymous, sv.Settings.AnonymitySalt, userID)
 	if err != nil {

@@ -626,6 +626,39 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 	}
 }
 
+func TestFinalizeDeadlineIsNotHTTPError(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-time.Minute)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "D",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+		Settings: SettingsIn{Deadline: &past},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	// Force published despite past deadline for submit-path test
+	_, _ = st.db.ExecContext(ctx, `UPDATE surveys SET status=? WHERE id=?`, StatusPublished, sv.ID)
+	sv, _ = st.Get(ctx, "t", sv.ID)
+	rt := NewRuntime(st)
+	err := rt.finalizeSubmit(ctx, "t", sv, PlatformLansenger, "u1", "N", "g", map[string]any{"q1": "a"})
+	if !errors.Is(err, ErrDeadlinePassed) {
+		t.Fatalf("want ErrDeadlinePassed got %v", err)
+	}
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + sv.ShortCode + " 1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ReplyText != "问卷已截止" {
+		t.Fatalf("reply=%q", r.ReplyText)
+	}
+}
+
 func TestResumeSameSurveyDoesNotResetCursor(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

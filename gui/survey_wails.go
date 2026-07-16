@@ -35,13 +35,25 @@ func (a *App) ListSurveys(filterJSON string) (string, error) {
 	return string(raw), nil
 }
 
+func requireSurveyID(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("survey id required")
+	}
+	return id, nil
+}
+
 // GetSurvey returns survey detail (salt redacted by Hub).
 func (a *App) GetSurvey(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Get(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Get(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -63,11 +75,15 @@ func (a *App) CreateSurvey(inputJSON string) (string, error) {
 
 // PublishSurvey publishes a survey.
 func (a *App) PublishSurvey(id string, optsJSON string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Publish(context.Background(), strings.TrimSpace(id), json.RawMessage(optsJSON))
+	raw, err := c.Publish(context.Background(), id, json.RawMessage(optsJSON))
 	if err != nil {
 		return "", err
 	}
@@ -83,11 +99,15 @@ func (a *App) PublishSurvey(id string, optsJSON string) (string, error) {
 
 // CloseSurvey closes a published survey.
 func (a *App) CloseSurvey(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Close(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Close(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -96,11 +116,15 @@ func (a *App) CloseSurvey(id string) (string, error) {
 
 // ReopenSurvey reopens a closed survey (keeps code + responses).
 func (a *App) ReopenSurvey(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Reopen(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Reopen(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -109,11 +133,15 @@ func (a *App) ReopenSurvey(id string) (string, error) {
 
 // ArchiveSurvey archives a draft or closed survey.
 func (a *App) ArchiveSurvey(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Archive(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Archive(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -122,11 +150,15 @@ func (a *App) ArchiveSurvey(id string) (string, error) {
 
 // DuplicateSurvey copies a survey into a new draft (new code + salt).
 func (a *App) DuplicateSurvey(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Duplicate(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Duplicate(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -135,20 +167,28 @@ func (a *App) DuplicateSurvey(id string) (string, error) {
 
 // DeleteSurvey deletes a draft or archived survey (cascade).
 func (a *App) DeleteSurvey(id string) error {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return err
 	}
-	return c.Delete(context.Background(), strings.TrimSpace(id))
+	return c.Delete(context.Background(), id)
 }
 
 // UpdateSurvey patches a draft survey.
 func (a *App) UpdateSurvey(id string, inputJSON string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Update(context.Background(), strings.TrimSpace(id), json.RawMessage(inputJSON))
+	raw, err := c.Update(context.Background(), id, json.RawMessage(inputJSON))
 	if err != nil {
 		return "", err
 	}
@@ -157,11 +197,15 @@ func (a *App) UpdateSurvey(id string, inputJSON string) (string, error) {
 
 // BindSurveyGroups binds Lansenger groups to a survey.
 func (a *App) BindSurveyGroups(id string, bodyJSON string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Bind(context.Background(), strings.TrimSpace(id), json.RawMessage(bodyJSON))
+	raw, err := c.Bind(context.Background(), id, json.RawMessage(bodyJSON))
 	if err != nil {
 		return "", err
 	}
@@ -170,6 +214,10 @@ func (a *App) BindSurveyGroups(id string, bodyJSON string) (string, error) {
 
 // UnbindSurveyGroup removes one group binding.
 func (a *App) UnbindSurveyGroup(id, platform, groupID string) error {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return err
@@ -177,16 +225,20 @@ func (a *App) UnbindSurveyGroup(id, platform, groupID string) error {
 	if strings.TrimSpace(platform) == "" {
 		platform = "lansenger"
 	}
-	return c.Unbind(context.Background(), strings.TrimSpace(id), platform, strings.TrimSpace(groupID))
+	return c.Unbind(context.Background(), id, platform, strings.TrimSpace(groupID))
 }
 
 // ListSurveyResponses returns submitted responses JSON.
 func (a *App) ListSurveyResponses(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Responses(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Responses(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -195,11 +247,15 @@ func (a *App) ListSurveyResponses(id string) (string, error) {
 
 // GetSurveyStats returns aggregate stats JSON.
 func (a *App) GetSurveyStats(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Stats(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Stats(context.Background(), id)
 	if err != nil {
 		return "", err
 	}
@@ -222,11 +278,14 @@ func (a *App) ExportSurveyXLSXFiltered(id string, responsesJSON string) (string,
 }
 
 func (a *App) exportSurveyXLSX(id string, responsesOverride json.RawMessage) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	id = strings.TrimSpace(id)
 	detailRaw, err := c.Get(context.Background(), id)
 	if err != nil {
 		return "", err

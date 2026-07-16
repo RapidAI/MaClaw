@@ -15,6 +15,9 @@ import (
 // ErrAlreadySubmitted is returned when UNIQUE blocks insert and allow_update is false.
 var ErrAlreadySubmitted = errors.New("already submitted")
 
+// ErrDeadlinePassed is returned when a submit is attempted after the survey deadline.
+var ErrDeadlinePassed = errors.New("deadline passed")
+
 // isUniqueViolation reports SQLite UNIQUE / constraint failures (modernc + string fallback).
 func isUniqueViolation(err error) bool {
 	if err == nil {
@@ -607,8 +610,18 @@ func (s *Store) Duplicate(ctx context.Context, tenantID, id, createdBy string) (
 	if sv.Settings.Deadline != nil && sv.Settings.Deadline.After(time.Now().UTC()) {
 		deadline = sv.Settings.Deadline
 	}
+	title := sv.Title + " (copy)"
+	if rs := []rune(title); len(rs) > 200 {
+		// Keep suffix readable within title limit.
+		suffix := " (copy)"
+		maxBase := 200 - len([]rune(suffix))
+		if maxBase < 1 {
+			maxBase = 1
+		}
+		title = string(rs[:maxBase]) + suffix
+	}
 	in := CreateInput{
-		Title:       sv.Title + " (copy)",
+		Title:       title,
 		Description: sv.Description,
 		Questions:   sv.Questions,
 		Settings: SettingsIn{
