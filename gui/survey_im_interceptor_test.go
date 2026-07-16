@@ -51,8 +51,14 @@ func TestCouldBeSurveySessionReply(t *testing.T) {
 	if !couldBeSurveySessionReply("2") {
 		t.Fatal("answer token")
 	}
+	if !couldBeSurveySessionReply("1,2") {
+		t.Fatal("multi index")
+	}
 	if !couldBeSurveySessionReply("修改") {
 		t.Fatal("modify")
+	}
+	if !couldBeSurveySessionReply("prev") {
+		t.Fatal("prev control")
 	}
 	if !couldBeSurveySessionReply("还可以") {
 		t.Fatal("free text candidate")
@@ -60,6 +66,25 @@ func TestCouldBeSurveySessionReply(t *testing.T) {
 	// empty
 	if couldBeSurveySessionReply("") {
 		t.Fatal("empty")
+	}
+}
+
+func TestStrictChoiceTokenIsNumericOnly(t *testing.T) {
+	if !isStrictChoiceToken("3") {
+		t.Fatal("rating/index digit")
+	}
+	if !isStrictChoiceToken("1,2") {
+		t.Fatal("multi")
+	}
+	// Latin chat must not be treated as safe pre-session probes.
+	if isStrictChoiceToken("hi") {
+		t.Fatal("latin word must not be strict")
+	}
+	if isStrictChoiceToken("ok") {
+		t.Fatal("ok must not be strict")
+	}
+	if isStrictChoiceToken("opt_yes") {
+		t.Fatal("option id is free-text path")
 	}
 }
 

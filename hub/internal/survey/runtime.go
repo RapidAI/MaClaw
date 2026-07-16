@@ -197,6 +197,16 @@ func (r *Runtime) handleList(ctx context.Context, tenantID, platform string, req
 	if err != nil {
 		return IMHandleResponse{}, err
 	}
+	// Hide already-deadline surveys so list does not advertise dead short codes.
+	now := r.now()
+	active := list[:0]
+	for i := range list {
+		if DeadlinePassed(list[i].Settings, now) {
+			continue
+		}
+		active = append(active, list[i])
+	}
+	list = active
 	if len(list) == 0 {
 		return IMHandleResponse{Handled: true, ReplyText: "本群暂无进行中的问卷。"}, nil
 	}

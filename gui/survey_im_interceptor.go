@@ -258,15 +258,21 @@ func couldBeSurveySessionReply(text string) bool {
 }
 
 func isSurveyControlWord(t string) bool {
-	switch strings.TrimSpace(t) {
-	case "取消", "修改", "上一题", "cancel", "Cancel", "CANCEL":
+	t = strings.TrimSpace(t)
+	switch t {
+	case "取消", "修改", "上一题":
+		return true
+	}
+	switch strings.ToLower(t) {
+	case "cancel", "prev", "back", "modify":
 		return true
 	default:
 		return false
 	}
 }
 
-// isStrictChoiceToken is option indexes / multi "1,2" / short latin labels — safe to probe without session hint.
+// isStrictChoiceToken is option indexes / multi "1,2" / ratings — safe to probe without session hint.
+// Short latin words ("hi", "ok") are NOT strict: they would hammer Hub without a session.
 func isStrictChoiceToken(t string) bool {
 	t = strings.TrimSpace(t)
 	if t == "" {
@@ -276,14 +282,18 @@ func isStrictChoiceToken(t string) bool {
 	if len(runes) > 32 {
 		return false
 	}
+	hasDigit := false
 	for _, r := range runes {
-		if unicode.IsDigit(r) || r == ',' || r == '，' || r == '、' || unicode.IsSpace(r) ||
-			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+		if unicode.IsDigit(r) {
+			hasDigit = true
+			continue
+		}
+		if r == ',' || r == '，' || r == '、' || unicode.IsSpace(r) {
 			continue
 		}
 		return false
 	}
-	return true
+	return hasDigit
 }
 
 // isFreeTextSurveyCandidate is non-control, non-pure-choice content (e.g. CJK text answers).

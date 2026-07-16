@@ -1068,6 +1068,52 @@ func TestListP2PMessage(t *testing.T) {
 	}
 }
 
+func TestListHidesDeadlinePassedSurveys(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	future := time.Now().UTC().Add(2 * time.Hour)
+	sv, err := st.Create(ctx, "t", "u", CreateInput{
+		Title: "SoonDead",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+		Settings: SettingsIn{Deadline: &future},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	if _, err := st.Publish(ctx, "t", sv.ID); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(st)
+	// Before deadline: listed
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u", ChatType: "group", GroupID: "g", Text: "/survey list",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.ReplyText, "SoonDead") {
+		t.Fatalf("expected list before deadline, got %q", r.ReplyText)
+	}
+	// After deadline: hidden
+	rt.Now = func() time.Time { return future.Add(time.Minute) }
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u", ChatType: "group", GroupID: "g", Text: "/survey list",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.ReplyText, "SoonDead") {
+		t.Fatalf("deadline-passed survey should be hidden: %q", r.ReplyText)
+	}
+	if !strings.Contains(r.ReplyText, "暂无") {
+		t.Fatalf("want empty list message, got %q", r.ReplyText)
+	}
+}
+
 func TestUpdateRejectsBadQuestions(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

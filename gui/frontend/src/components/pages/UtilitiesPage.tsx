@@ -11,6 +11,7 @@ import {
     completionPercent,
     createEmptyQuestion,
     deadlineListBadge,
+    deadlineLocalToRFC3339,
     deadlineRFC3339ToLocal,
     detailToEditorQuestions,
     expandResponseAnswers,
@@ -226,20 +227,30 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             type: q.type,
             options: (q.options || []).map((o) => ({ label: o.label })),
         }));
+        let deadlineISO: string | undefined;
+        try {
+            deadlineISO = draftDeadlineLocal
+                ? deadlineLocalToRFC3339(draftDeadlineLocal)
+                : selected.settings?.deadline;
+        } catch {
+            deadlineISO = selected.settings?.deadline;
+        }
         return buildPublishChecklist(
             {
                 status: selected.status,
                 questions: qs,
                 bindings: selected.bindings || [],
+                deadline: deadlineISO,
             },
             {
                 draft: isZh ? '状态为草稿' : 'Status is draft',
                 hasQuestions: isZh ? '至少一道有效题目' : 'At least one valid question',
                 choiceOptions: isZh ? '选择题 ≥2 个选项' : 'Choice questions have ≥2 options',
                 hasBindings: isZh ? '至少绑定 1 个蓝信群' : 'At least one Lansenger group bound',
+                deadlineOk: isZh ? '截止时间未过期' : 'Deadline not already past',
             },
         );
-    }, [selected, editQuestions, isZh]);
+    }, [selected, editQuestions, draftDeadlineLocal, isZh]);
 
     const canPublishNow = publishChecklistReady(publishChecks);
 
@@ -453,6 +464,9 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         if (code === 'invalid_target_count') return isZh ? '目标回收数无效' : 'Invalid target count';
         if (code === 'rating_min_max') return isZh ? '评分题 min 不能大于 max' : 'Rating min cannot exceed max';
         if (code === 'invalid_max_length') return isZh ? '文本最大字数无效' : 'Invalid max length';
+        if (code.includes('截止时间已过') || /deadline already passed|deadline.*past/i.test(code)) {
+            return isZh ? '截止时间已过，请先修改截止时间再发布' : 'Deadline already past; update deadline before publish';
+        }
         return code;
     };
 

@@ -196,6 +196,7 @@ describe('utilitiesSurveyEditor', () => {
             hasQuestions: 'questions',
             choiceOptions: 'options',
             hasBindings: 'bindings',
+            deadlineOk: 'deadline',
         };
         const bad = buildPublishChecklist(
             {
@@ -224,6 +225,25 @@ describe('utilitiesSurveyEditor', () => {
             labels,
         );
         expect(publishChecklistReady(good)).toBe(true);
+
+        const past = new Date(Date.now() - 3600_000).toISOString();
+        const expired = buildPublishChecklist(
+            {
+                status: 'draft',
+                questions: [
+                    {
+                        type: 'single_choice',
+                        title: 'Q',
+                        options: [{ label: 'A' }, { label: 'B' }],
+                    },
+                ],
+                bindings: [{ group_id: 'g1' }],
+                deadline: past,
+            },
+            labels,
+        );
+        expect(publishChecklistReady(expired)).toBe(false);
+        expect(expired.find((i) => i.id === 'deadline')?.ok).toBe(false);
     });
 
     it('filterResponsesByOption for single and multi', () => {

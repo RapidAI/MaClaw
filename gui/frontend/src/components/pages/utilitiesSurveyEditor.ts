@@ -318,13 +318,17 @@ export function buildPublishChecklist(
         questions?: Array<{ title?: string; type?: string; options?: Array<{ label?: string }> }>;
         bindings?: Array<{ group_id?: string }>;
         status?: string;
+        /** RFC3339 deadline; past values block publish (Hub rejects). */
+        deadline?: string | null;
     },
     labels: {
         draft: string;
         hasQuestions: string;
         choiceOptions: string;
         hasBindings: string;
+        deadlineOk?: string;
     },
+    nowMs: number = Date.now(),
 ): PublishCheckItem[] {
     const qs = input.questions || [];
     const bindings = (input.bindings || []).filter((b) => String(b.group_id || '').trim() !== '');
@@ -334,12 +338,20 @@ export function buildPublishChecklist(
         return opts.length < 2;
     });
     const titlesOk = qs.length > 0 && qs.every((q) => String(q.title || '').trim() !== '');
-    return [
+    const deadlineOk = !isDeadlineExpired(input.deadline, nowMs);
+    const items: PublishCheckItem[] = [
         { id: 'draft', ok: !input.status || input.status === 'draft', label: labels.draft },
         { id: 'questions', ok: titlesOk, label: labels.hasQuestions },
         { id: 'choice_options', ok: !choiceBad, label: labels.choiceOptions },
         { id: 'bindings', ok: bindings.length >= 1, label: labels.hasBindings },
     ];
+    if (labels.deadlineOk) {
+        items.push({ id: 'deadline', ok: deadlineOk, label: labels.deadlineOk });
+    } else if (!deadlineOk) {
+        // Always surface a failed check when deadline is past, even without a label override.
+        items.push({ id: 'deadline', ok: false, label: 'deadline not past' });
+    }
+    return items;
 }
 
 export function publishChecklistReady(items: PublishCheckItem[]): boolean {
