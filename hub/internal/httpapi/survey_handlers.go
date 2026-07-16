@@ -301,8 +301,13 @@ func (h *SurveyHandler) responses(w http.ResponseWriter, r *http.Request, p *aut
 		return
 	}
 	// Cheap anonymous flag — avoid full Get (questions+bindings).
+	// Fail closed on error so we never return respondent PII for anonymous surveys.
 	anon, err := h.Store.IsAnonymous(r.Context(), p.TenantID, id)
-	if err == nil && anon {
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SURVEY_RESPONSES_FAILED", err.Error())
+		return
+	}
+	if anon {
 		for i := range list {
 			list[i].RespondentKey = "anonymous"
 			list[i].RespondentName = ""

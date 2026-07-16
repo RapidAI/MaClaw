@@ -302,6 +302,12 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 
 	// Resume same survey in progress instead of wiping answers / re-prompting.
 	if existing != nil && existing.SurveyID == sv.ID {
+		// Touch TTL so re-issuing /survey <code> does not leave a nearly-expired session.
+		existing.ExpiresAt = r.now().Add(SessionTTL)
+		existing.UpdatedAt = r.now()
+		if err := r.Store.SaveSession(ctx, existing); err != nil {
+			return IMHandleResponse{}, err
+		}
 		switch existing.Phase {
 		case PhaseAnswering:
 			cur := existing.Cursor

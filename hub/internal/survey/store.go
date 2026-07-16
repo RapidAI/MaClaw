@@ -455,12 +455,20 @@ func (s *Store) Bind(ctx context.Context, tenantID, id string, bindings []Bindin
 		if groupID == "" {
 			return fmt.Errorf("group_id required")
 		}
+		if len([]rune(groupID)) > MaxGroupIDRunes {
+			return fmt.Errorf("group_id too long (max %d)", MaxGroupIDRunes)
+		}
+		groupName := strings.TrimSpace(b.GroupName)
+		if len([]rune(groupName)) > MaxGroupNameRunes {
+			rs := []rune(groupName)
+			groupName = string(rs[:MaxGroupNameRunes])
+		}
 		if b.BoundAt.IsZero() {
 			b.BoundAt = now
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO survey_bindings(survey_id,platform,group_id,group_name,bound_at)
 			VALUES(?,?,?,?,?) ON CONFLICT(survey_id,platform,group_id) DO UPDATE SET group_name=excluded.group_name`,
-			id, platform, groupID, strings.TrimSpace(b.GroupName), b.BoundAt.UTC().Format(time.RFC3339)); err != nil {
+			id, platform, groupID, groupName, b.BoundAt.UTC().Format(time.RFC3339)); err != nil {
 			return err
 		}
 	}
@@ -740,11 +748,17 @@ func (s *Store) SubmitResponse(ctx context.Context, tenantID string, resp *Respo
 		return ErrAlreadySubmitted
 	}
 	// UPSERT
-	_, err = s.db.ExecContext(ctx, `UPDATE survey_responses SET respondent_name=?, group_id=?, answers_json=?, submitted_at=?
+	res, err := s.db.ExecContext(ctx, `UPDATE survey_responses SET respondent_name=?, group_id=?, answers_json=?, submitted_at=?
 		WHERE survey_id=? AND platform=? AND respondent_key=?`,
 		resp.RespondentName, resp.GroupID, string(resp.Answers), resp.SubmittedAt.Format(time.RFC3339),
 		resp.SurveyID, resp.Platform, resp.RespondentKey)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("response update matched no rows")
+	}
+	return nil
 }
 
 func (s *Store) HasResponse(ctx context.Context, surveyID, platform, respondentKey string) (bool, error) {

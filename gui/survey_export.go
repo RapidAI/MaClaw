@@ -217,7 +217,16 @@ func formatSurveyAnswerCell(qType string, options []struct {
 }
 
 func defaultSurveyExportName(shortCode string, now time.Time) string {
-	return filepath.Base(fmt.Sprintf("survey_%s_%s.xlsx", shortCode, now.UTC().Format("20060102_150405")))
+	code := strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			return r
+		}
+		return -1
+	}, shortCode)
+	if code == "" {
+		code = "survey"
+	}
+	return filepath.Base(fmt.Sprintf("survey_%s_%s.xlsx", code, now.UTC().Format("20060102_150405")))
 }
 
 func writeSurveyExcelFile(path string, data excel.WriteData) error {

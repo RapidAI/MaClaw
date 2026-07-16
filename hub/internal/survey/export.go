@@ -119,5 +119,19 @@ func WriteExportFile(path string, sv *Survey, responses []Response) error {
 // DefaultExportFilename returns a suggested file name.
 func DefaultExportFilename(sv *Survey, now time.Time) string {
 	ts := now.UTC().Format("20060102_150405")
-	return filepath.Base(fmt.Sprintf("survey_%s_%s.xlsx", sv.ShortCode, ts))
+	code := sanitizeExportCode(sv.ShortCode)
+	return filepath.Base(fmt.Sprintf("survey_%s_%s.xlsx", code, ts))
+}
+
+func sanitizeExportCode(code string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(code)) {
+		if strings.ContainsRune(CrockfordAlphabet, r) {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "survey"
+	}
+	return b.String()
 }

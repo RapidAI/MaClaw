@@ -861,6 +861,52 @@ func TestNormalizeShortCodeCrockfordConfusables(t *testing.T) {
 	}
 }
 
+func TestResumeExtendsSessionTTL(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	base := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	rt := NewRuntime(st)
+	rt.Now = func() time.Time { return base }
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "R",
+		Questions: []Question{
+			{ID: "q1", Type: "text", Title: "A", Required: true},
+			{ID: "q2", Type: "text", Title: "B", Required: true},
+		},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	_, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := SessionKey(PlatformLansenger, "u1")
+	sess1, err := st.GetSession(ctx, "t", sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	early := sess1.ExpiresAt
+	// Advance clock and resume via short code.
+	rt.Now = func() time.Time { return base.Add(10 * time.Minute) }
+	_, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess2, err := st.GetSession(ctx, "t", sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess2.ExpiresAt.After(early) {
+		t.Fatalf("expected TTL extended: early=%v got=%v", early, sess2.ExpiresAt)
+	}
+}
+
 func TestInvalidFastPathOpensSession(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

@@ -101,9 +101,22 @@ func NormalizeQuestions(qs []Question) []Question {
 	return out
 }
 
+const (
+	MaxQuestionsPerSurvey  = 50
+	MaxOptionsPerQuestion  = 30
+	MaxQuestionTitleRunes  = 500
+	MaxOptionLabelRunes    = 200
+	MaxTargetCount         = 1_000_000
+	MaxGroupIDRunes        = 128
+	MaxGroupNameRunes      = 200
+)
+
 func ValidateDraftQuestions(qs []Question) error {
 	if len(qs) == 0 {
 		return fmt.Errorf("at least one question is required")
+	}
+	if len(qs) > MaxQuestionsPerSurvey {
+		return fmt.Errorf("too many questions (max %d)", MaxQuestionsPerSurvey)
 	}
 	seenQ := make(map[string]struct{}, len(qs))
 	for _, q := range qs {
@@ -115,15 +128,28 @@ func ValidateDraftQuestions(qs []Question) error {
 			return fmt.Errorf("duplicate question id %q", qid)
 		}
 		seenQ[qid] = struct{}{}
+		if q.Title == "" {
+			return fmt.Errorf("question title required")
+		}
+		if len([]rune(q.Title)) > MaxQuestionTitleRunes {
+			return fmt.Errorf("question title too long (max %d)", MaxQuestionTitleRunes)
+		}
 		switch q.Type {
 		case "single_choice", "multi_choice":
 			if len(q.Options) < 2 {
 				return fmt.Errorf("choice question needs at least 2 options")
 			}
+			if len(q.Options) > MaxOptionsPerQuestion {
+				return fmt.Errorf("too many options (max %d)", MaxOptionsPerQuestion)
+			}
 			seenO := make(map[string]struct{}, len(q.Options))
 			for _, o := range q.Options {
-				if strings.TrimSpace(o.Label) == "" {
+				label := strings.TrimSpace(o.Label)
+				if label == "" {
 					return fmt.Errorf("choice option label required")
+				}
+				if len([]rune(label)) > MaxOptionLabelRunes {
+					return fmt.Errorf("option label too long (max %d)", MaxOptionLabelRunes)
 				}
 				oid := strings.TrimSpace(o.ID)
 				if oid == "" {
@@ -161,9 +187,6 @@ func ValidateDraftQuestions(qs []Question) error {
 		default:
 			return fmt.Errorf("unsupported question type %q", q.Type)
 		}
-		if q.Title == "" {
-			return fmt.Errorf("question title required")
-		}
 	}
 	return nil
 }
@@ -172,6 +195,9 @@ func ValidateDraftQuestions(qs []Question) error {
 func ValidateSettingsIn(s SettingsIn) error {
 	if s.TargetCount < 0 {
 		return fmt.Errorf("target_count must be >= 0")
+	}
+	if s.TargetCount > MaxTargetCount {
+		return fmt.Errorf("target_count too large (max %d)", MaxTargetCount)
 	}
 	return nil
 }

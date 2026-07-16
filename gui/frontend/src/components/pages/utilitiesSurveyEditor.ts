@@ -112,7 +112,7 @@ export function deadlineRFC3339ToLocal(iso: string | undefined | null): string {
 export function parseTargetCount(raw: string | number | undefined | null): number {
     if (raw === '' || raw == null) return 0;
     const n = typeof raw === 'number' ? raw : Number(raw);
-    if (!Number.isFinite(n) || n < 0) {
+    if (!Number.isFinite(n) || n < 0 || n > 1_000_000) {
         throw new Error('invalid_target_count');
     }
     return Math.floor(n);
