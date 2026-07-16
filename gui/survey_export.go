@@ -28,9 +28,19 @@ func buildSurveyExportXLSX(detailJSON, responsesJSON []byte) (excel.WriteData, e
 				Label string `json:"label"`
 			} `json:"options"`
 		} `json:"questions"`
+		Bindings []struct {
+			GroupID   string `json:"group_id"`
+			GroupName string `json:"group_name"`
+		} `json:"bindings"`
 	}
 	if err := json.Unmarshal(detailJSON, &sv); err != nil {
 		return excel.WriteData{}, err
+	}
+	groupNames := map[string]string{}
+	for _, b := range sv.Bindings {
+		if gid := strings.TrimSpace(b.GroupID); gid != "" {
+			groupNames[gid] = b.GroupName
+		}
 	}
 	var wrap struct {
 		Responses []struct {
@@ -75,7 +85,7 @@ func buildSurveyExportXLSX(detailJSON, responsesJSON []byte) (excel.WriteData, e
 			{Value: resp.SubmittedAt},
 			{Value: resp.Platform},
 			{Value: resp.GroupID},
-			{Value: ""},
+			{Value: groupNames[strings.TrimSpace(resp.GroupID)]},
 			{Value: key},
 			{Value: name},
 		}

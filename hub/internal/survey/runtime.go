@@ -507,6 +507,47 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		sess.Cursor = 0
 	}
 	q := sv.Questions[sess.Cursor]
+	if sess.Answers == nil {
+		sess.Answers = map[string]any{}
+	}
+	// Optional questions: 「跳过」 advances without storing an answer.
+	if !q.Required && IsSkipToken(text) {
+		delete(sess.Answers, q.ID)
+		sess.Cursor++
+		sess.ExpiresAt = r.now().Add(SessionTTL)
+		sess.UpdatedAt = r.now()
+		if sess.Cursor >= len(sv.Questions) {
+			if err := r.finalizeSubmit(ctx, tenantID, sv, sess.Platform, sess.UserID, sess.UserName, sess.GroupID, sess.Answers); err != nil {
+				if errors.Is(err, ErrAlreadySubmitted) {
+					_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+					return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
+				}
+				if errors.Is(err, ErrDeadlinePassed) {
+					_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+					return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
+				}
+				if errors.Is(err, ErrNotCollecting) {
+					_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+					return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+				}
+				return IMHandleResponse{}, err
+			}
+			_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+			return IMHandleResponse{
+				Handled:   true,
+				ReplyText: "提交成功，感谢参与！",
+				SurveyID:  sv.ID,
+				Event:     "response_submitted",
+			}, nil
+		}
+		if err := r.Store.SaveSession(ctx, sess); err != nil {
+			return IMHandleResponse{}, err
+		}
+		return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[sess.Cursor], sess.Cursor, len(sv.Questions))}, nil
+	}
+	if q.Required && IsSkipToken(text) {
+		return IMHandleResponse{Handled: true, ReplyText: "该题为必填，不能跳过。\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions))}, nil
+	}
 	val, err := ParseAnswer(q, text)
 	if err != nil {
 		// unparseable while session active: short-circuit with hint (still handled)
@@ -514,9 +555,6 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 			return IMHandleResponse{Handled: true, ReplyText: "当前正在填写问卷。发送「取消」结束问卷后再对话。\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions))}, nil
 		}
 		return IMHandleResponse{Handled: true, ReplyText: "答案无效：" + err.Error() + "\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions))}, nil
-	}
-	if sess.Answers == nil {
-		sess.Answers = map[string]any{}
 	}
 	sess.Answers[q.ID] = val
 	sess.Cursor++

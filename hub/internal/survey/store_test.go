@@ -846,6 +846,75 @@ func TestFinalizeSubmitRejectsClosed(t *testing.T) {
 	}
 }
 
+func TestNormalizeShortCodeCrockfordConfusables(t *testing.T) {
+	// O→0, I/L→1 so users retyping codes still match.
+	// A3 O I 1 L → A3 0 1 1 1
+	got, err := NormalizeShortCode("A3OI1L")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "A30111" {
+		t.Fatalf("got %q want A30111", got)
+	}
+	if _, err := NormalizeShortCode("ABC"); err == nil {
+		t.Fatal("want length error")
+	}
+}
+
+func TestOptionalSkipAdvances(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "Opt",
+		Questions: []Question{
+			{ID: "q1", Type: "text", Title: "Optional note", Required: false},
+			{ID: "q2", Type: "single_choice", Title: "Need", Required: true,
+				Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}}},
+		},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	// Start conversational
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil || !r.Handled {
+		t.Fatalf("start err=%v reply=%q", err, r.ReplyText)
+	}
+	// Skip optional q1
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "跳过",
+	})
+	if err != nil || !r.Handled {
+		t.Fatalf("skip err=%v reply=%q", err, r.ReplyText)
+	}
+	if !strings.Contains(r.ReplyText, "Need") {
+		t.Fatalf("expected q2 prompt after skip, got %q", r.ReplyText)
+	}
+	// Answer required q2
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "1",
+	})
+	if err != nil || r.Event != "response_submitted" {
+		t.Fatalf("submit err=%v event=%q reply=%q", err, r.Event, r.ReplyText)
+	}
+	list, _ := st.ListResponses(ctx, "t", pub.ID)
+	if len(list) != 1 {
+		t.Fatalf("responses=%d", len(list))
+	}
+	m := JSONToAnswers(list[0].Answers)
+	if _, ok := m["q1"]; ok {
+		t.Fatalf("skipped q1 should be absent, got %v", m)
+	}
+	if m["q2"] != "a" {
+		t.Fatalf("q2=%v", m["q2"])
+	}
+}
+
 func TestIsControlWordCaseInsensitive(t *testing.T) {
 	if IsControlWord("CANCEL") != "cancel" {
 		t.Fatal("CANCEL")

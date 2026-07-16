@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -105,8 +106,21 @@ func (h *SurveyHandler) create(w http.ResponseWriter, r *http.Request, p *auth.M
 	writeJSON(w, http.StatusOK, sv)
 }
 
+// surveyPathID returns a non-empty {id} path value or writes 400.
+func surveyPathID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "survey id required")
+		return "", false
+	}
+	return id, true
+}
+
 func (h *SurveyHandler) get(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Get(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "SURVEY_NOT_FOUND", "survey not found")
@@ -117,7 +131,10 @@ func (h *SurveyHandler) get(w http.ResponseWriter, r *http.Request, p *auth.Mach
 }
 
 func (h *SurveyHandler) update(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	var in survey.UpdateInput
 	if !h.decodeJSON(w, r, &in) {
 		return
@@ -132,7 +149,10 @@ func (h *SurveyHandler) update(w http.ResponseWriter, r *http.Request, p *auth.M
 }
 
 func (h *SurveyHandler) delete(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	if err := h.Store.Delete(r.Context(), p.TenantID, id); err != nil {
 		writeError(w, http.StatusBadRequest, "SURVEY_DELETE_FAILED", err.Error())
 		return
@@ -141,7 +161,10 @@ func (h *SurveyHandler) delete(w http.ResponseWriter, r *http.Request, p *auth.M
 }
 
 func (h *SurveyHandler) publish(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Publish(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "SURVEY_PUBLISH_FAILED", err.Error())
@@ -152,7 +175,10 @@ func (h *SurveyHandler) publish(w http.ResponseWriter, r *http.Request, p *auth.
 }
 
 func (h *SurveyHandler) close(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Close(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "SURVEY_CLOSE_FAILED", err.Error())
@@ -163,7 +189,10 @@ func (h *SurveyHandler) close(w http.ResponseWriter, r *http.Request, p *auth.Ma
 }
 
 func (h *SurveyHandler) reopen(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Reopen(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "SURVEY_REOPEN_FAILED", err.Error())
@@ -174,7 +203,10 @@ func (h *SurveyHandler) reopen(w http.ResponseWriter, r *http.Request, p *auth.M
 }
 
 func (h *SurveyHandler) archive(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Archive(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "SURVEY_ARCHIVE_FAILED", err.Error())
@@ -185,7 +217,10 @@ func (h *SurveyHandler) archive(w http.ResponseWriter, r *http.Request, p *auth.
 }
 
 func (h *SurveyHandler) duplicate(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Duplicate(r.Context(), p.TenantID, id, p.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "SURVEY_DUPLICATE_FAILED", err.Error())
@@ -196,7 +231,10 @@ func (h *SurveyHandler) duplicate(w http.ResponseWriter, r *http.Request, p *aut
 }
 
 func (h *SurveyHandler) bind(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	var body struct {
 		Bindings []survey.Binding `json:"bindings"`
 	}
@@ -217,10 +255,17 @@ func (h *SurveyHandler) bind(w http.ResponseWriter, r *http.Request, p *auth.Mac
 }
 
 func (h *SurveyHandler) unbind(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	platform := r.PathValue("platform")
 	groupID := r.PathValue("groupId")
 	if err := h.Store.Unbind(r.Context(), p.TenantID, id, platform, groupID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "SURVEY_BINDING_NOT_FOUND", "binding not found")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "SURVEY_UNBIND_FAILED", err.Error())
 		return
 	}
@@ -228,7 +273,10 @@ func (h *SurveyHandler) unbind(w http.ResponseWriter, r *http.Request, p *auth.M
 }
 
 func (h *SurveyHandler) stats(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	sv, err := h.Store.Get(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "SURVEY_NOT_FOUND", "survey not found")
@@ -243,7 +291,10 @@ func (h *SurveyHandler) stats(w http.ResponseWriter, r *http.Request, p *auth.Ma
 }
 
 func (h *SurveyHandler) responses(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
-	id := r.PathValue("id")
+	id, ok := surveyPathID(w, r)
+	if !ok {
+		return
+	}
 	list, err := h.Store.ListResponses(r.Context(), p.TenantID, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "SURVEY_NOT_FOUND", err.Error())

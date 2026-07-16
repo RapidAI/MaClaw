@@ -27,6 +27,9 @@ func TestBuildSurveyExportXLSXMultiSheetAndAnonymous(t *testing.T) {
 				},
 			},
 		},
+		"bindings": []map[string]any{
+			{"group_id": "g1", "group_name": "Team Alpha"},
+		},
 	}
 	responses := map[string]any{
 		"responses": []map[string]any{
@@ -57,6 +60,9 @@ func TestBuildSurveyExportXLSXMultiSheetAndAnonymous(t *testing.T) {
 	}
 	// design cols: response_id, submitted_at, platform, group_id, group_name, respondent_key, respondent_name, Q…
 	row := data.Sheets[0].Rows[1]
+	if row[4].Value != "Team Alpha" {
+		t.Fatalf("group_name=%v", row[4].Value)
+	}
 	if row[5].Value != "anonymous" {
 		t.Fatalf("key=%v", row[5].Value)
 	}

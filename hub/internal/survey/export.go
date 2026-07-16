@@ -3,6 +3,7 @@ package survey
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/excel"
@@ -24,6 +25,13 @@ func BuildExportData(sv *Survey, responses []Response) excel.WriteData {
 	for _, q := range sv.Questions {
 		header = append(header, excel.WriteCell{Value: fmt.Sprintf("Q%d: %s", q.Position+1, q.Title)})
 	}
+	// Resolve group_name from current bindings (response rows do not snapshot name).
+	groupNames := map[string]string{}
+	for _, b := range sv.Bindings {
+		if gid := strings.TrimSpace(b.GroupID); gid != "" {
+			groupNames[gid] = b.GroupName
+		}
+	}
 	rows := [][]excel.WriteCell{header}
 	for _, resp := range responses {
 		key := resp.RespondentKey
@@ -37,7 +45,7 @@ func BuildExportData(sv *Survey, responses []Response) excel.WriteData {
 			{Value: resp.SubmittedAt.UTC().Format(time.RFC3339)},
 			{Value: resp.Platform},
 			{Value: resp.GroupID},
-			{Value: ""}, // group_name snapshot not stored on response rows in MVP
+			{Value: groupNames[strings.TrimSpace(resp.GroupID)]},
 			{Value: key},
 			{Value: name},
 		}

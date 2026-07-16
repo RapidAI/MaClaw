@@ -55,6 +55,17 @@ func GenerateShortCode() (string, error) {
 
 func NormalizeShortCode(in string) (string, error) {
 	s := strings.ToUpper(strings.TrimSpace(in))
+	// Crockford confusables: O→0, I/L→1 (common when users retype short codes).
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case 'O':
+			return '0'
+		case 'I', 'L':
+			return '1'
+		default:
+			return r
+		}
+	}, s)
 	if len(s) != ShortCodeLen {
 		return "", fmt.Errorf("short code must be %d characters", ShortCodeLen)
 	}
@@ -262,11 +273,27 @@ func ParseAnswer(q Question, text string) (any, error) {
 	}
 }
 
+// IsSkipToken reports optional-question skip replies (「跳过」 / skip).
+func IsSkipToken(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "跳过" {
+		return true
+	}
+	switch strings.ToLower(t) {
+	case "skip", "-":
+		return true
+	default:
+		return false
+	}
+}
+
 func FormatQuestionPrompt(q Question, index, total int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "【%d/%d】%s", index+1, total, q.Title)
 	if q.Required {
 		b.WriteString(" *")
+	} else {
+		b.WriteString("（选填）")
 	}
 	b.WriteString("\n")
 	switch q.Type {
@@ -290,6 +317,9 @@ func FormatQuestionPrompt(q Question, index, total int) string {
 		fmt.Fprintf(&b, "请回复 %d–%d 的整数\n", min, max)
 	case "text":
 		b.WriteString("请直接输入文字\n")
+	}
+	if !q.Required {
+		b.WriteString("选填可回复「跳过」\n")
 	}
 	b.WriteString("回复「取消」可退出；「上一题」可返回")
 	return strings.TrimRight(b.String(), "\n")
