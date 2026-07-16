@@ -239,9 +239,9 @@ func (h *SurveyHandler) responses(w http.ResponseWriter, r *http.Request, p *aut
 		writeError(w, http.StatusNotFound, "SURVEY_NOT_FOUND", err.Error())
 		return
 	}
-	// redact keys for anonymous surveys
-	sv, err := h.Store.Get(r.Context(), p.TenantID, id)
-	if err == nil && sv.Settings.Anonymous {
+	// Cheap anonymous flag — avoid full Get (questions+bindings).
+	anon, err := h.Store.IsAnonymous(r.Context(), p.TenantID, id)
+	if err == nil && anon {
 		for i := range list {
 			list[i].RespondentKey = "anonymous"
 			list[i].RespondentName = ""

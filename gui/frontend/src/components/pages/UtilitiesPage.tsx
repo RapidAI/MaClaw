@@ -495,8 +495,9 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         }
     };
 
-    const saveDraft = async () => {
-        if (!selected?.id || selected.status !== 'draft') return;
+    /** Returns false when save fails (so publish can abort). */
+    const saveDraft = async (): Promise<boolean> => {
+        if (!selected?.id || selected.status !== 'draft') return false;
         setBusy(true);
         setError('');
         try {
@@ -521,8 +522,10 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             setError('');
             setCopyHint(isZh ? '已保存' : 'Saved');
             setTimeout(() => setCopyHint(''), 2000);
+            return true;
         } catch (e: any) {
             setError(String(e?.message || e));
+            return false;
         } finally {
             setBusy(false);
         }
@@ -639,14 +642,11 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             setError(isZh ? '发布前请完成检查清单' : 'Complete publish checklist first');
             return;
         }
-        // Save draft first so editor questions/settings hit Hub before publish
+        // Save draft first so editor questions/settings hit Hub before publish.
+        // saveDraft swallows errors into UI state — must check boolean result.
         if (selected.status === 'draft') {
-            try {
-                await saveDraft();
-            } catch {
-                // saveDraft already sets error
-                return;
-            }
+            const saved = await saveDraft();
+            if (!saved) return;
         }
         setBusy(true);
         setError('');

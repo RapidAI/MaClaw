@@ -626,6 +626,38 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 	}
 }
 
+func TestCloseClearsSessions(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "C",
+		Questions: []Question{
+			{ID: "q1", Type: "text", Title: "A", Required: true},
+			{ID: "q2", Type: "text", Title: "B", Required: true},
+		},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	_, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk := SessionKey(PlatformLansenger, "u1")
+	if _, err := st.GetSession(ctx, "t", sk); err != nil {
+		t.Fatalf("expected session: %v", err)
+	}
+	if _, err := st.Close(ctx, "t", pub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetSession(ctx, "t", sk); err == nil {
+		t.Fatal("session should be cleared on close")
+	}
+}
+
 func TestBindRequiresNonEmpty(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

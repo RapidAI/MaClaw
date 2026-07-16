@@ -87,6 +87,8 @@ func (s *Store) InitSchema(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY(tenant_id, session_key)
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_survey_sessions_expires ON survey_sessions(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_survey_sessions_survey ON survey_sessions(survey_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -494,6 +496,8 @@ func (s *Store) Close(ctx context.Context, tenantID, id string) (*Survey, error)
 		StatusClosed, now.Format(time.RFC3339), id, tenantID); err != nil {
 		return nil, err
 	}
+	// Drop in-flight sessions so IM stops treating replies as survey answers.
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM survey_sessions WHERE survey_id=?`, id)
 	return s.Get(ctx, tenantID, id)
 }
 
@@ -623,7 +627,7 @@ func (s *Store) HasResponse(ctx context.Context, surveyID, platform, respondentK
 	var one int
 	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM survey_responses WHERE survey_id=? AND platform=? AND respondent_key=? LIMIT 1`,
 		surveyID, platform, respondentKey).Scan(&one)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
@@ -632,9 +636,33 @@ func (s *Store) HasResponse(ctx context.Context, surveyID, platform, respondentK
 	return true, nil
 }
 
+// surveyOwned is a cheap ownership check (no questions/bindings load).
+func (s *Store) surveyOwned(ctx context.Context, tenantID, surveyID string) error {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM surveys WHERE id=? AND tenant_id=? LIMIT 1`, surveyID, tenantID).Scan(&one)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// IsAnonymous returns the anonymous flag without loading questions/bindings.
+func (s *Store) IsAnonymous(ctx context.Context, tenantID, surveyID string) (bool, error) {
+	var settingsJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT settings_json FROM surveys WHERE id=? AND tenant_id=?`, surveyID, tenantID).Scan(&settingsJSON)
+	if err != nil {
+		return false, err
+	}
+	var st Settings
+	if err := json.Unmarshal([]byte(settingsJSON), &st); err != nil {
+		return false, err
+	}
+	return st.Anonymous, nil
+}
+
 func (s *Store) ListResponses(ctx context.Context, tenantID, surveyID string) ([]Response, error) {
-	// verify tenant owns survey
-	if _, err := s.Get(ctx, tenantID, surveyID); err != nil {
+	// verify tenant owns survey (avoid full Get)
+	if err := s.surveyOwned(ctx, tenantID, surveyID); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,survey_id,tenant_id,platform,respondent_key,respondent_name,group_id,answers_json,submitted_at

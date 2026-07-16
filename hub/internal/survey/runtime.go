@@ -601,6 +601,17 @@ func FormatAnswerCell(q Question, v any) string {
 			}
 		case []string:
 			ids = arr
+		case string:
+			var parsed []any
+			if err := json.Unmarshal([]byte(arr), &parsed); err == nil {
+				for _, x := range parsed {
+					if id, ok := x.(string); ok {
+						ids = append(ids, id)
+					}
+				}
+			} else if arr != "" {
+				ids = []string{arr}
+			}
 		}
 		return strings.Join(MultiLabelsInOptionOrder(q, ids), ", ")
 	case "rating":
