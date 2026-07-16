@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -291,19 +292,25 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	}
 	log.Printf("[agent-loop] shared start owner=%q request_id=%q loop=%q kind=%s platform=%q text_len=%d attachments=%d",
 		userID, requestID, loopID, kind, platform, len([]rune(userText)), len(attachments))
+	// Trajectory cleanup after recover so panic turns stamp error status before Flush.
+	var (
+		trajRecorder  *TrajectoryRecorder
+		trajCleanup   func()
+		trajTelemetry *agentLoopTelemetry
+	)
 	defer func() {
-		status := "success"
-		if result != nil && result.Error != "" {
-			status = "error"
+		if r := recover(); r != nil {
+			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
+			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v", userID, requestID, loopID, r)
 		}
-		if result != nil && strings.HasPrefix(strings.ToLower(result.Text), "task cancelled") {
-			status = "cancelled"
-		}
-		if result != nil && result.RequestID == "" {
-			result.RequestID = requestID
-		}
-		if result != nil && result.ResponseSource == "" {
-			result.ResponseSource = "shared_agent_loop"
+		status, _ := classifyIMAgentResponseOutcome(result)
+		if result != nil {
+			if result.RequestID == "" {
+				result.RequestID = requestID
+			}
+			if result.ResponseSource == "" {
+				result.ResponseSource = "shared_agent_loop"
+			}
 		}
 		inTok, outTok := 0, 0
 		routeTask, routeSrc, routeModel := "", "", ""
@@ -319,13 +326,23 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		cancelled := status == "cancelled"
 		errored := status == "error"
 		recordSharedAgentLoopTurn(status == "success", cancelled, errored)
-		if r := recover(); r != nil {
-			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
-			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v", userID, requestID, loopID, r)
+		// Stamp outcome only when RecordLoopResult did not already finalize it.
+		// Re-applying from a sparse IM response would clobber cancel/paused status
+		// and wipe LoopResult token usage (cancel uses Text, not Error).
+		// Panic / unexpected early return also lands here — close orphans first.
+		if trajRecorder != nil && !trajRecorder.HasOutcome() {
+			if reason := unpairedCloseReasonFromIMResponse(result); reason != "" {
+				trajRecorder.CloseUnpairedToolCalls(reason)
+			}
+			trajRecorder.SetOutcomeFromIMResponse(result, trajTelemetry, loopStats.iters, loopStats.tools)
+		}
+		if trajCleanup != nil {
+			trajCleanup()
 		}
 	}()
 
 	telemetry := newAgentLoopTelemetry()
+	trajTelemetry = telemetry
 	if ctx != nil {
 		if pp := strings.TrimSpace(ctx.Runtime.Execution.PromptProfile); pp != "" {
 			telemetry.PromptProfile = pp
@@ -356,7 +373,8 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		Telemetry:        telemetry,
 		SendProgress:     runtimeState.SendProgress,
 	})
-	defer startState.Cleanup()
+	trajRecorder = startState.Recorder
+	trajCleanup = startState.Cleanup
 
 	cfg := startState.Config
 	telemetry.Route = startState.RouteDecision
@@ -374,6 +392,7 @@ func (h *IMMessageHandler) runAgentLoopShared(
 		loopCtx:      ctx,
 		userID:       userID,
 		userText:     userText,
+		platform:     platform, // pin turn platform for tool rewrites (not only loopCtx)
 		systemPrompt: startState.SystemPrompt,
 		tools:        startState.Tools,
 		llmCfg:       cfg,
@@ -394,7 +413,6 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	if h.app != nil {
 		accumulateLoopResultUsage(h.app, cb.llmCfg, loopResult)
 	}
-
 	// Merge history delta for multi-turn continuity (includes multimodal user content).
 	outHistory := history
 	if len(loopResult.HistoryDelta) > 0 {
@@ -404,7 +422,42 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	// Cancel path: align with legacy cancelledExitResponse.
 	if loopResult.Error == "cancelled" || loopResult.Error == "cancelled during LLM retry" ||
 		(ctx != nil && ctx.IsCancelled() && strings.TrimSpace(loopResult.Text) == "") {
+		// Still stamp trajectory so cancel turns are not missing from session logs.
+		if startState.Recorder != nil {
+			startState.Recorder.SetKind("shared")
+			startState.Recorder.RecordLoopResult(loopResult)
+		}
 		return h.cancelledExitResponse(userID, outHistory, userText)
+	}
+
+	// Interactive record_audio pause: open desktop waveform card and stop the loop
+	// (parity with legacy handleAgentLoopRecordAudioToolResult). Must run before the
+	// generic history save so pending state binds to history that includes the tool result.
+	// Trajectory is completed inside finalize so the opened-session tool result is included.
+	if loopResult.RecordAudio != nil {
+		return h.finalizeSharedLoopRecordAudio(
+			userID, platform, userText, outHistory, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder,
+		)
+	}
+
+	// Complete trajectory for shared path: start recorded system/history/user;
+	// replay HistoryDelta (assistant + tools) and outcome before Cleanup Flush.
+	if startState.Recorder != nil {
+		startState.Recorder.SetKind("shared")
+		startState.Recorder.RecordLoopResult(loopResult)
+		// ask_user early-stops before the tool result is appended to HistoryDelta
+		// (same shape as record_audio). Pair the expanded tool call with a result.
+		if loopResult.AskUser != nil {
+			tcID := strings.TrimSpace(loopResult.PauseToolCallID)
+			if tcID == "" {
+				tcID = toolCallIDFromHistoryDeltaByName(loopResult.HistoryDelta, "ask_user")
+			}
+			toolContent := strings.TrimSpace(loopResult.Text)
+			if toolContent == "" {
+				toolContent = agent.FormatAskUserForDisplay(loopResult.AskUser)
+			}
+			startState.Recorder.RecordEarlyStopToolResult(tcID, "ask_user", toolContent)
+		}
 	}
 
 	if len(loopResult.HistoryDelta) > 0 {
@@ -451,7 +504,8 @@ func (h *IMMessageHandler) runAgentLoopShared(
 	}
 	if loopResult.AskUser != nil {
 		resp.Text = loopResult.Text
-		// Ask-user is returned as text for now; AG-UI paths stay on legacy loop.
+		// Mark interactive pause for UI/telemetry (parity with record_audio + legacy ask_user).
+		resp.ResponseSource = imResponseSourceAskUser.String()
 	}
 	if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
 		resp.InputTokens = loopResult.Usage.InputTokens
@@ -512,6 +566,7 @@ type sharedAgentLoopCallbacks struct {
 	loopCtx      *LoopContext
 	userID       string
 	userText     string
+	platform     string // turn platform from runAgentLoopShared (desktop/weixin/…)
 	systemPrompt string
 	tools        []map[string]interface{}
 	llmCfg       corelib.MaclawLLMConfig
@@ -529,6 +584,20 @@ type sharedAgentLoopCallbacks struct {
 	deliveredPaths       []string
 	fileMaterializeNanos int64
 	filesForwarded       int
+}
+
+// effectivePlatform prefers the pinned turn platform, then loop context.
+func (c *sharedAgentLoopCallbacks) effectivePlatform() string {
+	if c == nil {
+		return ""
+	}
+	if p := strings.TrimSpace(c.platform); p != "" {
+		return p
+	}
+	if c.loopCtx != nil {
+		return runtimePlatformFromLoopContext(c.loopCtx)
+	}
+	return ""
 }
 
 func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
@@ -703,10 +772,7 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	// post-tool artifact branch, so this is the only place desktop→WeChat runs.
 	// Pass originating platform so WeChat/Feishu channel turns report channel
 	// delivery success (LocalFilePaths) instead of false "sender unconfigured".
-	platform := ""
-	if c.loopCtx != nil {
-		platform = runtimePlatformFromLoopContext(c.loopCtx)
-	}
+	platform := c.effectivePlatform()
 	mat := c.handler.materializeToolFilePayloadForPlatform(exec.Text, platform)
 	if mat.Handled {
 		c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, mat.LocalPaths...)
@@ -717,7 +783,259 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		// Status is short; skip spill of the original multi-MB base64 blob.
 		return mat.Text
 	}
+	// Keep interactive markers intact: never run size/semantic compression on them
+	// (core early-stops only when the prefix survives into RunLoop).
+	if agent.IsRecordAudioResult(mat.Text) {
+		// Background has no desktop waveform host — match bonus-round policy.
+		if c.loopCtx != nil && c.loopCtx.Kind == LoopKindBackground {
+			return "record_audio is unavailable in background tasks; choose the next action directly."
+		}
+		if rewritten := c.handler.rewriteRecordAudioMarkerForSharedLoop(c.userID, platform, mat.Text); rewritten != "" {
+			return rewritten
+		}
+		return mat.Text
+	}
+	if agent.IsAskUserResult(mat.Text) {
+		return mat.Text
+	}
 	return truncateToolResultForToolWithSession(name, c.userID, mat.Text)
+}
+
+// rewriteRecordAudioMarkerForSharedLoop returns a non-empty rejection string when
+// the host must not open the interactive recording UI (IM channels, concurrent
+// session). Empty string means the marker is valid for core early-stop.
+func (h *IMMessageHandler) rewriteRecordAudioMarkerForSharedLoop(userID, platform, marker string) string {
+	if h == nil || !agent.IsRecordAudioResult(marker) {
+		return ""
+	}
+	req, ok := agent.ParseRecordAudioResult(marker)
+	if !ok {
+		return ""
+	}
+	if !normalizeIMMessagePlatformKind(platform).IsDesktop() {
+		log.Printf("[record-audio] shared: rejected on non-desktop platform user=%s platform=%s title=%q", userID, platform, req.Title)
+		return recordAudioDesktopOnlyRejection()
+	}
+	if rawPending, loaded := h.pendingRecordAudio.Load(userID); loaded {
+		var history []agent.ConversationEntry
+		if h.memory != nil {
+			history = h.memory.Load(userID)
+		}
+		if pending, fresh := pendingRecordAudioForCurrentHistory(rawPending, history); fresh && pending != nil {
+			log.Printf("[record-audio] shared: rejected concurrent session user=%s active_title=%q new_title=%q", userID, pending.Title, req.Title)
+			return recordAudioConcurrentRejection(pending.Title)
+		}
+	}
+	return ""
+}
+
+// finalizeSharedLoopRecordAudio opens the desktop recording session after the
+// shared RunLoop early-stopped on a record_audio marker (ResponseSource=record_audio).
+func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
+	userID, platform, userText string,
+	outHistory []agent.ConversationEntry,
+	loopResult agent.LoopResult,
+	requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+	recorder *TrajectoryRecorder,
+) *IMAgentResponse {
+	req := loopResult.RecordAudio
+	if req == nil {
+		if recorder != nil {
+			recorder.SetKind("shared")
+			recorder.RecordLoopResult(loopResult)
+		}
+		return &IMAgentResponse{
+			Text:           loopResult.Text,
+			RequestID:      requestID,
+			SessionKey:     userID,
+			ResponseSource: "shared_agent_loop",
+		}
+	}
+	raw := agent.FormatRecordAudioMarker(req)
+	// Prefer the id of the tool that triggered the pause (multi-tool batch safe).
+	tcID := strings.TrimSpace(loopResult.PauseToolCallID)
+	if tcID == "" {
+		// Fallback: name-match record_audio in the assistant batch (not merely last id).
+		tcID = toolCallIDFromHistoryDeltaByName(loopResult.HistoryDelta, "record_audio")
+	}
+	if tcID == "" {
+		tcID = "record_audio_shared"
+	}
+	out := h.handleAgentLoopRecordAudioToolResult(
+		userID, platform, userText, raw, false, tcID,
+		nil, outHistory, nil, nil,
+	)
+
+	// Trajectory: HistoryDelta lacks the tool result (core early-stops before append);
+	// record delta then the friendly/rejection tool result so sessions stay paired.
+	if recorder != nil {
+		recorder.SetKind("shared")
+		recorder.RecordLoopResult(loopResult)
+		if out.Response != nil {
+			// Interactive pause succeeded — pair the opened-session tool result.
+			recorder.RecordEarlyStopToolResult(tcID, "record_audio", out.Result)
+		} else {
+			// Host rejected after the loop already paused on the marker (IM channel,
+			// concurrent session race). Keep pairing but stamp error, not paused.
+			toolContent := strings.TrimSpace(out.Result)
+			if toolContent == "" {
+				toolContent = "record_audio rejected by host"
+			}
+			recorder.RecordEntry(TrajectoryEntry{
+				Role:        "tool_result",
+				Content:     toolContent,
+				ToolCallID:  tcID,
+				ToolName:    "record_audio",
+				ToolOutcome: "failed",
+			})
+			recorder.CloseUnpairedToolCalls("loop_paused")
+			recorder.SetOutcome("error", toolContent, loopResult.Iterations, loopResult.ToolCalls, -1, -1)
+		}
+	}
+
+	if out.Response != nil {
+		resp := out.Response
+		resp.RequestID = requestID
+		resp.SessionKey = userID
+		// Preserve usage/route when the pause happened after tool rounds.
+		if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+			resp.InputTokens = loopResult.Usage.InputTokens
+			resp.OutputTokens = loopResult.Usage.OutputTokens
+			resp.TotalTokens = loopResult.Usage.TotalTokens()
+			resp.CacheReadTokens = loopResult.Usage.CachedTokens
+			resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+			resp.EstCostRMB = loopResult.Usage.EstCostRMB
+			if telemetry != nil {
+				telemetry.LastLLMInputTokens = loopResult.Usage.InputTokens
+				telemetry.LastLLMOutputTokens = loopResult.Usage.OutputTokens
+				telemetry.LastLLMCacheReadTokens = loopResult.Usage.CachedTokens
+				telemetry.LastLLMCacheWriteTokens = loopResult.Usage.CacheWriteTokens
+			}
+		}
+		if cb != nil {
+			liveRoute := cb.currentRouteDecision()
+			if liveRoute.Task != "" || liveRoute.Model != "" {
+				if telemetry != nil {
+					telemetry.Route = liveRoute
+				}
+			}
+		}
+		if telemetry != nil {
+			telemetry.Attach(resp)
+		}
+		if onStreamDone != nil {
+			onStreamDone()
+		}
+		log.Printf("[record-audio] shared: session UI opened user=%s platform=%s title=%q tc=%s source=record_audio",
+			userID, platform, req.Title, tcID)
+		return resp
+	}
+	// Unexpected rejection after ExecuteTool precheck (race on concurrent session).
+	text := recordAudioUserFacingRejectText(out.Result, loopResult.Text)
+	// Keep tool-call/result pairing when we have a rewritten rejection.
+	if tcID != "" && strings.TrimSpace(out.Result) != "" {
+		paired := append(append([]agent.ConversationEntry(nil), outHistory...), agent.ConversationEntry{
+			Role:        "tool",
+			Content:     out.Result,
+			ToolCallID:  tcID,
+			ToolName:    "record_audio",
+			ToolOutcome: toolOutcomeUncertain.String(),
+		})
+		h.saveConversationHistoryTimed(userID, paired, nil)
+	} else if len(loopResult.HistoryDelta) > 0 {
+		h.saveConversationHistoryTimed(userID, outHistory, nil)
+	}
+	resp := &IMAgentResponse{
+		Text:           text,
+		RequestID:      requestID,
+		SessionKey:     userID,
+		ResponseSource: "shared_agent_loop",
+	}
+	if telemetry != nil {
+		telemetry.Attach(resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// toolCallIDFromHistoryDeltaByName finds the last assistant tool_call whose
+// function name matches (case-insensitive). Safer multi-tool fallback than
+// "last id in batch" when PauseToolCallID is missing.
+func toolCallIDFromHistoryDeltaByName(delta []agent.ConversationEntry, toolName string) string {
+	want := strings.ToLower(strings.TrimSpace(toolName))
+	if want == "" {
+		return ""
+	}
+	for i := len(delta) - 1; i >= 0; i-- {
+		if delta[i].Role != "assistant" || delta[i].ToolCalls == nil {
+			continue
+		}
+		found := ""
+		for _, tc := range extractNamedToolCallsForShared(delta[i].ToolCalls) {
+			if strings.ToLower(tc.Name) == want && tc.ID != "" {
+				found = tc.ID // prefer last match within the batch
+			}
+		}
+		if found != "" {
+			return found
+		}
+	}
+	return ""
+}
+
+type namedToolCallID struct {
+	ID   string
+	Name string
+}
+
+// extractNamedToolCallsForShared extracts id+name pairs from assistant ToolCalls.
+func extractNamedToolCallsForShared(toolCalls interface{}) []namedToolCallID {
+	if arr, ok := toolCalls.([]interface{}); ok {
+		out := make([]namedToolCallID, 0, len(arr))
+		for _, item := range arr {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			name := ""
+			if fn, ok := m["function"].(map[string]interface{}); ok {
+				name, _ = fn["name"].(string)
+			}
+			if id != "" || name != "" {
+				out = append(out, namedToolCallID{ID: id, Name: name})
+			}
+		}
+		return out
+	}
+	// Typed slice (e.g. []llm.ToolCall) — JSON round-trip.
+	type fn struct {
+		Name string `json:"name"`
+	}
+	type call struct {
+		ID       string `json:"id"`
+		Function fn     `json:"function"`
+	}
+	data, err := json.Marshal(toolCalls)
+	if err != nil {
+		return nil
+	}
+	var calls []call
+	if json.Unmarshal(data, &calls) != nil {
+		return nil
+	}
+	out := make([]namedToolCallID, 0, len(calls))
+	for _, c := range calls {
+		if c.ID != "" || c.Function.Name != "" {
+			out = append(out, namedToolCallID{ID: c.ID, Name: c.Function.Name})
+		}
+	}
+	return out
 }
 
 // appendUniqueStrings appends values not already present (order-preserving).

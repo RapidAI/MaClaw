@@ -5,8 +5,9 @@ type agentLoopRecorderBundle struct {
 	AdaptiveRetry        *AdaptiveRetry
 	RecordSystemMessages func(int, []interface{})
 	RecordToolCall       func(string, string, string)
-	RecordToolResult     func(string, interface{})
-	Cleanup              func()
+	// RecordToolResult records a tool result. toolName/outcome may be empty when unknown.
+	RecordToolResult func(id string, content interface{}, toolName, outcome string)
+	Cleanup          func()
 }
 
 // prepareAgentLoopRecorderBundle creates a per-loop recorder and an isolated
@@ -46,6 +47,15 @@ func (h *IMMessageHandler) prepareAgentLoopRecorderBundle(template *AdaptiveRetr
 	}
 }
 
+// newTrajectoryRecorderIfEnabled returns a recorder when the host factory is set
+// and trajectory logging is on. Used by SubAgents that bypass the main agent loop.
+func (h *IMMessageHandler) newTrajectoryRecorderIfEnabled() *TrajectoryRecorder {
+	if h == nil || h.trajectoryRecorderFactory == nil {
+		return nil
+	}
+	return h.trajectoryRecorderFactory()
+}
+
 type agentLoopRecorder struct {
 	recorder *TrajectoryRecorder
 }
@@ -58,15 +68,30 @@ func (r agentLoopRecorder) RecordSystemMessages(start int, items []interface{}) 
 	if r.recorder == nil {
 		return
 	}
+	if start < 0 {
+		start = 0
+	}
 	for i := start; i < len(items); i++ {
-		msg, ok := items[i].(map[string]string)
-		if !ok {
+		role, content, ok := trajectoryMessageRoleContent(items[i])
+		if !ok || role != "system" {
 			continue
 		}
-		if msg["role"] != "system" {
-			continue
-		}
-		r.recorder.Record("system", msg["content"], nil, "", "")
+		r.recorder.Record("system", content, nil, "", "")
+	}
+}
+
+func trajectoryMessageRoleContent(item interface{}) (role string, content interface{}, ok bool) {
+	switch msg := item.(type) {
+	case map[string]string:
+		role = msg["role"]
+		content = msg["content"]
+		return role, content, role != ""
+	case map[string]interface{}:
+		role, _ = msg["role"].(string)
+		content = msg["content"]
+		return role, content, role != ""
+	default:
+		return "", nil, false
 	}
 }
 
@@ -74,15 +99,24 @@ func (r agentLoopRecorder) RecordToolCall(id, name, args string) {
 	if r.recorder == nil {
 		return
 	}
-	r.recorder.Record("tool", map[string]interface{}{
-		"name":      name,
-		"arguments": args,
-	}, nil, id, "")
+	r.recorder.RecordEntry(TrajectoryEntry{
+		Role:       "tool",
+		Content:    map[string]interface{}{"name": name, "arguments": args},
+		ToolCallID: id,
+		ToolName:   name,
+	})
 }
 
-func (r agentLoopRecorder) RecordToolResult(id string, content interface{}) {
+func (r agentLoopRecorder) RecordToolResult(id string, content interface{}, toolName, outcome string) {
 	if r.recorder == nil {
 		return
 	}
-	r.recorder.Record("tool_result", content, nil, id, "")
+	r.recorder.RecordEntry(TrajectoryEntry{
+		Role:        "tool_result",
+		Content:     content,
+		ToolCallID:  id,
+		ToolName:    toolName,
+		ToolOutcome: outcome,
+	})
 }
+

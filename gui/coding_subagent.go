@@ -340,19 +340,45 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	userText := cb.buildTaskUserMessage()
 	userContent := codingSubAgentUserContent(s, userText)
+
+	parentSessionID := ""
+	userID := ""
+	if s.loopCtx != nil {
+		parentSessionID = s.loopCtx.ID
+		userID = strings.TrimSpace(s.loopCtx.UserID)
+	}
+	sessionID := fmt.Sprintf("coding-subagent-T%d-%d", taskDisplayNumber(task), time.Now().UnixNano())
+	traj := startSubAgentTrajectory(
+		s.handler,
+		"coding_subagent",
+		sessionID,
+		userID,
+		"coding_subagent",
+		parentSessionID,
+		s.cfg,
+		cb.BuildSystemPrompt(userText, true),
+		cb.BuildTools(userText),
+	)
+	if traj != nil {
+		defer flushSubAgentTrajectory(traj)
+	}
+
 	var result agent.LoopResult
 	if userContent != nil && userContent != userText {
 		result = agent.RunLoopWithUserContent(cb, userText, userContent, nil, s.httpClient, s.buildLoopHooks(cb))
 	} else {
 		result = agent.RunLoop(cb, userText, nil, s.httpClient, s.buildLoopHooks(cb))
 	}
-	if s.handler != nil {
-		accumulateLoopResultUsage(s.handler.app, s.cfg, result)
-	}
+	// Record main loop turns first; seal outcome after optional post-loop verify/fix.
+	appendSubAgentLoopResult(traj, result, false)
 
 	// Nested explorer/reviewer are inspection-only — do not run write-oriented
 	// post-loop verify/fix cycles or the full implementation quality matrix.
 	if s.nestDepth > 0 && (s.role == codingRoleExplorer || s.role == codingRoleReviewer) {
+		sealSubAgentTrajectory(traj, result)
+		if s.handler != nil {
+			accumulateLoopResultUsage(s.handler.app, s.cfg, result)
+		}
 		return s.finishInspectionRoleTask(cb, task, taskTitle, result)
 	}
 
@@ -366,9 +392,14 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
-				s.runPostLoopVerifyFixCycle(cb, &result, verifyCmd)
+				s.runPostLoopVerifyFixCycle(cb, &result, verifyCmd, traj)
 			}
 		}
+	}
+	sealSubAgentTrajectory(traj, result)
+	// Accumulate after post-loop so fix-loop token usage is not dropped.
+	if s.handler != nil {
+		accumulateLoopResultUsage(s.handler.app, s.cfg, result)
 	}
 
 	status := TaskExecPassed

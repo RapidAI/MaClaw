@@ -33,7 +33,12 @@ type agentLoopTelemetry struct {
 	LastLLMOutputTokens                   int
 	LastLLMCacheReadTokens                int
 	LastLLMCacheWriteTokens               int
-	FirstRequestMetrics                   *llmFirstRequestMetrics
+	// Full-loop accumulated token totals (sum of every LLM round in this turn).
+	TotalLLMInputTokens      int
+	TotalLLMOutputTokens     int
+	TotalLLMCacheReadTokens  int
+	TotalLLMCacheWriteTokens int
+	FirstRequestMetrics      *llmFirstRequestMetrics
 	// Route is the turn model-routing decision (initial + optional escalate).
 	Route modelRouteDecision
 	// PromptProfile is full|light adaptive system prompt thickness for this turn.
@@ -220,6 +225,10 @@ func (t *agentLoopTelemetry) ApplyLLMDispatch(result agentLoopLLMDispatchResult)
 		t.LastLLMOutputTokens = result.OutputTokens
 		t.LastLLMCacheReadTokens = result.CacheReadTokens
 		t.LastLLMCacheWriteTokens = result.CacheWriteTokens
+		t.TotalLLMInputTokens += result.InputTokens
+		t.TotalLLMOutputTokens += result.OutputTokens
+		t.TotalLLMCacheReadTokens += result.CacheReadTokens
+		t.TotalLLMCacheWriteTokens += result.CacheWriteTokens
 	}
 	if result.PostStreamUsageCompleted {
 		t.HandlerPostStreamUsageElapsed += result.UsageElapsed

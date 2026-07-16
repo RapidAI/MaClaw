@@ -59,33 +59,15 @@ func AnalyzeComplexity(session *TrajectorySession) ComplexityResult {
 }
 
 // collectToolNameSet extracts unique tool names from a ToolCalls interface{} value
-// into the provided set. ToolCalls is expected to be []interface{} where each
-// element is a map[string]interface{} with a "function" key containing a
-// map[string]interface{} with a "name" key.
+// into the provided set. Accepts live []llm.ToolCall, JSON []interface{} maps,
+// and other shapes handled by extractTrajectoryToolCalls.
 func collectToolNameSet(toolCalls interface{}, names map[string]bool) {
-	calls, ok := toolCalls.([]interface{})
-	if !ok {
+	if names == nil {
 		return
 	}
-	for _, call := range calls {
-		callMap, ok := call.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		fn, ok := callMap["function"]
-		if !ok {
-			continue
-		}
-		fnMap, ok := fn.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, ok := fnMap["name"].(string)
-		if !ok {
-			continue
-		}
-		if name != "" {
-			names[name] = true
+	for _, tc := range extractTrajectoryToolCalls(toolCalls) {
+		if tc.Name != "" {
+			names[tc.Name] = true
 		}
 	}
 }
@@ -137,13 +119,30 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 }
 
 // buildToolResultMap builds a map from tool_call_id to the content string
-// of the corresponding role="tool" entry.
+// of the corresponding tool result entry. Trajectory uses role="tool_result"
+// (legacy also used role="tool" for results in early drafts).
 func buildToolResultMap(entries []TrajectoryEntry) map[string]string {
 	results := make(map[string]string)
 	for _, entry := range entries {
-		if entry.Role == "tool" && entry.ToolCallID != "" {
-			if s, ok := entry.Content.(string); ok {
-				results[entry.ToolCallID] = s
+		if entry.ToolCallID == "" {
+			continue
+		}
+		// role=tool with map content is a tool *call* (name+args), not a result.
+		if entry.Role != "tool_result" && entry.Role != "tool" {
+			continue
+		}
+		if entry.Role == "tool" {
+			if _, isCall := entry.Content.(map[string]interface{}); isCall {
+				continue
+			}
+		}
+		switch s := entry.Content.(type) {
+		case string:
+			results[entry.ToolCallID] = s
+		default:
+			// Non-string results still useful for error-string detection via fmt.
+			if entry.Content != nil {
+				results[entry.ToolCallID] = fmt.Sprint(entry.Content)
 			}
 		}
 	}
@@ -151,47 +150,30 @@ func buildToolResultMap(entries []TrajectoryEntry) map[string]string {
 }
 
 // extractStepsFromToolCalls converts a ToolCalls interface{} into SkillYAMLStep
-// slice, checking each tool call's result for errors.
+// slice, checking each tool call's result for errors. Uses the same normalizer
+// as trajectory recording so live []llm.ToolCall payloads are not dropped.
 func extractStepsFromToolCalls(toolCalls interface{}, toolResults map[string]string) []skill.SkillYAMLStep {
-	calls, ok := toolCalls.([]interface{})
-	if !ok {
+	extracted := extractTrajectoryToolCalls(toolCalls)
+	if len(extracted) == 0 {
 		return nil
 	}
-	var steps []skill.SkillYAMLStep
-	for _, call := range calls {
-		callMap, ok := call.(map[string]interface{})
-		if !ok {
+	steps := make([]skill.SkillYAMLStep, 0, len(extracted))
+	for _, tc := range extracted {
+		if tc.Name == "" {
 			continue
 		}
-		fn, ok := callMap["function"]
-		if !ok {
-			continue
-		}
-		fnMap, ok := fn.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, _ := fnMap["name"].(string)
-		if name == "" {
-			continue
-		}
-
-		params := parseToolArguments(fnMap["arguments"])
-
 		step := skill.SkillYAMLStep{
-			Action: name,
-			Params: params,
+			Action: tc.Name,
+			Params: parseToolArguments(tc.Args),
 		}
-
 		// Check if the tool result indicates an error.
-		if id, ok := callMap["id"].(string); ok && id != "" {
-			if content, found := toolResults[id]; found {
+		if tc.ID != "" {
+			if content, found := toolResults[tc.ID]; found {
 				if strings.HasPrefix(content, "[error]") || strings.HasPrefix(content, "[stderr]") {
 					step.OnError = "skip"
 				}
 			}
 		}
-
 		steps = append(steps, step)
 	}
 	return steps
@@ -251,13 +233,56 @@ func mergeConsecutiveSteps(steps []skill.SkillYAMLStep) []skill.SkillYAMLStep {
 // entry, or empty string if none found.
 func extractUserDescription(session *TrajectorySession) string {
 	for _, entry := range session.Entries {
-		if entry.Role == "user" {
-			if s, ok := entry.Content.(string); ok && s != "" {
-				return s
-			}
+		if entry.Role != "user" {
+			continue
+		}
+		if s := trajectoryUserContentText(entry.Content); s != "" {
+			return s
 		}
 	}
 	return ""
+}
+
+// trajectoryUserContentText extracts plain text from user content that may be a
+// string or multimodal content-block array (OpenAI/Anthropic style).
+func trajectoryUserContentText(content interface{}) string {
+	switch v := content.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []interface{}:
+		var parts []string
+		for _, raw := range v {
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(string)
+			switch typ {
+			case "text", "input_text":
+				if t, ok := m["text"].(string); ok {
+					if t = strings.TrimSpace(t); t != "" {
+						parts = append(parts, t)
+					}
+				}
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	case []map[string]interface{}:
+		var parts []string
+		for _, m := range v {
+			typ, _ := m["type"].(string)
+			if typ == "text" || typ == "input_text" {
+				if t, ok := m["text"].(string); ok {
+					if t = strings.TrimSpace(t); t != "" {
+						parts = append(parts, t)
+					}
+				}
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	default:
+		return ""
+	}
 }
 
 // ValidationError holds all validation failure reasons.

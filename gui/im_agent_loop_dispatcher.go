@@ -40,26 +40,56 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		loopID = ctx.ID
 	}
 	log.Printf("[agent-loop] start owner=%q request_id=%q loop=%q platform=%q project=%q text_len=%d path=legacy", userID, requestID, loopID, platform, projectPathFromUserID(userID), len([]rune(userText)))
+	// Captured by the exit defer after prepare/runState are created. Closures see
+	// final values; outcome+Flush run AFTER recover so panic turns are not stamped success.
+	var (
+		trajRecorder *TrajectoryRecorder
+		trajCleanup  func()
+		trajRunState *agentLoopRunState
+		trajTelemetry *agentLoopTelemetry
+	)
 	defer func() {
-		status := "success"
-		if result != nil && result.Error != "" {
-			status = "error"
-		}
-		if result != nil && result.RequestID == "" {
-			result.RequestID = requestID
-		}
-		if result != nil && result.ResponseSource == "" {
-			result.ResponseSource = "legacy_agent_loop"
-		}
-		log.Printf("[agent-loop] end owner=%q request_id=%q loop=%q status=%s elapsed=%s path=legacy", userID, requestID, loopID, status, time.Since(startedAt).Round(time.Millisecond))
-		imPerfLog("agent_loop", startedAt, requestID, userID, "status", status, "loop", loopID, "platform", platform, "text_len", len([]rune(userText)), "prompt_len", len(systemPrompt), "history_len", len(history), "path", "legacy")
 		if r := recover(); r != nil {
 			result = &IMAgentResponse{Error: fmt.Sprintf("Agent loop panicked: %v", r)}
 			log.Printf("[agent-loop] panic owner=%q request_id=%q loop=%q panic=%v elapsed=%s", userID, requestID, loopID, r, time.Since(startedAt).Round(time.Millisecond))
 		}
+		status, _ := classifyIMAgentResponseOutcome(result)
+		if result != nil {
+			if result.RequestID == "" {
+				result.RequestID = requestID
+			}
+			if result.ResponseSource == "" {
+				result.ResponseSource = "legacy_agent_loop"
+			}
+		}
+		log.Printf("[agent-loop] end owner=%q request_id=%q loop=%q status=%s elapsed=%s path=legacy", userID, requestID, loopID, status, time.Since(startedAt).Round(time.Millisecond))
+		imPerfLog("agent_loop", startedAt, requestID, userID, "status", status, "loop", loopID, "platform", platform, "text_len", len([]rune(userText)), "prompt_len", len(systemPrompt), "history_len", len(history), "path", "legacy")
+		if trajRecorder != nil {
+			// LoopContext.Iteration is 0-based (set at the start of each round).
+			// Trajectory outcome uses a 1-based completed-round count, matching
+			// corelib agent.LoopResult.Iterations (iteration+1).
+			iters := 0
+			if ctx != nil {
+				iters = ctx.Iteration() + 1
+			}
+			tools := 0
+			if trajRunState != nil {
+				tools = trajRunState.TotalToolCallsInLoop
+			}
+			// Terminal safety net: cancel / panic / hard_exit / error leave no orphan tools.
+			// Success and interactive pause already pair (or CloseUnpaired) in-loop.
+			if reason := unpairedCloseReasonFromIMResponse(result); reason != "" {
+				trajRecorder.CloseUnpairedToolCalls(reason)
+			}
+			trajRecorder.SetOutcomeFromIMResponse(result, trajTelemetry, iters, tools)
+		}
+		if trajCleanup != nil {
+			trajCleanup()
+		}
 	}()
 
 	telemetry := newAgentLoopTelemetry()
+	trajTelemetry = telemetry
 	if ctx != nil {
 		if pp := strings.TrimSpace(ctx.Runtime.Execution.PromptProfile); pp != "" {
 			telemetry.PromptProfile = pp
@@ -103,7 +133,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		Telemetry:        telemetry,
 		SendProgress:     sendProgress,
 	})
-	defer startState.Cleanup()
+	trajRecorder = startState.Recorder
+	trajCleanup = startState.Cleanup
 	cfg := startState.Config
 	trialState := startState.TrialState
 	maxIter := startState.MaxIterations
@@ -127,6 +158,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	chatFinalizeGrace := startState.ChatFinalizeGrace
 
 	runState := newAgentLoopRunState(cfg)
+	trajRunState = runState
 	runState.Telemetry = telemetry
 	runState.applyRouteDecision(startState.RouteDecision, cfg)
 	telemetry.Route = startState.RouteDecision

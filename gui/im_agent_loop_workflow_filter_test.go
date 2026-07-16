@@ -1014,8 +1014,10 @@ func TestPrepareAgentLoopToolsAwaitingReviewUsesActivePhaseFilter(t *testing.T) 
 	if progressEmitted {
 		t.Fatal("workflow-blocked tools must not emit user-facing tool progress")
 	}
-	if recordedToolName != "" {
-		t.Fatalf("workflow-blocked browser call must not be recorded into trajectory context, got %q", recordedToolName)
+	// Trajectory still records the call so tool_result pairing stays intact;
+	// progress is suppressed separately so users never see blocked-tool chrome.
+	if recordedToolName != "browser" {
+		t.Fatalf("workflow-blocked browser call should still record into trajectory for pairing, got %q", recordedToolName)
 	}
 	if strings.Contains(strings.ToLower(browserResult.Text), "browser") {
 		t.Fatalf("workflow-blocked browser result must not reinforce role-prefix token, got %q", browserResult.Text)
@@ -1108,7 +1110,7 @@ func TestPolicyRejectedBrowserToolCallRedactedFromConversation(t *testing.T) {
 		},
 		Conversation: conversation,
 		History:      history,
-		RecordToolResult: func(id string, _ interface{}) {
+		RecordToolResult: func(id string, _ interface{}, _, _ string) {
 			recordedResultID = id
 		},
 	})

@@ -120,7 +120,23 @@ func (b *BtwSubAgent) Execute(query string) *BtwResult {
 	cb := &btwCallbacks{subagent: b}
 
 	// Run with empty history — /btw is a fresh, independent query.
+	sessionID := fmt.Sprintf("btw-subagent-%d", time.Now().UnixNano())
+	traj := startSubAgentTrajectory(
+		b.handler,
+		"btw_subagent",
+		sessionID,
+		b.OwnerID(),
+		"btw",
+		"",
+		b.cfg,
+		cb.BuildSystemPrompt(query, true),
+		cb.BuildTools(query),
+	)
+	if traj != nil {
+		defer flushSubAgentTrajectory(traj)
+	}
 	result := agent.RunLoop(cb, query, nil, b.httpClient)
+	finishSubAgentTrajectory(traj, result)
 
 	if result.Error != "" && result.Text == "" {
 		return &BtwResult{

@@ -35,7 +35,7 @@ type agentLoopCompletionOptions struct {
 	Recorder               *TrajectoryRecorder
 	InFlightLifecycle      *imInFlightLifecycle
 	RecordToolCall         func(string, string, string)
-	RecordToolResult       func(string, interface{})
+	RecordToolResult       func(string, interface{}, string, string)
 	AttachLLMTelemetry     func(*IMAgentResponse)
 	AttachVisibleArtifacts func(*IMAgentResponse)
 	SendProgress           func(string)
@@ -66,6 +66,25 @@ type agentLoopCompletionResult struct {
 func (h *IMMessageHandler) finishAgentLoopAndRecordTelemetry(opts agentLoopCompletionOptions, telemetry *agentLoopTelemetry) *IMAgentResponse {
 	completion := h.finishAgentLoopAfterMainIterations(opts)
 	if telemetry != nil {
+		// Bonus / finalize may produce a new LLM round not seen by ApplyLLMDispatch.
+		// Add it to full-loop totals when it differs from the already-counted last round.
+		sameAsLast := completion.InputTokens == telemetry.LastLLMInputTokens &&
+			completion.OutputTokens == telemetry.LastLLMOutputTokens &&
+			completion.CacheReadTokens == telemetry.LastLLMCacheReadTokens &&
+			completion.CacheWriteTokens == telemetry.LastLLMCacheWriteTokens
+		if completion.InputTokens > 0 || completion.OutputTokens > 0 || completion.CacheReadTokens > 0 || completion.CacheWriteTokens > 0 {
+			if !sameAsLast {
+				telemetry.TotalLLMInputTokens += completion.InputTokens
+				telemetry.TotalLLMOutputTokens += completion.OutputTokens
+				telemetry.TotalLLMCacheReadTokens += completion.CacheReadTokens
+				telemetry.TotalLLMCacheWriteTokens += completion.CacheWriteTokens
+			} else if telemetry.TotalLLMInputTokens == 0 && telemetry.TotalLLMOutputTokens == 0 {
+				telemetry.TotalLLMInputTokens = completion.InputTokens
+				telemetry.TotalLLMOutputTokens = completion.OutputTokens
+				telemetry.TotalLLMCacheReadTokens = completion.CacheReadTokens
+				telemetry.TotalLLMCacheWriteTokens = completion.CacheWriteTokens
+			}
+		}
 		telemetry.LastLLMInputTokens = completion.InputTokens
 		telemetry.LastLLMOutputTokens = completion.OutputTokens
 		telemetry.LastLLMCacheReadTokens = completion.CacheReadTokens

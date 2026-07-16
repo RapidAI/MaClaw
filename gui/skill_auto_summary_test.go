@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -136,6 +137,72 @@ func makeToolCalls(names ...string) []interface{} {
 		})
 	}
 	return calls
+}
+
+// makeLLMToolCalls builds the live in-memory ToolCalls shape used by shared/legacy
+// agent loops (and HistoryDelta) before any JSON round-trip.
+func makeLLMToolCalls(pairs ...string) []llm.ToolCall {
+	// pairs: id1, name1, id2, name2, ...
+	out := make([]llm.ToolCall, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		out = append(out, llm.ToolCall{
+			ID:   pairs[i],
+			Type: "function",
+			Function: llm.ToolCallFunction{
+				Name:      pairs[i+1],
+				Arguments: `{}`,
+			},
+		})
+	}
+	return out
+}
+
+func TestSkillAutoSummary_AnalyzeComplexity_LiveLLMToolCalls(t *testing.T) {
+	// Pipeline receives in-memory sessions with []llm.ToolCall, not JSON maps.
+	session := &TrajectorySession{
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "complex task"},
+			{Role: "assistant", ToolCalls: makeLLMToolCalls("c1", "read_file")},
+			{Role: "tool_result", ToolCallID: "c1", Content: "file content"},
+			{Role: "assistant", ToolCalls: makeLLMToolCalls("c2", "write_file")},
+			{Role: "tool_result", ToolCallID: "c2", Content: "ok"},
+			{Role: "assistant", ToolCalls: makeLLMToolCalls("c3", "read_file")},
+		},
+	}
+	result := AnalyzeComplexity(session)
+	if result.Score != "worth_summarizing" {
+		t.Fatalf("live llm tool calls: Score=%q steps=%d kinds=%d turns=%d",
+			result.Score, result.StepCount, result.ToolKindCount, result.TurnCount)
+	}
+	if result.StepCount != 3 || result.ToolKindCount != 2 {
+		t.Fatalf("counts steps=%d kinds=%d", result.StepCount, result.ToolKindCount)
+	}
+}
+
+func TestSkillAutoSummary_DraftSkill_LiveLLMToolCalls(t *testing.T) {
+	session := &TrajectorySession{
+		SessionID: "live-llm-tools",
+		Entries: []TrajectoryEntry{
+			{Role: "user", Content: "patch the bug"},
+			{Role: "assistant", ToolCalls: makeLLMToolCalls("c1", "read_file")},
+			{Role: "tool_result", ToolCallID: "c1", Content: "src"},
+			{Role: "assistant", ToolCalls: makeLLMToolCalls("c2", "write_file")},
+			{Role: "tool_result", ToolCallID: "c2", Content: "[error] permission denied"},
+		},
+	}
+	draft, err := DraftSkill(session)
+	if err != nil {
+		t.Fatalf("DraftSkill: %v", err)
+	}
+	if len(draft.Steps) != 2 {
+		t.Fatalf("steps=%d want 2", len(draft.Steps))
+	}
+	if draft.Steps[0].Action != "read_file" || draft.Steps[1].Action != "write_file" {
+		t.Fatalf("actions=%q %q", draft.Steps[0].Action, draft.Steps[1].Action)
+	}
+	if draft.Steps[1].OnError != "skip" {
+		t.Fatalf("write_file OnError=%q want skip", draft.Steps[1].OnError)
+	}
 }
 
 // makeToolCallsWithID creates a []interface{} mimicking ToolCalls with id, name, and arguments.

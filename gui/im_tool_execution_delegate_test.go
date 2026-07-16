@@ -270,13 +270,15 @@ func TestBonusRoundWorkflowPolicyRejectsBeforeProgressAndTrajectory(t *testing.T
 		InFlightLifecycle: &imInFlightLifecycle{},
 		SendProgress:      func(string) { progressEmitted = true },
 		RecordToolCall:    func(_ string, name string, _ string) { recordedToolName = name },
-		RecordToolResult:  func(string, interface{}) {},
+		RecordToolResult:  func(string, interface{}, string, string) {},
 	})
 	if progressEmitted {
 		t.Fatal("bonus-round workflow policy rejection must happen before user-facing progress")
 	}
-	if recordedToolName != "" {
-		t.Fatalf("bonus-round workflow policy rejection must happen before trajectory recording, got %q", recordedToolName)
+	// Trajectory still records the model-requested call + rejection tool_result so
+	// sessions stay call/result paired; only user-facing progress is suppressed.
+	if recordedToolName != "write_file" {
+		t.Fatalf("bonus-round policy rejection should still record tool call for trajectory pairing, got %q", recordedToolName)
 	}
 	if len(history) < 2 || history[len(history)-1].ToolOutcome != toolOutcomeFailed.String() {
 		t.Fatalf("expected failed tool result in history, got %#v", history)

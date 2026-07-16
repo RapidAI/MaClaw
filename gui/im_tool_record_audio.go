@@ -21,6 +21,60 @@ func (h *IMMessageHandler) toolRecordAudio(args map[string]interface{}) string {
 	return agent.ToolRecordAudio(args)
 }
 
+// Shared rejection copy for legacy + shared agent-loop paths (keep model guidance identical).
+func recordAudioDesktopOnlyRejection() string {
+	return "record_audio is desktop-only (long-form meeting recording with waveform UI). " +
+		"This IM channel does not support meeting/long-form recording — native voice notes are too short. " +
+		"Tell the user to open the desktop app and start meeting recording there. " +
+		"Do not call record_audio again here, do not ask them to send a short voice note as a substitute, " +
+		"and do not claim that recording has started."
+}
+
+func recordAudioConcurrentRejection(activeTitle string) string {
+	return fmt.Sprintf(
+		"录音会话已在进行中（%s）。请等待用户停止当前录音后再调用 record_audio。不要并行打开多个录音界面。",
+		activeTitle,
+	)
+}
+
+func recordAudioGateRejection(title string) string {
+	return fmt.Sprintf(
+		"record_audio is blocked by the coding workflow confirmation gate. Ask the user in plain text whether to start recording (%s) after the gate is cleared.",
+		title,
+	)
+}
+
+// recordAudioOpenedSessionResult is the tool-message content stored in history
+// after a successful interactive open (legacy + shared paths must stay identical).
+func recordAudioOpenedSessionResult(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "录音"
+	}
+	return fmt.Sprintf("Opened recording session: %s", title)
+}
+
+// recordAudioUserFacingRejectText maps model-facing rejection copy to a short
+// user-visible message when the shared path cannot open the card.
+func recordAudioUserFacingRejectText(modelFacing, fallbackDisplay string) string {
+	modelFacing = strings.TrimSpace(modelFacing)
+	fallbackDisplay = strings.TrimSpace(fallbackDisplay)
+	switch {
+	case strings.Contains(modelFacing, "已在进行中"):
+		return modelFacing // already Chinese
+	case strings.Contains(modelFacing, "desktop-only"):
+		return "会议/长录音仅支持桌面端，请在桌面应用中开启录音。"
+	case strings.HasPrefix(modelFacing, "record_audio "):
+		return "无法打开录音会话。"
+	case modelFacing != "":
+		return modelFacing
+	case fallbackDisplay != "":
+		return fallbackDisplay
+	default:
+		return "无法打开录音会话。"
+	}
+}
+
 type agentLoopRecordAudioToolResult struct {
 	Result       string
 	Response     *IMAgentResponse
@@ -36,7 +90,7 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 	conversation []interface{},
 	history []agent.ConversationEntry,
 	toolResults []string,
-	recordToolResult func(string, interface{}),
+	recordToolResult func(string, interface{}, string, string),
 ) agentLoopRecordAudioToolResult {
 	out := agentLoopRecordAudioToolResult{
 		Result:       result,
@@ -55,20 +109,13 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 	// voice is typically tens of seconds and is not a substitute for this feature.
 	if !normalizeIMMessagePlatformKind(platform).IsDesktop() {
 		log.Printf("[record-audio] rejected on non-desktop platform user=%s platform=%s title=%q", userID, platform, req.Title)
-		out.Result = "record_audio is desktop-only (long-form meeting recording with waveform UI). " +
-			"This IM channel does not support meeting/long-form recording — native voice notes are too short. " +
-			"Tell the user to open the desktop app and start meeting recording there. " +
-			"Do not call record_audio again here, do not ask them to send a short voice note as a substitute, " +
-			"and do not claim that recording has started."
+		out.Result = recordAudioDesktopOnlyRejection()
 		return out
 	}
 	if gateActive {
 		// Gate block is user-visible failure mode; always log.
 		log.Printf("[record-audio] blocked by coding gate user=%s title=%q platform=%s", userID, req.Title, platform)
-		out.Result = fmt.Sprintf(
-			"record_audio is blocked by the coding workflow confirmation gate. Ask the user in plain text whether to start recording (%s) after the gate is cleared.",
-			req.Title,
-		)
+		out.Result = recordAudioGateRejection(req.Title)
 		return out
 	}
 	// Reject overlapping interactive sessions for the same user — a second
@@ -76,19 +123,18 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 	if rawPending, loaded := h.pendingRecordAudio.Load(userID); loaded {
 		if pending, fresh := pendingRecordAudioForCurrentHistory(rawPending, history); fresh && pending != nil {
 			log.Printf("[record-audio] rejected concurrent session user=%s active_title=%q new_title=%q", userID, pending.Title, req.Title)
-			out.Result = fmt.Sprintf(
-				"录音会话已在进行中（%s）。请等待用户停止当前录音后再调用 record_audio。不要并行打开多个录音界面。",
-				pending.Title,
-			)
+			out.Result = recordAudioConcurrentRejection(pending.Title)
 			return out
 		}
 	}
 
 	displayText := agent.FormatRecordAudioForDisplay(req)
-	toolResult := fmt.Sprintf("Opened recording session: %s", req.Title)
+	toolResult := recordAudioOpenedSessionResult(req.Title)
+	out.Result = toolResult // replace marker so hosts/trajectory see the friendly tool result
 	out.ToolResults = append(out.ToolResults, toolResult)
+	// "paused" matches shared RecordEarlyStopToolResult (interactive host UI wait).
 	if recordToolResult != nil {
-		recordToolResult(tcID, toolResult)
+		recordToolResult(tcID, toolResult, "record_audio", "paused")
 	}
 	out.Conversation = append(out.Conversation, map[string]interface{}{
 		"role":         "tool",
@@ -96,7 +142,11 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 		"content":      toolResult,
 	})
 	out.History = append(out.History, agent.ConversationEntry{
-		Role: "tool", Content: toolResult, ToolCallID: tcID, ToolOutcome: toolOutcomeUncertain.String(),
+		Role:        "tool",
+		Content:     toolResult,
+		ToolCallID:  tcID,
+		ToolName:    "record_audio",
+		ToolOutcome: "paused",
 	})
 	h.saveConversationHistoryTimed(userID, out.History, nil)
 	h.pendingRecordAudio.Store(userID, &pendingRecordAudioState{

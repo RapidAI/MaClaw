@@ -175,7 +175,15 @@ type LoopResult struct {
 	Iterations int
 	ToolCalls  int
 	AskUser    *AskUserRequest
-	HardExit   bool // true when loop exited abnormally (consecutive empty responses, same-tool hard stop, etc.)
+	// RecordAudio is set when record_audio opened an interactive session and
+	// the loop paused for the host UI (desktop waveform card). Hosts must
+	// open the recording UI and resume after the user stops/cancels.
+	RecordAudio *RecordAudioRequest
+	// PauseToolCallID is the tool_call id that triggered AskUser/RecordAudio
+	// early-stop. Hosts need it to pair the tool result (do not use the last
+	// id in a multi-tool batch — record_audio may not be last).
+	PauseToolCallID string
+	HardExit        bool // true when loop exited abnormally (consecutive empty responses, same-tool hard stop, etc.)
 
 	// Usage aggregates LLM token/cost accounting for this loop when the host
 	// (or future loop instrumentation) records it. Zero means unknown.
@@ -572,11 +580,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					assistantMsg["reasoning_content"] = ""
 				}
 				conversation = append(conversation, assistantMsg)
+				historyDelta = append(historyDelta, ConversationEntry{
+					Role:             "assistant",
+					Content:          content,
+					ReasoningContent: reasoningContent,
+					FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, false),
+				})
 			}
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
 				"content": recoveryPrompt,
 			})
+			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoveryPrompt})
 			continue
 		}
 
@@ -595,11 +610,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					assistantMsg["reasoning_content"] = ""
 				}
 				conversation = append(conversation, assistantMsg)
+				historyDelta = append(historyDelta, ConversationEntry{
+					Role:             "assistant",
+					Content:          content,
+					ReasoningContent: reasoningContent,
+					FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, false),
+				})
 			}
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
 				"content": recoveryPrompt,
 			})
+			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoveryPrompt})
 			continue
 		}
 
@@ -635,10 +657,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				"content":           content,
 				"reasoning_content": "", // DeepSeek V4+: must exist on all assistant messages
 			})
+			historyDelta = append(historyDelta, ConversationEntry{
+				Role:         "assistant",
+				Content:      content,
+				FinishReason: ResolveAssistantFinishReason(choice.FinishReason, false),
+			})
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
 				"content": recoverPrompt,
 			})
+			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: recoverPrompt})
 			continue
 		}
 		consecutiveEmpty = 0
@@ -663,16 +691,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if len(choice.Message.ToolCalls) > 0 {
 			assistantMsg["tool_calls"] = choice.Message.ToolCalls
 		}
+		hasToolCalls := len(choice.Message.ToolCalls) > 0
 		conversation = append(conversation, assistantMsg)
 		historyDelta = append(historyDelta, ConversationEntry{
 			Role:             "assistant",
 			Content:          content,
 			ReasoningContent: reasoningContent,
 			ToolCalls:        choice.Message.ToolCalls,
+			FinishReason:     ResolveAssistantFinishReason(choice.FinishReason, hasToolCalls),
 		})
 
 		// No tool calls → final answer.
-		if len(choice.Message.ToolCalls) == 0 {
+		if !hasToolCalls {
 			finalText := StripThinkingTags(content)
 			// Note: we do NOT call cb.OnToken here. The final text is returned
 			// via LoopResult.Text, and the caller (handleChatSend) sends it as
@@ -732,10 +762,23 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 			if askReq, ok := ParseAskUserResult(result); ok {
 				return finish(LoopResult{
-					Text:       FormatAskUserForDisplay(askReq),
-					AskUser:    askReq,
-					Iterations: iteration + 1,
-					ToolCalls:  totalToolCalls,
+					Text:            FormatAskUserForDisplay(askReq),
+					AskUser:         askReq,
+					PauseToolCallID: tc.ID,
+					Iterations:      iteration + 1,
+					ToolCalls:       totalToolCalls,
+				})
+			}
+			// Interactive long-form recording: pause for host UI (same shape as ask_user).
+			// Hosts that reject (non-desktop IM) should rewrite the tool result before
+			// returning the marker so the model can continue with guidance text.
+			if recReq, ok := ParseRecordAudioResult(result); ok {
+				return finish(LoopResult{
+					Text:            FormatRecordAudioForDisplay(recReq),
+					RecordAudio:     recReq,
+					PauseToolCallID: tc.ID,
+					Iterations:      iteration + 1,
+					ToolCalls:       totalToolCalls,
 				})
 			}
 
@@ -811,10 +854,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if consecutiveSameToolFailures >= maxConsecutiveSameToolFailures && !sameToolFailureGuidanceInjected {
 			sameToolFailureGuidanceInjected = true
 			log.Printf("[agent-loop] consecutive same-tool failures: tool=%q count=%d, injecting stop guidance", lastFailedTool, consecutiveSameToolFailures)
+			guidance := fmt.Sprintf("[系统] 工具 %s 已连续失败 %d 次（每次方法不同但均未成功）。请停止继续尝试该工具，改用其他方式完成任务，或向用户说明当前遇到的具体问题和限制。", lastFailedTool, consecutiveSameToolFailures)
 			conversation = append(conversation, map[string]interface{}{
 				"role":    "user",
-				"content": fmt.Sprintf("[系统] 工具 %s 已连续失败 %d 次（每次方法不同但均未成功）。请停止继续尝试该工具，改用其他方式完成任务，或向用户说明当前遇到的具体问题和限制。", lastFailedTool, consecutiveSameToolFailures),
+				"content": guidance,
 			})
+			historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: guidance})
 		}
 
 		// Drift detection: check if the last N calls are the same tool+args+result.
@@ -838,10 +883,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					driftTool := tail[0].name
 					log.Printf("[agent-loop] drift detected: tool %q called %d times with same args+result, stopping", driftTool, driftWindow*consecutiveSame)
 					// Inject a message telling the LLM to stop and explain.
+					driftMsg := fmt.Sprintf("[系统] 检测到重复调用 %s 且结果相同，请停止重试并直接告诉用户当前的限制或问题。", driftTool)
 					conversation = append(conversation, map[string]interface{}{
 						"role":    "user",
-						"content": fmt.Sprintf("[系统] 检测到重复调用 %s 且结果相同，请停止重试并直接告诉用户当前的限制或问题。", driftTool),
+						"content": driftMsg,
 					})
+					historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: driftMsg})
 				}
 			} else {
 				consecutiveSame = 0

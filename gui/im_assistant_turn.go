@@ -116,7 +116,14 @@ func (h *IMMessageHandler) commitAgentLoopAssistantTurn(opts agentLoopAssistantT
 	assistantTurn := h.buildAgentLoopAssistantTurn(opts.Context, opts.Choice)
 	conversation := append(opts.Conversation, assistantTurn.Message)
 	if opts.Recorder != nil {
-		opts.Recorder.Record("assistant", assistantTurn.Content, opts.Choice.Message.ToolCalls, "", assistantTurn.Reasoning)
+		opts.Recorder.RecordEntry(TrajectoryEntry{
+			Role:         "assistant",
+			Content:      assistantTurn.Content,
+			ToolCalls:    opts.Choice.Message.ToolCalls,
+			Reasoning:    assistantTurn.Reasoning,
+			FinishReason: assistantTurn.HistoryEntry.FinishReason,
+			Iteration:    opts.Iteration + 1, // 1-based
+		})
 	}
 	result := agentLoopAssistantTurnCommitResult{
 		Turn:         assistantTurn,
@@ -176,12 +183,14 @@ func (h *IMMessageHandler) buildAgentLoopAssistantTurn(ctx *LoopContext, choice 
 		assistantMsg["tool_calls"] = choice.Message.ToolCalls
 	}
 
+	hasToolCalls := len(choice.Message.ToolCalls) > 0
 	historyEntry := agent.ConversationEntry{
 		Role:             "assistant",
 		Content:          msgContent,
 		ReasoningContent: msgReasoning,
+		FinishReason:     agent.ResolveAssistantFinishReason(choice.FinishReason, hasToolCalls),
 	}
-	if len(choice.Message.ToolCalls) > 0 {
+	if hasToolCalls {
 		historyEntry.ToolCalls = choice.Message.ToolCalls
 	}
 

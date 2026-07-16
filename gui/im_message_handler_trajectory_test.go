@@ -119,6 +119,21 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 	if session.SessionID != "chat-trajectory" {
 		t.Fatalf("SessionID = %q, want chat-trajectory", session.SessionID)
 	}
+	if session.Kind != "main" {
+		t.Fatalf("Kind = %q, want main", session.Kind)
+	}
+	if session.Status != "success" {
+		t.Fatalf("Status = %q, want success", session.Status)
+	}
+	if session.Iterations < 2 {
+		t.Fatalf("Iterations = %d, want >= 2", session.Iterations)
+	}
+	if session.ToolCallCount < 1 {
+		t.Fatalf("ToolCallCount = %d, want >= 1", session.ToolCallCount)
+	}
+	if session.InputTokens <= 0 || session.OutputTokens <= 0 {
+		t.Fatalf("tokens = %d/%d, want positive full-loop totals", session.InputTokens, session.OutputTokens)
+	}
 	if session.Provider != "Custom1" {
 		t.Fatalf("Provider = %q, want Custom1", session.Provider)
 	}
@@ -139,6 +154,12 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 	if session.Entries[2].ToolCalls == nil {
 		t.Fatalf("expected assistant tool_calls to be recorded")
 	}
+	if session.Entries[2].FinishReason != "tool_calls" {
+		t.Fatalf("first assistant finish_reason = %q, want tool_calls", session.Entries[2].FinishReason)
+	}
+	if session.Entries[2].Iteration != 1 {
+		t.Fatalf("first assistant iteration = %d, want 1", session.Entries[2].Iteration)
+	}
 	toolPayload, ok := session.Entries[3].Content.(map[string]interface{})
 	if !ok {
 		t.Fatalf("tool entry content type = %T, want map[string]interface{}", session.Entries[3].Content)
@@ -152,11 +173,23 @@ func TestRunAgentLoop_TrajectoryLoggingRecordsConversationAndTools(t *testing.T)
 	if session.Entries[4].ToolCallID != "call-bash" {
 		t.Fatalf("tool_result ToolCallID = %q, want call-bash", session.Entries[4].ToolCallID)
 	}
+	if session.Entries[4].ToolName != "bash" {
+		t.Fatalf("tool_result ToolName = %q, want bash", session.Entries[4].ToolName)
+	}
+	if session.Entries[4].ToolOutcome != "succeeded" {
+		t.Fatalf("tool_result ToolOutcome = %q, want succeeded", session.Entries[4].ToolOutcome)
+	}
 	if content, ok := session.Entries[4].Content.(string); !ok || content != "tool ok" {
 		t.Fatalf("tool_result content = %#v, want \"tool ok\"", session.Entries[4].Content)
 	}
 	if content, ok := session.Entries[5].Content.(string); !ok || content != "done" {
 		t.Fatalf("final assistant content = %#v, want \"done\"", session.Entries[5].Content)
+	}
+	if session.Entries[5].FinishReason != "stop" {
+		t.Fatalf("final assistant finish_reason = %q, want stop", session.Entries[5].FinishReason)
+	}
+	if session.Entries[5].Iteration != 2 {
+		t.Fatalf("final assistant iteration = %d, want 2", session.Entries[5].Iteration)
 	}
 }
 

@@ -22,9 +22,10 @@ type agentLoopToolCommitOptions struct {
 	Phase                      *agentLoopPhase
 	DriftDetector              *DriftDetector
 	ConsecutiveWriteFileErrors *int
-	InFlightLifecycle          *imInFlightLifecycle
-	RecordToolResult           func(string, interface{})
-	RecordSystemMessages       func(int, []interface{})
+	InFlightLifecycle    *imInFlightLifecycle
+	Recorder             *TrajectoryRecorder
+	RecordToolResult     func(string, interface{}, string, string)
+	RecordSystemMessages func(int, []interface{})
 	// ParallelGroupIndex is the 0-based index of the current tool_call
 	// within the parallel group. Used to defer drift detection responses
 	// until the entire group has been executed.
@@ -56,24 +57,44 @@ func (h *IMMessageHandler) commitAgentLoopToolResult(opts agentLoopToolCommitOpt
 		Role:        "tool",
 		Content:     opts.TruncatedResult,
 		ToolCallID:  tc.ID,
+		ToolName:    tc.Function.Name,
 		ToolOutcome: opts.Execution.Outcome.String(),
 	})
 	if opts.Execution.FailureKind == toolFailurePolicyRejected && isRolePrefixRiskToolName(tc.Function.Name) {
 		redactedID := redactedRolePrefixRiskToolCallID(tc.ID)
 		conversation = redactRolePrefixRiskToolCallInConversation(conversation, tc.ID, redactedID)
 		history = redactRolePrefixRiskToolCallInHistory(history, tc.ID, redactedID)
+		// Keep trajectory tool↔result pairing after conversation id redaction.
+		if opts.Recorder != nil {
+			opts.Recorder.RewriteToolCallID(tc.ID, redactedID)
+		}
 		recordToolResultID = redactedID
 	}
 	if opts.RecordToolResult != nil {
-		opts.RecordToolResult(recordToolResultID, opts.TruncatedResult)
+		opts.RecordToolResult(recordToolResultID, opts.TruncatedResult, tc.Function.Name, opts.Execution.Outcome.String())
 	}
 
 	if opts.InFlightLifecycle != nil {
 		opts.InFlightLifecycle.SetOnce()
 	}
 
+	if opts.Execution.IsFailure() && len(tc.Function.Arguments) > 2000 {
+		// Keep trajectory args aligned with conversation truncation (avoid multi-KB blobs).
+		summary := tc.Function.Arguments
+		if runes := []rune(summary); len(runes) > 200 {
+			summary = string(runes[:200]) + fmt.Sprintf("... [截断，原始 %d 字符]", len(runes))
+		}
+		if opts.Recorder != nil {
+			// Prefer redacted id if we already rewrote the trajectory tool call id.
+			opts.Recorder.TruncateToolCallArguments(recordToolResultID, summary)
+		}
+	}
 	conversation = handleOversizedFailedToolArguments(conversation, tc, opts.Execution)
+	writeHintStart := len(conversation)
 	conversation = updateWriteFileRecoveryHint(conversation, opts.Execution, opts.ConsecutiveWriteFileErrors)
+	if len(conversation) > writeHintStart && opts.RecordSystemMessages != nil {
+		opts.RecordSystemMessages(writeHintStart, conversation)
+	}
 
 	// Drift detection: defer ALL drift responses when in the middle of a
 	// parallel tool_calls group. Both interrupting (NeedHumanHelp=true) and

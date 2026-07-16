@@ -1074,11 +1074,141 @@ func TestRunLoop_AskUserReturnsEarly(t *testing.T) {
 	if result.AskUser == nil || result.AskUser.Question != "Choose one" {
 		t.Fatalf("unexpected ask_user result: %#v", result.AskUser)
 	}
+	if result.PauseToolCallID != "call_ask_1" {
+		t.Fatalf("PauseToolCallID = %q, want call_ask_1", result.PauseToolCallID)
+	}
 	if !strings.Contains(result.Text, "Choose one") {
 		t.Fatalf("unexpected text: %q", result.Text)
 	}
 	if result.ToolCalls != 1 {
 		t.Fatalf("expected 1 tool call, got %d", result.ToolCalls)
+	}
+}
+
+func TestRunLoop_RecordAudioReturnsEarly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   "call_rec_1",
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "record_audio",
+									"arguments": `{"title":"项目例会","purpose":"讨论排期"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	marker := ToolRecordAudio(map[string]interface{}{
+		"title":   "项目例会",
+		"purpose": "讨论排期",
+	})
+	cb := &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    10,
+		sysPrompt:  "You are a helpful assistant.",
+		toolResult: marker,
+	}
+
+	result := RunLoop(cb, "开始会议录音", nil, nil)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.RecordAudio == nil {
+		t.Fatal("expected RecordAudio pause result")
+	}
+	if result.RecordAudio.Title != "项目例会" {
+		t.Fatalf("title = %q", result.RecordAudio.Title)
+	}
+	if result.RecordAudio.Purpose != "讨论排期" {
+		t.Fatalf("purpose = %q", result.RecordAudio.Purpose)
+	}
+	if result.PauseToolCallID != "call_rec_1" {
+		t.Fatalf("PauseToolCallID = %q, want call_rec_1", result.PauseToolCallID)
+	}
+	if !strings.Contains(result.Text, "项目例会") {
+		t.Fatalf("display text missing title: %q", result.Text)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("expected 1 tool call, got %d", result.ToolCalls)
+	}
+	// Loop must stop (no further iterations after interactive pause).
+	if result.Iterations != 1 {
+		t.Fatalf("iterations = %d, want 1", result.Iterations)
+	}
+}
+
+func TestRunLoop_RecordAudioPauseUsesCurrentToolCallIDInBatch(t *testing.T) {
+	// Multi-tool batch: record_audio is first; PauseToolCallID must be its id,
+	// not the later sibling call that never executes after early-stop.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   "call_rec_first",
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "record_audio",
+									"arguments": `{"title":"A"}`,
+								},
+							},
+							{
+								"id":   "call_bash_second",
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "bash",
+									"arguments": `{"command":"echo hi"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:    10,
+		sysPrompt:  "You are a helpful assistant.",
+		toolResult: ToolRecordAudio(map[string]interface{}{"title": "A"}),
+	}
+
+	result := RunLoop(cb, "录音", nil, nil)
+	if result.RecordAudio == nil {
+		t.Fatal("expected RecordAudio pause")
+	}
+	if result.PauseToolCallID != "call_rec_first" {
+		t.Fatalf("PauseToolCallID = %q, want call_rec_first (not last batch id)", result.PauseToolCallID)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1 (early-stop before sibling tools)", result.ToolCalls)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "record_audio" {
+		t.Fatalf("executed tools = %v, want only record_audio", cb.toolCalls)
 	}
 }
 

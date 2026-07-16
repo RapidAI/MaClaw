@@ -68,6 +68,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		tc.Function.Arguments = rewrittenArgs
 	}
 	tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
+	// Record the tool call for trajectory before any reject/execute path so
+	// policy/truncation rejections still pair with a later tool_result entry.
+	if opts.RecordToolCall != nil {
+		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+	}
 	if reason := rejectUnstableBrowserToolCallJSON(tc.Function.Name, tc.Function.Arguments); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
@@ -99,9 +104,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if result.Text == "" {
 		if opts.MilestoneTracker != nil {
 			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
-		}
-		if opts.RecordToolCall != nil {
-			opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 		}
 	}
 	// Emit user-facing tool progress only after policy gates pass. Otherwise a

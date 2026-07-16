@@ -51,9 +51,26 @@ type ConversationEntry struct {
 	ToolCallID       string      `json:"tool_call_id,omitempty"`
 	ToolName         string      `json:"tool_name,omitempty"`
 	ToolOutcome      string      `json:"tool_outcome,omitempty"`
-	ID               string      `json:"_id,omitempty"`
-	ParentID         string      `json:"_parent_id,omitempty"`
-	Timestamp        int64       `json:"_ts,omitempty"`
+	// FinishReason is host/trajectory metadata only (not sent to the LLM API).
+	// Typical values: stop, tool_calls, length.
+	FinishReason string `json:"finish_reason,omitempty"`
+	ID           string `json:"_id,omitempty"`
+	ParentID     string `json:"_parent_id,omitempty"`
+	Timestamp    int64  `json:"_ts,omitempty"`
+}
+
+// ResolveAssistantFinishReason returns the LLM finish reason for trajectory/history
+// metadata. When the provider omits it, defaults to tool_calls if the assistant
+// issued tools, otherwise stop.
+func ResolveAssistantFinishReason(finishReason string, hasToolCalls bool) string {
+	fr := strings.TrimSpace(finishReason)
+	if fr != "" {
+		return fr
+	}
+	if hasToolCalls {
+		return "tool_calls"
+	}
+	return "stop"
 }
 
 // ToMessage converts a ConversationEntry to a map suitable for the LLM API.

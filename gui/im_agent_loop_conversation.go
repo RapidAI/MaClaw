@@ -30,9 +30,10 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 	history = append(history, agent.ConversationEntry{Role: "user", Content: userContent})
 
+	var driftCtx string
 	if driftTool, ok := h.sessionDriftTool.LoadAndDelete(userID); ok {
 		toolName, _ := driftTool.(string)
-		driftCtx := fmt.Sprintf(
+		driftCtx = fmt.Sprintf(
 			"[System notice] The previous turn stopped after repeated failures calling %s. "+
 				"Do not use the same approach again. "+
 				"If no alternative is available, explain the current limitation and recommendation to the user.",
@@ -45,9 +46,21 @@ func (h *IMMessageHandler) buildAgentLoopConversationStart(loopID, userID, userT
 	}
 
 	if recorder != nil {
-		recorder.StartSession(loopID, h.getMaclawLLMProviders().Current, cfg.Model, cfg.Protocol, userID, platform, tools)
+		provider := ""
+		if h != nil {
+			provider = h.getMaclawLLMProviders().Current
+		}
+		// Kind defaults to main; shared/subagent paths overwrite via SetKind / their own sessions.
+		recorder.StartSessionWithMeta(loopID, provider, cfg.Model, cfg.Protocol, userID, platform, "main", "", tools)
 		recorder.Record("system", systemPrompt, nil, "", "")
+		// Prior multi-turn context the model will see (before current user turn).
+		if prior := history[:len(history)-1]; len(prior) > 0 {
+			recorder.RecordHistory(prior)
+		}
 		recorder.Record("user", userContent, nil, "", "")
+		if driftCtx != "" {
+			recorder.Record("system", driftCtx, nil, "", "")
+		}
 	}
 
 	return agentLoopConversationStart{

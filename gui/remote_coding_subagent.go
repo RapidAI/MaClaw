@@ -237,6 +237,27 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 
 	userText := taskDescription
 	userContent := remoteCodingUserContent(r, userText)
+	parentSessionID := ""
+	userID := ""
+	if r.loopCtx != nil {
+		parentSessionID = r.loopCtx.ID
+		userID = strings.TrimSpace(r.loopCtx.UserID)
+	}
+	sessionID := fmt.Sprintf("remote-coding-subagent-%d", time.Now().UnixNano())
+	traj := startSubAgentTrajectory(
+		r.handler,
+		"remote_coding_subagent",
+		sessionID,
+		userID,
+		"remote_coding_subagent",
+		parentSessionID,
+		r.cfg,
+		cb.BuildSystemPrompt(userText, true),
+		cb.BuildTools(userText),
+	)
+	if traj != nil {
+		defer flushSubAgentTrajectory(traj)
+	}
 	hooks := r.buildRemoteCodingLoopHooks()
 	var result agent.LoopResult
 	if userContent != nil && userContent != userText {
@@ -244,6 +265,7 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	} else {
 		result = agent.RunLoop(cb, userText, nil, r.httpClient, hooks)
 	}
+	finishSubAgentTrajectory(traj, result)
 	if r.handler != nil {
 		accumulateLoopResultUsage(r.handler.app, r.cfg, result)
 	}

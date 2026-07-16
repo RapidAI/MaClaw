@@ -59,8 +59,9 @@ type agentLoopToolPathOptions struct {
 	OnToken                    llm.TokenCallback
 	SendToolProgress           func(string)
 	MilestoneTracker           *progress.AgentProgressTracker
+	Recorder                   *TrajectoryRecorder
 	RecordToolCall             func(string, string, string)
-	RecordToolResult           func(string, interface{})
+	RecordToolResult           func(string, interface{}, string, string)
 	RecordSystemMessages       func(int, []interface{})
 	AdaptiveRetry              *AdaptiveRetry
 	Debug                      bool
@@ -136,6 +137,7 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		InFlightLifecycle:          opts.InFlightLifecycle,
 		OnProgress:                 opts.OnProgress,
 		OnToken:                    opts.OnToken,
+		Recorder:                   opts.Recorder,
 		SendToolProgress:           opts.SendToolProgress,
 		MilestoneTracker:           opts.MilestoneTracker,
 		RecordToolCall:             opts.RecordToolCall,
@@ -227,8 +229,9 @@ type agentLoopToolCallsOptions struct {
 	OnToken                    llm.TokenCallback
 	SendToolProgress           func(string)
 	MilestoneTracker           *progress.AgentProgressTracker
+	Recorder                   *TrajectoryRecorder
 	RecordToolCall             func(string, string, string)
-	RecordToolResult           func(string, interface{})
+	RecordToolResult           func(string, interface{}, string, string)
 	RecordSystemMessages       func(int, []interface{})
 	AdaptiveRetry              *AdaptiveRetry
 	Debug                      bool
@@ -270,6 +273,10 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 	for tcIdx, tc := range opts.ToolCalls {
 		if opts.Context != nil && opts.Context.IsCancelled() {
 			opts.Context.SetLoopState(LoopStateStopped)
+			// Close any tool calls that never received a result so trajectory pairs stay complete.
+			if opts.Recorder != nil {
+				opts.Recorder.CloseUnpairedToolCalls("cancelled")
+			}
 			result.Response = h.cancelledExitResponse(opts.UserID, result.History, opts.UserText)
 			result.Cancelled = true
 			return result
@@ -329,6 +336,10 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		result.History = askUserResult.History
 		result.ToolResults = askUserResult.ToolResults
 		if askUserResult.Response != nil {
+			// Interactive pause — remaining tools in this parallel batch never run.
+			if opts.Recorder != nil {
+				opts.Recorder.CloseUnpairedToolCalls("loop_paused")
+			}
 			result.Response = askUserResult.Response
 			return result
 		}
@@ -339,6 +350,10 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		result.History = recordAudioResult.History
 		result.ToolResults = recordAudioResult.ToolResults
 		if recordAudioResult.Response != nil {
+			// Interactive pause — close siblings that never executed (parity with shared).
+			if opts.Recorder != nil {
+				opts.Recorder.CloseUnpairedToolCalls("loop_paused")
+			}
 			result.Response = recordAudioResult.Response
 			return result
 		}
@@ -459,6 +474,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			DriftDetector:              opts.DriftDetector,
 			ConsecutiveWriteFileErrors: opts.ConsecutiveWriteFileErrors,
 			InFlightLifecycle:          opts.InFlightLifecycle,
+			Recorder:                   opts.Recorder,
 			RecordToolResult:           opts.RecordToolResult,
 			RecordSystemMessages:       opts.RecordSystemMessages,
 			ParallelGroupIndex:         tcIdx,

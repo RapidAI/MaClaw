@@ -53,7 +53,7 @@ type agentLoopIterationDispatchOptions struct {
 	StreamDoneCallback            StreamDoneCallback
 	ReportActivity                func(int, int, string)
 	RecordToolCall                func(string, string, string)
-	RecordToolResult              func(string, interface{})
+	RecordToolResult              func(string, interface{}, string, string)
 	RecordSystemMessages          func(int, []interface{})
 	AttachLLMTelemetry            func(*IMAgentResponse)
 	AttachPendingVisibleArtifacts func(*IMAgentResponse)
@@ -102,7 +102,7 @@ type agentLoopMainIterationsOptions struct {
 	StreamDoneCallback            StreamDoneCallback
 	ReportActivity                func(int, int, string)
 	RecordToolCall                func(string, string, string)
-	RecordToolResult              func(string, interface{})
+	RecordToolResult              func(string, interface{}, string, string)
 	RecordSystemMessages          func(int, []interface{})
 	AttachLLMTelemetry            func(*IMAgentResponse)
 	AttachPendingVisibleArtifacts func(*IMAgentResponse)
@@ -127,6 +127,9 @@ func (h *IMMessageHandler) runAgentLoopMainIterations(opts agentLoopMainIteratio
 	}
 	for iteration := 0; ; iteration++ {
 		opts.Context.SetIteration(iteration)
+		if opts.Recorder != nil {
+			opts.Recorder.SetCurrentIteration(iteration)
+		}
 		iterationResult := h.runAgentLoopIteration(agentLoopIterationDispatchOptions{
 			Context:                       opts.Context,
 			RequestContext:                opts.RequestContext,
@@ -472,6 +475,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		OnToken:                    opts.OnToken,
 		SendToolProgress:           opts.RuntimeState.SendToolProgress,
 		MilestoneTracker:           opts.MilestoneTracker,
+		Recorder:                   opts.Recorder,
 		RecordToolCall:             opts.RecordToolCall,
 		RecordToolResult:           opts.RecordToolResult,
 		RecordSystemMessages:       opts.RecordSystemMessages,

@@ -1146,6 +1146,42 @@ func TestBuildAgentLoopAssistantTurnExtractsThinkTagsIntoReasoning(t *testing.T)
 	}
 }
 
+func TestBuildAgentLoopAssistantTurnFinishReason(t *testing.T) {
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{})
+	defer h.memory.Stop()
+
+	// Empty finish reason + tools → tool_calls
+	withTools := h.buildAgentLoopAssistantTurn(nil, llm.Choice{
+		Message: llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID: "c1", Type: "function",
+				Function: llm.ToolCallFunction{Name: "bash", Arguments: `{}`},
+			}},
+		},
+	})
+	if withTools.HistoryEntry.FinishReason != "tool_calls" {
+		t.Fatalf("tools default finish_reason = %q, want tool_calls", withTools.HistoryEntry.FinishReason)
+	}
+
+	// Empty finish reason + no tools → stop
+	final := h.buildAgentLoopAssistantTurn(nil, llm.Choice{
+		Message: llm.Message{Role: "assistant", Content: "done"},
+	})
+	if final.HistoryEntry.FinishReason != "stop" {
+		t.Fatalf("final default finish_reason = %q, want stop", final.HistoryEntry.FinishReason)
+	}
+
+	// Provider-supplied value is preserved
+	length := h.buildAgentLoopAssistantTurn(nil, llm.Choice{
+		FinishReason: "length",
+		Message:      llm.Message{Role: "assistant", Content: "truncated"},
+	})
+	if length.HistoryEntry.FinishReason != "length" {
+		t.Fatalf("preserved finish_reason = %q, want length", length.HistoryEntry.FinishReason)
+	}
+}
+
 func TestPendingUserReplyBindingSurvivesTranscriptReconciliation(t *testing.T) {
 	question := "请查看并确认需求是否准确，或提出修改意见。确认后我将进入技术设计阶段。"
 	pendingHistory := []agent.ConversationEntry{

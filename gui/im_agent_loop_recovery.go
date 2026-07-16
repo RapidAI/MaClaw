@@ -256,6 +256,8 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
 		cancelMsg = fmt.Sprintf("Task cancelled: %s", taskPreview)
 	}
+	// Keep Error empty: UI/telemetry treat non-empty Error as a hard failure.
+	// Trajectory cancel is stamped via RecordLoopResult / Task-cancelled text detection.
 	return &IMAgentResponse{Text: cancelMsg}
 }
 

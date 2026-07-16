@@ -133,9 +133,13 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 	cb *codingSubAgentCallbacks,
 	result *agent.LoopResult,
 	verifyCmd string,
+	traj *TrajectoryRecorder,
 ) {
 	for round := 0; round < subAgentMaxVerifyFixRounds; round++ {
 		if cb.ShouldStop() {
+			if result != nil && strings.TrimSpace(result.Error) == "" {
+				result.Error = "cancelled"
+			}
 			return
 		}
 
@@ -147,8 +151,16 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 		// Run verification command
 		verifyArgs := fmt.Sprintf(`{"command":%q,"working_dir":%q,"timeout":60}`, verifyCmd, s.projectPath)
 		verifyResult := cb.ExecuteTool("bash", verifyArgs)
+		verifyFailed := isSubAgentVerificationFailure(verifyResult)
+		outcome := "succeeded"
+		if verifyFailed {
+			outcome = "failed"
+		}
+		recordSubAgentPostLoopVerify(traj, round+1, verifyCmd, verifyArgs, verifyResult, outcome)
+		// Count automatic verify bash as a tool call for session accounting.
+		result.ToolCalls++
 
-		if !isSubAgentVerificationFailure(verifyResult) {
+		if !verifyFailed {
 			log.Printf("[coding-subagent-verify] round %d: verification PASSED", round+1)
 			if s.onProgress != nil {
 				s.onProgress("验证通过")
@@ -170,19 +182,32 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 
 		// Run fix loop as a fresh RunLoop (shares system prompt + tools via cb)
 		fixResult := agent.RunLoop(cb, fixPrompt, nil, s.httpClient)
+		// Append fix-loop turns into the same trajectory session.
+		appendSubAgentLoopResult(traj, fixResult, false)
 
 		// Merge results
 		result.Iterations += fixResult.Iterations
 		result.ToolCalls += fixResult.ToolCalls
+		result.Usage.Add(fixResult.Usage)
 		if fixResult.Text != "" {
 			result.Text = fixResult.Text
 		}
+		if fixResult.Error != "" {
+			result.Error = fixResult.Error
+		}
+		if fixResult.HardExit {
+			result.HardExit = true
+		}
 	}
 
-	// Exhausted all fix rounds
+	// Exhausted all fix rounds — surface failure so trajectory seals as error
+	// and task status does not look like a clean success.
 	log.Printf("[coding-subagent-verify] exhausted %d verify-fix rounds", subAgentMaxVerifyFixRounds)
 	if s.onProgress != nil {
 		s.onProgress(fmt.Sprintf("验证未通过（已尝试 %d 次修复）", subAgentMaxVerifyFixRounds))
+	}
+	if result != nil && strings.TrimSpace(result.Error) == "" {
+		result.Error = fmt.Sprintf("post-loop verification failed after %d rounds (%s)", subAgentMaxVerifyFixRounds, verifyCmd)
 	}
 }
 

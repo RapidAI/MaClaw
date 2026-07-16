@@ -36,7 +36,7 @@ type agentLoopBonusRoundOptions struct {
 	Recorder               *TrajectoryRecorder
 	InFlightLifecycle      *imInFlightLifecycle
 	RecordToolCall         func(id, name, args string)
-	RecordToolResult       func(id string, content interface{})
+	RecordToolResult       func(id string, content interface{}, toolName, outcome string)
 	AttachLLMTelemetry     func(*IMAgentResponse)
 	AttachVisibleArtifacts func(*IMAgentResponse)
 	SendProgress           func(string)
@@ -114,16 +114,30 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 		assistantMsg["tool_calls"] = choice.Message.ToolCalls
 	}
 	conversation = append(conversation, assistantMsg)
+	finishReason := agent.ResolveAssistantFinishReason(choice.FinishReason, len(choice.Message.ToolCalls) > 0)
 	if opts.Recorder != nil {
-		opts.Recorder.Record("assistant", content, choice.Message.ToolCalls, "", reasoning)
+		opts.Recorder.RecordEntry(TrajectoryEntry{
+			Role:         "assistant",
+			Content:      content,
+			ToolCalls:    choice.Message.ToolCalls,
+			Reasoning:    reasoning,
+			FinishReason: finishReason,
+		})
 	}
 	history = append(history, agent.ConversationEntry{
-		Role: "assistant", Content: content, ReasoningContent: reasoning, ToolCalls: choice.Message.ToolCalls,
+		Role:             "assistant",
+		Content:          content,
+		ReasoningContent: reasoning,
+		ToolCalls:        choice.Message.ToolCalls,
+		FinishReason:     finishReason,
 	})
 
 	var toolExecElapsed time.Duration
 	for _, tc := range choice.Message.ToolCalls {
 		if opts.Context != nil && opts.Context.IsCancelled() {
+			if opts.Recorder != nil {
+				opts.Recorder.CloseUnpairedToolCalls("cancelled")
+			}
 			break
 		}
 		tc.Function.Arguments = normalizeAgentLoopToolArgumentsJSON(tc.Function.Arguments)
@@ -136,6 +150,9 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 			if opts.Debug && opts.SendProgress != nil {
 				opts.SendProgress(userFacingToolProgressText(lang, tc.Function.Name))
 			}
+		}
+		// Always record the call (including policy rejections) so trajectory pairs with tool_result.
+		if opts.RecordToolCall != nil {
 			opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
 		}
 		execResult := workflowReject
@@ -163,9 +180,17 @@ func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, his
 			toolExecElapsed += time.Since(toolExecStartedAt)
 		}
 		truncated := truncateToolResultForToolWithSession(tc.Function.Name, opts.UserID, toolResult)
-		opts.RecordToolResult(tc.ID, truncated)
+		if opts.RecordToolResult != nil {
+			opts.RecordToolResult(tc.ID, truncated, tc.Function.Name, execResult.Outcome.String())
+		}
 		conversation = append(conversation, map[string]interface{}{"role": "tool", "tool_call_id": tc.ID, "content": truncated})
-		history = append(history, agent.ConversationEntry{Role: "tool", Content: truncated, ToolCallID: tc.ID, ToolOutcome: execResult.Outcome.String()})
+		history = append(history, agent.ConversationEntry{
+			Role:        "tool",
+			Content:     truncated,
+			ToolCallID:  tc.ID,
+			ToolName:    tc.Function.Name,
+			ToolOutcome: execResult.Outcome.String(),
+		})
 		opts.InFlightLifecycle.SetOnce()
 	}
 	return conversation, history, toolExecElapsed

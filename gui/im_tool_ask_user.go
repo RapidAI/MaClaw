@@ -134,7 +134,7 @@ type agentLoopAskUserToolResult struct {
 	ToolResults  []string
 }
 
-func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, msgContent, result string, gateActive bool, tcID string, conversation []interface{}, history []agent.ConversationEntry, toolResults []string, recordToolResult func(string, interface{})) agentLoopAskUserToolResult {
+func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, msgContent, result string, gateActive bool, tcID string, conversation []interface{}, history []agent.ConversationEntry, toolResults []string, recordToolResult func(string, interface{}, string, string)) agentLoopAskUserToolResult {
 	out := agentLoopAskUserToolResult{
 		Result:       result,
 		Conversation: conversation,
@@ -162,14 +162,21 @@ func (h *IMMessageHandler) handleAgentLoopAskUserToolResult(userID, platform, ms
 	}
 	toolResult := fmt.Sprintf("Asked user: %s", askReq.Question)
 	out.ToolResults = append(out.ToolResults, toolResult)
-	recordToolResult(tcID, toolResult)
+	// "paused" matches shared RecordEarlyStopToolResult / interactive training labels.
+	if recordToolResult != nil {
+		recordToolResult(tcID, toolResult, "ask_user", "paused")
+	}
 	out.Conversation = append(out.Conversation, map[string]interface{}{
 		"role":         "tool",
 		"tool_call_id": tcID,
 		"content":      toolResult,
 	})
 	out.History = append(out.History, agent.ConversationEntry{
-		Role: "tool", Content: toolResult, ToolCallID: tcID, ToolOutcome: toolOutcomeUncertain.String(),
+		Role:        "tool",
+		Content:     toolResult,
+		ToolCallID:  tcID,
+		ToolName:    "ask_user",
+		ToolOutcome: "paused",
 	})
 	h.saveConversationHistoryTimed(userID, out.History, nil)
 	h.pendingAskUser.Store(userID, &pendingAskUserState{

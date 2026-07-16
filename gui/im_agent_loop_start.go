@@ -45,7 +45,7 @@ type agentLoopStartState struct {
 	AttachPendingVisibleArtifacts func(*IMAgentResponse)
 	RecordSystemMessages          func(int, []interface{})
 	RecordToolCall                func(string, string, string)
-	RecordToolResult              func(string, interface{})
+	RecordToolResult              func(string, interface{}, string, string)
 	ReportActivity                func(int, int, string)
 	Conversation                  []interface{}
 	History                       []agent.ConversationEntry
