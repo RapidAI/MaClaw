@@ -861,6 +861,75 @@ func TestNormalizeShortCodeCrockfordConfusables(t *testing.T) {
 	}
 }
 
+func TestInvalidFastPathOpensSession(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "One",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	// Invalid fast answer must still open a session (not leave the user stranded).
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode + " 99",
+	})
+	if err != nil || !r.Handled {
+		t.Fatalf("fast invalid err=%v reply=%q", err, r.ReplyText)
+	}
+	if !strings.Contains(r.ReplyText, "答案无效") {
+		t.Fatalf("want invalid answer reply, got %q", r.ReplyText)
+	}
+	// Follow-up answer without retyping /survey code.
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "1",
+	})
+	if err != nil || r.Event != "response_submitted" {
+		t.Fatalf("follow-up err=%v event=%q reply=%q", err, r.Event, r.ReplyText)
+	}
+}
+
+func TestStatusConfirmUpdatePhase(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "Upd",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+		Settings: SettingsIn{AllowUpdate: true},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode + " 1",
+	})
+	// Re-start to enter confirm_update
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey status",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.ReplyText, "已提交") {
+		t.Fatalf("confirm status reply=%q", r.ReplyText)
+	}
+}
+
 func TestOptionalSkipAdvances(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

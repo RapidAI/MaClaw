@@ -61,7 +61,16 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	hints := m.surveyHints
 	m.mu.Unlock()
 
-	rk := surveyRateKey("lansenger", msg.FromUserID)
+	userID := strings.TrimSpace(msg.FromUserID)
+	if userID == "" {
+		// Hub requires user_id; avoid a confusing 400→"服务出错" path for commands.
+		if looksLikeSurveyCommand(text) {
+			_ = m.replySurveyText(msg, "无法识别发送者，请稍后重试。")
+			return true
+		}
+		return false
+	}
+	rk := surveyRateKey("lansenger", userID)
 	now := time.Now()
 	isCmd := looksLikeSurveyCommand(text)
 
@@ -97,7 +106,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 
 	body := map[string]any{
 		"platform":  "lansenger",
-		"user_id":   strings.TrimSpace(msg.FromUserID),
+		"user_id":   userID,
 		"user_name": strings.TrimSpace(msg.SenderName),
 		"chat_type": strings.ToLower(chatType),
 		"group_id":  strings.TrimSpace(msg.GroupID),

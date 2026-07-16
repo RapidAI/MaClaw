@@ -77,7 +77,7 @@ export function normalizeQuestionsForSave(qs: EditorQuestion[]): EditorQuestion[
         }
         if (q.type === 'text') {
             const ml = q.max_length ?? 500;
-            if (ml < 0) {
+            if (ml < 0 || ml > 10000) {
                 throw new Error('invalid_max_length');
             }
             base.max_length = ml;

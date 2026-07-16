@@ -135,8 +135,14 @@ func ValidateDraftQuestions(qs []Question) error {
 				seenO[oid] = struct{}{}
 			}
 		case "text":
-			if q.MaxLength != nil && *q.MaxLength < 0 {
-				return fmt.Errorf("text max_length must be >= 0")
+			if q.MaxLength != nil {
+				if *q.MaxLength < 0 {
+					return fmt.Errorf("text max_length must be >= 0")
+				}
+				// Cap abusive client values (IM/export stay usable).
+				if *q.MaxLength > 10000 {
+					return fmt.Errorf("text max_length must be <= 10000")
+				}
 			}
 		case "rating":
 			min, max := 1, 5
@@ -148,6 +154,9 @@ func ValidateDraftQuestions(qs []Question) error {
 			}
 			if min > max {
 				return fmt.Errorf("rating min > max")
+			}
+			if min < -1000 || max > 1000 {
+				return fmt.Errorf("rating range out of bounds")
 			}
 		default:
 			return fmt.Errorf("unsupported question type %q", q.Type)
