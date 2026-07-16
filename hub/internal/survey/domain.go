@@ -67,11 +67,11 @@ func NormalizeShortCode(in string) (string, error) {
 		}
 	}, s)
 	if len(s) != ShortCodeLen {
-		return "", fmt.Errorf("short code must be %d characters", ShortCodeLen)
+		return "", fmt.Errorf("%w: must be %d characters", ErrInvalidShortCode, ShortCodeLen)
 	}
 	for _, r := range s {
 		if !strings.ContainsRune(CrockfordAlphabet, r) {
-			return "", fmt.Errorf("invalid short code character")
+			return "", fmt.Errorf("%w: invalid character", ErrInvalidShortCode)
 		}
 	}
 	return s, nil

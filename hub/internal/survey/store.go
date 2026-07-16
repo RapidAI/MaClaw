@@ -24,6 +24,9 @@ var ErrNotCollecting = errors.New("survey not collecting")
 // ErrInvalidStatus is returned for unknown List status filters.
 var ErrInvalidStatus = errors.New("invalid status filter")
 
+// ErrInvalidShortCode is returned when a short code fails format validation.
+var ErrInvalidShortCode = errors.New("invalid short code")
+
 // isUniqueViolation reports SQLite UNIQUE / constraint failures (modernc + string fallback).
 func isUniqueViolation(err error) bool {
 	if err == nil {
@@ -162,9 +165,9 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 		AnonymitySalt: salt,
 	}
 	now := time.Now().UTC()
-	id := uuid.NewString()
 	var code string
 	for i := 0; i < ShortCodeRetries; i++ {
+		id := uuid.NewString()
 		c, err := GenerateShortCode()
 		if err != nil {
 			return nil, err
@@ -174,7 +177,11 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 		if err != nil {
 			return nil, err
 		}
-		settingsJSON, _ := json.Marshal(settings)
+		settingsJSON, err := json.Marshal(settings)
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO surveys(id,tenant_id,short_code,title,description,status,settings_json,created_by,created_at,updated_at)
 			VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			id, tenantID, code, title, desc, StatusDraft, string(settingsJSON), createdBy,
@@ -182,6 +189,7 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 		if err != nil {
 			_ = tx.Rollback()
 			if isUniqueViolation(err) {
+				// Retry with a new id + short code (covers rare id or code collisions).
 				continue
 			}
 			return nil, err
@@ -828,8 +836,11 @@ func (s *Store) ListResponses(ctx context.Context, tenantID, surveyID string) ([
 }
 
 func (s *Store) SaveSession(ctx context.Context, sess *Session) error {
-	raw, _ := json.Marshal(sess.Answers)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO survey_sessions(session_key,tenant_id,survey_id,platform,user_id,user_name,group_id,phase,cursor,answers_json,expires_at,updated_at)
+	raw, err := json.Marshal(sess.Answers)
+	if err != nil {
+		return fmt.Errorf("marshal session answers: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO survey_sessions(session_key,tenant_id,survey_id,platform,user_id,user_name,group_id,phase,cursor,answers_json,expires_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(tenant_id,session_key) DO UPDATE SET
 			survey_id=excluded.survey_id, platform=excluded.platform, user_id=excluded.user_id, user_name=excluded.user_name,

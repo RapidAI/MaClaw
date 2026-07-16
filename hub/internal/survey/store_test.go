@@ -846,6 +846,84 @@ func TestFinalizeSubmitRejectsClosed(t *testing.T) {
 	}
 }
 
+func TestGetByCodeInvalidVsDBError(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	// Invalid format must be a handled reply, not a 500.
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey BAD!!!",
+	})
+	if err != nil {
+		t.Fatalf("invalid format should not return infra err: %v", err)
+	}
+	if !r.Handled || !strings.Contains(r.ReplyText, "短码无效") {
+		t.Fatalf("reply=%q", r.ReplyText)
+	}
+	// Sentinel is wrapped from NormalizeShortCode.
+	if _, err := NormalizeShortCode("ABC"); !errors.Is(err, ErrInvalidShortCode) {
+		t.Fatalf("want ErrInvalidShortCode got %v", err)
+	}
+}
+
+func TestCorruptPhaseResumeDoesNotWipe(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "C",
+		Questions: []Question{
+			{ID: "q1", Type: "text", Title: "A", Required: true},
+			{ID: "q2", Type: "text", Title: "B", Required: true},
+		},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	// Answer Q1
+	_, _ = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "hello",
+	})
+	sk := SessionKey(PlatformLansenger, "u1")
+	sess, err := st.GetSession(ctx, "t", sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Cursor != 1 || sess.Answers["q1"] != "hello" {
+		t.Fatalf("precondition cursor=%d answers=%v", sess.Cursor, sess.Answers)
+	}
+	// Corrupt phase and resume via short code — must keep answers.
+	sess.Phase = "bogus"
+	if err := st.SaveSession(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil || !r.Handled {
+		t.Fatalf("err=%v reply=%q", err, r.ReplyText)
+	}
+	if !strings.Contains(r.ReplyText, "继续填写") {
+		t.Fatalf("want resume reply, got %q", r.ReplyText)
+	}
+	sess2, err := st.GetSession(ctx, "t", sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess2.Answers["q1"] != "hello" {
+		t.Fatalf("answers wiped: %v", sess2.Answers)
+	}
+	if sess2.Phase != PhaseAnswering {
+		t.Fatalf("phase=%q", sess2.Phase)
+	}
+}
+
 func TestFullwidthDigitsParse(t *testing.T) {
 	q := Question{
 		ID: "q1", Type: "single_choice", Title: "Q", Required: true,

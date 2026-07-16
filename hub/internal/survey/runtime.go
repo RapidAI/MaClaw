@@ -263,8 +263,11 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		if errors.Is(err, sql.ErrNoRows) {
 			return IMHandleResponse{Handled: true, ReplyText: "未找到该问卷短码。"}, nil
 		}
-		// invalid code format
-		return IMHandleResponse{Handled: true, ReplyText: "短码无效，请使用 6 位合法短码。"}, nil
+		if errors.Is(err, ErrInvalidShortCode) {
+			return IMHandleResponse{Handled: true, ReplyText: "短码无效，请使用 6 位合法短码。"}, nil
+		}
+		// Real storage/infra fault — do not mask as invalid code.
+		return IMHandleResponse{}, err
 	}
 	if sv.Status != StatusPublished {
 		return IMHandleResponse{Handled: true, ReplyText: "该问卷未在收集中。"}, nil
@@ -305,11 +308,21 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		// Touch TTL so re-issuing /survey <code> does not leave a nearly-expired session.
 		existing.ExpiresAt = r.now().Add(SessionTTL)
 		existing.UpdatedAt = r.now()
+		// Unknown/corrupt phase: recover as answering rather than falling through
+		// into a fresh start that would wipe in-progress answers.
+		if existing.Phase != PhaseAnswering && existing.Phase != PhaseConfirmUpdate {
+			existing.Phase = PhaseAnswering
+		}
 		if err := r.Store.SaveSession(ctx, existing); err != nil {
 			return IMHandleResponse{}, err
 		}
 		switch existing.Phase {
-		case PhaseAnswering:
+		case PhaseConfirmUpdate:
+			return IMHandleResponse{
+				Handled:   true,
+				ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出",
+			}, nil
+		default: // PhaseAnswering
 			cur := existing.Cursor
 			if cur < 0 || cur >= len(sv.Questions) {
 				cur = 0
@@ -317,11 +330,6 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 			return IMHandleResponse{
 				Handled:   true,
 				ReplyText: fmt.Sprintf("继续填写《%s》\n\n%s", sv.Title, FormatQuestionPrompt(sv.Questions[cur], cur, len(sv.Questions))),
-			}, nil
-		case PhaseConfirmUpdate:
-			return IMHandleResponse{
-				Handled:   true,
-				ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出",
 			}, nil
 		}
 	}
@@ -455,6 +463,11 @@ func boundToGroup(sv *Survey, platform, groupID string) bool {
 
 func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, sess *Session, text string) (IMHandleResponse, error) {
 	ctrl := IsControlWord(text)
+
+	// Recover corrupt phase values before branching.
+	if sess.Phase != PhaseAnswering && sess.Phase != PhaseConfirmUpdate {
+		sess.Phase = PhaseAnswering
+	}
 
 	if sess.Phase == PhaseConfirmUpdate {
 		switch ctrl {
