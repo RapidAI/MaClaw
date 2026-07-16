@@ -83,6 +83,11 @@ func (h *SurveyHandler) decodeJSON(w http.ResponseWriter, r *http.Request, dst a
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid body")
 		return false
 	}
+	// Reject concatenated / trailing JSON (e.g. `{}{}`).
+	if dec.More() {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "trailing data")
+		return false
+	}
 	return true
 }
 

@@ -575,6 +575,8 @@ func (s *Store) Archive(ctx context.Context, tenantID, id string) (*Survey, erro
 		StatusArchived, now.Format(time.RFC3339), id, tenantID); err != nil {
 		return nil, err
 	}
+	// Drop any leftover sessions (e.g. draft never published but session created in tests, or race).
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM survey_sessions WHERE survey_id=?`, id)
 	return s.Get(ctx, tenantID, id)
 }
 

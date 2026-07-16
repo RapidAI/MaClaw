@@ -97,10 +97,10 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 
 	body := map[string]any{
 		"platform":  "lansenger",
-		"user_id":   msg.FromUserID,
-		"user_name": msg.SenderName,
-		"chat_type": chatType,
-		"group_id":  msg.GroupID,
+		"user_id":   strings.TrimSpace(msg.FromUserID),
+		"user_name": strings.TrimSpace(msg.SenderName),
+		"chat_type": strings.ToLower(chatType),
+		"group_id":  strings.TrimSpace(msg.GroupID),
 		"text":      text,
 		"is_at_me":  msg.IsAtMe,
 		"raw_text":  msg.Text,

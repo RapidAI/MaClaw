@@ -92,7 +92,24 @@ func (a *App) PublishSurvey(id string, optsJSON string) (string, error) {
 	}
 	_ = json.Unmarshal([]byte(optsJSON), &opts)
 	if opts.Announce {
-		_, _ = a.AnnounceSurveyToBoundGroups(id)
+		annRaw, annErr := a.AnnounceSurveyToBoundGroups(id)
+		// Always return published survey; surface announce problems without failing publish.
+		var published map[string]any
+		if json.Unmarshal(raw, &published) == nil && published != nil {
+			if annErr != nil {
+				published["announce_failures"] = []string{annErr.Error()}
+			} else {
+				var ann struct {
+					Failures []string `json:"failures"`
+				}
+				if json.Unmarshal([]byte(annRaw), &ann) == nil && len(ann.Failures) > 0 {
+					published["announce_failures"] = ann.Failures
+				}
+			}
+			if patched, mErr := json.Marshal(published); mErr == nil {
+				raw = patched
+			}
+		}
 	}
 	return string(raw), nil
 }

@@ -54,7 +54,7 @@ func (r *Runtime) maybeCleanupSessions(ctx context.Context) {
 func (r *Runtime) Handle(ctx context.Context, tenantID string, req IMHandleRequest) (IMHandleResponse, error) {
 	r.maybeCleanupSessions(ctx)
 
-	platform := strings.TrimSpace(req.Platform)
+	platform := strings.ToLower(strings.TrimSpace(req.Platform))
 	if platform == "" {
 		platform = PlatformLansenger
 	}

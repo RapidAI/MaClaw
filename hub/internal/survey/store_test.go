@@ -839,6 +839,32 @@ func TestListRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestPlatformNormalizedOnHandle(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "P",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	// Mixed-case platform should still match bindings / session keys.
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: "Lansenger", UserID: "u1", ChatType: "GROUP", GroupID: "g",
+		Text: "/survey " + pub.ShortCode + " 1",
+	})
+	if err != nil || !r.Handled {
+		t.Fatalf("err=%v reply=%q", err, r.ReplyText)
+	}
+	if r.Event != "response_submitted" {
+		t.Fatalf("event=%q reply=%q", r.Event, r.ReplyText)
+	}
+}
+
 func TestListP2PMessage(t *testing.T) {
 	st := openTestDB(t)
 	rt := NewRuntime(st)

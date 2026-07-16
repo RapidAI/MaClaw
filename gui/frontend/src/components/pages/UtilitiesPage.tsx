@@ -77,6 +77,8 @@ type SurveyDetail = SurveySummary & {
         target_count?: number;
         deadline?: string;
     };
+    /** Present when publish requested announce and some groups failed. */
+    announce_failures?: string[];
 };
 
 /** Go Wails methods return JSON as string; objects may already be parsed in some runtimes. */
@@ -87,7 +89,11 @@ export function parseWailsJSON<T = any>(value: unknown): T {
     if (typeof value === 'string') {
         const s = value.trim();
         if (!s) return null as T;
-        return JSON.parse(s) as T;
+        try {
+            return JSON.parse(s) as T;
+        } catch (e) {
+            throw new Error(`invalid JSON from backend: ${(e as Error)?.message || e}`);
+        }
     }
     return value as T;
 }
@@ -645,8 +651,18 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         try {
             const mod = await getApp();
             const raw = await mod.PublishSurvey(selected.id, JSON.stringify({ announce: true }));
-            setSelected(parseWailsJSON<SurveyDetail>(raw));
+            const published = parseWailsJSON<SurveyDetail>(raw);
+            setSelected(published);
             await loadList();
+            if (published?.announce_failures && published.announce_failures.length > 0) {
+                setError(
+                    (isZh ? '已发布，但部分群公告失败：' : 'Published, but some announces failed: ') +
+                        published.announce_failures.join('; '),
+                );
+            } else {
+                setCopyHint(isZh ? '已发布' : 'Published');
+                setTimeout(() => setCopyHint(''), 2000);
+            }
         } catch (e: any) {
             setError(String(e?.message || e));
         } finally {
