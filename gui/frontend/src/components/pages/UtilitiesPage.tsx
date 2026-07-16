@@ -518,7 +518,9 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
             setSelected(detail);
             loadEditorFromDetail(detail);
             await loadList();
-            setError(isZh ? '已保存' : 'Saved');
+            setError('');
+            setCopyHint(isZh ? '已保存' : 'Saved');
+            setTimeout(() => setCopyHint(''), 2000);
         } catch (e: any) {
             setError(String(e?.message || e));
         } finally {

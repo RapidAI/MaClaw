@@ -626,6 +626,38 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 	}
 }
 
+func TestBindRequiresNonEmpty(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{Title: "T", Questions: sampleQuestions()})
+	if err := st.Bind(ctx, "t", sv.ID, nil); err == nil {
+		t.Fatal("empty bindings should fail")
+	}
+}
+
+func TestDuplicateDropsPastDeadline(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-time.Hour)
+	sv, err := st.Create(ctx, "t", "u", CreateInput{
+		Title: "Old",
+		Questions: []Question{{
+			ID: "q1", Type: "text", Title: "N", Required: true,
+		}},
+		Settings: SettingsIn{Deadline: &past},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup, err := st.Duplicate(ctx, "t", sv.ID, "u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dup.Settings.Deadline != nil {
+		t.Fatalf("expected past deadline cleared, got %v", dup.Settings.Deadline)
+	}
+}
+
 func TestValidateSettingsAndRatingRange(t *testing.T) {
 	if err := ValidateSettingsIn(SettingsIn{TargetCount: -1}); err == nil {
 		t.Fatal("negative target")

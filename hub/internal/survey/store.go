@@ -388,6 +388,9 @@ func (s *Store) Bind(ctx context.Context, tenantID, id string, bindings []Bindin
 	if sv.Status != StatusDraft && sv.Status != StatusPublished {
 		return fmt.Errorf("cannot bind in status %s", sv.Status)
 	}
+	if len(bindings) == 0 {
+		return fmt.Errorf("bindings required")
+	}
 	now := time.Now().UTC()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -567,6 +570,11 @@ func (s *Store) Duplicate(ctx context.Context, tenantID, id, createdBy string) (
 	if err != nil {
 		return nil, err
 	}
+	// Do not carry a past deadline into the new draft (would publish into already-closed collect window).
+	var deadline *time.Time
+	if sv.Settings.Deadline != nil && sv.Settings.Deadline.After(time.Now().UTC()) {
+		deadline = sv.Settings.Deadline
+	}
 	in := CreateInput{
 		Title:       sv.Title + " (copy)",
 		Description: sv.Description,
@@ -575,7 +583,7 @@ func (s *Store) Duplicate(ctx context.Context, tenantID, id, createdBy string) (
 			Anonymous:   sv.Settings.Anonymous,
 			AllowUpdate: sv.Settings.AllowUpdate,
 			AllowP2P:    sv.Settings.AllowP2P,
-			Deadline:    sv.Settings.Deadline,
+			Deadline:    deadline,
 			TargetCount: sv.Settings.TargetCount,
 		},
 	}
@@ -612,10 +620,16 @@ func (s *Store) SubmitResponse(ctx context.Context, tenantID string, resp *Respo
 }
 
 func (s *Store) HasResponse(ctx context.Context, surveyID, platform, respondentKey string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM survey_responses WHERE survey_id=? AND platform=? AND respondent_key=?`,
-		surveyID, platform, respondentKey).Scan(&n)
-	return n > 0, err
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM survey_responses WHERE survey_id=? AND platform=? AND respondent_key=? LIMIT 1`,
+		surveyID, platform, respondentKey).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) ListResponses(ctx context.Context, tenantID, surveyID string) ([]Response, error) {

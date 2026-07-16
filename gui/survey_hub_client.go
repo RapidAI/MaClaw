@@ -105,9 +105,17 @@ func (c *surveyHubClient) List(ctx context.Context, status string) (json.RawMess
 	return raw, err
 }
 
+func (c *surveyHubClient) surveyPath(id string, suffix string) string {
+	p := "/api/v1/surveys/" + url.PathEscape(strings.TrimSpace(id))
+	if suffix != "" {
+		p += suffix
+	}
+	return p
+}
+
 func (c *surveyHubClient) Get(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodGet, "/api/v1/surveys/"+id, nil, &raw)
+	err := c.do(ctx, http.MethodGet, c.surveyPath(id, ""), nil, &raw)
 	return raw, err
 }
 
@@ -130,36 +138,36 @@ func (c *surveyHubClient) Publish(ctx context.Context, id string, body json.RawM
 		payload = map[string]any{}
 	}
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/surveys/"+id+"/publish", payload, &raw)
+	err := c.do(ctx, http.MethodPost, c.surveyPath(id, "/publish"), payload, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Close(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/surveys/"+id+"/close", map[string]any{}, &raw)
+	err := c.do(ctx, http.MethodPost, c.surveyPath(id, "/close"), map[string]any{}, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Reopen(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/surveys/"+id+"/reopen", map[string]any{}, &raw)
+	err := c.do(ctx, http.MethodPost, c.surveyPath(id, "/reopen"), map[string]any{}, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Archive(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/surveys/"+id+"/archive", map[string]any{}, &raw)
+	err := c.do(ctx, http.MethodPost, c.surveyPath(id, "/archive"), map[string]any{}, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Duplicate(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/surveys/"+id+"/duplicate", map[string]any{}, &raw)
+	err := c.do(ctx, http.MethodPost, c.surveyPath(id, "/duplicate"), map[string]any{}, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Delete(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodDelete, "/api/v1/surveys/"+id, nil, nil)
+	return c.do(ctx, http.MethodDelete, c.surveyPath(id, ""), nil, nil)
 }
 
 func (c *surveyHubClient) Update(ctx context.Context, id string, body json.RawMessage) (json.RawMessage, error) {
@@ -168,7 +176,7 @@ func (c *surveyHubClient) Update(ctx context.Context, id string, body json.RawMe
 		return nil, err
 	}
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPatch, "/api/v1/surveys/"+id, payload, &raw)
+	err := c.do(ctx, http.MethodPatch, c.surveyPath(id, ""), payload, &raw)
 	return raw, err
 }
 
@@ -178,29 +186,24 @@ func (c *surveyHubClient) Bind(ctx context.Context, id string, body json.RawMess
 		return nil, err
 	}
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodPost, "/api/v1/surveys/"+id+"/bindings", payload, &raw)
+	err := c.do(ctx, http.MethodPost, c.surveyPath(id, "/bindings"), payload, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Unbind(ctx context.Context, id, platform, groupID string) error {
-	path := fmt.Sprintf(
-		"/api/v1/surveys/%s/bindings/%s/%s",
-		url.PathEscape(id),
-		url.PathEscape(platform),
-		url.PathEscape(groupID),
-	)
+	path := c.surveyPath(id, "/bindings/"+url.PathEscape(platform)+"/"+url.PathEscape(groupID))
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
 
 func (c *surveyHubClient) Stats(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodGet, "/api/v1/surveys/"+id+"/stats", nil, &raw)
+	err := c.do(ctx, http.MethodGet, c.surveyPath(id, "/stats"), nil, &raw)
 	return raw, err
 }
 
 func (c *surveyHubClient) Responses(ctx context.Context, id string) (json.RawMessage, error) {
 	var raw json.RawMessage
-	err := c.do(ctx, http.MethodGet, "/api/v1/surveys/"+id+"/responses", nil, &raw)
+	err := c.do(ctx, http.MethodGet, c.surveyPath(id, "/responses"), nil, &raw)
 	return raw, err
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,7 @@ type Runtime struct {
 	Store *Store
 	Now   func() time.Time
 	// lastCleanup throttles session TTL sweeps (every CleanupEvery; default 1m).
+	cleanupMu     sync.Mutex
 	lastCleanup   time.Time
 	CleanupEvery  time.Duration
 }
@@ -36,10 +38,14 @@ func (r *Runtime) maybeCleanupSessions(ctx context.Context) {
 	if every <= 0 {
 		every = time.Minute
 	}
+	r.cleanupMu.Lock()
 	if !r.lastCleanup.IsZero() && now.Sub(r.lastCleanup) < every {
+		r.cleanupMu.Unlock()
 		return
 	}
 	r.lastCleanup = now
+	r.cleanupMu.Unlock()
+	// Run outside the lock so concurrent Handle calls are not serialized on DB delete.
 	_ = r.Store.CleanupExpiredSessions(ctx, now)
 }
 
@@ -61,10 +67,10 @@ func (r *Runtime) Handle(ctx context.Context, tenantID string, req IMHandleReque
 
 	// Load active session if any
 	sess, err := r.Store.GetSession(ctx, tenantID, sk)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return IMHandleResponse{}, err
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		sess = nil
 	}
 	if sess != nil && !sess.ExpiresAt.After(r.now()) {
@@ -208,7 +214,7 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 
 	sv, err := r.Store.GetByCode(ctx, tenantID, code)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return IMHandleResponse{Handled: true, ReplyText: "未找到该问卷短码。"}, nil
 		}
 		// invalid code format
@@ -387,6 +393,11 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 	if ctrl == "prev" {
 		if sess.Cursor > 0 {
 			sess.Cursor--
+			// Require re-answer of the question we returned to (avoid stale answers
+			// if user later jumps forward without re-typing).
+			if sess.Answers != nil && sess.Cursor < len(sv.Questions) {
+				delete(sess.Answers, sv.Questions[sess.Cursor].ID)
+			}
 		}
 		sess.ExpiresAt = r.now().Add(SessionTTL)
 		sess.UpdatedAt = r.now()
