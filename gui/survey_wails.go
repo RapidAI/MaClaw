@@ -353,11 +353,15 @@ func (a *App) exportSurveyXLSX(id string, responsesOverride json.RawMessage) (st
 
 // AnnounceSurveyToBoundGroups sends announce text to bound Lansenger groups.
 func (a *App) AnnounceSurveyToBoundGroups(id string) (string, error) {
+	id, err := requireSurveyID(id)
+	if err != nil {
+		return "", err
+	}
 	c, err := a.newSurveyHubClient()
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.Get(context.Background(), strings.TrimSpace(id))
+	raw, err := c.Get(context.Background(), id)
 	if err != nil {
 		return "", err
 	}

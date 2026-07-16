@@ -389,18 +389,22 @@ func TestWriteExportToEnvPath(t *testing.T) {
 func TestDeadlineOnSubmit(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()
-	past := time.Now().UTC().Add(-time.Hour)
+	// Publish with a future deadline, then advance runtime clock past it.
+	future := time.Now().UTC().Add(time.Hour)
 	sv, _ := st.Create(ctx, "t", "u", CreateInput{
 		Title: "D",
 		Questions: []Question{{
 			ID: "q1", Type: "single_choice", Title: "X", Required: true,
 			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
 		}},
-		Settings: SettingsIn{Deadline: &past},
+		Settings: SettingsIn{Deadline: &future},
 	})
 	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
-	_, _ = st.Publish(ctx, "t", sv.ID)
+	if _, err := st.Publish(ctx, "t", sv.ID); err != nil {
+		t.Fatal(err)
+	}
 	rt := NewRuntime(st)
+	rt.Now = func() time.Time { return future.Add(time.Second) }
 	r, err := rt.Handle(ctx, "t", IMHandleRequest{
 		Platform: PlatformLansenger, UserID: "u", ChatType: "group", GroupID: "g",
 		Text: "/survey " + sv.ShortCode,
@@ -788,6 +792,57 @@ func TestValidateSettingsAndRatingRange(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("rating min>max")
+	}
+	err = ValidateDraftQuestions([]Question{
+		{ID: "q1", Type: "text", Title: "A", Required: true},
+		{ID: "q1", Type: "text", Title: "B", Required: true},
+	})
+	if err == nil {
+		t.Fatal("duplicate question id")
+	}
+	err = ValidateDraftQuestions([]Question{{
+		ID: "q1", Type: "single_choice", Title: "C", Required: true,
+		Options: []Option{{ID: "o1", Label: "A"}, {ID: "o1", Label: "B"}},
+	}})
+	if err == nil {
+		t.Fatal("duplicate option id")
+	}
+}
+
+func TestPublishRejectsPastDeadline(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-time.Hour)
+	sv, err := st.Create(ctx, "t", "u", CreateInput{
+		Title:     "T",
+		Questions: sampleQuestions(),
+		Settings:  SettingsIn{Deadline: &past},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	if _, err := st.Publish(ctx, "t", sv.ID); err == nil {
+		t.Fatal("expected publish with past deadline to fail")
+	}
+}
+
+func TestFinalizeSubmitRejectsClosed(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{Title: "T", Questions: sampleQuestions()})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	if _, err := st.Close(ctx, "t", pub.ID); err != nil {
+		t.Fatal(err)
+	}
+	err := rt.finalizeSubmit(ctx, "t", pub, PlatformLansenger, "u1", "n", "g", map[string]any{
+		"q1": "opt_yes",
+		"q2": []string{"opt_a"},
+	})
+	if !errors.Is(err, ErrNotCollecting) {
+		t.Fatalf("want ErrNotCollecting got %v", err)
 	}
 }
 

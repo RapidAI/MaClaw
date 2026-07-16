@@ -353,6 +353,9 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 					if errors.Is(err, ErrDeadlinePassed) {
 						return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 					}
+					if errors.Is(err, ErrNotCollecting) {
+						return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+					}
 					return IMHandleResponse{}, err
 				}
 				return IMHandleResponse{
@@ -414,9 +417,23 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		case "modify":
 			sv, err := r.Store.Get(ctx, tenantID, sess.SurveyID)
 			if err != nil {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 				return IMHandleResponse{Handled: true, ReplyText: "问卷不可用。"}, nil
 			}
+			if sv.Status != StatusPublished {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+				return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+			}
+			if DeadlinePassed(sv.Settings, r.now()) {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+				return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
+			}
+			if !sv.Settings.AllowUpdate {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+				return IMHandleResponse{Handled: true, ReplyText: "该问卷不允许修改答卷。"}, nil
+			}
 			if len(sv.Questions) == 0 {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 				return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
 			}
 			sess.Phase = PhaseAnswering
@@ -506,6 +523,10 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 				return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 			}
+			if errors.Is(err, ErrNotCollecting) {
+				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
+				return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+			}
 			return IMHandleResponse{}, err
 		}
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
@@ -536,15 +557,23 @@ func looksLikeAnswer(text string) bool {
 }
 
 func (r *Runtime) finalizeSubmit(ctx context.Context, tenantID string, sv *Survey, platform, userID, userName, groupID string, answers map[string]any) error {
-	if DeadlinePassed(sv.Settings, r.now()) {
+	// Re-load for status/deadline/settings so close/archive races cannot accept new answers.
+	cur, err := r.Store.Get(ctx, tenantID, sv.ID)
+	if err != nil {
+		return err
+	}
+	if cur.Status != StatusPublished {
+		return ErrNotCollecting
+	}
+	if DeadlinePassed(cur.Settings, r.now()) {
 		return ErrDeadlinePassed
 	}
-	key, err := ComputeRespondentKey(sv.Settings.Anonymous, sv.Settings.AnonymitySalt, userID)
+	key, err := ComputeRespondentKey(cur.Settings.Anonymous, cur.Settings.AnonymitySalt, userID)
 	if err != nil {
 		return err
 	}
 	name := userName
-	if sv.Settings.Anonymous {
+	if cur.Settings.Anonymous {
 		name = ""
 	}
 	raw, err := AnswersToJSON(answers)
@@ -552,7 +581,7 @@ func (r *Runtime) finalizeSubmit(ctx context.Context, tenantID string, sv *Surve
 		return err
 	}
 	resp := &Response{
-		SurveyID:       sv.ID,
+		SurveyID:       cur.ID,
 		TenantID:       tenantID,
 		Platform:       platform,
 		RespondentKey:  key,
@@ -561,7 +590,7 @@ func (r *Runtime) finalizeSubmit(ctx context.Context, tenantID string, sv *Surve
 		Answers:        raw,
 		SubmittedAt:    r.now(),
 	}
-	return r.Store.SubmitResponse(ctx, tenantID, resp, sv.Settings.AllowUpdate)
+	return r.Store.SubmitResponse(ctx, tenantID, resp, cur.Settings.AllowUpdate)
 }
 
 // ComputeStats builds stats from submitted responses.

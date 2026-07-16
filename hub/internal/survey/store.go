@@ -18,6 +18,9 @@ var ErrAlreadySubmitted = errors.New("already submitted")
 // ErrDeadlinePassed is returned when a submit is attempted after the survey deadline.
 var ErrDeadlinePassed = errors.New("deadline passed")
 
+// ErrNotCollecting is returned when submit targets a non-published survey.
+var ErrNotCollecting = errors.New("survey not collecting")
+
 // ErrInvalidStatus is returned for unknown List status filters.
 var ErrInvalidStatus = errors.New("invalid status filter")
 
@@ -546,6 +549,10 @@ func (s *Store) Publish(ctx context.Context, tenantID, id string) (*Survey, erro
 	if strings.TrimSpace(sv.Settings.AnonymitySalt) == "" {
 		return nil, fmt.Errorf("missing anonymity salt")
 	}
+	// Refuse to open collection when the deadline is already past.
+	if DeadlinePassed(sv.Settings, time.Now().UTC()) {
+		return nil, fmt.Errorf("截止时间已过，请先修改截止时间再发布")
+	}
 	now := time.Now().UTC()
 	// CAS: only draft → published wins; concurrent second publish fails cleanly.
 	res, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, published_at=?, updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
@@ -601,6 +608,8 @@ func (s *Store) Reopen(ctx context.Context, tenantID, id string) (*Survey, error
 	if len(sv.Bindings) < 1 {
 		return nil, fmt.Errorf("cannot reopen without bindings")
 	}
+	// Note: deadline may already be past (closed surveys cannot edit settings);
+	// IM submit still rejects via DeadlinePassed — operator may need a new draft/copy.
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `UPDATE surveys SET status=?, published_at=COALESCE(published_at,?), updated_at=? WHERE id=? AND tenant_id=? AND status=?`,
 		StatusPublished, now.Format(time.RFC3339), now.Format(time.RFC3339), id, tenantID, StatusClosed)

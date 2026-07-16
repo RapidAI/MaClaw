@@ -94,16 +94,34 @@ func ValidateDraftQuestions(qs []Question) error {
 	if len(qs) == 0 {
 		return fmt.Errorf("at least one question is required")
 	}
+	seenQ := make(map[string]struct{}, len(qs))
 	for _, q := range qs {
+		qid := strings.TrimSpace(q.ID)
+		if qid == "" {
+			return fmt.Errorf("question id required")
+		}
+		if _, dup := seenQ[qid]; dup {
+			return fmt.Errorf("duplicate question id %q", qid)
+		}
+		seenQ[qid] = struct{}{}
 		switch q.Type {
 		case "single_choice", "multi_choice":
 			if len(q.Options) < 2 {
 				return fmt.Errorf("choice question needs at least 2 options")
 			}
+			seenO := make(map[string]struct{}, len(q.Options))
 			for _, o := range q.Options {
 				if strings.TrimSpace(o.Label) == "" {
 					return fmt.Errorf("choice option label required")
 				}
+				oid := strings.TrimSpace(o.ID)
+				if oid == "" {
+					return fmt.Errorf("option id required")
+				}
+				if _, dup := seenO[oid]; dup {
+					return fmt.Errorf("duplicate option id %q", oid)
+				}
+				seenO[oid] = struct{}{}
 			}
 		case "text":
 			if q.MaxLength != nil && *q.MaxLength < 0 {
