@@ -923,6 +923,29 @@ ON CONFLICT(survey_id, platform, respondent_key) DO UPDATE SET
 
 **性能：** ListSurveys <50ms；TryHandle <20ms；Export 500 行 <2s。
 
+### 产品验收走查（桌面 + 蓝信，约 15 分钟）
+
+| # | 步骤 | 期望 |
+|---|------|------|
+| 1 | 连接 Hub；设置中「实用工具入口」「问卷 IM 拦截」保持开启 | 侧栏出现「实用工具」 |
+| 2 | 实用工具 → 调查问卷 → 新建：标题、≥1 题、目标回收数/截止可选 | 创建成功，短码 6 位 |
+| 3 | 绑定 ≥1 个蓝信群；发布前 checklist 全绿 → 发布（可勾公告） | 状态 `published`；群内可见公告（若开） |
+| 4 | 群内 @机器人 `/survey <短码>`，按题作答至完成 | 机器人逐步提问；最后「提交成功」 |
+| 5 | 桌面打开结果页 | 回收份数 +1；选择题百分比条；可复制摘要 |
+| 6 | 导出 Excel | 本地 xlsx 两 sheet；非匿名弹出 PII 确认 |
+| 7 | 设置 `survey_enabled=false` 后群内再 `/survey` | **不**拦截、进正常对话/LLM |
+| 8 | 关闭问卷 → 再答 | 「问卷已停止收集」或截止类文案 |
+
+**自动化回归（提交前）：**
+
+```text
+go test ./hub/internal/survey/ -count=1
+go test ./gui/ -count=1 -run "Survey|Rate|StripLansenger|LooksLike|ShouldAttempt"
+go test ./corelib/lansenger/ -count=1 -run "ListJoined|Group"
+# frontend
+npx vitest run src/components/pages/__tests__/utilitiesSurveyEditor.test.ts src/components/pages/__tests__/UtilitiesPageParse.test.ts
+```
+
 ---
 
 ## Key Decisions
