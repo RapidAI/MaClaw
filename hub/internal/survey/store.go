@@ -15,6 +15,23 @@ import (
 // ErrAlreadySubmitted is returned when UNIQUE blocks insert and allow_update is false.
 var ErrAlreadySubmitted = errors.New("already submitted")
 
+// isUniqueViolation reports SQLite UNIQUE / constraint failures (modernc + string fallback).
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se interface{ Code() int }
+	if errors.As(err, &se) {
+		// SQLITE_CONSTRAINT=19, SQLITE_CONSTRAINT_UNIQUE=2067
+		switch se.Code() {
+		case 19, 2067:
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "constraint failed")
+}
+
 // Store is the tenant-scoped survey authority (Hub SQLite).
 type Store struct {
 	db *sql.DB
@@ -107,6 +124,9 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 	if title == "" {
 		return nil, fmt.Errorf("title required")
 	}
+	if len([]rune(title)) > 200 {
+		return nil, fmt.Errorf("title too long (max 200)")
+	}
 	qs := NormalizeQuestions(in.Questions)
 	if len(qs) > 0 {
 		if err := ValidateDraftQuestions(qs); err != nil {
@@ -148,7 +168,7 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 			now.Format(time.RFC3339), now.Format(time.RFC3339))
 		if err != nil {
 			_ = tx.Rollback()
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			if isUniqueViolation(err) {
 				continue
 			}
 			return nil, err
@@ -338,6 +358,9 @@ func (s *Store) Update(ctx context.Context, tenantID, id string, in UpdateInput)
 		if t == "" {
 			return nil, fmt.Errorf("title required")
 		}
+		if len([]rune(t)) > 200 {
+			return nil, fmt.Errorf("title too long (max 200)")
+		}
 		sv.Title = t
 	}
 	if in.Description != nil {
@@ -400,10 +423,15 @@ func (s *Store) Bind(ctx context.Context, tenantID, id string, bindings []Bindin
 	}
 	defer tx.Rollback()
 	for _, b := range bindings {
-		if b.Platform != PlatformLansenger {
+		platform := strings.ToLower(strings.TrimSpace(b.Platform))
+		if platform == "" {
+			platform = PlatformLansenger
+		}
+		if platform != PlatformLansenger {
 			return fmt.Errorf("only lansenger bindings allowed")
 		}
-		if strings.TrimSpace(b.GroupID) == "" {
+		groupID := strings.TrimSpace(b.GroupID)
+		if groupID == "" {
 			return fmt.Errorf("group_id required")
 		}
 		if b.BoundAt.IsZero() {
@@ -411,7 +439,7 @@ func (s *Store) Bind(ctx context.Context, tenantID, id string, bindings []Bindin
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO survey_bindings(survey_id,platform,group_id,group_name,bound_at)
 			VALUES(?,?,?,?,?) ON CONFLICT(survey_id,platform,group_id) DO UPDATE SET group_name=excluded.group_name`,
-			id, b.Platform, b.GroupID, b.GroupName, b.BoundAt.UTC().Format(time.RFC3339)); err != nil {
+			id, platform, groupID, strings.TrimSpace(b.GroupName), b.BoundAt.UTC().Format(time.RFC3339)); err != nil {
 			return err
 		}
 	}
@@ -609,7 +637,7 @@ func (s *Store) SubmitResponse(ctx context.Context, tenantID string, resp *Respo
 	if err == nil {
 		return nil
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "unique") {
+	if !isUniqueViolation(err) {
 		return err
 	}
 	if !allowUpdate {

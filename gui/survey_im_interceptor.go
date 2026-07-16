@@ -141,14 +141,20 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 			log.Printf("[survey-im] SendText failed: %v", err)
 		}
 	}
+	// Only emit when Hub set survey_id (currently response submit). Do not invent
+	// event type — empty means "response_submitted" for UI refresh compatibility.
 	if sid, _ := out["survey_id"].(string); strings.TrimSpace(sid) != "" {
-		if ev == "" {
+		if strings.TrimSpace(ev) == "" {
 			ev = "response_submitted"
 		}
 		m.app.emitEvent(EventSurveyUpdated, map[string]any{
 			"survey_id": strings.TrimSpace(sid),
 			"event":     ev,
 		})
+		// Belt-and-suspenders: clear free-text hint after submit event.
+		if ev == "response_submitted" {
+			m.surveyHints.clear(rk)
+		}
 	}
 	return true
 }

@@ -626,6 +626,61 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 	}
 }
 
+func TestResumeSameSurveyDoesNotResetCursor(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "Resume",
+		Questions: []Question{
+			{ID: "q1", Type: "text", Title: "A", Required: true},
+			{ID: "q2", Type: "text", Title: "B", Required: true},
+		},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	_, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// answer Q1
+	_, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// re-issue start should resume at Q2, not wipe
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.ReplyText, "继续填写") {
+		t.Fatalf("want resume, got %q", r.ReplyText)
+	}
+	if !strings.Contains(r.ReplyText, "【2/2】") && !strings.Contains(r.ReplyText, "B") {
+		t.Fatalf("want Q2 prompt, got %q", r.ReplyText)
+	}
+	sk := SessionKey(PlatformLansenger, "u1")
+	sess, err := st.GetSession(ctx, "t", sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Cursor != 1 {
+		t.Fatalf("cursor=%d want 1", sess.Cursor)
+	}
+	if _, ok := sess.Answers["q1"]; !ok {
+		t.Fatal("q1 answer should remain")
+	}
+}
+
 func TestCloseClearsSessions(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

@@ -259,14 +259,10 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         try {
             const mod = await getApp();
             if (!mod?.ArchiveSurvey) throw new Error(t.hubOffline);
-            const failures: string[] = [];
-            for (const id of ids) {
-                try {
-                    await mod.ArchiveSurvey(id);
-                } catch (e: any) {
-                    failures.push(`${id}: ${e?.message || e}`);
-                }
-            }
+            const results = await Promise.allSettled(ids.map((id: string) => mod.ArchiveSurvey(id)));
+            const failures = results
+                .map((r, i) => (r.status === 'rejected' ? `${ids[i]}: ${String((r as PromiseRejectedResult).reason?.message || (r as PromiseRejectedResult).reason)}` : ''))
+                .filter(Boolean);
             setSelectedIds([]);
             await loadList();
             if (failures.length) {
@@ -294,14 +290,10 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         try {
             const mod = await getApp();
             if (!mod?.DeleteSurvey) throw new Error(t.hubOffline);
-            const failures: string[] = [];
-            for (const id of ids) {
-                try {
-                    await mod.DeleteSurvey(id);
-                } catch (e: any) {
-                    failures.push(`${id}: ${e?.message || e}`);
-                }
-            }
+            const results = await Promise.allSettled(ids.map((id: string) => mod.DeleteSurvey(id)));
+            const failures = results
+                .map((r, i) => (r.status === 'rejected' ? `${ids[i]}: ${String((r as PromiseRejectedResult).reason?.message || (r as PromiseRejectedResult).reason)}` : ''))
+                .filter(Boolean);
             setSelectedIds([]);
             if (selected?.id && ids.includes(selected.id)) {
                 setSelected(null);

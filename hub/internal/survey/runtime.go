@@ -250,6 +250,22 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		return IMHandleResponse{Handled: true, ReplyText: fmt.Sprintf("您正在填写《%s》。回复「取消」结束后再开始新问卷", title)}, nil
 	}
 
+	if len(sv.Questions) == 0 {
+		return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
+	}
+
+	// Resume same survey in progress instead of wiping answers.
+	if existing != nil && existing.SurveyID == sv.ID && existing.Phase == PhaseAnswering {
+		cur := existing.Cursor
+		if cur < 0 || cur >= len(sv.Questions) {
+			cur = 0
+		}
+		return IMHandleResponse{
+			Handled:   true,
+			ReplyText: fmt.Sprintf("继续填写《%s》\n\n%s", sv.Title, FormatQuestionPrompt(sv.Questions[cur], cur, len(sv.Questions))),
+		}, nil
+	}
+
 	key, err := ComputeRespondentKey(sv.Settings.Anonymous, sv.Settings.AnonymitySalt, userID)
 	if err != nil {
 		return IMHandleResponse{}, err
@@ -356,6 +372,9 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 			sv, err := r.Store.Get(ctx, tenantID, sess.SurveyID)
 			if err != nil {
 				return IMHandleResponse{Handled: true, ReplyText: "问卷不可用。"}, nil
+			}
+			if len(sv.Questions) == 0 {
+				return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
 			}
 			sess.Phase = PhaseAnswering
 			sess.Cursor = 0
