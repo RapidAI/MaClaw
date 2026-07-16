@@ -49,29 +49,35 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 		return false
 	}
 
+	// Init under gateway mutex so concurrent first messages do not race.
+	m.mu.Lock()
 	if m.surveyRate == nil {
 		m.surveyRate = newSurveyUserRateLimit()
 	}
 	if m.surveyHints == nil {
 		m.surveyHints = newSurveySessionHint()
 	}
+	rate := m.surveyRate
+	hints := m.surveyHints
+	m.mu.Unlock()
+
 	rk := surveyRateKey("lansenger", msg.FromUserID)
 	now := time.Now()
 	isCmd := looksLikeSurveyCommand(text)
 
 	// Free-text (not pure choice/control) only probes Hub when we believe a session is active.
 	// Avoids "你好"/"嗯" hammering im/handle when no one is filling a survey.
-	if !isCmd && isFreeTextSurveyCandidate(text) && !m.surveyHints.active(rk, now) {
+	if !isCmd && isFreeTextSurveyCandidate(text) && !hints.active(rk, now) {
 		return false
 	}
 
 	// Design §9: ~2 msg/s. Only *claim* the message on throttle for explicit commands.
 	if isCmd {
-		if !m.surveyRate.allow(rk, now) {
+		if !rate.allow(rk, now) {
 			_ = m.replySurveyText(msg, "操作过快，请稍后再试")
 			return true
 		}
-	} else if !m.surveyRate.wouldAllow(rk, now) {
+	} else if !rate.wouldAllow(rk, now) {
 		return false
 	}
 
@@ -115,7 +121,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 		return false
 	}
 	if !isCmd {
-		m.surveyRate.record(rk, now)
+		rate.record(rk, now)
 	}
 
 	ev, _ := out["event"].(string)
@@ -125,15 +131,16 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	switch {
 	case ev == "response_submitted",
 		strings.Contains(reply, "已取消"):
-		m.surveyHints.clear(rk)
+		hints.clear(rk)
 	case !isCmd:
 		// Session answer / control word that Hub accepted.
-		m.surveyHints.mark(rk, now, 30*time.Minute)
+		hints.mark(rk, now, 30*time.Minute)
 	case strings.Contains(reply, "开始填写"),
+		strings.Contains(reply, "继续填写"),
 		strings.Contains(reply, "回复「修改」"),
 		strings.Contains(reply, "答案无效"),
 		strings.Contains(reply, "正在填写"):
-		m.surveyHints.mark(rk, now, 30*time.Minute)
+		hints.mark(rk, now, 30*time.Minute)
 	}
 
 	if strings.TrimSpace(reply) != "" {
@@ -153,7 +160,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 		})
 		// Belt-and-suspenders: clear free-text hint after submit event.
 		if ev == "response_submitted" {
-			m.surveyHints.clear(rk)
+			hints.clear(rk)
 		}
 	}
 	return true

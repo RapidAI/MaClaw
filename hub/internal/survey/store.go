@@ -18,6 +18,9 @@ var ErrAlreadySubmitted = errors.New("already submitted")
 // ErrDeadlinePassed is returned when a submit is attempted after the survey deadline.
 var ErrDeadlinePassed = errors.New("deadline passed")
 
+// ErrInvalidStatus is returned for unknown List status filters.
+var ErrInvalidStatus = errors.New("invalid status filter")
+
 // isUniqueViolation reports SQLite UNIQUE / constraint failures (modernc + string fallback).
 func isUniqueViolation(err error) bool {
 	if err == nil {
@@ -143,6 +146,10 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 	if err != nil {
 		return nil, err
 	}
+	desc := strings.TrimSpace(in.Description)
+	if len([]rune(desc)) > 2000 {
+		return nil, fmt.Errorf("description too long (max 2000)")
+	}
 	settings := Settings{
 		Anonymous:     in.Settings.Anonymous,
 		AllowUpdate:   in.Settings.AllowUpdate,
@@ -167,7 +174,7 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 		settingsJSON, _ := json.Marshal(settings)
 		_, err = tx.ExecContext(ctx, `INSERT INTO surveys(id,tenant_id,short_code,title,description,status,settings_json,created_by,created_at,updated_at)
 			VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			id, tenantID, code, title, strings.TrimSpace(in.Description), StatusDraft, string(settingsJSON), createdBy,
+			id, tenantID, code, title, desc, StatusDraft, string(settingsJSON), createdBy,
 			now.Format(time.RFC3339), now.Format(time.RFC3339))
 		if err != nil {
 			_ = tx.Rollback()
@@ -270,7 +277,7 @@ func (s *Store) List(ctx context.Context, tenantID, status string) ([]Survey, er
 			q += ` AND status=?`
 			args = append(args, status)
 		default:
-			return nil, fmt.Errorf("invalid status filter")
+			return nil, ErrInvalidStatus
 		}
 	}
 	q += ` ORDER BY updated_at DESC`
@@ -367,7 +374,11 @@ func (s *Store) Update(ctx context.Context, tenantID, id string, in UpdateInput)
 		sv.Title = t
 	}
 	if in.Description != nil {
-		sv.Description = strings.TrimSpace(*in.Description)
+		d := strings.TrimSpace(*in.Description)
+		if len([]rune(d)) > 2000 {
+			return nil, fmt.Errorf("description too long (max 2000)")
+		}
+		sv.Description = d
 	}
 	if in.Settings != nil {
 		if err := ValidateSettingsIn(*in.Settings); err != nil {

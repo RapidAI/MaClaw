@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -58,6 +59,10 @@ func (h *SurveyHandler) list(w http.ResponseWriter, r *http.Request, p *auth.Mac
 	status := r.URL.Query().Get("status")
 	list, err := h.Store.List(r.Context(), p.TenantID, status)
 	if err != nil {
+		if errors.Is(err, survey.ErrInvalidStatus) {
+			writeError(w, http.StatusBadRequest, "INVALID_STATUS", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "SURVEY_LIST_FAILED", err.Error())
 		return
 	}

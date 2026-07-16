@@ -834,8 +834,22 @@ func TestListRejectsInvalidStatus(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()
 	_, err := st.List(ctx, "t", "not-a-status")
-	if err == nil {
-		t.Fatal("expected invalid status filter error")
+	if !errors.Is(err, ErrInvalidStatus) {
+		t.Fatalf("want ErrInvalidStatus got %v", err)
+	}
+}
+
+func TestListP2PMessage(t *testing.T) {
+	st := openTestDB(t)
+	rt := NewRuntime(st)
+	r, err := rt.Handle(context.Background(), "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u", ChatType: "p2p", Text: "/survey list",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.ReplyText, "私聊") {
+		t.Fatalf("reply=%q", r.ReplyText)
 	}
 }
 

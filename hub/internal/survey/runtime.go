@@ -168,10 +168,18 @@ func helpText() string {
 }
 
 func (r *Runtime) handleList(ctx context.Context, tenantID, platform string, req IMHandleRequest) (IMHandleResponse, error) {
-	if req.ChatType == "group" && strings.TrimSpace(req.GroupID) == "" {
+	chatType := strings.ToLower(strings.TrimSpace(req.ChatType))
+	groupID := strings.TrimSpace(req.GroupID)
+	isP2P := chatType == "p2p" || chatType == "private" || (chatType == "" && groupID == "")
+	if isP2P {
+		return IMHandleResponse{
+			Handled:   true,
+			ReplyText: "私聊请直接发送 /survey <短码> 开始填写（需问卷开启私聊）。查看绑定群内问卷请在群里发送 /survey list。",
+		}, nil
+	}
+	if groupID == "" {
 		return IMHandleResponse{Handled: true, ReplyText: "无法识别群。"}, nil
 	}
-	groupID := strings.TrimSpace(req.GroupID)
 	list, err := r.Store.ListPublishedForGroup(ctx, tenantID, platform, groupID)
 	if err != nil {
 		return IMHandleResponse{}, err
@@ -201,7 +209,18 @@ func (r *Runtime) handleStatus(ctx context.Context, tenantID string, sess *Sessi
 	if err != nil {
 		return IMHandleResponse{Handled: true, ReplyText: "会话已失效，请重新开始。"}, nil
 	}
-	return IMHandleResponse{Handled: true, ReplyText: fmt.Sprintf("正在填写《%s》，进度 %d/%d。回复「取消」可退出。", sv.Title, sess.Cursor+1, len(sv.Questions))}, nil
+	n := len(sv.Questions)
+	if n == 0 {
+		return IMHandleResponse{Handled: true, ReplyText: "会话已失效，请重新开始。"}, nil
+	}
+	cur := sess.Cursor + 1
+	if cur < 1 {
+		cur = 1
+	}
+	if cur > n {
+		cur = n
+	}
+	return IMHandleResponse{Handled: true, ReplyText: fmt.Sprintf("正在填写《%s》，进度 %d/%d。回复「取消」可退出。", sv.Title, cur, n)}, nil
 }
 
 func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, userName, chatType, groupID, args string, existing *Session) (IMHandleResponse, error) {
@@ -392,7 +411,9 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 			sess.Answers = map[string]any{}
 			sess.ExpiresAt = r.now().Add(SessionTTL)
 			sess.UpdatedAt = r.now()
-			_ = r.Store.SaveSession(ctx, sess)
+			if err := r.Store.SaveSession(ctx, sess); err != nil {
+				return IMHandleResponse{}, err
+			}
 			return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[0], 0, len(sv.Questions))}, nil
 		default:
 			// do not parse as answer
