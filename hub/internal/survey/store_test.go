@@ -224,11 +224,12 @@ func TestAnonymousHMACAndExport(t *testing.T) {
 	if len(data.Sheets) != 2 {
 		t.Fatalf("sheets=%d", len(data.Sheets))
 	}
-	// first data row respondent_key is literal anonymous
-	if data.Sheets[0].Rows[1][0].Value != "anonymous" {
-		t.Fatalf("export key=%v", data.Sheets[0].Rows[1][0].Value)
+	// design cols: response_id, submitted_at, platform, group_id, group_name, respondent_key, respondent_name
+	row := data.Sheets[0].Rows[1]
+	if row[5].Value != "anonymous" {
+		t.Fatalf("export key=%v", row[5].Value)
 	}
-	if data.Sheets[0].Rows[1][1].Value != "" {
+	if row[6].Value != "" {
 		t.Fatalf("export name should be empty")
 	}
 }
@@ -622,6 +623,28 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 		if !strings.Contains(h, needle) {
 			t.Fatalf("help missing %q in %q", needle, h)
 		}
+	}
+}
+
+func TestValidateSettingsAndRatingRange(t *testing.T) {
+	if err := ValidateSettingsIn(SettingsIn{TargetCount: -1}); err == nil {
+		t.Fatal("negative target")
+	}
+	min, max := 5, 1
+	err := ValidateDraftQuestions([]Question{{
+		ID: "q1", Type: "rating", Title: "R", Required: true, Min: &min, Max: &max,
+	}})
+	if err == nil {
+		t.Fatal("rating min>max")
+	}
+}
+
+func TestIsControlWordCaseInsensitive(t *testing.T) {
+	if IsControlWord("CANCEL") != "cancel" {
+		t.Fatal("CANCEL")
+	}
+	if IsControlWord("prev") != "prev" {
+		t.Fatal("prev")
 	}
 }
 

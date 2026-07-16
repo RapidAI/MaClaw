@@ -111,6 +111,9 @@ func (s *Store) Create(ctx context.Context, tenantID, createdBy string, in Creat
 			return nil, err
 		}
 	}
+	if err := ValidateSettingsIn(in.Settings); err != nil {
+		return nil, err
+	}
 	salt, err := NewAnonymitySalt()
 	if err != nil {
 		return nil, err
@@ -339,6 +342,9 @@ func (s *Store) Update(ctx context.Context, tenantID, id string, in UpdateInput)
 		sv.Description = strings.TrimSpace(*in.Description)
 	}
 	if in.Settings != nil {
+		if err := ValidateSettingsIn(*in.Settings); err != nil {
+			return nil, err
+		}
 		// preserve salt
 		salt := sv.Settings.AnonymitySalt
 		sv.Settings.Anonymous = in.Settings.Anonymous

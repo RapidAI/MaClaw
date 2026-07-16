@@ -1062,11 +1062,14 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                                     {typeof s.question_count === 'number' ? ` · ${s.question_count}${t.questions}` : ''}
                                     {typeof s.binding_count === 'number' ? ` · ${s.binding_count}${t.groups}` : ''}
                                     {typeof s.response_count === 'number' ? ` · ${s.response_count}${t.responsesShort}` : ''}
-                                    {formatCompletionBadge(Number(s.response_count) || 0, Number(s.settings?.target_count) || 0) && (
-                                        <span className="utilities-badge utilities-badge--ok" data-testid="survey-list-completion">
-                                            {formatCompletionBadge(Number(s.response_count) || 0, Number(s.settings?.target_count) || 0)}
-                                        </span>
-                                    )}
+                                    {(() => {
+                                        const badge = formatCompletionBadge(Number(s.response_count) || 0, Number(s.settings?.target_count) || 0);
+                                        return badge ? (
+                                            <span className="utilities-badge utilities-badge--ok" data-testid="survey-list-completion">
+                                                {badge}
+                                            </span>
+                                        ) : null;
+                                    })()}
                                     {s.updated_at ? ` · ${new Date(s.updated_at).toLocaleString()}` : ''}
                                 </span>
                             </button>

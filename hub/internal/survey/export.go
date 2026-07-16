@@ -9,15 +9,17 @@ import (
 )
 
 // BuildExportData builds multi-sheet excel data from survey + responses.
-// Anonymous: respondent_key literal "anonymous", name empty; never salt or HMAC hex.
+// Column order frozen by design §8; anonymous: respondent_key="anonymous", name empty.
 func BuildExportData(sv *Survey, responses []Response) excel.WriteData {
-	// Sheet1 responses
+	// Sheet1 responses — design column order
 	header := []excel.WriteCell{
+		{Value: "response_id"},
+		{Value: "submitted_at"},
+		{Value: "platform"},
+		{Value: "group_id"},
+		{Value: "group_name"},
 		{Value: "respondent_key"},
 		{Value: "respondent_name"},
-		{Value: "submitted_at"},
-		{Value: "group_id"},
-		{Value: "platform"},
 	}
 	for _, q := range sv.Questions {
 		header = append(header, excel.WriteCell{Value: fmt.Sprintf("Q%d: %s", q.Position+1, q.Title)})
@@ -31,11 +33,13 @@ func BuildExportData(sv *Survey, responses []Response) excel.WriteData {
 			name = ""
 		}
 		row := []excel.WriteCell{
+			{Value: resp.ID},
+			{Value: resp.SubmittedAt.UTC().Format(time.RFC3339)},
+			{Value: resp.Platform},
+			{Value: resp.GroupID},
+			{Value: ""}, // group_name snapshot not stored on response rows in MVP
 			{Value: key},
 			{Value: name},
-			{Value: resp.SubmittedAt.UTC().Format(time.RFC3339)},
-			{Value: resp.GroupID},
-			{Value: resp.Platform},
 		}
 		m := JSONToAnswers(resp.Answers)
 		for _, q := range sv.Questions {

@@ -34,6 +34,7 @@ func buildSurveyExportXLSX(detailJSON, responsesJSON []byte) (excel.WriteData, e
 	}
 	var wrap struct {
 		Responses []struct {
+			ID             string          `json:"id"`
 			RespondentKey  string          `json:"respondent_key"`
 			RespondentName string          `json:"respondent_name"`
 			SubmittedAt    string          `json:"submitted_at"`
@@ -46,12 +47,15 @@ func buildSurveyExportXLSX(detailJSON, responsesJSON []byte) (excel.WriteData, e
 		return excel.WriteData{}, err
 	}
 
+	// Design §8 frozen column order (group_name empty when snapshot unavailable).
 	header := []excel.WriteCell{
+		{Value: "response_id"},
+		{Value: "submitted_at"},
+		{Value: "platform"},
+		{Value: "group_id"},
+		{Value: "group_name"},
 		{Value: "respondent_key"},
 		{Value: "respondent_name"},
-		{Value: "submitted_at"},
-		{Value: "group_id"},
-		{Value: "platform"},
 	}
 	for i, q := range sv.Questions {
 		pos := q.Position
@@ -67,11 +71,13 @@ func buildSurveyExportXLSX(detailJSON, responsesJSON []byte) (excel.WriteData, e
 			key, name = "anonymous", ""
 		}
 		row := []excel.WriteCell{
+			{Value: resp.ID},
+			{Value: resp.SubmittedAt},
+			{Value: resp.Platform},
+			{Value: resp.GroupID},
+			{Value: ""},
 			{Value: key},
 			{Value: name},
-			{Value: resp.SubmittedAt},
-			{Value: resp.GroupID},
-			{Value: resp.Platform},
 		}
 		var answers map[string]any
 		_ = json.Unmarshal(resp.Answers, &answers)

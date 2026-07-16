@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/survey"
 )
+
+const surveyMaxBodyBytes = 1 << 20 // 1 MiB
 
 // SurveyHandler serves /api/v1/surveys/* with machine auth + tenant isolation.
 type SurveyHandler struct {
@@ -64,10 +67,23 @@ func (h *SurveyHandler) list(w http.ResponseWriter, r *http.Request, p *auth.Mac
 	writeJSON(w, http.StatusOK, map[string]any{"surveys": list})
 }
 
+func (h *SurveyHandler) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, surveyMaxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		if err == io.EOF {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "empty body")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid body")
+		return false
+	}
+	return true
+}
+
 func (h *SurveyHandler) create(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
 	var in survey.CreateInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid body")
+	if !h.decodeJSON(w, r, &in) {
 		return
 	}
 	sv, err := h.Store.Create(r.Context(), p.TenantID, p.UserID, in)
@@ -93,8 +109,7 @@ func (h *SurveyHandler) get(w http.ResponseWriter, r *http.Request, p *auth.Mach
 func (h *SurveyHandler) update(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
 	id := r.PathValue("id")
 	var in survey.UpdateInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid body")
+	if !h.decodeJSON(w, r, &in) {
 		return
 	}
 	sv, err := h.Store.Update(r.Context(), p.TenantID, id, in)
@@ -175,8 +190,7 @@ func (h *SurveyHandler) bind(w http.ResponseWriter, r *http.Request, p *auth.Mac
 	var body struct {
 		Bindings []survey.Binding `json:"bindings"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid body")
+	if !h.decodeJSON(w, r, &body) {
 		return
 	}
 	if err := h.Store.Bind(r.Context(), p.TenantID, id, body.Bindings); err != nil {
@@ -238,8 +252,7 @@ func (h *SurveyHandler) responses(w http.ResponseWriter, r *http.Request, p *aut
 
 func (h *SurveyHandler) imHandle(w http.ResponseWriter, r *http.Request, p *auth.MachinePrincipal) {
 	var req survey.IMHandleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid body")
+	if !h.decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Platform) == "" {

@@ -100,13 +100,40 @@ func ValidateDraftQuestions(qs []Question) error {
 			if len(q.Options) < 2 {
 				return fmt.Errorf("choice question needs at least 2 options")
 			}
-		case "text", "rating":
+			for _, o := range q.Options {
+				if strings.TrimSpace(o.Label) == "" {
+					return fmt.Errorf("choice option label required")
+				}
+			}
+		case "text":
+			if q.MaxLength != nil && *q.MaxLength < 0 {
+				return fmt.Errorf("text max_length must be >= 0")
+			}
+		case "rating":
+			min, max := 1, 5
+			if q.Min != nil {
+				min = *q.Min
+			}
+			if q.Max != nil {
+				max = *q.Max
+			}
+			if min > max {
+				return fmt.Errorf("rating min > max")
+			}
 		default:
 			return fmt.Errorf("unsupported question type %q", q.Type)
 		}
 		if q.Title == "" {
 			return fmt.Errorf("question title required")
 		}
+	}
+	return nil
+}
+
+// ValidateSettingsIn rejects impossible settings values from clients.
+func ValidateSettingsIn(s SettingsIn) error {
+	if s.TargetCount < 0 {
+		return fmt.Errorf("target_count must be >= 0")
 	}
 	return nil
 }
@@ -327,11 +354,19 @@ func SurveyIntroMeta(sv *Survey) string {
 func IsControlWord(text string) string {
 	t := strings.TrimSpace(text)
 	switch t {
-	case "取消", "cancel", "Cancel":
+	case "取消":
 		return "cancel"
 	case "上一题":
 		return "prev"
 	case "修改":
+		return "modify"
+	}
+	switch strings.ToLower(t) {
+	case "cancel":
+		return "cancel"
+	case "prev", "back":
+		return "prev"
+	case "modify":
 		return "modify"
 	default:
 		return ""

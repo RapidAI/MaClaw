@@ -14,10 +14,13 @@ import (
 type Runtime struct {
 	Store *Store
 	Now   func() time.Time
+	// lastCleanup throttles session TTL sweeps (every CleanupEvery; default 1m).
+	lastCleanup   time.Time
+	CleanupEvery  time.Duration
 }
 
 func NewRuntime(store *Store) *Runtime {
-	return &Runtime{Store: store, Now: func() time.Time { return time.Now().UTC() }}
+	return &Runtime{Store: store, Now: func() time.Time { return time.Now().UTC() }, CleanupEvery: time.Minute}
 }
 
 func (r *Runtime) now() time.Time {
@@ -27,10 +30,23 @@ func (r *Runtime) now() time.Time {
 	return time.Now().UTC()
 }
 
+func (r *Runtime) maybeCleanupSessions(ctx context.Context) {
+	now := r.now()
+	every := r.CleanupEvery
+	if every <= 0 {
+		every = time.Minute
+	}
+	if !r.lastCleanup.IsZero() && now.Sub(r.lastCleanup) < every {
+		return
+	}
+	r.lastCleanup = now
+	_ = r.Store.CleanupExpiredSessions(ctx, now)
+}
+
 // Handle implements POST /api/v1/surveys/im/handle domain logic.
 // Text should already be mention-stripped by the gateway when possible.
 func (r *Runtime) Handle(ctx context.Context, tenantID string, req IMHandleRequest) (IMHandleResponse, error) {
-	_ = r.Store.CleanupExpiredSessions(ctx, r.now())
+	r.maybeCleanupSessions(ctx)
 
 	platform := strings.TrimSpace(req.Platform)
 	if platform == "" {
@@ -89,9 +105,13 @@ func parseCommand(text string) (cmd string, args string) {
 	t := strings.TrimSpace(text)
 	low := strings.ToLower(t)
 
-	// /survey ...
+	// /survey ... (case-insensitive command; ASCII prefix length is fixed)
 	if strings.HasPrefix(low, "/survey") {
-		rest := strings.TrimSpace(t[len("/survey"):])
+		// Slice by rune-safe ASCII length of "/survey" (7).
+		rest := ""
+		if len(t) >= 7 {
+			rest = strings.TrimSpace(t[7:])
+		}
 		if rest == "" {
 			return "help", ""
 		}

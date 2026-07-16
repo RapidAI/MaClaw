@@ -55,17 +55,17 @@ func TestBuildSurveyExportXLSXMultiSheetAndAnonymous(t *testing.T) {
 	if data.Sheets[0].Name != "responses" || data.Sheets[1].Name != "summary" {
 		t.Fatalf("names=%q %q", data.Sheets[0].Name, data.Sheets[1].Name)
 	}
-	// anonymous placeholders
-	if data.Sheets[0].Rows[1][0].Value != "anonymous" {
-		t.Fatalf("key=%v", data.Sheets[0].Rows[1][0].Value)
+	// design cols: response_id, submitted_at, platform, group_id, group_name, respondent_key, respondent_name, Q…
+	row := data.Sheets[0].Rows[1]
+	if row[5].Value != "anonymous" {
+		t.Fatalf("key=%v", row[5].Value)
 	}
-	if data.Sheets[0].Rows[1][1].Value != "" {
-		t.Fatalf("name=%v", data.Sheets[0].Rows[1][1].Value)
+	if row[6].Value != "" {
+		t.Fatalf("name=%v", row[6].Value)
 	}
-	// multi labels in option array order: C then A
-	cell := data.Sheets[0].Rows[1][6].Value // after 5 fixed cols + q1
+	// multi labels in option array order: C then A (index 8 = q2 after 7 fixed + q1)
+	cell := row[8].Value
 	if cell != "C, A" {
-		// q columns: index 5 is q1, 6 is q2
 		t.Fatalf("multi cell=%v header0=%v", cell, data.Sheets[0].Rows[0])
 	}
 
