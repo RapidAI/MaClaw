@@ -28,7 +28,7 @@ func shouldAttemptSurveyIM(enabled bool, strippedText string) bool {
 	if !enabled {
 		return false
 	}
-	if looksLikeSurveyTraffic(strippedText) {
+	if looksLikeSurveyCommand(strippedText) {
 		return true
 	}
 	return couldBeSurveySessionReply(strippedText)
@@ -41,8 +41,6 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	if m == nil || m.app == nil {
 		return false
 	}
-	// Group messages already passed mention gate when we get here from onIncomingMessage.
-	// For p2p, allow without @.
 	text := stripLansengerBotMentions(msg)
 	if text == "" {
 		text = strings.TrimSpace(msg.Text)
@@ -54,13 +52,20 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	if m.surveyRate == nil {
 		m.surveyRate = newSurveyUserRateLimit()
 	}
+	if m.surveyHints == nil {
+		m.surveyHints = newSurveySessionHint()
+	}
 	rk := surveyRateKey("lansenger", msg.FromUserID)
 	now := time.Now()
 	isCmd := looksLikeSurveyCommand(text)
 
-	// Design §9: ~2 msg/s. Only *claim* the message on throttle for explicit
-	// survey commands — speculative session-like replies must never steal chat
-	// from the LLM with a throttle notice.
+	// Free-text (not pure choice/control) only probes Hub when we believe a session is active.
+	// Avoids "你好"/"嗯" hammering im/handle when no one is filling a survey.
+	if !isCmd && isFreeTextSurveyCandidate(text) && !m.surveyHints.active(rk, now) {
+		return false
+	}
+
+	// Design §9: ~2 msg/s. Only *claim* the message on throttle for explicit commands.
 	if isCmd {
 		if !m.surveyRate.allow(rk, now) {
 			_ = m.replySurveyText(msg, "操作过快，请稍后再试")
@@ -72,7 +77,6 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 
 	client, err := m.app.newSurveyHubClient()
 	if err != nil {
-		// Hub offline: if it looks like a survey command, claim and apologize.
 		if isCmd {
 			_ = m.replySurveyText(msg, "问卷服务暂不可用（Hub 未连接），请稍后重试。")
 			return true
@@ -80,11 +84,16 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 		return false
 	}
 
+	chatType := strings.TrimSpace(msg.ChatType)
+	if chatType == "" && strings.TrimSpace(msg.GroupID) != "" {
+		chatType = "group"
+	}
+
 	body := map[string]any{
 		"platform":  "lansenger",
 		"user_id":   msg.FromUserID,
 		"user_name": msg.SenderName,
-		"chat_type": msg.ChatType,
+		"chat_type": chatType,
 		"group_id":  msg.GroupID,
 		"text":      text,
 		"is_at_me":  msg.IsAtMe,
@@ -105,19 +114,34 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	if !handled {
 		return false
 	}
-	// Speculative path recorded only after Hub confirmed survey ownership.
 	if !isCmd {
 		m.surveyRate.record(rk, now)
 	}
+
+	ev, _ := out["event"].(string)
 	reply, _ := out["reply_text"].(string)
+	// Session lifecycle hints: only mark when user is actually mid-survey.
+	// Avoid marking after /survey help|list|not-found so free-text chat stays local.
+	switch {
+	case ev == "response_submitted",
+		strings.Contains(reply, "已取消"):
+		m.surveyHints.clear(rk)
+	case !isCmd:
+		// Session answer / control word that Hub accepted.
+		m.surveyHints.mark(rk, now, 30*time.Minute)
+	case strings.Contains(reply, "开始填写"),
+		strings.Contains(reply, "回复「修改」"),
+		strings.Contains(reply, "答案无效"),
+		strings.Contains(reply, "正在填写"):
+		m.surveyHints.mark(rk, now, 30*time.Minute)
+	}
+
 	if strings.TrimSpace(reply) != "" {
 		if err := m.replySurveyText(msg, reply); err != nil {
 			log.Printf("[survey-im] SendText failed: %v", err)
 		}
 	}
-	// Notify desktop UI when a response was submitted (design: survey-updated).
 	if sid, _ := out["survey_id"].(string); strings.TrimSpace(sid) != "" {
-		ev, _ := out["event"].(string)
 		if ev == "" {
 			ev = "response_submitted"
 		}
@@ -149,39 +173,20 @@ func (m *lansengerGatewayManager) replySurveyText(msg lansenger.IncomingMessage,
 // stripLansengerBotMentions removes leading @Bot tokens and known MentionedBots names.
 func stripLansengerBotMentions(msg lansenger.IncomingMessage) string {
 	text := strings.TrimSpace(msg.Text)
-	// strip leading @tokens
+	// Prefer Fields so multi-byte names are handled correctly.
 	for {
-		if !strings.HasPrefix(text, "@") {
-			break
-		}
-		// find end of mention token
-		i := 1
-		for i < len(text) {
-			r := rune(text[i])
-			if unicode.IsSpace(r) || text[i] == '@' {
-				break
-			}
-			// UTF-8 safe walk
-			if text[i] >= 0x80 {
-				// break on multibyte roughly by space only — use Fields-based approach
-				break
-			}
-			i++
-		}
-		// better: Fields
 		fields := strings.Fields(text)
 		if len(fields) == 0 || !strings.HasPrefix(fields[0], "@") {
 			break
 		}
 		text = strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 	}
-	// strip bot display names if present as prefix "@Name"
 	for _, b := range msg.MentionedBots {
 		name := strings.TrimSpace(b.Name)
 		if name == "" {
 			continue
 		}
-		for _, p := range []string{"@" + name, name} {
+		for _, p := range []string{"@" + name + " ", "@" + name, name + " ", name} {
 			if strings.HasPrefix(text, p) {
 				text = strings.TrimSpace(text[len(p):])
 			}
@@ -199,7 +204,10 @@ func looksLikeSurveyCommand(text string) bool {
 	if strings.HasPrefix(t, "问卷 ") || strings.HasPrefix(t, "调查 ") {
 		return true
 	}
-	// 问卷CODE without space is invalid per design; require space
+	// fullwidth space after keyword
+	if strings.HasPrefix(t, "问卷\u3000") || strings.HasPrefix(t, "调查\u3000") {
+		return true
+	}
 	return false
 }
 
@@ -212,25 +220,53 @@ func couldBeSurveySessionReply(text string) bool {
 	if t == "" {
 		return false
 	}
-	switch t {
-	case "取消", "修改", "上一题", "cancel", "Cancel":
+	if isSurveyControlWord(t) {
 		return true
 	}
-	// Numeric / choice tokens (1, 1,3, A, yes) — short answers only.
-	// Avoid sending arbitrary chat to Hub; runtime still rejects when no session.
+	if isStrictChoiceToken(t) {
+		return true
+	}
+	// Free-text answers (text questions) — gated by session hint at call site.
+	runes := []rune(t)
+	if len(runes) == 0 || len(runes) > 2000 {
+		return false
+	}
+	return isFreeTextSurveyCandidate(t)
+}
+
+func isSurveyControlWord(t string) bool {
+	switch strings.TrimSpace(t) {
+	case "取消", "修改", "上一题", "cancel", "Cancel", "CANCEL":
+		return true
+	default:
+		return false
+	}
+}
+
+// isStrictChoiceToken is option indexes / multi "1,2" / short latin labels — safe to probe without session hint.
+func isStrictChoiceToken(t string) bool {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return false
+	}
 	runes := []rune(t)
 	if len(runes) > 32 {
 		return false
 	}
-	// pure number or comma/space separated choice tokens
 	for _, r := range runes {
-		if unicode.IsDigit(r) || r == ',' || r == '，' || r == '、' || unicode.IsSpace(r) || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+		if unicode.IsDigit(r) || r == ',' || r == '，' || r == '、' || unicode.IsSpace(r) ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
 			continue
 		}
-		// allow short CJK free-text answers (rating/text questions)
-		if unicode.In(r, unicode.Han) {
-			continue
-		}
+		return false
+	}
+	return true
+}
+
+// isFreeTextSurveyCandidate is non-control, non-pure-choice content (e.g. CJK text answers).
+func isFreeTextSurveyCandidate(t string) bool {
+	t = strings.TrimSpace(t)
+	if t == "" || isSurveyControlWord(t) || isStrictChoiceToken(t) {
 		return false
 	}
 	return true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -621,6 +622,36 @@ func TestHelpTextCoversCoreCommands(t *testing.T) {
 		if !strings.Contains(h, needle) {
 			t.Fatalf("help missing %q in %q", needle, h)
 		}
+	}
+}
+
+func TestErrAlreadySubmittedIsSentinel(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "X",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Q", Required: true,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	_, _ = st.Publish(ctx, "t", sv.ID)
+	raw, _ := json.Marshal(map[string]any{"q1": "a"})
+	resp := &Response{
+		SurveyID: sv.ID, Platform: PlatformLansenger, RespondentKey: "u1",
+		Answers: raw, SubmittedAt: time.Now().UTC(),
+	}
+	if err := st.SubmitResponse(ctx, "t", resp, false); err != nil {
+		t.Fatal(err)
+	}
+	resp2 := &Response{
+		SurveyID: sv.ID, Platform: PlatformLansenger, RespondentKey: "u1",
+		Answers: raw, SubmittedAt: time.Now().UTC(),
+	}
+	err := st.SubmitResponse(ctx, "t", resp2, false)
+	if !errors.Is(err, ErrAlreadySubmitted) {
+		t.Fatalf("want ErrAlreadySubmitted got %v", err)
 	}
 }
 

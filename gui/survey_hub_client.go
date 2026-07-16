@@ -183,7 +183,12 @@ func (c *surveyHubClient) Bind(ctx context.Context, id string, body json.RawMess
 }
 
 func (c *surveyHubClient) Unbind(ctx context.Context, id, platform, groupID string) error {
-	path := fmt.Sprintf("/api/v1/surveys/%s/bindings/%s/%s", id, platform, groupID)
+	path := fmt.Sprintf(
+		"/api/v1/surveys/%s/bindings/%s/%s",
+		url.PathEscape(id),
+		url.PathEscape(platform),
+		url.PathEscape(groupID),
+	)
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
 

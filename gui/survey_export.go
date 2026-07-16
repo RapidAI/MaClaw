@@ -169,6 +169,18 @@ func formatSurveyAnswerCell(qType string, options []struct {
 			}
 		case []string:
 			ids = arr
+		case string:
+			// answers sometimes arrive as JSON-encoded array string
+			var parsed []any
+			if err := json.Unmarshal([]byte(arr), &parsed); err == nil {
+				for _, x := range parsed {
+					if id, ok := x.(string); ok {
+						ids = append(ids, id)
+					}
+				}
+			} else if arr != "" {
+				ids = []string{arr}
+			}
 		}
 		set := map[string]struct{}{}
 		for _, id := range ids {
@@ -179,6 +191,9 @@ func formatSurveyAnswerCell(qType string, options []struct {
 			if _, ok := set[o.ID]; ok {
 				labels = append(labels, o.Label)
 			}
+		}
+		if len(labels) == 0 && len(ids) > 0 {
+			return strings.Join(ids, ", ")
 		}
 		return strings.Join(labels, ", ")
 	}

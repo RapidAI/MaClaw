@@ -47,6 +47,9 @@ type lansengerGatewayManager struct {
 
 	// surveyRate throttles survey IM attempts (~2 msg/s per user; design §9).
 	surveyRate *surveyUserRateLimit
+	// surveyHints remembers users mid-survey so free-text answers can hit Hub
+	// without probing every short chat message.
+	surveyHints *surveySessionHint
 }
 
 type lansengerReplyRoute struct {

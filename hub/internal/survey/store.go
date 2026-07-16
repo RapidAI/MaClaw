@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrAlreadySubmitted is returned when UNIQUE blocks insert and allow_update is false.
+var ErrAlreadySubmitted = errors.New("already submitted")
 
 // Store is the tenant-scoped survey authority (Hub SQLite).
 type Store struct {
@@ -591,7 +595,7 @@ func (s *Store) SubmitResponse(ctx context.Context, tenantID string, resp *Respo
 		return err
 	}
 	if !allowUpdate {
-		return fmt.Errorf("already submitted")
+		return ErrAlreadySubmitted
 	}
 	// UPSERT
 	_, err = s.db.ExecContext(ctx, `UPDATE survey_responses SET respondent_name=?, group_id=?, answers_json=?, submitted_at=?

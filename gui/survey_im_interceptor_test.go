@@ -44,6 +44,19 @@ func TestCouldBeSurveySessionReply(t *testing.T) {
 	if !couldBeSurveySessionReply("修改") {
 		t.Fatal("modify")
 	}
+	if !couldBeSurveySessionReply("还可以") {
+		t.Fatal("free text candidate")
+	}
+	// empty
+	if couldBeSurveySessionReply("") {
+		t.Fatal("empty")
+	}
+}
+
+func TestLooksLikeSurveyCommandFullwidthSpace(t *testing.T) {
+	if !looksLikeSurveyCommand("问卷\u3000A3F9K2") {
+		t.Fatal("fullwidth space after 问卷")
+	}
 }
 
 func TestShouldAttemptSurveyIM_KillSwitchAndCommands(t *testing.T) {

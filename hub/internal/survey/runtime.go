@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -113,10 +114,11 @@ func parseCommand(text string) (cmd string, args string) {
 		}
 	}
 
-	// 问卷 CODE / 调查 CODE — must have code token
+	// 问卷 CODE / 调查 CODE — must have code token (ASCII or fullwidth space)
 	for _, prefix := range []string{"问卷", "调查"} {
 		if strings.HasPrefix(t, prefix) {
-			rest := strings.TrimSpace(t[len(prefix):])
+			rest := strings.TrimSpace(strings.TrimPrefix(t, prefix))
+			// TrimSpace handles regular + some unicode spaces after keyword
 			if rest == "" {
 				return "", "" // bare keyword — do not match
 			}
@@ -199,12 +201,14 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 	}
 
+	chatType = strings.ToLower(strings.TrimSpace(chatType))
+	isP2P := chatType == "p2p" || chatType == "private" || (chatType == "" && strings.TrimSpace(groupID) == "")
 	// p2p gate
-	if chatType == "p2p" && !sv.Settings.AllowP2P {
+	if isP2P && !sv.Settings.AllowP2P {
 		return IMHandleResponse{Handled: true, ReplyText: "该问卷仅支持群内填写。"}, nil
 	}
 	// binding check for group
-	if chatType != "p2p" {
+	if !isP2P {
 		if !boundToGroup(sv, platform, groupID) {
 			return IMHandleResponse{Handled: true, ReplyText: "该问卷未绑定到本群。"}, nil
 		}
@@ -261,7 +265,7 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 			if err == nil {
 				answers := map[string]any{q.ID: val}
 				if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, answers); err != nil {
-					if err.Error() == "already submitted" {
+					if errors.Is(err, ErrAlreadySubmitted) {
 						return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
 					}
 					return IMHandleResponse{}, err
@@ -356,6 +360,7 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
 	}
 	if DeadlinePassed(sv.Settings, r.now()) {
+		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 		return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
 	}
 
@@ -392,7 +397,7 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 
 	if sess.Cursor >= len(sv.Questions) {
 		if err := r.finalizeSubmit(ctx, tenantID, sv, sess.Platform, sess.UserID, sess.UserName, sess.GroupID, sess.Answers); err != nil {
-			if err.Error() == "already submitted" {
+			if errors.Is(err, ErrAlreadySubmitted) {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 				return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
 			}
