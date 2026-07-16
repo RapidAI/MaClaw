@@ -29,6 +29,8 @@ type SidebarNavRailProps = {
     onRenameFavorite?: (veId: string, name: string) => void | Promise<void>;
     showAppEntry?: boolean;
     showWorkflowEntry?: boolean;
+    showUtilitiesEntry?: boolean;
+    utilitiesLabel?: string;
 };
 
 const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
@@ -84,6 +86,8 @@ export const SidebarNavRail = ({
     onRenameFavorite = () => {},
     showAppEntry = false,
     showWorkflowEntry = true,
+    showUtilitiesEntry = true,
+    utilitiesLabel,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
 
@@ -192,6 +196,7 @@ export const SidebarNavRail = ({
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
+    const resolvedUtilitiesLabel = utilitiesLabel || (lang === 'zh-Hans' || lang === 'zh-Hant' ? '实用工具' : 'Utilities');
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'settings', icon: <SettingsIcon />, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
@@ -213,7 +218,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} switchTool={switchTool} workflowLabel={workflowLabel} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} showUtilitiesEntry={showUtilitiesEntry} switchTool={switchTool} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"

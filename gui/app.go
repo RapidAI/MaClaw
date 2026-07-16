@@ -6757,6 +6757,20 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			bv := v
 			cfg.ShowWorkflowEntry = &bv
+		case "show_utilities_entry":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.ShowUtilitiesEntry = &v
+		case "survey_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SurveyEnabled = &v
 		case "show_coding_tool_entry":
 			v, err := boolField(key, value)
 			if err != nil {

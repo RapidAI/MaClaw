@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -43,6 +44,9 @@ type lansengerGatewayManager struct {
 	replyRoutes map[string]lansengerReplyRoute
 
 	localHandler *IMMessageHandler
+
+	// surveyRate throttles survey IM attempts (~2 msg/s per user; design §9).
+	surveyRate *surveyUserRateLimit
 }
 
 type lansengerReplyRoute struct {
@@ -336,6 +340,13 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		log.Printf("[lansenger-mgr] ignoring non-mentioned group message: group=%s user=%s", msg.GroupID, msg.FromUserID)
 		return
 	}
+
+	// Survey intercept: after mention gate, before passthrough / local agent / Hub LLM.
+	if m.tryHandleSurveyMessage(msg) {
+		log.Printf("[lansenger-mgr] survey intercept handled: user=%s group=%s", msg.FromUserID, msg.GroupID)
+		return
+	}
+
 	if isPassthroughSlashText(msg.Text) {
 		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
 		m.handleLocalMessage(msg)
@@ -986,3 +997,98 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 	}
 	return nil
 }
+
+
+// LansengerGroupListEntry is one group in ListLansengerGroups.
+type LansengerGroupListEntry struct {
+	GroupID      string `json:"group_id"`
+	Name         string `json:"name"`
+	AvatarURL    string `json:"avatar_url,omitempty"`
+	Description  string `json:"description,omitempty"`
+	OwnerID      string `json:"owner_id,omitempty"`
+	OwnerName    string `json:"owner_name,omitempty"`
+	State        int    `json:"state"`
+	TotalMembers int    `json:"total_members"`
+	MaxMembers   int    `json:"max_members,omitempty"`
+	IsPublic     bool   `json:"is_public,omitempty"`
+}
+
+// LansengerGroupListResult is the Wails payload for ListLansengerGroups.
+type LansengerGroupListResult struct {
+	Total  int                       `json:"total"`
+	Groups []LansengerGroupListEntry `json:"groups"`
+}
+
+// ListLansengerGroups queries the Lansenger Open Platform for groups the bot
+// has joined (GET /v2/groups/fetch + per-group info). Works with credentials
+// even when the WebSocket gateway is temporarily disconnected.
+func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	appID := strings.TrimSpace(cfg.LansengerAppID)
+	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
+	if appID == "" || appSecret == "" {
+		return nil, fmt.Errorf("请先填写蓝信 App ID 和 App Secret")
+	}
+	apiURL := strings.TrimSpace(cfg.LansengerApiGatewayURL())
+	if apiURL == "" {
+		return nil, fmt.Errorf("请先填写蓝信网关地址")
+	}
+
+	// Prefer the running gateway so we can reuse its token cache.
+	var gw *lansenger.Gateway
+	if a.lansengerGateway != nil {
+		a.lansengerGateway.mu.Lock()
+		gw = a.lansengerGateway.gateway
+		a.lansengerGateway.mu.Unlock()
+	}
+	// Fall back to a short-lived client when the WS manager is not up yet.
+	if gw == nil {
+		gw = lansenger.NewGateway(lansenger.Config{
+			AppID:            appID,
+			AppSecret:        appSecret,
+			ApiGatewayURL:    apiURL,
+			WebSocketBaseURL: strings.TrimSpace(cfg.LansengerWebSocketGatewayURL()),
+		}, nil)
+	}
+
+	// Parallel detail fetch (up to 300 groups × 8 workers) usually finishes well
+	// under a minute; keep a hard ceiling so the UI never hangs indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	list, err := gw.ListJoinedGroups(ctx)
+	if err != nil {
+		var apiErr *lansenger.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == 10005 {
+			return nil, fmt.Errorf("蓝信接口无权限查询群列表 (errCode=10005)。请在开放平台开通 /v2/groups/fetch 权限，或联系管理员")
+		}
+		return nil, fmt.Errorf("查询蓝信群列表失败: %w", err)
+	}
+	if list == nil {
+		return &LansengerGroupListResult{Groups: []LansengerGroupListEntry{}}, nil
+	}
+	entries := make([]LansengerGroupListEntry, 0, len(list.Groups))
+	seen := make(map[string]struct{}, len(list.Groups))
+	for _, g := range list.Groups {
+		id := strings.TrimSpace(g.GroupID)
+		if id != "" {
+			seen[id] = struct{}{}
+		}
+		entries = append(entries, LansengerGroupListEntry{
+			GroupID:      g.GroupID,
+			Name:         g.Name,
+			AvatarURL:    g.AvatarURL,
+			Description:  g.Description,
+			OwnerID:      g.OwnerID,
+			OwnerName:    g.OwnerName,
+			State:        g.State,
+			TotalMembers: g.TotalMembers,
+			MaxMembers:   g.MaxMembers,
+			IsPublic:     g.IsPublic,
+		})
+	}
+	return &LansengerGroupListResult{Total: list.Total, Groups: entries}, nil
+}
+

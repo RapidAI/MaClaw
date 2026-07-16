@@ -29,6 +29,7 @@ import (
 	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	storesqlite "github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
+	"github.com/RapidAI/CodeClaw/hub/internal/survey"
 	"github.com/RapidAI/CodeClaw/hub/internal/ve"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
@@ -1009,6 +1010,17 @@ func NewRouter(
 
 		// Cascade route: HubCenter uses the registered installation ID as a pre-shared token.
 		mux.HandleFunc("POST /api/v1/notifications/cascade", requireCascadeAuth(notifHandler.HandleCascade))
+	}
+
+	// Surveys (Hub-first authority): machine-authenticated tenant APIs.
+	if hubDB != nil {
+		surveyStore := survey.NewStore(hubDB)
+		if err := surveyStore.InitSchema(context.Background()); err != nil {
+			log.Printf("[hub] survey schema init failed: %v", err)
+		} else {
+			surveyHandler := NewSurveyHandler(surveyStore)
+			surveyHandler.Register(mux, identity)
+		}
 	}
 
 	registerPWAStaticRoutes(mux, staticDir, routePrefix)

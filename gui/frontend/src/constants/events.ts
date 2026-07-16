@@ -44,6 +44,11 @@ export const EVENT_SKILL_EXECUTION_FAILED = "skill:execution_failed";
 /** Skill indexes refreshed after mutation (repair/install). */
 export const EVENT_SKILL_INDEX_REFRESHED = "skill:index_refreshed";
 
+
+/** Survey list/results should refresh after IM submit (or local mutation). Payload: { survey_id, event? }. */
+export const EVENT_SURVEY_UPDATED = "survey-updated";
+
+
 /** App config patched/saved (backend EventsEmit after PatchConfigFields). */
 export const EVENT_CONFIG_CHANGED = "config-changed";
 

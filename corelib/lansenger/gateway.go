@@ -1341,17 +1341,21 @@ func (g *Gateway) sendTextWithToken(ctx context.Context, token string, msg Outgo
 	})
 }
 
-type lansengerAPIError struct {
+// APIError is a structured Lansenger REST error (errCode/errMsg).
+type APIError struct {
 	Code int
 	Msg  string
 }
 
-func (e *lansengerAPIError) Error() string {
+// Deprecated name kept as an unexported alias so internal call sites stay short.
+type lansengerAPIError = APIError
+
+func (e *APIError) Error() string {
 	return fmt.Sprintf("lansenger API error %d: %s", e.Code, e.Msg)
 }
 
 func isLansengerTokenExpiredError(err error) bool {
-	var apiErr *lansengerAPIError
+	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		msg := strings.ToLower(apiErr.Msg)
 		if strings.Contains(msg, "token") && (strings.Contains(msg, "expired") || strings.Contains(msg, "invalid") || strings.Contains(msg, "expire")) {

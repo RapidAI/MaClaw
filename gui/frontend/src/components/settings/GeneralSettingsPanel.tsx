@@ -90,6 +90,14 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                     <input type="checkbox" checked={effectiveConfig?.show_workflow_entry !== false} onChange={(e) => saveConfigPatch({ show_workflow_entry: e.target.checked })} />
                     <span>{textForLang(lang, 'Workflow entry', '\u5de5\u4f5c\u6d41\u5165\u53e3', '\u5de5\u4f5c\u6d41\u5165\u53e3')}</span>
                 </label>
+                <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
+                    <input type="checkbox" checked={(effectiveConfig as any)?.show_utilities_entry !== false} onChange={(e) => saveConfigPatch({ show_utilities_entry: e.target.checked } as any)} />
+                    <span>{textForLang(lang, 'Utilities entry', '\u5b9e\u7528\u5de5\u5177\u5165\u53e3', '\u5be6\u7528\u5de5\u5177\u5165\u53e3')}</span>
+                </label>
+                <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
+                    <input type="checkbox" checked={(effectiveConfig as any)?.survey_enabled !== false} onChange={(e) => saveConfigPatch({ survey_enabled: e.target.checked } as any)} />
+                    <span>{textForLang(lang, 'Survey IM intercept', '\u95ee\u5377 IM \u62e6\u622a', '\u554f\u5377 IM \u62e6\u622a')}</span>
+                </label>
             </div>
         </section>
 

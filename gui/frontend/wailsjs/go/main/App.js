@@ -2971,3 +2971,59 @@ export function RecordMaclawAppApprovalInstance(arg1) {
 export function SyncMaclawAppApprovalInstanceToDataSrv(arg1) {
   return window['go']['main']['App']['SyncMaclawAppApprovalInstanceToDataSrv'](arg1);
 }
+
+export function ListSurveys(arg1) {
+  return window['go']['main']['App']['ListSurveys'](arg1);
+}
+export function GetSurvey(arg1) {
+  return window['go']['main']['App']['GetSurvey'](arg1);
+}
+export function CreateSurvey(arg1) {
+  return window['go']['main']['App']['CreateSurvey'](arg1);
+}
+export function PublishSurvey(arg1, arg2) {
+  return window['go']['main']['App']['PublishSurvey'](arg1, arg2);
+}
+export function CloseSurvey(arg1) {
+  return window['go']['main']['App']['CloseSurvey'](arg1);
+}
+export function BindSurveyGroups(arg1, arg2) {
+  return window['go']['main']['App']['BindSurveyGroups'](arg1, arg2);
+}
+export function GetSurveyStats(arg1) {
+  return window['go']['main']['App']['GetSurveyStats'](arg1);
+}
+export function ExportSurveyXLSX(arg1) {
+  return window['go']['main']['App']['ExportSurveyXLSX'](arg1);
+}
+export function AnnounceSurveyToBoundGroups(arg1) {
+  return window['go']['main']['App']['AnnounceSurveyToBoundGroups'](arg1);
+}
+export function ReopenSurvey(arg1) {
+  return window['go']['main']['App']['ReopenSurvey'](arg1);
+}
+export function ArchiveSurvey(arg1) {
+  return window['go']['main']['App']['ArchiveSurvey'](arg1);
+}
+export function DuplicateSurvey(arg1) {
+  return window['go']['main']['App']['DuplicateSurvey'](arg1);
+}
+export function DeleteSurvey(arg1) {
+  return window['go']['main']['App']['DeleteSurvey'](arg1);
+}
+export function UpdateSurvey(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSurvey'](arg1, arg2);
+}
+export function UnbindSurveyGroup(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UnbindSurveyGroup'](arg1, arg2, arg3);
+}
+export function ListSurveyResponses(arg1) {
+  return window['go']['main']['App']['ListSurveyResponses'](arg1);
+}
+export function ExportSurveyXLSXFiltered(arg1, arg2) {
+  return window['go']['main']['App']['ExportSurveyXLSXFiltered'](arg1, arg2);
+}
+export function ListLansengerGroups() {
+  return window['go']['main']['App']['ListLansengerGroups']();
+}
+

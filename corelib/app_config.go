@@ -138,6 +138,8 @@ type AppConfig struct {
 	ShowAITraceEntry                   bool                   `json:"show_ai_trace_entry,omitempty"`
 	ShowAppEntry                       bool                   `json:"show_app_entry"`
 	ShowWorkflowEntry                  *bool                  `json:"show_workflow_entry,omitempty"`
+	ShowUtilitiesEntry                 *bool                  `json:"show_utilities_entry,omitempty"`
+	SurveyEnabled                      *bool                  `json:"survey_enabled,omitempty"`
 	ShowAssistantEntry                 bool                   `json:"show_assistant_entry"`
 	ShowHubRanking                     *bool                  `json:"show_hub_ranking,omitempty"`
 	PetEnabled                         bool                   `json:"pet_enabled,omitempty"`

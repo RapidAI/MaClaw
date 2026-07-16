@@ -1,0 +1,70 @@
+package main
+
+import (
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/lansenger"
+)
+
+func TestStripLansengerBotMentions(t *testing.T) {
+	msg := lansenger.IncomingMessage{
+		Text: "@Bot /survey A3F9K2",
+		MentionedBots: []lansenger.MentionedBot{
+			{ID: "b1", Name: "Bot"},
+		},
+	}
+	got := stripLansengerBotMentions(msg)
+	if got != "/survey A3F9K2" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestLooksLikeSurveyCommand(t *testing.T) {
+	if !looksLikeSurveyCommand("/survey A3F9K2") {
+		t.Fatal("expected command")
+	}
+	if !looksLikeSurveyCommand("问卷 A3F9K2") {
+		t.Fatal("expected chinese start")
+	}
+	if looksLikeSurveyCommand("问卷写好了吗") {
+		t.Fatal("bare keyword must not match")
+	}
+	if looksLikeSurveyCommand("hello") {
+		t.Fatal("normal chat")
+	}
+}
+
+func TestCouldBeSurveySessionReply(t *testing.T) {
+	if !couldBeSurveySessionReply("取消") {
+		t.Fatal("cancel")
+	}
+	if !couldBeSurveySessionReply("2") {
+		t.Fatal("answer token")
+	}
+	if !couldBeSurveySessionReply("修改") {
+		t.Fatal("modify")
+	}
+}
+
+func TestShouldAttemptSurveyIM_KillSwitchAndCommands(t *testing.T) {
+	// kill-switch: survey_enabled=false must never claim, even for /survey
+	if shouldAttemptSurveyIM(false, "/survey A3F9K2") {
+		t.Fatal("disabled must not attempt")
+	}
+	if shouldAttemptSurveyIM(false, "问卷 A3F9K2") {
+		t.Fatal("disabled chinese start")
+	}
+	// enabled + command
+	if !shouldAttemptSurveyIM(true, "/survey A3F9K2") {
+		t.Fatal("enabled command should attempt")
+	}
+	if !shouldAttemptSurveyIM(true, "问卷 A3F9K2") {
+		t.Fatal("enabled chinese start should attempt")
+	}
+	// bare 问卷 must not (looksLikeSurveyCommand false and not a short answer token pattern alone - actually 问卷写好了吗 has CJK)
+	// 问卷写好了吗 is not a command (no space+code); couldBeSurveySessionReply may be true due to Han chars.
+	// Non-@ free chat that is clearly not survey should ideally not attempt — document current: Han short text may attempt, Hub returns handled=false.
+	if shouldAttemptSurveyIM(true, "") {
+		t.Fatal("empty")
+	}
+}

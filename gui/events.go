@@ -41,4 +41,9 @@ const (
 	EventSkillAutoDiscovered  = "skill:auto_discovered"
 	EventSkillExecutionFailed = "skill:execution_failed"
 	EventSkillIndexRefreshed  = "skill:index_refreshed"
+
+	// EventSurveyUpdated is emitted after an IM survey response is submitted
+	// (or other survey mutations that should refresh the Utilities results UI).
+	// Payload: map with survey_id (string) and optional event (string).
+	EventSurveyUpdated = "survey-updated"
 )

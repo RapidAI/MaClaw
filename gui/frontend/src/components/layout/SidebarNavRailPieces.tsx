@@ -34,8 +34,10 @@ type SidebarPrimaryNavProps = {
     appsLabel: string;
     showAppEntry: boolean;
     showWorkflowEntry: boolean;
+    showUtilitiesEntry?: boolean;
     switchTool: (tool: string) => void;
     workflowLabel?: string;
+    utilitiesLabel?: string;
 };
 
 const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
@@ -132,7 +134,7 @@ export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinke
     </div>
 );
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, switchTool, workflowLabel }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, showUtilitiesEntry = true, switchTool, workflowLabel, utilitiesLabel }: SidebarPrimaryNavProps) => {
     const isAiActive = navTab === 'ai';
 
     return (
@@ -179,6 +181,20 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                     </svg>
                 </span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{workflowLabel || '工作流'}</span>
+            </div>
+            <div
+                className={'sidebar-item left-nav-item ' + (navTab === 'utilities' ? 'active' : '')}
+                onClick={() => switchTool('utilities')}
+                data-testid="sidebar-utilities-nav"
+                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'utilities' ? 'inset -1px 0 0 var(--theme-primary)' : 'none', justifyContent: 'center', display: showUtilitiesEntry ? undefined : 'none' }}
+                title={utilitiesLabel || '实用工具'}
+            >
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'utilities' ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+                    </svg>
+                </span>
+                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{utilitiesLabel || '实用工具'}</span>
             </div>
         </>
     );

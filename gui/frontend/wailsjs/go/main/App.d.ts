@@ -1463,3 +1463,22 @@ export function KnowledgeDeepCrawlCancel():Promise<any>;
 export function KnowledgeGetImageAssetPaths(arg1:string):Promise<{[key:string]:string}>;
 
 export function KnowledgeOpenImageFile(arg1:string):Promise<void>;
+export function ListSurveys(arg1:string):Promise<string>;
+export function GetSurvey(arg1:string):Promise<string>;
+export function CreateSurvey(arg1:string):Promise<string>;
+export function PublishSurvey(arg1:string,arg2:string):Promise<string>;
+export function CloseSurvey(arg1:string):Promise<string>;
+export function BindSurveyGroups(arg1:string,arg2:string):Promise<string>;
+export function GetSurveyStats(arg1:string):Promise<string>;
+export function ExportSurveyXLSX(arg1:string):Promise<string>;
+export function AnnounceSurveyToBoundGroups(arg1:string):Promise<string>;
+export function ReopenSurvey(arg1:string):Promise<string>;
+export function ArchiveSurvey(arg1:string):Promise<string>;
+export function DuplicateSurvey(arg1:string):Promise<string>;
+export function DeleteSurvey(arg1:string):Promise<void>;
+export function UpdateSurvey(arg1:string,arg2:string):Promise<string>;
+export function UnbindSurveyGroup(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function ListSurveyResponses(arg1:string):Promise<string>;
+export function ExportSurveyXLSXFiltered(arg1:string,arg2:string):Promise<string>;
+export function ListLansengerGroups():Promise<any>;
+

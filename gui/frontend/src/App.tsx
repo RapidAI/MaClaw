@@ -58,7 +58,7 @@ import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDial
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
-import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage } from './appLazyComponents';
+import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage } from './appLazyComponents';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
@@ -345,6 +345,7 @@ function App() {
     }, []);
     const showAppEntryEnabled = config?.show_app_entry === true;
     const showWorkflowEntryEnabled = config?.show_workflow_entry !== false;
+    const showUtilitiesEntryEnabled = (config as any)?.show_utilities_entry !== false;
     useEffect(() => {
         const openAppsPanel = () => {
             if (showAppEntryEnabled) setNavTabNow('apps');
@@ -387,6 +388,9 @@ function App() {
     useEffect(() => {
         if (!showWorkflowEntryEnabled && navTab === 'workflows') setNavTabNow('ai');
     }, [navTab, setNavTabNow, showWorkflowEntryEnabled]);
+    useEffect(() => {
+        if (!showUtilitiesEntryEnabled && navTab === 'utilities') setNavTabNow('ai');
+    }, [navTab, setNavTabNow, showUtilitiesEntryEnabled]);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
@@ -3617,6 +3621,7 @@ ${instruction}`;
                 favoriteEmployeeNames={favoriteEmployeeNames}
                 showAppEntry={showAppEntryEnabled}
                 showWorkflowEntry={showWorkflowEntryEnabled}
+                showUtilitiesEntry={showUtilitiesEntryEnabled}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
                 availableProviders={availableProvidersForSwitch}
                 onSwitchProvider={handleQuickSwitchProvider}
@@ -3853,6 +3858,10 @@ ${instruction}`;
 
                     {navTab === 'workflows' && (
                         <WorkflowsPage lang={lang} switchToAI={() => setNavTabNow('ai')} />
+                    )}
+
+                    {navTab === 'utilities' && showUtilitiesEntryEnabled && (
+                        <UtilitiesPage lang={lang} />
                     )}
 
                     {navTab === 'skills' && (
