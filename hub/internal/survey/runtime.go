@@ -367,33 +367,51 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		return IMHandleResponse{Handled: true, ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出"}, nil
 	}
 
-	// Fast path: single question single_choice/rating with answer token
+	// Fast path: single-question survey with answer token (any supported type).
 	if fastAnswer != "" && len(sv.Questions) == 1 {
 		q := sv.Questions[0]
-		if q.Type == "single_choice" || q.Type == "rating" {
-			val, err := ParseAnswer(q, fastAnswer)
-			if err == nil {
-				answers := map[string]any{q.ID: val}
-				if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, answers); err != nil {
-					return r.mapSubmitError(ctx, tenantID, "", err)
+		if IsSkipToken(fastAnswer) {
+			if q.Required {
+				sess := newAnsweringSession(tenantID, platform, userID, userName, groupID, sv.ID, r.now())
+				if err := r.Store.SaveSession(ctx, sess); err != nil {
+					return IMHandleResponse{}, err
 				}
 				return IMHandleResponse{
 					Handled:   true,
-					ReplyText: "提交成功，感谢参与！",
-					SurveyID:  sv.ID,
-					Event:     "response_submitted",
+					ReplyText: "该题为必填，不能跳过。\n" + FormatQuestionPrompt(q, 0, 1),
 				}, nil
 			}
-			// Invalid fast answer: still open a session so the next reply is accepted.
-			sess := newAnsweringSession(tenantID, platform, userID, userName, groupID, sv.ID, r.now())
-			if err := r.Store.SaveSession(ctx, sess); err != nil {
-				return IMHandleResponse{}, err
+			if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, map[string]any{}); err != nil {
+				return r.mapSubmitError(ctx, tenantID, "", err)
 			}
 			return IMHandleResponse{
 				Handled:   true,
-				ReplyText: "答案无效：" + err.Error() + "\n" + FormatQuestionPrompt(q, 0, 1),
+				ReplyText: "提交成功，感谢参与！",
+				SurveyID:  sv.ID,
+				Event:     "response_submitted",
 			}, nil
 		}
+		val, err := ParseAnswer(q, fastAnswer)
+		if err == nil {
+			if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, map[string]any{q.ID: val}); err != nil {
+				return r.mapSubmitError(ctx, tenantID, "", err)
+			}
+			return IMHandleResponse{
+				Handled:   true,
+				ReplyText: "提交成功，感谢参与！",
+				SurveyID:  sv.ID,
+				Event:     "response_submitted",
+			}, nil
+		}
+		// Invalid fast answer: still open a session so the next reply is accepted.
+		sess := newAnsweringSession(tenantID, platform, userID, userName, groupID, sv.ID, r.now())
+		if err := r.Store.SaveSession(ctx, sess); err != nil {
+			return IMHandleResponse{}, err
+		}
+		return IMHandleResponse{
+			Handled:   true,
+			ReplyText: "答案无效：" + err.Error() + "\n" + FormatQuestionPrompt(q, 0, 1),
+		}, nil
 	}
 
 	// Start conversational at Q1

@@ -221,7 +221,10 @@ func insertQuestions(ctx context.Context, tx *sql.Tx, surveyID string, qs []Ques
 		if q.MaxLength != nil {
 			cfg["max_length"] = *q.MaxLength
 		}
-		raw, _ := json.Marshal(cfg)
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			return fmt.Errorf("marshal question config: %w", err)
+		}
 		req := 0
 		if q.Required {
 			req = 1
@@ -405,7 +408,10 @@ func (s *Store) Update(ctx context.Context, tenantID, id string, in UpdateInput)
 		sv.Settings.AnonymitySalt = salt
 	}
 	now := time.Now().UTC()
-	settingsJSON, _ := json.Marshal(sv.Settings)
+	settingsJSON, err := json.Marshal(sv.Settings)
+	if err != nil {
+		return nil, fmt.Errorf("marshal settings: %w", err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -972,7 +978,9 @@ func scanSurvey(row scanner) (*Survey, error) {
 	if err := row.Scan(&sv.ID, &sv.TenantID, &sv.ShortCode, &sv.Title, &sv.Description, &sv.Status, &settings, &sv.CreatedBy, &created, &updated, &published); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal([]byte(settings), &sv.Settings)
+	if err := json.Unmarshal([]byte(settings), &sv.Settings); err != nil {
+		return nil, fmt.Errorf("corrupt survey settings: %w", err)
+	}
 	sv.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	sv.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
 	if published.Valid && published.String != "" {

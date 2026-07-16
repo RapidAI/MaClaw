@@ -1038,6 +1038,52 @@ func TestInvalidFastPathOpensSession(t *testing.T) {
 	}
 }
 
+func TestFastPathTextAndOptionalSkip(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	// Text single-question fast path
+	sv, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "Txt",
+		Questions: []Question{{
+			ID: "q1", Type: "text", Title: "Note", Required: true,
+		}},
+	})
+	_ = st.Bind(ctx, "t", sv.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub, _ := st.Publish(ctx, "t", sv.ID)
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode + " hello world",
+	})
+	if err != nil || r.Event != "response_submitted" {
+		t.Fatalf("text fast err=%v event=%q reply=%q", err, r.Event, r.ReplyText)
+	}
+	// Optional single-question skip
+	sv2, _ := st.Create(ctx, "t", "u", CreateInput{
+		Title: "Opt",
+		Questions: []Question{{
+			ID: "q1", Type: "single_choice", Title: "Maybe", Required: false,
+			Options: []Option{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
+		}},
+	})
+	_ = st.Bind(ctx, "t", sv2.ID, []Binding{{Platform: PlatformLansenger, GroupID: "g"}})
+	pub2, _ := st.Publish(ctx, "t", sv2.ID)
+	r, err = rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u2", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub2.ShortCode + " 跳过",
+	})
+	if err != nil || r.Event != "response_submitted" {
+		t.Fatalf("skip fast err=%v event=%q reply=%q", err, r.Event, r.ReplyText)
+	}
+	list, _ := st.ListResponses(ctx, "t", pub2.ID)
+	if len(list) != 1 {
+		t.Fatalf("responses=%d", len(list))
+	}
+	if len(JSONToAnswers(list[0].Answers)) != 0 {
+		t.Fatalf("want empty answers got %v", JSONToAnswers(list[0].Answers))
+	}
+}
+
 func TestStatusConfirmUpdatePhase(t *testing.T) {
 	st := openTestDB(t)
 	ctx := context.Background()

@@ -136,10 +136,18 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	ev, _ := out["event"].(string)
 	reply, _ := out["reply_text"].(string)
 	// Session lifecycle hints: only mark when user is actually mid-survey.
-	// Avoid marking after /survey help|list|not-found so free-text chat stays local.
+	// Clear on terminal outcomes so free-text chat stops probing Hub.
 	switch {
 	case ev == "response_submitted",
-		strings.Contains(reply, "已取消"):
+		strings.Contains(reply, "已取消"),
+		strings.Contains(reply, "提交成功"),
+		strings.Contains(reply, "您已提交过"),
+		strings.Contains(reply, "问卷已停止收集"),
+		strings.Contains(reply, "问卷已截止"),
+		strings.Contains(reply, "问卷不可用"),
+		strings.Contains(reply, "会话已失效"),
+		strings.Contains(reply, "该问卷不允许修改"),
+		strings.Contains(reply, "当前没有进行中的问卷"):
 		hints.clear(rk)
 	case !isCmd:
 		// Session answer / control word that Hub accepted.
