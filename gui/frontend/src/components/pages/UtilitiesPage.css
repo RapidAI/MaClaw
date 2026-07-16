@@ -62,10 +62,22 @@
     background: var(--theme-surface, #fff);
     cursor: pointer;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    transition: border-color 0.15s ease, opacity 0.15s ease;
 }
 
-.utilities-tool-card:hover {
+.utilities-tool-card:hover:not(:disabled) {
     border-color: var(--theme-primary, #3b82f6);
+}
+
+.utilities-tool-card:focus-visible {
+    outline: 2px solid var(--theme-primary, #3b82f6);
+    outline-offset: 2px;
+}
+
+.utilities-tool-card:disabled,
+.utilities-tool-card.is-starting {
+    opacity: 0.72;
+    cursor: wait;
 }
 
 .utilities-tool-card__icon {

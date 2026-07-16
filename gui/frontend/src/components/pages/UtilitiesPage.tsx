@@ -39,6 +39,7 @@ import {
     type SurveyListSort,
 } from './utilitiesSurveyEditor';
 import { parseWailsJSON } from './utilitiesParse';
+import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetingRecord';
 
 export { parseWailsJSON } from './utilitiesParse';
 
@@ -93,9 +94,17 @@ async function getApp(): Promise<any | null> {
     }
 }
 
-export const UtilitiesPage = ({ lang }: { lang?: string }) => {
+export const UtilitiesPage = ({
+    lang,
+    onStartMeetingRecord,
+}: {
+    lang?: string;
+    /** Open a new agent tab and send the meeting-recording command. */
+    onStartMeetingRecord?: () => void | Promise<void>;
+}) => {
     const isZh = !lang || lang.startsWith('zh');
     const [view, setView] = useState<View>('home');
+    const [meetingStarting, setMeetingStarting] = useState(false);
     const [surveys, setSurveys] = useState<SurveySummary[]>([]);
     const [error, setError] = useState('');
     const [hubOk, setHubOk] = useState<boolean | null>(null);
@@ -125,6 +134,8 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
     const [responseQuery, setResponseQuery] = useState('');
     const [textAnswerQuery, setTextAnswerQuery] = useState('');
     const [showHelp, setShowHelp] = useState(false);
+    const meetingStartingRef = useRef(false);
+    const mountedRef = useRef(true);
     const selectedIdRef = useRef<string | null>(null);
     const viewRef = useRef<View>(view);
     const busyRef = useRef(busy);
@@ -133,6 +144,13 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
     viewRef.current = view;
     busyRef.current = busy;
     selectedStatusRef.current = selected?.status;
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
 
     const copyText = async (text: string, okMsg: string) => {
         const value = (text || '').trim();
@@ -317,10 +335,16 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
 
     const t = useMemo(() => ({
         title: isZh ? '实用工具' : 'Utilities',
-        subtitle: isZh ? '面向群场景的轻量工具（问卷、投票等）' : 'Lightweight tools for IM groups (surveys, polls, …)',
+        subtitle: isZh
+            ? '面向群场景与日常办公的轻量工具（问卷、会议记录等）'
+            : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, …)',
         surveyCard: isZh ? '调查问卷' : 'Surveys',
         surveyDesc: isZh ? '创建问卷、绑定蓝信群、查看结果并导出 Excel' : 'Create surveys, bind Lansenger groups, view results, export Excel',
+        meetingCard: meetingRecordBaseTitle(lang),
+        meetingDesc: meetingRecordCardDesc(lang),
         open: isZh ? '进入' : 'Open',
+        start: lang === 'zh-Hant' ? '開始' : isZh ? '开始' : 'Start',
+        starting: lang === 'zh-Hant' ? '啟動中…' : isZh ? '启动中…' : 'Starting…',
         back: isZh ? '返回' : 'Back',
         hubOffline: isZh ? '未连接 Hub。问卷数据保存在 Hub，请先注册/连接 Hub。' : 'Hub is offline. Survey data lives on Hub — connect first.',
         create: isZh ? '新建问卷' : 'New survey',
@@ -396,7 +420,22 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
         shortcutSave: isZh ? 'Ctrl+S 保存草稿' : 'Ctrl+S save draft',
         help: isZh ? '使用说明' : 'How to use',
         hideHelp: isZh ? '收起说明' : 'Hide help',
-    }), [isZh]);
+    }), [isZh, lang]);
+
+    const handleMeetingRecord = useCallback(async () => {
+        if (!onStartMeetingRecord || meetingStartingRef.current) return;
+        meetingStartingRef.current = true;
+        setMeetingStarting(true);
+        try {
+            await onStartMeetingRecord();
+        } catch {
+            // Parent surfaces errors (toast). Card re-enables in finally when still mounted.
+        } finally {
+            meetingStartingRef.current = false;
+            // Success navigates away (unmounts this page); skip setState after unmount.
+            if (mountedRef.current) setMeetingStarting(false);
+        }
+    }, [onStartMeetingRecord]);
 
     const operatorHelp = useMemo(() => buildSurveyOperatorHelp(isZh), [isZh]);
 
@@ -938,6 +977,23 @@ export const UtilitiesPage = ({ lang }: { lang?: string }) => {
                             <div className="utilities-tool-card__desc">{t.surveyDesc}</div>
                         </div>
                         <span className="utilities-tool-card__cta">{t.open}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className={`utilities-tool-card${meetingStarting ? ' is-starting' : ''}`}
+                        data-testid="utilities-meeting-card"
+                        disabled={meetingStarting || !onStartMeetingRecord}
+                        aria-busy={meetingStarting || undefined}
+                        aria-label={t.meetingCard}
+                        title={t.meetingDesc}
+                        onClick={() => { void handleMeetingRecord(); }}
+                    >
+                        <div className="utilities-tool-card__icon" aria-hidden>🎙️</div>
+                        <div className="utilities-tool-card__body">
+                            <div className="utilities-tool-card__title">{t.meetingCard}</div>
+                            <div className="utilities-tool-card__desc">{t.meetingDesc}</div>
+                        </div>
+                        <span className="utilities-tool-card__cta">{meetingStarting ? t.starting : t.start}</span>
                     </button>
                 </div>
             </div>

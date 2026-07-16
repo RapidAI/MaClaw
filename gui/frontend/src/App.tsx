@@ -59,6 +59,7 @@ import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage } from './appLazyComponents';
+import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
@@ -2425,6 +2426,42 @@ function App() {
         }
     }, [refreshTasks, switchTool]);
 
+    const meetingRecordInFlightRef = useRef(false);
+    /**
+     * Utilities → 会议记录.
+     * Task title is human-readable; auto-sent text is a tool-router start-recording marker.
+     */
+    const startMeetingRecord = useCallback(async () => {
+        if (meetingRecordInFlightRef.current) return;
+        meetingRecordInFlightRef.current = true;
+        const taskTitle = meetingRecordTaskTitle(lang);
+        const failMsg = meetingRecordFailMessage(lang);
+        const command = meetingRecordCommand(lang);
+        try {
+            const created = await CreateTask(taskTitle, '');
+            if (!created?.project_path) {
+                showToastMessage(failMsg, 4000);
+                return;
+            }
+            setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
+            // Pending before nav: AI panel is remounted when leaving utilities.
+            setPendingProjectTabOpen({
+                projectPath: created.project_path,
+                taskTitle: created.name || taskTitle,
+                initialMessage: command,
+                prepareMode: 'new-agent',
+                autoSend: true,
+            });
+            switchTool('ai');
+            refreshTasks();
+        } catch (error) {
+            console.error('startMeetingRecord failed:', error);
+            showToastMessage(failMsg, 4000);
+        } finally {
+            meetingRecordInFlightRef.current = false;
+        }
+    }, [lang, refreshTasks, showToastMessage, switchTool]);
+
     const normalizeSidebarProviderState = useCallback((data?: SidebarProviderStateWire) => {
         const list = (data?.providers ?? data?.Providers ?? [])
             .map((provider): SidebarLLMProviderSummary => {
@@ -3861,7 +3898,7 @@ ${instruction}`;
                     )}
 
                     {navTab === 'utilities' && showUtilitiesEntryEnabled && (
-                        <UtilitiesPage lang={lang} />
+                        <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} />
                     )}
 
                     {navTab === 'skills' && (
