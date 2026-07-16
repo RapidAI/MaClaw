@@ -201,6 +201,34 @@ func TestRemoteGatewayGroupReplyUsesConversationTargetNotSenderIdentity(t *testi
 	}
 }
 
+func TestRemoteGatewayReplyCarriesSourceMessageMeta(t *testing.T) {
+	sender := &remoteGatewayTestSender{}
+	plugin := NewRemoteGatewayPlugin("lansenger", sender, tenantEmailTestUsers{}, nil)
+	if ok, reason, _ := plugin.ClaimGatewayForTenant("tenant_a", "machine-a", "user-a"); !ok {
+		t.Fatalf("claim failed: %s", reason)
+	}
+	plugin.rememberReplyRoute("tenant_a", "staff-1", "group-1", "group")
+
+	ctx := WithReplyMeta(WithTenant(context.Background(), "tenant_a"), "staff-1", "mid-42")
+	if err := plugin.SendText(ctx, UserTarget{PlatformUID: "staff-1"}, "answer"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("reply count = %d", len(sender.messages))
+	}
+	payload, _ := sender.messages[0]["payload"].(map[string]any)
+	inner, _ := payload["payload"].(map[string]any)
+	if got, _ := inner["source_message_id"].(string); got != "mid-42" {
+		t.Fatalf("source_message_id = %q", got)
+	}
+	if got, _ := inner["sender_id"].(string); got != "staff-1" {
+		t.Fatalf("sender_id = %q", got)
+	}
+	if got, _ := inner["platform_uid"].(string); got != "group-1" {
+		t.Fatalf("platform_uid = %q, want group-1", got)
+	}
+}
+
 func TestRemoteGatewayReplyTargetRejectsGroupFallbackToSender(t *testing.T) {
 	if got := remoteGatewayReplyTarget("user-1", "", "group"); got != "" {
 		t.Fatalf("group target = %q, want empty", got)

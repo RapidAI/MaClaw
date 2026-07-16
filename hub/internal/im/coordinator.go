@@ -15,6 +15,14 @@ import (
 )
 
 type coordinatorTenantContextKey struct{}
+type replyMetaContextKey struct{}
+
+// replyMeta correlates outbound gateway replies with the inbound message that
+// triggered them (Lansenger group @ / quote / refMsgId pairing).
+type replyMeta struct {
+	SenderUID string
+	MessageID string
+}
 
 func WithTenant(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, coordinatorTenantContextKey{}, normalizeTenantID(tenantID))
@@ -28,6 +36,36 @@ func TenantIDFromContext(ctx context.Context) string {
 		return normalizeTenantID(tenantID)
 	}
 	return store.DefaultTenantID
+}
+
+// WithReplyMeta attaches inbound sender + platform message id for outbound
+// reply correlation. Empty fields are ignored by readers.
+func WithReplyMeta(ctx context.Context, senderUID, messageID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	senderUID = strings.TrimSpace(senderUID)
+	messageID = strings.TrimSpace(messageID)
+	if senderUID == "" && messageID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, replyMetaContextKey{}, replyMeta{
+		SenderUID: senderUID,
+		MessageID: messageID,
+	})
+}
+
+// ReplyMetaFromContext returns sender UID and source message id for the
+// current agent turn, if set via WithReplyMeta.
+func ReplyMetaFromContext(ctx context.Context) (senderUID, messageID string) {
+	if ctx == nil {
+		return "", ""
+	}
+	meta, ok := ctx.Value(replyMetaContextKey{}).(replyMeta)
+	if !ok {
+		return "", ""
+	}
+	return meta.SenderUID, meta.MessageID
 }
 
 func tenantIDFromContext(ctx context.Context) string {

@@ -285,14 +285,22 @@ function initNotificationNav() {
   var nav = document.querySelector('.nav');
   if (!nav || nav.querySelector('[data-tab="notifications"]')) return;
   var btn = document.createElement('button');
+  btn.type = 'button';
   btn.setAttribute('data-tab', 'notifications');
   btn.onclick = function() { openTab('notifications'); };
   btn.innerHTML = '<span class="nav-icon" aria-hidden="true">' + TAB_ICONS.notifications + '</span>'
     + '<span data-i18n="navNotifications">' + tr('navNotifications') + '</span>'
     + '<small data-i18n="navNotificationsDesc">' + tr('navNotificationsDesc') + '</small>';
-  // Insert before news or system nav button
+  // Insert into content group after news (or before failurelogs/system fallback)
   var newsBtn = nav.querySelector('[data-tab="news"]');
-  nav.insertBefore(btn, newsBtn || null);
+  var group = (newsBtn && newsBtn.closest('.nav-group')) || nav.querySelector('.nav-group[data-nav-group="content"]') || nav;
+  if (newsBtn && newsBtn.parentNode === group) {
+    group.insertBefore(btn, newsBtn.nextSibling);
+  } else {
+    var before = nav.querySelector('[data-tab="failurelogs"],[data-tab="system"]');
+    group.insertBefore(btn, before || null);
+  }
+  if (typeof syncNavGroups === 'function') syncNavGroups();
 }
 
 // --- List view ---

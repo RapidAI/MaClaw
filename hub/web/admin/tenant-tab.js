@@ -921,6 +921,7 @@
       if (hasProfile && !tenantAdmin) hidden = !!tenantOnly[tab];
       button.classList.toggle('hidden', hidden);
     });
+    if (typeof global.syncNavGroups === 'function') global.syncNavGroups();
     var active = global.document.querySelector('.nav button.active');
     var activeHidden = !!(active && active.classList.contains('hidden'));
     if (activeHidden && typeof global.openTab === 'function') global.openTab('tenants');

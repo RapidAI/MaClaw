@@ -27,6 +27,7 @@ type IMTask struct {
 	PlatformName string
 	PlatformUID  string
 	ReplyTarget  string
+	MessageID    string // platform inbound id for reply decoration correlation
 	MessageType  string
 	Text         string
 	Attachments  []MessageAttachment
@@ -278,6 +279,8 @@ func (d *IMTaskDispatcher) executeTask(task *IMTask) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAgentTimeout+30*time.Second)
 	defer cancel()
 	ctx = WithTenant(ctx, task.TenantID)
+	// Preserve inbound identity so gateway replies can pair @ / quote / refMsgId.
+	ctx = WithReplyMeta(ctx, task.PlatformUID, task.MessageID)
 
 	log.Printf("[TaskDispatcher] executing task #%d for user=%s text_len=%d", task.ID, task.UserID, len(task.Text))
 

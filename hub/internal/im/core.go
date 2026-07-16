@@ -975,18 +975,22 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	if a.taskDispatcher != nil && a.coordinator != nil {
 		if !isIncomingVoiceMessage(msg) {
 			if fastResp := a.coordinator.TryFastAnswer(ctx, unifiedID, msg.PlatformName, msg.PlatformUID, text); fastResp != nil {
-				a.sendResponse(ctx, plugin, target, fastResp)
+				// Agent-like answer: pair decorations with this inbound message.
+				a.sendResponse(WithReplyMeta(ctx, msg.PlatformUID, msg.MessageID), plugin, target, fastResp)
 				return
 			}
 		}
 
 		// --- Slow-path: queue for background processing ---
+		// Queue acks intentionally omit ReplyMeta so they do not consume the
+		// client's first-chunk decoration slot for the real agent answer.
 		task := &IMTask{
 			TenantID:     tenantID,
 			UserID:       unifiedID,
 			PlatformName: msg.PlatformName,
 			PlatformUID:  msg.PlatformUID,
 			ReplyTarget:  msg.ReplyTarget,
+			MessageID:    msg.MessageID,
 			MessageType:  msg.MessageType,
 			Text:         text,
 			Attachments:  msg.Attachments,
@@ -1013,6 +1017,8 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 	// WebSocket payload without changing the routing API signatures.
 	a.messageRouter.StashMessageTypeForTenant(tenantID, unifiedID, msg.MessageType)
 	a.messageRouter.StashAttachmentsForTenant(tenantID, unifiedID, msg.Attachments)
+	// Pair decorations with this inbound for the eventual agent reply.
+	ctx = WithReplyMeta(ctx, msg.PlatformUID, msg.MessageID)
 
 	var routeResp *GenericResponse
 	var routeErr error
@@ -1045,7 +1051,11 @@ func (a *Adapter) HandleMessage(ctx context.Context, msg IncomingMessage) {
 // IM plugin. This is used by the MessageRouter to relay intermediate status
 // updates from the Agent during long-running tasks.
 func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, platformUID, text string) {
-	plugin := a.GetPluginForTenant(TenantIDFromContext(ctx), platformName)
+	// Progress must not carry ReplyMeta: client would consume the first-chunk
+	// decoration slot (source_message_id) meant for the final agent answer.
+	tenantID := TenantIDFromContext(ctx)
+	progressCtx := WithTenant(context.Background(), tenantID)
+	plugin := a.GetPluginForTenant(tenantID, platformName)
 	if plugin == nil {
 		log.Printf("[IM Adapter] DeliverProgress: no plugin for platform %q", platformName)
 		return
@@ -1055,7 +1065,7 @@ func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, pla
 	// keeping the progress event available to refresh the request timeout.
 	if suppressor, ok := plugin.(interface {
 		SuppressGroupIMDetail(context.Context, UserTarget) bool
-	}); ok && suppressor.SuppressGroupIMDetail(ctx, UserTarget{PlatformUID: platformUID, UnifiedUserID: userID}) {
+	}); ok && suppressor.SuppressGroupIMDetail(progressCtx, UserTarget{PlatformUID: platformUID, UnifiedUserID: userID}) {
 		return
 	}
 
@@ -1065,7 +1075,7 @@ func (a *Adapter) DeliverProgress(ctx context.Context, platformName, userID, pla
 	text = textutil.PrepareChatBodyForDisplay(text)
 
 	target := UserTarget{PlatformUID: platformUID, UnifiedUserID: userID}
-	if err := plugin.SendText(ctx, target, text); err != nil {
+	if err := plugin.SendText(progressCtx, target, text); err != nil {
 		log.Printf("[IM Adapter] DeliverProgress SendText failed for %s: %v", platformName, err)
 	}
 }

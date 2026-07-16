@@ -64,8 +64,10 @@
     const btn=document.createElement('button');
     btn.type='button';btn.dataset.tab='userrankings';btn.setAttribute('onclick',"openTab('userrankings')");
     btn.innerHTML='<span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19h16"></path><path d="M7 16V9"></path><path d="M12 16V5"></path><path d="M17 16v-4"></path><path d="M6 20h12"></path></svg></span><span data-i18n="navUserRankings"></span><small data-i18n="navUserRankingsDesc"></small>';
-    const before=nav.querySelector('button[data-tab="news"],button[data-tab="system"]');
-    nav.insertBefore(btn,before||null);
+    const before=nav.querySelector('button[data-tab="news"],button[data-tab="failurelogs"],button[data-tab="system"]');
+    const group=(before&&before.closest('.nav-group'))||nav.querySelector('.nav-group[data-nav-group="content"]')||nav;
+    group.insertBefore(btn, before || null);
+    if (typeof syncNavGroups === 'function') syncNavGroups();
   }
   function ensurePanel(){
     if(document.getElementById('tab-userrankings'))return;

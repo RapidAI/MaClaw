@@ -13,9 +13,14 @@ document.addEventListener('DOMContentLoaded',function(){
           btn.type='button';
           btn.dataset.tab='usermgmt';btn.onclick=function(){openTab('usermgmt')};
           btn.innerHTML='<span class="nav-icon" aria-hidden="true">'+userMgmtIcon+'</span><span data-user-mgmt-i18n="nav"></span><small data-user-mgmt-i18n="navDesc"></small>';
-          const nav=document.querySelector('.nav');
-          const hubs=document.querySelector('.nav button[data-tab="hubs"]');
-          if(nav) nav.insertBefore(btn,hubs?hubs.nextSibling:null);
+          const hubs = document.querySelector('.nav button[data-tab="hubs"]');
+          const group = hubs && hubs.closest('.nav-group');
+          if (group) group.insertBefore(btn, hubs.nextSibling);
+          else {
+            const nav = document.querySelector('.nav');
+            if (nav) nav.insertBefore(btn, hubs ? hubs.nextSibling : null);
+          }
+          if (typeof syncNavGroups === 'function') syncNavGroups();
         }
         if(!document.getElementById('tab-usermgmt')){
           const section=document.createElement('section');
@@ -131,7 +136,7 @@ document.addEventListener('DOMContentLoaded',function(){
       async function migrateUserMgmtRoute(){setUserMgmtBusy(['userMgmtResult'],true);try{const payload=normalizeUserMgmtInput();const body={mode:payload.mode,email:payload.email,domain:payload.domain,from_hub_id:payload.from_hub_id,source_tenant_id:payload.source_tenant_id,to_hub_id:payload.to_hub_id,target_tenant_id:payload.target_tenant_id};const data=await api('/api/admin/users/migrate',{method:'POST',body:JSON.stringify(body)});const query=payload.mode==='domain'?payload.domain:payload.email;const after=await api('/api/admin/routing/query',{method:'POST',body:JSON.stringify({query,query_type:payload.query_type})});const migration=data.migration||{};const result=document.getElementById('userMgmtResult');if(result){result.setAttribute('aria-busy','false');result.innerHTML='<div class="badge ok">'+escapeHtml(userMgmtTr('migrateDone'))+'</div><div class="item-meta section-gap">'+escapeHtml(userMgmtTr('removed'))+': '+escapeHtml((migration.removed_ids||[]).join(', ')||'-')+'<br>'+escapeHtml(userMgmtTr('upserted'))+': '+escapeHtml((migration.upserted_ids||[]).join(', ')||'-')+'</div>'+renderUserMgmtRoute(userMgmtTr('newRoute'),after||{})}showToast(userMgmtTr('migrateDone'),'success');await Promise.all([listHubs(),loadRoutingDiagnostics()])}catch(err){setUserMgmtBusy(['userMgmtResult'],false);showToast(userMgmtTr('migrateFailed',{error:err.message}),'error')}}
       window.loadUserMgmtHubs=loadUserMgmtHubs;window.refreshUserMgmtInventory=refreshUserMgmtInventory;window.syncUserMgmtMode=syncUserMgmtMode;window.syncUserMgmtTargetTenant=syncUserMgmtTargetTenant;window.previewUserMgmtRoute=previewUserMgmtRoute;window.migrateUserMgmtRoute=migrateUserMgmtRoute;window.setUserMgmtReportMode=setUserMgmtReportMode;window.setUserMgmtPage=setUserMgmtPage;window.setUserMgmtTenant=setUserMgmtTenant;window.setUserMgmtTenantFromButton=setUserMgmtTenantFromButton;window.filterUserMgmtTenantButtons=filterUserMgmtTenantButtons;
       const baseOpenTab=openTab;
-      openTab=function(name){ensureUserMgmtTab();if(name==='usermgmt'){localStorage.setItem(activeTabKey,name);document.querySelectorAll('.nav button').forEach(v=>{const active=v.dataset.tab===name;v.classList.toggle('active',active);if(active)v.setAttribute('aria-current','page');else v.removeAttribute('aria-current')});document.querySelectorAll('.panel').forEach(v=>v.classList.remove('active'));document.getElementById('tab-usermgmt').classList.add('active');document.getElementById('pageTitle').textContent=userMgmtTr('tabTitle');document.getElementById('pageSubtitle').textContent=userMgmtTr('tabSubtitle');const icon=document.getElementById('pageTabIcon');if(icon)icon.innerHTML=userMgmtIcon;loadUserMgmtHubs();syncUserMgmtMode();return;}baseOpenTab(name);};
+      openTab=function(name){ensureUserMgmtTab();if(name==='usermgmt'){localStorage.setItem(activeTabKey,name);document.querySelectorAll('.nav button[data-tab]').forEach(v=>{const active=v.dataset.tab===name;v.classList.toggle('active',active);if(active)v.setAttribute('aria-current','page');else v.removeAttribute('aria-current')});document.querySelectorAll('.panel').forEach(v=>v.classList.remove('active'));document.getElementById('tab-usermgmt').classList.add('active');document.getElementById('pageTitle').textContent=userMgmtTr('tabTitle');document.getElementById('pageSubtitle').textContent=userMgmtTr('tabSubtitle');const icon=document.getElementById('pageTabIcon');if(icon)icon.innerHTML=userMgmtIcon;if(typeof syncNavGroups==='function')syncNavGroups();loadUserMgmtHubs();syncUserMgmtMode();return;}baseOpenTab(name);};
       const baseApplyI18n=applyI18n;
       applyI18n=function(){baseApplyI18n();ensureUserMgmtTab();applyUserMgmtI18n();};
       ensureUserMgmtTab();

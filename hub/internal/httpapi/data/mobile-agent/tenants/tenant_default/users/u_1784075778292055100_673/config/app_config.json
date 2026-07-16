@@ -1,0 +1,129 @@
+{
+  "tenant_id": "tenant_default",
+  "user_id": "u_1784075778292055100_673",
+  "app_config": {
+    "claude": {
+      "current_model": "",
+      "models": null
+    },
+    "codex": {
+      "current_model": "",
+      "models": null
+    },
+    "opencode": {
+      "current_model": "",
+      "models": null
+    },
+    "codebuddy": {
+      "current_model": "",
+      "models": null
+    },
+    "iflow": {
+      "current_model": "",
+      "models": null
+    },
+    "kilo": {
+      "current_model": "",
+      "models": null
+    },
+    "projects": null,
+    "current_project": "",
+    "active_tool": "",
+    "default_tool": "",
+    "default_tool_provider": "",
+    "hide_startup_popup": false,
+    "hide_maclaw_llm_popup": false,
+    "show_codex": false,
+    "show_opencode": false,
+    "show_codebuddy": false,
+    "show_iflow": false,
+    "show_kilo": false,
+    "language": "",
+    "power_optimization": false,
+    "screen_dim_timeout_min": 0,
+    "workstation_mode": false,
+    "check_update_on_startup": false,
+    "pause_env_check": false,
+    "env_check_done": false,
+    "env_check_interval": 0,
+    "last_env_check_time": "",
+    "default_proxy_enabled": false,
+    "default_proxy_host": "",
+    "default_proxy_port": "",
+    "default_proxy_username": "",
+    "default_proxy_password": "",
+    "use_windows_terminal": false,
+    "remote_enabled": false,
+    "remote_hub_url": "",
+    "remote_hubcenter_url": "",
+    "remote_email": "",
+    "remote_mobile": "",
+    "remote_sn": "",
+    "remote_user_id": "",
+    "remote_machine_id": "",
+    "remote_machine_token": "",
+    "remote_heartbeat_sec": 0,
+    "remote_client_id": "",
+    "default_launch_mode": "",
+    "maclaw_llm_url": "",
+    "maclaw_llm_key": "",
+    "maclaw_llm_model": "",
+    "llm_prompt_cache": {
+      "enabled": false
+    },
+    "tool_cache_maintenance": {
+      "enabled": false,
+      "clean_on_startup": false,
+      "clean_on_exit": false
+    },
+    "mis_data": {
+      "enabled": false
+    },
+    "group_discussion": {
+      "enabled": false,
+      "discoverable": false,
+      "suggest_consultation": false,
+      "confirm_before_start": false,
+      "allow_security_group_free_discussion": false,
+      "reject_when_dnd": false
+    },
+    "memory_auto_compress": false,
+    "memory_max_backups": 0,
+    "yolo_mode_allowed": false,
+    "smart_route_enabled": false,
+    "gossip_enabled": false,
+    "file_outbound_enabled": false,
+    "image_outbound_enabled": false,
+    "capability_market_policy": {
+      "managed_deployment": {},
+      "recommended_capability": {},
+      "update_policy": {
+        "enterprise_hub": {},
+        "hubcenter": {}
+      }
+    },
+    "show_app_entry": false,
+    "show_assistant_entry": false,
+    "gossip_auto_publish": false,
+    "onboarding_done": false,
+    "vector_search_enabled": false,
+    "asr_enabled": false,
+    "asr_voice_correction_enabled": false,
+    "tts_enabled": false,
+    "knowledge_skill_token_budget": 0,
+    "knowledge_vision_llm": {
+      "enabled": false
+    },
+    "auxiliary_llm": {
+      "url": "",
+      "key": "",
+      "model": ""
+    },
+    "moa": {
+      "enabled": false
+    },
+    "shared_agent_loop_enabled": false,
+    "shared_agent_loop_migrated": false
+  },
+  "updated_at": "2026-07-15T08:36:18.2943792+08:00"
+}

@@ -530,6 +530,16 @@ func (p *RemoteGatewayPlugin) sendToGatewayOwner(ctx context.Context, replyType 
 			payload["chat_type"] = route.chatType
 		}
 	}
+	// Correlate client-side group decorations when this send is an agent answer
+	// for a known inbound (set via WithReplyMeta). Queue acks omit this meta.
+	if senderUID, sourceMsgID := ReplyMetaFromContext(ctx); senderUID != "" || sourceMsgID != "" {
+		if sourceMsgID != "" {
+			payload["source_message_id"] = sourceMsgID
+		}
+		if senderUID != "" {
+			payload["sender_id"] = senderUID
+		}
+	}
 
 	msg := map[string]any{
 		"type": "im.gateway_reply",

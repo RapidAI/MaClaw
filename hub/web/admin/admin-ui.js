@@ -48,7 +48,9 @@
     scope.querySelectorAll('.nav button[data-tab]').forEach(function(button) {
       const active = button.classList.contains('active');
       button.setAttribute('aria-current', active ? 'page' : 'false');
-      button.tabIndex = active ? 0 : -1;
+      var group = button.closest('.nav-group');
+      const hidden = button.classList.contains('hidden') || !!(group && group.classList.contains('hidden'));
+      button.tabIndex = (active && !hidden) ? 0 : -1;
     });
   }
   function bindAdminNavigationKeyboard() {
@@ -59,7 +61,11 @@
       if (!nav) return;
       const keys = ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft', 'Home', 'End'];
       if (keys.indexOf(event.key) === -1) return;
-      const buttons = Array.prototype.slice.call(nav.querySelectorAll('button[data-tab]'));
+      const buttons = Array.prototype.slice.call(nav.querySelectorAll('button[data-tab]')).filter(function(btn) {
+        if (btn.classList.contains('hidden')) return false;
+        var group = btn.closest('.nav-group');
+        return !(group && group.classList.contains('hidden'));
+      });
       const index = buttons.indexOf(global.document.activeElement);
       if (index < 0) return;
       event.preventDefault();
