@@ -147,6 +147,93 @@ func TestEngineKeywordAnyoneAndForward(t *testing.T) {
 	}
 }
 
+func TestShouldForwardKeywordHit(t *testing.T) {
+	job := Job{ForwardChannels: []string{"weixin"}, ForwardOnTargetSpeech: true}
+	rule := KeywordRule{ForwardOnMatch: false}
+	if !shouldForwardKeywordHit(job, rule) {
+		t.Fatal("speech-forward + channels should forward keyword")
+	}
+	job.ForwardOnTargetSpeech = false
+	if shouldForwardKeywordHit(job, rule) {
+		t.Fatal("no speech-forward and no rule flag")
+	}
+	rule.ForwardOnMatch = true
+	if !shouldForwardKeywordHit(job, rule) {
+		t.Fatal("explicit rule flag")
+	}
+	job.ForwardChannels = nil
+	if shouldForwardKeywordHit(job, rule) {
+		t.Fatal("no channels → never")
+	}
+	job.ForwardChannels = []string{"unknown"}
+	if shouldForwardKeywordHit(job, rule) {
+		t.Fatal("invalid channels normalize to empty")
+	}
+}
+
+func TestEngineKeywordAnyoneForwardsWhenSpeechForwardOnWithoutRuleFlag(t *testing.T) {
+	// Mirrors user config: speech-forward + channels, keyword scope=anyone, reply works,
+	// but rule.ForwardOnMatch was left false — still must notify owner channels.
+	store := NewStore(t.TempDir())
+	eng := &Engine{
+		Store: store,
+		Now:   func() time.Time { return time.Date(2026, 7, 17, 10, 0, 0, 0, time.Local) },
+	}
+	job := Job{
+		ID:                    "job-implicit-kw-fwd",
+		Enabled:               true,
+		GroupID:               "g-k",
+		GroupName:             "运营群",
+		TargetStaffIDs:        []string{"vip"},
+		KeywordScope:          KeywordScopeAnyone,
+		ForwardOnTargetSpeech: true,
+		ForwardChannels:       []string{"weixin", "lansenger"},
+		Keywords: []KeywordRule{{
+			ID:             "r1",
+			Keywords:       []string{"test"},
+			RecordOnMatch:  true,
+			ForwardOnMatch: false, // explicit off — still forward via speech-forward job flag
+			ReplyText:      "收到",
+		}},
+	}
+	res := eng.Process(context.Background(), []Job{job}, Incoming{
+		IsGroup: true, GroupID: "g-k", GroupName: "运营群",
+		SpeakerID: "stranger", SpeakerName: "路人甲",
+		Text: "please test this", ReceivedAt: eng.Now(),
+	})
+	if len(res.Replies) != 1 || res.Replies[0] != "收到" {
+		t.Fatalf("group reply: %v", res.Replies)
+	}
+	if len(res.Forwards) != 2 {
+		t.Fatalf("want weixin+lansenger forwards, got %+v", res.Forwards)
+	}
+	if !res.KeywordHits[0].Forwarded {
+		t.Fatal("keyword hit should mark Forwarded")
+	}
+	for _, f := range res.Forwards {
+		if f.Reason != "keyword" {
+			t.Fatalf("reason=%s body=%s", f.Reason, f.Text)
+		}
+		if !strings.Contains(f.Text, "路人甲") || !strings.Contains(f.Text, "please test this") {
+			t.Fatalf("body: %s", f.Text)
+		}
+	}
+
+	// No speech-forward, no rule flag → group reply only, no channel package.
+	job.ForwardOnTargetSpeech = false
+	res2 := eng.Process(context.Background(), []Job{job}, Incoming{
+		IsGroup: true, GroupID: "g-k",
+		SpeakerID: "stranger", SpeakerName: "路人甲",
+		Text: "please test this", ReceivedAt: eng.Now(),
+	})
+	if len(res2.Replies) != 1 {
+		t.Fatalf("reply still: %v", res2.Replies)
+	}
+	if len(res2.Forwards) != 0 {
+		t.Fatalf("no forward expected: %+v", res2.Forwards)
+	}
+}
+
 func TestForwardSpeechUpgradedByKeyword(t *testing.T) {
 	store := NewStore(t.TempDir())
 	eng := &Engine{Store: store, Now: func() time.Time { return time.Date(2026, 7, 16, 15, 0, 0, 0, time.Local) }}

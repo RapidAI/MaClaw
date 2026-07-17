@@ -104,6 +104,14 @@ func runServer(ctx context.Context) error {
 	// Warm delivery target catalog registry (lansenger/weixin/telegram/qq).
 	_ = ensureSrvScheduleTargetCatalogs(svc)
 
+	// Proactive IM text tool (independent of scheduler enablement).
+	if executor != nil {
+		executor.IMMessageHandler = newSrvIMMessageHandler(svc)
+		defer func() {
+			executor.IMMessageHandler = nil
+		}()
+	}
+
 	// Initialize optional scheduler (MACLAW_ENABLE_SCHEDULER=true).
 	schMgr := initScheduler(dataRoot, svc, executor)
 	if schMgr != nil {

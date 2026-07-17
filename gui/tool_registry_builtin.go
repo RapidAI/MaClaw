@@ -598,11 +598,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"max_iterations"},
 		func(args map[string]interface{}) string { return h.toolSetMaxIterations(args) })
 
-	// --- Merged tool: manage_schedule (create/list/delete/update) ---
-	reg("manage_schedule", "定时任务管理（action: create/list/delete/update）。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31。一次性任务请将 start_date 和 end_date 都设为目标日期。",
-		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval", "create", "list", "delete", "update"},
+	// --- Merged tool: manage_schedule (create/list/delete/update/list_targets) ---
+	reg("manage_schedule", "定时任务管理。action: create/list/delete/update/list_targets。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self）。create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。即时发消息请用 im_message，不要用定时任务硬绕。",
+		ToolCategoryBuiltin, []string{"schedule", "task", "cron", "timer", "interval", "create", "list", "delete", "update", "delivery"},
 		map[string]interface{}{
-			"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update"},
+			"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update/list_targets"},
 			"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
 			"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，update/delete 时可选）"},
 			"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
@@ -613,8 +613,32 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
 			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
 			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+			"delivery":         map[string]string{"type": "object", "description": "结果推送 {enabled,channel,targets:[{kind,group_id|group_name|user_id}]}"},
+			"channel":          map[string]string{"type": "string", "description": "list_targets 或 delivery 通道"},
+			"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
+			"group_name":       map[string]string{"type": "string", "description": "delivery 简写：群名"},
+			"group_id":         map[string]string{"type": "string", "description": "delivery 简写：群 ID"},
+			"user_id":          map[string]string{"type": "string", "description": "delivery 简写：私聊 ID 或 self"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolManageSchedule(args) })
+
+	// --- Immediate IM message (proactive push, independent of schedule) ---
+	reg("im_message", "即时向 IM 通道发文本消息（蓝信群/人、微信/Telegram/QQ 最近会话）。action: list_targets|send（可省略：有 text 则 send，有 query/群名则 list）。用户说「给蓝信某群发…」「推送到微信」时用本工具，不要用 manage_schedule 绕路。send 需 text + group_name/group_id/user_id。",
+		ToolCategoryBuiltin, []string{"im", "message", "lansenger", "weixin", "telegram", "qq", "push", "notify", "group"},
+		map[string]interface{}{
+			"action":           map[string]string{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
+			"text":             map[string]string{"type": "string", "description": "send 时消息正文"},
+			"message":          map[string]string{"type": "string", "description": "text 别名"},
+			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
+			"query":            map[string]string{"type": "string", "description": "list_targets 时按名称/ID 过滤"},
+			"group_name":       map[string]string{"type": "string", "description": "send：群名（自动解析 group_id）"},
+			"group_id":         map[string]string{"type": "string", "description": "send：群 ID"},
+			"user_id":          map[string]string{"type": "string", "description": "send：私聊 ID；weixin/telegram/qq 可用 self"},
+			"mention_user_ids": map[string]string{"type": "string", "description": "群消息可选 @ 用户 ID，逗号分隔"},
+			"mention_all":      map[string]string{"type": "boolean", "description": "群消息是否 @所有人"},
+			"delivery":         map[string]string{"type": "object", "description": "可选完整投递配置 {channel,targets:[...]}"},
+		}, nil,
+		func(args map[string]interface{}) string { return h.toolIMMessage(args) })
 
 	// --- Audit log query tool (Phase 2 upgrade) ---
 	reg("query_audit_log", "查询安全审计日志，可按时间范围、工具名、风险等级筛选",

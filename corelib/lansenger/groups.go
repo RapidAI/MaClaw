@@ -64,6 +64,12 @@ type GroupMember struct {
 type GroupMembersResult struct {
 	TotalMembers int           `json:"total_members"`
 	Members      []GroupMember `json:"members"`
+	// PageCount is the raw number of entries the server returned for this page,
+	// before client-side filtering of empty staff IDs. Pagination offsets must
+	// advance by PageCount: some deployments honor a page size smaller than
+	// requested, so len(Members) < requested size does NOT mean the directory
+	// ended.
+	PageCount int `json:"-"`
 }
 
 // QueryGroups lists group IDs the bot has joined (paginated).
@@ -244,7 +250,7 @@ func (g *Gateway) getGroupMembersOnce(ctx context.Context, groupID string, pageO
 			OrgName: strings.TrimSpace(item.OrgName), Status: item.Status, Role: item.Role, FromType: item.FromType,
 		})
 	}
-	return &GroupMembersResult{TotalMembers: result.Data.TotalMembers, Members: members}, nil
+	return &GroupMembersResult{TotalMembers: result.Data.TotalMembers, Members: members, PageCount: len(result.Data.Members)}, nil
 }
 
 // ListJoinedGroups pages through all groups the bot has joined and enriches

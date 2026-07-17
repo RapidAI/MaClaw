@@ -47,6 +47,10 @@ type CoreAgentExecutor struct {
 	// Nil keeps the tool visible but returns "not initialized".
 	ScheduleHandler func(args map[string]interface{}) string
 
+	// IMMessageHandler hosts im_message (list_targets | send) for proactive IM push.
+	// Independent of the scheduler; nil returns "not initialized".
+	IMMessageHandler func(args map[string]interface{}) string
+
 	mu             sync.Mutex
 	userMemory     map[string]*memory.Store
 	tasks          map[string]*task.Store
@@ -109,6 +113,8 @@ type coreAgentCallbacks struct {
 
 	// Host-injected scheduled-task tool (MaClawSrv scheduler).
 	scheduleHandler func(args map[string]interface{}) string
+	// Host-injected proactive IM message tool.
+	imMessageHandler func(args map[string]interface{}) string
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -178,6 +184,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		onToolCall:           req.OnToolCall,
 		onToolResult:         req.OnToolResult,
 		scheduleHandler:      e.ScheduleHandler,
+		imMessageHandler:     e.IMMessageHandler,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:       sshResources.mgr,
 			BGTaskMgr:     sshResources.bg,
@@ -718,7 +725,7 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
 				"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self=最近会话）。" +
 				"create/update 可配 delivery 推送结果；蓝信可用 group_name 自动解析 group_id。" +
-				"fail_on_error 默认 false（投递失败只警告）。",
+				"fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
 			Enabled: c.scheduleHandler != nil,
 			DisabledReason: func() string {
 				if c.scheduleHandler == nil {
@@ -752,6 +759,34 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 					"mention_user_ids": map[string]interface{}{"type": "string", "description": "逗号分隔 @ 用户"},
 				},
 				"required": []string{"action"},
+			},
+		},
+		{
+			Name: "im_message",
+			Description: "即时向 IM 发文本（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send（可省略：有 text 则 send）。" +
+				"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。",
+			Enabled: c.imMessageHandler != nil,
+			DisabledReason: func() string {
+				if c.imMessageHandler == nil {
+					return "IM 消息工具未初始化"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":           map[string]interface{}{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
+					"text":             map[string]interface{}{"type": "string", "description": "send 时消息正文"},
+					"message":          map[string]interface{}{"type": "string", "description": "text 别名"},
+					"channel":          map[string]interface{}{"type": "string", "description": "lansenger|weixin|telegram|qq"},
+					"query":            map[string]interface{}{"type": "string", "description": "list_targets 过滤"},
+					"group_name":       map[string]interface{}{"type": "string", "description": "send：群名"},
+					"group_id":         map[string]interface{}{"type": "string", "description": "send：群 ID"},
+					"user_id":          map[string]interface{}{"type": "string", "description": "send：私聊 ID 或 self"},
+					"mention_user_ids": map[string]interface{}{"type": "string", "description": "逗号分隔 @ 用户"},
+					"mention_all":      map[string]interface{}{"type": "boolean"},
+					"delivery":         map[string]interface{}{"type": "object", "description": "可选完整投递配置"},
+				},
 			},
 		},
 		{
@@ -1264,6 +1299,19 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		out := c.scheduleHandler(args)
 		// Keep Outcome=OK for normal tool text so the model can read failure reasons;
 		// only hard-prefix errors mark OutcomeError.
+		outcome := agent.ToolExecutionOutcomeOK
+		if strings.HasPrefix(out, "Error:") {
+			outcome = agent.ToolExecutionOutcomeError
+		}
+		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
+	case "im_message":
+		if c.imMessageHandler == nil {
+			return agent.ToolExecutionResult{
+				Result:  "IM 消息工具未初始化。",
+				Outcome: agent.ToolExecutionOutcomeError,
+			}
+		}
+		out := c.imMessageHandler(args)
 		outcome := agent.ToolExecutionOutcomeOK
 		if strings.HasPrefix(out, "Error:") {
 			outcome = agent.ToolExecutionOutcomeError

@@ -135,17 +135,15 @@ func (app *TUIApp) toolCreateScheduledTask(args map[string]interface{}) string {
 }
 
 func (app *TUIApp) toolListScheduleDeliveryTargets(args map[string]interface{}) string {
-	channel := stringVal(args, "channel")
-	if channel == "" {
-		channel = stringVal(args, "platform")
-	}
-	query := stringVal(args, "query")
-	if query == "" {
-		query = stringVal(args, "group_name")
-	}
-	if query == "" {
-		query = stringVal(args, "name")
-	}
+	channel := scheduler.DefaultDeliveryChannel(firstNonEmpty(
+		stringVal(args, "channel"),
+		stringVal(args, "platform"),
+	))
+	query := firstNonEmpty(
+		stringVal(args, "query"),
+		stringVal(args, "group_name"),
+		stringVal(args, "name"),
+	)
 	text, err := app.listScheduleDeliveryTargets(channel, query)
 	if err != nil {
 		return fmt.Sprintf("查询投递目标失败: %s", err.Error())
@@ -159,35 +157,51 @@ func parseTUIScheduleDelivery(args map[string]interface{}) (*scheduler.TaskDeliv
 	if args == nil {
 		return nil, nil
 	}
-	if raw, ok := args["delivery"]; ok {
-		if raw == nil {
-			return nil, nil
+	// Align with GUI/Srv: delivery object wins when present; empty/null falls through to shorthand.
+	if raw, ok := args["delivery"]; ok && raw != nil {
+		if m, ok := raw.(map[string]interface{}); ok {
+			if len(m) == 0 {
+				// empty object → shorthand
+			} else if en, ok := m["enabled"].(bool); ok && !en {
+				return nil, nil
+			} else {
+				d, err := scheduler.ParseDeliveryFromAny(raw)
+				if err != nil {
+					return nil, fmt.Errorf("delivery 配置无效: %w", err)
+				}
+				if d != nil {
+					return d, nil
+				}
+			}
+		} else {
+			d, err := scheduler.ParseDeliveryFromAny(raw)
+			if err != nil {
+				return nil, fmt.Errorf("delivery 配置无效: %w", err)
+			}
+			if d != nil {
+				return d, nil
+			}
 		}
-		d, err := scheduler.ParseDeliveryFromAny(raw)
-		if err != nil {
-			return nil, fmt.Errorf("delivery 配置无效: %w", err)
-		}
-		return d, nil
 	}
-	groupID := strings.TrimSpace(stringVal(args, "group_id"))
-	if groupID == "" {
-		groupID = strings.TrimSpace(stringVal(args, "delivery_group_id"))
-	}
-	userID := strings.TrimSpace(stringVal(args, "user_id"))
-	if userID == "" {
-		userID = strings.TrimSpace(stringVal(args, "delivery_user_id"))
-	}
-	groupName := strings.TrimSpace(stringVal(args, "group_name"))
-	if groupName == "" {
-		groupName = strings.TrimSpace(stringVal(args, "delivery_group_name"))
-	}
+	groupID := firstNonEmpty(
+		stringVal(args, "group_id"),
+		stringVal(args, "delivery_group_id"),
+	)
+	userID := firstNonEmpty(
+		stringVal(args, "user_id"),
+		stringVal(args, "delivery_user_id"),
+	)
+	groupName := firstNonEmpty(
+		stringVal(args, "group_name"),
+		stringVal(args, "delivery_group_name"),
+	)
 	if groupID == "" && userID == "" && groupName == "" {
 		return nil, nil
 	}
-	channel := strings.TrimSpace(stringVal(args, "channel"))
-	if channel == "" {
-		channel = strings.TrimSpace(stringVal(args, "delivery_channel"))
-	}
+	channel := firstNonEmpty(
+		stringVal(args, "channel"),
+		stringVal(args, "delivery_channel"),
+	)
 	if channel == "" {
 		channel = scheduler.DeliveryChannelLansenger
 	}

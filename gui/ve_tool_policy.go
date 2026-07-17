@@ -56,6 +56,7 @@ var veBlockedTools = map[string]bool{
 	// --- System configuration ---
 	"manage_config":       true,
 	"manage_schedule":     true,
+	"im_message":          true,
 	"manage_template":     true,
 	"switch_llm_provider": true, // backward-compat alias for manage_config
 

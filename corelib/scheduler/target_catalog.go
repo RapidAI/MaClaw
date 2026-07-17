@@ -61,7 +61,8 @@ func (r *TargetCatalogRegistry) Register(c TargetCatalog) {
 	if r == nil || c == nil {
 		return
 	}
-	ch := strings.TrimSpace(strings.ToLower(c.Channel()))
+	// Canonical keys only (蓝信/wechat → lansenger/weixin) so Get aliases resolve.
+	ch := DefaultDeliveryChannel(c.Channel())
 	if ch == "" {
 		return
 	}
@@ -71,15 +72,12 @@ func (r *TargetCatalogRegistry) Register(c TargetCatalog) {
 	r.byChannel[ch] = c
 }
 
-// Get returns the catalog for channel (case-insensitive).
+// Get returns the catalog for channel (aliases like 蓝信/wechat accepted).
 func (r *TargetCatalogRegistry) Get(channel string) (TargetCatalog, bool) {
 	if r == nil {
 		return nil, false
 	}
-	ch := strings.TrimSpace(strings.ToLower(channel))
-	if ch == "" {
-		ch = DeliveryChannelLansenger
-	}
+	ch := DefaultDeliveryChannel(channel)
 	c, ok := r.byChannel[ch]
 	return c, ok
 }
@@ -113,7 +111,7 @@ func (r *TargetCatalogRegistry) ListTargets(ctx context.Context, channel, query 
 		if len(known) == 0 {
 			return nil, fmt.Errorf("scheduler: no delivery target catalogs registered")
 		}
-		return nil, fmt.Errorf("scheduler: unknown delivery channel %q (available: %s)", strings.TrimSpace(channel), strings.Join(known, ", "))
+		return nil, fmt.Errorf("scheduler: unknown delivery channel %q (available: %s)", DefaultDeliveryChannel(channel), strings.Join(known, ", "))
 	}
 	return c.ListTargets(ctx, query)
 }

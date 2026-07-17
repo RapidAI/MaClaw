@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -24,6 +25,11 @@ func EnforceConfig(cfg corelib.AppConfig, name string, args map[string]interface
 	}
 	if (name == "send_file" || name == "send_to_im") && !cfg.FileOutboundEnabled {
 		return false, "file outbound is disabled by Hub security policy"
+	}
+	// Proactive IM text send is outbound messaging; reuse file-outbound gate.
+	// Use intent inference so omitting action=send cannot bypass the policy.
+	if name == "im_message" && scheduler.IsIMMessageSendIntent(args) && !cfg.FileOutboundEnabled {
+		return false, "IM message outbound is disabled by Hub security policy"
 	}
 	if isImageOutboundTool(name) && !cfg.ImageOutboundEnabled {
 		return false, "image outbound is disabled by Hub security policy"

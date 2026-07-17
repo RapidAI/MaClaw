@@ -230,6 +230,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		ExtraHandlers: map[string]agent.ToolHandler{
 			"manage_skill":           newManageSkillHandler(app),
 			"manage_schedule":        newManageScheduleHandler(app),
+			"im_message":             newIMMessageHandler(app),
 			"tts":                    newTTSHandler(app),
 			"knowledge_search":       app.toolKnowledgeSearch,
 			"knowledge_context_pack": app.toolKnowledgeContextPack,

@@ -32,6 +32,65 @@ func groupReplyNameAndID(msg IncomingMessage) (name, id string) {
 	return name, id
 }
 
+// GroupReplySenderSource is how GroupReplySenderLabel chose its label.
+// Useful for diagnostics when quotes show staffId instead of a display name.
+const (
+	GroupReplySenderSourceDisplayName     = "display_name"
+	GroupReplySenderSourceStaffID         = "staff_id"
+	GroupReplySenderSourceFallbackSomeone = "fallback_someone"
+)
+
+// GroupReplySenderDecision explains which label will appear in "xx问：" and why.
+// Official bot_group_message callbacks only guarantee `from` (staff openId);
+// `senderName` is optional / gateway-enriched — so Source=staff_id is common
+// when the platform omits the display name (client UI still shows names from
+// the address book, which the bot callback does not include).
+type GroupReplySenderDecision struct {
+	Label     string // final label (may be empty before FormatGroupReplyWithQuote fills "有人")
+	Source    string // display_name | staff_id | fallback_someone
+	Reason    string // short machine-readable reason for logs
+	RawName   string // msg.SenderName as received
+	RawID     string // msg.FromUserID as received
+	CleanName string // after normalize; empty if unusable
+	CleanID   string // after normalize
+}
+
+// DecideGroupReplySender returns the quote-header label and the reason it was chosen.
+func DecideGroupReplySender(msg IncomingMessage) GroupReplySenderDecision {
+	d := GroupReplySenderDecision{
+		RawName: msg.SenderName,
+		RawID:   msg.FromUserID,
+	}
+	name, id := groupReplyNameAndID(msg)
+	d.CleanName = name
+	d.CleanID = id
+
+	rawName := strings.TrimSpace(msg.SenderName)
+	switch {
+	case name != "":
+		d.Label = name
+		d.Source = GroupReplySenderSourceDisplayName
+		d.Reason = "usable_display_name"
+	case id != "":
+		d.Label = id
+		d.Source = GroupReplySenderSourceStaffID
+		switch {
+		case rawName == "":
+			// Common for official bot_group_message: only `from` is documented.
+			d.Reason = "senderName_empty_fallback_staffId"
+		case normalizeGroupReplySenderLabel(rawName) == id:
+			d.Reason = "senderName_echoes_staffId_fallback_staffId"
+		default:
+			d.Reason = "senderName_normalized_empty_fallback_staffId"
+		}
+	default:
+		d.Label = ""
+		d.Source = GroupReplySenderSourceFallbackSomeone
+		d.Reason = "no_name_no_id_will_use_someone"
+	}
+	return d
+}
+
 // GroupReplyDisplayName returns the platform display name when it is usable as
 // a quote-header label (non-empty after normalize, and not just an echo of
 // staffId). Empty means callers should fall back to staffId / "有人".

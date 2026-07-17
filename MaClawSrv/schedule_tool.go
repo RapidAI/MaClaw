@@ -98,17 +98,15 @@ func srvScheduleIntArg(args map[string]interface{}, key string, def int) int {
 }
 
 func srvToolListScheduleDeliveryTargets(svc *agentservice.Service, args map[string]interface{}) string {
-	channel := stringArg(args, "channel")
-	if channel == "" {
-		channel = stringArg(args, "platform")
-	}
-	query := stringArg(args, "query")
-	if query == "" {
-		query = stringArg(args, "group_name")
-	}
-	if query == "" {
-		query = stringArg(args, "name")
-	}
+	channel := scheduler.DefaultDeliveryChannel(firstNonEmpty(
+		stringArg(args, "channel"),
+		stringArg(args, "platform"),
+	))
+	query := firstNonEmpty(
+		stringArg(args, "query"),
+		stringArg(args, "group_name"),
+		stringArg(args, "name"),
+	)
 	text, err := listSrvScheduleDeliveryTargets(svc, channel, query)
 	if err != nil {
 		return fmt.Sprintf("查询投递目标失败: %s", err.Error())

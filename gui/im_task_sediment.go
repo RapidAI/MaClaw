@@ -39,6 +39,7 @@ var productiveTools = map[string]bool{
 	"browser":            true,
 	"manage_skill":       true,
 	"manage_schedule":    true,
+	"im_message":         true,
 	"manage_template":    true,
 	"write_file":         true,
 	"edit_file":          true,
@@ -62,6 +63,9 @@ var outputToolActions = map[string]map[string]bool{
 		"create": true,
 		"delete": true,
 		"update": true,
+	},
+	"im_message": {
+		"send": true,
 	},
 	"manage_template": {
 		"create": true,

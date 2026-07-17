@@ -12493,6 +12493,31 @@ body {
     max-width: 760px;
 }
 
+/* Lansenger group policy + reply toggles: keep checkboxes on one horizontal baseline
+   (auto-fit 3-col grids previously pushed "Respond to @all" into a lonely third column). */
+.im-settings-lansenger-group {
+    display: grid;
+    gap: 12px;
+    margin-top: 12px;
+    max-width: 760px;
+}
+
+.im-settings-lansenger-group__policy {
+    max-width: 360px;
+}
+
+.im-settings-toggle-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.im-settings-toggle-row .im-settings-toggle {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
 .im-settings-field {
     min-width: 0;
     display: grid;

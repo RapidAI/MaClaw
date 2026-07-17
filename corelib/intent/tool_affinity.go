@@ -14,7 +14,7 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 			LabelSSH:              {"ssh"},
 			LabelSearch:           {"web_search"},
 			LabelLiveData:         {"web_search"},
-			LabelDocumentDelivery: {"send_file", "send_to_im", "open", "craft_tool"},
+			LabelDocumentDelivery: {"send_file", "send_to_im", "im_message", "open", "craft_tool"},
 			LabelBusinessData:     {"mis_data"},
 			LabelBrowser: {
 				"browser",

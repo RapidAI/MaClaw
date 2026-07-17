@@ -6,7 +6,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
@@ -29,21 +28,50 @@ func (app *TUIApp) deliverScheduledTaskResult(task *scheduler.ScheduledTask, res
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := scheduler.WithDeliveryTimeout(nil, scheduler.DefaultIMDeliveryTimeout)
 	defer cancel()
+	if err := app.DeliverIMFromTaskDelivery(ctx, d, body); err != nil {
+		log.Printf("[TUI-ScheduledTask] delivery failed task=%s: %v", task.ID, err)
+		return err
+	}
+	return nil
+}
 
-	send, err := app.newScheduleChannelSender(d.Channel)
+// DeliverIMText immediately pushes text to IM channel targets (shared by schedule + im_message).
+func (app *TUIApp) DeliverIMText(ctx context.Context, channel string, targets []scheduler.DeliveryTarget, text string) error {
+	if app == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	text = scheduler.TruncateDeliveryBody(text)
+	if text == "" {
+		return fmt.Errorf("message text is empty")
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no delivery targets")
+	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
+	ctx, cancel := scheduler.WithDeliveryTimeout(ctx, scheduler.DefaultIMDeliveryTimeout)
+	defer cancel()
+	send, err := app.newScheduleChannelSender(channel)
 	if err != nil {
 		return err
 	}
-	_, err = scheduler.FanOutDeliveryTargets(d.Targets, func(i int, target scheduler.DeliveryTarget) error {
-		if err := send(ctx, target, body); err != nil {
-			log.Printf("[TUI-ScheduledTask] delivery failed task=%s target=%d: %v", task.ID, i, err)
+	_, err = scheduler.FanOutDeliveryTargets(targets, func(i int, target scheduler.DeliveryTarget) error {
+		if err := send(ctx, target, text); err != nil {
+			log.Printf("[TUI-IM] delivery failed channel=%s target=%d: %v", channel, i, err)
 			return err
 		}
 		return nil
 	})
 	return err
+}
+
+// DeliverIMFromTaskDelivery sends using an active TaskDelivery config.
+func (app *TUIApp) DeliverIMFromTaskDelivery(ctx context.Context, d *scheduler.TaskDelivery, text string) error {
+	if d == nil || !d.Active() {
+		return fmt.Errorf("delivery not active")
+	}
+	return app.DeliverIMText(ctx, d.Channel, d.Targets, text)
 }
 
 func (app *TUIApp) deliveryStateStore() *scheduler.DeliveryStateStore {
@@ -59,10 +87,7 @@ func (app *TUIApp) deliveryStateStore() *scheduler.DeliveryStateStore {
 type tuiChannelSendFunc func(ctx context.Context, target scheduler.DeliveryTarget, text string) error
 
 func (app *TUIApp) newScheduleChannelSender(channel string) (tuiChannelSendFunc, error) {
-	channel = strings.TrimSpace(strings.ToLower(channel))
-	if channel == "" {
-		channel = scheduler.DeliveryChannelLansenger
-	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
 	switch channel {
 	case scheduler.DeliveryChannelLansenger:
 		gw, err := app.newLansengerGatewayForSend()

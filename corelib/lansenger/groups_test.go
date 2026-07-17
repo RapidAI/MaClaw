@@ -151,6 +151,9 @@ func TestGetGroupMembersPaginatesAndSkipsEmptyIDs(t *testing.T) {
 	if page.TotalMembers != 202 || len(page.Members) != 2 {
 		t.Fatalf("GetGroupMembers = %#v", page)
 	}
+	if page.PageCount != 3 {
+		t.Fatalf("PageCount must count raw entries incl. skipped empty IDs, got %d", page.PageCount)
+	}
 	if page.Members[0].StaffID != "staff-1" || page.Members[0].Name != "Alice" || page.Members[0].Status != 1 || page.Members[0].Role != 2 {
 		t.Fatalf("unexpected first member: %#v", page.Members[0])
 	}
@@ -172,7 +175,7 @@ func TestGetGroupMembersAllowsMissingReportedTotal(t *testing.T) {
 
 	gw := NewGateway(Config{AppID: "app", AppSecret: "sec", ApiGatewayURL: srv.URL}, nil)
 	page, err := gw.GetGroupMembers(context.Background(), "group-1", 0, 100)
-	if err != nil || page.TotalMembers != 0 || len(page.Members) != 1 {
+	if err != nil || page.TotalMembers != 0 || len(page.Members) != 1 || page.PageCount != 1 {
 		t.Fatalf("missing total must retain returned members: page=%#v err=%v", page, err)
 	}
 }

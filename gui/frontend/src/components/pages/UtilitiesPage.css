@@ -405,14 +405,27 @@
     min-width: 0;
 }
 
+/*
+ * Save/delete under the watch editor.
+ * Default: document flow (required for IM modal — sticky against
+ * .im-watch-modal__body overlays form content / "穿透").
+ * Full utilities page only: sticky for long forms.
+ */
 .watch-editor .utilities-watch-actions {
-    position: sticky;
-    bottom: 0;
     justify-content: space-between;
-    margin: 16px -16px -16px;
-    padding: 10px 16px;
+    margin: 16px 0 0;
+    padding: 12px 0 0;
     border-top: 1px solid var(--theme-border, #e2e5ea);
     background: var(--theme-surface, #fff);
+}
+
+.utilities-page:not(.utilities-page--compact) .watch-editor .utilities-watch-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 6;
+    margin: 16px -16px -16px;
+    padding: 10px 16px;
+    box-shadow: 0 -8px 18px color-mix(in srgb, var(--theme-surface, #fff) 88%, transparent);
 }
 
 @media (max-width: 620px) {
@@ -453,7 +466,7 @@
         justify-content: flex-start;
     }
 
-    .watch-editor .utilities-watch-actions {
+    .utilities-page:not(.utilities-page--compact) .watch-editor .utilities-watch-actions {
         margin: 16px -12px -12px;
         padding: 10px 12px;
     }
@@ -743,7 +756,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
     gap: 5px;
-    max-height: 264px;
+    max-height: 448px;
     overflow: auto;
     margin: 0;
     contain: content;
@@ -880,6 +893,99 @@
 .utilities-chip.is-on {
     border-color: var(--theme-primary, #3b82f6);
     color: var(--theme-primary, #3b82f6);
+}
+
+/* Selected for forward but private session not ready (online ≠ pushable). */
+.utilities-chip.is-on.is-warn {
+    border-color: color-mix(in srgb, var(--theme-warning, #d97706) 70%, var(--theme-border, #e2e5ea));
+    color: color-mix(in srgb, var(--theme-warning, #d97706) 85%, var(--theme-text-primary, #1a1a1a));
+}
+
+.utilities-chip-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.utilities-chip-test {
+    border: 1px solid var(--theme-border-subtle, #e2e5ea);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: var(--theme-surface-muted, #f3f4f6);
+    color: var(--theme-text-secondary, #667085);
+    cursor: pointer;
+}
+
+.utilities-chip-test:hover:not(:disabled),
+.utilities-chip-test:focus-visible {
+    border-color: var(--theme-primary, #3b82f6);
+    color: var(--theme-primary, #3b82f6);
+    outline: none;
+}
+
+.utilities-chip-test:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.watch-forward-log {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--theme-border-subtle, #e2e5ea);
+    background: var(--theme-surface-muted, #f7f8fa);
+}
+
+.watch-forward-log__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+}
+
+.watch-forward-log__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+}
+
+.watch-forward-log__list li {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 4px 8px;
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary, #667085);
+}
+
+.watch-forward-log__list li.is-ok .watch-forward-log__st {
+    color: color-mix(in srgb, var(--theme-success, #4f7f6f) 80%, var(--theme-text-primary, #1a1a1a));
+}
+
+.watch-forward-log__list li.is-err .watch-forward-log__st {
+    color: color-mix(in srgb, var(--theme-danger, #c43d34) 80%, var(--theme-text-primary, #1a1a1a));
+}
+
+.watch-forward-log__ch {
+    font-weight: 700;
+}
+
+.watch-forward-log__st {
+    grid-column: 2;
+    overflow-wrap: anywhere;
+}
+
+.watch-forward-log__pv {
+    grid-column: 1 / -1;
+    opacity: 0.85;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .utilities-kw-card {
@@ -1099,6 +1205,12 @@
     background: var(--theme-success-bg, #f3f7f5);
     color: color-mix(in srgb, var(--theme-success, #4f7f6f) 76%, var(--theme-text-primary, #1a1a1a));
     font-size: 0.85rem;
+}
+
+.utilities-hint--warn {
+    border-color: color-mix(in srgb, var(--theme-warning, #d97706) 42%, var(--theme-border, #e2e5ea));
+    background: color-mix(in srgb, var(--theme-warning, #d97706) 12%, var(--theme-surface, #fff));
+    color: color-mix(in srgb, var(--theme-warning, #d97706) 78%, var(--theme-text-primary, #1a1a1a));
 }
 
 .utilities-actions {

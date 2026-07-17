@@ -12,6 +12,7 @@ const DefaultTargetListCacheTTL = 2 * time.Minute
 
 // TargetListCache is a small per-channel TTL cache of TargetRef slices.
 // Safe for concurrent use. Used by GUI/TUI catalog list implementations.
+// Channel keys are canonical (DefaultDeliveryChannel) so "蓝信" and "lansenger" share a slot.
 type TargetListCache struct {
 	mu      sync.Mutex
 	ttl     time.Duration
@@ -39,10 +40,7 @@ func (c *TargetListCache) Get(channel string) ([]TargetRef, bool) {
 	if c == nil {
 		return nil, false
 	}
-	ch := strings.TrimSpace(strings.ToLower(channel))
-	if ch == "" {
-		ch = DeliveryChannelLansenger
-	}
+	ch := DefaultDeliveryChannel(channel)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ent, ok := c.entries[ch]
@@ -57,10 +55,7 @@ func (c *TargetListCache) Put(channel string, refs []TargetRef) {
 	if c == nil {
 		return
 	}
-	ch := strings.TrimSpace(strings.ToLower(channel))
-	if ch == "" {
-		ch = DeliveryChannelLansenger
-	}
+	ch := DefaultDeliveryChannel(channel)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
@@ -72,7 +67,8 @@ func (c *TargetListCache) Put(channel string, refs []TargetRef) {
 	}
 }
 
-// Invalidate drops one channel (empty = all).
+// Invalidate drops one channel. Empty channel invalidates all entries
+// (cannot mean "default channel" — use an explicit name to drop lansenger only).
 func (c *TargetListCache) Invalidate(channel string) {
 	if c == nil {
 		return
@@ -82,12 +78,11 @@ func (c *TargetListCache) Invalidate(channel string) {
 	if c.entries == nil {
 		return
 	}
-	ch := strings.TrimSpace(strings.ToLower(channel))
-	if ch == "" {
+	if strings.TrimSpace(channel) == "" {
 		c.entries = make(map[string]targetListCacheEntry)
 		return
 	}
-	delete(c.entries, ch)
+	delete(c.entries, DefaultDeliveryChannel(channel))
 }
 
 // GetOrLoad returns cached refs or calls load, then caches the full unfiltered list.

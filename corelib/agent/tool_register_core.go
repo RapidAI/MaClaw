@@ -504,7 +504,8 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
 			"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self）。" +
 			"create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。" +
-			"day_of_week: -1=每天, 0=周日…6=周六。一次性任务将 start_date 与 end_date 都设为目标日期。",
+			"day_of_week: -1=每天, 0=周日…6=周六。一次性任务将 start_date 与 end_date 都设为目标日期。" +
+			"即时发消息请用 im_message，不要用定时任务绕路。",
 		Properties: map[string]interface{}{
 			"action":           map[string]string{"type": "string", "description": "create/list/delete/update/list_targets"},
 			"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
@@ -527,6 +528,27 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		},
 		Required: []string{"action"},
 		Handler:  extraHandler(deps, "manage_schedule", "定时任务管理器未初始化。"),
+	})
+
+	r.Register(ToolEntry{
+		Name: "im_message",
+		Description: "即时向 IM 发文本（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send（可省略：有 text 则 send）。" +
+			"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。" +
+			"list_targets 的 channel：lansenger|weixin|telegram|qq；send 需 text + group_name/group_id/user_id。",
+		Properties: map[string]interface{}{
+			"action":           map[string]string{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
+			"text":             map[string]string{"type": "string", "description": "send 时消息正文"},
+			"message":          map[string]string{"type": "string", "description": "text 别名"},
+			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
+			"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
+			"group_name":       map[string]string{"type": "string", "description": "send：群名（自动解析）"},
+			"group_id":         map[string]string{"type": "string", "description": "send：群 ID"},
+			"user_id":          map[string]string{"type": "string", "description": "send：私聊 ID 或 self"},
+			"mention_user_ids": map[string]string{"type": "string", "description": "群 @ 用户 ID，逗号分隔"},
+			"mention_all":      map[string]string{"type": "boolean", "description": "是否 @所有人"},
+			"delivery":         map[string]string{"type": "object", "description": "可选完整投递配置"},
+		},
+		Handler: extraHandler(deps, "im_message", "IM 消息工具未初始化。"),
 	})
 
 	// --- Knowledge tools (host-injected via ExtraHandlers) ---

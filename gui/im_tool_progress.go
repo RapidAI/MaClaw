@@ -118,6 +118,12 @@ func toolProgressActionKeyDetail(toolName string, args map[string]any) (actionKe
 	case "send_file", "send_to_im":
 		actionKey = i18n.MsgToolActionSendFile
 		detail = shortPathForProgress(firstStringArg(args, "path", "file", "file_path"))
+	case "im_message":
+		actionKey = i18n.MsgToolActionSendFile
+		detail = firstStringArg(args, "group_name", "group_id", "user_id", "query", "channel")
+		if detail == "" {
+			detail = firstStringArg(args, "text", "message")
+		}
 	case "run_skill", "manage_skill":
 		actionKey = i18n.MsgToolActionRunSkill
 		detail = firstStringArg(args, "name", "skill_name", "skill")

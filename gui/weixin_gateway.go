@@ -1002,6 +1002,33 @@ func truncateForLog(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
+// HasProactiveSession reports whether WeChat has at least one usable context
+// token for self-notify. "Connected" alone is not enough — the user must have
+// privately messaged the bot so a context_token exists.
+func (m *weixinGatewayManager) HasProactiveSession() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	m.mu.Unlock()
+	if gw == nil || !gw.IsRunning() {
+		return false
+	}
+	if last := strings.TrimSpace(gw.LastActiveUserID()); last != "" {
+		if tok := strings.TrimSpace(gw.GetContextToken(last)); tok != "" {
+			return true
+		}
+	}
+	for _, pair := range gw.ContextSessionsByRecency() {
+		uid, tok := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+		if uid != "" && tok != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // SendProactiveText delivers a plain text push to the owner's active local WeChat
 // session (last-active first). Used by 盯人 forward and similar self-notify paths.
 func (m *weixinGatewayManager) SendProactiveText(text string) error {

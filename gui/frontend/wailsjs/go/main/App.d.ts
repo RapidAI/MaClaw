@@ -1036,6 +1036,10 @@ export function GetLansengerWatchStorePath():Promise<string>;
 
 export function ListLansengerWatchChannels():Promise<string>;
 
+export function ListLansengerWatchForwardResults():Promise<string>;
+
+export function TestLansengerWatchForward(arg1:string):Promise<void>;
+
 export function GetThirdPartyGatewayStatus():Promise<string>;
 
 export function RestartThirdPartyGateway():Promise<string>;

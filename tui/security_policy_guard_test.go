@@ -17,6 +17,12 @@ func TestEnforceClientSecurityPolicyBlocksHubDisabledOutbound(t *testing.T) {
 	if ok, reason := enforceClientSecurityPolicy(cfg, "send_to_im", map[string]interface{}{"path": "report.pdf"}); ok || !strings.Contains(reason, "file outbound") {
 		t.Fatalf("send_to_im allowed=%v reason=%q, want file outbound rejection", ok, reason)
 	}
+	if ok, reason := enforceClientSecurityPolicy(cfg, "im_message", map[string]interface{}{"action": "send", "text": "hi", "group_name": "g"}); ok || !strings.Contains(reason, "outbound") {
+		t.Fatalf("im_message send allowed=%v reason=%q, want outbound rejection", ok, reason)
+	}
+	if ok, reason := enforceClientSecurityPolicy(cfg, "im_message", map[string]interface{}{"action": "list_targets"}); !ok {
+		t.Fatalf("im_message list_targets blocked reason=%q, want allow", reason)
+	}
 	if ok, reason := enforceClientSecurityPolicy(cfg, "screenshot", nil); ok || !strings.Contains(reason, "image outbound") {
 		t.Fatalf("screenshot allowed=%v reason=%q, want image outbound rejection", ok, reason)
 	}

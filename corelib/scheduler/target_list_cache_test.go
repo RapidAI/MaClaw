@@ -46,3 +46,30 @@ func TestTargetListCacheGetOrLoad(t *testing.T) {
 		t.Fatal("expected load error")
 	}
 }
+
+func TestTargetListCacheAliasesShareSlot(t *testing.T) {
+	t.Parallel()
+	c := NewTargetListCache(time.Minute)
+	loads := 0
+	load := func() ([]TargetRef, error) {
+		loads++
+		return []TargetRef{{Kind: DeliveryKindGroup, ID: "g1"}}, nil
+	}
+	if _, err := c.GetOrLoad("lansenger", load); err != nil {
+		t.Fatal(err)
+	}
+	// Chinese alias must hit the same cache entry (not re-load).
+	if _, err := c.GetOrLoad("蓝信", load); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 {
+		t.Fatalf("alias should share cache slot, loads=%d", loads)
+	}
+	c.Invalidate("蓝信")
+	if _, err := c.GetOrLoad("lansenger", load); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 2 {
+		t.Fatalf("invalidate via alias should clear slot, loads=%d", loads)
+	}
+}

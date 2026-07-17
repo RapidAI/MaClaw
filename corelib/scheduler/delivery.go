@@ -118,10 +118,8 @@ func (d *TaskDelivery) Normalize() {
 	if d == nil {
 		return
 	}
-	d.Channel = strings.TrimSpace(strings.ToLower(d.Channel))
-	if d.Channel == "" {
-		d.Channel = DeliveryChannelLansenger
-	}
+	// Canonicalize aliases (蓝信/微信/wechat/…) before empty-default.
+	d.Channel = DefaultDeliveryChannel(d.Channel)
 	on := strings.TrimSpace(strings.ToLower(d.On))
 	switch on {
 	case DeliveryOnAlways, DeliveryOnError, DeliveryOnSuccess:
@@ -211,7 +209,7 @@ func (d *TaskDelivery) EnsureResolved() error {
 			if name == "" {
 				name = "(unknown)"
 			}
-			return fmt.Errorf("scheduler: delivery targets[%d]: group %q has no group_id — resolve group name first (manage_schedule action=list_targets)", i, name)
+			return fmt.Errorf("scheduler: delivery targets[%d]: group %q has no group_id — resolve group name first (im_message/manage_schedule action=list_targets)", i, name)
 		}
 	}
 	return nil
@@ -230,8 +228,13 @@ func (d *TaskDelivery) NeedsGroupNameResolution() bool {
 	return false
 }
 
-// maxDeliveryBodyRunes caps outbound IM text (most bots chunk or reject very long posts).
-const maxDeliveryBodyRunes = 3500
+// MaxDeliveryBodyRunes caps outbound IM text (most bots chunk or reject very long posts).
+const MaxDeliveryBodyRunes = 3500
+
+// TruncateDeliveryBody trims and caps text for proactive / scheduled IM delivery.
+func TruncateDeliveryBody(s string) string {
+	return TruncateStr(strings.TrimSpace(s), MaxDeliveryBodyRunes)
+}
 
 // ShouldDeliver decides whether to push based on run outcome.
 // Read-only: does not mutate d (avoids touching persisted config via shared pointers).
@@ -324,7 +327,7 @@ func (d *TaskDelivery) FormatBody(taskName, resultText string, runErr error) str
 		}
 		b.WriteString(body)
 	}
-	return TruncateStr(strings.TrimSpace(b.String()), maxDeliveryBodyRunes)
+	return TruncateDeliveryBody(b.String())
 }
 
 // ParseDeliveryFromAny converts JSON-decoded values (map / []byte / string / TaskDelivery) into TaskDelivery.

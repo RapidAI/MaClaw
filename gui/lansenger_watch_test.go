@@ -3,6 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -264,5 +269,463 @@ func TestDeliverToOwnerChannelUnknown(t *testing.T) {
 	// Empty text
 	if err := svc.deliverToOwnerChannel(lansengerwatch.ChannelHub, "  "); err == nil {
 		t.Fatal("expected empty text error")
+	}
+}
+
+// watchRosterServerOpts tunes the fake group-member directory.
+type watchRosterServerOpts struct {
+	total           int  // directory entries
+	serverPageSize  int  // effective page cap regardless of requested page_size
+	failAfterOffset int  // -1 = never fail; requests with offset >= this get errCode 500
+	botsFirst       int  // first N directory entries are bots (fromType=1)
+	reportTotal     bool // include totalMembers in responses (omitted otherwise)
+	replay          bool // ignore page_offset and always return the first page
+	emptyEvery      int  // every Nth directory entry (1-based) has an empty staffId; 0 = none
+}
+
+// watchRosterTestServer stubs the app-token and group-member directory
+// endpoints. The members handler caps the effective page size at serverPageSize
+// regardless of the requested page_size, mimicking deployments that ignore or
+// clamp pagination params.
+func watchRosterTestServer(t *testing.T, opts watchRosterServerOpts) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/apptoken/create", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data":    map[string]any{"appToken": "tok", "expiresIn": 3600},
+		})
+	})
+	mux.HandleFunc("/v2/groups/g/members/fetch", func(w http.ResponseWriter, r *http.Request) {
+		offset, _ := strconv.Atoi(r.URL.Query().Get("page_offset"))
+		if opts.failAfterOffset >= 0 && offset >= opts.failAfterOffset {
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 500, "errMsg": "boom"})
+			return
+		}
+		if opts.replay {
+			offset = 0
+		}
+		end := offset + opts.serverPageSize
+		if end > opts.total {
+			end = opts.total
+		}
+		members := []map[string]any{}
+		for i := offset; i < end; i++ {
+			fromType := 0
+			if i < opts.botsFirst {
+				fromType = 1
+			}
+			staffID := fmt.Sprintf("u-%d", i)
+			if opts.emptyEvery > 0 && (i+1)%opts.emptyEvery == 0 {
+				staffID = ""
+			}
+			members = append(members, map[string]any{
+				"staffId":  staffID,
+				"name":     fmt.Sprintf("Member %d", i),
+				"fromType": fromType,
+				"status":   1,
+			})
+		}
+		data := map[string]any{"members": members}
+		if opts.reportTotal {
+			data["totalMembers"] = opts.total
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data":    data,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func watchRosterTestApp(t *testing.T, srv *httptest.Server) *App {
+	t.Helper()
+	app := &App{testHomeDir: t.TempDir()}
+	app.lansengerGateway = &lansengerGatewayManager{
+		gateway: lansenger.NewGateway(lansenger.Config{AppID: "app", AppSecret: "sec", ApiGatewayURL: srv.URL}, nil),
+	}
+	return app
+}
+
+func TestListWatchRosterLoadsAllMembersWhenServerCapsPageSize(t *testing.T) {
+	// 230 members, server answers at most 50 per page even though the client
+	// asks for 100. A short page must not be treated as end-of-directory.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: -1})
+	app := watchRosterTestApp(t, srv)
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DirectoryAvailable {
+		t.Fatalf("directory must be available: %s", raw)
+	}
+	if payload.DirectoryTruncated {
+		t.Fatalf("230 members fit under the cap; must not be truncated: %s", raw)
+	}
+	if len(payload.Members) != 230 {
+		t.Fatalf("members=%d, want all 230 despite server-capped pages", len(payload.Members))
+	}
+}
+
+func TestListWatchRosterKeepsPartialDirectoryOnMidPaginationError(t *testing.T) {
+	// First page succeeds (50 members, no reported total), the next offset
+	// fails. The partial directory must be kept and flagged, not replaced by
+	// only locally learned members.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: 50})
+	app := watchRosterTestApp(t, srv)
+	svc := app.watchService()
+	if err := svc.store.NoteMember("g", "", "local-1", "本地成员", "manual"); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Note               string                  `json:"note"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DirectoryAvailable || !payload.DirectoryTruncated {
+		t.Fatalf("partial directory must stay available but truncated: %s", raw)
+	}
+	// 50 directory members + 1 locally learned member.
+	if len(payload.Members) != 51 {
+		t.Fatalf("members=%d, want 51 (50 partial directory + 1 local): %s", len(payload.Members), raw)
+	}
+	if !strings.Contains(payload.Note, "不完整") {
+		t.Fatalf("note must warn about the interrupted directory: %q", payload.Note)
+	}
+}
+
+func TestListWatchRosterLocalOverlapDoesNotStopPagination(t *testing.T) {
+	// The local roster already knows exactly the first server page. The replay
+	// guard must not mistake that overlap for an offset-ignoring server and
+	// stop before the later pages.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: -1})
+	app := watchRosterTestApp(t, srv)
+	svc := app.watchService()
+	for i := 0; i < 50; i++ {
+		if err := svc.store.NoteMember("g", "", fmt.Sprintf("u-%d", i), fmt.Sprintf("Member %d", i), "message"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Members []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Members) != 230 {
+		t.Fatalf("members=%d, want all 230 even though page one was already known locally", len(payload.Members))
+	}
+}
+
+func TestListWatchRosterPartialDirectoryIsNotCached(t *testing.T) {
+	// An interrupted (partial) directory must not be cached: the refresh button
+	// is the user's retry path and has to re-hit the directory, not replay a
+	// stale partial for the cache TTL.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: 50})
+	app := watchRosterTestApp(t, srv)
+	svc := app.watchService()
+
+	assertPartial := func(raw string) {
+		t.Helper()
+		var payload struct {
+			DirectoryTruncated bool   `json:"directory_truncated"`
+			Note               string `json:"note"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.DirectoryTruncated || !strings.Contains(payload.Note, "不完整") {
+			t.Fatalf("interrupted directory must be flagged with a warning note: %s", raw)
+		}
+	}
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPartial(raw)
+	if _, ok := svc.cachedRoster("g"); ok {
+		t.Fatal("partial directory must not be cached; refresh is the retry path")
+	}
+	// No cache entry exists, so this second call must have re-fetched — and it
+	// still reports the interruption rather than a stale cached view.
+	raw2, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPartial(raw2)
+}
+
+func TestListWatchRosterAllBotPageDoesNotStopPagination(t *testing.T) {
+	// The first directory page contains only bots (ineligible as watch
+	// targets). The replay guard must not treat "no new eligible member" as an
+	// offset-ignoring server; the people on later pages must still load.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: -1, botsFirst: 50})
+	app := watchRosterTestApp(t, srv)
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Members []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	// 230 directory entries, of which the first 50 are bots.
+	if len(payload.Members) != 180 {
+		t.Fatalf("members=%d, want 180 people (230 entries - 50 bots)", len(payload.Members))
+	}
+}
+
+func TestListWatchRosterTruncatesAtMemberCap(t *testing.T) {
+	// 2500 directory entries exceed the picker cap: the fetch must stop at the
+	// cap, flag truncation, and say so in Chinese.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 2500, serverPageSize: 100, failAfterOffset: -1})
+	app := watchRosterTestApp(t, srv)
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Note               string                  `json:"note"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DirectoryAvailable || !payload.DirectoryTruncated {
+		t.Fatalf("cap-hit directory must stay available but truncated: %s", raw)
+	}
+	if len(payload.Members) != lansengerWatchMaxRosterMembers {
+		t.Fatalf("members=%d, want cap %d", len(payload.Members), lansengerWatchMaxRosterMembers)
+	}
+	if !strings.Contains(payload.Note, "2000") {
+		t.Fatalf("note must state the loaded cap: %q", payload.Note)
+	}
+}
+
+func TestListWatchRosterStopsAtReportedTotal(t *testing.T) {
+	// totalMembers reported: pagination must stop exactly at the reported
+	// coverage (no extra empty-page request needed) and stay untruncated.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 100, failAfterOffset: -1, reportTotal: true})
+	app := watchRosterTestApp(t, srv)
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DirectoryAvailable || payload.DirectoryTruncated {
+		t.Fatalf("complete directory with reported total: %s", raw)
+	}
+	if len(payload.Members) != 230 {
+		t.Fatalf("members=%d, want 230", len(payload.Members))
+	}
+}
+
+func TestListWatchRosterReportedTotalAboveCapTruncates(t *testing.T) {
+	// totalMembers=2500 exceeds the picker cap: stop at the cap and flag
+	// truncation via the TotalMembers > cap expression.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 2500, serverPageSize: 100, failAfterOffset: -1, reportTotal: true})
+	app := watchRosterTestApp(t, srv)
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Note               string                  `json:"note"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DirectoryTruncated || len(payload.Members) != lansengerWatchMaxRosterMembers {
+		t.Fatalf("cap-hit with reported total: truncated=%v members=%d", payload.DirectoryTruncated, len(payload.Members))
+	}
+	if !strings.Contains(payload.Note, "2000") {
+		t.Fatalf("note must state the loaded cap: %q", payload.Note)
+	}
+}
+
+func TestListWatchRosterFirstPageFailureFallsBackToLocal(t *testing.T) {
+	// Gateway exists but the very first directory request fails: fall back to
+	// locally learned members only, mark the directory unavailable, no cache.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: 0})
+	app := watchRosterTestApp(t, srv)
+	svc := app.watchService()
+	if err := svc.store.NoteMember("g", "", "local-1", "本地成员", "manual"); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		Note               string                  `json:"note"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.DirectoryAvailable {
+		t.Fatalf("first-page failure must mark directory unavailable: %s", raw)
+	}
+	if len(payload.Members) != 1 || payload.Members[0].StaffID != "local-1" {
+		t.Fatalf("must show only locally learned members: %+v", payload.Members)
+	}
+	if !strings.Contains(payload.Note, "本地已学习成员") {
+		t.Fatalf("note must explain the local fallback: %q", payload.Note)
+	}
+	if _, ok := svc.cachedRoster("g"); ok {
+		t.Fatal("failed directory fetch must not populate the roster cache")
+	}
+}
+
+func TestListWatchRosterReplayedPagesTreatedAsPartial(t *testing.T) {
+	// The server ignores page_offset and replays the first page. The replay
+	// guard must stop the loop AND treat the result as partial: flagged,
+	// warning note, and NOT cached as a "complete" roster.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 500, serverPageSize: 50, failAfterOffset: -1, replay: true})
+	app := watchRosterTestApp(t, srv)
+	svc := app.watchService()
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryAvailable bool                    `json:"directory_available"`
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Note               string                  `json:"note"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DirectoryAvailable || !payload.DirectoryTruncated {
+		t.Fatalf("replayed directory must stay available but truncated: %s", raw)
+	}
+	if len(payload.Members) != 50 {
+		t.Fatalf("members=%d, want the 50 from the first page", len(payload.Members))
+	}
+	if !strings.Contains(payload.Note, "不完整") {
+		t.Fatalf("note must warn about the incomplete directory: %q", payload.Note)
+	}
+	if _, ok := svc.cachedRoster("g"); ok {
+		t.Fatal("replayed (partial) directory must not be cached as complete")
+	}
+}
+
+func TestListWatchRosterStepsByRawCountWithEmptyStaffIDs(t *testing.T) {
+	// Every second entry has an empty staffId: PageCount (raw) exceeds
+	// len(page.Members). Stepping by the filtered length would drift the
+	// offset into overlapping pages and lose members; stepping by PageCount
+	// must keep the coordinates exact.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 230, serverPageSize: 50, failAfterOffset: -1, emptyEvery: 2})
+	app := watchRosterTestApp(t, srv)
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Members []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	// Entries 0..229; odd 1-based positions (i.e. even index i+1 divisible by
+	// 2) are empty: 115 usable members.
+	if len(payload.Members) != 115 {
+		t.Fatalf("members=%d, want 115 (offset must step by raw page count)", len(payload.Members))
+	}
+}
+
+func TestListWatchRosterLargeLocalRosterDoesNotMislabelTruncation(t *testing.T) {
+	// The member cap bounds the directory fetch, not the locally learned
+	// roster. With 1999 local members preloaded, a small directory must still
+	// load completely and must NOT be labeled "群成员较多" merely because the
+	// merged map crossed the cap.
+	srv := watchRosterTestServer(t, watchRosterServerOpts{total: 60, serverPageSize: 50, failAfterOffset: -1})
+	app := watchRosterTestApp(t, srv)
+	svc := app.watchService()
+
+	local := lansengerwatch.GroupRoster{GroupID: "g", Members: make([]lansengerwatch.Member, 0, 1999)}
+	for i := 0; i < 1999; i++ {
+		local.Members = append(local.Members, lansengerwatch.Member{
+			StaffID: fmt.Sprintf("local-%d", i), Name: fmt.Sprintf("本地%d", i), Source: "message",
+		})
+	}
+	data, err := json.Marshal(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rosterPath := filepath.Join(svc.store.Root(), "roster", "g.json")
+	if err := os.MkdirAll(filepath.Dir(rosterPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rosterPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := app.ListLansengerWatchRoster("g", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DirectoryTruncated bool                    `json:"directory_truncated"`
+		Note               string                  `json:"note"`
+		Members            []lansengerwatch.Member `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.DirectoryTruncated || strings.Contains(payload.Note, "群成员较多") {
+		t.Fatalf("small complete directory over a large local roster must not be mislabeled: %s", raw)
+	}
+	// 1999 local + 60 directory, and pagination must have run to completion.
+	if len(payload.Members) != 2059 {
+		t.Fatalf("members=%d, want 2059 (1999 local + 60 directory)", len(payload.Members))
 	}
 }

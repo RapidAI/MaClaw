@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -56,7 +55,7 @@ func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservic
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := scheduler.WithDeliveryTimeout(nil, scheduler.DefaultIMDeliveryTimeout)
 	defer cancel()
 
 	dataRoot := ""
@@ -64,8 +63,8 @@ func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservic
 		dataRoot = strings.TrimSpace(svc.DataRoot())
 	}
 
-	// Resolve sender once per fan-out (not per target).
-	send, err := newChannelSender(ctx, svc, principal, d.Channel)
+	// Per-target audit while reusing the shared send path.
+	send, err := newChannelSender(ctx, svc, principal, scheduler.DefaultDeliveryChannel(d.Channel))
 	if err != nil {
 		appendDeliveryAudit(dataRoot, DeliveryAuditEntry{
 			TaskID:   task.ID,
@@ -78,6 +77,7 @@ func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservic
 	}
 
 	store := srvDeliveryState(svc)
+	body = scheduler.TruncateDeliveryBody(body)
 	_, err = scheduler.FanOutDeliveryTargets(d.Targets, func(i int, target scheduler.DeliveryTarget) error {
 		peer, sendErr := send(ctx, target, body)
 		audit := DeliveryAuditEntry{
@@ -95,7 +95,6 @@ func deliverScheduledTaskResult(svc *agentservice.Service, principal agentservic
 			appendDeliveryAudit(dataRoot, audit)
 			return sendErr
 		}
-		// Prefer concrete peer returned by sender; fall back only for non-self ids.
 		if peer == "" {
 			if id := scheduler.PeerIDFromTarget(target); !scheduler.IsSelfPeerID(id) {
 				audit.Peer = id
@@ -131,10 +130,7 @@ func srvDeliveryState(svc *agentservice.Service) *scheduler.DeliveryStateStore {
 type channelSendFunc func(ctx context.Context, target scheduler.DeliveryTarget, text string) (peer string, err error)
 
 func newChannelSender(ctx context.Context, svc *agentservice.Service, principal agentservice.Principal, channel string) (channelSendFunc, error) {
-	channel = strings.TrimSpace(strings.ToLower(channel))
-	if channel == "" {
-		channel = scheduler.DeliveryChannelLansenger
-	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
 	store := srvDeliveryState(svc)
 	switch channel {
 	case scheduler.DeliveryChannelLansenger:

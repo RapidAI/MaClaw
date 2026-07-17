@@ -66,7 +66,7 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindWebFetch
 	case "web_search":
 		return agentToolKindWebSearch
-	case "send_file", "send_to_im":
+	case "send_file", "send_to_im", "im_message":
 		return agentToolKindSendFile
 	case "ssh":
 		return agentToolKindSSH

@@ -155,11 +155,8 @@ func (s *DeliveryStateStore) saveLocked(st DeliveryState) error {
 }
 
 func normalizeChannelKey(ch string) string {
-	ch = strings.TrimSpace(strings.ToLower(ch))
-	if ch == "" {
-		return DeliveryChannelLansenger
-	}
-	return ch
+	// Same canonical keys as delivery/send/catalog (蓝信 → lansenger).
+	return DefaultDeliveryChannel(ch)
 }
 
 // IsSelfPeerID reports whether id means "last known / owner session".

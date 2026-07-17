@@ -2026,6 +2026,14 @@ export function ListLansengerWatchChannels() {
   return window['go']['main']['App']['ListLansengerWatchChannels']();
 }
 
+export function ListLansengerWatchForwardResults() {
+  return window['go']['main']['App']['ListLansengerWatchForwardResults']();
+}
+
+export function TestLansengerWatchForward(arg1) {
+  return window['go']['main']['App']['TestLansengerWatchForward'](arg1);
+}
+
 export function GetLansengerIgnoredGroups() {
   return window['go']['main']['App']['GetLansengerIgnoredGroups']();
 }

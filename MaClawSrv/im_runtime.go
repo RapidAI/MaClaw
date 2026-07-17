@@ -349,6 +349,11 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 					if !decorated.Swap(true) {
 						reminder, refMsgID = lansenger.BuildReplyDecorations(msg, groupOpts)
 						if isGroup && !lansenger.PreferNativeGroupQuote(groupOpts, refMsgID) {
+							d := lansenger.DecideGroupReplySender(msg)
+							if d.Source != lansenger.GroupReplySenderSourceDisplayName {
+								log.Printf("[im-runtime/lansenger] text-quote fallback: group=%s from=%s rawName=%q label=%q source=%s reason=%s",
+									msg.GroupID, msg.FromUserID, msg.SenderName, d.Label, d.Source, d.Reason)
+							}
 							text = lansenger.MaybeFormatGroupReplyWithQuoteFromMessage(true, msg, quoteQuestion, text)
 						}
 					}

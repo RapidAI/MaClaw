@@ -571,6 +571,12 @@ func buildLansengerOutgoingTextEx(msg lansenger.IncomingMessage, text string, op
 		if question == "" {
 			question = msg.Text
 		}
+		decision := lansenger.DecideGroupReplySender(msg)
+		// Log only when quote falls back away from a display name (the common bug class).
+		if decision.Source != lansenger.GroupReplySenderSourceDisplayName {
+			log.Printf("[lansenger-mgr] text-quote fallback: from=%s rawName=%q label=%q source=%s reason=%s q_runes=%d",
+				msg.FromUserID, msg.SenderName, decision.Label, decision.Source, decision.Reason, len([]rune(question)))
+		}
 		text = lansenger.MaybeFormatGroupReplyWithQuoteFromMessage(true, msg, question, text)
 	}
 	return lansenger.OutgoingText{
@@ -708,10 +714,15 @@ func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool
 	now := time.Now()
 	// Cache only a distinct display name (never staffId-as-name). Hub reply
 	// reconstruction feeds this back into GroupReplySenderLabel.
-	cleanName := lansenger.GroupReplyDisplayName(lansenger.IncomingMessage{
+	decision := lansenger.DecideGroupReplySender(lansenger.IncomingMessage{
 		FromUserID: senderID,
 		SenderName: senderName,
 	})
+	cleanName := decision.CleanName
+	if isGroup && decision.Source != lansenger.GroupReplySenderSourceDisplayName {
+		log.Printf("[lansenger-mgr] rememberReplyRoute no-display-name target=%s senderID=%s rawName=%q source=%s reason=%s corr=%s",
+			target, strings.TrimSpace(senderID), senderName, decision.Source, decision.Reason, corrID)
+	}
 	decor := lansengerReplyDecor{
 		senderID:      strings.TrimSpace(senderID),
 		senderName:    cleanName,
@@ -1253,6 +1264,13 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 					inbound.FromUserID = strings.TrimSpace(reply.PlatformUID)
 				}
 			}
+			if isGroup {
+				d := lansenger.DecideGroupReplySender(inbound)
+				if d.Source != lansenger.GroupReplySenderSourceDisplayName {
+					log.Printf("[lansenger-mgr] hub reply decor fallback: target=%s sourceMsg=%s senderID=%s cachedName=%q label=%q source=%s reason=%s",
+						reply.PlatformUID, reply.SourceMessageID, inbound.FromUserID, decor.senderName, d.Label, d.Source, d.Reason)
+				}
+			}
 			out = buildLansengerOutgoingText(inbound, text, opts)
 			out.ToUserID = reply.PlatformUID
 			out.IsGroup = isGroup
@@ -1357,6 +1375,12 @@ func (m *lansengerGatewayManager) LastPrivatePeerID() string {
 		}
 	}
 	return to
+}
+
+// HasProactiveSession reports whether a private peer is known for self-notify
+// (盯人 forward / scheduled delivery). Gateway "connected" alone is not enough.
+func (m *lansengerGatewayManager) HasProactiveSession() bool {
+	return strings.TrimSpace(m.LastPrivatePeerID()) != ""
 }
 
 // SendProactiveText pushes text to the owner's last Lansenger private session.

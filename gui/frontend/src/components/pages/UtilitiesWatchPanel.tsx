@@ -24,8 +24,20 @@ type IMChannel = {
     id: string;
     label: string;
     online: boolean;
+    /** Can proactive-push now (private chat / hub session known). */
+    session_ready?: boolean;
     detail?: string;
     enabled?: boolean;
+};
+
+type ForwardResult = {
+    at?: string;
+    job_id?: string;
+    reason?: string;
+    channel: string;
+    ok: boolean;
+    error?: string;
+    preview?: string;
 };
 
 type KeywordRule = {
@@ -51,7 +63,9 @@ type Member = {
 type GroupRow = { group_id: string; name: string; total_members?: number };
 type RosterPayload = { members?: Member[]; directory_available?: boolean; directory_truncated?: boolean; note?: string };
 
-const ROSTER_RENDER_LIMIT = 200;
+// The member list is a fixed-height scroll container and each card uses
+// content-visibility, so rendering up to this many entries stays cheap.
+const ROSTER_RENDER_LIMIT = 1000;
 
 /** Deduplicate dynamic import; on failure clear cache so the next call can retry. */
 let appModulePromise: Promise<any | null> | null = null;
@@ -129,8 +143,8 @@ export function UtilitiesWatchPanel({
                       kwScopeTargets: '仅盯人对象',
                       kwScopeAnyone: '群内任何人',
                       forwardSpeech: '盯人对象发言时转发到我的 IM 通道',
-                      forwardChannels: '转发到我的通道（勾选在线通道）',
-                      forwardKw: '关键字命中时也转发到上述通道',
+                      forwardChannels: '转发到我的通道（勾选可推送通道）',
+                      forwardKw: '关键字命中时转发（开启「发言转发」时默认也会转）',
                       keywords: '关键字规则',
                       addKw: '添加规则',
                       rule: '规则',
@@ -145,11 +159,20 @@ export function UtilitiesWatchPanel({
                       refreshLogs: '刷新日志',
                       openLog: '查看',
                       store: '数据目录',
-                      note: '说明：转发是推到「你自己」绑定的 IM 通道（微信/蓝信/Hub 等），不是转给其他人。需该通道在线且你曾与机器人有过私聊会话。',
+                      note: '说明：转发推到「你自己」与机器人的私聊，不是转给其他人。通道显示「在线」不够，必须曾私聊过机器人（显示「可推送」）。蓝信群消息通常需 @机器人 才会推到本机；测试可点通道旁「测」。',
                       empty: '暂无盯人任务',
                       saveOk: '已保存',
                       pickGroup: '请选择群',
                       pickTarget: '请至少选择一个盯人对象（关键字选「任何人」时可暂不选，但建议仍配置盯人列表）',
+                      sessionWarn: '已选通道尚不可推送：请先用该通道私聊机器人一次，或点「测」验证。',
+                      forwardLog: '最近转发结果',
+                      refreshForward: '刷新结果',
+                      testSend: '测',
+                      testOk: '测试已发送，请查看该通道私聊',
+                      chipReady: '·可推送',
+                      chipNeedChat: '·需私聊',
+                      chipOnline: '·在线',
+                      chipOff: '·未启用',
                   }
                 : {
                       title: 'People watch',
@@ -175,8 +198,8 @@ export function UtilitiesWatchPanel({
                       kwScopeTargets: 'Watched people only',
                       kwScopeAnyone: 'Anyone in the group',
                       forwardSpeech: 'Forward watched speech to my IM channels',
-                      forwardChannels: 'Forward to my channels (online only preferred)',
-                      forwardKw: 'Also forward on keyword hit',
+                      forwardChannels: 'Forward to my channels (prefer ready)',
+                      forwardKw: 'Forward on keyword (also when speech-forward is on)',
                       keywords: 'Keyword rules',
                       addKw: 'Add rule',
                       rule: 'Rule',
@@ -191,11 +214,20 @@ export function UtilitiesWatchPanel({
                       refreshLogs: 'Refresh logs',
                       openLog: 'View',
                       store: 'Data directory',
-                      note: 'Forward pushes packaged speech to your own online IM channels (WeChat/Lansenger/Hub), not other people.',
+                      note: 'Forward goes to your own private bot session, not other people. Online is not enough — private-chat the bot first (look for “ready”). Lansenger groups often only push @bot messages. Use Test on a channel to verify.',
                       empty: 'No people-watch jobs yet',
                       saveOk: 'Saved',
                       pickGroup: 'Select a group',
                       pickTarget: 'Select at least one target (optional if keyword scope is anyone)',
+                      sessionWarn: 'Selected channels are not push-ready: private-chat the bot on that channel first, or use Test.',
+                      forwardLog: 'Recent forwards',
+                      refreshForward: 'Refresh',
+                      testSend: 'Test',
+                      testOk: 'Test sent — check that channel’s private chat',
+                      chipReady: '·ready',
+                      chipNeedChat: '·need chat',
+                      chipOnline: '·on',
+                      chipOff: '·off',
                   },
         [isZh],
     );
@@ -219,6 +251,7 @@ export function UtilitiesWatchPanel({
     const [hint, setHint] = useState('');
     const [busy, setBusy] = useState(false);
     const [channels, setChannels] = useState<IMChannel[]>([]);
+    const [forwardResults, setForwardResults] = useState<ForwardResult[]>([]);
     const aliveRef = useRef(true);
     const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const membersGenRef = useRef(0);
@@ -278,11 +311,62 @@ export function UtilitiesWatchPanel({
                     /* ignore bad channel payload */
                 }
             }
+            if (app.ListLansengerWatchForwardResults) {
+                try {
+                    const fr = await app.ListLansengerWatchForwardResults();
+                    if (!aliveRef.current) return;
+                    setForwardResults(parseWailsJSON<ForwardResult[]>(fr) || []);
+                } catch {
+                    /* optional diagnostic API */
+                }
+            }
         } catch (e: any) {
             if (!aliveRef.current) return;
             setError(e?.message || String(e));
         }
     }, [apiMissingMsg]);
+
+    const refreshChannels = useCallback(async () => {
+        const app = await getApp();
+        if (!aliveRef.current || !app?.ListLansengerWatchChannels) return;
+        try {
+            const raw = await app.ListLansengerWatchChannels();
+            if (!aliveRef.current) return;
+            setChannels(parseWailsJSON<IMChannel[]>(raw) || []);
+            if (app.ListLansengerWatchForwardResults) {
+                const fr = await app.ListLansengerWatchForwardResults();
+                if (!aliveRef.current) return;
+                setForwardResults(parseWailsJSON<ForwardResult[]>(fr) || []);
+            }
+        } catch {
+            /* ignore */
+        }
+    }, []);
+
+    const testForwardChannel = useCallback(
+        async (channelId: string) => {
+            const app = await getApp();
+            if (!app?.TestLansengerWatchForward) {
+                setError(apiMissingMsg);
+                return;
+            }
+            setBusy(true);
+            setError('');
+            try {
+                await app.TestLansengerWatchForward(channelId);
+                if (!aliveRef.current) return;
+                flashHint(t.testOk);
+                await refreshChannels();
+            } catch (e: any) {
+                if (!aliveRef.current) return;
+                setError(e?.message || String(e));
+                await refreshChannels();
+            } finally {
+                if (aliveRef.current) setBusy(false);
+            }
+        },
+        [apiMissingMsg, flashHint, refreshChannels, t.testOk],
+    );
 
     const loadGroups = useCallback(async () => {
         const app = await getApp();
@@ -718,28 +802,85 @@ export function UtilitiesWatchPanel({
                                       ]
                                 ).map((ch) => {
                                     const on = (draft.forward_channels || []).includes(ch.id);
+                                    // Missing session_ready (older builds) → treat as not ready when online.
+                                    const ready = ch.session_ready === true;
+                                    const chipSuffix = ready
+                                        ? t.chipReady
+                                        : ch.online
+                                          ? t.chipNeedChat
+                                          : ch.enabled === false
+                                            ? t.chipOff
+                                            : '';
                                     return (
-                                        <button
-                                            key={ch.id}
-                                            type="button"
-                                            className={`utilities-chip${on ? ' is-on' : ''}`}
-                                            aria-pressed={on}
-                                            title={ch.detail || ''}
-                                            onClick={() => {
-                                                const set = new Set(draft.forward_channels || []);
-                                                if (set.has(ch.id)) set.delete(ch.id);
-                                                else set.add(ch.id);
-                                                setDraft({ ...draft, forward_channels: Array.from(set) });
-                                            }}
-                                        >
-                                            {on ? '✓ ' : ''}
-                                            {ch.label}
-                                            {ch.online ? (isZh ? ' ·在线' : ' ·on') : ch.enabled === false ? (isZh ? ' ·未启用' : ' ·off') : ''}
-                                        </button>
+                                        <span key={ch.id} className="utilities-chip-wrap">
+                                            <button
+                                                type="button"
+                                                className={`utilities-chip${on ? ' is-on' : ''}${on && !ready ? ' is-warn' : ''}`}
+                                                aria-pressed={on}
+                                                title={ch.detail || ''}
+                                                onClick={() => {
+                                                    const set = new Set(draft.forward_channels || []);
+                                                    if (set.has(ch.id)) set.delete(ch.id);
+                                                    else set.add(ch.id);
+                                                    setDraft({ ...draft, forward_channels: Array.from(set) });
+                                                }}
+                                            >
+                                                {on ? '✓ ' : ''}
+                                                {ch.label}
+                                                {chipSuffix}
+                                            </button>
+                                            {ch.online || ch.enabled !== false ? (
+                                                <button
+                                                    type="button"
+                                                    className="utilities-chip-test"
+                                                    disabled={busy}
+                                                    title={ch.detail || t.testSend}
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        void testForwardChannel(ch.id);
+                                                    }}
+                                                >
+                                                    {t.testSend}
+                                                </button>
+                                            ) : null}
+                                        </span>
                                     );
                                 })}
                             </div>
                         </div>
+                            {(() => {
+                                const wantsForward =
+                                    !!draft.forward_on_target_speech ||
+                                    (draft.keywords || []).some((k) => k.forward_on_match);
+                                const selectedNotReady = (draft.forward_channels || []).some((id) => {
+                                    const ch = channels.find((c) => c.id === id);
+                                    return !!ch && !!ch.online && ch.session_ready !== true;
+                                });
+                                return wantsForward && selectedNotReady ? (
+                                    <p className="utilities-hint utilities-hint--warn" role="status">
+                                        {t.sessionWarn}
+                                    </p>
+                                ) : null;
+                            })()}
+                            {forwardResults.length > 0 ? (
+                                <div className="watch-forward-log">
+                                    <div className="watch-forward-log__head">
+                                        <strong>{t.forwardLog}</strong>
+                                        <button type="button" className="utilities-link" onClick={() => void refreshChannels()}>
+                                            {t.refreshForward}
+                                        </button>
+                                    </div>
+                                    <ul className="watch-forward-log__list">
+                                        {forwardResults.slice(0, 8).map((r, i) => (
+                                            <li key={`${r.at || ''}-${r.channel}-${i}`} className={r.ok ? 'is-ok' : 'is-err'}>
+                                                <span className="watch-forward-log__ch">{r.channel}</span>
+                                                <span className="watch-forward-log__st">{r.ok ? 'OK' : r.error || 'ERR'}</span>
+                                                {r.preview ? <span className="watch-forward-log__pv">{r.preview}</span> : null}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ) : null}
                             </div>
                         </div>
 
@@ -764,7 +905,8 @@ export function UtilitiesWatchPanel({
                                                     cli_command: '',
                                                     cli_timeout_sec: 15,
                                                     reply_with_cli_stdout: true,
-                                                    forward_on_match: false,
+                                                    // Default on when speech-forward is enabled so keyword hits also notify owner channels.
+                                                    forward_on_match: !!draft.forward_on_target_speech,
                                                 },
                                             ],
                                         })

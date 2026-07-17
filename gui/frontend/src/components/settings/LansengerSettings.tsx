@@ -352,8 +352,8 @@ export const LansengerSettings = ({
             </div>
 
             {(config as any)?.lansenger_enabled && (
-                <div className="im-settings-grid im-settings-grid--two" style={{ marginTop: 12 }}>
-                    <label className="im-settings-field">
+                <div className="im-settings-lansenger-group">
+                    <label className="im-settings-field im-settings-lansenger-group__policy">
                         <span>{textForLang(lang, 'Group policy', '\u7fa4\u804a\u7b56\u7565', '\u7fa4\u804a\u7b56\u7565')}</span>
                         <select
                             value={(config as any)?.lansenger_group_policy || 'open'}
@@ -375,46 +375,49 @@ export const LansengerSettings = ({
                             </span>
                         ) : null}
                     </label>
-                    <label className="im-settings-toggle" style={{ alignSelf: 'end' }}>
-                        <input
-                            type="checkbox"
-                            checked={(config as any)?.lansenger_require_mention !== false}
-                            onChange={(e) => saveRemoteConfigField({ lansenger_require_mention: e.target.checked } as any)}
-                        />
-                        <span title={textForLang(lang, 'Only respond when @mentioned in groups', '\u7fa4\u804a\u4ec5\u5728 @\u673a\u5668\u4eba \u65f6\u56de\u590d', '\u7fa4\u804a\u50c5\u5728 @\u6a5f\u5668\u4eba \u6642\u56de\u8986')}>
-                            {textForLang(lang, 'Require @mention', '\u9700\u8981 @\u63d0\u53ca', '\u9700\u8981 @\u63d0\u53ca')}
-                        </span>
-                    </label>
-                    <label className="im-settings-toggle">
-                        <input
-                            type="checkbox"
-                            checked={!!(config as any)?.lansenger_respond_to_at_all}
-                            onChange={(e) => saveRemoteConfigField({ lansenger_respond_to_at_all: e.target.checked } as any)}
-                        />
-                        <span title={textForLang(lang, 'Also respond to @all when require-mention is on', '\u9700\u8981@\u65f6\u4e5f\u54cd\u5e94 @\u6240\u6709\u4eba', '\u9700\u8981@\u6642\u4e5f\u97ff\u61c9 @\u6240\u6709\u4eba')}>
-                            {textForLang(lang, 'Respond to @all', '\u54cd\u5e94 @\u6240\u6709\u4eba', '\u97ff\u61c9 @\u6240\u6709\u4eba')}
-                        </span>
-                    </label>
-                    <label className="im-settings-toggle">
-                        <input
-                            type="checkbox"
-                            checked={!!(config as any)?.lansenger_auto_mention_reply}
-                            onChange={(e) => saveRemoteConfigField({ lansenger_auto_mention_reply: e.target.checked } as any)}
-                        />
-                        <span title={textForLang(lang, 'Auto @ the asker in replies (native reminder API)', '\u56de\u590d\u65f6\u81ea\u52a8 @\u53d1\u9001\u8005\uff08\u539f\u751f reminder\uff09', '\u56de\u8986\u6642\u81ea\u52d5 @\u767c\u9001\u8005')}>
-                            {textForLang(lang, 'Auto @ reply', '\u56de\u590d\u81ea\u52a8 @', '\u56de\u8986\u81ea\u52d5 @')}
-                        </span>
-                    </label>
-                    <label className="im-settings-toggle">
-                        <input
-                            type="checkbox"
-                            checked={!!(config as any)?.lansenger_auto_quote_reply}
-                            onChange={(e) => saveRemoteConfigField({ lansenger_auto_quote_reply: e.target.checked } as any)}
-                        />
-                        <span title={textForLang(lang, 'Native quote via refMsgId (preferred over text quote)', '\u4f7f\u7528\u539f\u751f\u5f15\u7528\u56de\u590d\uff08refMsgId\uff09', '\u4f7f\u7528\u539f\u751f\u5f15\u7528\u56de\u8986\uff08refMsgId\uff09')}>
-                            {textForLang(lang, 'Auto quote reply', '\u81ea\u52a8\u5f15\u7528\u56de\u590d', '\u81ea\u52d5\u5f15\u7528\u56de\u8986')}
-                        </span>
-                    </label>
+                    {/* Keep toggles in one flex row so auto-fit 3-col grids cannot push "Respond to @all" alone into a third column. */}
+                    <div className="im-settings-toggle-row" role="group" aria-label={textForLang(lang, 'Group reply options', '\u7fa4\u56de\u590d\u9009\u9879', '\u7fa4\u56de\u8986\u9078\u9805')}>
+                        <label className="im-settings-toggle">
+                            <input
+                                type="checkbox"
+                                checked={(config as any)?.lansenger_require_mention !== false}
+                                onChange={(e) => saveRemoteConfigField({ lansenger_require_mention: e.target.checked } as any)}
+                            />
+                            <span title={textForLang(lang, 'Only respond when @mentioned in groups', '\u7fa4\u804a\u4ec5\u5728 @\u673a\u5668\u4eba \u65f6\u56de\u590d', '\u7fa4\u804a\u50c5\u5728 @\u6a5f\u5668\u4eba \u6642\u56de\u8986')}>
+                                {textForLang(lang, 'Require @mention', '\u9700\u8981 @\u63d0\u53ca', '\u9700\u8981 @\u63d0\u53ca')}
+                            </span>
+                        </label>
+                        <label className="im-settings-toggle">
+                            <input
+                                type="checkbox"
+                                checked={!!(config as any)?.lansenger_respond_to_at_all}
+                                onChange={(e) => saveRemoteConfigField({ lansenger_respond_to_at_all: e.target.checked } as any)}
+                            />
+                            <span title={textForLang(lang, 'Also respond to @all when require-mention is on', '\u9700\u8981@\u65f6\u4e5f\u54cd\u5e94 @\u6240\u6709\u4eba', '\u9700\u8981@\u6642\u4e5f\u97ff\u61c9 @\u6240\u6709\u4eba')}>
+                                {textForLang(lang, 'Respond to @all', '\u54cd\u5e94 @\u6240\u6709\u4eba', '\u97ff\u61c9 @\u6240\u6709\u4eba')}
+                            </span>
+                        </label>
+                        <label className="im-settings-toggle">
+                            <input
+                                type="checkbox"
+                                checked={!!(config as any)?.lansenger_auto_mention_reply}
+                                onChange={(e) => saveRemoteConfigField({ lansenger_auto_mention_reply: e.target.checked } as any)}
+                            />
+                            <span title={textForLang(lang, 'Auto @ the asker in replies (native reminder API)', '\u56de\u590d\u65f6\u81ea\u52a8 @\u53d1\u9001\u8005\uff08\u539f\u751f reminder\uff09', '\u56de\u8986\u6642\u81ea\u52d5 @\u767c\u9001\u8005')}>
+                                {textForLang(lang, 'Auto @ reply', '\u56de\u590d\u81ea\u52a8 @', '\u56de\u8986\u81ea\u52d5 @')}
+                            </span>
+                        </label>
+                        <label className="im-settings-toggle">
+                            <input
+                                type="checkbox"
+                                checked={!!(config as any)?.lansenger_auto_quote_reply}
+                                onChange={(e) => saveRemoteConfigField({ lansenger_auto_quote_reply: e.target.checked } as any)}
+                            />
+                            <span title={textForLang(lang, 'Native quote via refMsgId (preferred over text quote)', '\u4f7f\u7528\u539f\u751f\u5f15\u7528\u56de\u590d\uff08refMsgId\uff09', '\u4f7f\u7528\u539f\u751f\u5f15\u7528\u56de\u8986\uff08refMsgId\uff09')}>
+                                {textForLang(lang, 'Auto quote reply', '\u81ea\u52a8\u5f15\u7528\u56de\u590d', '\u81ea\u52d5\u5f15\u7528\u56de\u8986')}
+                            </span>
+                        </label>
+                    </div>
                 </div>
             )}
 

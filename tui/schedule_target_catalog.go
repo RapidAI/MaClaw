@@ -163,10 +163,7 @@ func (app *TUIApp) listScheduleDeliveryTargets(channel, query string) (string, e
 	if reg == nil {
 		return "", fmt.Errorf("delivery target catalog unavailable")
 	}
-	ch := strings.TrimSpace(channel)
-	if ch == "" {
-		ch = scheduler.DeliveryChannelLansenger
-	}
+	ch := scheduler.DefaultDeliveryChannel(channel)
 	refs, err := reg.ListTargets(context.Background(), ch, query)
 	if err != nil {
 		return "", err

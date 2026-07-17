@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+func TestDecideGroupReplySenderReasons(t *testing.T) {
+	d := DecideGroupReplySender(IncomingMessage{FromUserID: "staff-1", SenderName: "张三"})
+	if d.Source != GroupReplySenderSourceDisplayName || d.Label != "张三" || d.Reason != "usable_display_name" {
+		t.Fatalf("prefer name: %+v", d)
+	}
+	d = DecideGroupReplySender(IncomingMessage{FromUserID: "staff-1"})
+	if d.Source != GroupReplySenderSourceStaffID || d.Label != "staff-1" || d.Reason != "senderName_empty_fallback_staffId" {
+		t.Fatalf("empty name: %+v", d)
+	}
+	d = DecideGroupReplySender(IncomingMessage{FromUserID: "staff-1", SenderName: "staff-1"})
+	if d.Source != GroupReplySenderSourceStaffID || d.CleanName != "" || d.Reason != "senderName_echoes_staffId_fallback_staffId" {
+		t.Fatalf("echoed id: %+v", d)
+	}
+	d = DecideGroupReplySender(IncomingMessage{})
+	if d.Source != GroupReplySenderSourceFallbackSomeone || d.Reason != "no_name_no_id_will_use_someone" {
+		t.Fatalf("empty both: %+v", d)
+	}
+}
+
 func TestGroupReplyDisplayNameAndSenderLabel(t *testing.T) {
 	if got := GroupReplyDisplayName(IncomingMessage{FromUserID: "staff-1", SenderName: "张三"}); got != "张三" {
 		t.Fatalf("display name, got %q", got)

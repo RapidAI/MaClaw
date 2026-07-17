@@ -306,7 +306,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
 		// --- 合并工具：定时任务 (create/list/delete/update) ---
-		toolDef("manage_schedule", "定时任务管理。action: create/list/delete/update/list_targets。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。",
+		toolDef("manage_schedule", "定时任务管理。action: create/list/delete/update/list_targets。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。即时发消息请用 im_message。",
 			map[string]interface{}{
 				"action":           map[string]string{"type": "string", "description": "create/list/delete/update/list_targets（list_groups 等别名也可）"},
 				"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
@@ -328,6 +328,21 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"mention_user_ids": map[string]string{"type": "string", "description": "群推送时可选 @ 的用户 ID，逗号分隔"},
 				"mention_all":      map[string]string{"type": "boolean", "description": "群推送时是否 @所有人"},
 			}, []string{"action"}),
+		// --- Immediate IM text push (independent of schedule) ---
+		toolDef("im_message", "即时向 IM 发文本（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send（可省略：有 text 则 send）。用户要求「现在发到蓝信某群/微信」时用本工具；周期播报才用 manage_schedule+delivery。",
+			map[string]interface{}{
+				"action":           map[string]string{"type": "string", "description": "list_targets 或 send；可省略并自动推断"},
+				"text":             map[string]string{"type": "string", "description": "send 时消息正文"},
+				"message":          map[string]string{"type": "string", "description": "text 别名"},
+				"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
+				"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
+				"group_name":       map[string]string{"type": "string", "description": "send：群名（自动解析）"},
+				"group_id":         map[string]string{"type": "string", "description": "send：群 ID"},
+				"user_id":          map[string]string{"type": "string", "description": "send：私聊 ID 或 self"},
+				"mention_user_ids": map[string]string{"type": "string", "description": "群 @ 用户 ID，逗号分隔"},
+				"mention_all":      map[string]string{"type": "boolean", "description": "是否 @所有人"},
+				"delivery":         map[string]string{"type": "object", "description": "可选完整投递配置"},
+			}, nil),
 	}
 
 	// ---------- MIS structured data and AgentView transaction workspace ----------

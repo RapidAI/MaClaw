@@ -74,7 +74,7 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 		}
 
 		// --- Forward every speech from watched targets (may be upgraded by keyword) ---
-		if watched && job.ForwardOnTargetSpeech {
+		if watched && job.ForwardOnTargetSpeech && len(NormalizeForwardChannels(job.ForwardChannels)) > 0 {
 			upsertForward(&res, forwardByKey, job, msg, "target_speech", "")
 		}
 
@@ -140,7 +140,11 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 				res.Replies = append(res.Replies, reply)
 			}
 
-			if rule.ForwardOnMatch {
+			// Keyword auto-replies go to the source group. Owner-channel forwards are
+			// separate: explicit rule.ForwardOnMatch, or job-level "speech forward"
+			// with channels configured (so keyword hits under scope=anyone still
+			// notify the owner — speech forward alone only covers watched targets).
+			if shouldForwardKeywordHit(job, rule) {
 				hit.Forwarded = markKeywordForward(&res, forwardByKey, job, msg, kw)
 			}
 			res.KeywordHits = append(res.KeywordHits, hit)
@@ -148,6 +152,22 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 	}
 	res.Replies = DedupeNonEmpty(res.Replies)
 	return res
+}
+
+// shouldForwardKeywordHit reports whether a keyword match should also push to
+// the owner's IM channels (WeChat / Lansenger / …).
+func shouldForwardKeywordHit(job Job, rule KeywordRule) bool {
+	// No usable channels → never claim a forward (avoids Forwarded=true with empty list).
+	if len(NormalizeForwardChannels(job.ForwardChannels)) == 0 {
+		return false
+	}
+	if rule.ForwardOnMatch {
+		return true
+	}
+	// Job enabled "forward watched speech" + channels: also forward keyword hits
+	// (including non-target speakers when scope=anyone). Without this, users see
+	// group auto-replies work but never receive channel packages for keyword hits.
+	return job.ForwardOnTargetSpeech
 }
 
 // upsertForward keeps one package per (job, channel). Keyword reason upgrades speech.

@@ -21,8 +21,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -207,6 +209,10 @@ type Gateway struct {
 	// stampeding the app-token endpoint. A channel semaphore lets callers stop
 	// waiting promptly when their own context is cancelled.
 	tokenFetchSem chan struct{}
+	// staffNames caches /v1/staffs/:id/fetch display names for quote labels.
+	// Official bot_group_message callbacks only include `from` (staff openId).
+	staffNames staffNameCache
+	staffSF    singleflight.Group
 
 	mu sync.Mutex
 	// lifecycleMu serializes Start and Stop. In particular, a new Start must
@@ -798,6 +804,25 @@ func (g *Gateway) processEvent(evt wsEvent) {
 		IsAtMe:          actual.Reminder.IsAtMe,
 		IsAtAll:         actual.Reminder.IsAtAll,
 	}
+	// Official openapi.lanxin.cn bot_group_message only documents groupId/from/
+	// msgType/msgData — no senderName. Group text-quotes need a display name, so
+	// resolve via staffs/fetch when the payload omits it. Private chats skip the
+	// REST lookup (no "xx问：" header) to keep the WS path lean.
+	if IsGroupChat(chatType) {
+		rawSenderName := msg.SenderName
+		if GroupReplyDisplayName(msg) == "" && strings.TrimSpace(msg.FromUserID) != "" {
+			msg, _ = g.EnrichIncomingSenderName(context.Background(), msg)
+		}
+		decision := DecideGroupReplySender(msg)
+		// Only groups: log missing display names or successful directory fill.
+		// Healthy named payloads stay quiet; private chats never spam this path.
+		if decision.Source != GroupReplySenderSourceDisplayName || strings.TrimSpace(rawSenderName) != strings.TrimSpace(msg.SenderName) {
+			log.Printf("[lansenger] inbound evt=%s group=%s msgId=%s from=%s rawName=%q finalName=%q quoteSource=%s reason=%s text_runes=%d",
+				evtType, msg.GroupID, msg.MessageID, msg.FromUserID, rawSenderName, msg.SenderName,
+				decision.Source, decision.Reason, utf8.RuneCountInString(msg.Text))
+		}
+	}
+
 	msg.ReferenceText = extractReferenceText(actual.ReferenceMsg)
 	mediaCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

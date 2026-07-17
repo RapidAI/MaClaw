@@ -6,7 +6,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -28,23 +27,13 @@ func (a *App) deliverScheduledTaskResult(task *scheduler.ScheduledTask, resultTe
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := scheduler.WithDeliveryTimeout(nil, scheduler.DefaultIMDeliveryTimeout)
 	defer cancel()
-
-	store := a.deliveryStateStore()
-	_, err := scheduler.FanOutDeliveryTargets(d.Targets, func(i int, target scheduler.DeliveryTarget) error {
-		peer, err := a.deliverScheduledTaskTarget(ctx, d.Channel, target, body)
-		if err != nil {
-			log.Printf("[scheduled-task] delivery failed task=%s target=%d: %v", task.ID, i, err)
-			return err
-		}
-		// Only private/user peers feed user_id=self memory (never group ids).
-		if store != nil && peer != "" && scheduler.CanRememberAsSelfPeer(target) {
-			store.RememberPeer(d.Channel, peer)
-		}
-		return nil
-	})
-	return err
+	if err := a.DeliverIMFromTaskDelivery(ctx, d, body); err != nil {
+		log.Printf("[scheduled-task] delivery failed task=%s: %v", task.ID, err)
+		return err
+	}
+	return nil
 }
 
 func (a *App) deliveryStateStore() *scheduler.DeliveryStateStore {
@@ -62,10 +51,7 @@ func (a *App) deliveryStateStore() *scheduler.DeliveryStateStore {
 
 // deliverScheduledTaskTarget sends one target and returns the concrete peer id used (for memory).
 func (a *App) deliverScheduledTaskTarget(ctx context.Context, channel string, target scheduler.DeliveryTarget, text string) (peer string, err error) {
-	channel = strings.TrimSpace(strings.ToLower(channel))
-	if channel == "" {
-		channel = scheduler.DeliveryChannelLansenger
-	}
+	channel = scheduler.DefaultDeliveryChannel(channel)
 	switch channel {
 	case scheduler.DeliveryChannelLansenger:
 		return a.deliverLansengerScheduledTarget(ctx, target, text)

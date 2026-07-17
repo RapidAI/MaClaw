@@ -2361,17 +2361,15 @@ func (h *IMMessageHandler) toolListScheduleDeliveryTargets(args map[string]inter
 	if h.app == nil {
 		return "应用未初始化，无法查询投递目标"
 	}
-	channel := stringVal(args, "channel")
-	if channel == "" {
-		channel = stringVal(args, "platform")
-	}
-	query := stringVal(args, "query")
-	if query == "" {
-		query = stringVal(args, "group_name")
-	}
-	if query == "" {
-		query = stringVal(args, "name")
-	}
+	channel := scheduler.DefaultDeliveryChannel(firstNonEmptyArg(
+		stringVal(args, "channel"),
+		stringVal(args, "platform"),
+	))
+	query := firstNonEmptyArg(
+		stringVal(args, "query"),
+		stringVal(args, "group_name"),
+		stringVal(args, "name"),
+	)
 	text, err := h.app.listScheduleDeliveryTargets(channel, query)
 	if err != nil {
 		return fmt.Sprintf("查询投递目标失败: %s", err.Error())

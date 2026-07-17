@@ -328,6 +328,13 @@ Typical usage: Attach a file in the desktop chat (not WeChat by default)`,
 - destination (string, optional): wechat/feishu/qq/dingtalk/im
 Typical usage: User asked to send a file to WeChat or other IM`,
 
+	"im_message": `Parameters:
+- action (string, required): list_targets | send
+- text (string, required for send): Message body
+- channel (string, optional): lansenger|weixin|telegram|qq (default lansenger)
+- group_name / group_id / user_id: Destination shorthand
+Typical usage: Immediately send text to a Lansenger group or other IM channel (not scheduled)`,
+
 	"set_nickname": `Parameters:
 - nickname (string, required): New display name to set
 Typical usage: Change the assistant's display name in the conversation`,
@@ -526,6 +533,16 @@ var BuiltinEnrichments = map[string][]string{
 		"forward file to im",
 		"push file to wechat",
 		"放到微信",
+	},
+	"im_message": {
+		"send message to lansenger group",
+		"给蓝信群发消息",
+		"发到蓝信",
+		"推送到蓝信群",
+		"send text to wechat",
+		"给群里发一条",
+		"list im groups",
+		"查询蓝信群",
 	},
 	"set_nickname": {
 		"change my nickname",

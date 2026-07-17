@@ -30,6 +30,7 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 	}
 
 	// Expose manage_schedule to agents (list_targets / create with group_name resolve).
+	// im_message is wired independently in main (does not require the scheduler).
 	if executor != nil {
 		executor.ScheduleHandler = newSrvManageScheduleHandler(svc, mgr)
 	}
