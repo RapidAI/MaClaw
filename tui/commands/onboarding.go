@@ -37,9 +37,9 @@ func RunOnboarding(args []string) error {
 	}
 
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("MaClaw TUI onboarding")
-	fmt.Println("This wizard can activate Hub remote mode and bind WeChat for terminal-only environments.")
-	fmt.Println()
+	Println("MaClaw TUI onboarding")
+	Println("This wizard can activate Hub remote mode and bind WeChat for terminal-only environments.")
+	Println()
 
 	email := strings.TrimSpace(*emailFlag)
 	if email == "" {
@@ -75,8 +75,8 @@ func RunOnboarding(args []string) error {
 		}
 		activated := remoteActivationComplete(cfg)
 		if activated {
-			fmt.Printf("Hub remote mode is already activated for %s.\n", email)
-			fmt.Printf("HubCenter: %s\n", orDefault(cfg.RemoteHubCenterURL, remote.DefaultRemoteHubCenterURL))
+			Printf("Hub remote mode is already activated for %s.\n", email)
+			Printf("HubCenter: %s\n", orDefault(cfg.RemoteHubCenterURL, remote.DefaultRemoteHubCenterURL))
 		} else if *yes || promptYesNo(reader, "Activate this machine with Hub now?", true) {
 			if err := activateRemoteForOnboarding(context.Background(), store, cfg, email, strings.TrimSpace(*invitationCode)); err != nil {
 				return err
@@ -88,7 +88,7 @@ func RunOnboarding(args []string) error {
 	if !*skipWeixin {
 		bound := cfg.WeixinEnabled && cfg.WeixinToken != ""
 		if bound {
-			fmt.Printf("WeChat is already bound (account_id=%s).\n", orDefault(cfg.WeixinAccountID, "unknown"))
+			Printf("WeChat is already bound (account_id=%s).\n", orDefault(cfg.WeixinAccountID, "unknown"))
 		} else if *yes || promptYesNo(reader, "Bind WeChat by scanning a QR code?", true) {
 			if err := bindWeixinForOnboarding(context.Background(), store, cfg, *showQRPayload); err != nil {
 				return err
@@ -101,8 +101,8 @@ func RunOnboarding(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("save onboarding state: %w", err)
 	}
-	fmt.Println()
-	fmt.Println("Onboarding complete. Run `maclaw-tui status` to review the next step, or run `maclaw-tui` to continue.")
+	Println()
+	Println("Onboarding complete. Run `maclaw-tui status` to review the next step, or run `maclaw-tui` to continue.")
 	return nil
 }
 
@@ -169,15 +169,15 @@ func promptHubCenter(reader *bufio.Reader, choices []string, current string) (st
 	if len(choices) == 0 {
 		choices = []string{remote.DefaultRemoteHubCenterURL}
 	}
-	fmt.Println("HubCenter choices:")
+	Println("HubCenter choices:")
 	for i, choice := range choices {
 		marker := " "
 		if choice == current {
 			marker = "*"
 		}
-		fmt.Printf("  %s%d) %s\n", marker, i+1, choice)
+		Printf("  %s%d) %s\n", marker, i+1, choice)
 	}
-	fmt.Println("  m) Manual input (private HubCenter)")
+	Println("  m) Manual input (private HubCenter)")
 	answer, err := promptLine(reader, "HubCenter choice (number, Enter keeps current, m for manual): ")
 	if err != nil {
 		return "", err
@@ -203,12 +203,12 @@ func promptHubCenter(reader *bufio.Reader, choices []string, current string) (st
 	if strings.HasPrefix(answer, "http://") || strings.HasPrefix(answer, "https://") {
 		return strings.TrimRight(answer, "/"), nil
 	}
-	fmt.Printf("Unknown HubCenter choice %q; keeping current.\n", answer)
+	Printf("Unknown HubCenter choice %q; keeping current.\n", answer)
 	return current, nil
 }
 
 func activateRemoteForOnboarding(ctx context.Context, store *FileConfigStore, cfg corelib.AppConfig, email, invCode string) error {
-	fmt.Printf("Activating Hub remote mode for %s ...\n", email)
+	Printf("Activating Hub remote mode for %s ...\n", email)
 	profile := buildRemoteEnrollmentProfile(cfg, email, invCode)
 
 	result, err := remote.NewEnrollmentClient().Enroll(ctx, profile)
@@ -240,11 +240,11 @@ func activateRemoteForOnboarding(ctx context.Context, store *FileConfigStore, cf
 		return fmt.Errorf("save Hub credentials: %w", err)
 	}
 
-	fmt.Println("Hub activation succeeded.")
-	fmt.Printf("  Hub URL:    %s\n", result.HubURL)
-	fmt.Printf("  Machine ID: %s\n", result.MachineID)
+	Println("Hub activation succeeded.")
+	Printf("  Hub URL:    %s\n", result.HubURL)
+	Printf("  Machine ID: %s\n", result.MachineID)
 	if result.SN != "" {
-		fmt.Printf("  SN:         %s\n", result.SN)
+		Printf("  SN:         %s\n", result.SN)
 	}
 	return nil
 }
@@ -255,7 +255,7 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 		baseURL = weixin.DefaultBaseURL
 	}
 
-	fmt.Println("Requesting WeChat QR code ...")
+	Println("Requesting WeChat QR code ...")
 	qrContent, qrToken, err := weixin.StartQRLogin(ctx, baseURL, weixin.DefaultBotType)
 	if err != nil {
 		return fmt.Errorf("request WeChat QR code: %w", err)
@@ -264,15 +264,15 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 		return fmt.Errorf("WeChat QR response is incomplete")
 	}
 
-	fmt.Println()
+	Println()
 	if rendered, err := renderTerminalQR(qrContent); err == nil {
-		fmt.Println(rendered)
+		Println(rendered)
 	} else {
-		fmt.Printf("QR render failed: %v\n", err)
+		Printf("QR render failed: %v\n", err)
 	}
-	fmt.Println("Scan this QR code with WeChat, then confirm login on the phone.")
-	fmt.Println(weixinQRPayloadLine(qrContent, showPayload))
-	fmt.Println("Waiting for confirmation, press Ctrl+C to cancel.")
+	Println("Scan this QR code with WeChat, then confirm login on the phone.")
+	Println(weixinQRPayloadLine(qrContent, showPayload))
+	Println("Waiting for confirmation, press Ctrl+C to cancel.")
 
 	waitCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
@@ -281,7 +281,7 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 		result, status, err := weixin.PollQRStatus(waitCtx, baseURL, qrToken)
 		if err != nil {
 			if weixin.IsQRLoginRetryableError(err) {
-				fmt.Printf("WeChat QR status check failed; retrying: %v\n", err)
+				Printf("WeChat QR status check failed; retrying: %v\n", err)
 				select {
 				case <-waitCtx.Done():
 					return fmt.Errorf("WeChat binding timed out")
@@ -292,7 +292,7 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 			return fmt.Errorf("poll WeChat QR status: %w", err)
 		}
 		if status != lastStatus {
-			fmt.Printf("WeChat QR status: %s\n", weixinQRStatusLabel(status))
+			Printf("WeChat QR status: %s\n", weixinQRStatusLabel(status))
 			lastStatus = status
 		}
 		switch status {
@@ -338,9 +338,9 @@ func saveWeixinLoginResult(store *FileConfigStore, cfg corelib.AppConfig, result
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("save WeChat credentials: %w", err)
 	}
-	fmt.Println("WeChat binding succeeded.")
+	Println("WeChat binding succeeded.")
 	if result.AccountID != "" {
-		fmt.Printf("  Account ID: %s\n", result.AccountID)
+		Printf("  Account ID: %s\n", result.AccountID)
 	}
 	return nil
 }
@@ -409,7 +409,7 @@ func weixinQRStatusLabel(status weixin.QRLoginStatus) string {
 }
 
 func promptLine(reader *bufio.Reader, label string) (string, error) {
-	fmt.Print(label)
+	Print(label)
 	line, err := reader.ReadString('\n')
 	if err != nil && len(line) == 0 {
 		return "", err

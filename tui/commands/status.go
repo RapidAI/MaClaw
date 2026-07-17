@@ -131,38 +131,38 @@ func statusNextStep(cfg corelib.AppConfig, report statusReport) (string, string)
 func printStatusReport(cfg corelib.AppConfig, report statusReport) {
 	lang := i18n.NormalizeLang(cfg.Language)
 	if lang == "en" {
-		fmt.Println("MaClaw TUI status")
-		fmt.Printf("  HubCenter: %s\n", report.HubCenterURL)
+		Println("MaClaw TUI status")
+		Printf("  HubCenter: %s\n", report.HubCenterURL)
 		if report.HubURL != "" {
-			fmt.Printf("  Hub URL:   %s (display only)\n", report.HubURL)
+			Printf("  Hub URL:   %s (display only)\n", report.HubURL)
 		} else {
-			fmt.Println("  Hub URL:   auto-selected during Setup")
+			Println("  Hub URL:   auto-selected during Setup")
 		}
-		fmt.Printf("  %s Setup\n", statusMark(report.SetupReady))
-		fmt.Printf("  %s Hub activation\n", statusMark(report.HubReady))
-		fmt.Printf("  %s Remote machine%s\n", statusMark(report.RemoteMachineReady), statusRemoteMachineSuffix(report, lang))
-		fmt.Printf("  %s Official service\n", statusMark(report.OfficialServiceReady))
-		fmt.Printf("  %s LLM%s\n", statusMark(report.LLMReady), statusLLMSuffix(report, lang))
-		fmt.Printf("  %s MCP (%d configured)\n", statusMark(report.MCPCount > 0), report.MCPCount)
-		fmt.Printf("Next: %s\n", report.NextAction)
-		fmt.Printf("TUI:  %s\n", report.NextTUICommand)
+		Printf("  %s Setup\n", statusMark(report.SetupReady))
+		Printf("  %s Hub activation\n", statusMark(report.HubReady))
+		Printf("  %s Remote machine%s\n", statusMark(report.RemoteMachineReady), statusRemoteMachineSuffix(report, lang))
+		Printf("  %s Official service\n", statusMark(report.OfficialServiceReady))
+		Printf("  %s LLM%s\n", statusMark(report.LLMReady), statusLLMSuffix(report, lang))
+		Printf("  %s MCP (%d configured)\n", statusMark(report.MCPCount > 0), report.MCPCount)
+		Printf("Next: %s\n", report.NextAction)
+		Printf("TUI:  %s\n", report.NextTUICommand)
 		return
 	}
-	fmt.Println("MaClaw TUI 状态")
-	fmt.Printf("  HubCenter: %s\n", report.HubCenterURL)
+	Println("MaClaw TUI 状态")
+	Printf("  HubCenter: %s\n", report.HubCenterURL)
 	if report.HubURL != "" {
-		fmt.Printf("  Hub URL:   %s（仅展示）\n", report.HubURL)
+		Printf("  Hub URL:   %s（仅展示）\n", report.HubURL)
 	} else {
-		fmt.Println("  Hub URL:   初始化时自动选择")
+		Println("  Hub URL:   初始化时自动选择")
 	}
-	fmt.Printf("  %s 初始化\n", statusMark(report.SetupReady))
-	fmt.Printf("  %s Hub 激活\n", statusMark(report.HubReady))
-	fmt.Printf("  %s 远程机器%s\n", statusMark(report.RemoteMachineReady), statusRemoteMachineSuffix(report, lang))
-	fmt.Printf("  %s 官方服务\n", statusMark(report.OfficialServiceReady))
-	fmt.Printf("  %s LLM%s\n", statusMark(report.LLMReady), statusLLMSuffix(report, lang))
-	fmt.Printf("  %s MCP（已配置 %d 个）\n", statusMark(report.MCPCount > 0), report.MCPCount)
-	fmt.Printf("下一步: %s\n", report.NextAction)
-	fmt.Printf("TUI:  %s\n", report.NextTUICommand)
+	Printf("  %s 初始化\n", statusMark(report.SetupReady))
+	Printf("  %s Hub 激活\n", statusMark(report.HubReady))
+	Printf("  %s 远程机器%s\n", statusMark(report.RemoteMachineReady), statusRemoteMachineSuffix(report, lang))
+	Printf("  %s 官方服务\n", statusMark(report.OfficialServiceReady))
+	Printf("  %s LLM%s\n", statusMark(report.LLMReady), statusLLMSuffix(report, lang))
+	Printf("  %s MCP（已配置 %d 个）\n", statusMark(report.MCPCount > 0), report.MCPCount)
+	Printf("下一步: %s\n", report.NextAction)
+	Printf("TUI:  %s\n", report.NextTUICommand)
 }
 
 func statusRemoteMachineSuffix(report statusReport, lang string) string {

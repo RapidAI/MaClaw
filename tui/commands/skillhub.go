@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -166,10 +165,13 @@ func resolveMaclawID() string {
 }
 
 func skillhubSearch(args []string) error {
-	fs := flag.NewFlagSet("skillhub search", flag.ExitOnError)
+	fs := flag.NewFlagSet("skillhub search", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
 	page := fs.Int("page", 1, "页码")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() == 0 {
 		return NewUsageError("usage: skillhub search <query> [--page N] [--json]")
@@ -262,15 +264,15 @@ func skillhubSearch(args []string) error {
 			if err := enforceSkillHubSourceAction(cfg, "clawhub", "search", map[string]interface{}{"query": query, "url": skill.ClawHubMirrorURL}); err != nil {
 				return err
 			}
-			fmt.Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 ClawHub...\n", query)
+			Printf("SkillHub 未找到匹配 \"%s\" 的技能，正在搜索 ClawHub...\n", query)
 			client := skill.DefaultHubClient()
 			clawResults := client.SearchClawHub(ctx, query)
 			if len(clawResults) > 0 {
-				fmt.Printf("\n在 ClawHub 上找到 %d 个结果:\n\n", len(clawResults))
-				fmt.Printf("%-24s %-8s %-10s %s\n", "ID", "VERSION", "TRUST", "NAME")
-				fmt.Println(strings.Repeat("-", 70))
+				Printf("\n在 ClawHub 上找到 %d 个结果:\n\n", len(clawResults))
+				Printf("%-24s %-8s %-10s %s\n", "ID", "VERSION", "TRUST", "NAME")
+				Println(strings.Repeat("-", 70))
 				for _, r := range clawResults {
-					fmt.Printf("%-24s %-8s %-10s %s\n",
+					Printf("%-24s %-8s %-10s %s\n",
 						TruncateDisplay(r.ID, 24),
 						TruncateDisplay(r.Version, 8),
 						TruncateDisplay(r.TrustLevel, 10),
@@ -283,39 +285,39 @@ func skillhubSearch(args []string) error {
 
 		// Fallback 2: GitHub
 		if !sourceAllowedBySkillHubPolicy(cfg, "github") {
-			fmt.Println("No matching skills found in allowed sources.")
+			Println("No matching skills found in allowed sources.")
 			return nil
 		}
 		if err := enforceSkillHubSourceAction(cfg, "github", "search", map[string]interface{}{"query": query, "url": "https://github.com"}); err != nil {
 			return err
 		}
-		fmt.Printf("ClawHub 也未找到，正在搜索 GitHub...\n")
+		Printf("ClawHub 也未找到，正在搜索 GitHub...\n")
 		gs := skill.NewGitHubSearcher("") // unauthenticated
 		candidates, ghErr := gs.SearchGitHub(query)
 		if ghErr != nil || len(candidates) == 0 {
-			fmt.Printf("GitHub 也未找到匹配的技能。\n")
+			Printf("GitHub 也未找到匹配的技能。\n")
 			return nil
 		}
-		fmt.Printf("\n在 GitHub 上找到 %d 个候选技能:\n\n", len(candidates))
-		fmt.Printf("%-30s %-6s %-40s %s\n", "REPO", "STARS", "FILE", "DESCRIPTION")
-		fmt.Println(strings.Repeat("-", 100))
+		Printf("\n在 GitHub 上找到 %d 个候选技能:\n\n", len(candidates))
+		Printf("%-30s %-6s %-40s %s\n", "REPO", "STARS", "FILE", "DESCRIPTION")
+		Println(strings.Repeat("-", 100))
 		for _, c := range candidates {
-			fmt.Printf("%-30s %-6d %-40s %s\n",
+			Printf("%-30s %-6d %-40s %s\n",
 				TruncateDisplay(c.RepoFullName, 30),
 				c.Stars,
 				TruncateDisplay(c.FilePath, 40),
 				TruncateDisplay(c.Description, 30))
 		}
-		fmt.Println("\n使用 skillhub install-github <repo-url> 导入。")
+		Println("\n使用 skillhub install-github <repo-url> 导入。")
 		return nil
 	}
 
-	fmt.Printf("搜索 \"%s\" — 共 %d 个结果 (第 %d 页)\n\n", query, result.Total, result.Page)
-	fmt.Printf("%-24s %-8s %-6s %-5s %-8s %s\n", "ID", "VERSION", "TRUST", "RATE", "DOWNLOADS", "NAME")
-	fmt.Println(strings.Repeat("-", 90))
+	Printf("搜索 \"%s\" — 共 %d 个结果 (第 %d 页)\n\n", query, result.Total, result.Page)
+	Printf("%-24s %-8s %-6s %-5s %-8s %s\n", "ID", "VERSION", "TRUST", "RATE", "DOWNLOADS", "NAME")
+	Println(strings.Repeat("-", 90))
 	for _, s := range result.Skills {
 		rating := fmt.Sprintf("%.1f", s.AvgRating)
-		fmt.Printf("%-24s %-8s %-6s %-5s %-8d %s\n",
+		Printf("%-24s %-8s %-6s %-5s %-8d %s\n",
 			TruncateDisplay(s.ID, 24),
 			TruncateDisplay(s.Version, 8),
 			TruncateDisplay(s.TrustLevel, 6),
@@ -327,9 +329,12 @@ func skillhubSearch(args []string) error {
 }
 
 func skillhubInstall(args []string) error {
-	fs := flag.NewFlagSet("skillhub install", flag.ExitOnError)
+	fs := flag.NewFlagSet("skillhub install", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() == 0 {
 		return NewUsageError("usage: skillhub install <skill-id>")
@@ -395,7 +400,7 @@ func skillhubInstall(args []string) error {
 			if *jsonOut {
 				return PrintJSON(map[string]string{"status": "already_installed", "name": s.Name})
 			}
-			fmt.Printf("技能 '%s' 已安装 (hub_id=%s)\n", s.Name, skillID)
+			Printf("技能 '%s' 已安装 (hub_id=%s)\n", s.Name, skillID)
 			return nil
 		}
 	}
@@ -410,17 +415,20 @@ func skillhubInstall(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{"status": "installed", "skill": newSkill})
 	}
-	fmt.Printf("技能 '%s' (v%s) 已安装\n", full.Name, full.Version)
-	fmt.Printf("  作者: %s  信任等级: %s\n", full.Author, full.TrustLevel)
+	Printf("技能 '%s' (v%s) 已安装\n", full.Name, full.Version)
+	Printf("  作者: %s  信任等级: %s\n", full.Author, full.TrustLevel)
 	return nil
 }
 
 // skillhubInstallGitHub imports skill(s) from a GitHub repository URL
 // and registers them as local NL Skills.
 func skillhubInstallGitHub(args []string) error {
-	fs := flag.NewFlagSet("skillhub install-github", flag.ExitOnError)
+	fs := flag.NewFlagSet("skillhub install-github", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() == 0 {
 		return NewUsageError("usage: skillhub install-github <github-repo-url>")
@@ -459,7 +467,7 @@ func skillhubInstallGitHub(args []string) error {
 	var installed []corelib.NLSkillEntry
 	for _, sk := range imported {
 		if existingNames[sk.Name] {
-			fmt.Printf("跳过已存在的技能: %s\n", sk.Name)
+			Printf("跳过已存在的技能: %s\n", sk.Name)
 			continue
 		}
 		cfg.NLSkills = append(cfg.NLSkills, sk)
@@ -468,7 +476,7 @@ func skillhubInstallGitHub(args []string) error {
 	}
 
 	if len(installed) == 0 {
-		fmt.Println("没有新技能需要安装。")
+		Println("没有新技能需要安装。")
 		return nil
 	}
 
@@ -480,7 +488,7 @@ func skillhubInstallGitHub(args []string) error {
 		return PrintJSON(map[string]interface{}{"status": "installed", "count": len(installed), "skills": installed})
 	}
 	for _, sk := range installed {
-		fmt.Printf("技能 '%s' 已从 GitHub 导入 (%s)\n", sk.Name, sk.SourceProject)
+		Printf("技能 '%s' 已从 GitHub 导入 (%s)\n", sk.Name, sk.SourceProject)
 	}
 	return nil
 }
@@ -539,7 +547,7 @@ func skillhubRate(args []string) error {
 		return fmt.Errorf("SkillHub 返回 HTTP %d", resp.StatusCode)
 	}
 
-	fmt.Printf("已为技能 %s 评分 %d 星\n", skillID, *score)
+	Printf("已为技能 %s 评分 %d 星\n", skillID, *score)
 	return nil
 }
 
@@ -644,13 +652,13 @@ func skillhubCheckUpdates(args []string) error {
 	}
 
 	if len(results) == 0 {
-		fmt.Println("没有来自 Hub 的技能需要检查更新。")
+		Println("没有来自 Hub 的技能需要检查更新。")
 		return nil
 	}
 
 	hasUpdates := false
-	fmt.Printf("%-20s %-12s %-12s %s\n", "NAME", "LOCAL", "LATEST", "STATUS")
-	fmt.Println(strings.Repeat("-", 60))
+	Printf("%-20s %-12s %-12s %s\n", "NAME", "LOCAL", "LATEST", "STATUS")
+	Println(strings.Repeat("-", 60))
 	for _, r := range results {
 		status := "up-to-date"
 		if r.Error != "" {
@@ -659,14 +667,14 @@ func skillhubCheckUpdates(args []string) error {
 			status = "update available"
 			hasUpdates = true
 		}
-		fmt.Printf("%-20s %-12s %-12s %s\n",
+		Printf("%-20s %-12s %-12s %s\n",
 			TruncateDisplay(r.Name, 20),
 			TruncateDisplay(r.LocalVersion, 12),
 			TruncateDisplay(r.LatestVersion, 12),
 			status)
 	}
 	if !hasUpdates {
-		fmt.Println("\n所有 Hub 技能已是最新版本。")
+		Println("\n所有 Hub 技能已是最新版本。")
 	}
 	return nil
 }
@@ -725,12 +733,12 @@ func skillhubUpdate(args []string) error {
 		resp, err := client.Do(req)
 		cancel()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "更新 '%s' 失败: %v\n", s.Name, err)
+			Eprintf("更新 '%s' 失败: %v\n", s.Name, err)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			fmt.Fprintf(os.Stderr, "更新 '%s' 失败: HTTP %d\n", s.Name, resp.StatusCode)
+			Eprintf("更新 '%s' 失败: HTTP %d\n", s.Name, resp.StatusCode)
 			continue
 		}
 
@@ -740,7 +748,7 @@ func skillhubUpdate(args []string) error {
 		}
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&full); err != nil {
 			resp.Body.Close()
-			fmt.Fprintf(os.Stderr, "解析 '%s' 更新数据失败: %v\n", s.Name, err)
+			Eprintf("解析 '%s' 更新数据失败: %v\n", s.Name, err)
 			continue
 		}
 		resp.Body.Close()
@@ -751,7 +759,7 @@ func skillhubUpdate(args []string) error {
 		s.HubVersion = full.Version
 		s.TrustLevel = full.TrustLevel
 		updated++
-		fmt.Printf("'%s' 已更新到 v%s\n", s.Name, full.Version)
+		Printf("'%s' 已更新到 v%s\n", s.Name, full.Version)
 	}
 
 	if err := store.SaveConfig(cfg); err != nil {
@@ -762,7 +770,7 @@ func skillhubUpdate(args []string) error {
 		return PrintJSON(map[string]interface{}{"updated": updated})
 	}
 	if updated == 0 {
-		fmt.Println("没有技能被更新。")
+		Println("没有技能被更新。")
 	}
 	return nil
 }

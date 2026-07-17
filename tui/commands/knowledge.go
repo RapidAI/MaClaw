@@ -85,7 +85,7 @@ func knowledgeImport(dataDir string, args []string) error {
 				Status: "failed",
 				Error:  fmt.Sprintf("failed to open knowledge store: %v", err),
 			}}}
-			return json.NewEncoder(os.Stdout).Encode(summary)
+			return json.NewEncoder(Stdout()).Encode(summary)
 		}
 		return fmt.Errorf("failed to open knowledge store: %w", err)
 	}
@@ -116,7 +116,7 @@ func knowledgeImport(dataDir string, args []string) error {
 			summary.Results = append(summary.Results, r)
 			summary.Failed++
 			if !*jsonOutput {
-				fmt.Fprintf(os.Stderr, "Error: %s: %v\n", p, err)
+				Eprintf("Error: %s: %v\n", p, err)
 			}
 			continue
 		}
@@ -127,7 +127,7 @@ func knowledgeImport(dataDir string, args []string) error {
 			summary.Results = append(summary.Results, r)
 			summary.Failed++
 			if !*jsonOutput {
-				fmt.Fprintf(os.Stderr, "Error: %s: %v\n", p, err)
+				Eprintf("Error: %s: %v\n", p, err)
 			}
 			continue
 		}
@@ -146,7 +146,7 @@ func knowledgeImport(dataDir string, args []string) error {
 			summary.Results = append(summary.Results, r)
 			summary.Failed++
 			if !*jsonOutput {
-				fmt.Fprintf(os.Stderr, "Error: %s: %v\n", p, err)
+				Eprintf("Error: %s: %v\n", p, err)
 			}
 			continue
 		}
@@ -202,16 +202,16 @@ func knowledgeImport(dataDir string, args []string) error {
 		// Print human-readable output per path (non-JSON mode).
 		if !*jsonOutput {
 			if info.IsDir() {
-				fmt.Printf("Directory: %s\n", absPath)
-				fmt.Printf("  Total files: %d, Imported: %d, Skipped: %d, Failed: %d\n",
+				Printf("Directory: %s\n", absPath)
+				Printf("  Total files: %d, Imported: %d, Skipped: %d, Failed: %d\n",
 					result.TotalFiles, result.ImportedFiles, result.DuplicateFiles+result.SkippedFiles, result.FailedFiles)
 			} else {
 				if result.ImportedFiles > 0 {
-					fmt.Printf("Imported: %s (nodes: %d)\n", absPath, result.ImportedFiles)
+					Printf("Imported: %s (nodes: %d)\n", absPath, result.ImportedFiles)
 				} else if result.DuplicateFiles > 0 {
-					fmt.Printf("Skipped (duplicate): %s\n", absPath)
+					Printf("Skipped (duplicate): %s\n", absPath)
 				} else if result.FailedFiles > 0 {
-					fmt.Printf("Failed: %s\n", absPath)
+					Printf("Failed: %s\n", absPath)
 				}
 			}
 		}
@@ -221,12 +221,12 @@ func knowledgeImport(dataDir string, args []string) error {
 
 	// JSON output mode: emit valid JSON to stdout.
 	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(summary)
+		return json.NewEncoder(Stdout()).Encode(summary)
 	}
 
 	// Human-readable summary for multiple paths.
 	if len(paths) > 1 {
-		fmt.Printf("\nSummary: %d total, %d imported, %d skipped, %d failed\n",
+		Printf("\nSummary: %d total, %d imported, %d skipped, %d failed\n",
 			summary.TotalFiles, summary.Imported, summary.Skipped, summary.Failed)
 	}
 
@@ -256,14 +256,14 @@ func knowledgeList(dataDir string, args []string) error {
 	}
 
 	if len(sources) == 0 {
-		fmt.Println("No knowledge sources found.")
+		Println("No knowledge sources found.")
 		return nil
 	}
 
 	// Print table header.
-	fmt.Printf("%-12s %-10s %-30s %-10s %5s %5s %s\n",
+	Printf("%-12s %-10s %-30s %-10s %5s %5s %s\n",
 		"ID", "Kind", "Title/Path", "Status", "Nodes", "Cards", "Updated")
-	fmt.Println(strings.Repeat("-", 100))
+	Println(strings.Repeat("-", 100))
 
 	for _, s := range sources {
 		title := s.Title
@@ -276,11 +276,11 @@ func knowledgeList(dataDir string, args []string) error {
 		if s.UpdatedAt.IsZero() {
 			updated = "-"
 		}
-		fmt.Printf("%-12s %-10s %-30s %-10s %5d %5d %s\n",
+		Printf("%-12s %-10s %-30s %-10s %5d %5d %s\n",
 			id, s.Kind, title, s.Status, s.NodeCount, s.CardCount, updated)
 	}
 
-	fmt.Printf("\nTotal: %d sources\n", len(sources))
+	Printf("\nTotal: %d sources\n", len(sources))
 	return nil
 }
 
@@ -316,11 +316,11 @@ func knowledgeSearch(dataDir string, args []string) error {
 	}
 
 	if len(results) == 0 {
-		fmt.Println("No results found.")
+		Println("No results found.")
 		return nil
 	}
 
-	fmt.Printf("Search results for: %q (%d results)\n\n", query, len(results))
+	Printf("Search results for: %q (%d results)\n\n", query, len(results))
 	for i, r := range results {
 		sourceLabel := r.Source.Title
 		if sourceLabel == "" {
@@ -338,11 +338,11 @@ func knowledgeSearch(dataDir string, args []string) error {
 		snippet = strings.ReplaceAll(snippet, "\n", " ")
 		snippet = TruncateDisplay(snippet, 80)
 
-		fmt.Printf("%d. [%.2f] %s\n", i+1, r.Score, sourceLabel)
+		Printf("%d. [%.2f] %s\n", i+1, r.Score, sourceLabel)
 		if snippet != "" {
-			fmt.Printf("   %s\n", snippet)
+			Printf("   %s\n", snippet)
 		}
-		fmt.Println()
+		Println()
 	}
 	return nil
 }
@@ -354,9 +354,9 @@ func knowledgeStatus(dataDir string) error {
 	// Check if the database file exists.
 	info, err := os.Stat(dbPath)
 	if os.IsNotExist(err) {
-		fmt.Println("Knowledge base not initialized.")
-		fmt.Printf("Database path: %s (not found)\n", dbPath)
-		fmt.Println("Import documents with: maclaw-tui knowledge import <path>")
+		Println("Knowledge base not initialized.")
+		Printf("Database path: %s (not found)\n", dbPath)
+		Println("Import documents with: maclaw-tui knowledge import <path>")
 		return nil
 	}
 	if err != nil {
@@ -375,32 +375,32 @@ func knowledgeStatus(dataDir string) error {
 		return fmt.Errorf("failed to get stats: %w", err)
 	}
 
-	fmt.Println("Knowledge Base Status")
-	fmt.Println(strings.Repeat("=", 40))
-	fmt.Printf("  Database:       %s\n", dbPath)
-	fmt.Printf("  Database size:  %s\n", formatFileSize(info.Size()))
-	fmt.Printf("  Last modified:  %s\n", info.ModTime().Format("2006-01-02 15:04:05"))
-	fmt.Println()
-	fmt.Println("Statistics:")
-	fmt.Printf("  Total sources:  %d\n", stats.Sources)
-	fmt.Printf("  Total nodes:    %d\n", stats.DocumentNodes)
-	fmt.Printf("  Total cards:    %d\n", stats.Cards)
-	fmt.Printf("  Total facts:    %d\n", stats.Facts)
-	fmt.Printf("  Import batches: %d\n", stats.Batches)
+	Println("Knowledge Base Status")
+	Println(strings.Repeat("=", 40))
+	Printf("  Database:       %s\n", dbPath)
+	Printf("  Database size:  %s\n", formatFileSize(info.Size()))
+	Printf("  Last modified:  %s\n", info.ModTime().Format("2006-01-02 15:04:05"))
+	Println()
+	Println("Statistics:")
+	Printf("  Total sources:  %d\n", stats.Sources)
+	Printf("  Total nodes:    %d\n", stats.DocumentNodes)
+	Printf("  Total cards:    %d\n", stats.Cards)
+	Printf("  Total facts:    %d\n", stats.Facts)
+	Printf("  Import batches: %d\n", stats.Batches)
 
 	if len(stats.SourcesByKind) > 0 {
-		fmt.Println()
-		fmt.Println("Sources by kind:")
+		Println()
+		Println("Sources by kind:")
 		for kind, count := range stats.SourcesByKind {
-			fmt.Printf("  %-12s %d\n", kind, count)
+			Printf("  %-12s %d\n", kind, count)
 		}
 	}
 
 	if len(stats.SourcesByStatus) > 0 {
-		fmt.Println()
-		fmt.Println("Sources by status:")
+		Println()
+		Println("Sources by status:")
 		for status, count := range stats.SourcesByStatus {
-			fmt.Printf("  %-12s %d\n", status, count)
+			Printf("  %-12s %d\n", status, count)
 		}
 	}
 
@@ -458,9 +458,9 @@ func knowledgeDelete(dataDir string, args []string) error {
 		if title == "" {
 			title = source.URI
 		}
-		fmt.Printf("Delete source %s (%s)?\n", source.ID, title)
-		fmt.Printf("  Kind: %s, Nodes: %d, Cards: %d\n", source.Kind, source.NodeCount, source.CardCount)
-		fmt.Print("Confirm deletion? [y/N]: ")
+		Printf("Delete source %s (%s)?\n", source.ID, title)
+		Printf("  Kind: %s, Nodes: %d, Cards: %d\n", source.Kind, source.NodeCount, source.CardCount)
+		Print("Confirm deletion? [y/N]: ")
 
 		scanner := bufio.NewScanner(os.Stdin)
 		if !scanner.Scan() {
@@ -468,7 +468,7 @@ func knowledgeDelete(dataDir string, args []string) error {
 		}
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		if answer != "y" && answer != "yes" {
-			fmt.Println("Aborted.")
+			Println("Aborted.")
 			return nil
 		}
 	}
@@ -477,7 +477,7 @@ func knowledgeDelete(dataDir string, args []string) error {
 		return fmt.Errorf("failed to delete source: %w", err)
 	}
 
-	fmt.Printf("Source %s deleted.\n", sourceID)
+	Printf("Source %s deleted.\n", sourceID)
 	return nil
 }
 
@@ -507,19 +507,19 @@ func knowledgeClear(dataDir string, args []string) error {
 	}
 
 	if len(sources) == 0 {
-		fmt.Println("Knowledge base is already empty.")
+		Println("Knowledge base is already empty.")
 		return nil
 	}
 
 	deleted := 0
 	for _, src := range sources {
 		if err := store.DeleteSource(ctx, src.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to delete source %s: %v\n", src.ID, err)
+			Eprintf("warning: failed to delete source %s: %v\n", src.ID, err)
 			continue
 		}
 		deleted++
 	}
 
-	fmt.Printf("Cleared %d source(s) from knowledge base.\n", deleted)
+	Printf("Cleared %d source(s) from knowledge base.\n", deleted)
 	return nil
 }

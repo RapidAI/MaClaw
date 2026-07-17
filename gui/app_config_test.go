@@ -1242,6 +1242,57 @@ func TestPatchConfigFieldsRejectsLoopbackHubCenterURL(t *testing.T) {
 	}
 }
 
+func TestPatchConfigFieldsIMOwnerProactiveTargets(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	// Settings UI previously could not save these (missing whitelist).
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"qqbot_owner_openid":      " openid-abc ",
+		"telegram_owner_chat_id":  "9007199254740993", // beyond JS MAX_SAFE_INTEGER
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields: %v", err)
+	}
+	if patched.QQBotOwnerOpenID != "openid-abc" {
+		t.Fatalf("QQBotOwnerOpenID=%q", patched.QQBotOwnerOpenID)
+	}
+	if patched.TelegramBotOwnerChatID.String() != "9007199254740993" {
+		t.Fatalf("TelegramBotOwnerChatID=%q", patched.TelegramBotOwnerChatID.String())
+	}
+	if patched.TelegramBotOwnerChatID.Int64() != 9007199254740993 {
+		t.Fatalf("Int64=%d", patched.TelegramBotOwnerChatID.Int64())
+	}
+
+	// Clear chat id via empty string.
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"telegram_owner_chat_id": "",
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if patched.TelegramBotOwnerChatID.Int64() != 0 {
+		t.Fatalf("cleared chat id still %q", patched.TelegramBotOwnerChatID)
+	}
+
+	// Number form still accepted.
+	patched, err = app.PatchConfigFields(map[string]interface{}{
+		"telegram_owner_chat_id": float64(42),
+	})
+	if err != nil {
+		t.Fatalf("number form: %v", err)
+	}
+	if patched.TelegramBotOwnerChatID.Int64() != 42 {
+		t.Fatalf("number form got %d", patched.TelegramBotOwnerChatID.Int64())
+	}
+}
+
 func TestPatchConfigFieldsRejectsUnsupportedFields(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

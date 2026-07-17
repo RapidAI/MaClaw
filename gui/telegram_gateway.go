@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/improactive"
 	"github.com/RapidAI/CodeClaw/corelib/telegram"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
@@ -39,9 +40,11 @@ type telegramGatewayManager struct {
 }
 
 func newTelegramGatewayManager(app *App) *telegramGatewayManager {
+	peers := improactive.NewStore("").LoadOrEmpty()
 	return &telegramGatewayManager{
-		app:    app,
-		status: gatewayConnectionStatusDisconnected,
+		app:        app,
+		status:     gatewayConnectionStatusDisconnected,
+		lastChatID: peers.TelegramLastChatID,
 	}
 }
 
@@ -258,11 +261,57 @@ func (m *telegramGatewayManager) noteLastChat(chatID int64) {
 		return
 	}
 	m.mu.Lock()
+	prev := m.lastChatID
 	m.lastChatID = chatID
 	m.mu.Unlock()
+	if prev == chatID {
+		return
+	}
+	if err := improactive.NewStore("").Patch(func(p *improactive.Peers) {
+		p.TelegramLastChatID = chatID
+	}); err != nil {
+		log.Printf("[telegram-mgr] persist last chat: %v", err)
+	}
 }
 
-// SendProactiveText sends text to chatID, or to the last active chat when chatID==0.
+// ownerChatIDFromConfig returns the fixed owner chat id from app settings (if any).
+func (m *telegramGatewayManager) ownerChatIDFromConfig() int64 {
+	if m == nil || m.app == nil {
+		return 0
+	}
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		return 0
+	}
+	return cfg.TelegramBotOwnerChatID.Int64()
+}
+
+// ResolveProactiveChatID picks the chat for owner push:
+// concrete chatID → config telegram_owner_chat_id → last private chat.
+func (m *telegramGatewayManager) ResolveProactiveChatID(chatID int64) int64 {
+	if chatID != 0 {
+		return chatID
+	}
+	if cfgID := m.ownerChatIDFromConfig(); cfgID != 0 {
+		return cfgID
+	}
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	last := m.lastChatID
+	m.mu.Unlock()
+	return last
+}
+
+// HasProactiveSession reports whether a chat id is known for self-notify
+// (configured owner chat_id or remembered last chat).
+func (m *telegramGatewayManager) HasProactiveSession() bool {
+	return m.ResolveProactiveChatID(0) != 0
+}
+
+// SendProactiveText sends text to chatID, or to the owner peer when chatID==0.
+// Resolution: config telegram_owner_chat_id → last private chat.
 // On success returns the concrete chat id used (for delivery state memory).
 func (m *telegramGatewayManager) SendProactiveText(chatID int64, text string) (usedChatID int64, err error) {
 	text = strings.TrimSpace(text)
@@ -272,17 +321,15 @@ func (m *telegramGatewayManager) SendProactiveText(chatID int64, text string) (u
 	if m == nil {
 		return 0, fmt.Errorf("telegram gateway is nil")
 	}
+	chatID = m.ResolveProactiveChatID(chatID)
 	m.mu.Lock()
 	gw := m.gateway
-	if chatID == 0 {
-		chatID = m.lastChatID
-	}
 	m.mu.Unlock()
 	if gw == nil {
 		return 0, fmt.Errorf("telegram gateway not running")
 	}
 	if chatID == 0 {
-		return 0, fmt.Errorf("no active telegram chat (先给机器人发一条消息，或填写 chat_id)")
+		return 0, fmt.Errorf("no active telegram chat (先给机器人发一条消息，或在设置中填写 owner chat_id)")
 	}
 	if err := gw.SendText(context.Background(), telegram.OutgoingText{ChatID: chatID, Text: text}); err != nil {
 		return 0, err

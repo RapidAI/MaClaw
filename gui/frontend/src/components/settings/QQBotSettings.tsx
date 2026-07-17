@@ -104,5 +104,35 @@ export const QQBotSettings = ({
                 />
             </label>
         </div>
+        <label className="im-settings-field" style={{ marginTop: 12 }}>
+            <span>
+                {textForLang(
+                    lang,
+                    'Owner OpenID (proactive / 盯人)',
+                    '机主 OpenID（主动推送 / 盯人）',
+                    '機主 OpenID（主動推送 / 盯人）',
+                )}
+            </span>
+            <input
+                type="text"
+                value={(config as any)?.qqbot_owner_openid || ''}
+                onChange={(e) => saveRemoteConfigField({ qqbot_owner_openid: e.target.value } as any)}
+                placeholder={textForLang(
+                    lang,
+                    'C2C user_openid — no prior chat needed when set',
+                    'C2C user_openid，填写后无需先私聊即可推送',
+                    'C2C user_openid，填寫後無需先私聊即可推送',
+                )}
+                autoComplete="off"
+            />
+            <p className="im-settings-description" style={{ marginTop: 6, marginBottom: 0 }}>
+                {textForLang(
+                    lang,
+                    'Used for 盯人 forward and scheduled self-push. Get openid from the first private-chat log (C2C from …), then paste here so restarts do not require chatting again.',
+                    '用于盯人转发与定时任务「推给自己」。可从首次私聊日志中的 C2C from … 复制 openid；填好后无需先发消息也能推送。',
+                    '用於盯人轉發與定時任務「推給自己」。可從首次私聊日誌中的 C2C from … 複製 openid；填好後無需先發訊息也能推送。',
+                )}
+            </p>
+        </label>
     </section>
 );

@@ -95,5 +95,53 @@ export const TelegramBotSettings = ({
                 />
             </label>
         </div>
+        <label className="im-settings-field" style={{ marginTop: 12 }}>
+            <span>
+                {textForLang(
+                    lang,
+                    'Owner Chat ID (proactive / 盯人)',
+                    '机主 Chat ID（主动推送 / 盯人）',
+                    '機主 Chat ID（主動推送 / 盯人）',
+                )}
+            </span>
+            <input
+                type="text"
+                inputMode="numeric"
+                value={
+                    (config as any)?.telegram_owner_chat_id
+                        ? String((config as any).telegram_owner_chat_id)
+                        : ''
+                }
+                onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    if (raw === '') {
+                        // Empty clears owner chat id (stored as empty string server-side).
+                        saveRemoteConfigField({ telegram_owner_chat_id: '' } as any);
+                        return;
+                    }
+                    // Full integer only (supports negative group chat ids). Keep as string
+                    // so values outside JS Number.MAX_SAFE_INTEGER still round-trip.
+                    if (!/^-?\d+$/.test(raw)) {
+                        return;
+                    }
+                    saveRemoteConfigField({ telegram_owner_chat_id: raw } as any);
+                }}
+                placeholder={textForLang(
+                    lang,
+                    'Numeric chat_id (string) — no prior chat needed when set',
+                    '数字 chat_id（字符串保存），填写后无需先私聊即可推送',
+                    '數字 chat_id（字串保存），填寫後無需先私聊即可推送',
+                )}
+                autoComplete="off"
+            />
+            <p className="im-settings-description" style={{ marginTop: 6, marginBottom: 0 }}>
+                {textForLang(
+                    lang,
+                    'Used for 盯人 forward and scheduled self-push. Get chat_id from the first private-chat log, then paste here so restarts do not require chatting again.',
+                    '用于盯人转发与定时任务「推给自己」。可从首次私聊日志复制 chat_id；填好后无需先发消息也能推送。',
+                    '用於盯人轉發與定時任務「推給自己」。可從首次私聊日誌複製 chat_id；填好後無需先發訊息也能推送。',
+                )}
+            </p>
+        </label>
     </section>
 );

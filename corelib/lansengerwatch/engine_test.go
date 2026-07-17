@@ -150,30 +150,28 @@ func TestEngineKeywordAnyoneAndForward(t *testing.T) {
 func TestShouldForwardKeywordHit(t *testing.T) {
 	job := Job{ForwardChannels: []string{"weixin"}, ForwardOnTargetSpeech: true}
 	rule := KeywordRule{ForwardOnMatch: false}
-	if !shouldForwardKeywordHit(job, rule) {
-		t.Fatal("speech-forward + channels should forward keyword")
+	if !shouldForwardKeywordHit(job, rule, true, true) {
+		t.Fatal("speech-forward + watched should forward keyword")
+	}
+	if shouldForwardKeywordHit(job, rule, false, true) {
+		t.Fatal("speech-forward must not forward keyword for non-targets")
 	}
 	job.ForwardOnTargetSpeech = false
-	if shouldForwardKeywordHit(job, rule) {
+	if shouldForwardKeywordHit(job, rule, true, true) {
 		t.Fatal("no speech-forward and no rule flag")
 	}
 	rule.ForwardOnMatch = true
-	if !shouldForwardKeywordHit(job, rule) {
-		t.Fatal("explicit rule flag")
+	if !shouldForwardKeywordHit(job, rule, false, true) {
+		t.Fatal("explicit rule flag applies to non-targets (scope already gated)")
 	}
-	job.ForwardChannels = nil
-	if shouldForwardKeywordHit(job, rule) {
+	if shouldForwardKeywordHit(job, rule, true, false) {
 		t.Fatal("no channels → never")
-	}
-	job.ForwardChannels = []string{"unknown"}
-	if shouldForwardKeywordHit(job, rule) {
-		t.Fatal("invalid channels normalize to empty")
 	}
 }
 
-func TestEngineKeywordAnyoneForwardsWhenSpeechForwardOnWithoutRuleFlag(t *testing.T) {
-	// Mirrors user config: speech-forward + channels, keyword scope=anyone, reply works,
-	// but rule.ForwardOnMatch was left false — still must notify owner channels.
+func TestEngineKeywordAnyoneSpeechForwardOnlyForWatched(t *testing.T) {
+	// speech-forward + scope=anyone + ForwardOnMatch=false:
+	// group reply still works for anyone; owner-channel package only for watched.
 	store := NewStore(t.TempDir())
 	eng := &Engine{
 		Store: store,
@@ -192,10 +190,11 @@ func TestEngineKeywordAnyoneForwardsWhenSpeechForwardOnWithoutRuleFlag(t *testin
 			ID:             "r1",
 			Keywords:       []string{"test"},
 			RecordOnMatch:  true,
-			ForwardOnMatch: false, // explicit off — still forward via speech-forward job flag
+			ForwardOnMatch: false,
 			ReplyText:      "收到",
 		}},
 	}
+	// Non-target: group reply only (removing 盯人对象 must stop channel packages).
 	res := eng.Process(context.Background(), []Job{job}, Incoming{
 		IsGroup: true, GroupID: "g-k", GroupName: "运营群",
 		SpeakerID: "stranger", SpeakerName: "路人甲",
@@ -204,33 +203,97 @@ func TestEngineKeywordAnyoneForwardsWhenSpeechForwardOnWithoutRuleFlag(t *testin
 	if len(res.Replies) != 1 || res.Replies[0] != "收到" {
 		t.Fatalf("group reply: %v", res.Replies)
 	}
-	if len(res.Forwards) != 2 {
-		t.Fatalf("want weixin+lansenger forwards, got %+v", res.Forwards)
+	if len(res.Forwards) != 0 {
+		t.Fatalf("non-target must not get speech-forward keyword packages: %+v", res.Forwards)
 	}
-	if !res.KeywordHits[0].Forwarded {
-		t.Fatal("keyword hit should mark Forwarded")
-	}
-	for _, f := range res.Forwards {
-		if f.Reason != "keyword" {
-			t.Fatalf("reason=%s body=%s", f.Reason, f.Text)
-		}
-		if !strings.Contains(f.Text, "路人甲") || !strings.Contains(f.Text, "please test this") {
-			t.Fatalf("body: %s", f.Text)
-		}
+	if len(res.KeywordHits) != 1 || res.KeywordHits[0].Forwarded {
+		t.Fatalf("keyword hit should not mark Forwarded for non-target: %+v", res.KeywordHits)
 	}
 
-	// No speech-forward, no rule flag → group reply only, no channel package.
+	// Watched target: speech-forward piggyback still packages keyword hits.
+	resVIP := eng.Process(context.Background(), []Job{job}, Incoming{
+		IsGroup: true, GroupID: "g-k", GroupName: "运营群",
+		SpeakerID: "vip", SpeakerName: "重点人",
+		Text: "please test this", ReceivedAt: eng.Now(),
+	})
+	if len(resVIP.Forwards) != 2 {
+		t.Fatalf("watched keyword hit want weixin+lansenger, got %+v", resVIP.Forwards)
+	}
+
+	// Explicit ForwardOnMatch still notifies for anyone under scope=anyone.
+	job.Keywords[0].ForwardOnMatch = true
 	job.ForwardOnTargetSpeech = false
 	res2 := eng.Process(context.Background(), []Job{job}, Incoming{
+		IsGroup: true, GroupID: "g-k", GroupName: "运营群",
+		SpeakerID: "stranger", SpeakerName: "路人甲",
+		Text: "please test this", ReceivedAt: eng.Now(),
+	})
+	if len(res2.Forwards) != 2 {
+		t.Fatalf("explicit ForwardOnMatch should forward for anyone: %+v", res2.Forwards)
+	}
+
+	// No speech-forward, no rule flag → group reply only.
+	job.Keywords[0].ForwardOnMatch = false
+	res3 := eng.Process(context.Background(), []Job{job}, Incoming{
 		IsGroup: true, GroupID: "g-k",
 		SpeakerID: "stranger", SpeakerName: "路人甲",
 		Text: "please test this", ReceivedAt: eng.Now(),
 	})
-	if len(res2.Replies) != 1 {
-		t.Fatalf("reply still: %v", res2.Replies)
+	if len(res3.Replies) != 1 {
+		t.Fatalf("reply still: %v", res3.Replies)
 	}
+	if len(res3.Forwards) != 0 {
+		t.Fatalf("no forward expected: %+v", res3.Forwards)
+	}
+}
+
+func TestEngineRemoveTargetStopsSpeechForward(t *testing.T) {
+	store := NewStore(t.TempDir())
+	eng := &Engine{
+		Store: store,
+		Now:   func() time.Time { return time.Date(2026, 7, 17, 11, 0, 0, 0, time.Local) },
+	}
+	job := Job{
+		ID:                    "job-rm",
+		Enabled:               true,
+		GroupID:               "g1",
+		TargetStaffIDs:        []string{"u1", "u2"},
+		ForwardOnTargetSpeech: true,
+		ForwardChannels:       []string{"weixin"},
+		KeywordScope:          KeywordScopeAnyone,
+		Keywords: []KeywordRule{{
+			Keywords: []string{"机密"}, ForwardOnMatch: false, ReplyText: "ok",
+		}},
+	}
+	msg := Incoming{
+		IsGroup: true, GroupID: "g1", SpeakerID: "u1", SpeakerName: "Alice",
+		Text: "hello", ReceivedAt: eng.Now(),
+	}
+	res := eng.Process(context.Background(), []Job{job}, msg)
+	if len(res.Forwards) != 1 || res.Forwards[0].Reason != "target_speech" {
+		t.Fatalf("before remove: %+v", res.Forwards)
+	}
+
+	// User removes u1 from 盯人对象 and saves.
+	job.TargetStaffIDs = []string{"u2"}
+	res2 := eng.Process(context.Background(), []Job{job}, msg)
 	if len(res2.Forwards) != 0 {
-		t.Fatalf("no forward expected: %+v", res2.Forwards)
+		t.Fatalf("after remove u1, plain speech must not forward: %+v", res2.Forwards)
+	}
+	// Keyword hit without ForwardOnMatch also must not forward for removed target.
+	msg.Text = "这是机密"
+	res3 := eng.Process(context.Background(), []Job{job}, msg)
+	if len(res3.Forwards) != 0 {
+		t.Fatalf("after remove u1, keyword without rule flag must not forward: %+v", res3.Forwards)
+	}
+	// Remaining target still watched.
+	msg2 := Incoming{
+		IsGroup: true, GroupID: "g1", SpeakerID: "u2", SpeakerName: "Bob",
+		Text: "hi", ReceivedAt: eng.Now(),
+	}
+	res4 := eng.Process(context.Background(), []Job{job}, msg2)
+	if len(res4.Forwards) != 1 {
+		t.Fatalf("u2 still watched: %+v", res4.Forwards)
 	}
 }
 
@@ -315,12 +378,28 @@ func TestStoreUpsertAndRoster(t *testing.T) {
 	job, err := store.UpsertJob(Job{
 		Name: "test", GroupID: "g1", Enabled: true,
 		TargetStaffIDs: []string{"u1", "u1", " u2 "},
+		TargetNames:    map[string]string{"u1": "甲", "u2": "乙", "gone": "应删除"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if job.ID == "" || len(job.TargetStaffIDs) != 2 {
 		t.Fatalf("%+v", job)
+	}
+	if len(job.TargetNames) != 2 || job.TargetNames["gone"] != "" || job.TargetNames["u1"] != "甲" {
+		t.Fatalf("target names should prune removed ids: %+v", job.TargetNames)
+	}
+	// Clearing all targets must clear names too.
+	job, err = store.UpsertJob(Job{
+		ID: job.ID, Name: "test", GroupID: "g1", Enabled: true,
+		TargetStaffIDs: nil,
+		TargetNames:    map[string]string{"u1": "甲"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(job.TargetStaffIDs) != 0 || len(job.TargetNames) != 0 {
+		t.Fatalf("empty targets should clear names: %+v", job)
 	}
 	if err := store.NoteMember("g1", "群", "u1", "王", "message"); err != nil {
 		t.Fatal(err)

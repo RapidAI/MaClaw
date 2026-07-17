@@ -170,9 +170,8 @@ func (s *Store) UpsertJob(job Job) (Job, error) {
 	// Drop deprecated people-based forward list from persisted config.
 	job.ForwardStaffIDs = nil
 	job.KeywordScope = NormalizeKeywordScope(job.KeywordScope)
-	if job.TargetNames == nil {
-		job.TargetNames = map[string]string{}
-	}
+	// Keep display names only for current targets (drop removed 盯人对象 names).
+	job.TargetNames = pruneTargetNames(job.TargetNames, job.TargetStaffIDs)
 	for i := range job.Keywords {
 		job.Keywords[i].ID = strings.TrimSpace(job.Keywords[i].ID)
 		if job.Keywords[i].ID == "" {
@@ -472,6 +471,34 @@ func normalizeIDList(ids []string) []string {
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+	}
+	return out
+}
+
+// pruneTargetNames keeps only names for staff IDs still in targets.
+func pruneTargetNames(names map[string]string, targetIDs []string) map[string]string {
+	if len(targetIDs) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(targetIDs))
+	if len(names) == 0 {
+		return out
+	}
+	// Normalize keys so " u1 " in names still maps after TargetStaffIDs trim.
+	normNames := make(map[string]string, len(names))
+	for k, v := range names {
+		id := NormalizeStaffID(k)
+		if id == "" {
+			continue
+		}
+		if n := strings.TrimSpace(v); n != "" {
+			normNames[id] = n
+		}
+	}
+	for _, id := range targetIDs {
+		if n := normNames[id]; n != "" {
+			out[id] = n
+		}
 	}
 	return out
 }

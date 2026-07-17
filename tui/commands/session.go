@@ -67,12 +67,12 @@ func sessionList(client *HubClient, args []string) error {
 	}
 
 	if len(sessions) == 0 {
-		fmt.Println("No active sessions.")
+		Println("No active sessions.")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-12s %-10s %-30s %s\n", "ID", "TOOL", "STATUS", "PROJECT", "TITLE")
-	fmt.Println(strings.Repeat("-", 90))
+	Printf("%-20s %-12s %-10s %-30s %s\n", "ID", "TOOL", "STATUS", "PROJECT", "TITLE")
+	Println(strings.Repeat("-", 90))
 	for _, s := range sessions {
 		title := s.Title
 		if len(title) > 30 {
@@ -82,7 +82,7 @@ func sessionList(client *HubClient, args []string) error {
 		if len(project) > 30 {
 			project = "..." + project[len(project)-27:]
 		}
-		fmt.Printf("%-20s %-12s %-10s %-30s %s\n", s.ID, s.Tool, s.Status, project, title)
+		Printf("%-20s %-12s %-10s %-30s %s\n", s.ID, s.Tool, s.Status, project, title)
 	}
 	return nil
 }
@@ -116,7 +116,7 @@ func sessionStart(client *HubClient, args []string) error {
 		if json.Unmarshal(data, &raw) == nil {
 			return PrintJSON(raw)
 		}
-		fmt.Println(string(data))
+		Println(string(data))
 		return nil
 	}
 
@@ -127,7 +127,7 @@ func sessionStart(client *HubClient, args []string) error {
 	if err := json.Unmarshal(data, &result); err != nil {
 		return fmt.Errorf("parse result: %w", err)
 	}
-	fmt.Printf("Session created: %s (status: %s)\n", result.SessionID, result.Status)
+	Printf("Session created: %s (status: %s)\n", result.SessionID, result.Status)
 	return nil
 }
 
@@ -156,7 +156,7 @@ func sessionAttach(client *HubClient, args []string) error {
 	}
 
 	if !*jsonOut {
-		fmt.Printf("Attached to session %s. Press Ctrl+C to detach.\n", sessionID)
+		Printf("Attached to session %s. Press Ctrl+C to detach.\n", sessionID)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -174,7 +174,7 @@ func sessionAttach(client *HubClient, args []string) error {
 				return
 			}
 			if msg.Payload != nil {
-				fmt.Println(string(msg.Payload))
+				Println(string(msg.Payload))
 			}
 		}
 	}()
@@ -198,11 +198,11 @@ func sessionAttach(client *HubClient, args []string) error {
 	select {
 	case <-sigCh:
 		if !*jsonOut {
-			fmt.Println("\nDetaching (session continues running)...")
+			Println("\nDetaching (session continues running)...")
 		}
 	case <-doneCh:
 		if !*jsonOut {
-			fmt.Println("Session connection closed.")
+			Println("Session connection closed.")
 		}
 	}
 	return nil
@@ -234,6 +234,6 @@ func sessionKill(client *HubClient, args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("Session %s terminated.\n", sessionID)
+	Printf("Session %s terminated.\n", sessionID)
 	return nil
 }

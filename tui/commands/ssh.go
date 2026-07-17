@@ -40,11 +40,11 @@ func sshListHosts() error {
 	}
 
 	if len(cfg.SSHHosts) == 0 {
-		fmt.Println("未配置 SSH 主机。使用 'maclaw-tui ssh add <label> <user@host>' 添加。")
+		Println("未配置 SSH 主机。使用 'maclaw-tui ssh add <label> <user@host>' 添加。")
 		return nil
 	}
 
-	fmt.Printf("SSH 主机列表（%d 个）:\n", len(cfg.SSHHosts))
+	Printf("SSH 主机列表（%d 个）:\n", len(cfg.SSHHosts))
 	for _, h := range cfg.SSHHosts {
 		port := h.Port
 		if port == 0 {
@@ -54,7 +54,7 @@ func sshListHosts() error {
 		if auth == "" {
 			auth = "key"
 		}
-		fmt.Printf("  %-20s %s@%s:%d  (auth: %s)\n", h.Label, h.User, h.Host, port, auth)
+		Printf("  %-20s %s@%s:%d  (auth: %s)\n", h.Label, h.User, h.Host, port, auth)
 	}
 	return nil
 }
@@ -106,7 +106,7 @@ func sshAddHost(args []string) error {
 	}
 
 	data, _ := json.Marshal(entry)
-	fmt.Printf("SSH 主机已添加: %s\n%s\n", label, string(data))
+	Printf("SSH 主机已添加: %s\n%s\n", label, string(data))
 	return nil
 }
 
@@ -141,7 +141,7 @@ func sshRemoveHost(args []string) error {
 		return err
 	}
 
-	fmt.Printf("SSH 主机 %q 已删除\n", label)
+	Printf("SSH 主机 %q 已删除\n", label)
 	return nil
 }
 

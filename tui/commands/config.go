@@ -80,11 +80,11 @@ func configGetRemote(client *HubClient, args []string) error {
 
 	var kv map[string]interface{}
 	if err := json.Unmarshal(data, &kv); err != nil {
-		fmt.Println(string(data))
+		Println(string(data))
 		return nil
 	}
 	for k, v := range kv {
-		fmt.Printf("%s = %v\n", k, v)
+		Printf("%s = %v\n", k, v)
 	}
 	return nil
 }
@@ -102,7 +102,7 @@ func configSet(client *HubClient, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s = %s\n", key, value)
+	Printf("%s = %s\n", key, value)
 	return nil
 }
 
@@ -124,10 +124,10 @@ func configGetLocal(args []string) error {
 		return err
 	}
 	if *jsonOut {
-		fmt.Println(result)
+		Println(result)
 		return nil
 	}
-	fmt.Print(result)
+	Print(result)
 	return nil
 }
 
@@ -174,7 +174,7 @@ func configSetLocal(args []string) error {
 			"new_value": value,
 		})
 	}
-	fmt.Printf("%s.%s: %s → %s\n", section, key, oldVal, value)
+	Printf("%s.%s: %s → %s\n", section, key, oldVal, value)
 	return nil
 }
 
@@ -199,10 +199,10 @@ func configExport(args []string) error {
 		if err := os.WriteFile(*outFile, []byte(exported), 0o644); err != nil {
 			return fmt.Errorf("write export file: %w", err)
 		}
-		fmt.Printf("Config exported to %s\n", *outFile)
+		Printf("Config exported to %s\n", *outFile)
 		return nil
 	}
-	fmt.Println(exported)
+	Println(exported)
 	return nil
 }
 
@@ -229,9 +229,9 @@ func configImport(args []string) error {
 	if *jsonOut {
 		return PrintJSON(report)
 	}
-	fmt.Printf("Import complete: %d applied, %d skipped\n", report.Applied, report.Skipped)
+	Printf("Import complete: %d applied, %d skipped\n", report.Applied, report.Skipped)
 	for _, w := range report.Warnings {
-		fmt.Printf("  %s\n", w)
+		Printf("  %s\n", w)
 	}
 	return nil
 }
@@ -247,13 +247,13 @@ func configSchema(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(s)
+		Println(s)
 		return nil
 	}
 
 	schema := mgr.GetSchema()
 	for _, sec := range schema {
-		fmt.Printf("[%s] %s\n", sec.Name, sec.Description)
+		Printf("[%s] %s\n", sec.Name, sec.Description)
 		for _, k := range sec.Keys {
 			def := ""
 			if k.Default != "" {
@@ -263,9 +263,9 @@ func configSchema(args []string) error {
 			if len(k.ValidValues) > 0 {
 				vals = fmt.Sprintf(" [%s]", strings.Join(k.ValidValues, ", "))
 			}
-			fmt.Printf("  %-35s %s (%s)%s%s\n", k.Key, k.Description, k.Type, def, vals)
+			Printf("  %-35s %s (%s)%s%s\n", k.Key, k.Description, k.Type, def, vals)
 		}
-		fmt.Println()
+		Println()
 	}
 	return nil
 }

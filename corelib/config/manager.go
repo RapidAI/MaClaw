@@ -171,6 +171,8 @@ func (m *Manager) GetConfig(section string, unmasked ...bool) (string, error) {
 		return m.formatPowerConfig(cfg), nil
 	case "qqbot":
 		return m.formatQQBotConfig(cfg, raw), nil
+	case "telegram":
+		return m.formatTelegramConfig(cfg, raw), nil
 	case "skillmarket":
 		return m.formatSkillMarketConfig(cfg), nil
 	default:
@@ -657,6 +659,8 @@ func (m *Manager) applyChange(cfg *corelib.AppConfig, section, key, value string
 		return m.applyPowerChange(cfg, k, value)
 	case "qqbot":
 		return m.applyQQBotChange(cfg, k, value)
+	case "telegram":
+		return m.applyTelegramChange(cfg, k, value)
 	case "skillmarket":
 		return m.applySkillMarketChange(cfg, k, value)
 	}
@@ -877,6 +881,7 @@ func (m *Manager) formatQQBotConfig(cfg corelib.AppConfig, raw bool) string {
 		secret = maskSensitive(secret)
 	}
 	b.WriteString(fmt.Sprintf("  qqbot_app_secret = %s\n", secret))
+	b.WriteString(fmt.Sprintf("  qqbot_owner_openid = %s\n", cfg.QQBotOwnerOpenID))
 	return b.String()
 }
 
@@ -894,8 +899,45 @@ func (m *Manager) applyQQBotChange(cfg *corelib.AppConfig, key, value string) (s
 		old := cfg.QQBotAppSecret
 		cfg.QQBotAppSecret = value
 		return maskIfSensitive("qqbot_app_secret", old), nil
+	case "qqbot_owner_openid":
+		old := cfg.QQBotOwnerOpenID
+		cfg.QQBotOwnerOpenID = value
+		return old, nil
 	}
 	return "", fmt.Errorf("unsupported qqbot key %q", key)
+}
+
+func (m *Manager) formatTelegramConfig(cfg corelib.AppConfig, raw bool) string {
+	var b strings.Builder
+	b.WriteString("[Telegram Bot]\n")
+	b.WriteString(fmt.Sprintf("  telegram_bot_enabled     = %v\n", cfg.TelegramBotEnabled))
+	token := cfg.TelegramBotToken
+	if !raw {
+		token = maskSensitive(token)
+	}
+	b.WriteString(fmt.Sprintf("  telegram_bot_token       = %s\n", token))
+	b.WriteString(fmt.Sprintf("  telegram_owner_chat_id   = %s\n", cfg.TelegramBotOwnerChatID.String()))
+	return b.String()
+}
+
+func (m *Manager) applyTelegramChange(cfg *corelib.AppConfig, key, value string) (string, error) {
+	switch key {
+	case "telegram_bot_enabled":
+		old := fmt.Sprintf("%v", cfg.TelegramBotEnabled)
+		cfg.TelegramBotEnabled = strings.EqualFold(value, "true")
+		return old, nil
+	case "telegram_bot_token":
+		old := cfg.TelegramBotToken
+		cfg.TelegramBotToken = value
+		return maskIfSensitive("telegram_bot_token", old), nil
+	case "telegram_owner_chat_id":
+		old := cfg.TelegramBotOwnerChatID.String()
+		if err := cfg.TelegramBotOwnerChatID.SetString(value); err != nil {
+			return "", err
+		}
+		return old, nil
+	}
+	return "", fmt.Errorf("unsupported telegram key %q", key)
 }
 
 func (m *Manager) formatSkillMarketConfig(cfg corelib.AppConfig) string {
@@ -1028,6 +1070,16 @@ func (m *Manager) initSchema() {
 				{Key: "qqbot_enabled", Description: "是否启用 QQ 机器人", Type: "bool", Default: "false"},
 				{Key: "qqbot_app_id", Description: "QQ 机器人 AppID", Type: "string"},
 				{Key: "qqbot_app_secret", Description: "QQ 机器人 AppSecret", Type: "string"},
+				{Key: "qqbot_owner_openid", Description: "机主 C2C openid（盯人/主动推送，填写后无需先私聊）", Type: "string"},
+			},
+		},
+		{
+			Name:        "telegram",
+			Description: "Telegram 机器人（客户端侧 Bot API）",
+			Keys: []ConfigKeySchema{
+				{Key: "telegram_bot_enabled", Description: "是否启用 Telegram 机器人", Type: "bool", Default: "false"},
+				{Key: "telegram_bot_token", Description: "Telegram Bot Token", Type: "string"},
+				{Key: "telegram_owner_chat_id", Description: "机主 chat_id（盯人/主动推送，填写后无需先私聊）", Type: "string"},
 			},
 		},
 		{

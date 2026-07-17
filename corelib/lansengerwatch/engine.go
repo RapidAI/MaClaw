@@ -57,11 +57,14 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 	forwardByKey := map[string]int{} // jobID\x00channel -> index in res.Forwards
 
 	for _, job := range JobsForGroup(jobs, msg.GroupID) {
-		if !JobNeedsMessage(job, msg.SpeakerID) {
+		watched := JobWatchesStaff(job, msg.SpeakerID)
+		if !JobNeedsMessageFor(job, watched) {
 			continue
 		}
-		watched := JobWatchesStaff(job, msg.SpeakerID)
 		res.MatchedJobIDs = append(res.MatchedJobIDs, job.ID)
+		// Normalize once per job (speech + keyword forwards share the list).
+		channels := NormalizeForwardChannels(job.ForwardChannels)
+		hasChannels := len(channels) > 0
 
 		// --- Record all speech from watched targets ---
 		if watched && job.RecordAll {
@@ -74,8 +77,8 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 		}
 
 		// --- Forward every speech from watched targets (may be upgraded by keyword) ---
-		if watched && job.ForwardOnTargetSpeech && len(NormalizeForwardChannels(job.ForwardChannels)) > 0 {
-			upsertForward(&res, forwardByKey, job, msg, "target_speech", "")
+		if watched && job.ForwardOnTargetSpeech && hasChannels {
+			markForward(&res, forwardByKey, job, msg, "target_speech", "", channels)
 		}
 
 		// --- Keyword rules ---
@@ -141,11 +144,11 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 			}
 
 			// Keyword auto-replies go to the source group. Owner-channel forwards are
-			// separate: explicit rule.ForwardOnMatch, or job-level "speech forward"
-			// with channels configured (so keyword hits under scope=anyone still
-			// notify the owner — speech forward alone only covers watched targets).
-			if shouldForwardKeywordHit(job, rule) {
-				hit.Forwarded = markKeywordForward(&res, forwardByKey, job, msg, kw)
+			// separate: explicit rule.ForwardOnMatch, or speech-forward for watched
+			// targets only (never fan out to non-targets under scope=anyone — that
+			// kept notifying after users removed someone from 盯人对象).
+			if shouldForwardKeywordHit(job, rule, watched, hasChannels) {
+				hit.Forwarded = markForward(&res, forwardByKey, job, msg, "keyword", kw, channels)
 			}
 			res.KeywordHits = append(res.KeywordHits, hit)
 		}
@@ -156,32 +159,27 @@ func (e *Engine) Process(ctx context.Context, jobs []Job, msg Incoming) ActionRe
 
 // shouldForwardKeywordHit reports whether a keyword match should also push to
 // the owner's IM channels (WeChat / Lansenger / …).
-func shouldForwardKeywordHit(job Job, rule KeywordRule) bool {
+// watched is whether the speaker is in job.TargetStaffIDs.
+// hasChannels must reflect NormalizeForwardChannels(job.ForwardChannels).
+func shouldForwardKeywordHit(job Job, rule KeywordRule, watched, hasChannels bool) bool {
 	// No usable channels → never claim a forward (avoids Forwarded=true with empty list).
-	if len(NormalizeForwardChannels(job.ForwardChannels)) == 0 {
+	if !hasChannels {
 		return false
 	}
+	// Explicit per-rule flag: respects keyword scope (engine already gated speaker).
 	if rule.ForwardOnMatch {
 		return true
 	}
-	// Job enabled "forward watched speech" + channels: also forward keyword hits
-	// (including non-target speakers when scope=anyone). Without this, users see
-	// group auto-replies work but never receive channel packages for keyword hits.
-	return job.ForwardOnTargetSpeech
+	// "Forward watched speech" also packages keyword hits from watched people
+	// (upgrades plain speech package to keyword reason). Must not apply to
+	// non-targets — otherwise removing a 盯人对象 while scope=anyone still
+	// keeps forwarding their keyword hits via this piggyback.
+	return job.ForwardOnTargetSpeech && watched
 }
 
-// upsertForward keeps one package per (job, channel). Keyword reason upgrades speech.
-func upsertForward(res *ActionResult, byKey map[string]int, job Job, msg Incoming, reason, keyword string) {
-	_ = markForward(res, byKey, job, msg, reason, keyword)
-}
-
-// markKeywordForward applies keyword forward and reports whether any channel was touched.
-func markKeywordForward(res *ActionResult, byKey map[string]int, job Job, msg Incoming, keyword string) bool {
-	return markForward(res, byKey, job, msg, "keyword", keyword)
-}
-
-func markForward(res *ActionResult, byKey map[string]int, job Job, msg Incoming, reason, keyword string) bool {
-	channels := NormalizeForwardChannels(job.ForwardChannels)
+// markForward packages one owner-channel push per channel. channels must already
+// be canonical (see NormalizeForwardChannels); empty means no-op.
+func markForward(res *ActionResult, byKey map[string]int, job Job, msg Incoming, reason, keyword string, channels []string) bool {
 	if len(channels) == 0 {
 		return false
 	}

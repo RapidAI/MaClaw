@@ -338,6 +338,14 @@ func (g *Gateway) Start(ctx context.Context) error {
 		cancel()
 		return ctx2.Err()
 	}
+	// Register supported slash commands (/summary, …) with the Lansenger server
+	// so they appear in the client command picker. Best-effort with retries;
+	// failures do not block WebSocket connect.
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		g.syncSupportedCommandsBackground(ctx2)
+	}()
 	g.wg.Add(1)
 	go g.connectLoop(ctx2, runID)
 	g.lifecycleMu.Unlock()

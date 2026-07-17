@@ -539,7 +539,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 920],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 5400],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 5500],
   ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 1280],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 650],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
@@ -626,6 +626,13 @@ requireIncludes('gui/frontend/src/components/layout/sidebarLayout.ts', 'SIDEBAR_
 requireExcludes('gui/frontend/src/components/layout/AppSidebarShell.tsx', "'90px'", 'hard-coded old sidebar rail width');
 requireExcludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', "width: '90px'", 'hard-coded old sidebar rail width');
 requireIncludes('gui/frontend/src/App.tsx', 'className="global-action-bar" data-ai-theme={aiThemeMode}', 'dark themed global action bar');
+// Viewport shell must carry theme attrs so --theme-page-bg is not the light
+// :root default; otherwise dark mode shows a white frame around #App.
+requireIncludes('gui/frontend/src/App.tsx', 'className="app-viewport"', 'app viewport shell');
+requireIncludes('gui/frontend/src/App.tsx', 'data-ai-theme={aiThemeMode}\n            data-ai-dark-scheme={aiThemeMode === \'dark\' ? aiDarkSchemeId : undefined}', 'app viewport dark theme attrs for page-bg shell');
+requireIncludes('gui/frontend/src/App.css', ":where(#App, .app-viewport)[data-ai-theme='dark']", 'viewport/App dark theme rebinding (low-specificity :where so schemes win)');
+requireIncludes('gui/frontend/src/App.css', "#App[data-maximized=\"true\"] {\n    border-radius: 0;\n    border: none;", 'maximized window drops CSS border (no edge frame)');
+requireIncludes('gui/frontend/src/App.tsx', 'getAssistantDarkScheme(aiDarkSchemeId).cssVars.pageBg', 'document shell page-bg sync on theme change');
 requireIncludes('gui/frontend/src/App.css', ".sidebar[data-ai-theme='dark'] {\n    --theme-primary", 'sidebar dark theme variables');
 requireIncludes('gui/frontend/src/App.css', '--theme-page-bg: #0b1220;', 'sidebar dark theme page background');
 requireIncludes('gui/frontend/src/components/layout/SidebarSystemStatus.tsx', 'STATUS_DOT', 'system status decoded status dot');

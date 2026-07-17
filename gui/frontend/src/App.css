@@ -852,11 +852,25 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* React mount root must fill the webview; a short root leaves light body
+   (or default white) visible along the right/bottom edges. */
+#root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: inherit;
+}
+
 .app-viewport {
     width: 100vw;
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
+    /* Uses themed --theme-page-bg once data-ai-theme is set on this node.
+       Without the attribute this fell back to :root light #f3f5f8 and showed
+       as a white frame around #App (rounded corners / ui-scale subpixel gaps). */
     background-color: var(--theme-page-bg);
     /* Overridden by App.tsx from Auto (DPI-aware) or manual UI zoom. */
     --ui-scale: 1;
@@ -879,6 +893,8 @@ body {
     width: calc(100% / var(--ui-scale));
     height: calc(100% / var(--ui-scale));
     zoom: var(--ui-scale);
+    /* Keep parent theme page-bg in any fractional zoom remainder. */
+    background-color: inherit;
 }
 
 /* Older engines without CSS zoom (rare for current Wails webviews). */
@@ -929,9 +945,12 @@ body {
 
 /* Maximized window fills the entire screen — no rounded corners needed.
    On Windows 10 (transparent webview), border-radius creates transparent
-   cutouts at the corners when maximized; removing it fixes that. */
+   cutouts at the corners when maximized; removing it fixes that.
+   Also drop the 1px border so a light/theme-mismatched stroke cannot show
+   as a white frame along the right/bottom edges when maximized. */
 #App[data-maximized="true"] {
     border-radius: 0;
+    border: none;
     box-shadow: none;
 }
 
@@ -13821,7 +13840,15 @@ body {
     background: color-mix(in srgb, var(--theme-surface) 94%, transparent);
 }
 
-#App[data-ai-theme='dark'] {
+/* Dark shell palette on both #App and .app-viewport. Viewport must rebind
+   --theme-page-bg itself: it is the parent of #App, so it cannot inherit
+   #App's custom properties. Without this, dark mode leaves a light
+   #f3f5f8 frame (right/bottom 白边) around rounded #App corners.
+   :where() keeps specificity at (0,1,0) so later scheme rules
+   ([data-ai-theme][data-ai-dark-scheme=…], (0,2,0)) can override page-bg
+   etc. A bare #App[data-ai-theme=dark] would win over schemes and pin
+   classic slate forever. */
+:where(#App, .app-viewport)[data-ai-theme='dark'] {
     /* Align UA form/control chrome with the dark palette (buttons, selects, scrollbars). */
     color-scheme: dark;
     --theme-primary: #8fb4dc;

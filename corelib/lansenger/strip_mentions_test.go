@@ -58,6 +58,31 @@ func TestStripBotMentions(t *testing.T) {
 			},
 			want: "/exec echo hi",
 		},
+		{
+			name: "slash command bot postfix",
+			msg:  IncomingMessage{Text: "/summary@测试机器人"},
+			want: "/summary",
+		},
+		{
+			name: "slash command bot postfix with args",
+			msg:  IncomingMessage{Text: "/summary@Bot start"},
+			want: "/summary start",
+		},
+		{
+			name: "leading mention then slash postfix",
+			msg: IncomingMessage{
+				Text: "@Bot /summary@Bot",
+				MentionedBots: []MentionedBot{
+					{ID: "b1", Name: "Bot"},
+				},
+			},
+			want: "/summary",
+		},
+		{
+			name: "fullwidth slash with postfix",
+			msg:  IncomingMessage{Text: "／summary@Bot"},
+			want: "／summary",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

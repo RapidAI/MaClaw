@@ -2,12 +2,9 @@ package commands
 
 import (
 	"flag"
-	"fmt"
 	"strings"
-
 	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
-)
+	"github.com/RapidAI/CodeClaw/corelib/tool")
 
 // RunTool 执行 tool 子命令。
 func RunTool(args []string) error {
@@ -52,12 +49,12 @@ func toolRecommend(args []string) error {
 			"installed": strings.Join(installed, ","),
 		})
 	}
-	fmt.Printf("Recommended tool: %s\n", name)
-	fmt.Printf("Reason: %s\n", reason)
+	Printf("Recommended tool: %s\n", name)
+	Printf("Reason: %s\n", reason)
 	if len(installed) > 0 {
-		fmt.Printf("Installed: %s\n", strings.Join(installed, ", "))
+		Printf("Installed: %s\n", strings.Join(installed, ", "))
 	} else {
-		fmt.Println("Installed: (none detected)")
+		Println("Installed: (none detected)")
 	}
 	return nil
 }
@@ -108,14 +105,14 @@ func toolStatus(args []string) error {
 		return PrintJSON(tools)
 	}
 
-	fmt.Printf("%-15s %-15s %-10s %s\n", "NAME", "DISPLAY", "STATUS", "PATH")
-	fmt.Println(strings.Repeat("-", 65))
+	Printf("%-15s %-15s %-10s %s\n", "NAME", "DISPLAY", "STATUS", "PATH")
+	Println(strings.Repeat("-", 65))
 	for _, t := range tools {
 		status := "未安装"
 		if t.Available {
 			status = "就绪"
 		}
-		fmt.Printf("%-15s %-15s %-10s %s\n", t.Name, t.DisplayName, status, t.Path)
+		Printf("%-15s %-15s %-10s %s\n", t.Name, t.DisplayName, status, t.Path)
 	}
 	return nil
 }

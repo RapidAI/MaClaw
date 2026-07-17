@@ -38,6 +38,8 @@ type srvWeixinGateway interface {
 	SendText(context.Context, weixin.OutgoingText) error
 	SendMedia(context.Context, weixin.OutgoingMedia) error
 	GetContextToken(string) string
+	LastActiveUserID() string
+	ContextSessionsByRecency() [][2]string
 	SetStatusCallback(weixin.StatusCallback)
 }
 
@@ -93,14 +95,14 @@ func (m *srvWeixinGatewayManager) SyncPrincipal(ctx context.Context, p agentserv
 		m.stopPrincipal(p, srvWeixinStatusDisabled, "")
 		return
 	}
-	next := weixin.Config{
-		Token:     token,
-		BaseURL:   fallbackString(strings.TrimSpace(cfg.WeixinBaseURL), weixin.DefaultBaseURL),
-		CDNURL:    fallbackString(strings.TrimSpace(cfg.WeixinCDNURL), weixin.DefaultCDNBaseURL),
-		AccountID: strings.TrimSpace(cfg.WeixinAccountID),
-	}
-
 	key := principalRuntimeKey(p)
+	next := weixin.Config{
+		Token:              token,
+		BaseURL:            fallbackString(strings.TrimSpace(cfg.WeixinBaseURL), weixin.DefaultBaseURL),
+		CDNURL:             fallbackString(strings.TrimSpace(cfg.WeixinCDNURL), weixin.DefaultCDNBaseURL),
+		AccountID:          strings.TrimSpace(cfg.WeixinAccountID),
+		SessionPersistPath: weixin.SessionPersistPathForKey(key),
+	}
 	m.mu.Lock()
 	current := m.runtimes[key]
 	if current != nil && sameWeixinRuntimeConfig(current.config, next) {
@@ -165,6 +167,10 @@ func (m *srvWeixinGatewayManager) SyncPrincipal(ctx context.Context, p agentserv
 	stale := m.runtimes[key] != runtime
 	if !stale {
 		runtime.gateway = gateway
+		// Restore last private peer from disk-backed session tokens.
+		if uid := restoreProactivePeer(gateway); uid != "" {
+			runtime.lastUserID = uid
+		}
 	}
 	m.mu.Unlock()
 	if stale {
@@ -523,6 +529,12 @@ func (m *srvWeixinGatewayManager) SendProactiveTextAny(text string) (peer string
 		}
 		uid := strings.TrimSpace(rt.lastUserID)
 		if uid == "" {
+			uid = restoreProactivePeer(rt.gateway)
+			if uid != "" {
+				rt.lastUserID = uid
+			}
+		}
+		if uid == "" {
 			continue
 		}
 		cands = append(cands, candidate{gw: rt.gateway, userID: uid, p: rt.principal, rt: rt})
@@ -625,7 +637,24 @@ func (m *srvWeixinGatewayManager) clearCachedInstanceID(p agentservice.Principal
 }
 
 func sameWeixinRuntimeConfig(a, b weixin.Config) bool {
-	return a.Token == b.Token && a.BaseURL == b.BaseURL && a.CDNURL == b.CDNURL && a.AccountID == b.AccountID
+	return a.Token == b.Token && a.BaseURL == b.BaseURL && a.CDNURL == b.CDNURL &&
+		a.AccountID == b.AccountID && a.SessionPersistPath == b.SessionPersistPath
+}
+
+// restoreProactivePeer sets lastUserID from persisted gateway sessions when available.
+func restoreProactivePeer(gw srvWeixinGateway) string {
+	if gw == nil {
+		return ""
+	}
+	if uid := strings.TrimSpace(gw.LastActiveUserID()); uid != "" {
+		return uid
+	}
+	for _, pair := range gw.ContextSessionsByRecency() {
+		if uid := strings.TrimSpace(pair[0]); uid != "" {
+			return uid
+		}
+	}
+	return ""
 }
 
 func normalizeSrvWeixinStatus(status string) string {

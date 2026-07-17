@@ -74,13 +74,13 @@ func nlskillEvolution(args []string) error {
 			if err := PersistSkillEvolutionEnabled(false); err != nil {
 				return fmt.Errorf("persist skill_evolution_enabled=false: %w", err)
 			}
-			fmt.Println("Skill evolution disabled (session + config skill_evolution_enabled=false).")
-			fmt.Println("Manual manage_skill trigger_repair/trigger_optimize still work.")
+			Println("Skill evolution disabled (session + config skill_evolution_enabled=false).")
+			Println("Manual manage_skill trigger_repair/trigger_optimize still work.")
 			return nil
 		}
-		fmt.Println("Skill evolution disabled for this process session.")
-		fmt.Println("Tip: use --persist to also write skill_evolution_enabled=false to config.")
-		fmt.Println("(Also respects MACLAW_DISABLE_SKILL_EVOLUTION env.)")
+		Println("Skill evolution disabled for this process session.")
+		Println("Tip: use --persist to also write skill_evolution_enabled=false to config.")
+		Println("(Also respects MACLAW_DISABLE_SKILL_EVOLUTION env.)")
 		return nil
 	case "enable":
 		SetSkillEvolutionSessionDisabled(false)
@@ -88,19 +88,19 @@ func nlskillEvolution(args []string) error {
 			if err := PersistSkillEvolutionEnabled(true); err != nil {
 				return fmt.Errorf("persist skill_evolution_enabled=true: %w", err)
 			}
-			fmt.Println("Skill evolution enabled (session + config skill_evolution_enabled=true).")
+			Println("Skill evolution enabled (session + config skill_evolution_enabled=true).")
 		} else {
-			fmt.Println("Skill evolution session flag cleared.")
-			fmt.Println("Tip: use --persist to also write skill_evolution_enabled=true to config.")
+			Println("Skill evolution session flag cleared.")
+			Println("Tip: use --persist to also write skill_evolution_enabled=true to config.")
 		}
 		if SkillEvolutionEnvDisabled() {
-			fmt.Println("Note: MACLAW_DISABLE_SKILL_EVOLUTION still disables automatic evolution.")
+			Println("Note: MACLAW_DISABLE_SKILL_EVOLUTION still disables automatic evolution.")
 		}
 		// Reflect remaining config disable without --persist
 		if !persist {
 			store := NewFileConfigStore(ResolveDataDir())
 			if cfg, err := store.LoadConfig(); err == nil && !cfg.IsSkillEvolutionEnabled() {
-				fmt.Println("Note: config skill_evolution_enabled=false still disables automatic evolution (use --persist to re-enable).")
+				Println("Note: config skill_evolution_enabled=false still disables automatic evolution (use --persist to re-enable).")
 			}
 		}
 		return nil
@@ -125,15 +125,15 @@ func nlskillList(args []string) error {
 	}
 
 	if len(cfg.NLSkills) == 0 {
-		fmt.Println("无 NL 技能。")
+		Println("无 NL 技能。")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-8s %-8s %-6s %-30s %s\n", "NAME", "STATUS", "SOURCE", "USES", "TRIGGERS", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 100))
+	Printf("%-20s %-8s %-8s %-6s %-30s %s\n", "NAME", "STATUS", "SOURCE", "USES", "TRIGGERS", "DESCRIPTION")
+	Println(strings.Repeat("-", 100))
 	for _, s := range cfg.NLSkills {
 		triggers := strings.Join(s.Triggers, ", ")
-		fmt.Printf("%-20s %-8s %-8s %-6d %-30s %s\n",
+		Printf("%-20s %-8s %-8s %-6d %-30s %s\n",
 			TruncateDisplay(s.Name, 20),
 			s.Status,
 			s.Source,
@@ -183,7 +183,7 @@ func nlskillAdd(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("NL 技能 '%s' 已添加\n", *name)
+	Printf("NL 技能 '%s' 已添加\n", *name)
 	return nil
 }
 
@@ -217,7 +217,7 @@ func nlskillRemove(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("NL 技能 '%s' 已移除。\n", name)
+	Printf("NL 技能 '%s' 已移除。\n", name)
 	return nil
 }
 
@@ -251,7 +251,7 @@ func nlskillToggle(args []string, status string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("NL 技能 '%s' 状态已设为 %s。\n", name, status)
+	Printf("NL 技能 '%s' 状态已设为 %s。\n", name, status)
 	return nil
 }
 
@@ -314,7 +314,7 @@ func nlskillExecute(args []string) error {
 	hasFailure := false
 
 	for i, step := range skill.Steps {
-		fmt.Printf("[Step %d] %s ...\n", i+1, step.Action)
+		Printf("[Step %d] %s ...\n", i+1, step.Action)
 
 		output, execErr := tui_executeStep(step, skill.SkillDir)
 		r := stepResult{Step: i + 1, Action: step.Action}
@@ -325,7 +325,7 @@ func nlskillExecute(args []string) error {
 			r.Output = output
 			results = append(results, r)
 			hasFailure = true
-			fmt.Printf("  ERR %s\n", execErr.Error())
+			Printf("  ERR %s\n", execErr.Error())
 			if step.OnError != "continue" {
 				success = false
 				break
@@ -340,9 +340,9 @@ func nlskillExecute(args []string) error {
 				if len(display) > 200 {
 					display = display[:200] + "..."
 				}
-				fmt.Printf("  OK %s\n", display)
+				Printf("  OK %s\n", display)
 			} else {
-				fmt.Printf("  OK done\n")
+				Printf("  OK done\n")
 			}
 		}
 	}
@@ -389,9 +389,9 @@ func nlskillExecute(args []string) error {
 		})
 	}
 	if success {
-		fmt.Printf("技能 '%s' 执行完成 (%d 步)\n", name, len(results))
+		Printf("技能 '%s' 执行完成 (%d 步)\n", name, len(results))
 	} else {
-		fmt.Printf("技能 '%s' 执行失败\n", name)
+		Printf("技能 '%s' 执行失败\n", name)
 	}
 	return nil
 }

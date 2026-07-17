@@ -2,11 +2,8 @@ package commands
 
 import (
 	"flag"
-	"fmt"
 	"strings"
-
-	"github.com/RapidAI/CodeClaw/corelib/security"
-)
+	"github.com/RapidAI/CodeClaw/corelib/security")
 
 // SecurityReadOnlyFn is set by the main package. When it returns true,
 // security settings modifications are blocked (centralized security mode).
@@ -36,18 +33,18 @@ func policyList(dataDir string, args []string) error {
 		return PrintJSON(rules)
 	}
 	if len(rules) == 0 {
-		fmt.Println("No policy rules.")
+		Println("No policy rules.")
 		return nil
 	}
-	fmt.Printf("Security policy mode: %s\n\n", *mode)
-	fmt.Printf("%-30s %-8s %-15s %-12s %s\n", "NAME", "PRI", "TOOL", "ACTION", "RISK LEVELS")
-	fmt.Println(strings.Repeat("-", 85))
+	Printf("Security policy mode: %s\n\n", *mode)
+	Printf("%-30s %-8s %-15s %-12s %s\n", "NAME", "PRI", "TOOL", "ACTION", "RISK LEVELS")
+	Println(strings.Repeat("-", 85))
 	for _, r := range rules {
 		riskLevels := make([]string, len(r.RiskLevels))
 		for i, rl := range r.RiskLevels {
 			riskLevels[i] = string(rl)
 		}
-		fmt.Printf("%-30s %-8d %-15s %-12s %s\n",
+		Printf("%-30s %-8d %-15s %-12s %s\n",
 			TruncateDisplay(r.Name, 30), r.Priority,
 			TruncateDisplay(r.ToolPattern, 15), string(r.Action),
 			strings.Join(riskLevels, ","))

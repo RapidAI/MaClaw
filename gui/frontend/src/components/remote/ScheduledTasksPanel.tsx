@@ -813,7 +813,7 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, lineHeight: 1.45 }}>
                                                 {t(
                                                     "Pushes to your last active WeChat private chat with the bot. Chat with the bot once first.",
-                                                    "推送到你与机器人最近一次微信私聊会话。请先用微信私聊机器人一次。",
+                                                    "推送到你与机器人最近一次微信私聊会话。首次需私聊一次；会话会记住，重启 Maclaw 后仍可用。",
                                                 )}
                                             </div>
                                         ) : fDelChannel === "telegram" || fDelChannel === "qq" ? (

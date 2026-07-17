@@ -20,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -49,16 +50,27 @@ func applyMCPAuth(req *http.Request, entry corelib.MCPServerEntry) {
 }
 
 // RunMCP 执行 mcp 子命令。
+//
+// Marketplace-style search/install:
+//
+//	maclaw-tui mcp search <query>
+//	maclaw-tui mcp install <id|owner/repo|name@marketplace>
+//	maclaw-tui mcp remove <name>
 func RunMCP(args []string) error {
+	// Action list must stay in sync with InstallCLICatalog["mcp"] (install_cli_catalog.go).
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui mcp <list|add|remove|health-check|tools|call-tool>")
+		return NewUsageError("usage: maclaw-tui mcp <list|search|install|add|remove|health-check|tools|call-tool>")
 	}
 	switch args[0] {
 	case "list":
 		return mcpList(args[1:])
+	case "search":
+		return mcpSearch(args[1:])
+	case "install":
+		return mcpInstall(args[1:])
 	case "add":
 		return mcpAdd(args[1:])
-	case "remove":
+	case "remove", "uninstall", "rm":
 		return mcpRemove(args[1:])
 	case "health-check":
 		return mcpHealthCheck(args[1:])
@@ -67,14 +79,365 @@ func RunMCP(args []string) error {
 	case "call-tool":
 		return mcpCallTool(args[1:])
 	default:
-		return NewUsageError("unknown mcp action: %s", args[0])
+		return NewUsageError("unknown mcp action: %s\nusage: maclaw-tui mcp <list|search|install|add|remove|health-check|tools|call-tool>", args[0])
+	}
+}
+
+func mcpSearch(args []string) error {
+	fs := flag.NewFlagSet("mcp search", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	if err := fs.Parse(args); err != nil {
+		return NewUsageError("usage: maclaw-tui mcp search <query>")
+	}
+	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if query == "" {
+		return NewUsageError("usage: maclaw-tui mcp search <query>")
+	}
+
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, _ := store.LoadConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	type mcpHit struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+		Source      string `json:"source"`
+		InstallRef  string `json:"install_ref,omitempty"`
+		Kind        string `json:"kind"` // market | clawhub | github | plugin
+	}
+	var hits []mcpHit
+
+	seen := map[string]bool{}
+	addHit := func(h mcpHit) {
+		key := strings.ToLower(h.Kind + "|" + h.ID)
+		if h.ID == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		hits = append(hits, h)
+	}
+
+	// 1) HubCenter capability market
+	if items, err := searchCapabilityMarketMCP(ctx, query); err == nil {
+		for _, raw := range items {
+			id := firstMCPString(raw["id"], raw["capability_id"], raw["name"], raw["display_name"])
+			if id == "" {
+				continue
+			}
+			addHit(mcpHit{
+				ID:          id,
+				Name:        firstMCPString(raw["display_name"], raw["name"], id),
+				Description: firstMCPString(raw["description"]),
+				Source:      "capability_market",
+				InstallRef:  id,
+				Kind:        "market",
+			})
+		}
+	}
+
+	// 2) ClawHub + GitHub topic:mcp-server
+	allowed := cfg.SkillSourcesAllowed
+	client := skill.DefaultHubClient()
+	for _, r := range client.SearchMCPFiltered(ctx, query, allowed) {
+		addHit(mcpHit{
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
+			Source:      r.Source,
+			InstallRef:  firstNonEmpty(r.InstallRef, r.RepoURL, r.ID),
+			Kind:        r.Source,
+		})
+	}
+
+	// 3) Registered plugin marketplaces (MCP-capable plugins)
+	if pstore, err := loadPluginMarketplaceStore(); err == nil {
+		q := strings.ToLower(query)
+		for _, m := range pstore.Marketplaces {
+			for _, p := range m.Plugins {
+				hay := strings.ToLower(p.Name + " " + p.Description + " " + p.Category)
+				if !strings.Contains(hay, q) {
+					continue
+				}
+				addHit(mcpHit{
+					ID:          p.Name + "@" + m.Name,
+					Name:        p.Name,
+					Description: p.Description,
+					Source:      "plugin:" + m.Name,
+					InstallRef:  p.Name + "@" + m.Name,
+					Kind:        "plugin",
+				})
+			}
+		}
+	}
+
+	if *jsonOut {
+		return PrintJSON(hits)
+	}
+	if len(hits) == 0 {
+		Printf("No MCP results for %q.\n", query)
+		Println("Tips:")
+		Println("  maclaw-tui plugin marketplace add owner/repo")
+		Println("  maclaw-tui mcp add --name <n> --command <cmd>")
+		Println("  maclaw-tui mcp add --name <n> --url <endpoint>")
+		return nil
+	}
+	Printf("MCP search %q — %d results\n\n", query, len(hits))
+	Printf("%-28s %-12s %-20s %s\n", "ID/SPEC", "SOURCE", "NAME", "DESCRIPTION")
+	Println(strings.Repeat("-", 100))
+	for _, h := range hits {
+		Printf("%-28s %-12s %-20s %s\n",
+			TruncateDisplay(h.ID, 28),
+			TruncateDisplay(h.Source, 12),
+			TruncateDisplay(h.Name, 20),
+			TruncateDisplay(h.Description, 40))
+	}
+	Println("\nInstall:")
+	Println("  maclaw-tui mcp install <id>")
+	Println("  maclaw-tui plugin add <name>@<marketplace>")
+	return nil
+}
+
+func firstMCPString(values ...any) string {
+	for _, v := range values {
+		switch t := v.(type) {
+		case string:
+			if s := strings.TrimSpace(t); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func mcpInstall(args []string) error {
+	fs := flag.NewFlagSet("mcp install", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
+	jsonOut := fs.Bool("json", false, "JSON 格式输出")
+	nameFlag := fs.String("name", "", "覆盖安装后的 MCP 名称")
+	if err := fs.Parse(args); err != nil {
+		return NewUsageError("usage: maclaw-tui mcp install <id|owner/repo|name@marketplace>")
+	}
+	if fs.NArg() == 0 {
+		return NewUsageError("usage: maclaw-tui mcp install <id|owner/repo|name@marketplace>\nexamples:\n  maclaw-tui mcp install ida-pro-mcp@mrexodia\n  maclaw-tui mcp install mrexodia/ida-pro-mcp\n  maclaw-tui mcp install jira-mcp")
+	}
+	ref := strings.TrimSpace(fs.Arg(0))
+
+	// 1) plugin-style name@marketplace
+	if _, market, ok := pluginSpecParts(ref); ok && market != "" {
+		return pluginAdd([]string{ref})
+	}
+
+	// 2) GitHub owner/repo → install as plugin-like MCP source via archive
+	if owner, repo, ok := parseOwnerRepo(ref); ok {
+		return mcpInstallFromGitHub(owner, repo, *nameFlag, *jsonOut)
+	}
+
+	// 3) Capability market id
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	items, err := searchCapabilityMarketMCP(ctx, ref)
+	if err == nil {
+		var match map[string]any
+		for _, raw := range items {
+			id := firstMCPString(raw["id"], raw["capability_id"], raw["name"], raw["display_name"])
+			if strings.EqualFold(id, ref) || strings.EqualFold(firstMCPString(raw["display_name"], raw["name"]), ref) {
+				match = raw
+				break
+			}
+		}
+		if match == nil && len(items) == 1 {
+			match = items[0]
+		}
+		if match != nil {
+			return mcpInstallFromMarketItem(match, *nameFlag, *jsonOut)
+		}
+	}
+
+	// 4) ClawHub / GitHub search hit by id
+	client := skill.DefaultHubClient()
+	results := client.SearchMCPFiltered(ctx, ref, nil)
+	for _, r := range results {
+		if strings.EqualFold(r.ID, ref) || strings.EqualFold(r.Name, ref) || strings.EqualFold(r.InstallRef, ref) {
+			if r.Source == "github" || strings.Contains(r.InstallRef, "/") {
+				owner, repo, ok := parseOwnerRepo(firstNonEmpty(r.InstallRef, r.RepoURL, r.ID))
+				if ok {
+					return mcpInstallFromGitHub(owner, repo, firstNonEmpty(*nameFlag, r.Name), *jsonOut)
+				}
+			}
+			// ClawHub MCP without full package metadata: guide user.
+			return fmt.Errorf("found MCP %q from %s but no install package metadata; use: maclaw-tui mcp add --name %s --command <cmd>  or plugin marketplace install", r.Name, r.Source, r.Name)
+		}
+	}
+
+	return fmt.Errorf("MCP %q not found; try: maclaw-tui mcp search %s", ref, ref)
+}
+
+func mcpInstallFromMarketItem(raw map[string]any, nameOverride string, jsonOut bool) error {
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return err
+	}
+	// Flatten nested mcp metadata if present.
+	meta := map[string]any{}
+	for k, v := range raw {
+		meta[k] = v
+	}
+	if nested, ok := raw["mcp"].(map[string]any); ok {
+		for k, v := range nested {
+			if _, exists := meta[k]; !exists {
+				meta[k] = v
+			}
+		}
+	}
+	name := firstNonEmpty(nameOverride, firstMCPString(meta["name"], meta["display_name"], meta["id"], meta["capability_id"]))
+	if name == "" {
+		return fmt.Errorf("MCP market item missing name")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if command := firstMCPString(meta["command"]); command != "" {
+		if err := enforceMCPClientSecurity(cfg, "bash", map[string]interface{}{"command": command}); err != nil {
+			return err
+		}
+		entry := corelib.LocalMCPServerEntry{
+			ID:        fmt.Sprintf("market-%s-%d", name, time.Now().UnixMilli()),
+			Name:      name,
+			Command:   command,
+			Args:      anyStringSlice(meta["args"]),
+			Env:       anyStringMap(meta["env"]),
+			AutoStart: true,
+			CreatedAt: now,
+			Source:    corelib.MCPSourceMarket,
+		}
+		upsertLocalMCPConfig(&cfg, entry)
+		if err := store.SaveConfig(cfg); err != nil {
+			return err
+		}
+		if jsonOut {
+			return PrintJSON(map[string]any{"status": "installed", "type": "local", "entry": entry})
+		}
+		Printf("本地 MCP '%s' 已从能力市场安装 (command: %s)\n", name, command)
+		return nil
+	}
+	endpoint := firstMCPString(meta["endpoint_url"], meta["url"])
+	if endpoint == "" {
+		return fmt.Errorf("MCP market item %q has neither command nor endpoint_url", name)
+	}
+	if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": endpoint}); err != nil {
+		return err
+	}
+	authType := firstNonEmpty(firstMCPString(meta["auth_type"]), "none")
+	entry := corelib.MCPServerEntry{
+		ID:          fmt.Sprintf("market-%s-%d", name, time.Now().UnixMilli()),
+		Name:        name,
+		EndpointURL: endpoint,
+		AuthType:    authType,
+		Headers:     anyStringMap(meta["headers"]),
+		CreatedAt:   now,
+		Source:      corelib.MCPSourceMarket,
+	}
+	upsertRemoteMCPConfig(&cfg, entry)
+	if err := store.SaveConfig(cfg); err != nil {
+		return err
+	}
+	if jsonOut {
+		return PrintJSON(map[string]any{"status": "installed", "type": "remote", "entry": entry})
+	}
+	Printf("远程 MCP '%s' 已从能力市场安装 (url: %s)\n", name, endpoint)
+	return nil
+}
+
+func mcpInstallFromGitHub(owner, repo, nameOverride string, jsonOut bool) error {
+	// Reuse plugin install pipeline for GitHub MCP packages (Codex/Claude plugin layouts).
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	store, err := loadPluginMarketplaceStore()
+	if err != nil {
+		return err
+	}
+	name := firstNonEmpty(nameOverride, repo)
+	m := pluginMarketplaceEntry{
+		Name:   owner,
+		Source: owner + "/" + repo,
+		Repo:   owner + "/" + repo,
+	}
+	p := marketplacePlugin{
+		Name:       name,
+		SourceType: "url",
+		SourceURL:  "https://github.com/" + owner + "/" + repo + ".git",
+	}
+	installed, err := installPluginFromMarketplace(ctx, &store, m, p)
+	if err != nil {
+		return err
+	}
+	// Record under synthetic marketplace so remove works.
+	if installed.Marketplace == "" {
+		installed.Marketplace = owner
+		installed.Spec = installed.Name + "@" + owner
+	}
+	if err := savePluginMarketplaceStore(store); err != nil {
+		return err
+	}
+	if jsonOut {
+		return PrintJSON(installed)
+	}
+	Printf("MCP package %s installed from GitHub %s/%s\n", installed.Name, owner, repo)
+	if len(installed.MCPNames) > 0 {
+		Printf("  mcp: %s\n", strings.Join(installed.MCPNames, ", "))
+	}
+	if len(installed.SkillNames) > 0 {
+		Printf("  skills: %s\n", strings.Join(installed.SkillNames, ", "))
+	}
+	return nil
+}
+
+func anyStringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		return splitMCPArgs(t)
+	default:
+		return nil
+	}
+}
+
+func anyStringMap(v any) map[string]string {
+	switch t := v.(type) {
+	case map[string]string:
+		return t
+	case map[string]any:
+		out := make(map[string]string, len(t))
+		for k, val := range t {
+			if s, ok := val.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
 func mcpList(args []string) error {
-	fs := flag.NewFlagSet("mcp list", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp list", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
@@ -102,27 +465,27 @@ func mcpList(args []string) error {
 
 	if len(cfg.MCPServers) == 0 && len(cfg.LocalMCPServers) == 0 {
 		if lang == "en" {
-			fmt.Println("No MCP servers configured.")
-			fmt.Printf("Next: %s\n", mcpNextAction(cfg, lang))
-			fmt.Printf("TUI add: %s\n", mcpNextTUICommand(cfg))
+			Println("No MCP servers configured.")
+			Printf("Next: %s\n", mcpNextAction(cfg, lang))
+			Printf("TUI add: %s\n", mcpNextTUICommand(cfg))
 			return nil
 		}
-		fmt.Println("未配置 MCP 服务器。")
-		fmt.Printf("下一步: %s\n", mcpNextAction(cfg, lang))
-		fmt.Printf("TUI 添加: %s\n", mcpNextTUICommand(cfg))
+		Println("未配置 MCP 服务器。")
+		Printf("下一步: %s\n", mcpNextAction(cfg, lang))
+		Printf("TUI 添加: %s\n", mcpNextTUICommand(cfg))
 		return nil
 	}
 
 	if len(cfg.MCPServers) > 0 {
 		if lang == "en" {
-			fmt.Println("Remote MCP servers:")
+			Println("Remote MCP servers:")
 		} else {
-			fmt.Println("远程 MCP 服务器:")
+			Println("远程 MCP 服务器:")
 		}
-		fmt.Printf("  %-20s %-10s %-8s %s\n", "NAME", "AUTH", "SOURCE", "URL")
-		fmt.Println("  " + strings.Repeat("-", 70))
+		Printf("  %-20s %-10s %-8s %s\n", "NAME", "AUTH", "SOURCE", "URL")
+		Println("  " + strings.Repeat("-", 70))
 		for _, s := range cfg.MCPServers {
-			fmt.Printf("  %-20s %-10s %-8s %s\n",
+			Printf("  %-20s %-10s %-8s %s\n",
 				TruncateDisplay(s.Name, 20),
 				s.AuthType,
 				string(s.Source),
@@ -132,15 +495,15 @@ func mcpList(args []string) error {
 
 	if len(cfg.LocalMCPServers) > 0 {
 		if len(cfg.MCPServers) > 0 {
-			fmt.Println()
+			Println()
 		}
 		if lang == "en" {
-			fmt.Println("Local MCP servers:")
+			Println("Local MCP servers:")
 		} else {
-			fmt.Println("本地 MCP 服务器:")
+			Println("本地 MCP 服务器:")
 		}
-		fmt.Printf("  %-20s %-8s %s\n", "NAME", "DISABLED", "COMMAND")
-		fmt.Println("  " + strings.Repeat("-", 60))
+		Printf("  %-20s %-8s %s\n", "NAME", "DISABLED", "COMMAND")
+		Println("  " + strings.Repeat("-", 60))
 		for _, s := range cfg.LocalMCPServers {
 			disabled := "no"
 			if s.Disabled {
@@ -150,16 +513,16 @@ func mcpList(args []string) error {
 			if len(s.Args) > 0 {
 				cmd += " " + strings.Join(s.Args, " ")
 			}
-			fmt.Printf("  %-20s %-8s %s\n",
+			Printf("  %-20s %-8s %s\n",
 				TruncateDisplay(s.Name, 20),
 				disabled,
 				TruncateDisplay(cmd, 50))
 		}
 	}
 	if lang == "en" {
-		fmt.Printf("\nNext: %s\n", mcpNextAction(cfg, lang))
+		Printf("\nNext: %s\n", mcpNextAction(cfg, lang))
 	} else {
-		fmt.Printf("\n下一步: %s\n", mcpNextAction(cfg, lang))
+		Printf("\n下一步: %s\n", mcpNextAction(cfg, lang))
 	}
 	return nil
 }
@@ -191,14 +554,17 @@ func mcpTUIName() string {
 }
 
 func mcpAdd(args []string) error {
-	fs := flag.NewFlagSet("mcp add", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp add", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
 	name := fs.String("name", "", "服务器名称（必填）")
 	endpoint := fs.String("url", "", "远程端点 URL")
 	command := fs.String("command", "", "本地启动命令")
 	authType := fs.String("auth", "none", "认证类型 (none/api_key/bearer)")
 	authSecret := fs.String("secret", "", "认证密钥")
 	mcpArgs := fs.String("args", "", "命令参数（逗号分隔）")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if *name == "" {
 		return NewUsageError("usage: mcp add --name <name> (--url <endpoint> | --command <cmd>)\n推荐: 运行 maclaw-tui mcp，在 TUI 中从模板选择。")
@@ -248,7 +614,7 @@ func mcpAdd(args []string) error {
 		}
 		entry.Args = entryArgs
 		cfg.LocalMCPServers = append(cfg.LocalMCPServers, entry)
-		fmt.Printf("本地 MCP 服务器 '%s' 已添加 (command: %s)\n", *name, *command)
+		Printf("本地 MCP 服务器 '%s' 已添加 (command: %s)\n", *name, *command)
 	} else {
 		if err := enforceMCPClientSecurity(cfg, "web_fetch", map[string]interface{}{"url": *endpoint}); err != nil {
 			return err
@@ -264,7 +630,7 @@ func mcpAdd(args []string) error {
 			Source:      corelib.MCPSourceManual,
 		}
 		cfg.MCPServers = append(cfg.MCPServers, entry)
-		fmt.Printf("远程 MCP 服务器 '%s' 已添加 (url: %s)\n", *name, *endpoint)
+		Printf("远程 MCP 服务器 '%s' 已添加 (url: %s)\n", *name, *endpoint)
 	}
 
 	return store.SaveConfig(cfg)
@@ -295,8 +661,11 @@ func enforceMCPClientSecurity(cfg corelib.AppConfig, name string, args map[strin
 }
 
 func mcpRemove(args []string) error {
-	fs := flag.NewFlagSet("mcp remove", flag.ExitOnError)
-	fs.Parse(args)
+	fs := flag.NewFlagSet("mcp remove", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() == 0 {
 		return NewUsageError("usage: mcp remove <name>")
@@ -336,7 +705,7 @@ func mcpRemove(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("MCP 服务器 '%s' 已移除。\n", name)
+	Printf("MCP 服务器 '%s' 已移除。\n", name)
 	return nil
 }
 
@@ -434,12 +803,12 @@ func mcpHealthCheck(args []string) error {
 	}
 
 	if len(results) == 0 {
-		fmt.Println("未配置 MCP 服务器。")
+		Println("未配置 MCP 服务器。")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-8s %-15s %-10s %s\n", "NAME", "TYPE", "STATUS", "LATENCY", "ENDPOINT")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("%-20s %-8s %-15s %-10s %s\n", "NAME", "TYPE", "STATUS", "LATENCY", "ENDPOINT")
+	Println(strings.Repeat("-", 80))
 	for _, r := range results {
 		ep := r.Endpoint
 		if ep == "" {
@@ -449,7 +818,7 @@ func mcpHealthCheck(args []string) error {
 		if latency == "" {
 			latency = "-"
 		}
-		fmt.Printf("%-20s %-8s %-15s %-10s %s\n",
+		Printf("%-20s %-8s %-15s %-10s %s\n",
 			TruncateDisplay(r.Name, 20), r.Type, r.Status, latency, TruncateDisplay(ep, 40))
 	}
 	return nil
@@ -563,18 +932,18 @@ func mcpTools(args []string) error {
 	}
 
 	if len(tools) == 0 {
-		fmt.Println("未发现 MCP 工具。")
+		Println("未发现 MCP 工具。")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-30s %-40s %s\n", "SERVER", "TOOL", "DESCRIPTION", "PARAMS")
-	fmt.Println(strings.Repeat("-", 100))
+	Printf("%-20s %-30s %-40s %s\n", "SERVER", "TOOL", "DESCRIPTION", "PARAMS")
+	Println(strings.Repeat("-", 100))
 	for _, t := range tools {
 		params := t.Params
 		if params == "" {
 			params = "(no parameters)"
 		}
-		fmt.Printf("%-20s %-30s %-40s %s\n",
+		Printf("%-20s %-30s %-40s %s\n",
 			TruncateDisplay(t.Server, 20), TruncateDisplay(t.Name, 30), TruncateDisplay(t.Desc, 40), params)
 	}
 	return nil

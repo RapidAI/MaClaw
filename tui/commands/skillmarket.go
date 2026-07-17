@@ -122,20 +122,20 @@ func smSearch(args []string) error {
 	}
 
 	if len(result.Results) == 0 {
-		fmt.Println("未找到匹配的 Skill。")
+		Println("未找到匹配的 Skill。")
 		return nil
 	}
 
-	fmt.Printf("Capability Market 搜索结果 — 共 %d 个\n\n", result.Total)
-	fmt.Printf("%-24s %-6s %-5s %-8s %-12s %s\n", "ID", "PRICE", "RATE", "DOWNLOADS", "AUTHOR", "NAME")
-	fmt.Println(strings.Repeat("-", 90))
+	Printf("Capability Market 搜索结果 — 共 %d 个\n\n", result.Total)
+	Printf("%-24s %-6s %-5s %-8s %-12s %s\n", "ID", "PRICE", "RATE", "DOWNLOADS", "AUTHOR", "NAME")
+	Println(strings.Repeat("-", 90))
 	for _, s := range result.Results {
 		price := "free"
 		if s.Price > 0 {
 			price = fmt.Sprintf("%d", s.Price)
 		}
 		rating := fmt.Sprintf("%.1f", s.AvgRating)
-		fmt.Printf("%-24s %-6s %-5s %-8d %-12s %s\n",
+		Printf("%-24s %-6s %-5s %-8d %-12s %s\n",
 			TruncateDisplay(s.ID, 24),
 			price,
 			rating,
@@ -216,8 +216,8 @@ func smSubmit(args []string) error {
 	if *jsonOut {
 		return PrintJSON(result)
 	}
-	fmt.Printf("提交成功，submission_id: %s\n", result.SubmissionID)
-	fmt.Println("  使用 capabilitymarket status <submission_id> 查看审核状态")
+	Printf("提交成功，submission_id: %s\n", result.SubmissionID)
+	Println("  使用 capabilitymarket status <submission_id> 查看审核状态")
 	return nil
 }
 
@@ -260,9 +260,9 @@ func smStatus(args []string) error {
 	if *jsonOut {
 		return PrintJSON(result)
 	}
-	fmt.Printf("提交 %s 状态: %s\n", submissionID, result.Status)
+	Printf("提交 %s 状态: %s\n", submissionID, result.Status)
 	if result.ErrorMsg != "" {
-		fmt.Printf("  错误: %s\n", result.ErrorMsg)
+		Printf("  错误: %s\n", result.ErrorMsg)
 	}
 	return nil
 }
@@ -314,11 +314,11 @@ func smAccount(args []string) error {
 	if *jsonOut {
 		return PrintJSON(info)
 	}
-	fmt.Printf("Capability Market 账户: %s\n", info.Email)
-	fmt.Printf("  状态:     %s\n", info.Status)
-	fmt.Printf("  积分:     %d\n", info.Credits)
-	fmt.Printf("  已结算:   %d\n", info.SettledCredits)
-	fmt.Printf("  待结算:   %d\n", info.PendingSettlement)
-	fmt.Printf("  优惠券:   %d\n", info.VoucherCount)
+	Printf("Capability Market 账户: %s\n", info.Email)
+	Printf("  状态:     %s\n", info.Status)
+	Printf("  积分:     %d\n", info.Credits)
+	Printf("  已结算:   %d\n", info.SettledCredits)
+	Printf("  待结算:   %d\n", info.PendingSettlement)
+	Printf("  优惠券:   %d\n", info.VoucherCount)
 	return nil
 }

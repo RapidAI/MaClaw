@@ -24,8 +24,8 @@ import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './comp
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { agentModeFromTaskTags, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
-import { readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
-import { readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
+import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
+import { getAssistantLightScheme, readStoredAssistantLightSchemeId, writeStoredAssistantLightSchemeId, type AssistantLightSchemeId } from './components/ai/assistantLightSchemes';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } from './utils/hubCredits';
@@ -952,15 +952,22 @@ function App() {
             callBackend(() => IsWebviewTransparent()).catch(() => null),
         ]).then(([rounded, transparent]) => {
             if (rounded !== null) setNativeRounded(rounded);
-            if (transparent) {
-                setWebviewTransparent(true);
-                // Make html/body transparent so CSS border-radius clips to
-                // true transparency on Windows 10.
-                document.documentElement.style.backgroundColor = 'transparent';
-                document.body.style.backgroundColor = 'transparent';
-            }
+            if (transparent) setWebviewTransparent(true);
         });
     }, []);
+    // Keep document shell paint color aligned with the active page theme.
+    // Win10 transparent webview must stay transparent so CSS border-radius
+    // clips to the desktop; elsewhere, mismatched body/html paint shows as
+    // a light frame (right/bottom 白边) around #App corners / zoom gaps.
+    useEffect(() => {
+        const color = webviewTransparent
+            ? 'transparent'
+            : (aiThemeMode === 'dark'
+                ? getAssistantDarkScheme(aiDarkSchemeId).cssVars.pageBg
+                : getAssistantLightScheme(aiLightSchemeId).cssVars.pageBg);
+        document.documentElement.style.backgroundColor = color;
+        document.body.style.backgroundColor = color;
+    }, [aiThemeMode, aiDarkSchemeId, aiLightSchemeId, webviewTransparent]);
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
     
@@ -3587,6 +3594,9 @@ ${instruction}`;
     return (
         <div
             className="app-viewport"
+            data-ai-theme={aiThemeMode}
+            data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined}
+            data-ai-light-scheme={aiThemeMode === 'light' && aiLightSchemeId !== 'default' ? aiLightSchemeId : undefined}
             data-webview-transparent={webviewTransparent ? "true" : undefined}
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >

@@ -109,10 +109,11 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 	}
 
 	gw := weixin.NewGateway(weixin.Config{
-		Token:     cfg.WeixinToken,
-		BaseURL:   baseURL,
-		CDNURL:    cdnURL,
-		AccountID: cfg.WeixinAccountID,
+		Token:              cfg.WeixinToken,
+		BaseURL:            baseURL,
+		CDNURL:             cdnURL,
+		AccountID:          cfg.WeixinAccountID,
+		SessionPersistPath: weixin.DefaultSessionPersistPath(),
 	}, m.onIncomingMessage)
 	gw.SetStatusCallback(m.onStatusChange)
 

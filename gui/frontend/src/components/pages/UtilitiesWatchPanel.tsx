@@ -144,7 +144,7 @@ export function UtilitiesWatchPanel({
                       kwScopeAnyone: '群内任何人',
                       forwardSpeech: '盯人对象发言时转发到我的 IM 通道',
                       forwardChannels: '转发到我的通道（勾选可推送通道）',
-                      forwardKw: '关键字命中时转发（开启「发言转发」时默认也会转）',
+                      forwardKw: '关键字命中时转发到我的通道（任何人范围下也推非盯人对象）',
                       keywords: '关键字规则',
                       addKw: '添加规则',
                       rule: '规则',
@@ -159,12 +159,11 @@ export function UtilitiesWatchPanel({
                       refreshLogs: '刷新日志',
                       openLog: '查看',
                       store: '数据目录',
-                      note: '说明：转发推到「你自己」与机器人的私聊，不是转给其他人。通道显示「在线」不够，必须曾私聊过机器人（显示「可推送」）。蓝信群消息通常需 @机器人 才会推到本机；测试可点通道旁「测」。',
+                      note: '说明：转发推到「你自己」与机器人的私聊，不是转给其他人。首次需私聊机器人一次（显示「可推送」）；会话会落盘，关闭并重开 Maclaw 后仍可推。蓝信群消息通常需 @机器人 才会推到本机；测试可点通道旁「测」。',
                       empty: '暂无盯人任务',
                       saveOk: '已保存',
                       pickGroup: '请选择群',
-                      pickTarget: '请至少选择一个盯人对象（关键字选「任何人」时可暂不选，但建议仍配置盯人列表）',
-                      sessionWarn: '已选通道尚不可推送：请先用该通道私聊机器人一次，或点「测」验证。',
+                      sessionWarn: '已选通道尚不可推送：请先用该通道私聊机器人一次（之后会记住，重启仍可用），或点「测」验证。',
                       forwardLog: '最近转发结果',
                       refreshForward: '刷新结果',
                       testSend: '测',
@@ -199,7 +198,7 @@ export function UtilitiesWatchPanel({
                       kwScopeAnyone: 'Anyone in the group',
                       forwardSpeech: 'Forward watched speech to my IM channels',
                       forwardChannels: 'Forward to my channels (prefer ready)',
-                      forwardKw: 'Forward on keyword (also when speech-forward is on)',
+                      forwardKw: 'Forward keyword hits to my channels (anyone-scope includes non-targets)',
                       keywords: 'Keyword rules',
                       addKw: 'Add rule',
                       rule: 'Rule',
@@ -214,12 +213,11 @@ export function UtilitiesWatchPanel({
                       refreshLogs: 'Refresh logs',
                       openLog: 'View',
                       store: 'Data directory',
-                      note: 'Forward goes to your own private bot session, not other people. Online is not enough — private-chat the bot first (look for “ready”). Lansenger groups often only push @bot messages. Use Test on a channel to verify.',
+                      note: 'Forward goes to your own private bot session, not other people. Private-chat the bot once (“ready”); the session is saved so restarting Maclaw still works. Lansenger groups often only push @bot messages. Use Test on a channel to verify.',
                       empty: 'No people-watch jobs yet',
                       saveOk: 'Saved',
                       pickGroup: 'Select a group',
-                      pickTarget: 'Select at least one target (optional if keyword scope is anyone)',
-                      sessionWarn: 'Selected channels are not push-ready: private-chat the bot on that channel first, or use Test.',
+                      sessionWarn: 'Selected channels are not push-ready: private-chat the bot once (session is remembered across restarts), or use Test.',
                       forwardLog: 'Recent forwards',
                       refreshForward: 'Refresh',
                       testSend: 'Test',
@@ -495,15 +493,13 @@ export function UtilitiesWatchPanel({
             setError(t.pickGroup);
             return;
         }
-        const scopeAnyone = (draft.keyword_scope || 'targets') === 'anyone';
-        const hasKeywordRules = (draft.keywords || []).some((k) => (k.keywords || []).length > 0);
-        if ((draft.record_all || draft.forward_on_target_speech || !scopeAnyone) && !draft.target_staff_ids?.length) {
-            // targets-scope keywords / record / speech-forward need watch list
-            if (!scopeAnyone || draft.record_all || draft.forward_on_target_speech) {
-                setError(t.pickTarget);
-                return;
-            }
-        }
+        const hasKeywordRules = (draft.keywords || []).some((k) =>
+            (k.keywords || []).some((kw) => String(kw || '').trim().length > 0),
+        );
+        const hasTargets = (draft.target_staff_ids || []).length > 0;
+        // Empty 盯人对象 is valid and must be savable: record/speech-forward simply
+        // match nobody. Blocking empty lists previously left old targets on disk
+        // while the UI looked "cleared", so removed people kept being forwarded.
         if (!hasKeywordRules && !draft.record_all && !draft.forward_on_target_speech) {
             setError(isZh ? '请至少启用：记录发言 / 关键字 / 发言转发 之一' : 'Enable record, keywords, or speech forward');
             return;
@@ -523,11 +519,42 @@ export function UtilitiesWatchPanel({
                 setError(apiMissingMsg);
                 return;
             }
-            const raw = await app.UpsertLansengerWatchJob(JSON.stringify(draft));
+            // Always send explicit arrays so empty target lists clear disk state.
+            // Prune target_names to the remaining ids (removed people leave no name residue).
+            const targetIDs = draft.target_staff_ids || [];
+            const prunedNames: Record<string, string> = {};
+            for (const id of targetIDs) {
+                const n = (draft.target_names || {})[id];
+                if (n) prunedNames[id] = n;
+            }
+            const payload: WatchJob = {
+                ...draft,
+                target_staff_ids: targetIDs,
+                target_names: prunedNames,
+                forward_channels: draft.forward_channels || [],
+                keywords: draft.keywords || [],
+            };
+            const raw = await app.UpsertLansengerWatchJob(JSON.stringify(payload));
             if (!aliveRef.current) return;
             const saved = parseWailsJSON<WatchJob>(raw);
-            setDraft(saved);
-            flashHint(t.saveOk);
+            const base = emptyJob(isZh);
+            setDraft({
+                ...base,
+                ...saved,
+                target_staff_ids: saved?.target_staff_ids || [],
+                target_names: saved?.target_names || {},
+                forward_channels: saved?.forward_channels || [],
+                keywords: saved?.keywords?.length ? saved.keywords : base.keywords,
+            });
+            if (!hasTargets && (draft.record_all || draft.forward_on_target_speech)) {
+                flashHint(
+                    isZh
+                        ? '已保存：未选盯人对象，记录/发言转发不会匹配任何人'
+                        : 'Saved: no targets — record/speech-forward match nobody',
+                );
+            } else {
+                flashHint(t.saveOk);
+            }
             await loadJobs();
         } catch (e: any) {
             if (!aliveRef.current) return;

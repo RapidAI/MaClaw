@@ -73,7 +73,9 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		}
 	}
 
-	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser && !h.workflowReviewPending(msg.UserID, msg.IsBackground) {
+	// Short chit-chat only for free-form text — never intercept a classified
+	// slash/install command (defense in depth if phrase lists grow later).
+	if commandKind == imCommandUnknown && !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser && !h.workflowReviewPending(msg.UserID, msg.IsBackground) {
 		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}, true
 	}
 	switch commandKind {
@@ -118,6 +120,8 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		return h.handleMoACommand(msg, trimmed, responseLang), true
 	case imCommandCodingWorkbench:
 		return h.handleCodingWorkbenchIMCommand(msg, trimmed, onProgress, onToken), true
+	case imCommandSkill, imCommandMCP, imCommandPlugin, imCommandInstall:
+		return h.handleInstallIMCommand(commandKind, trimmed, responseLang), true
 	}
 	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)
@@ -281,6 +285,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"    e.g. /goal implement user login with JWT auth\n" +
 			"    sub-commands: status, pause, resume, cancel\n" +
 			"/workflow [type] - list or force-start a workflow\n" +
+			installSlashHelpBlock(lang) +
 			"/summary - (Lansenger group) summarize new group chat since last summary\n" +
 			"/compress - compress conversation history\n" +
 			"/memory - show memory status\n" +
@@ -300,6 +305,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"    例：/goal 實現用戶登錄功能，包含JWT認證\n" +
 			"    子命令：status, pause, resume, cancel\n" +
 			"/workflow [類型] - 列出或強制啟動工作流\n" +
+			installSlashHelpBlock(lang) +
 			"/summary - （藍信群）摘要自上次以來的新群聊討論\n" +
 			"/compress - 壓縮對話歷史\n" +
 			"/memory - 查看記憶狀態\n" +
@@ -319,6 +325,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"    例：/goal 实现用户登录功能，包含JWT认证\n" +
 			"    子命令：status, pause, resume, cancel\n" +
 			"/workflow [类型] - 列出或强制启动工作流\n" +
+			installSlashHelpBlock(lang) +
 			"/summary - （蓝信群）摘要自上次以来的新群聊讨论\n" +
 			"/compress - 压缩对话历史\n" +
 			"/memory - 查看记忆状态\n" +

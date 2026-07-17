@@ -44,9 +44,13 @@ func TruncateDisplay(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// PrintJSON 将值以 JSON 格式输出到 stdout。
+// PrintJSON 将值以 JSON 格式输出到 CLI stdout（CaptureOutput 可捕获）。
+// Holds the stdio read-lock for the full encode so CaptureOutput cannot swap
+// the target mid-write (same guarantee as Println/Printf).
 func PrintJSON(v interface{}) error {
-	enc := json.NewEncoder(os.Stdout)
+	stdioMu.RLock()
+	defer stdioMu.RUnlock()
+	enc := json.NewEncoder(currentStdoutLocked())
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
 }

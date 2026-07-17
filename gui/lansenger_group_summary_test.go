@@ -16,6 +16,12 @@ func TestLansengerGroupSummaryIsCommandAndFilter(t *testing.T) {
 	if lansengergroupsummary.IsSummaryCommand("/summary please") {
 		t.Fatal("extra args should not match bare command")
 	}
+	if lansengergroupsummary.ParseSummaryCommand("/summary start") != lansengergroupsummary.SummaryCmdStart {
+		t.Fatal("expected start")
+	}
+	if lansengergroupsummary.IsSummaryCommand("/summary start") {
+		t.Fatal("start is not bare run")
+	}
 }
 
 func TestLansengerGroupSummaryRecordAndGenerateEmpty(t *testing.T) {
@@ -74,6 +80,70 @@ func TestTryHandleGroupSummaryCommandIgnoresNonCommand(t *testing.T) {
 	}
 	if m.tryHandleGroupSummaryCommand(msg) {
 		t.Fatal("non-command should not be handled")
+	}
+}
+
+func TestMarkSummaryStartAdvancesCursor(t *testing.T) {
+	app := &App{}
+	m := newLansengerGatewayManager(app)
+	svc := m.groupSummaryService()
+	tmp := t.TempDir()
+	svc.store = lansengergroupsummary.NewStore(tmp)
+
+	// Buffer some discussion, then a start command.
+	for i, text := range []string{"旧消息 A", "旧消息 B", "/summary start"} {
+		if _, err := svc.store.Append("g-start", "起点群", "", "u1", "User", text, time.Now().Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := svc.markSummaryStart("g-start", "起点群")
+	if !strings.Contains(body, "已设置摘要起点") {
+		t.Fatalf("unexpected reply: %q", body)
+	}
+	// LoadNew must ignore pre-start messages.
+	msgs, st, err := svc.store.LoadNew("g-start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected no new messages after start, got %#v", msgs)
+	}
+	if st.LastSummarySeq < 3 {
+		t.Fatalf("cursor=%d want >=3 (through start line)", st.LastSummarySeq)
+	}
+
+	// New discussion after start is visible to /summary.
+	if _, err := svc.store.Append("g-start", "起点群", "", "u2", "Bob", "新讨论内容", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _, err = svc.store.LoadNew("g-start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Text != "新讨论内容" {
+		t.Fatalf("want only post-start message, got %#v", msgs)
+	}
+}
+
+func TestTryHandleGroupSummaryStartAndUnknown(t *testing.T) {
+	app := &App{}
+	m := newLansengerGatewayManager(app)
+	// No gateway: still claims the command (returns true) without panicking.
+	startMsg := lansenger.IncomingMessage{
+		ChatType: "group", GroupID: "g1", FromUserID: "u1",
+		Text: "/summary start", IsAtMe: true,
+	}
+	if !m.tryHandleGroupSummaryCommand(startMsg) {
+		t.Fatal("start should be claimed even without gateway send")
+	}
+	// With gateway nil, start returns early after claim — ok.
+
+	unknown := lansenger.IncomingMessage{
+		ChatType: "group", GroupID: "g1", FromUserID: "u1",
+		Text: "/summary nope", IsAtMe: true,
+	}
+	if !m.tryHandleGroupSummaryCommand(unknown) {
+		t.Fatal("unknown args should be claimed")
 	}
 }
 
@@ -149,10 +219,11 @@ func TestExtendMarkPastSummaryCommandsContiguousOnly(t *testing.T) {
 		{Seq: 11, Text: "real B"},
 		{Seq: 12, Text: "/summary"},
 		{Seq: 13, Text: "/摘要"},
+		{Seq: 14, Text: "/summary start"},
 	}
-	// Covered through 11: absorb trailing commands 12,13.
-	if got := extendMarkPastSummaryCommands(raw, 11); got != 13 {
-		t.Fatalf("after 11 mark=%d want 13", got)
+	// Covered through 11: absorb trailing control lines 12–14.
+	if got := extendMarkPastSummaryCommands(raw, 11); got != 14 {
+		t.Fatalf("after 11 mark=%d want 14", got)
 	}
 	// Covered through 10: next is real B (11), must NOT jump to /summary.
 	if got := extendMarkPastSummaryCommands(raw, 10); got != 10 {
@@ -161,7 +232,7 @@ func TestExtendMarkPastSummaryCommandsContiguousOnly(t *testing.T) {
 	// Only commands after empty coverage.
 	raw2 := []lansengergroupsummary.Message{
 		{Seq: 1, Text: "/summary"},
-		{Seq: 2, Text: "/summary"},
+		{Seq: 2, Text: "/summary start"},
 	}
 	if got := extendMarkPastSummaryCommands(raw2, 0); got != 2 {
 		t.Fatalf("commands only mark=%d want 2", got)

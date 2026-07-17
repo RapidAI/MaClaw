@@ -2,14 +2,11 @@ package commands
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
-)
+	"github.com/RapidAI/CodeClaw/corelib/remote")
 
 // RunTemplate 执行 template 子命令。
 func RunTemplate(args []string, dataDir string) error {
@@ -47,17 +44,17 @@ func templateList(mgr *remote.SessionTemplateManager, args []string) error {
 		return PrintJSON(templates)
 	}
 	if len(templates) == 0 {
-		fmt.Println("No templates.")
+		Println("No templates.")
 		return nil
 	}
-	fmt.Printf("%-20s %-12s %-40s %s\n", "NAME", "TOOL", "PROJECT", "CREATED")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("%-20s %-12s %-40s %s\n", "NAME", "TOOL", "PROJECT", "CREATED")
+	Println(strings.Repeat("-", 80))
 	for _, t := range templates {
 		project := t.ProjectPath
 		if len(project) > 40 {
 			project = "..." + project[len(project)-37:]
 		}
-		fmt.Printf("%-20s %-12s %-40s %s\n", t.Name, t.Tool, project, t.CreatedAt)
+		Printf("%-20s %-12s %-40s %s\n", t.Name, t.Tool, project, t.CreatedAt)
 	}
 	return nil
 }
@@ -89,7 +86,7 @@ func templateCreate(mgr *remote.SessionTemplateManager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"name": *name, "status": "created"})
 	}
-	fmt.Printf("Template %q created.\n", *name)
+	Printf("Template %q created.\n", *name)
 	return nil
 }
 
@@ -108,7 +105,7 @@ func templateDelete(mgr *remote.SessionTemplateManager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"name": name, "status": "deleted"})
 	}
-	fmt.Printf("Template %q deleted.\n", name)
+	Printf("Template %q deleted.\n", name)
 	return nil
 }
 

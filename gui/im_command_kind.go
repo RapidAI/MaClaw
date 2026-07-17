@@ -20,6 +20,10 @@ const (
 	imCommandBranch
 	imCommandMoA
 	imCommandCodingWorkbench
+	imCommandSkill   // /skill search|install|list|remove
+	imCommandMCP     // /mcp search|install|list|remove|add
+	imCommandPlugin  // /plugin marketplace|add|remove|search|installed
+	imCommandInstall // other commands added only via shared allowlist JSON
 )
 
 func classifyImmediateIMCommand(trimmed string) imCommandKind {
@@ -60,6 +64,10 @@ func classifyImmediateIMCommand(trimmed string) imCommandKind {
 		lower := strings.ToLower(trimmed)
 		if lower == "/moa" || strings.HasPrefix(lower, "/moa ") {
 			return imCommandMoA
+		}
+		// Skill / MCP / Plugin install commands (slash or bare CLI-style).
+		if kind := classifyInstallIMCommand(trimmed); kind != imCommandUnknown {
+			return kind
 		}
 		// Pure-coding workbench helpers (/plan /review /test /commit /pr /map /checkpoint /agents).
 		if isCodingWorkbenchSlash(trimmed) {

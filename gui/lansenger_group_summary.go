@@ -104,14 +104,20 @@ func (m *lansengerGatewayManager) recordGroupMessage(msg lansenger.IncomingMessa
 	}
 }
 
-// tryHandleGroupSummaryCommand handles @Bot /summary in a group.
+// tryHandleGroupSummaryCommand handles @Bot /summary [start] in a group.
+//
+//   - /summary        — generate a discussion summary from the current cursor
+//   - /summary start  — set the cursor to "now" so earlier buffered messages
+//     are ignored; only messages after this point are included in later /summary
+//
 // Returns true when the command was claimed (success or user-visible error).
 func (m *lansengerGatewayManager) tryHandleGroupSummaryCommand(msg lansenger.IncomingMessage) bool {
 	if m == nil || !isLansengerGroupMessage(msg) {
 		return false
 	}
 	clean := strings.TrimSpace(stripLansengerBotMentions(msg))
-	if !lansengergroupsummary.IsSummaryCommand(clean) {
+	kind := lansengergroupsummary.ParseSummaryCommand(clean)
+	if kind == lansengergroupsummary.SummaryCmdNone {
 		return false
 	}
 	svc := m.groupSummaryService()
@@ -130,34 +136,94 @@ func (m *lansengerGatewayManager) tryHandleGroupSummaryCommand(msg lansenger.Inc
 	opts := m.currentGroupOpts()
 	if groupID == "" {
 		_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
-			msg, "无法识别群 ID，无法生成摘要。", opts, true))
+			msg, "无法识别群 ID，无法处理摘要命令。", opts, true))
 		return true
 	}
 
-	// Claim the in-flight slot before acknowledging, so concurrent /summary
-	// gets a clear busy reply instead of duplicate "正在生成…".
-	if !svc.tryBegin(groupID) {
-		_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
-			msg, "该群正在生成摘要，请稍后再试。", opts, true))
-		return true
-	}
-
-	_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
-		msg, "正在生成群讨论摘要…", opts, true))
-
-	go func() {
+	switch kind {
+	case lansengergroupsummary.SummaryCmdStart:
+		// Serialize with in-flight summary so cursor moves are not racing a mark.
+		if !svc.tryBegin(groupID) {
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+				msg, "该群正在生成摘要，请稍后再试。", opts, true))
+			return true
+		}
+		// defer runs when tryHandle returns (this case returns immediately after).
 		defer svc.end(groupID)
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[lansenger-summary] panic: %v", r)
+		body := svc.markSummaryStart(groupID, msg.GroupName)
+		_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(msg, body, opts, true))
+		return true
+
+	case lansengergroupsummary.SummaryCmdUnknown:
+		_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+			msg, "用法：\n· /summary — 生成从起点（或上次摘要）以来的群讨论摘要\n· /summary start — 将此处设为新起点，忽略此前消息", opts, true))
+		return true
+
+	case lansengergroupsummary.SummaryCmdRun:
+		// Claim the in-flight slot before acknowledging, so concurrent /summary
+		// gets a clear busy reply instead of duplicate "正在生成…".
+		if !svc.tryBegin(groupID) {
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+				msg, "该群正在生成摘要，请稍后再试。", opts, true))
+			return true
+		}
+
+		_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+			msg, "正在生成群讨论摘要…", opts, true))
+
+		go func() {
+			defer svc.end(groupID)
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[lansenger-summary] panic: %v", r)
+				}
+			}()
+			body := svc.generateSummary(groupID, msg.GroupName)
+			if err := gw.SendText(context.Background(), buildLansengerOutgoingText(msg, body, opts)); err != nil {
+				log.Printf("[lansenger-summary] send group=%s: %v", groupID, err)
 			}
 		}()
-		body := svc.generateSummary(groupID, msg.GroupName)
-		if err := gw.SendText(context.Background(), buildLansengerOutgoingText(msg, body, opts)); err != nil {
-			log.Printf("[lansenger-summary] send group=%s: %v", groupID, err)
+		return true
+	}
+	return false
+}
+
+// markSummaryStart advances the summary cursor through the latest buffered
+// message (including this /summary start line) so earlier content is ignored.
+// Does not set LastSummaryAt (not a completed summary).
+func (s *lansengerGroupSummaryService) markSummaryStart(groupID, groupName string) string {
+	if s == nil || s.store == nil {
+		return "群摘要服务不可用。"
+	}
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return "无法识别群 ID。"
+	}
+	st, err := s.store.LoadState(groupID)
+	if err != nil {
+		log.Printf("[lansenger-summary] start load state group=%s: %v", groupID, err)
+		return "设置摘要起点失败，请稍后重试。"
+	}
+	// NextSeq is the last assigned seq (including the just-recorded /summary start).
+	// When NextSeq==0 there is nothing buffered; still report success as a no-op.
+	cursor := st.NextSeq
+	if cursor < st.LastSummarySeq {
+		cursor = st.LastSummarySeq
+	}
+	if cursor > 0 {
+		if err := s.store.MarkCursor(groupID, cursor); err != nil {
+			log.Printf("[lansenger-summary] start mark group=%s: %v", groupID, err)
+			return "设置摘要起点失败，请稍后重试。"
 		}
-	}()
-	return true
+	}
+	gn := strings.TrimSpace(groupName)
+	if gn == "" {
+		gn = strings.TrimSpace(st.GroupName)
+	}
+	if gn != "" {
+		return fmt.Sprintf("已设置摘要起点（%s）。\n此前消息将被忽略；之后的新讨论可用 /summary 生成摘要。", gn)
+	}
+	return "已设置摘要起点。\n此前消息将被忽略；之后的新讨论可用 /summary 生成摘要。"
 }
 
 func (s *lansengerGroupSummaryService) tryBegin(groupID string) bool {
@@ -208,19 +274,20 @@ func (s *lansengerGroupSummaryService) generateSummary(groupID, groupName string
 	cursorSeq := lansengergroupsummary.MaxSeq(rawMsgs)
 	msgs := lansengergroupsummary.FilterSummaryCommands(rawMsgs)
 	if len(msgs) == 0 {
-		// Advance past pure /summary spam so it does not keep reappearing as "new".
+		// Advance past pure /summary control lines so they do not keep reappearing
+		// as "new". Do not set LastSummaryAt — nothing was actually summarized.
 		if cursorSeq > 0 {
-			_ = s.store.MarkSummarized(groupID, cursorSeq, time.Now())
+			_ = s.store.MarkCursor(groupID, cursorSeq)
 		}
 		switch {
 		case !st.LastSummaryAt.IsZero():
 			return fmt.Sprintf("自上次摘要（%s）以来暂无新消息。",
 				st.LastSummaryAt.Local().Format("01-02 15:04"))
-		case st.LastSummarySeq > 0:
-			// Cursor advanced (e.g. expired reclaim / command-only) but no successful summary yet.
+		case st.LastSummarySeq > 0 || cursorSeq > 0:
+			// Cursor advanced (start / reclaim / command-only) but no successful summary yet.
 			return "暂无需要摘要的新群消息。"
 		default:
-			return "暂无可摘要的群消息。\n说明：机器人需能接收群内消息（含未 @ 的发言）才会缓冲内容。首次使用后群成员正常讨论，再 @ 机器人发送 /summary。"
+			return "暂无可摘要的群消息。\n说明：机器人需能接收群内消息（含未 @ 的发言）才会缓冲内容。可用 /summary start 设定起点，之后再 /summary 生成摘要。"
 		}
 	}
 
@@ -319,7 +386,7 @@ func extendMarkPastSummaryCommands(raw []lansengergroupsummary.Message, markSeq 
 				next = m
 			}
 		}
-		if next == nil || !lansengergroupsummary.IsSummaryCommand(next.Text) {
+		if next == nil || !lansengergroupsummary.IsSummaryControlLine(next.Text) {
 			return markSeq
 		}
 		markSeq = next.Seq
@@ -354,7 +421,7 @@ const (
 2. 标注重要发言人的立场（若可从记录看出）。
 3. 不要编造记录中不存在的内容；不确定就写「未明确」。
 4. 控制在 800 字以内，适合即时通讯阅读；可用简短条目，勿使用复杂 Markdown 表格。
-5. 忽略机器人命令行（如 /summary）与无意义灌水。`
+5. 忽略机器人命令行（如 /summary、/summary start）与无意义灌水。`
 
 	lansengerGroupSummaryMapPrompt = `你是群聊分段摘要助手。下面是整段讨论中的一部分消息，请生成本段的中文要点摘要（议题、观点、待办）。
 不要编造；控制在 400 字以内；不要使用复杂 Markdown。`

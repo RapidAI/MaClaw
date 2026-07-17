@@ -217,14 +217,78 @@ func (s *lansengerWatchService) invalidateCache() {
 	s.mu.Unlock()
 }
 
+// putJobInCache makes an upsert visible to processMessage immediately.
+// Warm cache: patch in place (avoids serving a 2s-stale target list).
+// Cold cache: only bump jobsGen — next listJobsCached loads disk (already written).
+func (s *lansengerWatchService) putJobInCache(job lansengerwatch.Job) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobsGen++
+	if s.jobsCache == nil {
+		s.jobsCacheAt = time.Time{}
+		return
+	}
+	next := make([]lansengerwatch.Job, len(s.jobsCache))
+	copy(next, s.jobsCache)
+	found := false
+	for i := range next {
+		if next[i].ID == job.ID {
+			next[i] = job
+			found = true
+			break
+		}
+	}
+	if !found {
+		next = append(next, job)
+	}
+	s.jobsCache = next
+	s.jobsCacheAt = time.Now()
+}
+
+// removeJobFromCache drops a job id from the hot-path cache (or just bumps gen if cold).
+func (s *lansengerWatchService) removeJobFromCache(jobID string) {
+	if s == nil {
+		return
+	}
+	jobID = strings.TrimSpace(jobID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobsGen++
+	if s.jobsCache == nil {
+		s.jobsCacheAt = time.Time{}
+		return
+	}
+	next := make([]lansengerwatch.Job, 0, len(s.jobsCache))
+	for _, j := range s.jobsCache {
+		if j.ID != jobID {
+			next = append(next, j)
+		}
+	}
+	s.jobsCache = next
+	s.jobsCacheAt = time.Now()
+}
+
+// copyWatchJobs returns a shallow copy of the jobs slice (Job structs are value-
+// copied; nested slices are shared read-only on the hot path).
+func copyWatchJobs(jobs []lansengerwatch.Job) []lansengerwatch.Job {
+	if jobs == nil {
+		return nil
+	}
+	out := make([]lansengerwatch.Job, len(jobs))
+	copy(out, jobs)
+	return out
+}
+
 func (s *lansengerWatchService) listJobsCached() []lansengerwatch.Job {
 	if s == nil || s.store == nil {
 		return nil
 	}
 	s.mu.Lock()
 	if s.jobsCache != nil && time.Since(s.jobsCacheAt) < 2*time.Second {
-		out := make([]lansengerwatch.Job, len(s.jobsCache))
-		copy(out, s.jobsCache)
+		out := copyWatchJobs(s.jobsCache)
 		s.mu.Unlock()
 		return out
 	}
@@ -232,30 +296,39 @@ func (s *lansengerWatchService) listJobsCached() []lansengerwatch.Job {
 	s.mu.Unlock()
 
 	// Disk I/O outside service lock so invalidate/UI upserts are not stalled.
+	// At most one re-read if a writer bumped gen while we were on disk (avoids
+	// returning a pre-upsert snapshot that still listed removed 盯人对象).
 	jobs, err := s.store.ListJobs()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err != nil {
-		log.Printf("[lansenger-watch] list jobs: %v", err)
-		if s.jobsCache == nil {
-			return nil
+	for attempt := 0; attempt < 2; attempt++ {
+		s.mu.Lock()
+		if err != nil {
+			log.Printf("[lansenger-watch] list jobs: %v", err)
+			out := copyWatchJobs(s.jobsCache)
+			s.mu.Unlock()
+			return out
 		}
-		out := make([]lansengerwatch.Job, len(s.jobsCache))
-		copy(out, s.jobsCache)
+		if gen != s.jobsGen {
+			// Prefer whatever a concurrent put/remove installed — authoritative.
+			if s.jobsCache != nil {
+				out := copyWatchJobs(s.jobsCache)
+				s.mu.Unlock()
+				return out
+			}
+			if attempt == 0 {
+				gen = s.jobsGen
+				s.mu.Unlock()
+				jobs, err = s.store.ListJobs()
+				continue
+			}
+			// Second pass still cold+racing: install this snapshot and return.
+		}
+		s.jobsCache = copyWatchJobs(jobs)
+		s.jobsCacheAt = time.Now()
+		out := copyWatchJobs(s.jobsCache)
+		s.mu.Unlock()
 		return out
 	}
-	// Drop stale load if a writer invalidated while we were on disk.
-	if gen != s.jobsGen {
-		// Prefer a fresh read next call; still return latest disk snapshot we got.
-		out := make([]lansengerwatch.Job, len(jobs))
-		copy(out, jobs)
-		return out
-	}
-	s.jobsCache = jobs
-	s.jobsCacheAt = time.Now()
-	out := make([]lansengerwatch.Job, len(jobs))
-	copy(out, jobs)
-	return out
+	return nil
 }
 
 // processMessage is the IM hot path: roster + record + keyword reply/CLI + private forward.
@@ -534,25 +607,97 @@ func (s *lansengerWatchService) deliverToOwnerChannel(channel, text string) erro
 			return fmt.Errorf("蓝信推送失败: %w", err)
 		}
 		return nil
-	case lansengerwatch.ChannelTelegram, lansengerwatch.ChannelQQ, lansengerwatch.ChannelHub:
-		// Portable owner-channel path: Hub proactive → last active bound IM.
-		hc := s.app.hubClient()
-		if hc == nil || !hc.IsConnected() {
-			// Try ensure for hub channel only
-			if channel == lansengerwatch.ChannelHub {
-				hc = s.app.ensureHubClient()
-			}
-		}
-		if hc == nil || !hc.IsConnected() {
-			return fmt.Errorf("%s 需要 Hub 已连接", channel)
-		}
-		if err := hc.SendIMProactiveMessage(text); err != nil {
-			return fmt.Errorf("%s 推送失败: %w", channel, err)
+	case lansengerwatch.ChannelQQ:
+		// Prefer local QQ bot (config owner openid or last chat); fall back to Hub.
+		return s.deliverQQOwnerChannel(text)
+	case lansengerwatch.ChannelTelegram:
+		// Prefer local Telegram last chat; fall back to Hub.
+		return s.deliverTelegramOwnerChannel(text)
+	case lansengerwatch.ChannelHub:
+		// Explicit Hub channel may spin up the client if configured.
+		if err := s.sendHubProactive(text, true); err != nil {
+			return fmt.Errorf("hub 推送失败: %w", err)
 		}
 		return nil
 	default:
 		return fmt.Errorf("未知通道 %q", channel)
 	}
+}
+
+// sendHubProactive pushes via Hub. When ensure is true, may start the Hub client
+// (used for the dedicated "hub" channel). Fallback paths pass ensure=false so
+// 盯人 does not cold-start Hub infrastructure unexpectedly.
+func (s *lansengerWatchService) sendHubProactive(text string, ensure bool) error {
+	if s == nil || s.app == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	hc := s.app.hubClient()
+	if (hc == nil || !hc.IsConnected()) && ensure {
+		hc = s.app.ensureHubClient()
+	}
+	if hc == nil || !hc.IsConnected() {
+		return fmt.Errorf("Hub 未连接")
+	}
+	return hc.SendIMProactiveMessage(text)
+}
+
+// deliverLocalOrHub tries local push first (when tryLocal != nil), then Hub
+// (only if already connected — does not cold-start Hub).
+// noPathHint is returned when there is no local path and Hub is also unavailable.
+func (s *lansengerWatchService) deliverLocalOrHub(label, text string, tryLocal func() error, noPathHint string) error {
+	var localErr error
+	if tryLocal != nil {
+		if err := tryLocal(); err == nil {
+			return nil
+		} else {
+			localErr = err
+			log.Printf("[lansenger-watch] %s local push failed, trying Hub: %v", label, err)
+		}
+	}
+	if err := s.sendHubProactive(text, false); err != nil {
+		if localErr != nil {
+			return fmt.Errorf("%s 推送失败: local=%v; hub=%w", label, localErr, err)
+		}
+		if tryLocal != nil {
+			return fmt.Errorf("%s 推送失败: %w", label, err)
+		}
+		return fmt.Errorf("%s", noPathHint)
+	}
+	return nil
+}
+
+// deliverQQOwnerChannel tries local QQ bot first, then Hub proactive.
+func (s *lansengerWatchService) deliverQQOwnerChannel(text string) error {
+	s.app.ensureQQBotGateway()
+	var tryLocal func() error
+	if s.app.qqBotGateway != nil && s.app.qqBotGateway.HasProactiveSession() {
+		tryLocal = func() error {
+			_, err := s.app.qqBotGateway.SendProactiveText("self", text)
+			return err
+		}
+	}
+	hint := "QQ 无可用私聊会话：请在设置中填写 owner openid，或先用 QQ 私聊机器人一次"
+	if s.app.qqBotGateway == nil {
+		hint = "QQ 未启用本地网关且 Hub 未连接"
+	}
+	return s.deliverLocalOrHub("QQ", text, tryLocal, hint)
+}
+
+// deliverTelegramOwnerChannel tries local last chat first, then Hub proactive.
+func (s *lansengerWatchService) deliverTelegramOwnerChannel(text string) error {
+	s.app.ensureTelegramGateway()
+	var tryLocal func() error
+	if s.app.telegramGateway != nil && s.app.telegramGateway.HasProactiveSession() {
+		tryLocal = func() error {
+			_, err := s.app.telegramGateway.SendProactiveText(0, text)
+			return err
+		}
+	}
+	hint := "Telegram 无可用私聊会话：请在设置中填写 owner chat_id，或先给机器人发一条消息"
+	if s.app.telegramGateway == nil {
+		hint = "Telegram 未启用本地网关且 Hub 未连接"
+	}
+	return s.deliverLocalOrHub("Telegram", text, tryLocal, hint)
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +735,8 @@ func (a *App) UpsertLansengerWatchJob(jobJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	svc.invalidateCache()
+	// Hot path must see the new target list immediately after save.
+	svc.putJobInCache(saved)
 	data, err := json.Marshal(saved)
 	if err != nil {
 		return "", err
@@ -607,7 +753,7 @@ func (a *App) DeleteLansengerWatchJob(jobID string) error {
 	if err := svc.store.DeleteJob(jobID); err != nil {
 		return err
 	}
-	svc.invalidateCache()
+	svc.removeJobFromCache(jobID)
 	return nil
 }
 
@@ -936,12 +1082,26 @@ func (a *App) ListLansengerWatchChannels() (string, error) {
 		lsSession = a.lansengerGateway.HasProactiveSession()
 	}
 	tgStatus := "disconnected"
+	tgOnline := false
+	tgSession := false
 	if a.telegramGateway != nil {
 		tgStatus = a.telegramGateway.Status()
+		tgOnline = strings.EqualFold(tgStatus, "connected")
+		tgSession = a.telegramGateway.HasProactiveSession()
+	} else if cfg.TelegramBotOwnerChatID.Int64() != 0 {
+		// Configured peer known even before gateway manager is created.
+		tgSession = true
 	}
 	qqStatus := "disconnected"
+	qqOnline := false
+	qqSession := false
 	if a.qqBotGateway != nil {
 		qqStatus = a.qqBotGateway.Status()
+		qqOnline = strings.EqualFold(qqStatus, "connected")
+		qqSession = a.qqBotGateway.HasProactiveSession()
+	} else if strings.TrimSpace(cfg.QQBotOwnerOpenID) != "" {
+		// Configured peer known even before gateway manager is created.
+		qqSession = true
 	}
 
 	wxEnabled := cfg.WeixinEnabled
@@ -949,11 +1109,17 @@ func (a *App) ListLansengerWatchChannels() (string, error) {
 	tgEnabled := cfg.TelegramBotEnabled
 	qqEnabled := cfg.QQBotEnabled
 
+	// Telegram/QQ: "online" if local gateway connected or Hub can forward.
+	tgLocalReady := tgEnabled && tgOnline && tgSession
+	tgHubReady := tgEnabled && hubOK
+	qqLocalReady := qqEnabled && qqOnline && qqSession
+	qqHubReady := qqEnabled && hubOK
+
 	channels := []WatchIMChannel{
 		{
 			ID: lansengerwatch.ChannelWeixin, Label: "微信",
 			Enabled: wxEnabled, Online: wxEnabled && wxOnline, SessionReady: wxEnabled && wxOnline && wxSession,
-			Detail: statusDetailWithSession(wxEnabled, wxStatus, wxSession, "请先用微信私聊机器人一次"),
+			Detail: statusDetailWithSession(wxEnabled, wxStatus, wxSession, "请先用微信私聊机器人一次（会话失效后也需再聊）"),
 		},
 		{
 			ID: lansengerwatch.ChannelLansenger, Label: "蓝信",
@@ -962,13 +1128,13 @@ func (a *App) ListLansengerWatchChannels() (string, error) {
 		},
 		{
 			ID: lansengerwatch.ChannelTelegram, Label: "Telegram",
-			Enabled: tgEnabled, Online: tgEnabled && hubOK, SessionReady: tgEnabled && hubOK,
-			Detail: statusDetailWithSession(tgEnabled, tgStatus, hubOK, "需 Hub 已连接（经 Hub 主动推送）"),
+			Enabled: tgEnabled, Online: tgEnabled && (tgOnline || hubOK), SessionReady: tgLocalReady || tgHubReady,
+			Detail: statusDetailLocalOrHub(tgEnabled, tgStatus, tgLocalReady, hubOK, "请在设置填写 owner chat_id，或先给机器人发一条消息"),
 		},
 		{
 			ID: lansengerwatch.ChannelQQ, Label: "QQ",
-			Enabled: qqEnabled, Online: qqEnabled && hubOK, SessionReady: qqEnabled && hubOK,
-			Detail: statusDetailWithSession(qqEnabled, qqStatus, hubOK, "需 Hub 已连接（经 Hub 主动推送）"),
+			Enabled: qqEnabled, Online: qqEnabled && (qqOnline || hubOK), SessionReady: qqLocalReady || qqHubReady,
+			Detail: statusDetailLocalOrHub(qqEnabled, qqStatus, qqLocalReady, hubOK, "请在设置填写 owner openid，或先私聊机器人一次"),
 		},
 		{
 			ID: lansengerwatch.ChannelHub, Label: "Hub（最近活跃 IM）",
@@ -1047,6 +1213,28 @@ func statusDetailWithSession(enabled bool, status string, sessionReady bool, nee
 		return "在线 · 可推送"
 	}
 	return "在线 · 不可推送：" + needSessionHint
+}
+
+// statusDetailLocalOrHub describes QQ/Telegram pathways that can push via
+// local gateway and/or Hub fallback.
+func statusDetailLocalOrHub(enabled bool, localStatus string, localReady, hubOK bool, needSessionHint string) string {
+	if !enabled {
+		return "未在设置中启用"
+	}
+	if localReady {
+		return "本地可推送"
+	}
+	if hubOK {
+		return "可经 Hub 推送"
+	}
+	st := strings.TrimSpace(localStatus)
+	if st == "" {
+		st = "disconnected"
+	}
+	if strings.EqualFold(st, "connected") {
+		return "在线 · 不可推送：" + needSessionHint
+	}
+	return "状态:" + st + " · " + needSessionHint + "（或连接 Hub）"
 }
 
 

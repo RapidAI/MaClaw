@@ -610,8 +610,10 @@ export namespace main {
 	    qqbot_enabled: boolean;
 	    qqbot_app_id: string;
 	    qqbot_app_secret: string;
+	    qqbot_owner_openid: string;
 	    telegram_bot_enabled: boolean;
 	    telegram_bot_token: string;
+	    telegram_owner_chat_id: string;
 	    weixin_enabled: boolean;
 	    weixin_token: string;
 	    weixin_base_url: string;
@@ -795,8 +797,10 @@ export namespace main {
 	        this.qqbot_enabled = source["qqbot_enabled"];
 	        this.qqbot_app_id = source["qqbot_app_id"];
 	        this.qqbot_app_secret = source["qqbot_app_secret"];
+	        this.qqbot_owner_openid = source["qqbot_owner_openid"];
 	        this.telegram_bot_enabled = source["telegram_bot_enabled"];
 	        this.telegram_bot_token = source["telegram_bot_token"];
+	        this.telegram_owner_chat_id = source["telegram_owner_chat_id"];
 	        this.weixin_enabled = source["weixin_enabled"];
 	        this.weixin_token = source["weixin_token"];
 	        this.weixin_base_url = source["weixin_base_url"];

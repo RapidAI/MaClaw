@@ -64,6 +64,10 @@ type Config struct {
 	BaseURL   string // defaults to DefaultBaseURL
 	CDNURL    string // defaults to DefaultCDNBaseURL
 	AccountID string
+	// SessionPersistPath is where proactive context tokens are stored so
+	// 盯人/scheduled push survives app restart. Empty disables disk I/O.
+	// Production callers should pass DefaultSessionPersistPath().
+	SessionPersistPath string
 }
 
 func (c Config) baseURL() string {
@@ -372,25 +376,7 @@ func newContextTokenCache() *contextTokenCache {
 	return &contextTokenCache{tokens: make(map[string]contextTokenEntry)}
 }
 
-func (c *contextTokenCache) Set(userID, token string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.tokens[userID] = contextTokenEntry{token: token, updated: time.Now()}
-	// Evict oldest entries if cache exceeds limit
-	if len(c.tokens) > maxContextTokenCacheSize {
-		var oldestKey string
-		var oldestTime time.Time
-		for k, v := range c.tokens {
-			if oldestKey == "" || v.updated.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = v.updated
-			}
-		}
-		if oldestKey != "" {
-			delete(c.tokens, oldestKey)
-		}
-	}
-}
+// Set / SetWithTime live in session_persist.go (with optional disk flush via Gateway).
 
 func (c *contextTokenCache) Get(userID string) string {
 	c.mu.RLock()
@@ -463,12 +449,19 @@ type Gateway struct {
 	client    *http.Client
 	ctxTokens *contextTokenCache
 
+	// sessionPersistPath empty disables disk; otherwise load on start / save on chat.
+	sessionPersistPath string
+	// Debounced disk flush for context tokens (message storms).
+	persistMu      sync.Mutex
+	persistTimer   *time.Timer
+	persistWriteMu sync.Mutex // serializes concurrent flush / AfterFunc writes
+
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	running bool
 
-	// Last active user for diagnostic broadcast
+	// Last active user for diagnostic broadcast / proactive self-notify
 	lastActiveUID string
 
 	// Per-user message processing locks — ensures messages from the same
@@ -500,16 +493,25 @@ type Gateway struct {
 }
 
 // NewGateway creates a new WeChat gateway.
+// When Config.SessionPersistPath is set (production passes DefaultSessionPersistPath),
+// restores context tokens from disk so 盯人/scheduled push survives restarts.
 func NewGateway(config Config, handler MessageHandler) *Gateway {
-	return &Gateway{
-		config:           config,
-		handler:          handler,
-		client:           &http.Client{},
-		ctxTokens:        newContextTokenCache(),
-		userLocks:        make(map[string]*sync.Mutex),
-		queueNoticeTimes: make(map[string]time.Time),
-		correctionStore:  progress.NewCorrectionStore(),
+	persistPath := strings.TrimSpace(config.SessionPersistPath)
+	if persistPath == "-" {
+		persistPath = "" // explicitly disabled
 	}
+	g := &Gateway{
+		config:             config,
+		handler:            handler,
+		client:             &http.Client{},
+		ctxTokens:          newContextTokenCache(),
+		sessionPersistPath: persistPath,
+		userLocks:          make(map[string]*sync.Mutex),
+		queueNoticeTimes:   make(map[string]time.Time),
+		correctionStore:    progress.NewCorrectionStore(),
+	}
+	g.loadPersistedSessions()
+	return g
 }
 
 // SetStatusCallback sets a callback for connection status changes.
@@ -674,6 +676,8 @@ func (g *Gateway) Stop() error {
 	g.mu.Lock()
 	if !g.running {
 		g.mu.Unlock()
+		// Still flush any debounced session write from a prior run.
+		g.flushSessionPersist()
 		return nil
 	}
 	wl.Log("gw.stop", "---", "-", "begin")
@@ -686,6 +690,8 @@ func (g *Gateway) Stop() error {
 
 	g.wg.Wait()        // wait for pollLoop to exit
 	g.handlerWg.Wait() // wait for in-flight handler goroutines
+	// Ensure last proactive session is on disk before process/gateway teardown.
+	g.flushSessionPersist()
 	log.Printf("[weixin/gw] stopped")
 	wl.Log("gw.stop", "---", "-", "done")
 	g.emitStatus("disconnected")
@@ -756,6 +762,73 @@ func (g *Gateway) buildHeaders() http.Header {
 	return h
 }
 
+// APIStatusError is a structured WeChat bot API failure.
+type APIStatusError struct {
+	Label   string
+	Ret     int
+	Errcode int
+	Code    int
+	ErrMsg  string
+	RespLen int
+}
+
+func (e *APIStatusError) Error() string {
+	if e == nil {
+		return "weixin: api error"
+	}
+	return fmt.Sprintf("weixin: %s API error ret=%d errcode=%d code=%d errmsg=%q resp_len=%d",
+		e.Label, e.Ret, e.Errcode, e.Code, e.ErrMsg, e.RespLen)
+}
+
+// IsContextSessionError reports whether the failure likely means the per-user
+// context_token is stale/invalid (caller should drop cache and re-chat).
+// Intentionally avoids bare "token"/"非法" matches so auth/rate-limit errors
+// do not wipe a still-valid private session.
+func IsContextSessionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIStatusError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		if apiErr.Errcode == sessionExpiredErrcode || apiErr.Ret == sessionExpiredErrcode {
+			return true
+		}
+		if isContextSessionMessage(apiErr.ErrMsg) {
+			return true
+		}
+	}
+	return isContextSessionMessage(err.Error())
+}
+
+func isContextSessionMessage(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if msg == "" {
+		return false
+	}
+	// Explicit context_token wording (API / logs).
+	if strings.Contains(msg, "context_token") || strings.Contains(msg, "context token") {
+		return true
+	}
+	// Chinese product/API phrases.
+	if strings.Contains(msg, "上下文") ||
+		strings.Contains(msg, "会话失效") ||
+		strings.Contains(msg, "会话过期") ||
+		strings.Contains(msg, "会话已失效") {
+		return true
+	}
+	// "context" + invalid/expired, or "session" + invalid/expired.
+	hasContext := strings.Contains(msg, "context")
+	hasSession := strings.Contains(msg, "session")
+	bad := strings.Contains(msg, "invalid") ||
+		strings.Contains(msg, "illegal") ||
+		strings.Contains(msg, "expire") ||
+		strings.Contains(msg, "expired") ||
+		strings.Contains(msg, "stale") ||
+		strings.Contains(msg, "过期") ||
+		strings.Contains(msg, "失效")
+	return (hasContext || hasSession) && bad
+}
+
 func validateAPIStatus(label string, data []byte) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -769,7 +842,14 @@ func validateAPIStatus(label string, data []byte) error {
 		return nil
 	}
 	if apiStatusValue(status.Ret) != 0 || apiStatusValue(status.Errcode) != 0 || apiStatusCodeError(status.Code) {
-		return fmt.Errorf("weixin: %s API error ret=%d errcode=%d code=%d errmsg=%q resp_len=%d", label, apiStatusValue(status.Ret), apiStatusValue(status.Errcode), apiStatusValue(status.Code), firstNonEmpty(status.ErrMsg, status.Message), len(trimmed))
+		return &APIStatusError{
+			Label:   label,
+			Ret:     apiStatusValue(status.Ret),
+			Errcode: apiStatusValue(status.Errcode),
+			Code:    apiStatusValue(status.Code),
+			ErrMsg:  firstNonEmpty(status.ErrMsg, status.Message),
+			RespLen: len(trimmed),
+		}
 	}
 	return nil
 }
@@ -944,15 +1024,8 @@ func (g *Gateway) processIncomingMessage(ctx context.Context, msg weixinMessage)
 		return
 	}
 
-	// Track last active user for diagnostic broadcast
-	g.mu.Lock()
-	g.lastActiveUID = fromUserID
-	g.mu.Unlock()
-
-	// Cache context token
-	if msg.ContextToken != "" {
-		g.ctxTokens.Set(fromUserID, msg.ContextToken)
-	}
+	// Track last active user + cache context token (persist for restart).
+	g.rememberInboundSession(fromUserID, msg.ContextToken)
 
 	// Extract text body
 	text := extractTextBody(msg.ItemList)
@@ -1331,7 +1404,10 @@ func (g *Gateway) sendTextChunk(ctx context.Context, to, text, contextToken stri
 	if err != nil {
 		return err
 	}
-	return validateAPIStatus("sendmessage", data)
+	if err := validateAPIStatus("sendmessage", data); err != nil {
+		return g.maybeInvalidateOnSendError(to, err)
+	}
+	return nil
 }
 
 // SendMedia uploads media to CDN and sends it to a WeChat user.
@@ -1477,7 +1553,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		return err
 	}
 	if err := validateAPIStatus("sendmessage", data); err != nil {
-		return err
+		return g.maybeInvalidateOnSendError(msg.ToUserID, err)
 	}
 	wl.Log("gw.SendMedia", "OUT", msg.ToUserID, "OK media=%s sendmessage_resp_len=%d", msg.MediaType, len(data))
 

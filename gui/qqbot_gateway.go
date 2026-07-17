@@ -13,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/improactive"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
@@ -40,9 +41,11 @@ type qqBotGatewayManager struct {
 }
 
 func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
+	peers := improactive.NewStore("").LoadOrEmpty()
 	return &qqBotGatewayManager{
-		app:    app,
-		status: gatewayConnectionStatusDisconnected,
+		app:        app,
+		status:     gatewayConnectionStatusDisconnected,
+		lastOpenID: strings.TrimSpace(peers.QQLastOpenID),
 	}
 }
 
@@ -78,10 +81,11 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		return
 	}
 
-	// Should be running — check if config actually changed
+	// Should be running — check if credentials actually changed.
+	// Owner openid can change without restarting the WS gateway (resolved via LoadConfig).
 	if m.gateway != nil && m.lastAppID == cfg.QQBotAppID && m.lastSecret == cfg.QQBotAppSecret {
 		m.mu.Unlock()
-		return // config unchanged, gateway already running
+		return
 	}
 
 	// Restart with new config
@@ -273,11 +277,58 @@ func (m *qqBotGatewayManager) noteLastOpenID(openID string) {
 		return
 	}
 	m.mu.Lock()
+	prev := m.lastOpenID
 	m.lastOpenID = openID
 	m.mu.Unlock()
+	if prev == openID {
+		return
+	}
+	if err := improactive.NewStore("").Patch(func(p *improactive.Peers) {
+		p.QQLastOpenID = openID
+	}); err != nil {
+		log.Printf("[qqbot-mgr] persist last openid: %v", err)
+	}
 }
 
-// SendProactiveText sends text to openID, or to the last active peer when empty/self.
+// ownerOpenIDFromConfig returns the fixed owner openid from app settings (if any).
+func (m *qqBotGatewayManager) ownerOpenIDFromConfig() string {
+	if m == nil || m.app == nil {
+		return ""
+	}
+	cfg, err := m.app.LoadConfig()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.QQBotOwnerOpenID)
+}
+
+// ResolveProactiveOpenID picks the C2C peer for owner push:
+// concrete openid → config qqbot_owner_openid → last private chat openid.
+func (m *qqBotGatewayManager) ResolveProactiveOpenID(openID string) string {
+	if m == nil {
+		return ""
+	}
+	openID = strings.TrimSpace(openID)
+	if openID != "" && !scheduler.IsSelfPeerID(openID) {
+		return openID
+	}
+	if cfgOID := m.ownerOpenIDFromConfig(); cfgOID != "" {
+		return cfgOID
+	}
+	m.mu.Lock()
+	last := strings.TrimSpace(m.lastOpenID)
+	m.mu.Unlock()
+	return last
+}
+
+// HasProactiveSession reports whether a QQ C2C peer is known for self-notify
+// (configured owner openid or remembered last private chat).
+func (m *qqBotGatewayManager) HasProactiveSession() bool {
+	return m.ResolveProactiveOpenID("self") != ""
+}
+
+// SendProactiveText sends text to openID, or to the owner peer when empty/self.
+// Resolution order for self: config qqbot_owner_openid → last private openid.
 // On success returns the concrete openid used.
 func (m *qqBotGatewayManager) SendProactiveText(openID, text string) (usedOpenID string, err error) {
 	text = strings.TrimSpace(text)
@@ -287,18 +338,15 @@ func (m *qqBotGatewayManager) SendProactiveText(openID, text string) (usedOpenID
 	if m == nil {
 		return "", fmt.Errorf("qqbot gateway is nil")
 	}
-	openID = strings.TrimSpace(openID)
+	openID = m.ResolveProactiveOpenID(openID)
 	m.mu.Lock()
 	gw := m.gateway
-	if scheduler.IsSelfPeerID(openID) {
-		openID = m.lastOpenID
-	}
 	m.mu.Unlock()
 	if gw == nil {
 		return "", fmt.Errorf("qqbot gateway not running")
 	}
 	if openID == "" {
-		return "", fmt.Errorf("no active qq session (先用 QQ 私聊机器人一次，或填写 openid)")
+		return "", fmt.Errorf("no active qq session (先用 QQ 私聊机器人一次，或在设置中填写 owner openid)")
 	}
 	if err := gw.SendText(context.Background(), qqbot.OutgoingText{OpenID: openID, Text: text}); err != nil {
 		return "", err

@@ -51,11 +51,11 @@ func scheduleList(mgr *scheduler.Manager, args []string) error {
 		return PrintJSON(tasks)
 	}
 	if len(tasks) == 0 {
-		fmt.Println("No scheduled tasks.")
+		Println("No scheduled tasks.")
 		return nil
 	}
-	fmt.Printf("%-20s %-20s %-8s %-8s %-10s %-6s %s\n", "ID", "NAME", "TYPE", "STATUS", "SCHEDULE", "RUNS", "ACTION")
-	fmt.Println(strings.Repeat("-", 105))
+	Printf("%-20s %-20s %-8s %-8s %-10s %-6s %s\n", "ID", "NAME", "TYPE", "STATUS", "SCHEDULE", "RUNS", "ACTION")
+	Println(strings.Repeat("-", 105))
 	for _, t := range tasks {
 		action := TruncateDisplay(t.Action, 30)
 		var schedStr string
@@ -68,7 +68,7 @@ func scheduleList(mgr *scheduler.Manager, args []string) error {
 		if taskType == "" {
 			taskType = "reminder"
 		}
-		fmt.Printf("%-20s %-20s %-8s %-8s %-10s %-6d %s\n",
+		Printf("%-20s %-20s %-8s %-8s %-10s %-6d %s\n",
 			TruncateDisplay(t.ID, 20), TruncateDisplay(t.Name, 20), taskType, t.Status, schedStr, t.RunCount, action)
 	}
 	return nil
@@ -112,7 +112,7 @@ func scheduleCreate(mgr *scheduler.Manager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": id, "status": "created"})
 	}
-	fmt.Printf("Scheduled task created: %s\n", id)
+	Printf("Scheduled task created: %s\n", id)
 	return nil
 }
 
@@ -131,7 +131,7 @@ func scheduleDelete(mgr *scheduler.Manager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": id, "status": "deleted"})
 	}
-	fmt.Printf("Scheduled task %s deleted.\n", id)
+	Printf("Scheduled task %s deleted.\n", id)
 	return nil
 }
 
@@ -150,7 +150,7 @@ func schedulePause(mgr *scheduler.Manager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": id, "status": "paused"})
 	}
-	fmt.Printf("Scheduled task %s paused.\n", id)
+	Printf("Scheduled task %s paused.\n", id)
 	return nil
 }
 
@@ -169,7 +169,7 @@ func scheduleResume(mgr *scheduler.Manager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": id, "status": "resumed"})
 	}
-	fmt.Printf("Scheduled task %s resumed.\n", id)
+	Printf("Scheduled task %s resumed.\n", id)
 	return nil
 }
 
@@ -188,7 +188,7 @@ func scheduleTrigger(mgr *scheduler.Manager, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": id, "status": "triggered"})
 	}
-	fmt.Printf("Scheduled task %s triggered.\n", id)
+	Printf("Scheduled task %s triggered.\n", id)
 	return nil
 }
 

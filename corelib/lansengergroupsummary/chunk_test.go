@@ -14,6 +14,7 @@ func TestIsSummaryCommand(t *testing.T) {
 		"/摘要":        true,
 		"／summary":   true, // fullwidth slash
 		"/summary x": false,
+		"/summary start": false, // start is not bare run
 		"summary":    false,
 		"":           false,
 	}
@@ -24,12 +25,56 @@ func TestIsSummaryCommand(t *testing.T) {
 	}
 }
 
+func TestParseSummaryCommand(t *testing.T) {
+	cases := map[string]SummaryCommandKind{
+		"":                 SummaryCmdNone,
+		"hello":            SummaryCmdNone,
+		"/summary":         SummaryCmdRun,
+		" /SUMMARY ":       SummaryCmdRun,
+		"／summary":         SummaryCmdRun,
+		"/摘要":              SummaryCmdRun,
+		"/summary start":   SummaryCmdStart,
+		"/summary  start":  SummaryCmdStart,
+		"/summary\tstart":  SummaryCmdStart,
+		"/SUMMARY START":   SummaryCmdStart,
+		"/summary 开始":      SummaryCmdStart,
+		"/summary 起点":      SummaryCmdStart,
+		"/摘要 开始":           SummaryCmdStart,
+		"/摘要 start":        SummaryCmdStart,
+		"/summary foo":     SummaryCmdUnknown,
+		"/summary start x": SummaryCmdUnknown,
+		"/summarystart":    SummaryCmdNone, // glued — not a command
+		"/摘要开始":            SummaryCmdNone,
+		"@Bot /summary":    SummaryCmdNone, // caller must strip @ first
+	}
+	for in, want := range cases {
+		if got := ParseSummaryCommand(in); got != want {
+			t.Errorf("ParseSummaryCommand(%q)=%v want %v", in, got, want)
+		}
+	}
+	if !IsSummaryControlLine("/summary start") || !IsSummaryControlLine("@Bot /summary start") {
+		t.Fatal("expected control lines")
+	}
+	if IsSummaryControlLine("hello") {
+		t.Fatal("plain text is not a control line")
+	}
+	// Parser also strips /cmd@BotName so buffered residual lines still match.
+	if ParseSummaryCommand("/summary@Bot") != SummaryCmdRun {
+		t.Fatal("expected /summary@Bot → run after postfix strip")
+	}
+	if ParseSummaryCommand("/summary@Bot start") != SummaryCmdStart {
+		t.Fatal("expected /summary@Bot start → start")
+	}
+}
+
 func TestFilterSummaryCommands(t *testing.T) {
 	msgs := []Message{
 		{Seq: 1, Text: "hello"},
 		{Seq: 2, Text: "/summary"},
 		{Seq: 3, Text: "world"},
 		{Seq: 4, Text: "@Bot /summary"},
+		{Seq: 5, Text: "/summary start"},
+		{Seq: 6, Text: "@Bot /summary 开始"},
 	}
 	out := FilterSummaryCommands(msgs)
 	if len(out) != 2 || out[0].Text != "hello" || out[1].Text != "world" {

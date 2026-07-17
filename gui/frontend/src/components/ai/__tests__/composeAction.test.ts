@@ -38,6 +38,23 @@ describe("applyComposeActionToText", () => {
         expect(applyComposeActionToText("/moa already", "moa")).toBe("/moa already");
         expect(applyComposeActionToText("/MOA already", "moa")).toBe("/MOA already");
     });
+
+    it("does not wrap install slash commands under compose modes", () => {
+        expect(applyComposeActionToText("/skill list", "goal")).toBe("/skill list");
+        expect(applyComposeActionToText("/mcp install x@y", "btw")).toBe("/mcp install x@y");
+        expect(applyComposeActionToText("/plugin add ida-pro-mcp@mrexodia", "moa")).toBe(
+            "/plugin add ida-pro-mcp@mrexodia",
+        );
+        // CLI prefix / fullwidth / aliases are canonicalized to /cmd …
+        expect(applyComposeActionToText("maclaw-tui skill list", "goal")).toBe("/skill list");
+        expect(applyComposeActionToText("／skill list", "goal")).toBe("/skill list");
+        expect(applyComposeActionToText("\uFEFF/skill list", "btw")).toBe("/skill list");
+        expect(applyComposeActionToText("/skills list", "goal")).toBe("/skill list");
+        // Other utility slash commands also stay intact (not install → not rewritten).
+        expect(applyComposeActionToText("/help", "goal")).toBe("/help");
+        expect(applyComposeActionToText("/memory", "btw")).toBe("/memory");
+        expect(applyComposeActionToText("／help", "goal")).toBe("／help");
+    });
 });
 
 describe("isBtwCommandText / btwQueryFromText", () => {

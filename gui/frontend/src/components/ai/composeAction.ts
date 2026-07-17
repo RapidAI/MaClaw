@@ -1,4 +1,10 @@
 import type { AssistantInputIconName } from "./aiAssistantPanelTheme";
+import {
+    isInstallActionAllowed,
+    isInstallCLIBinaryPrefix,
+    isKnownInstallCommand,
+    normalizeInstallCommand,
+} from "./installCommandAllowlist";
 
 /** Compose-mode actions: free-form input is wrapped as a slash command on send. */
 export type ComposeAction = "goal" | "btw" | "moa";
@@ -154,6 +160,123 @@ export function isBtwCommandText(text: string): boolean {
     return /^\/btw(?:\s|$)/i.test(text.trim());
 }
 
+/**
+ * Skill / MCP / Plugin install-or-search commands for the AI assistant panel.
+ * Handled immediately by the backend (no agent loop) — same class as /help.
+ *
+ * Allowlist source of truth (shared with Go via go:embed):
+ *   ./installCommandAllowlist.json
+ *
+ * Matches:
+ *   /skill search|install|list|remove ...
+ *   /mcp search|install|list|remove|add ...
+ *   /plugin marketplace|add|remove|search|installed|list ...
+ *   maclaw-tui skill|mcp|plugin ...
+ */
+/** Strip a leading ASCII or fullwidth slash from a single token. */
+function peelInstallCommandSlash(tok: string): string {
+    const t = tok.trim();
+    if (t.startsWith("/") || t.startsWith("／")) return t.slice(1).trim();
+    return t;
+}
+
+/**
+ * Split like shell fields: whitespace outside quotes, quotes stripped.
+ * Mirrors Go installCommandFields().
+ */
+export function installCommandFields(s: string): string[] {
+    const fields: string[] = [];
+    let cur = "";
+    let quote: string | null = null;
+    for (const ch of s) {
+        if (quote) {
+            if (ch === quote) {
+                quote = null;
+            } else {
+                cur += ch;
+            }
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+            continue;
+        }
+        if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+            if (cur) {
+                fields.push(cur);
+                cur = "";
+            }
+            continue;
+        }
+        cur += ch;
+    }
+    if (cur) fields.push(cur);
+    return fields;
+}
+
+/**
+ * Normalize install command text for send/classify parity with Go:
+ * strip BOM, optional CLI binary (path) prefix, and leading / or ／.
+ * Returns null when the text is not an install command.
+ */
+export function normalizeInstallCommandText(text: string): string | null {
+    // Strip BOM (some IM / paste sources include U+FEFF).
+    let trimmed = text.trim().replace(/^\uFEFF/, "").trim();
+    if (!trimmed) return null;
+
+    // Leading slash on the whole line (／skill … or /skill …).
+    let hasLeadingSlash = false;
+    if (trimmed.startsWith("/") || trimmed.startsWith("／")) {
+        hasLeadingSlash = true;
+        trimmed = trimmed.slice(1).trim();
+    }
+
+    let fields = installCommandFields(trimmed);
+    if (fields.length === 0) return null;
+
+    let hasBin = false;
+    if (isInstallCLIBinaryPrefix(fields[0])) {
+        hasBin = true;
+        fields = fields.slice(1);
+    }
+    if (fields.length === 0) return null;
+    // Free-form chat without slash or CLI binary prefix is never an install command.
+    if (!hasLeadingSlash && !hasBin) return null;
+
+    // After a binary prefix, still allow `maclaw-tui /skill list`.
+    fields[0] = peelInstallCommandSlash(fields[0]);
+    if (!fields[0]) return null;
+
+    const cmdToken = fields[0];
+    const cmd = normalizeInstallCommand(cmdToken);
+    const args = fields.slice(1);
+
+    if (args.length === 0) {
+        if (!isKnownInstallCommand(cmdToken)) return null;
+    } else if (!isInstallActionAllowed(cmd, args)) {
+        return null;
+    }
+
+    // Canonical slash form for backend/history (drop binary prefix; aliases → canonical).
+    // Re-quote args that contain whitespace so round-trip paste stays one token.
+    const rendered = [cmd, ...args.map(renderInstallArg)].filter(Boolean);
+    return `/${rendered.join(" ")}`;
+}
+
+function renderInstallArg(arg: string): string {
+    if (!arg) return arg;
+    // Match Go installCommandFields (no backslash escapes — quotes are delimiters only).
+    if (!/[\s"']/.test(arg)) return arg;
+    if (!arg.includes('"')) return `"${arg}"`;
+    if (!arg.includes("'")) return `'${arg}'`;
+    // Both quote types present: drop doubles and wrap (rare for install targets).
+    return `"${arg.replace(/"/g, "")}"`;
+}
+
+export function isInstallCommandText(text: string): boolean {
+    return normalizeInstallCommandText(text) !== null;
+}
+
 /** Strip the `/btw` prefix; returns "" for bare `/btw`. */
 export function btwQueryFromText(text: string): string {
     const trimmed = text.trim();
@@ -174,14 +297,24 @@ function hasComposePrefix(text: string, prefix: string): boolean {
  *
  * - empty input stays empty (caller should not send)
  * - text that already starts with the matching prefix is left unchanged
+ * - install/CLI commands and other leading-slash commands are never wrapped
+ *   (avoids `/goal /skill list` when goal compose mode is active)
  * - otherwise the text is prefixed as `/cmd <body>`
  */
 export function applyComposeActionToText(text: string, action: ComposeAction | null | undefined): string {
-    const trimmed = text.trim();
+    // Strip BOM so paste from IM clients matches backend splitInstallCommand.
+    const trimmed = text.trim().replace(/^\uFEFF/, "").trim();
     if (!trimmed || !action) return trimmed;
+    // Install / marketplace commands must stay intact under any compose mode.
+    // Prefer the canonical slash form (aliases / fullwidth / CLI prefix peeled).
+    const install = normalizeInstallCommandText(trimmed);
+    if (install) return install;
     const prefix = COMPOSE_PREFIX[action];
     if (!prefix) return trimmed;
     if (hasComposePrefix(trimmed, prefix)) return trimmed;
+    // Do not wrap other slash commands (/help, /memory, mistyped /skill, …).
+    // Fullwidth slash (／) is treated the same as ASCII "/" (Chinese IM keyboards).
+    if (trimmed.startsWith("/") || trimmed.startsWith("／")) return trimmed;
     return `${prefix} ${trimmed}`;
 }
 

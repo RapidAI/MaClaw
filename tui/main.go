@@ -110,6 +110,8 @@ func main() {
 		runLocalCommand("policy", os.Args[2:])
 	case "tool", "skill", "skillhub", "skillmarket", "capabilitymarket":
 		runToolsBackedCommand(os.Args[1], os.Args[2:])
+	case "plugin", "plugins":
+		runPluginCommand(os.Args[2:])
 	case "mcp":
 		runMCPCommand(os.Args[2:])
 	case "nlskill":
@@ -206,11 +208,12 @@ Commands:
   audit         兼容审计命令（无参数打开服务兑换；list 查看本地审计日志）
   policy        安全策略配置（无参数打开 TUI 安全设置；list 为脚本命令）
   tool          工具管理（无参数打开 TUI Tools；recommend/status 为脚本命令）
-  skill         技能管理（无参数打开 TUI Skill；list/add/delete/backup/restore/import/export 为脚本命令）
+  skill         技能管理（无参数打开 TUI Skill；search/install/list/add/delete/backup/restore/import/export 为脚本命令）
   skillhub      SkillHub 市场（无参数打开 TUI Skill；search/install/rate/check-updates/update 为脚本命令）
   skillmarket   SkillMarket 商店（无参数打开 TUI Skill；search/submit/status/account 为脚本命令）
+  plugin        插件市场（Codex 风格：marketplace add/list/remove；search/add/remove/installed/list）
   nlskill       NL 技能管理（无参数打开 TUI Skill；list/add/remove/enable/disable/execute；evolution status|enable|disable [--persist]）
-  mcp           MCP 管理（无配置时打开模板选择，已有配置时查看列表；remote 进入远程模板；list/remove/health-check/tools/call-tool 为脚本命令）
+  mcp           MCP 管理（无配置时打开模板选择；search/install/list/add/remove/health-check/tools/call-tool 为脚本命令）
   remote        远程模式管理（无参数打开 TUI 初始化；status 查看脚本状态；set-hubcenter/set-email/deactivate；Hub URL 注册后自动选择）
   onboarding    打开完整 TUI 的初始化页（脚本向导：onboarding cli）
   setup         打开完整 TUI 的初始化页（可跟邮箱预填；可加 llm/mcp/security/redeem 直达）
@@ -1048,6 +1051,26 @@ func runToolsBackedCommand(name string, args []string) {
 		err = commands.NewUsageError("unknown tools-backed command: %s", name)
 	}
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(exitCodeForError(err))
+	}
+}
+
+func runPluginCommand(args []string) {
+	if len(args) == 0 {
+		runTUI(views.TabTools)
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "tui", "setup", "--tui":
+		runTUI(views.TabTools)
+		return
+	}
+	if err := enforceScriptedCommandSecurity("plugin", args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(exitCodeForError(err))
+	}
+	if err := commands.RunPlugin(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(exitCodeForError(err))
 	}

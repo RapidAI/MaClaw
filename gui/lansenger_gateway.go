@@ -17,6 +17,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/improactive"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
@@ -117,12 +118,14 @@ const maxLansengerPendingDecors = 32
 const lansengerPendingDecorTTL = 15 * time.Minute
 
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
+	peers := improactive.NewStore("").LoadOrEmpty()
 	return &lansengerGatewayManager{
-		app:            app,
-		status:         gatewayConnectionStatusDisconnected,
-		statusSince:    time.Now(),
-		replyRoutes:    make(map[string]lansengerReplyRoute),
-		groupInfoCache: make(map[string]lansengerGroupInfoCacheEntry),
+		app:               app,
+		status:            gatewayConnectionStatusDisconnected,
+		statusSince:       time.Now(),
+		replyRoutes:       make(map[string]lansengerReplyRoute),
+		groupInfoCache:    make(map[string]lansengerGroupInfoCacheEntry),
+		lastPrivateUserID: strings.TrimSpace(peers.LansengerPrivateUserID),
 	}
 }
 
@@ -398,9 +401,7 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	// Remember last private peer so proactive self-notify can reach "my" 蓝信会话.
 	if !isLansengerGroupMessage(msg) {
 		if uid := strings.TrimSpace(msg.FromUserID); uid != "" {
-			m.mu.Lock()
-			m.lastPrivateUserID = uid
-			m.mu.Unlock()
+			m.noteLastPrivatePeer(uid)
 		}
 	}
 	// Watch (盯人): record / keyword / CLI / auto-reply runs for delivered group
@@ -421,7 +422,8 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 			return
 		}
 	}
-	// /summary: @Bot 群讨论摘要 — always local (needs on-device message buffer).
+	// /summary [start]: @Bot 群讨论摘要 — always local (needs on-device message buffer).
+	// Bare /summary generates a summary; /summary start sets the cursor (ignore older msgs).
 	if m.tryHandleGroupSummaryCommand(msg) {
 		log.Printf("[lansenger-mgr] group summary command handled: group=%s user=%s", msg.GroupID, msg.FromUserID)
 		return
@@ -1351,6 +1353,26 @@ func (a *App) GetLansengerStatus() string {
 		return "disconnected"
 	}
 	return a.lansengerGateway.Status()
+}
+
+// noteLastPrivatePeer remembers the owner private peer and persists across restarts.
+func (m *lansengerGatewayManager) noteLastPrivatePeer(uid string) {
+	uid = strings.TrimSpace(uid)
+	if m == nil || uid == "" {
+		return
+	}
+	m.mu.Lock()
+	prev := m.lastPrivateUserID
+	m.lastPrivateUserID = uid
+	m.mu.Unlock()
+	if prev == uid {
+		return
+	}
+	if err := improactive.NewStore("").Patch(func(p *improactive.Peers) {
+		p.LansengerPrivateUserID = uid
+	}); err != nil {
+		log.Printf("[lansenger-mgr] persist last private peer: %v", err)
+	}
 }
 
 // LastPrivatePeerID returns the last known private-chat peer for proactive sends.

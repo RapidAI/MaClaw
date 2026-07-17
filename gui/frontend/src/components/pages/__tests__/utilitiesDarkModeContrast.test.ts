@@ -136,7 +136,8 @@ describe('dark-mode button/card text contrast', () => {
     it('dark theme roots declare color-scheme: dark', () => {
         const css = readCss('App.css');
         for (const sel of [
-            '#App[data-ai-theme=\'dark\']',
+            // Shared shell rule (App + viewport); :where keeps specificity low so schemes win.
+            ':where(#App, .app-viewport)[data-ai-theme=\'dark\']',
             '.app-loading-shell[data-ai-theme=\'dark\']',
             '.sidebar[data-ai-theme=\'dark\']',
             '.modal-backdrop[data-ai-theme=\'dark\']',

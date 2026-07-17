@@ -35,7 +35,7 @@ import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
-import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText } from "./composeAction";
+import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText, isInstallCommandText, normalizeInstallCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
 import { AssistantWelcomeView, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
 import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
@@ -3859,6 +3859,30 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         // Live mic: never queue voice as chat (would fight the recording session).
         if (recordingActive) return;
+        // Install slash commands: same as typed send — always dispatch now (backend
+        // handles them before the agent loop), even when the agent is busy.
+        const voiceInstall = normalizeInstallCommandText(composed);
+        if (voiceInstall) {
+            if (sendInFlightRef.current) {
+                addEntry(voiceInstall, [], { autoDrain: true });
+                setComposeAction(null);
+                return;
+            }
+            sendInFlightRef.current = true;
+            setComposeAction(null);
+            clearComposerDraft({ clearAttachments: false });
+            try {
+                const sent = await sendMessageForTab(voiceInstall);
+                if (sent !== false) recordSubmittedPrompt?.(voiceInstall);
+            } catch (err: unknown) {
+                console.warn("[AIAssistantPanel] Voice install command send failed", err);
+                updateInputValue(voiceInstall);
+            } finally {
+                sendInFlightRef.current = false;
+                refreshQueueInFlight();
+            }
+            return;
+        }
         // If agent is busy (inputLocked), queue the transcription for later delivery
         // instead of dropping it. The buffer queue auto-drains when the agent becomes idle.
         if (inputLocked) {
@@ -3926,6 +3950,34 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             return;
         }
+        // /skill /mcp /plugin install commands: always dispatch now (backend
+        // handles them before the agent loop). If a send is already in flight,
+        // queue the command so it is not silently dropped (matches voice path).
+        // Normalize fullwidth slash / CLI prefix / aliases before send.
+        const installText = normalizeInstallCommandText(text);
+        if (installText) {
+            if (sendInFlightRef.current) {
+                addEntry(installText, [], { autoDrain: true });
+                setComposeAction(null);
+                clearComposerDraft({ clearAttachments: true });
+                return;
+            }
+            sendInFlightRef.current = true;
+            setComposeAction(null);
+            clearComposerDraft({ clearAttachments: true });
+            userScrolledUpRef.current = false;
+            try {
+                const sent = await sendMessageForTab(installText);
+                if (sent !== false) recordSubmittedPrompt?.(installText);
+            } catch (err: unknown) {
+                console.warn("[AIAssistantPanel] install command send failed", err);
+                updateInputValue(installText);
+            } finally {
+                sendInFlightRef.current = false;
+                refreshQueueInFlight();
+            }
+            return;
+        }
         if (submitLocked || queueEditDraftActive) {
             if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
                 if (queueEditDraftActive) {
@@ -3985,7 +4037,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainRef.current = false;
@@ -3994,7 +4046,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // A diarized voice recording calls its speaker turns synchronously.
         // The second turn may enter the buffer before the first send has made
         // submitLocked true, so the ref is the authoritative immediate guard.
-        const readyToDrainQueue = ready && showChatUI && !submitLocked && !sendInFlightRef.current;
+        // Install slash commands may drain while the agent is busy (backend
+        // handles them before the agent loop); other queue items still wait
+        // for !submitLocked.
+        const headText = queue[0]?.text?.trim() ?? "";
+        const headIsInstall = headText.length > 0 && isInstallCommandText(headText);
+        const readyBase = ready && showChatUI && !sendInFlightRef.current;
+        const readyToDrainQueue = readyBase && (!submitLocked || headIsInstall);
         const becameIdle = prevSubmitLockedRef.current && readyToDrainQueue;
         const returnedToChatIdle = !prevShowChatUIRef.current && readyToDrainQueue;
         const continueIdleDrain = continueQueueDrainRef.current && readyToDrainQueue;
@@ -4022,15 +4080,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             });
             // Preserve /btw side-query semantics when draining the buffer queue.
             const entryIsBtw = isBtwCommandText(entryText) && !!sendBtwMessage;
+            // Install commands must go through the plain send path (same as
+            // handleFireEntry), not attachment-wrapping multi builders.
+            const entryInstall = normalizeInstallCommandText(entryText);
             const drainPromise = entryIsBtw
                 ? dispatchBtwText(entryText)
-                : sendMessageForTab(buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath)));
+                : entryInstall
+                    ? sendMessageForTab(entryInstall)
+                    : sendMessageForTab(buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath)));
             drainPromise.then((sent) => {
                 if (sent === false) return;
                 continueQueueDrainRef.current = true;
                 removeEntry(entry.id);
                 // dispatchBtwText already records the prompt; only record normal sends here.
-                if (!entryIsBtw) recordSubmittedPrompt?.(entry.text);
+                if (!entryIsBtw) recordSubmittedPrompt?.(entryInstall ?? entry.text);
             }).catch(() => {}).finally(() => {
                 drainingEntryIdsRef.current.delete(entry.id);
                 refreshQueueInFlight();
@@ -4073,6 +4136,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (isBtwCommandText(entryText) && sendBtwMessage) {
                 const ok = await dispatchBtwText(entryText);
                 if (ok) removeEntry(id);
+                return;
+            }
+            // Install slash commands must go through the main send path (backend
+            // handles them before the agent loop), not guide/inject.
+            const fireInstall = normalizeInstallCommandText(entryText);
+            if (fireInstall) {
+                const sent = await sendMessageForTab(fireInstall);
+                if (sent !== false) {
+                    removeEntry(id);
+                    recordSubmittedPrompt?.(fireInstall);
+                }
                 return;
             }
             const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));

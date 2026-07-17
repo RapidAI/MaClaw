@@ -107,11 +107,11 @@ func gossipBrowse(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("八卦列表 — 共 %d 条\n\n", result.Total)
-	fmt.Printf("%-24s %-10s %-6s %-6s %-14s %s\n", "ID", "CATEGORY", "SCORE", "VOTES", "NICKNAME", "CONTENT")
-	fmt.Println(strings.Repeat("-", 90))
+	Printf("八卦列表 — 共 %d 条\n\n", result.Total)
+	Printf("%-24s %-10s %-6s %-6s %-14s %s\n", "ID", "CATEGORY", "SCORE", "VOTES", "NICKNAME", "CONTENT")
+	Println(strings.Repeat("-", 90))
 	for _, p := range result.Posts {
-		fmt.Printf("%-24s %-10s %-6d %-6d %-14s %s\n",
+		Printf("%-24s %-10s %-6d %-6d %-14s %s\n",
 			TruncateDisplay(p.ID, 24),
 			p.Category,
 			p.Score,
@@ -193,7 +193,7 @@ func gossipPublish(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("发布成功 (ID: %s)\n", result.Post.ID)
+	Printf("发布成功 (ID: %s)\n", result.Post.ID)
 	return nil
 }
 
@@ -270,7 +270,7 @@ func gossipComment(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("评论成功 (ID: %s)\n", result.Comment.ID)
+	Printf("评论成功 (ID: %s)\n", result.Comment.ID)
 	return nil
 }
 
@@ -338,7 +338,7 @@ func gossipRate(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Println("评分成功")
+	Println("评分成功")
 	return nil
 }
 
@@ -395,15 +395,15 @@ func gossipComments(args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Printf("评论列表 — 共 %d 条\n\n", result.Total)
-	fmt.Printf("%-14s %-8s %-30s %s\n", "NICKNAME", "RATING", "CONTENT", "TIME")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("评论列表 — 共 %d 条\n\n", result.Total)
+	Printf("%-14s %-8s %-30s %s\n", "NICKNAME", "RATING", "CONTENT", "TIME")
+	Println(strings.Repeat("-", 80))
 	for _, c := range result.Comments {
 		ratingStr := fmt.Sprintf("%d/5", c.Rating)
 		if c.Rating == 0 {
 			ratingStr = "-"
 		}
-		fmt.Printf("%-14s %-8s %-30s %s\n",
+		Printf("%-14s %-8s %-30s %s\n",
 			TruncateDisplay(c.Nickname, 14),
 			ratingStr,
 			TruncateDisplay(c.Content, 30),

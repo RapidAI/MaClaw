@@ -74,6 +74,37 @@ func TestStoreIgnoresEmpty(t *testing.T) {
 	}
 }
 
+func TestStoreMarkCursorDoesNotSetSummaryAt(t *testing.T) {
+	s := NewStore(t.TempDir())
+	now := time.Now().UTC()
+	if _, err := s.Append("g1", "T", "m1", "u1", "A", "old", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append("g1", "T", "m2", "u1", "A", "/summary start", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkCursor("g1", 2); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.LoadState("g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LastSummarySeq != 2 {
+		t.Fatalf("LastSummarySeq=%d want 2", st.LastSummarySeq)
+	}
+	if !st.LastSummaryAt.IsZero() {
+		t.Fatalf("LastSummaryAt should stay zero after MarkCursor, got %v", st.LastSummaryAt)
+	}
+	newMsgs, _, err := s.LoadNew("g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(newMsgs) != 0 {
+		t.Fatalf("expected no new msgs after cursor, got %#v", newMsgs)
+	}
+}
+
 func TestStoreDedupMessageID(t *testing.T) {
 	s := NewStore(t.TempDir())
 	now := time.Now()

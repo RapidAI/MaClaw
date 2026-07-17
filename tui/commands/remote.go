@@ -86,26 +86,26 @@ func printRemoteStatus(cfg corelib.AppConfig, lang string) {
 			status = "incomplete (run Setup again)"
 		}
 
-		fmt.Printf("Remote mode: %s\n", status)
-		fmt.Printf("  Enabled:   %v\n", cfg.RemoteEnabled)
-		fmt.Printf("  HubCenter: %s\n", effectiveRemoteHubCenterURL(cfg))
-		fmt.Printf("  Hub URL:   %s\n", orDefault(cfg.RemoteHubURL, "(auto-selected during registration)"))
-		fmt.Printf("  Email:     %s\n", orDefault(cfg.RemoteEmail, "(not set)"))
-		fmt.Printf("  Machine ID:%s\n", remoteAlignedValue(cfg.RemoteMachineID, "(not activated)"))
-		fmt.Printf("  SN:        %s\n", orDefault(cfg.RemoteSN, "(not activated)"))
+		Printf("Remote mode: %s\n", status)
+		Printf("  Enabled:   %v\n", cfg.RemoteEnabled)
+		Printf("  HubCenter: %s\n", effectiveRemoteHubCenterURL(cfg))
+		Printf("  Hub URL:   %s\n", orDefault(cfg.RemoteHubURL, "(auto-selected during registration)"))
+		Printf("  Email:     %s\n", orDefault(cfg.RemoteEmail, "(not set)"))
+		Printf("  Machine ID:%s\n", remoteAlignedValue(cfg.RemoteMachineID, "(not activated)"))
+		Printf("  SN:        %s\n", orDefault(cfg.RemoteSN, "(not activated)"))
 		if cfg.RemoteMachineToken != "" {
-			fmt.Printf("  Token:     %s****\n", cfg.RemoteMachineToken[:min(4, len(cfg.RemoteMachineToken))])
+			Printf("  Token:     %s****\n", cfg.RemoteMachineToken[:min(4, len(cfg.RemoteMachineToken))])
 		}
 		if cfg.RemoteViewerToken != "" {
-			fmt.Printf("  Viewer:    %s****\n", cfg.RemoteViewerToken[:min(4, len(cfg.RemoteViewerToken))])
+			Printf("  Viewer:    %s****\n", cfg.RemoteViewerToken[:min(4, len(cfg.RemoteViewerToken))])
 		} else if strings.TrimSpace(cfg.RemoteEmail) != "" {
-			fmt.Println("  Viewer:    (missing; run maclaw-tui setup again)")
+			Println("  Viewer:    (missing; run maclaw-tui setup again)")
 		}
-		fmt.Printf("  Service credentials: %s\n", yesNoEN(remoteHubServiceReady(cfg)))
-		fmt.Printf("  Machine activation:  %s\n", yesNoEN(remoteMachineActivationReady(cfg)))
-		fmt.Printf("  Next: %s\n", remoteNextAction(cfg, lang))
-		fmt.Printf("  TUI status: %s\n", remoteNextTUICommand(cfg))
-		fmt.Println("  Note: Hub URL is display-only. Change HubCenter, then register again if the entrypoint changes.")
+		Printf("  Service credentials: %s\n", yesNoEN(remoteHubServiceReady(cfg)))
+		Printf("  Machine activation:  %s\n", yesNoEN(remoteMachineActivationReady(cfg)))
+		Printf("  Next: %s\n", remoteNextAction(cfg, lang))
+		Printf("  TUI status: %s\n", remoteNextTUICommand(cfg))
+		Println("  Note: Hub URL is display-only. Change HubCenter, then register again if the entrypoint changes.")
 		return
 	}
 
@@ -119,26 +119,26 @@ func printRemoteStatus(cfg corelib.AppConfig, lang string) {
 		status = "未完成（请重新初始化）"
 	}
 
-	fmt.Printf("远程模式: %s\n", status)
-	fmt.Printf("  启用:     %v\n", cfg.RemoteEnabled)
-	fmt.Printf("  HubCenter: %s\n", effectiveRemoteHubCenterURL(cfg))
-	fmt.Printf("  Hub URL:  %s\n", orDefault(cfg.RemoteHubURL, "(注册时自动选择，当前未设置)"))
-	fmt.Printf("  邮箱:     %s\n", orDefault(cfg.RemoteEmail, "(未设置)"))
-	fmt.Printf("  机器 ID:  %s\n", orDefault(cfg.RemoteMachineID, "(未激活)"))
-	fmt.Printf("  SN:       %s\n", orDefault(cfg.RemoteSN, "(未激活)"))
+	Printf("远程模式: %s\n", status)
+	Printf("  启用:     %v\n", cfg.RemoteEnabled)
+	Printf("  HubCenter: %s\n", effectiveRemoteHubCenterURL(cfg))
+	Printf("  Hub URL:  %s\n", orDefault(cfg.RemoteHubURL, "(注册时自动选择，当前未设置)"))
+	Printf("  邮箱:     %s\n", orDefault(cfg.RemoteEmail, "(未设置)"))
+	Printf("  机器 ID:  %s\n", orDefault(cfg.RemoteMachineID, "(未激活)"))
+	Printf("  SN:       %s\n", orDefault(cfg.RemoteSN, "(未激活)"))
 	if cfg.RemoteMachineToken != "" {
-		fmt.Printf("  Token:    %s****\n", cfg.RemoteMachineToken[:min(4, len(cfg.RemoteMachineToken))])
+		Printf("  Token:    %s****\n", cfg.RemoteMachineToken[:min(4, len(cfg.RemoteMachineToken))])
 	}
 	if cfg.RemoteViewerToken != "" {
-		fmt.Printf("  Viewer:   %s****\n", cfg.RemoteViewerToken[:min(4, len(cfg.RemoteViewerToken))])
+		Printf("  Viewer:   %s****\n", cfg.RemoteViewerToken[:min(4, len(cfg.RemoteViewerToken))])
 	} else if strings.TrimSpace(cfg.RemoteEmail) != "" {
-		fmt.Println("  Viewer:   (缺失，请运行 maclaw-tui setup 重新初始化)")
+		Println("  Viewer:   (缺失，请运行 maclaw-tui setup 重新初始化)")
 	}
-	fmt.Printf("  服务凭据:  %s\n", yesNoCN(remoteHubServiceReady(cfg)))
-	fmt.Printf("  机器激活:  %s\n", yesNoCN(remoteMachineActivationReady(cfg)))
-	fmt.Printf("  下一步: %s\n", remoteNextAction(cfg, lang))
-	fmt.Printf("  TUI 状态总览: %s\n", remoteNextTUICommand(cfg))
-	fmt.Println("  提示: Hub URL 仅展示；如需更换入口，请设置 HubCenter 后重新注册。")
+	Printf("  服务凭据:  %s\n", yesNoCN(remoteHubServiceReady(cfg)))
+	Printf("  机器激活:  %s\n", yesNoCN(remoteMachineActivationReady(cfg)))
+	Printf("  下一步: %s\n", remoteNextAction(cfg, lang))
+	Printf("  TUI 状态总览: %s\n", remoteNextTUICommand(cfg))
+	Println("  提示: Hub URL 仅展示；如需更换入口，请设置 HubCenter 后重新注册。")
 }
 
 func remoteNextAction(cfg corelib.AppConfig, lang string) string {
@@ -214,11 +214,11 @@ func remoteActivate(args []string) error {
 
 	// Check if already activated.
 	if remoteActivationComplete(cfg) {
-		fmt.Printf("已激活 (machine_id=%s)。如需重新注册，请先运行: %s remote deactivate\n", cfg.RemoteMachineID, remoteCLIName())
+		Printf("已激活 (machine_id=%s)。如需重新注册，请先运行: %s remote deactivate\n", cfg.RemoteMachineID, remoteCLIName())
 		return nil
 	}
 
-	fmt.Printf("正在注册 %s ...\n", activateEmail)
+	Printf("正在注册 %s ...\n", activateEmail)
 
 	// Build machine profile with TUI version. Hub URL is intentionally not
 	// supplied; HubCenter resolves the correct Hub from the registration email.
@@ -247,19 +247,19 @@ func remoteActivate(args []string) error {
 		if smErr == nil && smResult.SessionToken != "" {
 			cfg.SkillMarketSessionToken = smResult.SessionToken
 			_ = store.SaveConfig(cfg)
-			fmt.Println("  SkillMarket: 已自动登录")
+			Println("  SkillMarket: 已自动登录")
 		}
 	}
 
-	fmt.Println("注册成功")
-	fmt.Printf("  Hub URL:    %s\n", result.HubURL)
-	fmt.Printf("  Machine ID: %s\n", result.MachineID)
-	fmt.Printf("  Email:      %s\n", result.Email)
+	Println("注册成功")
+	Printf("  Hub URL:    %s\n", result.HubURL)
+	Printf("  Machine ID: %s\n", result.MachineID)
+	Printf("  Email:      %s\n", result.Email)
 	if result.SN != "" {
-		fmt.Printf("  SN:         %s\n", result.SN)
+		Printf("  SN:         %s\n", result.SN)
 	}
-	fmt.Printf("  下一步: %s\n", remoteNextAction(cfg, i18n.NormalizeLang(cfg.Language)))
-	fmt.Printf("  TUI 状态总览: %s\n", remoteNextTUICommand(cfg))
+	Printf("  下一步: %s\n", remoteNextAction(cfg, i18n.NormalizeLang(cfg.Language)))
+	Printf("  TUI 状态总览: %s\n", remoteNextTUICommand(cfg))
 	return nil
 }
 
@@ -345,8 +345,8 @@ func remoteSetHubCenter(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("HubCenter 已设为 %s。下次注册会根据邮箱自动选择 Hub。\n", hubCenterURL)
-	fmt.Printf("下一步: 运行 %s setup 重新激活 Hub；Hub URL 会自动刷新。\n", remoteCLIName())
+	Printf("HubCenter 已设为 %s。下次注册会根据邮箱自动选择 Hub。\n", hubCenterURL)
+	Printf("下一步: 运行 %s setup 重新激活 Hub；Hub URL 会自动刷新。\n", remoteCLIName())
 	return nil
 }
 
@@ -453,8 +453,8 @@ func remoteSetEmail(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("远程邮箱已设为: %s\n", email)
-	fmt.Printf("下一步: 运行 %s setup 激活 Hub；Hub 会根据 HubCenter 和邮箱自动选择。\n", remoteCLIName())
+	Printf("远程邮箱已设为: %s\n", email)
+	Printf("下一步: 运行 %s setup 激活 Hub；Hub 会根据 HubCenter 和邮箱自动选择。\n", remoteCLIName())
 	return nil
 }
 
@@ -469,7 +469,7 @@ func remoteDeactivate(args []string) error {
 	}
 
 	if !remoteHasAnyCredential(cfg) {
-		fmt.Println("远程模式未激活，无需取消。")
+		Println("远程模式未激活，无需取消。")
 		return nil
 	}
 
@@ -489,7 +489,7 @@ func remoteDeactivate(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Println("远程模式已取消激活。")
+	Println("远程模式已取消激活。")
 	return nil
 }
 

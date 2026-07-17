@@ -118,6 +118,138 @@ func TestListJobsCachedRespectsInvalidate(t *testing.T) {
 	}
 }
 
+func TestPutJobInCacheWarmPatchesTargets(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	svc := app.watchService()
+	raw, err := app.UpsertLansengerWatchJob(`{
+		"name":"w","enabled":true,"group_id":"g",
+		"target_staff_ids":["u1","u2"],"record_all":true
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved lansengerwatch.Job
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		t.Fatal(err)
+	}
+	// Warm the hot-path cache.
+	if n := len(svc.listJobsCached()); n != 1 {
+		t.Fatalf("warm: %d", n)
+	}
+	// Patch without going through another full cold load path.
+	saved.TargetStaffIDs = []string{"u2"}
+	svc.putJobInCache(saved)
+	got := svc.listJobsCached()
+	if len(got) != 1 || len(got[0].TargetStaffIDs) != 1 || got[0].TargetStaffIDs[0] != "u2" {
+		t.Fatalf("warm patch missed: %+v", got)
+	}
+	// Cold after invalidate + put must still surface disk after upsert.
+	svc.invalidateCache()
+	saved.TargetStaffIDs = []string{"u1"}
+	if _, err := svc.store.UpsertJob(saved); err != nil {
+		t.Fatal(err)
+	}
+	svc.putJobInCache(saved) // cold: gen bump only
+	got2 := svc.listJobsCached()
+	if len(got2) != 1 || len(got2[0].TargetStaffIDs) != 1 || got2[0].TargetStaffIDs[0] != "u1" {
+		t.Fatalf("cold put + list: %+v", got2)
+	}
+}
+
+func TestUpsertRemovesTargetStopsProcessForward(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	svc := app.watchService()
+	raw, err := app.UpsertLansengerWatchJob(`{
+		"name":"watch","enabled":true,"group_id":"g1",
+		"target_staff_ids":["u1","u2"],
+		"forward_on_target_speech":true,
+		"forward_channels":["weixin"],
+		"record_all":false,
+		"keyword_scope":"anyone",
+		"keywords":[{"keywords":["机密"],"record_on_match":false,"forward_on_match":false,"reply_text":"ok"}]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved lansengerwatch.Job
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.ID == "" {
+		t.Fatal("expected job id")
+	}
+
+	// Warm cache with targets still present.
+	_ = svc.listJobsCached()
+
+	// Remove u1 via public upsert API (must refresh hot-path cache).
+	raw2, err := app.UpsertLansengerWatchJob(fmt.Sprintf(`{
+		"id":%q,"name":"watch","enabled":true,"group_id":"g1",
+		"target_staff_ids":["u2"],
+		"forward_on_target_speech":true,
+		"forward_channels":["weixin"],
+		"record_all":false,
+		"keyword_scope":"anyone",
+		"keywords":[{"keywords":["机密"],"record_on_match":false,"forward_on_match":false,"reply_text":"ok"}]
+	}`, saved.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved2 lansengerwatch.Job
+	if err := json.Unmarshal([]byte(raw2), &saved2); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved2.TargetStaffIDs) != 1 || saved2.TargetStaffIDs[0] != "u2" {
+		t.Fatalf("saved targets: %+v", saved2.TargetStaffIDs)
+	}
+
+	// Hot-path cache must reflect the upsert immediately.
+	cached := svc.listJobsCached()
+	if len(cached) != 1 || len(cached[0].TargetStaffIDs) != 1 || cached[0].TargetStaffIDs[0] != "u2" {
+		t.Fatalf("stale jobs cache after upsert: %+v", cached)
+	}
+
+	// Evaluate with the same jobs list processMessage would use (no real IM delivery).
+	eng := svc.engine
+	msgRemoved := lansengerwatch.Incoming{
+		IsGroup: true, GroupID: "g1", SpeakerID: "u1", SpeakerName: "Alice",
+		Text: "hello from removed target",
+	}
+	resRemoved := eng.Process(t.Context(), cached, msgRemoved)
+	if len(resRemoved.Forwards) != 0 {
+		t.Fatalf("removed target still forwarded: %+v", resRemoved.Forwards)
+	}
+	msgKept := lansengerwatch.Incoming{
+		IsGroup: true, GroupID: "g1", SpeakerID: "u2", SpeakerName: "Bob",
+		Text: "hello from kept target",
+	}
+	resKept := eng.Process(t.Context(), cached, msgKept)
+	if len(resKept.Forwards) != 1 || resKept.Forwards[0].Reason != "target_speech" {
+		t.Fatalf("kept target should speech-forward: %+v", resKept.Forwards)
+	}
+
+	// Empty targets must clear and stop all speech forwards.
+	if _, err := app.UpsertLansengerWatchJob(fmt.Sprintf(`{
+		"id":%q,"name":"watch","enabled":true,"group_id":"g1",
+		"target_staff_ids":[],
+		"forward_on_target_speech":true,
+		"forward_channels":["weixin"],
+		"record_all":false,
+		"keyword_scope":"anyone",
+		"keywords":[{"keywords":["机密"],"record_on_match":false,"forward_on_match":false,"reply_text":"ok"}]
+	}`, saved.ID)); err != nil {
+		t.Fatal(err)
+	}
+	cachedEmpty := svc.listJobsCached()
+	if len(cachedEmpty) != 1 || len(cachedEmpty[0].TargetStaffIDs) != 0 {
+		t.Fatalf("empty targets not applied: %+v", cachedEmpty)
+	}
+	resEmpty := eng.Process(t.Context(), cachedEmpty, msgKept)
+	if len(resEmpty.Forwards) != 0 {
+		t.Fatalf("empty targets must not speech-forward: %+v", resEmpty.Forwards)
+	}
+}
+
 func TestListWatchChannelsJSON(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	raw, err := app.ListLansengerWatchChannels()

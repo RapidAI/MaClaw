@@ -265,13 +265,24 @@ func (s *Store) LoadNew(groupID string) ([]Message, GroupState, error) {
 	return out, st, nil
 }
 
-// MarkSummarized advances the cursor so subsequent LoadNew starts after maxSeq.
+// MarkSummarized advances the cursor so subsequent LoadNew starts after maxSeq
+// and records LastSummaryAt as a completed summary time.
 func (s *Store) MarkSummarized(groupID string, maxSeq int64, at time.Time) error {
+	return s.markCursor(groupID, maxSeq, at, true)
+}
+
+// MarkCursor advances LastSummarySeq without updating LastSummaryAt.
+// Used by /summary start so empty follow-ups do not claim a prior "摘要" finished.
+func (s *Store) MarkCursor(groupID string, maxSeq int64) error {
+	return s.markCursor(groupID, maxSeq, time.Time{}, false)
+}
+
+func (s *Store) markCursor(groupID string, maxSeq int64, at time.Time, setSummaryAt bool) error {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return fmt.Errorf("group_id required")
 	}
-	if at.IsZero() {
+	if setSummaryAt && at.IsZero() {
 		at = time.Now()
 	}
 	s.mu.Lock()
@@ -280,15 +291,27 @@ func (s *Store) MarkSummarized(groupID string, maxSeq int64, at time.Time) error
 	if err != nil {
 		return err
 	}
+	// No-op when cursor does not move and we are not recording a summary time.
+	if maxSeq <= st.LastSummarySeq && !setSummaryAt {
+		return nil
+	}
+	changed := false
 	if maxSeq > st.LastSummarySeq {
 		st.LastSummarySeq = maxSeq
+		changed = true
 	}
-	st.LastSummaryAt = at.UTC()
+	if setSummaryAt {
+		st.LastSummaryAt = at.UTC()
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
 	st.UpdatedAt = time.Now().UTC()
 	if err := s.saveStateLocked(st); err != nil {
 		return err
 	}
-	// Free already-summarized aged lines after a successful summary.
+	// Free already-passed aged lines after a cursor advance.
 	_ = s.pruneLocked(groupID, st)
 	return nil
 }

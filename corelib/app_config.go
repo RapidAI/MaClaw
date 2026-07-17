@@ -178,9 +178,16 @@ type AppConfig struct {
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
 	QQBotAppSecret string `json:"qqbot_app_secret,omitempty"`
+	// QQBotOwnerOpenID is the fixed C2C user_openid for owner proactive push
+	// (盯人 forward / scheduled self). When set, no prior private chat is required.
+	QQBotOwnerOpenID string `json:"qqbot_owner_openid,omitempty"`
 	// IM 闂?per-user Telegram Bot (client-side gateway)
 	TelegramBotEnabled bool   `json:"telegram_bot_enabled,omitempty"`
 	TelegramBotToken   string `json:"telegram_bot_token,omitempty"`
+	// TelegramBotOwnerChatID is the fixed private chat id for owner proactive
+	// push (盯人 / scheduled self). Stored as decimal string for JS-safe JSON.
+	// When set, no prior bot message is required.
+	TelegramBotOwnerChatID DecimalInt64String `json:"telegram_owner_chat_id,omitempty"`
 	// IM 闂?per-user WeChat (client-side gateway via iLink API)
 	WeixinEnabled   bool   `json:"weixin_enabled,omitempty"`
 	WeixinToken     string `json:"weixin_token,omitempty"`

@@ -6614,6 +6614,14 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.QQBotAppSecret = v
 			imGatewayChanged = true
+		case "qqbot_owner_openid":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.QQBotOwnerOpenID = strings.TrimSpace(v)
+			// Owner openid is for proactive push only; no gateway restart required.
 		case "telegram_bot_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -6630,6 +6638,36 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.TelegramBotToken = strings.TrimSpace(v)
 			imGatewayChanged = true
+		case "telegram_owner_chat_id":
+			// Accept string (preferred, full int64) or number from legacy UI.
+			var id corelib.DecimalInt64String
+			switch v := value.(type) {
+			case string:
+				if err := id.SetString(v); err != nil {
+					a.configMu.Unlock()
+					return corelib.AppConfig{}, fmt.Errorf("config field %q: %w", key, err)
+				}
+			case float64:
+				if v != float64(int64(v)) {
+					a.configMu.Unlock()
+					return corelib.AppConfig{}, fmt.Errorf("config field %q must be integer", key)
+				}
+				id.SetInt64(int64(v))
+			case int:
+				id.SetInt64(int64(v))
+			case int64:
+				id.SetInt64(v)
+			case nil:
+				id = ""
+			default:
+				// coerce via string
+				s := strings.TrimSpace(fmt.Sprint(value))
+				if err := id.SetString(s); err != nil {
+					a.configMu.Unlock()
+					return corelib.AppConfig{}, fmt.Errorf("config field %q must be chat id string/number", key)
+				}
+			}
+			cfg.TelegramBotOwnerChatID = id
 		case "lansenger_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

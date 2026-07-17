@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "binary_prefixes": [
+    "maclaw-tui",
+    "maclaw",
+    "tigerclaw-tui",
+    "tigerclaw"
+  ],
+  "meta_actions": [
+    "help",
+    "--help",
+    "-h"
+  ],
+  "commands": {
+    "skill": {
+      "aliases": ["skills"],
+      "actions": [
+        "search",
+        "install",
+        "list",
+        "remove",
+        "delete",
+        "uninstall",
+        "rm"
+      ]
+    },
+    "mcp": {
+      "aliases": [],
+      "actions": [
+        "search",
+        "install",
+        "list",
+        "remove",
+        "uninstall",
+        "rm",
+        "add"
+      ]
+    },
+    "plugin": {
+      "aliases": ["plugins"],
+      "actions": [
+        "search",
+        "add",
+        "install",
+        "remove",
+        "uninstall",
+        "installed",
+        "list",
+        "info"
+      ],
+      "nested": {
+        "marketplace": {
+          "aliases": ["market"],
+          "actions": [
+            "add",
+            "list",
+            "ls",
+            "remove",
+            "rm",
+            "delete",
+            "refresh",
+            "update"
+          ]
+        }
+      }
+    }
+  }
+}

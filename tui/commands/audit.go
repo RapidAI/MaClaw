@@ -2,13 +2,10 @@ package commands
 
 import (
 	"flag"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/RapidAI/CodeClaw/corelib/security"
-)
+	"github.com/RapidAI/CodeClaw/corelib/security")
 
 // RunAudit 执行 audit 子命令。
 func RunAudit(args []string, dataDir string) error {
@@ -73,15 +70,15 @@ func auditList(dataDir string, args []string) error {
 		return PrintJSON(entries)
 	}
 	if len(entries) == 0 {
-		fmt.Println("No audit entries found.")
+		Println("No audit entries found.")
 		return nil
 	}
-	fmt.Printf("%-20s %-20s %-10s %-10s %s\n", "TIME", "TOOL", "RISK", "POLICY", "RESULT")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("%-20s %-20s %-10s %-10s %s\n", "TIME", "TOOL", "RISK", "POLICY", "RESULT")
+	Println(strings.Repeat("-", 80))
 	for _, e := range entries {
 		ts := e.Timestamp.Format("2006-01-02 15:04")
 		result := TruncateDisplay(e.Result, 20)
-		fmt.Printf("%-20s %-20s %-10s %-10s %s\n",
+		Printf("%-20s %-20s %-10s %-10s %s\n",
 			ts, TruncateDisplay(e.ToolName, 20), string(e.RiskLevel), string(e.PolicyAction), result)
 	}
 	return nil

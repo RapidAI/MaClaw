@@ -5,24 +5,145 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-// IsSummaryCommand reports whether cleaned user text is the bare /summary command
-// (or Chinese alias). Extra arguments are not treated as the command.
-func IsSummaryCommand(text string) bool {
+// SummaryCommandKind classifies a cleaned /summary control line.
+type SummaryCommandKind int
+
+const (
+	// SummaryCmdNone means the text is not a /summary control command.
+	SummaryCmdNone SummaryCommandKind = iota
+	// SummaryCmdRun is bare /summary (or /摘要): generate a discussion summary.
+	SummaryCmdRun
+	// SummaryCmdStart is /summary start: set the summary cursor so earlier
+	// buffered messages are ignored; only messages after this point count.
+	SummaryCmdStart
+	// SummaryCmdUnknown is /summary with an unrecognized argument.
+	SummaryCmdUnknown
+)
+
+// ParseSummaryCommand classifies cleaned user text for group summary controls.
+// Leading @Bot tokens should already be stripped by the caller.
+//
+// Supported forms:
+//   - /summary, /摘要           → run summary
+//   - /summary start|开始|起点  → set start cursor (ignore earlier messages)
+//   - fullwidth solidus ／ is accepted
+//
+// Glued forms like "/summarystart" or "/摘要foo" are not commands (None) so they
+// can fall through to the normal agent path.
+func ParseSummaryCommand(text string) SummaryCommandKind {
 	t := strings.TrimSpace(text)
 	if t == "" {
-		return false
+		return SummaryCmdNone
 	}
-	// Normalize fullwidth solidus and case for Latin commands.
+	// Normalize fullwidth solidus.
 	t = strings.ReplaceAll(t, "／", "/")
-	lower := strings.ToLower(t)
-	return lower == "/summary" || t == "/摘要"
+	// Defense in depth: strip "/cmd@BotName" even if the caller did not run
+	// lansenger.StripBotMentions (e.g. residual lines already in the buffer).
+	t = stripSummaryBotPostfix(t)
+
+	rest, ok := splitSummaryCommand(t)
+	if !ok {
+		return SummaryCmdNone
+	}
+	if rest == "" {
+		return SummaryCmdRun
+	}
+	// One argument only; extra tokens → unknown (show usage).
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return SummaryCmdRun
+	}
+	if len(fields) > 1 {
+		return SummaryCmdUnknown
+	}
+	switch strings.ToLower(fields[0]) {
+	case "start", "开始", "起点":
+		return SummaryCmdStart
+	default:
+		return SummaryCmdUnknown
+	}
 }
 
-// FilterSummaryCommands removes pure /summary command lines from the set to
+// stripSummaryBotPostfix rewrites "/summary@Bot" / "/summary@Bot start" to
+// "/summary" / "/summary start". Mirrors lansenger.stripSlashCommandBotPostfix.
+func stripSummaryBotPostfix(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return text
+	}
+	head := fields[0]
+	if !strings.HasPrefix(head, "/") {
+		return text
+	}
+	at := strings.Index(head, "@")
+	if at <= 1 {
+		return text
+	}
+	fields[0] = head[:at]
+	return strings.Join(fields, " ")
+}
+
+// splitSummaryCommand returns (remainder, ok) when text starts with a bare
+// /summary or /摘要 token (case-insensitive for Latin), optionally followed by
+// whitespace-separated arguments. Glued suffixes without whitespace are rejected.
+func splitSummaryCommand(t string) (rest string, ok bool) {
+	lower := strings.ToLower(t)
+	const latin = "/summary"
+	const zh = "/摘要"
+	switch {
+	case lower == latin:
+		return "", true
+	case t == zh:
+		return "", true
+	case strings.HasPrefix(lower, latin):
+		// Require whitespace after the command name (reject "/summarystart").
+		if !hasCommandArgBoundary(t, len(latin)) {
+			return "", false
+		}
+		return strings.TrimSpace(t[len(latin):]), true
+	case strings.HasPrefix(t, zh):
+		if !hasCommandArgBoundary(t, len(zh)) {
+			return "", false
+		}
+		return strings.TrimSpace(t[len(zh):]), true
+	default:
+		return "", false
+	}
+}
+
+func hasCommandArgBoundary(t string, cmdByteLen int) bool {
+	if cmdByteLen >= len(t) {
+		return true
+	}
+	// First rune after the command must be whitespace (reject "/summarystart").
+	r, _ := utf8.DecodeRuneInString(t[cmdByteLen:])
+	if r == utf8.RuneError {
+		return false
+	}
+	return unicode.IsSpace(r)
+}
+
+// IsSummaryCommand reports whether cleaned user text is the bare /summary command
+// (or Chinese alias) that triggers summary generation. Extra arguments are not a match.
+func IsSummaryCommand(text string) bool {
+	return ParseSummaryCommand(text) == SummaryCmdRun
+}
+
+// IsSummaryControlLine reports whether text is any /summary control line
+// (run, start, or unknown args), including residual "@Bot /summary …" forms.
+func IsSummaryControlLine(text string) bool {
+	if ParseSummaryCommand(text) != SummaryCmdNone {
+		return true
+	}
+	return ParseSummaryCommand(stripLeadingAtToken(text)) != SummaryCmdNone
+}
+
+// FilterSummaryCommands removes pure /summary control lines from the set to
 // summarize so the trigger itself does not pollute the discussion.
 func FilterSummaryCommands(msgs []Message) []Message {
 	if len(msgs) == 0 {
@@ -30,11 +151,7 @@ func FilterSummaryCommands(msgs []Message) []Message {
 	}
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
-		if IsSummaryCommand(m.Text) {
-			continue
-		}
-		// Also drop "@Bot /summary" style residual if strip failed upstream.
-		if IsSummaryCommand(stripLeadingAtToken(m.Text)) {
+		if IsSummaryControlLine(m.Text) {
 			continue
 		}
 		out = append(out, m)

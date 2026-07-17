@@ -157,8 +157,8 @@ func swarmCreate(args []string) error {
 		return fmt.Errorf("启动 Swarm Run 失败: %w", err)
 	}
 
-	fmt.Printf("Swarm Run 已启动: %s\n", run.ID)
-	fmt.Printf("模式: %s  项目: %s\n", run.Mode, run.ProjectPath)
+	Printf("Swarm Run 已启动: %s\n", run.ID)
+	Printf("模式: %s  项目: %s\n", run.Mode, run.ProjectPath)
 
 	// 轮询等待完成
 	for {
@@ -168,7 +168,7 @@ func swarmCreate(args []string) error {
 			return err
 		}
 		if r.Status == swarm.SwarmStatusCompleted || r.Status == swarm.SwarmStatusFailed || r.Status == swarm.SwarmStatusCancelled {
-			fmt.Printf("Swarm Run %s 完成，状态: %s\n", r.ID, r.Status)
+			Printf("Swarm Run %s 完成，状态: %s\n", r.ID, r.Status)
 			break
 		}
 	}
@@ -196,7 +196,7 @@ func swarmCancel(args []string) error {
 	if err := orch.CancelSwarmRun(args[0]); err != nil {
 		return err
 	}
-	fmt.Printf("Swarm Run %s 已取消\n", args[0])
+	Printf("Swarm Run %s 已取消\n", args[0])
 	return nil
 }
 
@@ -204,11 +204,11 @@ func swarmList() error {
 	orch := getSwarmOrchestrator()
 	runs := orch.ListSwarmRuns()
 	if len(runs) == 0 {
-		fmt.Println("无 Swarm Run 记录")
+		Println("无 Swarm Run 记录")
 		return nil
 	}
 	for _, r := range runs {
-		fmt.Printf("  %s  mode=%s  status=%s  phase=%s  tasks=%d  round=%d  created=%s\n",
+		Printf("  %s  mode=%s  status=%s  phase=%s  tasks=%d  round=%d  created=%s\n",
 			r.ID, r.Mode, r.Status, r.Phase, r.TaskCount, r.Round,
 			r.CreatedAt.Format("2006-01-02 15:04:05"))
 	}
@@ -216,19 +216,19 @@ func swarmList() error {
 }
 
 func printSwarmRun(run *swarm.SwarmRun) {
-	fmt.Printf("Run: %s  Mode: %s  Status: %s  Phase: %s\n", run.ID, run.Mode, run.Status, run.Phase)
-	fmt.Printf("Project: %s  TechStack: %s\n", run.ProjectPath, run.TechStack)
-	fmt.Printf("Round: %d/%d  Created: %s\n", run.CurrentRound, run.MaxRounds, run.CreatedAt.Format("2006-01-02 15:04:05"))
+	Printf("Run: %s  Mode: %s  Status: %s  Phase: %s\n", run.ID, run.Mode, run.Status, run.Phase)
+	Printf("Project: %s  TechStack: %s\n", run.ProjectPath, run.TechStack)
+	Printf("Round: %d/%d  Created: %s\n", run.CurrentRound, run.MaxRounds, run.CreatedAt.Format("2006-01-02 15:04:05"))
 	if len(run.Tasks) > 0 {
-		fmt.Printf("Tasks (%d):\n", len(run.Tasks))
+		Printf("Tasks (%d):\n", len(run.Tasks))
 		for _, t := range run.Tasks {
-			fmt.Printf("  [%d] %s (group=%d, deps=%v)\n", t.Index, t.Description, t.GroupID, t.Dependencies)
+			Printf("  [%d] %s (group=%d, deps=%v)\n", t.Index, t.Description, t.GroupID, t.Dependencies)
 		}
 	}
 	if len(run.Agents) > 0 {
-		fmt.Printf("Agents (%d):\n", len(run.Agents))
+		Printf("Agents (%d):\n", len(run.Agents))
 		for _, a := range run.Agents {
-			fmt.Printf("  %s  role=%s  task=%d  status=%s\n", a.ID, a.Role, a.TaskIndex, a.Status)
+			Printf("  %s  role=%s  task=%d  status=%s\n", a.ID, a.Role, a.TaskIndex, a.Status)
 		}
 	}
 }

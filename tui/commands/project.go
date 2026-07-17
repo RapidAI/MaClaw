@@ -2,11 +2,8 @@ package commands
 
 import (
 	"flag"
-	"fmt"
 	"strings"
-
-	"github.com/RapidAI/CodeClaw/corelib/project"
-)
+	"github.com/RapidAI/CodeClaw/corelib/project")
 
 // RunProject 执行 project 子命令。
 func RunProject(args []string, dataDir string) error {
@@ -47,7 +44,7 @@ func projectCreate(store *FileConfigStore, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": res.Id, "name": res.Name, "path": res.Path, "status": "created"})
 	}
-	fmt.Printf("Project %q created at %s (id: %s)\n", res.Name, res.Path, res.Id)
+	Printf("Project %q created at %s (id: %s)\n", res.Name, res.Path, res.Id)
 	return nil
 }
 
@@ -66,18 +63,18 @@ func projectList(store *FileConfigStore, args []string) error {
 	}
 
 	if len(items) == 0 {
-		fmt.Println("No projects.")
+		Println("No projects.")
 		return nil
 	}
 
-	fmt.Printf("  %-25s %-20s %s\n", "ID", "NAME", "PATH")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("  %-25s %-20s %s\n", "ID", "NAME", "PATH")
+	Println(strings.Repeat("-", 80))
 	for _, p := range items {
 		marker := " "
 		if p.Current {
 			marker = "*"
 		}
-		fmt.Printf("%s %-25s %-20s %s\n", marker, p.Id, p.Name, p.Path)
+		Printf("%s %-25s %-20s %s\n", marker, p.Id, p.Name, p.Path)
 	}
 	return nil
 }
@@ -99,7 +96,7 @@ func projectDelete(store *FileConfigStore, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": res.Id, "name": res.Name, "status": "deleted"})
 	}
-	fmt.Printf("Project %q deleted.\n", res.Name)
+	Printf("Project %q deleted.\n", res.Name)
 	return nil
 }
 
@@ -120,6 +117,6 @@ func projectSwitch(store *FileConfigStore, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": res.Id, "name": res.Name, "status": "switched"})
 	}
-	fmt.Printf("Switched to project %q (%s)\n", res.Name, res.Path)
+	Printf("Switched to project %q (%s)\n", res.Name, res.Path)
 	return nil
 }

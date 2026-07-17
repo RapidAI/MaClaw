@@ -97,10 +97,11 @@ func (g *tuiWeixinGateway) Start() {
 	}
 
 	gw := weixin.NewGateway(weixin.Config{
-		Token:     cfg.WeixinToken,
-		BaseURL:   baseURL,
-		CDNURL:    cdnURL,
-		AccountID: cfg.WeixinAccountID,
+		Token:              cfg.WeixinToken,
+		BaseURL:            baseURL,
+		CDNURL:             cdnURL,
+		AccountID:          cfg.WeixinAccountID,
+		SessionPersistPath: weixin.DefaultSessionPersistPath(),
 	}, g.onIncomingMessage)
 	gw.SetStatusCallback(g.onStatusChange)
 

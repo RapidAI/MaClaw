@@ -74,6 +74,10 @@ func (g *fakeSrvWeixinGateway) SendMedia(_ context.Context, out weixin.OutgoingM
 
 func (g *fakeSrvWeixinGateway) GetContextToken(string) string { return "ctx-token" }
 
+func (g *fakeSrvWeixinGateway) LastActiveUserID() string { return "" }
+
+func (g *fakeSrvWeixinGateway) ContextSessionsByRecency() [][2]string { return nil }
+
 func (g *fakeSrvWeixinGateway) SetStatusCallback(cb weixin.StatusCallback) { g.onStatus = cb }
 
 type fakeSrvASRTranscriber struct {

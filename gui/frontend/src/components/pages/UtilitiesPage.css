@@ -345,13 +345,27 @@
     width: min(230px, 42vw);
 }
 
+/* Channel chips need full width; never squeeze the label into a skinny column
+ * (that caused Chinese text to wrap one glyph per line and look "garbled"). */
 .watch-setting-row--channels {
-    align-items: start;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 10px;
+}
+
+.watch-setting-row--channels > span {
+    min-width: 0;
+}
+
+.watch-setting-row--channels strong,
+.watch-setting-row--channels small {
+    overflow-wrap: break-word;
 }
 
 .watch-setting-row--channels .utilities-chip-row {
-    justify-content: flex-end;
+    justify-content: flex-start;
     margin: 0;
+    width: 100%;
 }
 
 .watch-editor .utilities-kw-card {

@@ -50,12 +50,12 @@ func systemInfo(args []string) error {
 	if *jsonOut {
 		return PrintJSON(info)
 	}
-	fmt.Println("系统信息:")
-	fmt.Printf("  OS:       %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Printf("  Go:       %s\n", runtime.Version())
-	fmt.Printf("  CPUs:     %d\n", runtime.NumCPU())
-	fmt.Printf("  Home:     %s\n", home)
-	fmt.Printf("  DataDir:  %s\n", dataDir)
+	Println("系统信息:")
+	Printf("  OS:       %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	Printf("  Go:       %s\n", runtime.Version())
+	Printf("  CPUs:     %d\n", runtime.NumCPU())
+	Printf("  Home:     %s\n", home)
+	Printf("  DataDir:  %s\n", dataDir)
 	return nil
 }
 
@@ -106,13 +106,13 @@ func systemPythonEnvs(args []string) error {
 		return PrintJSON(envs)
 	}
 	if len(envs) == 0 {
-		fmt.Println("未检测到 Python 环境。")
+		Println("未检测到 Python 环境。")
 		return nil
 	}
-	fmt.Printf("%-20s %-10s %s\n", "NAME", "TYPE", "PATH")
-	fmt.Println(strings.Repeat("-", 60))
+	Printf("%-20s %-10s %s\n", "NAME", "TYPE", "PATH")
+	Println(strings.Repeat("-", 60))
 	for _, e := range envs {
-		fmt.Printf("%-20s %-10s %s\n", e.Name, e.Type, e.Path)
+		Printf("%-20s %-10s %s\n", e.Name, e.Type, e.Path)
 	}
 	return nil
 }
@@ -137,25 +137,25 @@ func systemPythonStatus(args []string) error {
 		return PrintJSON(st)
 	}
 
-	fmt.Println("Python 环境状态:")
+	Println("Python 环境状态:")
 	if st.Available {
 		label := "系统"
 		if st.IsPrivate {
 			label = "私有"
 		}
-		fmt.Printf("  Python:  ready v%s (%s) -> %s\n", st.Version, label, st.PythonPath)
+		Printf("  Python:  ready v%s (%s) -> %s\n", st.Version, label, st.PythonPath)
 	} else {
-		fmt.Println("  Python:  missing (>= 3.10)")
+		Println("  Python:  missing (>= 3.10)")
 	}
 	if st.UVAvailable {
-		fmt.Printf("  uv:      ready -> %s\n", st.UVPath)
+		Printf("  uv:      ready -> %s\n", st.UVPath)
 	} else {
-		fmt.Println("  uv:      missing")
+		Println("  uv:      missing")
 	}
 	if st.VenvReady {
-		fmt.Printf("  venv:    ready -> %s\n", st.VenvPath)
+		Printf("  venv:    ready -> %s\n", st.VenvPath)
 	} else {
-		fmt.Println("  venv:    missing")
+		Println("  venv:    missing")
 	}
 	return nil
 }
@@ -167,7 +167,7 @@ func systemPythonEnsure(args []string) error {
 	fs.Parse(args)
 
 	st := pyenv.EnsureEnvironment(func(stage string, pct int, msg string) {
-		fmt.Printf("[%s] %d%% %s\n", stage, pct, msg)
+		Printf("[%s] %d%% %s\n", stage, pct, msg)
 	})
 
 	if *jsonOut {
@@ -177,6 +177,6 @@ func systemPythonEnsure(args []string) error {
 	if st.Error != "" {
 		return fmt.Errorf("Python 环境安装失败: %s", st.Error)
 	}
-	fmt.Printf("Python %s ready, venv: %s\n", st.Version, st.VenvPath)
+	Printf("Python %s ready, venv: %s\n", st.Version, st.VenvPath)
 	return nil
 }

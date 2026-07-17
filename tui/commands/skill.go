@@ -15,16 +15,28 @@ import (
 )
 
 // RunSkill 执行 skill 子命令。
+//
+// Search/install mirror Codex-style discoverability:
+//
+//	maclaw-tui skill search <query>
+//	maclaw-tui skill install <skill-id|github-url|owner/repo>
+//	maclaw-tui skill remove <name>
 func RunSkill(args []string) error {
+	// Action list must stay in sync with InstallCLICatalog["skill"] (install_cli_catalog.go).
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui skill <list|add|delete|backup|restore|import|export>")
+		return NewUsageError("usage: maclaw-tui skill <list|search|install|add|delete|remove|backup|restore|import|export>")
 	}
 	switch args[0] {
 	case "list":
 		return skillList(args[1:])
+	case "search":
+		// Delegate to SkillHub search (SkillHub → ClawHub → GitHub fallbacks).
+		return skillhubSearch(args[1:])
+	case "install":
+		return skillInstall(args[1:])
 	case "add":
 		return skillAdd(args[1:])
-	case "delete":
+	case "delete", "remove", "uninstall", "rm":
 		return skillDelete(args[1:])
 	case "backup":
 		return skillBackup(args[1:])
@@ -35,8 +47,42 @@ func RunSkill(args []string) error {
 	case "export":
 		return skillExport(args[1:])
 	default:
-		return NewUsageError("unknown skill action: %s", args[0])
+		return NewUsageError("unknown skill action: %s\nusage: maclaw-tui skill <list|search|install|add|delete|backup|restore|import|export>", args[0])
 	}
+}
+
+// skillInstall installs from SkillHub id, GitHub URL, or owner/repo.
+func skillInstall(args []string) error {
+	if len(args) == 0 {
+		return NewUsageError("usage: maclaw-tui skill install <skill-id|github-url|owner/repo>")
+	}
+	// Keep flags for skillhub install/install-github; peel the target ref.
+	target := ""
+	passthrough := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			passthrough = append(passthrough, a)
+			continue
+		}
+		if target == "" {
+			target = a
+			continue
+		}
+		passthrough = append(passthrough, a)
+	}
+	if target == "" {
+		return NewUsageError("usage: maclaw-tui skill install <skill-id|github-url|owner/repo>")
+	}
+
+	// GitHub URL or owner/repo → install-github.
+	if strings.Contains(target, "github.com/") || strings.HasPrefix(target, "git@github.com:") {
+		return skillhubInstallGitHub(append(passthrough, target))
+	}
+	if owner, repo, ok := parseOwnerRepo(target); ok {
+		return skillhubInstallGitHub(append(passthrough, "https://github.com/"+owner+"/"+repo))
+	}
+	// Otherwise treat as SkillHub skill id.
+	return skillhubInstall(append(passthrough, target))
 }
 
 // localSkillInfo 本地技能信息（从 YAML 读取）。
@@ -48,9 +94,12 @@ type localSkillInfo struct {
 }
 
 func skillList(args []string) error {
-	fs := flag.NewFlagSet("skill list", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill list", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	// Merge config-based skills with file-based skills (same as GUI loadSkills).
 	store := NewFileConfigStore(ResolveDataDir())
@@ -88,18 +137,18 @@ func skillList(args []string) error {
 		return PrintJSON(skills)
 	}
 	if len(skills) == 0 {
-		fmt.Println("No skills found.")
+		Println("No skills found.")
 		roots := skill.SkillScanRoots()
 		for _, r := range roots {
-			fmt.Printf("  Scanned: %s\n", r)
+			Printf("  Scanned: %s\n", r)
 		}
 		return nil
 	}
-	fmt.Printf("%-20s %-8s %-30s %s\n", "NAME", "STATUS", "TRIGGERS", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 85))
+	Printf("%-20s %-8s %-30s %s\n", "NAME", "STATUS", "TRIGGERS", "DESCRIPTION")
+	Println(strings.Repeat("-", 85))
 	for _, s := range skills {
 		triggers := strings.Join(s.Triggers, ", ")
-		fmt.Printf("%-20s %-8s %-30s %s\n",
+		Printf("%-20s %-8s %-30s %s\n",
 			TruncateDisplay(s.Name, 20),
 			s.Status,
 			TruncateDisplay(triggers, 30),
@@ -150,13 +199,16 @@ func skillAdd(args []string) error {
 	if err := fileutil.AtomicWriteFile(yamlPath, data, 0o644); err != nil {
 		return fmt.Errorf("write skill.yaml: %w", err)
 	}
-	fmt.Printf("Skill '%s' created at %s\n", *name, skillDir)
+	Printf("Skill '%s' created at %s\n", *name, skillDir)
 	return nil
 }
 
 func skillDelete(args []string) error {
-	fs := flag.NewFlagSet("skill delete", flag.ExitOnError)
-	fs.Parse(args)
+	fs := flag.NewFlagSet("skill delete", flag.ContinueOnError)
+	fs.SetOutput(Stderr())
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if fs.NArg() == 0 {
 		return NewUsageError("usage: skill delete <name>")
@@ -176,7 +228,7 @@ func skillDelete(args []string) error {
 			if err := os.RemoveAll(s.SkillDir); err != nil {
 				return fmt.Errorf("delete skill: %w", err)
 			}
-			fmt.Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
+			Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
 			return nil
 		}
 	}
@@ -186,7 +238,7 @@ func skillDelete(args []string) error {
 			if err := os.RemoveAll(s.SkillDir); err != nil {
 				return fmt.Errorf("delete skill: %w", err)
 			}
-			fmt.Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
+			Printf("Skill '%s' deleted from %s.\n", name, s.SkillDir)
 			return nil
 		}
 	}
@@ -256,7 +308,7 @@ func skillBackup(args []string) error {
 	if err != nil {
 		return fmt.Errorf("zip skills: %w", err)
 	}
-	fmt.Printf("Skills backed up: %d files → %s\n", count, output)
+	Printf("Skills backed up: %d files → %s\n", count, output)
 	return nil
 }
 
@@ -306,7 +358,7 @@ func skillRestore(args []string) error {
 		}
 		count++
 	}
-	fmt.Printf("Skills restored: %d files from %s\n", count, zipPath)
+	Printf("Skills restored: %d files from %s\n", count, zipPath)
 	return nil
 }
 
@@ -366,7 +418,7 @@ func skillExport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("zip skill: %w", err)
 	}
-	fmt.Printf("Skill '%s' exported: %d files → %s\n", name, count, zipPath)
+	Printf("Skill '%s' exported: %d files → %s\n", name, count, zipPath)
 	return nil
 }
 
@@ -423,6 +475,6 @@ func skillImport(args []string) error {
 		}
 		count++
 	}
-	fmt.Printf("Skill '%s' imported: %d files from %s\n", skillName, count, zipPath)
+	Printf("Skill '%s' imported: %d files from %s\n", skillName, count, zipPath)
 	return nil
 }

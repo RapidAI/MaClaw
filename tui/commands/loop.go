@@ -40,15 +40,15 @@ func loopList(args []string, mgr *agent.BackgroundLoopManager) error {
 	}
 
 	if len(views) == 0 {
-		fmt.Println("无运行中的后台任务。")
+		Println("无运行中的后台任务。")
 		return nil
 	}
 
-	fmt.Printf("%-20s %-10s %-10s %-8s %-6s %s\n", "ID", "TYPE", "STATUS", "ITER", "QUEUE", "DESCRIPTION")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("%-20s %-10s %-10s %-8s %-6s %s\n", "ID", "TYPE", "STATUS", "ITER", "QUEUE", "DESCRIPTION")
+	Println(strings.Repeat("-", 80))
 	for _, v := range views {
 		iter := fmt.Sprintf("%d/%d", v.Iteration, v.MaxIter)
-		fmt.Printf("%-20s %-10s %-10s %-8s %-6d %s\n",
+		Printf("%-20s %-10s %-10s %-8s %-6d %s\n",
 			TruncateDisplay(v.ID, 20),
 			v.SlotKind,
 			v.Status,
@@ -74,7 +74,7 @@ func loopStop(args []string, mgr *agent.BackgroundLoopManager) error {
 	}
 
 	mgr.Stop(loopID)
-	fmt.Printf("后台任务 '%s' 已停止。\n", loopID)
+	Printf("后台任务 '%s' 已停止。\n", loopID)
 	return nil
 }
 
@@ -91,6 +91,6 @@ func loopContinue(args []string, mgr *agent.BackgroundLoopManager) error {
 	if err := mgr.SendContinue(loopID, *rounds); err != nil {
 		return err
 	}
-	fmt.Printf("已向后台任务 '%s' 追加 %d 轮迭代。\n", loopID, *rounds)
+	Printf("已向后台任务 '%s' 追加 %d 轮迭代。\n", loopID, *rounds)
 	return nil
 }

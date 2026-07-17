@@ -73,10 +73,15 @@ func JobHasKeywords(job Job) bool {
 // JobNeedsMessage reports whether an enabled job may act on this speaker
 // (record-all for targets, keyword anyone/targets, or forward-on-speech).
 func JobNeedsMessage(job Job, staffID string) bool {
+	return JobNeedsMessageFor(job, JobWatchesStaff(job, staffID))
+}
+
+// JobNeedsMessageFor is JobNeedsMessage with a precomputed watched flag
+// (avoids a second TargetStaffIDs scan on the engine hot path).
+func JobNeedsMessageFor(job Job, watched bool) bool {
 	if !job.Enabled {
 		return false
 	}
-	watched := JobWatchesStaff(job, staffID)
 	if watched && (job.RecordAll || job.ForwardOnTargetSpeech) {
 		return true
 	}

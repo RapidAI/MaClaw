@@ -169,25 +169,25 @@ func presetProviders() []presetProvider {
 func llmSetup(args []string) error {
 	providers := presetProviders()
 
-	fmt.Println()
-	fmt.Println("  ╭─────────────────────────────────────╮")
-	fmt.Println("  │       MaClaw LLM 配置向导           │")
-	fmt.Println("  ╰─────────────────────────────────────╯")
-	fmt.Println()
-	fmt.Println("  选择 LLM 服务商：")
-	fmt.Println()
+	Println()
+	Println("  ╭─────────────────────────────────────╮")
+	Println("  │       MaClaw LLM 配置向导           │")
+	Println("  ╰─────────────────────────────────────╯")
+	Println()
+	Println("  选择 LLM 服务商：")
+	Println()
 	for i, p := range providers {
-		fmt.Printf("    %d. %-20s %s\n", i+1, p.Name, p.Hint)
+		Printf("    %d. %-20s %s\n", i+1, p.Name, p.Hint)
 	}
-	fmt.Println()
+	Println()
 	if brand.Current().ID == "qianxin" {
-		fmt.Printf("    另外：maclaw llm login openai   — OpenAI Codex 订阅（OAuth）\n")
-		fmt.Printf("          maclaw llm login codegen  — CodeGen 企业 SSO\n")
+		Printf("    另外：maclaw llm login openai   — OpenAI Codex 订阅（OAuth）\n")
+		Printf("          maclaw llm login codegen  — CodeGen 企业 SSO\n")
 	} else {
-		fmt.Printf("    另外：maclaw llm login openai   — OpenAI Codex 订阅（OAuth）\n")
+		Printf("    另外：maclaw llm login openai   — OpenAI Codex 订阅（OAuth）\n")
 	}
-	fmt.Println()
-	fmt.Print("  请输入编号 (1-" + fmt.Sprintf("%d", len(providers)) + "): ")
+	Println()
+	Print("  请输入编号 (1-" + fmt.Sprintf("%d", len(providers)) + "): ")
 
 	var choice int
 	fmt.Scanln(&choice)
@@ -204,21 +204,21 @@ func llmSetup(args []string) error {
 
 	// 自定义服务商需要输入 URL 和 Model
 	if selected.Name == "自定义" {
-		fmt.Print("  API URL: ")
+		Print("  API URL: ")
 		fmt.Scanln(&apiURL)
 		apiURL = strings.TrimSpace(apiURL)
 		if apiURL == "" {
 			return fmt.Errorf("URL 不能为空")
 		}
 
-		fmt.Print("  模型名称: ")
+		Print("  模型名称: ")
 		fmt.Scanln(&model)
 		model = strings.TrimSpace(model)
 		if model == "" {
 			return fmt.Errorf("模型名称不能为空")
 		}
 
-		fmt.Print("  协议 (openai/anthropic，默认 openai): ")
+		Print("  协议 (openai/anthropic，默认 openai): ")
 		var proto string
 		fmt.Scanln(&proto)
 		proto = strings.TrimSpace(proto)
@@ -230,9 +230,9 @@ func llmSetup(args []string) error {
 	// 输入 API Key；本地/内网兼容接口可以跳过。
 	apiKeyRequired := selected.AuthType != "none" && llmURLUsuallyNeedsKey(apiURL)
 	if apiKeyRequired {
-		fmt.Print("  API Key: ")
+		Print("  API Key: ")
 	} else {
-		fmt.Print("  API Key（可选，直接回车跳过）: ")
+		Print("  API Key（可选，直接回车跳过）: ")
 	}
 	var apiKey string
 	fmt.Scanln(&apiKey)
@@ -303,13 +303,13 @@ func llmSetup(args []string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Printf("  已配置 %s\n", providerName)
-	fmt.Printf("    模型: %s\n", model)
-	fmt.Printf("    URL:  %s\n", apiURL)
-	fmt.Printf("    Key:  %s****\n", apiKey[:min(4, len(apiKey))])
-	fmt.Println()
-	fmt.Println("  运行 maclaw llm test 验证配置是否正确。")
+	Println()
+	Printf("  已配置 %s\n", providerName)
+	Printf("    模型: %s\n", model)
+	Printf("    URL:  %s\n", apiURL)
+	Printf("    Key:  %s****\n", apiKey[:min(4, len(apiKey))])
+	Println()
+	Println("  运行 maclaw llm test 验证配置是否正确。")
 	return nil
 }
 
@@ -355,51 +355,51 @@ func llmStatus(args []string) error {
 		return nil
 	}
 	if !configured {
-		fmt.Println("LLM 状态: 未配置")
+		Println("LLM 状态: 未配置")
 		if missingKey {
-			fmt.Println("  " + llmMissingKeyHint(lang))
+			Println("  " + llmMissingKeyHint(lang))
 		} else {
-			fmt.Println("  " + llmUnconfiguredHint(hubServiceReady, lang))
+			Println("  " + llmUnconfiguredHint(hubServiceReady, lang))
 		}
-		fmt.Printf("  下一步: %s\n", llmNextAction(false, hubServiceReady, mcpCount, lang))
+		Printf("  下一步: %s\n", llmNextAction(false, hubServiceReady, mcpCount, lang))
 		return nil
 	}
-	fmt.Println("LLM 状态: 已配置")
-	fmt.Printf("  URL:      %s\n", llm.URL)
-	fmt.Printf("  Model:    %s\n", llm.Model)
-	fmt.Printf("  Protocol: %s\n", orDefault(llm.Protocol, "openai"))
+	Println("LLM 状态: 已配置")
+	Printf("  URL:      %s\n", llm.URL)
+	Printf("  Model:    %s\n", llm.Model)
+	Printf("  Protocol: %s\n", orDefault(llm.Protocol, "openai"))
 	if llm.ContextLength > 0 {
-		fmt.Printf("  Context:  %d tokens\n", llm.ContextLength)
+		Printf("  Context:  %d tokens\n", llm.ContextLength)
 	}
 	if llm.Key != "" {
-		fmt.Printf("  API Key:  %s****\n", llm.Key[:min(4, len(llm.Key))])
+		Printf("  API Key:  %s****\n", llm.Key[:min(4, len(llm.Key))])
 	}
-	fmt.Printf("  下一步: %s\n", llmNextAction(true, hubServiceReady, mcpCount, lang))
+	Printf("  下一步: %s\n", llmNextAction(true, hubServiceReady, mcpCount, lang))
 	return nil
 }
 
 func printLLMStatusEN(llm corelib.MaclawLLMConfig, configured bool, hubServiceReady bool, mcpCount int, missingKey bool) {
 	if !configured {
-		fmt.Println("LLM status: not configured")
+		Println("LLM status: not configured")
 		if missingKey {
-			fmt.Println("  " + llmMissingKeyHint("en"))
+			Println("  " + llmMissingKeyHint("en"))
 		} else {
-			fmt.Println("  " + llmUnconfiguredHint(hubServiceReady, "en"))
+			Println("  " + llmUnconfiguredHint(hubServiceReady, "en"))
 		}
-		fmt.Printf("  Next: %s\n", llmNextAction(false, hubServiceReady, mcpCount, "en"))
+		Printf("  Next: %s\n", llmNextAction(false, hubServiceReady, mcpCount, "en"))
 		return
 	}
-	fmt.Println("LLM status: configured")
-	fmt.Printf("  URL:      %s\n", llm.URL)
-	fmt.Printf("  Model:    %s\n", llm.Model)
-	fmt.Printf("  Protocol: %s\n", orDefault(llm.Protocol, "openai"))
+	Println("LLM status: configured")
+	Printf("  URL:      %s\n", llm.URL)
+	Printf("  Model:    %s\n", llm.Model)
+	Printf("  Protocol: %s\n", orDefault(llm.Protocol, "openai"))
 	if llm.ContextLength > 0 {
-		fmt.Printf("  Context:  %d tokens\n", llm.ContextLength)
+		Printf("  Context:  %d tokens\n", llm.ContextLength)
 	}
 	if llm.Key != "" {
-		fmt.Printf("  API Key:  %s****\n", llm.Key[:min(4, len(llm.Key))])
+		Printf("  API Key:  %s****\n", llm.Key[:min(4, len(llm.Key))])
 	}
-	fmt.Printf("  Next: %s\n", llmNextAction(true, hubServiceReady, mcpCount, "en"))
+	Printf("  Next: %s\n", llmNextAction(true, hubServiceReady, mcpCount, "en"))
 }
 
 func llmConfiguredFromAppConfig(cfg corelib.AppConfig) bool {
@@ -659,7 +659,7 @@ func llmTest(args []string) error {
 		return fmt.Errorf("LLM 未配置。%s", llmTUISetupHint())
 	}
 
-	fmt.Printf("测试 LLM: %s (%s)...\n", llm.Model, llm.URL)
+	Printf("测试 LLM: %s (%s)...\n", llm.Model, llm.URL)
 	msgs := []interface{}{
 		map[string]string{"role": "user", "content": "请回复 OK"},
 	}
@@ -677,8 +677,8 @@ func llmTest(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{"success": true, "response": resp.Content, "elapsed_ms": elapsed.Milliseconds()})
 	}
-	fmt.Printf("成功 (%v)\n", elapsed.Round(time.Millisecond))
-	fmt.Printf("  响应: %s\n", TruncateDisplay(resp.Content, 80))
+	Printf("成功 (%v)\n", elapsed.Round(time.Millisecond))
+	Printf("  响应: %s\n", TruncateDisplay(resp.Content, 80))
 	return nil
 }
 
@@ -719,7 +719,7 @@ func llmPing(args []string) error {
 		if *jsonOut {
 			return PrintJSON(map[string]interface{}{"reachable": true, "status": http.StatusOK, "elapsed_ms": elapsed.Milliseconds()})
 		}
-		fmt.Printf("鉁?绔偣鍙揪 (HTTP %d, %v)\n", http.StatusOK, elapsed.Round(time.Millisecond))
+		Printf("鉁?绔偣鍙揪 (HTTP %d, %v)\n", http.StatusOK, elapsed.Round(time.Millisecond))
 		return nil
 	}
 
@@ -742,7 +742,7 @@ func llmPing(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]interface{}{"reachable": true, "status": resp.StatusCode, "elapsed_ms": elapsed.Milliseconds()})
 	}
-	fmt.Printf("端点可达 (HTTP %d, %v)\n", resp.StatusCode, elapsed.Round(time.Millisecond))
+	Printf("端点可达 (HTTP %d, %v)\n", resp.StatusCode, elapsed.Round(time.Millisecond))
 	return nil
 }
 
@@ -764,15 +764,15 @@ func llmProviders(args []string) error {
 		})
 	}
 	if len(cfg.MaclawLLMProviders) == 0 {
-		fmt.Println("未配置 LLM 提供商。")
-		fmt.Println("  " + llmTUISetupHint())
+		Println("未配置 LLM 提供商。")
+		Println("  " + llmTUISetupHint())
 		if cfg.MaclawLLMUrl != "" {
-			fmt.Printf("  当前直接配置: %s (%s)\n", cfg.MaclawLLMModel, cfg.MaclawLLMUrl)
+			Printf("  当前直接配置: %s (%s)\n", cfg.MaclawLLMModel, cfg.MaclawLLMUrl)
 		}
 		return nil
 	}
-	fmt.Printf("%-20s %-10s %-30s %-16s %s\n", "NAME", "PROTOCOL", "URL", "AUTH", "MODEL")
-	fmt.Println(strings.Repeat("-", 96))
+	Printf("%-20s %-10s %-30s %-16s %s\n", "NAME", "PROTOCOL", "URL", "AUTH", "MODEL")
+	Println(strings.Repeat("-", 96))
 	for _, p := range cfg.MaclawLLMProviders {
 		marker := "  "
 		if p.Name == cfg.MaclawLLMCurrentProvider {
@@ -788,7 +788,7 @@ func llmProviders(args []string) error {
 				auth = "已认证"
 			}
 		}
-		fmt.Printf("%s%-18s %-10s %-30s %-16s %s\n", marker, p.Name, orDefault(p.Protocol, "openai"), TruncateDisplay(p.URL, 30), auth, p.Model)
+		Printf("%s%-18s %-10s %-30s %-16s %s\n", marker, p.Name, orDefault(p.Protocol, "openai"), TruncateDisplay(p.URL, 30), auth, p.Model)
 	}
 	return nil
 }
@@ -852,7 +852,7 @@ func llmSetProvider(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
-	fmt.Printf("已切换到 LLM 提供商: %s (%s, %s)\n", name, found.Model, found.URL)
+	Printf("已切换到 LLM 提供商: %s (%s, %s)\n", name, found.Model, found.URL)
 	return nil
 }
 
@@ -876,7 +876,7 @@ func llmSetMaxIterations(args []string) error {
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
-	fmt.Printf("Agent 最大推理轮次已设置为 %d\n", normalizedValue)
+	Printf("Agent 最大推理轮次已设置为 %d\n", normalizedValue)
 	return nil
 }
 
@@ -894,7 +894,7 @@ func llmGetMaxIterations(args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]int{"max_iterations": value})
 	}
-	fmt.Printf("Agent 最大推理轮次: %d\n", value)
+	Printf("Agent 最大推理轮次: %d\n", value)
 	return nil
 }
 
@@ -920,17 +920,17 @@ func llmLogin(args []string) error {
 }
 
 func llmLoginOpenAI(args []string) error {
-	fmt.Println("╭──────────────────────────────────────────────────────╮")
-	fmt.Println("│         OpenAI OAuth 登录（Codex 订阅）             │")
-	fmt.Println("├──────────────────────────────────────────────────────┤")
-	fmt.Println("│                                                      │")
-	fmt.Println("│  1. 在任意浏览器中打开以下链接                       │")
-	fmt.Println("│  2. 完成 OpenAI 登录授权                             │")
-	fmt.Println("│  3. 浏览器会跳转到一个打不开的页面（正常）           │")
-	fmt.Println("│  4. 复制浏览器地址栏中的完整 URL 粘贴到下方          │")
-	fmt.Println("│                                                      │")
-	fmt.Println("╰──────────────────────────────────────────────────────╯")
-	fmt.Println()
+	Println("╭──────────────────────────────────────────────────────╮")
+	Println("│         OpenAI OAuth 登录（Codex 订阅）             │")
+	Println("├──────────────────────────────────────────────────────┤")
+	Println("│                                                      │")
+	Println("│  1. 在任意浏览器中打开以下链接                       │")
+	Println("│  2. 完成 OpenAI 登录授权                             │")
+	Println("│  3. 浏览器会跳转到一个打不开的页面（正常）           │")
+	Println("│  4. 复制浏览器地址栏中的完整 URL 粘贴到下方          │")
+	Println("│                                                      │")
+	Println("╰──────────────────────────────────────────────────────╯")
+	Println()
 
 	cfg := oauth.DefaultConfig()
 	params, err := oauth.PrepareHeadlessOAuth(cfg)
@@ -938,14 +938,14 @@ func llmLoginOpenAI(args []string) error {
 		return fmt.Errorf("准备 OAuth 参数失败: %w", err)
 	}
 
-	fmt.Println("请在浏览器中打开:")
-	fmt.Println()
-	fmt.Println("  " + params.AuthURL)
-	fmt.Println()
-	fmt.Println("授权完成后，浏览器会跳转到 http://localhost:... 页面（无法打开是正常的）。")
-	fmt.Println("请复制浏览器地址栏中的完整 URL，粘贴到下方：")
-	fmt.Println()
-	fmt.Print("回调 URL: ")
+	Println("请在浏览器中打开:")
+	Println()
+	Println("  " + params.AuthURL)
+	Println()
+	Println("授权完成后，浏览器会跳转到 http://localhost:... 页面（无法打开是正常的）。")
+	Println("请复制浏览器地址栏中的完整 URL，粘贴到下方：")
+	Println()
+	Print("回调 URL: ")
 
 	var callbackURL string
 	fmt.Scanln(&callbackURL)
@@ -954,7 +954,7 @@ func llmLoginOpenAI(args []string) error {
 		return fmt.Errorf("未输入回调 URL，登录取消")
 	}
 
-	fmt.Println("正在完成认证...")
+	Println("正在完成认证...")
 	result, err := oauth.CompleteHeadlessOAuth(cfg, params, callbackURL)
 	if err != nil {
 		return fmt.Errorf("OAuth 认证失败: %w", err)
@@ -985,8 +985,8 @@ func llmLoginOpenAI(args []string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
+	Println()
+	Println("OpenAI OAuth 登录成功，已设为当前 LLM 提供商")
 	return nil
 }
 
@@ -1028,22 +1028,22 @@ func llmLoginCodeGen(args []string) error {
 	}
 	loginURL := params.AuthURL
 
-	fmt.Println("╭──────────────────────────────────────────────────────╮")
-	fmt.Println("│           CodeGen SSO 登录（无头模式）               │")
-	fmt.Println("├──────────────────────────────────────────────────────┤")
-	fmt.Println("│                                                      │")
-	fmt.Println("│  1. 在任意浏览器中打开以下链接:                      │")
-	fmt.Printf("│     %s\n", loginURL)
-	fmt.Println("│                                                      │")
-	fmt.Println("│  2. 完成扫码/登录后，浏览器会跳转到 localhost 页面   │")
-	fmt.Println("│                                                      │")
-	fmt.Println("│  3. 优先复制浏览器地址栏中的完整回调 URL             │")
-	fmt.Println("│                                                      │")
-	fmt.Println("│  4. 若页面仍直接显示 Token，也可直接粘贴 Token       │")
-	fmt.Println("│                                                      │")
-	fmt.Println("╰──────────────────────────────────────────────────────╯")
-	fmt.Println()
-	fmt.Print("请粘贴回调 URL 或 Token: ")
+	Println("╭──────────────────────────────────────────────────────╮")
+	Println("│           CodeGen SSO 登录（无头模式）               │")
+	Println("├──────────────────────────────────────────────────────┤")
+	Println("│                                                      │")
+	Println("│  1. 在任意浏览器中打开以下链接:                      │")
+	Printf("│     %s\n", loginURL)
+	Println("│                                                      │")
+	Println("│  2. 完成扫码/登录后，浏览器会跳转到 localhost 页面   │")
+	Println("│                                                      │")
+	Println("│  3. 优先复制浏览器地址栏中的完整回调 URL             │")
+	Println("│                                                      │")
+	Println("│  4. 若页面仍直接显示 Token，也可直接粘贴 Token       │")
+	Println("│                                                      │")
+	Println("╰──────────────────────────────────────────────────────╯")
+	Println()
+	Print("请粘贴回调 URL 或 Token: ")
 
 	var input string
 	fmt.Scanln(&input)
@@ -1052,7 +1052,7 @@ func llmLoginCodeGen(args []string) error {
 		return fmt.Errorf("未输入回调 URL 或 Token，登录取消")
 	}
 
-	fmt.Println("正在完成 CodeGen 认证...")
+	Println("正在完成 CodeGen 认证...")
 	result, err := oauth.ResolveHeadlessCodeGenInput(input, params)
 	if err != nil {
 		return fmt.Errorf("CodeGen 认证失败: %w", err)
@@ -1108,13 +1108,13 @@ func llmLoginCodeGen(args []string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("CodeGen SSO 登录成功")
+	Println()
+	Println("CodeGen SSO 登录成功")
 	if result.Email != "" {
-		fmt.Printf("  用户: %s\n", result.Email)
+		Printf("  用户: %s\n", result.Email)
 	}
-	fmt.Printf("  模型: %s\n", result.ModelID)
-	fmt.Printf("  API:  %s\n", result.BaseURL)
+	Printf("  模型: %s\n", result.ModelID)
+	Printf("  API:  %s\n", result.BaseURL)
 	return nil
 }
 
@@ -1154,9 +1154,9 @@ func llmUsage(args []string) error {
 		return PrintJSON(info)
 	}
 
-	fmt.Println("OpenAI 用量信息:")
-	fmt.Printf("  总额度:   $%.2f\n", info.TotalGranted)
-	fmt.Printf("  已使用:   $%.2f\n", info.TotalUsed)
-	fmt.Printf("  剩余额度: $%.2f\n", info.TotalAvailable)
+	Println("OpenAI 用量信息:")
+	Printf("  总额度:   $%.2f\n", info.TotalGranted)
+	Printf("  已使用:   $%.2f\n", info.TotalUsed)
+	Printf("  剩余额度: $%.2f\n", info.TotalAvailable)
 	return nil
 }

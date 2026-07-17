@@ -76,18 +76,18 @@ func memoryList(dataDir string, args []string) error {
 		return PrintJSON(entries)
 	}
 	if len(entries) == 0 {
-		fmt.Println("No memories found.")
+		Println("No memories found.")
 		return nil
 	}
-	fmt.Printf("%-24s %-20s %-12s %s\n", "ID", "CATEGORY", "ACCESS", "CONTENT")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("%-24s %-20s %-12s %s\n", "ID", "CATEGORY", "ACCESS", "CONTENT")
+	Println(strings.Repeat("-", 80))
 	for _, e := range entries {
 		content := e.Content
 		if len(content) > 40 {
 			content = content[:37] + "..."
 		}
 		content = strings.ReplaceAll(content, "\n", " ")
-		fmt.Printf("%-24s %-20s %-12d %s\n", e.ID, e.Category, e.AccessCount, content)
+		Printf("%-24s %-20s %-12d %s\n", e.ID, e.Category, e.AccessCount, content)
 	}
 	return nil
 }
@@ -117,17 +117,17 @@ func memorySearch(dataDir string, args []string) error {
 		return PrintJSON(entries)
 	}
 	if len(entries) == 0 {
-		fmt.Println("No memories found.")
+		Println("No memories found.")
 		return nil
 	}
-	fmt.Printf("%-24s %-20s %-12s %s\n", "ID", "CATEGORY", "ACCESS", "CONTENT")
-	fmt.Println(strings.Repeat("-", 80))
+	Printf("%-24s %-20s %-12s %s\n", "ID", "CATEGORY", "ACCESS", "CONTENT")
+	Println(strings.Repeat("-", 80))
 	for _, e := range entries {
 		content := strings.ReplaceAll(e.Content, "\n", " ")
 		if len(content) > 40 {
 			content = content[:37] + "..."
 		}
-		fmt.Printf("%-24s %-20s %-12d %s\n", e.ID, e.Category, e.AccessCount, content)
+		Printf("%-24s %-20s %-12d %s\n", e.ID, e.Category, e.AccessCount, content)
 	}
 	return nil
 }
@@ -166,10 +166,10 @@ func memoryRecall(dataDir string, args []string) error {
 	}
 	formatted := memory.FormatRecallResultForTool(store, q, result, *debug, true)
 	if formatted == "No relevant memories found." {
-		fmt.Println("No memories found.")
+		Println("No memories found.")
 		return nil
 	}
-	fmt.Print(formatted)
+	Print(formatted)
 	return nil
 }
 
@@ -210,7 +210,7 @@ func memoryCandidates(dataDir string, args []string) error {
 		return PrintJSON(result)
 	}
 
-	fmt.Print(memory.FormatMemoryCandidatesResultForTool(result))
+	Print(memory.FormatMemoryCandidatesResultForTool(result))
 	return nil
 }
 
@@ -248,7 +248,7 @@ func memoryThemes(dataDir string, args []string) error {
 	if *jsonOut {
 		return PrintJSON(memory.MemoryThemesJSONPayloadForTool(result, themeOpts))
 	}
-	fmt.Print(memory.FormatMemoryThemesResultForTool(result, themeOpts))
+	Print(memory.FormatMemoryThemesResultForTool(result, themeOpts))
 	return nil
 }
 func memoryEval(dataDir string, args []string) error {
@@ -284,7 +284,7 @@ func memoryEval(dataDir string, args []string) error {
 		if *jsonOut {
 			return PrintJSON(report)
 		}
-		fmt.Print(memory.FormatRecallMaintenanceEvalReportForTool(report))
+		Print(memory.FormatRecallMaintenanceEvalReportForTool(report))
 		return nil
 	}
 
@@ -292,7 +292,7 @@ func memoryEval(dataDir string, args []string) error {
 	if *jsonOut {
 		return PrintJSON(report)
 	}
-	fmt.Print(memory.FormatRecallEvalReportForTool(report))
+	Print(memory.FormatRecallEvalReportForTool(report))
 	return nil
 }
 
@@ -344,7 +344,7 @@ func memorySave(dataDir string, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"status": "saved", "message": out})
 	}
-	fmt.Println(out)
+	Println(out)
 	return nil
 }
 
@@ -374,7 +374,7 @@ func memoryDelete(dataDir string, args []string) error {
 	if *jsonOut {
 		return PrintJSON(map[string]string{"id": id, "status": "deleted", "message": out})
 	}
-	fmt.Println(out)
+	Println(out)
 	return nil
 }
 
@@ -398,16 +398,16 @@ func memoryCompress(dataDir string, args []string) error {
 	if *jsonOut {
 		return PrintJSON(result)
 	}
-	fmt.Printf("Memory Compress Result:\n")
-	fmt.Printf("  Total entries:  %d\n", result.TotalEntries)
-	fmt.Printf("  Dedup removed:  %d\n", result.DedupCount)
-	fmt.Printf("  Merged:         %d\n", result.MergedCount)
-	fmt.Printf("  Compressed:     %d\n", result.CompressedCount)
-	fmt.Printf("  Skipped:        %d\n", result.SkippedCount)
-	fmt.Printf("  Errors:         %d\n", result.ErrorCount)
-	fmt.Printf("  Saved chars:    %d\n", result.SavedChars)
+	Printf("Memory Compress Result:\n")
+	Printf("  Total entries:  %d\n", result.TotalEntries)
+	Printf("  Dedup removed:  %d\n", result.DedupCount)
+	Printf("  Merged:         %d\n", result.MergedCount)
+	Printf("  Compressed:     %d\n", result.CompressedCount)
+	Printf("  Skipped:        %d\n", result.SkippedCount)
+	Printf("  Errors:         %d\n", result.ErrorCount)
+	Printf("  Saved chars:    %d\n", result.SavedChars)
 	if result.BackupName != "" {
-		fmt.Printf("  Backup:         %s\n", result.BackupName)
+		Printf("  Backup:         %s\n", result.BackupName)
 	}
 	return nil
 }
@@ -448,13 +448,13 @@ func memoryBackupList(dataDir string, args []string) error {
 		return PrintJSON(backups)
 	}
 	if len(backups) == 0 {
-		fmt.Println("No backups found.")
+		Println("No backups found.")
 		return nil
 	}
-	fmt.Printf("%-40s %-22s %-10s %s\n", "NAME", "CREATED", "SIZE", "ENTRIES")
-	fmt.Println(strings.Repeat("-", 85))
+	Printf("%-40s %-22s %-10s %s\n", "NAME", "CREATED", "SIZE", "ENTRIES")
+	Println(strings.Repeat("-", 85))
 	for _, b := range backups {
-		fmt.Printf("%-40s %-22s %-10d %d\n", b.Name, b.CreatedAt, b.SizeBytes, b.EntryCount)
+		Printf("%-40s %-22s %-10d %d\n", b.Name, b.CreatedAt, b.SizeBytes, b.EntryCount)
 	}
 	return nil
 }
@@ -477,7 +477,7 @@ func memoryBackupRestore(dataDir string, args []string) error {
 	if err := maintenance.RestoreBackup(name); err != nil {
 		return err
 	}
-	fmt.Printf("Backup %s restored.\n", name)
+	Printf("Backup %s restored.\n", name)
 	return nil
 }
 
@@ -499,7 +499,7 @@ func memoryBackupDelete(dataDir string, args []string) error {
 	if err := maintenance.DeleteBackup(name); err != nil {
 		return err
 	}
-	fmt.Printf("Backup %s deleted.\n", name)
+	Printf("Backup %s deleted.\n", name)
 	return nil
 }
 
@@ -518,7 +518,7 @@ func memoryAutoCompress(dataDir string, args []string) error {
 		if err := store.SaveConfig(cfg); err != nil {
 			return err
 		}
-		fmt.Println("自动压缩已开启。")
+		Println("自动压缩已开启。")
 		return nil
 	case "off":
 		cfg, err := store.LoadConfig()
@@ -529,7 +529,7 @@ func memoryAutoCompress(dataDir string, args []string) error {
 		if err := store.SaveConfig(cfg); err != nil {
 			return err
 		}
-		fmt.Println("自动压缩已关闭。")
+		Println("自动压缩已关闭。")
 		return nil
 	case "status":
 		cfg, err := store.LoadConfig()
@@ -537,9 +537,9 @@ func memoryAutoCompress(dataDir string, args []string) error {
 			return err
 		}
 		if cfg.MemoryAutoCompress {
-			fmt.Println("自动压缩: 开启")
+			Println("自动压缩: 开启")
 		} else {
-			fmt.Println("自动压缩: 关闭")
+			Println("自动压缩: 关闭")
 		}
 		return nil
 	default:
@@ -553,7 +553,7 @@ func memoryStats(dataDir string) error {
 		return err
 	}
 	defer store.Stop()
-	fmt.Print(memory.FormatStoreStatsForTool(store.Stats()))
+	Print(memory.FormatStoreStatsForTool(store.Stats()))
 	return nil
 }
 
@@ -564,7 +564,7 @@ func memoryEmbedStatus(dataDir string) error {
 	}
 	defer store.Stop()
 
-	fmt.Print(memory.FormatEmbedStatusForTool(store.EmbedStatusForTool()))
+	Print(memory.FormatEmbedStatusForTool(store.EmbedStatusForTool()))
 	return nil
 }
 
@@ -580,7 +580,7 @@ func memoryGraph(dataDir string, args []string) error {
 	}
 	defer store.Stop()
 
-	fmt.Print(memory.FormatGraphNeighborsForTool(id, store.GraphNeighborsForTool(id)))
+	Print(memory.FormatGraphNeighborsForTool(id, store.GraphNeighborsForTool(id)))
 	return nil
 }
 
@@ -591,7 +591,7 @@ func memoryStrength(dataDir string) error {
 	}
 	defer store.Stop()
 
-	fmt.Print(memory.FormatStrengthForTool(store.StrengthForTool(time.Now())))
+	Print(memory.FormatStrengthForTool(store.StrengthForTool(time.Now())))
 	return nil
 }
 
@@ -612,6 +612,6 @@ func memoryInfer(dataDir string, args []string) error {
 		MinConfidence:   0.40,
 		MaxVisitedFacts: 200,
 	})
-	fmt.Print(memory.FormatInferenceResultForTool(query, result))
+	Print(memory.FormatInferenceResultForTool(query, result))
 	return nil
 }
