@@ -45,16 +45,13 @@ except Exception as e:
 KEYMAP = {
     "return": 36, "enter": 36, "tab": 48, "space": 49, "backspace": 51, "delete": 51,
     "escape": 53, "esc": 53,
-    "command": 55, "cmd": 55, "shift": 56, "option": 58, "alt": 58, "control": 59, "ctrl": 59,
+    "command": 55, "cmd": 55, "win": 55, "meta": 55,
+    "shift": 56, "option": 58, "alt": 58, "control": 59, "ctrl": 59,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
     "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
     "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
-    "left": 123, "right": 124, "down": 125, "up": 126,
+    "left": 123, "right": 124, "down": 125, "up": 126, "del": 51,
 }
-for i, ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
-    # approximate QWERTY map used by prior one-shot code
-    pass
-# full letter map from previous implementation
 KEYMAP.update({
     "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4,
     "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31,
@@ -92,19 +89,23 @@ def click(x, y, button="left", count=1):
             time.sleep(0.04)
 
 def type_text(text):
+    # CGEventKeyboardSetUnicodeString takes a UniChar count (UTF-16 code units),
+    # which differs from Python's code-point count for non-BMP characters.
+    def unit_count(value):
+        return len(value.encode("utf-16-le")) // 2
     for ch in text:
         e = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
-        Quartz.CGEventKeyboardSetUnicodeString(e, len(ch), ch)
+        Quartz.CGEventKeyboardSetUnicodeString(e, unit_count(ch), ch)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
         e = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
-        Quartz.CGEventKeyboardSetUnicodeString(e, len(ch), ch)
+        Quartz.CGEventKeyboardSetUnicodeString(e, unit_count(ch), ch)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
         time.sleep(0.005)
 
 def key_combo(keys):
     codes = []
     for k in keys:
-        code = KEYMAP.get(str(k).lower())
+        code = KEYMAP.get(str(k).strip().lower())
         if code is None:
             raise ValueError("unknown key: %s" % k)
         codes.append(code)
@@ -269,7 +270,7 @@ func (s *darwinInputSidecar) call(req map[string]interface{}) error {
 		s.stop()
 		// one retry after restart
 		if err2 := s.ensure(); err2 != nil {
-			return err
+			return err2
 		}
 		if err2 := s.writeAndReadLocked(req); err2 != nil {
 			s.stop()
@@ -350,16 +351,19 @@ Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
 
 func (d *darwinInputSimulator) Type(text string) error {
 	return d.callOrFallback(map[string]interface{}{"op": "type", "text": text}, func() error {
-		escaped := strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(text)
+		// A JSON string is also a valid Python string literal. This preserves
+		// quotes, line breaks, and non-ASCII input without hand-rolled escaping.
+		escaped, _ := json.Marshal(text)
 		script := fmt.Sprintf(`
 import Quartz, time
-text = '%s'
+text = %s
 for ch in text:
+    unit_count = len(ch.encode("utf-16-le")) // 2
     e = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
-    Quartz.CGEventKeyboardSetUnicodeString(e, len(ch), ch)
+    Quartz.CGEventKeyboardSetUnicodeString(e, unit_count, ch)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
     e = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
-    Quartz.CGEventKeyboardSetUnicodeString(e, len(ch), ch)
+    Quartz.CGEventKeyboardSetUnicodeString(e, unit_count, ch)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
     time.sleep(0.01)
 `, escaped)
@@ -376,9 +380,8 @@ func (d *darwinInputSimulator) KeyCombo(keys ...string) error {
 		arr[i] = k
 	}
 	return d.callOrFallback(map[string]interface{}{"op": "key", "keys": arr}, func() error {
-		// minimal fallback: only common keys via one-shot (reuse click-style map)
-		script := "import Quartz\n"
-		// use previous resolve logic inline is complex; require sidecar for full key set
+		// Key combinations require the shared Quartz key map, so this operation
+		// cannot safely degrade to a reduced one-shot implementation.
 		return fmt.Errorf("key combo requires python3+Quartz sidecar (keys=%v)", keys)
 	})
 }
