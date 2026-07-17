@@ -417,12 +417,16 @@ func (h *IMMessageHandler) consumePendingRecordAudioAnswer(userID, trimmed strin
 	}
 	h.pendingRecordAudio.Delete(userID)
 
+	// Desktop successful saves are usually short-circuited by offerPostRecordingChoice.
+	// This fallback context covers cancelled/error/missing-path and non-desktop paths.
 	context := fmt.Sprintf(
 		"[Context hint] The user finished an interactive recording session started via record_audio, not a new request.\nRecording title: %s\nUser report: %s\n"+
-			"If the report includes a saved audio path and the user has not yet been asked, ask whether they want transcription + meeting minutes. "+
-			"If they decline minutes, deliver the audio with send_file and show a short summary (duration, size, path). "+
-			"If they accept, call asr(path=...) then write a minutes document, and ALWAYS send_file BOTH the original audio (backup) and the minutes document so the user gets clickable file links for both. "+
-			"If status is cancelled/error or path is missing, acknowledge and do not invent a transcript.",
+			"On desktop, a successful save with a path is normally handled by engine-injected choice buttons (do not re-ask with plain 1/2/3 text). "+
+			"If you still need to handle this report directly (cancelled/error/missing path, or non-desktop fallback): "+
+			"for cancelled/error/missing path, acknowledge and do not invent a transcript; "+
+			"if a path is present and the user wants minutes, produce BOTH markdown (write_file .md) and PDF (generate_pdf) with a mandatory full-transcript section of the original audio ASR text; deliver MP3 archive (prefer mp3_path from the report, else bash+ffmpeg) and send_file mp3+md (ensure PDF is delivered); "+
+			"for transcribe-only, produce BOTH markdown and PDF of the full ASR transcript (not minutes structure) plus deliver MP3 (prefer mp3_path); "+
+			"for keep-only, still deliver MP3 (prefer mp3_path).",
 		pending.Title, trimmed,
 	)
 	if recordDetailEnabled() {

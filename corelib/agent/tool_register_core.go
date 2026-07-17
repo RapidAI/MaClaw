@@ -310,8 +310,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Description: "Desktop only: open an interactive long-form audio recording session (waveform + pause/stop) and wait until the user stops. " +
 			"Not available on IM channels — if the user asks to record a meeting on IM, tell them to use the desktop app; do not improvise with short voice notes. " +
 			"When the user's current message already asks to start meeting/long-form recording, call this immediately — do not re-confirm and do not search disks for existing audio. " +
-			"After the user stops, the saved audio path is returned in the next user message so you can offer transcription/minutes or deliver the audio file. " +
-			"When generating meeting minutes, always also send_file the original audio so the user gets a clickable backup link.",
+			"After the user stops successfully, the host injects localized choice buttons (minutes / transcribe only / keep audio only) — do not re-ask with plain numbered text. " +
+			"When the user selects minutes: produce BOTH markdown (write_file .md) and PDF (generate_pdf) minutes with the same body; minutes MUST include a full-transcript section with the complete ASR text of the original audio; deliver MP3 archive (prefer pre-built mp3_path from the completion report, else bash+ffmpeg), and send_file mp3+md (PDF may auto-deliver). " +
+			"Long transcripts: asr may return [ASR long transcript] with transcript_file — map-reduce for summary/decisions; assemble the full-transcript section from the file on disk without retyping; never paste the entire transcript into chat. " +
+			"When the user selects transcribe-only: still produce BOTH markdown and PDF of the full ASR transcript (title/meta + transcript body only — not meeting minutes); short audio also needs md+pdf on disk; long transcripts assemble from transcript_file; deliver MP3 archive (prefer mp3_path) and send_file md+mp3 (ensure PDF is delivered). " +
+			"For keep-only: deliver MP3 archive (prefer mp3_path). Match user-facing document language to the UI language when provided.",
 		Properties: map[string]interface{}{
 			"title":   map[string]string{"type": "string", "description": "Short label for the recording session (e.g. meeting name)"},
 			"purpose": map[string]string{"type": "string", "description": "Optional purpose shown in the recording UI"},
@@ -487,18 +490,23 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "asr",
 		Description: audioconv.ASRToolDescription(),
 		Properties: map[string]interface{}{
-			"path":   map[string]string{"type": "string", "description": "本地音频文件路径"},
-			"format": map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+			"path":        map[string]string{"type": "string", "description": "本地音频文件路径"},
+			"format":      map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+			"for_minutes": map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿；默认 false（仅快速 extractive）"},
+			"minutes":     map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
 		},
 		Required: []string{"path"},
 		Handler:  extraHandler(deps, "asr", "语音识别不可用（ASR 模型未加载）。请在设置中启用 ASR 并等待模型下载完成。"),
 	})
 
 	r.Register(ToolEntry{
-		Name:        "manage_schedule",
-		Description: "定时任务管理（action: create/list/delete/update）。create 创建定时任务，list 列出所有任务，delete 删除任务，update 修改任务。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31。一次性任务请将 start_date 和 end_date 都设为目标日期。",
+		Name: "manage_schedule",
+		Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
+			"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self）。" +
+			"create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。" +
+			"day_of_week: -1=每天, 0=周日…6=周六。一次性任务将 start_date 与 end_date 都设为目标日期。",
 		Properties: map[string]interface{}{
-			"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update"},
+			"action":           map[string]string{"type": "string", "description": "create/list/delete/update/list_targets"},
 			"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
 			"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，delete 时可选）"},
 			"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
@@ -509,6 +517,13 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
 			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
 			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+			"channel":          map[string]string{"type": "string", "description": "list_targets 或 delivery 通道"},
+			"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
+			"delivery":         map[string]string{"type": "object", "description": "结果推送 {enabled,channel,fail_on_error,targets:[{kind,group_id|group_name|user_id}]}"},
+			"group_id":         map[string]string{"type": "string", "description": "delivery 简写：群 ID"},
+			"group_name":       map[string]string{"type": "string", "description": "delivery 简写：群名"},
+			"user_id":          map[string]string{"type": "string", "description": "delivery 简写：私聊 ID 或 self"},
+			"fail_on_error":    map[string]string{"type": "boolean", "description": "投递失败是否让任务失败（默认 false）"},
 		},
 		Required: []string{"action"},
 		Handler:  extraHandler(deps, "manage_schedule", "定时任务管理器未初始化。"),

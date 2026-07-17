@@ -158,7 +158,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		SkipWorkflowRouting:        preflight.SkipWorkflowRouting,
 	})
 	if entryContext.Handled {
-		return entryContext.Response
+		return finalizeIMEntryHostResponse(entryContext.Response, requestID, msg.UserID)
+	}
+	// Host-side post-recording ASR (and similar) must not hold state.mu: the
+	// serialization acquire timeout is 60s and long ASR would block the session.
+	if entryContext.DeferredHostResponse != nil {
+		serialization.Unlock() // Once-safe; deferred Unlock() becomes a no-op
+		return finalizeIMEntryHostResponse(entryContext.DeferredHostResponse(), requestID, msg.UserID)
 	}
 	entryContextDone := time.Since(msgReceivedAt)
 	if entryContextDone > 500*time.Millisecond {
@@ -201,4 +207,19 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		OnNewRound:                onNewRound,
 		OnStreamDone:              onStreamDone,
 	})
+}
+
+// finalizeIMEntryHostResponse fills request/session routing fields for short-circuit
+// host responses (post-recording keep_only / deferred transcribe).
+func finalizeIMEntryHostResponse(resp *IMAgentResponse, requestID, userID string) *IMAgentResponse {
+	if resp == nil {
+		return nil
+	}
+	if strings.TrimSpace(resp.RequestID) == "" {
+		resp.RequestID = requestID
+	}
+	if strings.TrimSpace(resp.SessionKey) == "" {
+		resp.SessionKey = userID
+	}
+	return resp
 }

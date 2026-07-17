@@ -37,6 +37,9 @@ type imEntryContextResult struct {
 	HasPendingAskUser         bool
 	Response                  *IMAgentResponse
 	Handled                   bool
+	// DeferredHostResponse runs AFTER the per-session IM serialization lock is
+	// released (e.g. host-side ASR). Unlock uses sync.Once so early Unlock + defer is safe.
+	DeferredHostResponse func() *IMAgentResponse
 }
 
 func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imEntryContextResult {
@@ -97,6 +100,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		h.pendingUserReply.Delete(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
 		h.pendingRecordAudio.Delete(msg.UserID)
+		h.pendingPostRecording.Delete(msg.UserID)
 	}
 	pendingReplyElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
@@ -159,7 +163,46 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	lastPhaseAt = time.Now()
 
 	result.AskUserContext, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
+
+	// Engine-injected post-recording choice (minutes / transcribe / keep_only).
+	// Must run before record completion handling so button clicks resolve first.
+	if postCtx, hostResp, deferredHost, hasPost := h.consumePendingPostRecordingChoice(msg.UserID, trimmed, result.EntriesBeforeClear); hasPost {
+		if deferredHost != nil {
+			// Long host work (ASR) must run after the session lock is released.
+			result.DeferredHostResponse = deferredHost
+			return result
+		}
+		if hostResp != nil {
+			// Fast host path (e.g. keep_only file delivery).
+			result.Handled = true
+			result.Response = hostResp
+			return result
+		}
+		if result.AskUserContext != "" {
+			result.AskUserContext = result.AskUserContext + "\n\n" + postCtx
+		} else {
+			result.AskUserContext = postCtx
+		}
+		result.HasPendingAskUser = true
+	}
+
+	// Capture title/purpose before consumePendingRecordAudioAnswer clears state.
+	recTitle, recPurpose := "", ""
+	if raw, ok := h.pendingRecordAudio.Load(msg.UserID); ok {
+		if pending, fresh := pendingRecordAudioForCurrentHistory(raw, result.EntriesBeforeClear); fresh && pending != nil {
+			recTitle, recPurpose = pending.Title, pending.Purpose
+		}
+	}
 	if recordCtx, hasRecord := h.consumePendingRecordAudioAnswer(msg.UserID, trimmed, result.EntriesBeforeClear); hasRecord {
+		// Option B: successful save with path → inject choice GUI, skip LLM for this step.
+		if isSuccessfulRecordingForChoice(trimmed) {
+			lang := h.imCommandResponseLang(msg.Lang)
+			if resp := h.offerPostRecordingChoice(msg.UserID, recTitle, recPurpose, trimmed, lang, result.EntriesBeforeClear); resp != nil {
+				result.Handled = true
+				result.Response = resp
+				return result
+			}
+		}
 		if result.AskUserContext != "" {
 			result.AskUserContext = result.AskUserContext + "\n\n" + recordCtx
 		} else {
@@ -191,11 +234,11 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		result.FreshTask,
 		result.HasPendingAskUser || result.HasPendingUserReply,
 	)
-	// Defensive: a preset FreshTask / slot switch must not win over an open mic session.
-	// clearPerUserSessionState would wipe pendingRecordAudio and strand the UI.
-	if h.hasActivePendingRecordAudio(msg.UserID, result.EntriesBeforeClear) {
+	// Defensive: a preset FreshTask / slot switch must not win over an open mic session
+	// or a pending post-recording choice. clearPerUserSessionState would wipe pending state.
+	if h.hasActivePendingRecordAudio(msg.UserID, result.EntriesBeforeClear) || h.hasActivePendingPostRecording(msg.UserID, result.EntriesBeforeClear) {
 		if result.FreshTask || taskContextClearUI {
-			log.Printf("[record-audio] suppressing FreshTask/clearUI while recording active user=%s fresh=%v clearUI=%v",
+			log.Printf("[record-audio] suppressing FreshTask/clearUI while recording/post-choice active user=%s fresh=%v clearUI=%v",
 				msg.UserID, result.FreshTask, taskContextClearUI)
 		}
 		result.FreshTask = false

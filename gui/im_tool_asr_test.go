@@ -153,6 +153,132 @@ func TestRegisterBuiltinToolsIncludesASR(t *testing.T) {
 	}
 }
 
+func TestASRTranscriptSidecarPath(t *testing.T) {
+	got := asrTranscriptSidecarPath(`C:\rec\meeting.wav`)
+	if !strings.HasSuffix(got, `_transcript.txt`) || !strings.Contains(got, "meeting") {
+		t.Fatalf("sidecar=%q", got)
+	}
+	if asrTranscriptSidecarPath("") != "transcript.txt" {
+		t.Fatalf("empty audio path")
+	}
+	md := asrTranscriptMarkdownPath(`C:\rec\meeting.wav`)
+	if !strings.HasSuffix(md, `_transcript.md`) || !strings.Contains(md, "meeting") {
+		t.Fatalf("md path=%q", md)
+	}
+	if asrTranscriptMarkdownPath("") != "transcript.md" {
+		t.Fatalf("empty audio md path")
+	}
+}
+
+func TestASRShouldSpillToFile(t *testing.T) {
+	if asrShouldSpillToFile("短") {
+		t.Fatal("short text should stay inline")
+	}
+	// Over byte budget even with mostly ASCII.
+	long := strings.Repeat("abcdefghij", 400) // 4000 bytes
+	if !asrShouldSpillToFile(long) {
+		t.Fatal("expected spill for long ASCII")
+	}
+	// CJK denser tokens: still under bytes but over token budget.
+	cjk := strings.Repeat("会议记录摘要内容", 800)
+	if !asrShouldSpillToFile(cjk) {
+		t.Fatal("expected spill for long CJK")
+	}
+}
+
+func TestFormatASRToolResultShortInline(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "short.wav")
+	got := formatASRToolResult(audio, "hello 会议")
+	if !strings.Contains(got, "hello 会议") {
+		t.Fatalf("short should include full text, got %q", got)
+	}
+	if !strings.Contains(got, "transcript_md:") {
+		t.Fatalf("short should announce host markdown archive, got %q", got)
+	}
+	// Short results still get a markdown archive (not the long .txt spill).
+	if _, err := os.Stat(asrTranscriptSidecarPath(audio)); err == nil {
+		t.Fatal("short result must not write long txt sidecar")
+	}
+	mdPath := asrTranscriptMarkdownPath(audio)
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("expected host-written transcript md: %v", err)
+	}
+	if !strings.Contains(string(data), "hello 会议") || !strings.Contains(string(data), "转写正文") {
+		t.Fatalf("md content unexpected: %q", string(data))
+	}
+	// PDF is best-effort (requires system CJK fonts). When present, path must be announced.
+	if pdfPath := asrTranscriptPDFPath(audio); strings.Contains(got, "transcript_pdf:") {
+		if _, err := os.Stat(pdfPath); err != nil {
+			// GenerateToFile may return a cleaned abs path; accept either announcement or file.
+			if !strings.Contains(got, filepath.Base(pdfPath)) {
+				t.Fatalf("transcript_pdf announced but file missing: %v\n%s", err, got)
+			}
+		}
+	}
+}
+
+func TestASRTranscriptTitleAndMarkdown(t *testing.T) {
+	if got := asrTranscriptTitle(`C:\rec\会议录音-1.wav`); got != "会议录音-1" {
+		t.Fatalf("title=%q", got)
+	}
+	if got := asrTranscriptTitle(""); got != "转写" {
+		t.Fatalf("empty title=%q", got)
+	}
+	md := buildASRTranscriptMarkdown(`C:\rec\demo.wav`, "正文")
+	if !strings.Contains(md, "# demo") || !strings.Contains(md, "正文") {
+		t.Fatalf("md=%q", md)
+	}
+}
+
+func TestFormatASRToolResultLongSpillsFile(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "long.wav")
+	// Build long CJK body with distinct head/tail markers.
+	body := "【开头标记】" + strings.Repeat("这是会议转写正文段落。", 600) + "【结尾标记】"
+	got := formatASRToolResult(audio, body)
+	if !strings.Contains(got, "[ASR long transcript]") {
+		t.Fatalf("expected long envelope: %s", clipASRTest(got, 200))
+	}
+	sidecar := asrTranscriptSidecarPath(audio)
+	if !strings.Contains(got, sidecar) {
+		t.Fatalf("expected transcript_file path in result: %s", clipASRTest(got, 400))
+	}
+	for _, needle := range []string{"for_minutes=true", "transcript_file", "transcript_md", "preview_head", "preview_tail", "【开头标记】", "【结尾标记】"} {
+		if !strings.Contains(got, needle) {
+			t.Fatalf("missing %q in:\n%s", needle, clipASRTest(got, 800))
+		}
+	}
+	mdPath := asrTranscriptMarkdownPath(audio)
+	if mdData, err := os.ReadFile(mdPath); err != nil {
+		t.Fatalf("long result should also write transcript_md: %v", err)
+	} else if !strings.Contains(string(mdData), "【开头标记】") {
+		t.Fatalf("transcript_md missing body")
+	}
+	// Result must be a small preview envelope, not the full transcript payload.
+	if len(got) >= len(body) {
+		t.Fatalf("result (%d) should be smaller than full body (%d)", len(got), len(body))
+	}
+	if !strings.Contains(got, "runes omitted") {
+		t.Fatalf("expected omission marker in preview")
+	}
+	data, err := os.ReadFile(sidecar)
+	if err != nil {
+		t.Fatalf("sidecar missing: %v", err)
+	}
+	if string(data) != body {
+		t.Fatalf("sidecar content mismatch: got %d bytes want %d", len(data), len(body))
+	}
+}
+
+func clipASRTest(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 // makeTestWAV builds a minimal PCM WAV for tests.
 func makeTestWAV(sampleRate, channels, bitsPerSample int, pcm []byte) []byte {
 	byteRate := sampleRate * channels * bitsPerSample / 8

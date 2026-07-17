@@ -342,21 +342,29 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 
 // desktopWorkflowDocOverride returns a system prompt section that overrides
 // the PDF generation instructions for the desktop AI assistant panel.
-// In the desktop panel, workflow documents (requirements, design, tasks) are
-// displayed as Markdown in the right-side preview panel — no PDF needed.
-// PDF generation is only needed for IM channels (飞书/微信/QQ/Telegram).
+// In the desktop panel, **workflow phase documents** (requirements, design, tasks)
+// are displayed as Markdown in the right-side preview panel — no PDF needed.
+// PDF generation remains required for IM channels (飞书/微信/QQ/Telegram).
+//
+// Scope is intentionally limited to coding/product workflow phase docs.
+// Meeting-recording products (minutes, transcript archives, MP3) still use
+// write_file / generate_pdf / send_file as directed by post-recording context.
 func desktopWorkflowDocOverride() string {
 	return `
 
-### 文档交付方式覆盖（桌面 AI 助手面板专用）
-你当前运行在桌面 AI 助手面板中（非 IM 通道）。以下规则覆盖上述 PDF 生成相关的所有指令：
+### 文档交付方式覆盖（桌面 AI 助手面板 · 仅工作流阶段文档）
+你当前运行在桌面 AI 助手面板中（非 IM 通道）。以下规则**仅适用于**编程/产品等工作流阶段产出（需求文档、技术设计、任务列表等），**不覆盖**会议录音后处理：
 
-1. **不要使用 office(action="generate_pdf") 或 generate_pdf 工具**——桌面面板不需要 PDF，直接输出 Markdown 文本即可
-2. **不要使用 send_file 发送文档**——文档内容直接作为你的回复文本输出
+**工作流阶段文档（requirements / design / tasks 等）：**
+1. **不要使用 office(action="generate_pdf") 或 generate_pdf 工具**——桌面面板阶段文档不需要 PDF，直接输出 Markdown 文本即可
+2. **不要使用 send_file 发送上述工作流阶段文档**——文档内容直接作为你的回复文本输出
 3. 需求文档、技术设计文档、任务列表文档：直接用 Markdown 格式写在回复中
 4. 系统会自动将你输出的 Markdown 文档显示在聊天区右侧的预览面板中
 5. 输出文档后，仍然需要附带确认提示（如"请查看并确认需求是否准确，或提出修改意见"）
 6. 其他规则不变：仍需等待用户确认后才能进入下一阶段
+
+**例外（必须遵守，优先级高于上列 1–2）：**
+- 会议/长时录音后处理（转写并生成会议纪要、仅转写文字、音频存档等）：必须按任务指令使用 write_file 落盘 .md、generate_pdf 生成 PDF、send_file 投递 md/pdf/mp3（及 transcript 相关文件）。不要因为上列工作流规则而省略落盘或投递。
 `
 }
 

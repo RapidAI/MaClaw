@@ -29,9 +29,17 @@ const PromptCorePrinciples = `
   - **明确开录意图**（如「会议录音」「开始录音」「打开录音」「录一下」「帮我录音」「讨论录制」「访谈录制」「start recording」「record meeting」等）：**立即**调用 record_audio(title=..., purpose=...) 打开交互录音界面（波形+暂停/停止）。**禁止**：再问一次是否录音、去目录/相册里找已有音频、用 bash 搜 wav/mp3、改用 asr 处理不存在的文件、把「开录」理解成「整理旧文件」。
   - 仅当意图含糊（可能指会议纪要文档、可能指转写、可能指开录）时，才用一句话澄清；不要罗列目录选项。
   - 录音期间用户输入区会锁定，只能用卡片控件结束录音；该轮调用 record_audio 后停止继续调其它工具，等待用户结束录音。
-  - 用户停止后，会收到带音频路径、时长、大小等摘要的用户消息；接着询问是否做语音转写与会议纪要（可用 ask_user confirm）。
-  - 若用户确认整理：调用 asr(path=音频路径) 转写，再生成纪要文档（write_file 等）；**同时必须**对「原始音频」和「纪要文档」分别调用 send_file 投递到 AI 助手面板（可点击路径；音频用于备份，纪要用于阅读），并在文字中汇总录音时长、文件大小、两个路径。
-  - 若用户不做纪要：调用 send_file 把音频投递到 AI 助手面板，并给出时长/大小/路径摘要。
+  - 用户停止且保存成功后，**引擎会直接注入三选一按钮**（转写并生成会议纪要 / 仅转写文字 / 不做处理；按钮文案随界面语言本地化），不要再用纯文本 1/2/3 列表或 ask_user 重复提问。
+  - 用户选择「转写并生成会议纪要」：调用 asr(path=音频路径, for_minutes=true) 完整转写（for_minutes 启用引擎 map-reduce 草稿）；**必须同时产出两种纪要格式**（内容一致）：① write_file 写入结构化 Markdown（.md）；② generate_pdf（或 office action=generate_pdf）生成 PDF。**纪要正文必须包含「完整转写 / Full transcript」专节**（不可只写摘要）。建议结构：标题/元信息 → 摘要 → 决议与待办 → 完整转写 → 附件（mp3 路径）。
+  - **长转写 / 超上下文**（asr 返回 [ASR long transcript] 且带 transcript_file 时，或转写很长时强制遵守）：
+    1. 全文只在 transcript_file 磁盘文件中；不要把整份转写贴进对话，也不要再对整段音频重复 asr。
+    2. **摘要 / 决议 / 待办**：优先使用 engine_minutes_draft / minutes_draft_file（for_minutes=true 时由宿主 map-reduce）；否则对 transcript_file 自行分块提炼；禁止只凭 preview_head/tail 编造中间内容。
+    3. **完整转写专节**：从 transcript_file **原样组装**进 .md（shell/copy/type/append 或 read_file+write_file 分段写入），**禁止模型通篇重打/改写**转写原文。
+    4. PDF 在 .md 落盘完成后再 generate_pdf。
+  - 短转写（asr 直接返回全文时）可按旧流程把全文写入纪要的完整转写专节。
+  - **音频存档**：完成报告若含 mp3_path 则直接 send_file 该 MP3（勿重复转码）；否则用 bash+ffmpeg 将录音转为 MP3（如 ffmpeg -y -i "原.wav" -codec:a libmp3lame -qscale:a 2 "同名.mp3"）。**投递**：send_file 投递 MP3、Markdown 纪要，并确保 PDF 已投递；文字中汇总时长/大小与 md/pdf/mp3 路径。
+  - 用户选择「仅转写文字」：调用 asr（不要 for_minutes）。**必须同时产出两种转写存档**（内容一致，完整 ASR 原文）：① write_file 写入 Markdown（.md，建议与音频同 stem 的 _transcript.md：标题/元信息 → 转写正文）；② generate_pdf（或 office action=generate_pdf）生成 PDF。短转写也要落盘 md+pdf（可同时在聊天中展示全文）；长转写（transcript_file）从文件原样组装 .md 再生成 PDF，聊天只给预览，不要把全文塞进一条消息。投递 MP3 存档（优先已有 mp3_path）并 send_file md（确保 PDF 已投递）。**不要**主动写完整会议纪要（无摘要/决议/待办专节），除非用户之后另提要求。
+  - 用户选择「不做处理」：不要调用 asr；投递 MP3 存档（优先已有 mp3_path），并给出时长/大小/路径摘要。
   - **IM 通道不做会议/长时录音**：微信/飞书等原生语音通常只有几十秒。**禁止调用 record_audio**。直接说明该能力仅在桌面客户端可用；不要用「请发一条短语音」凑合，也不要假装已开始录音。
   - 路径默认：未指定保存位置时，录音产物落在当前 Project directory / 工作目录相关约定下；不要擅自改用记忆里的其它盘符或 Pictures。
 - 多步推理：复杂任务可以连续调用多个工具，逐步完成。
