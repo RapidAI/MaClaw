@@ -767,7 +767,7 @@ func (g *Gateway) processEvent(evt wsEvent) {
 	}
 
 	text := extractText(actual.MsgData, msgType)
-	chatType := actual.ChatType
+	chatType := NormalizeChatType(actual.ChatType)
 	if chatType == "" {
 		if evtType == "bot_group_message" {
 			chatType = "group"
@@ -1321,8 +1321,12 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 	return g.sendTextRetrying(ctx, token, msg)
 }
 
-// sendTextRetrying sends once, refreshes an expired token, and drops reminder
-// once if the deployment rejects formatText+reminder.
+// sendTextRetrying sends once, refreshes an expired token, then degrades optional
+// decorations on structured API rejections only (never on network/context errors).
+// Order prefers keeping @mention when possible (invalid refMsgId is a common reject):
+//  1. drop refMsgId (native quote)
+//  2. drop reminder (@mention), keep refMsgId
+//  3. drop both
 func (g *Gateway) sendTextRetrying(ctx context.Context, token string, msg OutgoingText) error {
 	err := g.sendTextWithToken(ctx, token, msg, true)
 	if err == nil {
@@ -1341,16 +1345,46 @@ func (g *Gateway) sendTextRetrying(ctx context.Context, token string, msg Outgoi
 		}
 		token = freshToken
 	}
-	// Some private deployments reject formatText+reminder; strip @ and retry once.
-	if msg.Reminder != nil {
-		log.Printf("[lansenger] SendText with reminder failed (%v), retrying without reminder", err)
-		if retryErr := g.sendTextWithToken(ctx, token, msg, false); retryErr == nil {
+	if !isLansengerAPIError(err) {
+		return err
+	}
+
+	type degrade struct {
+		label   string
+		withRem bool
+		refID   string
+	}
+	var attempts []degrade
+	hasRef := strings.TrimSpace(msg.RefMsgID) != ""
+	hasRem := msg.Reminder != nil
+	if hasRef {
+		attempts = append(attempts, degrade{"without refMsgId", true, ""})
+	}
+	if hasRem {
+		attempts = append(attempts, degrade{"without reminder", false, msg.RefMsgID})
+	}
+	if hasRem && hasRef {
+		attempts = append(attempts, degrade{"without reminder+refMsgId", false, ""})
+	}
+	for _, a := range attempts {
+		next := msg
+		next.RefMsgID = a.refID
+		log.Printf("[lansenger] SendText decoration failed (%v), retrying %s", err, a.label)
+		if retryErr := g.sendTextWithToken(ctx, token, next, a.withRem); retryErr == nil {
 			return nil
 		} else {
-			return retryErr
+			err = retryErr
+			if !isLansengerAPIError(err) {
+				return err
+			}
 		}
 	}
 	return err
+}
+
+func isLansengerAPIError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr)
 }
 
 func (g *Gateway) sendTextWithToken(ctx context.Context, token string, msg OutgoingText, withReminder bool) error {

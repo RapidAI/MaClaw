@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,9 @@ type telegramGatewayManager struct {
 	gateway   *telegram.Gateway
 	status    gatewayConnectionStatus
 	lastToken string
+	// lastChatID is the most recent private/group chat that messaged the bot.
+	// Used for scheduled-task proactive delivery (user_id=self).
+	lastChatID int64
 
 	// localHandler is a fully-wired IMMessageHandler for local mode.
 	localHandler *IMMessageHandler
@@ -249,7 +253,46 @@ func (m *telegramGatewayManager) ensureLocalHandler() *IMMessageHandler {
 }
 
 // onIncomingMessage routes Telegram messages to local handler or Hub.
+func (m *telegramGatewayManager) noteLastChat(chatID int64) {
+	if m == nil || chatID == 0 {
+		return
+	}
+	m.mu.Lock()
+	m.lastChatID = chatID
+	m.mu.Unlock()
+}
+
+// SendProactiveText sends text to chatID, or to the last active chat when chatID==0.
+// On success returns the concrete chat id used (for delivery state memory).
+func (m *telegramGatewayManager) SendProactiveText(chatID int64, text string) (usedChatID int64, err error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, fmt.Errorf("empty proactive text")
+	}
+	if m == nil {
+		return 0, fmt.Errorf("telegram gateway is nil")
+	}
+	m.mu.Lock()
+	gw := m.gateway
+	if chatID == 0 {
+		chatID = m.lastChatID
+	}
+	m.mu.Unlock()
+	if gw == nil {
+		return 0, fmt.Errorf("telegram gateway not running")
+	}
+	if chatID == 0 {
+		return 0, fmt.Errorf("no active telegram chat (先给机器人发一条消息，或填写 chat_id)")
+	}
+	if err := gw.SendText(context.Background(), telegram.OutgoingText{ChatID: chatID, Text: text}); err != nil {
+		return 0, err
+	}
+	m.noteLastChat(chatID)
+	return chatID, nil
+}
+
 func (m *telegramGatewayManager) onIncomingMessage(msg telegram.IncomingMessage) {
+	m.noteLastChat(msg.ChatID)
 	if isPassthroughSlashText(msg.Text) {
 		log.Printf("[telegram-mgr] routing passthrough command locally: chat=%d", msg.ChatID)
 		m.handleLocalMessage(msg)
@@ -526,7 +569,11 @@ type GatewayReplyPayload struct {
 	MimeType     string               `json:"mime_type"`
 	ContextToken string               `json:"context_token,omitempty"`
 	ChatType     string               `json:"chat_type,omitempty"`
-	Extra        map[string]any       `json:"extra,omitempty"`
+	// SourceMessageID / SenderID correlate Lansenger group decorations when
+	// hub replies complete out of FIFO order for the same group.
+	SourceMessageID string         `json:"source_message_id,omitempty"`
+	SenderID        string         `json:"sender_id,omitempty"`
+	Extra           map[string]any `json:"extra,omitempty"`
 }
 
 // HandleGatewayReply dispatches a reply from Hub to the Telegram API.

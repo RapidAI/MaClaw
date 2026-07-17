@@ -60,3 +60,41 @@ func TestLansengerGroupIgnoredListCapsSize(t *testing.T) {
 		t.Fatal("newest entry should remain")
 	}
 }
+
+func TestLansengerGroupAllowedList(t *testing.T) {
+	var cfg AppConfig
+	if cfg.IsLansengerGroupAllowed("g1") {
+		t.Fatal("empty allowlist")
+	}
+	if !cfg.SetLansengerGroupAllowed("g1", true) {
+		t.Fatal("allow should change")
+	}
+	if cfg.SetLansengerGroupAllowed("g1", true) {
+		t.Fatal("dup allow no-op")
+	}
+	if !cfg.IsLansengerGroupAllowed("g1") {
+		t.Fatal("g1 allowed")
+	}
+	if !cfg.SetLansengerGroupAllowed("g1", false) {
+		t.Fatal("disallow change")
+	}
+	if cfg.IsLansengerGroupAllowed("g1") {
+		t.Fatal("g1 not allowed")
+	}
+	if cfg.EffectiveLansengerGroupPolicy() != "open" {
+		t.Fatal("default policy open")
+	}
+	cfg.LansengerGroupPolicy = "allowlist"
+	if cfg.EffectiveLansengerGroupPolicy() != "allowlist" {
+		t.Fatal("allowlist policy")
+	}
+	if !cfg.IsLansengerRequireMention() {
+		t.Fatal("require mention default true")
+	}
+	f := false
+	cfg.LansengerRequireMention = &f
+	if cfg.IsLansengerRequireMention() {
+		t.Fatal("require mention false")
+	}
+}
+

@@ -39,25 +39,37 @@ const (
 	MsgIMProactiveImageCaptionBare = "msg.im_proactive_image_caption_bare" // no filename
 
 	// Desktop-side file delivery status (shown in AI assistant after materialize).
-	MsgIMFileForwardedCount       = "msg.im_file_forwarded_count"        // %d count
-	MsgIMFileForwardFailed        = "msg.im_file_forward_failed"         // %s name, %s err
-	MsgIMFileSenderNotConfigured  = "msg.im_file_sender_not_configured"  // %s name
-	MsgIMFileSaveFailed           = "msg.im_file_save_failed"            // %s name, %s err
-	MsgIMFileSaveEmpty            = "msg.im_file_save_empty"             // %s name
-	MsgIMFileDesktopReadyOne      = "msg.im_file_desktop_ready_one"      // %s name
-	MsgIMFileDesktopReadyMany     = "msg.im_file_desktop_ready_many"     // %d count
-	MsgIMFileChannelReadyOne      = "msg.im_file_channel_ready_one"      // %s name — already on WeChat/Feishu/etc.
-	MsgIMFileChannelReadyMany     = "msg.im_file_channel_ready_many"     // %d count
-	MsgIMFileChannelStagedOne     = "msg.im_file_channel_staged_one"     // %s name — interim tool observation on IM channel
-	MsgIMFileDesktopStagedOne     = "msg.im_file_desktop_staged_one"     // %s name — interim desktop-only observation
-	MsgIMFileForwardStagedOne     = "msg.im_file_forward_staged_one"     // %s name — interim forward_to_im observation
-	MsgIMFileEmptyPayload         = "msg.im_file_empty_payload"          // %s name
+	MsgIMFileForwardedCount      = "msg.im_file_forwarded_count"       // %d count
+	MsgIMFileForwardFailed       = "msg.im_file_forward_failed"        // %s name, %s err
+	MsgIMFileSenderNotConfigured = "msg.im_file_sender_not_configured" // %s name
+	MsgIMFileSaveFailed          = "msg.im_file_save_failed"           // %s name, %s err
+	MsgIMFileSaveEmpty           = "msg.im_file_save_empty"            // %s name
+	MsgIMFileDesktopReadyOne     = "msg.im_file_desktop_ready_one"     // %s name
+	MsgIMFileDesktopReadyMany    = "msg.im_file_desktop_ready_many"    // %d count
+	MsgIMFileChannelReadyOne     = "msg.im_file_channel_ready_one"     // %s name — already on WeChat/Feishu/etc.
+	MsgIMFileChannelReadyMany    = "msg.im_file_channel_ready_many"    // %d count
+	MsgIMFileChannelStagedOne    = "msg.im_file_channel_staged_one"    // %s name — interim tool observation on IM channel
+	MsgIMFileDesktopStagedOne    = "msg.im_file_desktop_staged_one"    // %s name — interim desktop-only observation
+	MsgIMFileForwardStagedOne    = "msg.im_file_forward_staged_one"    // %s name — interim forward_to_im observation
+	MsgIMFileEmptyPayload        = "msg.im_file_empty_payload"         // %s name
 
 	// Local WeChat gateway proactive-send errors (GUI language).
 	MsgWeixinGatewayNotRunning = "msg.weixin_gateway_not_running"
 	MsgWeixinFileDecodeFailed  = "msg.weixin_file_decode_failed" // wraps %v via %w style text
 	MsgWeixinFileDataEmpty     = "msg.weixin_file_data_empty"
 	MsgWeixinNoActiveSession   = "msg.weixin_no_active_session"
+
+	// Survey (问卷/投票) IM fallbacks + group display (GUI language).
+	MsgSurveyIMUnknownSender   = "msg.survey_im_unknown_sender"
+	MsgSurveyIMRateLimited     = "msg.survey_im_rate_limited"
+	MsgSurveyIMHubUnavailable  = "msg.survey_im_hub_unavailable"
+	MsgSurveyIMServiceError    = "msg.survey_im_service_error"
+	MsgSurveyGroupTag          = "msg.survey_group_tag"          // group-reply identity prefix line
+	MsgSurveyAnnounceHeader    = "msg.survey_announce_header"    // %s title, %s short code
+	MsgSurveyAnnounceDeadline  = "msg.survey_announce_deadline"  // %s time
+	MsgSurveyAnnounceTarget    = "msg.survey_announce_target"    // %d count
+	MsgSurveyAnnounceQuestions = "msg.survey_announce_questions" // %d count
+	MsgSurveyAnnounceCTA       = "msg.survey_announce_cta"       // %s short code
 
 	// gateway – LLM / Hub status
 	MsgLLMNotConfigured   = "msg.llm_not_configured"
@@ -258,6 +270,11 @@ const (
 	MsgTUIConfigDescLansengerAppID           = "msg.tui_config_desc_lansenger_app_id"
 	MsgTUIConfigDescLansengerAppSecret       = "msg.tui_config_desc_lansenger_app_secret"
 	MsgTUIConfigDescLansengerGateway         = "msg.tui_config_desc_lansenger_gateway"
+	MsgTUIConfigDescLansengerGroupPolicy     = "msg.tui_config_desc_lansenger_group_policy"
+	MsgTUIConfigDescLansengerRequireMention  = "msg.tui_config_desc_lansenger_require_mention"
+	MsgTUIConfigDescLansengerRespondToAtAll  = "msg.tui_config_desc_lansenger_respond_to_at_all"
+	MsgTUIConfigDescLansengerAutoMention     = "msg.tui_config_desc_lansenger_auto_mention"
+	MsgTUIConfigDescLansengerAutoQuote       = "msg.tui_config_desc_lansenger_auto_quote"
 	MsgTUIConfigDescProxyEnabled             = "msg.tui_config_desc_proxy_enabled"
 	MsgTUIConfigDescProxyProfile             = "msg.tui_config_desc_proxy_profile"
 	MsgTUIConfigDescProxyProtocol            = "msg.tui_config_desc_proxy_protocol"
@@ -370,6 +387,24 @@ const (
 	MsgExecConfirmCancelled  = "msg.exec_confirm_cancelled"
 	MsgExecConfirmExpired    = "msg.exec_confirm_expired"
 
+	// Post-recording choice UI (engine-injected after record_audio save).
+	MsgRecordPostSuccess        = "msg.record_post_success"
+	MsgRecordPostSummaryHeading = "msg.record_post_summary_heading"
+	MsgRecordPostLabelTitle     = "msg.record_post_label_title"    // %s title
+	MsgRecordPostLabelDuration  = "msg.record_post_label_duration" // %s duration
+	MsgRecordPostLabelSize      = "msg.record_post_label_size"     // %s size
+	MsgRecordPostLabelFormat    = "msg.record_post_label_format"   // %s format
+	MsgRecordPostLabelPath      = "msg.record_post_label_path"     // %s path (WAV)
+	MsgRecordPostLabelMP3Path   = "msg.record_post_label_mp3_path" // %s mp3 path
+	MsgRecordPostChoosePrompt   = "msg.record_post_choose_prompt"
+	MsgRecordPostDefaultTitle   = "msg.record_post_default_title"
+	MsgRecordPostBtnMinutes     = "msg.record_post_btn_minutes"
+	MsgRecordPostBtnTranscribe  = "msg.record_post_btn_transcribe"
+	MsgRecordPostBtnKeepOnly    = "msg.record_post_btn_keep_only"
+	MsgRecordPostSizeBytes      = "msg.record_post_size_bytes" // %d
+	MsgRecordPostSizeKB         = "msg.record_post_size_kb"    // %d
+	MsgRecordPostSizeMB         = "msg.record_post_size_mb"    // %.1f
+
 	// Execution confirmation – planned actions by intent type
 	MsgExecPlanCoding1  = "msg.exec_plan_coding_1"
 	MsgExecPlanCoding2  = "msg.exec_plan_coding_2"
@@ -393,37 +428,37 @@ const (
 	MsgExecRevisionDefault2 = "msg.exec_revision_default_2"
 
 	// IM tool-status card labels (must stay distinct from normal chat replies).
-	MsgToolStatusLabel            = "msg.tool_status_label"
-	MsgToolActionProcessing       = "msg.tool_action_processing"
-	MsgToolActionRunCommand       = "msg.tool_action_run_command"
-	MsgToolActionReadFile         = "msg.tool_action_read_file"
-	MsgToolActionWriteFile        = "msg.tool_action_write_file"
-	MsgToolActionEditFile         = "msg.tool_action_edit_file"
-	MsgToolActionListDir          = "msg.tool_action_list_dir"
-	MsgToolActionSearchFiles      = "msg.tool_action_search_files"
-	MsgToolActionGrep             = "msg.tool_action_grep"
-	MsgToolActionWebSearch        = "msg.tool_action_web_search"
-	MsgToolActionWebFetch         = "msg.tool_action_web_fetch"
-	MsgToolActionSendFile         = "msg.tool_action_send_file"
-	MsgToolActionRunSkill         = "msg.tool_action_run_skill"
-	MsgToolActionGeneratePDF      = "msg.tool_action_generate_pdf"
-	MsgToolActionMemory           = "msg.tool_action_memory"
-	MsgToolActionSSHConnect       = "msg.tool_action_ssh_connect"
-	MsgToolActionSSHExec          = "msg.tool_action_ssh_exec"
-	MsgToolActionSSHClose         = "msg.tool_action_ssh_close"
-	MsgToolActionSSHCloseAll      = "msg.tool_action_ssh_close_all"
-	MsgToolActionSSH              = "msg.tool_action_ssh"
-	MsgToolActionScreenshot       = "msg.tool_action_screenshot"
-	MsgToolActionTTS              = "msg.tool_action_tts"
-	MsgToolActionASR              = "msg.tool_action_asr"
-	MsgToolActionBrowser          = "msg.tool_action_browser"
-	MsgToolActionCraft            = "msg.tool_action_craft"
-	MsgToolActionOpen             = "msg.tool_action_open"
-	MsgToolActionDelegate         = "msg.tool_action_delegate"
-	MsgToolActionCallTool         = "msg.tool_action_call_tool"
-	MsgToolActionScriptProgress   = "msg.tool_action_script_progress"
-	MsgToolActionCommandProgress  = "msg.tool_action_command_progress"
-	MsgToolActionSkillProgress    = "msg.tool_action_skill_progress"
+	MsgToolStatusLabel           = "msg.tool_status_label"
+	MsgToolActionProcessing      = "msg.tool_action_processing"
+	MsgToolActionRunCommand      = "msg.tool_action_run_command"
+	MsgToolActionReadFile        = "msg.tool_action_read_file"
+	MsgToolActionWriteFile       = "msg.tool_action_write_file"
+	MsgToolActionEditFile        = "msg.tool_action_edit_file"
+	MsgToolActionListDir         = "msg.tool_action_list_dir"
+	MsgToolActionSearchFiles     = "msg.tool_action_search_files"
+	MsgToolActionGrep            = "msg.tool_action_grep"
+	MsgToolActionWebSearch       = "msg.tool_action_web_search"
+	MsgToolActionWebFetch        = "msg.tool_action_web_fetch"
+	MsgToolActionSendFile        = "msg.tool_action_send_file"
+	MsgToolActionRunSkill        = "msg.tool_action_run_skill"
+	MsgToolActionGeneratePDF     = "msg.tool_action_generate_pdf"
+	MsgToolActionMemory          = "msg.tool_action_memory"
+	MsgToolActionSSHConnect      = "msg.tool_action_ssh_connect"
+	MsgToolActionSSHExec         = "msg.tool_action_ssh_exec"
+	MsgToolActionSSHClose        = "msg.tool_action_ssh_close"
+	MsgToolActionSSHCloseAll     = "msg.tool_action_ssh_close_all"
+	MsgToolActionSSH             = "msg.tool_action_ssh"
+	MsgToolActionScreenshot      = "msg.tool_action_screenshot"
+	MsgToolActionTTS             = "msg.tool_action_tts"
+	MsgToolActionASR             = "msg.tool_action_asr"
+	MsgToolActionBrowser         = "msg.tool_action_browser"
+	MsgToolActionCraft           = "msg.tool_action_craft"
+	MsgToolActionOpen            = "msg.tool_action_open"
+	MsgToolActionDelegate        = "msg.tool_action_delegate"
+	MsgToolActionCallTool        = "msg.tool_action_call_tool"
+	MsgToolActionScriptProgress  = "msg.tool_action_script_progress"
+	MsgToolActionCommandProgress = "msg.tool_action_command_progress"
+	MsgToolActionSkillProgress   = "msg.tool_action_skill_progress"
 
 	// IM intermediate progress (non-final replies).
 	MsgProgressAck          = "msg.progress_ack"
@@ -432,14 +467,14 @@ const (
 	MsgProgressStatusLabel  = "msg.progress_status_label"
 
 	// Milestone merge / heartbeat summary templates.
-	MsgMilestoneWorking           = "msg.milestone_working"             // %s summary
-	MsgMilestoneDoneList          = "msg.milestone_done_list"            // %s joined summaries
-	MsgMilestoneDoneSteps         = "msg.milestone_done_steps"           // %d count
-	MsgMilestoneDoneWorking       = "msg.milestone_done_working"         // %s done, %s current
-	MsgMilestoneProcessingElapsed = "msg.milestone_processing_elapsed"   // %s duration
-	MsgMilestoneStepsCurrent      = "msg.milestone_steps_current"        // %d, %s current, %s duration
-	MsgMilestoneStepsLatest       = "msg.milestone_steps_latest"         // %d, %s latest, %s duration
-	MsgMilestoneVerbEllipsis      = "msg.milestone_verb_ellipsis"        // %s verb → "verb..."
+	MsgMilestoneWorking           = "msg.milestone_working"            // %s summary
+	MsgMilestoneDoneList          = "msg.milestone_done_list"          // %s joined summaries
+	MsgMilestoneDoneSteps         = "msg.milestone_done_steps"         // %d count
+	MsgMilestoneDoneWorking       = "msg.milestone_done_working"       // %s done, %s current
+	MsgMilestoneProcessingElapsed = "msg.milestone_processing_elapsed" // %s duration
+	MsgMilestoneStepsCurrent      = "msg.milestone_steps_current"      // %d, %s current, %s duration
+	MsgMilestoneStepsLatest       = "msg.milestone_steps_latest"       // %d, %s latest, %s duration
+	MsgMilestoneVerbEllipsis      = "msg.milestone_verb_ellipsis"      // %s verb → "verb..."
 )
 
 // defaultLang is the fallback language when lang is empty or unknown.
@@ -484,6 +519,16 @@ var translations = map[string]map[string]string{
 		MsgWeixinFileDecodeFailed:             "文件数据解码失败",
 		MsgWeixinFileDataEmpty:                "文件数据为空",
 		MsgWeixinNoActiveSession:              "没有可用的微信会话：请先在微信里给机器人发一条消息，再重试发送文件",
+		MsgSurveyIMUnknownSender:              "无法识别发送者，请稍后重试。",
+		MsgSurveyIMRateLimited:                "操作过快，请稍后再试",
+		MsgSurveyIMHubUnavailable:             "问卷服务暂不可用（Hub 未连接），请稍后重试。",
+		MsgSurveyIMServiceError:               "问卷服务暂时出错，请稍后重试。",
+		MsgSurveyGroupTag:                     "【问卷】",
+		MsgSurveyAnnounceHeader:               "【问卷】%s\n短码：%s",
+		MsgSurveyAnnounceDeadline:             "截止：%s",
+		MsgSurveyAnnounceTarget:               "目标回收：%d 份",
+		MsgSurveyAnnounceQuestions:            "共 %d 题",
+		MsgSurveyAnnounceCTA:                  "请 @机器人 发送 /survey %s 开始填写",
 		MsgLLMNotConfigured:                   "本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
 		MsgHubUnavailable:                     "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
 		MsgProgressPrefix:                     "",
@@ -680,6 +725,11 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLansengerAppID:           "蓝信 AppID",
 		MsgTUIConfigDescLansengerAppSecret:       "蓝信 AppSecret",
 		MsgTUIConfigDescLansengerGateway:         "蓝信网关地址",
+		MsgTUIConfigDescLansengerGroupPolicy:     "蓝信群聊策略 (open/allowlist/disabled)",
+		MsgTUIConfigDescLansengerRequireMention:  "蓝信群聊需 @机器人",
+		MsgTUIConfigDescLansengerRespondToAtAll:  "蓝信响应 @所有人",
+		MsgTUIConfigDescLansengerAutoMention:     "蓝信回复时 @提问者",
+		MsgTUIConfigDescLansengerAutoQuote:       "蓝信回复时引用原消息",
 		MsgTUIConfigDescProxyEnabled:             "启用代理",
 		MsgTUIConfigDescProxyProfile:             "一键应用常见本地代理方案；自定义代理可继续调整下面的主机、端口和范围",
 		MsgTUIConfigDescProxyProtocol:            "代理协议",
@@ -780,62 +830,78 @@ var translations = map[string]map[string]string{
 		MsgConfirmLabelRiskFlags:      "风险标记",
 		MsgConfirmLabelRevisionHints:  "修订提示",
 		// Execution confirmation gate
-		MsgExecConfirmText:       "请确认我的理解是否正确。确认后开始执行；如有偏差，请回复修正后的目录、目标或前提。",
-		MsgExecConfirmNilText:    "请确认后继续。",
-		MsgExecConfirmBtnConfirm: "确认并开始",
-		MsgExecConfirmBtnCancel:  "取消",
-		MsgExecConfirmCancelled:  "已取消待确认的任务。",
-		MsgExecConfirmExpired:    "确认已过期，请重新发起。",
-		MsgExecPlanCoding1:       "确认项目目录",
-		MsgExecPlanCoding2:       "确认任务目标",
-		MsgExecPlanCoding3:       "确认后开始修改代码",
-		MsgExecPlanSSH1:          "确认目标服务器或目录",
-		MsgExecPlanSSH2:          "确认诊断目标",
-		MsgExecPlanSSH3:          "确认后执行远程操作",
-		MsgExecPlanAmbig1:        "确认是代码工作还是远程操作",
-		MsgExecPlanAmbig2:        "确认工作区或目标环境",
-		MsgExecPlanAmbig3:        "确认后执行",
-		MsgExecPlanDefault1:      "确认任务理解",
-		MsgExecPlanDefault2:      "确认后开始执行",
-		MsgExecRiskCoding1:       "未确认就执行可能会修改错误目录中的代码",
-		MsgExecRiskSSH1:          "未确认就执行可能会连接到错误的服务器或环境",
-		MsgExecRiskAmbig1:        "该请求存在多个可能的执行路径，应先澄清",
-		MsgExecRevisionAmbig1:    "请说明这是代码工作还是 SSH/服务器工作",
-		MsgExecRevisionAmbig2:    "请提供正确的项目目录或主机信息",
-		MsgExecRevisionDefault1:  "如果目录不对，请回复正确目录",
-		MsgExecRevisionDefault2:  "如果任务理解不对，请回复修正内容",
+		MsgExecConfirmText:          "请确认我的理解是否正确。确认后开始执行；如有偏差，请回复修正后的目录、目标或前提。",
+		MsgExecConfirmNilText:       "请确认后继续。",
+		MsgExecConfirmBtnConfirm:    "确认并开始",
+		MsgExecConfirmBtnCancel:     "取消",
+		MsgExecConfirmCancelled:     "已取消待确认的任务。",
+		MsgExecConfirmExpired:       "确认已过期，请重新发起。",
+		MsgRecordPostSuccess:        "这次录音成功！✅",
+		MsgRecordPostSummaryHeading: "**录音摘要：**",
+		MsgRecordPostLabelTitle:     "- 标题：%s",
+		MsgRecordPostLabelDuration:  "- 时长：%s",
+		MsgRecordPostLabelSize:      "- 大小：%s",
+		MsgRecordPostLabelFormat:    "- 格式：%s",
+		MsgRecordPostLabelPath:      "- 路径（WAV）：`%s`",
+		MsgRecordPostLabelMP3Path:   "- MP3 存档：`%s`",
+		MsgRecordPostChoosePrompt:   "请选择后续处理（也可直接点下方按钮）：",
+		MsgRecordPostDefaultTitle:   "录音",
+		MsgRecordPostBtnMinutes:     "转写并生成会议纪要",
+		MsgRecordPostBtnTranscribe:  "仅转写文字",
+		MsgRecordPostBtnKeepOnly:    "不做处理",
+		MsgRecordPostSizeBytes:      "%d B",
+		MsgRecordPostSizeKB:         "约%d KB",
+		MsgRecordPostSizeMB:         "约%.1f MB",
+		MsgExecPlanCoding1:          "确认项目目录",
+		MsgExecPlanCoding2:          "确认任务目标",
+		MsgExecPlanCoding3:          "确认后开始修改代码",
+		MsgExecPlanSSH1:             "确认目标服务器或目录",
+		MsgExecPlanSSH2:             "确认诊断目标",
+		MsgExecPlanSSH3:             "确认后执行远程操作",
+		MsgExecPlanAmbig1:           "确认是代码工作还是远程操作",
+		MsgExecPlanAmbig2:           "确认工作区或目标环境",
+		MsgExecPlanAmbig3:           "确认后执行",
+		MsgExecPlanDefault1:         "确认任务理解",
+		MsgExecPlanDefault2:         "确认后开始执行",
+		MsgExecRiskCoding1:          "未确认就执行可能会修改错误目录中的代码",
+		MsgExecRiskSSH1:             "未确认就执行可能会连接到错误的服务器或环境",
+		MsgExecRiskAmbig1:           "该请求存在多个可能的执行路径，应先澄清",
+		MsgExecRevisionAmbig1:       "请说明这是代码工作还是 SSH/服务器工作",
+		MsgExecRevisionAmbig2:       "请提供正确的项目目录或主机信息",
+		MsgExecRevisionDefault1:     "如果目录不对，请回复正确目录",
+		MsgExecRevisionDefault2:     "如果任务理解不对，请回复修正内容",
 		// IM tool-status card
-		MsgToolStatusLabel:           "【工具】",
-		MsgToolActionProcessing:      "处理中",
-		MsgToolActionRunCommand:      "执行命令",
-		MsgToolActionReadFile:        "读取文件",
-		MsgToolActionWriteFile:       "写入文件",
-		MsgToolActionEditFile:        "编辑文件",
-		MsgToolActionListDir:         "列出目录",
-		MsgToolActionSearchFiles:     "搜索文件",
-		MsgToolActionGrep:            "检索内容",
-		MsgToolActionWebSearch:       "搜索网络",
-		MsgToolActionWebFetch:        "访问网页",
-		MsgToolActionSendFile:        "发送文件",
-		MsgToolActionRunSkill:        "执行技能",
-		MsgToolActionGeneratePDF:     "生成 PDF",
-		MsgToolActionMemory:          "访问记忆",
-		MsgToolActionSSHConnect:      "连接服务器",
-		MsgToolActionSSHExec:         "远程执行",
-		MsgToolActionSSHClose:        "断开连接",
-		MsgToolActionSSHCloseAll:     "断开全部连接",
-		MsgToolActionSSH:             "远程操作",
-		MsgToolActionScreenshot:      "截取屏幕",
-		MsgToolActionTTS:             "生成语音",
-		MsgToolActionASR:             "语音转写",
-		MsgToolActionBrowser:         "操作浏览器",
-		MsgToolActionCraft:           "生成脚本",
-		MsgToolActionOpen:            "打开",
-		MsgToolActionDelegate:        "委派任务",
-		MsgToolActionCallTool:        "调用工具",
-		MsgToolActionScriptProgress:  "脚本进度",
-		MsgToolActionCommandProgress: "命令进度",
-		MsgToolActionSkillProgress:   "技能进度",
+		MsgToolStatusLabel:            "【工具】",
+		MsgToolActionProcessing:       "处理中",
+		MsgToolActionRunCommand:       "执行命令",
+		MsgToolActionReadFile:         "读取文件",
+		MsgToolActionWriteFile:        "写入文件",
+		MsgToolActionEditFile:         "编辑文件",
+		MsgToolActionListDir:          "列出目录",
+		MsgToolActionSearchFiles:      "搜索文件",
+		MsgToolActionGrep:             "检索内容",
+		MsgToolActionWebSearch:        "搜索网络",
+		MsgToolActionWebFetch:         "访问网页",
+		MsgToolActionSendFile:         "发送文件",
+		MsgToolActionRunSkill:         "执行技能",
+		MsgToolActionGeneratePDF:      "生成 PDF",
+		MsgToolActionMemory:           "访问记忆",
+		MsgToolActionSSHConnect:       "连接服务器",
+		MsgToolActionSSHExec:          "远程执行",
+		MsgToolActionSSHClose:         "断开连接",
+		MsgToolActionSSHCloseAll:      "断开全部连接",
+		MsgToolActionSSH:              "远程操作",
+		MsgToolActionScreenshot:       "截取屏幕",
+		MsgToolActionTTS:              "生成语音",
+		MsgToolActionASR:              "语音转写",
+		MsgToolActionBrowser:          "操作浏览器",
+		MsgToolActionCraft:            "生成脚本",
+		MsgToolActionOpen:             "打开",
+		MsgToolActionDelegate:         "委派任务",
+		MsgToolActionCallTool:         "调用工具",
+		MsgToolActionScriptProgress:   "脚本进度",
+		MsgToolActionCommandProgress:  "命令进度",
+		MsgToolActionSkillProgress:    "技能进度",
 		MsgProgressAck:                "收到，正在处理",
 		MsgProgressLongTask:           "任务耗时较长，完成后会立即通知你。",
 		MsgProgressStillWorking:       "仍在执行中，%s",
@@ -881,6 +947,16 @@ var translations = map[string]map[string]string{
 		MsgWeixinFileDecodeFailed:             "Failed to decode file data",
 		MsgWeixinFileDataEmpty:                "File data is empty",
 		MsgWeixinNoActiveSession:              "No active WeChat session: message the bot once in WeChat, then retry sending the file",
+		MsgSurveyIMUnknownSender:              "Cannot identify the sender. Please try again later.",
+		MsgSurveyIMRateLimited:                "Too many requests, please slow down",
+		MsgSurveyIMHubUnavailable:             "Survey service unavailable (Hub not connected). Please try again later.",
+		MsgSurveyIMServiceError:               "Survey service error. Please try again later.",
+		MsgSurveyGroupTag:                     "[Survey]",
+		MsgSurveyAnnounceHeader:               "[Survey] %s\nCode: %s",
+		MsgSurveyAnnounceDeadline:             "Deadline: %s",
+		MsgSurveyAnnounceTarget:               "Target: %d responses",
+		MsgSurveyAnnounceQuestions:            "%d questions",
+		MsgSurveyAnnounceCTA:                  "@bot and send /survey %s to start",
 		MsgLLMNotConfigured:                   "Local LLM not configured. Please configure MaClaw LLM in settings first.",
 		MsgHubUnavailable:                     "Multi-device mode is active but Hub is disconnected. Message has been processed locally.\nPlease check Hub connection or switch to standalone mode.",
 		MsgProgressPrefix:                     "",
@@ -1077,6 +1153,11 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLansengerAppID:           "Lansenger AppID",
 		MsgTUIConfigDescLansengerAppSecret:       "Lansenger AppSecret",
 		MsgTUIConfigDescLansengerGateway:         "Lansenger gateway URL",
+		MsgTUIConfigDescLansengerGroupPolicy:     "Lansenger group policy (open/allowlist/disabled)",
+		MsgTUIConfigDescLansengerRequireMention:  "Lansenger require @bot in groups",
+		MsgTUIConfigDescLansengerRespondToAtAll:  "Lansenger respond to @all",
+		MsgTUIConfigDescLansengerAutoMention:     "Lansenger @ask on reply",
+		MsgTUIConfigDescLansengerAutoQuote:       "Lansenger native quote on reply",
 		MsgTUIConfigDescProxyEnabled:             "Enable proxy",
 		MsgTUIConfigDescProxyProfile:             "Apply a common local proxy profile; adjust host, port, and scope below for custom proxy setup",
 		MsgTUIConfigDescProxyProtocol:            "Proxy protocol",
@@ -1177,62 +1258,78 @@ var translations = map[string]map[string]string{
 		MsgConfirmLabelRiskFlags:      "Risk flags",
 		MsgConfirmLabelRevisionHints:  "Revision hints",
 		// Execution confirmation gate
-		MsgExecConfirmText:       "Please confirm whether my understanding is correct. After confirmation I will start execution; if anything is off, reply with the corrected directory, goal, or premise.",
-		MsgExecConfirmNilText:    "Please confirm before continuing.",
-		MsgExecConfirmBtnConfirm: "Confirm and start",
-		MsgExecConfirmBtnCancel:  "Cancel",
-		MsgExecConfirmCancelled:  "Cancelled pending confirmation.",
-		MsgExecConfirmExpired:    "Confirmation expired; please start again.",
-		MsgExecPlanCoding1:       "Confirm project directory",
-		MsgExecPlanCoding2:       "Confirm task goal",
-		MsgExecPlanCoding3:       "Start code changes after confirmation",
-		MsgExecPlanSSH1:          "Confirm target server or directory",
-		MsgExecPlanSSH2:          "Confirm diagnosis goal",
-		MsgExecPlanSSH3:          "Run remote operation after confirmation",
-		MsgExecPlanAmbig1:        "Confirm whether this is code work or remote work",
-		MsgExecPlanAmbig2:        "Confirm workspace or target environment",
-		MsgExecPlanAmbig3:        "Execute after confirmation",
-		MsgExecPlanDefault1:      "Confirm task understanding",
-		MsgExecPlanDefault2:      "Start execution after confirmation",
-		MsgExecRiskCoding1:       "Executing without confirmation may modify code in the wrong directory",
-		MsgExecRiskSSH1:          "Executing without confirmation may connect to the wrong server or environment",
-		MsgExecRiskAmbig1:        "The request has multiple possible execution paths and should be clarified first",
-		MsgExecRevisionAmbig1:    "Clarify whether this is code work or SSH/server work",
-		MsgExecRevisionAmbig2:    "Provide the correct project directory or host information",
-		MsgExecRevisionDefault1:  "If the directory is wrong, reply with the correct directory",
-		MsgExecRevisionDefault2:  "If the task understanding is wrong, reply with the correction",
+		MsgExecConfirmText:          "Please confirm whether my understanding is correct. After confirmation I will start execution; if anything is off, reply with the corrected directory, goal, or premise.",
+		MsgExecConfirmNilText:       "Please confirm before continuing.",
+		MsgExecConfirmBtnConfirm:    "Confirm and start",
+		MsgExecConfirmBtnCancel:     "Cancel",
+		MsgExecConfirmCancelled:     "Cancelled pending confirmation.",
+		MsgExecConfirmExpired:       "Confirmation expired; please start again.",
+		MsgRecordPostSuccess:        "Recording saved successfully! ✅",
+		MsgRecordPostSummaryHeading: "**Recording summary:**",
+		MsgRecordPostLabelTitle:     "- Title: %s",
+		MsgRecordPostLabelDuration:  "- Duration: %s",
+		MsgRecordPostLabelSize:      "- Size: %s",
+		MsgRecordPostLabelFormat:    "- Format: %s",
+		MsgRecordPostLabelPath:      "- Path (WAV): `%s`",
+		MsgRecordPostLabelMP3Path:   "- MP3 archive: `%s`",
+		MsgRecordPostChoosePrompt:   "Choose what to do next (or tap a button below):",
+		MsgRecordPostDefaultTitle:   "Recording",
+		MsgRecordPostBtnMinutes:     "Transcribe + meeting minutes",
+		MsgRecordPostBtnTranscribe:  "Transcribe only",
+		MsgRecordPostBtnKeepOnly:    "Keep audio only",
+		MsgRecordPostSizeBytes:      "%d B",
+		MsgRecordPostSizeKB:         "~%d KB",
+		MsgRecordPostSizeMB:         "~%.1f MB",
+		MsgExecPlanCoding1:          "Confirm project directory",
+		MsgExecPlanCoding2:          "Confirm task goal",
+		MsgExecPlanCoding3:          "Start code changes after confirmation",
+		MsgExecPlanSSH1:             "Confirm target server or directory",
+		MsgExecPlanSSH2:             "Confirm diagnosis goal",
+		MsgExecPlanSSH3:             "Run remote operation after confirmation",
+		MsgExecPlanAmbig1:           "Confirm whether this is code work or remote work",
+		MsgExecPlanAmbig2:           "Confirm workspace or target environment",
+		MsgExecPlanAmbig3:           "Execute after confirmation",
+		MsgExecPlanDefault1:         "Confirm task understanding",
+		MsgExecPlanDefault2:         "Start execution after confirmation",
+		MsgExecRiskCoding1:          "Executing without confirmation may modify code in the wrong directory",
+		MsgExecRiskSSH1:             "Executing without confirmation may connect to the wrong server or environment",
+		MsgExecRiskAmbig1:           "The request has multiple possible execution paths and should be clarified first",
+		MsgExecRevisionAmbig1:       "Clarify whether this is code work or SSH/server work",
+		MsgExecRevisionAmbig2:       "Provide the correct project directory or host information",
+		MsgExecRevisionDefault1:     "If the directory is wrong, reply with the correct directory",
+		MsgExecRevisionDefault2:     "If the task understanding is wrong, reply with the correction",
 		// IM tool-status card
-		MsgToolStatusLabel:           "[Tool] ",
-		MsgToolActionProcessing:      "Working",
-		MsgToolActionRunCommand:      "Run command",
-		MsgToolActionReadFile:        "Read file",
-		MsgToolActionWriteFile:       "Write file",
-		MsgToolActionEditFile:        "Edit file",
-		MsgToolActionListDir:         "List directory",
-		MsgToolActionSearchFiles:     "Search files",
-		MsgToolActionGrep:            "Search content",
-		MsgToolActionWebSearch:       "Web search",
-		MsgToolActionWebFetch:        "Open page",
-		MsgToolActionSendFile:        "Send file",
-		MsgToolActionRunSkill:        "Run Skill",
-		MsgToolActionGeneratePDF:     "Generate PDF",
-		MsgToolActionMemory:          "Access memory",
-		MsgToolActionSSHConnect:      "Connect server",
-		MsgToolActionSSHExec:         "Remote exec",
-		MsgToolActionSSHClose:        "Disconnect",
-		MsgToolActionSSHCloseAll:     "Disconnect all",
-		MsgToolActionSSH:             "Remote operation",
-		MsgToolActionScreenshot:      "Screenshot",
-		MsgToolActionTTS:             "Generate speech",
-		MsgToolActionASR:             "Transcribe audio",
-		MsgToolActionBrowser:         "Browser",
-		MsgToolActionCraft:           "Generate script",
-		MsgToolActionOpen:            "Open",
-		MsgToolActionDelegate:        "Delegate task",
-		MsgToolActionCallTool:        "Call tool",
-		MsgToolActionScriptProgress:  "Script progress",
-		MsgToolActionCommandProgress: "Command progress",
-		MsgToolActionSkillProgress:   "Skill progress",
+		MsgToolStatusLabel:            "[Tool] ",
+		MsgToolActionProcessing:       "Working",
+		MsgToolActionRunCommand:       "Run command",
+		MsgToolActionReadFile:         "Read file",
+		MsgToolActionWriteFile:        "Write file",
+		MsgToolActionEditFile:         "Edit file",
+		MsgToolActionListDir:          "List directory",
+		MsgToolActionSearchFiles:      "Search files",
+		MsgToolActionGrep:             "Search content",
+		MsgToolActionWebSearch:        "Web search",
+		MsgToolActionWebFetch:         "Open page",
+		MsgToolActionSendFile:         "Send file",
+		MsgToolActionRunSkill:         "Run Skill",
+		MsgToolActionGeneratePDF:      "Generate PDF",
+		MsgToolActionMemory:           "Access memory",
+		MsgToolActionSSHConnect:       "Connect server",
+		MsgToolActionSSHExec:          "Remote exec",
+		MsgToolActionSSHClose:         "Disconnect",
+		MsgToolActionSSHCloseAll:      "Disconnect all",
+		MsgToolActionSSH:              "Remote operation",
+		MsgToolActionScreenshot:       "Screenshot",
+		MsgToolActionTTS:              "Generate speech",
+		MsgToolActionASR:              "Transcribe audio",
+		MsgToolActionBrowser:          "Browser",
+		MsgToolActionCraft:            "Generate script",
+		MsgToolActionOpen:             "Open",
+		MsgToolActionDelegate:         "Delegate task",
+		MsgToolActionCallTool:         "Call tool",
+		MsgToolActionScriptProgress:   "Script progress",
+		MsgToolActionCommandProgress:  "Command progress",
+		MsgToolActionSkillProgress:    "Skill progress",
 		MsgProgressAck:                "Got it, working on it...",
 		MsgProgressLongTask:           "This is taking a while; I'll notify you when done.",
 		MsgProgressStillWorking:       "Still working: %s",

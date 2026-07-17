@@ -209,6 +209,105 @@ func TestVerifySHA256File_UppercaseExpected(t *testing.T) {
 	}
 }
 
+func TestPickPreferredUpdateResult(t *testing.T) {
+	betaOnly := UpdateResult{HasUpdate: true, LatestVersion: "V1.4.0-beta.1", TagName: "1.4.0-beta.1", Channel: "beta"}
+	stableOnly := UpdateResult{HasUpdate: true, LatestVersion: "V1.3.0", TagName: "1.3.0", Channel: "stable"}
+	olderBeta := UpdateResult{HasUpdate: false, LatestVersion: "V1.3.0-beta.2", TagName: "1.3.0-beta.2", Channel: "beta"}
+	newerStable := UpdateResult{HasUpdate: true, LatestVersion: "V1.3.0", TagName: "1.3.0", Channel: "stable"}
+	sameBeta := UpdateResult{HasUpdate: true, LatestVersion: "V1.3.0-beta.1", TagName: "1.3.0-beta.1", Channel: "beta"}
+	sameStable := UpdateResult{HasUpdate: false, LatestVersion: "V1.2.0", TagName: "1.2.0", Channel: "stable"}
+	// Same numeric tag on both channels should prefer beta (user opted in).
+	equalBeta := UpdateResult{HasUpdate: true, LatestVersion: "V1.5.0", TagName: "1.5.0", Channel: "beta"}
+	equalStable := UpdateResult{HasUpdate: true, LatestVersion: "V1.5.0", TagName: "1.5.0", Channel: "stable"}
+	// TagName should win over display-only LatestVersion for comparison.
+	tagWinsBeta := UpdateResult{HasUpdate: true, LatestVersion: "V1.0.0", TagName: "2.0.0-beta.1", Channel: "beta"}
+	tagWinsStable := UpdateResult{HasUpdate: true, LatestVersion: "V9.0.0", TagName: "1.9.0", Channel: "stable"}
+
+	t.Run("both fail", func(t *testing.T) {
+		_, err := pickPreferredUpdateResult(UpdateResult{}, fmt.Errorf("beta down"), UpdateResult{}, fmt.Errorf("stable down"))
+		if err == nil {
+			t.Fatal("expected error when both channels fail")
+		}
+	})
+	t.Run("beta fails falls back to stable", func(t *testing.T) {
+		got, err := pickPreferredUpdateResult(UpdateResult{}, fmt.Errorf("beta down"), stableOnly, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Channel != "stable" || !got.HasUpdate {
+			t.Fatalf("got %+v, want stable update", got)
+		}
+	})
+	t.Run("stable fails falls back to beta", func(t *testing.T) {
+		got, err := pickPreferredUpdateResult(betaOnly, nil, UpdateResult{}, fmt.Errorf("stable down"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Channel != "beta" || !got.HasUpdate {
+			t.Fatalf("got %+v, want beta update", got)
+		}
+	})
+	t.Run("newer beta preferred over older stable", func(t *testing.T) {
+		got, err := pickPreferredUpdateResult(betaOnly, nil, stableOnly, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Channel != "beta" || got.LatestVersion != "V1.4.0-beta.1" {
+			t.Fatalf("got %+v, want beta V1.4.0-beta.1", got)
+		}
+	})
+	t.Run("newer stable not masked by older beta", func(t *testing.T) {
+		// User on a beta build; formal 1.3.0 is out but beta.json still points at 1.3.0-beta.2.
+		got, err := pickPreferredUpdateResult(olderBeta, nil, newerStable, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Channel != "stable" || !got.HasUpdate || got.LatestVersion != "V1.3.0" {
+			t.Fatalf("got %+v, want stable V1.3.0 with has_update", got)
+		}
+	})
+	t.Run("newer beta preferred when stable has no update path", func(t *testing.T) {
+		got, err := pickPreferredUpdateResult(sameBeta, nil, sameStable, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Channel != "beta" {
+			t.Fatalf("got %+v, want beta", got)
+		}
+	})
+	t.Run("equal versions prefer beta", func(t *testing.T) {
+		got, err := pickPreferredUpdateResult(equalBeta, nil, equalStable, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Channel != "beta" {
+			t.Fatalf("got %+v, want beta on version tie", got)
+		}
+	})
+	t.Run("compare TagName over display LatestVersion", func(t *testing.T) {
+		got, err := pickPreferredUpdateResult(tagWinsBeta, nil, tagWinsStable, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Tag 2.0.0-beta.1 > 1.9.0 even though display LatestVersion on stable is V9.0.0.
+		if got.Channel != "beta" || got.TagName != "2.0.0-beta.1" {
+			t.Fatalf("got %+v, want beta by TagName", got)
+		}
+	})
+}
+
+func TestUpdateResultVersionKey(t *testing.T) {
+	if got := updateResultVersionKey(UpdateResult{TagName: "1.2.3", LatestVersion: "V9.9.9"}); got != "1.2.3" {
+		t.Fatalf("prefer TagName, got %q", got)
+	}
+	if got := updateResultVersionKey(UpdateResult{LatestVersion: "V1.0.0"}); got != "V1.0.0" {
+		t.Fatalf("fallback LatestVersion, got %q", got)
+	}
+	if got := updateResultVersionKey(UpdateResult{TagName: "  v1.0.0  "}); got != "v1.0.0" {
+		t.Fatalf("trim TagName, got %q", got)
+	}
+}
+
 func TestUpdateTargetFileNameFor_BrandPackages(t *testing.T) {
 	cases := []struct {
 		name      string

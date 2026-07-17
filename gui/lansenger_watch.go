@@ -27,6 +27,16 @@ type lansengerWatchService struct {
 	jobsGen uint64
 	// replyDedupe limits identical group auto-replies (key -> last sent).
 	replyDedupe map[string]time.Time
+	// rosterCache avoids repeatedly paging through large group directories when
+	// the watch panel is reopened or remounted within a short interval.
+	rosterCache map[string]lansengerWatchRosterCacheEntry
+}
+
+type lansengerWatchRosterCacheEntry struct {
+	groupName string
+	members   []lansengerwatch.Member
+	truncated bool
+	expiresAt time.Time
 }
 
 const (
@@ -34,6 +44,15 @@ const (
 	lansengerWatchProcessTimeout = 25 * time.Second
 	// Suppress identical group replies within this window.
 	lansengerWatchReplyDedupeTTL = 30 * time.Second
+	// Group directories can contain thousands of people; cache a successful
+	// directory fetch briefly, then refresh on the next natural panel open.
+	lansengerWatchRosterCacheTTL = 2 * time.Minute
+	// Cap the desktop picker fetch. Above this, the UI still supports manual
+	// staff IDs rather than holding an unbounded in-memory directory.
+	lansengerWatchMaxRosterMembers = 2000
+	// Avoid retaining several full, large-group directories if an operator
+	// quickly inspects many groups in one session.
+	lansengerWatchMaxCachedRosters = 8
 )
 
 func (a *App) watchService() *lansengerWatchService {
@@ -48,9 +67,128 @@ func (a *App) watchService() *lansengerWatchService {
 			store:       store,
 			engine:      &lansengerwatch.Engine{Store: store},
 			replyDedupe: make(map[string]time.Time),
+			rosterCache: make(map[string]lansengerWatchRosterCacheEntry),
 		}
 	})
 	return a.lansengerWatch
+}
+
+func (s *lansengerWatchService) cachedRoster(groupID string) (lansengerWatchRosterCacheEntry, bool) {
+	if s == nil {
+		return lansengerWatchRosterCacheEntry{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.rosterCache[strings.TrimSpace(groupID)]
+	if !ok || time.Now().After(entry.expiresAt) {
+		delete(s.rosterCache, strings.TrimSpace(groupID))
+		return lansengerWatchRosterCacheEntry{}, false
+	}
+	entry.members = append([]lansengerwatch.Member(nil), entry.members...)
+	return entry, true
+}
+
+func (s *lansengerWatchService) cacheRoster(groupID, groupName string, members []lansengerwatch.Member, truncated bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rosterCache == nil {
+		s.rosterCache = make(map[string]lansengerWatchRosterCacheEntry)
+	}
+	now := time.Now()
+	for id, entry := range s.rosterCache {
+		if now.After(entry.expiresAt) {
+			delete(s.rosterCache, id)
+		}
+	}
+	groupID = strings.TrimSpace(groupID)
+	if _, exists := s.rosterCache[groupID]; !exists && len(s.rosterCache) >= lansengerWatchMaxCachedRosters {
+		var oldestID string
+		var oldestExpiry time.Time
+		for id, entry := range s.rosterCache {
+			if oldestID == "" || entry.expiresAt.Before(oldestExpiry) {
+				oldestID, oldestExpiry = id, entry.expiresAt
+			}
+		}
+		delete(s.rosterCache, oldestID)
+	}
+	s.rosterCache[groupID] = lansengerWatchRosterCacheEntry{
+		groupName: strings.TrimSpace(groupName),
+		members:   append([]lansengerwatch.Member(nil), members...),
+		truncated: truncated,
+		expiresAt: now.Add(lansengerWatchRosterCacheTTL),
+	}
+}
+
+func (s *lansengerWatchService) invalidateRosterCache(groupID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.rosterCache, strings.TrimSpace(groupID))
+	s.mu.Unlock()
+}
+
+// mergeCachedRosterMembers fills gaps from a successful directory cache without
+// overwriting newer local observations or manually maintained names.
+func mergeCachedRosterMembers(local map[string]lansengerwatch.Member, cached []lansengerwatch.Member) {
+	for _, member := range cached {
+		id := lansengerwatch.NormalizeStaffID(member.StaffID)
+		if id == "" {
+			continue
+		}
+		if _, exists := local[id]; exists {
+			continue
+		}
+		member.StaffID = id
+		local[id] = member
+	}
+}
+
+func isWatchTargetMember(member lansenger.GroupMember) bool {
+	return member.FromType == 0 && member.Status != 3 && lansengerwatch.NormalizeStaffID(member.StaffID) != ""
+}
+
+// noteCachedRosterMember keeps a warm directory cache consistent with inbound
+// traffic. It deliberately does nothing when the group has not been cached:
+// live messages must not create a partial directory cache.
+func (s *lansengerWatchService) noteCachedRosterMember(groupID, groupName, staffID, name string) {
+	if s == nil {
+		return
+	}
+	groupID = strings.TrimSpace(groupID)
+	staffID = lansengerwatch.NormalizeStaffID(staffID)
+	if groupID == "" || staffID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.rosterCache[groupID]
+	if !ok || time.Now().After(entry.expiresAt) {
+		return
+	}
+	for i := range entry.members {
+		if entry.members[i].StaffID != staffID {
+			continue
+		}
+		if strings.TrimSpace(name) != "" {
+			entry.members[i].Name = strings.TrimSpace(name)
+		}
+		s.rosterCache[groupID] = entry
+		return
+	}
+	// A truncated directory deliberately represents only the platform's first
+	// bounded page range. Do not let inbound traffic grow it without limit.
+	if entry.truncated || len(entry.members) >= lansengerWatchMaxRosterMembers {
+		return
+	}
+	entry.members = append(entry.members, lansengerwatch.Member{StaffID: staffID, Name: strings.TrimSpace(name), Source: "message"})
+	if strings.TrimSpace(entry.groupName) == "" {
+		entry.groupName = strings.TrimSpace(groupName)
+	}
+	s.rosterCache[groupID] = entry
 }
 
 func (s *lansengerWatchService) invalidateCache() {
@@ -133,6 +271,8 @@ func (s *lansengerWatchService) processMessage(msg lansenger.IncomingMessage) {
 	// NoteMember skips redundant disk writes for frequent chatters.
 	if err := s.store.NoteMember(groupID, msg.GroupName, speakerID, msg.SenderName, "message"); err != nil {
 		log.Printf("[lansenger-watch] roster note: %v", err)
+	} else {
+		s.noteCachedRosterMember(groupID, msg.GroupName, speakerID, msg.SenderName)
 	}
 	// Include keyword-scope=anyone jobs even when speaker is not a watch target.
 	if !lansengerwatch.GroupNeedsWatchMessage(jobs, groupID, speakerID) {
@@ -283,11 +423,9 @@ func (s *lansengerWatchService) sendWatchGroupText(msg lansenger.IncomingMessage
 	if gw == nil {
 		return fmt.Errorf("lansenger gateway not running")
 	}
-	return gw.SendText(context.Background(), lansenger.OutgoingText{
-		ToUserID: lansengerReplyTarget(msg),
-		Text:     text,
-		IsGroup:  true,
-	})
+	// Keyword / CLI auto-replies should honor the same group-chat decorations
+	// (auto-@ / native quote) as agent answers.
+	return gw.SendText(context.Background(), buildLansengerOutgoingText(msg, text, m.currentGroupOpts()))
 }
 
 // deliverToOwnerChannel pushes text onto one of the owner's IM pathways.
@@ -411,37 +549,75 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 		member.StaffID = id
 		membersByID[id] = member
 	}
+	// Preserve the local roster separately. If the remote directory fails part
+	// way through pagination, return only this known-good local data rather than
+	// presenting a misleading partial platform directory.
+	localMembersByID := make(map[string]lansengerwatch.Member, len(membersByID))
+	for id, member := range membersByID {
+		localMembersByID[id] = member
+	}
 
 	// The documented group-member endpoint is paginated at 100 members. Load
 	// enough pages for a practical picker while keeping this Wails call bounded.
 	const pageSize = 100
-	const maxMembers = 2000
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	gw, gwErr := a.lansengerGatewayForWatch()
-	if gwErr == nil {
-		for offset := 0; offset < maxMembers; offset += pageSize {
-			page, pageErr := gw.GetGroupMembers(ctx, groupID, offset, pageSize)
-			if pageErr != nil {
-				gwErr = pageErr
-				break
-			}
-			for _, member := range page.Members {
-				// Bots are returned by the directory too, but cannot be a watch
-				// target for a person's speech.
-				if member.FromType != 0 {
-					continue
+	gwErr := error(nil)
+	directoryTruncated := false
+	if cached, ok := svc.cachedRoster(groupID); ok {
+		mergeCachedRosterMembers(membersByID, cached.members)
+		if roster.GroupName == "" {
+			roster.GroupName = cached.groupName
+		}
+		directoryTruncated = cached.truncated
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		gw, err := a.lansengerGatewayForWatch()
+		gwErr = err
+		if gwErr == nil {
+			for offset := 0; offset < lansengerWatchMaxRosterMembers; offset += pageSize {
+				page, pageErr := gw.GetGroupMembers(ctx, groupID, offset, pageSize)
+				if pageErr != nil {
+					gwErr = pageErr
+					break
 				}
-				id := lansengerwatch.NormalizeStaffID(member.StaffID)
-				if id == "" {
-					continue
+				for _, member := range page.Members {
+					// Bots are returned by the directory too, but cannot be a watch
+					// target for a person's speech.
+					// Deleted directory entries must never be offered as watch
+					// targets. Inactive users remain selectable because they can
+					// still be present in a group before activating their account.
+					if !isWatchTargetMember(member) {
+						continue
+					}
+					id := lansengerwatch.NormalizeStaffID(member.StaffID)
+					if id == "" {
+						continue
+					}
+					membersByID[id] = lansengerwatch.Member{StaffID: id, Name: member.Name, Source: "directory"}
 				}
-				membersByID[id] = lansengerwatch.Member{StaffID: id, Name: member.Name, Source: "directory"}
+				// Some deployments omit totalMembers. In that case, a short page is
+				// the only reliable end-of-directory signal; do not stop after page
+				// one simply because the reported total is zero.
+				if len(page.Members) < pageSize || (page.TotalMembers > 0 && offset+pageSize >= page.TotalMembers) {
+					break
+				}
+				if offset+pageSize >= lansengerWatchMaxRosterMembers {
+					directoryTruncated = page.TotalMembers == 0 || page.TotalMembers > lansengerWatchMaxRosterMembers
+					break
+				}
 			}
-			if len(page.Members) < pageSize || offset+pageSize >= page.TotalMembers {
-				break
+			if gwErr == nil {
+				members := make([]lansengerwatch.Member, 0, len(membersByID))
+				for _, member := range membersByID {
+					members = append(members, member)
+				}
+				svc.cacheRoster(groupID, roster.GroupName, members, directoryTruncated)
 			}
 		}
+	}
+	if gwErr != nil {
+		membersByID = localMembersByID
+		directoryTruncated = false
 	}
 
 	members := make([]lansengerwatch.Member, 0, len(membersByID))
@@ -469,6 +645,8 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 	note := "成员由蓝信群成员目录提供。"
 	if gwErr != nil {
 		note = "蓝信群成员目录暂不可用，正在显示本地已学习成员。"
+	} else if directoryTruncated {
+		note = fmt.Sprintf("Group directory is large; loaded the first %d members. Add other staff IDs manually.", lansengerWatchMaxRosterMembers)
 	}
 	data, err := json.Marshal(map[string]any{
 		"group_id":            roster.GroupID,
@@ -476,6 +654,7 @@ func (a *App) ListLansengerWatchRoster(groupID, query string) (string, error) {
 		"members":             members,
 		"updated_at":          roster.UpdatedAt,
 		"directory_available": gwErr == nil,
+		"directory_truncated": directoryTruncated,
 		"note":                note,
 	})
 	if err != nil {
@@ -519,7 +698,11 @@ func (a *App) AddLansengerWatchMember(groupID, staffID, name string) error {
 	if strings.TrimSpace(groupID) == "" || staffID == "" {
 		return fmt.Errorf("group_id and staff_id required")
 	}
-	return svc.store.NoteMember(groupID, "", staffID, name, "manual")
+	if err := svc.store.NoteMember(groupID, "", staffID, name, "manual"); err != nil {
+		return err
+	}
+	svc.invalidateRosterCache(groupID)
+	return nil
 }
 
 // ListLansengerWatchTranscripts lists log file paths for a job.

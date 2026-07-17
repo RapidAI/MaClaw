@@ -18,6 +18,7 @@ type AboutPageProps = {
     brandDisplayTitle: string;
     brandInfo: BrandInfo | null;
     appVersion: string;
+    preferBetaChannel?: boolean;
     t: (key: string) => string;
     setStatus: (status: string) => void;
     setUpdateResult: (result: any) => void;
@@ -31,6 +32,7 @@ export const AboutPage = ({
     brandDisplayTitle,
     brandInfo,
     appVersion,
+    preferBetaChannel,
     t,
     setStatus,
     setUpdateResult,
@@ -65,6 +67,7 @@ export const AboutPage = ({
                 <AboutActions
                     brandInfo={brandInfo}
                     appVersion={appVersion}
+                    preferBetaChannel={preferBetaChannel}
                     t={t}
                     setStatus={setStatus}
                     setUpdateResult={setUpdateResult}

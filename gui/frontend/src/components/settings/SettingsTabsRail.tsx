@@ -56,6 +56,19 @@ export const SettingsTabsRail = ({ tabs, activeTab, onChange }: SettingsTabsRail
 
     const tooltipId = tooltip ? `settings-tab-tooltip-${tooltip.id}` : undefined;
 
+    // Bucket tabs into their nav groups, preserving first-appearance order so the
+    // rail matches the flat tab order from getSettingsTabOptions.
+    const railGroups: { key: string; label?: string; items: SettingsTabOption[] }[] = [];
+    for (const tab of tabs) {
+        const key = tab.group ?? '__ungrouped__';
+        let group = railGroups.find((entry) => entry.key === key);
+        if (!group) {
+            group = { key, label: tab.groupLabel, items: [] };
+            railGroups.push(group);
+        }
+        group.items.push(tab);
+    }
+
     // Portal tooltips to document.body so they never become a third grid item
     // inside .settings-shell (hovering tabs could otherwise distort the nav/content layout).
     const tooltipNode = tooltip && typeof document !== 'undefined'
@@ -76,34 +89,41 @@ export const SettingsTabsRail = ({ tabs, activeTab, onChange }: SettingsTabsRail
     return (
         <>
             <nav className="settings-top-tabs" aria-label="Settings sections">
-                {tabs.map((tab) => (
-                    <button
-                        key={tab.id}
-                        type="button"
-                        className={`settings-top-tab ${activeTab === tab.id ? 'active' : ''}`}
-                        onClick={() => {
-                            setTooltip(null);
-                            onChange(tab.id);
-                        }}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Escape') {
-                                event.stopPropagation();
-                                setTooltip(null);
-                            }
-                        }}
-                        onMouseEnter={(event) => showTooltip(tab, event.currentTarget)}
-                        onMouseLeave={() => setTooltip(null)}
-                        onFocus={(event) => showTooltip(tab, event.currentTarget)}
-                        onBlur={() => setTooltip(null)}
-                        aria-current={activeTab === tab.id ? 'page' : undefined}
-                        aria-describedby={tooltip?.id === tab.id ? tooltipId : undefined}
-                        aria-label={`${tab.label}: ${tab.desc}`}
-                    >
-                        <span className="settings-top-tab__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: tab.icon }} />
-                        <span className="settings-top-tab__text">
-                            <span className="settings-top-tab__label">{tab.label}</span>
-                        </span>
-                    </button>
+                {railGroups.map((group) => (
+                    <div className="settings-top-tabs__group" key={group.key}>
+                        {group.label ? (
+                            <div className="settings-top-tabs__group-label">{group.label}</div>
+                        ) : null}
+                        {group.items.map((tab) => (
+                            <button
+                                key={tab.id}
+                                type="button"
+                                className={`settings-top-tab ${activeTab === tab.id ? 'active' : ''}`}
+                                onClick={() => {
+                                    setTooltip(null);
+                                    onChange(tab.id);
+                                }}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Escape') {
+                                        event.stopPropagation();
+                                        setTooltip(null);
+                                    }
+                                }}
+                                onMouseEnter={(event) => showTooltip(tab, event.currentTarget)}
+                                onMouseLeave={() => setTooltip(null)}
+                                onFocus={(event) => showTooltip(tab, event.currentTarget)}
+                                onBlur={() => setTooltip(null)}
+                                aria-current={activeTab === tab.id ? 'page' : undefined}
+                                aria-describedby={tooltip?.id === tab.id ? tooltipId : undefined}
+                                aria-label={`${tab.label}: ${tab.desc}`}
+                            >
+                                <span className="settings-top-tab__icon" aria-hidden="true" dangerouslySetInnerHTML={{ __html: tab.icon }} />
+                                <span className="settings-top-tab__text">
+                                    <span className="settings-top-tab__label">{tab.label}</span>
+                                </span>
+                            </button>
+                        ))}
+                    </div>
                 ))}
             </nav>
             {tooltipNode}

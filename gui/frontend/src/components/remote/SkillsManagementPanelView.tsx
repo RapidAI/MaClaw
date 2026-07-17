@@ -2184,7 +2184,17 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         try {
             const name = await ImportNLSkillZip();
             if (name) {
+                // Backend emits skill:index_refreshed; also reload here so the list
+                // updates even if the event is delayed or missed.
                 await loadData();
+                showToast(
+                    localizeText(
+                        `Imported skill “${name}”`,
+                        `已导入技能「${name}」`,
+                        `已匯入技能「${name}」`,
+                    ),
+                    "success",
+                );
             }
         } catch (err) {
             setError(localizeHubError(String(err)));

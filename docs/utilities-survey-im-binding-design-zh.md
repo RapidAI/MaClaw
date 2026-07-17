@@ -1065,3 +1065,11 @@ flowchart LR
 ```
 
 **说明：** 本仓以单轨连续实现代替分 PR 合入；契约与测试以本文 Checklist 为准。
+
+## rev 5：IM 多语言 + 群会话隔离 + 事件驱动提示 + 群内机器人显示（已落地）
+
+- **`lang` 请求字段**：`IMHandleRequest.lang`（如 `zh-Hans`/`en`）由桌面按界面语言（`App.CurrentLanguage`）上送，经 `i18n.NormalizeLang` 归一；空值回退中文。Hub 侧全部 IM 文案集中在 `hub/internal/survey/messages.go` 的 zh/en 消息表（`tr(lang, key, args...)`），新增语言只需加表。桌面本地兜底文案（无法识别发送者/限流/Hub 未连接/服务出错）与群公告卡片走 `corelib/i18n` 的 `MsgSurveyIM*` / `MsgSurveyAnnounce*` 键。
+- **事件驱动会话提示（冻结）**：`IMHandleResponse.event` 取值为 `response_submitted` / `session_ended` / `session_active` / 空（纯信息回复）。桌面网关据事件码维护 free-text 会话提示（`surveyHintAction`），**不再匹配中文回复文本**；旧 Hub 无事件码时保留原探测行为（非命令被 handled 即 mark，终态最迟 30 分钟 TTL 自清）。
+- **群会话隔离（冻结）**：群聊会话键为 `platform:groupID:userID`（`GroupSessionKey` / `IMSessionKey`），p2p 保持 `platform:userID`。同一用户可在不同群同时进行不同问卷；桌面限流/hint 键同步按群作用域（`surveyScopedUserID`）。存量旧键群会话 30 分钟 TTL 后自然失效。
+- **群内机器人显示（冻结）**：群内的问卷回复强制 `@投票人` + 引用原消息（native refMsgId，缺 MessageID 时退化为「xx问：」文本引用），并在首行加身份标签（zh「【问卷】」/ en「[Survey]」），不依赖 `LansengerAutoMentionReply` / `LansengerAutoQuoteReply` 开关；私聊不加强制装饰。公告卡片按界面语言本地化并含题目数（`buildSurveyAnnounceText`）。
+- **答案解析错误 sentinel 化**：`ParseAnswer` 族返回 `ErrOptionIndexOutOfRange` 等 sentinel，`LocalizedAnswerError` 在回复处按语言映射；`FormatQuestionPrompt` 第 1 题不再显示「上一题」。

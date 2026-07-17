@@ -1016,6 +1016,7 @@ export function ListLansengerGroups():Promise<any>;
 export function GetLansengerIgnoredGroups():Promise<Array<string>>;
 
 export function SetLansengerGroupIgnored(arg1:string,arg2:boolean):Promise<void>;
+export function SetLansengerGroupAllowed(arg1:string,arg2:boolean):Promise<void>;
 
 export function ListLansengerWatchJobs():Promise<string>;
 
@@ -1088,6 +1089,16 @@ export function SetASREnabled(arg1:boolean):Promise<void>;
 export function CheckASRModel():Promise<{[key:string]:any}>;
 
 export function DownloadASRModel():Promise<void>;
+
+export function GetDiarizationEnabled():Promise<boolean>;
+
+export function SetDiarizationEnabled(arg1:boolean):Promise<void>;
+
+export function CheckDiarizationModel():Promise<{[key:string]:any}>;
+
+export function DownloadDiarizationModel():Promise<void>;
+
+export function DiarizeAndTranscribeAudioBase64(arg1:string,arg2:number):Promise<Array<any>>;
 
 export function TranscribeAudioBase64(arg1:string):Promise<string>;
 

@@ -377,6 +377,60 @@ func (g *tuiWeixinGateway) sendText(toUserID, contextToken, text string) {
 	}
 }
 
+// SendProactiveText pushes text to the owner's last active WeChat private session.
+// Used by scheduled-task delivery (channel=weixin, user_id=self).
+func (g *tuiWeixinGateway) SendProactiveText(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("empty proactive text")
+	}
+	if g == nil {
+		return fmt.Errorf("weixin gateway is nil")
+	}
+	g.mu.Lock()
+	gw := g.gateway
+	g.mu.Unlock()
+	if gw == nil || !gw.IsRunning() {
+		return fmt.Errorf("weixin gateway not running")
+	}
+	type session struct{ uid, tok string }
+	var candidates []session
+	seen := map[string]bool{}
+	if last := strings.TrimSpace(gw.LastActiveUserID()); last != "" {
+		if tok := strings.TrimSpace(gw.GetContextToken(last)); tok != "" {
+			candidates = append(candidates, session{uid: last, tok: tok})
+			seen[last] = true
+		}
+	}
+	for _, pair := range gw.ContextSessionsByRecency() {
+		uid, tok := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+		if uid == "" || tok == "" || seen[uid] {
+			continue
+		}
+		candidates = append(candidates, session{uid: uid, tok: tok})
+		seen[uid] = true
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("no active weixin session (先用微信私聊机器人一次)")
+	}
+	var lastErr error
+	for _, c := range candidates {
+		if err := gw.SendText(context.Background(), weixin.OutgoingText{
+			ToUserID:     c.uid,
+			Text:         text,
+			ContextToken: c.tok,
+		}); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("weixin proactive text failed")
+	}
+	return lastErr
+}
+
 // ---------------------------------------------------------------------------
 // tuiWeixinCallbacks — agent.LoopCallbacks for WeChat messages
 // ---------------------------------------------------------------------------

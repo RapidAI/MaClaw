@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,86 @@ func TestListWatchRosterStableLocalFallbackOrder(t *testing.T) {
 	}
 	if len(payload.Members) != 3 || payload.Members[0].StaffID != "a-id" || payload.Members[1].StaffID != "z-id" || payload.Members[2].StaffID != "no-name" {
 		t.Fatalf("members must be deterministic and unnamed entries last: %+v", payload.Members)
+	}
+}
+
+func TestWatchRosterCacheExpiresAndInvalidates(t *testing.T) {
+	svc := &lansengerWatchService{rosterCache: make(map[string]lansengerWatchRosterCacheEntry)}
+	svc.cacheRoster("g", "Group", []lansengerwatch.Member{{StaffID: "u1", Name: "Alice"}}, false)
+	cached, ok := svc.cachedRoster("g")
+	if !ok || cached.groupName != "Group" || len(cached.members) != 1 {
+		t.Fatalf("cache miss: %+v, ok=%v", cached, ok)
+	}
+	// A caller must not be able to mutate the stored cache through its copy.
+	cached.members[0].Name = "changed"
+	again, ok := svc.cachedRoster("g")
+	if !ok || again.members[0].Name != "Alice" {
+		t.Fatalf("cache aliasing: %+v", again)
+	}
+	svc.invalidateRosterCache("g")
+	if _, ok := svc.cachedRoster("g"); ok {
+		t.Fatal("manual entry must invalidate the affected roster cache")
+	}
+}
+
+func TestWatchRosterCacheLearnsInboundMemberWithoutCreatingPartialCache(t *testing.T) {
+	svc := &lansengerWatchService{rosterCache: make(map[string]lansengerWatchRosterCacheEntry)}
+	svc.noteCachedRosterMember("uncached", "Group", "u1", "Alice")
+	if _, ok := svc.cachedRoster("uncached"); ok {
+		t.Fatal("inbound traffic must not create a partial directory cache")
+	}
+	svc.cacheRoster("g", "Group", []lansengerwatch.Member{{StaffID: "u1", Name: "Old"}}, false)
+	svc.noteCachedRosterMember("g", "Group", "u1", "Alice")
+	svc.noteCachedRosterMember("g", "Group", "u2", "Bob")
+	cached, ok := svc.cachedRoster("g")
+	if !ok || len(cached.members) != 2 || cached.members[0].Name != "Alice" || cached.members[1].StaffID != "u2" {
+		t.Fatalf("cache should reflect inbound directory changes: %+v", cached)
+	}
+}
+
+func TestWatchRosterCachePreservesTruncation(t *testing.T) {
+	svc := &lansengerWatchService{rosterCache: make(map[string]lansengerWatchRosterCacheEntry)}
+	svc.cacheRoster("g", "Large group", []lansengerwatch.Member{{StaffID: "u1"}}, true)
+	svc.noteCachedRosterMember("g", "Large group", "u2", "Bob")
+	cached, ok := svc.cachedRoster("g")
+	if !ok || !cached.truncated || len(cached.members) != 1 {
+		t.Fatalf("cache must preserve partial-directory state: %+v", cached)
+	}
+}
+
+func TestWatchRosterLocalMemberNameWinsOverCachedDirectory(t *testing.T) {
+	local := lansengerwatch.Member{StaffID: "u1", Name: "Fresh name", Source: "message"}
+	cached := lansengerwatch.Member{StaffID: "u1", Name: "Stale name", Source: "directory"}
+	membersByID := map[string]lansengerwatch.Member{local.StaffID: local}
+	mergeCachedRosterMembers(membersByID, []lansengerwatch.Member{cached, {StaffID: "u2", Name: "Directory only"}})
+	if got := membersByID["u1"].Name; got != "Fresh name" {
+		t.Fatalf("local roster name must win, got %q", got)
+	}
+	if got := membersByID["u2"].Name; got != "Directory only" {
+		t.Fatalf("directory-only member must be retained, got %q", got)
+	}
+}
+
+func TestWatchRosterCacheBoundsLargeGroupEntries(t *testing.T) {
+	svc := &lansengerWatchService{rosterCache: make(map[string]lansengerWatchRosterCacheEntry)}
+	for i := 0; i < lansengerWatchMaxCachedRosters+1; i++ {
+		svc.cacheRoster(fmt.Sprintf("g-%d", i), "Group", []lansengerwatch.Member{{StaffID: fmt.Sprintf("u-%d", i)}}, false)
+	}
+	if got := len(svc.rosterCache); got != lansengerWatchMaxCachedRosters {
+		t.Fatalf("cache size=%d, want %d", got, lansengerWatchMaxCachedRosters)
+	}
+	if _, ok := svc.cachedRoster(fmt.Sprintf("g-%d", lansengerWatchMaxCachedRosters)); !ok {
+		t.Fatal("most recently cached group must remain available")
+	}
+}
+
+func TestWatchRosterSkipsDeletedDirectoryMembers(t *testing.T) {
+	member := lansenger.GroupMember{StaffID: "deleted", FromType: 0, Status: 3}
+	if isWatchTargetMember(member) {
+		t.Fatal("deleted directory member must not be selectable")
+	}
+	if !isWatchTargetMember(lansenger.GroupMember{StaffID: "active", FromType: 0, Status: 1}) {
+		t.Fatal("active human member must be selectable")
 	}
 }
 

@@ -396,6 +396,10 @@ func TestLoadConfigPreservesExplicitLocalAIModelDisable(t *testing.T) {
 }
 
 func TestUpdateToastTranslationUsesReadableText(t *testing.T) {
+	// SetLanguage mutates the package-global agent view lang; restore it so
+	// later tests that render localized text are not polluted.
+	prevLang, _ := agentViewCurrentLang.Load().(string)
+	t.Cleanup(func() { agentViewCurrentLang.Store(prevLang) })
 	app := &App{}
 
 	app.SetLanguage("en")
@@ -672,6 +676,48 @@ func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
 	}
 	if !patched.LogDetailEnabled {
 		t.Fatal("LogDetailEnabled = false, want preserved true")
+	}
+}
+
+func TestPatchConfigFieldsLansengerGroupChatOptions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if _, err := app.LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	patched, err := app.PatchConfigFields(map[string]interface{}{
+		"lansenger_group_policy":       "allowlist",
+		"lansenger_require_mention":    false,
+		"lansenger_respond_to_at_all":  true,
+		"lansenger_auto_mention_reply": true,
+		"lansenger_auto_quote_reply":   true,
+		"lansenger_allowed_group_ids":  []any{" g-a ", "g-b"},
+	})
+	if err != nil {
+		t.Fatalf("PatchConfigFields: %v", err)
+	}
+	if patched.EffectiveLansengerGroupPolicy() != "allowlist" {
+		t.Fatalf("policy=%q", patched.LansengerGroupPolicy)
+	}
+	if patched.IsLansengerRequireMention() {
+		t.Fatal("require mention should be false")
+	}
+	if !patched.LansengerRespondToAtAll || !patched.LansengerAutoMentionReply || !patched.LansengerAutoQuoteReply {
+		t.Fatalf("bool flags: atAll=%v mention=%v quote=%v", patched.LansengerRespondToAtAll, patched.LansengerAutoMentionReply, patched.LansengerAutoQuoteReply)
+	}
+	if !patched.IsLansengerGroupAllowed("g-a") || !patched.IsLansengerGroupAllowed("g-b") {
+		t.Fatalf("allowed=%#v", patched.LansengerAllowedGroupIDs)
+	}
+
+	// Invalid policy rejected without clobbering.
+	if _, err := app.PatchConfigFields(map[string]interface{}{
+		"lansenger_group_policy": "nope",
+	}); err == nil {
+		t.Fatal("expected invalid policy error")
 	}
 }
 

@@ -185,7 +185,9 @@ func IsDirectASRFormat(format string) bool {
 // ASRToolDescription is the shared agent-facing description for the asr tool.
 func ASRToolDescription() string {
 	return "本地语音识别（ASR）。将音频文件转写为文本。直接支持: " + DirectASRFormats +
-		"。推荐 16kHz mono WAV。m4a/aac/其它格式请先用 bash+ffmpeg 转为 16kHz mono 16-bit WAV 再调用；不要安装 Whisper。"
+		"。推荐 16kHz mono WAV。m4a/aac/其它格式请先用 bash+ffmpeg 转为 16kHz mono 16-bit WAV 再调用；不要安装 Whisper。" +
+		"长转写会写入与音频同目录的 *_transcript.txt，并返回 transcript_file + 预览（避免撑爆上下文）。" +
+		"生成会议纪要时传 for_minutes=true 以启用引擎 LLM map-reduce 草稿；默认仅快速 extractive。完整转写专节从 transcript_file 组装。"
 }
 
 // DetectFormat identifies audio format from magic bytes (empty if unknown).

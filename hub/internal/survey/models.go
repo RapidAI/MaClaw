@@ -140,14 +140,17 @@ type Session struct {
 
 // IMHandleRequest is the body of POST /api/v1/surveys/im/handle.
 type IMHandleRequest struct {
-	Platform  string `json:"platform"`
-	UserID    string `json:"user_id"`
-	UserName  string `json:"user_name"`
-	ChatType  string `json:"chat_type"` // p2p|group
-	GroupID   string `json:"group_id"`
-	Text      string `json:"text"` // already stripped of @mentions when possible
-	IsAtMe    bool   `json:"is_at_me"`
-	RawText   string `json:"raw_text,omitempty"`
+	Platform string `json:"platform"`
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name"`
+	ChatType string `json:"chat_type"` // p2p|group
+	GroupID  string `json:"group_id"`
+	Text     string `json:"text"` // already stripped of @mentions when possible
+	IsAtMe   bool   `json:"is_at_me"`
+	RawText  string `json:"raw_text,omitempty"`
+	// Lang is the gateway machine's interface language (zh-Hans / en / ...);
+	// empty falls back to zh.
+	Lang string `json:"lang,omitempty"`
 }
 
 // IMHandleResponse is returned to the gateway machine.
@@ -156,30 +159,31 @@ type IMHandleResponse struct {
 	ReplyText string `json:"reply_text,omitempty"`
 	// SurveyID is set when Event is non-empty so the desktop can refresh results.
 	SurveyID string `json:"survey_id,omitempty"`
-	// Event is a lightweight signal for the gateway (e.g. "response_submitted").
+	// Event is a lightweight signal for the gateway: EventResponseSubmitted /
+	// EventSessionEnded / EventSessionActive (empty for pure info replies).
 	Event string `json:"event,omitempty"`
 }
 
 type Stats struct {
-	SurveyID      string            `json:"survey_id"`
-	ResponseCount int               `json:"response_count"`
-	TargetCount   int               `json:"target_count,omitempty"`
-	ByQuestion    []QuestionStats   `json:"by_question"`
+	SurveyID      string          `json:"survey_id"`
+	ResponseCount int             `json:"response_count"`
+	TargetCount   int             `json:"target_count,omitempty"`
+	ByQuestion    []QuestionStats `json:"by_question"`
 }
 
 type QuestionStats struct {
-	QuestionID string         `json:"question_id"`
-	Title      string         `json:"title"`
-	Type       string         `json:"type"`
-	Options    []OptionCount  `json:"options,omitempty"`
-	TextCount  int            `json:"text_count,omitempty"`
-	RatingAvg  float64        `json:"rating_avg,omitempty"`
-	RatingN    int            `json:"rating_n,omitempty"`
+	QuestionID string        `json:"question_id"`
+	Title      string        `json:"title"`
+	Type       string        `json:"type"`
+	Options    []OptionCount `json:"options,omitempty"`
+	TextCount  int           `json:"text_count,omitempty"`
+	RatingAvg  float64       `json:"rating_avg,omitempty"`
+	RatingN    int           `json:"rating_n,omitempty"`
 }
 
 type OptionCount struct {
-	OptionID string `json:"option_id"`
-	Label    string `json:"label"`
-	Count    int    `json:"count"`
+	OptionID string  `json:"option_id"`
+	Label    string  `json:"label"`
+	Count    int     `json:"count"`
 	Percent  float64 `json:"percent"`
 }

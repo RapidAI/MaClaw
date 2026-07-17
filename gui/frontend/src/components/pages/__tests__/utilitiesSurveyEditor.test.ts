@@ -455,9 +455,11 @@ describe('utilitiesSurveyEditor', () => {
 
     it('buildSurveyOperatorHelp mentions /survey and list', () => {
         const zh = buildSurveyOperatorHelp(true);
-        expect(zh.some((l) => l.includes('/survey'))).toBe(true);
-        expect(zh.some((l) => l.includes('list'))).toBe(true);
+        const zhLines = zh.flatMap((g) => g.lines);
+        expect(zhLines.some((l) => l.includes('/survey'))).toBe(true);
+        expect(zhLines.some((l) => l.includes('list'))).toBe(true);
+        expect(zh.every((g) => g.heading.length > 0 && g.lines.length > 0)).toBe(true);
         const en = buildSurveyOperatorHelp(false);
-        expect(en.length).toBeGreaterThan(3);
+        expect(en.flatMap((g) => g.lines).length).toBeGreaterThan(3);
     });
 });

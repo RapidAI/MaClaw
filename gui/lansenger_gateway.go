@@ -10,11 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
@@ -57,6 +61,11 @@ type lansengerGatewayManager struct {
 	// lastPrivateUserID is the most recent p2p peer (owner talking to the bot).
 	// Used for 盯人 self-forward onto the Lansenger private channel.
 	lastPrivateUserID string
+
+	// groupSummary buffers group chat and handles /summary (群讨论摘要).
+	groupSummary *lansengerGroupSummaryService
+	// groupSummaryAtomic is the lock-free hot-path pointer after first init.
+	groupSummaryAtomic atomic.Pointer[lansengerGroupSummaryService]
 }
 
 type lansengerGroupInfoCacheEntry struct {
@@ -71,15 +80,41 @@ const (
 	lansengerGroupInfoFetchTimeout = 2 * time.Second
 )
 
+// lansengerReplyDecor is one inbound message's decoration slot for hub replies
+// (@mention / text quote / refMsgId). Multi-chunk replies consume the slot once.
+type lansengerReplyDecor struct {
+	senderID      string    // Lansenger staffId of the asker (for @mention)
+	senderName    string    // display name for "xx问：" text quotes
+	question      string    // cleaned user question (no leading @Bot)
+	messageID     string    // platform message id for native refMsgId (empty if unknown)
+	correlationID string    // hub pairing key (platform id or synthetic mc-…)
+	at            time.Time // when the inbound was remembered (TTL)
+}
+
 type lansengerReplyRoute struct {
-	isGroup   bool
-	senderID  string // Lansenger staffId of the asker (group replies)
-	question  string // original user question text (group replies)
-	messageID string // platform message id for native refMsgId quote
-	seenAt    time.Time
+	isGroup bool
+	// pending is a FIFO of undecorated inbound slots. Concurrent messages in the
+	// same group each push a slot so replies decorate the matching question
+	// instead of overwriting a single shared record.
+	pending []lansengerReplyDecor
+	// last* retains the most recent metadata for isGroup / quote peeks after
+	// pending has been fully consumed by multi-chunk first-take.
+	lastSender     string
+	lastSenderName string
+	lastQuestion   string
+	lastMessageID  string
+	seenAt         time.Time
 }
 
 const maxLansengerReplyRoutes = 1024
+
+// Cap how many concurrent undecorated inbound messages we remember per target
+// (same group or same DM peer) to bound memory under reply storms.
+const maxLansengerPendingDecors = 32
+
+// Drop pending slots that never got a matching hub agent reply (reject, timeout,
+// abandoned). 15m covers long agent turns without retaining forever.
+const lansengerPendingDecorTTL = 15 * time.Minute
 
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
 	return &lansengerGatewayManager{
@@ -375,6 +410,8 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 		if svc := m.app.watchService(); svc != nil {
 			svc.processMessage(msg)
 		}
+		// Group summary buffer: same delivery scope as watch (before mention gate).
+		m.recordGroupMessage(msg)
 	}
 	// Group policy + mention gate (OpenClaw / 蓝信文档: groupPolicy, requireMention,
 	// respondToAtAll, allowlist, ignore list). Watch above intentionally runs first.
@@ -384,12 +421,19 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 			return
 		}
 	}
+	// /summary: @Bot 群讨论摘要 — always local (needs on-device message buffer).
+	if m.tryHandleGroupSummaryCommand(msg) {
+		log.Printf("[lansenger-mgr] group summary command handled: group=%s user=%s", msg.GroupID, msg.FromUserID)
+		return
+	}
 	// Survey intercept: after mention gate, before passthrough / local agent / Hub LLM.
 	if m.tryHandleSurveyMessage(msg) {
 		log.Printf("[lansenger-mgr] survey intercept handled: user=%s group=%s", msg.FromUserID, msg.GroupID)
 		return
 	}
-	if isPassthroughSlashText(msg.Text) {
+	// Group messages often look like "@Bot /help" — detect slash commands on the
+	// cleaned text so hub mode still forces local passthrough handling.
+	if isPassthroughSlashText(stripLansengerBotMentions(msg)) {
 		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
 		m.handleLocalMessage(msg)
 		return
@@ -419,7 +463,7 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 }
 
 func isLansengerGroupMessage(msg lansenger.IncomingMessage) bool {
-	return strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
+	return lansenger.IsGroupChat(msg.ChatType)
 }
 
 // agentTextWithGroupContext prepends platform group metadata for LLM turns.
@@ -519,10 +563,15 @@ func buildLansengerOutgoingText(msg lansenger.IncomingMessage, text string, opts
 func buildLansengerOutgoingTextEx(msg lansenger.IncomingMessage, text string, opts lansenger.GroupChatOptions, systemNotice bool) lansenger.OutgoingText {
 	reminder, refMsgID := lansenger.BuildReplyDecorationsEx(msg, opts, systemNotice)
 	isGroup := isLansengerGroupMessage(msg)
-	// System notices still get a plain text attribution in groups so members know
-	// which ask failed; native refMsgId is skipped for systemNotice.
-	if isGroup && !lansenger.PreferNativeGroupQuote(opts, refMsgID) {
-		text = lansenger.MaybeFormatGroupReplyWithQuote(true, msg.FromUserID, msg.Text, text)
+	// Status/error notices stay plain (no "xx问：" / @ / refMsgId). Agent answers
+	// in groups get a text quote unless a native refMsgId quote will be attached.
+	if isGroup && !systemNotice && !lansenger.PreferNativeGroupQuote(opts, refMsgID) {
+		// Quote the cleaned user text (without leading @Bot tokens) when available.
+		question := stripLansengerBotMentions(msg)
+		if question == "" {
+			question = msg.Text
+		}
+		text = lansenger.MaybeFormatGroupReplyWithQuoteFromMessage(true, msg, question, text)
 	}
 	return lansenger.OutgoingText{
 		ToUserID: lansengerReplyTarget(msg),
@@ -576,18 +625,29 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 		msgType = msg.MediaType
 	}
 	replyTarget := lansengerReplyTarget(msg)
-	// Cache the original user question + message id for group reply quotes —
+	// Strip @Bot tokens for hub agent text and for outbound quote cache.
+	cleanText := stripLansengerBotMentions(msg)
+	// Correlation id is always set so multi-chunk hub replies can pair without
+	// FIFO-stealing. Platform message id is only used for native refMsgId.
+	platformMsgID := strings.TrimSpace(msg.MessageID)
+	corrID := platformMsgID
+	if corrID == "" {
+		corrID = "mc-" + uuid.NewString()
+	}
+	// Cache the cleaned user question + ids for group reply quotes —
 	// not the agent-enriched text that may include group metadata prefixes.
-	m.rememberReplyRoute(replyTarget, isLansengerGroupMessage(msg), msg.FromUserID, msg.Text, msg.MessageID)
+	m.rememberReplyRoute(replyTarget, isLansengerGroupMessage(msg), msg.FromUserID, msg.SenderName, cleanText, platformMsgID, corrID)
 	payload := map[string]any{
 		// platform_uid remains the human sender for Hub identity, binding and
 		// per-user routing. The separate reply target preserves group delivery.
 		"platform_uid": msg.FromUserID,
 		"reply_target": replyTarget,
-		"text":         m.agentTextWithGroupContext(msg, msg.Text),
+		"text":         m.agentTextWithGroupContext(msg, cleanText),
 		"message_type": msgType,
 		"chat_type":    msg.ChatType,
 		"group_id":     msg.GroupID,
+		// Always send so Hub echoes source_message_id (concurrent + multi-chunk).
+		"message_id": corrID,
 	}
 	if attachment := buildMediaAttachment(msg.MediaType, msg.MediaData, msg.MediaName, ""); attachment != nil {
 		payload["attachments"] = []map[string]any{attachment}
@@ -601,6 +661,9 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 
 	if err := hubClient.SendIMGatewayMessage(imGatewayPlatformLansenger, payload); err != nil {
 		log.Printf("[lansenger-mgr] forwardToHub error: %v, falling back to local", err)
+		// Local path decorates via buildLansengerOutgoingText; drop the hub slot
+		// so a late hub rejection/ack cannot steal or double-decorate.
+		m.forgetReplyDecor(replyTarget, corrID)
 		m.handleLocalMessage(msg)
 	}
 }
@@ -615,7 +678,7 @@ func lansengerReplyTarget(msg lansenger.IncomingMessage) string {
 	return msg.FromUserID
 }
 
-func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool, senderID, question, messageID string) {
+func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool, senderID, senderName, question, messageID, correlationID string) {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return
@@ -625,7 +688,7 @@ func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool
 	if m.replyRoutes == nil {
 		m.replyRoutes = make(map[string]lansengerReplyRoute)
 	}
-	if len(m.replyRoutes) >= maxLansengerReplyRoutes {
+	if _, exists := m.replyRoutes[target]; !exists && len(m.replyRoutes) >= maxLansengerReplyRoutes {
 		var oldestKey string
 		var oldest time.Time
 		for key, route := range m.replyRoutes {
@@ -635,13 +698,57 @@ func (m *lansengerGatewayManager) rememberReplyRoute(target string, isGroup bool
 		}
 		delete(m.replyRoutes, oldestKey)
 	}
-	route := lansengerReplyRoute{isGroup: isGroup, seenAt: time.Now()}
-	if isGroup {
-		route.senderID = strings.TrimSpace(senderID)
-		route.question = strings.TrimSpace(question)
-		route.messageID = strings.TrimSpace(messageID)
+	route := m.replyRoutes[target]
+	route.isGroup = isGroup || route.isGroup
+	msgID := strings.TrimSpace(messageID)
+	corrID := strings.TrimSpace(correlationID)
+	if corrID == "" {
+		corrID = msgID
 	}
+	now := time.Now()
+	// Cache only a distinct display name (never staffId-as-name). Hub reply
+	// reconstruction feeds this back into GroupReplySenderLabel.
+	cleanName := lansenger.GroupReplyDisplayName(lansenger.IncomingMessage{
+		FromUserID: senderID,
+		SenderName: senderName,
+	})
+	decor := lansengerReplyDecor{
+		senderID:      strings.TrimSpace(senderID),
+		senderName:    cleanName,
+		question:      strings.TrimSpace(question),
+		messageID:     msgID,
+		correlationID: corrID,
+		at:            now,
+	}
+	route.lastSender = decor.senderID
+	route.lastSenderName = decor.senderName
+	route.lastQuestion = decor.question
+	route.lastMessageID = decor.messageID
+	route.pending = append(pruneLansengerPendingDecors(route.pending, now), decor)
+	// Drop oldest pending slots if this target is under a reply storm.
+	if len(route.pending) > maxLansengerPendingDecors {
+		route.pending = append([]lansengerReplyDecor(nil), route.pending[len(route.pending)-maxLansengerPendingDecors:]...)
+	}
+	route.seenAt = now
 	m.replyRoutes[target] = route
+}
+
+// pruneLansengerPendingDecors drops slots older than lansengerPendingDecorTTL.
+func pruneLansengerPendingDecors(pending []lansengerReplyDecor, now time.Time) []lansengerReplyDecor {
+	if len(pending) == 0 {
+		return pending
+	}
+	out := pending[:0]
+	for _, d := range pending {
+		if d.at.IsZero() || now.Sub(d.at) <= lansengerPendingDecorTTL {
+			out = append(out, d)
+		}
+	}
+	// If all pruned, return a fresh nil slice (not a reused full-cap alias).
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (m *lansengerGatewayManager) isGroupReplyTarget(target string) bool {
@@ -651,17 +758,96 @@ func (m *lansengerGatewayManager) isGroupReplyTarget(target string) bool {
 	return ok && route.isGroup
 }
 
-func (m *lansengerGatewayManager) groupReplyQuote(target string) (senderID, question, messageID string, ok bool) {
+func (m *lansengerGatewayManager) groupReplyQuote(target string) (decor lansengerReplyDecor, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	route, found := m.replyRoutes[strings.TrimSpace(target)]
 	if !found || !route.isGroup {
-		return "", "", "", false
+		return lansengerReplyDecor{}, false
 	}
-	return route.senderID, route.question, route.messageID, true
+	// Prefer the next pending slot (matches the next reply); fall back to last.
+	if len(route.pending) > 0 {
+		return route.pending[0], true
+	}
+	if route.lastQuestion == "" && route.lastSender == "" && route.lastSenderName == "" && route.lastMessageID == "" {
+		return lansengerReplyDecor{}, false
+	}
+	return lansengerReplyDecor{
+		senderID:   route.lastSender,
+		senderName: route.lastSenderName,
+		question:   route.lastQuestion,
+		messageID:  route.lastMessageID,
+	}, true
 }
 
-// groupReplyText prefixes group replies with "{staffId}问：问题" so interleaved
+// takeReplyDecorations pops a pending decoration slot for this target
+// (group or DM). preferredID must match correlationID (hub source_message_id)
+// or platform messageID. Empty preferredID never decorates — queue acks,
+// ownership rejects, and progress without ReplyMeta would otherwise FIFO-steal
+// agent answer slots. When preferredID is set but not pending (already consumed
+// by an earlier multi-chunk fragment), returns ok=false.
+// Returned messageID is the platform id for native refMsgId (may be empty).
+func (m *lansengerGatewayManager) takeReplyDecorations(target string, preferredID string) (decor lansengerReplyDecor, ok bool) {
+	target = strings.TrimSpace(target)
+	preferredID = strings.TrimSpace(preferredID)
+	if preferredID == "" {
+		return lansengerReplyDecor{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	route, found := m.replyRoutes[target]
+	if !found {
+		return lansengerReplyDecor{}, false
+	}
+	now := time.Now()
+	route.pending = pruneLansengerPendingDecors(route.pending, now)
+	if len(route.pending) == 0 {
+		m.replyRoutes[target] = route
+		return lansengerReplyDecor{}, false
+	}
+	idx := -1
+	for i, d := range route.pending {
+		if strings.TrimSpace(d.correlationID) == preferredID || strings.TrimSpace(d.messageID) == preferredID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		// Multi-chunk: first chunk already took this id.
+		m.replyRoutes[target] = route
+		return lansengerReplyDecor{}, false
+	}
+	d := route.pending[idx]
+	route.pending = append(route.pending[:idx], route.pending[idx+1:]...)
+	m.replyRoutes[target] = route
+	d.messageID = strings.TrimSpace(d.messageID)
+	return d, true
+}
+
+// forgetReplyDecor drops a pending decoration slot by correlation id (e.g. when
+// hub forward fails and we fall back to local handling that decorates itself).
+func (m *lansengerGatewayManager) forgetReplyDecor(target, correlationID string) {
+	target = strings.TrimSpace(target)
+	correlationID = strings.TrimSpace(correlationID)
+	if target == "" || correlationID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	route, found := m.replyRoutes[target]
+	if !found {
+		return
+	}
+	for i, d := range route.pending {
+		if strings.TrimSpace(d.correlationID) == correlationID || strings.TrimSpace(d.messageID) == correlationID {
+			route.pending = append(route.pending[:i], route.pending[i+1:]...)
+			m.replyRoutes[target] = route
+			return
+		}
+	}
+}
+
+// groupReplyText prefixes group replies with "{显示名}问：问题" so interleaved
 // group answers remain attributable. Private replies are unchanged.
 // Prefer native RefMsgID quotes when AutoQuoteReply is enabled.
 func (m *lansengerGatewayManager) groupReplyText(msg lansenger.IncomingMessage, reply string) string {
@@ -669,7 +855,11 @@ func (m *lansengerGatewayManager) groupReplyText(msg lansenger.IncomingMessage, 
 	if lansenger.PreferNativeGroupQuote(opts, msg.MessageID) {
 		return strings.TrimSpace(reply)
 	}
-	return lansenger.MaybeFormatGroupReplyWithQuote(isLansengerGroupMessage(msg), msg.FromUserID, msg.Text, reply)
+	question := stripLansengerBotMentions(msg)
+	if question == "" {
+		question = msg.Text
+	}
+	return lansenger.MaybeFormatGroupReplyWithQuoteFromMessage(isLansengerGroupMessage(msg), msg, question, reply)
 }
 
 func (m *lansengerGatewayManager) currentGroupOpts() lansenger.GroupChatOptions {
@@ -762,7 +952,10 @@ func (m *lansengerGatewayManager) ensureLocalHandler() *IMMessageHandler {
 }
 
 func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessage) {
-	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(msg.Text, "lansenger:"+msg.FromUserID); handled {
+	// Always work from cleaned text so "@Bot /help" matches slash passthrough
+	// the same way as plain "/help".
+	cleanText := stripLansengerBotMentions(msg)
+	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(cleanText, "lansenger:"+msg.FromUserID); handled {
 		m.mu.Lock()
 		gw := m.gateway
 		m.mu.Unlock()
@@ -783,8 +976,8 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		gw := m.gateway
 		m.mu.Unlock()
 		if gw != nil {
-			_ = gw.SendText(context.Background(), buildLansengerOutgoingText(
-				msg, i18n.T(i18n.MsgLLMNotConfigured, "zh"), m.currentGroupOpts()))
+			_ = gw.SendText(context.Background(), buildLansengerOutgoingTextEx(
+				msg, i18n.T(i18n.MsgLLMNotConfigured, "zh"), m.currentGroupOpts(), true))
 		}
 		return
 	}
@@ -798,8 +991,10 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		return
 	}
 
-	// Keep msg.Text pristine for group reply quotes (staffId问：原问题).
-	text := msg.Text
+	// Agent-facing text: already cleaned of leading @Bot tokens (survey/watch match).
+	// Keep msg.Text raw for any call sites that still need the platform payload;
+	// outbound quotes prefer the stripped form via buildLansengerOutgoingTextEx.
+	text := cleanText
 
 	// Pass images/files as attachments, matching the pattern used by
 	// WeChat, Telegram and QQ gateways.
@@ -857,7 +1052,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 		_ = gw.SendText(context.Background(), lansenger.OutgoingText{
 			ToUserID: lansengerReplyTarget(msg),
 			Text:     i18n.T(i18n.MsgProgressPrefix, appUILang(m.app)) + stripped,
-			IsGroup:  msg.ChatType == "group",
+			IsGroup:  isLansengerGroupMessage(msg),
 		})
 	}
 
@@ -887,6 +1082,7 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 	ctx := context.Background()
 	toUserID := lansengerReplyTarget(msg)
 	isGroup := isLansengerGroupMessage(msg)
+	opts := m.currentGroupOpts()
 
 	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
@@ -913,7 +1109,6 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 			}
 		}
 		// Quote / @mention: native refMsgId + reminder when configured; else text quote.
-		opts := m.currentGroupOpts()
 		if err := gw.SendText(ctx, buildLansengerOutgoingText(msg, text, opts)); err != nil {
 			log.Printf("[lansenger-mgr] SendText error: %v", err)
 		}
@@ -923,11 +1118,12 @@ func (m *lansengerGatewayManager) sendAgentResponse(gw *lansenger.Gateway, msg l
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		_ = gw.SendText(ctx, buildLansengerOutgoingText(msg, text, m.currentGroupOpts()))
+		_ = gw.SendText(ctx, buildLansengerOutgoingText(msg, text, opts))
 	}
 
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
-		_ = gw.SendText(ctx, buildLansengerOutgoingTextEx(msg, textutil.StripMarkdown(resp.Error), m.currentGroupOpts(), true))
+		// Errors are system notices: no auto-@ / native quote spam.
+		_ = gw.SendText(ctx, buildLansengerOutgoingTextEx(msg, textutil.StripMarkdown(resp.Error), opts, true))
 	}
 
 	if resp.ImageKey != "" {
@@ -1018,76 +1214,96 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 	}
 
 	ctx := context.Background()
-	isGroup := strings.EqualFold(strings.TrimSpace(reply.ChatType), "group") || m.isGroupReplyTarget(reply.PlatformUID)
+	isGroup := lansenger.IsGroupChat(reply.ChatType) || m.isGroupReplyTarget(reply.PlatformUID)
 	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
 	case gatewayReplyTypeText:
 		text := textutil.StripMarkdown(reply.Text)
 		opts := m.currentGroupOpts()
-		var reminder *lansenger.OutgoingReminder
-		var refMsgID string
-		if isGroup {
-			// Hub replies only identify the conversation; recover the original
-			// question / message id from the route cache.
-			if sender, question, msgID, ok := m.groupReplyQuote(reply.PlatformUID); ok {
-				refMsgID = msgID
-				if !lansenger.PreferNativeGroupQuote(opts, refMsgID) {
-					text = lansenger.FormatGroupReplyWithQuote(sender, question, text)
-				}
-				if opts.AutoMentionReply && strings.TrimSpace(sender) != "" {
-					reminder = &lansenger.OutgoingReminder{UserIDs: []string{sender}}
-				}
-				if opts.AutoQuoteReply {
-					refMsgID = strings.TrimSpace(msgID)
-				}
-			}
-		} else if opts.AutoMentionReply {
-			// DM auto-@ is rarely needed for personal bots but supported by the doc.
-			if uid := strings.TrimSpace(reply.PlatformUID); uid != "" {
-				reminder = &lansenger.OutgoingReminder{UserIDs: []string{uid}}
-			}
-		}
-		_ = gw.SendText(ctx, lansenger.OutgoingText{
+		// First hub text chunk only: reuse the same decoration builder as local
+		// mode so @mention / refMsgId / text-quote stay consistent. Later chunks
+		// stay plain (takeReplyDecorations returns false once marked).
+		out := lansenger.OutgoingText{
 			ToUserID: reply.PlatformUID,
 			Text:     text,
 			IsGroup:  isGroup,
-			Reminder: reminder,
-			RefMsgID: refMsgID,
-		})
+		}
+		if decor, ok := m.takeReplyDecorations(reply.PlatformUID, reply.SourceMessageID); ok {
+			inbound := lansenger.IncomingMessage{
+				ChatType:  "p2p",
+				MessageID: decor.messageID,
+				// question is already cleaned (no leading @Bot) when cached.
+				Text:       decor.question,
+				SenderName: strings.TrimSpace(decor.senderName),
+			}
+			if isGroup {
+				inbound.ChatType = "group"
+				inbound.GroupID = reply.PlatformUID
+				// Prefer cached route sender; hub may also echo sender_id.
+				inbound.FromUserID = strings.TrimSpace(decor.senderID)
+				if inbound.FromUserID == "" {
+					inbound.FromUserID = strings.TrimSpace(reply.SenderID)
+				}
+			} else {
+				// DM: route sender if present, else conversation peer (PlatformUID).
+				inbound.FromUserID = strings.TrimSpace(decor.senderID)
+				if inbound.FromUserID == "" {
+					inbound.FromUserID = strings.TrimSpace(reply.SenderID)
+				}
+				if inbound.FromUserID == "" {
+					inbound.FromUserID = strings.TrimSpace(reply.PlatformUID)
+				}
+			}
+			out = buildLansengerOutgoingText(inbound, text, opts)
+			out.ToUserID = reply.PlatformUID
+			out.IsGroup = isGroup
+		}
+		if err := gw.SendText(ctx, out); err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply SendText failed (to=%s group=%v): %v", reply.PlatformUID, isGroup, err)
+		}
 	case gatewayReplyTypeImage:
 		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
 		if err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply image decode: %v", err)
 			return
 		}
-		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+		if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
 			MediaType: imMediaImage.String(),
 			IsGroup:   isGroup,
-		})
+		}); err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia image failed: %v", err)
+		}
 	case gatewayReplyTypeFile:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply file decode: %v", err)
 			return
 		}
-		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+		if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
 			FileName:  reply.FileName,
 			MediaType: imMediaFile.String(),
 			IsGroup:   isGroup,
-		})
+		}); err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia file failed: %v", err)
+		}
 	case gatewayReplyTypeVoice:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply voice decode: %v", err)
 			return
 		}
-		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
+		if err := gw.SendMedia(ctx, lansenger.OutgoingMedia{
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
 			FileName:  reply.FileName,
 			MediaType: imMediaFile.String(),
 			IsGroup:   isGroup,
-		})
+		}); err != nil {
+			log.Printf("[lansenger-mgr] HandleGatewayReply SendMedia voice failed: %v", err)
+		}
 	}
 }
 
@@ -1119,6 +1335,30 @@ func (a *App) GetLansengerStatus() string {
 	return a.lansengerGateway.Status()
 }
 
+// LastPrivatePeerID returns the last known private-chat peer for proactive sends.
+func (m *lansengerGatewayManager) LastPrivatePeerID() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	to := strings.TrimSpace(m.lastPrivateUserID)
+	if to != "" {
+		return to
+	}
+	var newest time.Time
+	for target, route := range m.replyRoutes {
+		if route.isGroup {
+			continue
+		}
+		if newest.IsZero() || route.seenAt.After(newest) {
+			newest = route.seenAt
+			to = strings.TrimSpace(target)
+		}
+	}
+	return to
+}
+
 // SendProactiveText pushes text to the owner's last Lansenger private session.
 func (m *lansengerGatewayManager) SendProactiveText(text string) error {
 	text = strings.TrimSpace(text)
@@ -1128,22 +1368,9 @@ func (m *lansengerGatewayManager) SendProactiveText(text string) error {
 	if m == nil {
 		return fmt.Errorf("lansenger gateway manager is nil")
 	}
+	to := m.LastPrivatePeerID()
 	m.mu.Lock()
 	gw := m.gateway
-	to := strings.TrimSpace(m.lastPrivateUserID)
-	// Prefer last private peer; otherwise newest non-group reply route.
-	if to == "" {
-		var newest time.Time
-		for target, route := range m.replyRoutes {
-			if route.isGroup {
-				continue
-			}
-			if newest.IsZero() || route.seenAt.After(newest) {
-				newest = route.seenAt
-				to = strings.TrimSpace(target)
-			}
-		}
-	}
 	m.mu.Unlock()
 	if gw == nil {
 		return fmt.Errorf("lansenger gateway not running")
@@ -1164,6 +1391,8 @@ func (a *App) RestartLansenger() string {
 		return "disconnected"
 	}
 	a.lansengerGateway.Restart()
+	// Group membership may change after reconnect; drop stale catalog.
+	a.invalidateScheduleTargetListCache(scheduler.DeliveryChannelLansenger)
 	return a.lansengerGateway.Status()
 }
 
@@ -1225,9 +1454,11 @@ type LansengerGroupListEntry struct {
 	TotalMembers int    `json:"total_members"`
 	MaxMembers   int    `json:"max_members,omitempty"`
 	IsPublic     bool   `json:"is_public,omitempty"`
-	// Ignored means the bot will not answer messages from this group.
+	// Ignored means the bot will not answer messages from this group (open policy denylist).
 	Ignored bool `json:"ignored"`
-	// Orphan means this row comes only from the local ignore list (not the
+	// Allowed means the group is on the allowlist (allowlist policy only).
+	Allowed bool `json:"allowed"`
+	// Orphan means this row comes only from the local ignore/allow list (not the
 	// platform group fetch). Used by the UI to drop the row after "Resume".
 	Orphan bool `json:"orphan,omitempty"`
 }
@@ -1307,10 +1538,11 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			MaxMembers:   g.MaxMembers,
 			IsPublic:     g.IsPublic,
 			Ignored:      cfg.IsLansengerGroupIgnored(g.GroupID),
+			Allowed:      cfg.IsLansengerGroupAllowed(g.GroupID),
 		})
 	}
-	// Surface ignore-list entries that are no longer returned by the platform
-	// (or failed to load) so the user can still re-enable them.
+	// Surface ignore/allowlist-only entries that are no longer returned by the
+	// platform so the user can still re-enable or un-allow them.
 	for _, id := range cfg.LansengerIgnoredGroupIDs {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -1323,6 +1555,23 @@ func (a *App) ListLansengerGroups() (*LansengerGroupListResult, error) {
 			GroupID: id,
 			Name:    id,
 			Ignored: true,
+			Allowed: cfg.IsLansengerGroupAllowed(id),
+			Orphan:  true,
+		})
+		seen[id] = struct{}{}
+	}
+	for _, id := range cfg.LansengerAllowedGroupIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		entries = append(entries, LansengerGroupListEntry{
+			GroupID: id,
+			Name:    id,
+			Allowed: true,
 			Orphan:  true,
 		})
 	}
@@ -1353,5 +1602,16 @@ func (a *App) SetLansengerGroupIgnored(groupID string, ignored bool) error {
 	}
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
 		cfg.SetLansengerGroupIgnored(groupID, ignored)
+	})
+}
+
+// SetLansengerGroupAllowed marks or unmarks a group on the allowlist (allowlist policy).
+func (a *App) SetLansengerGroupAllowed(groupID string, allowed bool) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return fmt.Errorf("group id is required")
+	}
+	return a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SetLansengerGroupAllowed(groupID, allowed)
 	})
 }

@@ -55,6 +55,7 @@ type GroupMember struct {
 	Name      string `json:"name"`
 	AvatarURL string `json:"avatar_url,omitempty"`
 	OrgName   string `json:"org_name,omitempty"`
+	Status    int    `json:"status"`
 	Role      int    `json:"role"`
 	FromType  int    `json:"from_type"`
 }
@@ -220,6 +221,7 @@ func (g *Gateway) getGroupMembersOnce(ctx context.Context, groupID string, pageO
 				Name      string `json:"name"`
 				AvatarURL string `json:"avatarUrl"`
 				OrgName   string `json:"orgName"`
+				Status    int    `json:"status"`
 				Role      int    `json:"role"`
 				FromType  int    `json:"fromType"`
 			} `json:"members"`
@@ -239,7 +241,7 @@ func (g *Gateway) getGroupMembersOnce(ctx context.Context, groupID string, pageO
 		}
 		members = append(members, GroupMember{
 			StaffID: id, Name: strings.TrimSpace(item.Name), AvatarURL: strings.TrimSpace(item.AvatarURL),
-			OrgName: strings.TrimSpace(item.OrgName), Role: item.Role, FromType: item.FromType,
+			OrgName: strings.TrimSpace(item.OrgName), Status: item.Status, Role: item.Role, FromType: item.FromType,
 		})
 	}
 	return &GroupMembersResult{TotalMembers: result.Data.TotalMembers, Members: members}, nil

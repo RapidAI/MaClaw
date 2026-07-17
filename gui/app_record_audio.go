@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/google/uuid"
 )
 
@@ -510,6 +512,18 @@ func (a *App) finalizeRecordedWAVFile(path, title string, started time.Time) (ma
 		"sample_rate":  sampleRate,
 	}
 
+	// Best-effort MP3 archive product (sibling of WAV). Failure never fails the save:
+	// original WAV remains the source of truth; agent can still convert via ffmpeg.
+	mp3Path, mp3Size, mp3Err := archiveRecordedWAVAsMP3(abs, durationSec)
+	if mp3Err != nil {
+		log.Printf("[record-audio] mp3 archive skipped path=%s duration=%.1fs err=%v", abs, durationSec, mp3Err)
+		out["mp3_error"] = mp3Err.Error()
+	} else if mp3Path != "" {
+		out["mp3_path"] = mp3Path
+		out["mp3_size_bytes"] = mp3Size
+		out["mp3_format"] = "mp3"
+	}
+
 	detail := recordDetailEnabled()
 	if detail {
 		pcmStats := recordWAVPCMStatsFromFile(f, size)
@@ -540,6 +554,13 @@ func (a *App) finalizeRecordedWAVFile(path, title string, started time.Time) (ma
 			"log_detail":      true,
 			"original_path":   abs,
 		}
+		if mp3Path != "" {
+			meta["mp3_path"] = mp3Path
+			meta["mp3_size_bytes"] = mp3Size
+		}
+		if mp3Err != nil {
+			meta["mp3_error"] = mp3Err.Error()
+		}
 		if indexPath, ierr := writeRecordDumpIndex(meta, safeTitle, stamp); ierr != nil {
 			log.Printf("[record-audio] dump index failed title=%q err=%v", title, ierr)
 		} else {
@@ -556,10 +577,68 @@ func (a *App) finalizeRecordedWAVFile(path, title string, started time.Time) (ma
 			log.Printf("[record-audio] meta saved path=%s", metaPath)
 			out["meta_path"] = metaPath
 		}
-		log.Printf("[record-audio] save ok title=%q path=%s size=%d duration=%.2fs sr=%d rms=%.5f peak=%.5f elapsed=%s",
-			title, abs, size, durationSec, sampleRate, pcmStats.RMS, pcmStats.Peak, time.Since(start).Round(time.Millisecond))
+		log.Printf("[record-audio] save ok title=%q path=%s size=%d duration=%.2fs sr=%d rms=%.5f peak=%.5f mp3=%q elapsed=%s",
+			title, abs, size, durationSec, sampleRate, pcmStats.RMS, pcmStats.Peak, mp3Path, time.Since(start).Round(time.Millisecond))
+	} else {
+		// Always emit one ops line even when log-detail is off (product audit trail).
+		log.Printf("[record-audio] save ok title=%q path=%s size=%d duration=%.2fs mp3=%q elapsed=%s",
+			title, abs, size, durationSec, mp3Path, time.Since(start).Round(time.Millisecond))
 	}
 	return out, nil
+}
+
+// archiveRecordedWAVAsMP3 produces a sibling .mp3 next to the product WAV using the
+// built-in pure-Go shine encoder. Returns empty path + error on failure (non-fatal).
+func archiveRecordedWAVAsMP3(wavPath string, durationSec float64) (string, int64, error) {
+	wavPath = strings.TrimSpace(wavPath)
+	if wavPath == "" {
+		return "", 0, fmt.Errorf("empty wav path")
+	}
+	if !tts.HasMP3Encoder() {
+		return "", 0, fmt.Errorf("mp3 encoder unavailable")
+	}
+	// Soft guard before loading multi-hour PCM into memory (encoder bound is 3h).
+	if durationSec > float64(3*60*60)+1 {
+		return "", 0, fmt.Errorf("duration too long for in-process mp3 archive")
+	}
+	// Align with product path helper used by post-recording agent context.
+	mp3Path := suggestMP3ArchivePath(wavPath)
+	if mp3Path == "" {
+		return "", 0, fmt.Errorf("empty mp3 path")
+	}
+	// Bound encode time so a stuck encoder cannot freeze the stop-save UI forever.
+	// Scale timeout with duration (min 30s, max 10m) so short clips return quickly
+	// and hour-long meetings still have room to finish.
+	timeout := 30 * time.Second
+	if durationSec > 0 {
+		// ~2× realtime is usually enough for shine encode; clamp to [30s, 10m].
+		scaled := time.Duration(durationSec * 2 * float64(time.Second))
+		if scaled > timeout {
+			timeout = scaled
+		}
+	}
+	if timeout > 10*time.Minute {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := tts.EncodeWAVFileToMP3Archive(ctx, wavPath, mp3Path); err != nil {
+		_ = os.Remove(mp3Path)
+		return "", 0, err
+	}
+	fi, err := os.Stat(mp3Path)
+	if err != nil {
+		return "", 0, err
+	}
+	if fi.Size() <= 0 {
+		_ = os.Remove(mp3Path)
+		return "", 0, fmt.Errorf("empty mp3 product")
+	}
+	absMP3, err := filepath.Abs(mp3Path)
+	if err != nil {
+		absMP3 = mp3Path
+	}
+	return absMP3, fi.Size(), nil
 }
 
 func wavDurationFromSize(size int64, header recordWAVHeaderInfo) float64 {

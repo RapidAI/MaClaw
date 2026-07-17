@@ -149,6 +149,9 @@ func (h *IMMessageHandler) handleAgentLoopRecordAudioToolResult(
 		ToolOutcome: "paused",
 	})
 	h.saveConversationHistoryTimed(userID, out.History, nil)
+	// A new recording session supersedes any unfinished post-recording choice
+	// (minutes/transcribe/keep) from a previous save.
+	h.pendingPostRecording.Delete(userID)
 	h.pendingRecordAudio.Store(userID, &pendingRecordAudioState{
 		Title:     req.Title,
 		Purpose:   req.Purpose,

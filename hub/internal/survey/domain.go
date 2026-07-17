@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -79,6 +80,71 @@ func NormalizeShortCode(in string) (string, error) {
 
 func SessionKey(platform, userID string) string {
 	return strings.TrimSpace(platform) + ":" + strings.TrimSpace(userID)
+}
+
+// GroupSessionKey scopes an IM session to one group so the same user can run
+// independent sessions in different groups (and in p2p) without interference.
+func GroupSessionKey(platform, groupID, userID string) string {
+	return strings.TrimSpace(platform) + ":" + strings.TrimSpace(groupID) + ":" + strings.TrimSpace(userID)
+}
+
+// IMSessionKey picks the session key for an inbound IM message: group chats
+// get a group-scoped key, p2p keeps the legacy per-user key.
+func IMSessionKey(platform, chatType, groupID, userID string) string {
+	ct := strings.ToLower(strings.TrimSpace(chatType))
+	gid := strings.TrimSpace(groupID)
+	isP2P := ct == "p2p" || ct == "private" || (ct == "" && gid == "")
+	if !isP2P && gid != "" {
+		return GroupSessionKey(platform, gid, userID)
+	}
+	return SessionKey(platform, userID)
+}
+
+// Sentinel answer-parse errors so IM replies can be localized by key instead
+// of matching English detail strings.
+var (
+	ErrEmptyAnswer           = errors.New("empty answer")
+	ErrOptionIndexOutOfRange = errors.New("option index out of range")
+	ErrAmbiguousOption       = errors.New("ambiguous option")
+	ErrUnknownOption         = errors.New("unknown option")
+	ErrRatingNotInteger      = errors.New("rating must be an integer")
+	ErrRatingOutOfRange      = errors.New("rating out of range")
+	ErrAnswerRequired        = errors.New("required")
+	ErrTextTooLong           = errors.New("text too long")
+	ErrUnsupportedQType      = errors.New("unsupported type")
+)
+
+// LocalizedAnswerError maps a ParseAnswer error to a localized short message.
+func LocalizedAnswerError(q Question, err error, lang string) string {
+	min, max := 1, 5
+	if q.Min != nil {
+		min = *q.Min
+	}
+	if q.Max != nil {
+		max = *q.Max
+	}
+	switch {
+	case errors.Is(err, ErrEmptyAnswer):
+		return tr(lang, msgErrEmptyAnswer)
+	case errors.Is(err, ErrOptionIndexOutOfRange):
+		return tr(lang, msgErrOptionRange)
+	case errors.Is(err, ErrAmbiguousOption):
+		return tr(lang, msgErrAmbiguous)
+	case errors.Is(err, ErrUnknownOption):
+		return tr(lang, msgErrUnknownOption)
+	case errors.Is(err, ErrRatingNotInteger):
+		return tr(lang, msgErrRatingInt)
+	case errors.Is(err, ErrRatingOutOfRange):
+		return tr(lang, msgErrRatingRange, min, max)
+	case errors.Is(err, ErrAnswerRequired):
+		return tr(lang, msgErrRequired)
+	case errors.Is(err, ErrTextTooLong):
+		return tr(lang, msgErrTextTooLong)
+	case errors.Is(err, ErrUnsupportedQType):
+		return tr(lang, msgErrUnsupportedType)
+	default:
+		return err.Error()
+	}
 }
 
 func NormalizeQuestions(qs []Question) []Question {
@@ -221,14 +287,14 @@ func normalizeFullwidthDigits(s string) string {
 func ParseChoiceToken(q Question, token string) (string, error) {
 	token = strings.TrimSpace(normalizeFullwidthDigits(token))
 	if token == "" {
-		return "", fmt.Errorf("empty answer")
+		return "", ErrEmptyAnswer
 	}
 	// 1-based index
 	if n, err := strconv.Atoi(token); err == nil {
 		if n >= 1 && n <= len(q.Options) {
 			return q.Options[n-1].ID, nil
 		}
-		return "", fmt.Errorf("option index out of range")
+		return "", ErrOptionIndexOutOfRange
 	}
 	low := strings.ToLower(token)
 	var matches []string
@@ -241,15 +307,15 @@ func ParseChoiceToken(q Question, token string) (string, error) {
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
-		return "", fmt.Errorf("ambiguous option")
+		return "", ErrAmbiguousOption
 	}
-	return "", fmt.Errorf("unknown option")
+	return "", ErrUnknownOption
 }
 
 func ParseMultiChoice(q Question, text string) ([]string, error) {
 	text = strings.TrimSpace(normalizeFullwidthDigits(text))
 	if text == "" {
-		return nil, fmt.Errorf("empty answer")
+		return nil, ErrEmptyAnswer
 	}
 	// split on comma, whitespace, Chinese顿号
 	fields := strings.FieldsFunc(text, func(r rune) bool {
@@ -268,7 +334,7 @@ func ParseMultiChoice(q Question, text string) ([]string, error) {
 		}
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("empty answer")
+		return nil, ErrEmptyAnswer
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -278,7 +344,7 @@ func ParseRating(q Question, text string) (int, error) {
 	text = strings.TrimSpace(normalizeFullwidthDigits(text))
 	n, err := strconv.Atoi(text)
 	if err != nil {
-		return 0, fmt.Errorf("rating must be an integer")
+		return 0, ErrRatingNotInteger
 	}
 	min, max := 1, 5
 	if q.Min != nil {
@@ -288,7 +354,7 @@ func ParseRating(q Question, text string) (int, error) {
 		max = *q.Max
 	}
 	if n < min || n > max {
-		return 0, fmt.Errorf("rating out of range [%d,%d]", min, max)
+		return 0, fmt.Errorf("%w [%d,%d]", ErrRatingOutOfRange, min, max)
 	}
 	return n, nil
 }
@@ -300,10 +366,10 @@ func ParseText(q Question, text string) (string, error) {
 		maxLen = *q.MaxLength
 	}
 	if q.Required && s == "" {
-		return "", fmt.Errorf("required")
+		return "", ErrAnswerRequired
 	}
 	if len([]rune(s)) > maxLen {
-		return "", fmt.Errorf("text too long")
+		return "", ErrTextTooLong
 	}
 	return s, nil
 }
@@ -319,7 +385,7 @@ func ParseAnswer(q Question, text string) (any, error) {
 	case "text":
 		return ParseText(q, text)
 	default:
-		return nil, fmt.Errorf("unsupported type")
+		return nil, ErrUnsupportedQType
 	}
 }
 
@@ -337,13 +403,15 @@ func IsSkipToken(text string) bool {
 	}
 }
 
-func FormatQuestionPrompt(q Question, index, total int) string {
+// FormatQuestionPrompt renders one question for IM in the given language.
+// The "previous question" hint is only shown when there is one to go back to.
+func FormatQuestionPrompt(q Question, index, total int, lang string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "【%d/%d】%s", index+1, total, q.Title)
+	b.WriteString(tr(lang, msgPromptProgress, index+1, total, q.Title))
 	if q.Required {
 		b.WriteString(" *")
 	} else {
-		b.WriteString("（选填）")
+		b.WriteString(tr(lang, msgPromptOptional))
 	}
 	b.WriteString("\n")
 	switch q.Type {
@@ -352,9 +420,9 @@ func FormatQuestionPrompt(q Question, index, total int) string {
 			fmt.Fprintf(&b, "%d. %s\n", i+1, o.Label)
 		}
 		if q.Type == "multi_choice" {
-			b.WriteString("（多选，用空格或逗号分隔序号）\n")
+			b.WriteString(tr(lang, msgPromptMulti))
 		} else {
-			b.WriteString("（回复选项序号）\n")
+			b.WriteString(tr(lang, msgPromptSingle))
 		}
 	case "rating":
 		min, max := 1, 5
@@ -364,14 +432,18 @@ func FormatQuestionPrompt(q Question, index, total int) string {
 		if q.Max != nil {
 			max = *q.Max
 		}
-		fmt.Fprintf(&b, "请回复 %d–%d 的整数\n", min, max)
+		b.WriteString(tr(lang, msgPromptRating, min, max))
 	case "text":
-		b.WriteString("请直接输入文字\n")
+		b.WriteString(tr(lang, msgPromptText))
 	}
 	if !q.Required {
-		b.WriteString("选填可回复「跳过」\n")
+		b.WriteString(tr(lang, msgPromptSkipHint))
 	}
-	b.WriteString("回复「取消」可退出；「上一题」可返回")
+	if index > 0 {
+		b.WriteString(tr(lang, msgPromptTailPrev))
+	} else {
+		b.WriteString(tr(lang, msgPromptTailFirst))
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -422,26 +494,26 @@ func DeadlinePassed(s Settings, now time.Time) bool {
 	return !now.Before(s.Deadline.UTC())
 }
 
-// FormatDeadlineLine returns a short Chinese line for IM, or empty if no deadline.
-func FormatDeadlineLine(s Settings) string {
+// FormatDeadlineLine returns a short localized line for IM, or empty if no deadline.
+func FormatDeadlineLine(s Settings, lang string) string {
 	if s.Deadline == nil {
 		return ""
 	}
 	// Local-friendly UTC display with Z; desktop UI uses locale separately.
-	return "截止：" + s.Deadline.UTC().Format("2006-01-02 15:04 UTC")
+	return tr(lang, msgMetaDeadline, s.Deadline.UTC().Format("2006-01-02 15:04 UTC"))
 }
 
 // SurveyIntroMeta appends optional deadline/target hints under survey title for IM.
-func SurveyIntroMeta(sv *Survey) string {
+func SurveyIntroMeta(sv *Survey, lang string) string {
 	if sv == nil {
 		return ""
 	}
 	var parts []string
-	if line := FormatDeadlineLine(sv.Settings); line != "" {
+	if line := FormatDeadlineLine(sv.Settings, lang); line != "" {
 		parts = append(parts, line)
 	}
 	if sv.Settings.TargetCount > 0 {
-		parts = append(parts, fmt.Sprintf("目标回收：%d 份", sv.Settings.TargetCount))
+		parts = append(parts, tr(lang, msgMetaTarget, sv.Settings.TargetCount))
 	}
 	if len(parts) == 0 {
 		return ""

@@ -3,6 +3,7 @@ import { main } from '../../../wailsjs/go/models';
 import { resolveSettingsTabId, type SettingsTabId } from '../../config/settingsTabs';
 import {
     ASRConfigPanel,
+	DiarizationConfigPanel,
     EmbeddingConfigPanel,
     HubServiceRedeemPanel,
     KnowledgeSettingsPanel,
@@ -106,6 +107,8 @@ export type SettingsActiveContentProps = {
     audioDevices: AudioDevicesState;
     uiZoom: number;
     setUiZoom: Dispatch<SetStateAction<number>>;
+    uiZoomAuto: boolean;
+    setUiZoomAuto: Dispatch<SetStateAction<boolean>>;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
     darkSchemeId: AssistantDarkSchemeId;
@@ -190,6 +193,8 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
         audioDevices,
         uiZoom,
         setUiZoom,
+        uiZoomAuto,
+        setUiZoomAuto,
         chatFontSize,
         setChatFontSize,
         darkSchemeId,
@@ -293,6 +298,7 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 <>
                     <EmbeddingConfigPanel lang={lang} />
                     <ASRConfigPanel lang={lang} />
+					<DiarizationConfigPanel lang={lang} />
                     <TTSConfigPanel lang={lang} />
                 </>
             ));
@@ -392,6 +398,8 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     t={t}
                     uiZoom={uiZoom}
                     setUiZoom={setUiZoom}
+                    uiZoomAuto={uiZoomAuto}
+                    setUiZoomAuto={setUiZoomAuto}
                     chatFontSize={chatFontSize}
                     setChatFontSize={setChatFontSize}
                     darkSchemeId={darkSchemeId}

@@ -2,6 +2,24 @@ package lansenger
 
 import "testing"
 
+func TestIsGroupChatAndNormalizeChatType(t *testing.T) {
+	if !IsGroupChat("group") || !IsGroupChat(" GROUP ") || !IsGroupChat("Group") {
+		t.Fatal("expected group variants to match")
+	}
+	if IsGroupChat("p2p") || IsGroupChat("") {
+		t.Fatal("non-group must not match")
+	}
+	if got := NormalizeChatType(" GROUP "); got != "group" {
+		t.Fatalf("NormalizeChatType group = %q", got)
+	}
+	if got := NormalizeChatType("Private"); got != "p2p" {
+		t.Fatalf("NormalizeChatType private = %q", got)
+	}
+	if got := NormalizeChatType("dm"); got != "p2p" {
+		t.Fatalf("NormalizeChatType dm = %q", got)
+	}
+}
+
 func TestGroupMessageAllowed(t *testing.T) {
 	base := IncomingMessage{
 		ChatType: "group",

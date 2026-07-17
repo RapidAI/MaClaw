@@ -68,10 +68,14 @@ type adminSchedulerStatus struct {
 	Exists      bool                      `json:"exists"`
 	TaskCount   int                       `json:"task_count"`
 	ByStatus    map[string]int            `json:"by_status"`
-	NextRunAt   *time.Time                `json:"next_run_at,omitempty"`
-	LastErrorAt *time.Time                `json:"last_error_at,omitempty"`
-	LastError   string                    `json:"last_error,omitempty"`
-	RecentTasks []scheduler.ScheduledTask `json:"recent_tasks,omitempty"`
+	// DeliveryEnabled counts tasks with active IM push config.
+	DeliveryEnabled int `json:"delivery_enabled"`
+	// DeliveryWarnings counts tasks whose LastResult has a soft delivery warning.
+	DeliveryWarnings int `json:"delivery_warnings"`
+	NextRunAt        *time.Time                `json:"next_run_at,omitempty"`
+	LastErrorAt      *time.Time                `json:"last_error_at,omitempty"`
+	LastError        string                    `json:"last_error,omitempty"`
+	RecentTasks      []scheduler.ScheduledTask `json:"recent_tasks,omitempty"`
 }
 
 func (s *HTTPServer) handleAdminRuntimeStatus(w http.ResponseWriter, r *http.Request) {
@@ -188,6 +192,38 @@ func isAllowedRuntimeProfile(name string) bool {
 }
 func (s *HTTPServer) handleAdminSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, redactAdminSchedulerStatusForAdminAPI(s.svc.DataRoot(), buildAdminSchedulerStatus(s.svc.DataRoot(), true)))
+}
+
+// handleAdminSchedulerDeliveryTargets lists IM push destinations (channel catalog).
+// Query: channel (default lansenger), query (optional name/id filter).
+func (s *HTTPServer) handleAdminSchedulerDeliveryTargets(w http.ResponseWriter, r *http.Request) {
+	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
+	if channel == "" {
+		channel = scheduler.DeliveryChannelLansenger
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	if query == "" {
+		query = strings.TrimSpace(r.URL.Query().Get("q"))
+	}
+	text, err := listSrvScheduleDeliveryTargets(s.svc, channel, query)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	// Also return structured refs when catalog can list without error.
+	var targets []scheduler.TargetRef
+	if reg := ensureSrvScheduleTargetCatalogs(s.svc); reg != nil {
+		if refs, listErr := reg.ListTargets(r.Context(), channel, query); listErr == nil {
+			targets = refs
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"channel": channel,
+		"query":   query,
+		"text":    text,
+		"targets": targets,
+		"count":   len(targets),
+	})
 }
 
 func (s *HTTPServer) handleAdminJobs(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +376,12 @@ func buildAdminSchedulerStatus(dataRoot string, includeTasks bool) adminSchedule
 			key = "unknown"
 		}
 		status.ByStatus[key]++
+		if task.Delivery != nil && task.Delivery.Active() {
+			status.DeliveryEnabled++
+			if scheduler.HasDeliveryWarning(task.LastResult) {
+				status.DeliveryWarnings++
+			}
+		}
 		if task.NextRunAt != nil && (status.NextRunAt == nil || task.NextRunAt.Before(*status.NextRunAt)) {
 			next := task.NextRunAt.UTC()
 			status.NextRunAt = &next

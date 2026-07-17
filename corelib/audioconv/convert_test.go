@@ -265,6 +265,9 @@ func testMP3(t *testing.T) []byte {
 	if err := enc.Write(&out, samples); err != nil {
 		t.Fatalf("encode test mp3: %v", err)
 	}
+	if err := enc.Flush(&out); err != nil {
+		t.Fatalf("flush test mp3: %v", err)
+	}
 	if out.Len() == 0 {
 		t.Fatal("encoded test mp3 empty")
 	}

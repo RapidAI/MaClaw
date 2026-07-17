@@ -19,7 +19,7 @@ const AgentGroupContextRules = "" +
 // chats. Returns "" for non-group messages. info may be nil when GetGroupInfo
 // was skipped or failed — message-level fields are still emitted.
 func FormatAgentGroupContext(msg IncomingMessage, info *GroupInfo) string {
-	if !strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
+	if !IsGroupChat(msg.ChatType) {
 		return ""
 	}
 

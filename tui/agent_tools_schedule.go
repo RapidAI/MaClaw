@@ -40,8 +40,10 @@ func newManageScheduleHandler(app *TUIApp) agent.ToolHandler {
 			return app.toolDeleteScheduledTask(args)
 		case "update":
 			return app.toolUpdateScheduledTask(args)
+		case "list_targets":
+			return app.toolListScheduleDeliveryTargets(args)
 		default:
-			return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update）", action)
+			return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update/list_targets）", action)
 		}
 	}
 }
@@ -57,6 +59,8 @@ func normalizeScheduleAction(s string) string {
 		return "delete"
 	case "update", "edit", "modify":
 		return "update"
+	case "list_targets", "list_groups", "list_im_targets", "list_delivery_targets":
+		return "list_targets"
 	default:
 		return s
 	}
@@ -67,37 +71,29 @@ func (app *TUIApp) toolCreateScheduledTask(args map[string]interface{}) string {
 		return "定时任务管理器未初始化"
 	}
 	name := stringVal(args, "name")
-	// The task's action content comes from "task_action" (preferred) or "action".
+	// Prefer task_action; never treat CRUD verb "action" as work content.
 	taskAction := stringVal(args, "task_action")
 	if taskAction == "" {
-		taskAction = stringVal(args, "action")
+		if a := stringVal(args, "action"); a != "" {
+			switch normalizeScheduleAction(a) {
+			case "create", "list", "delete", "update", "list_targets":
+				// leftover CRUD verb — ignore
+			default:
+				taskAction = a
+			}
+		}
 	}
 	if name == "" || taskAction == "" {
-		return "缺少 name 或 task_action 参数"
+		return "缺少 name 或 task_action 参数（task_action 为到点要执行的内容）"
 	}
-	hour := -1
-	if v, ok := args["hour"].(float64); ok {
-		hour = int(v)
-	}
+	hour := tuiScheduleIntArg(args, "hour", -1)
 	if hour < 0 || hour > 23 {
 		return "hour 必须在 0-23 之间"
 	}
-	minute := 0
-	if v, ok := args["minute"].(float64); ok {
-		minute = int(v)
-	}
-	dow := -1
-	if v, ok := args["day_of_week"].(float64); ok {
-		dow = int(v)
-	}
-	dom := -1
-	if v, ok := args["day_of_month"].(float64); ok {
-		dom = int(v)
-	}
-	intervalMin := 0
-	if v, ok := args["interval_minutes"].(float64); ok {
-		intervalMin = int(v)
-	}
+	minute := tuiScheduleIntArg(args, "minute", 0)
+	dow := tuiScheduleIntArg(args, "day_of_week", -1)
+	dom := tuiScheduleIntArg(args, "day_of_month", -1)
+	intervalMin := tuiScheduleIntArg(args, "interval_minutes", 0)
 
 	t := scheduler.ScheduledTask{
 		Name:            name,
@@ -111,16 +107,120 @@ func (app *TUIApp) toolCreateScheduledTask(args map[string]interface{}) string {
 		EndDate:         stringVal(args, "end_date"),
 		TaskType:        stringVal(args, "task_type"),
 	}
+	if d, err := parseTUIScheduleDelivery(args); err != nil {
+		return err.Error()
+	} else if d != nil {
+		if err := app.resolveScheduleDelivery(d); err != nil {
+			return err.Error()
+		}
+		t.Delivery = d
+	}
 
 	id, err := app.scheduledTaskManager.Add(t)
 	if err != nil {
 		return fmt.Sprintf("创建定时任务失败: %s", err.Error())
 	}
 
-	if task := app.scheduledTaskManager.Get(id); task != nil && task.NextRunAt != nil {
-		return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, taskAction, task.NextRunAt.Format("2006-01-02 15:04"))
+	if task := app.scheduledTaskManager.Get(id); task != nil {
+		extra := ""
+		if s := scheduler.SummarizeDelivery(task.Delivery); s != "" {
+			extra = "\n推送: " + s
+		}
+		if task.NextRunAt != nil {
+			return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s%s", id, name, taskAction, task.NextRunAt.Format("2006-01-02 15:04"), extra)
+		}
+		return fmt.Sprintf("定时任务已创建（ID: %s）%s", id, extra)
 	}
 	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
+}
+
+func (app *TUIApp) toolListScheduleDeliveryTargets(args map[string]interface{}) string {
+	channel := stringVal(args, "channel")
+	if channel == "" {
+		channel = stringVal(args, "platform")
+	}
+	query := stringVal(args, "query")
+	if query == "" {
+		query = stringVal(args, "group_name")
+	}
+	if query == "" {
+		query = stringVal(args, "name")
+	}
+	text, err := app.listScheduleDeliveryTargets(channel, query)
+	if err != nil {
+		return fmt.Sprintf("查询投递目标失败: %s", err.Error())
+	}
+	return text
+}
+
+// parseTUIScheduleDelivery supports delivery object or group_id/user_id/group_name shorthand.
+// group_name is resolved via the channel catalog (same as desktop).
+func parseTUIScheduleDelivery(args map[string]interface{}) (*scheduler.TaskDelivery, error) {
+	if args == nil {
+		return nil, nil
+	}
+	if raw, ok := args["delivery"]; ok {
+		if raw == nil {
+			return nil, nil
+		}
+		d, err := scheduler.ParseDeliveryFromAny(raw)
+		if err != nil {
+			return nil, fmt.Errorf("delivery 配置无效: %w", err)
+		}
+		return d, nil
+	}
+	groupID := strings.TrimSpace(stringVal(args, "group_id"))
+	if groupID == "" {
+		groupID = strings.TrimSpace(stringVal(args, "delivery_group_id"))
+	}
+	userID := strings.TrimSpace(stringVal(args, "user_id"))
+	if userID == "" {
+		userID = strings.TrimSpace(stringVal(args, "delivery_user_id"))
+	}
+	groupName := strings.TrimSpace(stringVal(args, "group_name"))
+	if groupName == "" {
+		groupName = strings.TrimSpace(stringVal(args, "delivery_group_name"))
+	}
+	if groupID == "" && userID == "" && groupName == "" {
+		return nil, nil
+	}
+	channel := strings.TrimSpace(stringVal(args, "channel"))
+	if channel == "" {
+		channel = strings.TrimSpace(stringVal(args, "delivery_channel"))
+	}
+	if channel == "" {
+		channel = scheduler.DeliveryChannelLansenger
+	}
+	d := &scheduler.TaskDelivery{Enabled: true, Channel: channel, On: scheduler.DeliveryOnSuccess}
+	if b, ok := args["fail_on_error"].(bool); ok {
+		d.FailOnError = b
+	}
+	if userID != "" && groupID == "" && groupName == "" {
+		d.Targets = []scheduler.DeliveryTarget{{Kind: scheduler.DeliveryKindUser, UserID: userID}}
+	} else {
+		tg := scheduler.DeliveryTarget{
+			Kind: scheduler.DeliveryKindGroup, GroupID: groupID, GroupName: groupName,
+		}
+		if mentions := stringVal(args, "mention_user_ids"); mentions != "" {
+			for _, p := range strings.FieldsFunc(mentions, func(r rune) bool {
+				return r == ',' || r == '，' || r == ';' || r == ' ' || r == '\n' || r == '\t'
+			}) {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					tg.MentionUserIDs = append(tg.MentionUserIDs, p)
+				}
+			}
+		}
+		if b, ok := args["mention_all"].(bool); ok && b {
+			tg.MentionAll = true
+		}
+		d.Targets = []scheduler.DeliveryTarget{tg}
+	}
+	d.Normalize()
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	return d, nil
 }
 
 func (app *TUIApp) toolListScheduledTasks() string {
@@ -139,8 +239,12 @@ func (app *TUIApp) toolListScheduledTasks() string {
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
 		}
-		b.WriteString(fmt.Sprintf("%d. [%s] %s\n   ID: %s\n   操作: %s\n   下次执行: %s\n   已执行: %d 次\n\n",
+		b.WriteString(fmt.Sprintf("%d. [%s] %s\n   ID: %s\n   操作: %s\n   下次执行: %s\n   已执行: %d 次",
 			i+1, status, t.Name, t.ID, scheduler.TruncateStr(t.Action, 80), next, t.RunCount))
+		if s := scheduler.SummarizeDelivery(t.Delivery); s != "" {
+			b.WriteString("\n   推送: " + s)
+		}
+		b.WriteString("\n\n")
 	}
 	return b.String()
 }
@@ -174,6 +278,31 @@ func (app *TUIApp) toolUpdateScheduledTask(args map[string]interface{}) string {
 	if id == "" {
 		return "缺少 id 参数"
 	}
+	if ta := stringVal(args, "task_action"); ta != "" {
+		args["action"] = ta
+	} else if a := stringVal(args, "action"); a != "" && normalizeScheduleAction(a) != a {
+		// action is a CRUD verb (update/create/…) — do not persist as work content.
+		delete(args, "action")
+	}
+	var current *scheduler.TaskDelivery
+	if cur := app.scheduledTaskManager.Get(id); cur != nil {
+		current = cur.Delivery
+	}
+	if err := scheduler.PrepareDeliveryForUpdate(current, args, func(a map[string]interface{}) (*scheduler.TaskDelivery, error) {
+		d, err := parseTUIScheduleDelivery(a)
+		if err != nil {
+			return nil, err
+		}
+		if d == nil {
+			return nil, nil
+		}
+		if err := app.resolveScheduleDelivery(d); err != nil {
+			return nil, err
+		}
+		return d, nil
+	}); err != nil {
+		return err.Error()
+	}
 	err := app.scheduledTaskManager.Update(id, args)
 	if err != nil {
 		return fmt.Sprintf("更新失败: %s", err.Error())
@@ -183,9 +312,37 @@ func (app *TUIApp) toolUpdateScheduledTask(args map[string]interface{}) string {
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
 		}
-		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+		extra := ""
+		if s := scheduler.SummarizeDelivery(t.Delivery); s != "" {
+			extra = "\n推送: " + s
+		}
+		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s%s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next, extra)
 	}
 	return "定时任务已更新"
+}
+
+func tuiScheduleIntArg(args map[string]interface{}, key string, def int) int {
+	if args == nil {
+		return def
+	}
+	v, ok := args[key]
+	if !ok || v == nil {
+		return def
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case float32:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return def
+	}
 }
 
 // buildTUIScheduledTaskExecutor creates a TaskExecutor for the TUI that uses
@@ -200,12 +357,27 @@ func (app *TUIApp) buildScheduledTaskExecutor() scheduler.TaskExecutor {
 		cb := &tuiSchedulerCallbacks{app: app, ctx: ctx}
 		result := agent.RunLoop(cb, actionText, nil, nil)
 
+		var runErr error
 		if result.Error != "" {
+			runErr = fmt.Errorf("%s", result.Error)
 			log.Printf("[TUI-ScheduledTask] task %s failed: %s", task.Name, result.Error)
-			return result.Text, fmt.Errorf("%s", result.Error)
+		} else {
+			log.Printf("[TUI-ScheduledTask] task %s completed: %s", task.Name, scheduler.TruncateStr(result.Text, 200))
 		}
-		log.Printf("[TUI-ScheduledTask] task %s completed: %s", task.Name, scheduler.TruncateStr(result.Text, 200))
-		return result.Text, nil
+		// Wrap with ctx abort so ShouldDeliver can push partial text on timeout.
+		runErr = scheduler.AnnotateRunErrWithContext(ctx, runErr)
+
+		resultText := result.Text
+		// Structured channel delivery (same model as desktop GUI / MaClawSrv).
+		// Also attempt on timeout when partial text exists.
+		if delErr := app.deliverScheduledTaskResult(task, resultText, runErr); delErr != nil {
+			log.Printf("[TUI-ScheduledTask] delivery failed: %v", delErr)
+			resultText, runErr = scheduler.MergeDeliveryOutcome(task.Delivery, resultText, runErr, delErr)
+		}
+		if runErr != nil {
+			return resultText, runErr
+		}
+		return resultText, nil
 	}
 }
 

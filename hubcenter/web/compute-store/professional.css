@@ -4,12 +4,12 @@
   --panel-muted: #f8fafc;
   --ink: #172033;
   --muted: #5d6b82;
-  --faint: #7b8798;
+  --faint: #667386;
   --line: #d7e0ec;
   --line-strong: #b9c8d9;
-  --primary: #1f5fd0;
-  --primary-dark: #184aa5;
-  --primary-soft: #edf4ff;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-soft: #eaf1ff;
   --green: #11765d;
   --green-soft: #ecfdf5;
   --warn: #9a6b14;
@@ -417,7 +417,7 @@ h3 { font-size: 18px; line-height: 1.3; font-weight: 720; }
 }
 
 .status-dot.ok { background: var(--green); box-shadow: 0 0 0 4px rgba(17, 118, 93, .14); }
-.status-dot.info { background: var(--primary); box-shadow: 0 0 0 4px rgba(31, 95, 208, .14); }
+.status-dot.info { background: var(--primary); box-shadow: 0 0 0 4px rgba(37, 99, 235, .14); }
 
 .section-head {
   display: flex;
@@ -470,7 +470,7 @@ h3 { font-size: 18px; line-height: 1.3; font-weight: 720; }
 
 .product.is-selected {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(31, 95, 208, .14), var(--soft-shadow);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .14), var(--soft-shadow);
 }
 
 .service-art {
@@ -660,7 +660,7 @@ a:focus-visible,
 .product:focus-visible {
   outline: 2px solid transparent;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(31, 95, 208, .16);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .16);
 }
 
 .payment-picker {
@@ -734,7 +734,7 @@ a:focus-visible,
 .pay-option:has(input:checked) {
   border-color: var(--primary);
   background: var(--primary-soft);
-  box-shadow: 0 0 0 3px rgba(31, 95, 208, .12);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
 }
 
 .checkout-actions {
@@ -763,9 +763,9 @@ a:focus-visible,
 .checkout-notice {
   margin-top: 14px;
   padding: 12px 14px;
-  border: 1px solid #f4b9b4;
+  border: 1px solid #f1c4c0;
   border-radius: 9px;
-  background: #fff7f6;
+  background: #fff5f5;
   color: var(--danger);
   font-size: 13px;
   font-weight: 720;
@@ -786,7 +786,7 @@ a:focus-visible,
   width: min(420px, calc(100vw - 36px));
   padding: 13px 15px;
   color: var(--danger);
-  border: 1px solid #f4b9b4;
+  border: 1px solid #f1c4c0;
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 18px 44px rgba(15, 23, 42, .16);
@@ -1179,12 +1179,12 @@ a:focus-visible,
 
 .delete-order-btn {
   color: var(--danger);
-  border: 1px solid #f0c4c0;
+  border: 1px solid #f1c4c0;
 }
 
 .delete-order-btn:hover {
   border-color: #e6a29b;
-  background: #fff7f6;
+  background: #fff5f5;
 }
 
 .pay-order-btn:disabled,

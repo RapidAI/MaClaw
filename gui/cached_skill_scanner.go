@@ -25,10 +25,14 @@ type skillCacheEntry struct {
 //   - Get() returns cached results or empty list (graceful degradation)
 //   - Expired cache (>10m): returns stale data immediately + triggers background refresh
 //   - Invalidate(): marks cache stale and triggers background refresh
-//   - Only one concurrent scan at a time (mutex-guarded)
+//   - Only one concurrent scan at a time (mutex-guarded); if a mutation races an
+//     in-flight scan, triggerBackgroundScan re-arms after the worker exits
 //   - Individual directory scan errors are skipped (logged), remaining dirs continue
 //   - RemoveByDir(): synchronously removes from cache AND records in pendingRemovals
 //     so that a concurrent scan() will filter the removed dir from its results
+//   - UpsertSkills(): synchronously merges imported/installed skills into cache AND
+//     records them in pendingUpserts so a concurrent scan that raced the write
+//     cannot drop the newly added entries when it stores its result
 type CachedSkillScanner struct {
 	roots    []string
 	cache    atomic.Pointer[skillCacheEntry]
@@ -39,8 +43,11 @@ type CachedSkillScanner struct {
 	// pendingRemovals tracks SkillDir paths that have been deleted from disk
 	// but may not yet be reflected in a concurrent background scan's results.
 	// scan() applies these removals after completing its disk scan.
+	// pendingUpserts tracks skills that were just written to disk (import/install)
+	// so a concurrent scan that started before those dirs existed still surfaces them.
 	removalsMu      sync.Mutex
 	pendingRemovals map[string]struct{}
+	pendingUpserts  map[string]corelib.NLSkillEntry
 }
 
 const skillCacheTTL = 10 * time.Minute
@@ -79,17 +86,22 @@ func (s *CachedSkillScanner) Get() []corelib.NLSkillEntry {
 // Invalidate marks the cache as stale and triggers a background refresh.
 // The stale cache remains available for Get() callers until the new scan completes.
 func (s *CachedSkillScanner) Invalidate() {
+	if s == nil {
+		return
+	}
+	// Hold removalsMu so we never overwrite a concurrent UpsertSkills/RemoveByDir
+	// with a stale snapshot of the pre-mutation skill list.
+	s.removalsMu.Lock()
 	entry := s.cache.Load()
-	if entry != nil {
-		// Mark as stale — atomic pointer swap with stale flag
-		staleEntry := &skillCacheEntry{
+	if entry != nil && !entry.stale {
+		s.cache.Store(&skillCacheEntry{
 			skills:    entry.skills,
 			createdAt: entry.createdAt,
 			stale:     true,
-		}
-		s.cache.Store(staleEntry)
+		})
 	}
 	s.version.Add(1)
+	s.removalsMu.Unlock()
 	s.triggerBackgroundScan()
 }
 
@@ -102,20 +114,43 @@ func (s *CachedSkillScanner) Version() uint64 {
 
 // triggerBackgroundScan starts a background scan if one is not already running.
 // Uses atomic CAS as a fast-path check, then the mutex inside scan() prevents
-// concurrent execution. The atomic flag is cleared in the goroutine's defer,
-// ensuring subsequent Invalidate() calls can trigger a new scan after the
-// current one completes.
+// concurrent execution.
+//
+// After a successful scan, if another mutation marked the cache stale while
+// scanning was true (so a nested triggerBackgroundScan CAS failed), we
+// re-arm a scan immediately. Without this, scan()'s final stale=false store
+// can race a concurrent Invalidate/Upsert and leave no follow-up worker until
+// the next Get()/TTL — the same class of lag as the zip-import list bug.
+//
+// Panic safety: a panicking scan must not re-arm from a still-stale entry, or
+// we would spin forever. The next Get()/Invalidate()/UpsertSkills() will
+// schedule a fresh attempt.
 func (s *CachedSkillScanner) triggerBackgroundScan() {
-	if s.scanning.CompareAndSwap(false, true) {
-		go func() {
-			s.scan()
-			// Clear the flag AFTER scan() returns (which releases the mutex).
-			// This ordering ensures: if Invalidate() is called while scan() holds
-			// the mutex, the CAS will fail (flag is still true), but the stale
-			// marker on the cache entry will cause the next Get() to re-trigger.
-			s.scanning.Store(false)
-		}()
+	if s == nil {
+		return
 	}
+	if !s.scanning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		panicked := false
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+				log.Printf("[CachedSkillScanner] background scan panic: %v", r)
+			}
+			s.scanning.Store(false)
+			if panicked {
+				return
+			}
+			// Re-check after releasing the scanning flag (classic double-check):
+			// a mutation may have set stale=true while CAS was blocked.
+			if entry := s.cache.Load(); entry != nil && entry.stale {
+				s.triggerBackgroundScan()
+			}
+		}()
+		s.scan()
+	}()
 }
 
 // scan performs the actual file system scan across all roots.
@@ -128,23 +163,26 @@ func (s *CachedSkillScanner) scan() {
 	defer s.mu.Unlock()
 
 	var allSkills []corelib.NLSkillEntry
+	// Case-insensitive name set (matches skillNameIdentityKey) so pending
+	// upserts and multi-root scans share the same dedup rules.
 	seen := make(map[string]bool)
 
 	for _, root := range s.roots {
 		skills := s.scanRoot(root)
 		for _, sk := range skills {
-			if !seen[sk.Name] {
-				seen[sk.Name] = true
-				allSkills = append(allSkills, sk)
+			nameKey := skillNameIdentityKey(sk.Name)
+			if nameKey != "" && seen[nameKey] {
+				continue
 			}
+			if nameKey != "" {
+				seen[nameKey] = true
+			}
+			allSkills = append(allSkills, sk)
 		}
 	}
 
-	// Apply pending removals: filter out skills whose directories were deleted
-	// concurrently (between Invalidate triggering this scan and scan completing).
-	// Hold removalsMu through cache.Store to prevent RemoveByDir from inserting
-	// a removal between drain and store (which would cause the skill to "revive"
-	// if scan's store overwrites RemoveByDir's store).
+	// Apply pending removals/upserts under removalsMu held through cache.Store so
+	// concurrent RemoveByDir/UpsertSkills cannot lose a mutation between drain and store.
 	s.removalsMu.Lock()
 	if len(s.pendingRemovals) > 0 {
 		filtered := make([]corelib.NLSkillEntry, 0, len(allSkills))
@@ -156,6 +194,41 @@ func (s *CachedSkillScanner) scan() {
 		allSkills = filtered
 		// Clear pending removals — they've been applied to a fresh scan.
 		s.pendingRemovals = nil
+		// Rebuild name set after removals so a same-name re-import pending upsert
+		// is not incorrectly suppressed by the pre-removal seen entry.
+		seen = make(map[string]bool, len(allSkills))
+		for _, sk := range allSkills {
+			if name := skillNameIdentityKey(sk.Name); name != "" {
+				seen[name] = true
+			}
+		}
+	}
+	if len(s.pendingUpserts) > 0 {
+		byKey := make(map[string]int, len(allSkills))
+		for i, sk := range allSkills {
+			if key := skillCacheIdentityKey(sk); key != "" {
+				byKey[key] = i
+			}
+		}
+		for key, sk := range s.pendingUpserts {
+			if _, ok := byKey[key]; ok {
+				// Prefer the on-disk scan result when present; only keep the
+				// pending entry when the concurrent scan missed the new dir.
+				continue
+			}
+			// Match disk-scan name dedup (case-insensitive): do not surface a
+			// second entry for a name already discovered under another path.
+			nameKey := skillNameIdentityKey(sk.Name)
+			if nameKey != "" && seen[nameKey] {
+				continue
+			}
+			allSkills = append(allSkills, sk)
+			byKey[key] = len(allSkills) - 1
+			if nameKey != "" {
+				seen[nameKey] = true
+			}
+		}
+		s.pendingUpserts = nil
 	}
 
 	// Ensure non-nil slice so Get() can distinguish "scan complete with 0 results"
@@ -164,7 +237,7 @@ func (s *CachedSkillScanner) scan() {
 		allSkills = []corelib.NLSkillEntry{}
 	}
 
-	// Store the new cache entry (still under removalsMu to prevent race with RemoveByDir).
+	// Store the new cache entry (still under removalsMu to prevent race with RemoveByDir/UpsertSkills).
 	entry := &skillCacheEntry{
 		skills:    allSkills,
 		createdAt: time.Now(),
@@ -196,22 +269,24 @@ func (s *CachedSkillScanner) scanRoot(root string) []corelib.NLSkillEntry {
 // scan() goroutine (which may have started scanning before the disk deletion)
 // will filter this skill from its results.
 func (s *CachedSkillScanner) RemoveByDir(skillDir string) {
-	if skillDir == "" {
+	if s == nil || skillDir == "" {
 		return
 	}
 	normalizedDir := skillDirIdentityKey(skillDir)
 
-	// Record in pending removals for any concurrent/future scan to honor.
+	// Hold removalsMu through cache.Store so a concurrent UpsertSkills/scan
+	// cannot reintroduce the removed dir between pending update and store.
 	s.removalsMu.Lock()
 	if s.pendingRemovals == nil {
 		s.pendingRemovals = make(map[string]struct{})
 	}
 	s.pendingRemovals[normalizedDir] = struct{}{}
-	s.removalsMu.Unlock()
+	delete(s.pendingUpserts, normalizedDir)
 
-	// Also immediately remove from the current cache for instant UI feedback.
 	entry := s.cache.Load()
 	if entry == nil {
+		s.version.Add(1)
+		s.removalsMu.Unlock()
 		return
 	}
 	var filtered []corelib.NLSkillEntry
@@ -223,17 +298,126 @@ func (s *CachedSkillScanner) RemoveByDir(skillDir string) {
 		}
 		filtered = append(filtered, sk)
 	}
-	if !removed {
+	if removed {
+		if filtered == nil {
+			filtered = []corelib.NLSkillEntry{}
+		}
+		s.cache.Store(&skillCacheEntry{
+			skills:    filtered,
+			createdAt: entry.createdAt,
+			stale:     entry.stale,
+		})
+	}
+	s.version.Add(1)
+	s.removalsMu.Unlock()
+}
+
+// skillCacheIdentityKey returns a stable identity for cache merge/dedup.
+// Prefer SkillDir (path-stable); fall back to lower-cased name for config-only entries.
+func skillCacheIdentityKey(sk corelib.NLSkillEntry) string {
+	if dir := skillDirIdentityKey(sk.SkillDir); dir != "" && dir != "." {
+		return dir
+	}
+	if name := skillNameIdentityKey(sk.Name); name != "" {
+		return "name:" + name
+	}
+	return ""
+}
+
+// UpsertSkills merges newly imported/installed skills into the cache immediately
+// so ListNLSkills/loadSkills can return them without waiting for a background rescan
+// (which may take a long time when many skill directories exist).
+//
+// Pending upserts are also recorded so a concurrent scan() that started before the
+// directories existed still includes them when it stores its result.
+func (s *CachedSkillScanner) UpsertSkills(skills []corelib.NLSkillEntry) {
+	if s == nil || len(skills) == 0 {
 		return
 	}
-	if filtered == nil {
-		filtered = []corelib.NLSkillEntry{}
+	cloned := cloneSkillEntries(skills)
+
+	s.removalsMu.Lock()
+	if s.pendingUpserts == nil {
+		s.pendingUpserts = make(map[string]corelib.NLSkillEntry, len(cloned))
 	}
-	newEntry := &skillCacheEntry{
-		skills:    filtered,
-		createdAt: entry.createdAt,
-		stale:     entry.stale,
+	changed := false
+	for _, sk := range cloned {
+		key := skillCacheIdentityKey(sk)
+		if key == "" {
+			continue
+		}
+		s.pendingUpserts[key] = sk
+		// A fresh install cancels any pending removal for the same directory.
+		if sk.SkillDir != "" {
+			delete(s.pendingRemovals, skillDirIdentityKey(sk.SkillDir))
+		}
+		changed = true
 	}
-	s.cache.Store(newEntry)
+	if !changed {
+		s.removalsMu.Unlock()
+		return
+	}
+
+	entry := s.cache.Load()
+	var merged []corelib.NLSkillEntry
+	if entry != nil {
+		merged = append([]corelib.NLSkillEntry(nil), entry.skills...)
+	}
+	byKey := make(map[string]int, len(merged)+len(cloned))
+	byName := make(map[string]int, len(merged)+len(cloned))
+	for i, sk := range merged {
+		if key := skillCacheIdentityKey(sk); key != "" {
+			byKey[key] = i
+		}
+		if nameKey := skillNameIdentityKey(sk.Name); nameKey != "" {
+			byName[nameKey] = i
+		}
+	}
+	for _, sk := range cloned {
+		key := skillCacheIdentityKey(sk)
+		if key == "" {
+			continue
+		}
+		if idx, ok := byKey[key]; ok {
+			merged[idx] = sk
+			if nameKey := skillNameIdentityKey(sk.Name); nameKey != "" {
+				byName[nameKey] = idx
+			}
+			continue
+		}
+		// Replace any existing same-name row (config-only name key, or a
+		// different SkillDir for the same skill name) to avoid list duplicates.
+		if nameKey := skillNameIdentityKey(sk.Name); nameKey != "" {
+			if idx, ok := byName[nameKey]; ok {
+				oldKey := skillCacheIdentityKey(merged[idx])
+				if oldKey != "" {
+					delete(byKey, oldKey)
+				}
+				merged[idx] = sk
+				byKey[key] = idx
+				byName[nameKey] = idx
+				continue
+			}
+			byName[nameKey] = len(merged)
+		}
+		byKey[key] = len(merged)
+		merged = append(merged, sk)
+	}
+	if merged == nil {
+		merged = []corelib.NLSkillEntry{}
+	}
+	createdAt := time.Now()
+	if entry != nil {
+		createdAt = entry.createdAt
+	}
+	s.cache.Store(&skillCacheEntry{
+		skills:    merged,
+		createdAt: createdAt,
+		// Mark stale so a background rescan still runs and converges with disk.
+		stale: true,
+	})
 	s.version.Add(1)
+	s.removalsMu.Unlock()
+
+	s.triggerBackgroundScan()
 }

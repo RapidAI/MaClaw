@@ -488,7 +488,7 @@ func TestSurveyIntroMetaAndStartIncludesDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta := SurveyIntroMeta(sv)
+	meta := SurveyIntroMeta(sv, "zh")
 	if meta == "" || !strings.Contains(meta, "截止") || !strings.Contains(meta, "20") {
 		t.Fatalf("meta=%q", meta)
 	}
@@ -622,7 +622,7 @@ func TestSessionTTLExpires(t *testing.T) {
 	}
 }
 func TestHelpTextCoversCoreCommands(t *testing.T) {
-	h := helpText()
+	h := tr("zh", msgHelp)
 	for _, needle := range []string{"/survey", "list", "cancel", "help", "上一题", "修改"} {
 		if !strings.Contains(h, needle) {
 			t.Fatalf("help missing %q in %q", needle, h)
@@ -705,7 +705,7 @@ func TestResumeSameSurveyDoesNotResetCursor(t *testing.T) {
 	if !strings.Contains(r.ReplyText, "【2/2】") && !strings.Contains(r.ReplyText, "B") {
 		t.Fatalf("want Q2 prompt, got %q", r.ReplyText)
 	}
-	sk := SessionKey(PlatformLansenger, "u1")
+	sk := IMSessionKey(PlatformLansenger, "group", "g", "u1")
 	sess, err := st.GetSession(ctx, "t", sk)
 	if err != nil {
 		t.Fatal(err)
@@ -738,7 +738,7 @@ func TestCloseClearsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sk := SessionKey(PlatformLansenger, "u1")
+	sk := IMSessionKey(PlatformLansenger, "group", "g", "u1")
 	if _, err := st.GetSession(ctx, "t", sk); err != nil {
 		t.Fatalf("expected session: %v", err)
 	}
@@ -889,7 +889,7 @@ func TestCorruptPhaseResumeDoesNotWipe(t *testing.T) {
 		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
 		Text: "hello",
 	})
-	sk := SessionKey(PlatformLansenger, "u1")
+	sk := IMSessionKey(PlatformLansenger, "group", "g", "u1")
 	sess, err := st.GetSession(ctx, "t", sk)
 	if err != nil {
 		t.Fatal(err)
@@ -980,7 +980,7 @@ func TestResumeExtendsSessionTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sk := SessionKey(PlatformLansenger, "u1")
+	sk := IMSessionKey(PlatformLansenger, "group", "g", "u1")
 	sess1, err := st.GetSession(ctx, "t", sk)
 	if err != nil {
 		t.Fatal(err)

@@ -43,6 +43,10 @@ type CoreAgentExecutor struct {
 	AllowDirectSSH             bool
 	AllowSSHFileTransfer       bool
 
+	// ScheduleHandler hosts manage_schedule (create/list/update/delete/list_targets).
+	// Nil keeps the tool visible but returns "not initialized".
+	ScheduleHandler func(args map[string]interface{}) string
+
 	mu             sync.Mutex
 	userMemory     map[string]*memory.Store
 	tasks          map[string]*task.Store
@@ -102,6 +106,9 @@ type coreAgentCallbacks struct {
 	moaPreset        *moa.ResolvedPreset
 	moaSource        string // request | auto
 	moaActive        bool
+
+	// Host-injected scheduled-task tool (MaClawSrv scheduler).
+	scheduleHandler func(args map[string]interface{}) string
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -170,6 +177,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		onToken:              req.OnToken,
 		onToolCall:           req.OnToolCall,
 		onToolResult:         req.OnToolResult,
+		scheduleHandler:      e.ScheduleHandler,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:       sshResources.mgr,
 			BGTaskMgr:     sshResources.bg,
@@ -706,6 +714,47 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 			},
 		},
 		{
+			Name: "manage_schedule",
+			Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
+				"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self=最近会话）。" +
+				"create/update 可配 delivery 推送结果；蓝信可用 group_name 自动解析 group_id。" +
+				"fail_on_error 默认 false（投递失败只警告）。",
+			Enabled: c.scheduleHandler != nil,
+			DisabledReason: func() string {
+				if c.scheduleHandler == nil {
+					return "定时任务管理器未初始化（需 MACLAW_ENABLE_SCHEDULER=true）"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":           map[string]interface{}{"type": "string", "description": "create/list/delete/update/list_targets"},
+					"id":               map[string]interface{}{"type": "string", "description": "任务 ID（delete/update）"},
+					"name":             map[string]interface{}{"type": "string", "description": "任务名称"},
+					"task_action":      map[string]interface{}{"type": "string", "description": "到点执行的内容（自然语言）"},
+					"hour":             map[string]interface{}{"type": "integer", "description": "0-23"},
+					"minute":           map[string]interface{}{"type": "integer", "description": "0-59"},
+					"day_of_week":      map[string]interface{}{"type": "integer", "description": "-1=每天, 0=周日…6=周六"},
+					"day_of_month":     map[string]interface{}{"type": "integer", "description": "-1=不限, 1-31"},
+					"interval_minutes": map[string]interface{}{"type": "integer", "description": ">0 间隔模式"},
+					"start_date":       map[string]interface{}{"type": "string", "description": "YYYY-MM-DD"},
+					"end_date":         map[string]interface{}{"type": "string", "description": "YYYY-MM-DD"},
+					"task_type":        map[string]interface{}{"type": "string", "description": "reminder|process"},
+					"channel":          map[string]interface{}{"type": "string", "description": "list_targets 或 delivery 通道"},
+					"query":            map[string]interface{}{"type": "string", "description": "list_targets 过滤"},
+					"delivery":         map[string]interface{}{"type": "object", "description": "推送配置 {enabled,channel,fail_on_error,targets:[{kind,group_id|group_name|user_id}]}"},
+					"group_id":         map[string]interface{}{"type": "string", "description": "delivery 简写：群 ID"},
+					"group_name":       map[string]interface{}{"type": "string", "description": "delivery 简写：群名（可自动解析）"},
+					"user_id":          map[string]interface{}{"type": "string", "description": "delivery 简写：私聊 ID 或 self"},
+					"fail_on_error":    map[string]interface{}{"type": "boolean", "description": "投递失败是否让任务失败"},
+					"mention_all":      map[string]interface{}{"type": "boolean"},
+					"mention_user_ids": map[string]interface{}{"type": "string", "description": "逗号分隔 @ 用户"},
+				},
+				"required": []string{"action"},
+			},
+		},
+		{
 			Name:        "knowledge_search",
 			Description: knowledge.KnowledgeSearchToolDescription,
 			Enabled:     c.knowledgeStore != nil,
@@ -1205,6 +1254,21 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: agent.ToolAskUser(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "task":
 		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "manage_schedule":
+		if c.scheduleHandler == nil {
+			return agent.ToolExecutionResult{
+				Result:  "定时任务管理器未初始化（需 MACLAW_ENABLE_SCHEDULER=true）。",
+				Outcome: agent.ToolExecutionOutcomeError,
+			}
+		}
+		out := c.scheduleHandler(args)
+		// Keep Outcome=OK for normal tool text so the model can read failure reasons;
+		// only hard-prefix errors mark OutcomeError.
+		outcome := agent.ToolExecutionOutcomeOK
+		if strings.HasPrefix(out, "Error:") {
+			outcome = agent.ToolExecutionOutcomeError
+		}
+		return agent.ToolExecutionResult{Result: out, Outcome: outcome}
 	case "memory":
 		return agent.ToolExecutionResult{Result: memory.HandleTool(c.memory, args, memory.ToolOptions{
 			ProjectPath: c.workspace,

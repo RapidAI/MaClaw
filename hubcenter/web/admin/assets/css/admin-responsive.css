@@ -45,3 +45,7 @@
 .nav-group-label{color:#667085}.nav-group.is-follow{border-top-color:#e4e7ee}
 
 @media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;height:auto;overflow:visible;border-right:0}.nav{overflow:visible;max-height:none}}
+
+/* Missing panel-heading icons: without --head-icon the ::after renders as a solid slate block. */
+#tab-computemarket{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5.5' width='18' height='13' rx='2'/%3E%3Cpath d='M3 10h18'/%3E%3Cpath d='M7 14.5h4'/%3E%3C/svg%3E")}
+#tab-llmservice{--head-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='7' y='7' width='10' height='10' rx='2'/%3E%3Cpath d='M9 2.8v2.4M15 2.8v2.4M9 18.8v2.4M15 18.8v2.4M2.8 9h2.4M2.8 15h2.4M18.8 9h2.4M18.8 15h2.4'/%3E%3C/svg%3E")}

@@ -1,31 +1,32 @@
 /* HubCenter professional UI layer. Loaded after page-local styles. */
+/* !important on the tokens: admin-shell.css loads later and re-declares :root with the legacy pink theme; these must win. */
 :root {
-  --bg: #f6f8fb;
-  --bg-2: #ffffff;
-  --panel: #ffffff;
-  --panel-strong: #ffffff;
-  --card: #ffffff;
-  --soft: #f8fafc;
-  --soft-2: #eef2f7;
-  --text: #202938;
-  --muted: #667085;
-  --line: #d8e0eb;
-  --line-strong: #b8c6d9;
-  --primary: #2563eb;
-  --primary-strong: #1d4ed8;
-  --primary-soft: #eaf1ff;
-  --green: #16835f;
-  --ok: #16835f;
-  --warn: #b7791f;
-  --danger: #c2413d;
-  --shadow: 0 14px 34px rgba(15, 23, 42, .07);
-  --shadow-soft: 0 8px 22px rgba(15, 23, 42, .045);
-  --radius: 10px;
+  --bg: #f5f7fa !important;
+  --bg-2: #fbfcfe !important;
+  --panel: #ffffff !important;
+  --panel-strong: #ffffff !important;
+  --card: #ffffff !important;
+  --soft: #f3f7fb !important;
+  --soft-2: #eef3f8 !important;
+  --text: #202733 !important;
+  --muted: #667386 !important;
+  --line: #d8e0eb !important;
+  --line-strong: #b8c6d9 !important;
+  --primary: #2563eb !important;
+  --primary-strong: #1d4ed8 !important;
+  --primary-soft: #eaf1ff !important;
+  --green: #147d58 !important;
+  --ok: #147d58 !important;
+  --warn: #9a6700 !important;
+  --danger: #c2413a !important;
+  --shadow: 0 14px 34px rgba(15, 23, 42, .07) !important;
+  --shadow-soft: 0 8px 22px rgba(15, 23, 42, .045) !important;
+  --radius: 10px !important;
 }
 
-html { background: #f6f8fb; scrollbar-gutter: stable; }
+html { background: #f5f7fa; scrollbar-gutter: stable; }
 body {
-  background: linear-gradient(180deg, #fbfcff 0%, #f6f8fb 46%, #eef2f7 100%) !important;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f5f7fa 100%) !important;
   color: var(--text) !important;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif !important;
   font-size: 14px;
@@ -129,7 +130,7 @@ button, .btn, .tab, .cap-tab, .auth-tab, .filter, .user-link, .nav-link, .nav-bt
   box-shadow: 10px 0 30px rgba(15, 23, 42, .04) !important;
 }
 .side::before { background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important; }
-.brand-mark, .avatar { background: linear-gradient(135deg, #2563eb, #16835f) !important; }
+.brand-mark, .avatar { background: linear-gradient(135deg, #1d4ed8, #0f9f8f) !important; box-shadow: 0 12px 24px rgba(37, 99, 235, .18) !important; }
 .nav button { border-radius: 12px !important; color: #344054 !important; }
 .nav button:hover, .nav button.active { background: var(--primary-soft) !important; border-color: #c7d7fe !important; box-shadow: none !important; }
 .nav-icon, .page-tab-icon, .head h3::before, h1::before, h2::before, h3::before, .card-name::before,
@@ -137,9 +138,9 @@ button, .btn, .tab, .cap-tab, .auth-tab, .filter, .user-link, .nav-link, .nav-bt
 .nav button.active .nav-icon, .nav button:hover .nav-icon, .page-tab-icon { color: var(--primary) !important; }
 .head h3::after, h1::after, h2::after, h3::after, .card-name::after, .post-name::after { background: var(--primary) !important; opacity: .9; }
 
-.metric, .stat, .summary-card, .auth-metric { background: var(--soft) !important; }
-.console { background: #0f172a !important; border-color: #1e293b !important; color: #dbeafe !important; }
-.state, .empty, .hint { border-style: dashed !important; background: #fbfcfe !important; }
+.metric, .stat, .summary-card, .auth-metric { background: var(--panel) !important; }
+.console { background: #fbfcfe !important; border-color: var(--line) !important; color: #475569 !important; }
+.state, .empty, .hint { border-style: solid !important; background: #fbfcfe !important; }
 .route-query-kv .item-meta { min-width: 0; overflow-wrap: anywhere; }
 #hubs.list { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 .hub-card { min-width: 0; overflow-wrap: anywhere; }
@@ -197,3 +198,47 @@ td, th { border-bottom-color: var(--line) !important; }
   .user-mgmt-layout, .user-mgmt-migration-grid, .user-mgmt-card-grid, .user-mgmt-stat-grid { grid-template-columns: 1fr; }
   .user-mgmt-report-row { grid-template-columns: 82px minmax(0, 1fr) 34px; }
 }
+
+/* --- Unified theme pass: match Hub's professional control surface --- */
+/* Kills the hard-coded legacy pink that survives the token override. */
+.mini { background: #eef5ff !important; border: 1px solid #dbe7ff !important; color: #1d4ed8 !important; box-shadow: none !important; }
+.hero p, .hero li { color: var(--muted) !important; }
+.item-title::before { background: #2563eb !important; box-shadow: none !important; }
+.nav button::before { background: #2563eb !important; }
+.head h3::after, h1::after, h2::after, h3::after, .card-name::after, .post-name::after { background: #64748b !important; }
+.ha-node-plan-peer { background: #f4f8ff !important; border-color: #dbe7ff !important; }
+.side-note, .mcp-secret-panel { background: #fff !important; border-color: var(--line) !important; border-radius: var(--radius) !important; }
+.user-card, .session-item, .ha-secret-card { background: #fff !important; border-color: var(--line) !important; border-radius: var(--radius) !important; }
+/* Login heroes carry the same quiet brand tint as Hub's. */
+.login-card .hero, .auth-brand-panel { background: linear-gradient(135deg, #eef5ff 0%, #f7fbff 54%, #e9f7f4 100%) !important; }
+.toast::before, .toast.info::before { background: #2563eb !important; }
+.toast.success::before { background: #147d58 !important; }
+.toast.error::before { background: #c2413a !important; }
+.toast.warning::before, .toast.warn::before { background: #9a6700 !important; }
+::selection { background: rgba(37, 99, 235, .16); }
+/* Decorative OS-window dots removed from the markup; hide stragglers from older cached HTML. */
+.window-chrome { display: none !important; }
+
+/* Admin console density: the 44px touch floor stays on consumer pages; the control surface runs tighter. */
+.app button { min-height: 38px !important; }
+.app input, .app select { min-height: 38px !important; }
+.app .filter-group button { min-height: 32px !important; }
+.app .card:hover, .app .item:hover, .app .metric:hover, .app .post:hover { transform: none !important; }
+
+/* --- Review fixes --- */
+/* Decorative gradient strips / glow blobs from the legacy theme: off. */
+.metric::before, .metric::after, .item::after, .sm-config-card::before, .sm-section::before { content: none !important; }
+/* Neutralize leftover pink borders on status surfaces. */
+.hint, .sm-status.loading { background: #fbfcfe !important; border: 1px solid var(--line) !important; }
+#tab-system .item { border-style: solid !important; }
+.sm-config-field:hover { border-color: var(--line-strong) !important; }
+/* Active nav icon matches Hub: blue chip, white glyph. */
+.app .nav button.active .nav-icon { background: #2563eb !important; border-color: #2563eb !important; color: #fff !important; }
+/* Checkboxes/radios must not inherit the text-input size floor (was rendering them stretched). */
+input[type="checkbox"], input[type="radio"] { min-height: 0 !important; min-width: 0 !important; }
+
+/* Filter chips inside toolbars: ghost with a single active primary (aligns with the .filter vocabulary above). */
+.toolbar button.filter { background: #fff !important; border: 1px solid var(--line) !important; color: #475467 !important; box-shadow: none !important; }
+.toolbar button.filter.active, .toolbar button.filter[aria-pressed="true"] { background: var(--primary) !important; border-color: var(--primary) !important; color: #fff !important; }
+/* These surfaces render opaque now; the legacy backdrop blur costs GPU and shows nothing. */
+.card, .panel, .item, .metric, .side { backdrop-filter: none !important; }

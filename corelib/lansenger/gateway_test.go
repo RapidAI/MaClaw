@@ -548,6 +548,46 @@ func TestSendTextSkipsBlankContent(t *testing.T) {
 }
 
 
+func TestSendTextDoesNotStripReminderOnNetworkError(t *testing.T) {
+	// When the first attempt fails with a non-API error, we must not silently
+	// retry without reminder (that would mask transport failures).
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/v1/apptoken/create") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data":    map[string]any{"appToken": "tok", "expiresIn": 7200},
+			})
+			return
+		}
+		// Close without response → client transport/read error, not APIError.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("hijack unsupported")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{ApiGatewayURL: api.URL, AppID: "a", AppSecret: "s"}, nil)
+	err := gw.SendText(context.Background(), OutgoingText{
+		ToUserID: "group-1",
+		Text:     "answer",
+		IsGroup:  true,
+		Reminder: &OutgoingReminder{UserIDs: []string{"staff-1"}},
+	})
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("expected non-API error, got %v", err)
+	}
+}
+
 func TestSendTextIncludesReminderAndRefMsgID(t *testing.T) {
 	var body []byte
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -590,6 +630,63 @@ func TestSendTextIncludesReminderAndRefMsgID(t *testing.T) {
 	ids, _ := rem["userIds"].([]any)
 	if len(ids) != 1 || ids[0] != "staff-1" {
 		t.Fatalf("reminder = %#v", rem)
+	}
+}
+
+func TestSendTextRetriesWithoutRefMsgIDOnAPIError(t *testing.T) {
+	// Invalid refMsgId is a common platform reject; keep @mention when possible.
+	var attempt int
+	var lastBody []byte
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/v1/apptoken/create"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data":    map[string]any{"appToken": "tok", "expiresIn": 7200},
+			})
+		case strings.Contains(r.URL.Path, "/v1/messages/group/create"):
+			body, _ := io.ReadAll(r.Body)
+			attempt++
+			if attempt == 1 {
+				// Reject full payload (with refMsgId).
+				_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 40004, "errMsg": "invalid refMsgId"})
+				return
+			}
+			lastBody = body
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{ApiGatewayURL: api.URL, AppID: "a", AppSecret: "s"}, nil)
+	err := gw.SendText(context.Background(), OutgoingText{
+		ToUserID: "group-1",
+		Text:     "answer",
+		IsGroup:  true,
+		Reminder: &OutgoingReminder{UserIDs: []string{"staff-1"}},
+		RefMsgID: "bad-ref",
+	})
+	if err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if attempt != 2 {
+		t.Fatalf("attempts = %d, want 2", attempt)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(lastBody, &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, hasRef := payload["refMsgId"]; hasRef {
+		t.Fatalf("retry must drop refMsgId, payload=%#v", payload)
+	}
+	msgData, _ := payload["msgData"].(map[string]any)
+	ft, _ := msgData["formatText"].(map[string]any)
+	rem, _ := ft["reminder"].(map[string]any)
+	ids, _ := rem["userIds"].([]any)
+	if len(ids) != 1 || ids[0] != "staff-1" {
+		t.Fatalf("retry should keep reminder, rem=%#v", rem)
 	}
 }
 

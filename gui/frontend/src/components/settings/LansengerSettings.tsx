@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { ListLansengerGroups, LoadConfig, RestartLansenger, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
+import { ListLansengerGroups, LoadConfig, RestartLansenger, SetLansengerGroupAllowed, SetLansengerGroupIgnored, SetLansengerLocalMode } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { channelModeLabel, followLabel, localModeOptions, restartLabel, switchFailedLabel, textForLang, watchLabel } from './imSettingsShared';
@@ -18,7 +18,7 @@ const UtilitiesWatchPanel = lazy(() =>
             }) {
                 return (
                     <p className="im-groups-modal__status" role="alert">
-                        {isZh ? '加载关注面板失败，请重试' : 'Failed to load Follow panel'}
+                        {isZh ? '加载盯人面板失败，请重试' : 'Failed to load people-watch panel'}
                     </p>
                 );
             },
@@ -46,7 +46,9 @@ type LansengerGroupRow = {
     total_members?: number;
     state?: number;
     ignored?: boolean;
-    /** Local ignore-list only (not returned by Lansenger group fetch). */
+    /** Allowlist membership (used when group policy is allowlist). */
+    allowed?: boolean;
+    /** Local ignore/allow list only (not returned by Lansenger group fetch). */
     orphan?: boolean;
 };
 
@@ -141,27 +143,52 @@ export const LansengerSettings = ({
             });
     }, [lang]);
 
-    const toggleGroupIgnored = useCallback((groupID: string, ignored: boolean) => {
+    const groupPolicy = String((config as any)?.lansenger_group_policy || 'open').toLowerCase();
+    const isAllowlistPolicy = groupPolicy === 'allowlist' || groupPolicy === 'allow' || groupPolicy === 'whitelist';
+
+    const toggleGroupResponse = useCallback((groupID: string, nextMuted: boolean) => {
         const id = String(groupID || '').trim();
         if (!id) return;
         setIgnoreBusyID(id);
-        // Optimistic UI update so the row flips immediately.
-        setGroups((prev) => prev.map((g) => (g.group_id === id ? { ...g, ignored } : g)));
-        SetLansengerGroupIgnored(id, ignored)
-            .then(() => LoadConfig().then((c: any) => setConfig(c)).catch(() => {}))
+        // Optimistic UI: open policy uses ignored denylist; allowlist uses allowed.
+        setGroups((prev) => prev.map((g) => {
+            if (g.group_id !== id) return g;
+            if (isAllowlistPolicy) {
+                return { ...g, allowed: !nextMuted, ignored: false };
+            }
+            return { ...g, ignored: nextMuted };
+        }));
+        const apply = isAllowlistPolicy
+            ? SetLansengerGroupAllowed(id, !nextMuted)
+            : SetLansengerGroupIgnored(id, nextMuted);
+        apply
+            .then(() => LoadConfig().then((c: any) => {
+                // Normalize through AppConfig so group-policy fields are retained
+                // the same way as PatchConfigFields responses.
+                try {
+                    setConfig(new main.AppConfig(c));
+                } catch {
+                    setConfig(c);
+                }
+            }).catch(() => {}))
             .then(() => {
-                if (!ignored) {
-                    // Drop ignore-list-only rows once the user re-enables them.
+                if (!nextMuted) {
+                    // Drop list-only rows once the user re-enables them.
                     setGroups((prev) => prev.filter((g) => !(g.group_id === id && g.orphan)));
                 }
             })
             .catch((err: unknown) => {
-                // Revert optimistic flip on failure.
-                setGroups((prev) => prev.map((g) => (g.group_id === id ? { ...g, ignored: !ignored } : g)));
-                alert(wailsErrorMessage(err, textForLang(lang, 'Failed to update ignore list', '更新忽略列表失败', '更新忽略列表失敗')));
+                setGroups((prev) => prev.map((g) => {
+                    if (g.group_id !== id) return g;
+                    if (isAllowlistPolicy) {
+                        return { ...g, allowed: nextMuted };
+                    }
+                    return { ...g, ignored: !nextMuted };
+                }));
+                alert(wailsErrorMessage(err, textForLang(lang, 'Failed to update group list', '更新群列表失败', '更新群列表失敗')));
             })
             .finally(() => setIgnoreBusyID((cur) => (cur === id ? '' : cur)));
-    }, [lang, setConfig]);
+    }, [isAllowlistPolicy, lang, setConfig]);
 
     // One Escape handler for whichever sheet is open (watch stacks above groups).
     // Capture phase so nested inputs / other listeners do not swallow Escape first.
@@ -200,7 +227,7 @@ export const LansengerSettings = ({
         }
     }, [lansengerConnected]);
 
-    // Focus close control on open; restore to Follow button on close (when still connected).
+    // Focus close control on open; restore to the people-watch button on close.
     useEffect(() => {
         if (watchOpen) {
             hadWatchOpenRef.current = true;
@@ -220,7 +247,7 @@ export const LansengerSettings = ({
     return (
         <section className="im-settings-card im-settings-channel">
             <p className="im-settings-description">
-                {textForLang(lang, 'Configure Lansenger access for TigerClaw Agent messages.', '\u914d\u7f6e\u84dd\u4fe1\u63a5\u5165\uff0c\u7528\u84dd\u4fe1\u4e0e TigerClaw Agent \u5bf9\u8bdd\u3002', '\u914d\u7f6e\u85cd\u4fe1\u63a5\u5165\uff0c\u7528\u85cd\u4fe1\u8207 TigerClaw Agent \u5c0d\u8a71\u3002')}
+                {textForLang(lang, 'Configure Lansenger access to chat with the Agent over Lansenger.', '\u914d\u7f6e\u84dd\u4fe1\u63a5\u5165\uff0c\u7528\u84dd\u4fe1\u4e0e Agent \u5bf9\u8bdd\u3002', '\u914d\u7f6e\u85cd\u4fe1\u63a5\u5165\uff0c\u7528\u85cd\u4fe1\u8207 Agent \u5c0d\u8a71\u3002')}
             </p>
             <div className="im-settings-toolbar">
                 <label className="im-settings-toggle">
@@ -270,9 +297,9 @@ export const LansengerSettings = ({
                         onClick={openWatch}
                         title={textForLang(
                             lang,
-                            'Follow members: log speech, keyword replies or CLI',
-                            '关注：记录指定成员发言，关键字固定回复或 CLI',
-                            '關注：記錄指定成員發言，關鍵字固定回覆或 CLI',
+                            'Watch people: log speech, keyword replies or CLI',
+                            '盯人：记录指定成员发言，关键字固定回复或 CLI',
+                            '盯人：記錄指定成員發言，關鍵字固定回覆或 CLI',
                         )}
                     >
                         {followLabel(lang)}
@@ -337,6 +364,16 @@ export const LansengerSettings = ({
                             <option value="allowlist">{textForLang(lang, 'Allowlist only', '\u4ec5\u5141\u8bb8\u5217\u8868', '\u50c5\u5141\u8a31\u5217\u8868')}</option>
                             <option value="disabled">{textForLang(lang, 'Disabled', '\u7981\u7528\u7fa4\u804a', '\u7981\u7528\u7fa4\u804a')}</option>
                         </select>
+                        {isAllowlistPolicy ? (
+                            <span className="im-settings-field-hint" style={{ display: 'block', marginTop: 4, opacity: 0.8, fontSize: 12 }}>
+                                {textForLang(
+                                    lang,
+                                    'Allowlist mode: open Group Info and mark groups as Allowed. Empty allowlist means no group replies.',
+                                    '允许列表模式：在「群信息」中将群标记为允许。列表为空时不会回复任何群。',
+                                    '允許列表模式：在「群資訊」中將群標記為允許。列表為空時不會回覆任何群。',
+                                )}
+                            </span>
+                        ) : null}
                     </label>
                     <label className="im-settings-toggle" style={{ alignSelf: 'end' }}>
                         <input
@@ -434,12 +471,19 @@ export const LansengerSettings = ({
                             {!groupsLoading && !groupsError && groups.length > 0 && (
                                 <>
                                     <p className="im-groups-modal__hint">
-                                        {textForLang(
-                                            lang,
-                                            '“Ignore” keeps the bot in the group but stops answering there. It does not remove the bot on Lansenger.',
-                                            '「不响应」只是本机不再回答该群消息，机器人仍留在蓝信群里（无法通过 API 退群）。',
-                                            '「不回應」只是本機不再回答該群訊息，機器人仍留在藍信群裡（無法透過 API 退群）。',
-                                        )}
+                                        {isAllowlistPolicy
+                                            ? textForLang(
+                                                lang,
+                                                'Allowlist mode: only “Allowed” groups get replies. The bot stays in every Lansenger group either way.',
+                                                '允许列表模式：仅「允许」的群会得到回复。机器人仍留在蓝信群中。',
+                                                '允許列表模式：僅「允許」的群會得到回覆。機器人仍留在藍信群中。',
+                                            )
+                                            : textForLang(
+                                                lang,
+                                                '“Ignore” keeps the bot in the group but stops answering there. It does not remove the bot on Lansenger.',
+                                                '「不响应」只是本机不再回答该群消息，机器人仍留在蓝信群里（无法通过 API 退群）。',
+                                                '「不回應」只是本機不再回答該群訊息，機器人仍留在藍信群裡（無法透過 API 退群）。',
+                                            )}
                                     </p>
                                     <div className="im-groups-table-wrap">
                                         <table className="im-groups-table">
@@ -457,15 +501,18 @@ export const LansengerSettings = ({
                                                 {groups.map((g, idx) => {
                                                     const id = g.group_id || '';
                                                     const owner = g.owner_name || g.owner_id || '—';
-                                                    const ignored = !!g.ignored;
+                                                    // muted = bot will not answer this group under current policy
+                                                    const muted = isAllowlistPolicy ? !g.allowed : !!g.ignored;
                                                     const busy = ignoreBusyID === id;
                                                     return (
-                                                        <tr key={id || `row-${idx}`} data-ignored={ignored ? 'true' : undefined}>
+                                                        <tr key={id || `row-${idx}`} data-ignored={muted ? 'true' : undefined}>
                                                             <td className="im-groups-table__name">
                                                                 {g.name || id || '—'}
-                                                                {ignored ? (
+                                                                {muted ? (
                                                                     <span className="im-groups-badge im-groups-badge--muted">
-                                                                        {textForLang(lang, 'Ignored', '\u4e0d\u54cd\u5e94', '\u4e0d\u56de\u61c9')}
+                                                                        {isAllowlistPolicy
+                                                                            ? textForLang(lang, 'Not allowed', '\u672a\u5141\u8bb8', '\u672a\u5141\u8a31')
+                                                                            : textForLang(lang, 'Ignored', '\u4e0d\u54cd\u5e94', '\u4e0d\u56de\u61c9')}
                                                                     </span>
                                                                 ) : null}
                                                             </td>
@@ -476,18 +523,22 @@ export const LansengerSettings = ({
                                                             <td className="im-groups-table__action">
                                                                 <button
                                                                     type="button"
-                                                                    className={ignored ? 'im-settings-button im-settings-button--primary' : 'im-settings-button'}
+                                                                    className={muted ? 'im-settings-button im-settings-button--primary' : 'im-settings-button'}
                                                                     disabled={!id || busy || groupsLoading}
-                                                                    onClick={() => toggleGroupIgnored(id, !ignored)}
-                                                                    title={ignored
+                                                                    onClick={() => toggleGroupResponse(id, !muted)}
+                                                                    title={muted
                                                                         ? textForLang(lang, 'Resume answering in this group', '\u6062\u590d\u5728\u8be5\u7fa4\u56de\u590d', '\u6062\u5fa9\u5728\u8a72\u7fa4\u56de\u8986')
                                                                         : textForLang(lang, 'Stop answering in this group', '\u4e0d\u518d\u5728\u8be5\u7fa4\u56de\u590d', '\u4e0d\u518d\u5728\u8a72\u7fa4\u56de\u8986')}
                                                                 >
                                                                     {busy
                                                                         ? '…'
-                                                                        : ignored
-                                                                            ? textForLang(lang, 'Resume', '\u6062\u590d\u54cd\u5e94', '\u6062\u5fa9\u56de\u61c9')
-                                                                            : textForLang(lang, 'Ignore', '\u4e0d\u54cd\u5e94', '\u4e0d\u56de\u61c9')}
+                                                                        : muted
+                                                                            ? (isAllowlistPolicy
+                                                                                ? textForLang(lang, 'Allow', '\u5141\u8bb8', '\u5141\u8a31')
+                                                                                : textForLang(lang, 'Resume', '\u6062\u590d\u54cd\u5e94', '\u6062\u5fa9\u56de\u61c9'))
+                                                                            : (isAllowlistPolicy
+                                                                                ? textForLang(lang, 'Disallow', '\u79fb\u51fa\u5141\u8bb8', '\u79fb\u51fa\u5141\u8a31')
+                                                                                : textForLang(lang, 'Ignore', '\u4e0d\u54cd\u5e94', '\u4e0d\u56de\u61c9'))}
                                                                 </button>
                                                             </td>
                                                         </tr>

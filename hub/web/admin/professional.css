@@ -6,7 +6,7 @@
   --ok:#147d58;--warn:#9a6700;--danger:#c2413a;--shadow:0 18px 48px rgba(23,34,54,.08);--shadow-soft:0 8px 22px rgba(23,34,54,.055)
 }
 html{background:#f5f7fa}
-body{background:linear-gradient(180deg,#fbfcfe 0%,#f5f7fa 100%);color:var(--text);font-family:"Segoe UI",Arial,sans-serif;letter-spacing:0}
+body{background:linear-gradient(180deg,#fbfcfe 0%,#f5f7fa 100%);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;letter-spacing:0}
 body::before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(28,39,55,.035) 1px,transparent 1px),linear-gradient(180deg,rgba(28,39,55,.026) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(180deg,rgba(0,0,0,.45),transparent 68%)}
 .card,.panel,.metric,.item,.stage-card,.admin-chip,.side-note,.console,.hint,.row,.feishu-bind-card,.user-card{border-color:var(--line);border-radius:8px;box-shadow:var(--shadow-soft);background:#fff}
 .app{grid-template-columns:268px minmax(0,1fr)}
@@ -38,7 +38,7 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 .hero{background:linear-gradient(135deg,#eef5ff 0%,#f7fbff 54%,#e9f7f4 100%);border-right:1px solid var(--line)}.hero h1{letter-spacing:0}.form{background:#fff}.login-card{border-radius:10px}.toast{border-radius:10px}
 :focus-visible{outline:3px solid rgba(37,99,235,.34);outline-offset:2px}
 @media (max-width:1100px){.tenant-list-shell{grid-template-columns:1fr}.tenant-settings{grid-template-columns:1fr 1fr}}
-@media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;height:auto;overflow:visible;border-right:0;border-bottom:1px solid var(--line)}.nav{overflow:visible;max-height:none}.nav{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}.main{padding:16px}.metrics,.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3,.grid2{grid-template-columns:1fr}.top{display:grid}.tenant-settings{grid-template-columns:1fr}}
+@media (max-width:900px){.app{grid-template-columns:1fr}.side{position:static;height:auto;overflow:visible;border-right:0;border-bottom:1px solid var(--line)}.nav{overflow:visible;max-height:none}.nav{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));align-items:start}.main{padding:16px}.metrics,.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3,.grid2{grid-template-columns:1fr}.top{display:grid}.tenant-settings{grid-template-columns:1fr}}
 @media (max-width:620px){.shell{padding:16px}.login-card{grid-template-columns:1fr}.metrics,.grid4{grid-template-columns:1fr}.nav{grid-template-columns:1fr}.topbar{justify-content:flex-start}.compute-top-alert{width:100%;justify-content:space-between;border-radius:10px}.admin-chip{width:100%}.tenant-summary{grid-template-columns:1fr}.tenant-actions{justify-content:flex-start}.tenant-actions button{flex:1 1 auto}.tenant-settings{padding:12px}.tenant-save{width:100%}.tenant-pager{justify-content:flex-start;flex-wrap:wrap}}
 
 /* Enterprise management control surface */
@@ -246,3 +246,45 @@ button{border-radius:8px;min-height:38px;letter-spacing:0}.btn-primary{backgroun
 @media (max-width:640px){.overview-context-grid,.overview-summary-grid{grid-template-columns:1fr}.overview-tenant-summary{display:block}.overview-assistant-composer{grid-template-columns:minmax(0,1fr) 56px;gap:8px}.overview-assistant-composer textarea{min-height:148px!important}.overview-assistant-composer .btn-primary{width:56px;min-width:56px;min-height:148px}.overview-assistant-prompts>.btn-ghost,.overview-more-prompts .btn-ghost{min-height:36px}.overview-assistant-chat{min-height:220px;max-height:440px}}
 @media (prefers-reduced-motion:reduce){.overview-assistant-card,.overview-assistant-prompts>.btn-ghost,.overview-more-prompts .btn-ghost{transition:none!important}}
 @media (prefers-reduced-motion:no-preference){@keyframes overview-spin{to{transform:rotate(360deg)}}}
+
+/* --- Unified theme pass: one accent, readable muted text, no leftover pink --- */
+/* Contrast floor for secondary text (WCAG AA on white): kills the #98a1ab layer from the legacy inline theme. */
+.subtle,.brand p,.brand-copy p,.admin-chip span,.pager-meta,.side-note,.session-item .session-label,.usage-rank-label,.nav-group-label,.hero p,.hero li{color:#667386}
+.hero h1{color:#1f2c44}
+.console{background:#fbfcfe;border-color:var(--line);color:#475569}
+/* Single accent: every active control resolves to the same steel blue. */
+.lang-switch button{color:#5f6b7c}
+.lang-switch button.active{background:#2563eb;color:#fff;box-shadow:none}
+.im-sidebar{background:#f8fafc;border-bottom-color:var(--line)}
+.im-sidebar button:hover{background:rgba(37,99,235,.06)}
+.im-sidebar button.active{background:#fff;border-bottom-color:#2563eb;color:#1d4ed8}
+.subtab.active{color:#1d4ed8;border-bottom-color:#2563eb}
+/* Neutral surfaces where the legacy theme still tinted pink. */
+.session-item{background:#fff;border-color:var(--line)}
+.tenant-chip.tenant{background:linear-gradient(180deg,#fff 0%,#f5f9ff 100%);border-color:#cfe0ff}
+.usage-rank-chip{background:#f8fafc;border-color:var(--line)}
+.usage-rank-row:hover{border-color:rgba(37,99,235,.28);box-shadow:0 8px 18px rgba(23,34,54,.05)}
+.usage-rank-empty{background:#f8fafc;border-color:var(--line)}
+/* Panel heading icons: quiet slate, not near-invisible gray. */
+.head h3::after,.page-tab-icon::before{background:#64748b}
+/* Toasts share HubCenter's light pattern: white card, left semantic bar. */
+.toast{position:relative;background:#fff;color:#242936;border:1px solid var(--line);box-shadow:0 18px 42px rgba(23,34,54,.14);border-radius:12px;padding-left:18px;font-weight:650;overflow:hidden}
+.toast.success,.toast.error,.toast.info,.toast.warning,.toast.warn{background:#fff}
+.toast::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#2563eb}
+.toast.success::before{background:#147d58}
+.toast.error::before{background:#c2413a}
+.toast.info::before{background:#2563eb}
+.toast.warning::before,.toast.warn::before{background:#9a6700}
+/* Review fixes: hero body text needed >=4.5:1 on the tinted hero; system tab items kept a dashed border. */
+.hero p,.hero li{color:#5c6b83}
+#tab-system .item{border-style:solid}
+/* Natural press feedback instead of decorative hover lift on every button. */
+button:hover{transform:none}
+button:active{transform:scale(.985)}
+.mp-card-btn:active{transform:scale(.97)}
+::selection{background:rgba(37,99,235,.16)}
+/* Cards and sidebar render opaque; the legacy backdrop blur costs GPU and shows nothing. Modal overlay keeps its meaningful blur. */
+.card,.side{backdrop-filter:none}
+@media (prefers-reduced-motion:reduce){button:active{transform:none}}
+/* Decorative OS-window dots are gone from the markup; hide any stragglers from older cached HTML. */
+.window-chrome{display:none!important}

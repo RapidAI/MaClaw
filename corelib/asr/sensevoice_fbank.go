@@ -23,12 +23,12 @@ import (
 const (
 	svSampleRate = 16000
 	svNumMels    = 80
-	svWindowSize = 400  // 25ms at 16kHz
-	svHopSize    = 160  // 10ms at 16kHz
-	svFFTSize    = 512  // next power of 2 >= windowSize
-	svLFRm       = 7    // stack 7 frames
-	svLFRn       = 6    // skip 6 frames
-	svFeatsDim   = 560  // svNumMels * svLFRm = 80 * 7
+	svWindowSize = 400           // 25ms at 16kHz
+	svHopSize    = 160           // 10ms at 16kHz
+	svFFTSize    = 512           // next power of 2 >= windowSize
+	svLFRm       = 7             // stack 7 frames
+	svLFRn       = 6             // skip 6 frames
+	svFeatsDim   = 560           // svNumMels * svLFRm = 80 * 7
 	svNBins      = svFFTSize / 2 // 256 spectrum bins used by mel
 	svHalfFFT    = svFFTSize / 2 // 256-pt complex FFT inside rfft
 )
@@ -175,12 +175,99 @@ func svMelFilterbank(pcm []float32) []float32 {
 	if nSamples < svWindowSize {
 		return nil
 	}
-	numFrames := (nSamples - svWindowSize) / svHopSize + 1
+	numFrames := (nSamples-svWindowSize)/svHopSize + 1
 	out := make([]float32, numFrames*svNumMels)
 	if !svMelFilterbankInto(pcm, out) {
 		return nil
 	}
 	return out
+}
+
+// SpeakerFbank returns the 80-bin, 10 ms Kaldi-style log-mel features used by
+// the local speaker-diarization models.  It deliberately does not apply the
+// SenseVoice LFR or CMVN stages: speaker encoders consume one 80-bin vector per
+// frame and perform their own utterance-level normalization.
+//
+// The returned layout is row-major [frames][80].  PCM must be 16 kHz mono.
+func SpeakerFbank(pcm []float32) []float32 {
+	const (
+		window = 400
+		hop    = 160
+		fft    = 512
+		mels   = 80
+	)
+	if len(pcm) < window {
+		return nil
+	}
+	// Reuse the precomputed real-FFT tables shared by the SenseVoice frontend.
+	svInitFbankTables()
+	frames := (len(pcm)-window)/hop + 1
+	filters := speakerMelFilters()
+	out := make([]float32, frames*mels)
+	timeBuf := make([]float32, fft)
+	re := make([]float32, fft/2)
+	im := make([]float32, fft/2)
+	power := make([]float32, fft/2)
+	for frame := 0; frame < frames; frame++ {
+		off := frame * hop
+		var mean float64
+		for i := 0; i < window; i++ {
+			mean += float64(pcm[off+i])
+		}
+		mean /= window
+		previous := float64(pcm[off]) - mean
+		timeBuf[0] = float32(previous * 0.03 * speakerPoveyWindow(0, window))
+		for i := 1; i < window; i++ {
+			current := float64(pcm[off+i]) - mean
+			timeBuf[i] = float32((current - 0.97*previous) * speakerPoveyWindow(i, window))
+			previous = current
+		}
+		for i := window; i < fft; i++ {
+			timeBuf[i] = 0
+		}
+		rfftPower32(timeBuf, re, im, power)
+		for mel := 0; mel < mels; mel++ {
+			var energy float64
+			for bin := 0; bin < fft/2; bin++ {
+				energy += float64(power[bin]) * filters[mel*(fft/2)+bin]
+			}
+			if energy < 1e-10 {
+				energy = 1e-10
+			}
+			out[frame*mels+mel] = float32(math.Log(energy))
+		}
+	}
+	return out
+}
+
+// speakerMelFilters implements the defaults of torchaudio.compliance.kaldi
+// fbank used by FunASR CAM++: 20 Hz low cutoff, 80 mel bins and a 512-point
+// FFT. It is deliberately separate from SenseVoice's fixed filterbank.
+func speakerMelFilters() []float64 {
+	const fft, mels = 512, 80
+	const low, high = 20.0, 8000.0
+	toMel := func(hz float64) float64 { return 1127 * math.Log(1+hz/700) }
+	fromMel := func(mel float64) float64 { return 700 * (math.Exp(mel/1127) - 1) }
+	points := make([]float64, mels+2)
+	for i := range points {
+		points[i] = fromMel(toMel(low) + (toMel(high)-toMel(low))*float64(i)/float64(mels+1))
+	}
+	weights := make([]float64, mels*(fft/2))
+	for m := 0; m < mels; m++ {
+		for b := 0; b < fft/2; b++ {
+			f := float64(b) * 16000 / fft
+			up := (f - points[m]) / (points[m+1] - points[m])
+			down := (points[m+2] - f) / (points[m+2] - points[m+1])
+			weights[m*(fft/2)+b] = math.Max(0, math.Min(up, down))
+		}
+	}
+	return weights
+}
+
+func speakerPoveyWindow(i, size int) float64 {
+	// Kaldi's Povey window is a Hamming window raised to 0.85.
+	hamming := 0.54 - 0.46*math.Cos(2*math.Pi*float64(i)/float64(size-1))
+	return math.Pow(hamming, 0.85)
 }
 
 // svMelFilterbankInto writes fbank into out (must have capacity numFrames*svNumMels).
@@ -189,7 +276,7 @@ func svMelFilterbankInto(pcm, out []float32) bool {
 	if nSamples < svWindowSize {
 		return false
 	}
-	numFrames := (nSamples - svWindowSize) / svHopSize + 1
+	numFrames := (nSamples-svWindowSize)/svHopSize + 1
 	if len(out) < numFrames*svNumMels {
 		return false
 	}
@@ -631,7 +718,7 @@ func svBuildKaldiMelFilterbank() []float32 {
 }
 
 func svApplyLFR(fbank []float32, numFrames int) ([]float32, int) {
-	lfrFrames := (numFrames - svLFRm) / svLFRn + 1
+	lfrFrames := (numFrames-svLFRm)/svLFRn + 1
 	if lfrFrames <= 0 {
 		lfrFrames = 1
 	}
@@ -641,7 +728,7 @@ func svApplyLFR(fbank []float32, numFrames int) ([]float32, int) {
 }
 
 func svApplyLFRInto(fbank []float32, numFrames int, out []float32) int {
-	lfrFrames := (numFrames - svLFRm) / svLFRn + 1
+	lfrFrames := (numFrames-svLFRm)/svLFRn + 1
 	if lfrFrames <= 0 {
 		clear(out[:svFeatsDim])
 		for i := 0; i < svLFRm && i < numFrames; i++ {

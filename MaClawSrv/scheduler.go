@@ -29,6 +29,12 @@ func initScheduler(dataRoot string, svc *agentservice.Service, executor *agentse
 		return nil
 	}
 
+	// Expose manage_schedule to agents (list_targets / create with group_name resolve).
+	if executor != nil {
+		executor.ScheduleHandler = newSrvManageScheduleHandler(svc, mgr)
+	}
+
+	setSrvSchedulerManager(mgr)
 	taskExecutor := buildSrvScheduledTaskExecutor(svc, executor)
 	mgr.StartWithExecutor(taskExecutor)
 	log.Printf("[MaClawSrv] scheduler started (data: %s)", schPath)
@@ -104,7 +110,12 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 			mu.Lock()
 			cachedInstanceID = ""
 			mu.Unlock()
-			return "", fmt.Errorf("post scheduled task message: %w", err)
+			// Still attempt delivery of any partial text when the run aborted mid-flight.
+			runErr := scheduler.AnnotateRunErrWithContext(ctx, fmt.Errorf("post scheduled task message: %w", err))
+			if delErr := deliverScheduledTaskResult(svc, principal, task, "", runErr); delErr != nil {
+				return scheduler.MergeDeliveryOutcome(task.Delivery, "", runErr, delErr)
+			}
+			return "", runErr
 		}
 
 		result := ""
@@ -117,6 +128,18 @@ func buildSrvScheduledTaskExecutor(svc *agentservice.Service, executor *agentser
 			runID = run.ID
 		}
 		log.Printf("[MaClawSrv-Scheduler] task %s completed (run=%s)", task.Name, runID)
+
+		// Fold timeout/cancel so partial agent text can still be pushed.
+		runErr := scheduler.AnnotateRunErrWithContext(ctx, nil)
+
+		// Structured channel delivery (lansenger / weixin / telegram / qq).
+		if delErr := deliverScheduledTaskResult(svc, principal, task, result, runErr); delErr != nil {
+			log.Printf("[MaClawSrv-Scheduler] delivery failed: %v", delErr)
+			return scheduler.MergeDeliveryOutcome(task.Delivery, result, runErr, delErr)
+		}
+		if runErr != nil {
+			return result, runErr
+		}
 		return result, nil
 	}
 }

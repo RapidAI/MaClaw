@@ -177,6 +177,13 @@ type App struct {
 	foregroundAgentLoops              atomic.Int64
 	compressorMu                      sync.Mutex // guards lazy creation of memoryCompressor
 	scheduledTaskManager              *scheduler.Manager
+	// scheduleTargetCatalogs maps delivery channel → target list (groups/users).
+	// Agent tools use channel as a parameter; new IM platforms only register here.
+	scheduleTargetCatalogs            *scheduler.TargetCatalogRegistry
+	scheduleTargetListCache           *scheduler.TargetListCache
+	scheduleTargetCatalogsOnce        sync.Once
+	deliveryStateStoreCached          *scheduler.DeliveryStateStore
+	deliveryStateStoreOnce            sync.Once
 	remoteInfraOnce                   sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady                  atomic.Bool // fast-path check for ensureRemoteInfra
 	backgroundUpdateOnce              sync.Once   // guards startBackgroundUpdateChecks single loop
@@ -344,6 +351,7 @@ func (a *App) resolveExperienceProviderForAttribution() lifecycle.Provider {
 var OnConfigChanged func(corelib.AppConfig) = func(corelib.AppConfig) {}
 var UpdateTrayMenu func(string) = func(string) {}
 var UpdateTrayVisibility func(bool) = func(bool) {}
+
 // UpdateComputerUseTray refreshes tray Computer Use submenu labels/enabled state.
 // Set by platform tray setup (Windows); no-op elsewhere.
 var UpdateComputerUseTray func() = func() {}
@@ -2148,18 +2156,33 @@ func (a *App) domReady(ctx context.Context) {
 	a.startBackgroundUpdateChecks()
 }
 
-// GetUIZoomFactor returns the saved UI zoom factor (default 1.0).
+// GetUIZoomFactor returns the saved UI zoom factor.
+// 0 means Auto (frontend applies a DPI/resolution-based recommendation).
+// Manual values are in [0.5, 2.0].
 func (a *App) GetUIZoomFactor() float64 {
 	cfg, err := a.LoadConfig()
-	if err != nil || cfg.UIZoomFactor <= 0 {
-		return 1.0
+	if err != nil {
+		return 0
+	}
+	if cfg.UIZoomFactor < 0 {
+		return 0
+	}
+	if cfg.UIZoomFactor > 0 && cfg.UIZoomFactor < 0.5 {
+		return 0.5
+	}
+	if cfg.UIZoomFactor > 2.0 {
+		return 2.0
 	}
 	return cfg.UIZoomFactor
 }
 
-// SetUIZoomFactor persists the UI zoom factor (clamped to 0.5-3.0).
+// SetUIZoomFactor persists the UI zoom factor.
+// Pass 0 for Auto (DPI-adaptive). Manual range is [0.5, 2.0].
 func (a *App) SetUIZoomFactor(factor float64) error {
-	if factor < 0.5 {
+	if factor < 0 {
+		factor = 0
+	}
+	if factor > 0 && factor < 0.5 {
 		factor = 0.5
 	}
 	if factor > 2.0 {
@@ -6091,6 +6114,42 @@ func (a *App) GetSkillEvolutionStatus() SkillEvolutionStatus {
 	return out
 }
 
+// parseLansengerGroupIDList accepts []string / []any from the settings UI.
+func parseLansengerGroupIDList(key string, value interface{}) ([]string, error) {
+	switch raw := value.(type) {
+	case nil:
+		return nil, nil
+	case []string:
+		ids := make([]string, 0, len(raw))
+		for _, id := range raw {
+			if id = strings.TrimSpace(id); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		return ids, nil
+	case []any:
+		ids := make([]string, 0, len(raw))
+		for _, item := range raw {
+			id, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if id = strings.TrimSpace(id); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		return ids, nil
+	default:
+		return nil, fmt.Errorf("%s must be a string array", key)
+	}
+}
+
 // PatchConfigFields is a frontend-safe atomic config patch endpoint.
 // It only accepts whitelisted small settings so stale frontend snapshots cannot
 // overwrite unrelated config fields while a user toggles general settings.
@@ -6611,43 +6670,66 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.LansengerWSSURL = strings.TrimSpace(v)
 			imGatewayChanged = true
-		case "lansenger_ignored_group_ids":
-			// Accept []any / []string from the settings UI.
-			switch raw := value.(type) {
-			case nil:
-				cfg.LansengerIgnoredGroupIDs = nil
-			case []string:
-				ids := make([]string, 0, len(raw))
-				for _, id := range raw {
-					if id = strings.TrimSpace(id); id != "" {
-						ids = append(ids, id)
-					}
-				}
-				if len(ids) == 0 {
-					cfg.LansengerIgnoredGroupIDs = nil
-				} else {
-					cfg.LansengerIgnoredGroupIDs = ids
-				}
-			case []any:
-				ids := make([]string, 0, len(raw))
-				for _, item := range raw {
-					id, ok := item.(string)
-					if !ok {
-						continue
-					}
-					if id = strings.TrimSpace(id); id != "" {
-						ids = append(ids, id)
-					}
-				}
-				if len(ids) == 0 {
-					cfg.LansengerIgnoredGroupIDs = nil
-				} else {
-					cfg.LansengerIgnoredGroupIDs = ids
-				}
+		case "lansenger_group_policy":
+			v, err := stringField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			// Normalize to open|allowlist|disabled (empty → open via Effective helper).
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "", "open":
+				cfg.LansengerGroupPolicy = "open"
+			case "allowlist", "allow", "whitelist":
+				cfg.LansengerGroupPolicy = "allowlist"
+			case "disabled", "off", "none":
+				cfg.LansengerGroupPolicy = "disabled"
 			default:
 				a.configMu.Unlock()
-				return corelib.AppConfig{}, fmt.Errorf("lansenger_ignored_group_ids must be a string array")
+				return corelib.AppConfig{}, fmt.Errorf("lansenger_group_policy must be open, allowlist, or disabled")
 			}
+		case "lansenger_require_mention":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerRequireMention = &v
+		case "lansenger_respond_to_at_all":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerRespondToAtAll = v
+		case "lansenger_auto_mention_reply":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerAutoMentionReply = v
+		case "lansenger_auto_quote_reply":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerAutoQuoteReply = v
+		case "lansenger_allowed_group_ids":
+			ids, err := parseLansengerGroupIDList(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerAllowedGroupIDs = ids
+		case "lansenger_ignored_group_ids":
+			ids, err := parseLansengerGroupIDList(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.LansengerIgnoredGroupIDs = ids
 		case "thirdparty_gateway_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7051,7 +7133,11 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
-			if v < 0.5 {
+			// 0 = Auto (DPI-adaptive on the frontend). Manual range [0.5, 2.0].
+			if v < 0 {
+				v = 0
+			}
+			if v > 0 && v < 0.5 {
 				v = 0.5
 			}
 			if v > 2.0 {
@@ -7157,6 +7243,13 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ASREnabled = v
+		case "diarization_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.DiarizationEnabled = v
 		case "asr_voice_correction_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7901,16 +7994,87 @@ func (a *App) buildUpdateResult(currentVersion string, release latestReleaseInfo
 	return UpdateResult{HasUpdate: false, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl, SHA256: release.SHA256, Channel: channel}, nil
 }
 
-// CheckUpdateBeta checks for beta/pre-release versions from the beta channel manifests.
-// Called when user opts in to beta test version (尝鲜测试版).
+// CheckUpdateBeta checks for updates when the user opts into 尝鲜测试版.
+// It fetches both the beta and stable channels (in parallel) and returns the
+// newer one, so a newer formal release is never hidden behind an older beta build.
 func (a *App) CheckUpdateBeta(currentVersion string) (UpdateResult, error) {
-	release, source, err := a.fetchBetaReleaseFast()
-	if err != nil {
-		a.log(a.tr("CheckUpdateBeta: all beta sources failed: %v", err))
-		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, err
+	type channelOutcome struct {
+		result UpdateResult
+		err    error
 	}
-	a.log(a.tr("CheckUpdateBeta: using beta source: %s", source))
-	return a.buildUpdateResult(currentVersion, release, true)
+	var beta, stable channelOutcome
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				beta.err = fmt.Errorf("beta check panic: %v", r)
+			}
+		}()
+		release, source, err := a.fetchBetaReleaseFast()
+		if err != nil {
+			a.log(a.tr("CheckUpdateBeta: all beta sources failed: %v", err))
+			beta.err = err
+			return
+		}
+		a.log(a.tr("CheckUpdateBeta: using beta source: %s", source))
+		beta.result, beta.err = a.buildUpdateResult(currentVersion, release, true)
+	}()
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				stable.err = fmt.Errorf("stable check panic: %v", r)
+			}
+		}()
+		release, source, err := a.fetchLatestReleaseFast()
+		if err != nil {
+			a.log(a.tr("CheckUpdateBeta: stable check failed: %v", err))
+			stable.err = err
+			return
+		}
+		a.log(a.tr("CheckUpdateBeta: also checked stable source: %s", source))
+		stable.result, stable.err = a.buildUpdateResult(currentVersion, release, false)
+	}()
+	wg.Wait()
+
+	result, err := pickPreferredUpdateResult(beta.result, beta.err, stable.result, stable.err)
+	if err != nil {
+		a.log(a.tr("CheckUpdateBeta: all update sources failed: %v", err))
+		return result, err
+	}
+	a.log(a.tr("CheckUpdateBeta: preferred channel=%s latest=%s has_update=%v", result.Channel, result.LatestVersion, result.HasUpdate))
+	return result, nil
+}
+
+// updateResultVersionKey returns the best string for semver comparison.
+// Prefer TagName (raw manifest tag) over LatestVersion (display, may have a V prefix).
+func updateResultVersionKey(r UpdateResult) string {
+	if tag := strings.TrimSpace(r.TagName); tag != "" {
+		return tag
+	}
+	return strings.TrimSpace(r.LatestVersion)
+}
+
+// pickPreferredUpdateResult chooses the better of beta and stable update results.
+// The user opted into beta, so equal versions prefer beta; a strictly newer
+// stable release always wins so formal updates are not masked by the beta channel.
+func pickPreferredUpdateResult(beta UpdateResult, betaErr error, stable UpdateResult, stableErr error) (UpdateResult, error) {
+	if betaErr != nil && stableErr != nil {
+		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, fmt.Errorf("beta: %v; stable: %v", betaErr, stableErr)
+	}
+	if betaErr != nil {
+		return stable, nil
+	}
+	if stableErr != nil {
+		return beta, nil
+	}
+	// Prefer whichever release is strictly newer; on tie keep beta (user opted in).
+	if compareVersions(updateResultVersionKey(stable), updateResultVersionKey(beta)) > 0 {
+		return stable, nil
+	}
+	return beta, nil
 }
 
 func (a *App) fetchBetaReleaseFast() (latestReleaseInfo, string, error) {

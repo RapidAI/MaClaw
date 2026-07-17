@@ -1,5 +1,5 @@
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
-import { CheckUpdate } from '../../../wailsjs/go/main/App';
+import { checkAppUpdate } from '../../utils/checkAppUpdate';
 
 type BrandInfo = {
     id: string;
@@ -10,6 +10,7 @@ type BrandInfo = {
 type AboutActionsProps = {
     brandInfo: BrandInfo | null;
     appVersion: string;
+    preferBetaChannel?: boolean;
     t: (key: string) => string;
     setStatus: (status: string) => void;
     setUpdateResult: (result: any) => void;
@@ -21,6 +22,7 @@ type AboutActionsProps = {
 export const AboutActions = ({
     brandInfo,
     appVersion,
+    preferBetaChannel,
     t,
     setStatus,
     setUpdateResult,
@@ -33,7 +35,7 @@ export const AboutActions = ({
     const websiteURL = brandInfo?.websiteURL || 'https://maclaw.top';
     const checkForUpdate = () => {
         setStatus(t('checkingUpdate'));
-        CheckUpdate(appVersion).then(res => {
+        checkAppUpdate(appVersion, preferBetaChannel).then(res => {
             setUpdateResult(res);
             setIsStartupUpdateCheck(false);
             setShowUpdateModal(true);

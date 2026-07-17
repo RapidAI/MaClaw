@@ -1009,6 +1009,37 @@ var allConfigFields = []ConfigFieldDef{
 		Get:     func(c *corelib.AppConfig) string { return c.LansengerGatewayURL },
 		Set:     func(c *corelib.AppConfig, v string) { c.LansengerGatewayURL = v },
 	},
+	{
+		Key: "lansenger_group_policy", Tab: CfgTabIM, Section: "lansenger",
+		DescKey: i18n.MsgTUIConfigDescLansengerGroupPolicy,
+		Options: []string{"open", "allowlist", "disabled"}, Default: "open",
+		Get: func(c *corelib.AppConfig) string { return c.EffectiveLansengerGroupPolicy() },
+		Set: func(c *corelib.AppConfig, v string) { c.LansengerGroupPolicy = v },
+	},
+	{
+		Key: "lansenger_require_mention", Tab: CfgTabIM, Section: "lansenger",
+		DescKey: i18n.MsgTUIConfigDescLansengerRequireMention, Options: boolOpts, Default: "true",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.IsLansengerRequireMention() }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LansengerRequireMention = &v }),
+	},
+	{
+		Key: "lansenger_respond_to_at_all", Tab: CfgTabIM, Section: "lansenger",
+		DescKey: i18n.MsgTUIConfigDescLansengerRespondToAtAll, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LansengerRespondToAtAll }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LansengerRespondToAtAll = v }),
+	},
+	{
+		Key: "lansenger_auto_mention_reply", Tab: CfgTabIM, Section: "lansenger",
+		DescKey: i18n.MsgTUIConfigDescLansengerAutoMention, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LansengerAutoMentionReply }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LansengerAutoMentionReply = v }),
+	},
+	{
+		Key: "lansenger_auto_quote_reply", Tab: CfgTabIM, Section: "lansenger",
+		DescKey: i18n.MsgTUIConfigDescLansengerAutoQuote, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LansengerAutoQuoteReply }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LansengerAutoQuoteReply = v }),
+	},
 
 	// ---- Tab 3: Proxy ----
 	{

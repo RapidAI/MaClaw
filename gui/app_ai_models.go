@@ -41,6 +41,12 @@ func (a *App) ensureConfiguredAIModels() {
 				}
 			}
 
+			if cfg.DiarizationEnabled {
+				if !modelStatusExists(a.CheckDiarizationModel()) {
+					startPreload("CAM++ diarization", a.backgroundPreloadDiarizationModel)
+				}
+			}
+
 			if cfg.TTSEnabled {
 				if !modelStatusExists(a.CheckTTSModel()) {
 					startPreload("TTS", a.backgroundPreloadTTSModel)

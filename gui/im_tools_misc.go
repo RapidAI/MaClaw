@@ -1975,9 +1975,15 @@ func (h *IMMessageHandler) toolManageTemplate(args map[string]interface{}) strin
 // toolManageSchedule dispatches the merged manage_schedule tool to individual handlers.
 func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) string {
 	actionText := stringVal(args, "action")
-	if ta, ok := args["task_action"]; ok {
-		args["action"] = ta
-		actionText = stringVal(args, "action")
+	// Tool schema has both "action" (CRUD verb) and "task_action" (what the job
+	// should do). Only swap when the model put the CRUD verb in task_action —
+	// never overwrite action=create with natural-language work content.
+	if ta := stringVal(args, "task_action"); ta != "" {
+		if normalized := normalizeManageScheduleAction(ta); normalized != manageScheduleActionUnknown {
+			args["task_action"] = actionText
+			actionText = ta
+			args["action"] = ta
+		}
 	}
 	action := normalizeManageScheduleAction(actionText)
 	switch action {
@@ -1989,8 +1995,10 @@ func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) strin
 		return h.toolDeleteScheduledTask(args)
 	case manageScheduleActionUpdate:
 		return h.toolUpdateScheduledTask(args)
+	case manageScheduleActionListTargets:
+		return h.toolListScheduleDeliveryTargets(args)
 	default:
-		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update）", action)
+		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update/list_targets）", actionText)
 	}
 }
 
@@ -2160,34 +2168,27 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 		return "定时任务管理器未初始化"
 	}
 	name := stringVal(args, "name")
-	action := stringVal(args, "action")
-	if name == "" || action == "" {
-		return "缺少 name 或 action 参数"
+	// Prefer task_action (work content). "action" is the CRUD verb for manage_schedule
+	// and must not be used as the scheduled payload when task_action is set.
+	taskAction := stringVal(args, "task_action")
+	if taskAction == "" {
+		// Legacy / alias path: create_scheduled_task may pass content as "action".
+		if normalizeManageScheduleAction(stringVal(args, "action")) == manageScheduleActionUnknown {
+			taskAction = stringVal(args, "action")
+		}
 	}
-	hour := -1
-	if v, ok := args["hour"].(float64); ok {
-		hour = int(v)
+	if name == "" || taskAction == "" {
+		return "缺少 name 或 task_action 参数（task_action 为到点要执行的内容）"
 	}
+	action := taskAction
+	hour := scheduleIntArg(args, "hour", -1)
 	if hour < 0 || hour > 23 {
 		return "hour 必须在 0-23 之间"
 	}
-	minute := 0
-	if v, ok := args["minute"].(float64); ok {
-		minute = int(v)
-	}
-	dow := -1
-	if v, ok := args["day_of_week"].(float64); ok {
-		dow = int(v)
-	}
-	dom := -1
-	if v, ok := args["day_of_month"].(float64); ok {
-		dom = int(v)
-	}
-
-	intervalMin := 0
-	if v, ok := args["interval_minutes"].(float64); ok {
-		intervalMin = int(v)
-	}
+	minute := scheduleIntArg(args, "minute", 0)
+	dow := scheduleIntArg(args, "day_of_week", -1)
+	dom := scheduleIntArg(args, "day_of_month", -1)
+	intervalMin := scheduleIntArg(args, "interval_minutes", 0)
 
 	t := scheduler.ScheduledTask{
 		Name:            name,
@@ -2201,6 +2202,11 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 		EndDate:         stringVal(args, "end_date"),
 		TaskType:        stringVal(args, "task_type"),
 	}
+	d, derr := h.parseAndResolveScheduleDelivery(args)
+	if derr != nil {
+		return derr.Error()
+	}
+	t.Delivery = d
 
 	id, err := h.scheduledTaskManager.Add(t)
 	if err != nil {
@@ -2219,11 +2225,19 @@ func (h *IMMessageHandler) toolCreateScheduledTask(args map[string]interface{}) 
 		}()
 	}
 
-	// Format next run time for display.
-	if task := h.scheduledTaskManager.Get(id); task != nil && task.NextRunAt != nil {
-		return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"))
+	// Format next run time for display (reuse calendar Get when possible).
+	task := h.scheduledTaskManager.Get(id)
+	if task == nil {
+		return fmt.Sprintf("定时任务已创建（ID: %s）", id)
 	}
-	return fmt.Sprintf("定时任务已创建（ID: %s）", id)
+	extra := ""
+	if s := scheduler.SummarizeDelivery(task.Delivery); s != "" {
+		extra = "\n推送: " + s
+	}
+	if task.NextRunAt != nil {
+		return fmt.Sprintf("定时任务已创建\nID: %s\n名称: %s\n操作: %s\n下次执行: %s%s", id, name, action, task.NextRunAt.Format("2006-01-02 15:04"), extra)
+	}
+	return fmt.Sprintf("定时任务已创建（ID: %s）%s", id, extra)
 }
 
 func (h *IMMessageHandler) toolListScheduledTasks() string {
@@ -2266,6 +2280,9 @@ func (h *IMMessageHandler) toolListScheduledTasks() string {
 		if t.RunCount > 0 {
 			b.WriteString(fmt.Sprintf(" | 已执行 %d 次", t.RunCount))
 		}
+		if s := scheduler.SummarizeDelivery(t.Delivery); s != "" {
+			b.WriteString(fmt.Sprintf("\n   推送: %s", s))
+		}
 		b.WriteString("\n\n")
 	}
 	return b.String()
@@ -2301,6 +2318,23 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	if id == "" {
 		return "缺少 id 参数"
 	}
+	// Manager.Update uses key "action" for work content. manage_schedule also
+	// passes CRUD action=update in the same map — never persist that as the job body.
+	if ta := stringVal(args, "task_action"); ta != "" {
+		args["action"] = ta
+	} else if normalizeManageScheduleAction(stringVal(args, "action")) != manageScheduleActionUnknown {
+		delete(args, "action")
+	}
+	// Full replace or partial patch (fail_on_error) without wiping delivery.
+	var current *scheduler.TaskDelivery
+	if cur := h.scheduledTaskManager.Get(id); cur != nil {
+		current = cur.Delivery
+	}
+	if err := scheduler.PrepareDeliveryForUpdate(current, args, func(a map[string]interface{}) (*scheduler.TaskDelivery, error) {
+		return h.parseAndResolveScheduleDelivery(a)
+	}); err != nil {
+		return err.Error()
+	}
 	err := h.scheduledTaskManager.Update(id, args)
 	if err != nil {
 		return fmt.Sprintf("更新失败: %s", err.Error())
@@ -2312,9 +2346,210 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 		if t.NextRunAt != nil {
 			next = t.NextRunAt.Format("2006-01-02 15:04")
 		}
-		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next)
+		extra := ""
+		if s := scheduler.SummarizeDelivery(t.Delivery); s != "" {
+			extra = "\n推送: " + s
+		}
+		return fmt.Sprintf("定时任务已更新\nID: %s\n名称: %s\n操作: %s\n时间: %02d:%02d\n下次执行: %s%s", t.ID, t.Name, t.Action, t.Hour, t.Minute, next, extra)
 	}
 	return "定时任务已更新"
+}
+
+// toolListScheduleDeliveryTargets lists push destinations for a channel (generic).
+// Args: channel (default lansenger), query (optional name/id filter).
+func (h *IMMessageHandler) toolListScheduleDeliveryTargets(args map[string]interface{}) string {
+	if h.app == nil {
+		return "应用未初始化，无法查询投递目标"
+	}
+	channel := stringVal(args, "channel")
+	if channel == "" {
+		channel = stringVal(args, "platform")
+	}
+	query := stringVal(args, "query")
+	if query == "" {
+		query = stringVal(args, "group_name")
+	}
+	if query == "" {
+		query = stringVal(args, "name")
+	}
+	text, err := h.app.listScheduleDeliveryTargets(channel, query)
+	if err != nil {
+		return fmt.Sprintf("查询投递目标失败: %s", err.Error())
+	}
+	return text
+}
+
+// parseAndResolveScheduleDelivery builds delivery from args (full object or shorthand)
+// and resolves group_name → group_id via the channel's target catalog.
+func (h *IMMessageHandler) parseAndResolveScheduleDelivery(args map[string]interface{}) (*scheduler.TaskDelivery, error) {
+	d, err := parseScheduleDeliveryArgs(args)
+	if err != nil {
+		return nil, fmt.Errorf("delivery 配置无效: %w", err)
+	}
+	if d == nil {
+		return nil, nil
+	}
+	if h.app == nil {
+		if err := d.EnsureResolved(); err != nil {
+			return nil, fmt.Errorf("%w（无法查询通道目标：app 未初始化）", err)
+		}
+		return d, nil
+	}
+	if err := h.app.resolveScheduleDelivery(d); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// scheduleArgsTouchDelivery reports whether args intend to set/clear delivery.
+func scheduleArgsTouchDelivery(args map[string]interface{}) bool {
+	return scheduler.ArgsTouchDelivery(args)
+}
+
+// parseScheduleDeliveryArgs accepts either delivery object or shorthand fields:
+//
+//	delivery: {enabled, channel, targets:[...]}
+//	group_name / delivery_group_name + optional channel / mention_user_ids
+//	group_id / delivery_group_id
+//	user_id / delivery_user_id
+func parseScheduleDeliveryArgs(args map[string]interface{}) (*scheduler.TaskDelivery, error) {
+	if args == nil {
+		return nil, nil
+	}
+	if raw, ok := args["delivery"]; ok {
+		if raw == nil {
+			return nil, nil
+		}
+		// Explicit empty object / disabled
+		if m, ok := raw.(map[string]interface{}); ok {
+			if len(m) == 0 {
+				return nil, nil
+			}
+			if en, ok := m["enabled"].(bool); ok && !en {
+				return nil, nil
+			}
+		}
+		d, err := scheduler.ParseDeliveryFromAny(raw)
+		if err != nil {
+			return nil, err
+		}
+		if d != nil {
+			return d, nil
+		}
+		// Fall through to shorthand when delivery was empty/null-like.
+	}
+
+	// Shorthand: build a single-target delivery so the agent need not construct nested JSON.
+	groupName := firstNonEmptyArg(
+		stringVal(args, "group_name"),
+		stringVal(args, "delivery_group_name"),
+	)
+	groupID := firstNonEmptyArg(
+		stringVal(args, "group_id"),
+		stringVal(args, "delivery_group_id"),
+	)
+	userID := firstNonEmptyArg(
+		stringVal(args, "user_id"),
+		stringVal(args, "delivery_user_id"),
+	)
+	if groupName == "" && groupID == "" && userID == "" {
+		return nil, nil
+	}
+	channel := firstNonEmptyArg(stringVal(args, "channel"), stringVal(args, "delivery_channel"))
+	if channel == "" {
+		channel = scheduler.DeliveryChannelLansenger
+	}
+	d := &scheduler.TaskDelivery{
+		Enabled: true,
+		Channel: channel,
+		On:      scheduler.DeliveryOnSuccess,
+	}
+	if b, ok := args["fail_on_error"].(bool); ok {
+		d.FailOnError = b
+	}
+	if userID != "" && groupID == "" && groupName == "" {
+		d.Targets = []scheduler.DeliveryTarget{{
+			Kind:   scheduler.DeliveryKindUser,
+			UserID: userID,
+		}}
+	} else {
+		tg := scheduler.DeliveryTarget{
+			Kind:      scheduler.DeliveryKindGroup,
+			GroupID:   groupID,
+			GroupName: groupName,
+		}
+		if mentions := stringVal(args, "mention_user_ids"); mentions != "" {
+			tg.MentionUserIDs = splitDeliveryIDList(mentions)
+		}
+		if b, ok := args["mention_all"].(bool); ok && b {
+			tg.MentionAll = true
+		}
+		d.Targets = []scheduler.DeliveryTarget{tg}
+	}
+	d.Normalize()
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+func splitDeliveryIDList(s string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, p := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == ' ' || r == '\n' || r == '\t'
+	}) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func firstNonEmptyArg(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// scheduleIntArg reads int-like tool args (JSON float64, Go int, etc.).
+func scheduleIntArg(args map[string]interface{}, key string, def int) int {
+	if args == nil {
+		return def
+	}
+	v, ok := args[key]
+	if !ok || v == nil {
+		return def
+	}
+	switch n := v.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case float32:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return def
+		}
+		return int(i)
+	default:
+		return def
+	}
 }
 
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {

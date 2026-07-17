@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -32,6 +32,7 @@ import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } 
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
+import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
 import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
@@ -50,6 +51,7 @@ import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
 import { UpdateModal } from './components/modals/UpdateModal';
+import { checkAppUpdate } from './utils/checkAppUpdate';
 import { InstallLogModal } from './components/modals/InstallLogModal';
 import { ProjectProxySettingsDialog } from './components/modals/ProjectProxySettingsDialog';
 import { InstallSkillModal } from './components/modals/InstallSkillModal';
@@ -470,7 +472,8 @@ function App() {
     const [hubAuthRejectedPrompt, setHubAuthRejectedPrompt] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
-    const [uiZoom, setUiZoom] = useState<number>(1.0);
+    const [uiZoom, setUiZoom] = useState<number>(() => recommendUIScale());
+    const [uiZoomAuto, setUiZoomAuto] = useState<boolean>(true);
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
@@ -497,6 +500,20 @@ function App() {
     const digitalEmployeeStatusRefreshAgainRef = useRef(false);
     const digitalEmployeeStatusGenerationRef = useRef(0);
     const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
+
+    // When zoom is Auto, re-evaluate after display DPI / resolution changes
+    // (monitor move, OS scale change, RDP, etc.). Skip no-op setState; debounce resize.
+    useEffect(() => {
+        if (!uiZoomAuto) {
+            return;
+        }
+        const applyRecommended = () => {
+            const next = recommendUIScale();
+            setUiZoom((prev) => (uiScaleEquals(prev, next) ? prev : next));
+        };
+        applyRecommended();
+        return subscribeDisplayScaleChanges(applyRecommended);
+    }, [uiZoomAuto]);
 
     // Load favorite employees from config
     useEffect(() => {
@@ -946,7 +963,6 @@ function App() {
     }, []);
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
-    const isTigerClawBrand = brandInfo?.id === 'qianxin';
     
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
@@ -1599,12 +1615,12 @@ function App() {
             }
             setConfig(cfg);
 
-            // Apply saved UI zoom factor
+            // Apply saved UI zoom factor (0 = Auto / DPI-adaptive)
             callBackend(() => GetUIZoomFactor()).then((z) => {
-                if (z > 0) {
-                    setUiZoom(z);
-                }
-            }).catch(() => {});
+                applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom);
+            }).catch(() => {
+                applySavedUIZoomFactor(0, setUiZoomAuto, setUiZoom);
+            });
             callBackend(() => GetChatFontSize()).then((s) => {
                 if (s >= 12) {
                     setChatFontSize(s);
@@ -1683,16 +1699,23 @@ function App() {
         // Listen for external config changes (e.g. from Tray)
         const applyConfigChange = (cfg: main.AppConfig) => {
             setConfig(cfg);
-            callBackend(() => GetUIZoomFactor()).then((z) => {
-                if (z > 0) {
-                    setUiZoom(z);
-                }
-            }).catch(() => {});
-            callBackend(() => GetChatFontSize()).then((s) => {
-                if (s >= 12) {
-                    setChatFontSize(s);
-                }
-            }).catch(() => {});
+            // Prefer the payload's zoom field to avoid an extra backend round-trip.
+            if (typeof cfg.ui_zoom_factor === 'number') {
+                applySavedUIZoomFactor(cfg.ui_zoom_factor, setUiZoomAuto, setUiZoom);
+            } else {
+                callBackend(() => GetUIZoomFactor()).then((z) => {
+                    applySavedUIZoomFactor(z, setUiZoomAuto, setUiZoom);
+                }).catch(() => {});
+            }
+            if (typeof cfg.chat_font_size === 'number' && cfg.chat_font_size >= 12) {
+                setChatFontSize(cfg.chat_font_size);
+            } else {
+                callBackend(() => GetChatFontSize()).then((s) => {
+                    if (s >= 12) {
+                        setChatFontSize(s);
+                    }
+                }).catch(() => {});
+            }
             const tool = normalizeToolTab(cfg.active_tool);
             setActiveTool(tool);
             const toolCfg = (cfg as any)[tool];
@@ -1832,11 +1855,6 @@ function App() {
 
     useEffect(() => {
         if (!brandInfoLoaded) return;
-        if (!isTigerClawBrand) {
-            setLansengerStatus('disconnected');
-            setLansengerLocalModeState(true);
-            return;
-        }
         safeEventsOn("lansenger-status-changed", (status: string) => {
             setLansengerStatus(status);
         });
@@ -1845,7 +1863,7 @@ function App() {
         return () => {
             safeEventsOff("lansenger-status-changed");
         };
-    }, [brandInfoLoaded, isTigerClawBrand]);
+    }, [brandInfoLoaded]);
 
     // Poll MaClaw LLM status every 60 seconds.
     // Also re-ping immediately when the user navigates to/from the LLM settings
@@ -1969,12 +1987,6 @@ function App() {
         const next = resolveSettingsTabId(settingsTab, { hideVirtualEmployee: !veNavigationAvailable });
         if (next !== settingsTab) setSettingsTab(next);
     }, [settingsTab, veNavigationAvailable]);
-
-    useEffect(() => {
-        if (!isTigerClawBrand && imSubTab === 'lansenger') {
-            setImSubTab('qq');
-        }
-    }, [isTigerClawBrand, imSubTab]);
 
     const handleSkillContext = (e: React.MouseEvent, skillName: string) => {
         e.preventDefault();
@@ -3593,7 +3605,7 @@ ${instruction}`;
                 switchTool={switchTool}
                 lang={lang}
                 maclawLLMOnline={maclawLLMOnline}
-                showLansenger={isTigerClawBrand}
+                showLansenger
                 remoteActivationStatus={remoteActivationStatus}
                 qqBotStatus={qqBotStatus}
                 telegramStatus={telegramStatus}
@@ -3779,7 +3791,7 @@ ${instruction}`;
                             setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
                             thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
                             setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
-                            showLansenger={isTigerClawBrand}
+                            showLansenger
                             lansengerStatus={lansengerStatus}
                             setLansengerStatus={setLansengerStatus}
                             lansengerLocalMode={lansengerLocalMode}
@@ -3803,6 +3815,8 @@ ${instruction}`;
                             audioDevices={audioDevices}
                             uiZoom={uiZoom}
                             setUiZoom={setUiZoom}
+                            uiZoomAuto={uiZoomAuto}
+                            setUiZoomAuto={setUiZoomAuto}
                             chatFontSize={chatFontSize}
                             setChatFontSize={setChatFontSize}
                             darkSchemeId={aiDarkSchemeId}
@@ -3921,13 +3935,14 @@ ${instruction}`;
                             onOpenWebsite={() => safeBrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}
                             onCheckUpdate={() => {
                                 setStatus(t("checkingUpdate"));
-                                CheckUpdate(APP_VERSION).then((res: any) => {
-                                    console.log("CheckUpdate result:", res);
+                                const preferBeta = Boolean(config?.prefer_beta_channel);
+                                checkAppUpdate(APP_VERSION, preferBeta).then((res: any) => {
+                                    console.log(preferBeta ? "CheckUpdateBeta result:" : "CheckUpdate result:", res);
                                     setUpdateResult(res);
                                     setShowUpdateModal(true);
                                     setStatus("");
                                 }).catch((err: any) => {
-                                    console.error("CheckUpdate error:", err);
+                                    console.error(preferBeta ? "CheckUpdateBeta error:" : "CheckUpdate error:", err);
                                     setStatus((lang === 'zh-Hans' ? '检查更新失败：' : lang === 'zh-Hant' ? '檢查更新失敗：' : 'Update check failed: ') + err);
                                     setUpdateResult({
                                         has_update: false,
@@ -4338,7 +4353,7 @@ ${instruction}`;
                     maclawLLMOnline={maclawLLMOnline}
                     maclawLLMConfigured={maclawLLMConfigured}
                     remoteActivated={!!remoteActivationStatus?.activated}
-                    showLansenger={isTigerClawBrand}
+                    showLansenger
                     navTab={navTab}
                     settingsTab={resolvedSettingsTab}
                     backgroundInstallStatus={backgroundInstallStatus}

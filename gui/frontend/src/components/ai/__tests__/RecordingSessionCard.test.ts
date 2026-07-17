@@ -32,22 +32,38 @@ describe("RecordingSessionCard helpers", () => {
         expect(formatDuration(3661)).toBe("1:01:01");
     });
 
-    it("formatRecordingCompletionMessage includes path and duration", () => {
+    it("formatRecordingCompletionMessage includes path, mp3, and duration", () => {
         const msg = formatRecordingCompletionMessage({
             status: "stopped",
             title: "周会",
             path: "C:\\\\tmp\\\\a.wav",
+            mp3Path: "C:\\\\tmp\\\\a.mp3",
             durationSec: 12.34,
             sizeBytes: 1000,
+            mp3SizeBytes: 400,
             format: "wav",
         });
         expect(msg).toContain("[Recording completed]");
         expect(msg).toContain("status: stopped");
         expect(msg).toContain("title: 周会");
         expect(msg).toContain("path: C:\\\\tmp\\\\a.wav");
+        expect(msg).toContain("mp3_path: C:\\\\tmp\\\\a.mp3");
         expect(msg).toContain("duration_sec: 12.3");
         expect(msg).toContain("size_bytes: 1000");
+        expect(msg).toContain("mp3_size_bytes: 400");
         expect(msg).toContain("format: wav");
+    });
+
+    it("formatRecordingCompletionMessage surfaces mp3_error when archive failed", () => {
+        const msg = formatRecordingCompletionMessage({
+            status: "stopped",
+            path: "/tmp/a.wav",
+            mp3Error: "wav pcm too large",
+            durationSec: 1,
+            format: "wav",
+        });
+        expect(msg).toContain("mp3_error: wav pcm too large");
+        expect(msg).not.toContain("mp3_path:");
     });
 
     it("formatRecordingCompletionDisplay localizes cancel and error", () => {
@@ -56,6 +72,18 @@ describe("RecordingSessionCard helpers", () => {
         expect(formatRecordingCompletionDisplay({ status: "stopped", path: "/a.wav", durationSec: 9 }, "zh")).toContain(
             "录音已保存",
         );
+        expect(
+            formatRecordingCompletionDisplay(
+                { status: "stopped", path: "/a.wav", mp3Path: "/a.mp3", durationSec: 9 },
+                "zh",
+            ),
+        ).toContain("MP3");
+        expect(
+            formatRecordingCompletionDisplay(
+                { status: "stopped", path: "/a.wav", mp3Path: "/a.mp3", durationSec: 9 },
+                "en",
+            ),
+        ).toMatch(/MP3/i);
     });
 
     it("encodeWAVFromInt16 writes valid RIFF/WAVE header and PCM size", () => {

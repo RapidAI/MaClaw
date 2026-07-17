@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 )
 
 func TestSaveRecordedAudioBase64(t *testing.T) {
@@ -41,6 +42,17 @@ func TestSaveRecordedAudioBase64(t *testing.T) {
 	if dur < 0.05 || dur > 0.2 {
 		t.Fatalf("duration_sec = %v, want ~0.1", dur)
 	}
+	// MP3 archive product should be produced alongside the WAV on successful save.
+	mp3Path, _ := info["mp3_path"].(string)
+	if mp3Path == "" {
+		t.Fatalf("expected mp3_path on successful save, info=%#v", info)
+	}
+	if _, err := os.Stat(mp3Path); err != nil {
+		t.Fatalf("mp3 product missing: %v", err)
+	}
+	if !strings.HasSuffix(strings.ToLower(mp3Path), ".mp3") {
+		t.Fatalf("mp3_path suffix: %q", mp3Path)
+	}
 	// Detail off: no meta / dump.
 	if _, ok := info["meta_path"]; ok {
 		t.Fatalf("meta_path present with log detail off: %#v", info["meta_path"])
@@ -50,6 +62,39 @@ func TestSaveRecordedAudioBase64(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".meta.json"); !os.IsNotExist(err) {
 		t.Fatalf("meta file should not exist when log detail off, err=%v", err)
+	}
+}
+
+// TestSaveRecordedAudioMP3ArchiveIsDecodable guards the broken-archive
+// regression: the sibling MP3 must not merely exist on disk (it did even when
+// the encoder produced desynced garbage) — it must actually decode.
+func TestSaveRecordedAudioMP3ArchiveIsDecodable(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+
+	wav := makeMinimalRecordWAV(16000, 16000) // ~1s of PCM
+	info, err := app.SaveRecordedAudioBase64(base64.StdEncoding.EncodeToString(wav), "mp3-check")
+	if err != nil {
+		t.Fatalf("SaveRecordedAudioBase64: %v", err)
+	}
+	mp3Path, _ := info["mp3_path"].(string)
+	if mp3Path == "" {
+		t.Fatalf("expected mp3_path on successful save, info=%#v", info)
+	}
+	mp3Data, err := os.ReadFile(mp3Path)
+	if err != nil {
+		t.Fatalf("read mp3 product: %v", err)
+	}
+	decoded, err := audioconv.ToWAV(mp3Data, audioconv.FormatMP3)
+	if err != nil {
+		t.Fatalf("mp3 archive does not decode: %v", err)
+	}
+	if len(decoded) < 44 || string(decoded[0:4]) != "RIFF" || string(decoded[8:12]) != "WAVE" {
+		t.Fatalf("decoded output is not WAV: %d bytes", len(decoded))
+	}
+	// ~1s of 16kHz mono PCM16 = ~32000 payload bytes; allow codec padding/delay.
+	pcmBytes := len(decoded) - 44
+	if pcmBytes < 16000 || pcmBytes > 64000 {
+		t.Fatalf("decoded pcm payload = %d bytes (~%.2fs), want ~1s", pcmBytes, float64(pcmBytes)/32000)
 	}
 }
 
@@ -228,6 +273,14 @@ func TestLiveRecordedAudioUploadPCMThenFinish(t *testing.T) {
 	}
 	if string(got[0:4]) != "RIFF" || string(got[8:12]) != "WAVE" {
 		t.Fatalf("bad header tags")
+	}
+	// Live finish must also produce the sibling MP3 product (primary desktop path).
+	mp3Path, _ := info["mp3_path"].(string)
+	if mp3Path == "" {
+		t.Fatalf("expected mp3_path on live finish, info=%#v", info)
+	}
+	if _, err := os.Stat(mp3Path); err != nil {
+		t.Fatalf("live mp3 product missing: %v", err)
 	}
 	// data chunk size at offset 40
 	dataSize := int(got[40]) | int(got[41])<<8 | int(got[42])<<16 | int(got[43])<<24

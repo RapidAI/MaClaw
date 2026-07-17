@@ -251,8 +251,10 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		// --- 语音识别工具 ---
 		toolDef("asr", audioconv.ASRToolDescription(),
 			map[string]interface{}{
-				"path":   map[string]string{"type": "string", "description": "本地音频文件路径"},
-				"format": map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+				"path":        map[string]string{"type": "string", "description": "本地音频文件路径"},
+				"format":      map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+				"for_minutes": map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿；默认 false"},
+				"minutes":     map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
 			}, []string{"path"}),
 		// --- Long-term memory (unified) ---
 		func() map[string]interface{} {
@@ -304,9 +306,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"reason":         map[string]string{"type": "string", "description": "调整原因（用于日志记录）"},
 			}, []string{"max_iterations"}),
 		// --- 合并工具：定时任务 (create/list/delete/update) ---
-		toolDef("manage_schedule", "定时任务管理（action: create/list/delete/update）。create 创建定时任务，list 列出所有任务，delete 删除任务，update 修改任务。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31。一次性任务请将 start_date 和 end_date 都设为目标日期。",
+		toolDef("manage_schedule", "定时任务管理。action: create/list/delete/update/list_targets。list_targets 的 channel：lansenger（群/人）、weixin/telegram/qq（self=最近会话）。create/update 配 delivery 推送；蓝信 group_name 可解析为 group_id。fail_on_error 默认 false（投递失败只警告）。",
 			map[string]interface{}{
-				"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update"},
+				"action":           map[string]string{"type": "string", "description": "create/list/delete/update/list_targets（list_groups 等别名也可）"},
 				"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
 				"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，update/delete 时可选）"},
 				"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
@@ -317,6 +319,14 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
 				"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
 				"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+				"delivery":         map[string]string{"type": "object", "description": "结果推送：{enabled, channel(lansenger|weixin|telegram|qq), fail_on_error?, targets:[{kind, group_id|group_name|user_id}]}；weixin/telegram/qq 常用 user_id=self"},
+				"channel":          map[string]string{"type": "string", "description": "投递通道：lansenger|weixin|telegram|qq"},
+				"query":            map[string]string{"type": "string", "description": "list_targets 时按名称/ID 过滤"},
+				"group_name":       map[string]string{"type": "string", "description": "create/update 简写：推送到该名称的群（自动解析 group_id）"},
+				"group_id":         map[string]string{"type": "string", "description": "create/update 简写：推送到该群 ID"},
+				"user_id":          map[string]string{"type": "string", "description": "create/update 简写：私聊 ID；weixin/telegram/qq 可用 self"},
+				"mention_user_ids": map[string]string{"type": "string", "description": "群推送时可选 @ 的用户 ID，逗号分隔"},
+				"mention_all":      map[string]string{"type": "boolean", "description": "群推送时是否 @所有人"},
 			}, []string{"action"}),
 	}
 

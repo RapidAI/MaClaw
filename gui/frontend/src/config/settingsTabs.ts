@@ -44,12 +44,54 @@ export function resolveSettingsTabId(
     return raw;
 }
 
+/** Nav grouping for the settings rail. Tabs sharing a group render under one localized header. */
+export type SettingsTabGroupId = 'essentials' | 'ai' | 'services' | 'data' | 'system';
+
 export interface SettingsTabOption {
     id: SettingsTabId;
     label: string;
     desc: string;
     icon: string;
+    group?: SettingsTabGroupId;
+    groupLabel?: string;
 }
+
+const settingsTabGroupMeta: Record<SettingsTabGroupId, { en: string; zhHans: string; zhHant: string }> = {
+    essentials: { en: 'Essentials', zhHans: '基础设置', zhHant: '基礎設定' },
+    ai: { en: 'AI & Models', zhHans: 'AI 与模型', zhHant: 'AI 與模型' },
+    services: { en: 'Services & Integrations', zhHans: '服务与集成', zhHant: '服務與整合' },
+    data: { en: 'Data & Memory', zhHans: '数据与记忆', zhHant: '資料與記憶' },
+    system: { en: 'System', zhHans: '系统', zhHant: '系統' },
+};
+
+/** Group assignment per tab id (skills/mcp are legacy ids and stay ungrouped). */
+const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> = {
+    general: 'essentials',
+    proxy: 'essentials',
+    ui: 'essentials',
+    display: 'essentials',
+    pet: 'essentials',
+    searchEngine: 'ai',
+    llm: 'ai',
+    llmCache: 'ai',
+    embedding: 'ai',
+    memory: 'data',
+    knowledge: 'data',
+    misData: 'data',
+    migration: 'data',
+    redeem: 'services',
+    virtualEmployee: 'services',
+    im: 'services',
+    security: 'system',
+    system: 'system',
+};
+
+const attachSettingsTabGroup = (lang: string, tab: SettingsTabOption): SettingsTabOption => {
+    const group = settingsTabGroupById[tab.id];
+    if (!group) return tab;
+    const meta = settingsTabGroupMeta[group];
+    return { ...tab, group, groupLabel: localizeText(lang, meta.en, meta.zhHans, meta.zhHant) };
+};
 
 /**
  * Minimalist SVG icons for each settings tab (16×16 viewBox, stroke-based).
@@ -194,5 +236,5 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
     ];
     let filtered = tabs;
     if (options.hideVirtualEmployee) filtered = filtered.filter(tab => tab.id !== 'virtualEmployee');
-    return filtered;
+    return filtered.map((tab) => attachSettingsTabGroup(lang, tab));
 };

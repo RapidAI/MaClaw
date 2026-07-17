@@ -70,6 +70,30 @@ func TestModelDownloadHandlerServesKokoroArtifacts(t *testing.T) {
 	}
 }
 
+func TestModelDownloadHandlerServesCAMPlusArtifact(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "configs")
+	modelsDir := filepath.Join(root, "data", "models")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.MkdirAll(modelsDir, 0755); err != nil {
+		t.Fatalf("mkdir models dir: %v", err)
+	}
+	const name = "campplus-cn-common.cmpg"
+	if err := os.WriteFile(filepath.Join(modelsDir, name), []byte("cam++"), 0644); err != nil {
+		t.Fatalf("write model: %v", err)
+	}
+	h := ModelDownloadHandler(filepath.Join(configDir, "config.yaml"))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/models/"+name, nil)
+	req.SetPathValue("filename", name)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.String() != "cam++" {
+		t.Fatalf("status=%d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
 func TestModelDownloadHandlerRejectsInvalidPathAndUnsupportedExtension(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "configs")

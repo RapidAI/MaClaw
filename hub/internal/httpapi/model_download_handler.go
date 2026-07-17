@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
+	"github.com/RapidAI/CodeClaw/corelib/diarization"
 )
 
 const defaultHubModelBaseURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release"
-const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf " + asr.DefaultModelFilename + " omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
+const defaultHubModelFiles = "embeddinggemma-300M-Q8_0.gguf " + asr.DefaultModelFilename + " " + diarization.DefaultCAMPlusFilename + " omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip"
 const defaultHubModelLockTTL = 24 * time.Hour
 const modelDownloadScriptVersion = "maclaw-model-download-v2"
 
@@ -128,7 +129,7 @@ func isAllowedModelFilename(filename string) bool {
 // Allows model artifacts distributed through the hub public model endpoint.
 func isAllowedModelExtension(filename string) bool {
 	lower := strings.ToLower(filename)
-	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".yolow") || strings.HasSuffix(lower, ".koro") || strings.HasSuffix(lower, ".zip")
+	return strings.HasSuffix(lower, ".gguf") || strings.HasSuffix(lower, ".cmpg") || strings.HasSuffix(lower, ".yolow") || strings.HasSuffix(lower, ".koro") || strings.HasSuffix(lower, ".zip")
 }
 
 // ModelDownloadHandler serves model files while keeping the public URL stable.
@@ -388,7 +389,7 @@ trap cleanup EXIT INT TERM
 is_allowed_model_file() {
   case "$1" in
     ""|*/*|*\\*|*..*) return 1 ;;
-    *.gguf|*.yolow|*.koro|*.zip) return 0 ;;
+	    *.gguf|*.cmpg|*.yolow|*.koro|*.zip) return 0 ;;
     *) return 1 ;;
   esac
 }

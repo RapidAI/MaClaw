@@ -89,6 +89,8 @@ const baseContentProps = {
     },
     uiZoom: 1,
     setUiZoom: vi.fn(),
+    uiZoomAuto: true,
+    setUiZoomAuto: vi.fn(),
     chatFontSize: 14,
     setChatFontSize: vi.fn(),
     darkSchemeId: 'graphite' as AssistantDarkSchemeId,

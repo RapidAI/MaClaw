@@ -53,6 +53,13 @@ const COMPACT_MAX_HEAD_BYTES = UPLOAD_CHUNK_BYTES;
 const EMPTY_I16 = new Int16Array(0);
 const DEFAULT_LIVE_APPEND_PATH = "/maclaw-record/v1/append";
 
+/** Non-empty trimmed string from FinishRecordedAudioUpload fields. */
+function finishInfoString(v: unknown): string | undefined {
+    if (typeof v !== "string") return undefined;
+    const s = v.trim();
+    return s || undefined;
+}
+
 /** Console detail logs only when settings → 日志详情 is enabled. */
 function recordDebug(event: string, detail?: Record<string, unknown>, enabled = false) {
     if (!enabled) return;
@@ -66,6 +73,11 @@ function recordDebug(event: string, detail?: Record<string, unknown>, enabled = 
 export type RecordingCompleteResult = {
     status: "stopped" | "cancelled" | "error";
     path?: string;
+    /** Sibling MP3 archive produced on save (when conversion succeeds). */
+    mp3Path?: string;
+    mp3SizeBytes?: number;
+    /** Present when in-process MP3 archive failed; agent should convert via ffmpeg. */
+    mp3Error?: string;
     durationSec?: number;
     sizeBytes?: number;
     format?: string;
@@ -808,6 +820,9 @@ export function RecordingSessionCard({
                     size_bytes?: number;
                     duration_sec?: number;
                     format?: string;
+                    mp3_path?: string;
+                    mp3_size_bytes?: number;
+                    mp3_error?: string;
                 };
                 liveSessionIdRef.current = "";
                 uploadSessionId = "";
@@ -818,16 +833,21 @@ export function RecordingSessionCard({
                     {
                         path: info?.path,
                         size_bytes: info?.size_bytes,
+                        mp3_path: info?.mp3_path,
+                        mp3_error: info?.mp3_error,
                         binary: liveUsedBinaryRef.current,
                     },
                     logDetailRef.current,
                 );
                 finishWithResult({
                     status: "stopped",
-                    path: info?.path || "",
+                    path: finishInfoString(info?.path) || "",
+                    mp3Path: finishInfoString(info?.mp3_path),
+                    mp3SizeBytes: typeof info?.mp3_size_bytes === "number" ? info.mp3_size_bytes : undefined,
+                    mp3Error: finishInfoString(info?.mp3_error),
                     durationSec: typeof info?.duration_sec === "number" ? info.duration_sec : durationSec,
                     sizeBytes: typeof info?.size_bytes === "number" ? info.size_bytes : undefined,
-                    format: info?.format || "wav",
+                    format: finishInfoString(info?.format) || "wav",
                     title: titleRef.current,
                 });
             } catch (err: unknown) {
@@ -895,14 +915,20 @@ export function RecordingSessionCard({
                 size_bytes?: number;
                 duration_sec?: number;
                 format?: string;
+                mp3_path?: string;
+                mp3_size_bytes?: number;
+                mp3_error?: string;
             };
             uploadSessionId = "";
             finishWithResult({
                 status: "stopped",
-                path: info?.path || "",
+                path: finishInfoString(info?.path) || "",
+                mp3Path: finishInfoString(info?.mp3_path),
+                mp3SizeBytes: typeof info?.mp3_size_bytes === "number" ? info.mp3_size_bytes : undefined,
+                mp3Error: finishInfoString(info?.mp3_error),
                 durationSec: typeof info?.duration_sec === "number" ? info.duration_sec : durationSec,
                 sizeBytes: typeof info?.size_bytes === "number" ? info.size_bytes : wavBytes,
-                format: info?.format || "wav",
+                format: finishInfoString(info?.format) || "wav",
                 title: titleRef.current,
             });
         } catch (err: unknown) {
@@ -1291,11 +1317,14 @@ export function formatRecordingCompletionMessage(result: RecordingCompleteResult
     lines.push(`status: ${result.status}`);
     if (result.title) lines.push(`title: ${result.title}`);
     if (result.path) lines.push(`path: ${result.path}`);
+    if (result.mp3Path) lines.push(`mp3_path: ${result.mp3Path}`);
+    if (result.mp3Error) lines.push(`mp3_error: ${result.mp3Error}`);
     if (typeof result.durationSec === "number") {
         lines.push(`duration_sec: ${result.durationSec.toFixed(1)}`);
         lines.push(`duration: ${formatDuration(result.durationSec)}`);
     }
     if (typeof result.sizeBytes === "number") lines.push(`size_bytes: ${result.sizeBytes}`);
+    if (typeof result.mp3SizeBytes === "number") lines.push(`mp3_size_bytes: ${result.mp3SizeBytes}`);
     if (result.format) lines.push(`format: ${result.format}`);
     if (result.error) lines.push(`error: ${result.error}`);
     return lines.join("\n");
@@ -1312,6 +1341,11 @@ export function formatRecordingCompletionDisplay(result: RecordingCompleteResult
     const dur =
         typeof result.durationSec === "number" ? formatDuration(result.durationSec) : zh ? "未知" : "unknown";
     if (result.path) {
+        if (result.mp3Path) {
+            return zh
+                ? `录音已保存（时长 ${dur}，已生成 MP3 存档）`
+                : `Recording saved (duration ${dur}, MP3 archive ready)`;
+        }
         return zh ? `录音已保存（时长 ${dur}）` : `Recording saved (duration ${dur})`;
     }
     return zh ? "录音已结束" : "Recording finished";

@@ -29,7 +29,7 @@ const (
 	// the default tool-result budget after CJK estimation.
 	asrInlineMaxTokens = 2200
 	// asrInlineMaxBytes: hard byte guard aligned with MaxToolResultLen headroom.
-	asrInlineMaxBytes = 3500
+	asrInlineMaxBytes   = 3500
 	asrPreviewHeadRunes = 900
 	asrPreviewTailRunes = 450
 )
@@ -192,9 +192,27 @@ func (h *IMMessageHandler) toolASR(args map[string]interface{}) string {
 		return errMsg
 	}
 
-	text, err := h.app.TranscribeWAVBytes(wav)
-	if err != nil {
-		return fmt.Sprintf("语音识别失败: %v", err)
+	// Meeting recordings use the same CAM++ diarization path as the desktop
+	// assistant. The formatted speaker turns are then passed unchanged through
+	// the existing transcript archive and minutes map-reduce workflow.
+	text := ""
+	forMinutes := asrToolBoolArg(args, "for_minutes", "minutes", "meeting_minutes")
+	if forMinutes && h.app.GetDiarizationEnabled() {
+		if turns, diarizeErr := h.app.DiarizeAndTranscribeWAVBytes(wav, 0); diarizeErr == nil {
+			text = FormatSpeakerTranscript(turns)
+			if recordDetailEnabled() {
+				log.Printf("[asr] diarized recording path=%s turns=%d", absPath, len(turns))
+			}
+		} else if recordDetailEnabled() {
+			log.Printf("[asr] diarization unavailable; falling back to plain ASR path=%s err=%v", absPath, diarizeErr)
+		}
+	}
+	if text == "" {
+		var transcribeErr error
+		text, transcribeErr = h.app.TranscribeWAVBytes(wav)
+		if transcribeErr != nil {
+			return fmt.Sprintf("语音识别失败: %v", transcribeErr)
+		}
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -203,7 +221,7 @@ func (h *IMMessageHandler) toolASR(args map[string]interface{}) string {
 	result := formatASRToolResult(absPath, text)
 	// Minutes draft (extractive or LLM map-reduce) only when explicitly requested.
 	// Plain "transcribe only" keeps the long-transcript spill + preview, no draft.
-	if asrShouldSpillToFile(text) && asrToolBoolArg(args, "for_minutes", "minutes", "meeting_minutes") {
+	if asrShouldSpillToFile(text) && forMinutes {
 		result = h.enrichLongASRWithMinutesDraft(absPath, text, result, true)
 	}
 	return result

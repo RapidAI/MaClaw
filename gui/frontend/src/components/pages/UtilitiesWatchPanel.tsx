@@ -49,7 +49,7 @@ type Member = {
 };
 
 type GroupRow = { group_id: string; name: string; total_members?: number };
-type RosterPayload = { members?: Member[]; directory_available?: boolean; note?: string };
+type RosterPayload = { members?: Member[]; directory_available?: boolean; directory_truncated?: boolean; note?: string };
 
 const ROSTER_RENDER_LIMIT = 200;
 
@@ -68,7 +68,7 @@ function getApp(): Promise<any | null> {
 
 function emptyJob(isZh: boolean): WatchJob {
     return {
-        name: isZh ? '关注任务' : 'Follow job',
+        name: isZh ? '盯人任务' : 'People watch job',
         enabled: true,
         group_id: '',
         group_name: '',
@@ -106,7 +106,7 @@ export function UtilitiesWatchPanel({
         () =>
             isZh
                 ? {
-                      title: '关注',
+                      title: '盯人',
                       back: '关闭',
                       list: '任务列表',
                       create: '新建任务',
@@ -116,40 +116,43 @@ export function UtilitiesWatchPanel({
                       name: '名称',
                       group: '蓝信群',
                       loadGroups: '刷新群列表',
-                      members: '可选择的群成员',
+                      refreshMembers: '刷新成员',
                       filter: '按姓名/ID 过滤',
                       memberLimit: '为保持流畅，仅显示前 {count} 位；可使用搜索定位其他成员。',
-                      addManual: '添加关注对象',
+                      directoryLimit: '蓝信仅返回了部分成员；可手动添加其他 staffId。',
+                      addManual: '添加盯人对象',
+                      manualToggle: '手动添加 staffId',
                       manualId: '成员 staffId',
                       manualName: '姓名（可选）',
                       recordAll: '记录目标用户全部发言（文本日志）',
                       kwScope: '关键字匹配范围',
-                      kwScopeTargets: '仅关注的人',
+                      kwScopeTargets: '仅盯人对象',
                       kwScopeAnyone: '群内任何人',
-                      forwardSpeech: '关注对象发言时转发到我的 IM 通道',
+                      forwardSpeech: '盯人对象发言时转发到我的 IM 通道',
                       forwardChannels: '转发到我的通道（勾选在线通道）',
                       forwardKw: '关键字命中时也转发到上述通道',
                       keywords: '关键字规则',
                       addKw: '添加规则',
+                      rule: '规则',
                       kwList: '关键字（逗号分隔）',
                       reply: '固定回复（回源群）',
                       cli: 'CLI 命令',
                       cliHint:
                           '可用占位符：{{date}} {{content}} {{speaker_id}} {{speaker_name}} {{group_id}} {{group_name}} {{keyword}}。无占位符时自动追加 --date/--content/--speaker-id/--group-id/--keyword。环境变量 LANXIN_WATCH_* 同步注入。stdout 非空则回给用户（源群）。',
                       recordKw: '命中时写入关键字日志',
-                      targets: '关注对象',
+                      targets: '盯人对象',
                       logs: '发言记录',
                       refreshLogs: '刷新日志',
                       openLog: '查看',
                       store: '数据目录',
                       note: '说明：转发是推到「你自己」绑定的 IM 通道（微信/蓝信/Hub 等），不是转给其他人。需该通道在线且你曾与机器人有过私聊会话。',
-                      empty: '暂无关注任务',
+                      empty: '暂无盯人任务',
                       saveOk: '已保存',
                       pickGroup: '请选择群',
-                      pickTarget: '请至少选择一个关注对象（关键字选「任何人」时可暂不选，但建议仍配置关注列表）',
+                      pickTarget: '请至少选择一个盯人对象（关键字选「任何人」时可暂不选，但建议仍配置盯人列表）',
                   }
                 : {
-                      title: 'Follow',
+                      title: 'People watch',
                       back: 'Close',
                       list: 'Jobs',
                       create: 'New job',
@@ -159,10 +162,12 @@ export function UtilitiesWatchPanel({
                       name: 'Name',
                       group: 'Lansenger group',
                       loadGroups: 'Refresh groups',
-                      members: 'Selectable members',
+                      refreshMembers: 'Refresh members',
                       filter: 'Filter by name/id',
                       memberLimit: 'Showing the first {count} people for performance. Search to find anyone else.',
+                      directoryLimit: 'Lansenger returned only part of this directory. Add other staff IDs manually.',
                       addManual: 'Add target',
+                      manualToggle: 'Add by staff ID',
                       manualId: 'Member staffId',
                       manualName: 'Name (optional)',
                       recordAll: 'Record all speech from targets (text log)',
@@ -174,6 +179,7 @@ export function UtilitiesWatchPanel({
                       forwardKw: 'Also forward on keyword hit',
                       keywords: 'Keyword rules',
                       addKw: 'Add rule',
+                      rule: 'Rule',
                       kwList: 'Keywords (comma-separated)',
                       reply: 'Static reply (to source group)',
                       cli: 'CLI command',
@@ -186,7 +192,7 @@ export function UtilitiesWatchPanel({
                       openLog: 'View',
                       store: 'Data directory',
                       note: 'Forward pushes packaged speech to your own online IM channels (WeChat/Lansenger/Hub), not other people.',
-                      empty: 'No follow jobs yet',
+                      empty: 'No people-watch jobs yet',
                       saveOk: 'Saved',
                       pickGroup: 'Select a group',
                       pickTarget: 'Select at least one target (optional if keyword scope is anyone)',
@@ -201,8 +207,10 @@ export function UtilitiesWatchPanel({
     const [memberQuery, setMemberQuery] = useState('');
     const [manualId, setManualId] = useState('');
     const [manualName, setManualName] = useState('');
+    const [manualOpen, setManualOpen] = useState(false);
     const [directoryAvailable, setDirectoryAvailable] = useState(true);
     const [rosterNote, setRosterNote] = useState('');
+    const [directoryTruncated, setDirectoryTruncated] = useState(false);
     const [membersLoading, setMembersLoading] = useState(false);
     const [logs, setLogs] = useState<string[]>([]);
     const [logContent, setLogContent] = useState('');
@@ -218,8 +226,8 @@ export function UtilitiesWatchPanel({
 
     // Stable primitive for callback deps (avoid recreating loadJobs when only identity of a string literal would change).
     const apiMissingMsg = isZh
-        ? '后端未暴露关注接口（请重新编译桌面端）'
-        : 'Follow APIs missing (rebuild desktop)';
+        ? '后端未暴露盯人接口（请重新编译桌面端）'
+        : 'People-watch APIs missing (rebuild desktop)';
 
     useEffect(() => {
         aliveRef.current = true;
@@ -295,6 +303,7 @@ export function UtilitiesWatchPanel({
             setMembers([]);
             setDirectoryAvailable(true);
             setRosterNote('');
+            setDirectoryTruncated(false);
             setMembersLoading(false);
             return;
         }
@@ -303,12 +312,14 @@ export function UtilitiesWatchPanel({
         setMembers([]);
         setDirectoryAvailable(true);
         setRosterNote(isZh ? '正在获取蓝信群成员目录…' : 'Loading Lansenger group members…');
+        setDirectoryTruncated(false);
         const app = await getApp();
         if (!aliveRef.current || gen !== membersGenRef.current) return;
         if (!app?.ListLansengerWatchRoster) {
             setDirectoryAvailable(false);
             setMembersLoading(false);
             setRosterNote(apiMissingMsg);
+            setDirectoryTruncated(false);
             return;
         }
         try {
@@ -318,17 +329,20 @@ export function UtilitiesWatchPanel({
             if (!parsed || !Array.isArray(parsed.members)) {
                 setMembers([]);
                 setDirectoryAvailable(false);
-                setRosterNote(isZh ? '成员目录返回格式异常，可手动添加关注对象。' : 'Member directory returned an invalid response. Add a target manually.');
+                setRosterNote(isZh ? '成员目录返回格式异常，可手动添加盯人对象。' : 'Member directory returned an invalid response. Add a target manually.');
+                setDirectoryTruncated(false);
                 return;
             }
             setMembers(parsed.members);
             setDirectoryAvailable(parsed.directory_available !== false);
             setRosterNote(parsed.note || '');
+            setDirectoryTruncated(!!parsed.directory_truncated);
         } catch (e: any) {
             if (!aliveRef.current || gen !== membersGenRef.current) return;
             setMembers([]);
             setDirectoryAvailable(false);
             setRosterNote(e?.message || String(e));
+            setDirectoryTruncated(false);
         } finally {
             if (aliveRef.current && gen === membersGenRef.current) setMembersLoading(false);
         }
@@ -357,13 +371,15 @@ export function UtilitiesWatchPanel({
         void loadGroups();
     }, [loadJobs, loadGroups]);
 
-    // Debounce roster filter so typing does not spam the backend.
+    // Load the group directory whenever the selected group changes. Filtering
+    // stays local so typing in the picker never creates extra backend calls.
     useEffect(() => {
         if (!draft?.group_id) {
             setMembers([]);
             setMembersLoading(false);
             setDirectoryAvailable(true);
             setRosterNote('');
+            setDirectoryTruncated(false);
             return;
         }
         void loadMembers(draft.group_id, '');
@@ -503,8 +519,8 @@ export function UtilitiesWatchPanel({
         setDraft({ ...draft, keywords });
     };
 
-    const selectedGroup = groups.find((group) => group.group_id === draft?.group_id);
     const activeChannels = (draft?.forward_channels || []).length;
+    const manualForced = !directoryAvailable || directoryTruncated;
     const filteredMembers = useMemo(() => {
         const query = memberQuery.trim().toLocaleLowerCase();
         if (!query) return members;
@@ -521,8 +537,8 @@ export function UtilitiesWatchPanel({
                         </button>
                     )}
                     {!compactHeader && <h1 className="utilities-page__title">{t.title}</h1>}
-                    <p className="utilities-page__subtitle">{t.note}</p>
-                    {storePath ? (
+                    {!compactHeader && <p className="utilities-page__subtitle">{t.note}</p>}
+                    {!compactHeader && storePath ? (
                         <p className="utilities-meta">
                             {t.store}: {storePath}
                         </p>
@@ -542,7 +558,7 @@ export function UtilitiesWatchPanel({
                 <aside className="utilities-watch-list">
                     <div className="utilities-watch-list__header">
                         <div>
-                            <span className="utilities-section-kicker">{isZh ? '关注任务' : 'Follow jobs'}</span>
+                            <span className="utilities-section-kicker">{isZh ? '盯人任务' : 'People watch jobs'}</span>
                             <h3>{t.list}</h3>
                         </div>
                         <span className="utilities-watch-list__count">{jobs.length}</span>
@@ -564,7 +580,16 @@ export function UtilitiesWatchPanel({
                             }}
                         >
                             <div className="utilities-watch-item__title">
-                                {j.enabled ? '●' : '○'} {j.name || j.id}
+                                <span
+                                    className="utilities-watch-item__dot"
+                                    data-on={j.enabled ? 'true' : 'false'}
+                                    title={j.enabled ? t.enabled : (isZh ? '已停用' : 'Disabled')}
+                                    aria-hidden="true"
+                                />
+                                <span className="utilities-watch-item__name">{j.name || j.id}</span>
+                                {!j.enabled ? (
+                                    <span className="utilities-watch-item__badge">{isZh ? '已停用' : 'Off'}</span>
+                                ) : null}
                             </div>
                             <div className="utilities-watch-item__meta">
                                 {j.group_name || j.group_id}
@@ -577,123 +602,113 @@ export function UtilitiesWatchPanel({
                 </aside>
 
                 {draft ? (
-                    <section className="utilities-watch-editor">
-                        <header className="utilities-watch-editor__header">
-                            <div>
-                                <span className="utilities-section-kicker">{draft.id ? (isZh ? '编辑任务' : 'Edit job') : (isZh ? '新建任务' : 'New job')}</span>
-                                <h2>{draft.name || (isZh ? '未命名关注任务' : 'Untitled follow job')}</h2>
-                                <p>{selectedGroup?.name || draft.group_name || (isZh ? '先选择一个蓝信群' : 'Select a Lansenger group to begin')}</p>
-                            </div>
-                            <label className="utilities-watch-switch">
-                                <input
-                                    type="checkbox"
-                                    checked={!!draft.enabled}
-                                    onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-                                />
+                    <section className="utilities-watch-editor watch-editor">
+                        <div className="watch-editor__topbar">
+                            <label className="watch-editor__name">
+                                <span>{t.name}</span>
+                                <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+                            </label>
+                            <label className="watch-editor__enabled">
+                                <input type="checkbox" checked={!!draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
                                 <span>{draft.enabled ? t.enabled : (isZh ? '已停用' : 'Disabled')}</span>
                             </label>
-                        </header>
-
-                        <div className="utilities-watch-summary" aria-label={isZh ? '任务概览' : 'Job overview'}>
-                            <span>{isZh ? '关注对象' : 'Targets'} <strong>{(draft.target_staff_ids || []).length}</strong></span>
-                            <span>{isZh ? '转发通道' : 'Channels'} <strong>{activeChannels}</strong></span>
-                            <span>{isZh ? '关键字规则' : 'Rules'} <strong>{(draft.keywords || []).length}</strong></span>
                         </div>
 
-                        <div className="utilities-watch-section utilities-watch-section--setup">
-                            <div className="utilities-watch-section__heading">
-                                <div>
-                                    <h3>{isZh ? '基础设置' : 'Basics'}</h3>
-                                    <p>{isZh ? '为任务命名，并选择要关注的群。' : 'Name the job and select the group to follow.'}</p>
-                                </div>
-                            </div>
-                            <div className="utilities-watch-form-grid">
-                                <label className="utilities-field">
-                                    <span>{t.name}</span>
-                                    <input
-                                        value={draft.name}
-                                        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                                    />
-                                </label>
-                                <label className="utilities-field">
-                                    <span>{t.group}</span>
-                                    <div className="utilities-field__row utilities-field__row--tight">
+                        <div className="watch-editor__group-row">
+                            <label>
+                                <span>{t.group}</span>
                                 <select
                                     value={draft.group_id}
                                     onChange={(e) => {
                                         const g = groups.find((x) => x.group_id === e.target.value);
-                                        setDraft({
-                                            ...draft,
-                                            group_id: e.target.value,
-                                            group_name: g?.name || '',
-                                            target_staff_ids: [],
-                                            target_names: {},
-                                        });
+                                        setDraft({ ...draft, group_id: e.target.value, group_name: g?.name || '', target_staff_ids: [], target_names: {} });
                                         setMemberQuery('');
                                         setManualId('');
                                         setManualName('');
+                                        setManualOpen(false);
                                     }}
                                 >
                                     <option value="">{t.pickGroup}</option>
-                                    {groups.map((g) => (
-                                        <option key={g.group_id} value={g.group_id}>
-                                            {g.name || g.group_id}
-                                            {g.total_members != null ? ` (${g.total_members})` : ''}
-                                        </option>
-                                    ))}
+                                    {groups.map((g) => <option key={g.group_id} value={g.group_id}>{g.name || g.group_id}{g.total_members != null ? ` (${g.total_members})` : ''}</option>)}
                                 </select>
-                                <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => void loadGroups()}>
-                                    {t.loadGroups}
-                                </button>
-                            </div>
-                                </label>
-                            </div>
+                            </label>
+                            <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => void loadGroups()}>{t.loadGroups}</button>
                         </div>
 
-                        <div className="utilities-watch-section utilities-watch-section--capture">
-                            <div className="utilities-watch-section__heading">
+                        <div className="watch-editor__section watch-editor__section--targets">
+                            <div className="watch-editor__section-heading">
                                 <div>
-                                    <h3>{isZh ? '记录与转发' : 'Capture & forward'}</h3>
-                                    <p>{isZh ? '决定记录范围，以及何时推送给你。' : 'Choose what to capture and when to send it to you.'}</p>
+                                    <h3>
+                                        {t.targets}
+                                        {(draft.target_staff_ids || []).length > 0 ? (
+                                            <span className="watch-editor__count">{(draft.target_staff_ids || []).length}</span>
+                                        ) : null}
+                                    </h3>
+                                    <p>{isZh ? '选择要监看的群成员；目录不可用时也可手动添加。' : 'Pick group members to watch; add by staff ID when the directory is unavailable.'}</p>
                                 </div>
                             </div>
-                            <div className="utilities-option-stack">
-                        <label className="utilities-field utilities-field--row utilities-option-row">
-                            <input
-                                type="checkbox"
-                                checked={!!draft.record_all}
-                                onChange={(e) => setDraft({ ...draft, record_all: e.target.checked })}
-                            />
-                            <span>{t.recordAll}</span>
-                        </label>
+                            {(draft.target_staff_ids || []).length > 0 ? (
+                                <div className="utilities-chip-row utilities-watch-targets">
+                                    {(draft.target_staff_ids || []).map((id) => (
+                                        <button key={id} type="button" className="utilities-chip is-on" title={id} onClick={() => toggleTarget(id)}>{(draft.target_names || {})[id] || id} ×</button>
+                                    ))}
+                                </div>
+                            ) : null}
+                            <div className="utilities-member-picker">
+                                <div className="utilities-member-picker__toolbar">
+                                    <input className="utilities-input" aria-label={t.filter} placeholder={t.filter} value={memberQuery} onChange={(e) => setMemberQuery(e.target.value)} />
+                                    <button
+                                        type="button"
+                                        className="utilities-btn utilities-btn--ghost utilities-member-picker__refresh"
+                                        disabled={!draft.group_id || membersLoading}
+                                        onClick={() => void loadMembers(draft.group_id, memberQuery)}
+                                    >
+                                        {t.refreshMembers}
+                                    </button>
+                                </div>
+                                {rosterNote && !membersLoading ? <p className="utilities-member-picker__note" role="status">{rosterNote}</p> : null}
+                                <div className="utilities-member-list">
+                                    {filteredMembers.slice(0, ROSTER_RENDER_LIMIT).map((m) => {
+                                        const on = (draft.target_staff_ids || []).includes(m.staff_id);
+                                        return <button key={m.staff_id} type="button" className={`utilities-member${on ? ' is-on' : ''}`} aria-pressed={on} onClick={() => toggleTarget(m.staff_id, m.name)}><strong>{m.name || m.staff_id}</strong><span>{m.staff_id}</span></button>;
+                                    })}
+                                    {membersLoading ? <div className="utilities-empty utilities-empty--member-list" role="status"><strong>{isZh ? '正在加载成员…' : 'Loading members…'}</strong></div> : filteredMembers.length === 0 ? <div className="utilities-empty utilities-empty--member-list"><strong>{isZh ? '暂无可选成员' : 'No selectable members yet'}</strong><span>{rosterNote || (isZh ? '正在获取蓝信群成员目录。' : 'Fetching the Lansenger group member directory.')}</span></div> : null}
+                                    {filteredMembers.length > ROSTER_RENDER_LIMIT ? <p className="utilities-member-picker__limit">{t.memberLimit.replace('{count}', String(ROSTER_RENDER_LIMIT))}</p> : null}
+                                </div>
+                            </div>
+                            {draft.group_id ? (
+                                manualForced || manualOpen ? (
+                                    <div className="utilities-manual-target">
+                                        <p>
+                                            {directoryTruncated
+                                                ? t.directoryLimit
+                                                : !directoryAvailable
+                                                  ? (isZh ? '群成员目录不可用时，可临时手动添加盯人对象。' : 'Add a target manually while the group directory is unavailable.')
+                                                  : (isZh ? '输入成员 staffId 直接加入盯人列表。' : 'Add a member to the watch list by staff ID.')}
+                                        </p>
+                                        <div className="utilities-field__row">
+                                            <input className="utilities-input" placeholder={t.manualId} aria-label={t.manualId} value={manualId} onChange={(e) => setManualId(e.target.value)} />
+                                            <input className="utilities-input" placeholder={t.manualName} aria-label={t.manualName} value={manualName} onChange={(e) => setManualName(e.target.value)} />
+                                            <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => void addManual()}>{t.addManual}</button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button type="button" className="utilities-link utilities-manual-target__toggle" onClick={() => setManualOpen(true)}>
+                                        {t.manualToggle}
+                                    </button>
+                                )
+                            ) : null}
+                        </div>
 
-                        <label className="utilities-field utilities-option-row">
-                            <span>{t.kwScope}</span>
-                            <select
-                                value={draft.keyword_scope || 'targets'}
-                                onChange={(e) =>
-                                    setDraft({
-                                        ...draft,
-                                        keyword_scope: e.target.value === 'anyone' ? 'anyone' : 'targets',
-                                    })
-                                }
-                            >
-                                <option value="targets">{t.kwScopeTargets}</option>
-                                <option value="anyone">{t.kwScopeAnyone}</option>
-                            </select>
-                        </label>
-
-                        <label className="utilities-field utilities-field--row utilities-option-row">
-                            <input
-                                type="checkbox"
-                                checked={!!draft.forward_on_target_speech}
-                                onChange={(e) => setDraft({ ...draft, forward_on_target_speech: e.target.checked })}
-                            />
-                            <span>{t.forwardSpeech}</span>
-                        </label>
-                        <div className="utilities-field utilities-option-row">
-                            <span>{t.forwardChannels}</span>
-                            <div className="utilities-chip-row" style={{ marginTop: 6 }}>
+                        <div className="watch-editor__section">
+                            <div className="watch-editor__section-heading"><div><h3>{isZh ? '记录与转发' : 'Capture & forward'}</h3><p>{isZh ? '设置需要记录或推送的消息。' : 'Set what to record or forward.'}</p></div></div>
+                            <div className="watch-settings">
+                                <div className="watch-settings__pair">
+                                    <label className="watch-setting-row"><span><strong>{t.recordAll}</strong><small>{isZh ? '保存盯人对象的完整文本记录' : 'Save full text records from watched people'}</small></span><input type="checkbox" checked={!!draft.record_all} onChange={(e) => setDraft({ ...draft, record_all: e.target.checked })} /></label>
+                                    <label className="watch-setting-row"><span><strong>{t.forwardSpeech}</strong><small>{isZh ? '推送盯人对象发言' : 'Push watched speech'}</small></span><input type="checkbox" checked={!!draft.forward_on_target_speech} onChange={(e) => setDraft({ ...draft, forward_on_target_speech: e.target.checked })} /></label>
+                                </div>
+                                <label className="watch-setting-row"><span><strong>{t.kwScope}</strong><small>{isZh ? '关键字规则匹配的范围' : 'Who keyword rules should match'}</small></span><select value={draft.keyword_scope || 'targets'} onChange={(e) => setDraft({ ...draft, keyword_scope: e.target.value === 'anyone' ? 'anyone' : 'targets' })}><option value="targets">{t.kwScopeTargets}</option><option value="anyone">{t.kwScopeAnyone}</option></select></label>
+                                <div className="watch-setting-row watch-setting-row--channels"><span><strong>{t.forwardChannels}{activeChannels > 0 ? ` (${activeChannels})` : ''}</strong><small>{isZh ? '推送到你与机器人的私聊会话；Hub = 最近活跃绑定 IM' : 'Pushes to your own bot session; Hub = last active bound IM'}</small></span><div className="utilities-chip-row">
                                 {(channels.length
                                     ? channels
                                     : [
@@ -724,103 +739,12 @@ export function UtilitiesWatchPanel({
                                     );
                                 })}
                             </div>
-                            <span className="utilities-meta">
-                                {isZh
-                                    ? '推送到你自己在该通道与机器人的会话（非转给其他人）。Hub = 最近活跃绑定 IM。'
-                                    : 'Pushes to your own bot session on that channel. Hub = last active bound IM.'}
-                            </span>
                         </div>
                             </div>
                         </div>
 
-                        <div className="utilities-watch-section utilities-watch-section--targets">
-                            <div className="utilities-watch-section__heading">
-                                <div>
-                                    <h3>{t.targets} <span>{(draft.target_staff_ids || []).length}</span></h3>
-                                    <p>{isZh ? '从群成员中选择需要持续关注的人。' : 'Select the people whose messages need attention.'}</p>
-                                </div>
-                            </div>
-                            <div className="utilities-chip-row utilities-watch-targets">
-                                {(draft.target_staff_ids || []).map((id) => (
-                                    <button key={id} type="button" className="utilities-chip is-on" onClick={() => toggleTarget(id)}>
-                                        {(draft.target_names || {})[id] || id} ×
-                                    </button>
-                                ))}
-                            </div>
-                            <div className="utilities-member-picker">
-                                <div className="utilities-member-picker__toolbar">
-                                    <h4 className="utilities-watch-subheading">{t.members}</h4>
-                                    <input
-                                        className="utilities-input"
-                                        aria-label={t.filter}
-                                        placeholder={t.filter}
-                                        value={memberQuery}
-                                        onChange={(e) => setMemberQuery(e.target.value)}
-                                    />
-                                </div>
-                                <div className="utilities-member-list">
-                                {filteredMembers.slice(0, ROSTER_RENDER_LIMIT).map((m) => {
-                                    const on = (draft.target_staff_ids || []).includes(m.staff_id);
-                                    return (
-                                        <button
-                                            key={m.staff_id}
-                                            type="button"
-                                            className={`utilities-member${on ? ' is-on' : ''}`}
-                                            aria-pressed={on}
-                                            onClick={() => toggleTarget(m.staff_id, m.name)}
-                                        >
-                                            <strong>{m.name || m.staff_id}</strong>
-                                            <span>{m.staff_id}</span>
-                                        </button>
-                                    );
-                                })}
-                                {membersLoading ? (
-                                    <div className="utilities-empty utilities-empty--member-list" role="status">
-                                        <strong>{isZh ? '正在加载成员…' : 'Loading members…'}</strong>
-                                    </div>
-                                ) : filteredMembers.length === 0 ? (
-                                    <div className="utilities-empty utilities-empty--member-list">
-                                        <strong>{isZh ? '暂未获取到可选成员' : 'No selectable members yet'}</strong>
-                                        <span>
-                                            {rosterNote || (isZh ? '正在获取蓝信群成员目录。' : 'Fetching the Lansenger group member directory.')}
-                                        </span>
-                                    </div>
-                                ) : null}
-                                {filteredMembers.length > ROSTER_RENDER_LIMIT ? (
-                                    <p className="utilities-member-picker__limit">
-                                        {t.memberLimit.replace('{count}', String(ROSTER_RENDER_LIMIT))}
-                                    </p>
-                                ) : null}
-                                </div>
-                            </div>
-                            {!directoryAvailable ? (
-                                <div className="utilities-manual-target">
-                                    <p>{isZh ? '群成员目录不可用时，可临时手动添加。' : 'Add a target manually while the group directory is unavailable.'}</p>
-                                    <div className="utilities-field__row">
-                                        <input
-                                            className="utilities-input"
-                                            placeholder={t.manualId}
-                                            aria-label={t.manualId}
-                                            value={manualId}
-                                            onChange={(e) => setManualId(e.target.value)}
-                                        />
-                                        <input
-                                            className="utilities-input"
-                                            placeholder={t.manualName}
-                                            aria-label={t.manualName}
-                                            value={manualName}
-                                            onChange={(e) => setManualName(e.target.value)}
-                                        />
-                                        <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => void addManual()}>
-                                            {t.addManual}
-                                        </button>
-                                    </div>
-                                </div>
-                            ) : null}
-                        </div>
-
-                        <div className="utilities-watch-section">
-                            <div className="utilities-watch-section__heading utilities-watch-section__heading--action">
+                        <div className="watch-editor__section">
+                            <div className="watch-editor__section-heading watch-editor__section-heading--action">
                                 <div>
                                     <h3>{t.keywords}</h3>
                                     <p>{isZh ? '设置命中关键字后的记录、回复或转发动作。' : 'Define logging, replies, or forwards when keywords match.'}</p>
@@ -850,7 +774,22 @@ export function UtilitiesWatchPanel({
                                 </button>
                             </div>
                             {(draft.keywords || []).map((rule, idx) => (
-                                <div key={rule.id || idx} className="utilities-kw-card">
+                                <div key={rule.id || idx} className="utilities-kw-card watch-keyword-rule">
+                                    <div className="watch-keyword-rule__head">
+                                        <span className="watch-keyword-rule__index">{t.rule} {idx + 1}</span>
+                                        <button
+                                            type="button"
+                                            className="utilities-btn utilities-btn--ghost utilities-btn--quiet-danger watch-keyword-rule__remove"
+                                            aria-label={isZh ? `删除关键字规则 ${idx + 1}` : `Remove keyword rule ${idx + 1}`}
+                                            onClick={() => {
+                                                const keywords = [...(draft.keywords || [])];
+                                                keywords.splice(idx, 1);
+                                                setDraft({ ...draft, keywords });
+                                            }}
+                                        >
+                                            {isZh ? '删除' : 'Remove'}
+                                        </button>
+                                    </div>
                                     <label className="utilities-field">
                                         <span>{t.kwList}</span>
                                         <input
@@ -865,22 +804,17 @@ export function UtilitiesWatchPanel({
                                             }
                                         />
                                     </label>
-                                    <label className="utilities-field utilities-field--row">
-                                        <input
-                                            type="checkbox"
-                                            checked={!!rule.record_on_match}
-                                            onChange={(e) => updateKw(idx, { record_on_match: e.target.checked })}
-                                        />
-                                        <span>{t.recordKw}</span>
-                                    </label>
-                                    <label className="utilities-field utilities-field--row">
-                                        <input
-                                            type="checkbox"
-                                            checked={!!rule.forward_on_match}
-                                            onChange={(e) => updateKw(idx, { forward_on_match: e.target.checked })}
-                                        />
-                                        <span>{t.forwardKw}</span>
-                                    </label>
+                                    <div className="watch-keyword-rule__toggles">
+                                        <label className="utilities-field utilities-field--row">
+                                            <input type="checkbox" checked={!!rule.record_on_match} onChange={(e) => updateKw(idx, { record_on_match: e.target.checked })} />
+                                            <span>{t.recordKw}</span>
+                                        </label>
+                                        <label className="utilities-field utilities-field--row">
+                                            <input type="checkbox" checked={!!rule.forward_on_match} onChange={(e) => updateKw(idx, { forward_on_match: e.target.checked })} />
+                                            <span>{t.forwardKw}</span>
+                                        </label>
+                                    </div>
+                                    <div className="watch-keyword-rule__fields">
                                     <label className="utilities-field">
                                         <span>{t.reply}</span>
                                         <textarea
@@ -901,36 +835,30 @@ export function UtilitiesWatchPanel({
                                                     : 'e.g. python /hooks/watch.py --who={{speaker_id}}'
                                             }
                                         />
-                                        <span className="utilities-meta">{t.cliHint}</span>
                                     </label>
-                                    <label className="utilities-field utilities-field--row">
-                                        <input
-                                            type="checkbox"
-                                            checked={rule.reply_with_cli_stdout !== false}
-                                            onChange={(e) => updateKw(idx, { reply_with_cli_stdout: e.target.checked })}
-                                        />
-                                        <span>{isZh ? '用 CLI 标准输出作为回复' : 'Reply with CLI stdout'}</span>
-                                    </label>
-                                    <button
-                                        type="button"
-                                        className="utilities-link"
-                                        aria-label={isZh ? `删除关键字规则 ${idx + 1}` : `Remove keyword rule ${idx + 1}`}
-                                        onClick={() => {
-                                            const keywords = [...(draft.keywords || [])];
-                                            keywords.splice(idx, 1);
-                                            setDraft({ ...draft, keywords });
-                                        }}
-                                    >
-                                        {isZh ? '删除此规则' : 'Remove rule'}
-                                    </button>
+                                    </div>
+                                    {(rule.cli_command || '').trim() ? (
+                                        <div className="watch-keyword-rule__cli-extra">
+                                            <label className="utilities-field utilities-field--row">
+                                                <input type="checkbox" checked={rule.reply_with_cli_stdout !== false} onChange={(e) => updateKw(idx, { reply_with_cli_stdout: e.target.checked })} />
+                                                <span>{isZh ? '用 CLI 标准输出作为回复' : 'Reply with CLI stdout'}</span>
+                                            </label>
+                                            <span className="utilities-meta">{t.cliHint}</span>
+                                        </div>
+                                    ) : null}
                                 </div>
                             ))}
                         </div>
 
                         {draft.id ? (
                             <div className="utilities-watch-section">
-                                <div className="utilities-field__row">
+                                <div className="utilities-field__row utilities-watch-logs__head">
                                     <h3>{t.logs}</h3>
+                                    {storePath ? (
+                                        <span className="utilities-meta utilities-watch-logs__store" title={storePath}>
+                                            {t.store}: {storePath}
+                                        </span>
+                                    ) : null}
                                     <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => void loadLogs(draft.id)}>
                                         {t.refreshLogs}
                                     </button>
@@ -938,10 +866,10 @@ export function UtilitiesWatchPanel({
                                 <ul className="utilities-log-list">
                                     {logs.map((p) => (
                                         <li key={p}>
-                                            <button type="button" className="utilities-link" onClick={() => void openLog(p)}>
+                                            <code title={p}>{p.split(/[\\/]/).pop() || p}</code>
+                                            <button type="button" className="utilities-btn utilities-btn--ghost" onClick={() => void openLog(p)}>
                                                 {t.openLog}
-                                            </button>{' '}
-                                            <code>{p}</code>
+                                            </button>
                                         </li>
                                     ))}
                                 </ul>
@@ -952,16 +880,18 @@ export function UtilitiesWatchPanel({
                         ) : null}
 
                         <div className="utilities-actions utilities-watch-actions">
-                            <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void save()}>
-                                {t.save}
-                            </button>
                             <button type="button" className="utilities-btn utilities-btn--danger" disabled={busy} onClick={() => void remove()}>
                                 {t.del}
+                            </button>
+                            <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void save()}>
+                                {t.save}
                             </button>
                         </div>
                     </section>
                 ) : (
-                    <section className="utilities-watch-editor utilities-empty">{isZh ? '选择或新建任务' : 'Select or create a job'}</section>
+                    <section className="utilities-watch-editor utilities-empty utilities-watch-editor--empty">
+                        <p>{isZh ? '从左侧选择一个任务进行编辑，或点击上方「新建任务」。' : 'Select a job on the left to edit, or click "New job" above.'}</p>
+                    </section>
                 )}
             </div>
         </div>

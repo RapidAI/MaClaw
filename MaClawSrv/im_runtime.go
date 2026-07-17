@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -240,32 +241,86 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 		IgnoredGroupIDs:  append([]string(nil), cfg.LansengerIgnoredGroupIDs...),
 		AppID:            appID,
 	}
+	// Per-gateway group info cache (rebuilt when the runtime restarts).
+	// Avoids a GetGroupInfo REST call on every inbound group message.
+	type giCacheEnt struct {
+		info *lansenger.GroupInfo
+		err  bool
+		at   time.Time
+	}
+	const (
+		giCacheTTL    = 5 * time.Minute
+		giCacheNegTTL = 30 * time.Second
+	)
+	var (
+		giMu    sync.Mutex
+		giCache = make(map[string]giCacheEnt)
+	)
+	lookupGroupInfo := func(gid string) *lansenger.GroupInfo {
+		gid = strings.TrimSpace(gid)
+		if gid == "" || gw == nil {
+			return nil
+		}
+		now := time.Now()
+		giMu.Lock()
+		if ent, ok := giCache[gid]; ok {
+			ttl := giCacheTTL
+			if ent.err {
+				ttl = giCacheNegTTL
+			}
+			if now.Sub(ent.at) < ttl {
+				info := ent.info
+				giMu.Unlock()
+				return info
+			}
+		}
+		giMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		fetched, err := gw.GetGroupInfo(ctx, gid)
+		cancel()
+		giMu.Lock()
+		defer giMu.Unlock()
+		if err != nil {
+			log.Printf("[im-runtime/lansenger] GetGroupInfo %s: %v", gid, err)
+			giCache[gid] = giCacheEnt{err: true, at: now}
+			return nil
+		}
+		if len(giCache) >= 256 {
+			for k := range giCache {
+				delete(giCache, k)
+				break
+			}
+		}
+		giCache[gid] = giCacheEnt{info: fetched, at: now}
+		return fetched
+	}
 	gw = lansenger.NewGateway(lansenger.Config{AppID: appID, AppSecret: secret, ApiGatewayURL: baseURL, WebSocketBaseURL: wssURL}, func(msg lansenger.IncomingMessage) {
-		if strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
+		isGroup := lansenger.IsGroupChat(msg.ChatType)
+		if isGroup {
 			if ok, reason := lansenger.GroupMessageAllowed(msg, groupOpts); !ok {
 				log.Printf("[im-runtime/lansenger] ignoring group message: group=%s user=%s reason=%s", msg.GroupID, msg.FromUserID, reason)
 				return
 			}
 		}
+		// Contact routing must match IsGroupChat (case-insensitive). A strict
+		// == "group" check would leave contactID as the sender and deliver
+		// group answers via the private-message API.
 		contactID := msg.FromUserID
-		if msg.ChatType == "group" && strings.TrimSpace(msg.GroupID) != "" {
+		if isGroup && strings.TrimSpace(msg.GroupID) != "" {
 			contactID = msg.GroupID
 		}
-		// Enrich agent-facing text with group metadata; keep msg.Text for reply quotes.
-		agentText := msg.Text
-		if strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
-			var info *lansenger.GroupInfo
-			if gid := strings.TrimSpace(msg.GroupID); gid != "" {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				fetched, err := gw.GetGroupInfo(ctx, gid)
-				cancel()
-				if err != nil {
-					log.Printf("[im-runtime/lansenger] GetGroupInfo %s: %v", gid, err)
-				} else {
-					info = fetched
-				}
-			}
-			agentText = lansenger.WithAgentGroupContext(msg.Text, msg, info)
+		// Strip leading @Bot tokens for agent input and text quotes — same as gui.
+		// Keep msg.Text raw for event IDs / platform payload diagnostics.
+		cleanText := lansenger.StripBotMentions(msg)
+		agentText := cleanText
+		if isGroup {
+			info := lookupGroupInfo(msg.GroupID)
+			agentText = lansenger.WithAgentGroupContext(cleanText, msg, info)
+		}
+		// Prefer cleaned question for "xx问：" prefixes; fall back to raw text.
+		quoteQuestion := cleanText
+		if strings.TrimSpace(quoteQuestion) == "" {
+			quoteQuestion = msg.Text
 		}
 		handler(srvIMIncomingMessage{
 			Platform:      "lansenger",
@@ -284,23 +339,29 @@ func newSrvLansengerRuntimeGateway(cfg corelib.AppConfig, handler func(srvIMInco
 				"group_name":  msg.GroupName,
 				"reference":   msg.ReferenceText,
 			},
-			Reply: func(ctx context.Context, text string) error {
-				isGroup := strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
-				reminder, refMsgID := lansenger.BuildReplyDecorations(msg, groupOpts)
-				if isGroup && !lansenger.PreferNativeGroupQuote(groupOpts, refMsgID) {
-					// Text quote when native quote is off; use original user text.
-					text = lansenger.MaybeFormatGroupReplyWithQuote(true, msg.FromUserID, msg.Text, text)
+			Reply: func() func(context.Context, string) error {
+				// Decorate only the first Reply() for this inbound message so multi-chunk
+				// agent output does not re-@ / re-quote every fragment.
+				var decorated atomic.Bool
+				return func(ctx context.Context, text string) error {
+					var reminder *lansenger.OutgoingReminder
+					var refMsgID string
+					if !decorated.Swap(true) {
+						reminder, refMsgID = lansenger.BuildReplyDecorations(msg, groupOpts)
+						if isGroup && !lansenger.PreferNativeGroupQuote(groupOpts, refMsgID) {
+							text = lansenger.MaybeFormatGroupReplyWithQuoteFromMessage(true, msg, quoteQuestion, text)
+						}
+					}
+					return gw.SendText(ctx, lansenger.OutgoingText{
+						ToUserID: contactID,
+						Text:     text,
+						IsGroup:  isGroup,
+						Reminder: reminder,
+						RefMsgID: refMsgID,
+					})
 				}
-				return gw.SendText(ctx, lansenger.OutgoingText{
-					ToUserID: contactID,
-					Text:     text,
-					IsGroup:  isGroup,
-					Reminder: reminder,
-					RefMsgID: refMsgID,
-				})
-			},
+			}(),
 			ReplyMedia: func(ctx context.Context, data []byte, fileName, mediaType, mimeType string) error {
-				isGroup := strings.EqualFold(strings.TrimSpace(msg.ChatType), "group")
 				return gw.SendMedia(ctx, lansenger.OutgoingMedia{ToUserID: contactID, FileData: data, FileName: fileName, MediaType: normalizeSrvIMMediaType(mediaType), IsGroup: isGroup})
 			},
 		})

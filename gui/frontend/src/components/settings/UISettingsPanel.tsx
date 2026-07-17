@@ -1,7 +1,14 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import { SetChatFontSize, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import {
+    clampUIScale,
+    recommendUIScale,
+    UI_SCALE_AUTO,
+    uiScaleEquals,
+    uiScaleToPercent,
+} from '../../utils/uiScale';
 import { assistantDarkSchemes, type AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 import { assistantLightSchemes, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 
@@ -11,6 +18,9 @@ type UISettingsPanelProps = {
     t: (key: string) => string;
     uiZoom: number;
     setUiZoom: Dispatch<SetStateAction<number>>;
+    /** When true, scale follows DPI/resolution recommendation. */
+    uiZoomAuto: boolean;
+    setUiZoomAuto: Dispatch<SetStateAction<boolean>>;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
     darkSchemeId: AssistantDarkSchemeId;
@@ -20,6 +30,7 @@ type UISettingsPanelProps = {
 };
 
 const textForLang = localizeText;
+const UI_ZOOM_PERSIST_DEBOUNCE_MS = 280;
 
 export const UISettingsPanel = ({
     config,
@@ -27,13 +38,75 @@ export const UISettingsPanel = ({
     t,
     uiZoom,
     setUiZoom,
+    uiZoomAuto,
+    setUiZoomAuto,
     chatFontSize,
     setChatFontSize,
     darkSchemeId,
     setDarkSchemeId,
     lightSchemeId,
     setLightSchemeId,
-}: UISettingsPanelProps) => (
+}: UISettingsPanelProps) => {
+    const zoomPercent = uiScaleToPercent(uiZoom);
+    const zoomLabel = uiZoomAuto
+        ? textForLang(
+            lang,
+            `Auto (${zoomPercent}%)`,
+            `\u81ea\u52a8 (${zoomPercent}%)`,
+            `\u81ea\u52d5 (${zoomPercent}%)`,
+        )
+        : `${zoomPercent}%`;
+
+    // Last value written to config: number = manual scale, UI_SCALE_AUTO = Auto mode.
+    // Avoids redundant writes and the blur→Auto race (blur must not clobber Auto).
+    const lastPersistedRef = useRef<number>(uiZoomAuto ? UI_SCALE_AUTO : uiZoom);
+    const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => () => {
+        if (persistTimerRef.current != null) {
+            clearTimeout(persistTimerRef.current);
+        }
+    }, []);
+
+    const clearPersistTimer = () => {
+        if (persistTimerRef.current != null) {
+            clearTimeout(persistTimerRef.current);
+            persistTimerRef.current = null;
+        }
+    };
+
+    const persistManualUIZoom = (rawPercent: number, opts?: { debounce?: boolean }) => {
+        const v = clampUIScale(rawPercent / 100);
+        setUiZoomAuto(false);
+        setUiZoom(v);
+
+        const write = () => {
+            if (lastPersistedRef.current !== UI_SCALE_AUTO && uiScaleEquals(lastPersistedRef.current, v)) {
+                return;
+            }
+            lastPersistedRef.current = v;
+            void SetUIZoomFactor(v).catch(() => {});
+        };
+
+        clearPersistTimer();
+        if (opts?.debounce) {
+            persistTimerRef.current = setTimeout(write, UI_ZOOM_PERSIST_DEBOUNCE_MS);
+        } else {
+            write();
+        }
+        return v;
+    };
+
+    const restoreAutoUIZoom = () => {
+        clearPersistTimer();
+        const auto = recommendUIScale();
+        lastPersistedRef.current = UI_SCALE_AUTO;
+        setUiZoomAuto(true);
+        setUiZoom(auto);
+        void SetUIZoomFactor(UI_SCALE_AUTO).catch(() => {});
+    };
+
+    return (
     <div className="settings-panel ui-settings-panel">
         <section className="ui-settings-card ui-settings-card--themes">
             <h4>
@@ -171,27 +244,45 @@ export const UISettingsPanel = ({
                     min={50}
                     max={200}
                     step={5}
-                    value={Math.round(uiZoom * 100)}
+                    value={zoomPercent}
                     onChange={(e) => {
-                        const v = Number(e.target.value) / 100;
-                        setUiZoom(v);
+                        // Live preview + debounced persist (covers drag-release outside thumb).
+                        // No onBlur: focusing "Auto" would otherwise re-write manual and race Auto(0).
+                        persistManualUIZoom(Number(e.target.value), { debounce: true });
                     }}
-                    onPointerUp={async (e) => {
-                        const v = Number((e.currentTarget as HTMLInputElement).value) / 100;
-                        setUiZoom(v);
-                        await SetUIZoomFactor(v).catch(() => {});
+                    onPointerUp={(e) => {
+                        persistManualUIZoom(Number((e.currentTarget as HTMLInputElement).value));
+                    }}
+                    onKeyUp={(e) => {
+                        if (
+                            e.key !== 'ArrowLeft'
+                            && e.key !== 'ArrowRight'
+                            && e.key !== 'Home'
+                            && e.key !== 'End'
+                            && e.key !== 'PageUp'
+                            && e.key !== 'PageDown'
+                        ) {
+                            return;
+                        }
+                        persistManualUIZoom(Number((e.currentTarget as HTMLInputElement).value));
                     }}
                     aria-label={textForLang(lang, 'UI Zoom', '\u754c\u9762\u7f29\u653e', '\u4ecb\u9762\u7e2e\u653e')}
                 />
-                <span className="ui-settings-value">{Math.round(uiZoom * 100)}%</span>
+                <span className="ui-settings-value">{zoomLabel}</span>
                 <button
-                    onClick={() => { setUiZoom(1.0); SetUIZoomFactor(1.0).catch(() => {}); }}
+                    type="button"
+                    onClick={restoreAutoUIZoom}
                 >
-                    {textForLang(lang, 'Reset', '\u91cd\u7f6e', '\u91cd\u7f6e')}
+                    {textForLang(lang, 'Auto', '\u81ea\u52a8', '\u81ea\u52d5')}
                 </button>
             </div>
             <p>
-                {textForLang(lang, 'Adjust overall UI scale for HiDPI displays or personal preference.', '\u8c03\u6574\u754c\u9762\u6574\u4f53\u7f29\u653e\u6bd4\u4f8b\uff0c\u9002\u914d\u9ad8 DPI \u5c4f\u5e55\u6216\u4e2a\u4eba\u504f\u597d\u3002', '\u8abf\u6574\u4ecb\u9762\u6574\u9ad4\u7e2e\u653e\u6bd4\u4f8b\uff0c\u9069\u914d\u9ad8 DPI \u87a2\u5e55\u6216\u500b\u4eba\u504f\u597d\u3002')}
+                {textForLang(
+                    lang,
+                    'Default is Auto: scale follows display DPI and resolution so low-res screens stay readable and HiDPI is not double-scaled. Drag the slider to override.',
+                    '\u9ed8\u8ba4\u4e3a\u81ea\u52a8\uff1a\u6839\u636e\u5c4f\u5e55 DPI \u4e0e\u5206\u8fa8\u7387\u8c03\u6574\u7f29\u653e\uff0c\u4f4e\u5206\u5c4f\u66f4\u6613\u8bfb\u3001\u9ad8 DPI \u4e0d\u4f1a\u91cd\u590d\u653e\u5927\u3002\u62d6\u52a8\u6ed1\u5757\u53ef\u624b\u52a8\u8986\u76d6\u3002',
+                    '\u9810\u8a2d\u70ba\u81ea\u52d5\uff1a\u6839\u64da\u87a2\u5e55 DPI \u8207\u5206\u8fa8\u7387\u8abf\u6574\u7e2e\u653e\uff0c\u4f4e\u5206\u5c4f\u66f4\u6613\u8b80\u3001\u9ad8 DPI \u4e0d\u6703\u91cd\u8907\u653e\u5927\u3002\u62d6\u52d5\u6ed1\u687f\u53ef\u624b\u52d5\u8986\u84cb\u3002',
+                )}
             </p>
         </section>
 
@@ -216,7 +307,8 @@ export const UISettingsPanel = ({
                 />
                 <span className="ui-settings-value">{chatFontSize}px</span>
                 <button
-                    onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
+                    type="button"
+                    onClick={() => { setChatFontSize(14); void SetChatFontSize(14).catch(() => {}); }}
                 >
                     {textForLang(lang, 'Reset', '\u91cd\u7f6e', '\u91cd\u7f6e')}
                 </button>
@@ -226,4 +318,5 @@ export const UISettingsPanel = ({
             </p>
         </section>
     </div>
-);
+    );
+};

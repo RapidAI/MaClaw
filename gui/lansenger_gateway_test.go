@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -70,8 +70,8 @@ func TestLansengerRestartCooldown(t *testing.T) {
 
 func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
-	m.rememberReplyRoute("group-1", true, "staff-abc", "今天天气？", "mid-1")
-	m.rememberReplyRoute("user-1", false, "", "", "")
+	m.rememberReplyRoute("group-1", true, "staff-abc", "张三", "今天天气？", "mid-1", "")
+	m.rememberReplyRoute("user-1", false, "", "", "", "", "")
 	if !m.isGroupReplyTarget("group-1") {
 		t.Fatal("group reply route was not retained")
 	}
@@ -81,11 +81,11 @@ func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 	if m.isGroupReplyTarget("unknown") {
 		t.Fatal("unknown reply route must default to private")
 	}
-	sender, question, msgID, ok := m.groupReplyQuote("group-1")
-	if !ok || sender != "staff-abc" || question != "今天天气？" || msgID != "mid-1" {
-		t.Fatalf("group quote cache = (%q, %q, %q, %v)", sender, question, msgID, ok)
+	d, ok := m.groupReplyQuote("group-1")
+	if !ok || d.senderID != "staff-abc" || d.senderName != "张三" || d.question != "今天天气？" || d.messageID != "mid-1" {
+		t.Fatalf("group quote cache = %#v ok=%v", d, ok)
 	}
-	if _, _, _, ok := m.groupReplyQuote("user-1"); ok {
+	if _, ok := m.groupReplyQuote("user-1"); ok {
 		t.Fatal("private route must not expose a group quote")
 	}
 }
@@ -93,7 +93,7 @@ func TestLansengerReplyRoutePreservesGroupRouting(t *testing.T) {
 func TestLansengerReplyRouteHasBoundedCache(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
 	for i := 0; i < maxLansengerReplyRoutes+1; i++ {
-		m.rememberReplyRoute(fmt.Sprintf("target-%d", i), i%2 == 0, "", "", "")
+		m.rememberReplyRoute(fmt.Sprintf("target-%d", i), i%2 == 0, "", "", "", "", "")
 	}
 	if got := len(m.replyRoutes); got != maxLansengerReplyRoutes {
 		t.Fatalf("reply route cache size = %d, want %d", got, maxLansengerReplyRoutes)
@@ -102,10 +102,194 @@ func TestLansengerReplyRouteHasBoundedCache(t *testing.T) {
 
 func TestLansengerReplyRoutesCanBeClearedOnLifecycleReset(t *testing.T) {
 	m := newLansengerGatewayManager(nil)
-	m.rememberReplyRoute("group-1", true, "A", "q", "m1")
+	m.rememberReplyRoute("group-1", true, "A", "", "q", "m1", "")
 	clear(m.replyRoutes)
 	if m.isGroupReplyTarget("group-1") {
 		t.Fatal("cleared reply route was retained")
+	}
+}
+
+func TestTakeReplyDecorationsOnlyOnce(t *testing.T) {
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-1", "李四", "q?", "mid-9", "")
+	// Empty preferred must never decorate (queue ack / reject would steal slots).
+	if _, ok := m.takeReplyDecorations("group-1", ""); ok {
+		t.Fatal("empty preferred must not take")
+	}
+	d, ok := m.takeReplyDecorations("group-1", "mid-9")
+	if !ok || d.senderID != "staff-1" || d.senderName != "李四" || d.question != "q?" || d.messageID != "mid-9" {
+		t.Fatalf("first take = %#v ok=%v", d, ok)
+	}
+	if _, ok := m.takeReplyDecorations("group-1", "mid-9"); ok {
+		t.Fatal("second take must fail (slot consumed)")
+	}
+	// Route still usable for isGroup / quote metadata without re-decorating.
+	if !m.isGroupReplyTarget("group-1") {
+		t.Fatal("group route must remain after take")
+	}
+	// Private routes also decorate once (DM auto-@).
+	m.rememberReplyRoute("user-9", false, "user-9", "", "", "dm-1", "")
+	if d, ok := m.takeReplyDecorations("user-9", "dm-1"); !ok || d.messageID != "dm-1" {
+		t.Fatalf("dm first take %#v ok=%v", d, ok)
+	}
+	if _, ok := m.takeReplyDecorations("user-9", "dm-1"); ok {
+		t.Fatal("dm second take must fail")
+	}
+}
+
+func TestTakeReplyDecorationsRequiresSourceMessageID(t *testing.T) {
+	// Concurrent pending slots without preferred id must not FIFO-steal.
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-a", "", "问题A", "mid-a", "")
+	m.rememberReplyRoute("group-1", true, "staff-b", "", "问题B", "mid-b", "")
+	if !m.isGroupReplyTarget("group-1") {
+		t.Fatal("expected group route")
+	}
+	if _, ok := m.takeReplyDecorations("group-1", ""); ok {
+		t.Fatal("empty preferred must not FIFO-steal under concurrent pending")
+	}
+	d1, ok := m.takeReplyDecorations("group-1", "mid-a")
+	if !ok || d1.senderID != "staff-a" || d1.question != "问题A" || d1.messageID != "mid-a" {
+		t.Fatalf("A by id = %#v ok=%v", d1, ok)
+	}
+	d2, ok := m.takeReplyDecorations("group-1", "mid-b")
+	if !ok || d2.senderID != "staff-b" || d2.question != "问题B" || d2.messageID != "mid-b" {
+		t.Fatalf("B by id = %#v ok=%v", d2, ok)
+	}
+	// isGroup must survive drained pending so late hub chunks still route as group.
+	if !m.isGroupReplyTarget("group-1") {
+		t.Fatal("group route must survive drained pending")
+	}
+}
+
+func TestForgetReplyDecorOnHubFallback(t *testing.T) {
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-a", "", "问", "mid-a", "mc-1")
+	m.forgetReplyDecor("group-1", "mc-1")
+	if _, ok := m.takeReplyDecorations("group-1", "mc-1"); ok {
+		t.Fatal("forgotten corr must not decorate")
+	}
+	// isGroup retained for routing.
+	if !m.isGroupReplyTarget("group-1") {
+		t.Fatal("group route should remain after forget")
+	}
+}
+
+func TestPruneLansengerPendingDecorsTTL(t *testing.T) {
+	now := time.Now()
+	pending := []lansengerReplyDecor{
+		{correlationID: "old", at: now.Add(-lansengerPendingDecorTTL - time.Minute)},
+		{correlationID: "fresh", at: now.Add(-time.Minute)},
+		{correlationID: "zero-at"}, // zero at kept (tests / legacy)
+	}
+	got := pruneLansengerPendingDecors(pending, now)
+	if len(got) != 2 {
+		t.Fatalf("len=%d, want 2 (fresh+zero)", len(got))
+	}
+	if got[0].correlationID != "fresh" || got[1].correlationID != "zero-at" {
+		t.Fatalf("got %#v", got)
+	}
+	// Expired slot must not be take-able after remember path prunes.
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "a", "", "q", "mid-old", "mid-old")
+	route := m.replyRoutes["group-1"]
+	route.pending[0].at = now.Add(-lansengerPendingDecorTTL - time.Minute)
+	m.replyRoutes["group-1"] = route
+	if _, ok := m.takeReplyDecorations("group-1", "mid-old"); ok {
+		t.Fatal("TTL-expired pending must not decorate")
+	}
+}
+
+func TestTakeReplyDecorationsPrefersSourceMessageID(t *testing.T) {
+	// Hub finishes B before A — preferred message id must pair correctly.
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-a", "", "问题A", "mid-a", "")
+	m.rememberReplyRoute("group-1", true, "staff-b", "", "问题B", "mid-b", "")
+	d, ok := m.takeReplyDecorations("group-1", "mid-b")
+	if !ok || d.senderID != "staff-b" || d.question != "问题B" || d.messageID != "mid-b" {
+		t.Fatalf("prefer B = %#v ok=%v", d, ok)
+	}
+	d, ok = m.takeReplyDecorations("group-1", "mid-a")
+	if !ok || d.senderID != "staff-a" || d.question != "问题A" || d.messageID != "mid-a" {
+		t.Fatalf("then A = %#v ok=%v", d, ok)
+	}
+}
+
+func TestTakeReplyDecorationsNoFIFOStealOnMultiChunk(t *testing.T) {
+	// First hub chunk consumes mid-a; later chunks still carry source_message_id
+	// mid-a and must not steal mid-b via FIFO fallback.
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-a", "", "问题A", "mid-a", "")
+	m.rememberReplyRoute("group-1", true, "staff-b", "", "问题B", "mid-b", "")
+	if _, ok := m.takeReplyDecorations("group-1", "mid-a"); !ok {
+		t.Fatal("first chunk of A should decorate")
+	}
+	if _, ok := m.takeReplyDecorations("group-1", "mid-a"); ok {
+		t.Fatal("second chunk of A must not decorate again / steal B")
+	}
+	d, ok := m.takeReplyDecorations("group-1", "mid-b")
+	if !ok || d.senderID != "staff-b" || d.question != "问题B" || d.messageID != "mid-b" {
+		t.Fatalf("B still intact = %#v ok=%v", d, ok)
+	}
+}
+
+func TestTakeReplyDecorationsSyntheticCorrelationKeepsPlatformRefEmpty(t *testing.T) {
+	// Platform message id empty; synthetic corr pairs multi-chunk without becoming refMsgId.
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-a", "", "问A", "", "mc-synthetic-1")
+	m.rememberReplyRoute("group-1", true, "staff-b", "", "问B", "mid-b", "mid-b")
+	d, ok := m.takeReplyDecorations("group-1", "mc-synthetic-1")
+	if !ok || d.senderID != "staff-a" || d.question != "问A" || d.messageID != "" {
+		t.Fatalf("synthetic take = %#v ok=%v", d, ok)
+	}
+	if _, ok := m.takeReplyDecorations("group-1", "mc-synthetic-1"); ok {
+		t.Fatal("second synthetic chunk must not steal B")
+	}
+	d, ok = m.takeReplyDecorations("group-1", "mid-b")
+	if !ok || d.senderID != "staff-b" || d.messageID != "mid-b" {
+		t.Fatalf("B = %#v ok=%v", d, ok)
+	}
+}
+
+func TestHubReplyDecorUsesCachedDisplayName(t *testing.T) {
+	// Hub path reconstructs inbound from the route cache; display name must survive.
+	m := newLansengerGatewayManager(nil)
+	m.rememberReplyRoute("group-1", true, "staff-abc", "王占一", "帮我查天气", "mid-1", "")
+	d, ok := m.takeReplyDecorations("group-1", "mid-1")
+	if !ok {
+		t.Fatal("expected decor")
+	}
+	if d.senderName != "王占一" {
+		t.Fatalf("cached display name = %q", d.senderName)
+	}
+	inbound := lansenger.IncomingMessage{
+		ChatType:   "group",
+		GroupID:    "group-1",
+		FromUserID: d.senderID,
+		SenderName: d.senderName,
+		MessageID:  d.messageID,
+		Text:       d.question,
+	}
+	out := buildLansengerOutgoingText(inbound, "今天晴。", lansenger.GroupChatOptions{RequireMention: true})
+	if !strings.HasPrefix(out.Text, "王占一问：帮我查天气") {
+		t.Fatalf("hub reconstructed quote must use display name, got %q", out.Text)
+	}
+	// Echoed staffId must not be stored as a "display name".
+	m.rememberReplyRoute("group-2", true, "staff-xyz", "staff-xyz", "问题", "mid-2", "")
+	d2, ok := m.takeReplyDecorations("group-2", "mid-2")
+	if !ok || d2.senderName != "" || d2.senderID != "staff-xyz" {
+		t.Fatalf("echoed id must not be cached as name: %#v ok=%v", d2, ok)
+	}
+	inbound2 := lansenger.IncomingMessage{
+		ChatType:   "group",
+		GroupID:    "group-2",
+		FromUserID: d2.senderID,
+		SenderName: d2.senderName,
+		Text:       d2.question,
+	}
+	out2 := buildLansengerOutgoingText(inbound2, "答", lansenger.GroupChatOptions{RequireMention: true})
+	if !strings.HasPrefix(out2.Text, "staff-xyz问：") {
+		t.Fatalf("fallback quote must use staffId, got %q", out2.Text)
 	}
 }
 
@@ -119,16 +303,133 @@ func TestLansengerGroupReplyTextQuotesQuestion(t *testing.T) {
 		Text:       "帮我查天气",
 	}
 	got := m.groupReplyText(msg, "今天晴。")
-	want := lansenger.FormatGroupReplyWithQuote("staff-abc", "帮我查天气", "今天晴。")
+	want := lansenger.FormatGroupReplyWithQuote("张三", "帮我查天气", "今天晴。")
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(got, "staff-abc问：") {
-		t.Fatalf("expected staff id prefix, got %q", got)
+	if !strings.HasPrefix(got, "张三问：") {
+		t.Fatalf("expected display name prefix, got %q", got)
+	}
+	// When Lansenger omits senderName, fall back to staffId so the header is not blank.
+	noName := lansenger.IncomingMessage{
+		ChatType:   "group",
+		GroupID:    "g1",
+		FromUserID: "staff-abc",
+		Text:       "帮我查天气",
+	}
+	if got := m.groupReplyText(noName, "今天晴。"); !strings.HasPrefix(got, "staff-abc问：") {
+		t.Fatalf("expected staffId fallback prefix, got %q", got)
 	}
 	private := lansenger.IncomingMessage{ChatType: "p2p", FromUserID: "staff-abc", Text: "帮我查天气"}
 	if got := m.groupReplyText(private, "今天晴。"); got != "今天晴。" {
 		t.Fatalf("private reply must stay plain, got %q", got)
+	}
+	// Quote path must strip leading @Bot tokens like buildLansengerOutgoingText.
+	withMention := lansenger.IncomingMessage{
+		ChatType:   "group",
+		GroupID:    "g1",
+		FromUserID: "staff-abc",
+		Text:       "@测试机器人 帮我查天气",
+		MentionedBots: []lansenger.MentionedBot{
+			{ID: "bot-1", Name: "测试机器人"},
+		},
+	}
+	gotMention := m.groupReplyText(withMention, "今天晴。")
+	if strings.Contains(gotMention, "@测试机器人") {
+		t.Fatalf("groupReplyText quote must strip @bot, got %q", gotMention)
+	}
+	if !strings.Contains(gotMention, "帮我查天气") {
+		t.Fatalf("groupReplyText quote must keep cleaned question, got %q", gotMention)
+	}
+}
+
+func TestStripLansengerBotMentionsForAgentPath(t *testing.T) {
+	msg := lansenger.IncomingMessage{
+		ChatType: "group",
+		GroupID:  "g1",
+		Text:     "@测试机器人 帮我查天气",
+		MentionedBots: []lansenger.MentionedBot{
+			{ID: "bot-1", Name: "测试机器人"},
+		},
+	}
+	got := stripLansengerBotMentions(msg)
+	if got != "帮我查天气" {
+		t.Fatalf("strip = %q, want 帮我查天气", got)
+	}
+	// Outbound text quote should also prefer cleaned question.
+	out := buildLansengerOutgoingText(msg, "晴", lansenger.GroupChatOptions{RequireMention: true})
+	if !strings.HasPrefix(out.Text, "问：帮我查天气") && !strings.Contains(out.Text, "问：帮我查天气") {
+		// who may be "有人" when FromUserID empty
+		if !strings.Contains(out.Text, "帮我查天气") || strings.Contains(out.Text, "@测试机器人") {
+			t.Fatalf("quote should use cleaned text, got %q", out.Text)
+		}
+	}
+	if strings.Contains(out.Text, "@测试机器人") {
+		t.Fatalf("quote must not retain @bot token, got %q", out.Text)
+	}
+}
+
+func TestPassthroughSlashDetectedAfterBotMentionStrip(t *testing.T) {
+	// Group chats commonly send "@Bot /help" — slash routing must see cleaned text.
+	msg := lansenger.IncomingMessage{
+		ChatType: "group",
+		GroupID:  "g1",
+		Text:     "@M-Wiggins /help",
+		MentionedBots: []lansenger.MentionedBot{
+			{ID: "bot", Name: "M-Wiggins"},
+		},
+	}
+	cleaned := stripLansengerBotMentions(msg)
+	if cleaned != "/help" {
+		t.Fatalf("cleaned = %q, want /help", cleaned)
+	}
+	if !isPassthroughSlashText(cleaned) {
+		t.Fatal("cleaned /help must be a passthrough slash command")
+	}
+	if isPassthroughSlashText(msg.Text) {
+		t.Fatal("raw @Bot /help must NOT match slash detector (needs strip first)")
+	}
+	for _, raw := range []string{"@Bot /run demo", "@x /runctl status", "@机器人 /exec echo hi"} {
+		m := lansenger.IncomingMessage{Text: raw}
+		if !isPassthroughSlashText(stripLansengerBotMentions(m)) {
+			t.Fatalf("expected slash after strip for %q -> %q", raw, stripLansengerBotMentions(m))
+		}
+	}
+}
+
+func TestBuildLansengerOutgoingSystemNoticeSkipsGroupQuote(t *testing.T) {
+	msg := lansenger.IncomingMessage{
+		ChatType:   "group",
+		GroupID:    "g1",
+		FromUserID: "staff-1",
+		MessageID:  "mid-1",
+		Text:       "原问题",
+	}
+	opts := lansenger.GroupChatOptions{
+		RequireMention:   true,
+		AutoMentionReply: true,
+		AutoQuoteReply:   true,
+	}
+	// Status/error notices must not @ or quote (no "xx问：" / reminder / refMsgId).
+	out := buildLansengerOutgoingTextEx(msg, "Hub 未连接", opts, true)
+	if out.Text != "Hub 未连接" {
+		t.Fatalf("system notice text = %q", out.Text)
+	}
+	if out.Reminder != nil || out.RefMsgID != "" {
+		t.Fatalf("system notice must not decorate, rem=%#v ref=%q", out.Reminder, out.RefMsgID)
+	}
+	// Normal agent replies still quote when native quote is unavailable.
+	agent := buildLansengerOutgoingText(msg, "答案", lansenger.GroupChatOptions{RequireMention: true})
+	if !strings.HasPrefix(agent.Text, "staff-1问：") {
+		t.Fatalf("agent reply should text-quote, got %q", agent.Text)
+	}
+	// AutoQuote with message id uses native ref, not text prefix.
+	quoted := buildLansengerOutgoingText(msg, "答案", opts)
+	if strings.Contains(quoted.Text, "问：") {
+		t.Fatalf("native quote path must not text-prefix, got %q", quoted.Text)
+	}
+	if quoted.RefMsgID != "mid-1" || quoted.Reminder == nil || len(quoted.Reminder.UserIDs) != 1 {
+		t.Fatalf("decorations = ref=%q rem=%#v", quoted.RefMsgID, quoted.Reminder)
 	}
 }
 
@@ -209,10 +510,10 @@ func TestAgentTextWithGroupContextInjectsMetadataWithoutMutatingQuoteSource(t *t
 	if !strings.Contains(got, "用户消息:\n看下群里还有哪些机器人？") {
 		t.Fatalf("expected original user text section, got %q", got)
 	}
-	// Quote path must still use pristine msg.Text.
+	// Quote path must still use pristine msg.Text and prefer display name.
 	quoted := m.groupReplyText(msg, "目前无法获取完整成员列表。")
-	if !strings.HasPrefix(quoted, "staff-abc问：看下群里还有哪些机器人？") {
-		t.Fatalf("group quote must use original question, got %q", quoted)
+	if !strings.HasPrefix(quoted, "王占一问：看下群里还有哪些机器人？") {
+		t.Fatalf("group quote must use display name + original question, got %q", quoted)
 	}
 	if strings.Contains(quoted, "[群聊上下文]") {
 		t.Fatalf("group quote must not include agent context prefix, got %q", quoted)

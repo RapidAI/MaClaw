@@ -316,6 +316,12 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *pendingRecordAudioState.
 	pendingRecordAudio sync.Map
 
+	// pendingPostRecording tracks a completed recording that is waiting for the
+	// user to pick a post-processing action via engine-injected GUI buttons
+	// (minutes / transcribe / keep_only). Keyed by userID, value is
+	// *pendingPostRecordingState.
+	pendingPostRecording sync.Map
+
 	// pendingUserReply tracks plain-text assistant questions that expect the
 	// next user message to continue the same task. Keyed by userID, value is
 	// *pendingUserReplyState.

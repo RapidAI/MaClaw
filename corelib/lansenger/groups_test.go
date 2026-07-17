@@ -133,7 +133,7 @@ func TestGetGroupMembersPaginatesAndSkipsEmptyIDs(t *testing.T) {
 			"data": map[string]any{
 				"totalMembers": 202,
 				"members": []map[string]any{
-					{"staffId": "staff-1", "name": "Alice", "fromType": 0, "role": 2},
+					{"staffId": "staff-1", "name": "Alice", "fromType": 0, "status": 1, "role": 2},
 					{"staffId": "", "name": "ignored", "fromType": 0},
 					{"staffId": "bot-1", "name": "Robot", "fromType": 1},
 				},
@@ -151,8 +151,29 @@ func TestGetGroupMembersPaginatesAndSkipsEmptyIDs(t *testing.T) {
 	if page.TotalMembers != 202 || len(page.Members) != 2 {
 		t.Fatalf("GetGroupMembers = %#v", page)
 	}
-	if page.Members[0].StaffID != "staff-1" || page.Members[0].Name != "Alice" || page.Members[0].Role != 2 {
+	if page.Members[0].StaffID != "staff-1" || page.Members[0].Name != "Alice" || page.Members[0].Status != 1 || page.Members[0].Role != 2 {
 		t.Fatalf("unexpected first member: %#v", page.Members[0])
+	}
+}
+
+func TestGetGroupMembersAllowsMissingReportedTotal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/apptoken/create", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0, "data": map[string]any{"appToken": "tok", "expiresIn": 3600}})
+	})
+	mux.HandleFunc("/v2/groups/group-1/members/fetch", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data":    map[string]any{"members": []map[string]any{{"staffId": "staff-1", "name": "Alice"}}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	gw := NewGateway(Config{AppID: "app", AppSecret: "sec", ApiGatewayURL: srv.URL}, nil)
+	page, err := gw.GetGroupMembers(context.Background(), "group-1", 0, 100)
+	if err != nil || page.TotalMembers != 0 || len(page.Members) != 1 {
+		t.Fatalf("missing total must retain returned members: page=%#v err=%v", page, err)
 	}
 }
 

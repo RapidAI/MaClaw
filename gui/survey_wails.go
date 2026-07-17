@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -372,7 +373,8 @@ func (a *App) AnnounceSurveyToBoundGroups(id string) (string, error) {
 			Deadline    string `json:"deadline"`
 			TargetCount int    `json:"target_count"`
 		} `json:"settings"`
-		Bindings []struct {
+		Questions []json.RawMessage `json:"questions"`
+		Bindings  []struct {
 			Platform string `json:"platform"`
 			GroupID  string `json:"group_id"`
 		} `json:"bindings"`
@@ -380,18 +382,14 @@ func (a *App) AnnounceSurveyToBoundGroups(id string) (string, error) {
 	if err := json.Unmarshal(raw, &sv); err != nil {
 		return "", err
 	}
-	text := fmt.Sprintf("【问卷】%s\n短码：%s", sv.Title, sv.ShortCode)
-	if sv.Settings.Deadline != "" {
-		if t, err := time.Parse(time.RFC3339, sv.Settings.Deadline); err == nil {
-			text += "\n截止：" + t.Local().Format("2006-01-02 15:04")
-		} else {
-			text += "\n截止：" + sv.Settings.Deadline
-		}
-	}
-	if sv.Settings.TargetCount > 0 {
-		text += fmt.Sprintf("\n目标回收：%d 份", sv.Settings.TargetCount)
-	}
-	text += fmt.Sprintf("\n请 @机器人 发送 /survey %s 开始填写", sv.ShortCode)
+	// Card text follows the desktop interface language.
+	text := buildSurveyAnnounceText(a.surveyIMLang(), surveyAnnounceInfo{
+		Title:         sv.Title,
+		ShortCode:     sv.ShortCode,
+		Deadline:      sv.Settings.Deadline,
+		TargetCount:   sv.Settings.TargetCount,
+		QuestionCount: len(sv.Questions),
+	})
 	var failures []string
 	for _, b := range sv.Bindings {
 		if b.Platform != "lansenger" {
@@ -403,6 +401,34 @@ func (a *App) AnnounceSurveyToBoundGroups(id string) (string, error) {
 	}
 	out, _ := json.Marshal(map[string]any{"failures": failures})
 	return string(out), nil
+}
+
+// surveyAnnounceInfo carries the fields rendered on the group announce card.
+type surveyAnnounceInfo struct {
+	Title         string
+	ShortCode     string
+	Deadline      string // RFC3339 or raw
+	TargetCount   int
+	QuestionCount int
+}
+
+// buildSurveyAnnounceText renders the group announce card in the given language.
+func buildSurveyAnnounceText(lang string, sv surveyAnnounceInfo) string {
+	text := i18n.Tf(i18n.MsgSurveyAnnounceHeader, lang, sv.Title, sv.ShortCode)
+	if sv.QuestionCount > 0 {
+		text += "\n" + i18n.Tf(i18n.MsgSurveyAnnounceQuestions, lang, sv.QuestionCount)
+	}
+	if sv.Deadline != "" {
+		if t, err := time.Parse(time.RFC3339, sv.Deadline); err == nil {
+			text += "\n" + i18n.Tf(i18n.MsgSurveyAnnounceDeadline, lang, t.Local().Format("2006-01-02 15:04"))
+		} else {
+			text += "\n" + i18n.Tf(i18n.MsgSurveyAnnounceDeadline, lang, sv.Deadline)
+		}
+	}
+	if sv.TargetCount > 0 {
+		text += "\n" + i18n.Tf(i18n.MsgSurveyAnnounceTarget, lang, sv.TargetCount)
+	}
+	return text + "\n" + i18n.Tf(i18n.MsgSurveyAnnounceCTA, lang, sv.ShortCode)
 }
 
 func (a *App) sendLansengerGroupText(groupID, text string) error {

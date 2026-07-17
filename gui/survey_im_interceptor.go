@@ -7,8 +7,52 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/lansenger"
 )
+
+// Mirror of hub/internal/survey IM event codes (hub internal packages are not
+// importable from gui). Drive session hints off these, never off reply text.
+const (
+	surveyEventResponseSubmitted = "response_submitted"
+	surveyEventSessionEnded      = "session_ended"
+	surveyEventSessionActive     = "session_active"
+)
+
+// surveyIMLang resolves the gateway machine's interface language for survey
+// IM texts (zh/en today; falls back to zh via i18n.NormalizeLang).
+func (a *App) surveyIMLang() string {
+	lang := a.CurrentLanguage
+	if strings.TrimSpace(lang) == "" {
+		if cfg, err := a.LoadConfig(); err == nil {
+			lang = cfg.Language
+		}
+	}
+	return i18n.NormalizeLang(lang)
+}
+
+// surveyScopedUserID scopes a user id by group so rate limits / session hints
+// match the Hub's group-scoped session key for group chats.
+func surveyScopedUserID(groupID, userID string) string {
+	userID = strings.TrimSpace(userID)
+	if gid := strings.TrimSpace(groupID); gid != "" {
+		return gid + ":" + userID
+	}
+	return userID
+}
+
+// surveyHintAction maps a Hub IM event code to a session-hint mutation.
+// Legacy Hubs send no event: non-command handled replies still mark (old behavior).
+func surveyHintAction(ev string, isCmd bool) (clear, mark bool) {
+	switch ev {
+	case surveyEventResponseSubmitted, surveyEventSessionEnded:
+		return true, false
+	case surveyEventSessionActive:
+		return false, true
+	default:
+		return false, !isCmd
+	}
+}
 
 // surveyEnabled reports whether IM survey intercept is on (default true).
 func (a *App) surveyEnabled() bool {
@@ -61,16 +105,19 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	hints := m.surveyHints
 	m.mu.Unlock()
 
+	lang := m.app.surveyIMLang()
 	userID := strings.TrimSpace(msg.FromUserID)
 	if userID == "" {
 		// Hub requires user_id; avoid a confusing 400→"服务出错" path for commands.
 		if looksLikeSurveyCommand(text) {
-			_ = m.replySurveyText(msg, "无法识别发送者，请稍后重试。")
+			_ = m.replySurveyText(msg, i18n.T(i18n.MsgSurveyIMUnknownSender, lang))
 			return true
 		}
 		return false
 	}
-	rk := surveyRateKey("lansenger", userID)
+	// Group-scope the rate/hint key so one user's sessions in different groups
+	// (matching the Hub group-scoped session key) do not share limits or hints.
+	rk := surveyRateKey("lansenger", surveyScopedUserID(msg.GroupID, userID))
 	now := time.Now()
 	isCmd := looksLikeSurveyCommand(text)
 
@@ -83,7 +130,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	// Design §9: ~2 msg/s. Only *claim* the message on throttle for explicit commands.
 	if isCmd {
 		if !rate.allow(rk, now) {
-			_ = m.replySurveyText(msg, "操作过快，请稍后再试")
+			_ = m.replySurveyText(msg, i18n.T(i18n.MsgSurveyIMRateLimited, lang))
 			return true
 		}
 	} else if !rate.wouldAllow(rk, now) {
@@ -93,7 +140,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	client, err := m.app.newSurveyHubClient()
 	if err != nil {
 		if isCmd {
-			_ = m.replySurveyText(msg, "问卷服务暂不可用（Hub 未连接），请稍后重试。")
+			_ = m.replySurveyText(msg, i18n.T(i18n.MsgSurveyIMHubUnavailable, lang))
 			return true
 		}
 		return false
@@ -113,6 +160,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 		"text":      text,
 		"is_at_me":  msg.IsAtMe,
 		"raw_text":  msg.Text,
+		"lang":      lang,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -120,7 +168,7 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	if err != nil {
 		log.Printf("[survey-im] im/handle error: %v", err)
 		if isCmd {
-			_ = m.replySurveyText(msg, "问卷服务暂时出错，请稍后重试。")
+			_ = m.replySurveyText(msg, i18n.T(i18n.MsgSurveyIMServiceError, lang))
 			return true
 		}
 		return false
@@ -135,28 +183,11 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 
 	ev, _ := out["event"].(string)
 	reply, _ := out["reply_text"].(string)
-	// Session lifecycle hints: only mark when user is actually mid-survey.
-	// Clear on terminal outcomes so free-text chat stops probing Hub.
-	switch {
-	case ev == "response_submitted",
-		strings.Contains(reply, "已取消"),
-		strings.Contains(reply, "提交成功"),
-		strings.Contains(reply, "您已提交过"),
-		strings.Contains(reply, "问卷已停止收集"),
-		strings.Contains(reply, "问卷已截止"),
-		strings.Contains(reply, "问卷不可用"),
-		strings.Contains(reply, "会话已失效"),
-		strings.Contains(reply, "该问卷不允许修改"),
-		strings.Contains(reply, "当前没有进行中的问卷"):
+	// Session lifecycle hints follow Hub event codes (never reply text, which is
+	// localized). Legacy Hubs without events keep the old probing behavior.
+	if clear, mark := surveyHintAction(ev, isCmd); clear {
 		hints.clear(rk)
-	case !isCmd:
-		// Session answer / control word that Hub accepted.
-		hints.mark(rk, now, 30*time.Minute)
-	case strings.Contains(reply, "开始填写"),
-		strings.Contains(reply, "继续填写"),
-		strings.Contains(reply, "回复「修改」"),
-		strings.Contains(reply, "答案无效"),
-		strings.Contains(reply, "正在填写"):
+	} else if mark {
 		hints.mark(rk, now, 30*time.Minute)
 	}
 
@@ -169,16 +200,12 @@ func (m *lansengerGatewayManager) tryHandleSurveyMessage(msg lansenger.IncomingM
 	// event type — empty means "response_submitted" for UI refresh compatibility.
 	if sid, _ := out["survey_id"].(string); strings.TrimSpace(sid) != "" {
 		if strings.TrimSpace(ev) == "" {
-			ev = "response_submitted"
+			ev = surveyEventResponseSubmitted
 		}
 		m.app.emitEvent(EventSurveyUpdated, map[string]any{
 			"survey_id": strings.TrimSpace(sid),
 			"event":     ev,
 		})
-		// Belt-and-suspenders: clear free-text hint after submit event.
-		if ev == "response_submitted" {
-			hints.clear(rk)
-		}
 	}
 	return true
 }
@@ -190,39 +217,27 @@ func (m *lansengerGatewayManager) replySurveyText(msg lansenger.IncomingMessage,
 	if gw == nil {
 		return nil
 	}
-	to := lansengerReplyTarget(msg)
-	isGroup := isLansengerGroupMessage(msg)
-	text = m.groupReplyText(msg, text)
-	return gw.SendText(context.Background(), lansenger.OutgoingText{
-		ToUserID: to,
-		Text:     text,
-		IsGroup:  isGroup,
-	})
+	return gw.SendText(context.Background(), m.surveyOutgoingText(msg, text))
 }
 
-// stripLansengerBotMentions removes leading @Bot tokens and known MentionedBots names.
+// surveyOutgoingText builds the decorated survey reply. In groups the bot is
+// always visible: force @voter + quote of the inbound message and prepend a
+// survey identity tag, regardless of the agent-reply decoration toggles.
+func (m *lansengerGatewayManager) surveyOutgoingText(msg lansenger.IncomingMessage, text string) lansenger.OutgoingText {
+	opts := m.currentGroupOpts()
+	if isLansengerGroupMessage(msg) {
+		opts.AutoMentionReply = true
+		opts.AutoQuoteReply = true
+		text = i18n.T(i18n.MsgSurveyGroupTag, m.app.surveyIMLang()) + "\n" + text
+	}
+	// Same decoration path as agent replies: optional native @ / refMsgId / text quote.
+	return buildLansengerOutgoingText(msg, text, opts)
+}
+
+// stripLansengerBotMentions is a thin gui wrapper around the shared corelib
+// helper so survey / gateway / watch call sites stay short.
 func stripLansengerBotMentions(msg lansenger.IncomingMessage) string {
-	text := strings.TrimSpace(msg.Text)
-	// Prefer Fields so multi-byte names are handled correctly.
-	for {
-		fields := strings.Fields(text)
-		if len(fields) == 0 || !strings.HasPrefix(fields[0], "@") {
-			break
-		}
-		text = strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
-	}
-	for _, b := range msg.MentionedBots {
-		name := strings.TrimSpace(b.Name)
-		if name == "" {
-			continue
-		}
-		for _, p := range []string{"@" + name + " ", "@" + name, name + " ", name} {
-			if strings.HasPrefix(text, p) {
-				text = strings.TrimSpace(text[len(p):])
-			}
-		}
-	}
-	return strings.TrimSpace(text)
+	return lansenger.StripBotMentions(msg)
 }
 
 func looksLikeSurveyCommand(text string) bool {

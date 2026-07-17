@@ -4635,6 +4635,17 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 displayText: dismissSessionText,
             });
         }
+        const recordPostMatch = command.match(/^__record_post__\s+(\S+)$/);
+        if (recordPostMatch) {
+            const action = recordPostMatch[1];
+            const displayLabels: Record<string, string> = {
+                minutes: localizeText(uiLang, "Transcribe + meeting minutes", "转写并生成会议纪要", "轉寫並生成會議紀要"),
+                transcribe: localizeText(uiLang, "Transcribe only", "仅转写文字", "僅轉寫文字"),
+                keep_only: localizeText(uiLang, "Keep audio only", "不做处理", "不做處理"),
+            };
+            setMessages(prev => disableActionsForCommand(prev, command));
+            return sendMessage(command, { uiAction: true, displayText: displayLabels[action] || command });
+        }
         const workflowReviewMatch = command.match(/^__wf_review__\s+(\S+)$/);
         if (workflowReviewMatch) {
             const action = workflowReviewMatch[1];

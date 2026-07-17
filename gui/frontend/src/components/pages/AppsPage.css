@@ -1207,6 +1207,7 @@
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
     background: var(--theme-surface);
+    color: var(--theme-text-primary);
     font: inherit;
     text-align: left;
     cursor: pointer;
@@ -1251,16 +1252,12 @@
     padding-top: 2px;
 }
 
-.apps-datasrv-approval-summary__details-head,
-.apps-datasrv-approval-summary__row-main {
+.apps-datasrv-approval-summary__details-head {
     min-width: 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
     align-items: center;
-}
-
-.apps-datasrv-approval-summary__details-head {
     color: var(--theme-text-secondary);
     font-size: 0.72rem;
 }
@@ -1278,11 +1275,18 @@
     align-items: stretch;
 }
 
+/* Interactive row control: keep grid + theme text on one rule so button UA color cannot win. */
 .apps-datasrv-approval-summary__row-main {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
     padding: 7px 8px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--theme-surface) 92%, var(--theme-bg));
+    background: color-mix(in srgb, var(--theme-surface) 92%, var(--theme-page-bg));
+    color: var(--theme-text-primary);
     font: inherit;
     text-align: left;
     cursor: pointer;
@@ -4056,6 +4060,8 @@
     border: 1px solid var(--theme-border-subtle);
     border-radius: var(--radius-md);
     background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
     cursor: pointer;
 }
 

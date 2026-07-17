@@ -163,6 +163,296 @@ func TestAddSkillInvalidatesCachedSkillScanner(t *testing.T) {
 	}
 }
 
+func TestCachedSkillScannerUpsertSkillsSurfacesImmediatelyAndSurvivesScan(t *testing.T) {
+	scanner := &CachedSkillScanner{
+		roots: []string{t.TempDir()}, // empty root: disk scan finds nothing
+	}
+	scanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{{Name: "existing", Status: "active", SkillDir: filepath.Join(t.TempDir(), "existing")}},
+		createdAt: time.Now(),
+		stale:     false,
+	})
+
+	importedDir := filepath.Join(t.TempDir(), "fresh")
+	scanner.UpsertSkills([]corelib.NLSkillEntry{{
+		Name:        "fresh",
+		Description: "from upsert",
+		Status:      "active",
+		SkillDir:    importedDir,
+	}})
+
+	got := scanner.Get()
+	if len(got) != 2 {
+		t.Fatalf("Get() after Upsert len = %d, want 2", len(got))
+	}
+	found := false
+	for _, s := range got {
+		if s.Name == "fresh" && s.SkillDir == importedDir {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Get() = %+v, want fresh skill", got)
+	}
+	entry := scanner.cache.Load()
+	if entry == nil || !entry.stale {
+		t.Fatalf("cache entry = %#v, want stale after Upsert", entry)
+	}
+	if len(scanner.pendingUpserts) != 1 {
+		t.Fatalf("pendingUpserts = %d, want 1", len(scanner.pendingUpserts))
+	}
+
+	// Concurrent-style scan that misses the new dir must still keep the pending upsert.
+	scanner.scan()
+	got = scanner.Get()
+	found = false
+	for _, s := range got {
+		if s.Name == "fresh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Get() after scan = %+v, want pending upsert retained", got)
+	}
+	if len(scanner.pendingUpserts) != 0 {
+		t.Fatalf("pendingUpserts after scan = %d, want 0", len(scanner.pendingUpserts))
+	}
+}
+
+func TestCachedSkillScannerRemoveByDirCancelsPendingUpsert(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "skill-a")
+	scanner := &CachedSkillScanner{}
+	scanner.UpsertSkills([]corelib.NLSkillEntry{{
+		Name:     "skill-a",
+		Status:   "active",
+		SkillDir: dir,
+	}})
+	if len(scanner.pendingUpserts) != 1 {
+		t.Fatalf("pendingUpserts before remove = %d, want 1", len(scanner.pendingUpserts))
+	}
+	scanner.RemoveByDir(dir)
+	if len(scanner.pendingUpserts) != 0 {
+		t.Fatalf("pendingUpserts after remove = %d, want 0", len(scanner.pendingUpserts))
+	}
+	if _, removed := scanner.pendingRemovals[skillDirIdentityKey(dir)]; !removed {
+		t.Fatalf("pendingRemovals missing %s", dir)
+	}
+	for _, s := range scanner.Get() {
+		if s.Name == "skill-a" {
+			t.Fatalf("Get() still has skill-a after RemoveByDir: %+v", scanner.Get())
+		}
+	}
+}
+
+func TestCachedSkillScannerRearmsScanWhenStaleAfterInFlightScan(t *testing.T) {
+	// Contract: if a mutation marks the cache stale while scanning==true
+	// (so triggerBackgroundScan CAS fails), clearing the scanning flag must
+	// re-arm a scan so we do not sit on a permanent stale marker with no worker.
+	root := t.TempDir()
+	scanner := &CachedSkillScanner{roots: []string{root}}
+	scanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{},
+		createdAt: time.Now(),
+		stale:     false,
+	})
+
+	// Simulate an in-flight scan holding the scanning flag.
+	scanner.scanning.Store(true)
+	scanner.UpsertSkills([]corelib.NLSkillEntry{{
+		Name:     "late",
+		Status:   "active",
+		SkillDir: filepath.Join(root, "late"),
+	}})
+	if !scanner.scanning.Load() {
+		t.Fatal("scanning flag should still be held by the simulated in-flight scan")
+	}
+	entry := scanner.cache.Load()
+	if entry == nil || !entry.stale {
+		t.Fatalf("entry = %#v, want stale after Upsert during in-flight scan", entry)
+	}
+	// Upsert could not start a nested scan (CAS blocked).
+	// Finish the simulated worker the same way triggerBackgroundScan does.
+	scanner.scanning.Store(false)
+	if entry := scanner.cache.Load(); entry != nil && entry.stale {
+		scanner.triggerBackgroundScan()
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !scanner.scanning.Load() {
+			entry = scanner.cache.Load()
+			if entry != nil && !entry.stale {
+				// Rescan completed and cleared stale. Pending upsert must still be present
+				// (empty root cannot discover "late" on disk).
+				found := false
+				for _, s := range entry.skills {
+					if s.Name == "late" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("skills after re-armed scan = %+v, want late retained via pending upsert", entry.skills)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for re-armed scan; scanning=%v entry=%#v", scanner.scanning.Load(), scanner.cache.Load())
+}
+
+func TestCachedSkillScannerUpsertReplacesSameNameDifferentDir(t *testing.T) {
+	oldDir := filepath.Join(t.TempDir(), "old")
+	newDir := filepath.Join(t.TempDir(), "new")
+	scanner := &CachedSkillScanner{}
+	scanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{{Name: "Demo", Status: "active", SkillDir: oldDir}},
+		createdAt: time.Now(),
+	})
+	scanner.UpsertSkills([]corelib.NLSkillEntry{{
+		Name:     "demo", // case-insensitive same name
+		Status:   "active",
+		SkillDir: newDir,
+		Description: "replacement",
+	}})
+	got := scanner.Get()
+	if len(got) != 1 {
+		t.Fatalf("Get() len = %d, want 1 (no duplicate names)", len(got))
+	}
+	if got[0].SkillDir != newDir || got[0].Description != "replacement" {
+		t.Fatalf("Get()[0] = %+v, want new dir replacement", got[0])
+	}
+}
+
+func TestCachedSkillScannerScanKeepsReimportAfterPendingRemoval(t *testing.T) {
+	// Disk scan finds skill-a; a concurrent Remove+re-Upsert of the same name
+	// must survive scan() after pendingRemovals filter (seen map rebuild).
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skill-a")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(
+		"name: skill-a\ndescription: on disk\nsteps:\n  - action: bash\n    params:\n      command: echo a\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scanner := &CachedSkillScanner{roots: []string{root}}
+	// Simulate delete-then-reimport while a background scan is in flight:
+	// record removal of the on-disk dir, then upsert the re-imported entry.
+	// (In production the re-import uses a new path under primary skills dir;
+	// for this race we keep the same dir key so disk scan would also see it —
+	// the key assertion is that pending removal rebuilds `seen` so upsert is kept
+	// when the scan path was filtered out.)
+	otherDir := filepath.Join(t.TempDir(), "skill-a-reimport")
+	scanner.RemoveByDir(skillDir)
+	scanner.UpsertSkills([]corelib.NLSkillEntry{{
+		Name:        "skill-a",
+		Description: "reimported",
+		Status:      "active",
+		SkillDir:    otherDir,
+	}})
+	// Drop the removal so disk scan keeps skill-a, then re-set only the
+	// "scan started before reimport" scenario: removal applied to disk result
+	// of skillDir while pending upsert at otherDir must remain.
+	// Force pending state: removal of skillDir + upsert at otherDir.
+	scanner.pendingRemovals = map[string]struct{}{skillDirIdentityKey(skillDir): {}}
+	scanner.pendingUpserts = map[string]corelib.NLSkillEntry{
+		skillDirIdentityKey(otherDir): {
+			Name: "skill-a", Description: "reimported", Status: "active", SkillDir: otherDir,
+		},
+	}
+
+	scanner.scan()
+	got := scanner.Get()
+	foundReimport := false
+	foundOldDir := false
+	for _, s := range got {
+		if s.Name == "skill-a" && s.SkillDir == otherDir {
+			foundReimport = true
+		}
+		if skillDirIdentityKey(s.SkillDir) == skillDirIdentityKey(skillDir) {
+			foundOldDir = true
+		}
+	}
+	if !foundReimport {
+		t.Fatalf("Get() after scan = %+v, want reimported skill-a at otherDir", got)
+	}
+	if foundOldDir {
+		t.Fatalf("Get() still has removed skillDir entry: %+v", got)
+	}
+}
+
+func TestImportNLSkillZipPathRefreshesWarmSkillCacheImmediately(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("AppData", filepath.Join(tmpHome, "AppData", "Roaming"))
+
+	// Pre-warm both the file scanner cache and the executor list cache so a
+	// naive disk write would otherwise leave ListNLSkills stale for up to the
+	// skillLoadCacheTTL window (the bug users see in the skill management UI).
+	scanner := &CachedSkillScanner{}
+	scanner.cache.Store(&skillCacheEntry{
+		skills:    []corelib.NLSkillEntry{},
+		createdAt: time.Now(),
+		stale:     false,
+	})
+	scanner.version.Store(1)
+	// Block background rescan so the test only passes if UpsertSkills provides
+	// the imported skill synchronously (not via a delayed disk scan).
+	scanner.scanning.Store(true)
+
+	app := &App{testHomeDir: tmpHome, cachedSkillScanner: scanner}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	// Prime executor cache with an empty skill list under the current scanner version.
+	if got := app.skillExecutor.List(); len(got) != 0 {
+		t.Fatalf("pre-import List() = %+v, want empty", got)
+	}
+
+	zipPath := filepath.Join(t.TempDir(), "fresh-import.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"fresh-import/skill.yaml": "name: fresh-import\ndescription: should appear immediately\nsteps:\n  - action: bash\n    params:\n      command: echo hi\n",
+	})
+
+	name, err := app.importNLSkillZipPath(zipPath)
+	if err != nil {
+		t.Fatalf("importNLSkillZipPath() error = %v", err)
+	}
+	if name != "fresh-import" {
+		t.Fatalf("name = %q, want fresh-import", name)
+	}
+
+	// Immediate ListNLSkills path used by the skills management UI.
+	got := app.skillExecutor.List()
+	found := false
+	for _, s := range got {
+		if s.Name == "fresh-import" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("List() after zip import = %+v, want fresh-import immediately (warm cache must not hide it)", got)
+	}
+
+	// Scanner cache itself must also expose the skill for other consumers.
+	cached := scanner.Get()
+	found = false
+	for _, s := range cached {
+		if s.Name == "fresh-import" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("CachedSkillScanner.Get() = %+v, want fresh-import after UpsertSkills", cached)
+	}
+}
+
 func TestCloneSkillEntriesDeepCopiesMutableFields(t *testing.T) {
 	fallback := corelib.NLSkillStep{Action: "bash", Params: map[string]interface{}{"command": "echo fallback"}}
 	original := []corelib.NLSkillEntry{{

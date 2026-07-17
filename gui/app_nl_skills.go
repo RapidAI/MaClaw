@@ -344,12 +344,22 @@ func skillNameIdentityKey(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-func (e *SkillExecutor) invalidateSkillCache() {
+// clearSkillListCache drops only the SkillExecutor-level list cache.
+// Use this after CachedSkillScanner.UpsertSkills so we do not re-Invalidate the
+// scanner (which would double-bump the version and schedule a redundant scan).
+func (e *SkillExecutor) clearSkillListCache() {
+	if e == nil {
+		return
+	}
 	e.skillCacheMu.Lock()
 	e.skillCache = nil
 	e.skillCacheAt = time.Time{}
 	e.skillCacheKey = ""
 	e.skillCacheMu.Unlock()
+}
+
+func (e *SkillExecutor) invalidateSkillCache() {
+	e.clearSkillListCache()
 
 	// Also invalidate the CachedSkillScanner so the next Route() call
 	// picks up the updated skill list from disk.
@@ -4130,6 +4140,7 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 	}
 
 	var installedDirs []string
+	installedEntries := make([]corelib.NLSkillEntry, 0, len(packageRoots))
 	for i, packageRoot := range packageRoots {
 		entry := entries[i]
 		destDir := filepath.Join(primaryDir, entry.Name)
@@ -4155,10 +4166,43 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 			cleanupImportedSkillDirs(installedDirs)
 			return "", fmt.Errorf("write skill scan cache: %w", err)
 		}
+		installedEntries = append(installedEntries, installedEntry)
 	}
+
+	// Instant list refresh: zip import only writes to disk, so without an
+	// immediate cache upsert the UI can keep serving a 10-minute stale skill
+	// index until a background rescan finishes.
+	a.refreshSkillIndexesAfterMutation(entries[0].Name, installedEntries...)
 
 	a.emitSkillInstallProgress(entries[0].Name, "done", "Skill imported successfully.", scanReports[0])
 	return entries[0].Name, nil
+}
+
+// refreshSkillIndexesAfterMutation invalidates in-process skill caches and
+// notifies the frontend after a skill definition changes on disk or in config.
+//
+// When installed entries are provided, they are upserted into CachedSkillScanner
+// for immediate ListNLSkills visibility; the executor list cache is cleared
+// without a second scanner Invalidate (UpsertSkills already marks stale and
+// schedules a background rescan).
+func (a *App) refreshSkillIndexesAfterMutation(skillName string, installed ...corelib.NLSkillEntry) {
+	if a == nil {
+		return
+	}
+	if len(installed) > 0 && a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.UpsertSkills(installed)
+		if a.skillExecutor != nil {
+			a.skillExecutor.clearSkillListCache()
+		}
+	} else if a.skillExecutor != nil {
+		a.skillExecutor.invalidateSkillCache()
+	} else if a.cachedSkillScanner != nil {
+		a.cachedSkillScanner.Invalidate()
+	}
+	if a.toolRouter != nil {
+		a.toolRouter.RefreshSkillIndex()
+	}
+	a.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": skillName})
 }
 
 func cleanupImportedSkillDirs(paths []string) {

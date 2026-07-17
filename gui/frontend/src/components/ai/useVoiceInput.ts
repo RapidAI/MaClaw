@@ -25,12 +25,44 @@
  * layer of noise filtering.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText } from "../../../wailsjs/go/main/App";
+import { DiarizeAndTranscribeAudioBase64, TranscribeAudioBase64, IsASRReady, LoadConfig, SpeakPlainText, NormalizeVoiceCommand, CorrectASRText } from "../../../wailsjs/go/main/App";
 import { EventsEmit, EventsOn } from "../../../wailsjs/runtime";
 import { normalizeASRText, resolveNormalizedVoiceText, shouldDispatchASRText } from "./asrTextUtils";
 
 export type VoiceInputState = "idle" | "listening" | "transcribing";
 export type VoiceInputSource = "hold" | "continuous";
+
+type SpeakerTranscript = { start?: number; end?: number; speaker?: number; text?: string };
+
+function speakerPrefix(speaker: number, speakerCount: number): string {
+    return speakerCount > 1 ? `[Speaker ${speaker + 1}] ` : "";
+}
+
+function splitSpeakerPrefix(text: string): { prefix: string; text: string } {
+    const match = /^\[Speaker \d+\]\s*/.exec(text);
+    if (!match) return { prefix: "", text };
+    return { prefix: match[0], text: text.slice(match[0].length) };
+}
+
+export function diarizedVoiceTurns(
+    diarized: SpeakerTranscript[],
+    fallbackText: string,
+): string[] {
+    const turns = diarized
+        .map((turn, index) => ({
+            speaker: Number.isInteger(turn.speaker) && (turn.speaker as number) >= 0 ? Number(turn.speaker) : 0,
+            start: typeof turn.start === "number" && Number.isFinite(turn.start) ? turn.start : index,
+            text: normalizeASRText(String(turn.text || "")),
+        }))
+        .filter((turn) => shouldDispatchASRText(turn.text))
+        .sort((a, b) => a.start - b.start);
+    if (turns.length === 0) {
+        const fallback = normalizeASRText(fallbackText);
+        return shouldDispatchASRText(fallback) ? [fallback] : [];
+    }
+    const speakerCount = new Set(turns.map((turn) => turn.speaker)).size;
+    return turns.map((turn) => speakerPrefix(turn.speaker, speakerCount) + turn.text);
+}
 
 export interface UseVoiceInputResult {
     /** Current state: idle (off), listening (mic open), transcribing (processing a segment) */
@@ -637,6 +669,7 @@ export function useVoiceInput(
     const petAutoRetryOnNoHearRef = useRef(false);
     const petVoiceReadbackEnabledRef = useRef(false);
     const voiceCorrectionEnabledRef = useRef(true); // default on; matches asr_voice_correction_enabled
+	const diarizationEnabledRef = useRef(true); // default on; matches AppConfigDefaults
     const lastPetRetryPromptAtRef = useRef(0);
     const configLoadedRef = useRef(false);     // true after LoadConfig completes -prevents race with early mic open
 
@@ -658,6 +691,7 @@ export function useVoiceInput(
                 petVoiceReadbackEnabledRef.current = !!(cfg as any).pet_voice_readback_enabled && ((cfg as any).pet_readback_mode || 'summary') !== 'off';
                 // Default true when field is absent (AppConfigDefaults).
                 voiceCorrectionEnabledRef.current = (cfg as any).asr_voice_correction_enabled !== false;
+				diarizationEnabledRef.current = (cfg as any).diarization_enabled !== false;
                 configLoadedRef.current = true;
             }).catch(() => {
                 configLoadedRef.current = true; // proceed with defaults on error
@@ -809,24 +843,51 @@ export function useVoiceInput(
                 durationSec: Number(durationSec.toFixed(3)),
             });
             try {
-                const raw = await TranscribeAudioBase64(b64);
-                const trimmed = normalizeASRText(raw);
+                // CAM++ returns ordered, speaker-labelled turns. Send every
+                // distinct turn through the regular assistant callback so a
+                // meeting recorded near the desktop mic becomes multiple
+                // independent user inputs instead of one mixed prompt.
+                let diarized: SpeakerTranscript[] = [];
+                if (diarizationEnabledRef.current) {
+                    try {
+                        diarized = await DiarizeAndTranscribeAudioBase64(b64, 0);
+                    } catch (diarizationErr: unknown) {
+                        // Speaker separation is an enhancement for the desktop
+                        // mic. A missing/invalid CAM++ model must not prevent
+                        // the established one-speaker ASR workflow.
+                        voiceDebug("diarization unavailable; falling back to ASR", {
+                            error: diarizationErr instanceof Error ? diarizationErr.message : String(diarizationErr),
+                        });
+                    }
+                }
+                // Keep the established ASR fallback for one-person speech,
+                // missing/disabled CAM++, and short clips that VAD rejects.
+                // A successful diarization call can still contain only blank
+                // turns after ASR filtering, so decide from usable turns—not
+                // merely from diarized.length—before falling back.
+                let trimmed = diarizedVoiceTurns(diarized, "");
+                if (trimmed.length === 0) {
+                    trimmed = diarizedVoiceTurns([], await TranscribeAudioBase64(b64));
+                }
+                const speakerCount = new Set(diarized
+                    .filter((turn) => shouldDispatchASRText(normalizeASRText(String(turn.text || ""))))
+                    .map((turn) => Number(turn.speaker || 0))).size;
                 voiceDebug("ASR returned", {
-                    rawType: typeof raw,
-                    rawLength: typeof raw === "string" ? raw.length : 0,
-                    trimmedLength: trimmed.length,
+                    diarizedTurns: diarized.length,
+                    speakers: speakerCount,
+                    trimmedLength: trimmed.reduce((n, text) => n + text.length, 0),
                     text: trimmed,
                     source,
                 });
-                if (!shouldDispatchASRText(trimmed)) {
+                if (trimmed.length === 0) {
                     // Empty / punctuation-only (backend may already drop these to "").
                     // Continuous: silent — common for breath/noise; avoid "没听清" spam.
                     // Hold: empty still prompts retry (user deliberately spoke).
                     voiceDebug(
-                        trimmed ? "skip ASR: punctuation-only result" : "ASR returned empty text",
+                        "ASR returned empty text",
                         { text: trimmed, source },
                     );
-                    if (source !== "continuous" && !trimmed) {
+                    if (source !== "continuous") {
                         promptPetRetryOnNoHear("empty-result");
                     }
                     return;
@@ -835,67 +896,66 @@ export function useVoiceInput(
                 // Optional LLM pre-filter (settings: ASR → 语音纠错).
                 // Continuous: command filter + correction (drop background chatter).
                 // Hold: correction-only (user deliberately pressed the mic).
-                let dispatchText = trimmed;
-                if (voiceCorrectionEnabledRef.current) {
-                    try {
-                        if (source === "hold") {
-                            const corrected = normalizeASRText(await CorrectASRText(trimmed));
-                            if (corrected && shouldDispatchASRText(corrected)) {
-                                dispatchText = corrected;
-                            }
-                            voiceDebug("hold ASR corrected", {
-                                input: trimmed,
-                                corrected: dispatchText,
-                            });
-                        } else {
-                            const normResult = await NormalizeVoiceCommand(trimmed) as {
-                                is_command?: boolean;
-                                corrected_text?: string;
-                                confidence?: number;
-                                reason?: string;
-                            };
-                            voiceDebug("voice-command normalized", {
-                                source,
-                                input: trimmed,
-                                corrected: normResult?.corrected_text,
-                                isCommand: normResult?.is_command,
-                                confidence: normResult?.confidence,
-                                reason: normResult?.reason,
-                            });
-                            const resolved = resolveNormalizedVoiceText(trimmed, normResult, source);
-                            if (!resolved.dispatch) {
-                                voiceDebug("skip ASR after normalize", {
+                for (const originalText of trimmed) {
+                    // Do not give the LLM corrector / command classifier the
+                    // synthetic speaker label. It may rewrite or remove it,
+                    // which would lose the identity needed by the assistant.
+                    const labelled = splitSpeakerPrefix(originalText);
+                    let dispatchText = labelled.text;
+                    if (voiceCorrectionEnabledRef.current) {
+                        try {
+                            if (source === "hold") {
+                                const corrected = normalizeASRText(await CorrectASRText(labelled.text));
+                                if (corrected && shouldDispatchASRText(corrected)) {
+                                    dispatchText = corrected;
+                                }
+                                voiceDebug("hold ASR corrected", { input: labelled.text, corrected: dispatchText });
+                            } else {
+                                const normResult = await NormalizeVoiceCommand(labelled.text) as {
+                                    is_command?: boolean;
+                                    corrected_text?: string;
+                                    confidence?: number;
+                                    reason?: string;
+                                };
+                                voiceDebug("voice-command normalized", {
                                     source,
-                                    input: trimmed,
-                                    reason: resolved.reason,
-                                    llmReason: normResult?.reason,
+                                    input: labelled.text,
+                                    corrected: normResult?.corrected_text,
+                                    isCommand: normResult?.is_command,
+                                    confidence: normResult?.confidence,
+                                    reason: normResult?.reason,
                                 });
-                                return;
+                                const resolved = resolveNormalizedVoiceText(labelled.text, normResult, source);
+                                if (!resolved.dispatch) {
+                                    voiceDebug("skip ASR after normalize", {
+                                        source,
+                                        input: labelled.text,
+                                        reason: resolved.reason,
+                                        llmReason: normResult?.reason,
+                                    });
+                                    continue;
+                                }
+                                dispatchText = resolved.text;
                             }
-                            dispatchText = resolved.text;
+                        } catch (normErr: unknown) {
+                            // Fall back to raw ASR text; never block send on normalization failure.
+                            voiceDebug("voice-command normalize failed, using raw ASR", {
+                                source,
+                                text: labelled.text,
+                                error: normErr instanceof Error ? normErr.message : String(normErr),
+                            });
                         }
-                    } catch (normErr: unknown) {
-                        // Fall back to raw ASR text; never block send on normalization failure.
-                        voiceDebug("voice-command normalize failed, using raw ASR", {
+                    } else {
+                        voiceDebug("voice-command normalize skipped (disabled in settings)", {
                             source,
-                            text: trimmed,
-                            error: normErr instanceof Error ? normErr.message : String(normErr),
+                            text: labelled.text,
                         });
                     }
-                } else {
-                    voiceDebug("voice-command normalize skipped (disabled in settings)", {
-                        source,
-                        text: trimmed,
-                    });
+                    dispatchText = labelled.prefix + dispatchText;
+                    voiceDebug("dispatch transcribed text", { text: dispatchText, source, raw: originalText });
+                    await Promise.resolve(onTranscribedRef.current(dispatchText, source));
+                    setSegmentCount(c => c + 1);
                 }
-
-                voiceDebug("dispatch transcribed text", {
-                    text: dispatchText,
-                    source,
-                    raw: trimmed,
-                });
-                await Promise.resolve(onTranscribedRef.current(dispatchText, source));
-                setSegmentCount(c => c + 1);
             } catch (err: any) {
                 console.warn("[voice-input] ASR failed", err);
                 setErrorAuto(`Transcription: ${err?.message || String(err)}`);

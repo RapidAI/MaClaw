@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // Runtime owns IM handle state machine against Store.
@@ -16,9 +18,9 @@ type Runtime struct {
 	Store *Store
 	Now   func() time.Time
 	// lastCleanup throttles session TTL sweeps (every CleanupEvery; default 1m).
-	cleanupMu     sync.Mutex
-	lastCleanup   time.Time
-	CleanupEvery  time.Duration
+	cleanupMu    sync.Mutex
+	lastCleanup  time.Time
+	CleanupEvery time.Duration
 }
 
 func NewRuntime(store *Store) *Runtime {
@@ -63,7 +65,10 @@ func (r *Runtime) Handle(ctx context.Context, tenantID string, req IMHandleReque
 		return IMHandleResponse{}, fmt.Errorf("user_id required")
 	}
 	text := strings.TrimSpace(req.Text)
-	sk := SessionKey(platform, userID)
+	lang := i18n.NormalizeLang(req.Lang)
+	// Group chats get a group-scoped session key so one user can run
+	// independent sessions in different groups; p2p keeps the legacy key.
+	sk := IMSessionKey(platform, req.ChatType, req.GroupID, userID)
 
 	// Load active session if any
 	sess, err := r.Store.GetSession(ctx, tenantID, sk)
@@ -82,25 +87,25 @@ func (r *Runtime) Handle(ctx context.Context, tenantID string, req IMHandleReque
 	if cmd, args := parseCommand(text); cmd != "" {
 		switch cmd {
 		case "help":
-			return IMHandleResponse{Handled: true, ReplyText: helpText()}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgHelp)}, nil
 		case "list":
-			return r.handleList(ctx, tenantID, platform, req)
+			return r.handleList(ctx, tenantID, platform, req, lang)
 		case "cancel":
 			if sess != nil {
 				_ = r.Store.DeleteSession(ctx, tenantID, sk)
-				return IMHandleResponse{Handled: true, ReplyText: "已取消当前问卷填写。"}, nil
+				return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgCancelDone), Event: EventSessionEnded}, nil
 			}
-			return IMHandleResponse{Handled: true, ReplyText: "当前没有进行中的问卷。"}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNoActiveSurvey), Event: EventSessionEnded}, nil
 		case "status":
-			return r.handleStatus(ctx, tenantID, sess)
+			return r.handleStatus(ctx, tenantID, sess, lang)
 		case "start":
-			return r.handleStart(ctx, tenantID, platform, userID, req.UserName, req.ChatType, req.GroupID, args, sess)
+			return r.handleStart(ctx, tenantID, platform, userID, req.UserName, req.ChatType, req.GroupID, args, sk, lang, sess)
 		}
 	}
 
 	// Active session path
 	if sess != nil {
-		return r.handleSessionMessage(ctx, tenantID, sess, text)
+		return r.handleSessionMessage(ctx, tenantID, sess, text, lang)
 	}
 
 	// Not a command and no session → not handled (let agent continue)
@@ -167,32 +172,18 @@ func isASCIISpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f' || b == '\v'
 }
 
-func helpText() string {
-	return strings.TrimSpace(`问卷帮助：
-· @机器人 /survey <短码> — 开始填写（群须绑定且已发布）
-· @机器人 /survey <短码> <答案> — 单题快投
-· @机器人 问卷 <短码> / 调查 <短码>
-· 答题中：直接回复编号或文本；「上一题」回退；「取消」结束
-· 选填题可回复「跳过」
-· 已提交且允许修改：回复「修改」重答、「取消」退出
-· /survey list — 本群已发布问卷
-· /survey status — 当前填写进度
-· /survey cancel — 取消进行中的填写
-· /survey help — 本说明`)
-}
-
-func (r *Runtime) handleList(ctx context.Context, tenantID, platform string, req IMHandleRequest) (IMHandleResponse, error) {
+func (r *Runtime) handleList(ctx context.Context, tenantID, platform string, req IMHandleRequest, lang string) (IMHandleResponse, error) {
 	chatType := strings.ToLower(strings.TrimSpace(req.ChatType))
 	groupID := strings.TrimSpace(req.GroupID)
 	isP2P := chatType == "p2p" || chatType == "private" || (chatType == "" && groupID == "")
 	if isP2P {
 		return IMHandleResponse{
 			Handled:   true,
-			ReplyText: "私聊请直接发送 /survey <短码> 开始填写（需问卷开启私聊）。查看绑定群内问卷请在群里发送 /survey list。",
+			ReplyText: tr(lang, msgListP2P),
 		}, nil
 	}
 	if groupID == "" {
-		return IMHandleResponse{Handled: true, ReplyText: "无法识别群。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgListNoGroup)}, nil
 	}
 	list, err := r.Store.ListPublishedForGroup(ctx, tenantID, platform, groupID)
 	if err != nil {
@@ -209,36 +200,36 @@ func (r *Runtime) handleList(ctx context.Context, tenantID, platform string, req
 	}
 	list = active
 	if len(list) == 0 {
-		return IMHandleResponse{Handled: true, ReplyText: "本群暂无进行中的问卷。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgListEmpty)}, nil
 	}
 	var b strings.Builder
-	b.WriteString("本群问卷：\n")
+	b.WriteString(tr(lang, msgListHeader))
 	for _, s := range list {
-		meta := SurveyIntroMeta(&s)
+		meta := SurveyIntroMeta(&s, lang)
 		if meta != "" {
-			fmt.Fprintf(&b, "· %s（%s）%s\n", s.Title, s.ShortCode, " — "+meta)
+			b.WriteString(tr(lang, msgListItemMeta, s.Title, s.ShortCode, meta))
 		} else {
-			fmt.Fprintf(&b, "· %s（%s）\n", s.Title, s.ShortCode)
+			b.WriteString(tr(lang, msgListItem, s.Title, s.ShortCode))
 		}
 	}
-	b.WriteString("回复 /survey <短码> 开始填写")
+	b.WriteString(tr(lang, msgListFooter))
 	return IMHandleResponse{Handled: true, ReplyText: b.String()}, nil
 }
 
-func (r *Runtime) handleStatus(ctx context.Context, tenantID string, sess *Session) (IMHandleResponse, error) {
+func (r *Runtime) handleStatus(ctx context.Context, tenantID string, sess *Session, lang string) (IMHandleResponse, error) {
 	if sess == nil {
-		return IMHandleResponse{Handled: true, ReplyText: "当前没有进行中的问卷。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNoActiveSurvey), Event: EventSessionEnded}, nil
 	}
 	sv, err := r.Store.Get(ctx, tenantID, sess.SurveyID)
 	if err != nil {
-		return IMHandleResponse{Handled: true, ReplyText: "会话已失效，请重新开始。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgSessionExpired), Event: EventSessionEnded}, nil
 	}
 	if sess.Phase == PhaseConfirmUpdate {
-		return IMHandleResponse{Handled: true, ReplyText: fmt.Sprintf("已提交《%s》。回复「修改」可重新作答，或「取消」退出。", sv.Title)}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgStatusSubmitted, sv.Title), Event: EventSessionActive}, nil
 	}
 	n := len(sv.Questions)
 	if n == 0 {
-		return IMHandleResponse{Handled: true, ReplyText: "会话已失效，请重新开始。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgSessionExpired), Event: EventSessionEnded}, nil
 	}
 	cur := sess.Cursor + 1
 	if cur < 1 {
@@ -247,13 +238,13 @@ func (r *Runtime) handleStatus(ctx context.Context, tenantID string, sess *Sessi
 	if cur > n {
 		cur = n
 	}
-	return IMHandleResponse{Handled: true, ReplyText: fmt.Sprintf("正在填写《%s》，进度 %d/%d。回复「取消」可退出。", sv.Title, cur, n)}, nil
+	return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgStatusProgress, sv.Title, cur, n), Event: EventSessionActive}, nil
 }
 
-func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, userName, chatType, groupID, args string, existing *Session) (IMHandleResponse, error) {
+func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, userName, chatType, groupID, args, sessionKey, lang string, existing *Session) (IMHandleResponse, error) {
 	parts := strings.Fields(args)
 	if len(parts) == 0 {
-		return IMHandleResponse{Handled: true, ReplyText: "请提供问卷短码，例如 /survey A3F9K2"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNeedCode)}, nil
 	}
 	code := parts[0]
 	fastAnswer := strings.TrimSpace(strings.TrimPrefix(args, parts[0]))
@@ -261,31 +252,31 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 	sv, err := r.Store.GetByCode(ctx, tenantID, code)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return IMHandleResponse{Handled: true, ReplyText: "未找到该问卷短码。"}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgCodeNotFound)}, nil
 		}
 		if errors.Is(err, ErrInvalidShortCode) {
-			return IMHandleResponse{Handled: true, ReplyText: "短码无效，请使用 6 位合法短码。"}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgCodeInvalid)}, nil
 		}
 		// Real storage/infra fault — do not mask as invalid code.
 		return IMHandleResponse{}, err
 	}
 	if sv.Status != StatusPublished {
-		return IMHandleResponse{Handled: true, ReplyText: "该问卷未在收集中。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNotCollecting)}, nil
 	}
 	if DeadlinePassed(sv.Settings, r.now()) {
-		return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgDeadlinePassed), Event: EventSessionEnded}, nil
 	}
 
 	chatType = strings.ToLower(strings.TrimSpace(chatType))
 	isP2P := chatType == "p2p" || chatType == "private" || (chatType == "" && strings.TrimSpace(groupID) == "")
 	// p2p gate
 	if isP2P && !sv.Settings.AllowP2P {
-		return IMHandleResponse{Handled: true, ReplyText: "该问卷仅支持群内填写。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgGroupOnly)}, nil
 	}
 	// binding check for group
 	if !isP2P {
 		if !boundToGroup(sv, platform, groupID) {
-			return IMHandleResponse{Handled: true, ReplyText: "该问卷未绑定到本群。"}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNotBoundGroup)}, nil
 		}
 	}
 
@@ -296,11 +287,11 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		if old != nil {
 			title = old.Title
 		}
-		return IMHandleResponse{Handled: true, ReplyText: fmt.Sprintf("您正在填写《%s》。回复「取消」结束后再开始新问卷", title)}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgBusyOtherSurvey, title), Event: EventSessionActive}, nil
 	}
 
 	if len(sv.Questions) == 0 {
-		return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNoQuestions)}, nil
 	}
 
 	// Resume same survey in progress instead of wiping answers / re-prompting.
@@ -320,7 +311,8 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		case PhaseConfirmUpdate:
 			return IMHandleResponse{
 				Handled:   true,
-				ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出",
+				ReplyText: tr(lang, msgSubmittedEditable),
+				Event:     EventSessionActive,
 			}, nil
 		default: // PhaseAnswering
 			cur := existing.Cursor
@@ -329,7 +321,8 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 			}
 			return IMHandleResponse{
 				Handled:   true,
-				ReplyText: fmt.Sprintf("继续填写《%s》\n\n%s", sv.Title, FormatQuestionPrompt(sv.Questions[cur], cur, len(sv.Questions))),
+				ReplyText: tr(lang, msgResumeIntro, sv.Title, FormatQuestionPrompt(sv.Questions[cur], cur, len(sv.Questions), lang)),
+				Event:     EventSessionActive,
 			}, nil
 		}
 	}
@@ -343,12 +336,12 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		return IMHandleResponse{}, err
 	}
 	if has && !sv.Settings.AllowUpdate {
-		return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgAlreadySubmitted), Event: EventSessionEnded}, nil
 	}
 	if has && sv.Settings.AllowUpdate {
 		// confirm_update phase
 		sess := &Session{
-			SessionKey: SessionKey(platform, userID),
+			SessionKey: sessionKey,
 			TenantID:   tenantID,
 			SurveyID:   sv.ID,
 			Platform:   platform,
@@ -364,7 +357,7 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		if err := r.Store.SaveSession(ctx, sess); err != nil {
 			return IMHandleResponse{}, err
 		}
-		return IMHandleResponse{Handled: true, ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgSubmittedEditable), Event: EventSessionActive}, nil
 	}
 
 	// Fast path: single-question survey with answer token (any supported type).
@@ -372,64 +365,66 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		q := sv.Questions[0]
 		if IsSkipToken(fastAnswer) {
 			if q.Required {
-				sess := newAnsweringSession(tenantID, platform, userID, userName, groupID, sv.ID, r.now())
+				sess := newAnsweringSession(sessionKey, tenantID, platform, userID, userName, groupID, sv.ID, r.now())
 				if err := r.Store.SaveSession(ctx, sess); err != nil {
 					return IMHandleResponse{}, err
 				}
 				return IMHandleResponse{
 					Handled:   true,
-					ReplyText: "该题为必填，不能跳过。\n" + FormatQuestionPrompt(q, 0, 1),
+					ReplyText: tr(lang, msgRequiredNoSkip) + FormatQuestionPrompt(q, 0, 1, lang),
+					Event:     EventSessionActive,
 				}, nil
 			}
 			if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, map[string]any{}); err != nil {
-				return r.mapSubmitError(ctx, tenantID, "", err)
+				return r.mapSubmitError(ctx, tenantID, "", err, lang)
 			}
 			return IMHandleResponse{
 				Handled:   true,
-				ReplyText: "提交成功，感谢参与！",
+				ReplyText: tr(lang, msgSubmitOK),
 				SurveyID:  sv.ID,
-				Event:     "response_submitted",
+				Event:     EventResponseSubmitted,
 			}, nil
 		}
 		val, err := ParseAnswer(q, fastAnswer)
 		if err == nil {
 			if err := r.finalizeSubmit(ctx, tenantID, sv, platform, userID, userName, groupID, map[string]any{q.ID: val}); err != nil {
-				return r.mapSubmitError(ctx, tenantID, "", err)
+				return r.mapSubmitError(ctx, tenantID, "", err, lang)
 			}
 			return IMHandleResponse{
 				Handled:   true,
-				ReplyText: "提交成功，感谢参与！",
+				ReplyText: tr(lang, msgSubmitOK),
 				SurveyID:  sv.ID,
-				Event:     "response_submitted",
+				Event:     EventResponseSubmitted,
 			}, nil
 		}
 		// Invalid fast answer: still open a session so the next reply is accepted.
-		sess := newAnsweringSession(tenantID, platform, userID, userName, groupID, sv.ID, r.now())
+		sess := newAnsweringSession(sessionKey, tenantID, platform, userID, userName, groupID, sv.ID, r.now())
 		if err := r.Store.SaveSession(ctx, sess); err != nil {
 			return IMHandleResponse{}, err
 		}
 		return IMHandleResponse{
 			Handled:   true,
-			ReplyText: "答案无效：" + err.Error() + "\n" + FormatQuestionPrompt(q, 0, 1),
+			ReplyText: tr(lang, msgInvalidAnswer) + LocalizedAnswerError(q, err, lang) + "\n" + FormatQuestionPrompt(q, 0, 1, lang),
+			Event:     EventSessionActive,
 		}, nil
 	}
 
 	// Start conversational at Q1
-	sess := newAnsweringSession(tenantID, platform, userID, userName, groupID, sv.ID, r.now())
+	sess := newAnsweringSession(sessionKey, tenantID, platform, userID, userName, groupID, sv.ID, r.now())
 	if err := r.Store.SaveSession(ctx, sess); err != nil {
 		return IMHandleResponse{}, err
 	}
-	prompt := FormatQuestionPrompt(sv.Questions[0], 0, len(sv.Questions))
-	intro := fmt.Sprintf("开始填写《%s》", sv.Title)
-	if meta := SurveyIntroMeta(sv); meta != "" {
+	prompt := FormatQuestionPrompt(sv.Questions[0], 0, len(sv.Questions), lang)
+	intro := tr(lang, msgStartIntro, sv.Title)
+	if meta := SurveyIntroMeta(sv, lang); meta != "" {
 		intro += "\n" + meta
 	}
-	return IMHandleResponse{Handled: true, ReplyText: intro + "\n\n" + prompt}, nil
+	return IMHandleResponse{Handled: true, ReplyText: intro + "\n\n" + prompt, Event: EventSessionActive}, nil
 }
 
-func newAnsweringSession(tenantID, platform, userID, userName, groupID, surveyID string, now time.Time) *Session {
+func newAnsweringSession(sessionKey, tenantID, platform, userID, userName, groupID, surveyID string, now time.Time) *Session {
 	return &Session{
-		SessionKey: SessionKey(platform, userID),
+		SessionKey: sessionKey,
 		TenantID:   tenantID,
 		SurveyID:   surveyID,
 		Platform:   platform,
@@ -445,7 +440,7 @@ func newAnsweringSession(tenantID, platform, userID, userName, groupID, surveyID
 }
 
 // mapSubmitError maps domain submit faults to IM replies (and clears session when set).
-func (r *Runtime) mapSubmitError(ctx context.Context, tenantID, sessionKey string, err error) (IMHandleResponse, error) {
+func (r *Runtime) mapSubmitError(ctx context.Context, tenantID, sessionKey string, err error, lang string) (IMHandleResponse, error) {
 	if err == nil {
 		return IMHandleResponse{}, nil
 	}
@@ -457,13 +452,13 @@ func (r *Runtime) mapSubmitError(ctx context.Context, tenantID, sessionKey strin
 	switch {
 	case errors.Is(err, ErrAlreadySubmitted):
 		clear()
-		return IMHandleResponse{Handled: true, ReplyText: "您已提交过该问卷，感谢参与"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgAlreadySubmitted), Event: EventSessionEnded}, nil
 	case errors.Is(err, ErrDeadlinePassed):
 		clear()
-		return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgDeadlinePassed), Event: EventSessionEnded}, nil
 	case errors.Is(err, ErrNotCollecting):
 		clear()
-		return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgStoppedCollecting), Event: EventSessionEnded}, nil
 	default:
 		return IMHandleResponse{}, err
 	}
@@ -479,7 +474,7 @@ func boundToGroup(sv *Survey, platform, groupID string) bool {
 	return false
 }
 
-func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, sess *Session, text string) (IMHandleResponse, error) {
+func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, sess *Session, text, lang string) (IMHandleResponse, error) {
 	ctrl := IsControlWord(text)
 
 	// Recover corrupt phase values before branching.
@@ -491,28 +486,28 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		switch ctrl {
 		case "cancel":
 			_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-			return IMHandleResponse{Handled: true, ReplyText: "已取消。"}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgCancelled), Event: EventSessionEnded}, nil
 		case "modify":
 			sv, err := r.Store.Get(ctx, tenantID, sess.SurveyID)
 			if err != nil {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-				return IMHandleResponse{Handled: true, ReplyText: "问卷不可用。"}, nil
+				return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgSurveyUnavailable), Event: EventSessionEnded}, nil
 			}
 			if sv.Status != StatusPublished {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-				return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+				return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgStoppedCollecting), Event: EventSessionEnded}, nil
 			}
 			if DeadlinePassed(sv.Settings, r.now()) {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-				return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
+				return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgDeadlinePassed), Event: EventSessionEnded}, nil
 			}
 			if !sv.Settings.AllowUpdate {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-				return IMHandleResponse{Handled: true, ReplyText: "该问卷不允许修改答卷。"}, nil
+				return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNoModifyAllowed), Event: EventSessionEnded}, nil
 			}
 			if len(sv.Questions) == 0 {
 				_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-				return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
+				return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNoQuestions), Event: EventSessionEnded}, nil
 			}
 			sess.Phase = PhaseAnswering
 			sess.Cursor = 0
@@ -522,35 +517,35 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 			if err := r.Store.SaveSession(ctx, sess); err != nil {
 				return IMHandleResponse{}, err
 			}
-			return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[0], 0, len(sv.Questions))}, nil
+			return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[0], 0, len(sv.Questions), lang), Event: EventSessionActive}, nil
 		default:
 			// do not parse as answer
-			return IMHandleResponse{Handled: true, ReplyText: "您已提交。回复「修改」可重新作答，或「取消」退出"}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgSubmittedEditable), Event: EventSessionActive}, nil
 		}
 	}
 
 	// answering phase
 	if ctrl == "cancel" {
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-		return IMHandleResponse{Handled: true, ReplyText: "已取消当前问卷填写。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgCancelDone), Event: EventSessionEnded}, nil
 	}
 
 	sv, err := r.Store.Get(ctx, tenantID, sess.SurveyID)
 	if err != nil {
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-		return IMHandleResponse{Handled: true, ReplyText: "问卷不可用，已结束会话。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgSurveyGoneEnded), Event: EventSessionEnded}, nil
 	}
 	if sv.Status != StatusPublished {
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-		return IMHandleResponse{Handled: true, ReplyText: "问卷已停止收集。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgStoppedCollecting), Event: EventSessionEnded}, nil
 	}
 	if DeadlinePassed(sv.Settings, r.now()) {
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-		return IMHandleResponse{Handled: true, ReplyText: "问卷已截止"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgDeadlinePassed), Event: EventSessionEnded}, nil
 	}
 	if len(sv.Questions) == 0 {
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
-		return IMHandleResponse{Handled: true, ReplyText: "问卷配置异常：暂无题目。"}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNoQuestions), Event: EventSessionEnded}, nil
 	}
 
 	if ctrl == "prev" {
@@ -567,7 +562,7 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 		if err := r.Store.SaveSession(ctx, sess); err != nil {
 			return IMHandleResponse{}, err
 		}
-		return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[sess.Cursor], sess.Cursor, len(sv.Questions))}, nil
+		return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[sess.Cursor], sess.Cursor, len(sv.Questions), lang), Event: EventSessionActive}, nil
 	}
 
 	// parse as answer for current question
@@ -581,44 +576,44 @@ func (r *Runtime) handleSessionMessage(ctx context.Context, tenantID string, ses
 	// Optional questions: 「跳过」 advances without storing an answer.
 	if !q.Required && IsSkipToken(text) {
 		delete(sess.Answers, q.ID)
-		return r.advanceAfterAnswer(ctx, tenantID, sess, sv)
+		return r.advanceAfterAnswer(ctx, tenantID, sess, sv, lang)
 	}
 	if q.Required && IsSkipToken(text) {
-		return IMHandleResponse{Handled: true, ReplyText: "该题为必填，不能跳过。\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions))}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgRequiredNoSkip) + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions), lang), Event: EventSessionActive}, nil
 	}
 	val, err := ParseAnswer(q, text)
 	if err != nil {
 		// unparseable while session active: short-circuit with hint (still handled)
 		if strings.TrimSpace(text) != "" && !looksLikeAnswer(text) {
-			return IMHandleResponse{Handled: true, ReplyText: "当前正在填写问卷。发送「取消」结束问卷后再对话。\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions))}, nil
+			return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgBusyAnswering) + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions), lang), Event: EventSessionActive}, nil
 		}
-		return IMHandleResponse{Handled: true, ReplyText: "答案无效：" + err.Error() + "\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions))}, nil
+		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgInvalidAnswer) + LocalizedAnswerError(q, err, lang) + "\n" + FormatQuestionPrompt(q, sess.Cursor, len(sv.Questions), lang), Event: EventSessionActive}, nil
 	}
 	sess.Answers[q.ID] = val
-	return r.advanceAfterAnswer(ctx, tenantID, sess, sv)
+	return r.advanceAfterAnswer(ctx, tenantID, sess, sv, lang)
 }
 
 // advanceAfterAnswer increments cursor and either prompts the next question or finalizes.
-func (r *Runtime) advanceAfterAnswer(ctx context.Context, tenantID string, sess *Session, sv *Survey) (IMHandleResponse, error) {
+func (r *Runtime) advanceAfterAnswer(ctx context.Context, tenantID string, sess *Session, sv *Survey, lang string) (IMHandleResponse, error) {
 	sess.Cursor++
 	sess.ExpiresAt = r.now().Add(SessionTTL)
 	sess.UpdatedAt = r.now()
 	if sess.Cursor >= len(sv.Questions) {
 		if err := r.finalizeSubmit(ctx, tenantID, sv, sess.Platform, sess.UserID, sess.UserName, sess.GroupID, sess.Answers); err != nil {
-			return r.mapSubmitError(ctx, tenantID, sess.SessionKey, err)
+			return r.mapSubmitError(ctx, tenantID, sess.SessionKey, err, lang)
 		}
 		_ = r.Store.DeleteSession(ctx, tenantID, sess.SessionKey)
 		return IMHandleResponse{
 			Handled:   true,
-			ReplyText: "提交成功，感谢参与！",
+			ReplyText: tr(lang, msgSubmitOK),
 			SurveyID:  sv.ID,
-			Event:     "response_submitted",
+			Event:     EventResponseSubmitted,
 		}, nil
 	}
 	if err := r.Store.SaveSession(ctx, sess); err != nil {
 		return IMHandleResponse{}, err
 	}
-	return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[sess.Cursor], sess.Cursor, len(sv.Questions))}, nil
+	return IMHandleResponse{Handled: true, ReplyText: FormatQuestionPrompt(sv.Questions[sess.Cursor], sess.Cursor, len(sv.Questions), lang), Event: EventSessionActive}, nil
 }
 
 func looksLikeAnswer(text string) bool {

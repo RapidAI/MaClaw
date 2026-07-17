@@ -169,7 +169,7 @@ describe('Lansenger Follow e2e', () => {
         rerender(<LansengerSettings {...lansengerBaseProps({ lansengerStatus: 'connected' })} />);
         const follow = screen.getByTestId('lansenger-follow-button');
         const watchBtn = screen.getByRole('button', { name: '监看' });
-        expect(follow.textContent).toBe('关注');
+        expect(follow.textContent).toBe('盯人');
         expect(watchBtn.compareDocumentPosition(follow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
@@ -178,7 +178,7 @@ describe('Lansenger Follow e2e', () => {
         expect(page.classList.contains('utilities-page--compact')).toBe(true);
 
         // Dialog shell from LansengerSettings
-        expect(screen.getByRole('dialog', { name: '关注' })).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: '盯人' })).toBeTruthy();
         expect(document.body.style.overflow).toBe('hidden');
 
         // Wait for lazy panel + initial load
@@ -189,11 +189,11 @@ describe('Lansenger Follow e2e', () => {
 
         fireEvent.click(within(page).getByRole('button', { name: '新建任务' }));
         await waitFor(() => {
-            expect(within(page).getByDisplayValue('关注任务')).toBeTruthy();
+            expect(within(page).getByDisplayValue('盯人任务')).toBeTruthy();
         });
 
         // Name
-        const nameInput = within(page).getByDisplayValue('关注任务');
+        const nameInput = within(page).getByDisplayValue('盯人任务');
         fireEvent.change(nameInput, { target: { value: '盯产品同学' } });
 
         // Select group (first combobox is 蓝信群; second is keyword scope)
@@ -226,7 +226,7 @@ describe('Lansenger Follow e2e', () => {
         await waitFor(() => {
             expect(within(page).getByText('已保存')).toBeTruthy();
             // Job appears in list after reload
-            expect(within(page).getByText('盯产品同学')).toBeTruthy();
+            expect(within(page).getByDisplayValue('盯产品同学')).toBeTruthy();
         });
     });
 
@@ -258,6 +258,47 @@ describe('Lansenger Follow e2e', () => {
         expect(screen.getByTestId('watch-page')).toBeTruthy();
         fireEvent.keyDown(window, { key: 'Escape', keyCode: 229 });
         expect(screen.getByTestId('watch-page')).toBeTruthy();
+    });
+
+    it('hides manual add until a group is selected', async () => {
+        const page = await openFollowPanel();
+        fireEvent.click(within(page).getByRole('button', { name: '新建任务' }));
+        await waitFor(() => expect(within(page).getByDisplayValue('盯人任务')).toBeTruthy());
+        expect(within(page).queryByRole('button', { name: '手动添加 staffId' })).toBeNull();
+    });
+
+    it('expands manual add and appends a target by staff ID', async () => {
+        const page = await openFollowPanel();
+        fireEvent.click(within(page).getByRole('button', { name: '新建任务' }));
+        await waitFor(() => expect(within(page).getByDisplayValue('盯人任务')).toBeTruthy());
+
+        fireEvent.change(within(page).getAllByRole('combobox')[0], { target: { value: 'g1' } });
+        await waitFor(
+            () => expect(within(page).getByText('张三')).toBeTruthy(),
+            { timeout: 2000 },
+        );
+
+        fireEvent.click(within(page).getByRole('button', { name: '手动添加 staffId' }));
+        fireEvent.change(within(page).getByPlaceholderText('成员 staffId'), { target: { value: 'u9' } });
+        fireEvent.change(within(page).getByPlaceholderText('姓名（可选）'), { target: { value: '王五' } });
+        fireEvent.click(within(page).getByRole('button', { name: '添加盯人对象' }));
+
+        await waitFor(() => expect(AddLansengerWatchMemberMock).toHaveBeenCalledWith('g1', 'u9', '王五'));
+        await waitFor(() => expect(within(page).getByTitle('u9')).toBeTruthy());
+    });
+
+    it('shows CLI options only after a CLI command is entered', async () => {
+        const page = await openFollowPanel();
+        fireEvent.click(within(page).getByRole('button', { name: '新建任务' }));
+        await waitFor(() => expect(within(page).getByDisplayValue('盯人任务')).toBeTruthy());
+
+        expect(within(page).queryByText('用 CLI 标准输出作为回复')).toBeNull();
+
+        const cli = within(page).getByPlaceholderText('例: python C:\\hooks\\watch.py --who={{speaker_id}}');
+        fireEvent.change(cli, { target: { value: 'python watch.py --who={{speaker_id}}' } });
+
+        expect(within(page).getByText('用 CLI 标准输出作为回复')).toBeTruthy();
+        expect(within(page).getByText(/LANXIN_WATCH_\*/)).toBeTruthy();
     });
 });
 
@@ -344,7 +385,7 @@ describe('IM settings → 蓝信 → 关注 e2e', () => {
         fireEvent.click(screen.getByTestId('lansenger-follow-button'));
         const page = await screen.findByTestId('watch-page');
         expect(page).toBeTruthy();
-        expect(screen.getByRole('dialog', { name: '关注' })).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: '盯人' })).toBeTruthy();
 
         await waitFor(() => expect(ListLansengerWatchJobsMock).toHaveBeenCalled());
     });
@@ -361,13 +402,69 @@ describe('Utilities page no longer hosts Follow/盯人', () => {
         vi.clearAllMocks();
     });
 
-    it('home grid has survey only — no watch card or entry', async () => {
+    it('home grid has survey and meeting cards — no watch card or entry', async () => {
         render(<UtilitiesPage lang="zh-Hans" />);
         expect(screen.getByTestId('utilities-page')).toBeTruthy();
         expect(screen.getByTestId('utilities-survey-card')).toBeTruthy();
+        const meetingCard = screen.getByTestId('utilities-meeting-card') as HTMLButtonElement;
+        expect(meetingCard).toBeTruthy();
+        expect(meetingCard.disabled).toBe(true); // no handler in this isolation render
+        expect(screen.getByText('会议记录')).toBeTruthy();
         expect(screen.queryByTestId('utilities-watch-card')).toBeNull();
         expect(screen.queryByText('盯人')).toBeNull();
         expect(screen.queryByText('关注')).toBeNull();
         expect(screen.queryByTestId('watch-page')).toBeNull();
+    });
+
+    it('meeting card invokes onStartMeetingRecord', async () => {
+        const onStartMeetingRecord = vi.fn().mockResolvedValue(undefined);
+        render(<UtilitiesPage lang="zh-Hans" onStartMeetingRecord={onStartMeetingRecord} />);
+        fireEvent.click(screen.getByTestId('utilities-meeting-card'));
+        await waitFor(() => expect(onStartMeetingRecord).toHaveBeenCalledTimes(1));
+    });
+
+    it('meeting card ignores double-clicks while starting', async () => {
+        let resolveStart: (() => void) | undefined;
+        const onStartMeetingRecord = vi.fn(
+            () => new Promise<void>((resolve) => { resolveStart = resolve; }),
+        );
+        render(<UtilitiesPage lang="zh-Hans" onStartMeetingRecord={onStartMeetingRecord} />);
+        const card = screen.getByTestId('utilities-meeting-card') as HTMLButtonElement;
+        fireEvent.click(card);
+        fireEvent.click(card);
+        fireEvent.click(card);
+        expect(onStartMeetingRecord).toHaveBeenCalledTimes(1);
+        expect(card.disabled).toBe(true);
+        expect(card.getAttribute('aria-busy')).toBe('true');
+        expect(screen.getByText('启动中…')).toBeTruthy();
+        resolveStart?.();
+        await waitFor(() => expect(card.disabled).toBe(false));
+        expect(card.getAttribute('aria-busy')).toBeNull();
+        expect(screen.getByText('开始')).toBeTruthy();
+    });
+
+    it('meeting card re-enables after failure', async () => {
+        const onStartMeetingRecord = vi.fn().mockRejectedValue(new Error('create failed'));
+        render(<UtilitiesPage lang="zh-Hans" onStartMeetingRecord={onStartMeetingRecord} />);
+        const card = screen.getByTestId('utilities-meeting-card') as HTMLButtonElement;
+        fireEvent.click(card);
+        await waitFor(() => expect(onStartMeetingRecord).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(card.disabled).toBe(false));
+    });
+
+    it('meeting card skips setState after unmount (navigate-away mid-start)', async () => {
+        let resolveStart: (() => void) | undefined;
+        const onStartMeetingRecord = vi.fn(
+            () => new Promise<void>((resolve) => { resolveStart = resolve; }),
+        );
+        const { unmount } = render(
+            <UtilitiesPage lang="zh-Hans" onStartMeetingRecord={onStartMeetingRecord} />,
+        );
+        fireEvent.click(screen.getByTestId('utilities-meeting-card'));
+        expect(onStartMeetingRecord).toHaveBeenCalledTimes(1);
+        unmount();
+        // Resolving after unmount must not throw (mountedRef guards setState).
+        resolveStart?.();
+        await Promise.resolve();
     });
 });

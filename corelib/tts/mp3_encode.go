@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -21,7 +23,12 @@ type PlayableVoiceFile struct {
 
 const MP3EncoderName = "shine-mp3"
 
+// maxWAVToMP3EncodeSeconds bounds in-memory encode for short voice replies (TTS/IM).
 const maxWAVToMP3EncodeSeconds = 10 * 60
+
+// maxArchiveWAVToMP3EncodeSeconds bounds archival convert for desktop record_audio
+// products (matches the 3h UI hard cap). Longer inputs should fall back to ffmpeg.
+const maxArchiveWAVToMP3EncodeSeconds = 3 * 60 * 60
 
 // HasMP3Encoder reports whether the built-in pure Go WAV-to-MP3 encoder is available.
 func HasMP3Encoder() bool {
@@ -62,32 +69,175 @@ func EncodeWAVToMP3(wavData []byte) ([]byte, error) {
 
 // EncodeWAVToMP3Context converts WAV bytes to MP3 fully in-process.
 func EncodeWAVToMP3Context(ctx context.Context, wavData []byte) ([]byte, error) {
+	return encodeWAVToMP3Context(ctx, wavData, maxWAVToMP3EncodeSeconds)
+}
+
+// maxArchiveWAVFileBytes is a coarse pre-read guard (~3h mono 16kHz 16-bit PCM
+// + WAV header slack). Avoids loading multi-GB files into memory before decode.
+const maxArchiveWAVFileBytes = int64(400 * 1024 * 1024)
+
+// EncodeWAVFileToMP3Archive converts an on-disk product WAV into a sibling MP3
+// for long-form recording archival. Uses a higher duration budget than TTS voice.
+// Writes atomically via a temp file then rename. Caller should treat errors as
+// best-effort (original WAV remains the source of truth).
+func EncodeWAVFileToMP3Archive(ctx context.Context, wavPath, mp3Path string) error {
+	wavPath = strings.TrimSpace(wavPath)
+	mp3Path = strings.TrimSpace(mp3Path)
+	if wavPath == "" || mp3Path == "" {
+		return fmt.Errorf("mp3 archive: empty path")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Fast path: source already MP3 (should not happen for record products).
+	if strings.EqualFold(filepath.Ext(wavPath), ".mp3") {
+		if absSrc, err := filepath.Abs(wavPath); err == nil {
+			if absDst, err2 := filepath.Abs(mp3Path); err2 == nil && absSrc == absDst {
+				return nil
+			}
+		}
+		data, err := os.ReadFile(wavPath)
+		if err != nil {
+			return fmt.Errorf("mp3 archive: read source: %w", err)
+		}
+		return writeFileAtomic(mp3Path, data)
+	}
+
+	// Stat first: reject oversized inputs without a full ReadFile.
+	fi, err := os.Stat(wavPath)
+	if err != nil {
+		return fmt.Errorf("mp3 archive: stat wav: %w", err)
+	}
+	if fi.Size() < 44 {
+		return fmt.Errorf("mp3 archive: wav too short")
+	}
+	if fi.Size() > maxArchiveWAVFileBytes {
+		return fmt.Errorf("mp3 archive: wav file too large (%d bytes)", fi.Size())
+	}
+
+	data, err := os.ReadFile(wavPath)
+	if err != nil {
+		return fmt.Errorf("mp3 archive: read wav: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	mp3Data, err := encodeWAVToMP3Context(ctx, data, maxArchiveWAVToMP3EncodeSeconds)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(mp3Path, mp3Data)
+}
+
+func encodeWAVToMP3Context(ctx context.Context, wavData []byte, maxSeconds int) ([]byte, error) {
 	if len(wavData) == 0 {
 		return nil, fmt.Errorf("mp3 encode: empty wav data")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	decoded, err := decodeWAVPCM(wavData)
+	decoded, err := decodeWAVPCM(wavData, maxSeconds)
 	if err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var out bytes.Buffer
-	encoder := mp3.NewEncoder(decoded.sampleRate, decoded.channels)
-	if encoder == nil {
-		return nil, fmt.Errorf("mp3 encode: failed to initialize encoder")
+
+	// shine.Write is not cancelable mid-stream; run it in a goroutine so a parent
+	// timeout can return promptly (caller can free/abandon without waiting for
+	// the full encode). The goroutine may still finish and drop the result.
+	type encodeResult struct {
+		data []byte
+		err  error
 	}
-	if err := encoder.Write(&out, decoded.samples); err != nil {
-		return nil, fmt.Errorf("mp3 encode: %w", err)
+	done := make(chan encodeResult, 1)
+	go func() {
+		var out bytes.Buffer
+		encoder := mp3.NewEncoder(decoded.sampleRate, decoded.channels)
+		if encoder == nil {
+			done <- encodeResult{err: fmt.Errorf("mp3 encode: failed to initialize encoder")}
+			return
+		}
+		if err := encoder.Write(&out, decoded.samples); err != nil {
+			done <- encodeResult{err: fmt.Errorf("mp3 encode: %w", err)}
+			return
+		}
+		// Drain the encoder bit-cache so the final frame is not truncated.
+		if err := encoder.Flush(&out); err != nil {
+			done <- encodeResult{err: fmt.Errorf("mp3 encode flush: %w", err)}
+			return
+		}
+		mp3Data := out.Bytes()
+		if len(mp3Data) == 0 {
+			done <- encodeResult{err: fmt.Errorf("mp3 encode: empty mp3 output")}
+			return
+		}
+		done <- encodeResult{data: mp3Data}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-done:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return r.data, nil
 	}
-	mp3Data := out.Bytes()
-	if len(mp3Data) == 0 {
-		return nil, fmt.Errorf("mp3 encode: empty mp3 output")
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mp3 archive: mkdir: %w", err)
 	}
-	return mp3Data, nil
+	tmp := path + ".part"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("mp3 archive: create temp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("mp3 archive: write temp: %w", err)
+	}
+	// Flush before rename so a crash cannot leave a truncated product that looks final.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("mp3 archive: sync temp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("mp3 archive: close temp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		// Cross-volume fallback: copy then remove temp.
+		if err2 := copyFileContents(tmp, path); err2 != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("mp3 archive: finalize: %w", err2)
+		}
+		_ = os.Remove(tmp)
+	}
+	return nil
+}
+
+func copyFileContents(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 type wavPCM struct {
@@ -96,7 +246,10 @@ type wavPCM struct {
 	samples    []int16
 }
 
-func decodeWAVPCM(wavData []byte) (wavPCM, error) {
+func decodeWAVPCM(wavData []byte, maxSeconds int) (wavPCM, error) {
+	if maxSeconds <= 0 {
+		maxSeconds = maxWAVToMP3EncodeSeconds
+	}
 	decoder := wav.NewDecoder(bytes.NewReader(wavData))
 	if !decoder.IsValidFile() {
 		return wavPCM{}, fmt.Errorf("mp3 encode: invalid wav data")
@@ -111,7 +264,7 @@ func decodeWAVPCM(wavData []byte) (wavPCM, error) {
 	if !isSupportedMP3SampleRate(sampleRate) {
 		return wavPCM{}, fmt.Errorf("mp3 encode: unsupported sample rate %d", sampleRate)
 	}
-	if err := validateWAVPCMForMP3(decoder); err != nil {
+	if err := validateWAVPCMForMP3(decoder, maxSeconds); err != nil {
 		return wavPCM{}, err
 	}
 	pcm, err := decoder.FullPCMBuffer()
@@ -135,7 +288,7 @@ func decodeWAVPCM(wavData []byte) (wavPCM, error) {
 	}, nil
 }
 
-func validateWAVPCMForMP3(decoder *wav.Decoder) error {
+func validateWAVPCMForMP3(decoder *wav.Decoder, maxSeconds int) error {
 	bitDepth := int(decoder.BitDepth)
 	switch bitDepth {
 	case 8, 16, 24, 32:
@@ -153,7 +306,10 @@ func validateWAVPCMForMP3(decoder *wav.Decoder) error {
 	if frameSize <= 0 || decoder.PCMSize%frameSize != 0 {
 		return fmt.Errorf("mp3 encode: malformed wav pcm size %d for %dch/%dbit", decoder.PCMSize, decoder.NumChans, bitDepth)
 	}
-	maxPCMBytes := int(decoder.SampleRate) * frameSize * maxWAVToMP3EncodeSeconds
+	if maxSeconds <= 0 {
+		maxSeconds = maxWAVToMP3EncodeSeconds
+	}
+	maxPCMBytes := int(decoder.SampleRate) * frameSize * maxSeconds
 	if decoder.PCMSize > maxPCMBytes {
 		return fmt.Errorf("mp3 encode: wav pcm too large")
 	}

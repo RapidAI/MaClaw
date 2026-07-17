@@ -623,6 +623,13 @@ export namespace main {
 	    lansenger_app_secret: string;
 	    lansenger_gateway_url: string;
 	    lansenger_wss_url: string;
+	    lansenger_ignored_group_ids?: string[];
+	    lansenger_group_policy?: string;
+	    lansenger_allowed_group_ids?: string[];
+	    lansenger_require_mention?: boolean;
+	    lansenger_respond_to_at_all?: boolean;
+	    lansenger_auto_mention_reply?: boolean;
+	    lansenger_auto_quote_reply?: boolean;
 	    lansenger_local_mode?: boolean;
 	    thirdparty_gateway_enabled?: boolean;
 	    thirdparty_gateway_token: string;
@@ -674,6 +681,7 @@ export namespace main {
 	    tts_enabled?: boolean;
 	    tts_voice_id?: string;
 	    asr_enabled?: boolean;
+	    diarization_enabled?: boolean;
 	    asr_voice_correction_enabled?: boolean;
 	    noise_floor_calibrated?: number;
 	    speech_level_calibrated?: number;
@@ -800,6 +808,13 @@ export namespace main {
 	        this.lansenger_app_secret = source["lansenger_app_secret"];
 	        this.lansenger_gateway_url = source["lansenger_gateway_url"];
 	        this.lansenger_wss_url = source["lansenger_wss_url"];
+	        this.lansenger_ignored_group_ids = source["lansenger_ignored_group_ids"];
+	        this.lansenger_group_policy = source["lansenger_group_policy"];
+	        this.lansenger_allowed_group_ids = source["lansenger_allowed_group_ids"];
+	        this.lansenger_require_mention = source["lansenger_require_mention"];
+	        this.lansenger_respond_to_at_all = source["lansenger_respond_to_at_all"];
+	        this.lansenger_auto_mention_reply = source["lansenger_auto_mention_reply"];
+	        this.lansenger_auto_quote_reply = source["lansenger_auto_quote_reply"];
 	        this.lansenger_local_mode = source["lansenger_local_mode"];
 	        this.thirdparty_gateway_enabled = source["thirdparty_gateway_enabled"];
 	        this.thirdparty_gateway_token = source["thirdparty_gateway_token"];
@@ -851,6 +866,7 @@ export namespace main {
 	        this.tts_enabled = source["tts_enabled"];
 	        this.tts_voice_id = source["tts_voice_id"];
 	        this.asr_enabled = source["asr_enabled"];
+	        this.diarization_enabled = source["diarization_enabled"];
 	        this.asr_voice_correction_enabled = source["asr_voice_correction_enabled"];
 	        this.noise_floor_calibrated = source["noise_floor_calibrated"];
 	        this.speech_level_calibrated = source["speech_level_calibrated"];

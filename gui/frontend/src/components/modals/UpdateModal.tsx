@@ -38,6 +38,26 @@ export function downloadSourceName(value: unknown): string {
     return host;
 }
 
+export function failedUpdateResult(message: string) {
+    return {
+        has_update: false,
+        check_failed: true,
+        latest_version: '?',
+        message,
+        release_url: '',
+    };
+}
+
+/** True when the cached result can be restored as a stable-channel snapshot. */
+export function isRestorableStableResult(result: unknown): boolean {
+    if (!result || typeof result !== 'object') return false;
+    const r = result as { channel?: string; check_failed?: boolean };
+    if (r.check_failed) return false;
+    // Missing channel = legacy stable-only payload; accept it.
+    if (!r.channel || r.channel === 'stable') return true;
+    return false;
+}
+
 export const UpdateModal = ({
     updateResult,
     appVersion,
@@ -58,26 +78,84 @@ export const UpdateModal = ({
     const [betaLoading, setBetaLoading] = useState(false);
     // Cache the stable result so we can restore it when user unchecks beta
     const stableResultRef = useRef(updateResult);
+    // Monotonic id so out-of-order CheckUpdate* responses cannot clobber newer UI state
+    // (e.g. user unchecks beta while a beta fetch is still in flight).
+    const requestIdRef = useRef(0);
     const downloadSource = downloadSourceName(activeDownloadSource || updateResult?.download_url || updateResult?.release_url);
     const checkFailed = Boolean(updateResult?.check_failed);
+    const hasUpdate = Boolean(updateResult?.has_update);
+    const titleKey = checkFailed ? 'updateCheckFailed' : hasUpdate ? 'foundNewVersion' : 'isLatestVersion';
 
-    // When modal opens with beta preference already enabled, immediately fetch beta info
-    // so the user sees beta results instead of stale stable results.
-    // Skip if the result already came from the beta channel (startup auto-check).
-    const didInitialBetaFetch = useRef(false);
-    useEffect(() => {
-        if (preferBetaChannel && !didInitialBetaFetch.current && !isDownloading && updateResult?.channel !== "beta") {
-            didInitialBetaFetch.current = true;
-            stableResultRef.current = updateResult;
-            setBetaLoading(true);
-            CheckUpdateBeta(appVersion).then((res: any) => {
+    const beginRequest = () => {
+        requestIdRef.current += 1;
+        return requestIdRef.current;
+    };
+
+    const fetchPreferredBeta = () => {
+        const reqId = beginRequest();
+        setBetaLoading(true);
+        return CheckUpdateBeta(appVersion)
+            .then((res: any) => {
+                if (reqId !== requestIdRef.current) return;
+                // Prefer-beta may surface a formal release; keep that as the stable cache.
+                if (res?.channel === 'stable') {
+                    stableResultRef.current = res;
+                }
                 onUpdateResultChange?.(res);
-                setBetaLoading(false);
-            }).catch(() => {
-                onUpdateResultChange?.({ has_update: false, latest_version: t("betaNoUpdate") });
+            })
+            .catch(() => {
+                if (reqId !== requestIdRef.current) return;
+                // Network / both-channel failure — surface as a check error, not "no beta".
+                onUpdateResultChange?.(failedUpdateResult(t('updateCheckFailedMessage')));
+            })
+            .finally(() => {
+                if (reqId !== requestIdRef.current) return;
                 setBetaLoading(false);
             });
+    };
+
+    const fetchStable = () => {
+        const reqId = beginRequest();
+        setBetaLoading(true);
+        return CheckUpdate(appVersion)
+            .then((res: any) => {
+                if (reqId !== requestIdRef.current) return;
+                stableResultRef.current = res;
+                onUpdateResultChange?.(res);
+            })
+            .catch(() => {
+                if (reqId !== requestIdRef.current) return;
+                onUpdateResultChange?.(failedUpdateResult(t('updateCheckFailedMessage')));
+            })
+            .finally(() => {
+                if (reqId !== requestIdRef.current) return;
+                setBetaLoading(false);
+            });
+    };
+
+    // When modal opens with beta preference already enabled, the opening payload may
+    // still be a stable-only check (e.g. older callers). Re-check preferred channels
+    // only when the payload has no channel field (legacy/partial). Prefer-beta results
+    // may legitimately be channel=stable when formal is newer than beta.
+    const didInitialBetaFetch = useRef(false);
+    useEffect(() => {
+        if (
+            preferBetaChannel &&
+            !didInitialBetaFetch.current &&
+            !isDownloading &&
+            !updateResult?.check_failed &&
+            !updateResult?.channel
+        ) {
+            didInitialBetaFetch.current = true;
+            if (isRestorableStableResult(updateResult)) {
+                stableResultRef.current = updateResult;
+            }
+            void fetchPreferredBeta();
         }
+        return () => {
+            // Drop any in-flight responses after unmount.
+            requestIdRef.current += 1;
+        };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     const handleBetaToggle = (checked: boolean) => {
@@ -86,31 +164,19 @@ export const UpdateModal = ({
         PatchConfigFields({ prefer_beta_channel: checked }).catch(() => {});
         if (checked) {
             // Save current stable result before switching to beta (only if it's actually stable)
-            if (!updateResult?.channel || updateResult.channel === "stable") {
+            if (isRestorableStableResult(updateResult)) {
                 stableResultRef.current = updateResult;
             }
-            setBetaLoading(true);
-            CheckUpdateBeta(appVersion).then((res: any) => {
-                onUpdateResultChange?.(res);
-                setBetaLoading(false);
-            }).catch(() => {
-                onUpdateResultChange?.({ has_update: false, latest_version: t("betaNoUpdate") });
-                setBetaLoading(false);
-            });
+            void fetchPreferredBeta();
         } else {
-            // Restore cached stable result, or fetch fresh stable data if we never had it
-            if (stableResultRef.current?.channel && stableResultRef.current.channel !== "stable") {
-                setBetaLoading(true);
-                CheckUpdate(appVersion).then((res: any) => {
-                    stableResultRef.current = res;
-                    onUpdateResultChange?.(res);
-                    setBetaLoading(false);
-                }).catch(() => {
-                    onUpdateResultChange?.({ has_update: false, latest_version: "?" });
-                    setBetaLoading(false);
-                });
+            // Invalidate in-flight preferred fetches so they cannot overwrite the restore.
+            const cached = stableResultRef.current;
+            if (isRestorableStableResult(cached)) {
+                beginRequest();
+                setBetaLoading(false);
+                onUpdateResultChange?.(cached);
             } else {
-                onUpdateResultChange?.(stableResultRef.current);
+                void fetchStable();
             }
         }
     };
@@ -121,7 +187,7 @@ export const UpdateModal = ({
                 <div className="update-modal__header">
                     <div>
                         <p className="update-modal__eyebrow">{t("onlineUpdate")}</p>
-                        <h3 id="update-modal-title">{checkFailed ? t("updateCheckFailed") : t("foundNewVersion")}</h3>
+                        <h3 id="update-modal-title">{t(titleKey)}</h3>
                     </div>
                     <label className="update-modal__beta-toggle">
                         <input
@@ -144,7 +210,7 @@ export const UpdateModal = ({
                         <div className="update-modal__version update-modal__version--current">v{appVersion}</div>
                         <p className="update-modal__error-message">{updateResult.message || t("updateCheckFailedMessage")}</p>
                     </div>
-                ) : updateResult.has_update ? (
+                ) : hasUpdate ? (
                     <>
                         <div className="update-modal__info update-modal__info--version">
                             <div className="update-modal__version-row">
@@ -155,7 +221,14 @@ export const UpdateModal = ({
                                 <span className="update-modal__version-arrow" aria-hidden="true">→</span>
                                 <div>
                                     <div className="update-modal__label">{t("latestVersion")}</div>
-                                    <div className="update-modal__version update-modal__version--latest">{updateResult.latest_version}</div>
+                                    <div className="update-modal__version update-modal__version--latest">
+                                        {updateResult.latest_version}
+                                        {updateResult.channel === 'beta' && (
+                                            <span className="update-modal__channel-badge" title={t('betaChannel')}>
+                                                {t('betaChannel')}
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
                             {downloadSource && (

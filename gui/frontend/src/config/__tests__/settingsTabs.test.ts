@@ -33,6 +33,34 @@ describe('getSettingsTabOptions', () => {
     it('lists the same content tabs as SETTINGS_CONTENT_TAB_IDS', () => {
         expect(getSettingsTabOptions('en').map((tab) => tab.id)).toEqual([...SETTINGS_CONTENT_TAB_IDS]);
     });
+
+    it('assigns a localized group and group label to every content tab', () => {
+        const enTabs = getSettingsTabOptions('en');
+        expect(enTabs.every((tab) => Boolean(tab.group) && Boolean(tab.groupLabel))).toBe(true);
+
+        const general = enTabs.find((tab) => tab.id === 'general');
+        expect(general?.group).toBe('essentials');
+        expect(general?.groupLabel).toBe('Essentials');
+
+        const llm = enTabs.find((tab) => tab.id === 'llm');
+        expect(llm?.group).toBe('ai');
+        expect(llm?.groupLabel).toBe('AI & Models');
+
+        const zhGeneral = getSettingsTabOptions('zh-Hans').find((tab) => tab.id === 'general');
+        expect(zhGeneral?.groupLabel).toBe('基础设置');
+
+        const zhSystem = getSettingsTabOptions('zh-Hant').find((tab) => tab.id === 'system');
+        expect(zhSystem?.group).toBe('system');
+        expect(zhSystem?.groupLabel).toBe('系統');
+    });
+
+    it('keeps group order stable by first appearance', () => {
+        const groups = getSettingsTabOptions('en')
+            .map((tab) => tab.group)
+            .filter((group, index, all): group is NonNullable<typeof group> => Boolean(group) && all.indexOf(group) === index);
+
+        expect(groups).toEqual(['essentials', 'ai', 'services', 'data', 'system']);
+    });
 });
 
 describe('resolveSettingsTabId', () => {

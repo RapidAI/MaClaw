@@ -13,6 +13,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RestartLansenger: (...args: unknown[]) => RestartLansengerMock(...args),
     SetLansengerLocalMode: (...args: unknown[]) => SetLansengerLocalModeMock(...args),
     ListLansengerGroups: (...args: unknown[]) => ListLansengerGroupsMock(...args),
+    SetLansengerGroupIgnored: vi.fn().mockResolvedValue(undefined),
+    SetLansengerGroupAllowed: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../pages/UtilitiesWatchPanel', () => ({
@@ -67,6 +69,12 @@ describe('LansengerSettings', () => {
 
         fireEvent.click(screen.getByRole('button', { name: '\u76d1\u770b' }));
         expect(props.setIMAuditPlatform).toHaveBeenCalledWith('lansenger');
+
+        // Group-chat options must go through saveRemoteConfigField (atomic whitelist).
+        fireEvent.change(screen.getByLabelText('\u7fa4\u804a\u7b56\u7565'), { target: { value: 'allowlist' } });
+        expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_group_policy: 'allowlist' });
+        fireEvent.click(screen.getByText('\u9700\u8981 @\u63d0\u53ca'));
+        expect(props.saveRemoteConfigField).toHaveBeenCalledWith({ lansenger_require_mention: false });
     });
 
     it('shows Follow only when Lansenger is connected, after Watch', async () => {
@@ -76,7 +84,7 @@ describe('LansengerSettings', () => {
         rerender(<LansengerSettings {...baseProps()} lansengerStatus="connected" />);
         const follow = screen.getByTestId('lansenger-follow-button');
         expect(follow).toBeTruthy();
-        expect(follow.textContent).toBe('\u5173\u6ce8');
+        expect(follow.textContent).toBe('\u76ef\u4eba');
 
         // Follow sits after 监看 in the toolbar
         const watchBtn = screen.getByRole('button', { name: '\u76d1\u770b' });
@@ -113,7 +121,7 @@ describe('LansengerSettings', () => {
         fireEvent.click(screen.getByTestId('lansenger-follow-button'));
         const page = await screen.findByTestId('watch-page');
         expect(page.getAttribute('data-compact')).toBe('1');
-        expect(screen.getByRole('dialog', { name: '\u5173\u6ce8' })).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: '\u76ef\u4eba' })).toBeTruthy();
 
         fireEvent.click(screen.getByRole('button', { name: '\u5173\u95ed' }));
         await waitFor(() => expect(screen.queryByTestId('watch-page')).toBeNull());

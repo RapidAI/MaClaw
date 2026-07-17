@@ -121,12 +121,12 @@ type AppConfig struct {
 	MemoryAutoCompress bool `json:"memory_auto_compress"`
 	MemoryMaxBackups   int  `json:"memory_max_backups"` // 0 means use default (20)
 	// Security
-	SecurityPolicyMode                 string                 `json:"security_policy_mode,omitempty"`
-	HubSecurityCentralized             bool                   `json:"hub_security_centralized,omitempty"`
-	SandboxMode                        string                 `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
-	NetworkLevel                       string                 `json:"network_level,omitempty"`         // "none", "intranet", "allowlist", "full" (default)
-	NetworkAllowlist                   []string               `json:"network_allowlist,omitempty"`     // hostnames/IPs allowed when network_level="allowlist"
-	YoloModeAllowed                    bool                   `json:"yolo_mode_allowed"`               // default true
+	SecurityPolicyMode     string   `json:"security_policy_mode,omitempty"`
+	HubSecurityCentralized bool     `json:"hub_security_centralized,omitempty"`
+	SandboxMode            string   `json:"sandbox_mode,omitempty"`      // "none" (default), "os", "docker"
+	NetworkLevel           string   `json:"network_level,omitempty"`     // "none", "intranet", "allowlist", "full" (default)
+	NetworkAllowlist       []string `json:"network_allowlist,omitempty"` // hostnames/IPs allowed when network_level="allowlist"
+	YoloModeAllowed        bool     `json:"yolo_mode_allowed"`           // default true
 	// ComputerUseEnabled controls desktop Computer Use tools/playbook injection.
 	// Nil means default true. Independent of ScreenParsingEnabled (OmniParser YOLO weights).
 	ComputerUseEnabled *bool `json:"computer_use_enabled,omitempty"`
@@ -138,7 +138,7 @@ type AppConfig struct {
 	ComputerUseLogMaxAgeDays *int `json:"computer_use_log_max_age_days,omitempty"`
 	// ComputerUseLogAutoPrune runs prune on GUI startup using keep/max-age policy.
 	// Nil/false means off (default).
-	ComputerUseLogAutoPrune *bool `json:"computer_use_log_auto_prune,omitempty"`
+	ComputerUseLogAutoPrune            *bool                  `json:"computer_use_log_auto_prune,omitempty"`
 	SmartRouteEnabled                  bool                   `json:"smart_route_enabled"`             // default true (Hub smart routing allowed)
 	GossipEnabled                      bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
 	FileOutboundEnabled                bool                   `json:"file_outbound_enabled"`           // default true
@@ -275,6 +275,9 @@ type AppConfig struct {
 	VectorSearchEnabled bool `json:"vector_search_enabled"`
 	// ASR toggle.
 	ASREnabled bool `json:"asr_enabled"`
+	// Diarization toggle. When enabled, the CAM++ speaker embedding model is
+	// downloaded in the background and made available for meeting transcription.
+	DiarizationEnabled bool `json:"diarization_enabled"`
 	// ASR voice correction: after local ASR, run a light LLM pass to fix
 	// obvious homophone/typo errors and (in continuous mode) drop non-commands.
 	// Default true via AppConfigDefaults; set false to send raw ASR text.
@@ -302,7 +305,7 @@ type AppConfig struct {
 	// Screen parsing (YOLO) toggle 鈥?enables vision-based UI element detection.
 	// Default: enabled (nil = true). Uses *bool so we can distinguish "not set" from "false".
 	ScreenParsingEnabled *bool `json:"screen_parsing_enabled,omitempty"`
-	// UI zoom factor (0.5 ~ 2.0, 0 = default 1.0).
+	// UI zoom factor (0.5 ~ 2.0 manual). 0 / omit = Auto (DPI-adaptive on the frontend).
 	UIZoomFactor float64 `json:"ui_zoom_factor,omitempty"`
 	// Chat font size in pixels (12 ~ 24, 0 = default 14).
 	ChatFontSize int `json:"chat_font_size,omitempty"`
@@ -947,6 +950,7 @@ func AppConfigDefaults() AppConfig {
 		UseWindowsTerminal:         true,
 		VectorSearchEnabled:        true,
 		ASREnabled:                 true,
+		DiarizationEnabled:         true,
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,
 		ScreenParsingEnabled:       boolPtrValue(true),

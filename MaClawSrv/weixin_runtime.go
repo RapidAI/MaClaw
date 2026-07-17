@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 )
 
@@ -55,6 +56,8 @@ type srvWeixinRuntime struct {
 	status             srvWeixinRuntimeStatus
 	instanceID         string
 	lastIdentitySyncAt time.Time
+	// lastUserID is the most recent private chat peer (for scheduled proactive push).
+	lastUserID string
 }
 
 type srvWeixinGatewayManager struct {
@@ -273,6 +276,14 @@ func (m *srvWeixinGatewayManager) handleIncomingMessage(parent context.Context, 
 	if !m.isCurrentRuntime(p, expected) {
 		return
 	}
+	// Remember last private peer for scheduled-task proactive delivery (user_id=self).
+	if uid := strings.TrimSpace(msg.FromUserID); uid != "" {
+		m.mu.Lock()
+		if m.runtimes[principalRuntimeKey(p)] == expected {
+			expected.lastUserID = uid
+		}
+		m.mu.Unlock()
+	}
 	cfg, _ := m.svc.GetUserConfig(context.Background(), p)
 	text := strings.TrimSpace(msg.Text)
 	asrTranscript, asrOK := m.transcribeIncomingVoice(context.Background(), cfg, msg)
@@ -450,6 +461,98 @@ func (m *srvWeixinGatewayManager) reply(ctx context.Context, p agentservice.Prin
 	if err := runtime.gateway.SendText(ctx, weixin.OutgoingText{ToUserID: msg.FromUserID, Text: text, ContextToken: contextToken}); err != nil {
 		m.setStatus(p, runtime, srvWeixinStatusError, err.Error())
 	}
+}
+
+// ListProactivePeers returns known private peers across connected WeChat runtimes
+// (for list_targets / admin delivery-targets catalog).
+func (m *srvWeixinGatewayManager) ListProactivePeers() []scheduler.TargetRef {
+	if m == nil {
+		return nil
+	}
+	var out []scheduler.TargetRef
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, rt := range m.runtimes {
+		if rt == nil {
+			continue
+		}
+		st := strings.TrimSpace(rt.status.Status)
+		if st != srvWeixinStatusConnected && st != srvWeixinStatusConnecting {
+			continue
+		}
+		uid := strings.TrimSpace(rt.lastUserID)
+		if uid == "" {
+			continue
+		}
+		out = append(out, scheduler.TargetRef{
+			Kind:    scheduler.DeliveryKindUser,
+			ID:      uid,
+			Name:    "微信私聊 " + uid,
+			Channel: scheduler.DeliveryChannelWeixin,
+		})
+	}
+	return out
+}
+
+// SendProactiveTextAny pushes text to the most recently active WeChat private
+// session among connected runtimes. Used by scheduled-task delivery (channel=weixin).
+// Returns the peer user id on success (for DeliveryStateStore memory).
+func (m *srvWeixinGatewayManager) SendProactiveTextAny(text string) (peer string, err error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", fmt.Errorf("empty proactive text")
+	}
+	if m == nil {
+		return "", fmt.Errorf("weixin runtime manager is nil")
+	}
+	type candidate struct {
+		gw     srvWeixinGateway
+		userID string
+		p      agentservice.Principal
+		rt     *srvWeixinRuntime
+	}
+	var cands []candidate
+	m.mu.Lock()
+	for _, rt := range m.runtimes {
+		if rt == nil || rt.gateway == nil {
+			continue
+		}
+		st := strings.TrimSpace(rt.status.Status)
+		if st != srvWeixinStatusConnected && st != srvWeixinStatusConnecting {
+			continue
+		}
+		uid := strings.TrimSpace(rt.lastUserID)
+		if uid == "" {
+			continue
+		}
+		cands = append(cands, candidate{gw: rt.gateway, userID: uid, p: rt.principal, rt: rt})
+	}
+	m.mu.Unlock()
+	if len(cands) == 0 {
+		return "", fmt.Errorf("no active weixin session (先用微信私聊机器人一次)")
+	}
+	var lastErr error
+	for _, c := range cands {
+		tok := strings.TrimSpace(c.gw.GetContextToken(c.userID))
+		if tok == "" {
+			lastErr = fmt.Errorf("weixin: no context token for %s", c.userID)
+			continue
+		}
+		if err := c.gw.SendText(context.Background(), weixin.OutgoingText{
+			ToUserID:     c.userID,
+			Text:         text,
+			ContextToken: tok,
+		}); err != nil {
+			lastErr = err
+			m.setStatus(c.p, c.rt, srvWeixinStatusError, err.Error())
+			continue
+		}
+		return c.userID, nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("weixin proactive send failed")
 }
 
 func (m *srvWeixinGatewayManager) replyVoiceFile(ctx context.Context, p agentservice.Principal, expected *srvWeixinRuntime, msg weixin.IncomingMessage, mp3 []byte) {

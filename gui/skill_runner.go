@@ -3698,16 +3698,11 @@ func (r *SkillRunner) maybeRepairSkillWithForce(entry *corelib.NLSkillEntry, for
 }
 
 func (r *SkillRunner) refreshSkillIndexesAfterMutation(skillName string) {
-	if r == nil || r.executor == nil {
+	if r == nil || r.executor == nil || r.executor.app == nil {
 		return
 	}
-	r.executor.invalidateSkillCache()
-	if r.executor.app != nil {
-		if r.executor.app.toolRouter != nil {
-			r.executor.app.toolRouter.RefreshSkillIndex()
-		}
-		r.executor.app.emitEvent(EventSkillIndexRefreshed, map[string]string{"skill": skillName})
-	}
+	// Single policy with import/UI/IM paths (invalidate list + scanner, emit event).
+	r.executor.app.refreshSkillIndexesAfterMutation(skillName)
 }
 
 func markRepairBlockedBySecurity(entry *corelib.NLSkillEntry, originalSteps []corelib.NLSkillStep, report *cskill.ScanReport) {

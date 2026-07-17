@@ -1612,16 +1612,18 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			return
 		}
 		c.app.lansengerGateway.HandleGatewayReply(GatewayReplyPayload{
-			ReplyType:   reply.ReplyType,
-			PlatformUID: reply.PlatformUID,
-			Text:        reply.Text,
-			ImageData:   reply.ImageData,
-			Caption:     reply.Caption,
-			FileData:    reply.FileData,
-			FileName:    reply.FileName,
-			MimeType:    reply.MimeType,
-			ChatType:    reply.ChatType,
-			Extra:       reply.Extra,
+			ReplyType:       reply.ReplyType,
+			PlatformUID:     reply.PlatformUID,
+			Text:            reply.Text,
+			ImageData:       reply.ImageData,
+			Caption:         reply.Caption,
+			FileData:        reply.FileData,
+			FileName:        reply.FileName,
+			MimeType:        reply.MimeType,
+			ChatType:        reply.ChatType,
+			SourceMessageID: reply.SourceMessageID,
+			SenderID:        reply.SenderID,
+			Extra:           reply.Extra,
 		})
 	case imGatewayPlatformThirdParty:
 		if c.app.thirdPartyGateway == nil {

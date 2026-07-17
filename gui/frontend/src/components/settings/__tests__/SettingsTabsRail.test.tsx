@@ -98,4 +98,30 @@ describe('SettingsTabsRail', () => {
 
         expect(screen.queryByRole('tooltip')).toBeNull();
     });
+
+    it('renders group labels in first-appearance order and groups tabs under them', () => {
+        const groupedTabs: SettingsTabOption[] = [
+            { id: 'general', label: 'General', desc: 'g', icon: '<svg></svg>', group: 'essentials', groupLabel: 'Essentials' },
+            { id: 'proxy', label: 'Proxy', desc: 'p', icon: '<svg></svg>', group: 'essentials', groupLabel: 'Essentials' },
+            { id: 'llm', label: 'LLM', desc: 'l', icon: '<svg></svg>', group: 'ai', groupLabel: 'AI & Models' },
+            { id: 'embedding', label: 'Embedding', desc: 'e', icon: '<svg></svg>', group: 'ai', groupLabel: 'AI & Models' },
+        ];
+        const { container } = render(<SettingsTabsRail tabs={groupedTabs} activeTab="llm" onChange={vi.fn()} />);
+
+        const labels = Array.from(container.querySelectorAll('.settings-top-tabs__group-label')).map((node) => node.textContent);
+        expect(labels).toEqual(['Essentials', 'AI & Models']);
+
+        const groups = container.querySelectorAll('.settings-top-tabs__group');
+        expect(groups).toHaveLength(2);
+        expect(groups[0].querySelectorAll('.settings-top-tab')).toHaveLength(2);
+        expect(groups[1].querySelectorAll('.settings-top-tab')).toHaveLength(2);
+        expect(groups[1].querySelector('.settings-top-tab.active')?.textContent).toBe('LLM');
+    });
+
+    it('renders tabs without a group under no group label', () => {
+        const { container } = render(<SettingsTabsRail tabs={tabs} activeTab="general" onChange={vi.fn()} />);
+
+        expect(container.querySelector('.settings-top-tabs__group-label')).toBeNull();
+        expect(container.querySelectorAll('.settings-top-tab')).toHaveLength(2);
+    });
 });

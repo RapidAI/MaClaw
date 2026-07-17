@@ -3,6 +3,8 @@ package tts
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -90,6 +92,53 @@ func TestEncodeWAVToMP3ProducesMP3Data(t *testing.T) {
 	}
 	if !bytes.HasPrefix(mp3Data, []byte("ID3")) && !HasMP3FrameHeader(mp3Data) {
 		t.Fatalf("mp3 header = % x", mp3Data[:min(4, len(mp3Data))])
+	}
+}
+
+func TestEncodeWAVFileToMP3Archive(t *testing.T) {
+	dir := t.TempDir()
+	wavPath := filepath.Join(dir, "meeting.wav")
+	mp3Path := filepath.Join(dir, "meeting.mp3")
+	wavData := testWAVS16Mono(16000, []int16{0, 1000, -1000, 500, -500, 0, 200, -200})
+	if err := os.WriteFile(wavPath, wavData, 0o644); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	if err := EncodeWAVFileToMP3Archive(context.Background(), wavPath, mp3Path); err != nil {
+		t.Fatalf("EncodeWAVFileToMP3Archive: %v", err)
+	}
+	got, err := os.ReadFile(mp3Path)
+	if err != nil {
+		t.Fatalf("read mp3: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("empty mp3 product")
+	}
+	if !bytes.HasPrefix(got, []byte("ID3")) && !HasMP3FrameHeader(got) {
+		t.Fatalf("mp3 header = % x", got[:min(4, len(got))])
+	}
+}
+
+func TestEncodeWAVFileToMP3ArchiveRejectsMissingAndTiny(t *testing.T) {
+	dir := t.TempDir()
+	mp3Path := filepath.Join(dir, "out.mp3")
+	if err := EncodeWAVFileToMP3Archive(context.Background(), filepath.Join(dir, "missing.wav"), mp3Path); err == nil {
+		t.Fatal("expected missing wav error")
+	}
+	tiny := filepath.Join(dir, "tiny.wav")
+	if err := os.WriteFile(tiny, []byte("RIFF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncodeWAVFileToMP3Archive(context.Background(), tiny, mp3Path); err == nil || !strings.Contains(err.Error(), "too short") {
+		t.Fatalf("tiny wav err = %v", err)
+	}
+}
+
+func TestEncodeWAVToMP3ContextRespectsCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := EncodeWAVToMP3Context(ctx, testWAVS16Mono(16000, []int16{0, 1, -1, 0}))
+	if err == nil || !strings.Contains(err.Error(), "context") {
+		t.Fatalf("cancelled ctx err = %v", err)
 	}
 }
 

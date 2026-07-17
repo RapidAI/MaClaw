@@ -47,11 +47,29 @@ func NormalizeGroupPolicy(policy string) string {
 	}
 }
 
+// IsGroupChat reports whether chatType identifies a group conversation.
+// Matching is case-insensitive and trims whitespace.
+func IsGroupChat(chatType string) bool {
+	return strings.EqualFold(strings.TrimSpace(chatType), "group")
+}
+
+// NormalizeChatType returns a canonical "group" | "p2p" (or lowercased raw value).
+func NormalizeChatType(chatType string) string {
+	switch strings.ToLower(strings.TrimSpace(chatType)) {
+	case "group":
+		return "group"
+	case "p2p", "private", "dm", "direct":
+		return "p2p"
+	default:
+		return strings.ToLower(strings.TrimSpace(chatType))
+	}
+}
+
 // GroupMessageAllowed reports whether a group inbound message should enter the
 // agent / survey pipeline. Non-group messages always return true.
 // Watch/盯人 may still observe messages separately.
 func GroupMessageAllowed(msg IncomingMessage, opts GroupChatOptions) (allowed bool, reason string) {
-	if !strings.EqualFold(strings.TrimSpace(msg.ChatType), "group") {
+	if !IsGroupChat(msg.ChatType) {
 		return true, ""
 	}
 	policy := NormalizeGroupPolicy(opts.Policy)

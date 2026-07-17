@@ -2204,9 +2204,13 @@ func TestRemoteCodingSubAgentCallbacksAreNilSafe(t *testing.T) {
 	if nilCB.ShouldStop() {
 		t.Fatalf("nil callback should not request stop")
 	}
-	if ctx, release, err := nilCB.LLMRequestContext(1); err != nil || ctx == nil || release == nil {
+	ctx, release, err := nilCB.LLMRequestContext(1)
+	if err != nil || ctx == nil || release == nil {
 		t.Fatalf("nil callback should return background request context, ctx=%v release_nil=%v err=%v", ctx, release == nil, err)
 	}
+	// Release the scheduler lease: a leaked foreground slot starves all
+	// background-priority LLM calls for the rest of the package run.
+	defer release(nil)
 	if prompt := nilCB.BuildSystemPrompt("task", true); !strings.Contains(prompt, "Remote Coding SubAgent") {
 		t.Fatalf("nil callback should still build base remote prompt, got %q", prompt)
 	}

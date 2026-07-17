@@ -3866,7 +3866,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             setComposeAction(null);
             return;
         }
-        if (sendInFlightRef.current) return;
+        // A diarized recording can yield several chronological speaker turns.
+        // The first turn starts a send; subsequent turns must be preserved for
+        // the buffer queue instead of being silently dropped by the duplicate-
+        // send guard. The queue drains after the active assistant turn ends.
+        if (sendInFlightRef.current) {
+            addEntry(composed, [], { autoDrain: true });
+            setComposeAction(null);
+            return;
+        }
         sendInFlightRef.current = true;
         clearComposerDraft({ clearAttachments: false });
         try {
@@ -3876,8 +3884,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             console.warn("[AIAssistantPanel] Voice prompt send failed", err);
         } finally {
             sendInFlightRef.current = false;
+            // The send promise can settle before the session's busy state is
+            // rendered. Wake the queue explicitly so a diarized follow-up
+            // turn waits for this send, then drains promptly afterwards.
+            refreshQueueInFlight();
         }
-    }, [addEntry, clearComposerDraft, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, recordingActive, sendBtwMessage, sendMessageForTab, updateInputValue]);
+    }, [addEntry, clearComposerDraft, composeAction, dispatchBtwText, inputLocked, ready, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, sendBtwMessage, sendMessageForTab, updateInputValue]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');
     const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
         inputRef,
@@ -3979,7 +3991,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             continueQueueDrainRef.current = false;
             queueAutoDrainArmedRef.current = false;
         }
-        const readyToDrainQueue = ready && showChatUI && !submitLocked;
+        // A diarized voice recording calls its speaker turns synchronously.
+        // The second turn may enter the buffer before the first send has made
+        // submitLocked true, so the ref is the authoritative immediate guard.
+        const readyToDrainQueue = ready && showChatUI && !submitLocked && !sendInFlightRef.current;
         const becameIdle = prevSubmitLockedRef.current && readyToDrainQueue;
         const returnedToChatIdle = !prevShowChatUIRef.current && readyToDrainQueue;
         const continueIdleDrain = continueQueueDrainRef.current && readyToDrainQueue;
@@ -4023,7 +4038,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeTab.id, activeTab.projectPath, activeTab.type, dispatchBtwText, queue, queueEditDraftActive, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
+    }, [activeTab.id, activeTab.projectPath, activeTab.type, dispatchBtwText, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked]);
     const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null, accepted = true) => {
         if (!targetTabId) return;
         const targetTab = tabState.tabs.find(tab => tab.id === targetTabId);

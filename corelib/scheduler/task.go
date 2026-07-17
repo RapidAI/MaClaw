@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,6 +41,9 @@ type ScheduledTask struct {
 	StartDate       string     `json:"start_date,omitempty"`         // "2006-01-02", empty=no limit
 	EndDate         string     `json:"end_date,omitempty"`           // "2006-01-02", empty=no limit
 	TaskType        string     `json:"task_type,omitempty"`          // "reminder" (default) or "process"
+	// Delivery optionally pushes the agent result to an IM channel target
+	// (e.g. Lansenger group or user). Nil/disabled = no structured push.
+	Delivery        *TaskDelivery `json:"delivery,omitempty"`
 	Status          string     `json:"status"`                       // "active", "paused", "expired"
 	CreatedAt       time.Time  `json:"created_at"`
 	LastRunAt       *time.Time `json:"last_run_at,omitempty"`
@@ -268,6 +273,9 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 				return
 			}
 			cp := t // copy the struct
+			// Delivery is a pointer — deep-copy so fire-time Normalize cannot
+			// mutate the persisted task (and concurrent Update stays isolated).
+			cp.Delivery = CloneTaskDelivery(t.Delivery)
 			taskCopy = &cp
 			m.tasks[i].NextRunAt = nil // prevent double-fire
 			break
@@ -315,12 +323,8 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		result = "no executor configured"
 	}
 
-	// If the context was cancelled (timeout or shutdown), annotate the error.
-	if ctx.Err() == context.DeadlineExceeded && errStr == "" {
-		errStr = fmt.Sprintf("execution timed out after %v", timeout)
-	} else if ctx.Err() == context.Canceled && errStr == "" {
-		errStr = "execution cancelled (shutdown)"
-	}
+	// If the context was cancelled (timeout or shutdown), annotate when missing.
+	errStr = annotateExecErrStr(ctx, errStr, timeout)
 
 	// Update state under lock.
 	now := time.Now()
@@ -331,7 +335,7 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		}
 		m.tasks[i].LastRunAt = &now
 		m.tasks[i].RunCount++
-		m.tasks[i].LastResult = TruncateStr(result, 500)
+		m.tasks[i].LastResult = TruncateLastResult(result)
 		m.tasks[i].LastError = errStr
 
 		if m.isExpired(&m.tasks[i], now) {
@@ -375,6 +379,19 @@ func (m *Manager) Add(t ScheduledTask) (string, error) {
 	if t.IntervalMinutes < 0 {
 		return "", fmt.Errorf("scheduler: interval_minutes must be >= 0")
 	}
+	if t.Delivery != nil {
+		t.Delivery.Normalize()
+		if err := t.Delivery.Validate(); err != nil {
+			return "", err
+		}
+		if err := t.Delivery.EnsureResolved(); err != nil {
+			return "", err
+		}
+		// Persist nil when disabled so old clients stay clean.
+		if !t.Delivery.Enabled {
+			t.Delivery = nil
+		}
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -401,7 +418,12 @@ func (m *Manager) List() []ScheduledTask {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]ScheduledTask, len(m.tasks))
-	copy(out, m.tasks)
+	for i, t := range m.tasks {
+		cp := t
+		// Isolate Delivery pointer so callers cannot mutate the store via Normalize.
+		cp.Delivery = CloneTaskDelivery(t.Delivery)
+		out[i] = cp
+	}
 	return out
 }
 
@@ -412,6 +434,7 @@ func (m *Manager) Get(id string) *ScheduledTask {
 	for _, t := range m.tasks {
 		if t.ID == id {
 			cp := t
+			cp.Delivery = CloneTaskDelivery(t.Delivery)
 			return &cp
 		}
 	}
@@ -501,26 +524,20 @@ func (m *Manager) Update(id string, args map[string]interface{}) error {
 		if v, ok := args["action"].(string); ok && v != "" {
 			m.tasks[i].Action = v
 		}
-		if v, ok := args["hour"].(float64); ok {
-			h := int(v)
-			if h >= 0 && h <= 23 {
-				m.tasks[i].Hour = h
-			}
+		// Accept float64 (JSON) and int (Go tooling / re-marshaled maps).
+		if h, ok := coerceInt(args["hour"]); ok && h >= 0 && h <= 23 {
+			m.tasks[i].Hour = h
 		}
-		if v, ok := args["minute"].(float64); ok {
-			mn := int(v)
-			if mn >= 0 && mn <= 59 {
-				m.tasks[i].Minute = mn
-			}
+		if mn, ok := coerceInt(args["minute"]); ok && mn >= 0 && mn <= 59 {
+			m.tasks[i].Minute = mn
 		}
-		if v, ok := args["day_of_week"].(float64); ok {
-			m.tasks[i].DayOfWeek = int(v)
+		if dow, ok := coerceInt(args["day_of_week"]); ok {
+			m.tasks[i].DayOfWeek = dow
 		}
-		if v, ok := args["day_of_month"].(float64); ok {
-			m.tasks[i].DayOfMonth = int(v)
+		if dom, ok := coerceInt(args["day_of_month"]); ok {
+			m.tasks[i].DayOfMonth = dom
 		}
-		if v, ok := args["interval_minutes"].(float64); ok {
-			iv := int(v)
+		if iv, ok := coerceInt(args["interval_minutes"]); ok {
 			if iv < 0 {
 				return fmt.Errorf("scheduler: interval_minutes must be >= 0")
 			}
@@ -534,10 +551,28 @@ func (m *Manager) Update(id string, args map[string]interface{}) error {
 		}
 		if v, ok := args["task_type"].(string); ok {
 			if v != "" && v != TaskTypeReminder && v != TaskTypeProcess {
-				m.mu.Unlock()
 				return fmt.Errorf("scheduler: task_type must be %q or %q", TaskTypeReminder, TaskTypeProcess)
 			}
 			m.tasks[i].TaskType = v
+		}
+		if raw, ok := args["delivery"]; ok {
+			// Explicit null / empty clears delivery.
+			if raw == nil {
+				m.tasks[i].Delivery = nil
+			} else {
+				d, err := ParseDeliveryFromAny(raw)
+				if err != nil {
+					return err
+				}
+				if d == nil || !d.Enabled {
+					m.tasks[i].Delivery = nil
+				} else {
+					if err := d.EnsureResolved(); err != nil {
+						return err
+					}
+					m.tasks[i].Delivery = d
+				}
+			}
 		}
 		now := time.Now()
 		if m.tasks[i].Status == "active" {
@@ -589,6 +624,7 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 	for _, t := range m.tasks {
 		if t.ID == id {
 			cp := t
+			cp.Delivery = CloneTaskDelivery(t.Delivery)
 			taskCopy = &cp
 			break
 		}
@@ -631,11 +667,7 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 		result = "no executor configured"
 	}
 
-	if ctx.Err() == context.DeadlineExceeded && errStr == "" {
-		errStr = fmt.Sprintf("execution timed out after %v", timeout)
-	} else if ctx.Err() == context.Canceled && errStr == "" {
-		errStr = "execution cancelled (shutdown)"
-	}
+	errStr = annotateExecErrStr(ctx, errStr, timeout)
 
 	now := time.Now()
 	m.mu.Lock()
@@ -645,7 +677,7 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 		}
 		m.tasks[i].LastRunAt = &now
 		m.tasks[i].RunCount++
-		m.tasks[i].LastResult = TruncateStr(result, 500)
+		m.tasks[i].LastResult = TruncateLastResult(result)
 		m.tasks[i].LastError = errStr
 		break
 	}
@@ -656,6 +688,43 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 	if cb != nil {
 		cb()
 	}
+}
+
+// annotateExecErrStr fills or augments LastError when the scheduler aborted
+// (timeout/cancel). If the executor already returned an error string that does
+// not mention the abort, append a short marker so operators still see the timeout.
+func annotateExecErrStr(ctx context.Context, errStr string, timeout time.Duration) string {
+	if ctx == nil {
+		return errStr
+	}
+	cerr := ctx.Err()
+	if cerr == nil {
+		return errStr
+	}
+	var mark string
+	switch {
+	case errors.Is(cerr, context.DeadlineExceeded):
+		mark = fmt.Sprintf("execution timed out after %v", timeout)
+	case errors.Is(cerr, context.Canceled):
+		mark = "execution cancelled (shutdown)"
+	default:
+		return errStr
+	}
+	if errStr == "" {
+		return mark
+	}
+	// Avoid duplicating common abort phrases already present in executor errors.
+	lower := strings.ToLower(errStr)
+	if strings.Contains(lower, "timed out") ||
+		strings.Contains(lower, "deadline exceeded") || // errors.Is → Error() text
+		strings.Contains(lower, "deadlineexceeded") ||
+		strings.Contains(lower, "canceled") ||
+		strings.Contains(lower, "cancelled") ||
+		strings.Contains(errStr, "超时") ||
+		strings.Contains(errStr, "中断") {
+		return errStr
+	}
+	return errStr + "; " + mark
 }
 
 // ---------------------------------------------------------------------------
@@ -872,13 +941,36 @@ func generateID() string {
 	return fmt.Sprintf("%d-%04x", time.Now().UnixNano(), int(buf[0])<<8|int(buf[1]))
 }
 
-// TruncateStr truncates s to maxLen runes.
+// TruncateStr truncates s to at most maxLen runes (including "..." when shortened).
 func TruncateStr(s string, maxLen int) string {
-	r := []rune(s)
-	if len(r) <= maxLen {
-		return s
+	return truncateRunes(s, maxLen)
+}
+
+// coerceInt accepts JSON float64, int, int64, and json.Number-like strings.
+func coerceInt(v interface{}) (int, bool) {
+	if v == nil {
+		return 0, false
 	}
-	return string(r[:maxLen]) + "..."
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	default:
+		return 0, false
+	}
 }
 
 // FormatInterval returns a human-readable string for IntervalMinutes.

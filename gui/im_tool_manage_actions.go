@@ -58,11 +58,13 @@ func normalizeManageTemplateAction(action string) manageTemplateAction {
 type manageScheduleAction string
 
 const (
-	manageScheduleActionUnknown manageScheduleAction = ""
-	manageScheduleActionCreate  manageScheduleAction = "create"
-	manageScheduleActionList    manageScheduleAction = "list"
-	manageScheduleActionDelete  manageScheduleAction = "delete"
-	manageScheduleActionUpdate  manageScheduleAction = "update"
+	manageScheduleActionUnknown     manageScheduleAction = ""
+	manageScheduleActionCreate      manageScheduleAction = "create"
+	manageScheduleActionList        manageScheduleAction = "list"
+	manageScheduleActionDelete      manageScheduleAction = "delete"
+	manageScheduleActionUpdate      manageScheduleAction = "update"
+	// list_targets: generic IM delivery destinations (channel=lansenger|…, query optional)
+	manageScheduleActionListTargets manageScheduleAction = "list_targets"
 )
 
 func normalizeManageScheduleAction(action string) manageScheduleAction {
@@ -75,6 +77,9 @@ func normalizeManageScheduleAction(action string) manageScheduleAction {
 		return manageScheduleActionDelete
 	case manageScheduleActionUpdate:
 		return manageScheduleActionUpdate
+	case manageScheduleActionListTargets, "list_delivery_targets", "list_groups", "list_im_targets":
+		// Aliases keep older/agent-phrased names working without new tools.
+		return manageScheduleActionListTargets
 	default:
 		return manageScheduleActionUnknown
 	}

@@ -52,40 +52,27 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 			return "", fmt.Errorf("nil response from agent")
 		}
 
-		// Check if we were cancelled by the scheduler timeout.
-		if ctx.Err() != nil {
-			return resp.Text, ctx.Err()
-		}
-
-		// Notify completion.
 		resultText := resp.Text
 		hasError := resp.Error != ""
-
-		notifSummary := resultText
-		if hasError && notifSummary == "" {
-			notifSummary = resp.Error
+		var runErr error
+		if hasError {
+			runErr = fmt.Errorf("%s", resp.Error)
 		}
-		if notifSummary != "" {
-			if FlashAndBeep != nil {
-				FlashAndBeep()
-			}
-			notifTitle := "定时任务完成"
-			if hasError {
-				notifTitle = "定时任务失败"
-			}
-			if ShowNotification != nil {
-				ShowNotification(
-					notifTitle,
-					fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(notifSummary, 200)),
-					1,
-				)
-			}
+		// Fold timeout/cancel into runErr so partial text can still be delivered.
+		runErr = scheduler.AnnotateRunErrWithContext(ctx, runErr)
+
+		// Structured delivery even on timeout when partial text exists (process-type reports).
+		if err := a.deliverScheduledTaskResult(task, resultText, runErr); err != nil {
+			log.Printf("[ScheduledTask] %s delivery: %v", task.Name, err)
+			resultText, runErr = scheduler.MergeDeliveryOutcome(task.Delivery, resultText, runErr, err)
 		}
 
-		if resp.Error != "" {
-			return resp.Text, fmt.Errorf("%s", resp.Error)
+		showScheduledTaskCompletionNotification(task.Name, resultText, resp.Error, hasError, runErr)
+
+		if runErr != nil {
+			return resultText, runErr
 		}
-		return resp.Text, nil
+		return resultText, nil
 	}
 }
 
@@ -126,57 +113,75 @@ func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) schedule
 			return "", fmt.Errorf("nil response from agent")
 		}
 
-		if ctx.Err() != nil {
-			return resp.Text, ctx.Err()
-		}
-
-		// Push the result to the user's IM channels via Hub.
 		resultText := resp.Text
 		hasError := resp.Error != ""
-
-		var proactiveMsg string
+		var runErr error
 		if hasError {
-			if resultText != "" {
-				proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nResult:\n%s\n\nError: %s", task.Name, resultText, resp.Error)
-			} else {
-				proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nError: %s", task.Name, resp.Error)
-			}
-		} else if resultText != "" {
-			proactiveMsg = fmt.Sprintf("Task %s completed successfully.\n\nResult:\n%s", task.Name, resultText)
+			runErr = fmt.Errorf("%s", resp.Error)
 		}
+		runErr = scheduler.AnnotateRunErrWithContext(ctx, runErr)
 
-		if proactiveMsg != "" {
-			if err := hubClient.SendIMProactiveMessage(proactiveMsg); err != nil {
-				a.log(fmt.Sprintf("[scheduled-task] proactive message send failed: %v", err))
+		// Prefer explicit delivery targets (channel / group / user).
+		// Fall back to owner Hub proactive only when no structured delivery is set.
+		// Deliver even on timeout when partial text exists.
+		if task.Delivery != nil && task.Delivery.Active() {
+			if err := a.deliverScheduledTaskResult(task, resultText, runErr); err != nil {
+				a.log(fmt.Sprintf("[scheduled-task] delivery failed: %v", err))
+				resultText, runErr = scheduler.MergeDeliveryOutcome(task.Delivery, resultText, runErr, err)
 			}
-		}
-
-		// Play sound + flash + notification on completion.
-		notifSummary := resultText
-		if hasError && notifSummary == "" {
-			notifSummary = resp.Error
-		}
-		if notifSummary != "" {
-			if FlashAndBeep != nil {
-				FlashAndBeep()
-			}
-			notifTitle := "定时任务完成"
+		} else {
+			var proactiveMsg string
 			if hasError {
-				notifTitle = "定时任务失败"
+				if resultText != "" {
+					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nResult:\n%s\n\nError: %s", task.Name, resultText, resp.Error)
+				} else {
+					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nError: %s", task.Name, resp.Error)
+				}
+			} else if resultText != "" {
+				proactiveMsg = fmt.Sprintf("Task %s completed successfully.\n\nResult:\n%s", task.Name, resultText)
 			}
-			if ShowNotification != nil {
-				ShowNotification(
-					notifTitle,
-					fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(notifSummary, 200)),
-					1,
-				)
+			if proactiveMsg != "" {
+				if err := hubClient.SendIMProactiveMessage(proactiveMsg); err != nil {
+					a.log(fmt.Sprintf("[scheduled-task] proactive message send failed: %v", err))
+				}
 			}
 		}
 
-		if resp.Error != "" {
-			return resp.Text, fmt.Errorf("%s", resp.Error)
+		showScheduledTaskCompletionNotification(task.Name, resultText, resp.Error, hasError, runErr)
+
+		if runErr != nil {
+			return resultText, runErr
 		}
-		return resp.Text, nil
+		return resultText, nil
+	}
+}
+
+func showScheduledTaskCompletionNotification(taskName, resultText, respError string, hasError bool, runErr error) {
+	notifSummary := resultText
+	if hasError && notifSummary == "" {
+		notifSummary = respError
+	}
+	if notifSummary == "" {
+		return
+	}
+	if FlashAndBeep != nil {
+		FlashAndBeep()
+	}
+	notifTitle := "定时任务完成"
+	// Soft delivery warnings keep task success; prefer that title over "失败".
+	if scheduler.HasDeliveryWarning(resultText) && runErr == nil {
+		notifTitle = "定时任务完成(投递有警告)"
+	} else if hasError || runErr != nil {
+		notifTitle = "定时任务失败"
+	}
+	if ShowNotification != nil {
+		// Keep soft delivery warning visible inside the short toast body.
+		body := scheduler.TruncatePreservingDeliveryWarning(notifSummary, 200)
+		ShowNotification(
+			notifTitle,
+			fmt.Sprintf("%s: %s", taskName, body),
+			1,
+		)
 	}
 }
 

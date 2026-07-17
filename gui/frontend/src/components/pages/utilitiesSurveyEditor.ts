@@ -664,29 +664,65 @@ export function surveyStatusBadgeClass(status: string | undefined | null): strin
     }
 }
 
-/** Operator-facing IM command help lines (desktop help panel). */
-export function buildSurveyOperatorHelp(isZh: boolean): string[] {
+/** One section of the operator help panel: a heading plus its lines. */
+export type SurveyOperatorHelpGroup = {
+    heading: string;
+    lines: string[];
+};
+
+/** Operator-facing IM command help, grouped for the desktop help panel. */
+export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[] {
     if (isZh) {
         return [
-            '群内须 @机器人 后发送（问卷已发布且绑定本群）',
-            '/survey <短码> — 开始填写',
-            '/survey <短码> <答案> — 单题快投',
-            '问卷 <短码> 或 调查 <短码> — 同上',
-            '答题中：回复编号/文本；「上一题」回退；「取消」结束',
-            '允许修改时：提交后可 /survey <短码> 再选「修改」',
-            '/survey list — 本群进行中的问卷',
-            '/survey status · /survey cancel · /survey help',
-            '桌面：Ctrl+S 保存草稿；结果页可复制摘要 / 打印 / 导出 Excel',
+            {
+                heading: '群内使用',
+                lines: [
+                    '群内须 @机器人 后发送（问卷已发布且绑定本群）',
+                    '/survey <短码> — 开始填写',
+                    '/survey <短码> <答案> — 单题快投',
+                    '问卷 <短码> 或 调查 <短码> — 同上',
+                    '/survey list — 本群进行中的问卷',
+                    '/survey status · cancel · help',
+                ],
+            },
+            {
+                heading: '答题与修改',
+                lines: [
+                    '答题中：回复编号/文本；「上一题」回退；「取消」结束',
+                    '允许修改时：提交后可 /survey <短码> 再选「修改」',
+                ],
+            },
+            {
+                heading: '桌面端',
+                lines: [
+                    'Ctrl+S 保存草稿；结果页可复制摘要 / 打印 / 导出 Excel',
+                ],
+            },
         ];
     }
     return [
-        'In group: @bot first (survey published and bound to the group)',
-        '/survey <code> — start',
-        '/survey <code> <answer> — single-question fast path',
-        'While answering: send option number/text; 上一题 = prev; 取消 = cancel',
-        'If updates allowed: re-run /survey <code> then 修改',
-        '/survey list · status · cancel · help',
-        'Desktop: Ctrl+S saves draft; results support summary / print / Excel export',
+        {
+            heading: 'In a group',
+            lines: [
+                '@bot first (survey published and bound to the group)',
+                '/survey <code> — start',
+                '/survey <code> <answer> — single-question fast path',
+                '/survey list · status · cancel · help',
+            ],
+        },
+        {
+            heading: 'Answering',
+            lines: [
+                'Send option number/text; 上一题 = prev; 取消 = cancel',
+                'If updates allowed: re-run /survey <code> then 修改',
+            ],
+        },
+        {
+            heading: 'Desktop',
+            lines: [
+                'Ctrl+S saves draft; results support summary / print / Excel export',
+            ],
+        },
     ];
 }
 

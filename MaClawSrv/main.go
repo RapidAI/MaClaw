@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/internal/servicehost"
 )
@@ -89,10 +90,30 @@ func runServer(ctx context.Context) error {
 	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 
+	// Wire WeChat proactive push + catalog peers for scheduled-task delivery.
+	if server != nil && server.weixinRuntime != nil {
+		setSrvWeixinProactiveSender(func(text string) (string, error) {
+			return server.weixinRuntime.SendProactiveTextAny(text)
+		})
+		setSrvScheduleCatalogWeixinLister(func() []scheduler.TargetRef {
+			return server.weixinRuntime.ListProactivePeers()
+		})
+		defer setSrvWeixinProactiveSender(nil)
+		defer setSrvScheduleCatalogWeixinLister(nil)
+	}
+	// Warm delivery target catalog registry (lansenger/weixin/telegram/qq).
+	_ = ensureSrvScheduleTargetCatalogs(svc)
+
 	// Initialize optional scheduler (MACLAW_ENABLE_SCHEDULER=true).
 	schMgr := initScheduler(dataRoot, svc, executor)
 	if schMgr != nil {
-		defer schMgr.Stop()
+		defer func() {
+			schMgr.Stop()
+			setSrvSchedulerManager(nil)
+			if executor != nil {
+				executor.ScheduleHandler = nil
+			}
+		}()
 	}
 
 	httpServer := &http.Server{

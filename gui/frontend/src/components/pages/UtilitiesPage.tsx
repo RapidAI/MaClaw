@@ -37,6 +37,7 @@ import {
     surveyStatusLabel,
     type EditorQuestion,
     type SurveyListSort,
+    type SurveyOperatorHelpGroup,
 } from './utilitiesSurveyEditor';
 import { parseWailsJSON } from './utilitiesParse';
 import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetingRecord';
@@ -94,6 +95,25 @@ async function getApp(): Promise<any | null> {
     }
 }
 
+/** Operator help panel: grouped IM command usage, shared by list and editor views. */
+const SurveyHelpPanel = ({ title, groups }: { title: string; groups: SurveyOperatorHelpGroup[] }) => (
+    <div id="survey-help-panel" className="utilities-help" data-testid="survey-help-panel">
+        <h3>{title}</h3>
+        <div className="utilities-help__groups">
+            {groups.map((group) => (
+                <section key={group.heading} className="utilities-help__group">
+                    <h4>{group.heading}</h4>
+                    <ul>
+                        {group.lines.map((line) => (
+                            <li key={line} className={line.startsWith('/') ? 'utilities-help__cmd' : undefined}>{line}</li>
+                        ))}
+                    </ul>
+                </section>
+            ))}
+        </div>
+    </div>
+);
+
 export const UtilitiesPage = ({
     lang,
     onStartMeetingRecord,
@@ -120,6 +140,7 @@ export const UtilitiesPage = ({
         createEmptyQuestion('single_choice', [], { title: isZh ? '满意吗' : 'Satisfied?', optA: isZh ? '是' : 'Yes', optB: isZh ? '否' : 'No' }),
     ]);
     const [groups, setGroups] = useState<Array<{ group_id: string; name: string }>>([]);
+    const [groupQuery, setGroupQuery] = useState('');
     const [stats, setStats] = useState<any>(null);
     const [responses, setResponses] = useState<any[]>([]);
     const [busy, setBusy] = useState(false);
@@ -257,6 +278,19 @@ export const UtilitiesPage = ({
     }, [selected, editQuestions, draftDeadlineLocal, isZh]);
 
     const canPublishNow = publishChecklistReady(publishChecks);
+
+    const boundGroupIDs = useMemo(
+        () => new Set((selected?.bindings || []).map((binding) => binding.group_id)),
+        [selected],
+    );
+
+    const availableGroups = useMemo(() => {
+        const query = groupQuery.trim().toLocaleLowerCase();
+        return groups.filter((group) => {
+            if (boundGroupIDs.has(group.group_id)) return false;
+            return !query || `${group.name} ${group.group_id}`.toLocaleLowerCase().includes(query);
+        });
+    }, [groups, boundGroupIDs, groupQuery]);
 
     const toggleSelect = (id: string) => {
         setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -608,6 +642,7 @@ export const UtilitiesPage = ({
         setDraftAllowP2P(false);
         setDraftDeadlineLocal('');
         setDraftTargetCount('');
+        setGroupQuery('');
         setEditQuestions([
             createEmptyQuestion('single_choice', [], {
                 title: isZh ? '满意吗' : 'Satisfied?',
@@ -1040,6 +1075,9 @@ export const UtilitiesPage = ({
                             type="button"
                             className="utilities-btn"
                             data-testid="survey-help-toggle"
+                            aria-expanded={showHelp}
+                            aria-controls="survey-help-panel"
+                            aria-label={showHelp ? t.hideHelp : t.help}
                             onClick={() => setShowHelp((v) => !v)}
                         >{showHelp ? t.hideHelp : t.help}</button>
                         <button type="button" className="utilities-btn" onClick={toggleSelectAllVisible} disabled={busy || filteredSurveys.length === 0}>{t.selectAll}</button>
@@ -1064,6 +1102,7 @@ export const UtilitiesPage = ({
                     <input
                         className="utilities-search"
                         data-testid="survey-list-search"
+                        aria-label={t.search}
                         value={listQuery}
                         onChange={(e) => setListQuery(e.target.value)}
                         placeholder={t.search}
@@ -1075,18 +1114,9 @@ export const UtilitiesPage = ({
                         </button>
                     )}
                 </div>
-                {showHelp && (
-                    <div className="utilities-help" data-testid="survey-help-panel">
-                        <h3>{t.help}</h3>
-                        <ol>
-                            {operatorHelp.map((line) => (
-                                <li key={line}>{line}</li>
-                            ))}
-                        </ol>
-                    </div>
-                )}
+                {showHelp && <SurveyHelpPanel title={t.help} groups={operatorHelp} />}
                 {hubOk === false && <div className="utilities-banner" role="status">{t.hubOffline}</div>}
-                {error && <div className="utilities-error">{error}</div>}
+                {error && <div className="utilities-error" role="alert">{error}</div>}
                 {surveys.length === 0 && hubOk !== false && (
                     <div className="utilities-empty utilities-empty--cta" data-testid="survey-list-empty">
                         <p className="utilities-empty__title">{t.empty}</p>
@@ -1102,7 +1132,7 @@ export const UtilitiesPage = ({
                 {surveys.length > 0 && filteredSurveys.length === 0 && (
                     <div className="utilities-empty">{t.noMatch}</div>
                 )}
-                {copyHint && <p className="utilities-meta" data-testid="survey-copy-hint">{copyHint}</p>}
+                {copyHint && <p className="utilities-hint" role="status" data-testid="survey-copy-hint">{copyHint}</p>}
                 <ul className="utilities-list">
                     {filteredSurveys.map((s) => (
                         <li key={s.id} className="utilities-list-row">
@@ -1178,32 +1208,31 @@ export const UtilitiesPage = ({
         const bindings = selected?.bindings || [];
         const textQuestions = (selected?.questions || []).filter((q) => q.type === 'text');
         const groupRows = buildGroupBreakdown(responses, bindings, t.p2pUnknown);
+        const statusLabel = surveyStatusLabel(selected?.status || '', isZh);
         return (
             <div className="utilities-page utilities-page--print" data-testid="survey-results-page">
-                <button type="button" className="utilities-link utilities-no-print" onClick={() => setView('survey-edit')}>{t.back}</button>
-                <h1 className="utilities-page__title">{t.results}{selected?.title ? ` · ${selected.title}` : ''}</h1>
-                {error && <div className="utilities-error">{error}</div>}
-                {copyHint && <p className="utilities-meta" data-testid="survey-live-hint">{copyHint}</p>}
-                <div className="utilities-results-overview" data-testid="survey-results-overview">
-                    <p className="utilities-meta">
-                        <strong>{t.status}</strong>: {selected?.status || '—'}
-                        {selected?.settings?.anonymous ? (isZh ? ' · 匿名' : ' · anonymous') : ''}
-                        {selected?.settings?.allow_p2p ? (isZh ? ' · 私聊可填' : ' · P2P') : ''}
-                        {deadline ? ` · ${t.deadline}: ${new Date(deadline).toLocaleString()}` : ''}
-                        {isDeadlineExpired(deadline) ? (
-                            <span className="utilities-badge utilities-badge--danger">{t.expired}</span>
-                        ) : null}
-                    </p>
-                    {bindings.length > 0 && (
-                        <p className="utilities-meta">
-                            <strong>{t.bindings}</strong>: {bindings.map((b) => b.group_name || b.group_id).join(' · ')}
-                        </p>
-                    )}
-                    <p className="utilities-meta utilities-export-pii-note" data-testid="survey-export-pii-note">
-                        {shouldWarnExportPII(selected?.settings?.anonymous) ? t.exportPiiNote : t.exportAnonNote}
-                    </p>
-                </div>
-                <div className="utilities-stat-tiles">
+                <header className="utilities-results-header">
+                    <div>
+                        <button type="button" className="utilities-link utilities-no-print" onClick={() => setView('survey-edit')}>{t.back}</button>
+                        <h1 className="utilities-page__title">{selected?.title || t.results}</h1>
+                        <div className="utilities-results-header__meta">
+                            <span className={surveyStatusBadgeClass(selected?.status || '')}>{statusLabel}</span>
+                            <span>{selected?.short_code || '—'}</span>
+                            {deadline ? <span>{t.deadline}: {new Date(deadline).toLocaleString()}</span> : null}
+                        </div>
+                    </div>
+                    <div className="utilities-results-header__actions utilities-no-print">
+                        <button type="button" className="utilities-btn" disabled={busy} onClick={() => void openResults()}>{t.refresh}</button>
+                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} aria-busy={busy && exportHint === t.exporting} onClick={() => void exportXlsx(false)}>
+                            {busy && exportHint === t.exporting ? t.exporting : t.export}
+                        </button>
+                    </div>
+                </header>
+                {error && <div className="utilities-error" role="alert">{error}</div>}
+                {copyHint && <p className="utilities-hint" role="status" data-testid="survey-live-hint">{copyHint}</p>}
+                <div className="utilities-results-layout">
+                <main className="utilities-results-main">
+                <section className="utilities-stat-tiles" aria-label={isZh ? '回收概览' : 'Collection overview'}>
                     <div className="utilities-stat-tile">
                         <span>{t.count}</span>
                         <strong>{count}</strong>
@@ -1223,7 +1252,7 @@ export const UtilitiesPage = ({
                             </div>
                         </div>
                     )}
-                </div>
+                </section>
                 {groupRows.length > 0 && (
                     <div className="utilities-result-block" data-testid="survey-group-breakdown">
                         <h3>{t.byGroup}</h3>
@@ -1237,6 +1266,7 @@ export const UtilitiesPage = ({
                                             type="button"
                                             className={`utilities-group-filter-btn${active ? ' is-active' : ''}`}
                                             data-testid={`survey-group-filter-${row.groupId}`}
+                                            aria-pressed={active}
                                             onClick={() =>
                                                 setGroupFilter((prev) => (prev === row.groupId ? '' : row.groupId))
                                             }
@@ -1308,6 +1338,7 @@ export const UtilitiesPage = ({
                                                     <input
                                                         className="utilities-search"
                                                         data-testid="survey-text-answer-search"
+                                                        aria-label={t.searchTextAnswers}
                                                         value={textAnswerQuery}
                                                         onChange={(e) => setTextAnswerQuery(e.target.value)}
                                                         placeholder={t.searchTextAnswers}
@@ -1337,11 +1368,43 @@ export const UtilitiesPage = ({
                         </div>
                     );
                 })}
-                <h3>{t.responses}</h3>
+                </main>
+                <aside className="utilities-results-aside">
+                    <section className="utilities-results-aside__section">
+                        <h2>{isZh ? '收集设置' : 'Collection'}</h2>
+                        <dl>
+                            <div><dt>{t.status}</dt><dd>{statusLabel}</dd></div>
+                            <div><dt>{isZh ? '匿名' : 'Anonymous'}</dt><dd>{selected?.settings?.anonymous ? (isZh ? '是' : 'Yes') : (isZh ? '否' : 'No')}</dd></div>
+                            <div><dt>{isZh ? '私聊填写' : 'P2P fill'}</dt><dd>{selected?.settings?.allow_p2p ? (isZh ? '允许' : 'Allowed') : (isZh ? '关闭' : 'Off')}</dd></div>
+                        </dl>
+                    </section>
+                    <section className="utilities-results-aside__section">
+                        <h2>{t.bindings} <span>{bindings.length}</span></h2>
+                        {bindings.length > 0 ? (
+                            <ul className="utilities-results-aside__groups">
+                                {bindings.map((binding) => <li key={`${binding.platform}-${binding.group_id}`}>{binding.group_name || binding.group_id}</li>)}
+                            </ul>
+                        ) : <p className="utilities-meta">{isZh ? '尚未绑定群' : 'No groups bound'}</p>}
+                    </section>
+                    <p className="utilities-meta utilities-export-pii-note" data-testid="survey-export-pii-note">
+                        {shouldWarnExportPII(selected?.settings?.anonymous) ? t.exportPiiNote : t.exportAnonNote}
+                    </p>
+                </aside>
+                </div>
+                <section className="utilities-responses-section" aria-labelledby="survey-responses-heading">
+                <div className="utilities-responses-section__header">
+                    <div>
+                        <h2 id="survey-responses-heading">{t.responses}</h2>
+                        {(optionFilter.qid || optionFilter.oid || responseQuery || groupFilter) && (
+                            <p className="utilities-meta">{t.showing} {filteredResponses.length}/{responses.length}</p>
+                        )}
+                    </div>
+                </div>
                 <div className="utilities-search-row utilities-no-print">
                     <input
                         className="utilities-search"
                         data-testid="survey-response-search"
+                        aria-label={t.searchResponses}
                         value={responseQuery}
                         onChange={(e) => setResponseQuery(e.target.value)}
                         placeholder={t.searchResponses}
@@ -1351,6 +1414,7 @@ export const UtilitiesPage = ({
                         <select
                             className="utilities-select"
                             data-testid="survey-option-filter"
+                            aria-label={t.filterOption}
                             value={optionFilter.qid && optionFilter.oid ? `${optionFilter.qid}::${optionFilter.oid}` : ''}
                             onChange={(e) => {
                                 const v = e.target.value;
@@ -1361,7 +1425,6 @@ export const UtilitiesPage = ({
                                 const [qid, oid] = v.split('::');
                                 setOptionFilter({ qid, oid });
                             }}
-                            aria-label={t.filterOption}
                         >
                             <option value="">{t.allOptions}</option>
                             {choiceFilterOptions.map((o) => (
@@ -1370,11 +1433,6 @@ export const UtilitiesPage = ({
                                 </option>
                             ))}
                         </select>
-                    )}
-                    {(optionFilter.qid || optionFilter.oid || responseQuery || groupFilter) && (
-                        <span className="utilities-meta">
-                            {t.showing} {filteredResponses.length}/{responses.length}
-                        </span>
                     )}
                 </div>
                 {responses.length === 0 ? (
@@ -1408,9 +1466,9 @@ export const UtilitiesPage = ({
                         })}
                     </div>
                 )}
-                {exportHint && <p className="utilities-meta utilities-no-print" data-testid="survey-export-hint">{exportHint}</p>}
-                <div className="utilities-actions utilities-no-print">
-                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void openResults()}>{t.refresh}</button>
+                </section>
+                {exportHint && <p className="utilities-hint utilities-no-print" role="status" data-testid="survey-export-hint">{exportHint}</p>}
+                <div className="utilities-actions utilities-results-secondary-actions utilities-no-print">
                     <button
                         type="button"
                         className="utilities-btn"
@@ -1455,9 +1513,6 @@ export const UtilitiesPage = ({
                         data-testid="survey-print"
                         onClick={() => window.print()}
                     >{t.print}</button>
-                    <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void exportXlsx(false)}>
-                        {busy && exportHint === t.exporting ? t.exporting : t.export}
-                    </button>
                     {(optionFilter.qid && optionFilter.oid) || responseQuery || groupFilter ? (
                         <button
                             type="button"
@@ -1475,7 +1530,7 @@ export const UtilitiesPage = ({
     }
 
     return (
-        <div className="utilities-page" data-testid="survey-edit-page">
+        <div className={`utilities-page${selected && selected.status !== 'draft' ? ' utilities-page--published' : ''}`} data-testid="survey-edit-page">
             <header className="utilities-survey-editor__header">
                 <div>
                     <button type="button" className="utilities-link" onClick={() => { setSelected(null); setView('survey-list'); }}>{t.back}</button>
@@ -1485,28 +1540,22 @@ export const UtilitiesPage = ({
                     )}
                 </div>
                 <button
-                    type="button"
-                    className="utilities-btn utilities-btn--ghost"
-                    data-testid="survey-help-toggle-edit"
+                            type="button"
+                            className="utilities-btn utilities-btn--ghost"
+                            data-testid="survey-help-toggle-edit"
+                            aria-expanded={showHelp}
+                            aria-controls="survey-help-panel"
+                            aria-label={showHelp ? t.hideHelp : t.help}
                     onClick={() => setShowHelp((v) => !v)}
                 >{showHelp ? t.hideHelp : t.help}</button>
             </header>
             <div className="utilities-survey-editor__feedback">
-                {copyHint && <p className="utilities-meta">{copyHint}</p>}
-                {error && <div className="utilities-error">{error}</div>}
+                {copyHint && <p className="utilities-hint" role="status">{copyHint}</p>}
+                {error && <div className="utilities-error" role="alert">{error}</div>}
             </div>
-            {showHelp && (
-                <div className="utilities-help" data-testid="survey-help-panel">
-                    <h3>{t.help}</h3>
-                    <ol>
-                        {operatorHelp.map((line) => (
-                            <li key={line}>{line}</li>
-                        ))}
-                    </ol>
-                </div>
-            )}
+            {showHelp && <SurveyHelpPanel title={t.help} groups={operatorHelp} />}
             {selected && (
-                <p className="utilities-meta">
+                <p className="utilities-meta utilities-survey-editor__meta">
                     {selected.short_code} · <span className={surveyStatusBadgeClass(selected.status)}>{surveyStatusLabel(selected.status, isZh)}</span>
                     {selected.settings?.anonymous ? (isZh ? ' · 匿名' : ' · anonymous') : ''}
                     {selected.settings?.deadline
@@ -1530,25 +1579,43 @@ export const UtilitiesPage = ({
                 </p>
             )}
             {selected && (
-                <div className="utilities-actions utilities-survey-editor__actions">
+                <div className="utilities-actions utilities-survey-editor__actions" aria-label={isZh ? '问卷操作' : 'Survey actions'}>
                     {selected.status === 'draft' && (
-                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void saveDraft()}>{t.save}</button>
+                        <button type="button" className="utilities-btn" disabled={busy} aria-busy={busy} onClick={() => void saveDraft()}>{busy ? (isZh ? '保存中…' : 'Saving…') : t.save}</button>
                     )}
-                    <button
-                        type="button"
-                        className="utilities-btn utilities-btn--primary"
-                        data-testid="survey-publish"
-                        disabled={busy || selected.status !== 'draft' || !canPublishNow}
-                        onClick={() => void publish()}
-                    >{t.publish}</button>
-                    <button type="button" className="utilities-btn" disabled={busy || selected.status !== 'published'} onClick={() => void closeSurvey()}>{t.close}</button>
-                    <button type="button" className="utilities-btn" disabled={busy || selected.status !== 'closed'} onClick={() => void reopenSurvey()}>{t.reopen}</button>
-                    <button type="button" className="utilities-btn" disabled={busy || (selected.status !== 'draft' && selected.status !== 'closed')} onClick={() => void archiveSurvey()}>{t.archive}</button>
-                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void duplicateSurvey()}>{t.duplicate}</button>
-                    <button type="button" className="utilities-btn utilities-btn--danger" disabled={busy || (selected.status !== 'draft' && selected.status !== 'archived')} onClick={() => void deleteSurvey()}>{t.delete}</button>
-                    <button type="button" className="utilities-btn" disabled={busy || selected.status !== 'published'} onClick={() => void announce()}>{t.announce}</button>
-                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void openResults()}>{t.results}</button>
-                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void exportXlsx(false)}>{t.export}</button>
+                    {selected.status === 'draft' && (
+                        <button
+                            type="button"
+                            className="utilities-btn utilities-btn--primary"
+                            data-testid="survey-publish"
+                            disabled={busy || !canPublishNow}
+                            aria-busy={busy}
+                            onClick={() => void publish()}
+                        >{busy ? (isZh ? '处理中…' : 'Working…') : t.publish}</button>
+                    )}
+                    <div className="utilities-survey-editor__secondary-actions">
+                        {selected.status === 'published' && <button type="button" className="utilities-btn" disabled={busy} onClick={() => void closeSurvey()}>{t.close}</button>}
+                        {selected.status === 'closed' && <button type="button" className="utilities-btn" disabled={busy} onClick={() => void reopenSurvey()}>{t.reopen}</button>}
+                        {(selected.status === 'draft' || selected.status === 'closed') && <button type="button" className="utilities-btn" disabled={busy} onClick={() => void archiveSurvey()}>{t.archive}</button>}
+                        <button type="button" className="utilities-btn" disabled={busy} onClick={() => void duplicateSurvey()}>{t.duplicate}</button>
+                        {(selected.status === 'draft' || selected.status === 'archived') && <button type="button" className="utilities-btn utilities-btn--danger" disabled={busy} onClick={() => void deleteSurvey()}>{t.delete}</button>}
+                        {selected.status === 'published' && <button type="button" className="utilities-btn" disabled={busy} onClick={() => void announce()}>{t.announce}</button>}
+                        <button type="button" className="utilities-btn" disabled={busy} onClick={() => void openResults()}>{t.results}</button>
+                        <button type="button" className="utilities-btn" disabled={busy} onClick={() => void exportXlsx(false)}>{t.export}</button>
+                    </div>
+                </div>
+            )}
+
+            {selected?.status === 'draft' && publishChecks.length > 0 && !canPublishNow && (
+                <div className="utilities-checklist utilities-survey-editor__checklist" data-testid="survey-publish-checklist" aria-labelledby="survey-publish-checklist-heading">
+                    <h3 id="survey-publish-checklist-heading">{t.publishBlocked}</h3>
+                    <ul>
+                        {publishChecks.filter((c) => !c.ok).map((c) => (
+                            <li key={c.id} className={c.ok ? 'ok' : 'bad'}>
+                                <span aria-hidden>!</span> {c.label}
+                            </li>
+                        ))}
+                    </ul>
                 </div>
             )}
 
@@ -1583,184 +1650,200 @@ export const UtilitiesPage = ({
                             </label>
                         </div>
                         <div className="utilities-survey-fields utilities-survey-fields--schedule">
-                            <label>{t.deadline}
-                        <input
-                            type="datetime-local"
-                            value={draftDeadlineLocal}
-                            onChange={(e) => setDraftDeadlineLocal(e.target.value)}
-                        />
-                        <span className="utilities-meta">{isZh ? '留空表示不截止；仅在提交时校验' : 'Empty = no deadline; checked on submit only'}</span>
+                            <div className="utilities-schedule-field utilities-schedule-field--deadline">
+                                <label htmlFor="survey-deadline">{t.deadline}</label>
+                                <span className="utilities-deadline-control">
+                                    <input
+                                        id="survey-deadline"
+                                        type="datetime-local"
+                                        value={draftDeadlineLocal}
+                                        onChange={(e) => setDraftDeadlineLocal(e.target.value)}
+                                    />
+                                    {draftDeadlineLocal && (
+                                        <button type="button" className="utilities-btn utilities-btn--ghost utilities-deadline-clear" onClick={() => setDraftDeadlineLocal('')}>
+                                            {isZh ? '清除' : 'Clear'}
+                                        </button>
+                                    )}
+                                </span>
+                                <span className="utilities-meta">{isZh ? '留空表示不截止；仅在提交时校验' : 'Empty = no deadline; checked on submit only'}</span>
+                            </div>
+                            <label>{t.target}
+                                <input
+                                    type="number"
+                                    min={0}
+                                    placeholder={isZh ? '0 表示不展示完成率' : '0 = hide completion %'}
+                                    value={draftTargetCount}
+                                    onChange={(e) => setDraftTargetCount(e.target.value)}
+                                />
                             </label>
-                    {draftDeadlineLocal && (
-                        <button type="button" className="utilities-btn utilities-btn--ghost utilities-deadline-clear" onClick={() => setDraftDeadlineLocal('')}>
-                            {isZh ? '清除截止时间' : 'Clear deadline'}
-                        </button>
-                    )}
-                    <label>{t.target}
-                        <input
-                            type="number"
-                            min={0}
-                            placeholder={isZh ? '0 表示不展示完成率' : '0 = hide completion %'}
-                            value={draftTargetCount}
-                            onChange={(e) => setDraftTargetCount(e.target.value)}
-                        />
-                    </label>
                         </div>
                     </section>
 
                     <section className="utilities-survey-section utilities-survey-section--questions">
                     <div className="utilities-survey-section__heading">
                         <h2>{isZh ? '题目' : 'Questions'} <span>{editQuestions.length}</span></h2>
+                        <div className="utilities-actions utilities-question-add-actions">
+                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加单选题' : 'Add single-choice question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('single_choice', prev)])}>+ {isZh ? '单选' : 'Choice'}</button>
+                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加文本题' : 'Add text question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('text', prev)])}>+ {isZh ? '文本' : 'Text'}</button>
+                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加评分题' : 'Add rating question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('rating', prev)])}>+ {isZh ? '评分' : 'Rating'}</button>
+                            <button type="button" className="utilities-btn" aria-label={isZh ? '添加多选题' : 'Add multiple-choice question'} onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('multi_choice', prev)])}>+ {isZh ? '多选' : 'Multiple'}</button>
+                        </div>
                     </div>
                     <div className="utilities-question-list">
                     {editQuestions.map((q, qi) => (
                         <div key={q.id} className="utilities-q-card" data-testid={`survey-q-${qi}`}>
                             <div className="utilities-q-card__row">
-                                <strong>Q{qi + 1}</strong>
-                                <select
-                                    value={q.type}
-                                    onChange={(e) => {
-                                        const type = e.target.value as EditorQuestion['type'];
-                                        const next = createEmptyQuestion(type, editQuestions.filter((_, i) => i !== qi), { title: q.title });
-                                        next.id = q.id;
-                                        updateQuestion(qi, next);
-                                    }}
-                                >
-                                    <option value="single_choice">{isZh ? '单选' : 'Single choice'}</option>
-                                    <option value="multi_choice">{isZh ? '多选' : 'Multi choice'}</option>
-                                    <option value="text">{isZh ? '文本' : 'Text'}</option>
-                                    <option value="rating">{isZh ? '评分' : 'Rating'}</option>
-                                </select>
-                                <label className="utilities-check">
-                                    <input type="checkbox" checked={q.required} onChange={(e) => updateQuestion(qi, { required: e.target.checked })} />
-                                    {isZh ? '必填' : 'Required'}
-                                </label>
-                                <button
-                                    type="button"
-                                    className="utilities-btn"
-                                    data-testid={`survey-q-up-${qi}`}
-                                    disabled={qi === 0}
-                                    title={t.moveUp}
-                                    onClick={() => setEditQuestions((prev) => moveQuestionAt(prev, qi, -1))}
-                                >↑</button>
-                                <button
-                                    type="button"
-                                    className="utilities-btn"
-                                    data-testid={`survey-q-down-${qi}`}
-                                    disabled={qi >= editQuestions.length - 1}
-                                    title={t.moveDown}
-                                    onClick={() => setEditQuestions((prev) => moveQuestionAt(prev, qi, 1))}
-                                >↓</button>
-                                <button
-                                    type="button"
-                                    className="utilities-btn"
-                                    disabled={editQuestions.length <= 1}
-                                    onClick={() => setEditQuestions((prev) => prev.filter((_, i) => i !== qi))}
-                                >{t.remove}</button>
+                                <div className="utilities-q-card__identity">
+                                    <strong>Q{qi + 1}</strong>
+                                    <label className="utilities-inline-field">{isZh ? '题型' : 'Type'}
+                                        <select
+                                            value={q.type}
+                                            aria-label={isZh ? `第 ${qi + 1} 题类型` : `Question ${qi + 1} type`}
+                                            onChange={(e) => {
+                                                const type = e.target.value as EditorQuestion['type'];
+                                                const next = createEmptyQuestion(type, editQuestions.filter((_, i) => i !== qi), { title: q.title });
+                                                next.id = q.id;
+                                                updateQuestion(qi, next);
+                                            }}
+                                        >
+                                            <option value="single_choice">{isZh ? '单选' : 'Single choice'}</option>
+                                            <option value="multi_choice">{isZh ? '多选' : 'Multi choice'}</option>
+                                            <option value="text">{isZh ? '文本' : 'Text'}</option>
+                                            <option value="rating">{isZh ? '评分' : 'Rating'}</option>
+                                        </select>
+                                    </label>
+                                    <label className="utilities-check">
+                                        <input type="checkbox" checked={q.required} onChange={(e) => updateQuestion(qi, { required: e.target.checked })} />
+                                        {isZh ? '必填' : 'Required'}
+                                    </label>
+                                </div>
+                                <div className="utilities-q-card__actions">
+                                    <button
+                                        type="button"
+                                        className="utilities-btn"
+                                        data-testid={`survey-q-up-${qi}`}
+                                        disabled={qi === 0}
+                                        title={t.moveUp}
+                                        aria-label={`${t.moveUp} Q${qi + 1}`}
+                                        onClick={() => setEditQuestions((prev) => moveQuestionAt(prev, qi, -1))}
+                                    >↑</button>
+                                    <button
+                                        type="button"
+                                        className="utilities-btn"
+                                        data-testid={`survey-q-down-${qi}`}
+                                        disabled={qi >= editQuestions.length - 1}
+                                        title={t.moveDown}
+                                        aria-label={`${t.moveDown} Q${qi + 1}`}
+                                        onClick={() => setEditQuestions((prev) => moveQuestionAt(prev, qi, 1))}
+                                    >↓</button>
+                                    <button
+                                        type="button"
+                                        className="utilities-btn utilities-btn--quiet-danger"
+                                        disabled={editQuestions.length <= 1}
+                                        aria-label={`${t.remove} Q${qi + 1}`}
+                                        onClick={() => setEditQuestions((prev) => prev.filter((_, i) => i !== qi))}
+                                    >{t.remove}</button>
+                                </div>
                             </div>
-                            <label>{isZh ? '题干' : 'Title'}
-                                <input value={q.title} onChange={(e) => updateQuestion(qi, { title: e.target.value })} />
+                            <label className="utilities-field-label">{isZh ? '题干' : 'Title'}
+                                <input required value={q.title} onChange={(e) => updateQuestion(qi, { title: e.target.value })} />
                             </label>
                             {(q.type === 'single_choice' || q.type === 'multi_choice') && (
                                 <div className="utilities-opts">
                                     {(q.options || []).map((o, oi) => (
                                         <div key={o.id} className="utilities-opts__row">
-                                            <span>{oi + 1}.</span>
-                                            <input value={o.label} onChange={(e) => updateOption(qi, oi, e.target.value)} />
-                                            <button
-                                                type="button"
-                                                className="utilities-btn"
-                                                data-testid={`survey-opt-up-${qi}-${oi}`}
-                                                disabled={oi === 0}
-                                                title={t.moveUp}
-                                                onClick={() =>
-                                                    updateQuestion(qi, {
-                                                        options: moveOptionAt(q.options || [], oi, -1),
-                                                    })
-                                                }
-                                            >↑</button>
-                                            <button
-                                                type="button"
-                                                className="utilities-btn"
-                                                data-testid={`survey-opt-down-${qi}-${oi}`}
-                                                disabled={oi >= (q.options || []).length - 1}
-                                                title={t.moveDown}
-                                                onClick={() =>
-                                                    updateQuestion(qi, {
-                                                        options: moveOptionAt(q.options || [], oi, 1),
-                                                    })
-                                                }
-                                            >↓</button>
-                                            <button
-                                                type="button"
-                                                className="utilities-btn"
-                                                disabled={(q.options || []).length <= 2}
-                                                onClick={() =>
-                                                    updateQuestion(qi, {
-                                                        options: (q.options || []).filter((_, j) => j !== oi),
-                                                    })
-                                                }
-                                            >{t.remove}</button>
+                                            <label className="utilities-option-label" htmlFor={`survey-option-${q.id}-${o.id}`}>{isZh ? `选项 ${oi + 1}` : `Option ${oi + 1}`}</label>
+                                            <input id={`survey-option-${q.id}-${o.id}`} required value={o.label} onChange={(e) => updateOption(qi, oi, e.target.value)} />
+                                            <div className="utilities-option-actions">
+                                                <button
+                                                    type="button"
+                                                    className="utilities-btn"
+                                                    data-testid={`survey-opt-up-${qi}-${oi}`}
+                                                    disabled={oi === 0}
+                                                    title={t.moveUp}
+                                                    aria-label={`${t.moveUp} ${isZh ? '选项' : 'option'} ${oi + 1}`}
+                                                    onClick={() =>
+                                                        updateQuestion(qi, {
+                                                            options: moveOptionAt(q.options || [], oi, -1),
+                                                        })
+                                                    }
+                                                >↑</button>
+                                                <button
+                                                    type="button"
+                                                    className="utilities-btn"
+                                                    data-testid={`survey-opt-down-${qi}-${oi}`}
+                                                    disabled={oi >= (q.options || []).length - 1}
+                                                    title={t.moveDown}
+                                                    aria-label={`${t.moveDown} ${isZh ? '选项' : 'option'} ${oi + 1}`}
+                                                    onClick={() =>
+                                                        updateQuestion(qi, {
+                                                            options: moveOptionAt(q.options || [], oi, 1),
+                                                        })
+                                                    }
+                                                >↓</button>
+                                                <button
+                                                    type="button"
+                                                    className="utilities-btn utilities-btn--quiet-danger"
+                                                    disabled={(q.options || []).length <= 2}
+                                                    aria-label={`${t.remove} ${isZh ? '选项' : 'option'} ${oi + 1}`}
+                                                    onClick={() =>
+                                                        updateQuestion(qi, {
+                                                            options: (q.options || []).filter((_, j) => j !== oi),
+                                                        })
+                                                    }
+                                                >{t.remove}</button>
+                                            </div>
                                         </div>
                                     ))}
                                     <button
                                         type="button"
-                                        className="utilities-btn"
+                                        className="utilities-btn utilities-add-option"
+                                        aria-label={isZh ? `为第 ${qi + 1} 题添加选项` : `Add option to question ${qi + 1}`}
                                         onClick={() => {
                                             const options = [...(q.options || [])];
                                             options.push({ id: newOptionId(options), label: '' });
                                             updateQuestion(qi, { options });
                                         }}
-                                    >{t.addOpt}</button>
+                                    >+ {t.addOpt}</button>
                                 </div>
                             )}
                             {q.type === 'rating' && (
-                                <div className="utilities-q-card__row">
-                                    <label>min <input type="number" value={q.min ?? 1} onChange={(e) => updateQuestion(qi, { min: Number(e.target.value) || 1 })} style={{ width: 64 }} /></label>
-                                    <label>max <input type="number" value={q.max ?? 5} onChange={(e) => updateQuestion(qi, { max: Number(e.target.value) || 5 })} style={{ width: 64 }} /></label>
+                                <div className="utilities-rating-fields">
+                                    <label className="utilities-inline-number-field">{isZh ? '最低分' : 'Minimum'}<input type="number" min={0} step={1} aria-label={isZh ? `第 ${qi + 1} 题最低分` : `Question ${qi + 1} minimum rating`} value={q.min ?? 1} onChange={(e) => {
+                                        const min = Math.max(0, Number(e.target.value) || 0);
+                                        updateQuestion(qi, { min, ...(min > (q.max ?? 5) ? { max: min } : {}) });
+                                    }} /></label>
+                                    <label className="utilities-inline-number-field">{isZh ? '最高分' : 'Maximum'}<input type="number" min={q.min ?? 1} step={1} aria-label={isZh ? `第 ${qi + 1} 题最高分` : `Question ${qi + 1} maximum rating`} value={q.max ?? 5} onChange={(e) => {
+                                        const max = Math.max(0, Number(e.target.value) || 0);
+                                        updateQuestion(qi, { max, ...(max < (q.min ?? 1) ? { min: max } : {}) });
+                                    }} /></label>
                                 </div>
                             )}
                             {q.type === 'text' && (
-                                <label>{isZh ? '最大字数' : 'Max length'}
-                                    <input type="number" value={q.max_length ?? 500} onChange={(e) => updateQuestion(qi, { max_length: Number(e.target.value) || 500 })} />
+                                <label className="utilities-compact-field">{isZh ? '最大字数' : 'Max length'}
+                                    <input type="number" min={0} max={10000} step={1} aria-label={isZh ? `第 ${qi + 1} 题最大字数` : `Question ${qi + 1} maximum length`} value={q.max_length ?? 500} onChange={(e) => updateQuestion(qi, { max_length: Math.min(10000, Math.max(0, Number(e.target.value) || 0)) })} />
                                 </label>
                             )}
                         </div>
                     ))}
                     </div>
-                    <div className="utilities-actions utilities-question-add-actions">
-                        <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('single_choice', prev)])}>{t.addQ} · {isZh ? '单选' : 'choice'}</button>
-                        <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('text', prev)])}>{t.addQ} · {isZh ? '文本' : 'text'}</button>
-                        <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('rating', prev)])}>{t.addQ} · {isZh ? '评分' : 'rating'}</button>
-                        <button type="button" className="utilities-btn" onClick={() => setEditQuestions((prev) => [...prev, createEmptyQuestion('multi_choice', prev)])}>{t.addQ} · {isZh ? '多选' : 'multi'}</button>
-                    </div>
                     </section>
                     {!selected && (
-                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void createSurvey()}>{t.create}</button>
-                    )}
-                    {selected?.status === 'draft' && (
-                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} onClick={() => void saveDraft()}>{t.save}</button>
+                        <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy} aria-busy={busy} onClick={() => void createSurvey()}>{busy ? (isZh ? '创建中…' : 'Creating…') : t.create}</button>
                     )}
                 </div>
             )}
 
             {/* Read-only questions when published/closed/archived */}
-            {selected?.status === 'draft' && publishChecks.length > 0 && (
-                <div className="utilities-checklist" data-testid="survey-publish-checklist">
-                    <h3>{canPublishNow ? t.publishReady : t.publishBlocked}</h3>
-                    <ul>
-                        {publishChecks.map((c) => (
-                            <li key={c.id} className={c.ok ? 'ok' : 'bad'}>
-                                <span aria-hidden>{c.ok ? '✓' : '!'}</span> {c.label}
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            )}
-
             {selected && selected.status !== 'draft' && (
-                <>
-                    <h3>{isZh ? '题目（已发布不可改）' : 'Questions (locked)'}</h3>
+                <section className="utilities-survey-readonly" aria-labelledby="survey-questions-heading">
+                    <div className="utilities-survey-readonly__header">
+                        <div>
+                            <h2 id="survey-questions-heading">{isZh ? '题目' : 'Questions'}</h2>
+                            <p className="utilities-meta">{isZh ? '问卷已发布，题目内容不可修改。' : 'This survey is published; questions are locked.'}</p>
+                        </div>
+                        <span>{selected.questions?.length || 0}</span>
+                    </div>
                     <ul className="utilities-list">
                         {(selected.questions || []).map((q, i) => (
                             <li key={q.id} className="utilities-list-item static">
@@ -1774,31 +1857,72 @@ export const UtilitiesPage = ({
                             </li>
                         ))}
                     </ul>
-                </>
+                </section>
             )}
 
             {selected && (
-                <>
-                    <h3>{isZh ? '群绑定（蓝信）' : 'Group bindings (Lansenger)'}</h3>
-                    <ul className="utilities-list">
-                        {(selected.bindings || []).map((b) => (
-                            <li key={b.platform + b.group_id} className="utilities-list-item static" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span>{b.group_name || b.group_id} ({b.platform})</span>
-                                {(selected.status === 'draft' || selected.status === 'published') && (
-                                    <button type="button" className="utilities-btn" disabled={busy} onClick={() => void unbindGroup(b.platform, b.group_id)}>{t.unbind}</button>
-                                )}
-                            </li>
-                        ))}
-                    </ul>
-                    <div className="utilities-group-pick">
-                        {groups.length === 0 && <p className="utilities-meta">{isZh ? '暂无群列表（请配置蓝信并确保有查询权限）' : 'No groups (configure Lansenger)'}</p>}
-                        {groups.map((g) => (
-                            <button key={g.group_id} type="button" className="utilities-btn" disabled={busy || selected.status === 'closed' || selected.status === 'archived'} onClick={() => void bindGroup(g.group_id, g.name)}>
-                                {t.bind}: {g.name}
-                            </button>
-                        ))}
+                <section className="utilities-bindings" aria-labelledby="survey-bindings-heading">
+                    <div className="utilities-bindings__header">
+                        <div>
+                            <h3 id="survey-bindings-heading">{isZh ? '群绑定（蓝信）' : 'Group bindings (Lansenger)'}</h3>
+                            <p className="utilities-meta">
+                                {isZh
+                                    ? `已绑定 ${selected.bindings?.length || 0} 个群；发布前至少需要绑定 1 个群。`
+                                    : `${selected.bindings?.length || 0} bound; bind at least one group before publishing.`}
+                            </p>
+                        </div>
                     </div>
-                </>
+                    <div className="utilities-bindings__grid">
+                        <div className="utilities-bindings__panel">
+                            <h4>{isZh ? '已绑定群' : 'Bound groups'}</h4>
+                            {(selected.bindings || []).length === 0 ? (
+                                <p className="utilities-meta utilities-bindings__empty">{isZh ? '尚未绑定群' : 'No groups bound yet'}</p>
+                            ) : (
+                                <ul className="utilities-bindings__list">
+                                    {(selected.bindings || []).map((b) => (
+                                        <li key={b.platform + b.group_id}>
+                                            <span title={b.group_name || b.group_id}>{b.group_name || b.group_id}</span>
+                                            {(selected.status === 'draft' || selected.status === 'published') && (
+                                                <button type="button" className="utilities-btn utilities-btn--ghost" disabled={busy} onClick={() => void unbindGroup(b.platform, b.group_id)}>{t.unbind}</button>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                        <div className="utilities-bindings__panel">
+                            <div className="utilities-bindings__available-head">
+                                <h4>{isZh ? '可绑定群' : 'Available groups'}</h4>
+                                <span>{availableGroups.length}</span>
+                            </div>
+                            {groups.length === 0 ? (
+                                <p className="utilities-meta utilities-bindings__empty">{isZh ? '暂无群列表；请配置蓝信并确认查询权限。' : 'No groups available. Configure Lansenger and confirm access.'}</p>
+                            ) : (
+                                <>
+                                    <input
+                                        className="utilities-search utilities-bindings__search"
+                                        value={groupQuery}
+                                        onChange={(e) => setGroupQuery(e.target.value)}
+                                        placeholder={isZh ? '搜索群名称…' : 'Search groups…'}
+                                        aria-label={isZh ? '搜索可绑定群' : 'Search available groups'}
+                                    />
+                                    {availableGroups.length === 0 ? (
+                                        <p className="utilities-meta utilities-bindings__empty">{isZh ? '没有匹配的可绑定群' : 'No matching groups'}</p>
+                                    ) : (
+                                        <ul className="utilities-bindings__list utilities-bindings__list--available">
+                                            {availableGroups.map((g) => (
+                                                <li key={g.group_id}>
+                                                    <span title={g.name}>{g.name}</span>
+                                                    <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy || selected.status === 'closed' || selected.status === 'archived'} onClick={() => void bindGroup(g.group_id, g.name)}>{t.bind}</button>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </section>
             )}
         </div>
     );

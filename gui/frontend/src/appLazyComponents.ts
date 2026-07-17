@@ -7,6 +7,7 @@ export const LLMConfigPanel = lazy(() => import('./components/remote/LLMConfigPa
 export const HubServiceRedeemPanel = lazy(() => import('./components/remote/HubServiceRedeemPanel').then((module) => ({ default: module.HubServiceRedeemPanel })));
 export const EmbeddingConfigPanel = lazy(() => import('./components/remote/EmbeddingConfigPanel').then((module) => ({ default: module.EmbeddingConfigPanel })));
 export const ASRConfigPanel = lazy(() => import('./components/remote/ASRConfigPanel').then((module) => ({ default: module.ASRConfigPanel })));
+export const DiarizationConfigPanel = lazy(() => import('./components/remote/DiarizationConfigPanel').then((module) => ({ default: module.DiarizationConfigPanel })));
 export const TTSConfigPanel = lazy(() => import('./components/remote/TTSConfigPanel').then((module) => ({ default: module.TTSConfigPanel })));
 export const MemoryManagementPanel = lazy(() => import('./components/remote/MemoryManagementPanel').then((module) => ({ default: module.MemoryManagementPanel })));
 export const KnowledgeSettingsPanel = lazy(() => import('./components/settings/KnowledgeSettingsPanel').then((module) => ({ default: module.KnowledgeSettingsPanel })));

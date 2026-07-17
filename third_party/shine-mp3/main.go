@@ -59,7 +59,16 @@ func main() {
 
 	// Create new encoder with audio settings
 	mp3Encoder := mp3.NewEncoder(wavBuffer.Format.SampleRate, wavBuffer.Format.NumChannels)
+	if mp3Encoder == nil {
+		log.Fatalf("Unsupported MP3 config: %d Hz, %d channels\n", wavBuffer.Format.SampleRate, wavBuffer.Format.NumChannels)
+	}
 
 	// Write all the data to the output file
-	mp3Encoder.Write(out, decodedData)
+	if err := mp3Encoder.Write(out, decodedData); err != nil {
+		log.Fatalf("Error encoding MP3: %v", err)
+	}
+	// Drain the encoder bit-cache so the final frame is not truncated
+	if err := mp3Encoder.Flush(out); err != nil {
+		log.Fatalf("Error flushing MP3 stream: %v", err)
+	}
 }

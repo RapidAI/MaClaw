@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
@@ -34,12 +35,29 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 	}
 
 	hasPendingAskUser := false
+	// Load history lazily and at most once: handlers constructed without memory
+	// (unit tests) must not touch h.memory, and loads are wasted when no
+	// pending state exists.
+	var historySnapshot []agent.ConversationEntry
+	historyLoaded := false
+	loadHistory := func() []agent.ConversationEntry {
+		if !historyLoaded {
+			historySnapshot = h.memory.Load(msg.UserID)
+			historyLoaded = true
+		}
+		return historySnapshot
+	}
 	if raw, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
-		_, hasPendingAskUser = pendingAskUserForCurrentHistory(raw, h.memory.Load(msg.UserID))
+		_, hasPendingAskUser = pendingAskUserForCurrentHistory(raw, loadHistory())
 	}
 	if !hasPendingAskUser {
 		if raw, loaded := h.pendingRecordAudio.Load(msg.UserID); loaded {
-			_, hasPendingAskUser = pendingRecordAudioForCurrentHistory(raw, h.memory.Load(msg.UserID))
+			_, hasPendingAskUser = pendingRecordAudioForCurrentHistory(raw, loadHistory())
+		}
+	}
+	if !hasPendingAskUser {
+		if raw, loaded := h.pendingPostRecording.Load(msg.UserID); loaded {
+			_, hasPendingAskUser = pendingPostRecordingForCurrentHistory(raw, loadHistory())
 		}
 	}
 
@@ -263,6 +281,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"    e.g. /goal implement user login with JWT auth\n" +
 			"    sub-commands: status, pause, resume, cancel\n" +
 			"/workflow [type] - list or force-start a workflow\n" +
+			"/summary - (Lansenger group) summarize new group chat since last summary\n" +
 			"/compress - compress conversation history\n" +
 			"/memory - show memory status\n" +
 			"/cancel - cancel current task\n" +
@@ -281,6 +300,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"    例：/goal 實現用戶登錄功能，包含JWT認證\n" +
 			"    子命令：status, pause, resume, cancel\n" +
 			"/workflow [類型] - 列出或強制啟動工作流\n" +
+			"/summary - （藍信群）摘要自上次以來的新群聊討論\n" +
 			"/compress - 壓縮對話歷史\n" +
 			"/memory - 查看記憶狀態\n" +
 			"/cancel - 取消當前任務\n" +
@@ -299,6 +319,7 @@ func localizedIMSlashHelpText(lang string) string {
 			"    例：/goal 实现用户登录功能，包含JWT认证\n" +
 			"    子命令：status, pause, resume, cancel\n" +
 			"/workflow [类型] - 列出或强制启动工作流\n" +
+			"/summary - （蓝信群）摘要自上次以来的新群聊讨论\n" +
 			"/compress - 压缩对话历史\n" +
 			"/memory - 查看记忆状态\n" +
 			"/cancel - 取消当前任务\n" +

@@ -2034,6 +2034,10 @@ export function SetLansengerGroupIgnored(arg1, arg2) {
   return window['go']['main']['App']['SetLansengerGroupIgnored'](arg1, arg2);
 }
 
+export function SetLansengerGroupAllowed(arg1, arg2) {
+  return window['go']['main']['App']['SetLansengerGroupAllowed'](arg1, arg2);
+}
+
 export function GetThirdPartyGatewayStatus() {
   return window['go']['main']['App']['GetThirdPartyGatewayStatus']();
 }
@@ -2128,6 +2132,26 @@ export function CheckASRModel() {
 
 export function DownloadASRModel() {
   return window['go']['main']['App']['DownloadASRModel']();
+}
+
+export function GetDiarizationEnabled() {
+  return window['go']['main']['App']['GetDiarizationEnabled']();
+}
+
+export function SetDiarizationEnabled(arg1) {
+  return window['go']['main']['App']['SetDiarizationEnabled'](arg1);
+}
+
+export function CheckDiarizationModel() {
+  return window['go']['main']['App']['CheckDiarizationModel']();
+}
+
+export function DownloadDiarizationModel() {
+  return window['go']['main']['App']['DownloadDiarizationModel']();
+}
+
+export function DiarizeAndTranscribeAudioBase64(arg1, arg2) {
+  return window['go']['main']['App']['DiarizeAndTranscribeAudioBase64'](arg1, arg2);
 }
 
 export function TranscribeAudioBase64(arg1) {

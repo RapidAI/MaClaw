@@ -460,6 +460,12 @@ type TUIApp struct {
 
 	// Scheduled task manager 鈥?background ticker fires due tasks.
 	scheduledTaskManager *scheduler.Manager
+	// Delivery target catalogs (channel → group/user list) for manage_schedule.
+	scheduleTargetCatalogs     *scheduler.TargetCatalogRegistry
+	scheduleTargetListCache    *scheduler.TargetListCache
+	scheduleTargetCatalogsOnce sync.Once
+	deliveryStateStoreCached   *scheduler.DeliveryStateStore
+	deliveryStateStoreOnce     sync.Once
 
 	// WeChat gateway 鈥?runs in background, receives/sends WeChat messages.
 	weixinGateway *tuiWeixinGateway

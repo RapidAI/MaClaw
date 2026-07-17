@@ -7,12 +7,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
@@ -29,6 +31,8 @@ type qqBotGatewayManager struct {
 	status     gatewayConnectionStatus
 	lastAppID  string
 	lastSecret string
+	// lastOpenID is the most recent C2C peer for proactive scheduled delivery.
+	lastOpenID string
 
 	// localHandler is a fully-wired IMMessageHandler for local mode.
 	// Created lazily on first local-mode message.
@@ -263,9 +267,50 @@ func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
 	return h
 }
 
+func (m *qqBotGatewayManager) noteLastOpenID(openID string) {
+	openID = strings.TrimSpace(openID)
+	if m == nil || openID == "" {
+		return
+	}
+	m.mu.Lock()
+	m.lastOpenID = openID
+	m.mu.Unlock()
+}
+
+// SendProactiveText sends text to openID, or to the last active peer when empty/self.
+// On success returns the concrete openid used.
+func (m *qqBotGatewayManager) SendProactiveText(openID, text string) (usedOpenID string, err error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", fmt.Errorf("empty proactive text")
+	}
+	if m == nil {
+		return "", fmt.Errorf("qqbot gateway is nil")
+	}
+	openID = strings.TrimSpace(openID)
+	m.mu.Lock()
+	gw := m.gateway
+	if scheduler.IsSelfPeerID(openID) {
+		openID = m.lastOpenID
+	}
+	m.mu.Unlock()
+	if gw == nil {
+		return "", fmt.Errorf("qqbot gateway not running")
+	}
+	if openID == "" {
+		return "", fmt.Errorf("no active qq session (先用 QQ 私聊机器人一次，或填写 openid)")
+	}
+	if err := gw.SendText(context.Background(), qqbot.OutgoingText{OpenID: openID, Text: text}); err != nil {
+		return "", err
+	}
+	m.noteLastOpenID(openID)
+	return openID, nil
+}
+
 // onIncomingMessage is called when a C2C message arrives from QQ.
 // Routes to local handler or Hub depending on mode.
 func (m *qqBotGatewayManager) onIncomingMessage(msg qqbot.IncomingMessage) {
+	m.noteLastOpenID(msg.OpenID)
 	if isPassthroughSlashText(msg.Text) {
 		log.Printf("[qqbot-mgr] routing passthrough command locally: user=%s", msg.OpenID)
 		m.handleLocalMessage(msg)

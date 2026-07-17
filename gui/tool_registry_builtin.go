@@ -495,8 +495,10 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("asr", audioconv.ASRToolDescription(),
 		ToolCategoryBuiltin, []string{"asr", "transcribe", "transcription", "speech", "audio", "voice", "语音", "转写", "转录", "语音识别", "录音"},
 		map[string]interface{}{
-			"path":   map[string]string{"type": "string", "description": "本地音频文件路径"},
-			"format": map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认按扩展名与文件头自动检测）"},
+			"path":         map[string]string{"type": "string", "description": "本地音频文件路径"},
+			"format":       map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认按扩展名与文件头自动检测）"},
+			"for_minutes":  map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿（较慢）；默认 false 仅快速 extractive 草稿"},
+			"minutes":      map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolASR(args) })
 
