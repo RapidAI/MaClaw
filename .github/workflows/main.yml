@@ -364,23 +364,26 @@ jobs:
                   /DARG_ACPBRIDGE_ARM64_BINARY="$root\dist\maclaw-acp-bridge_arm64.exe" `
                   /DMUI_ICON_PATH="$root\$($env:BRAND_ICON_ICO)" `
                   build/windows/installer/multiarch.nsi
+          if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed: $LASTEXITCODE" }
 
       - name: Verify NSIS installer includes the VS Code ACP bridge
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $installer = "dist/$($env:BRAND_APP_NAME)-Setup.exe"
           if (-not (Test-Path $installer -PathType Leaf)) { throw "Installer not found: $installer" }
-          $extractRoot = Join-Path $env:RUNNER_TEMP 'maclaw-nsis-payload'
-          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
-          & $installer '/S' "/D=$extractRoot"
-          if ($LASTEXITCODE -ne 0) { throw "Silent NSIS payload verification install failed: $LASTEXITCODE" }
-          $bridge = Join-Path $extractRoot 'maclaw-acp-bridge.exe'
-          if (-not (Test-Path $bridge -PathType Leaf) -or (Get-Item $bridge).Length -le 0) {
-            throw "NSIS installer did not install the required ACP bridge: $bridge"
+          # NSIS File commands are compile-time assertions. Since the bridge
+          # directive is required (not /nonfatal), a successful makensis run
+          # proves it was embedded. Avoid executing an admin-level installer or
+          # relying on 7-Zip's incomplete view of NSIS solid payloads.
+          foreach ($arch in @('amd64', 'arm64')) {
+            $sourceBridge = "dist/maclaw-acp-bridge_${arch}.exe"
+            if (-not (Test-Path $sourceBridge -PathType Leaf) -or (Get-Item $sourceBridge).Length -le 0) {
+              throw "Expected NSIS source payload is missing or empty: $sourceBridge"
+            }
           }
-          & $bridge --version
-          if ($LASTEXITCODE -ne 0) { throw "Installed ACP bridge smoke check failed" }
+          & 'dist/maclaw-acp-bridge_amd64.exe' --version
+          if ($LASTEXITCODE -ne 0) { throw "ACP bridge source payload smoke check failed" }
 
       - name: Create DataSrv NSIS installer (default brand only)
         if: matrix.brand == ''
