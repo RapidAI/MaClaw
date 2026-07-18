@@ -416,8 +416,22 @@ func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessag
 	}
 	// Group policy + mention gate (OpenClaw / 蓝信文档: groupPolicy, requireMention,
 	// respondToAtAll, allowlist, ignore list). Watch above intentionally runs first.
+	//
+	// Survey Q&A is special: after /survey starts, users often reply with bare "1"
+	// or short text without @bot. requireMention would drop those before the
+	// survey interceptor. Only bypass the *mention* requirement for survey-shaped
+	// traffic; ignore list / allowlist / disabled policy still block.
 	if isLansengerGroupMessage(msg) {
 		if ok, reason := lansenger.GroupMessageAllowed(msg, groupOpts); !ok {
+			if reason == "require_mention" && m.surveyCandidateBypassesMention(msg) {
+				log.Printf("[lansenger-mgr] survey mention-bypass: group=%s user=%s", msg.GroupID, msg.FromUserID)
+				if m.tryHandleSurveyMessage(msg) {
+					log.Printf("[lansenger-mgr] survey intercept handled (no @): user=%s group=%s", msg.FromUserID, msg.GroupID)
+					return
+				}
+				// Not an active survey answer — drop (same as require_mention).
+				return
+			}
 			log.Printf("[lansenger-mgr] ignoring group message (agent): group=%s user=%s reason=%s", msg.GroupID, msg.FromUserID, reason)
 			return
 		}

@@ -33,7 +33,7 @@ import (
 
 // FetchOptions configures the Fetch operation.
 type FetchOptions struct {
-	MaxBytes int64  // max response body size (default 2MB, max 10MB)
+	MaxBytes int64  // max response body size (default 2MB text / 100MB save_path; hard caps apply)
 	RenderJS bool   // attempt headless Chrome rendering
 	SavePath string // if set, save raw content to this file path instead of returning text
 	TimeoutS int    // timeout in seconds (default 30, max 600)
@@ -95,10 +95,21 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 		opts = &FetchOptions{}
 	}
 	if opts.MaxBytes <= 0 {
-		opts.MaxBytes = 2 * 1024 * 1024 // 2MB default
+		if strings.TrimSpace(opts.SavePath) != "" {
+			// File downloads (download_file / web_fetch save_path): allow large PDFs.
+			opts.MaxBytes = 100 * 1024 * 1024
+		} else {
+			opts.MaxBytes = 2 * 1024 * 1024 // 2MB default for text extraction
+		}
 	}
-	if opts.MaxBytes > 10*1024*1024 {
-		opts.MaxBytes = 10 * 1024 * 1024 // 10MB cap
+	// Text extraction stays capped at 10MB; explicit save-to-file may go up to 100MB
+	// (arxiv papers in the wild regularly exceed 10MB).
+	maxCap := int64(10 * 1024 * 1024)
+	if strings.TrimSpace(opts.SavePath) != "" {
+		maxCap = 100 * 1024 * 1024
+	}
+	if opts.MaxBytes > maxCap {
+		opts.MaxBytes = maxCap
 	}
 	if opts.TimeoutS <= 0 {
 		opts.TimeoutS = 30

@@ -455,6 +455,10 @@ export function PrepareLocalCodingEnvironment(arg1, arg2) {
   return window['go']['main']['App']['PrepareLocalCodingEnvironment'](arg1, arg2);
 }
 
+export function PrepareVSCodeACP() {
+  return window['go']['main']['App']['PrepareVSCodeACP']();
+}
+
 export function PrepareRemoteCodingEnvironment(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['PrepareRemoteCodingEnvironment'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
@@ -805,6 +809,14 @@ export function LaunchInstallerAndExit(arg1) {
 
 export function LaunchTool(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['LaunchTool'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function LaunchVSCodeWithACP() {
+  return window['go']['main']['App']['LaunchVSCodeWithACP']();
+}
+
+export function LaunchVSCodeWithACPExtension() {
+  return window['go']['main']['App']['LaunchVSCodeWithACPExtension']();
 }
 
 export function ListPythonEnvironments() {
@@ -2050,8 +2062,20 @@ export function GetThirdPartyGatewayStatus() {
   return window['go']['main']['App']['GetThirdPartyGatewayStatus']();
 }
 
+export function GetACPHostStatus() {
+  return window['go']['main']['App']['GetACPHostStatus']();
+}
+
+export function GetVSCodeACPStatus() {
+  return window['go']['main']['App']['GetVSCodeACPStatus']();
+}
+
 export function RestartThirdPartyGateway() {
   return window['go']['main']['App']['RestartThirdPartyGateway']();
+}
+
+export function RestartACPHost() {
+  return window['go']['main']['App']['RestartACPHost']();
 }
 
 export function StopThirdPartyGateway() {

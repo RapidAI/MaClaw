@@ -404,6 +404,15 @@ const (
 	MsgRecordPostSizeBytes      = "msg.record_post_size_bytes" // %d
 	MsgRecordPostSizeKB         = "msg.record_post_size_kb"    // %d
 	MsgRecordPostSizeMB         = "msg.record_post_size_mb"    // %.1f
+	// Speaker-count confirmation after minutes/transcribe is chosen.
+	MsgRecordPostSpeakersHeading     = "msg.record_post_speakers_heading"
+	MsgRecordPostSpeakersSuggested   = "msg.record_post_speakers_suggested"    // %d
+	MsgRecordPostSpeakersUnknown     = "msg.record_post_speakers_unknown"
+	MsgRecordPostSpeakersPrompt      = "msg.record_post_speakers_prompt"
+	MsgRecordPostSpeakersBtnN        = "msg.record_post_speakers_btn_n"        // %d
+	MsgRecordPostSpeakersBtnNRec     = "msg.record_post_speakers_btn_n_rec"    // %d (recommended)
+	MsgRecordPostSpeakersBtnAuto     = "msg.record_post_speakers_btn_auto"
+	MsgRecordPostSpeakersEstimating  = "msg.record_post_speakers_estimating"
 
 	// Execution confirmation – planned actions by intent type
 	MsgExecPlanCoding1  = "msg.exec_plan_coding_1"
@@ -528,7 +537,7 @@ var translations = map[string]map[string]string{
 		MsgSurveyAnnounceDeadline:             "截止：%s",
 		MsgSurveyAnnounceTarget:               "目标回收：%d 份",
 		MsgSurveyAnnounceQuestions:            "共 %d 题",
-		MsgSurveyAnnounceCTA:                  "请 @机器人 发送 /survey %s 开始填写",
+		MsgSurveyAnnounceCTA:                  "请 @本机器人 发送 /survey %s 开始填写；答题时也请 @本机器人 回复序号（多题一题一答）",
 		MsgLLMNotConfigured:                   "本地 LLM 未配置，请先在设置中配置 MaClaw LLM。",
 		MsgHubUnavailable:                     "当前为多机模式，但 Hub 未连接。消息已回退到本地处理。\n请检查 Hub 连接状态，或切换回单机模式。",
 		MsgProgressPrefix:                     "",
@@ -852,6 +861,14 @@ var translations = map[string]map[string]string{
 		MsgRecordPostSizeBytes:      "%d B",
 		MsgRecordPostSizeKB:         "约%d KB",
 		MsgRecordPostSizeMB:         "约%.1f MB",
+		MsgRecordPostSpeakersHeading:    "**确认说话人数**",
+		MsgRecordPostSpeakersSuggested:  "系统估计约 **%d** 位说话人。",
+		MsgRecordPostSpeakersUnknown:    "未能自动估计人数（模型未就绪或音频过短）。",
+		MsgRecordPostSpeakersPrompt:     "请确认人数后开始转写（点选下方按钮，或直接回复如「2人」「自动」）：",
+		MsgRecordPostSpeakersBtnN:       "%d 人",
+		MsgRecordPostSpeakersBtnNRec:    "%d 人（推荐）",
+		MsgRecordPostSpeakersBtnAuto:    "自动",
+		MsgRecordPostSpeakersEstimating: "正在估计说话人数…",
 		MsgExecPlanCoding1:          "确认项目目录",
 		MsgExecPlanCoding2:          "确认任务目标",
 		MsgExecPlanCoding3:          "确认后开始修改代码",
@@ -956,7 +973,7 @@ var translations = map[string]map[string]string{
 		MsgSurveyAnnounceDeadline:             "Deadline: %s",
 		MsgSurveyAnnounceTarget:               "Target: %d responses",
 		MsgSurveyAnnounceQuestions:            "%d questions",
-		MsgSurveyAnnounceCTA:                  "@bot and send /survey %s to start",
+		MsgSurveyAnnounceCTA:                  "@this bot and send /survey %s to start; answer by @this bot with the option number (one question per reply)",
 		MsgLLMNotConfigured:                   "Local LLM not configured. Please configure MaClaw LLM in settings first.",
 		MsgHubUnavailable:                     "Multi-device mode is active but Hub is disconnected. Message has been processed locally.\nPlease check Hub connection or switch to standalone mode.",
 		MsgProgressPrefix:                     "",
@@ -1280,6 +1297,14 @@ var translations = map[string]map[string]string{
 		MsgRecordPostSizeBytes:      "%d B",
 		MsgRecordPostSizeKB:         "~%d KB",
 		MsgRecordPostSizeMB:         "~%.1f MB",
+		MsgRecordPostSpeakersHeading:    "**Confirm speaker count**",
+		MsgRecordPostSpeakersSuggested:  "Estimated about **%d** speaker(s).",
+		MsgRecordPostSpeakersUnknown:    "Could not auto-estimate speaker count (model not ready or audio too short).",
+		MsgRecordPostSpeakersPrompt:     "Confirm the count to start transcription (tap a button, or reply e.g. \"2\" / \"auto\"):",
+		MsgRecordPostSpeakersBtnN:       "%d",
+		MsgRecordPostSpeakersBtnNRec:    "%d (recommended)",
+		MsgRecordPostSpeakersBtnAuto:    "Auto",
+		MsgRecordPostSpeakersEstimating: "Estimating speaker count…",
 		MsgExecPlanCoding1:          "Confirm project directory",
 		MsgExecPlanCoding2:          "Confirm task goal",
 		MsgExecPlanCoding3:          "Start code changes after confirmation",

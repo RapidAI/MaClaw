@@ -7,24 +7,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib/config"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
-	"github.com/RapidAI/CodeClaw/corelib/scheduler"
-	"github.com/RapidAI/CodeClaw/corelib/security"
-	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"gopkg.in/yaml.v3"
 )
@@ -247,6 +250,9 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 		if degradedNote != "" {
 			return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill（且搜索不完整：%s）", query, degradedNote)
 		}
+		if cskill.LooksLikeDownloadSearchQuery(query) {
+			return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill。\n优先建议：通用 HTTP/PDF 下载请直接使用 download_file 或 web_fetch(save_path=...)，无需安装 Hub 下载 skill。", query)
+		}
 		return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill", query)
 	}
 
@@ -256,19 +262,26 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 		b.WriteString("⚠️ " + degradedNote + "\n")
 		b.WriteString("（部分源失败，结果可能不完整；空结果不等于「无匹配 skill」）\n")
 	}
+	if cskill.LooksLikeDownloadSearchQuery(query) {
+		b.WriteString("优先建议：通用 HTTP/PDF 下载用内置 download_file / web_fetch(save_path=...)，不要为简单下载安装 ClawHub wget/curl/Paper Fetch。\n")
+	}
 	for _, r := range results {
+		caution := ""
+		if cskill.LooksLikeGenericDownloadSkill(r.Name, r.Description) {
+			caution = " [caution: generic download — prefer download_file]"
+		}
 		switch r.Source {
 		case "skillhub", "skillmarket":
-			b.WriteString(fmt.Sprintf("- [SkillHub] ID: %s | %s: %s (trust: %s, downloads: %d)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
-				r.ID, r.Name, r.Description, r.TrustLevel, r.Downloads, r.ID, hubURL))
+			b.WriteString(fmt.Sprintf("- [SkillHub] ID: %s | %s: %s (trust: %s, downloads: %d)%s\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
+				r.ID, r.Name, r.Description, r.TrustLevel, r.Downloads, caution, r.ID, hubURL))
 		case "clawhub":
-			b.WriteString(fmt.Sprintf("- [ClawHub] ID: %s | %s: %s (downloads: %d)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
-				r.ID, r.Name, r.Description, r.Downloads, r.ID, cskill.ClawHubMirrorURL))
+			b.WriteString(fmt.Sprintf("- [ClawHub] ID: %s | %s: %s (downloads: %d)%s\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"%s\")\n",
+				r.ID, r.Name, r.Description, r.Downloads, caution, r.ID, cskill.ClawHubMirrorURL))
 		case "github":
-			b.WriteString(fmt.Sprintf("- [GitHub] %s: %s (repo: %s)\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"github\", install_ref=%q)\n",
-				r.Name, r.Description, r.RepoURL, r.Name, r.InstallRef))
+			b.WriteString(fmt.Sprintf("- [GitHub] %s: %s (repo: %s)%s\n  安装: manage_skill(action=\"install\", skill_id=\"%s\", hub_url=\"github\", install_ref=%q)\n",
+				r.Name, r.Description, r.RepoURL, caution, r.Name, r.InstallRef))
 		default:
-			b.WriteString(fmt.Sprintf("- [%s] %s: %s\n", r.Source, r.Name, r.Description))
+			b.WriteString(fmt.Sprintf("- [%s] %s: %s%s\n", r.Source, r.Name, r.Description, caution))
 		}
 	}
 	return b.String()
@@ -504,8 +517,20 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		}
 	}
 
+	// GUI runner compatibility: warn (and demote unrunnable download skills)
+	// so the agent does not treat broken Hub packages as valid download tools.
+	compat := cskill.AssessRunnerCompatibility(entry, cskill.RunnerBackendGUI)
+	if !compat.Runnable && len(entry.Steps) > 0 {
+		entry.Status = "needs_review"
+		if strings.TrimSpace(entry.LastError) == "" {
+			entry.LastError = "install precheck: " + cskill.FormatRunnerCompatReport(compat)
+		}
+		log.Printf("[skill-install] marked %s needs_review: %s", entry.Name, entry.LastError)
+	}
+
 	// Register locally.
 	if err := h.getSkillExecutor().Register(*entry); err != nil {
+
 		if committedDir != "" {
 			_ = os.RemoveAll(committedDir)
 		}
@@ -556,8 +581,24 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	lang := h.skillConfirmLang()
 	var b strings.Builder
 	b.WriteString(localizedSkillInstallSuccessSummary(lang, entry.Name, entry.Description, hubURL, entry.TrustLevel))
+	if report := cskill.AssessRunnerCompatibility(entry, cskill.RunnerBackendGUI); len(report.Warnings) > 0 || !report.Runnable {
+		b.WriteString("\n\n")
+		b.WriteString(cskill.FormatRunnerCompatReport(report))
+		if report.SuggestedAlt != "" {
+			b.WriteString("\nHint: " + report.SuggestedAlt)
+		}
+	}
 
 	if autoRun {
+		// Do not auto-run skills that install precheck demoted to needs_review
+		// (e.g. GUI-unsupported step actions). Agent should use download_file etc.
+		if normalizeSkillEntryStatus(entry.Status) == skillEntryStatusNeedsReview {
+			b.WriteString("\n\nAuto-run skipped: skill status is needs_review after runner compatibility precheck.")
+			if report := cskill.AssessRunnerCompatibility(entry, cskill.RunnerBackendGUI); report.SuggestedAlt != "" {
+				b.WriteString(" Prefer " + report.SuggestedAlt + ".")
+			}
+			return b.String()
+		}
 		runArgs := buildRunSkillArgs(args)
 		if shouldSkipInstructionOnlyInstallAutoRun(entry, runArgs) {
 			b.WriteString("\n\nAuto-run skipped: this Skill is instruction-only and no concrete user task context was provided, so running it now would generate a script from the documentation alone.\n")
@@ -1592,19 +1633,203 @@ func resolveCraftToolTimeout(args map[string]interface{}, task string) int {
 }
 
 // resolvePath resolves a path, expanding ~ and making relative paths relative
-// to ~/.maclaw/workspace. When p is empty, returns ~/.maclaw/workspace.
+// to the effective user working directory. When p is empty, returns that base.
 func resolvePath(p string) string {
+	return resolvePathWithBase(p, corelib.EffectiveWorkspaceDir())
+}
+
+func resolvePathWithBase(p, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = corelib.EffectiveWorkspaceDir()
+	}
 	if p == "" {
-		return corelib.EffectiveWorkspaceDir()
+		return filepath.Clean(base)
 	}
-	if strings.HasPrefix(p, "~") {
-		home, _ := os.UserHomeDir()
-		p = filepath.Join(home, p[1:])
-	}
+	p = corelib.ExpandHomePath(p)
 	if !filepath.IsAbs(p) {
-		p = filepath.Join(corelib.EffectiveWorkspaceDir(), p)
+		p = filepath.Join(base, p)
 	}
 	return filepath.Clean(p)
+}
+
+// pathContainedInBase reports whether absPath is the base directory itself or a
+// descendant. Used to keep download_file / web_fetch(save_path) inside workdir.
+func pathContainedInBase(absPath, base string) bool {
+	absPath = filepath.Clean(strings.TrimSpace(absPath))
+	base = filepath.Clean(strings.TrimSpace(base))
+	if absPath == "" || base == "" {
+		return false
+	}
+	// Windows paths are case-insensitive; normalize before Rel so C:\Work vs
+	// c:\work\file is treated as contained.
+	if runtime.GOOS == "windows" {
+		absPath = strings.ToLower(absPath)
+		base = strings.ToLower(base)
+	}
+	rel, err := filepath.Rel(base, absPath)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	rel = filepath.ToSlash(rel)
+	return rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
+// resolveDownloadSavePath sanitizes a relative save_path, resolves against base,
+// and rejects absolute paths that escape the session workbench.
+// Returns (absPath, errMsg). errMsg non-empty means the caller should return it.
+func resolveDownloadSavePath(savePath, base string) (string, string) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = corelib.EffectiveWorkspaceDir()
+	}
+	savePath = strings.TrimSpace(savePath)
+	if savePath == "" {
+		return "", "缺少 save_path"
+	}
+	expanded := corelib.ExpandHomePath(savePath)
+	if !filepath.IsAbs(expanded) {
+		savePath = sanitizeDownloadSavePath(savePath)
+	} else {
+		savePath = expanded
+	}
+	abs := resolvePathWithBase(savePath, base)
+	if !pathContainedInBase(abs, base) {
+		return "", fmt.Sprintf("save_path 必须位于工作目录内: workdir=%s path=%s", base, abs)
+	}
+	return abs, ""
+}
+
+// sanitizeDownloadSavePath cleans a user/agent-provided relative save path:
+// drops ".." segments and sanitizes each component. Absolute paths should be
+// handled by resolveDownloadSavePath instead.
+func sanitizeDownloadSavePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return p
+	}
+	// Normalize separators then sanitize each component.
+	p = strings.ReplaceAll(p, "\\", "/")
+	parts := strings.Split(p, "/")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			// Drop parent traversal segments in relative save paths.
+			continue
+		}
+		out = append(out, sanitizeDownloadFileName(part))
+	}
+	if len(out) == 0 {
+		return "download.bin"
+	}
+	return strings.Join(out, string(filepath.Separator))
+}
+
+// downloadFileNameFromURL derives a safe local filename from a URL.
+// Uses net/url + path.Base (slash paths) so Windows filepath.Base is not applied
+// to "https://host/a/b.pdf" (which has no '\' and would return the whole URL).
+func downloadFileNameFromURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "download.bin"
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		scheme := strings.ToLower(u.Scheme)
+		if scheme == "http" || scheme == "https" || scheme == "ftp" {
+			name := pathpkg.Base(strings.TrimSuffix(u.Path, "/"))
+			if name == "" || name == "." || name == "/" {
+				return "download.bin"
+			}
+			return sanitizeDownloadFileName(name)
+		}
+	}
+	// Fallback for non-URL / relative strings.
+	s := strings.TrimSpace(strings.SplitN(rawURL, "?", 2)[0])
+	if i := strings.Index(s, "#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.ReplaceAll(s, "\\", "/")
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		s = s[i+1:]
+	}
+	return sanitizeDownloadFileName(s)
+}
+
+// sanitizeDownloadFileName strips path separators and Windows-illegal characters
+// from a URL-derived basename so download_file never writes outside workdir.
+func sanitizeDownloadFileName(name string) string {
+	name = strings.TrimSpace(name)
+	// Use slash-based basename first: filepath.Base treats "a:b.pdf" as a drive
+	// relative path on Windows and would drop the "a" segment.
+	name = strings.ReplaceAll(name, "\\", "/")
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" || name == "." {
+		return "download.bin"
+	}
+	// Replace characters illegal on Windows and awkward on all platforms.
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch r {
+		case '<', '>', ':', '"', '|', '?', '*', '/', '\\':
+			b.WriteByte('_')
+		default:
+			if r < 32 {
+				b.WriteByte('_')
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	out = strings.Trim(out, " .")
+	if out == "" || out == "." || out == ".." {
+		return "download.bin"
+	}
+	// Cap extreme lengths (NTFS max component ~255).
+	if len(out) > 200 {
+		ext := filepath.Ext(out)
+		base := strings.TrimSuffix(out, ext)
+		if len(base) > 200-len(ext) {
+			base = base[:200-len(ext)]
+		}
+		out = base + ext
+	}
+	return out
+}
+
+// toolDownloadBaseDir is the session workbench used for downloads. Same
+// resolution as bash/write_file (project tab owner → top-bar working directory).
+func (h *IMMessageHandler) toolDownloadBaseDir() string {
+	owner := ""
+	if h != nil {
+		owner = h.currentRuntimeOrLegacyPolicyOwnerID()
+	}
+	return h.toolDownloadBaseDirForOwner(owner)
+}
+
+// toolDownloadBaseDirForOwner resolves download landing dir for a session owner.
+func (h *IMMessageHandler) toolDownloadBaseDirForOwner(ownerID string) string {
+	if h != nil {
+		if wd := strings.TrimSpace(h.resolveToolWorkDirForOwner("", ownerID)); wd != "" {
+			return wd
+		}
+		if h.app != nil {
+			if wd := strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(ownerID)); wd != "" {
+				return wd
+			}
+		}
+	}
+	return corelib.EffectiveWorkspaceDir()
 }
 
 // toolGeneratePDF generates a PDF from Markdown content and returns it as a
@@ -2657,6 +2882,9 @@ func (h *IMMessageHandler) toolWebSearch(args map[string]interface{}) string {
 	return sb.String()
 }
 
+// maxWebFetchDownloadBytes allows large PDFs / papers (logs saw 10MB+ arXiv PDFs).
+const maxWebFetchDownloadBytes = 100 * 1024 * 1024
+
 func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	rawURL := stringVal(args, "url")
 	if rawURL == "" {
@@ -2672,9 +2900,30 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 	if renderJS, ok := args["render_js"].(bool); ok {
 		opts.RenderJS = renderJS
 	}
-	if savePath := stringVal(args, "save_path"); savePath != "" {
-		opts.SavePath = resolvePath(savePath)
-		opts.MaxBytes = 10 * 1024 * 1024 // 10MB for file downloads
+	// Accept save_path / output / dest so download-oriented callers share one path.
+	savePath := ""
+	for _, key := range []string{"save_path", "output", "dest", "path"} {
+		if v := strings.TrimSpace(stringVal(args, key)); v != "" {
+			savePath = v
+			break
+		}
+	}
+	// Same owner resolution as download_file / bash so containment checks agree.
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "web_fetch failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
+	if ownerID == "" && h != nil {
+		ownerID = h.currentRuntimeOrLegacyPolicyOwnerID()
+	}
+	baseDir := h.toolDownloadBaseDirForOwner(ownerID)
+	if savePath != "" {
+		abs, errMsg := resolveDownloadSavePath(savePath, baseDir)
+		if errMsg != "" {
+			return errMsg
+		}
+		opts.SavePath = abs
+		opts.MaxBytes = maxWebFetchDownloadBytes
 	} else {
 		// For text content, allow up to 2MB raw before extraction/windowing.
 		opts.MaxBytes = 2 * 1024 * 1024
@@ -2713,9 +2962,23 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		return fmt.Sprintf("抓取失败: %s", err.Error())
 	}
 
-	// If saved to file, return short message
+	// If saved to file, return a stable absolute-path summary for the agent.
 	if result.SavedTo != "" {
-		return result.Content
+		saved := strings.TrimSpace(result.SavedTo)
+		if saved == "" {
+			saved = opts.SavePath
+		}
+		msg := strings.TrimSpace(result.Content)
+		if msg == "" {
+			msg = fmt.Sprintf("已保存到: %s", saved)
+		}
+		if saved != "" && !strings.Contains(msg, saved) {
+			msg = fmt.Sprintf("%s\nsaved_path: %s", msg, saved)
+		}
+		if result.BytesRead > 0 && !strings.Contains(msg, "字节") && !strings.Contains(strings.ToLower(msg), "bytes") {
+			msg = fmt.Sprintf("%s\nsize_bytes: %d", msg, result.BytesRead)
+		}
+		return msg
 	}
 
 	start := offset
@@ -2737,4 +3000,49 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		sb.WriteString(fmt.Sprintf("\n\n--- 完整性信号 ---\nhas_more: true\nnext_offset: %d\n继续读取时请传入 offset=%d\n", result.NextOffset, result.NextOffset))
 	}
 	return sb.String()
+}
+
+// toolDownloadFile downloads a URL into the session workbench directory.
+// Prefer this (or web_fetch with save_path) over installing ClawHub wget/curl skills.
+func (h *IMMessageHandler) toolDownloadFile(args map[string]interface{}) string {
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "download_file failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
+	if ownerID == "" && h != nil {
+		ownerID = h.currentRuntimeOrLegacyPolicyOwnerID()
+	}
+	rawURL := strings.TrimSpace(stringVal(args, "url"))
+	if rawURL == "" {
+		return "缺少 url 参数"
+	}
+	savePath := ""
+	for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {
+		if v := strings.TrimSpace(stringVal(args, key)); v != "" {
+			savePath = v
+			break
+		}
+	}
+	if savePath == "" {
+		// Default filename from URL path under the working directory.
+		savePath = downloadFileNameFromURL(rawURL)
+	}
+	base := h.toolDownloadBaseDirForOwner(ownerID)
+	absPath, errMsg := resolveDownloadSavePath(savePath, base)
+	if errMsg != "" {
+		return errMsg
+	}
+	log.Printf("[download_file] url=%q save_path=%q workdir=%q abs=%q owner=%q", rawURL, savePath, base, absPath, ownerID)
+	fetchArgs := map[string]interface{}{
+		"url":       rawURL,
+		"save_path": absPath, // absolute under workdir; toolWebFetch re-checks with same owner base
+	}
+	if t, ok := args["timeout"]; ok {
+		fetchArgs["timeout"] = t
+	}
+	// Re-inject owner so toolWebFetch resolves the same workbench (consume removed it above).
+	if strings.TrimSpace(ownerID) != "" {
+		fetchArgs[registeredToolPolicyOwnerIDField] = ownerID
+	}
+	return h.toolWebFetch(fetchArgs)
 }

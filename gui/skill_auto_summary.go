@@ -115,6 +115,7 @@ func DraftSkill(session *TrajectorySession) (*skill.SkillYAMLFile, error) {
 		Triggers:    triggers,
 		Steps:       mergedSteps,
 		Status:      "active",
+		Source:      "learned",
 	}, nil
 }
 
@@ -685,6 +686,10 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 					defPath = filepath.Join(existing.SkillDir, "skill.yaml")
 					defFormat = "yaml"
 				}
+				// Ensure rewritten YAML keeps self-learned classification.
+				if strings.TrimSpace(draft.Source) == "" {
+					draft.Source = "learned"
+				}
 				data, fmtErr := skill.FormatSkillDefinitionFile(draft, defFormat)
 				if fmtErr == nil {
 					if writeErr := os.WriteFile(defPath, data, 0o644); writeErr != nil {
@@ -692,6 +697,11 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 					} else {
 						log.Printf("[skill-auto-summary] session=%s stage=VersionedUpdate result=ok", sid)
 						_ = versioner.CleanOldVersions(existing.SkillDir, 5)
+						if p.skillExec != nil {
+							if regErr := registerAutoSummaryLearnedSkill(p.skillExec, draft, existing.SkillDir); regErr != nil {
+								log.Printf("[skill-auto-summary] session=%s stage=RegisterLearned error=%v", sid, regErr)
+							}
+						}
 					}
 				}
 			}
@@ -720,6 +730,17 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 	log.Printf("[skill-auto-summary] session=%s stage=RunQualityGate result=%s score=%d dir=%s",
 		sid, gateResult.Status, gateResult.Score, gateResult.SkillDir)
 
+	// Stage 4.5: Register as a learned skill so UI "自学习" filters and
+	// config-backed lifecycle paths see Source=learned immediately
+	// (scanner also resolves craft_* / source: learned from disk).
+	if p.skillExec != nil {
+		if regErr := registerAutoSummaryLearnedSkill(p.skillExec, draft, gateResult.SkillDir); regErr != nil {
+			log.Printf("[skill-auto-summary] session=%s stage=RegisterLearned error=%v", sid, regErr)
+		} else {
+			log.Printf("[skill-auto-summary] session=%s stage=RegisterLearned result=ok name=%s", sid, draft.Name)
+		}
+	}
+
 	// Stage 5: RunAutoUpload (only if approved)
 	if normalizeSkillQualityGateStatus(gateResult.Status) == skillQualityGateStatusApproved {
 		err := RunAutoUpload(
@@ -747,6 +768,40 @@ func (p *SkillAutoSummaryPipeline) clearActivity() {
 	if p.activity != nil {
 		p.activity.Clear("skill_summarizing")
 	}
+}
+
+// registerAutoSummaryLearnedSkill persists a thin Source=learned overlay into
+// config (name + source + SkillDir), matching skill-recorder semantics.
+// Steps remain on disk under skill.yaml and are hydrated by loadSkills.
+//
+// Uses UpdateLearnedSource (config-only upsert) instead of Register(loadSkills)
+// so we never rewrite the entire merged skill list into config.json.
+func registerAutoSummaryLearnedSkill(exec *SkillExecutor, draft *skill.SkillYAMLFile, skillDir string) error {
+	if exec == nil || draft == nil {
+		return fmt.Errorf("skill executor and draft are required")
+	}
+	name := strings.TrimSpace(draft.Name)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	source := strings.TrimSpace(draft.Source)
+	if !corelib.IsLearnedSource(source) {
+		source = "learned"
+	} else {
+		source = strings.ToLower(source)
+	}
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return fmt.Errorf("skill dir is required for learned overlay")
+	}
+	entry := corelib.NLSkillEntry{
+		Name:     name,
+		Source:   source,
+		SkillDir: skillDir,
+		Status:   "active",
+	}
+	// UpdateLearnedSource → saveSkills already invalidates skill list + scanner cache.
+	return exec.UpdateLearnedSource(entry)
 }
 
 // shouldUpdateSkill returns true if the new draft is better than the existing skill.

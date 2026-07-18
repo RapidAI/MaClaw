@@ -29,6 +29,29 @@ func TestResolveFileToolPath_Absolute(t *testing.T) {
 	}
 }
 
+func TestResolveFileToolPath_TildeHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("UserHomeDir unavailable")
+	}
+	got, err := ResolveFileToolPath("~/.maclaw/workspace/note.md", nil)
+	if err != nil {
+		t.Fatalf("ResolveFileToolPath tilde error: %v", err)
+	}
+	want := filepath.Clean(filepath.Join(home, ".maclaw", "workspace", "note.md"))
+	if got != want {
+		t.Fatalf("tilde path = %q, want %q", got, want)
+	}
+	// ~otheruser must not be treated as home expansion.
+	other, err := ResolveFileToolPath("~otheruser/docs", nil)
+	if err != nil {
+		t.Fatalf("ResolveFileToolPath ~otheruser error: %v", err)
+	}
+	if other == filepath.Join(home, "otheruser", "docs") || other == filepath.Clean(filepath.Join(home, "otheruser/docs")) {
+		t.Fatalf("~otheruser was incorrectly expanded to home: %q", other)
+	}
+}
+
 func TestResolveFileToolPath_EmptyUsesProjectDir(t *testing.T) {
 	project := filepath.Clean("/tmp/project-root")
 	got, err := ResolveFileToolPath("", func() string { return project })

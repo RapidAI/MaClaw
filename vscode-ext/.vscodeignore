@@ -1,0 +1,13 @@
+.vscode/**
+.npm_cache/**
+src/**
+webview/**
+test/**
+scripts/**
+node_modules/**
+build.mjs
+tsconfig.json
+*.vsix
+*.map
+dist/*.map
+build-vsix.ps1

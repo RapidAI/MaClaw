@@ -34,13 +34,18 @@ func conv1dStrideSimd(dst, input, weight []float32, outCh, kSize, stride int) {
 	}
 }
 
-// conv1dPad1Simd performs multi-channel Conv1D with padding=1.
+// conv1dPad1Simd performs multi-channel Conv1D with padding=1 and stride.
 // Uses pre-transposed weights WT [outCh, kSize, inCh] so that for each (oc, k),
 // the sum over inCh is a contiguous dot product — ideal for SIMD.
 // inColsBuf is pre-allocated [T][maxInCh] gather buffers (from scratch).
-func conv1dPad1Simd(dst, input []float32, inCh, inLen int, weight, bias []float32, outCh, wInCh, kSize int, wt []float32, inColsBuf [][]float32) {
-	if wt == nil || kSize != 3 || inLen <= 0 {
+// outLen = (inLen + 2 - kSize) / stride + 1 (PyTorch conv1d k=3 pad=1 semantics).
+func conv1dPad1Simd(dst, input []float32, inCh, inLen int, weight, bias []float32, outCh, wInCh, kSize, stride int, wt []float32, inColsBuf [][]float32) {
+	if stride == 1 && (wt == nil || kSize != 3 || inLen <= 0) {
 		conv1dPad1Into(dst, input, inCh, inLen, weight, bias, outCh, wInCh, kSize)
+		return
+	}
+	outLen := (inLen-kSize+2)/stride + 1
+	if outLen <= 0 {
 		return
 	}
 
@@ -62,17 +67,18 @@ func conv1dPad1Simd(dst, input []float32, inCh, inLen int, weight, bias []float3
 		if bias != nil && oc < len(bias) {
 			biasVal = bias[oc]
 		}
-		dstOff := oc * inLen
+		dstOff := oc * outLen
 		wtBase := oc * kSize * wInCh
 
-		for t := 0; t < inLen; t++ {
+		for t := 0; t < outLen; t++ {
+			c := t * stride
 			var sum float32
-			if t > 0 {
-				sum += vek32.Dot(wt[wtBase:wtBase+wInCh], inColsBuf[t-1][:wInCh])
+			if c > 0 {
+				sum += vek32.Dot(wt[wtBase:wtBase+wInCh], inColsBuf[c-1][:wInCh])
 			}
-			sum += vek32.Dot(wt[wtBase+wInCh:wtBase+2*wInCh], inColsBuf[t][:wInCh])
-			if t < inLen-1 {
-				sum += vek32.Dot(wt[wtBase+2*wInCh:wtBase+3*wInCh], inColsBuf[t+1][:wInCh])
+			sum += vek32.Dot(wt[wtBase+wInCh:wtBase+2*wInCh], inColsBuf[c][:wInCh])
+			if c+1 < inLen {
+				sum += vek32.Dot(wt[wtBase+2*wInCh:wtBase+3*wInCh], inColsBuf[c+1][:wInCh])
 			}
 			dst[dstOff+t] = sum + biasVal
 		}
@@ -115,19 +121,18 @@ func lstmCellSimd(x, h, c, gates []float32,
 	}
 }
 
-// magnitudeSimd computes magnitude spectrum from STFT output using SIMD.
-// stftOut: [258, T] flattened (first 129 = real, next 129 = imag)
-// mag: [129, T] output
-// Uses vek32 for element-wise operations where beneficial.
-func magnitudeSimd(mag, stftOut []float32, freqBins, T int) {
-	// For each frequency bin, compute sqrt(re^2 + im^2 + eps)
-	// With T=3, the inner loop is too short for SIMD on the T dimension.
-	// Instead, we process all freq bins for each time step.
+// magnitudeFromSTFT computes the magnitude spectrum of stftOut frames
+// [skip, skip+T). The reference v5 frontend drops the first STFT frame
+// (it mostly covers the reflection-padded region), so skip=1 in practice.
+// stftOut: [2*freqBins, T+skip] flattened (first freqBins rows = real, then imag)
+// mag: [freqBins, T] output
+func magnitudeFromSTFT(mag, stftOut []float32, freqBins, T, skip int) {
+	totalT := T + skip
 	for t := 0; t < T; t++ {
 		for f := 0; f < freqBins; f++ {
-			re := stftOut[f*T+t]
-			im := stftOut[(freqBins+f)*T+t]
-			mag[f*T+t] = fastsqrt(re*re + im*im + 1e-8)
+			re := stftOut[f*totalT+t+skip]
+			im := stftOut[(freqBins+f)*totalT+t+skip]
+			mag[f*T+t] = fastsqrt(re*re + im*im)
 		}
 	}
 }

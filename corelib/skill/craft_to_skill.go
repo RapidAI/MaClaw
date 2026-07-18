@@ -90,6 +90,7 @@ func PersistCraftedSkill(skillsRoot, taskDescription, scriptContent, scriptLang 
 	sf := SkillYAMLFile{
 		Name:        skillName,
 		Description: taskDescription,
+		Source:      "crafted",
 		Params:      skillYAMLParamsFromCore(skillParams),
 		RequiredEnv: ExtractScriptRequiredEnv(scriptContent, scriptLang),
 		Requires:    ExtractScriptRequires(scriptContent, scriptLang),

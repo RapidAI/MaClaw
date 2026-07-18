@@ -1806,7 +1806,7 @@ func (h *IMMessageHandler) cancelWorkflowForUser(userID string) {
 	// Clear any pending ask_user / recording state.
 	h.pendingAskUser.Delete(userID)
 	h.pendingRecordAudio.Delete(userID)
-	h.pendingPostRecording.Delete(userID)
+	h.clearPendingPostRecording(userID)
 }
 
 // applyWorkflowToolFilter restricts the tool list based on the current

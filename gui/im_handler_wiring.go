@@ -322,6 +322,12 @@ type IMMessageHandler struct {
 	// *pendingPostRecordingState.
 	pendingPostRecording sync.Map
 
+	// pendingSpeakerEstimates caches CAM++ speaker-count estimates for the open
+	// post-recording choice (userID -> int). Kept separate from
+	// pendingPostRecording so background pre-estimate never races with the
+	// step-2 confirm state machine via copy-on-write Store.
+	pendingSpeakerEstimates sync.Map
+
 	// pendingUserReply tracks plain-text assistant questions that expect the
 	// next user message to continue the same task. Keyed by userID, value is
 	// *pendingUserReplyState.
@@ -875,6 +881,13 @@ func (h *IMMessageHandler) filterInactiveDeferredTools(tools []map[string]interf
 // sensitive tools such as ssh and browser automation are not exposed by a
 // missing router setup.
 func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
+	return h.routeToolsWithOptions(userMessage, allTools, false)
+}
+
+// routeToolsWithOptions is like routeTools. When skipHeavySemantic is true
+// (ACP Mode B), skip route-intent LLM rewrite and full UIC fusion — those
+// alone often cost 5–8s before the main agent LLM starts.
+func (h *IMMessageHandler) routeToolsWithOptions(userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
 	h.toolsMu.RLock()
 	router := h.toolRouter
 	h.toolsMu.RUnlock()
@@ -901,7 +914,15 @@ func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]
 	}
 	// Optional lightweight LLM rewrite → structured pins + retrieval query.
 	// Failures degrade silently to original-message routing.
-	routeOpts := tool.RouteOptions{Intent: h.rewriteRouteIntentForTools(userMessage)}
+	// ACP Mode B skips rewrite + UIC fusion (often multi-second).
+	var routeIntent *tool.RouteIntent
+	if !skipHeavySemantic {
+		routeIntent = h.rewriteRouteIntentForTools(userMessage)
+	}
+	routeOpts := tool.RouteOptions{
+		Intent:                routeIntent,
+		SkipUnifiedClassifier: skipHeavySemantic,
+	}
 	routed := router.RouteWithOptions(userMessage, allTools, routeOpts)
 	if isExplicitNicknameRequest(userMessage) {
 		return routed

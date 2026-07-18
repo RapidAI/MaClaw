@@ -33,6 +33,7 @@ const (
 // After compression, results exceeding this cap are hard-truncated.
 var PerToolResultCap = map[string]int{
 	"web_fetch":          4000,
+	"download_file":      2000,
 	"web_search":         2500,
 	"bash":               4000,
 	"read_file":          5000,

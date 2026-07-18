@@ -28,6 +28,104 @@ func TestClusterRespectsAutomaticMaxSpeakerCount(t *testing.T) {
 	}
 }
 
+func TestAutomaticSpeakerCapShortMeeting(t *testing.T) {
+	cfg := Config{MinSpeakers: 1, MaxSpeakers: 15}.normalized()
+	// ~27s of speech (the user-reported two-person product demo) must not allow
+	// seven invented speakers.
+	if got := automaticSpeakerCap(27, cfg); got != 2 {
+		t.Fatalf("automaticSpeakerCap(27) = %d, want 2", got)
+	}
+	if got := automaticSpeakerCap(90, cfg); got != 5 {
+		t.Fatalf("automaticSpeakerCap(90) = %d, want 5", got)
+	}
+	if got := automaticSpeakerCap(0, cfg); got != 15 {
+		t.Fatalf("automaticSpeakerCap(0) = %d, want MaxSpeakers fallback", got)
+	}
+}
+
+func TestClusterDurationSoftCapStopsOverSegmentation(t *testing.T) {
+	// Seven mutually dissimilar short-window embeddings — the classic failure
+	// mode where each interjection becomes Speaker N on a short two-person clip.
+	embs := [][]float32{
+		{1, 0, 0, 0, 0, 0, 0},
+		{0, 1, 0, 0, 0, 0, 0},
+		{0, 0, 1, 0, 0, 0, 0},
+		{0, 0, 0, 1, 0, 0, 0},
+		{0, 0, 0, 0, 1, 0, 0},
+		{0, 0, 0, 0, 0, 1, 0},
+		{0, 0, 0, 0, 0, 0, 1},
+	}
+	got := cluster(embs, Config{
+		MinSpeakers:   1,
+		MaxSpeakers:   15,
+		SpeechSeconds: 27,
+	}.normalized())
+	seen := map[int]struct{}{}
+	for _, label := range got {
+		seen[label] = struct{}{}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("labels = %v (%d speakers), want 2 for a ~27s automatic meeting", got, len(seen))
+	}
+}
+
+func TestClusterSoftMergeCollapsesNearDuplicatesUnderCapPressure(t *testing.T) {
+	// Two real speakers (axis-aligned) plus near-duplicates that fall below the
+	// hard 0.78 bar but above the soft 0.55 bar. With a short speech budget the
+	// near-duplicates must rejoin their parent speaker rather than invent IDs.
+	// Cosine( [1,0], normalize([1,0.5]) ) ≈ 0.894 → hard-merge.
+	// Use a weaker near-match: [1, 0.7] → cos ≈ 0.819 hard; need softer.
+	// [1, 0] vs normalize([0.7, 0.7]) = cos( [1,0], [0.707,0.707] ) = 0.707 soft.
+	a := []float32{1, 0}
+	aNear := []float32{0.7071, 0.7071} // cos≈0.707 with a (below hard 0.78, above soft 0.55)
+	b := []float32{0, 1}
+	// Keep four embeddings that should collapse to at most 2 under softCap=2.
+	embs := [][]float32{a, aNear, b, {0.1, 0.995}}
+	for i := range embs {
+		normalize(embs[i])
+	}
+	got := cluster(embs, Config{
+		MinSpeakers:   1,
+		MaxSpeakers:   15,
+		SpeechSeconds: 25,
+	}.normalized())
+	seen := map[int]struct{}{}
+	for _, label := range got {
+		seen[label] = struct{}{}
+	}
+	if len(seen) > 2 {
+		t.Fatalf("labels = %v, want at most 2 speakers after soft/duration cap", got)
+	}
+}
+
+func TestSmoothCollapsesSingletonBlipSpeaker(t *testing.T) {
+	got := smooth([]Segment{
+		{0, 2, 0},
+		{2, 2.6, 1}, // 0.6s singleton blip — noise, not a real turn
+		{2.6, 4, 0},
+	})
+	for _, s := range got {
+		if s.Speaker != 0 {
+			t.Fatalf("smooth left singleton blip: %#v", got)
+		}
+	}
+}
+
+func TestSmoothKeepsShortButRealSecondSpeaker(t *testing.T) {
+	got := smooth([]Segment{
+		{0, 2, 0},
+		{2, 3, 1}, // 1s reply must not be swallowed
+		{3, 5, 0},
+	})
+	seen := map[int]struct{}{}
+	for _, s := range got {
+		seen[s.Speaker] = struct{}{}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("smooth swallowed real short reply: %#v", got)
+	}
+}
+
 func TestConfigNormalizesUnsafeKnownSpeakerCount(t *testing.T) {
 	if got := (Config{KnownSpeakers: -3}).normalized().KnownSpeakers; got != 0 {
 		t.Fatalf("negative KnownSpeakers = %d, want automatic mode (0)", got)

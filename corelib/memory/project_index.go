@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
 )
 
@@ -871,8 +872,8 @@ func LooksLikeFilePath(s string) bool {
 	if len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
 		return true
 	}
-	// Home directory.
-	if strings.HasPrefix(s, "~/") {
+	// Home directory (~/… or ~\…).
+	if maclawpath.IsHomePath(s) {
 		return true
 	}
 	// Unix absolute path — require at least 2 segments to avoid matching

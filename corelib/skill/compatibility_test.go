@@ -33,6 +33,26 @@ func TestNormalizeStepForRunner_ActionAndParamAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeStepForRunner_ShellToolBecomesBash(t *testing.T) {
+	// ClawHub self-repair historically emitted shell_tool; GUI only accepts bash.
+	step := corelib.NLSkillStep{
+		Action: "shell_tool",
+		Params: map[string]interface{}{
+			"command": "wget -O '{{output}}' '{{url}}'",
+		},
+	}
+	got := NormalizeStepForRunner(step, "")
+	if got.Action != "bash" {
+		t.Fatalf("Action = %q, want bash", got.Action)
+	}
+	if got.Params["command"] != "wget -O '{{output}}' '{{url}}'" {
+		t.Fatalf("command = %#v", got.Params["command"])
+	}
+	if err := EnsureStepActionSupported(RunnerBackendGUI, got.Action); err != nil {
+		t.Fatalf("normalized shell_tool must be GUI-supported: %v", err)
+	}
+}
+
 func TestNormalizeStepForRunner_IgnoresInvalidNumericStrings(t *testing.T) {
 	step := corelib.NLSkillStep{
 		Action: "run",

@@ -729,6 +729,19 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 				action = "updated"
 			}
 			log.Printf("[craft-persist] %s skill %q at %s", action, persistResult.SkillName, persistResult.SkillDir)
+			// Thin config overlay so the disk-backed skill is classified as
+			// crafted/自学习 even when its directory name differs from the
+			// in-memory craft_* registration name.
+			if app != nil && app.skillExecutor != nil && strings.TrimSpace(persistResult.SkillDir) != "" {
+				if overlayErr := app.skillExecutor.UpdateLearnedSource(corelib.NLSkillEntry{
+					Name:     persistResult.SkillName,
+					Source:   "crafted",
+					SkillDir: persistResult.SkillDir,
+					Status:   "active",
+				}); overlayErr != nil {
+					log.Printf("[craft-persist] crafted source overlay failed (non-fatal): %v", overlayErr)
+				}
+			}
 		}()
 	} else if request.SaveAsSkill {
 		result.WriteString("\n默认未自动注册为 Skill：该脚本更像一次性任务或强输出绑定结果。")

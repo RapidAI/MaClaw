@@ -228,6 +228,13 @@ type AppConfig struct {
 	ThirdPartyGatewayHost      string `json:"thirdparty_gateway_host,omitempty"`
 	ThirdPartyGatewayPort      int    `json:"thirdparty_gateway_port,omitempty"`
 	ThirdPartyGatewayLocalMode *bool  `json:"thirdparty_gateway_local_mode,omitempty"`
+	// ACP Mode B: GUI hosts industry ACP so VS Code programming agents use the
+	// desktop AI assistant. Nil means default enabled. Port 0 = ephemeral bind.
+	AcpHostEnabled *bool `json:"acp_host_enabled,omitempty"`
+	AcpHostPort    int   `json:"acp_host_port,omitempty"` // preferred 18789; 0 = OS-assigned
+	// AcpHostMirrorUI: when true (default), Mode B token/progress also emits
+	// AI assistant Wails events so the GUI chat surface can mirror activity.
+	AcpHostMirrorUI *bool `json:"acp_host_mirror_ui,omitempty"`
 	// IMProgressNudgeEnabled controls whether IM channels show intermediate
 	// progress/nudge messages. Nil means default true. When false, only the
 	// first progress message and the final result are sent to the user.
@@ -545,16 +552,7 @@ func ExpandLLMPromptCacheDir(dir string) string {
 	if dir == "" {
 		return DefaultLLMPromptCacheDir()
 	}
-	if dir == "~" || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
-		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-			if dir == "~" {
-				dir = home
-			} else {
-				dir = filepath.Join(home, strings.TrimLeft(dir[1:], `/\`))
-			}
-		}
-	}
-	return filepath.Clean(dir)
+	return filepath.Clean(ExpandHomePath(dir))
 }
 
 func (c LLMPromptCacheConfig) EffectiveCacheDir() string {
@@ -1386,6 +1384,45 @@ func (c *AppConfig) IsThirdPartyGatewayLocalMode() bool {
 // SetThirdPartyGatewayLocal sets the ThirdPartyGatewayLocalMode pointer field.
 func (c *AppConfig) SetThirdPartyGatewayLocal(v bool) {
 	c.ThirdPartyGatewayLocalMode = &v
+}
+
+// IsAcpHostEnabled returns whether Mode B ACP host should run.
+// Default is true when the field has never been set (nil).
+func (c *AppConfig) IsAcpHostEnabled() bool {
+	if c == nil || c.AcpHostEnabled == nil {
+		return true
+	}
+	return *c.AcpHostEnabled
+}
+
+// SetAcpHostEnabled sets the AcpHostEnabled pointer field.
+func (c *AppConfig) SetAcpHostEnabled(v bool) {
+	c.AcpHostEnabled = &v
+}
+
+// IsAcpHostMirrorUI returns whether Mode B should mirror streams to the GUI AI chat.
+// Default is true when nil.
+func (c *AppConfig) IsAcpHostMirrorUI() bool {
+	if c == nil || c.AcpHostMirrorUI == nil {
+		return true
+	}
+	return *c.AcpHostMirrorUI
+}
+
+// SetAcpHostMirrorUI sets the AcpHostMirrorUI pointer field.
+func (c *AppConfig) SetAcpHostMirrorUI(v bool) {
+	c.AcpHostMirrorUI = &v
+}
+
+// PreferredAcpHostPort returns the configured preferred port (0 = ephemeral).
+func (c *AppConfig) PreferredAcpHostPort() int {
+	if c == nil {
+		return 0
+	}
+	if c.AcpHostPort < 0 || c.AcpHostPort > 65535 {
+		return 0
+	}
+	return c.AcpHostPort
 }
 
 // IsWorkflowEnabled returns the effective workflow enabled setting.

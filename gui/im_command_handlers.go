@@ -75,8 +75,14 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 
 	// Short chit-chat only for free-form text — never intercept a classified
 	// slash/install command (defense in depth if phrase lists grow later).
-	if commandKind == imCommandUnknown && !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser && !h.workflowReviewPending(msg.UserID, msg.IsBackground) {
-		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}, true
+	// ACP Mode B: host flushes non-streamed text as agent_message_chunk.
+	// Use bare user text when body is workspace-wrapped.
+	chitText := trimmed
+	if isACPProgrammingMessage(msg) {
+		chitText = acpUserFacingText(trimmed)
+	}
+	if commandKind == imCommandUnknown && !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(chitText) && !hasPendingAskUser && !h.workflowReviewPending(msg.UserID, msg.IsBackground) {
+		return &IMAgentResponse{Text: buildShortChitChatResponse(chitText, msg.Lang)}, true
 	}
 	switch commandKind {
 	case imCommandExit:

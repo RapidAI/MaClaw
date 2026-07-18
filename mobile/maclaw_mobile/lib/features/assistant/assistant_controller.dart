@@ -12,6 +12,7 @@ import '../documents/documents_controller.dart';
 import '../tasks/mobile_jobs_provider.dart';
 import '../memory/local_memory_controller.dart';
 import '../memory/local_memory_note.dart';
+import '../meeting_recording/meeting_recording_request.dart';
 import 'search_history.dart';
 
 final assistantQueryProvider = StateProvider<String>((ref) => '');
@@ -219,8 +220,7 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
     if (body.isEmpty && !draft.hasOriginal) return;
     final boundId = _resolveBoundDocumentId();
     if (boundId.isEmpty || boundId != id) return;
-    final title =
-        draft.title.trim().isEmpty ? '移动文档' : draft.title.trim();
+    final title = draft.title.trim().isEmpty ? '移动文档' : draft.title.trim();
     final originalLine = draft.hasOriginal
         ? 'has_original=true source_filename=${draft.sourceFilename} '
             'source_size=${draft.sourceSize}\n'
@@ -291,8 +291,8 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
           '${message.role}: ${_clipHistory(message.text, 4000)}',
       ];
       // Inject on-device personal memory so the agent can "remember" important notes.
-      final memories =
-          ref.read(localMemoryProvider).valueOrNull ?? const <LocalMemoryNote>[];
+      final memories = ref.read(localMemoryProvider).valueOrNull ??
+          const <LocalMemoryNote>[];
       final memoryBlock = buildLocalMemoryContextBlock(memories);
       if (memoryBlock.isNotEmpty) {
         historyMessages.insert(0, {
@@ -361,7 +361,9 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
           if (ref.read(assistantTabsProvider).activeTabId == tabId) {
             state = handoff;
           }
-          ref.read(assistantTabsProvider.notifier).setResultForTab(tabId, handoff);
+          ref
+              .read(assistantTabsProvider.notifier)
+              .setResultForTab(tabId, handoff);
           // Do not append a permanent "handoff" chat bubble — poll will write
           // the final answer (or failure) into the conversation.
         },
@@ -398,11 +400,11 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
 
       interactive.subscription = client
           .searchWithContextStream(
-            text,
-            messages: historyMessages,
-            context: context,
-            documentId: boundDocumentId,
-          )
+        text,
+        messages: historyMessages,
+        context: context,
+        documentId: boundDocumentId,
+      )
           .listen(
         (snapshot) {
           if (interactive.finished) return;
@@ -474,9 +476,20 @@ class AssistantSearchController extends AsyncNotifier<SearchAnswer?> {
       if (currentAnswer == null) {
         throw StateError('助手未返回结果，请重试。');
       }
-      final finalized = currentAnswer.streaming
+      var finalized = currentAnswer.streaming
           ? currentAnswer.copyWith(streaming: false)
           : currentAnswer;
+      final recordingRequest = parseMeetingRecordingRequest(
+        finalized.answer,
+        sourceQuery: text,
+      );
+      if (recordingRequest != null) {
+        ref.read(meetingRecordingRequestProvider.notifier).state =
+            recordingRequest;
+        finalized = finalized.copyWith(
+          answer: '我已准备好“${recordingRequest.title}”。请确认后开始录音。',
+        );
+      }
       answer = finalized;
       interactive.markFinished();
       final data = AsyncData<SearchAnswer?>(finalized);
@@ -824,6 +837,7 @@ class AssistantConversationMessage {
   final String llmMode;
   final String llmRequestId;
   final String llmUsageRecordId;
+  final MeetingRecordingCardData? meetingRecording;
 
   const AssistantConversationMessage({
     required this.id,
@@ -834,6 +848,7 @@ class AssistantConversationMessage {
     this.llmMode = '',
     this.llmRequestId = '',
     this.llmUsageRecordId = '',
+    this.meetingRecording,
   });
 
   factory AssistantConversationMessage.user(String text) {
@@ -851,6 +866,7 @@ class AssistantConversationMessage {
     String llmMode = '',
     String llmRequestId = '',
     String llmUsageRecordId = '',
+    MeetingRecordingCardData? meetingRecording,
   }) {
     return AssistantConversationMessage(
       id: 'assistant-${DateTime.now().microsecondsSinceEpoch}',
@@ -861,8 +877,61 @@ class AssistantConversationMessage {
       llmMode: llmMode,
       llmRequestId: llmRequestId,
       llmUsageRecordId: llmUsageRecordId,
+      meetingRecording: meetingRecording,
     );
   }
+}
+
+/// Persisted conversation-only rendering data for a meeting recording. The Hub
+/// remains the authority for processing status; this card keeps that status
+/// visible where the user initiated the task rather than only in a task list.
+class MeetingRecordingCardData {
+  final String recordingId;
+  final String title;
+  final String status;
+  final String message;
+  final String failureCode;
+  final double progress;
+  final String transcriptDraftId;
+  final String minutesDraftId;
+  final bool audioAvailable;
+  final String processMode;
+
+  const MeetingRecordingCardData({
+    required this.recordingId,
+    required this.title,
+    this.status = 'queued',
+    this.message = '',
+    this.failureCode = '',
+    this.progress = 0,
+    this.transcriptDraftId = '',
+    this.minutesDraftId = '',
+    this.audioAvailable = true,
+    this.processMode = 'minutes',
+  });
+
+  MeetingRecordingCardData copyWith({
+    String? status,
+    String? message,
+    String? failureCode,
+    double? progress,
+    String? transcriptDraftId,
+    String? minutesDraftId,
+    String? processMode,
+    bool? audioAvailable,
+  }) =>
+      MeetingRecordingCardData(
+        recordingId: recordingId,
+        title: title,
+        status: status ?? this.status,
+        message: message ?? this.message,
+        failureCode: failureCode ?? this.failureCode,
+        progress: progress ?? this.progress,
+        transcriptDraftId: transcriptDraftId ?? this.transcriptDraftId,
+        minutesDraftId: minutesDraftId ?? this.minutesDraftId,
+        processMode: processMode ?? this.processMode,
+        audioAvailable: audioAvailable ?? this.audioAvailable,
+      );
 }
 
 class AssistantConversationTab {
@@ -1020,6 +1089,38 @@ class AssistantTabsController extends Notifier<AssistantTabsState> {
         for (final tab in state.tabs)
           if (tab.id == tabId)
             tab.copyWith(messages: [...tab.messages, message])
+          else
+            tab,
+      ],
+    );
+  }
+
+  void updateMeetingRecording(String tabId, String recordingId,
+      MeetingRecordingCardData Function(MeetingRecordingCardData) update) {
+    state = AssistantTabsState(
+      activeTabId: state.activeTabId,
+      tabs: [
+        for (final tab in state.tabs)
+          if (tab.id == tabId)
+            tab.copyWith(
+              messages: [
+                for (final message in tab.messages)
+                  if (message.meetingRecording?.recordingId == recordingId)
+                    AssistantConversationMessage(
+                      id: message.id,
+                      role: message.role,
+                      text: message.text,
+                      query: message.query,
+                      citations: message.citations,
+                      llmMode: message.llmMode,
+                      llmRequestId: message.llmRequestId,
+                      llmUsageRecordId: message.llmUsageRecordId,
+                      meetingRecording: update(message.meetingRecording!),
+                    )
+                  else
+                    message,
+              ],
+            )
           else
             tab,
       ],

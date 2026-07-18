@@ -11,6 +11,7 @@ import (
 var LightTurnToolAllowlist = map[string]bool{
 	"web_search":             true,
 	"web_fetch":              true,
+	"download_file":          true,
 	"current_datetime":       true,
 	"memory":                 true, // hosts should still prefer recall; write is discouraged by light prompt
 	"tts":                    true,

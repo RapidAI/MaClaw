@@ -458,8 +458,12 @@ describe('utilitiesSurveyEditor', () => {
         const zhLines = zh.flatMap((g) => g.lines);
         expect(zhLines.some((l) => l.includes('/survey'))).toBe(true);
         expect(zhLines.some((l) => l.includes('list'))).toBe(true);
+        expect(zhLines.some((l) => l.includes('一题一答') || l.includes('【1/N】'))).toBe(true);
+        expect(zhLines.some((l) => l.includes('刷新群列表'))).toBe(true);
         expect(zh.every((g) => g.heading.length > 0 && g.lines.length > 0)).toBe(true);
         const en = buildSurveyOperatorHelp(false);
-        expect(en.flatMap((g) => g.lines).length).toBeGreaterThan(3);
+        const enLines = en.flatMap((g) => g.lines);
+        expect(enLines.some((l) => l.includes('one answer') || l.includes('[1/N]'))).toBe(true);
+        expect(enLines.length).toBeGreaterThan(3);
     });
 });

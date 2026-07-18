@@ -24,6 +24,16 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	if confirmedResume || freshTask || decision.ResumeSlotID != "" {
 		return askUserContext, freshTask, false
 	}
+	// ACP Mode B: skip the extra task-context LLM hop (~1–2s). Structural
+	// continue/new is enough for an editor programming session.
+	if isACPProgrammingMessage(msg) {
+		if len(entries) == 0 {
+			log.Printf("[TaskContext] acp-mode-b structural new user=%s (no history, skip LLM)", msg.UserID)
+			return "", true, false
+		}
+		log.Printf("[TaskContext] acp-mode-b structural continue user=%s historyLen=%d (skip LLM)", msg.UserID, len(entries))
+		return askUserContext, freshTask, false
+	}
 	tcDecision := h.resolveTaskContext(
 		msg.CancelCtx, msg.UserID, trimmed, entries,
 		hasPendingTaskAnswer, false, false,

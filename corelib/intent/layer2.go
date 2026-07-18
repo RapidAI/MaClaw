@@ -235,7 +235,8 @@ func defaultAnchors() []intentAnchor {
 // Returns (result, true) when confident (top1Score >= 0.78 and gap >= 0.10),
 // or (result, false) when the result is ambiguous and should escalate to Layer 3.
 //
-// The function does NOT depend on QueryEmbeddingCache — the caller handles caching.
+// Caching is handled one level up: UnifiedIntentClassifier memoizes results
+// per message (full Classify cache and the ClassifyEmbeddingOnly cache).
 func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool) {
 	// 1. Get query embedding.
 	queryVec, err := embedder.Embed(text)

@@ -15,6 +15,7 @@ import (
 // Remote SSH tool surface by nested role. Worker allows the full remote set
 // (except spawn, which is gated by canSpawnRemoteCodingAgent).
 var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
+	// todo_write is root/worker-only (requirement breakdown for implement turns).
 	codingRoleExplorer: {
 		"ssh_read_file": true, "ssh_list_dir": true, "ssh_bash": true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,

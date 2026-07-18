@@ -616,7 +616,7 @@ function makeLocalizeHubError(localizeText: Props["localizeText"]) {
 
 const LEARNED_SOURCES = new Set(["learned", "crafted"]);
 function isLearnedSource(source: string): boolean {
-    return LEARNED_SOURCES.has(source);
+    return LEARNED_SOURCES.has(String(source || "").trim().toLowerCase());
 }
 
 type HubSourceFilter = "all" | "hubcenter" | "clawhub" | "github";

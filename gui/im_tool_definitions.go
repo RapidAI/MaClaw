@@ -251,10 +251,12 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		// --- 语音识别工具 ---
 		toolDef("asr", audioconv.ASRToolDescription(),
 			map[string]interface{}{
-				"path":        map[string]string{"type": "string", "description": "本地音频文件路径"},
-				"format":      map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
-				"for_minutes": map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿；默认 false"},
-				"minutes":     map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
+				"path":           map[string]string{"type": "string", "description": "本地音频文件路径"},
+				"format":         map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认自动检测）"},
+				"for_minutes":    map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿；默认 false"},
+				"minutes":        map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
+				"known_speakers": map[string]string{"type": "integer", "description": "已知/用户确认的说话人数量（1-15）。0 或省略=自动估计。用户确认人数后应传入以提高说话人分离准确度"},
+				"speakers":       map[string]string{"type": "integer", "description": "known_speakers 的别名"},
 			}, []string{"path"}),
 		// --- Long-term memory (unified) ---
 		func() map[string]interface{} {

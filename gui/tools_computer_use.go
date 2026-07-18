@@ -144,14 +144,18 @@ func registerComputerUseTools(registry *ToolRegistry) {
 		Name: "computer_observe",
 		Description: "Observe the desktop as structured TEXT for Computer Use (text-primary). " +
 			"Uses local OmniParser (YOLO) + OCR + accessibility. Does NOT return screenshots/base64 — " +
-			"safe for text-only models. Returns eN elements; click with computer_click ref=eN.",
+			"safe for text-only models. Returns eN elements; click with computer_click ref=eN. " +
+			"Defaults to primary monitor (screen_index=0). Use screen_index=-1 only when you need all monitors stitched.",
 		Category: ToolCategoryBuiltin,
 		Tags:     []string{"computer", "gui", "desktop", "observe", "omniparser"},
 		Priority: 8,
 		Status:   RegToolAvailable,
 		InputSchema: map[string]interface{}{
-			"window":       map[string]interface{}{"type": "string", "description": "Optional window title substring to bias a11y tree"},
-			"screen_index": map[string]interface{}{"type": "integer", "description": "Monitor index; omit for all monitors stitched"},
+			"window": map[string]interface{}{"type": "string", "description": "Optional window title substring to bias a11y tree"},
+			"screen_index": map[string]interface{}{
+				"type":        "integer",
+				"description": "Monitor index: 0=primary (default), 1=second, …; -1=all monitors stitched (slow, OCR may degrade on huge desktops)",
+			},
 		},
 		Source: "builtin:computer_use",
 		Handler: func(args map[string]interface{}) string {
@@ -332,7 +336,9 @@ func cuSession() *computeruse.Session {
 }
 
 func cuHandleObserve(args map[string]interface{}) string {
-	screenIdx := guiIntArg(args, "screen_index", -1)
+	// Default to primary monitor. Full multi-monitor stitch (-1) is explicit only —
+	// huge virtual desktops crash/degrade OCR and leave all YOLO labels empty.
+	screenIdx := guiIntArg(args, "screen_index", 0)
 	windowHint := guiStrArg(args, "window", "")
 	res := computerUseObserve(screenIdx, windowHint, true)
 	if !res.OK {
@@ -353,6 +359,8 @@ type computerUseObserveResult struct {
 	YOLOCount    int
 	A11yCount    int
 	OCRCount     int
+	OCRFailed    bool
+	OCRError     string
 	ScreenshotOK bool
 	Width        int
 	Height       int
@@ -398,6 +406,9 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	out.ScreenshotOK = true
 	if w, h, ok := decodeImageSizeB64(pngB64); ok {
 		out.Width, out.Height = w, h
+	}
+	if screenIdx < 0 && int64(out.Width)*int64(out.Height) > 8_000_000 {
+		log.Printf("[computer-use] large stitched capture %dx%d (screen_index=-1); prefer screen_index=0 for reliable OCR", out.Width, out.Height)
 	}
 
 	meta := computeruse.ScreenMeta{
@@ -454,16 +465,14 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	var ocrResults []taskengine.OCRResult
 	tOCR := time.Now()
 	if withOCR && ocr != nil {
-		if ocr.IsAvailable() {
-			if res, err := ocr.Recognize(pngB64); err == nil {
-				ocrResults = res
-			} else {
-				log.Printf("[computer-use] OCR: %v", err)
-			}
-		} else if res, err := ocr.Recognize(pngB64); err == nil {
-			ocrResults = res
+		// Always attempt Recognize: IsAvailable is advisory (install-on-demand).
+		res, ocrErr := ocr.Recognize(pngB64)
+		if ocrErr != nil {
+			log.Printf("[computer-use] OCR: %v", ocrErr)
+			out.OCRFailed = true
+			out.OCRError = ocrErr.Error()
 		} else {
-			log.Printf("[computer-use] OCR unavailable: %v", err)
+			ocrResults = res
 		}
 	}
 	out.TimingMs["ocr"] = time.Since(tOCR).Milliseconds()
@@ -476,7 +485,7 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 	clearComputerUseError()
 
 	out.OK = true
-	out.Message = obs.TextForModel
+	out.Message = appendOCRFailureHint(obs.TextForModel, out.OCRFailed, out.OCRError, screenIdx, out.Width, out.Height)
 	out.ElementCount = len(obs.Elements)
 	out.WindowCount = len(obs.Windows)
 	out.YOLOCount = yoloN
@@ -494,16 +503,48 @@ func computerUseObserve(screenIdx int, windowHint string, withOCR bool) computer
 		"ocr_excerpt":   cuTruncateRunes(obs.OCRExcerpt, 400),
 		"elements":      summarizeMarksForUI(obs.Elements, 40),
 		"meta":          obs.Meta,
-		"text_preview":  cuTruncateRunes(obs.TextForModel, 1200),
+		"text_preview":  cuTruncateRunes(out.Message, 1200),
 		"yolo_count":    yoloN,
 		"a11y_count":    a11yN,
 		"ocr_count":     len(ocrResults),
+		"ocr_failed":    out.OCRFailed,
+		"ocr_error":     out.OCRError,
 		"timing_ms":     out.TimingMs,
 		"total_ms":      out.TotalMs,
 	}
 	storeComputerUseLastObserveMetrics(payload)
 	emitComputerUseEvent(EventComputerUseObserve, payload)
 	return out
+}
+
+// appendOCRFailureHint surfaces OCR failures in the model-facing observe text so
+// agents stop treating unlabeled YOLO boxes as trustworthy UI labels.
+func appendOCRFailureHint(text string, failed bool, errMsg string, screenIdx, width, height int) string {
+	if !failed {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(text, "\n"))
+	b.WriteByte('\n')
+	b.WriteString("ocr_failed=true")
+	if errMsg != "" {
+		// Keep one line: strip embedded newlines so logs/parsers stay stable.
+		b.WriteString(" ocr_error=")
+		b.WriteString(strings.ReplaceAll(strings.ReplaceAll(errMsg, "\r", " "), "\n", " "))
+	}
+	b.WriteByte('\n')
+	b.WriteString("hint: OCR failed — element labels may be empty. Prefer screen_index=0 (primary monitor). ")
+	b.WriteString("Avoid screen_index=-1 (all monitors stitched) on large desktops. ")
+	b.WriteString("Retry computer_observe with screen_index=0, or launch apps via shell (e.g. start winword) instead of blind clicks.")
+	if screenIdx < 0 {
+		b.WriteString(" Current capture used screen_index=-1")
+		if width > 0 && height > 0 {
+			fmt.Fprintf(&b, " (%dx%d)", width, height)
+		}
+		b.WriteByte('.')
+	}
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func cuScreenshotFailureGuidance(err error) (guidance, action string) {

@@ -100,7 +100,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 		h.pendingUserReply.Delete(msg.UserID)
 		h.pendingAskUser.Delete(msg.UserID)
 		h.pendingRecordAudio.Delete(msg.UserID)
-		h.pendingPostRecording.Delete(msg.UserID)
+		h.clearPendingPostRecording(msg.UserID)
 	}
 	pendingReplyElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()

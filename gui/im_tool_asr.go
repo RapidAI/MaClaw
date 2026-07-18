@@ -192,27 +192,24 @@ func (h *IMMessageHandler) toolASR(args map[string]interface{}) string {
 		return errMsg
 	}
 
-	// Meeting recordings use the same CAM++ diarization path as the desktop
-	// assistant. The formatted speaker turns are then passed unchanged through
-	// the existing transcript archive and minutes map-reduce workflow.
-	text := ""
+	// All transcription (plain transcribe and minutes alike) shares the CAM++
+	// diarization path with the desktop assistant when enabled: multi-speaker
+	// audio keeps [mm:ss] Speaker N labels, single-speaker audio stays plain
+	// text. The formatted text then passes unchanged through the existing
+	// transcript archive and minutes map-reduce workflow.
+	// known_speakers pins cluster count when the user confirmed attendee count
+	// (0 / omitted = automatic clustering with duration soft-cap).
 	forMinutes := asrToolBoolArg(args, "for_minutes", "minutes", "meeting_minutes")
-	if forMinutes && h.app.GetDiarizationEnabled() {
-		if turns, diarizeErr := h.app.DiarizeAndTranscribeWAVBytes(wav, 0); diarizeErr == nil {
-			text = FormatSpeakerTranscript(turns)
-			if recordDetailEnabled() {
-				log.Printf("[asr] diarized recording path=%s turns=%d", absPath, len(turns))
-			}
-		} else if recordDetailEnabled() {
-			log.Printf("[asr] diarization unavailable; falling back to plain ASR path=%s err=%v", absPath, diarizeErr)
-		}
+	knownSpeakers := asrToolIntArg(args, 0, "known_speakers", "speakers", "speaker_count", "num_speakers")
+	if knownSpeakers < 0 {
+		knownSpeakers = 0
 	}
-	if text == "" {
-		var transcribeErr error
-		text, transcribeErr = h.app.TranscribeWAVBytes(wav)
-		if transcribeErr != nil {
-			return fmt.Sprintf("语音识别失败: %v", transcribeErr)
-		}
+	if knownSpeakers > 15 {
+		knownSpeakers = 15
+	}
+	text, transcribeErr := h.app.transcribeWAVBytesWithSpeakers(wav, knownSpeakers)
+	if transcribeErr != nil {
+		return fmt.Sprintf("语音识别失败: %v", transcribeErr)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -254,6 +251,42 @@ func asrToolBoolArg(args map[string]interface{}, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+// asrToolIntArg reads a non-negative integer from common tool-arg shapes.
+// Returns fallback when the key is missing or unparsable.
+func asrToolIntArg(args map[string]interface{}, fallback int, keys ...string) int {
+	if args == nil {
+		return fallback
+	}
+	for _, key := range keys {
+		v, ok := args[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch t := v.(type) {
+		case int:
+			return t
+		case int32:
+			return int(t)
+		case int64:
+			return int(t)
+		case float64:
+			return int(t)
+		case float32:
+			return int(t)
+		case string:
+			s := strings.TrimSpace(t)
+			if s == "" {
+				continue
+			}
+			var n int
+			if _, err := fmt.Sscanf(s, "%d", &n); err == nil {
+				return n
+			}
+		}
+	}
+	return fallback
 }
 
 // asrTranscriptSidecarPath returns the path used to persist a long transcript

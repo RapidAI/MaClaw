@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
 type WriteMode string
@@ -29,13 +31,7 @@ func ResolveFileToolPath(path string, projectDirResolver PathResolver) (string, 
 		}
 		return "", fmt.Errorf("缺少 path 参数")
 	}
-	if strings.HasPrefix(p, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		p = filepath.Join(home, p[1:])
-	}
+	p = maclawpath.ExpandHomePath(p)
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p), nil
 	}

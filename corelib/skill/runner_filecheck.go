@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
 var runnerFileReferenceExts = map[string]bool{
@@ -981,7 +982,7 @@ func isCommandFileReference(token string) bool {
 	if token == "./" || token == `.\` || token == "../" || token == `..\` {
 		return false
 	}
-	if packagePathIsAbs(token) || strings.HasPrefix(token, "~/") || strings.HasPrefix(token, `~\`) {
+	if packagePathIsAbs(token) || maclawpath.IsHomePath(token) {
 		return true
 	}
 	if strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") ||
@@ -1147,12 +1148,8 @@ func resolveCommandFileReference(ref, baseDir string) (string, bool) {
 	if ref == "" {
 		return "", false
 	}
-	if strings.HasPrefix(ref, "~/") || strings.HasPrefix(ref, `~\`) {
-		home, err := os.UserHomeDir()
-		if err != nil || strings.TrimSpace(home) == "" {
-			return "", false
-		}
-		return filepath.Clean(filepath.Join(home, strings.TrimLeft(ref[1:], `/\`))), true
+	if expanded := maclawpath.ExpandHomePath(ref); expanded != ref {
+		return expanded, true
 	}
 	if packagePathIsAbs(ref) {
 		return filepath.Clean(ref), true

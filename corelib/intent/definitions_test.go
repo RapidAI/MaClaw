@@ -93,8 +93,14 @@ func TestBuildToolAffinityFromDefinitions(t *testing.T) {
 	}
 
 	liveDataTools := mapping[LabelLiveData]
-	if len(liveDataTools) != 1 || liveDataTools[0] != "web_search" {
-		t.Errorf("live_data label should map to web_search; got %#v", liveDataTools)
+	wantLive := map[string]bool{"web_search": true, "web_fetch": true, "download_file": true}
+	if len(liveDataTools) != len(wantLive) {
+		t.Errorf("live_data label tool count = %d want %d; got %#v", len(liveDataTools), len(wantLive), liveDataTools)
+	}
+	for _, name := range liveDataTools {
+		if !wantLive[name] {
+			t.Errorf("live_data unexpected tool %q in %#v", name, liveDataTools)
+		}
 	}
 }
 
@@ -242,9 +248,23 @@ func TestFullDefinitions_ToolAffinityRoundTrip(t *testing.T) {
 
 	origLiveData := original.ToolsFor(LabelLiveData)
 	defsLiveData := fromDefs.ToolsFor(LabelLiveData)
-	if len(origLiveData) != 1 || len(defsLiveData) != 1 || origLiveData[0] != "web_search" || defsLiveData[0] != "web_search" {
+	if len(origLiveData) != len(defsLiveData) {
 		t.Errorf("LiveData tools mismatch: original=%v, fromDefs=%v", origLiveData, defsLiveData)
 	}
+	for _, name := range []string{"web_search", "web_fetch", "download_file"} {
+		if !sliceContainsString(origLiveData, name) || !sliceContainsString(defsLiveData, name) {
+			t.Errorf("LiveData missing %q: original=%v fromDefs=%v", name, origLiveData, defsLiveData)
+		}
+	}
+}
+
+func sliceContainsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func containsSubstring(s, sub string) bool {

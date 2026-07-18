@@ -15,7 +15,13 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 	skills := p.executor.List()
 	var out []tool.SkillSummary
 	for _, s := range skills {
-		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
+		// Empty/unknown status is runnable (same contract as StartRunForOwner).
+		// needs_review / disabled / needs_setup must not enter BM25 skill routing
+		// (prevents broken Hub wget/curl skills from crowding out paper_pdf_translator
+		// or built-in download_file).
+		switch normalizeSkillEntryStatus(s.Status) {
+		case skillEntryStatusActive, skillEntryStatusUnknown:
+		default:
 			continue
 		}
 		if isShellBrowserAutomationSkill(s) {

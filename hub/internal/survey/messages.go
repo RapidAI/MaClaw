@@ -87,12 +87,14 @@ const (
 var surveyMessages = map[string]map[string]string{
 	"zh": {
 		msgHelp: `问卷帮助：
-· @机器人 /survey <短码> — 开始填写（群须绑定且已发布）
-· @机器人 /survey <短码> <答案> — 单题快投
-· @机器人 问卷 <短码> / 调查 <短码>
-· 答题中：直接回复编号或文本；「上一题」回退；「取消」结束
-· 选填题可回复「跳过」
+· @本机器人 /survey <短码> — 开始填写（群须绑定且已发布）
+· @本机器人 /survey <短码> <答案> — 单题快投（仅 1 题问卷）
+· @本机器人 问卷 <短码> / 调查 <短码>
+· 多题：一题一答，答完自动出下一题（【1/N】→【2/N】…）
+· 答题中：@本机器人 回复选项序号或文字（也可在平台推送非@消息时直接回复序号）
+· 「上一题」回退；「取消」结束；选填题可「跳过」
 · 已提交且允许修改：回复「修改」重答、「取消」退出
+· 请勿 @ 其他机器人答题（会进 AI 对话而非问卷）
 · /survey list — 本群已发布问卷
 · /survey status — 当前填写进度
 · /survey cancel — 取消进行中的填写
@@ -123,7 +125,7 @@ var surveyMessages = map[string]map[string]string{
 		msgRequiredNoSkip:    "该题为必填，不能跳过。\n",
 		msgSubmitOK:          "提交成功，感谢参与！",
 		msgInvalidAnswer:     "答案无效：",
-		msgStartIntro:        "开始填写《%s》",
+		msgStartIntro:        "开始填写《%s》\n（多题请一题一答；请 @本机器人 回复答案，勿 @ 其他机器人）",
 		msgResumeIntro:       "继续填写《%s》\n\n%s",
 		msgAlreadySubmitted:  "您已提交过该问卷，感谢参与",
 		msgStoppedCollecting: "问卷已停止收集。",
@@ -136,12 +138,12 @@ var surveyMessages = map[string]map[string]string{
 		msgPromptProgress:  "【%d/%d】%s",
 		msgPromptOptional:  "（选填）",
 		msgPromptMulti:     "（多选，用空格或逗号分隔序号）\n",
-		msgPromptSingle:    "（回复选项序号）\n",
-		msgPromptRating:    "请回复 %d–%d 的整数\n",
-		msgPromptText:      "请直接输入文字\n",
+		msgPromptSingle:    "（@本机器人 回复选项序号，如：1）\n",
+		msgPromptRating:    "请 @本机器人 回复 %d–%d 的整数\n",
+		msgPromptText:      "请 @本机器人 直接输入文字\n",
 		msgPromptSkipHint:  "选填可回复「跳过」\n",
-		msgPromptTailFirst: "回复「取消」可退出",
-		msgPromptTailPrev:  "回复「取消」可退出；「上一题」可返回",
+		msgPromptTailFirst: "答完本题后自动进入下一题；回复「取消」可退出",
+		msgPromptTailPrev:  "答完本题后自动进入下一题；「上一题」可返回；「取消」退出",
 		msgMetaDeadline:    "截止：%s",
 		msgMetaTarget:      "目标回收：%d 份",
 
@@ -157,12 +159,13 @@ var surveyMessages = map[string]map[string]string{
 	},
 	"en": {
 		msgHelp: `Survey help:
-· @bot /survey <code> — start (group must be bound & published)
-· @bot /survey <code> <answer> — quick vote (single question)
-· @bot 问卷 <code> / 调查 <code>
-· While answering: reply with the option number or text; "prev" goes back; "cancel" exits
-· Optional questions: reply "skip"
-· Submitted & editable: reply "modify" to redo, "cancel" to exit
+· @this bot /survey <code> — start (group must be bound & published)
+· @this bot /survey <code> <answer> — quick vote (single-question only)
+· @this bot 问卷 <code> / 调查 <code>
+· Multi-question: one answer per message; bot advances [1/N] → [2/N] …
+· While answering: @this bot with the option number or text (not another bot)
+· "prev" goes back; "cancel" exits; optional questions: "skip"
+· Submitted & editable: "modify" to redo, "cancel" to exit
 · /survey list — published surveys in this group
 · /survey status — current progress
 · /survey cancel — cancel the current session
@@ -193,7 +196,7 @@ var surveyMessages = map[string]map[string]string{
 		msgRequiredNoSkip:    "This question is required and cannot be skipped.\n",
 		msgSubmitOK:          "Submitted successfully. Thank you!",
 		msgInvalidAnswer:     "Invalid answer: ",
-		msgStartIntro:        "Starting \"%s\"",
+		msgStartIntro:        "Starting \"%s\"\n(Multi-question: one answer per message; @this bot — not another bot)",
 		msgResumeIntro:       "Resuming \"%s\"\n\n%s",
 		msgAlreadySubmitted:  "You have already submitted this survey. Thank you!",
 		msgStoppedCollecting: "This survey has stopped collecting.",
@@ -206,12 +209,12 @@ var surveyMessages = map[string]map[string]string{
 		msgPromptProgress:  "[%d/%d] %s",
 		msgPromptOptional:  "(optional)",
 		msgPromptMulti:     "(multi-choice; separate numbers with space or comma)\n",
-		msgPromptSingle:    "(reply with the option number)\n",
-		msgPromptRating:    "Reply with an integer between %d and %d\n",
-		msgPromptText:      "Type your answer directly\n",
+		msgPromptSingle:    "(@this bot, reply with the option number, e.g. 1)\n",
+		msgPromptRating:    "@this bot with an integer between %d and %d\n",
+		msgPromptText:      "@this bot and type your answer\n",
 		msgPromptSkipHint:  "Optional: reply \"skip\" to skip\n",
-		msgPromptTailFirst: "Reply \"cancel\" to exit",
-		msgPromptTailPrev:  "Reply \"cancel\" to exit; \"prev\" for the previous question",
+		msgPromptTailFirst: "Next question is sent after this answer; reply \"cancel\" to exit",
+		msgPromptTailPrev:  "Next question after this answer; \"prev\" goes back; \"cancel\" exits",
 		msgMetaDeadline:    "Deadline: %s",
 		msgMetaTarget:      "Target: %d responses",
 

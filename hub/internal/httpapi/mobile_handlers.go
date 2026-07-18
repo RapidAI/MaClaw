@@ -106,6 +106,17 @@ var mobileOfficialHubCenterCandidates = []string{
 
 const mobileStatePathEnv = "MACLAW_MOBILE_STATE_PATH"
 
+// Keep raw meeting audio for the configured retention period without relying on
+// future mobile traffic or a Hub restart to trigger cleanup.  The interval is
+// intentionally much shorter than the retention window so expiry is timely,
+// while still keeping the filesystem work negligible.
+const mobileMeetingRecordingRetentionCleanupInterval = time.Hour
+
+var mobileMeetingRecordingRetentionCleanup = struct {
+	sync.Mutex
+	cancel context.CancelFunc
+}{}
+
 // mobileStatePathOverride is set by InitMobileStatePersistence when env is empty
 // (Hub runtime data dir / mobile/state.json).
 var mobileStatePathOverride string
@@ -114,6 +125,7 @@ type mobilePersistentState struct {
 	Drafts               map[string]mobileDocumentDraftRecord       `json:"drafts"`
 	Exports              map[string]mobileDocumentExportRecord      `json:"exports"`
 	Uploads              map[string]mobileDocumentUploadRecord      `json:"uploads"`
+	MeetingRecordings    map[string]mobileMeetingRecording          `json:"meeting_recordings,omitempty"`
 	DigitalEmployeeTasks map[string]mobileDigitalEmployeeTaskRecord `json:"digital_employee_tasks"`
 	// PushDevices / PushPending survive Hub restarts (Phase E).
 	PushDevices map[string][]mobilePushDevice      `json:"push_devices,omitempty"`
@@ -134,6 +146,43 @@ func InitMobileStatePersistence(runtimeDataDir string) {
 		}
 	}
 	mobileEnsureStateLoaded()
+	mobileCleanupExpiredMeetingRecordings(time.Now().UTC())
+	mobileStartMeetingRecordingRetentionCleanup()
+}
+
+// mobileStartMeetingRecordingRetentionCleanup starts exactly one in-process
+// retention sweeper. InitMobileStatePersistence may be called more than once
+// by embedding hosts, but duplicate tickers must not race or multiply work.
+func mobileStartMeetingRecordingRetentionCleanup() {
+	mobileMeetingRecordingRetentionCleanup.Lock()
+	defer mobileMeetingRecordingRetentionCleanup.Unlock()
+	if mobileMeetingRecordingRetentionCleanup.cancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	mobileMeetingRecordingRetentionCleanup.cancel = cancel
+	go func() {
+		ticker := time.NewTicker(mobileMeetingRecordingRetentionCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				mobileCleanupExpiredMeetingRecordings(now.UTC())
+			}
+		}
+	}()
+}
+
+func mobileStopMeetingRecordingRetentionCleanupForTest() {
+	mobileMeetingRecordingRetentionCleanup.Lock()
+	cancel := mobileMeetingRecordingRetentionCleanup.cancel
+	mobileMeetingRecordingRetentionCleanup.cancel = nil
+	mobileMeetingRecordingRetentionCleanup.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 type mobileDocumentDraftRecord struct {
@@ -370,6 +419,25 @@ func mobileEnsureStateLoaded() {
 		mobileDocuments.uploads = state.Uploads
 	}
 	mobileDocuments.Unlock()
+	if state.MeetingRecordings != nil {
+		// Finalization is an in-process critical section, not a durable worker.
+		// After a Hub restart no goroutine can still be assembling the file, so
+		// reopen the resumable chunk stream rather than leaving it stuck forever.
+		for id, rec := range state.MeetingRecordings {
+			if rec.Status == "finalizing" {
+				rec.Status = "uploading"
+				rec.Message = "upload finalization interrupted; retry complete"
+				rec.Progress = 0
+				rec.UpdatedAt = time.Now().UTC()
+				state.MeetingRecordings[id] = rec
+			}
+		}
+		mobileMeetingRecordings.Lock()
+		mobileMeetingRecordings.items = state.MeetingRecordings
+		mobileMeetingRecordings.Unlock()
+		mobileCleanupExpiredMeetingRecordings(time.Now().UTC())
+		mobileResumeMeetingRecordingWorkers()
+	}
 	mobileDigitalEmployeeTasks.Lock()
 	if state.DigitalEmployeeTasks != nil {
 		mobileDigitalEmployeeTasks.tasks = state.DigitalEmployeeTasks
@@ -397,6 +465,7 @@ func mobilePersistState() {
 		Drafts:               make(map[string]mobileDocumentDraftRecord),
 		Exports:              make(map[string]mobileDocumentExportRecord),
 		Uploads:              make(map[string]mobileDocumentUploadRecord),
+		MeetingRecordings:    make(map[string]mobileMeetingRecording),
 		DigitalEmployeeTasks: make(map[string]mobileDigitalEmployeeTaskRecord),
 		PushDevices:          make(map[string][]mobilePushDevice),
 		PushPending:          make(map[string][]mobilePushPendingItem),
@@ -441,6 +510,11 @@ func mobilePersistState() {
 		}
 	}
 	mobileDocuments.Unlock()
+	mobileMeetingRecordings.Lock()
+	for id, record := range mobileMeetingRecordings.items {
+		state.MeetingRecordings[id] = record
+	}
+	mobileMeetingRecordings.Unlock()
 	mobileDigitalEmployeeTasks.Lock()
 	for id, record := range mobileDigitalEmployeeTasks.tasks {
 		state.DigitalEmployeeTasks[id] = record
@@ -474,6 +548,7 @@ func mobilePersistState() {
 }
 
 func mobileResetStatePersistenceForTest() {
+	mobileStopMeetingRecordingRetentionCleanupForTest()
 	mobileStatePersistence.Lock()
 	mobileStatePersistence.loaded = false
 	mobileStatePathOverride = ""

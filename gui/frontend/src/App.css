@@ -834,7 +834,7 @@ html, body {
     height: 100%;
     overflow: hidden;
     /* Explicit rem baseline so dense rem chrome scales consistently across
-       WebView hosts (and with --ui-scale zoom on .app-scale-layer). */
+       WebView hosts (and with --ui-scale transform on .app-scale-layer). */
     font-size: 16px;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
@@ -884,26 +884,18 @@ body {
 }
 
 /*
- * Fill the viewport at any --ui-scale. Prefer CSS zoom (Chromium/WebView2):
- * sharper glyphs than transform:scale on low-DPI. Inverse width/height keeps
- * the laid-out box filling the parent after zoom.
+ * UI scale (restored from 2026-07-16 behavior).
+ * Use transform:scale — not CSS zoom. Commit b77bef80 switched to zoom and
+ * left light right/bottom strips on WebView2 with fractional --ui-scale
+ * (e.g. Auto 1.05). Inverse width/height + transform-origin top-left fills
+ * the viewport the way the pre-7/17 builds did.
  */
 .app-scale-layer {
-    box-sizing: border-box;
     width: calc(100% / var(--ui-scale));
     height: calc(100% / var(--ui-scale));
-    zoom: var(--ui-scale);
-    /* Keep parent theme page-bg in any fractional zoom remainder. */
+    transform: scale(var(--ui-scale));
+    transform-origin: top left;
     background-color: inherit;
-}
-
-/* Older engines without CSS zoom (rare for current Wails webviews). */
-@supports not (zoom: 1) {
-    .app-scale-layer {
-        zoom: unset;
-        transform: scale(var(--ui-scale));
-        transform-origin: top left;
-    }
 }
 
 /* Windows 10 frameless DWM workaround:
@@ -946,8 +938,7 @@ body {
 /* Maximized window fills the entire screen — no rounded corners needed.
    On Windows 10 (transparent webview), border-radius creates transparent
    cutouts at the corners when maximized; removing it fixes that.
-   Also drop the 1px border so a light/theme-mismatched stroke cannot show
-   as a white frame along the right/bottom edges when maximized. */
+   (border:none kept from later fix so maximized never shows a light stroke.) */
 #App[data-maximized="true"] {
     border-radius: 0;
     border: none;

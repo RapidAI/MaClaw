@@ -10,7 +10,9 @@ const digitalEmployeeCapabilityIconScanPattern = new RegExp(digitalEmployeeCapab
 // Horizontal space only — do not let \\s eat newlines and rewrite the next line's leading mark.
 const capabilityIconAfterPunctuationPattern = new RegExp(`([\\uff1a:;\\uff1b])[ \\t]*${digitalEmployeeCapabilityIconPattern}[ \\t]*`, "gu");
 const capabilityIconMidSentencePattern = new RegExp(`([^\\n\\s])[ \\t]+${digitalEmployeeCapabilityIconPattern}[ \\t]*`, "gu");
-const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)/g;
+// Protect path-like spans before escaped-newline rewriting. Without this,
+// Windows/home paths containing "\n…" (e.g. \notes, ~\name) get a hard line break.
+const markdownSensitiveSpanPattern = /(!?\[[^\]\n]+\]\([^)\n]+\))|(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^\s*\n][^*\n]*\*)|(https?:\/\/[^\s<>()]+)|([A-Za-z]:\\[^\n\r\s*?"<>|]+)|(~[/\\][^\n\r\s*?"<>|]+)/g;
 const compactPipeTableSeparatorPattern = /(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)/g;
 const bareHeadingMarkerLinePattern = /^(#{1,6})(?:\s+#{1,6})*$/;
 const markdownBlockStructureLinePattern = /^(#{1,6}\s+|>\s+|[-*]\s+|\d+[.)]\s+|[-*_]{3,}\s*$|\[KB_IMAGE:)/;

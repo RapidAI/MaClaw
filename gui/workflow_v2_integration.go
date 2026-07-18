@@ -3222,6 +3222,21 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			defer cancelRun()
 		}
 	}
+	// Codex/Claude Code-style checklist once multi-step plan is armed.
+	if planned {
+		memSteps := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+		if len(memSteps) == 0 {
+			memSteps = codingWorkbenchStepsFromTasks(tasks, codingStepPending)
+		}
+		if checklist := formatCodingStepsChecklist(memSteps); checklist != "" {
+			if onToken != nil {
+				onToken("\n\n" + checklist + "\n\n")
+			}
+			if onProgress != nil {
+				onProgress(checklist)
+			}
+		}
+	}
 	runner := v2.NewTaskRunner(config, subAgentFn)
 	runResults := runner.RunAll(runCtx, tasks, reasoningToken, func(progress string) {
 		log.Printf("[workflow-v2-template] %s", progress)
@@ -3229,6 +3244,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 			onProgress(progress)
 		}
 	})
+	// TaskRunner may skip later steps without calling SubAgent — mirror into sticky Todo.
+	for _, rr := range runResults {
+		if rr.Status == v2.TaskSkipped {
+			h.updateStickyCodingStepStatus(userID, rr.TaskIndex, codingStepSkipped, rr.Error)
+		}
+	}
 	report := runner.FinalReport()
 	if lastCodingResult != nil {
 		// Aggregate file audit across multi-step runs for sticky memory.
@@ -3457,6 +3478,21 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			onProgress(fmt.Sprintf("全功能远程编程：使用 SSH 会话 %s 开始执行", remoteCtx.SessionID))
 		}
 	}
+	// Codex/Claude Code-style checklist banner once the multi-step plan is armed.
+	if planned {
+		memSteps := h.getStickyCodingWorkbenchMemory(userID).StepStatuses
+		if len(memSteps) == 0 {
+			memSteps = codingWorkbenchStepsFromTasks(tasks, codingStepPending)
+		}
+		if checklist := formatCodingStepsChecklist(memSteps); checklist != "" {
+			if onToken != nil {
+				onToken("\n\n" + checklist + "\n\n")
+			}
+			if onProgress != nil {
+				onProgress(checklist)
+			}
+		}
+	}
 
 	cfg := h.getMaclawLLMConfig()
 	httpClient := h.client
@@ -3493,6 +3529,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, sum)
 				reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
 				result = &RemoteCodingSubAgentResult{Status: "failed", Error: "pre_step hook failed", Summary: sum}
+				h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 				break
 			}
 		}
@@ -3603,6 +3640,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 					reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
 					sessionMem.LastSummary = truncateRunesV2(sum, 800)
 					_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+					h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 					break
 				}
 				ok, vcmd, vout, skipped := runCodingWorkbenchRemoteStepVerify(h, remoteCtx.SessionID, remoteCtx.ProjectDir)
@@ -3635,6 +3673,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 							sessionMem.LastSummary = truncateRunesV2(sum, 800)
 						}
 						_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+						h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 						break
 					}
 					h.updateStickyCodingStepVerify(userID, step.Index, vcmd, true, gateSum)
@@ -3655,13 +3694,23 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				// Feed prior step outcome into subsequent steps.
 				sessionMem.LastSummary = truncateRunesV2(sum, 800)
 			}
+			// Stream a one-line checkmark update (Claude Code-style).
+			if planned && onProgress != nil {
+				mark := "✗"
+				if stepResult.Status == "success" {
+					mark = "☑"
+				}
+				onProgress(fmt.Sprintf("%s T%d %s", mark, step.Index, strings.TrimSpace(step.Title)))
+			}
 			// Sequential plans: stop on first hard failure (matches TaskRunner depends_on skip).
 			if stepResult.Status != "success" {
+				h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 				break
 			}
 		} else {
 			h.updateStickyCodingStepStatus(userID, step.Index, codingStepFailed, "nil result")
 			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
+			h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 			break
 		}
 	}

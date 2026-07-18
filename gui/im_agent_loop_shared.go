@@ -757,6 +757,43 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		}
 		return fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, guiMaxToolArgumentsBytes)
 	}
+	requestID := ""
+	if c.loopCtx != nil {
+		requestID = c.loopCtx.Runtime.RequestID
+	}
+	toolCallID := newACPToolCallID(name)
+	if isACPProgrammingRequestID(requestID) {
+		pctx := context.Background()
+		var pcancel context.CancelFunc
+		if c.loopCtx != nil {
+			// Prefer live loop cancel so VS Code cancel aborts permission wait.
+			pctx, pcancel, _ = c.loopCtx.BeginReplannableOperation(context.Background())
+			if pcancel != nil {
+				defer pcancel()
+			}
+		}
+		if allowed, reason := globalACPPermission.check(pctx, requestID, name, argsJSON); !allowed {
+			msg := "[system rejected] " + reason
+			if strings.TrimSpace(reason) == "" {
+				msg = "[system rejected] tool not permitted"
+			}
+			emitACPToolEventForRequest(requestID, ACPToolEvent{
+				Phase: "end", ToolCallID: toolCallID, Name: name, ArgsJSON: argsJSON,
+				Result: msg, OK: false, Kind: acpToolKind(name), Title: acpToolTitle(name, argsJSON),
+				Paths: acpPathsFromToolArgs(name, argsJSON),
+			})
+			return msg
+		}
+		emitACPToolEventForRequest(requestID, ACPToolEvent{
+			Phase:      "start",
+			ToolCallID: toolCallID,
+			Name:       name,
+			ArgsJSON:   argsJSON,
+			Kind:       acpToolKind(name),
+			Paths:      acpPathsFromToolArgs(name, argsJSON),
+			Title:      acpToolTitle(name, argsJSON),
+		})
+	}
 	// IM channels need concrete tool details (path/command/pattern), not bare tool names.
 	// Emit here where argsJSON is available; OnToolCall only receives the name.
 	// Language follows GUI interface language (App.CurrentLanguage).
@@ -774,6 +811,8 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	// delivery success (LocalFilePaths) instead of false "sender unconfigured".
 	platform := c.effectivePlatform()
 	mat := c.handler.materializeToolFilePayloadForPlatform(exec.Text, platform)
+	outText := ""
+	ok := true
 	if mat.Handled {
 		c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, mat.LocalPaths...)
 		c.fileMaterializeNanos += mat.MaterializeNanos
@@ -781,24 +820,48 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 			c.filesForwarded++
 		}
 		// Status is short; skip spill of the original multi-MB base64 blob.
-		return mat.Text
-	}
-	// Keep interactive markers intact: never run size/semantic compression on them
-	// (core early-stops only when the prefix survives into RunLoop).
-	if agent.IsRecordAudioResult(mat.Text) {
+		outText = mat.Text
+	} else if agent.IsRecordAudioResult(mat.Text) {
+		// Keep interactive markers intact: never run size/semantic compression on them
+		// (core early-stops only when the prefix survives into RunLoop).
 		// Background has no desktop waveform host — match bonus-round policy.
 		if c.loopCtx != nil && c.loopCtx.Kind == LoopKindBackground {
-			return "record_audio is unavailable in background tasks; choose the next action directly."
+			outText = "record_audio is unavailable in background tasks; choose the next action directly."
+			ok = false
+		} else if rewritten := c.handler.rewriteRecordAudioMarkerForSharedLoop(c.userID, platform, mat.Text); rewritten != "" {
+			outText = rewritten
+			ok = false
+		} else {
+			outText = mat.Text
 		}
-		if rewritten := c.handler.rewriteRecordAudioMarkerForSharedLoop(c.userID, platform, mat.Text); rewritten != "" {
-			return rewritten
+	} else if agent.IsAskUserResult(mat.Text) {
+		outText = mat.Text
+	} else {
+		outText = truncateToolResultForToolWithSession(name, c.userID, mat.Text)
+	}
+	trimOut := strings.TrimSpace(outText)
+	if strings.HasPrefix(trimOut, "[system rejected]") ||
+		strings.HasPrefix(strings.ToLower(trimOut), "error:") {
+		ok = false
+	}
+	if isACPProgrammingRequestID(requestID) {
+		paths := acpPathsFromToolArgs(name, argsJSON)
+		if mat.Handled && len(mat.LocalPaths) > 0 {
+			paths = append(paths, mat.LocalPaths...)
 		}
-		return mat.Text
+		emitACPToolEventForRequest(requestID, ACPToolEvent{
+			Phase:      "end",
+			ToolCallID: toolCallID,
+			Name:       name,
+			ArgsJSON:   argsJSON,
+			Result:     outText,
+			OK:         ok,
+			Kind:       acpToolKind(name),
+			Paths:      paths,
+			Title:      acpToolTitle(name, argsJSON),
+		})
 	}
-	if agent.IsAskUserResult(mat.Text) {
-		return mat.Text
-	}
-	return truncateToolResultForToolWithSession(name, c.userID, mat.Text)
+	return outText
 }
 
 // rewriteRecordAudioMarkerForSharedLoop returns a non-empty rejection string when

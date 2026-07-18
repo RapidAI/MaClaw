@@ -1,11 +1,12 @@
 // corelib/vad/silero.go — Pure Go Silero VAD v5 inference with embedded weights.
 //
-// Architecture (16kHz model):
-//   PCM [512 samples]
-//   → STFT Conv1D [258, 1, 256] stride=128 → split real/imag → magnitude [129, T]
-//   → Encoder Conv1D ×4 (kernel=3, padding=1, ReLU)
-//   → LSTM (hidden=128, 1 layer) over T time steps
-//   → Linear [128→1] + Sigmoid → speech probability [0,1]
+// Architecture (16kHz model, matches the reference v5 forward pass):
+//   PCM [512 samples] + 64-sample rolling context
+//   → ReflectionPad1d(128) → STFT Conv1D [258, 1, 256] stride=128
+//   → drop first (padding-dominated) frame → magnitude [129, 4]
+//   → Encoder Conv1D ×4 (kernel=3, padding=1, ReLU; strides 1,2,2,1)
+//   → LSTM (hidden=128, 1 layer), one step per window
+//   → ReLU → Linear [128→1] + Sigmoid → speech probability [0,1]
 //
 // Weights are embedded as a compressed binary blob (~1MB) via go:embed.
 // No external model file needed.
@@ -63,6 +64,7 @@ func DefaultHParams() HParams {
 type State struct {
 	H          []float32 // LSTM hidden [HiddenSize]
 	C          []float32 // LSTM cell [HiddenSize]
+	Context    []float32 // trailing StftSize/4 samples of the previous window
 	SpeechProb float32
 	// State machine
 	IsSpeaking     bool
@@ -75,16 +77,21 @@ type State struct {
 }
 
 // scratchBuffers holds pre-allocated working memory for Detect.
-// Sized for the fixed model architecture (WindowSize=512, T=3, hidden=128).
+// Sized for the fixed model architecture: 64-sample context + 512-sample window,
+// reflection-padded to 832 → 5 STFT frames → 4 encoder frames after dropping
+// the first (padding-dominated) frame.
 type scratchBuffers struct {
-	stftOut []float32    // [258 * T]
-	mag     []float32    // [129 * T]
-	conv    [4][]float32 // encoder conv outputs
-	xt      []float32    // [128] LSTM input per time step
-	gates   []float32    // [4 * hidden]
-	hTmp    []float32    // [hidden]
-	cTmp    []float32    // [hidden]
-	inCols  [][]float32  // [T][maxInCh] — gather buffers for SIMD conv
+	stftIn     []float32    // [context+window] = 576
+	stftPadded []float32    // [576 + 2*128] = 832
+	stftOut    []float32    // [258 * 5]
+	mag        []float32    // [129 * 4]
+	conv       [4][]float32 // encoder conv outputs [128*4, 64*2, 64*1, 128*1]
+	xt         []float32    // [128] LSTM input per time step
+	gates      []float32    // [4 * hidden]
+	hTmp       []float32    // [hidden]
+	cTmp       []float32    // [hidden]
+	outH       []float32    // [hidden] ReLU(h) for the output branch
+	inCols     [][]float32  // [T][maxInCh] — gather buffers for SIMD conv
 }
 
 // convLayer holds weights for a single Conv1D + bias layer.
@@ -230,8 +237,9 @@ func (m *Model) loadEmbeddedWeights() error {
 // NewState creates a fresh VAD state for streaming inference.
 func (m *Model) NewState() *State {
 	return &State{
-		H: make([]float32, m.hp.HiddenSize),
-		C: make([]float32, m.hp.HiddenSize),
+		H:       make([]float32, m.hp.HiddenSize),
+		C:       make([]float32, m.hp.HiddenSize),
+		Context: make([]float32, m.hp.StftSize/4),
 	}
 }
 
@@ -240,26 +248,37 @@ func (s *State) ensureScratch(hp *HParams) *scratchBuffers {
 	if s.scratch != nil {
 		return s.scratch
 	}
-	T := (hp.WindowSize-hp.StftSize)/hp.StftStride + 1
+	ctxSize := hp.StftSize / 4
+	pad := hp.StftSize / 2
+	inLen := hp.WindowSize + ctxSize                        // 576
+	stftT := (inLen+2*pad-hp.StftSize)/hp.StftStride + 1    // 5
+	encT := stftT - 1                                       // first STFT frame dropped
 	hidden := hp.HiddenSize
 	sc := &scratchBuffers{
-		stftOut: make([]float32, 258*T),
-		mag:     make([]float32, hp.FreqBins*T),
-		xt:      make([]float32, hidden),
-		gates:   make([]float32, 4*hidden),
-		hTmp:    make([]float32, hidden),
-		cTmp:    make([]float32, hidden),
+		stftIn:     make([]float32, inLen),
+		stftPadded: make([]float32, inLen+2*pad),
+		stftOut:    make([]float32, 258*stftT),
+		mag:        make([]float32, hp.FreqBins*encT),
+		xt:         make([]float32, hidden),
+		gates:      make([]float32, 4*hidden),
+		hTmp:       make([]float32, hidden),
+		cTmp:       make([]float32, hidden),
+		outH:       make([]float32, hidden),
 	}
-	// Encoder conv outputs: each layer's output size
+	// Encoder conv outputs follow strides 1,2,2,1: 4 → 2 → 1 → 1 frames.
 	outChs := [4]int{128, 64, 64, 128}
+	strides := [4]int{1, 2, 2, 1}
+	t := encT
 	for i := 0; i < 4; i++ {
-		sc.conv[i] = make([]float32, outChs[i]*T)
+		outLen := (t-1)/strides[i] + 1
+		sc.conv[i] = make([]float32, outChs[i]*outLen)
+		t = outLen
 	}
-	// Gather buffers for SIMD conv: T columns, max inCh = 129 (FreqBins)
+	// Gather buffers for SIMD conv: one per input frame, max inCh = 129 (FreqBins)
 	maxInCh := hp.FreqBins
-	sc.inCols = make([][]float32, T)
-	for t := 0; t < T; t++ {
-		sc.inCols[t] = make([]float32, maxInCh)
+	sc.inCols = make([][]float32, encT)
+	for i := range sc.inCols {
+		sc.inCols[i] = make([]float32, maxInCh)
 	}
 	s.scratch = sc
 	return sc
@@ -268,6 +287,11 @@ func (s *State) ensureScratch(hp *HParams) *scratchBuffers {
 // Detect runs VAD on a single window of audio and returns the speech probability.
 // pcm must contain at least WindowSize (512) samples of 16kHz mono float32 PCM.
 // State is updated in-place for streaming use.
+//
+// The forward pass follows the reference Silero VAD v5 model exactly:
+// 64-sample context prepend → ReflectionPad1d(128) → STFT conv → drop first
+// frame → magnitude [129, 4] → encoder convs (k=3, pad=1, strides 1,2,2,1) →
+// single LSTM step → ReLU → 1x1 conv → sigmoid.
 func (m *Model) Detect(pcm []float32, state *State) (float32, error) {
 	hp := &m.hp
 	ws := hp.WindowSize
@@ -275,58 +299,70 @@ func (m *Model) Detect(pcm []float32, state *State) (float32, error) {
 		return 0, fmt.Errorf("vad: input too short (%d < %d)", len(pcm), ws)
 	}
 
-	T := (ws - hp.StftSize) / hp.StftStride + 1
-	if T <= 0 {
-		return 0, fmt.Errorf("vad: window too short for STFT")
-	}
+	ctxSize := hp.StftSize / 4 // 64
+	pad := hp.StftSize / 2     // 128
 
 	sc := state.ensureScratch(hp)
 	freqBins := hp.FreqBins
 	hidden := hp.HiddenSize
 
-	// Step 1: STFT via Conv1D with stride — SIMD accelerated
-	conv1dStrideSimd(sc.stftOut, pcm[:ws], m.w.stft.W, m.w.stft.OutCh, m.w.stft.K, hp.StftStride)
+	// Step 1: context + window, then ReflectionPad1d(128) on both sides.
+	src := sc.stftIn
+	copy(src[:ctxSize], state.Context)
+	copy(src[ctxSize:], pcm[:ws])
+	n := len(src)
+	padded := sc.stftPadded
+	for i := 0; i < pad; i++ {
+		padded[i] = src[pad-i]       // left: src[128..1] mirrored
+		padded[pad+n+i] = src[n-2-i] // right: src[n-2..n-129] mirrored
+	}
+	copy(padded[pad:pad+n], src)
 
-	// Step 2: Magnitude spectrum
-	magnitudeSimd(sc.mag, sc.stftOut, freqBins, T)
+	// Step 2: STFT conv [258, 5] → drop first frame → magnitude [129, 4]
+	encT := (n+2*pad-hp.StftSize)/hp.StftStride + 1 - 1 // 4
+	conv1dStrideSimd(sc.stftOut, padded, m.w.stft.W, m.w.stft.OutCh, m.w.stft.K, hp.StftStride)
+	magnitudeFromSTFT(sc.mag, sc.stftOut, freqBins, encT, 1)
 
-	// Step 3: Encoder conv blocks (4 layers, kernel=3, padding=1, ReLU)
-	var h []float32
-	var hCh int
-	h = sc.mag
-	hCh = freqBins
+	// Step 3: Encoder conv blocks (4 layers, kernel=3, padding=1, ReLU).
+	// Strides 1,2,2,1 collapse time: 4 → 2 → 1 → 1 frame.
+	strides := [4]int{1, 2, 2, 1}
+	h := sc.mag
+	hCh := freqBins
+	hLen := encT
 	for i := 0; i < 4; i++ {
 		enc := &m.w.encoder[i]
-		conv1dPad1Simd(sc.conv[i], h, hCh, T, enc.W, enc.B, enc.OutCh, enc.InCh, enc.K, enc.WT, sc.inCols)
-		reluInPlace(sc.conv[i][:enc.OutCh*T])
+		outLen := (hLen-1)/strides[i] + 1
+		conv1dPad1Simd(sc.conv[i], h, hCh, hLen, enc.W, enc.B, enc.OutCh, enc.InCh, enc.K, strides[i], enc.WT, sc.inCols)
+		reluInPlace(sc.conv[i][:enc.OutCh*outLen])
 		h = sc.conv[i]
 		hCh = enc.OutCh
+		hLen = outLen
 	}
 
-	// Step 4: LSTM over T time steps — SIMD accelerated
+	// Step 4: single LSTM step on the collapsed frame
 	copy(sc.hTmp, state.H)
 	copy(sc.cTmp, state.C)
-
-	for t := 0; t < T; t++ {
-		for c := 0; c < hCh; c++ {
-			sc.xt[c] = h[c*T+t]
-		}
-		lstmCellSimd(sc.xt, sc.hTmp, sc.cTmp, sc.gates,
-			m.w.lstmWIH, m.w.lstmWHH, m.w.lstmBIH, m.w.lstmBHH,
-			hCh, hidden)
+	for c := 0; c < hCh; c++ {
+		sc.xt[c] = h[c*hLen]
 	}
+	lstmCellSimd(sc.xt, sc.hTmp, sc.cTmp, sc.gates,
+		m.w.lstmWIH, m.w.lstmWHH, m.w.lstmBIH, m.w.lstmBHH,
+		hCh, hidden)
 
-	// Step 5: Output projection
+	// Step 5: output branch — ReLU then 1x1 conv (dot) + sigmoid.
+	copy(sc.outH, sc.hTmp)
+	reluInPlace(sc.outH)
 	var logit float32
 	for j := 0; j < hidden; j++ {
-		logit += m.w.outW[j] * sc.hTmp[j]
+		logit += m.w.outW[j] * sc.outH[j]
 	}
 	logit += m.w.outB
 	prob := sigmoid(logit)
 
-	// Update state
+	// Update state (raw LSTM state, pre-ReLU) and the rolling context.
 	copy(state.H, sc.hTmp)
 	copy(state.C, sc.cTmp)
+	copy(state.Context, pcm[ws-ctxSize:ws])
 	state.SpeechProb = prob
 
 	// State machine

@@ -933,6 +933,13 @@ func TestFullwidthDigitsParse(t *testing.T) {
 	if err != nil || id != "a" {
 		t.Fatalf("choice id=%q err=%v", id, err)
 	}
+	// Mobile habit: trailing punctuation after the index.
+	for _, tok := range []string{"1。", "1、", "1)", "1）", "２."} {
+		id, err = ParseChoiceToken(q, tok)
+		if err != nil || id == "" {
+			t.Fatalf("token %q id=%q err=%v", tok, id, err)
+		}
+	}
 	ids, err := ParseMultiChoice(q, "１，２")
 	if err != nil || len(ids) != 2 {
 		t.Fatalf("multi ids=%v err=%v", ids, err)

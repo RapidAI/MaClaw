@@ -307,6 +307,14 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 				if fs.HubVersion != "" {
 					configSkill.HubVersion = fs.HubVersion
 				}
+			} else if configSkill.SkillDir == "" && fs.SkillDir != "" {
+				configSkill.SkillDir = fs.SkillDir
+			}
+			// Disk-derived learned/crafted classification must win over weak
+			// config overlays (empty/file/manual). External marketplace sources
+			// (hub/github/clawhub) keep their config identity.
+			if shouldPromoteDiskLearnedSource(configSkill.Source, fs.Source) {
+				configSkill.Source = fs.Source
 			}
 			continue
 		}
@@ -321,7 +329,32 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		}
 	}
 
-	if fileSkillsReady {
+	// Normalize empty status → active for disk/file skills that are runnable
+	// so BM25 routing (ListActiveSkills) and UI agree with StartRunForOwner.
+	statusFixed := normalizeEmptySkillStatuses(skills)
+
+	// Persist demotion of broken generic download skills (wget/curl/fetch) so the
+	// agent stops selecting them over built-in download_file after a restart.
+	demoted := demoteBrokenGenericDownloadSkills(skills)
+	if statusFixed || demoted {
+		if demoted {
+			log.Printf("[skill-load] demoted broken generic download skills for needs_review")
+		}
+		// Patch status overlays only — never rewrite the full NLSkills table via
+		// saveSkills here. Full-table save filters disk skills and has wiped
+		// hub entries when a partial in-memory list was persisted.
+		toPatch := cloneSkillEntries(skills)
+		go func() {
+			if e == nil {
+				return
+			}
+			if err := e.persistSkillStatusOverlays(toPatch); err != nil {
+				log.Printf("[skill-load] persist skill status overlays failed: %v", err)
+			}
+		}()
+	}
+
+	if fileSkillsReady || demoted || statusFixed {
 		e.skillCacheMu.Lock()
 		e.skillCache = cloneSkillEntries(skills)
 		e.skillCacheAt = time.Now()
@@ -330,6 +363,63 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 	}
 
 	return cloneSkillEntries(skills)
+}
+
+// normalizeEmptySkillStatuses promotes blank status to active for skills that
+// are otherwise runnable. Blank overlays previously fell through as "unknown"
+// and were excluded from ListActiveSkills BM25 matching.
+// Returns true when any entry was modified.
+func normalizeEmptySkillStatuses(skills []corelib.NLSkillEntry) bool {
+	changed := false
+	for i := range skills {
+		if strings.TrimSpace(skills[i].Status) == "" {
+			skills[i].Status = string(skillEntryStatusActive)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// demoteBrokenGenericDownloadSkills marks failed/unrunnable generic download
+// Hub skills as needs_review. Returns true when any entry was modified.
+func demoteBrokenGenericDownloadSkills(skills []corelib.NLSkillEntry) bool {
+	changed := false
+	const note = "auto-demoted: prefer download_file for generic HTTP/PDF downloads"
+	for i := range skills {
+		s := &skills[i]
+		if !skill.LooksLikeGenericDownloadSkill(s.Name, s.Description) {
+			continue
+		}
+		st := normalizeSkillEntryStatus(s.Status)
+		if st == skillEntryStatusNeedsReview || st == skillEntryStatusDisabled {
+			continue
+		}
+		failHeavy := s.FailureCount > s.SuccessCount && s.UsageCount >= 1
+		errLow := strings.ToLower(s.LastError)
+		errSignal := strings.Contains(errLow, "python runtime") ||
+			strings.Contains(errLow, "shell_tool") ||
+			strings.Contains(errLow, "unsupported_step") ||
+			strings.Contains(errLow, "auto-repaired")
+		unrunnable := false
+		if len(s.Steps) > 0 {
+			report := skill.AssessRunnerCompatibility(s, skill.RunnerBackendGUI)
+			unrunnable = !report.Runnable
+		}
+		if !failHeavy && !errSignal && !unrunnable {
+			continue
+		}
+		s.Status = string(skillEntryStatusNeedsReview)
+		if !strings.Contains(s.LastError, note) {
+			if strings.TrimSpace(s.LastError) != "" {
+				s.LastError = strings.TrimSpace(s.LastError) + " | " + note
+			} else {
+				s.LastError = note
+			}
+		}
+		changed = true
+		log.Printf("[skill-load] demote skill=%q status=needs_review fail=%d ok=%d", s.Name, s.FailureCount, s.SuccessCount)
+	}
+	return changed
 }
 
 func skillDirIdentityKey(dir string) string {
@@ -342,6 +432,28 @@ func skillDirIdentityKey(dir string) string {
 
 func skillNameIdentityKey(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// shouldPromoteDiskLearnedSource reports whether a disk-scanned source should
+// replace the config overlay source. Only self-learned classifications
+// (learned/crafted) promote, and only over weak overlays (empty/file/manual).
+// Marketplace and install sources (hub, enterprise_hub, github, clawhub,
+// zip_import, auto_*, agent, …) must keep their config identity.
+func shouldPromoteDiskLearnedSource(configSource, diskSource string) bool {
+	if !corelib.IsLearnedSource(diskSource) {
+		return false
+	}
+	if corelib.IsLearnedSource(configSource) {
+		// Already classified as self-learned; keep the config value
+		// (learned vs crafted) unless empty.
+		return strings.TrimSpace(configSource) == ""
+	}
+	switch strings.ToLower(strings.TrimSpace(configSource)) {
+	case "", "file", "manual":
+		return true
+	default:
+		return false
+	}
 }
 
 // clearSkillListCache drops only the SkillExecutor-level list cache.
@@ -587,10 +699,10 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 }
 
 // saveSkills persists skill entries to config.
-// File-based skills (source == "file") are saved as stats-only stubs so that
-// usage statistics survive across restarts. The full definition (steps,
-// triggers, description, etc.) is always loaded from the YAML file at runtime
-// via loadSkills -> scanSkillYAMLFiles (directory-path identity matching).
+// Disk-backed skills (source == "file", or learned/crafted with SkillDir) are
+// saved as thin overlays so config.json is not polluted with YAML-managed
+// steps. Full definitions load from skill.yaml at runtime via loadSkills.
+// Config-only learned/crafted skills (no SkillDir) still store full entries.
 func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	if e == nil || e.app == nil {
 		return fmt.Errorf("skill executor app not initialized")
@@ -601,38 +713,206 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	}
 	filtered := make([]corelib.NLSkillEntry, 0, len(skills))
 	for _, s := range skills {
-		if normalizeSkillEntrySource(s.Source) == skillEntrySourceFile {
-			// Only persist the runtime overlay; strip definition data so
-			// config.json is not polluted with YAML-managed content.
-			// Repair metadata is runtime/audit state, not definition state.
-			if fileSkillHasRuntimeOverlay(s) {
-				filtered = append(filtered, corelib.NLSkillEntry{
-					Name:               s.Name,
-					Source:             string(skillEntrySourceFile),
-					SkillDir:           s.SkillDir,
-					Status:             fileSkillOverlayStatus(s.Status),
-					UsageCount:         s.UsageCount,
-					SuccessCount:       s.SuccessCount,
-					FailureCount:       s.FailureCount,
-					WorkaroundCount:    s.WorkaroundCount,
-					LastUsedAt:         s.LastUsedAt,
-					LastError:          s.LastError,
-					RepairAttemptCount: s.RepairAttemptCount,
-					LastRepairAt:       s.LastRepairAt,
-					RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
-				})
+		if skillPersistsAsDiskOverlay(s) {
+			// learned/crafted + SkillDir always keep a thin source overlay so
+			// UI classification survives restart; file skills only when they
+			// have runtime/audit state worth remembering.
+			if corelib.IsLearnedSource(s.Source) || fileSkillHasRuntimeOverlay(s) {
+				filtered = append(filtered, diskSkillConfigOverlay(s))
 			}
 			continue
 		}
 		filtered = append(filtered, s)
 	}
 	if err := e.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		if skillPersistLooksLikeWipe(cfg.NLSkills, filtered) {
+			log.Printf("[skill-load] refuse NLSkills wipe: prev=%d next=%d; merging instead",
+				len(cfg.NLSkills), len(filtered))
+			cfg.NLSkills = mergeSkillPersistSafe(cfg.NLSkills, filtered)
+			return
+		}
 		cfg.NLSkills = filtered
 	}); err != nil {
 		return err
 	}
 	e.invalidateSkillCache()
 	return nil
+}
+
+// persistSkillStatusOverlays updates status/error/stats for skills already in
+// config (and adds thin overlays for demoted disk skills) without replacing the
+// entire NLSkills table. Used after demote/normalize on load.
+func (e *SkillExecutor) persistSkillStatusOverlays(skills []corelib.NLSkillEntry) error {
+	if e == nil || e.app == nil {
+		return fmt.Errorf("skill executor app not initialized")
+	}
+	byName := make(map[string]corelib.NLSkillEntry, len(skills))
+	byDir := make(map[string]corelib.NLSkillEntry, len(skills))
+	for _, s := range skills {
+		if k := skillNameIdentityKey(s.Name); k != "" {
+			byName[k] = s
+		}
+		if s.SkillDir != "" {
+			byDir[skillDirIdentityKey(s.SkillDir)] = s
+		}
+	}
+	if err := e.app.PatchConfig(func(cfg *corelib.AppConfig) {
+		seen := make(map[string]bool, len(cfg.NLSkills))
+		for i := range cfg.NLSkills {
+			cur := &cfg.NLSkills[i]
+			src, ok := byName[skillNameIdentityKey(cur.Name)]
+			if !ok && cur.SkillDir != "" {
+				src, ok = byDir[skillDirIdentityKey(cur.SkillDir)]
+			}
+			if !ok {
+				continue
+			}
+			seen[skillNameIdentityKey(cur.Name)] = true
+			// Overlay fields only — never replace steps/description wholesale here.
+			cur.Status = src.Status
+			cur.LastError = src.LastError
+			cur.UsageCount = src.UsageCount
+			cur.SuccessCount = src.SuccessCount
+			cur.FailureCount = src.FailureCount
+			cur.WorkaroundCount = src.WorkaroundCount
+			cur.LastUsedAt = src.LastUsedAt
+			if cur.SkillDir == "" && src.SkillDir != "" {
+				cur.SkillDir = src.SkillDir
+			}
+		}
+		// Demoted hub/download skills may need a new overlay row if missing.
+		for _, s := range skills {
+			nameKey := skillNameIdentityKey(s.Name)
+			if nameKey == "" || seen[nameKey] {
+				continue
+			}
+			if !fileSkillHasRuntimeOverlay(s) && !skill.LooksLikeGenericDownloadSkill(s.Name, s.Description) {
+				continue
+			}
+			if skillPersistsAsDiskOverlay(s) {
+				cfg.NLSkills = append(cfg.NLSkills, diskSkillConfigOverlay(s))
+			} else {
+				// Compact hub row: keep steps so re-enable still works, but avoid
+				// cloning repair history slices twice via diskSkillConfigOverlay path.
+				cfg.NLSkills = append(cfg.NLSkills, compactHubSkillPersist(s))
+			}
+			seen[nameKey] = true
+		}
+	}); err != nil {
+		return err
+	}
+	e.invalidateSkillCache()
+	return nil
+}
+
+// skillPersistLooksLikeWipe detects catastrophic NLSkills shrink (e.g. 4→unknown).
+// Intentional deletes that keep a previously known skill (4→1 of the same set)
+// are allowed; replacing the table with an unrelated singleton (empty-skill) is not.
+func skillPersistLooksLikeWipe(prev, next []corelib.NLSkillEntry) bool {
+	if len(prev) >= 2 && len(next) == 0 {
+		return true
+	}
+	prevNamed := map[string]bool{}
+	for _, s := range prev {
+		if k := skillNameIdentityKey(s.Name); k != "" {
+			prevNamed[k] = true
+		}
+	}
+	nextNamed := map[string]bool{}
+	for _, s := range next {
+		if k := skillNameIdentityKey(s.Name); k != "" {
+			nextNamed[k] = true
+		}
+	}
+	if len(prevNamed) == 0 {
+		return false
+	}
+	kept := 0
+	for k := range prevNamed {
+		if nextNamed[k] {
+			kept++
+		}
+	}
+	// Unrelated singleton replacing a populated table (e.g. empty-skill) — wipe.
+	// Keeping one skill that already existed (intentional multi-delete) is fine.
+	if len(prevNamed) >= 3 && len(nextNamed) <= 1 && kept == 0 {
+		return true
+	}
+	return false
+}
+
+// compactHubSkillPersist stores a hub/clawhub skill without expanding nil slices
+// into accidental empty JSON arrays that thrash config diffs.
+func compactHubSkillPersist(s corelib.NLSkillEntry) corelib.NLSkillEntry {
+	out := s
+	if out.Triggers == nil {
+		out.Triggers = []string{}
+	}
+	if out.Steps == nil {
+		out.Steps = []corelib.NLSkillStep{}
+	}
+	if len(out.RepairHistory) > 0 {
+		out.RepairHistory = append([]corelib.SkillRepairRecord(nil), out.RepairHistory...)
+	}
+	return out
+}
+
+// mergeSkillPersistSafe applies next updates onto prev by name, never dropping
+// prev entries that are absent from next.
+func mergeSkillPersistSafe(prev, next []corelib.NLSkillEntry) []corelib.NLSkillEntry {
+	out := append([]corelib.NLSkillEntry(nil), prev...)
+	idx := make(map[string]int, len(out))
+	for i, s := range out {
+		if k := skillNameIdentityKey(s.Name); k != "" {
+			idx[k] = i
+		}
+	}
+	for _, s := range next {
+		k := skillNameIdentityKey(s.Name)
+		if k == "" {
+			continue
+		}
+		if i, ok := idx[k]; ok {
+			out[i] = s
+			continue
+		}
+		idx[k] = len(out)
+		out = append(out, s)
+	}
+	return out
+}
+
+// skillPersistsAsDiskOverlay reports whether definition data lives on disk
+// (skill.yaml) and config should only store an identity/source/stats overlay.
+func skillPersistsAsDiskOverlay(s corelib.NLSkillEntry) bool {
+	if normalizeSkillEntrySource(s.Source) == skillEntrySourceFile {
+		return true
+	}
+	return corelib.IsLearnedSource(s.Source) && strings.TrimSpace(s.SkillDir) != ""
+}
+
+// diskSkillConfigOverlay strips YAML-managed definition fields, keeping only
+// identity, source classification, status overlay, and runtime/audit stats.
+func diskSkillConfigOverlay(s corelib.NLSkillEntry) corelib.NLSkillEntry {
+	source := strings.TrimSpace(s.Source)
+	if source == "" {
+		source = string(skillEntrySourceFile)
+	}
+	return corelib.NLSkillEntry{
+		Name:               s.Name,
+		Source:             source,
+		SkillDir:           s.SkillDir,
+		Status:             fileSkillOverlayStatus(s.Status),
+		UsageCount:         s.UsageCount,
+		SuccessCount:       s.SuccessCount,
+		FailureCount:       s.FailureCount,
+		WorkaroundCount:    s.WorkaroundCount,
+		LastUsedAt:         s.LastUsedAt,
+		LastError:          s.LastError,
+		RepairAttemptCount: s.RepairAttemptCount,
+		LastRepairAt:       s.LastRepairAt,
+		RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
+	}
 }
 
 func fileSkillStatusIsOverlay(status string) bool {
@@ -803,6 +1083,88 @@ func (e *SkillExecutor) Update(entry corelib.NLSkillEntry) error {
 		}
 	}
 	return fmt.Errorf("skill %q not found", entry.Name)
+}
+
+// UpdateLearnedSource upserts a thin self-learned config overlay (learned/crafted)
+// for a disk-backed skill. It only patches config.NLSkills and never re-serializes
+// the full loadSkills merge, so steps stay on disk under SkillDir.
+func (e *SkillExecutor) UpdateLearnedSource(entry corelib.NLSkillEntry) error {
+	if e == nil {
+		return fmt.Errorf("skill executor not initialized")
+	}
+	if e.app == nil {
+		return fmt.Errorf("skill executor app not initialized")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		return fmt.Errorf("skill name is required")
+	}
+	source := strings.ToLower(strings.TrimSpace(entry.Source))
+	if !corelib.IsLearnedSource(source) {
+		return fmt.Errorf("source %q is not a learned source", entry.Source)
+	}
+	skillDir := strings.TrimSpace(entry.SkillDir)
+	if skillDir == "" {
+		return fmt.Errorf("skill dir is required for learned overlay")
+	}
+
+	cfg, err := e.app.LoadConfig()
+	if err != nil {
+		return err
+	}
+	skills := append([]corelib.NLSkillEntry(nil), cfg.NLSkills...)
+	idx := -1
+	for i, s := range skills {
+		if s.Name == name || s.MatchesName(name) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		if skillDirKey := skillDirIdentityKey(skillDir); skillDirKey != "" && skillDirKey != "." {
+			for i, s := range skills {
+				if s.SkillDir != "" && skillDirIdentityKey(s.SkillDir) == skillDirKey {
+					idx = i
+					break
+				}
+			}
+		}
+	}
+
+	// Thin overlay: identity + source + skill dir. Steps stay on disk.
+	// Status is left empty for active so disk status remains authoritative;
+	// non-active overlays (needs_review, disabled, …) are preserved below.
+	overlay := corelib.NLSkillEntry{
+		Name:     name,
+		Source:   source,
+		SkillDir: skillDir,
+	}
+	if fileSkillStatusIsOverlay(entry.Status) {
+		overlay.Status = strings.TrimSpace(entry.Status)
+	}
+	if idx >= 0 {
+		// Preserve runtime stats / non-active status overlays already in config.
+		overlay.UsageCount = skills[idx].UsageCount
+		overlay.SuccessCount = skills[idx].SuccessCount
+		overlay.FailureCount = skills[idx].FailureCount
+		overlay.WorkaroundCount = skills[idx].WorkaroundCount
+		overlay.LastUsedAt = skills[idx].LastUsedAt
+		overlay.LastError = skills[idx].LastError
+		overlay.RepairAttemptCount = skills[idx].RepairAttemptCount
+		overlay.LastRepairAt = skills[idx].LastRepairAt
+		overlay.RepairHistory = append([]corelib.SkillRepairRecord(nil), skills[idx].RepairHistory...)
+		if overlay.Status == "" && fileSkillStatusIsOverlay(skills[idx].Status) {
+			overlay.Status = skills[idx].Status
+		}
+		skills[idx] = overlay
+	} else {
+		skills = append(skills, overlay)
+	}
+	// saveSkills re-applies diskSkillConfigOverlay (strip definition fields).
+	return e.saveSkills(skills)
 }
 
 // UpdateStatus changes only the status field of an existing skill.
@@ -1458,7 +1820,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 	if vars == nil {
 		vars = make(map[string]string)
 	}
-	extraEnv := skillExecutionExtraEnv(runArgs)
+	extraEnv := e.skillExecutionExtraEnv(runArgs)
 
 	preparedEntry := *entry
 	preparedEntry.Steps = append([]corelib.NLSkillStep(nil), entry.Steps...)
@@ -1471,10 +1833,11 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 		skill.FoldUnconsumedArgsToInput(vars, preparedEntry.Params)
 	}
 	sourceSkillDir := preparedEntry.SkillDir
-	if workspace, cleanup, err := prepareSkillRunWorkspace("sync", preparedEntry.Name, preparedEntry.SkillDir); err != nil {
+	wsRoot := skillRunWorkspaceRootFromEnv(extraEnv)
+	if workspace, cleanup, err := prepareSkillRunWorkspaceInRoot("sync", preparedEntry.Name, preparedEntry.SkillDir, wsRoot); err != nil {
 		log.Printf("[skill-executor] owner=%q skill=%q workspace isolation unavailable dir=%q err=%v; using installed dir", ownerID, preparedEntry.Name, preparedEntry.SkillDir, err)
 	} else if workspace != "" {
-		log.Printf("[skill-executor] owner=%q skill=%q workspace=%s source_dir=%s", ownerID, preparedEntry.Name, workspace, preparedEntry.SkillDir)
+		log.Printf("[skill-executor] owner=%q skill=%q workspace=%s source_dir=%s", ownerID, preparedEntry.Name, workspace, sourceSkillDir)
 		preparedEntry.SkillDir = workspace
 		defer cleanup()
 	}
@@ -1699,8 +2062,22 @@ func skillExecutionRunArgs(userPrompt string) map[string]interface{} {
 	}
 }
 
-func skillExecutionExtraEnv(runArgs map[string]interface{}) map[string]string {
-	return skill.ExtractRunExtraEnvFromArgs(runArgs)
+// skillExecutionExtraEnv extracts caller extra_env and binds the session
+// workbench/project dir (TEMP redirect) for third-party skills. Used by the
+// sync execution path and pipeline sub-skills — same contract as SkillRunner.
+func (e *SkillExecutor) skillExecutionExtraEnv(runArgs map[string]interface{}) map[string]string {
+	extraEnv := skill.ExtractRunExtraEnvFromArgs(runArgs)
+	wd := ""
+	if e != nil && e.app != nil {
+		if ownerID := skillRunOwnerIDFromArgs(runArgs); ownerID != "" {
+			wd = e.app.EffectiveWorkingDirForOwner(ownerID)
+		} else {
+			wd = e.app.EffectiveDesktopWorkingDir()
+		}
+	} else {
+		wd = corelib.EffectiveWorkspaceDir()
+	}
+	return skill.InjectSkillWorkDirEnv(wd, extraEnv)
 }
 
 func skillRunOwnerIDFromArgs(runArgs map[string]interface{}) string {
@@ -1842,7 +2219,7 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 	if vars == nil {
 		vars = map[string]string{}
 	}
-	extraEnv := skill.ExtractRunExtraEnvFromArgs(runArgs)
+	extraEnv := e.skillExecutionExtraEnv(runArgs)
 	dataDir := ""
 	if e != nil && e.app != nil {
 		dataDir = e.app.GetDataDir()

@@ -31,6 +31,8 @@ import 'assistant_input_history.dart';
 import 'assistant_markdown.dart';
 import 'assistant_ssh_quick_connect.dart';
 import 'assistant_voice_input.dart';
+import '../meeting_recording/meeting_recording_screen.dart';
+import '../meeting_recording/meeting_recording_request.dart';
 import 'search_history.dart';
 
 bool canRetryAssistantQuery(String query) => query.trim().isNotEmpty;
@@ -130,6 +132,19 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   void initState() {
     super.initState();
     _voiceInput = ref.read(assistantVoiceInputProvider);
+    ref.listenManual<MeetingRecordingRequest?>(
+      meetingRecordingRequestProvider,
+      (_, next) {
+        if (next == null || !mounted) return;
+        ref.read(meetingRecordingRequestProvider.notifier).state = null;
+        unawaited(_confirmAndStartMeetingRecording(
+          next.sourceQuery,
+          proposedTitle: next.title,
+          proposedPurpose: next.purpose,
+          hint: next.hint,
+        ));
+      },
+    );
   }
 
   @override
@@ -169,11 +184,301 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
   }
 
   void _searchManually(String query) {
+    if (_isMeetingRecordingIntent(query)) {
+      unawaited(_confirmAndStartMeetingRecording(query));
+      return;
+    }
     ref.read(assistantSharedCitationProvider.notifier).state = null;
     ref.read(assistantTabsProvider.notifier).setActiveSharedCitation(null);
     unawaited(ref.read(assistantSearchProvider.notifier).search(query));
     _historyBrowser.reset();
     _setQuery('');
+    _scrollConversationToEnd();
+  }
+
+  bool _isMeetingRecordingIntent(String query) {
+    final normalized = query.trim().toLowerCase();
+    return (normalized.contains('会议') || normalized.contains('会')) &&
+            (normalized.contains('录音') ||
+                normalized.contains('记录') ||
+                normalized.contains('纪要')) ||
+        normalized.contains('record this meeting') ||
+        normalized.contains('start meeting recording');
+  }
+
+  Future<void> _confirmAndStartMeetingRecording(
+    String query, {
+    String proposedTitle = '',
+    String proposedPurpose = '',
+    String hint = '',
+  }) async {
+    final client = ref.read(apiClientProvider);
+    if (client == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请先登录后再开始会议录音。')),
+        );
+      }
+      return;
+    }
+    MobileMeetingRecordingCapabilities capabilities;
+    try {
+      capabilities = await client.getMeetingRecordingCapabilities();
+    } on Object {
+      // Recording itself remains useful offline: its local file is persisted
+      // and the existing queue will upload when connectivity returns. Since we
+      // cannot safely promise an unavailable Worker, expose archive-only mode
+      // until the Hub capabilities can be read again.
+      capabilities = const MobileMeetingRecordingCapabilities(keep: true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('暂时无法连接 Hub：本次将安全归档音频，网络恢复后自动上传。'),
+          ),
+        );
+      }
+    }
+    if (!mounted) return;
+    final intent =
+        proposedPurpose.trim().isEmpty ? query : proposedPurpose.trim();
+    final titleController = TextEditingController(
+      text: proposedTitle.trim().isEmpty ? '会议录音' : proposedTitle.trim(),
+    );
+    var processMode = capabilities.minutes
+        ? 'minutes'
+        : capabilities.transcript
+            ? 'transcript'
+            : 'keep';
+    final consentAccepted = ValueNotifier(false);
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('开始会议录音？'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            hint.trim().isEmpty
+                ? '录音只会在你点击“开始录音”后进行。结束后音频将上传以生成转写和会议纪要。'
+                : hint.trim(),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '请在开始前取得所有参会者同意。原始音频默认保留 30 天，可在完成后删除；逐字稿和纪要会继续保留。'
+            '以 16kHz 单声道 PCM WAV 估算，每小时约占用 115 MB；受 512 MiB 上传上限限制，单次最多约 4 小时 39 分钟。',
+          ),
+          if (!capabilities.transcript)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text('当前未确认转写服务可用，本次仅安全归档音频。'),
+            ),
+          ValueListenableBuilder<bool>(
+            valueListenable: consentAccepted,
+            builder: (context, accepted, _) => CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: accepted,
+              onChanged: (value) => consentAccepted.value = value ?? false,
+              title: const Text('我已取得所有参会者同意，并确认上传与留存安排'),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+              controller: titleController,
+              autofocus: true,
+              decoration: const InputDecoration(labelText: '会议主题')),
+          const SizedBox(height: 8),
+          StatefulBuilder(
+            builder: (context, setModalState) =>
+                DropdownButtonFormField<String>(
+              value: processMode,
+              decoration: const InputDecoration(labelText: '录音完成后'),
+              items: [
+                if (capabilities.minutes)
+                  const DropdownMenuItem(
+                    value: 'minutes',
+                    child: Text('生成纪要和逐字稿'),
+                  ),
+                if (capabilities.transcript)
+                  const DropdownMenuItem(
+                    value: 'transcript',
+                    child: Text('只生成逐字稿'),
+                  ),
+                DropdownMenuItem(value: 'keep', child: Text('仅安全归档音频')),
+              ],
+              onChanged: (value) {
+                final next = value ?? processMode;
+                if ((next == 'minutes' && !capabilities.minutes) ||
+                    (next == 'transcript' && !capabilities.transcript)) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('当前 Hub 未配置所选的转写服务。')),
+                  );
+                  return;
+                }
+                setModalState(() => processMode = next);
+              },
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消')),
+          ValueListenableBuilder<bool>(
+            valueListenable: consentAccepted,
+            builder: (context, accepted, _) => FilledButton(
+              onPressed:
+                  accepted ? () => Navigator.of(context).pop(true) : null,
+              child: const Text('继续'),
+            ),
+          ),
+        ],
+      ),
+    );
+    consentAccepted.dispose();
+    final title = titleController.text.trim().isEmpty
+        ? '会议录音'
+        : titleController.text.trim();
+    titleController.dispose();
+    if (approved != true || !mounted) return;
+    final tabId = ref.read(assistantTabsProvider).activeTabId;
+    ref
+        .read(assistantTabsProvider.notifier)
+        .appendMessage(tabId, AssistantConversationMessage.user(query));
+    ref.read(assistantTabsProvider.notifier).appendMessage(
+          tabId,
+          AssistantConversationMessage.assistant(
+              query: query,
+              text: '已准备好“$title”。点击开始后我会持续记录会议；结束时将自动上传并生成会议纪要。'),
+        );
+    _setQuery('');
+    _scrollConversationToEnd();
+    final result = await Navigator.of(context).push<MeetingRecordingResult>(
+      MaterialPageRoute(
+          builder: (_) => MeetingRecordingScreen(
+                title: title,
+                purpose: intent,
+                conversationId: tabId,
+                processMode: processMode,
+              )),
+    );
+    if (!mounted || result == null) return;
+    final submittedText = switch (result.processMode) {
+      'transcript' => '录音已上传，正在生成逐字稿。任务编号：${result.recordingId}',
+      'keep' => '录音已安全上传，正在归档音频。任务编号：${result.recordingId}',
+      _ => '录音已上传，正在生成转写与会议纪要。任务编号：${result.recordingId}',
+    };
+    final submittedMessage = switch (result.processMode) {
+      'transcript' => '已安全上传，正在生成逐字稿',
+      'keep' => '已安全上传，正在安全归档音频',
+      _ => '已安全上传，正在生成转写与会议纪要',
+    };
+    ref.read(assistantTabsProvider.notifier).appendMessage(
+          tabId,
+          AssistantConversationMessage.assistant(
+            query: query,
+            text: submittedText,
+            meetingRecording: MeetingRecordingCardData(
+              recordingId: result.recordingId,
+              title: title,
+              status: result.status,
+              message: submittedMessage,
+              progress: result.status == 'ready' ? 1 : .25,
+              processMode: result.processMode,
+            ),
+          ),
+        );
+    _scrollConversationToEnd();
+    unawaited(_watchMeetingProcessing(tabId, query, result.recordingId));
+  }
+
+  Future<void> _watchMeetingProcessing(
+    String tabId,
+    String query,
+    String recordingId,
+  ) async {
+    final client = ref.read(apiClientProvider);
+    if (client == null) return;
+    String? lastMessage;
+    var terminalAnnounced = false;
+    for (var attempt = 0; attempt < 360; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 5));
+      try {
+        final job = await client.getMeetingRecording(recordingId);
+        final status = job.status.toLowerCase();
+        ref.read(assistantTabsProvider.notifier).updateMeetingRecording(
+              tabId,
+              recordingId,
+              (current) => current.copyWith(
+                status: status,
+                message: job.message,
+                failureCode: job.failureCode,
+                progress: job.progress,
+                transcriptDraftId: job.transcriptDraftId,
+                minutesDraftId: job.minutesDraftId,
+                processMode: job.mode,
+                audioAvailable: job.audioAvailable,
+              ),
+            );
+        if (status == 'ready') {
+          if (terminalAnnounced) return;
+          terminalAnnounced = true;
+          if (!mounted) return;
+          ref.read(assistantTabsProvider.notifier).appendMessage(
+                tabId,
+                AssistantConversationMessage.assistant(
+                  query: query,
+                  text: switch (job.mode) {
+                    'keep' => '会议录音已安全归档。你可以在“任务”中查看状态或按需删除原始音频。',
+                    'transcript' => '会议逐字稿已完成，已保存到“文档库”。',
+                    _ => job.minutesDraftId.isNotEmpty
+                        ? '会议纪要已完成，已保存到“文档库”。可在那里查看和导出纪要；完整逐字稿也已归档。'
+                        : '会议纪要已完成。请在“任务”中查看完整逐字稿和纪要。',
+                  },
+                ),
+              );
+          _scrollConversationToEnd();
+          return;
+        }
+        if (status.contains('fail') || status.contains('error')) {
+          if (terminalAnnounced) return;
+          terminalAnnounced = true;
+          if (!mounted) return;
+          ref.read(assistantTabsProvider.notifier).appendMessage(
+                tabId,
+                AssistantConversationMessage.assistant(
+                  query: query,
+                  text:
+                      '会议录音处理失败：${job.message.isEmpty ? '请稍后重试' : job.message}',
+                ),
+              );
+          _scrollConversationToEnd();
+          return;
+        }
+        // Avoid turning every poll into chat noise; the current phase is only
+        // surfaced when it changes.
+        if (job.message.isNotEmpty && job.message != lastMessage) {
+          lastMessage = job.message;
+          if (!mounted) return;
+          ref.read(assistantTabsProvider.notifier).appendMessage(
+                tabId,
+                AssistantConversationMessage.assistant(
+                  query: query,
+                  text: '会议处理进度：${job.message}',
+                ),
+              );
+          _scrollConversationToEnd();
+        }
+      } on Object {
+        // Network recovery is expected for a long task; continue polling.
+      }
+    }
+    if (!mounted || terminalAnnounced) return;
+    ref.read(assistantTabsProvider.notifier).appendMessage(
+          tabId,
+          AssistantConversationMessage.assistant(
+            query: query,
+            text: '会议录音仍在处理中。你可以稍后在“任务”中查看最新状态。',
+          ),
+        );
     _scrollConversationToEnd();
   }
 
@@ -240,8 +545,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final prefLanguage =
         ref.read(appPreferencesProvider).valueOrNull?.language ??
             appLanguageSystem;
-    final uiLanguage =
-        resolveAppUiLanguage(preferenceLanguage: prefLanguage);
+    final uiLanguage = resolveAppUiLanguage(preferenceLanguage: prefLanguage);
     final localeId = assistantSpeechLocaleForLanguage(uiLanguage);
     _lastVoiceTranscript = '';
     _voicePermissionEvidence = null;
@@ -585,7 +889,6 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
             const _AssistantSearchUnavailableBanner(),
             const SizedBox(height: 8),
           ],
-
           if (!compactComposer) ...[
             _AssistantQuickPrompts(
               onSelect: _setQuery,
@@ -721,8 +1024,7 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                                     ? (_historyBrowser.isBrowsing
                                         ? scheme.primary
                                         : null)
-                                    : scheme.onSurface
-                                        .withValues(alpha: 0.28),
+                                    : scheme.onSurface.withValues(alpha: 0.28),
                               ),
                             ),
                             // ↑ steps older; mic stays reachable with a fat hit target.
@@ -741,15 +1043,11 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
                                       ),
                                     ),
                                   IconButton(
-                                    tooltip:
-                                        _listening ? '停止语音输入' : '语音输入',
+                                    tooltip: _listening ? '停止语音输入' : '语音输入',
                                     onPressed: _toggleVoiceInput,
                                     icon: Icon(
-                                      _listening
-                                          ? Icons.mic
-                                          : Icons.mic_none,
-                                      color:
-                                          _listening ? scheme.primary : null,
+                                      _listening ? Icons.mic : Icons.mic_none,
+                                      color: _listening ? scheme.primary : null,
                                     ),
                                   ),
                                 ],
@@ -814,8 +1112,9 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
     final query = rawQuery.trim();
     if (query.isEmpty) return;
     try {
-      final job =
-          await ref.read(assistantSearchProvider.notifier).enqueueBackground(query);
+      final job = await ref
+          .read(assistantSearchProvider.notifier)
+          .enqueueBackground(query);
       if (!mounted) return;
       _historyBrowser.reset();
       _setQuery('');
@@ -1100,8 +1399,7 @@ class _InputRecallSheetState extends State<_InputRecallSheet> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             trailing: TextButton(
-                              onPressed: () =>
-                                  Navigator.of(context).pop(text),
+                              onPressed: () => Navigator.of(context).pop(text),
                               child: Text(s.recallInputFill),
                             ),
                             onTap: () => Navigator.of(context).pop(text),
@@ -1181,14 +1479,245 @@ class _AssistantConversationView extends StatelessWidget {
     if (message.role == 'user') {
       return ChatBubble(text: message.text, fromUser: true);
     }
-    return _AssistantReplyBubble(
-      query: message.query,
-      answer: message.text,
-      citations: message.citations,
-      llmMode: message.llmMode,
-      llmRequestId: message.llmRequestId,
-      llmUsageRecordId: message.llmUsageRecordId,
-      fallbackCitation: isLatest ? fallbackCitation : null,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _AssistantReplyBubble(
+          query: message.query,
+          answer: message.text,
+          citations: message.citations,
+          llmMode: message.llmMode,
+          llmRequestId: message.llmRequestId,
+          llmUsageRecordId: message.llmUsageRecordId,
+          fallbackCitation: isLatest ? fallbackCitation : null,
+        ),
+        if (message.meetingRecording != null)
+          _MeetingRecordingConversationCard(
+            data: message.meetingRecording!,
+            onRetry: message.meetingRecording!.failureCode ==
+                    'AUDIO_MISSING_FOR_RETRY'
+                ? null
+                : () => _retryMeetingRecording(
+                      context,
+                      message.meetingRecording!,
+                      message.query,
+                    ),
+            onDeleteAudio: () => _deleteMeetingRecordingAudio(
+              context,
+              message.meetingRecording!,
+            ),
+            onOpenDocument:
+                (message.meetingRecording!.minutesDraftId.isNotEmpty ||
+                        message.meetingRecording!.transcriptDraftId.isNotEmpty)
+                    ? () => _openMeetingRecordingDocument(context)
+                    : null,
+          ),
+      ],
+    );
+  }
+
+  void _openMeetingRecordingDocument(BuildContext context) {
+    try {
+      context.go('/documents');
+    } on Object {
+      // Widget tests and minimal hosts may not install GoRouter.
+    }
+  }
+
+  Future<void> _retryMeetingRecording(
+    BuildContext context,
+    MeetingRecordingCardData data,
+    String query,
+  ) async {
+    final container = ProviderScope.containerOf(context);
+    final client = container.read(apiClientProvider);
+    if (client == null) return;
+    try {
+      final updated = await client.processMeetingRecording(
+        data.recordingId,
+        mode: data.processMode,
+      );
+      final tabId = container.read(assistantTabsProvider).activeTabId;
+      container.read(assistantTabsProvider.notifier).updateMeetingRecording(
+            tabId,
+            data.recordingId,
+            (current) => current.copyWith(
+              status: updated.status,
+              message: updated.message,
+              failureCode: updated.failureCode,
+              progress: updated.progress,
+              transcriptDraftId: updated.transcriptDraftId,
+              minutesDraftId: updated.minutesDraftId,
+              audioAvailable: updated.audioAvailable,
+            ),
+          );
+    } on Object catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法重新处理会议录音：$error')),
+      );
+    }
+  }
+
+  Future<void> _deleteMeetingRecordingAudio(
+    BuildContext context,
+    MeetingRecordingCardData data,
+  ) async {
+    final container = ProviderScope.containerOf(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除原始音频？'),
+        content: const Text('将删除 Hub 中保留的原始会议音频；逐字稿、纪要和文档库结果会保留。此操作不可撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除音频'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final client = container.read(apiClientProvider);
+    if (client == null) return;
+    try {
+      final updated =
+          await client.deleteMeetingRecordingAudio(data.recordingId);
+      final tabId = container.read(assistantTabsProvider).activeTabId;
+      container.read(assistantTabsProvider.notifier).updateMeetingRecording(
+            tabId,
+            data.recordingId,
+            (current) => current.copyWith(
+              message: updated.message,
+              failureCode: updated.failureCode,
+              audioAvailable: updated.audioAvailable,
+            ),
+          );
+    } on Object catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法删除原始音频：$error')),
+      );
+    }
+  }
+}
+
+class _MeetingRecordingConversationCard extends StatelessWidget {
+  final MeetingRecordingCardData data;
+  final VoidCallback? onRetry;
+  final VoidCallback? onDeleteAudio;
+  final VoidCallback? onOpenDocument;
+
+  const _MeetingRecordingConversationCard({
+    required this.data,
+    this.onRetry,
+    this.onDeleteAudio,
+    this.onOpenDocument,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final status = data.status.toLowerCase();
+    final failed = status.contains('fail') || status.contains('error');
+    final ready = status == 'ready';
+    final active = !ready && !failed;
+    final title = data.title.trim().isEmpty ? '会议录音' : data.title.trim();
+    final label = ready
+        ? switch (data.processMode) {
+            'keep' => '音频已安全归档',
+            'transcript' => '逐字稿已完成',
+            _ => '转写与纪要已完成',
+          }
+        : failed
+            ? '处理未完成'
+            : '正在处理会议录音';
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: failed ? scheme.errorContainer : scheme.surfaceContainerLow,
+        border: Border.all(
+          color: failed
+              ? scheme.error.withValues(alpha: .45)
+              : scheme.outlineVariant,
+        ),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(
+              ready
+                  ? Icons.check_circle_outline
+                  : failed
+                      ? Icons.error_outline
+                      : Icons.graphic_eq,
+              color: failed ? scheme.error : scheme.primary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                title,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Text(label, style: Theme.of(context).textTheme.labelLarge),
+          if (data.message.trim().isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Text(data.message.trim(),
+                style: TextStyle(color: scheme.onSurfaceVariant)),
+          ],
+          if (failed && data.failureCode.trim().isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Text(
+              data.failureCode == 'AUDIO_MISSING_FOR_RETRY'
+                  ? '原始音频已删除或已过期，请重新录制会议。'
+                  : '错误代码：${data.failureCode}',
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          ],
+          if (active) ...[
+            const SizedBox(height: 10),
+            LinearProgressIndicator(value: data.progress.clamp(0, 1)),
+          ],
+          if (ready &&
+              (data.minutesDraftId.isNotEmpty ||
+                  data.transcriptDraftId.isNotEmpty)) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: onOpenDocument,
+              icon: const Icon(Icons.article_outlined, size: 18),
+              label: const Text('打开会议纪要'),
+            ),
+          ],
+          if (failed && onRetry != null) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重新处理'),
+            ),
+          ],
+          if (data.audioAvailable && (ready || failed)) ...[
+            const SizedBox(height: 4),
+            TextButton.icon(
+              onPressed: onDeleteAudio,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('删除原始音频'),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1345,8 +1874,7 @@ class _AssistantSearchUnavailableBanner extends StatelessWidget {
     return const StatusBanner(
       tone: StatusTone.info,
       icon: Icons.info_outline,
-      message:
-          '当前 Hub 未启用 AI 助手服务能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
+      message: '当前 Hub 未启用 AI 助手服务能力，发送给 AI 助手暂不可用。仍可语音输入、导入图片/文件，或把内容整理成文档草稿。',
     );
   }
 }
@@ -1876,7 +2404,9 @@ class _AssistantReplyBubble extends ConsumerWidget {
                             );
                           },
                           child: Text(
-                            AppStringsScope.of(context).isZh ? '记住' : 'Remember',
+                            AppStringsScope.of(context).isZh
+                                ? '记住'
+                                : 'Remember',
                           ),
                         ),
                       ],
@@ -2058,7 +2588,7 @@ class _AssistantNextStepsCardState
     switch (key) {
       case 'draft':
         await widget.onDraft();
-        // Keep card open so multi-template draft flows still work.
+      // Keep card open so multi-template draft flows still work.
       case 'employee':
         if (!mounted) return;
         offerAssistantEmployeeHandoff(

@@ -12,9 +12,9 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 	return &ToolAffinityRegistry{
 		mapping: map[IntentLabel][]string{
 			LabelSSH:              {"ssh"},
-			LabelSearch:           {"web_search"},
-			LabelLiveData:         {"web_search"},
-			LabelDocumentDelivery: {"send_file", "send_to_im", "im_message", "open", "craft_tool"},
+			LabelSearch:           {"web_search", "web_fetch", "download_file"},
+			LabelLiveData:         {"web_search", "web_fetch", "download_file"},
+			LabelDocumentDelivery: {"send_file", "send_to_im", "im_message", "open", "craft_tool", "download_file"},
 			LabelBusinessData:     {"mis_data"},
 			LabelBrowser: {
 				"browser",

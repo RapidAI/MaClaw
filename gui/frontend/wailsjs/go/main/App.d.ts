@@ -221,6 +221,8 @@ export function TestRemoteSSHConnection(arg1:string,arg2:string,arg3:string,arg4
 
 export function PrepareLocalCodingEnvironment(arg1:string,arg2:string):Promise<void>;
 
+export function PrepareVSCodeACP():Promise<Record<string, any>>;
+
 export function PrepareRemoteCodingEnvironment(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:number):Promise<void>;
 
 export function EnsureCodingWorkbenchArmed(arg1:string):Promise<main.CodingWorkbenchStatus>;
@@ -391,6 +393,10 @@ export function GetFramelessTopInset():Promise<number>;
 export function LaunchInstallerAndExit(arg1:string):Promise<void>;
 
 export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,arg5:string,arg6:string,arg7:boolean):Promise<void>;
+
+export function LaunchVSCodeWithACP():Promise<Record<string, any>>;
+
+export function LaunchVSCodeWithACPExtension():Promise<Record<string, any>>;
 
 export function ListPythonEnvironments():Promise<Array<main.PythonEnvironment>>;
 
@@ -1042,7 +1048,13 @@ export function TestLansengerWatchForward(arg1:string):Promise<void>;
 
 export function GetThirdPartyGatewayStatus():Promise<string>;
 
+export function GetACPHostStatus():Promise<Record<string, any>>;
+
+export function GetVSCodeACPStatus():Promise<Record<string, any>>;
+
 export function RestartThirdPartyGateway():Promise<string>;
+
+export function RestartACPHost():Promise<Record<string, any>>;
 
 export function StopThirdPartyGateway():Promise<void>;
 

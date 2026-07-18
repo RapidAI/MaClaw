@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
 // ---------------------------------------------------------------------------
@@ -356,8 +358,8 @@ func isFilePath(s string) bool {
 		// Avoid matching URLs like //...
 		return true
 	}
-	// Home directory path: ~/...
-	if strings.HasPrefix(s, "~/") {
+	// Home directory path: ~/... or ~\...
+	if maclawpath.IsHomePath(s) {
 		return true
 	}
 	return false

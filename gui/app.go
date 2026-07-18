@@ -214,6 +214,8 @@ type App struct {
 	lansengerWatch                    *lansengerWatchService
 	lansengerWatchOnce                sync.Once
 	thirdPartyGateway                 *thirdPartyGatewayManager
+	acpHost                           *acpHost // Mode B: loopback ACP for VS Code programming agent
+	acpHostMu                         sync.Mutex
 	imGatewaySyncMu                   sync.Mutex
 	passthroughRegistry               *PassthroughRegistry
 	iworkerGoalWatch                  *IWorkerGoalWatchService
@@ -1648,6 +1650,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		registerKnowledgeTools(handler.registry, a)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+		// Re-sync the router's registry snapshot so late-registered tools
+		// (computer_*, group discussion, knowledge) get Priority/Tags scoring.
+		handler.SetToolRouter(a.toolRouter)
 		// Wire skill-aware routing to the tool builder.
 		if a.skillExecutor != nil {
 			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
@@ -1909,6 +1914,9 @@ func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) fu
 		registerKnowledgeTools(handler.registry, a)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+		// Re-sync the router's registry snapshot so late-registered tools
+		// (computer_*, group discussion, knowledge) get Priority/Tags scoring.
+		handler.SetToolRouter(a.toolRouter)
 		// Wire skill-aware routing to the tool builder.
 		if a.skillExecutor != nil {
 			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
@@ -2012,9 +2020,18 @@ func (a *App) startup(ctx context.Context) {
 	bm25.PrewarmDict()
 	// Initialize CodeBuddy config in project directory
 	if config, err := a.LoadConfig(); err == nil {
-		log.Printf("[startup] LoadConfig done in %v (since startup begin: %v)", time.Since(startupBegin), time.Since(startupBegin))
 		// Apply user-configured working directory (or keep default).
 		corelib.SetWorkspaceDir(config.WorkingDirectory)
+		effectiveWD := corelib.EffectiveWorkspaceDir()
+		skillTemp := filepath.Join(effectiveWD, ".maclaw-tmp")
+		if err := os.MkdirAll(skillTemp, 0o755); err != nil {
+			log.Printf("[startup] warn: create skill_temp failed path=%q err=%v", skillTemp, err)
+		}
+		// Always-important markers (err= keyword forces log filter pass) + sidecar file.
+		// Keep this line ASCII-only so Windows log encoding cannot drop it.
+		log.Printf("[startup] workdir ready err=none download_file=builtin effective_wd_set=%t skill_temp_set=%t elapsed=%v",
+			strings.TrimSpace(effectiveWD) != "", strings.TrimSpace(skillTemp) != "", time.Since(startupBegin))
+		writeWorkdirReadySidecar(config.WorkingDirectory, effectiveWD, skillTemp)
 		a.logStoragePaths("startup.config_loaded", &config)
 		// a.syncToCodeBuddySettings(config, ")
 		if config.Language != "" {
@@ -2086,6 +2103,12 @@ func (a *App) startup(ctx context.Context) {
 				a.syncIMGatewaysFromConfig()
 			}()
 		}
+		// Mode B: loopback ACP host so VS Code can use GUI AI assistant as programming agent.
+		go func() {
+			// Defer slightly so hub/IM handler warmup can begin first.
+			time.Sleep(2 * time.Second)
+			a.ensureACPHost()
+		}()
 		// CodeGen SSO token validation on startup (qianxin brand only).
 		// Claude/TigerClaw Code now uses CodeGen's remote Anthropic-compatible
 		// base URL directly; the legacy local adapter remains disabled.
@@ -4508,6 +4531,38 @@ func (a *App) log(message string) {
 	}
 }
 
+// writeWorkdirReadySidecar records download/workdir binding outside the filtered
+// maclaw.log stream so operators and verify scripts always have a signal.
+// It also appends one line directly to maclaw.log (bypassing detailAwareLogWriter)
+// because some production builds were observed to drop the standard log.Printf
+// for this exact startup section while still executing the following statements.
+func writeWorkdirReadySidecar(configured, effective, skillTemp string) {
+	dir := corelib.MaclawLogsDir()
+	_ = os.MkdirAll(dir, 0o755)
+	now := time.Now()
+	body := fmt.Sprintf("%s download_file=builtin configured_wd=%q effective_wd=%q skill_temp=%q\n",
+		now.Format(time.RFC3339),
+		strings.TrimSpace(configured),
+		strings.TrimSpace(effective),
+		strings.TrimSpace(skillTemp),
+	)
+	path := filepath.Join(dir, "workdir_ready.txt")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		log.Printf("[startup] warn: write workdir_ready sidecar failed path=%q err=%v", path, err)
+	}
+	// Unfiltered append — must stay visible even when log detail filter drops lines.
+	logLine := fmt.Sprintf("%s workdir_ready.go:0: [startup] workdir ready err=none download_file=builtin configured_wd=%q effective_wd=%q skill_temp=%q\n",
+		now.Format("2006/01/02 15:04:05"),
+		strings.TrimSpace(configured),
+		strings.TrimSpace(effective),
+		strings.TrimSpace(skillTemp),
+	)
+	if f, err := os.OpenFile(filepath.Join(dir, "maclaw.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		_, _ = f.WriteString(logLine)
+		_ = f.Close()
+	}
+}
+
 func (a *App) logStoragePaths(stage string, config *corelib.AppConfig) {
 	cwd, cwdErr := os.Getwd()
 	if cwdErr != nil {
@@ -6342,6 +6397,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	proxyChanged := false
 	policyModeChanged := false
 	imGatewayChanged := false
+	acpHostChanged := false
 	petChanged := false
 
 	for key, value := range patch {
@@ -6804,6 +6860,34 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 			}
 			cfg.ThirdPartyGatewayPort = v
 			imGatewayChanged = true
+		case "acp_host_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetAcpHostEnabled(v)
+			acpHostChanged = true
+		case "acp_host_port":
+			v, err := intField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			if v < 0 || v > 65535 {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, fmt.Errorf("acp_host_port must be between 0 and 65535 (0 = ephemeral)")
+			}
+			cfg.AcpHostPort = v
+			acpHostChanged = true
+		case "acp_host_mirror_ui":
+			v, err := boolField(key, value)
+			if err != nil {
+				a.configMu.Unlock()
+				return corelib.AppConfig{}, err
+			}
+			cfg.SetAcpHostMirrorUI(v)
+			// no restart required
 		case "default_proxy_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -7615,6 +7699,9 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 	}
 	if imGatewayChanged && a.ctx != nil {
 		go a.syncIMGatewaysFromConfig()
+	}
+	if acpHostChanged && a.ctx != nil {
+		go a.syncACPHostFromConfig()
 	}
 	if floatingChanged {
 		go func(cfg corelib.AppConfig) {
@@ -9152,7 +9239,58 @@ func (a *App) PackLog(logContent string) (string, error) {
 	}
 	return zipPath, nil
 }
+// normalizeOpenPath expands portable ~/… home paths and rejects empty results.
+// Windows does not interpret "~", so open/stat must always expand first.
+// Prefer normalizeOpenPathForApp when an *App is available so testHomeDir applies.
+func normalizeOpenPath(path string) (string, error) {
+	return normalizeOpenPathHome(path, "")
+}
+
+func normalizeOpenPathHome(path, home string) (string, error) {
+	if strings.TrimSpace(home) != "" {
+		path = filepath.Clean(corelib.ExpandHomePathWithHome(path, home))
+	} else {
+		path = filepath.Clean(corelib.ExpandHomePath(path))
+	}
+	if path == "" || path == "." {
+		return "", fmt.Errorf("empty path")
+	}
+	return path, nil
+}
+
+func (a *App) normalizeOpenPathForApp(path string) (string, error) {
+	home := ""
+	if a != nil {
+		home = a.GetUserHomeDir()
+	}
+	return normalizeOpenPathHome(path, home)
+}
+
+// startSystemOpen opens path with the OS default handler (non-blocking).
+func startSystemOpen(path string) error {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		cmd = exec.Command(windowsSystemExecutable("rundll32.exe"), "url.dll,FileProtocolHandler", filepath.FromSlash(path))
+	case "darwin":
+		cmd = exec.Command("open", path)
+	case "linux":
+		cmd = exec.Command("xdg-open", path)
+	default:
+		return fmt.Errorf("unsupported platform")
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait()
+	return nil
+}
+
 func (a *App) ShowItemInFolder(path string) error {
+	path, err := a.normalizeOpenPathForApp(path)
+	if err != nil {
+		return err
+	}
 	var cmd *exec.Cmd
 	switch goruntime.GOOS {
 	case "darwin":
@@ -9171,47 +9309,19 @@ func (a *App) ShowItemInFolder(path string) error {
 }
 
 func (a *App) OpenFileOrShowInFolder(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("empty path")
+	path, err := a.normalizeOpenPathForApp(path)
+	if err != nil {
+		return err
 	}
-	path = filepath.Clean(path)
 	if _, err := os.Stat(path); err != nil {
 		log.Printf("[app-open-file] path unavailable path=%q err=%v", path, err)
 		return err
 	}
-
-	switch goruntime.GOOS {
-	case "windows":
-		winPath := filepath.FromSlash(path)
-		openCmd := exec.Command(windowsSystemExecutable("rundll32.exe"), "url.dll,FileProtocolHandler", winPath)
-		if err := openCmd.Start(); err == nil {
-			go openCmd.Wait()
-			return nil
-		} else {
-			log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
-		}
+	if err := startSystemOpen(path); err != nil {
+		log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
 		return a.ShowItemInFolder(path)
-	case "darwin":
-		openCmd := exec.Command("open", path)
-		if err := openCmd.Start(); err == nil {
-			go openCmd.Wait()
-			return nil
-		} else {
-			log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
-		}
-		return a.ShowItemInFolder(path)
-	case "linux":
-		openCmd := exec.Command("xdg-open", path)
-		if err := openCmd.Start(); err == nil {
-			go openCmd.Wait()
-			return nil
-		} else {
-			log.Printf("[app-open-file] system open failed path=%q err=%v; falling back to reveal", path, err)
-		}
-		return a.ShowItemInFolder(path)
-	default:
-		return fmt.Errorf("unsupported platform")
 	}
+	return nil
 }
 
 func windowsSystemExecutable(name string) string {
@@ -9244,33 +9354,19 @@ func (a *App) OpenSkillRunArtifact(runID string, artifactID string) error {
 // OpenProjectDirectory opens a directory in the system file explorer.
 // This is a Wails binding method called from the ProjectDirBar component.
 func (a *App) OpenProjectDirectory(path string) error {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fmt.Errorf("empty path")
+	path, err := a.normalizeOpenPathForApp(path)
+	if err != nil {
+		return err
 	}
-	path = filepath.Clean(path)
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		if err != nil {
 			return err
 		}
 		return fmt.Errorf("not a directory: %s", path)
 	}
-	switch goruntime.GOOS {
-	case "windows":
-		cmd := exec.Command("explorer", filepath.FromSlash(path))
-		hideCommandWindow(cmd)
-		_ = cmd.Start()
-		go cmd.Wait()
-	case "darwin":
-		cmd := exec.Command("open", path)
-		_ = cmd.Start()
-		go cmd.Wait()
-	case "linux":
-		cmd := exec.Command("xdg-open", path)
-		_ = cmd.Start()
-		go cmd.Wait()
-	default:
-		log.Printf("[OpenProjectDirectory] unsupported platform: %s", goruntime.GOOS)
+	if err := startSystemOpen(path); err != nil {
+		log.Printf("[OpenProjectDirectory] system open failed path=%q err=%v", path, err)
+		return err
 	}
 	return nil
 }

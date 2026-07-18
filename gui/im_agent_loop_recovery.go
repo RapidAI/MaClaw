@@ -520,5 +520,5 @@ func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []strin
 }
 
 func buildRemoteSkillSearchPrompt() string {
-	return "[Execution requirement]\nThis task should prefer a reusable Skill, but no suitable local Skill was found. Search/install a reusable Skill first. Only switch to craft_tool or bash after the remote Skill path is unavailable.\n[/Execution requirement]"
+	return "[Execution requirement]\nThis task should prefer a reusable Skill when the work is specialized (domain pipelines, multi-step automation). For simple HTTP/PDF downloads use download_file or web_fetch with save_path under the working directory — do NOT install ClawHub wget/curl/Paper Fetch skills for basic downloads. For arXiv PDF translate prefer local paper_pdf_translator. Otherwise search/install a reusable Skill first; only switch to craft_tool or bash after the remote Skill path is unavailable.\n[/Execution requirement]"
 }

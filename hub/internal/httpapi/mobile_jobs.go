@@ -41,6 +41,7 @@ func MobileJobsHandler(identity *auth.IdentityService) http.HandlerFunc {
 		jobs = append(jobs, mobileCollectDigitalEmployeeJobs(ownerID)...)
 		jobs = append(jobs, mobileCollectBackendSSHJobs(ownerID)...)
 		jobs = append(jobs, mobileCollectAgentJobs(ownerID)...)
+		jobs = append(jobs, mobileCollectMeetingRecordingJobs(ownerID)...)
 
 		sort.SliceStable(jobs, func(i, j int) bool {
 			return jobs[i].UpdatedAt.After(jobs[j].UpdatedAt)
@@ -61,10 +62,10 @@ func MobileJobsHandler(identity *auth.IdentityService) http.HandlerFunc {
 			out = append(out, j.toMap())
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"jobs":          out,
-			"count":         len(out),
-			"active_count":  active,
-			"generated_at":  time.Now().UTC().Format(time.RFC3339),
+			"jobs":         out,
+			"count":        len(out),
+			"active_count": active,
+			"generated_at": time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }

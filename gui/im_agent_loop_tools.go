@@ -22,14 +22,16 @@ type agentLoopToolSet struct {
 func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *LoopContext, phase agentLoopPhase) agentLoopToolSet {
 	startedAt := time.Now()
 	allTools := h.getTools()
-	baseTools := h.routeTools(userText, allTools)
-	tools := baseTools
 	profile := ExecutionProfile{}
 	requestID := ""
 	if ctx != nil {
 		profile = ctx.Runtime.Execution
 		requestID = ctx.Runtime.RequestID
 	}
+	// ACP Mode B: skip route-intent rewrite + full UIC (often 5s+ tree timeout).
+	skipHeavy := isACPProgrammingRequestID(requestID)
+	baseTools := h.routeToolsWithOptions(userText, allTools, skipHeavy)
+	tools := baseTools
 
 	var browserSessionPinned bool
 	if h.toolRouter != nil {

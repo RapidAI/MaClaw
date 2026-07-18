@@ -428,22 +428,24 @@ type detailAwareLogWriter struct {
 }
 
 func (w *detailAwareLogWriter) Write(p []byte) (int, error) {
-	if corelib.IsLogDetailEnabled() || isImportantLogLine(string(p)) {
-		writers := make([]io.Writer, 0, 2)
-		if w.file != nil {
-			writers = append(writers, w.file)
-		}
-		if w.stderr != nil {
-			writers = append(writers, w.stderr)
-		}
-		if len(writers) == 0 {
-			return len(p), nil
-		}
-		_, err := io.MultiWriter(writers...).Write(p)
-		if err != nil {
-			return 0, err
-		}
+	if !corelib.IsLogDetailEnabled() && !isImportantLogLine(string(p)) {
 		return len(p), nil
+	}
+	// Write sinks independently. io.MultiWriter fails the whole write when any
+	// sink errors; with -H windowsgui, stderr is often broken and would drop
+	// already-successful file writes from the caller's perspective (and can
+	// interact badly with concurrent appenders).
+	var firstErr error
+	if w.file != nil {
+		if _, err := w.file.Write(p); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if w.stderr != nil {
+		_, _ = w.stderr.Write(p) // best-effort; never fail the log line for console
+	}
+	if firstErr != nil {
+		return 0, firstErr
 	}
 	return len(p), nil
 }
@@ -462,9 +464,14 @@ func setLogFallback(desktop bool, stderr io.Writer) {
 
 func isImportantLogLine(line string) bool {
 	lower := strings.ToLower(line)
+	// Keep download/workdir diagnostics visible even when log_detail_enabled is off:
+	// agents land files under working_directory only when these paths are wired correctly.
 	keywords := []string{"error", "err=", "failed", "fatal", "panic", "warn", "warning",
 		"[skill-runner]", "[skill-scanner]", "[lansenger]",
-		"-lifecycle]"}
+		"-lifecycle]",
+		"[download_file]", "download_file=builtin", "effective_wd=", "configured_wd=",
+		"workdir ready", "inject workdir",
+		"[startup] loadconfig", "[startup] begin", "[startup] complete", "[startup] workdir"}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
 			return true

@@ -93,6 +93,37 @@ func (s *stubRepairLLM) ChatCall(messages []map[string]string) (string, error) {
 	return s.respond, nil
 }
 
+func TestSanitizeRepairResult_NormalizesShellTool(t *testing.T) {
+	entry := &corelib.NLSkillEntry{Name: "wget"}
+	result := &RepairResult{
+		Repaired:    true,
+		Explanation: "use shell_tool",
+		NewSteps: []SkillYAMLStep{{
+			Action: "shell_tool",
+			Params: map[string]interface{}{"command": "wget -O out.pdf https://example.com/a.pdf"},
+		}},
+	}
+	if err := SanitizeRepairResult(entry, result); err != nil {
+		t.Fatalf("SanitizeRepairResult: %v", err)
+	}
+	if len(result.NewSteps) != 1 || result.NewSteps[0].Action != "bash" {
+		t.Fatalf("NewSteps = %#v, want bash", result.NewSteps)
+	}
+}
+
+func TestApplyRepair_RejectsUnsupportedAction(t *testing.T) {
+	// After normalize, a step with no command cannot become bash and is rejected.
+	entry := &corelib.NLSkillEntry{Name: "bad"}
+	applied := ApplyRepair(entry, &RepairResult{
+		Repaired:    true,
+		Explanation: "invent action",
+		NewSteps:    []SkillYAMLStep{{Action: "totally_unknown_action", Params: map[string]interface{}{}}},
+	})
+	if applied {
+		t.Fatal("ApplyRepair should reject unsupported actions")
+	}
+}
+
 func TestApplyRepairRecordsSuccessfulAttemptMetadata(t *testing.T) {
 	formatted := FormatErrorForLLM(ClassifiedError{Class: ErrCommandNotFound, UserMessage: "missing cmd", Repairable: true})
 	entry := &corelib.NLSkillEntry{Name: "repairable", LastError: formatted}

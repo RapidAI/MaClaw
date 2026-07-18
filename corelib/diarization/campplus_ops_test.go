@@ -79,20 +79,22 @@ func TestConv1d3SIMDMatchesScalar(t *testing.T) {
 		w[i] = rng.Float32()*2 - 1
 	}
 	m := &CAMPlus{w: map[string]tensor{"p.weight": {shape: []int{out, in, 3}, data: w}}}
-	got := m.conv1d3SIMD(x, in, frames, "p")
-	for oc := 0; oc < out; oc++ {
-		for frame := 0; frame < frames; frame++ {
-			var want float32
-			for ic := 0; ic < in; ic++ {
-				for z := 0; z < 3; z++ {
-					at := frame - 1 + z
-					if at >= 0 && at < frames {
-						want += w[(oc*in+ic)*3+z] * x[ic*frames+at]
+	for _, dilation := range []int{1, 2} {
+		got := m.conv1d3SIMD(x, in, frames, "p", dilation)
+		for oc := 0; oc < out; oc++ {
+			for frame := 0; frame < frames; frame++ {
+				var want float32
+				for ic := 0; ic < in; ic++ {
+					for z := 0; z < 3; z++ {
+						at := frame + (z-1)*dilation
+						if at >= 0 && at < frames {
+							want += w[(oc*in+ic)*3+z] * x[ic*frames+at]
+						}
 					}
 				}
-			}
-			if d := math.Abs(float64(got[oc*frames+frame] - want)); d > 3e-4 {
-				t.Fatalf("[%d,%d] diff=%g", oc, frame, d)
+				if d := math.Abs(float64(got[oc*frames+frame] - want)); d > 3e-4 {
+					t.Fatalf("dilation=%d [%d,%d] diff=%g", dilation, oc, frame, d)
+				}
 			}
 		}
 	}

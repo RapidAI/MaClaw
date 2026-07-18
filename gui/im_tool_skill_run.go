@@ -215,7 +215,9 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	} else if sessionReady {
 		b.WriteString("- session_id 来自旧外部会话路径；继续调用 get_skill_run(run_id) 观察状态。新编程任务请走内部 CodingSubAgent，不再使用外部会话续接工具。\n")
 	} else if status.IsRunning() {
-		b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度。\n")
+		b.WriteString("- still_running: true\n")
+		b.WriteString(fmt.Sprintf("- poll_hint: manage_skill(action=\"status\", run_id=%q, wait_seconds=30)\n", runID))
+		b.WriteString("- 使用 manage_skill(action=\"status\", run_id=...) 继续观察；建议 wait_seconds=15~60，不要在任务仍 running 时去 Hub 安装替代下载 skill。\n")
 	} else if status.IsFinished() {
 		// Skill has finished — step outputs are already shown above.
 		// No need to direct the LLM to poll or wait for session_ready.
@@ -273,7 +275,7 @@ func emitSkillRunProgress(onProgress tool.ProgressCallback, status *SkillRunStat
 }
 
 func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
-	seconds := 2.0
+	seconds := 15.0
 	switch v := raw.(type) {
 	case float64:
 		if v >= 0 {
@@ -287,15 +289,15 @@ func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
 	if seconds > 0 && seconds < 0.1 {
 		seconds = 0.1
 	}
-	if seconds > 30 {
-		seconds = 30
+	if seconds > 120 {
+		seconds = 120
 	}
 	return time.Duration(seconds * float64(time.Second))
 }
 
 func normalizeInitialSkillRunWaitSeconds(raw interface{}) time.Duration {
 	if raw == nil {
-		return 12 * time.Second
+		return 20 * time.Second
 	}
 	return normalizeSkillRunWaitSeconds(raw)
 }

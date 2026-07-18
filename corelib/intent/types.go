@@ -20,6 +20,7 @@ const (
 	LabelContinuation     IntentLabel = "continuation"
 	LabelMaintenance      IntentLabel = "maintenance"
 	LabelOffice           IntentLabel = "office"
+	LabelComputerUse      IntentLabel = "computer_use"
 	LabelKnowledgeWrite   IntentLabel = "knowledge_write"
 	LabelCurrentTime      IntentLabel = "current_time"
 	LabelWorkflowTask     IntentLabel = "workflow_task"
@@ -42,6 +43,7 @@ func AllLabels() []IntentLabel {
 		LabelContinuation,
 		LabelMaintenance,
 		LabelOffice,
+		LabelComputerUse,
 		LabelKnowledgeWrite,
 		LabelCurrentTime,
 		LabelWorkflowTask,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -106,7 +107,7 @@ func appendFileDeliveryChannelRules(b *strings.Builder, platform string) {
 // appendGUIPostSSHRules injects GUI-only content after SSH rules:
 // skills with usage stats, skill priority, MCP servers, dynamic tools,
 // security firewall, device status, sessions, background tasks, MIS, group discussion.
-func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode bool, currentNickname string, cfg corelib.AppConfig) {
+func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode bool, currentNickname string, cfg corelib.AppConfig, ownerID string) {
 	// Skills with usage stats
 	if h.getSkillExecutor() != nil {
 		skills := h.getSkillExecutor().List()
@@ -115,13 +116,17 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
 			b.WriteString("**Skill 运行规则**：直接调用 manage_skill(action=\"run\") 即可。禁止事先用 bash 检测 Python/Node 等依赖——Skill Runner 内置依赖预检，缺少依赖时会返回明确的安装指引。只有 Runner 报错后才需要根据错误信息处理。\n")
 			for _, s := range skills {
-				if normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
-					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
-					if s.UsageCount > 0 {
-						b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
-					}
-					b.WriteString("\n")
+				st := normalizeSkillEntryStatus(s.Status)
+				// Only list runnable skills (active or blank/unknown). Never advertise
+				// needs_review/disabled download helpers that will fail at StartRun.
+				if st != skillEntryStatusActive && st != skillEntryStatusUnknown {
+					continue
 				}
+				b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
+				if s.UsageCount > 0 {
+					b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
+				}
+				b.WriteString("\n")
 			}
 		}
 	}
@@ -131,12 +136,34 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 		b.WriteString(`
 ## Skill 优先策略（重要）
 当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：
-1. **本地已安装 Skill**：先检查上面「已注册 Skill」列表，看是否有匹配的 Skill 可以直接用 manage_skill(action="run", name="skill名称") 执行。如果下方有该 Skill 的使用文档，先阅读文档了解工作流程和前置条件再调用 run
-2. **搜索并安装 Skill**：只有当前工具列表明确包含 search_and_install_skill，且任务确实需要新能力时，才可调用该工具从 SkillMarket 搜索安装（搜索顺序：SkillMarket → ClawHub 镜像 → GitHub）
-3. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本
+1. **内置下载工具（HTTP/PDF）**：通用「下载 URL / 保存 PDF」优先用 download_file（或 web_fetch + save_path）。禁止为简单下载去 Hub 安装 wget/curl/Paper Fetch。
+2. **本地已安装 Skill**：检查上面「已注册 Skill」列表；领域流水线（如 paper_pdf_translator 论文翻译）用 manage_skill(action="run", name="...")。若列表未出现某 skill，不要假设可用。
+3. **搜索并安装 Skill**：只有当前工具列表明确包含 search_and_install_skill，且任务确实需要新能力（非简单下载）时，才可从 SkillMarket/ClawHub/GitHub 搜索安装
+4. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本
 
-不要跳过第 1、2 步直接 craft_tool——Skill 经过社区验证，质量和安全性更有保障。
+不要跳过内置 download_file 去装社区下载 skill；不要跳过本地可用 Skill 直接 craft_tool。
 `)
+		// Working directory + download landing zone (owner-aware; matches tool cwd).
+		wd := ""
+		if h != nil {
+			if dir := strings.TrimSpace(h.resolveToolWorkDirForOwner("", ownerID)); dir != "" {
+				wd = dir
+			}
+		}
+		if wd == "" {
+			if dir := strings.TrimSpace(corelib.EffectiveWorkspaceDir()); dir != "" {
+				wd = dir
+			}
+		}
+		if wd != "" {
+			skillTemp := filepath.Join(wd, ".maclaw-tmp")
+			b.WriteString("\n## 工作目录与下载落点\n")
+			b.WriteString(fmt.Sprintf("- 当前有效工作目录：`%s`\n", wd))
+			b.WriteString(fmt.Sprintf("- 临时/scratch 目录：`%s`（不是系统 Temp）\n", skillTemp))
+			b.WriteString("- download_file / web_fetch(save_path=...) 的相对路径相对工作目录。\n")
+			b.WriteString("- Skill 运行时 TEMP/TMP 会重定向到上述 `.maclaw-tmp`（勿再到 %TEMP%\\maclaw-arxiv 等系统路径找文件）。\n")
+			b.WriteString("- 打开路径时使用绝对路径；不要使用未展开的 `~\\...` 字面路径。\n")
+		}
 	}
 
 	// MCP servers

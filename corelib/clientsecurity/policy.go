@@ -116,7 +116,7 @@ func enforceNetworkLevel(level string, allowlist []string, name string, args map
 
 func isNetworkTool(name string) bool {
 	switch name {
-	case "web_search", "web_fetch", "knowledge_save_url", "open", "search_and_install_skill", "ssh":
+	case "web_search", "web_fetch", "download_file", "knowledge_save_url", "open", "search_and_install_skill", "ssh":
 		return true
 	case "manage_skill":
 		return false

@@ -1,0 +1,107 @@
+{
+  "name": "maclaw-acp",
+  "displayName": "MaClaw ACP",
+  "description": "MaClaw AI coding assistant over ACP — chat lives in the bottom panel, never blocks your Explorer.",
+  "version": "0.3.1",
+  "publisher": "maclaw",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "MaClaw chat talks to the local MaClaw app; it does not execute workspace content."
+    }
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "acp",
+    "maclaw",
+    "agent",
+    "coding agent"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "maclaw-acp",
+          "title": "MaClaw",
+          "icon": "resources/icon.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "maclaw-acp-sidebar",
+          "title": "MaClaw",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "maclaw-acp": [
+        {
+          "id": "maclaw-acp.chat",
+          "name": "Chat",
+          "type": "webview",
+          "icon": "resources/icon.svg"
+        }
+      ],
+      "maclaw-acp-sidebar": [
+        {
+          "id": "maclaw-acp.launcher",
+          "name": "MaClaw",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "maclaw-acp.openChat",
+        "title": "MaClaw: Open Chat"
+      },
+      {
+        "command": "maclaw-acp.newSession",
+        "title": "MaClaw: New Session"
+      },
+      {
+        "command": "maclaw-acp.cancelTurn",
+        "title": "MaClaw: Cancel Current Turn"
+      }
+    ],
+    "configuration": {
+      "title": "MaClaw ACP",
+      "properties": {
+        "maclaw-acp.bridgePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the maclaw-acp-bridge executable. Empty = auto-resolve from MACLAW_ACP_BRIDGE, <maclaw data dir>/bin, or PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc --noEmit",
+    "package": "node build.mjs && node scripts/package-vsix.mjs",
+    "smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "marked": "^12.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.5.4"
+  }
+}

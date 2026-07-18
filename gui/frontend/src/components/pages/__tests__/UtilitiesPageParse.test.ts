@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseWailsJSON } from '../utilitiesParse';
+import { mapLansengerGroupsForSurveyBind, parseWailsJSON } from '../utilitiesParse';
 
 describe('parseWailsJSON', () => {
     it('parses Hub list string into surveys array', () => {
@@ -36,5 +36,29 @@ describe('parseWailsJSON', () => {
         const raw = JSON.stringify({ survey_id: 's1', response_count: 2 });
         const stats = parseWailsJSON<{ response_count: number }>(raw);
         expect(stats.response_count).toBe(2);
+    });
+});
+
+describe('mapLansengerGroupsForSurveyBind', () => {
+    it('maps object payload from ListLansengerGroups', () => {
+        const rows = mapLansengerGroupsForSurveyBind({
+            total: 1,
+            groups: [{ group_id: 'g1', name: '艾尔建测试' }],
+        });
+        expect(rows).toEqual([{ group_id: 'g1', name: '艾尔建测试' }]);
+    });
+
+    it('maps JSON string and PascalCase fields', () => {
+        const rows = mapLansengerGroupsForSurveyBind(JSON.stringify({
+            Groups: [{ GroupID: 'g2', Name: 'Demo' }],
+        }));
+        expect(rows).toEqual([{ group_id: 'g2', name: 'Demo' }]);
+    });
+
+    it('drops empty group ids', () => {
+        const rows = mapLansengerGroupsForSurveyBind({
+            groups: [{ group_id: '', name: 'x' }, { group_id: 'ok', name: '' }],
+        });
+        expect(rows).toEqual([{ group_id: 'ok', name: 'ok' }]);
     });
 });

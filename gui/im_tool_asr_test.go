@@ -28,6 +28,21 @@ func TestASRToolPathArg(t *testing.T) {
 	}
 }
 
+func TestAsrToolIntArg(t *testing.T) {
+	if got := asrToolIntArg(map[string]interface{}{"known_speakers": 3.0}, 0, "known_speakers"); got != 3 {
+		t.Fatalf("float64: got %d", got)
+	}
+	if got := asrToolIntArg(map[string]interface{}{"speakers": "2"}, 0, "known_speakers", "speakers"); got != 2 {
+		t.Fatalf("string alias: got %d", got)
+	}
+	if got := asrToolIntArg(map[string]interface{}{}, 0, "known_speakers"); got != 0 {
+		t.Fatalf("missing: got %d", got)
+	}
+	if got := asrToolIntArg(nil, 7, "known_speakers"); got != 7 {
+		t.Fatalf("nil args fallback: got %d", got)
+	}
+}
+
 func TestDecodeASRAudioRetriesAutoDetect(t *testing.T) {
 	// Valid WAV mis-labeled as mp3 should succeed after auto-detect retry.
 	pcm := make([]byte, 320)

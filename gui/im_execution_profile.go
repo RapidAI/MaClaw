@@ -69,6 +69,22 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessa
 	if profile, forced := lengthFullExecutionProfile(msg); forced {
 		return profile, nil
 	}
+	// ACP Mode B short turns: force light without embedding/UIC. Avoids
+	// multi-second tool-routing fusion and oversized full prompts for chatty
+	// editor messages while real coding asks (paths/URLs/fences/long text)
+	// still hit full via structural/length gates above.
+	if acpPreferLightProfile(msg) {
+		return ExecutionProfile{
+			Layer:                string(executionLayerLight),
+			TaskType:             "general",
+			PromptProfile:        "light",
+			Confidence:           1,
+			Reason:               "acp-mode-b short programming turn",
+			RequiredCapabilities: []string{"current_data", "time", "web", "fetch", "status", "files"},
+			ToolBudget:           8,
+			IterationBudget:      3,
+		}, nil
+	}
 	// Execution-profile routing only needs a rough intent signal to choose
 	// light vs full agent. Full UIC fusion waits on the tree/LLM channel
 	// (often multi-second). Embedding-only keeps pre-loop under ~100ms while
@@ -401,8 +417,8 @@ func inferredExecutionContract(name string) ToolExecutionContract {
 		contract.Capabilities = []string{"web", "current_data"}
 		contract.SupportsDirect = true
 		contract.RequiresAgentPlanning = false
-	case "web_fetch":
-		contract.Capabilities = []string{"web", "fetch"}
+	case "web_fetch", "download_file":
+		contract.Capabilities = []string{"web", "fetch", "download"}
 		contract.SupportsDirect = true
 		contract.RequiresAgentPlanning = false
 	case "call_mcp_tool":

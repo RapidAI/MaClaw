@@ -186,6 +186,8 @@ func IsDirectASRFormat(format string) bool {
 func ASRToolDescription() string {
 	return "本地语音识别（ASR）。将音频文件转写为文本。直接支持: " + DirectASRFormats +
 		"。推荐 16kHz mono WAV。m4a/aac/其它格式请先用 bash+ffmpeg 转为 16kHz mono 16-bit WAV 再调用；不要安装 Whisper。" +
+		"启用说话人分离后，多人音频自动按说话人分段标注（[mm:ss-mm:ss] Speaker N: 文本），单人或分离不可用时输出纯文本。" +
+		"若用户已确认说话人数，传 known_speakers=N（1-15）可显著提高分离准确度；0/省略=自动估计。" +
 		"长转写会写入与音频同目录的 *_transcript.txt，并返回 transcript_file + 预览（避免撑爆上下文）。" +
 		"生成会议纪要时传 for_minutes=true 以启用引擎 LLM map-reduce 草稿；默认仅快速 extractive。完整转写专节从 transcript_file 组装。"
 }

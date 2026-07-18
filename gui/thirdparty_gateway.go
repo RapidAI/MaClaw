@@ -684,6 +684,7 @@ func (m *thirdPartyGatewayManager) enqueueError(req thirdPartyIncomingRequest, r
 		Type:             "error",
 		Error:            code,
 		Text:             text,
+		Metadata:         map[string]string{"acp_turn": "final"},
 	})
 }
 
@@ -775,6 +776,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 			ReplyToMessageID: req.MessageID,
 			Type:             thirdPartyGatewayMessageText.String(),
 			Text:             reply,
+			Metadata:         map[string]string{"acp_turn": "final"},
 		})
 		return
 	}
@@ -784,6 +786,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 			ReplyToMessageID: req.MessageID,
 			Type:             "text",
 			Text:             i18n.T(i18n.MsgLLMNotConfigured, "zh"),
+			Metadata:         map[string]string{"acp_turn": "final"},
 		})
 		return
 	}
@@ -854,6 +857,9 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 }
 
 func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID, replyTo string, resp *IMAgentResponse) {
+	// acp_turn=final marks terminal messages for ACP bridge turn completion.
+	finalMeta := map[string]string{"acp_turn": "final"}
+	enqueued := false
 	if resp.Text != "" {
 		text := textutil.StripMarkdown(resp.Text)
 		if len(resp.Actions) > 0 {
@@ -866,31 +872,49 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 				text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 			}
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: finalMeta})
+		enqueued = true
 	} else if len(resp.Actions) > 0 {
 		text := "Please reply with an option:"
 		for i, action := range resp.Actions {
 			text += fmt.Sprintf("\n%d. %s", i+1, action.Label)
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "text", Text: text, Metadata: finalMeta})
+		enqueued = true
 	}
 	if resp.Error != "" && resp.Text == "" && len(resp.Actions) == 0 {
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error)})
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "error", Error: "agent_error", Text: textutil.StripMarkdown(resp.Error), Metadata: finalMeta})
+		enqueued = true
 	}
 	if resp.ImageKey != "" {
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey})
+		meta := map[string]string{}
+		if !enqueued {
+			meta["acp_turn"] = "final"
+			enqueued = true
+		}
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "image", ContentType: "image/png", FileName: "image.png", Data: resp.ImageKey, Metadata: meta})
 	}
 	if resp.FileData != "" {
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData})
+		meta := map[string]string{}
+		if !enqueued {
+			meta["acp_turn"] = "final"
+			enqueued = true
+		}
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: resp.FileMimeType, FileName: resp.FileName, Data: resp.FileData, Metadata: meta})
 	}
 	if resp.VoiceData != "" {
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData})
+		meta := map[string]string{}
+		if !enqueued {
+			meta["acp_turn"] = "final"
+			enqueued = true
+		}
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "voice", ContentType: resp.VoiceMimeType, FileName: resp.VoiceFileName, Data: resp.VoiceData, Metadata: meta})
 	}
 	paths := resp.LocalFilePaths
 	if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
 		paths = append([]string{resp.LocalFilePath}, paths...)
 	}
-	for _, p := range paths {
+	for i, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			log.Printf("[thirdparty-mgr] read local file %s error: %v", p, err)
@@ -901,7 +925,22 @@ func (m *thirdPartyGatewayManager) enqueueAgentResponse(clientID, conversationID
 		if ct == "" {
 			ct = "application/octet-stream"
 		}
-		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data)})
+		meta := map[string]string{}
+		if !enqueued && i == len(paths)-1 {
+			meta["acp_turn"] = "final"
+			enqueued = true
+		}
+		m.enqueue(clientID, thirdPartyOutgoingMessage{ConversationID: conversationID, ReplyToMessageID: replyTo, Type: "file", ContentType: ct, FileName: name, Data: base64.StdEncoding.EncodeToString(data), Metadata: meta})
+	}
+	// Ensure ACP bridge always sees a terminal marker even for empty agent results.
+	if !enqueued {
+		m.enqueue(clientID, thirdPartyOutgoingMessage{
+			ConversationID:   conversationID,
+			ReplyToMessageID: replyTo,
+			Type:             "text",
+			Text:             "(no output)",
+			Metadata:         finalMeta,
+		})
 	}
 }
 
@@ -918,6 +957,8 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 		Caption:        reply.Caption,
 		FileName:       reply.FileName,
 		ContentType:    reply.MimeType,
+		// Deferred hub/async replies complete an ACP bridge turn.
+		Metadata: map[string]string{"acp_turn": "final"},
 	}
 	replyKind := normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String())
 	switch {

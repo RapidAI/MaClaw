@@ -247,7 +247,12 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		return IMHandleResponse{Handled: true, ReplyText: tr(lang, msgNeedCode)}, nil
 	}
 	code := parts[0]
-	fastAnswer := strings.TrimSpace(strings.TrimPrefix(args, parts[0]))
+	// Prefer field-join over TrimPrefix(args, code): leading/odd whitespace after
+	// Fields-normalize would leave the whole args string as a false "answer".
+	fastAnswer := ""
+	if len(parts) > 1 {
+		fastAnswer = strings.Join(parts[1:], " ")
+	}
 
 	sv, err := r.Store.GetByCode(ctx, tenantID, code)
 	if err != nil {
@@ -315,6 +320,11 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 				Event:     EventSessionActive,
 			}, nil
 		default: // PhaseAnswering
+			// `/survey CODE 1` while mid-session answers the current question
+			// instead of only re-printing the prompt (common when re-@ the bot).
+			if fastAnswer != "" {
+				return r.handleSessionMessage(ctx, tenantID, existing, fastAnswer, lang)
+			}
 			cur := existing.Cursor
 			if cur < 0 || cur >= len(sv.Questions) {
 				cur = 0
@@ -409,10 +419,15 @@ func (r *Runtime) handleStart(ctx context.Context, tenantID, platform, userID, u
 		}, nil
 	}
 
-	// Start conversational at Q1
+	// Start conversational at Q1. If the user already provided an answer token
+	// (e.g. `/survey CODE 1` on a multi-question survey), apply it immediately
+	// so they do not need an extra round trip for the first question.
 	sess := newAnsweringSession(sessionKey, tenantID, platform, userID, userName, groupID, sv.ID, r.now())
 	if err := r.Store.SaveSession(ctx, sess); err != nil {
 		return IMHandleResponse{}, err
+	}
+	if fastAnswer != "" {
+		return r.handleSessionMessage(ctx, tenantID, sess, fastAnswer, lang)
 	}
 	prompt := FormatQuestionPrompt(sv.Questions[0], 0, len(sv.Questions), lang)
 	intro := tr(lang, msgStartIntro, sv.Title)

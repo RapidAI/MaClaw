@@ -230,6 +230,12 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		"protocol": llmCfg.Protocol,
 		"wire_api": llmCfg.WireAPI,
 	}
+	if result.RecordAudio != nil {
+		metadata["record_audio"] = "true"
+		metadata["recording_title"] = result.RecordAudio.Title
+		metadata["recording_purpose"] = result.RecordAudio.Purpose
+		metadata["recording_hint"] = result.RecordAudio.Hint
+	}
 	if cb.moaActive && cb.moaPreset != nil {
 		metadata["moa_preset"] = cb.moaPreset.Name
 		if cb.moaSource != "" {
@@ -624,6 +630,19 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 
 func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 	return []coreToolSpec{
+		{
+			Name:        "record_audio",
+			Description: "Start an interactive long-form meeting recording. The host opens a native recording UI and resumes after the user stops it. Use this immediately for an explicit request to record a meeting; never use it for an IM voice note.",
+			Enabled:     true,
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"title":   map[string]interface{}{"type": "string", "description": "Meeting title"},
+					"purpose": map[string]interface{}{"type": "string", "description": "What the recording is for"},
+					"hint":    map[string]interface{}{"type": "string", "description": "Short user-facing instruction"},
+				},
+			},
+		},
 		{
 			Name:        "bash",
 			Description: bashToolDescription(c.localBashTenantID, c.localBashUserID),
@@ -1264,6 +1283,11 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
 	}
 	switch strings.TrimSpace(name) {
+	case "record_audio":
+		// Interactive hosts (desktop and mobile) recognize the marker and open
+		// their native recording UI. Keeping this in the shared executor avoids
+		// a mobile-only keyword fork from the assistant tool contract.
+		return agent.ToolExecutionResult{Result: agent.ToolRecordAudio(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "bash":
 		if !c.allowLocalBash {
 			return agent.ToolExecutionResult{Result: "Error: local bash is disabled for this MaClawSrv deployment", Outcome: agent.ToolExecutionOutcomeError}

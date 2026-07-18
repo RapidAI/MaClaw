@@ -2,24 +2,25 @@ package computeruse
 
 import "testing"
 
-func TestShouldActivate(t *testing.T) {
+func TestHasExplicitTrigger(t *testing.T) {
 	cases := []struct {
 		in   string
 		want bool
 	}{
 		{"@computer open notepad", true},
-		{"帮我在桌面操作记事本输入 hello", true},
-		{"点击屏幕上的保存按钮", true},
 		{"用 computer use 测一下计算器", true},
-		{"open notepad and type hello", true},
-		{"写一个排序算法", false},
-		{"在浏览器里点击购买", false},
-		{"打开网页 https://example.com", false},
+		{"try computer_use mode", true},
+		{"computer-use please", true},
+		// Semantic desktop phrasing is NOT an explicit trigger — activation is
+		// decided by the unified intent classifier (corelib/intent).
+		{"打开word程序写一份简历", false},
+		{"点击屏幕上的保存按钮", false},
+		{"open notepad and type hello", false},
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := ShouldActivate(c.in); got != c.want {
-			t.Errorf("ShouldActivate(%q)=%v want %v", c.in, got, c.want)
+		if got := HasExplicitTrigger(c.in); got != c.want {
+			t.Errorf("HasExplicitTrigger(%q)=%v want %v", c.in, got, c.want)
 		}
 	}
 }

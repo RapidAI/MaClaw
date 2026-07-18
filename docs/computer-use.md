@@ -32,7 +32,9 @@ LLM 输出 computer_click(ref=e3) 等
 
 ## 自动激活
 
-当用户话术匹配桌面操控意图（如「桌面操作」「打开记事本」「@computer」）或本进程已执行过 `computer_*` 时：
+激活判断走**统一意图分类器（UIC）语义识别**（embedding 快速通道，不走 LLM）：用户话术被分类为 `computer_use` 意图（如「打开word程序写简历」「点击窗口上的确定按钮」「看看屏幕上显示什么」）时即激活；`@computer` / `computer use` 为显式触发语法，始终生效；本进程已执行过 `computer_*` 时保持激活。分类器不可用（嵌入模型未就绪）时门保持关闭，仅显式触发可用。
+
+满足以上任一条件时：
 
 1. 系统提示词注入 Computer Use playbook  
 2. 路由强制保留 `computer_*` 工具  

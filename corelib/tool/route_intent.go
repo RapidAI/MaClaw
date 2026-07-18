@@ -27,6 +27,9 @@ type RouteIntent struct {
 type RouteOptions struct {
 	// Intent is an optional LLM (or test) rewrite of the user message.
 	Intent *RouteIntent
+	// SkipUnifiedClassifier skips full UIC fusion (tree/LLM channels, multi-second).
+	// Used by ACP Mode B so editor turns stay responsive; BM25/hybrid still run.
+	SkipUnifiedClassifier bool
 }
 
 // MinRouteIntentConfidence is the floor below which a rewrite is ignored.
@@ -44,8 +47,8 @@ var toolFamilyMembers = map[string][]string{
 	"browser":   {"browser"},
 	"ssh":       {"ssh"},
 	"office":    {"office", "generate_pdf", "send_file"},
-	"search":    {"web_search", "web_fetch", "session_search", "memory"},
-	"files":     {"read_file", "write_file", "edit_file", "list_directory", "bash"},
+	"search":    {"web_search", "web_fetch", "download_file", "session_search", "memory"},
+	"files":     {"read_file", "write_file", "edit_file", "list_directory", "bash", "download_file"},
 	"memory":    {"memory"},
 	"coding":    {"bash", "read_file", "write_file", "edit_file", "ripgrep", "Glob"},
 }
@@ -93,6 +96,7 @@ func isTrivialRouteMessage(msg string) bool {
 		"ok", "okay", "yes", "y", "no", "n",
 		"是", "否", "对", "對", "继续", "繼續", "确认", "確認", "取消",
 		"谢谢", "謝謝", "感谢", "感謝",
+		"你好", "你好呀", "你好啊", "哈喽", "hi", "hello", "hey",
 		"1", "2", "3", "4", "5",
 		"开工", "開工":
 		return true

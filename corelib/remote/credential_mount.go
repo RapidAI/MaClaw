@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/maclawpath"
 )
 
 // SCPUploader abstracts the file upload and command execution capabilities
@@ -53,31 +55,21 @@ func NewCredentialMounterWithUploader(uploader SCPUploader) *CredentialMounter {
 	return &CredentialMounter{uploader: uploader}
 }
 
-// ExpandCredentialPath expands ~ to the user's home directory and expands
-// environment variables ($HOME, %USERPROFILE%, etc.) in a credential file path.
-// Works cross-platform on Windows, macOS, and Linux.
+// ExpandCredentialPath expands environment variables ($HOME, …) and a leading
+// "~" / "~/…" / "~\…" to an absolute local path. Works cross-platform.
+//
+// Note: Go's os.ExpandEnv only expands $VAR / ${VAR} forms (not %USERPROFILE%).
 func ExpandCredentialPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("credential path is empty")
 	}
 
-	// Expand ~ to home directory
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("expand ~: %w", err)
-		}
-		// Handle both ~/path and ~\path (Windows)
-		path = home + path[1:]
-	}
-
-	// Expand environment variables ($HOME, %USERPROFILE%, etc.)
+	// Env first so $HOME/… becomes absolute before home-tilde handling.
 	path = os.ExpandEnv(path)
-
-	// Clean the path for the current OS
+	path = maclawpath.ExpandHomePath(path)
 	path = filepath.Clean(path)
 
-	// Convert to absolute path if not already
 	if !filepath.IsAbs(path) {
 		abs, err := filepath.Abs(path)
 		if err != nil {

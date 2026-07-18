@@ -265,6 +265,65 @@ func TestLocalizedAnswerErrorSentinels(t *testing.T) {
 	}
 }
 
+// TestIMFastAnswerExtractionWithOddSpacing: multi-space between code and answer
+// must still parse the answer token (not re-include the short code).
+func TestIMFastAnswerExtractionWithOddSpacing(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	pub := publishIMTestSurvey(t, st, "SpaceFast", []string{"g"}, singleChoiceQuestions())
+	// Extra spaces between code and answer (Fields-normalized).
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey  " + pub.ShortCode + "   1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Event != EventResponseSubmitted {
+		t.Fatalf("odd-spacing fast path event=%q reply=%q", r.Event, r.ReplyText)
+	}
+}
+
+// TestIMMultiQuestionFastAnswerOnStart: `/survey CODE 1` on a multi-question
+// survey applies Q1 immediately and prompts Q2 (no wasted round trip).
+func TestIMMultiQuestionFastAnswerOnStart(t *testing.T) {
+	st := openTestDB(t)
+	ctx := context.Background()
+	rt := NewRuntime(st)
+	twoQ := []Question{
+		{ID: "q1", Type: "single_choice", Title: "A", Required: true,
+			Options: []Option{{ID: "a", Label: "是"}, {ID: "b", Label: "否"}}},
+		{ID: "q2", Type: "single_choice", Title: "B", Required: true,
+			Options: []Option{{ID: "a", Label: "是"}, {ID: "b", Label: "否"}}},
+	}
+	pub := publishIMTestSurvey(t, st, "MultiFast", []string{"g"}, twoQ)
+	r, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode + " 1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Event != EventSessionActive {
+		t.Fatalf("event=%q want session_active", r.Event)
+	}
+	if !strings.Contains(r.ReplyText, "【2/2】") && !strings.Contains(r.ReplyText, "[2/2]") {
+		t.Fatalf("want Q2 prompt after fast Q1 answer, reply=%q", r.ReplyText)
+	}
+	// Resume with another fast answer should complete.
+	r2, err := rt.Handle(ctx, "t", IMHandleRequest{
+		Platform: PlatformLansenger, UserID: "u1", ChatType: "group", GroupID: "g",
+		Text: "/survey " + pub.ShortCode + " 2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.Event != EventResponseSubmitted {
+		t.Fatalf("resume+answer event=%q reply=%q", r2.Event, r2.ReplyText)
+	}
+}
+
 // TestIMFirstQuestionHidesPrevHint: Q1 prompt offers cancel only; Q2 adds prev.
 func TestIMFirstQuestionHidesPrevHint(t *testing.T) {
 	q := singleChoiceQuestions()[0]

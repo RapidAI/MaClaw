@@ -677,9 +677,9 @@ export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[
             {
                 heading: '群内使用',
                 lines: [
-                    '群内须 @机器人 后发送（问卷已发布且绑定本群）',
+                    '必须 @出问卷的机器人（勿 @ 其他 AI），问卷须已发布且绑定本群',
                     '/survey <短码> — 开始填写',
-                    '/survey <短码> <答案> — 单题快投',
+                    '/survey <短码> <答案> — 答第 1 题（单题可直接交卷；多题进入下一题）',
                     '问卷 <短码> 或 调查 <短码> — 同上',
                     '/survey list — 本群进行中的问卷',
                     '/survey status · cancel · help',
@@ -688,14 +688,17 @@ export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[
             {
                 heading: '答题与修改',
                 lines: [
-                    '答题中：回复编号/文本；「上一题」回退；「取消」结束',
-                    '允许修改时：提交后可 /survey <短码> 再选「修改」',
+                    '多题：一题一答，【1/N】答完自动【2/N】…',
+                    '答题中：@本机器人 回复选项序号（如 1）或文字；也可用全角数字 １',
+                    '「上一题」回退；「取消」结束；选填题「跳过」',
+                    '允许修改时：提交后 /survey <短码> 再选「修改」',
                 ],
             },
             {
                 heading: '桌面端',
                 lines: [
                     'Ctrl+S 保存草稿；结果页可复制摘要 / 打印 / 导出 Excel',
+                    '群绑定区可点「刷新群列表」拉取机器人已入群',
                 ],
             },
         ];
@@ -704,23 +707,26 @@ export function buildSurveyOperatorHelp(isZh: boolean): SurveyOperatorHelpGroup[
         {
             heading: 'In a group',
             lines: [
-                '@bot first (survey published and bound to the group)',
+                '@the survey bot only (not other AIs); survey published & bound',
                 '/survey <code> — start',
-                '/survey <code> <answer> — single-question fast path',
+                '/survey <code> <answer> — answer Q1 (submit if single-Q; else advance)',
                 '/survey list · status · cancel · help',
             ],
         },
         {
             heading: 'Answering',
             lines: [
-                'Send option number/text; 上一题 = prev; 取消 = cancel',
-                'If updates allowed: re-run /survey <code> then 修改',
+                'Multi-question: one answer per message; bot advances [1/N] → [2/N]',
+                '@this bot with option number (1) or text; fullwidth １ OK',
+                'prev / cancel / skip (optional questions)',
+                'If updates allowed: /survey <code> then modify',
             ],
         },
         {
             heading: 'Desktop',
             lines: [
                 'Ctrl+S saves draft; results support summary / print / Excel export',
+                'Use Refresh groups under bindings after the bot joins a group',
             ],
         },
     ];

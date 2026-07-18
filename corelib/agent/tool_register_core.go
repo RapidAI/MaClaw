@@ -9,6 +9,8 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
@@ -411,11 +413,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "web_fetch",
-		Description: "Fetch and extract text content from a URL. Supports encoding detection and HTML extraction.",
+		Description: "Fetch and extract text content from a URL. Supports encoding detection and HTML extraction. For binary/PDF downloads set save_path (relative paths use the session working directory). Prefer download_file for simple HTTP downloads instead of Hub wget/curl skills.",
 		Properties: map[string]interface{}{
 			"url":       map[string]string{"type": "string", "description": "URL to fetch"},
 			"render_js": map[string]string{"type": "boolean", "description": "Use Chrome to render JS (optional, default false)"},
-			"save_path": map[string]string{"type": "string", "description": "Save file path (optional, downloads file instead of returning text)"},
+			"save_path": map[string]string{"type": "string", "description": "Save file path (optional, downloads file instead of returning text; relative to working directory)"},
 			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
 			"offset":    map[string]string{"type": "integer", "description": "Character offset for pagination (default 0)"},
 			"max_chars": map[string]string{"type": "integer", "description": "Max characters to return (optional)"},
@@ -429,6 +431,49 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 				return deps.WebFetchHandler(args)
 			}
 			return "Web fetch is not configured."
+		}),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "download_file",
+		Description: "Download an HTTP/HTTPS URL into the session working directory and return the absolute saved path. Preferred for PDFs and generic file downloads; do not install ClawHub wget/curl skills for this.",
+		Properties: map[string]interface{}{
+			"url":       map[string]string{"type": "string", "description": "URL to download"},
+			"save_path": map[string]string{"type": "string", "description": "Destination path (optional; relative to working directory; defaults to URL basename)"},
+			"output":    map[string]string{"type": "string", "description": "Alias for save_path"},
+			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds (optional)"},
+		},
+		Required: []string{"url"},
+		HandlerCtx: guardedHandlerCtx(deps, "download_file", func(ctx context.Context, args map[string]interface{}) string {
+			// Copy args so we can fill save_path without mutating caller maps.
+			callArgs := map[string]interface{}{}
+			for k, v := range args {
+				callArgs[k] = v
+			}
+			savePath := strings.TrimSpace(StringArg(callArgs, "save_path"))
+			if savePath == "" {
+				savePath = strings.TrimSpace(StringArg(callArgs, "output"))
+			}
+			if savePath == "" {
+				savePath = strings.TrimSpace(StringArg(callArgs, "dest"))
+			}
+			if savePath == "" {
+				rawURL := strings.TrimSpace(StringArg(callArgs, "url"))
+				name := filepath.Base(strings.Split(rawURL, "?")[0])
+				name = strings.TrimSpace(name)
+				if name == "" || name == "." || name == "/" || name == "\\" {
+					name = "download.bin"
+				}
+				savePath = name
+			}
+			callArgs["save_path"] = savePath
+			if deps.WebFetchHandlerCtx != nil {
+				return deps.WebFetchHandlerCtx(ctx, callArgs)
+			}
+			if deps.WebFetchHandler != nil {
+				return deps.WebFetchHandler(callArgs)
+			}
+			return "Download is not configured."
 		}),
 	})
 

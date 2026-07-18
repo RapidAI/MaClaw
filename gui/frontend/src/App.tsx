@@ -946,27 +946,41 @@ function App() {
     // When true, html/body/.app-viewport must also be transparent.
     const [webviewTransparent, setWebviewTransparent] = useState(false);
     // Confirm from backend (authoritative) on mount.
+    // Match 2026-07-16 behavior for shell paint:
+    // - Win10 transparent: force html/body transparent for CSS radius clip
+    // - otherwise clear inline bg and let CSS --theme-page-bg own the color
+    //   (writing scheme pageBg here mismatched #App and showed right/bottom 白边)
     useEffect(() => {
         Promise.all([
             callBackend(() => IsNativeRoundedCorners()).catch(() => null),
             callBackend(() => IsWebviewTransparent()).catch(() => null),
         ]).then(([rounded, transparent]) => {
             if (rounded !== null) setNativeRounded(rounded);
-            if (transparent) setWebviewTransparent(true);
+            if (transparent) {
+                setWebviewTransparent(true);
+                document.documentElement.style.backgroundColor = 'transparent';
+                document.body.style.backgroundColor = 'transparent';
+            } else {
+                document.documentElement.style.backgroundColor = '';
+                document.body.style.backgroundColor = '';
+            }
         });
     }, []);
-    // Keep document shell paint color aligned with the active page theme.
-    // Win10 transparent webview must stay transparent so CSS border-radius
-    // clips to the desktop; elsewhere, mismatched body/html paint shows as
-    // a light frame (right/bottom 白边) around #App corners / zoom gaps.
+    // When theme mode changes after mount, keep non-transparent shells on CSS tokens
+    // (same as #App) instead of a different scheme hex that can fringe at scale edges.
     useEffect(() => {
-        const color = webviewTransparent
-            ? 'transparent'
-            : (aiThemeMode === 'dark'
-                ? getAssistantDarkScheme(aiDarkSchemeId).cssVars.pageBg
-                : getAssistantLightScheme(aiLightSchemeId).cssVars.pageBg);
-        document.documentElement.style.backgroundColor = color;
-        document.body.style.backgroundColor = color;
+        const shellPageBg = aiThemeMode === 'dark'
+            ? getAssistantDarkScheme(aiDarkSchemeId).cssVars.pageBg
+            : getAssistantLightScheme(aiLightSchemeId).cssVars.pageBg;
+        document.documentElement.style.setProperty('--theme-page-bg', shellPageBg);
+        document.body.style.setProperty('--theme-page-bg', shellPageBg);
+        if (webviewTransparent) {
+            document.documentElement.style.backgroundColor = 'transparent';
+            document.body.style.backgroundColor = 'transparent';
+            return;
+        }
+        document.documentElement.style.backgroundColor = '';
+        document.body.style.backgroundColor = '';
     }, [aiThemeMode, aiDarkSchemeId, aiLightSchemeId, webviewTransparent]);
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';

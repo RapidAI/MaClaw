@@ -469,6 +469,16 @@ func NewRouter(
 	mux.HandleFunc("GET /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
 	mux.HandleFunc("POST /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
 	mux.HandleFunc("GET /api/mobile/agent/jobs/{jobId}", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
+	// Meeting recordings use a resumable audio protocol, separate from the
+	// 25 MiB document-import path.
+	mux.HandleFunc("POST /api/mobile/meeting-recordings", MobileMeetingRecordingsHandler(identity))
+	mux.HandleFunc("GET /api/mobile/meeting-recordings/capabilities", MobileMeetingRecordingCapabilitiesHandler(identity))
+	mux.HandleFunc("GET /api/mobile/meeting-recordings/{recordingId}", MobileMeetingRecordingsHandler(identity))
+	mux.HandleFunc("DELETE /api/mobile/meeting-recordings/{recordingId}", MobileMeetingRecordingsHandler(identity))
+	mux.HandleFunc("DELETE /api/mobile/meeting-recordings/{recordingId}/audio", MobileMeetingRecordingsHandler(identity))
+	mux.HandleFunc("PUT /api/mobile/meeting-recordings/{recordingId}/chunks/{chunkIndex}", MobileMeetingRecordingsHandler(identity))
+	mux.HandleFunc("POST /api/mobile/meeting-recordings/{recordingId}/complete", MobileMeetingRecordingsHandler(identity))
+	mux.HandleFunc("POST /api/mobile/meeting-recordings/{recordingId}/process", MobileMeetingRecordingsHandler(identity))
 	mux.HandleFunc("GET /api/mobile/agent/mcp", MobileAgentMCPHandler(identity))
 	mux.HandleFunc("PUT /api/mobile/agent/mcp", MobileAgentMCPHandler(identity))
 	mux.HandleFunc("GET /api/mobile/agent/mcp/health", MobileAgentMCPHealthHandler(identity))
@@ -863,9 +873,9 @@ func NewRouter(
 		runtimeExec := newHubRuntimeExecutorAdapter(executor)
 		runtimeAPI := workflow.NewRuntimeAPI(runtimeExec, instStore, auditStore, &workflow.FormValidator{}, wfStore)
 		runtimeAPI.SetWithdrawalHandler(
-				workflow.NewWithdrawalHandler(instStore, auditStore, nil, nil).
-					SetEscalationManager(escalationMgr),
-			)
+			workflow.NewWithdrawalHandler(instStore, auditStore, nil, nil).
+				SetEscalationManager(escalationMgr),
+		)
 		runtimeAPI.SetDirectoryService(workflow.NewDirectoryService(instStore, confirmStore, newHubNodeExecStoreAdapter(instStore)))
 		runtimeAPI.RegisterRoutes(mux, workflowUserAuth)
 

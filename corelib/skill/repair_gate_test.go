@@ -20,6 +20,44 @@ func TestRepairGate_NilExecutor_PassesByDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultSandboxRejectsUnsupportedAction(t *testing.T) {
+	// Historically shell_tool soft-passed as "no bash steps". After the fix,
+	// unsupported actions (that cannot normalize) must fail the sandbox runner.
+	exec := NewDefaultSandboxExecutor()
+	ok, _, err := exec.RunInSandbox(
+		context.Background(),
+		&corelib.NLSkillEntry{Name: "bad"},
+		[]corelib.NLSkillStep{{Action: "totally_unknown_action", Params: map[string]interface{}{}}},
+		map[string]string{"url": "https://example.com"},
+		5*time.Second,
+	)
+	if ok || err == nil {
+		t.Fatalf("expected unsupported action to fail sandbox, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDefaultSandboxNormalizesShellToolToBash(t *testing.T) {
+	// shell_tool with a command becomes bash and is eligible for sandbox exec.
+	// Use a harmless command so verification can pass when the shell is available.
+	exec := NewDefaultSandboxExecutor()
+	ok, out, err := exec.RunInSandbox(
+		context.Background(),
+		&corelib.NLSkillEntry{Name: "wget-like"},
+		[]corelib.NLSkillStep{{
+			Action: "shell_tool",
+			Params: map[string]interface{}{"command": "echo ok"},
+		}},
+		map[string]string{},
+		10*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("sandbox err: %v out=%s", err, out)
+	}
+	if !ok {
+		t.Fatalf("expected shell_tool→bash sandbox pass, out=%s", out)
+	}
+}
+
 func TestRepairGate_EmptyHistoricalArgs_PassesByDefault(t *testing.T) {
 	gate := NewRepairGate(RepairGateConfig{}, &mockSandboxExecutor{alwaysFail: true})
 	result, err := gate.Verify(context.Background(), &corelib.NLSkillEntry{Name: "test"}, nil, nil)

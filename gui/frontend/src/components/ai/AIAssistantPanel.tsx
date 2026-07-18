@@ -1080,6 +1080,48 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         // codingSessionPlanEditing intentionally omitted to avoid refetch loops while typing.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type, activeTab?.remoteHost]);
+    // Live Todo checklist while multi-step pure-coding (local + remote) runs:
+    // backend emits coding-workbench-steps on each step status change.
+    useEffect(() => {
+        const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
+        const pureCoding = activeTab?.agentMode === "coding_dev" || activeTab?.agentMode === "remote_coding_dev";
+        if (!pureCoding || !projectPath) return;
+        const normPath = (p: string) => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+        const expected = normPath(projectPath);
+        const applySteps = (raw: any) => {
+            if (!Array.isArray(raw)) {
+                setCodingStepStatuses([]);
+                return;
+            }
+            setCodingStepStatuses(raw.map((s: any) => ({
+                index: Number(s.index) || 0,
+                title: String(s.title || ""),
+                status: String(s.status || "pending"),
+                summary: String(s.summary || ""),
+                verify_cmd: String(s.verify_cmd || ""),
+                verify_ok: typeof s.verify_ok === "boolean" ? s.verify_ok : undefined,
+            })));
+        };
+        const off = EventsOn("coding-workbench-steps", (payload: any) => {
+            if (!pureCodingTabRef.current) return;
+            const pp = normPath(String(payload?.project_path || payload?.projectPath || ""));
+            if (pp && expected && pp !== expected) return;
+            if (Array.isArray(payload?.step_statuses) || Array.isArray(payload?.stepStatuses)) {
+                applySteps(payload?.step_statuses ?? payload?.stepStatuses);
+                const plan = String(payload?.execution_plan || payload?.executionPlan || "").trim();
+                if (plan) setCodingExecutionPlan(plan);
+                return;
+            }
+            // Fallback: re-poll status if payload shape unexpected.
+            void GetCodingWorkbenchStatus(projectPath).then((st) => {
+                if (!st) return;
+                applySteps(st.step_statuses);
+                const execPlan = String(st.execution_plan || "").trim();
+                if (execPlan) setCodingExecutionPlan(execPlan);
+            });
+        });
+        return () => { if (typeof off === "function") off(); };
+    }, [activeTab?.id, activeTab?.agentMode, activeTab?.projectPath, activeTab?.type]);
     // After a pure-coding turn finishes, refresh session/execution plan (auto-plan is written mid-turn).
     useEffect(() => {
         const projectPath = activeTab?.type === "project" ? (activeTab.projectPath || "") : "";
@@ -2628,6 +2670,45 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return tab;
     }, [createProjectTab, finishProjectTabPreparing, getTabs, hasProjectTab, loadProjectContext, getTabState, saveTabState, setProjectTabPreparing]);
+
+    // Mode B: VS Code programming agent → open/activate matching project tab so
+    // acp- foreground rounds land in the same workspace session as the agent.
+    useEffect(() => {
+        const off = EventsOn("acp-mode-b-message", (payload: unknown) => {
+            let data: any = payload;
+            try {
+                if (typeof payload === "string") data = JSON.parse(payload);
+            } catch {
+                return;
+            }
+            if (!data || data.role !== "user") return;
+            const projectPath = normalizeProjectSessionPath(String(data.project_path || data.projectPath || ""));
+            if (!projectPath) return;
+            const sessionKey = projectSessionKey(projectPath);
+            const tab = createProjectTabWithContext(projectPath, "VS Code / ACP", {
+                prepareMode: "restore-context",
+                agentMode: "coding_dev",
+            });
+            if (tab?.id) {
+                activateTab(tab.id);
+            }
+            if (sessionKey) {
+                setActiveSessionKey(sessionKey);
+            }
+            logAIPanelDiagnostic({
+                event: "acp_mode_b_open_project",
+                projectPath,
+                sessionKey,
+                requestId: String(data.request_id || ""),
+                tabId: tab?.id || "",
+            });
+        });
+        return () => {
+            if (typeof off === "function") off();
+            else EventsOff("acp-mode-b-message");
+        };
+    }, [activateTab, createProjectTabWithContext]);
+
     const messagesLengthRef = useRef(messages.length);
     messagesLengthRef.current = messages.length;
     const sendMessageForTab = useCallback((text: string, options?: Record<string, unknown>): Promise<boolean> => {
@@ -4840,19 +4921,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
                                                 </div>
                                                 {codingStepStatuses.map((st) => {
+                                                    // Claude Code / Codex-style checklist marks.
                                                     const icon = st.status === "passed"
-                                                        ? "✓"
+                                                        ? "☑"
                                                         : (st.status === "failed" || st.status === "verify_failed")
                                                             ? "✗"
                                                             : st.status === "running"
                                                                 ? "…"
                                                                 : st.status === "skipped"
                                                                     ? "–"
-                                                                    : "○";
+                                                                    : "☐";
                                                     const color = codingStepStatusColor(st.status, !!t.isDark, codingBannerChrome);
                                                     return (
-                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color }}>
-                                                            <span style={{ width: 12, flexShrink: 0 }}>{icon}</span>
+                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} data-status={st.status} style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color }}>
+                                                            <span style={{ width: 14, flexShrink: 0 }}>{icon}</span>
                                                             <span style={{ fontWeight: 600 }}>T{st.index}</span>
                                                             <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{st.title || st.status}</span>
                                                             <span style={{ opacity: 0.8, flexShrink: 0 }}>{st.status}</span>

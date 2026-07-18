@@ -283,9 +283,17 @@ func normalizeFullwidthDigits(s string) string {
 	return b.String()
 }
 
+// trimChoiceNoise strips common mobile trailing punctuation after a choice
+// index (e.g. "1。" / "1、" / "1)") so single-choice answers still parse.
+func trimChoiceNoise(token string) string {
+	token = strings.TrimSpace(token)
+	return strings.TrimRight(token, ".。)）、,，")
+}
+
 // ParseChoiceToken maps user input to a single option id.
 func ParseChoiceToken(q Question, token string) (string, error) {
 	token = strings.TrimSpace(normalizeFullwidthDigits(token))
+	token = trimChoiceNoise(token)
 	if token == "" {
 		return "", ErrEmptyAnswer
 	}

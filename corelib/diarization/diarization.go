@@ -34,6 +34,15 @@ type Config struct {
 	// MergeThreshold is the centroid cosine similarity at which two inferred
 	// clusters are merged. FunASR's CAM++ backend uses 0.78.
 	MergeThreshold float32
+	// SoftMergeThreshold is retained for FunASR-compatible config surfaces and
+	// future soft-join experiments. Automatic clustering currently force-merges
+	// to the duration soft cap after hard merges (MergeThreshold) stop.
+	// Prefer KnownSpeakers (user confirm) when attendee count is known.
+	SoftMergeThreshold float32
+	// SpeechSeconds is the total VAD-positive duration of the recording. When
+	// zero, automatic clustering falls back to MaxSpeakers only. Diarize fills
+	// this in; callers rarely need to set it.
+	SpeechSeconds float64
 	// SegmentDuration and SegmentShift control overlapping speaker windows.
 	SegmentDuration float64
 	SegmentShift    float64
@@ -63,6 +72,17 @@ func (c Config) normalized() Config {
 	if c.MergeThreshold <= 0 || c.MergeThreshold > 1 {
 		c.MergeThreshold = .78
 	}
+	// Soft merges intentionally sit well below FunASR's hard bar so brief
+	// interjections of the same person still rejoin their main cluster.
+	if c.SoftMergeThreshold <= 0 || c.SoftMergeThreshold > 1 {
+		c.SoftMergeThreshold = .55
+	}
+	if c.SoftMergeThreshold > c.MergeThreshold {
+		c.SoftMergeThreshold = c.MergeThreshold
+	}
+	if c.SpeechSeconds < 0 {
+		c.SpeechSeconds = 0
+	}
 	if c.SegmentDuration <= 0 {
 		c.SegmentDuration = 1.5
 	}
@@ -73,6 +93,28 @@ func (c Config) normalized() Config {
 		c.MaxWindows = 240
 	}
 	return c
+}
+
+// automaticSpeakerCap estimates a realistic upper bound on speaker count from
+// total speech duration. Over-segmentation (one short turn → one new Speaker N)
+// is far more common on single-mic phone/desktop recordings than true multi-party
+// meetings that introduce a new talker every few seconds.
+func automaticSpeakerCap(speechSec float64, cfg Config) int {
+	if speechSec <= 0 {
+		return cfg.MaxSpeakers
+	}
+	// ~1 speaker per 20s of speech, floor 2 once there is any real dialogue.
+	est := int(speechSec/20.0) + 1
+	if speechSec >= 2 && est < 2 {
+		est = 2
+	}
+	if est < cfg.MinSpeakers {
+		est = cfg.MinSpeakers
+	}
+	if est > cfg.MaxSpeakers {
+		est = cfg.MaxSpeakers
+	}
+	return est
 }
 
 // Embedder makes an L2-normalized speaker embedding for a 16 kHz mono window.
@@ -98,6 +140,15 @@ func Diarize(pcm []float32, embedder Embedder, config Config) ([]Segment, error)
 	}
 	if len(voice) == 0 {
 		return nil, nil
+	}
+	if config.SpeechSeconds <= 0 {
+		var speech float64
+		for _, s := range voice {
+			if s.end > s.start {
+				speech += s.end - s.start
+			}
+		}
+		config.SpeechSeconds = speech
 	}
 	windows := chunkBounded(voice, pcm, config.SegmentDuration, config.SegmentShift, config.MaxWindows)
 	if len(windows) == 0 {
@@ -312,40 +363,81 @@ func cluster(embs [][]float32, cfg Config) []int {
 	// Agglomerative average-linkage is deterministic and avoids scipy/sklearn at
 	// runtime. It merges the closest centroids until an oracle count is reached,
 	// or until no pair meets FunASR's 0.78 merge rule.
+	//
+	// Automatic mode so a two-person ~30s meeting does not fan out into
+	// Speaker 1..7 from short interjections of the same talker:
+	//  1. hard merge while cosine >= MergeThreshold (FunASR 0.78)
+	//  2. force-merge closest pair while still above softCap / MaxSpeakers
+	// SoftMergeThreshold remains on Config for FunASR-compatible callers; the
+	// duration soft-cap force path is the primary over-segmentation defense.
 	groups := make([][]int, n)
+	centroids := make([][]float32, n)
 	for i := range groups {
 		groups[i] = []int{i}
+		// Copy so later centroid rewrites never alias into the embedding table.
+		centroids[i] = append([]float32(nil), embs[i]...)
 	}
 	target := cfg.KnownSpeakers
 	if target < 1 {
 		target = cfg.MinSpeakers
 	}
+	softCap := cfg.MaxSpeakers
+	if cfg.KnownSpeakers == 0 {
+		softCap = automaticSpeakerCap(cfg.SpeechSeconds, cfg)
+	}
 	for len(groups) > target {
 		bi, bj, best := -1, -1, float32(-2)
 		for i := 0; i < len(groups); i++ {
-			ci := centroid(groups[i], embs)
+			ci := centroids[i]
 			for j := i + 1; j < len(groups); j++ {
-				v := cosine(ci, centroid(groups[j], embs))
+				v := cosine(ci, centroids[j])
 				if v > best {
 					bi, bj, best = i, j, v
 				}
 			}
 		}
-		// Automatic clustering normally stops below the similarity threshold,
-		// but MaxSpeakers is a real upper bound, not merely documentation.  In
-		// a long/noisy recording every analysis window can otherwise become a
-		// distinct "speaker", causing one ASR request per window.
-		mustRespectMax := cfg.KnownSpeakers == 0 && len(groups) > cfg.MaxSpeakers
-		if bi < 0 || (cfg.KnownSpeakers == 0 && !mustRespectMax && best < cfg.MergeThreshold) {
+		if bi < 0 {
 			break
 		}
+		if cfg.KnownSpeakers == 0 {
+			// Closest-first: hard matches always; otherwise keep merging while
+			// above the duration soft cap or MaxSpeakers so short noisy meetings
+			// cannot invent a speaker per analysis window.
+			overCap := len(groups) > softCap || len(groups) > cfg.MaxSpeakers
+			if best < cfg.MergeThreshold && !overCap {
+				break
+			}
+		}
 		groups[bi] = append(groups[bi], groups[bj]...)
+		centroids[bi] = centroid(groups[bi], embs)
 		groups = append(groups[:bj], groups[bj+1:]...)
+		centroids = append(centroids[:bj], centroids[bj+1:]...)
 	}
 	for id, g := range groups {
 		for _, i := range g {
 			labels[i] = id
 		}
+	}
+	// Compact labels to 0..k-1 ordered by earliest window so Speaker 1 is the
+	// first person who speaks in the recording.
+	first := make(map[int]int, len(groups))
+	for i, lab := range labels {
+		if prev, ok := first[lab]; !ok || i < prev {
+			first[lab] = i
+		}
+	}
+	type rank struct{ lab, at int }
+	ranks := make([]rank, 0, len(first))
+	for lab, at := range first {
+		ranks = append(ranks, rank{lab, at})
+	}
+	sort.Slice(ranks, func(i, j int) bool { return ranks[i].at < ranks[j].at })
+	remap := make(map[int]int, len(ranks))
+	for i, r := range ranks {
+		remap[r.lab] = i
+	}
+	for i, lab := range labels {
+		labels[i] = remap[lab]
 	}
 	return labels
 }
@@ -423,6 +515,27 @@ func smooth(in []Segment) []Segment {
 				} else {
 					in[i].Speaker = in[i+1].Speaker
 				}
+			}
+		}
+	}
+	// Collapse speakers that only appear as a single sub-second blip. Keep
+	// anything ≥0.85s so a real short reply from a second person is preserved;
+	// duration soft-cap already handles multi-second over-segmentation.
+	dur := map[int]float64{}
+	count := map[int]int{}
+	for _, s := range in {
+		if s.End > s.Start {
+			dur[s.Speaker] += s.End - s.Start
+			count[s.Speaker]++
+		}
+	}
+	for i := range in {
+		sp := in[i].Speaker
+		if count[sp] == 1 && dur[sp] < .85 && len(dur) > 1 {
+			if i == 0 && len(in) > 1 {
+				in[i].Speaker = in[i+1].Speaker
+			} else if i > 0 {
+				in[i].Speaker = in[i-1].Speaker
 			}
 		}
 	}

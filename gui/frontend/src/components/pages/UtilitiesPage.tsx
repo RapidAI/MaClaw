@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './UtilitiesPage.css';
-import { EventsOn } from '../../../wailsjs/runtime';
+import { EventsOn, BrowserOpenURL } from '../../../wailsjs/runtime';
 import { EVENT_SURVEY_UPDATED } from '../../constants/events';
+import { ConfirmDialog } from '../modals/ConfirmDialog';
 import {
     buildGroupBreakdown,
     buildPublishChecklist,
@@ -39,10 +40,10 @@ import {
     type SurveyListSort,
     type SurveyOperatorHelpGroup,
 } from './utilitiesSurveyEditor';
-import { parseWailsJSON } from './utilitiesParse';
+import { mapLansengerGroupsForSurveyBind, parseWailsJSON } from './utilitiesParse';
 import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetingRecord';
 
-export { parseWailsJSON } from './utilitiesParse';
+export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
 type View = 'home' | 'survey-list' | 'survey-edit' | 'survey-results';
 
@@ -95,6 +96,144 @@ async function getApp(): Promise<any | null> {
     }
 }
 
+/** Stroke icons for home tool cards — same conventions as the AppsPage icon set. */
+const ToolCardIcon = ({ kind }: { kind: 'survey' | 'meeting' | 'vscode' }) => {
+    const common = {
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.8,
+        strokeLinecap: 'round' as const,
+        strokeLinejoin: 'round' as const,
+        'aria-hidden': true,
+    };
+    switch (kind) {
+        case 'survey':
+            return (
+                <svg {...common}>
+                    <rect x="8" y="2" width="8" height="4" rx="1" />
+                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                    <path d="M9 11h6M9 15h4" />
+                </svg>
+            );
+        case 'meeting':
+            return (
+                <svg {...common}>
+                    <rect x="9" y="2" width="6" height="12" rx="3" />
+                    <path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8" />
+                </svg>
+            );
+        case 'vscode':
+            return (
+                <svg {...common}>
+                    <path d="m8 7-5 5 5 5M16 7l5 5-5 5" />
+                </svg>
+            );
+    }
+};
+
+/** Small trailing arrow shown after each tool card CTA label. */
+const ToolCardCtaArrow = () => (
+    <svg
+        className="utilities-tool-card__cta-arrow"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+    >
+        <path d="M4 12h14M13 7l5 5-5 5" />
+    </svg>
+);
+
+/** Structured result of a tool launch attempt (VS Code configure & launch). */
+type LaunchFeedback = {
+    kind: 'success' | 'error';
+    message: string;
+    steps: string[];
+    warnings: string[];
+};
+
+/** Leading icon for the launch-feedback panel. */
+const LaunchFeedbackIcon = ({ kind }: { kind: LaunchFeedback['kind'] }) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {kind === 'success' ? (
+            <>
+                <circle cx="12" cy="12" r="9" />
+                <path d="m8.5 12.3 2.4 2.4 4.6-5.2" />
+            </>
+        ) : (
+            <>
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7.5v5.5M12 16.5h.01" />
+            </>
+        )}
+    </svg>
+);
+
+/** Per-step check mark inside the launch-feedback step list. */
+const LaunchFeedbackStepIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m5 12.5 4.5 4.5L19 7.5" />
+    </svg>
+);
+
+/** Per-warning triangle inside the launch-feedback warning list. */
+const LaunchFeedbackWarningIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 4 21 20H3z" />
+        <path d="M12 10v4M12 17h.01" />
+    </svg>
+);
+
+/** Structured launch result panel: title, step checklist, warnings, dismiss. */
+const LaunchFeedbackPanel = ({
+    feedback,
+    dismissLabel,
+    onDismiss,
+}: {
+    feedback: LaunchFeedback;
+    dismissLabel: string;
+    onDismiss: () => void;
+}) => (
+    <div
+        className={`utilities-launch-feedback utilities-launch-feedback--${feedback.kind}`}
+        role={feedback.kind === 'error' ? 'alert' : 'status'}
+        data-testid="utilities-vscode-hint"
+    >
+        <span className="utilities-launch-feedback__icon" aria-hidden>
+            <LaunchFeedbackIcon kind={feedback.kind} />
+        </span>
+        <div className="utilities-launch-feedback__body">
+            <div className="utilities-launch-feedback__title">{feedback.message}</div>
+            {feedback.steps.length > 0 ? (
+                <ul className="utilities-launch-feedback__steps">
+                    {feedback.steps.map((step) => (
+                        <li key={step}><LaunchFeedbackStepIcon />{step}</li>
+                    ))}
+                </ul>
+            ) : null}
+            {feedback.warnings.length > 0 ? (
+                <ul className="utilities-launch-feedback__warnings">
+                    {feedback.warnings.map((warning) => (
+                        <li key={warning}><LaunchFeedbackWarningIcon />{warning}</li>
+                    ))}
+                </ul>
+            ) : null}
+        </div>
+        <button
+            type="button"
+            className="utilities-launch-feedback__dismiss"
+            aria-label={dismissLabel}
+            onClick={onDismiss}
+        >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+    </div>
+);
+
 /** Operator help panel: grouped IM command usage, shared by list and editor views. */
 const SurveyHelpPanel = ({ title, groups }: { title: string; groups: SurveyOperatorHelpGroup[] }) => (
     <div id="survey-help-panel" className="utilities-help" data-testid="survey-help-panel">
@@ -125,6 +264,12 @@ export const UtilitiesPage = ({
     const isZh = !lang || lang.startsWith('zh');
     const [view, setView] = useState<View>('home');
     const [meetingStarting, setMeetingStarting] = useState(false);
+    const [vscodeStarting, setVscodeStarting] = useState(false);
+    const [vscodeExtStarting, setVscodeExtStarting] = useState(false);
+    const [vscodeFeedback, setVscodeFeedback] = useState<LaunchFeedback | null>(null);
+    const [vscodeInstallPrompt, setVscodeInstallPrompt] = useState<string | null>(null);
+    const [acpStatusLine, setAcpStatusLine] = useState('');
+    const [acpState, setAcpState] = useState<'running' | 'stopped' | 'disabled' | null>(null);
     const [surveys, setSurveys] = useState<SurveySummary[]>([]);
     const [error, setError] = useState('');
     const [hubOk, setHubOk] = useState<boolean | null>(null);
@@ -140,6 +285,8 @@ export const UtilitiesPage = ({
         createEmptyQuestion('single_choice', [], { title: isZh ? '满意吗' : 'Satisfied?', optA: isZh ? '是' : 'Yes', optB: isZh ? '否' : 'No' }),
     ]);
     const [groups, setGroups] = useState<Array<{ group_id: string; name: string }>>([]);
+    const [groupsLoading, setGroupsLoading] = useState(false);
+    const [groupsError, setGroupsError] = useState('');
     const [groupQuery, setGroupQuery] = useState('');
     const [stats, setStats] = useState<any>(null);
     const [responses, setResponses] = useState<any[]>([]);
@@ -156,6 +303,8 @@ export const UtilitiesPage = ({
     const [textAnswerQuery, setTextAnswerQuery] = useState('');
     const [showHelp, setShowHelp] = useState(false);
     const meetingStartingRef = useRef(false);
+    const vscodeStartingRef = useRef(false);
+    const vscodeExtStartingRef = useRef(false);
     const mountedRef = useRef(true);
     const selectedIdRef = useRef<string | null>(null);
     const viewRef = useRef<View>(view);
@@ -172,6 +321,38 @@ export const UtilitiesPage = ({
             mountedRef.current = false;
         };
     }, []);
+
+    // Mode B / VS Code ACP readiness line on home.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const mod = await getApp();
+                const st = mod?.GetACPHostStatus ? await mod.GetACPHostStatus() : null;
+                if (cancelled || !mountedRef.current || !st) return;
+                const running = !!st.running;
+                const enabled = st.enabled !== false;
+                const addr = st.address || (st.host && st.port ? `${st.host}:${st.port}` : '');
+                if (!enabled) {
+                    setAcpState('disabled');
+                    setAcpStatusLine(isZh ? 'ACP Mode B：已关闭（设置 → 编程工具）' : 'ACP Mode B: disabled (Settings → Programming tools)');
+                } else if (running) {
+                    setAcpState('running');
+                    setAcpStatusLine(isZh
+                        ? `ACP Mode B：运行中 ${addr}（GUI AI 助手 = 编程 agent）`
+                        : `ACP Mode B: running ${addr} (GUI AI assistant = programming agent)`);
+                } else {
+                    setAcpState('stopped');
+                    setAcpStatusLine(isZh
+                        ? 'ACP Mode B：未运行（打开 GUI 后自动启动，或点「启动 VS Code」）'
+                        : 'ACP Mode B: not running (starts with GUI, or use Launch VS Code)');
+                }
+            } catch {
+                // ignore
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [isZh, view]);
 
     const copyText = async (text: string, okMsg: string) => {
         const value = (text || '').trim();
@@ -370,15 +551,30 @@ export const UtilitiesPage = ({
     const t = useMemo(() => ({
         title: isZh ? '实用工具' : 'Utilities',
         subtitle: isZh
-            ? '面向群场景与日常办公的轻量工具（问卷、会议记录等）'
-            : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, …)',
+            ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'
+            : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)',
         surveyCard: isZh ? '调查问卷' : 'Surveys',
         surveyDesc: isZh ? '创建问卷、绑定蓝信群、查看结果并导出 Excel' : 'Create surveys, bind Lansenger groups, view results, export Excel',
         meetingCard: meetingRecordBaseTitle(lang),
         meetingDesc: meetingRecordCardDesc(lang),
+        vscodeCard: isZh ? '启动 VS Code' : 'Launch VS Code',
+        vscodeDesc: isZh
+            ? '自动开启 Gateway、配置 ACP Bridge，在 VS Code 中调用 MaClaw GUI 能力'
+            : 'Enable Gateway, configure ACP Bridge, use MaClaw GUI from VS Code',
+        vscodeExtCard: isZh ? '启动 VS Code（扩展）' : 'Launch VS Code (Extension)',
+        vscodeExtDesc: isZh
+            ? '安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板，不遮挡文件管理器'
+            : 'Install the first-party MaClaw extension — chat stays in the bottom panel, never hides the Explorer',
+        vscodeMissingTitle: isZh ? '未检测到 VS Code' : 'VS Code not found',
+        vscodeMissingMsg: isZh
+            ? '启动前需要先安装 Visual Studio Code。是否打开官方下载页面？'
+            : 'Visual Studio Code is required before launching. Open the official download page?',
+        openDownload: isZh ? '打开下载页' : 'Open download',
+        cancel: isZh ? '取消' : 'Cancel',
         open: isZh ? '进入' : 'Open',
         start: lang === 'zh-Hant' ? '開始' : isZh ? '开始' : 'Start',
         starting: lang === 'zh-Hant' ? '啟動中…' : isZh ? '启动中…' : 'Starting…',
+        configureLaunch: isZh ? '配置并启动' : 'Configure & launch',
         back: isZh ? '返回' : 'Back',
         hubOffline: isZh ? '未连接 Hub。问卷数据保存在 Hub，请先注册/连接 Hub。' : 'Hub is offline. Survey data lives on Hub — connect first.',
         create: isZh ? '新建问卷' : 'New survey',
@@ -454,6 +650,7 @@ export const UtilitiesPage = ({
         shortcutSave: isZh ? 'Ctrl+S 保存草稿' : 'Ctrl+S save draft',
         help: isZh ? '使用说明' : 'How to use',
         hideHelp: isZh ? '收起说明' : 'Hide help',
+        dismiss: isZh ? '关闭提示' : 'Dismiss',
     }), [isZh, lang]);
 
     const handleMeetingRecord = useCallback(async () => {
@@ -470,6 +667,126 @@ export const UtilitiesPage = ({
             if (mountedRef.current) setMeetingStarting(false);
         }
     }, [onStartMeetingRecord]);
+
+    const launchVSCodeVia = useCallback(async (
+        method: 'LaunchVSCodeWithACP' | 'LaunchVSCodeWithACPExtension',
+        startingRef: React.MutableRefObject<boolean>,
+        setStarting: (v: boolean) => void,
+    ) => {
+        // Serialize both launch paths: they share the ACP host, gateway,
+        // bridge install and VS Code CLI — concurrent runs can race.
+        if (vscodeStartingRef.current || vscodeExtStartingRef.current) return;
+        startingRef.current = true;
+        setStarting(true);
+        setVscodeFeedback(null);
+        setError('');
+        try {
+            const mod = await getApp();
+            // Prefer JS binding; also verify the live Wails runtime has the Go method
+            // (stale MaClaw.exe can leave JS wrappers present after wailsjs was updated).
+            const nativeFn = (typeof window !== 'undefined'
+                ? (window as any)?.go?.main?.App?.[method]
+                : undefined);
+            const jsFn = mod?.[method];
+            if (typeof jsFn !== 'function' && typeof nativeFn !== 'function') {
+                throw new Error(isZh
+                    ? `当前构建未包含 ${method}，请重新编译并重启 GUI（不仅 bridge）`
+                    : `${method} is not available — rebuild and restart the GUI (not only the bridge)`);
+            }
+            if (typeof nativeFn !== 'function' && typeof jsFn === 'function') {
+                // JS stub exists but Go binary is old — fail early with clear message.
+                throw new Error(isZh
+                    ? '前端已有绑定，但正在运行的 MaClaw.exe 过旧。请用新编译的 GUI 重启应用。'
+                    : 'Frontend bindings exist but the running MaClaw.exe is outdated. Restart with a freshly built GUI.');
+            }
+            const raw = typeof jsFn === 'function'
+                ? await jsFn()
+                : await nativeFn();
+            const res = (raw && typeof raw === 'object') ? raw as {
+                ok?: boolean;
+                message?: string;
+                steps?: string[];
+                warnings?: string[];
+                needVSCodeInstall?: boolean;
+                vscodeDownloadURL?: string;
+            } : {};
+            // VS Code not installed: prompt the user; on confirm open the
+            // official download page. Applies to both launch paths.
+            if (res.needVSCodeInstall) {
+                if (mountedRef.current) {
+                    setVscodeInstallPrompt(
+                        typeof res.vscodeDownloadURL === 'string' && res.vscodeDownloadURL !== ''
+                            ? res.vscodeDownloadURL
+                            : 'https://code.visualstudio.com/Download');
+                }
+                return;
+            }
+            const steps = Array.isArray(res.steps) ? res.steps.filter(Boolean) : [];
+            const warnings = Array.isArray(res.warnings) ? res.warnings.filter(Boolean) : [];
+            if (!res.ok) {
+                if (mountedRef.current) {
+                    setVscodeFeedback({
+                        kind: 'error',
+                        message: res.message || (isZh ? '启动失败' : 'Launch failed'),
+                        steps: [],
+                        warnings,
+                    });
+                }
+                return;
+            }
+            if (mountedRef.current) {
+                const feedback: LaunchFeedback = {
+                    kind: 'success',
+                    message: res.message || (isZh ? '已启动 VS Code' : 'VS Code launched'),
+                    steps,
+                    warnings,
+                };
+                setVscodeFeedback(feedback);
+                // Success auto-dismisses; errors stay until dismissed or the next attempt.
+                setTimeout(() => {
+                    if (mountedRef.current) {
+                        setVscodeFeedback((cur) => (cur === feedback ? null : cur));
+                    }
+                }, 12000);
+                // Refresh Mode B status line after configure/launch.
+                try {
+                    const st = mod?.GetACPHostStatus ? await mod.GetACPHostStatus() : null;
+                    if (st && mountedRef.current) {
+                        const running = !!st.running;
+                        const addr = st.address || (st.host && st.port ? `${st.host}:${st.port}` : '');
+                        if (running) {
+                            setAcpState('running');
+                            setAcpStatusLine(isZh
+                                ? `ACP Mode B：运行中 ${addr}（GUI AI 助手 = 编程 agent）`
+                                : `ACP Mode B: running ${addr} (GUI AI assistant = programming agent)`);
+                        }
+                    }
+                } catch { /* ignore */ }
+            }
+        } catch (e: any) {
+            if (mountedRef.current) {
+                setVscodeFeedback({
+                    kind: 'error',
+                    message: String(e?.message || e),
+                    steps: [],
+                    warnings: [],
+                });
+            }
+        } finally {
+            startingRef.current = false;
+            if (mountedRef.current) setStarting(false);
+        }
+    }, [isZh]);
+
+    const handleLaunchVSCode = useCallback(
+        () => launchVSCodeVia('LaunchVSCodeWithACP', vscodeStartingRef, setVscodeStarting),
+        [launchVSCodeVia],
+    );
+
+    const handleLaunchVSCodeExt = useCallback(
+        () => launchVSCodeVia('LaunchVSCodeWithACPExtension', vscodeExtStartingRef, setVscodeExtStarting),
+        [launchVSCodeVia],
+    );
 
     const operatorHelp = useMemo(() => buildSurveyOperatorHelp(isZh), [isZh]);
 
@@ -514,6 +831,43 @@ export const UtilitiesPage = ({
             void loadList();
         }
     }, [view, loadList]);
+
+    /** Fetch Lansenger groups the bot has joined (for survey bind UI). */
+    const loadBindableGroups = useCallback(async (opts?: { silent?: boolean }) => {
+        if (!mountedRef.current) return;
+        setGroupsLoading(true);
+        if (!opts?.silent) {
+            setGroupsError('');
+        }
+        try {
+            const mod = await getApp();
+            if (!mountedRef.current) return;
+            if (!mod?.ListLansengerGroups) {
+                setGroups([]);
+                setGroupsError(isZh ? '当前版本不支持拉取群列表' : 'Group list API unavailable in this build');
+                return;
+            }
+            const res = await mod.ListLansengerGroups();
+            if (!mountedRef.current) return;
+            // Wails may return a struct object or a JSON string.
+            const mapped = mapLansengerGroupsForSurveyBind(res);
+            setGroups(mapped);
+            setGroupsError('');
+        } catch (e: any) {
+            if (!mountedRef.current) return;
+            setGroups([]);
+            setGroupsError(String(e?.message || e || (isZh ? '拉取群列表失败' : 'Failed to load groups')));
+        } finally {
+            if (mountedRef.current) setGroupsLoading(false);
+        }
+    }, [isZh]);
+
+    // After create/open, always (re)load joinable groups so "可绑定群" is not stuck empty.
+    useEffect(() => {
+        if (view === 'survey-edit' && selected?.id) {
+            void loadBindableGroups({ silent: true });
+        }
+    }, [view, selected?.id, loadBindableGroups]);
 
     const mapCreateError = (code: string) => {
         if (code === 'choice_needs_two_options') return isZh ? '选择题至少需要 2 个选项' : 'Choice needs 2 options';
@@ -615,17 +969,7 @@ export const UtilitiesPage = ({
             setSelected(detail);
             loadEditorFromDetail(detail);
             setView('survey-edit');
-            try {
-                const g = await mod.ListLansengerGroups?.();
-                const parsed = parseWailsJSON<any>(g);
-                const list = parsed?.groups || parsed?.Groups || (Array.isArray(parsed) ? parsed : []);
-                setGroups((list || []).map((x: any) => ({
-                    group_id: x.group_id || x.GroupID || x.groupId,
-                    name: x.name || x.Name || x.group_id,
-                })).filter((x: any) => x.group_id));
-            } catch {
-                setGroups([]);
-            }
+            // Groups load via useEffect(view + selected.id) → loadBindableGroups.
         } catch (e: any) {
             setError(String(e?.message || e));
         } finally {
@@ -993,43 +1337,113 @@ export const UtilitiesPage = ({
     };
 
     if (view === 'home') {
+        const toolCards: Array<{
+            key: string;
+            icon: 'survey' | 'meeting' | 'vscode';
+            title: string;
+            desc: string;
+            cta: string;
+            starting?: boolean;
+            disabled?: boolean;
+            onClick: () => void;
+        }> = [
+            {
+                key: 'survey',
+                icon: 'survey',
+                title: t.surveyCard,
+                desc: t.surveyDesc,
+                cta: t.open,
+                onClick: () => setView('survey-list'),
+            },
+            {
+                key: 'meeting',
+                icon: 'meeting',
+                title: t.meetingCard,
+                desc: t.meetingDesc,
+                cta: meetingStarting ? t.starting : t.start,
+                starting: meetingStarting,
+                disabled: meetingStarting || !onStartMeetingRecord,
+                onClick: () => { void handleMeetingRecord(); },
+            },
+            {
+                key: 'vscode',
+                icon: 'vscode',
+                title: t.vscodeCard,
+                desc: t.vscodeDesc,
+                cta: vscodeStarting ? t.starting : t.configureLaunch,
+                starting: vscodeStarting,
+                disabled: vscodeStarting || vscodeExtStarting,
+                onClick: () => { void handleLaunchVSCode(); },
+            },
+            {
+                key: 'vscode-ext',
+                icon: 'vscode',
+                title: t.vscodeExtCard,
+                desc: t.vscodeExtDesc,
+                cta: vscodeExtStarting ? t.starting : t.configureLaunch,
+                starting: vscodeExtStarting,
+                disabled: vscodeStarting || vscodeExtStarting,
+                onClick: () => { void handleLaunchVSCodeExt(); },
+            },
+        ];
         return (
             <div className="utilities-page" data-testid="utilities-page">
                 <div className="utilities-page__header">
                     <h1 className="utilities-page__title">{t.title}</h1>
                     <p className="utilities-page__subtitle">{t.subtitle}</p>
+                    {acpStatusLine ? (
+                        <p className="utilities-status-chip" data-state={acpState || undefined} data-testid="utilities-acp-status">
+                            <span className="utilities-status-chip__dot" aria-hidden />
+                            {acpStatusLine}
+                        </p>
+                    ) : null}
+                    {error ? <p className="utilities-error" role="alert">{error}</p> : null}
+                    {vscodeFeedback ? (
+                        <LaunchFeedbackPanel
+                            feedback={vscodeFeedback}
+                            dismissLabel={t.dismiss}
+                            onDismiss={() => setVscodeFeedback(null)}
+                        />
+                    ) : null}
+                    {vscodeInstallPrompt ? (
+                        <ConfirmDialog
+                            title={t.vscodeMissingTitle}
+                            message={t.vscodeMissingMsg}
+                            t={(key: string) => (key === 'confirm' ? t.openDownload : t.cancel)}
+                            onCancel={() => setVscodeInstallPrompt(null)}
+                            onConfirm={() => {
+                                const url = vscodeInstallPrompt;
+                                setVscodeInstallPrompt(null);
+                                try {
+                                    BrowserOpenURL(url);
+                                } catch {
+                                    window.open(url, '_blank', 'noopener');
+                                }
+                            }}
+                        />
+                    ) : null}
                 </div>
                 <div className="utilities-page__grid">
-                    <button
-                        type="button"
-                        className="utilities-tool-card"
-                        data-testid="utilities-survey-card"
-                        onClick={() => setView('survey-list')}
-                    >
-                        <div className="utilities-tool-card__icon" aria-hidden>📋</div>
-                        <div className="utilities-tool-card__body">
-                            <div className="utilities-tool-card__title">{t.surveyCard}</div>
-                            <div className="utilities-tool-card__desc">{t.surveyDesc}</div>
-                        </div>
-                        <span className="utilities-tool-card__cta">{t.open}</span>
-                    </button>
-                    <button
-                        type="button"
-                        className={`utilities-tool-card${meetingStarting ? ' is-starting' : ''}`}
-                        data-testid="utilities-meeting-card"
-                        disabled={meetingStarting || !onStartMeetingRecord}
-                        aria-busy={meetingStarting || undefined}
-                        aria-label={t.meetingCard}
-                        title={t.meetingDesc}
-                        onClick={() => { void handleMeetingRecord(); }}
-                    >
-                        <div className="utilities-tool-card__icon" aria-hidden>🎙️</div>
-                        <div className="utilities-tool-card__body">
-                            <div className="utilities-tool-card__title">{t.meetingCard}</div>
-                            <div className="utilities-tool-card__desc">{t.meetingDesc}</div>
-                        </div>
-                        <span className="utilities-tool-card__cta">{meetingStarting ? t.starting : t.start}</span>
-                    </button>
+                    {toolCards.map((card) => (
+                        <button
+                            key={card.key}
+                            type="button"
+                            className={`utilities-tool-card${card.starting ? ' is-starting' : ''}`}
+                            data-testid={`utilities-${card.key}-card`}
+                            disabled={card.disabled || undefined}
+                            aria-busy={card.starting || undefined}
+                            aria-label={card.title}
+                            title={card.desc}
+                            onClick={card.onClick}
+                        >
+                            <div className="utilities-tool-card__icon" aria-hidden><ToolCardIcon kind={card.icon} /></div>
+                            <div className="utilities-tool-card__body">
+                                <div className="utilities-tool-card__title">{card.title}</div>
+                                <div className="utilities-tool-card__desc">{card.desc}</div>
+                            </div>
+                            <span className="utilities-tool-card__cta">{card.cta}<ToolCardCtaArrow /></span>
+                        </button>
+                    ))}
                 </div>
             </div>
         );
@@ -1867,10 +2281,23 @@ export const UtilitiesPage = ({
                             <h3 id="survey-bindings-heading">{isZh ? '群绑定（蓝信）' : 'Group bindings (Lansenger)'}</h3>
                             <p className="utilities-meta">
                                 {isZh
-                                    ? `已绑定 ${selected.bindings?.length || 0} 个群；发布前至少需要绑定 1 个群。`
-                                    : `${selected.bindings?.length || 0} bound; bind at least one group before publishing.`}
+                                    ? `已绑定 ${selected.bindings?.length || 0} 个群；发布前至少需要绑定 1 个群。机器人入群后可点「刷新」更新列表。`
+                                    : `${selected.bindings?.length || 0} bound; bind at least one group before publishing. Refresh after the bot joins a group.`}
                             </p>
                         </div>
+                        <button
+                            type="button"
+                            className="utilities-btn utilities-btn--ghost"
+                            disabled={busy || groupsLoading}
+                            aria-busy={groupsLoading}
+                            data-testid="survey-refresh-groups"
+                            onClick={() => void loadBindableGroups()}
+                            title={isZh ? '从蓝信重新拉取机器人已加入的群' : 'Reload groups the bot has joined from Lansenger'}
+                        >
+                            {groupsLoading
+                                ? (isZh ? '刷新中…' : 'Refreshing…')
+                                : (isZh ? '刷新群列表' : 'Refresh groups')}
+                        </button>
                     </div>
                     <div className="utilities-bindings__grid">
                         <div className="utilities-bindings__panel">
@@ -1893,10 +2320,43 @@ export const UtilitiesPage = ({
                         <div className="utilities-bindings__panel">
                             <div className="utilities-bindings__available-head">
                                 <h4>{isZh ? '可绑定群' : 'Available groups'}</h4>
-                                <span>{availableGroups.length}</span>
+                                <div className="utilities-bindings__available-actions">
+                                    <span aria-label={isZh ? '可绑定群数量' : 'Available group count'}>{availableGroups.length}</span>
+                                    <button
+                                        type="button"
+                                        className="utilities-btn utilities-btn--ghost utilities-bindings__refresh"
+                                        disabled={busy || groupsLoading}
+                                        aria-busy={groupsLoading}
+                                        data-testid="survey-refresh-groups-inline"
+                                        onClick={() => void loadBindableGroups()}
+                                        title={isZh ? '刷新可用群列表' : 'Refresh available groups'}
+                                    >
+                                        {groupsLoading ? (isZh ? '…' : '…') : (isZh ? '刷新' : 'Refresh')}
+                                    </button>
+                                </div>
                             </div>
-                            {groups.length === 0 ? (
-                                <p className="utilities-meta utilities-bindings__empty">{isZh ? '暂无群列表；请配置蓝信并确认查询权限。' : 'No groups available. Configure Lansenger and confirm access.'}</p>
+                            {groupsError ? (
+                                <p className="utilities-meta utilities-bindings__empty utilities-bindings__error" role="alert">
+                                    {groupsError}
+                                    <button
+                                        type="button"
+                                        className="utilities-link"
+                                        disabled={groupsLoading}
+                                        onClick={() => void loadBindableGroups()}
+                                    >
+                                        {isZh ? '重试' : 'Retry'}
+                                    </button>
+                                </p>
+                            ) : groupsLoading && groups.length === 0 ? (
+                                <p className="utilities-meta utilities-bindings__empty">
+                                    {isZh ? '正在拉取机器人已加入的群…' : 'Loading groups the bot has joined…'}
+                                </p>
+                            ) : groups.length === 0 ? (
+                                <p className="utilities-meta utilities-bindings__empty">
+                                    {isZh
+                                        ? '暂无群列表。请确认蓝信已配置、机器人已入群，并开通群列表查询权限，然后点「刷新群列表」。'
+                                        : 'No groups yet. Confirm Lansenger config, bot membership, and group-list API access, then refresh.'}
+                                </p>
                             ) : (
                                 <>
                                     <input
@@ -1907,12 +2367,12 @@ export const UtilitiesPage = ({
                                         aria-label={isZh ? '搜索可绑定群' : 'Search available groups'}
                                     />
                                     {availableGroups.length === 0 ? (
-                                        <p className="utilities-meta utilities-bindings__empty">{isZh ? '没有匹配的可绑定群' : 'No matching groups'}</p>
+                                        <p className="utilities-meta utilities-bindings__empty">{isZh ? '没有匹配的可绑定群（可能已全部绑定，或搜索无结果）' : 'No matching groups (all bound, or search empty)'}</p>
                                     ) : (
                                         <ul className="utilities-bindings__list utilities-bindings__list--available">
                                             {availableGroups.map((g) => (
                                                 <li key={g.group_id}>
-                                                    <span title={g.name}>{g.name}</span>
+                                                    <span title={`${g.name} (${g.group_id})`}>{g.name || g.group_id}</span>
                                                     <button type="button" className="utilities-btn utilities-btn--primary" disabled={busy || selected.status === 'closed' || selected.status === 'archived'} onClick={() => void bindGroup(g.group_id, g.name)}>{t.bind}</button>
                                                 </li>
                                             ))}

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -328,8 +329,23 @@ func mobileRunCoreAgent(
 		requestID = fmt.Sprintf("mobile-core-%d", now.UnixNano())
 	}
 	content := ""
+	recordingMarker := ""
 	if result != nil {
 		content = strings.TrimSpace(result.Content)
+		if result.Metadata != nil && result.Metadata["record_audio"] == "true" {
+			payload, _ := json.Marshal(map[string]string{
+				"title":   result.Metadata["recording_title"],
+				"purpose": result.Metadata["recording_purpose"],
+				"hint":    result.Metadata["recording_hint"],
+			})
+			recordingMarker = "__RECORD_AUDIO__" + string(payload)
+		}
+	}
+	if recordingMarker != "" {
+		if emit != nil {
+			emit("record_audio", map[string]any{"request": recordingMarker})
+		}
+		content = recordingMarker
 	}
 	return content, requestID, nil
 }
@@ -513,8 +529,8 @@ type mobileHubLLMTransport struct {
 	delegated    mobileLlmAuthorizationRecord
 	useDelegated bool
 
-	mu         sync.Mutex
-	lastReqID  string
+	mu        sync.Mutex
+	lastReqID string
 }
 
 func (t *mobileHubLLMTransport) lastRequestID() string {

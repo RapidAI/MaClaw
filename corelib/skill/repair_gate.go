@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -178,13 +177,24 @@ func NewDefaultSandboxExecutor() *TempDirSandboxExecutor {
 }
 
 // defaultBashSandboxStepRunner executes only bash steps inside the sandbox.
-// Skills with no bash steps return success=true (nothing to verify).
+// Skills with no bash steps soft-pass only when every step is still a supported
+// non-bash GUI action after normalization (craft_tool / poll / call_mcp_tool).
+// Unsupported aliases (historically shell_tool) must fail the gate instead of
+// silently passing with "no bash steps to verify".
 func defaultBashSandboxStepRunner(ctx context.Context, sk *corelib.NLSkillEntry, steps []corelib.NLSkillStep, args map[string]string, workDir string) (bool, string, error) {
+	skillDir := ""
+	if sk != nil {
+		skillDir = sk.SkillDir
+	}
 	bashSteps := make([]corelib.NLSkillStep, 0, len(steps))
 	for _, s := range steps {
-		action := strings.ToLower(strings.TrimSpace(s.Action))
-		if action == "bash" || action == "shell" || action == "run" {
-			bashSteps = append(bashSteps, s)
+		normalized := NormalizeStepForRunnerCopy(s, skillDir)
+		if err := EnsureStepActionSupported(RunnerBackendGUI, normalized.Action); err != nil {
+			return false, "", err
+		}
+		action := NormalizeStepActionName(normalized.Action)
+		if action == "bash" {
+			bashSteps = append(bashSteps, normalized)
 		}
 	}
 	if len(bashSteps) == 0 {

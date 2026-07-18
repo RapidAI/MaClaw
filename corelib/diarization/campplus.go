@@ -236,7 +236,21 @@ func (m *CAMPlus) Embed(pcm []float32) (embedding []float32, err error) {
 	if len(f) < 80*8 {
 		return nil, fmt.Errorf("cam++ audio too short")
 	}
-	return m.embedFbank(f, len(f)/80), nil
+	// The reference frontend (3D-Speaker FBank with mean_nor=True) subtracts the
+	// per-utterance mean of each mel bin before the network. This also removes
+	// any constant log-amplitude offset from recording level differences.
+	frames := len(f) / 80
+	for mel := 0; mel < 80; mel++ {
+		var sum float64
+		for t := 0; t < frames; t++ {
+			sum += float64(f[t*80+mel])
+		}
+		mean := float32(sum / float64(frames))
+		for t := 0; t < frames; t++ {
+			f[t*80+mel] -= mean
+		}
+	}
+	return m.embedFbank(f, frames), nil
 }
 
 // embedFbank is kept separate to enable parity tests against PyTorch feature
@@ -261,10 +275,13 @@ func (m *CAMPlus) embedFbank(feat []float32, frames int) []float32 {
 	x = m.bnRelu(x, 128, (T+1)/2, "xvector.tdnn.nonlinear.batchnorm")
 	T = (T + 1) / 2
 	c := 128
+	// Per-block dilations match the reference CAMPPlus: (12, 24, 16) layers with
+	// dilations (1, 2, 2) — later dense blocks see a wider temporal context.
+	dilations := []int{1, 2, 2}
 	for block, layers := range []int{12, 24, 16} {
 		prefix := fmt.Sprintf("xvector.block%d", block+1)
 		for i := 1; i <= layers; i++ {
-			y := m.denseLayer(x, c, T, fmt.Sprintf("%s.tdnnd%d", prefix, i))
+			y := m.denseLayer(x, c, T, fmt.Sprintf("%s.tdnnd%d", prefix, i), dilations[block])
 			x = catChannels(x, c, y, 32, T)
 			c += 32
 		}
@@ -590,34 +607,61 @@ func (m *CAMPlus) bn(x []float32, c, T int, prefix string, relu bool) []float32 
 	return x
 }
 func (m *CAMPlus) bnRelu(x []float32, c, T int, p string) []float32 { return m.bn(x, c, T, p, true) }
-func (m *CAMPlus) denseLayer(x []float32, c, T int, p string) []float32 {
-	z := m.bnRelu(x, c, T, p+".nonlinear1.batchnorm")
+func (m *CAMPlus) denseLayer(x []float32, c, T int, p string, dilation int) []float32 {
+	// The reference model's nonlinear1 produces a NEW tensor; the carried
+	// dense-block input must stay unmodified for the later channel concat.
+	// bnRelu normalizes in place, so clone first — otherwise accumulated
+	// channels get re-normalized at every layer and activations blow up
+	// exponentially (eventually NaN embeddings).
+	z := m.bnRelu(append([]float32(nil), x...), c, T, p+".nonlinear1.batchnorm")
 	z = m.conv1dBN(z, c, T, p+".linear1", p+".nonlinear2.batchnorm", true)
-	// This 3-tap CAM projection has padding=1 and preserves T. Its original
-	// scalar kernel is the last dominant CAM++ hotspot after 3x3 Conv2d is
-	// lowered to GEMM. Pack each [channel,t-1:t+1] patch and use the same SIMD
-	// GEMM backend; it is effectively a specialized 1-D im2col fusion.
-	local := m.conv1d3SIMD(z, 128, T, p+".cam_layer.linear_local")
-	ctx := make([]float32, 128)
+	// This 3-tap CAM projection preserves T (padding=dilation). CAM++ dense
+	// blocks use per-block dilations (1, 2, 2) for a wider receptive field.
+	local := m.conv1d3SIMD(z, 128, T, p+".cam_layer.linear_local", dilation)
+	// CAM context (reference CAMLayer): per-frame value is the channel's
+	// global mean plus its 100-frame segment mean, expanded back over time.
+	ctx := make([]float32, 128*T)
 	for ch := 0; ch < 128; ch++ {
-		var s float32
+		var sum float32
 		for t := 0; t < T; t++ {
-			s += z[ch*T+t]
+			sum += z[ch*T+t]
 		}
-		ctx[ch] = s/float32(T) + segmentMean(z, ch, T)
+		mean := sum / float32(T)
+		for start := 0; start < T; start += 100 {
+			end := min(start+100, T)
+			var seg float32
+			for t := start; t < end; t++ {
+				seg += z[ch*T+t]
+			}
+			v := mean + seg/float32(end-start)
+			for t := start; t < end; t++ {
+				ctx[ch*T+t] = v
+			}
+		}
 	}
-	a := m.conv1dPoint(ctx, 128, p+".cam_layer.linear1", true)
-	a = m.conv1dPoint(a, 64, p+".cam_layer.linear2", false)
-	for ch := 0; ch < 32; ch++ {
-		gate := 1 / (1 + float32(math.Exp(float64(-a[ch]))))
-		for t := 0; t < T; t++ {
+	// Gate MLP is 1x1 convs over time: y *= sigmoid(linear2(relu(linear1(ctx)))).
+	col := make([]float32, 128)
+	for t := 0; t < T; t++ {
+		for ch := 0; ch < 128; ch++ {
+			col[ch] = ctx[ch*T+t]
+		}
+		a := m.conv1dPoint(col, 128, p+".cam_layer.linear1", true)
+		a = m.conv1dPoint(a, 64, p+".cam_layer.linear2", false)
+		for ch := 0; ch < 32; ch++ {
+			gate := 1 / (1 + float32(math.Exp(float64(-a[ch]))))
 			local[ch*T+t] *= gate
 		}
 	}
 	return local
 }
 
-func (m *CAMPlus) conv1d3SIMD(x []float32, in, T int, prefix string) []float32 {
+// conv1d3SIMD computes a 3-tap dilated Conv1d (stride=1, padding=dilation,
+// preserving T). CAM++ dense blocks 2 and 3 use dilation=2 (receptive field
+// t-2, t, t+2) — see 3D-Speaker CAMPPlus block dilations (1, 2, 2).
+func (m *CAMPlus) conv1d3SIMD(x []float32, in, T int, prefix string, dilation int) []float32 {
+	if dilation < 1 {
+		dilation = 1
+	}
 	wt := m.t(prefix + ".weight")
 	out := wt.shape[0]
 	patches := make([]float32, T*in*3) // [T,in*3]
@@ -625,12 +669,12 @@ func (m *CAMPlus) conv1d3SIMD(x []float32, in, T int, prefix string) []float32 {
 		p := patches[t*in*3 : (t+1)*in*3]
 		for ch := 0; ch < in; ch++ {
 			base := ch * 3
-			if t > 0 {
-				p[base] = x[ch*T+t-1]
+			if t-dilation >= 0 {
+				p[base] = x[ch*T+t-dilation]
 			}
 			p[base+1] = x[ch*T+t]
-			if t+1 < T {
-				p[base+2] = x[ch*T+t+1]
+			if t+dilation < T {
+				p[base+2] = x[ch*T+t+dilation]
 			}
 		}
 	}
@@ -644,22 +688,6 @@ func (m *CAMPlus) conv1d3SIMD(x []float32, in, T int, prefix string) []float32 {
 		}
 	}
 	return y
-}
-func segmentMean(x []float32, ch, T int) float32 {
-	const n = 100
-	var total float32
-	for start := 0; start < T; start += n {
-		end := min(start+n, T)
-		var s float32
-		for t := start; t < end; t++ {
-			s += x[ch*T+t]
-		}
-		v := s / float32(end-start)
-		for t := start; t < end; t++ {
-			total += v
-		}
-	}
-	return total / float32(T)
 }
 func (m *CAMPlus) transit(x []float32, c, T int, p string) []float32 {
 	x = m.bnRelu(x, c, T, p+".nonlinear.batchnorm")

@@ -54,8 +54,9 @@ func NormalizeStepForRunner(step corelib.NLSkillStep, skillDir string) corelib.N
 	normalizeCommonParamAliases(step.Params)
 
 	switch step.Action {
-	case "", "run", "exec", "execute", "command", "shell", "sh", "cmd", "script":
-		if command := firstStringParam(step.Params, "command", "cmd", "run", "script"); command != "" {
+	// shell_tool is a common ClawHub / self-repair alias; GUI runner only accepts bash.
+	case "", "run", "exec", "execute", "command", "shell", "shell_tool", "sh", "cmd", "script":
+		if command := firstStringParam(step.Params, "command", "cmd", "run", "script", "shell_command"); command != "" {
 			step.Action = "bash"
 			step.Params["command"] = normalizeScriptReference(command, skillDir)
 		} else if runtime := normalizeRuntimeName(firstStringParam(step.Params, "language", "lang", "runtime", "interpreter")); runtime != "" && firstStringParam(step.Params, "code", "source") != "" {

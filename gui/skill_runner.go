@@ -519,15 +519,38 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 		target.Type = configuredType
 	}
 
-	// Bug #3: Distinguish needs_setup / disabled from active
+	// Bug #3: Distinguish needs_setup / disabled / needs_review from active
 	switch normalizeSkillEntryStatus(target.Status) {
 	case skillEntryStatusNeedsSetup:
 		return "", fmt.Errorf("skill %q needs setup. Installation was incomplete (missing dependencies or files). Please check the skill directory (%s) and complete configuration", skillName, target.SkillDir)
 	case skillEntryStatusDisabled:
 		return "", fmt.Errorf("skill %q is disabled. Please enable it first", skillName)
+	case skillEntryStatusNeedsReview:
+		hint := skillRunBlockedDownloadHint(target)
+		errMsg := fmt.Sprintf("skill %q is needs_review and cannot run", skillName)
+		if last := strings.TrimSpace(target.LastError); last != "" {
+			errMsg += ": " + last
+		}
+		if hint != "" {
+			errMsg += " " + hint
+		} else {
+			errMsg += ". Prefer download_file / web_fetch(save_path=...) for simple HTTP downloads, or fix/re-enable the skill."
+		}
+		return "", fmt.Errorf("%s", errMsg)
 	case skillEntryStatusActive, skillEntryStatusUnknown:
 	default:
 		return "", fmt.Errorf("skill %q status is %q, expected active", skillName, target.Status)
+	}
+
+	// Preflight: refuse to start skills that still have zero GUI-supported steps
+	// after normalization (prevents install→run loops on broken Hub packages).
+	if compat := cskill.AssessRunnerCompatibility(target, cskill.RunnerBackendGUI); !compat.Runnable && len(target.Steps) > 0 {
+		hint := skillRunBlockedDownloadHint(target)
+		msg := fmt.Sprintf("skill %q is not runnable on GUI runner: %s", skillName, cskill.FormatRunnerCompatReport(compat))
+		if hint != "" {
+			msg += " " + hint
+		}
+		return "", fmt.Errorf("%s", msg)
 	}
 
 	// Guard: reject runs for skills currently undergoing self-repair.
@@ -563,6 +586,9 @@ func (r *SkillRunner) StartRunForOwner(policyOwnerID, skillName string, runArgs 
 
 	templateVars := normalizeSkillRunVars(runArgs)
 	extraEnv := cskill.ExtractRunExtraEnvFromArgs(runArgs)
+	// Inject the owner's project/workbench directory so skills can write
+	// downloads and artifacts under the user-configured workdir instead of %TEMP%.
+	extraEnv = r.injectOwnerWorkDirEnv(policyOwnerID, extraEnv)
 
 	// Mechanism: For contractless skills (no declared params, no required_args,
 	// no {{placeholders}}), fold LLM-provided args into the "input" carrier key
@@ -2484,6 +2510,10 @@ func (r *SkillRunner) failRunPendingSkipped(run *skillRun, skill *corelib.NLSkil
 }
 
 func prepareSkillRunWorkspace(runID, skillName, skillDir string) (string, func(), error) {
+	return prepareSkillRunWorkspaceInRoot(runID, skillName, skillDir, "")
+}
+
+func prepareSkillRunWorkspaceInRoot(runID, skillName, skillDir, workspaceRoot string) (string, func(), error) {
 	skillDir = strings.TrimSpace(skillDir)
 	if skillDir == "" {
 		return "", func() {}, nil
@@ -2496,7 +2526,10 @@ func prepareSkillRunWorkspace(runID, skillName, skillDir string) (string, func()
 	if !info.IsDir() {
 		return "", func() {}, fmt.Errorf("skill dir is not a directory: %s", skillDir)
 	}
-	root := skillRunWorkspaceRoot()
+	root := strings.TrimSpace(workspaceRoot)
+	if root == "" {
+		root = skillRunWorkspaceRoot()
+	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", func() {}, err
 	}
@@ -2540,7 +2573,23 @@ func cleanupStaleSkillRunWorkspaces() {
 	cleanupStaleSkillRunWorkspacesLastRun = time.Now()
 	cleanupStaleSkillRunWorkspacesMu.Unlock()
 
-	root := skillRunWorkspaceRoot()
+	roots := []string{skillRunWorkspaceRoot()}
+	// Also prune project-local isolation roots when the configured workdir is set.
+	if wd := strings.TrimSpace(corelib.EffectiveWorkspaceDir()); wd != "" {
+		if info, err := os.Stat(wd); err == nil && info.IsDir() {
+			roots = append(roots, filepath.Join(wd, cskill.MaclawSkillTmpDirName, "skill-runs"))
+		}
+	}
+	for _, root := range roots {
+		cleanupStaleSkillRunWorkspacesInRoot(root)
+	}
+}
+
+func cleanupStaleSkillRunWorkspacesInRoot(root string) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return
@@ -2567,6 +2616,51 @@ func cleanupStaleSkillRunWorkspaces() {
 func skillRunWorkspaceRoot() string {
 	return filepath.Join(os.TempDir(), "maclaw-skill-runs")
 }
+
+// skillRunWorkspaceRootFromEnv returns the isolated skill-run workspace root.
+// When MACLAW_WORKDIR is available (user project/workbench), isolation
+// workspaces live under <workdir>/.maclaw-tmp/skill-runs so artifacts stay
+// inside the project tree. Falls back to the system temp root otherwise.
+func skillRunWorkspaceRootFromEnv(extraEnv map[string]string) string {
+	if root := cskill.SkillWorkdirTmpSubdir(extraEnv, "skill-runs"); root != "" {
+		return root
+	}
+	return skillRunWorkspaceRoot()
+}
+
+// injectOwnerWorkDirEnv resolves the session owner's workbench/project directory
+// and applies the shared Skill Runner workdir binding (MACLAW_WORKDIR + TEMP
+// redirect) so third-party skills need no per-skill patches.
+func (r *SkillRunner) injectOwnerWorkDirEnv(ownerID string, extraEnv map[string]string) map[string]string {
+	wd := ""
+	if r != nil && r.executor != nil && r.executor.app != nil {
+		wd = strings.TrimSpace(r.executor.app.EffectiveWorkingDirForOwner(ownerID))
+	}
+	out := cskill.InjectSkillWorkDirEnv(wd, extraEnv)
+	if bound := cskill.SkillWorkdirFromEnv(out); bound != "" {
+		log.Printf("[skill-runner] inject workdir owner=%q workdir=%q temp=%q",
+			ownerID, bound, filepath.Join(bound, cskill.MaclawSkillTmpDirName))
+	} else {
+		log.Printf("[skill-runner] inject workdir skipped owner=%q resolved=%q (downloads may use system TEMP)",
+			ownerID, wd)
+	}
+	return out
+}
+
+// skillRunBlockedDownloadHint steers the agent away from broken Hub download skills.
+func skillRunBlockedDownloadHint(skill *corelib.NLSkillEntry) string {
+	if skill == nil {
+		return ""
+	}
+	blob := strings.ToLower(strings.TrimSpace(skill.Name) + " " + strings.TrimSpace(skill.Description) + " " + strings.TrimSpace(skill.LastError))
+	for _, key := range []string{"wget", "curl", "download", "fetch", "paper fetch", "python runtime not found", "shell_tool"} {
+		if strings.Contains(blob, key) {
+			return "[action: use_builtin] For simple HTTP/PDF downloads use download_file or web_fetch with save_path under the working directory instead of this skill."
+		}
+	}
+	return ""
+}
+
 
 func shouldRetainSkillRunWorkspaceStatus(status SkillRunStatus, workspace string) bool {
 	workspace = strings.TrimSpace(workspace)
@@ -2722,7 +2816,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	execSkill := *skill
 	skill = &execSkill
 	sourceSkillDir := skill.SkillDir
-	if workspace, cleanup, err := prepareSkillRunWorkspace(run.status.RunID, skill.Name, skill.SkillDir); err != nil {
+	wsRoot := skillRunWorkspaceRootFromEnv(run.extraEnv)
+	if workspace, cleanup, err := prepareSkillRunWorkspaceInRoot(run.status.RunID, skill.Name, skill.SkillDir, wsRoot); err != nil {
 		log.Printf("[skill-runner] run=%s owner=%q skill=%q workspace isolation unavailable dir=%q err=%v; using installed dir", run.status.RunID, run.status.OwnerID, skill.Name, skill.SkillDir, err)
 	} else if workspace != "" {
 		run.workspaceDir = workspace

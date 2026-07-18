@@ -269,9 +269,17 @@ Typical usage: Search for documentation, find solutions, look up APIs`,
 
 	"web_fetch": `Parameters:
 - url (string, required): URL to fetch
+- save_path (string, optional): Save binary/PDF to this path under the working directory instead of returning text
 - format (string, optional): Output format (text/html/markdown), default text
 - timeout (int, optional): Timeout seconds, default 600, range 240-600
-Typical usage: Fetch webpage content, read documentation, download text resources`,
+Typical usage: Fetch webpage content, read documentation; use save_path for file downloads`,
+
+	"download_file": `Parameters:
+- url (string, required): HTTP/HTTPS URL to download
+- save_path (string, optional): Destination path relative to the working directory (defaults to URL basename)
+- output (string, optional): Alias for save_path
+- timeout (int, optional): Timeout seconds
+Typical usage: Preferred tool for PDF/binary downloads. Do not install Hub wget/curl skills for simple downloads.`,
 
 	"screenshot": `Parameters:
 - display (int, optional): Display index for multi-monitor, default 0

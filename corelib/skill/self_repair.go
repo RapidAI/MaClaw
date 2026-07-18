@@ -357,10 +357,13 @@ func AttemptRepairWithContext(llm LLMRepairer, skill *corelib.NLSkillEntry, ctx 
 Analyze the error, the parameter contract, and the current steps, then propose fixed steps.
 
 Rules:
-- Keep the same action names (tool names) — only modify params or step order
+- GUI skill runner supports ONLY these step actions: bash, call_mcp_tool, craft_tool, poll
+- NEVER use shell_tool, shell, run, exec, wget, curl as step actions — use action "bash" with params.command
+- When craft_tool fails with "python runtime not found", rewrite download/fetch skills to a single bash step
+  (e.g. curl -L -o "{{output}}" "{{url}}" or equivalent) instead of inventing unsupported actions
 - Do NOT change the skill's core functionality — only fix the specific failure
 - If a step consistently fails, add on_error: "skip" or "continue"
-- If the error is fundamental (wrong tool, impossible task), set should_disable: true
+- If the error is fundamental (missing runtime that cannot be worked around, wrong tool, impossible task), set should_disable: true
 - Distinguish PARAMETER CONTRACT failures from SKILL LOGIC failures:
   * If "missing required params" or "args not in schema" appear, prefer fixing
     placeholders/aliases/defaults or documenting expected arg names — do NOT rewrite
@@ -437,10 +440,58 @@ Propose a fix.`,
 		return nil, fmt.Errorf("parse repair response: %w", err)
 	}
 
+	// Normalize/validate proposed steps so self-repair cannot persist
+	// GUI-unsupported actions (e.g. shell_tool) that later fail at start_run.
+	if err := SanitizeRepairResult(skill, &result); err != nil {
+		log.Printf("[skill-repair] skill=%s sanitize rejected repair: %v", skill.Name, err)
+		return &RepairResult{
+			Repaired:      false,
+			ShouldDisable: result.ShouldDisable,
+			Explanation:   fmt.Sprintf("repair rejected: %v; original: %s", err, strings.TrimSpace(result.Explanation)),
+		}, nil
+	}
+
 	log.Printf("[skill-repair] skill=%s repaired=%v should_disable=%v explanation=%s",
 		skill.Name, result.Repaired, result.ShouldDisable, result.Explanation)
 
 	return &result, nil
+}
+
+// SanitizeRepairResult normalizes proposed repair steps into runner-native
+// actions and rejects repairs that still cannot run on the GUI backend.
+// Mutates result.NewSteps in place when repaired=true.
+func SanitizeRepairResult(skill *corelib.NLSkillEntry, result *RepairResult) error {
+	if result == nil || result.ShouldDisable || !result.Repaired {
+		return nil
+	}
+	if len(result.NewSteps) == 0 {
+		return fmt.Errorf("repaired=true but new_steps is empty")
+	}
+	skillDir := ""
+	if skill != nil {
+		skillDir = skill.SkillDir
+	}
+	out := make([]SkillYAMLStep, 0, len(result.NewSteps))
+	for i, s := range result.NewSteps {
+		step := NormalizeStepForRunner(corelib.NLSkillStep{
+			Action:  s.Action,
+			Params:  s.Params,
+			OnError: s.OnError,
+		}, skillDir)
+		if err := EnsureStepActionSupported(RunnerBackendGUI, step.Action); err != nil {
+			return fmt.Errorf("step %d action %q unsupported after normalize: %w", i, step.Action, err)
+		}
+		if strings.TrimSpace(step.Action) == "" {
+			return fmt.Errorf("step %d has empty action after normalize", i)
+		}
+		out = append(out, SkillYAMLStep{
+			Action:  step.Action,
+			Params:  step.Params,
+			OnError: step.OnError,
+		})
+	}
+	result.NewSteps = out
+	return nil
 }
 
 // ApplyRepair writes the repaired steps back to the skill entry.
@@ -462,6 +513,13 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 		return false
 	}
 
+	// Re-sanitize at apply time so callers that skip AttemptRepair still cannot
+	// persist unsupported actions.
+	if err := SanitizeRepairResult(skill, result); err != nil {
+		log.Printf("[skill-repair] apply rejected for %s: %v", skill.Name, err)
+		return false
+	}
+
 	// Convert RepairResult steps to NLSkillStep.
 	newSteps := make([]corelib.NLSkillStep, len(result.NewSteps))
 	for i, s := range result.NewSteps {
@@ -473,6 +531,7 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 	}
 
 	skill.Steps = newSteps
+	NormalizeSkillForRunner(skill)
 	skill.LastError = fmt.Sprintf("auto-repaired: %s", result.Explanation)
 	recordRepairAttempt(skill, errorClass, result.Explanation)
 

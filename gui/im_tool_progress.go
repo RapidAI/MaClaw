@@ -112,9 +112,9 @@ func toolProgressActionKeyDetail(toolName string, args map[string]any) (actionKe
 	case "web_search":
 		actionKey = i18n.MsgToolActionWebSearch
 		detail = firstStringArg(args, "query", "q", "search")
-	case "web_fetch":
+	case "web_fetch", "download_file":
 		actionKey = i18n.MsgToolActionWebFetch
-		detail = firstStringArg(args, "url", "uri")
+		detail = firstStringArg(args, "url", "uri", "save_path", "output")
 	case "send_file", "send_to_im":
 		actionKey = i18n.MsgToolActionSendFile
 		detail = shortPathForProgress(firstStringArg(args, "path", "file", "file_path"))

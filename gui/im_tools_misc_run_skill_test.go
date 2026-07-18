@@ -61,14 +61,17 @@ func TestToolRunSkill_StartFailure(t *testing.T) {
 }
 
 func TestInstallSkillHub_AutoRunAcceptsWaitSeconds(t *testing.T) {
-	if got := normalizeSkillRunWaitSeconds(float64(99)); got > 30*time.Second {
-		t.Fatalf("expected wait_seconds clamp to 30s, got %v", got)
+	if got := normalizeSkillRunWaitSeconds(float64(200)); got > 120*time.Second {
+		t.Fatalf("expected wait_seconds clamp to 120s, got %v", got)
+	}
+	if got := normalizeSkillRunWaitSeconds(float64(99)); got != 99*time.Second {
+		t.Fatalf("expected 99s wait to remain 99s, got %v", got)
 	}
 }
 
 func TestNormalizeSkillRunWaitSeconds_AllowsFastSnapshot(t *testing.T) {
-	if got := normalizeSkillRunWaitSeconds(nil); got != 2*time.Second {
-		t.Fatalf("expected default wait to stay 2s, got %v", got)
+	if got := normalizeSkillRunWaitSeconds(nil); got != 15*time.Second {
+		t.Fatalf("expected default wait to be 15s, got %v", got)
 	}
 	if got := normalizeSkillRunWaitSeconds(float64(0.01)); got != 100*time.Millisecond {
 		t.Fatalf("expected tiny explicit wait to clamp to 100ms, got %v", got)

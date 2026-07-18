@@ -539,6 +539,33 @@ describe("renderContentWithCodeBlocks", () => {
         });
     });
 
+    it("renders portable home paths (~/) as clickable links", () => {
+        render(<div>{renderContentWithCodeBlocks("工作目录：~/.maclaw/workspace/self_evolving_papers/", lightTheme)}</div>);
+
+        const link = screen.getByTitle("~/.maclaw/workspace/self_evolving_papers/");
+        expect(link.tagName).toBe("A");
+        fireEvent.click(link);
+        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("~/.maclaw/workspace/self_evolving_papers/");
+    });
+
+    it("renders Windows-style home paths (~\\) as clickable links", () => {
+        render(<div>{renderContentWithCodeBlocks("Open ~\\.maclaw\\workspace\\notes", lightTheme)}</div>);
+
+        const link = screen.getByTitle("~\\.maclaw\\workspace\\notes");
+        expect(link.tagName).toBe("A");
+        fireEvent.click(link);
+        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("~\\.maclaw\\workspace\\notes");
+    });
+
+    it("renders bare home directories inside code blocks as clickable links", () => {
+        render(<div>{renderContentWithCodeBlocks("```text\n~/.maclaw/workspace/self_evolving_papers/\n```", lightTheme)}</div>);
+
+        const link = screen.getByTitle("~/.maclaw/workspace/self_evolving_papers/");
+        expect(link.tagName).toBe("A");
+        fireEvent.click(link);
+        expect(openFileOrShowInFolderMock).toHaveBeenCalledWith("~/.maclaw/workspace/self_evolving_papers/");
+    });
+
     it("renders single-quoted Windows paths inside code blocks without keeping quote wrappers", () => {
         const { container } = render(<div>{renderContentWithCodeBlocks("```text\n'C:\\Users\\ma139\\Desktop\\2602.06052v3_pages\\'\n```", lightTheme)}</div>);
 

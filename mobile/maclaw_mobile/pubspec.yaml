@@ -23,6 +23,10 @@ dependencies:
   file_picker: ^8.1.2
   image_picker: ^1.1.2
   speech_to_text: ^7.4.0
+  # 6.x keeps the AudioRecorder API used by MeetingRecordingScreen while
+  # aligning every platform implementation with the current interface package.
+  record: ^6.2.1
+  crypto: ^3.0.5
   drift: ^2.20.3
   drift_flutter: ^0.2.1
   sqlite3_flutter_libs: ^0.5.24

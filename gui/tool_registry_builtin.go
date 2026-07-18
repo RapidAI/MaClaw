@@ -495,10 +495,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("asr", audioconv.ASRToolDescription(),
 		ToolCategoryBuiltin, []string{"asr", "transcribe", "transcription", "speech", "audio", "voice", "语音", "转写", "转录", "语音识别", "录音"},
 		map[string]interface{}{
-			"path":         map[string]string{"type": "string", "description": "本地音频文件路径"},
-			"format":       map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认按扩展名与文件头自动检测）"},
-			"for_minutes":  map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿（较慢）；默认 false 仅快速 extractive 草稿"},
-			"minutes":      map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
+			"path":           map[string]string{"type": "string", "description": "本地音频文件路径"},
+			"format":         map[string]string{"type": "string", "description": "可选格式提示: wav/mp3/ogg/opus/silk（默认按扩展名与文件头自动检测）"},
+			"for_minutes":    map[string]string{"type": "boolean", "description": "true=长转写后运行引擎 LLM map-reduce 生成会议纪要草稿（较慢）；默认 false 仅快速 extractive 草稿"},
+			"minutes":        map[string]string{"type": "boolean", "description": "for_minutes 的别名"},
+			"known_speakers": map[string]string{"type": "integer", "description": "已知/用户确认的说话人数量（1-15）。0 或省略=自动估计。用户确认人数后应传入"},
+			"speakers":       map[string]string{"type": "integer", "description": "known_speakers 的别名"},
 		}, []string{"path"},
 		func(args map[string]interface{}) string { return h.toolASR(args) })
 
@@ -680,17 +682,27 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"query"},
 		func(args map[string]interface{}) string { return h.toolWebSearch(args) })
 
-	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
+	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
 		ToolCategoryBuiltin, []string{"web", "fetch", "download", "url", "browse", "network"},
 		map[string]interface{}{
 			"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
 			"render_js": map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false）"},
-			"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选，指定后下载文件而非返回文本）"},
+			"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选，指定后下载文件而非返回文本；相对路径相对当前工作目录）"},
 			"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
 			"offset":    map[string]string{"type": "integer", "description": "从第几个字符开始读取（用于长页面续读，默认 0）"},
 			"max_chars": map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolWebFetch(args) })
+
+	reg("download_file", "将 HTTP/HTTPS URL 下载到当前工作目录（顶栏 working_directory / 项目工作区）。通用文件与 PDF 下载的首选工具；返回绝对路径。不要为简单下载去 Hub 安装 wget/curl/Paper Fetch。",
+		ToolCategoryBuiltin, []string{"download", "file", "http", "https", "pdf", "url", "wget", "curl", "fetch"},
+		map[string]interface{}{
+			"url":       map[string]string{"type": "string", "description": "要下载的 URL"},
+			"save_path": map[string]string{"type": "string", "description": "保存路径（可选；相对路径相对当前工作目录；省略则用 URL 文件名）"},
+			"output":    map[string]string{"type": "string", "description": "save_path 的别名"},
+			"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选）"},
+		}, []string{"url"},
+		func(args map[string]interface{}) string { return h.toolDownloadFile(args) })
 
 	// --- Unified office document tool ---
 	reg("office", "Office 文档操作工具。action 参数：generate_pdf（生成PDF文档）、read_excel（读取XLSX/CSV表格）、write_excel（写入XLSX表格）、read_pptx（读取PPT演示文稿）。Office document tool: generate PDF, read/write Excel (XLSX/CSV), read PowerPoint (PPTX).",

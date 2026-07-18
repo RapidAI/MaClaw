@@ -109,6 +109,49 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	// Emit user-facing tool progress only after policy gates pass. Otherwise a
 	// workflow-blocked browser/tool call can still leak confusing progress text.
 	progressLang := h.imUILang()
+	acpToolCallID := ""
+	acpEndEmitted := false
+	if result.Text == "" && isACPProgrammingRequestID(requestID) {
+		acpToolCallID = strings.TrimSpace(tc.ID)
+		if acpToolCallID == "" {
+			acpToolCallID = newACPToolCallID(tc.Function.Name)
+		}
+		pctx := context.Background()
+		if opts.Context != nil {
+			var pcancel context.CancelFunc
+			pctx, pcancel, _ = opts.Context.BeginReplannableOperation(context.Background())
+			if pcancel != nil {
+				defer pcancel()
+			}
+		}
+		if allowed, reason := globalACPPermission.check(pctx, requestID, tc.Function.Name, tc.Function.Arguments); !allowed {
+			msg := "[system rejected] " + reason
+			if strings.TrimSpace(reason) == "" {
+				msg = "[system rejected] tool not permitted"
+			}
+			result = toolExecutionResult{
+				Text: msg, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name),
+				Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected,
+			}
+			emitACPToolEventForRequest(requestID, ACPToolEvent{
+				Phase: "end", ToolCallID: acpToolCallID, Name: tc.Function.Name, ArgsJSON: tc.Function.Arguments,
+				Result: msg, OK: false, Kind: acpToolKind(tc.Function.Name),
+				Title: acpToolTitle(tc.Function.Name, tc.Function.Arguments),
+				Paths: acpPathsFromToolArgs(tc.Function.Name, tc.Function.Arguments),
+			})
+			acpEndEmitted = true
+		} else {
+			emitACPToolEventForRequest(requestID, ACPToolEvent{
+				Phase:      "start",
+				ToolCallID: acpToolCallID,
+				Name:       tc.Function.Name,
+				ArgsJSON:   tc.Function.Arguments,
+				Kind:       acpToolKind(tc.Function.Name),
+				Paths:      acpPathsFromToolArgs(tc.Function.Name, tc.Function.Arguments),
+				Title:      acpToolTitle(tc.Function.Name, tc.Function.Arguments),
+			})
+		}
+	}
 	if result.Text == "" && opts.SendToolProgress != nil {
 		opts.SendToolProgress(userFacingToolProgressTextWithArgs(progressLang, tc.Function.Name, tc.Function.Arguments))
 	}
@@ -163,6 +206,33 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 
 	if opts.MilestoneTracker != nil {
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
+	}
+	if !acpEndEmitted && (acpToolCallID != "" || (isACPProgrammingRequestID(requestID) && strings.TrimSpace(tc.Function.Name) != "")) {
+		id := acpToolCallID
+		if id == "" {
+			id = strings.TrimSpace(tc.ID)
+			if id == "" {
+				id = newACPToolCallID(tc.Function.Name)
+			}
+		}
+		ok := result.Outcome == toolOutcomeSucceeded && (result.FailureKind == toolFailureNone || result.FailureKind == "")
+		if result.Text != "" && strings.HasPrefix(strings.TrimSpace(result.Text), "[system rejected]") {
+			ok = false
+		}
+		if result.Outcome == toolOutcomeFailed {
+			ok = false
+		}
+		emitACPToolEventForRequest(requestID, ACPToolEvent{
+			Phase:      "end",
+			ToolCallID: id,
+			Name:       tc.Function.Name,
+			ArgsJSON:   tc.Function.Arguments,
+			Result:     result.Text,
+			OK:         ok,
+			Kind:       acpToolKind(tc.Function.Name),
+			Paths:      acpPathsFromToolArgs(tc.Function.Name, tc.Function.Arguments),
+			Title:      acpToolTitle(tc.Function.Name, tc.Function.Arguments),
+		})
 	}
 	return result
 }

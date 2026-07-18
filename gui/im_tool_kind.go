@@ -62,7 +62,7 @@ func classifyAgentToolKind(name string) agentToolKind {
 		return agentToolKindSearchAndInstallSkill
 	case "manage_skill":
 		return agentToolKindManageSkill
-	case "web_fetch":
+	case "web_fetch", "download_file":
 		return agentToolKindWebFetch
 	case "web_search":
 		return agentToolKindWebSearch

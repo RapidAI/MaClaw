@@ -141,6 +141,48 @@ func DefaultDefinitions() []IntentDefinition {
 			},
 		},
 		{
+			Label:  LabelComputerUse,
+			Domain: "桌面操控 (Computer Use)",
+			TreeText: "用户要操作本机桌面图形界面（GUI）：打开软件/程序/应用窗口、点击界面控件、" +
+				"用键盘在桌面应用里输入、查看或截取屏幕内容。" +
+				"语义判据：用户目标需要驱动本机桌面应用的窗口与控件，而不只是读写文件内容。" +
+				"边界：「创建/生成/制作 Word、Excel、PPT 等文档内容」→ office，无需打开真实程序；" +
+				"「浏览器/网页操作」→ browser；「纯文件读写或命令行即可完成的任务」→ non_coding 或 coding。",
+			EmbedTexts: []string{
+				"打开word程序写一份简历",
+				"帮我在电脑上打开Excel程序",
+				"打开记事本程序输入一段文字",
+				"点击窗口上的确定按钮",
+				"看看屏幕上现在显示了什么",
+				"在桌面上把文件拖进文件夹",
+				"操作桌面软件完成设置",
+				"控制鼠标点击屏幕上的图标",
+				"在应用窗口里输入文字",
+				"打开电脑上的软件并操作界面",
+				"把当前窗口最小化",
+				"用键盘在桌面应用里按快捷键",
+				"open the Word app and type a document",
+				"click the OK button on the dialog",
+				"operate the desktop GUI application",
+				"type into the notepad window",
+				"look at what is on the screen",
+				"open the calculator app and click buttons",
+				"drag a file into a folder on the desktop",
+				"control the mouse and keyboard in a desktop app",
+			},
+			ToolNames: []string{
+				"computer_observe",
+				"computer_click",
+				"computer_type",
+				"computer_key",
+				"computer_scroll",
+				"computer_wait",
+				"computer_focus",
+				"computer_done",
+				"computer_playbook",
+			},
+		},
+		{
 			Label:  LabelSearch,
 			Domain: "内容处理 (Content)",
 			TreeText: "用户要在网上搜索信息、文档、论文、解决方案。" +
@@ -159,7 +201,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"google this error and find a fix",
 				"look up best practices for Go concurrency",
 			},
-			ToolNames: []string{"web_search"},
+			ToolNames: []string{"web_search", "web_fetch", "download_file"},
 		},
 		{
 			Label:  LabelNonCoding,
@@ -207,7 +249,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"\u67e5\u6700\u65b0\u80a1\u4ef7",
 				"\u67e5\u822a\u73ed\u72b6\u6001",
 			},
-			ToolNames: []string{"web_search"},
+			ToolNames: []string{"web_search", "web_fetch", "download_file"},
 		},
 		{
 			Label:  LabelCurrentTime,
@@ -247,7 +289,7 @@ func DefaultDefinitions() []IntentDefinition {
 				"open this spreadsheet file",
 				"export the results and send the file",
 			},
-			ToolNames: []string{"send_file", "send_to_im", "im_message", "open", "craft_tool"},
+			ToolNames: []string{"send_file", "send_to_im", "im_message", "open", "craft_tool", "download_file"},
 		},
 		{
 			Label:  LabelBusinessData,

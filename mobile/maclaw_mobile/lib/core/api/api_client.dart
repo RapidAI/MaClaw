@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 
 import '../../features/digital_employees/digital_employee.dart';
@@ -287,7 +288,8 @@ class ApiClient {
     return MobileCapsPutResult.fromJson(response.data ?? const {});
   }
 
-  Future<MobileCardStoreCatalog> listCardStoreProducts({String tenantId = ''}) async {
+  Future<MobileCardStoreCatalog> listCardStoreProducts(
+      {String tenantId = ''}) async {
     final query = <String, dynamic>{};
     if (tenantId.trim().isNotEmpty) {
       query['tenant_id'] = tenantId.trim();
@@ -312,7 +314,8 @@ class ApiClient {
         'product_id': productId,
         'account': account,
         if (tenantId.trim().isNotEmpty) 'tenant_id': tenantId.trim(),
-        if (paymentMethod.trim().isNotEmpty) 'payment_method': paymentMethod.trim(),
+        if (paymentMethod.trim().isNotEmpty)
+          'payment_method': paymentMethod.trim(),
         if (payChannel.trim().isNotEmpty) 'pay_channel': payChannel.trim(),
       },
     );
@@ -366,6 +369,99 @@ class ApiClient {
       options: _assistantRequestOptions(),
     );
     return MobileAgentJob.fromJson(response.data ?? const {});
+  }
+
+  /// Creates a resumable upload session for a long meeting recording.
+  Future<MobileMeetingRecording> createMeetingRecording({
+    required String title,
+    String purpose = '',
+    String conversationId = '',
+    String contentType = 'audio/mp4',
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/meeting-recordings',
+      data: {
+        'title': title,
+        'purpose': purpose,
+        'conversation_id': conversationId,
+        'content_type': contentType,
+      },
+      options: _assistantRequestOptions(),
+    );
+    return MobileMeetingRecording.fromJson(response.data ?? const {});
+  }
+
+  Future<MobileMeetingRecordingCapabilities>
+      getMeetingRecordingCapabilities() async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/mobile/meeting-recordings/capabilities',
+      options: _assistantRequestOptions(),
+    );
+    return MobileMeetingRecordingCapabilities.fromJson(
+      response.data ?? const {},
+    );
+  }
+
+  Future<void> uploadMeetingRecordingChunk(
+    String recordingId,
+    int index,
+    Uint8List bytes,
+  ) async {
+    final digest = sha256Hex(bytes);
+    await _dio.put<void>(
+      '/api/mobile/meeting-recordings/$recordingId/chunks/$index',
+      data: Stream<List<int>>.value(bytes),
+      options: _assistantRequestOptions(
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Chunk-SHA256': digest,
+        },
+      ),
+    );
+  }
+
+  Future<MobileMeetingRecording> completeMeetingRecording(
+    String recordingId, {
+    required int chunks,
+    required String sha256,
+    required double durationSec,
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/meeting-recordings/$recordingId/complete',
+      data: {'chunks': chunks, 'sha256': sha256, 'duration_sec': durationSec},
+      options: _assistantRequestOptions(),
+    );
+    return MobileMeetingRecording.fromJson(response.data ?? const {});
+  }
+
+  Future<MobileMeetingRecording> processMeetingRecording(
+    String recordingId, {
+    String mode = 'minutes',
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/mobile/meeting-recordings/$recordingId/process',
+      data: {'mode': mode},
+      options: _assistantRequestOptions(),
+    );
+    return MobileMeetingRecording.fromJson(response.data ?? const {});
+  }
+
+  Future<MobileMeetingRecording> getMeetingRecording(String recordingId) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/api/mobile/meeting-recordings/$recordingId',
+      options: _assistantRequestOptions(),
+    );
+    return MobileMeetingRecording.fromJson(response.data ?? const {});
+  }
+
+  /// Delete the retained raw audio while keeping transcript/minutes documents.
+  Future<MobileMeetingRecording> deleteMeetingRecordingAudio(
+      String recordingId) async {
+    final response = await _dio.delete<Map<String, dynamic>>(
+      '/api/mobile/meeting-recordings/$recordingId/audio',
+      options: _assistantRequestOptions(),
+    );
+    return MobileMeetingRecording.fromJson(response.data ?? const {});
   }
 
   Future<SearchAnswer> search(String query) async {
@@ -577,9 +673,7 @@ class ApiClient {
             toolEvents: toolEvents.isNotEmpty
                 ? List<AssistantToolEvent>.from(toolEvents)
                 : null,
-            agent: data['agent'] == true || toolEvents.isNotEmpty
-                ? true
-                : null,
+            agent: data['agent'] == true || toolEvents.isNotEmpty ? true : null,
           );
           // Prefer assembled deltas if the done payload omitted answer text.
           if (done.answer.trim().isEmpty && buffer.isNotEmpty) {
@@ -590,9 +684,9 @@ class ApiClient {
           return;
         case 'error':
           final data = event.jsonMap;
-          final message =
-              (data['message'] as String? ?? 'mobile AI assistant request failed')
-                  .toString();
+          final message = (data['message'] as String? ??
+                  'mobile AI assistant request failed')
+              .toString();
           throw StateError(message);
       }
     }
@@ -814,8 +908,7 @@ class ApiClient {
       },
       options: Options(
         // 202 Accepted is success for async document process.
-        validateStatus: (code) =>
-            code != null && code >= 200 && code < 300,
+        validateStatus: (code) => code != null && code >= 200 && code < 300,
       ),
     );
     final data = response.data ?? const {};
@@ -1182,6 +1275,7 @@ class ApiClient {
     required String sessionId,
     required String input,
     bool raw = false,
+
     /// When true, send [input] as base64 `data_b64` (hub_exec binary PTY frame).
     bool asBinary = false,
   }) async {
@@ -1519,7 +1613,8 @@ class SearchAnswer {
     return citations;
   }
 
-  static List<AssistantToolEvent> toolEventsFromJson(Map<String, dynamic> json) {
+  static List<AssistantToolEvent> toolEventsFromJson(
+      Map<String, dynamic> json) {
     final raw = json['tool_events'];
     if (raw is! List) return const [];
     final events = <AssistantToolEvent>[];
@@ -1792,9 +1887,8 @@ class MobileSSHQuickConnectResult {
 
   factory MobileSSHQuickConnectResult.fromJson(Map<String, dynamic> json) {
     final portRaw = json['port'];
-    final port = portRaw is int
-        ? portRaw
-        : (portRaw is num ? portRaw.toInt() : 22);
+    final port =
+        portRaw is int ? portRaw : (portRaw is num ? portRaw.toInt() : 22);
     return MobileSSHQuickConnectResult(
       profileId: json['profile_id'] as String? ?? '',
       label: json['label'] as String? ?? '',
@@ -1813,12 +1907,14 @@ class MobileBackendSSHSessionInputResult {
   final String output;
   final String status;
   final String message;
+  final String failureCode;
 
   const MobileBackendSSHSessionInputResult({
     required this.sessionId,
     this.output = '',
     this.status = '',
     this.message = '',
+    this.failureCode = '',
   });
 
   factory MobileBackendSSHSessionInputResult.fromJson(
@@ -2159,8 +2255,7 @@ class MobileMcpServerHealth {
     );
   }
 
-  bool get isHealthy =>
-      healthStatus == 'healthy' || healthStatus == 'slow';
+  bool get isHealthy => healthStatus == 'healthy' || healthStatus == 'slow';
 }
 
 class MobileAgentMcpHealth {
@@ -2356,6 +2451,114 @@ class MobileJobsList {
 }
 
 /// Long-running official assistant job (POST /api/mobile/agent/jobs).
+class MobileMeetingRecording {
+  final String recordingId;
+  final String title;
+  final String status;
+  final String message;
+  final String failureCode;
+  final int chunkSize;
+  final double progress;
+  final String mode;
+  final String transcript;
+  final String minutes;
+  final String transcriptDraftId;
+  final String minutesDraftId;
+  final bool audioAvailable;
+  final List<MobileMeetingSpeakerSegment> speakerSegments;
+
+  const MobileMeetingRecording({
+    this.recordingId = '',
+    this.title = '',
+    this.status = '',
+    this.message = '',
+    this.failureCode = '',
+    this.chunkSize = 4 * 1024 * 1024,
+    this.progress = 0,
+    this.mode = '',
+    this.transcript = '',
+    this.minutes = '',
+    this.transcriptDraftId = '',
+    this.minutesDraftId = '',
+    this.audioAvailable = true,
+    this.speakerSegments = const [],
+  });
+
+  factory MobileMeetingRecording.fromJson(Map<String, dynamic> json) {
+    final rawProgress = json['progress'];
+    final rawChunkSize = json['chunk_size'];
+    return MobileMeetingRecording(
+      recordingId: json['recording_id'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+      message: json['message'] as String? ?? '',
+      failureCode: json['failure_code'] as String? ?? '',
+      chunkSize: rawChunkSize is num ? rawChunkSize.toInt() : 4 * 1024 * 1024,
+      progress: rawProgress is num ? rawProgress.toDouble() : 0,
+      mode: json['mode'] as String? ?? '',
+      transcript: json['transcript'] as String? ?? '',
+      minutes: json['minutes'] as String? ?? '',
+      transcriptDraftId: json['transcript_draft_id'] as String? ?? '',
+      minutesDraftId: json['minutes_draft_id'] as String? ?? '',
+      audioAvailable: json['audio_available'] as bool? ?? true,
+      speakerSegments: [
+        for (final item in json['speaker_segments'] as List? ?? const [])
+          if (item is Map)
+            MobileMeetingSpeakerSegment.fromJson(
+                Map<String, dynamic>.from(item)),
+      ],
+    );
+  }
+}
+
+class MobileMeetingRecordingCapabilities {
+  final bool keep;
+  final bool transcript;
+  final bool minutes;
+
+  const MobileMeetingRecordingCapabilities({
+    this.keep = true,
+    this.transcript = false,
+    this.minutes = false,
+  });
+
+  factory MobileMeetingRecordingCapabilities.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final modes = json['modes'];
+    final map = modes is Map ? Map<String, dynamic>.from(modes) : const {};
+    return MobileMeetingRecordingCapabilities(
+      keep: map['keep'] as bool? ?? true,
+      transcript: map['transcript'] as bool? ?? false,
+      minutes: map['minutes'] as bool? ?? false,
+    );
+  }
+}
+
+class MobileMeetingSpeakerSegment {
+  final String speaker;
+  final double startSec;
+  final double endSec;
+  final String text;
+
+  const MobileMeetingSpeakerSegment({
+    this.speaker = '',
+    this.startSec = 0,
+    this.endSec = 0,
+    this.text = '',
+  });
+
+  factory MobileMeetingSpeakerSegment.fromJson(Map<String, dynamic> json) =>
+      MobileMeetingSpeakerSegment(
+        speaker: json['speaker'] as String? ?? '',
+        startSec: (json['start_sec'] as num?)?.toDouble() ?? 0,
+        endSec: (json['end_sec'] as num?)?.toDouble() ?? 0,
+        text: json['text'] as String? ?? '',
+      );
+}
+
+String sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
+
 class MobileAgentJob {
   final String jobId;
   final String kind;
@@ -2418,7 +2621,6 @@ class MobileAgentJob {
     );
   }
 }
-
 
 class LlmServiceCardRedeemResult {
   final bool success;
@@ -2543,9 +2745,7 @@ class MobilePushPendingList {
         : const <String, dynamic>{};
     return MobilePushPendingList(
       items: items,
-      count: json['count'] is int
-          ? json['count'] as int
-          : items.length,
+      count: json['count'] is int ? json['count'] as int : items.length,
       remoteConfigured: transport['remote_configured'] as bool? ?? false,
       pendingSync: transport['pending_sync'] as bool? ?? true,
     );
@@ -2626,8 +2826,7 @@ class MobileEntitlementsCaps {
     this.serverTime = '',
   });
 
-  bool get hasRuntimeOverrides =>
-      runtimeOverrides.values.any((v) => v > 0);
+  bool get hasRuntimeOverrides => runtimeOverrides.values.any((v) => v > 0);
 
   factory MobileEntitlementsCaps.fromJson(Map<String, dynamic> json) {
     int asInt(Object? v) {
@@ -2665,7 +2864,8 @@ class MobileEntitlementsCaps {
       mobileAgent: caps['mobile_agent'] as bool? ?? false,
       documentAi: caps['document_ai'] as bool? ?? false,
       hubFileDownloadMaxBytes: asInt(caps['hub_file_download_max_bytes']),
-      hubFileDownloadChunked: caps['hub_file_download_chunked'] as bool? ?? false,
+      hubFileDownloadChunked:
+          caps['hub_file_download_chunked'] as bool? ?? false,
       hubFileSingleShotBytes: asInt(caps['hub_file_single_shot_bytes']),
       hubFileChunkRawBytes: asInt(caps['hub_file_chunk_raw_bytes']),
       envOverrides: env,
@@ -2737,7 +2937,8 @@ class MobileCardStoreCatalog {
     if (raw is List) {
       for (final item in raw) {
         if (item is Map) {
-          list.add(MobileCardStoreProduct.fromJson(Map<String, dynamic>.from(item)));
+          list.add(
+              MobileCardStoreProduct.fromJson(Map<String, dynamic>.from(item)));
         }
       }
     }

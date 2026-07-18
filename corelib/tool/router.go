@@ -52,6 +52,7 @@ var CoreToolNames = map[string]bool{
 	"manage_skill":     true,
 	"memory":           true,
 	"web_fetch":        true,
+	"download_file":    true, // generic HTTP/PDF download; prefer over Hub wget/curl skills
 	"set_nickname":     true,
 	"discover_tool":    true,
 	"task":             true,
@@ -1097,7 +1098,7 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		searchQuery = routeIntent.SearchQuery(userMessage)
 	}
 
-	if r.unifiedClassifier != nil {
+	if r.unifiedClassifier != nil && !opts.SkipUnifiedClassifier {
 		// UIC path: use UnifiedIntentClassifier to determine which conditional
 		// tools to keep, replacing local matchConditionalKeepRules.
 		condKeep = make(map[string]bool)

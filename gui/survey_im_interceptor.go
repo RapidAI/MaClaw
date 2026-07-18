@@ -78,6 +78,54 @@ func shouldAttemptSurveyIM(enabled bool, strippedText string) bool {
 	return couldBeSurveySessionReply(strippedText)
 }
 
+// surveyShouldBypassMention is the pure policy: after requireMention fails, may we
+// still enter the survey interceptor?
+//
+//   - commands / control words / pure choice tokens: always (Hub session may exist
+//     even when the local TTL hint was lost after restart)
+//   - free-text: only with an active local session hint (avoids "你好" → Hub)
+func surveyShouldBypassMention(enabled bool, strippedText string, hasActiveSessionHint bool) bool {
+	if !enabled {
+		return false
+	}
+	strippedText = strings.TrimSpace(strippedText)
+	if strippedText == "" {
+		return false
+	}
+	if looksLikeSurveyCommand(strippedText) || isSurveyControlWord(strippedText) || isStrictChoiceToken(strippedText) {
+		return true
+	}
+	// Free-text answers only when we already believe a session is active.
+	if !hasActiveSessionHint {
+		return false
+	}
+	return couldBeSurveySessionReply(strippedText)
+}
+
+// surveyCandidateBypassesMention reports whether a group message that failed
+// requireMention should still enter the survey interceptor (session answers / commands).
+func (m *lansengerGatewayManager) surveyCandidateBypassesMention(msg lansenger.IncomingMessage) bool {
+	if m == nil || m.app == nil || !m.app.surveyEnabled() {
+		return false
+	}
+	text := stripLansengerBotMentions(msg)
+	if text == "" {
+		text = strings.TrimSpace(msg.Text)
+	}
+	hasHint := false
+	userID := strings.TrimSpace(msg.FromUserID)
+	if userID != "" {
+		m.mu.Lock()
+		hints := m.surveyHints
+		m.mu.Unlock()
+		if hints != nil {
+			rk := surveyRateKey("lansenger", surveyScopedUserID(msg.GroupID, userID))
+			hasHint = hints.active(rk, time.Now())
+		}
+	}
+	return surveyShouldBypassMention(true, text, hasHint)
+}
+
 // tryHandleSurveyMessage intercepts Lansenger messages for survey Q&A.
 // Must run after mention gate and before passthrough / agent / Hub forward.
 // Returns true if handled (caller must not continue normal agent routing).
@@ -292,11 +340,13 @@ func couldBeSurveySessionReply(text string) bool {
 func isSurveyControlWord(t string) bool {
 	t = strings.TrimSpace(t)
 	switch t {
-	case "取消", "修改", "上一题":
+	case "取消", "修改", "上一题", "跳过":
+		// 「跳过」 is Hub IsSkipToken for optional questions — must bypass @mention
+		// the same way as cancel/prev (session may exist on Hub without local hint).
 		return true
 	}
 	switch strings.ToLower(t) {
-	case "cancel", "prev", "back", "modify":
+	case "cancel", "prev", "back", "modify", "skip":
 		return true
 	default:
 		return false
@@ -305,7 +355,11 @@ func isSurveyControlWord(t string) bool {
 
 // isStrictChoiceToken is option indexes / multi "1,2" / ratings — safe to probe without session hint.
 // Short latin words ("hi", "ok") are NOT strict: they would hammer Hub without a session.
+// Fullwidth digits (１) and trailing mobile noise (1。 / 1、) are accepted.
 func isStrictChoiceToken(t string) bool {
+	t = strings.TrimSpace(t)
+	// Match Hub trimChoiceNoise so bare "1。" still reaches survey intercept.
+	t = strings.TrimRight(t, ".。)）、,，")
 	t = strings.TrimSpace(t)
 	if t == "" {
 		return false
@@ -316,6 +370,7 @@ func isStrictChoiceToken(t string) bool {
 	}
 	hasDigit := false
 	for _, r := range runes {
+		// unicode.IsDigit covers ASCII and fullwidth ０-９.
 		if unicode.IsDigit(r) {
 			hasDigit = true
 			continue

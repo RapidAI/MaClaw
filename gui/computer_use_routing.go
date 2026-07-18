@@ -5,6 +5,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/computeruse"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 // computerUseEnabledFromConfig returns whether Computer Use product surface is on.
@@ -43,7 +44,16 @@ func markComputerUseSessionActive() {
 	}
 }
 
+// computerUseIntentMinConfidence is the minimum UIC embedding confidence for
+// LabelComputerUse to activate the CU surface. Aligned with the Router's
+// UIC conditional-keep threshold convention (0.50).
+const computerUseIntentMinConfidence = 0.50
+
 // shouldActivateComputerUse decides playbook + tool injection for this turn.
+// Intent detection is semantic: the unified intent classifier (embedding-only
+// fast path, no LLM call) decides whether the message wants desktop GUI
+// operation. Explicit @computer syntax and an already-active CU session
+// always win; when the classifier is unavailable the gate stays closed.
 func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 	if h == nil || !h.computerUseEnabled() {
 		return false
@@ -51,7 +61,23 @@ func (h *IMMessageHandler) shouldActivateComputerUse(userText string) bool {
 	if computerUseSessionActive() {
 		return true
 	}
-	return computeruse.ShouldActivate(userText)
+	if computeruse.HasExplicitTrigger(userText) {
+		return true
+	}
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return false
+	}
+	return computerUseIntentActivated(uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: userText}))
+}
+
+// computerUseIntentActivated is the pure decision on a UIC result: the gate
+// opens only for a confident, non-degraded computer_use primary intent.
+func computerUseIntentActivated(res intent.ClassificationResult) bool {
+	if res.Degraded {
+		return false
+	}
+	return res.Primary == intent.LabelComputerUse && res.Confidence >= computerUseIntentMinConfidence
 }
 
 // ensureComputerUseTools forces CU tools into the routed list when active.

@@ -1,4 +1,4 @@
-﻿name: Release Build
+name: Release Build
 
 on:
   push:
@@ -94,7 +94,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
+          cache-dependency-path: |
+            gui/frontend/package-lock.json
+            vscode-ext/package-lock.json
 
       - name: Check source encoding
         run: npm run check:encoding
@@ -129,6 +131,17 @@ jobs:
           [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'gui/frontend/dist/.build-stamp'), $stamp)
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
           node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+
+      - name: Build VS Code extension VSIX
+        shell: pwsh
+        run: |
+          # Refresh the first-party VS Code extension asset (gui/vscode_ext_asset/)
+          # before the Go build embeds it. Required in CI (Node is guaranteed):
+          # a packaging break must fail the release, not ship a stale VSIX.
+          cd vscode-ext
+          npm ci --cache ./.npm_cache
+          npm run package
+          cd ..
 
       - name: Install goversioninfo
         shell: pwsh
@@ -416,6 +429,7 @@ jobs:
             dist/maclaw-data-srv_arm64.exe
             dist/srvdemo_amd64.exe
             dist/srvdemo_arm64.exe
+            vscode-ext/maclaw-acp-*.vsix
 
 
 
@@ -804,7 +818,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
+          cache-dependency-path: |
+            gui/frontend/package-lock.json
+            vscode-ext/package-lock.json
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
         run: |
@@ -824,6 +840,15 @@ jobs:
           printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
           node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+
+      - name: Build VS Code extension VSIX
+        run: |
+          # Same embedded-asset refresh as the Windows job; must run before the
+          # Go GUI build below (go:embed gui/vscode_ext_asset).
+          cd vscode-ext
+          npm ci --cache ./.npm_cache
+          npm run package
+          cd ..
 
       - name: Build macOS GUI binaries
         env:
@@ -1251,7 +1276,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
+          cache-dependency-path: |
+            gui/frontend/package-lock.json
+            vscode-ext/package-lock.json
 
       - name: Install Linux GUI dependencies
         run: |
@@ -1290,6 +1317,15 @@ jobs:
           printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
           node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+
+      - name: Build VS Code extension VSIX
+        run: |
+          # Same embedded-asset refresh as the Windows/macOS jobs; must run
+          # before the Go GUI build below (go:embed gui/vscode_ext_asset).
+          cd vscode-ext
+          npm ci --cache ./.npm_cache
+          npm run package
+          cd ..
 
       - name: Build Linux GUI (amd64)
         run: |
@@ -1516,7 +1552,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
+          cache-dependency-path: |
+            gui/frontend/package-lock.json
+            vscode-ext/package-lock.json
 
       - name: Install Linux GUI dependencies
         run: |
@@ -1553,6 +1591,15 @@ jobs:
           printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
           node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+
+      - name: Build VS Code extension VSIX
+        run: |
+          # Same embedded-asset refresh as the Windows/macOS jobs; must run
+          # before the Go GUI build below (go:embed gui/vscode_ext_asset).
+          cd vscode-ext
+          npm ci --cache ./.npm_cache
+          npm run package
+          cd ..
 
       - name: Build Linux GUI (arm64)
         run: |

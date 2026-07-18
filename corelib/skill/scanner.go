@@ -199,6 +199,9 @@ type SkillYAMLFile struct {
 	Triggers         []string             `yaml:"triggers"`
 	Steps            []SkillYAMLStep      `yaml:"steps"`
 	Status           string               `yaml:"status"`
+	// Source classifies origin for UI filters (e.g. "learned", "crafted", "file").
+	// Empty means resolve via path/name heuristics, defaulting to "file".
+	Source           string               `yaml:"source,omitempty"`
 	Platforms        []string             `yaml:"platforms"`
 	RequiresGUI      bool                 `yaml:"requires_gui"`
 	ProducesArtifact *bool                `yaml:"produces_artifact,omitempty"` // false = diagnostic/instruction skill, no file output expected
@@ -227,6 +230,59 @@ type SkillYAMLFile struct {
 	// Pipeline declares multi-skill orchestration (Pattern 5: Multi-Phase + Checkpoint)
 	Pipeline []SkillYAMLPipelineStep `yaml:"pipeline,omitempty"`
 	Extra    map[string]any          `yaml:"-"`
+}
+
+// ResolveDiskSkillSource decides the runtime Source for a skill loaded from disk.
+// Priority:
+//  1. explicit learned/crafted value from skill.yaml (or Extra["source"])
+//  2. parent directory is the crafted skills subdir
+//  3. legacy auto-summary / craft_tool name prefix "craft_" (only when
+//     declared source is empty or "file")
+//  4. other non-empty declared values (rare on disk) are preserved
+//  5. default "file"
+func ResolveDiskSkillSource(declared, skillDir, skillName string) string {
+	declared = strings.ToLower(strings.TrimSpace(declared))
+	if corelib.IsLearnedSource(declared) {
+		return declared
+	}
+	cleanedDir := filepath.Clean(strings.TrimSpace(skillDir))
+	if cleanedDir != "" && cleanedDir != "." {
+		parent := filepath.Base(filepath.Dir(cleanedDir))
+		if strings.EqualFold(parent, CraftedSkillsSubdir) {
+			return "crafted"
+		}
+	}
+	// GenerateSkillName / tool.GenerateSkillName always prefix auto-generated
+	// learned and craft-tool skills with "craft_". Directory names are kebab-
+	// cased (craft-task-…). Older on-disk copies often omitted source: in
+	// skill.yaml; treat them as self-learned so the UI "自学习" filter includes them.
+	name := strings.ToLower(strings.TrimSpace(skillName))
+	if declared == "" || declared == "file" {
+		if strings.HasPrefix(name, "craft_") || strings.HasPrefix(name, "craft-") {
+			return "learned"
+		}
+	}
+	if declared != "" {
+		return declared
+	}
+	return "file"
+}
+
+// skillYAMLDeclaredSource returns the source declared on a SkillYAMLFile,
+// including legacy copies that only stashed it under Extra.
+func skillYAMLDeclaredSource(sf *SkillYAMLFile) string {
+	if sf == nil {
+		return ""
+	}
+	if s := strings.TrimSpace(sf.Source); s != "" {
+		return s
+	}
+	if sf.Extra != nil {
+		if v, ok := sf.Extra["source"]; ok {
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+	}
+	return ""
 }
 
 // SkillYAMLOperation describes a named operation in a skill definition.
@@ -334,7 +390,7 @@ func parseSkillDefinitionRaw(raw map[string]any, label string) (*SkillYAMLFile, 
 	applySkillYAMLCompatibility(&sf, normalizedRaw)
 	knownKeys := map[string]bool{
 		"id": true, "name": true, "version": true, "description": true, "triggers": true, "steps": true,
-		"status": true, "platforms": true, "requires_gui": true,
+		"status": true, "source": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
 		"shell": true, "mode": true, "operations": true, "params": true,
 		"type": true, "content": true, "capabilities": true,
@@ -1317,7 +1373,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				NameFallback:        name,
 				DescriptionFallback: sf.Description,
 				Triggers:            sf.Triggers,
-				Source:              "file",
+				Source:              ResolveDiskSkillSource(skillYAMLDeclaredSource(&sf), skillDir, name),
 				SkillDir:            skillDir,
 				Platforms:           sf.Platforms,
 				RequiresGUI:         requiresGUI,
@@ -1444,7 +1500,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Triggers:                sf.Triggers,
 			Steps:                   steps,
 			Status:                  status,
-			Source:                  "file",
+			Source:                  ResolveDiskSkillSource(skillYAMLDeclaredSource(&sf), skillDir, name),
 			HubVersion:              strings.TrimSpace(sf.Version),
 			Version:                 strings.TrimSpace(sf.Version),
 			Platforms:               sf.Platforms,
@@ -1489,7 +1545,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 func loadMarkdownSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, string, error) {
 	parsed, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
 		NameFallback: fallbackName,
-		Source:       "file",
+		Source:       ResolveDiskSkillSource("", skillDir, fallbackName),
 		SkillDir:     skillDir,
 	})
 	if err != nil {
@@ -1571,7 +1627,7 @@ func loadKnowledgeSkill(skillDir, name, fallbackName, description string, trigge
 		Description: description,
 		Triggers:    triggers,
 		Status:      status,
-		Source:      "file",
+		Source:      ResolveDiskSkillSource("", skillDir, name),
 		Platforms:   platforms,
 		RequiresGUI: requiresGUI,
 		SkillDir:    skillDir,
@@ -1607,7 +1663,7 @@ func buildYAMLKnowledgeSkillEntry(skillDir, name, fallbackName, status, content,
 		Description:             sf.Description,
 		Triggers:                sf.Triggers,
 		Status:                  status,
-		Source:                  "file",
+		Source:                  ResolveDiskSkillSource(skillYAMLDeclaredSource(&sf), skillDir, name),
 		Platforms:               sf.Platforms,
 		RequiresGUI:             sf.RequiresGUI,
 		SkillDir:                skillDir,
@@ -1681,7 +1737,7 @@ func buildCraftToolFallback(skillDir, fallbackName string, data []byte) *corelib
 			{Action: "craft_tool", Params: params},
 		},
 		Status:         "active",
-		Source:         "file",
+		Source:         ResolveDiskSkillSource(yamlString(yamlFM["source"]), skillDir, name),
 		SkillDir:       skillDir,
 		Platforms:      meta.platforms,
 		Mode:           meta.mode,
@@ -1825,8 +1881,18 @@ func scanSkillDirInternal(root string, filterPlatform bool) []corelib.NLSkillEnt
 		if parsed.SkillDir == "" {
 			parsed.SkillDir = skillDir
 		}
-		if parsed.Source == "" {
-			parsed.Source = "file"
+		if parsed.Source == "" || parsed.Source == "file" {
+			// Re-resolve so craft_* names and crafted/ subdirs promote to learned/crafted
+			// even when ImportMarkdownSkillDir defaulted Source to "file".
+			// Prefer skill name, then DirName, then directory basename (kebab craft-task-*).
+			resolveName := parsed.Name
+			if resolveName == "" {
+				resolveName = parsed.DirName
+			}
+			if resolveName == "" {
+				resolveName = filepath.Base(skillDir)
+			}
+			parsed.Source = ResolveDiskSkillSource(parsed.Source, skillDir, resolveName)
 		}
 		if defPath != "" {
 			parsed.CreatedAt = fileModTime(defPath)

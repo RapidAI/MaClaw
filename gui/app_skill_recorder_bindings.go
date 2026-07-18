@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -151,24 +150,17 @@ func (a *App) ResolveSkillRecording(action string, name string, description stri
 	log.Printf("[skill-recorder] skill saved: name=%s dir=%s", name, skillDir)
 
 	// Refresh skill indexes so the new skill is immediately available.
-	// The scanner will load the skill.yaml from disk — Source will be "file" in scanner's view.
-	// To preserve Source="learned", register via SkillExecutor which persists to skill.json.
+	// Scanner loads skill.yaml from disk; a thin config overlay preserves
+	// Source="learned" without duplicating steps into config.json.
 	if a.skillExecutor != nil {
 		entry := corelib.NLSkillEntry{
-			Name:          name,
-			Description:   description,
-			Source:        "learned",
-			SourceProject: a.GetCurrentProjectPath(),
-			Status:        "active",
-			SkillDir:      skillDir,
-			CreatedAt:     time.Now().Format(time.RFC3339),
+			Name:     name,
+			Source:   "learned",
+			SkillDir: skillDir,
+			Status:   "active",
 		}
-		if regErr := a.skillExecutor.Register(entry); regErr != nil {
-			// If already exists, try Update instead (re-recording same skill name)
-			entry.CreatedAt = "" // let Update preserve original creation time
-			if updErr := a.skillExecutor.Update(entry); updErr != nil {
-				log.Printf("[skill-recorder] register/update in executor failed (non-fatal): register=%v update=%v", regErr, updErr)
-			}
+		if regErr := a.skillExecutor.UpdateLearnedSource(entry); regErr != nil {
+			log.Printf("[skill-recorder] learned source overlay failed (non-fatal): %v", regErr)
 		}
 	}
 

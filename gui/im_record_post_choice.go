@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
@@ -18,12 +20,16 @@ import (
 // After a successful record_audio save, the host returns a deterministic
 // response with Actions — no LLM call for the choice UI itself.
 //
-// Clicking a button sends __record_post__ <action>:
-//   - transcribe / keep_only: host may short-circuit (ASR + archives / MP3 delivery)
-//     when safe under the per-session IM lock; otherwise an agent context hint is injected.
-//   - minutes: always expands to an agent context hint (needs LLM summarization).
+// Step 1 — click sends __record_post__ <action>:
+//   - keep_only: host may short-circuit (MP3 delivery)
+//   - minutes / transcribe: when diarization is enabled, offer step 2 (speaker confirm);
+//     otherwise host ASR (transcribe) or agent context (minutes)
+//
+// Step 2 — click sends __record_post__ speakers <N|auto>:
+//   pins known_speakers for CAM++ clustering, then continues minutes/transcribe.
 
 const recordPostChoiceCommandPrefix = "__record_post__ "
+const recordPostSpeakersCommandPrefix = "__record_post__ speakers "
 
 type recordPostChoiceAction string
 
@@ -36,6 +42,10 @@ const (
 // pendingPostRecordingState holds metadata for a completed recording that is
 // waiting for the user to pick a post-processing action via GUI buttons.
 // Stored in IMMessageHandler.pendingPostRecording keyed by userID.
+//
+// Two-step flow when diarization is enabled and the user picks minutes/transcribe:
+//  1. AwaitingSpeakerConfirm=false → choose minutes / transcribe / keep
+//  2. AwaitingSpeakerConfirm=true  → confirm estimated speaker count, then process
 type pendingPostRecordingState struct {
 	Title       string
 	Purpose     string
@@ -47,11 +57,24 @@ type pendingPostRecordingState struct {
 	Report      string
 	Lang        string    // UI language tag used when the choice card was shown
 	CreatedAt   time.Time // absolute offer time; used for TTL (not refreshed on soft chat)
+
+	// Speaker confirmation (step 2). Only set after minutes/transcribe is chosen
+	// while CAM++ diarization is enabled.
+	AwaitingSpeakerConfirm bool
+	PendingAction          recordPostChoiceAction // minutes or transcribe
+	SuggestedSpeakers      int                    // auto estimate; 0 = unknown/unavailable
+	// KnownSpeakers is the user-confirmed pin passed to diarization (0 = auto).
+	// Set only after the confirm step succeeds; used by host ASR / agent context.
+	KnownSpeakers int
 }
 
 func parseRecordPostChoiceCommand(text string) (recordPostChoiceAction, bool) {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, recordPostChoiceCommandPrefix) {
+		return "", false
+	}
+	// Speaker-count confirm commands are handled separately.
+	if strings.HasPrefix(trimmed, recordPostSpeakersCommandPrefix) {
 		return "", false
 	}
 	action := recordPostChoiceAction(strings.TrimSpace(strings.TrimPrefix(trimmed, recordPostChoiceCommandPrefix)))
@@ -61,6 +84,95 @@ func parseRecordPostChoiceCommand(text string) (recordPostChoiceAction, bool) {
 	default:
 		return "", false
 	}
+}
+
+// parseRecordPostSpeakerCommand parses "__record_post__ speakers N|auto".
+// ok=true when this is a speaker-confirm command. speakers=0 means automatic.
+func parseRecordPostSpeakerCommand(text string) (speakers int, ok bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, recordPostSpeakersCommandPrefix) {
+		return 0, false
+	}
+	arg := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, recordPostSpeakersCommandPrefix)))
+	if arg == "" {
+		return 0, false
+	}
+	if arg == "auto" || arg == "0" || arg == "automatic" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(arg)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	if n > 15 {
+		n = 15
+	}
+	return n, true
+}
+
+// speakerCountCN maps common Chinese number words used in short confirm replies.
+var speakerCountCN = map[rune]int{
+	'一': 1, '二': 2, '两': 2, '兩': 2, '三': 3, '四': 4, '五': 5,
+	'六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+}
+
+// firstSpeakerCountInText finds the first plausible speaker count (1–15) in s,
+// supporting arabic digits and single Chinese numerals (两人/3人/确认2人吧).
+func firstSpeakerCountInText(s string) (int, bool) {
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r >= '0' && r <= '9' {
+			j := i + 1
+			for j < len(runes) && runes[j] >= '0' && runes[j] <= '9' {
+				j++
+			}
+			n, err := strconv.Atoi(string(runes[i:j]))
+			if err == nil && n >= 1 && n <= 15 {
+				return n, true
+			}
+			i = j - 1
+			continue
+		}
+		if n, ok := speakerCountCN[r]; ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// matchRecordPostSpeakerFreeText maps plain replies like "2人"/"两人"/"自动" to a
+// confirmed speaker count while the confirm step is pending.
+// speakers=0 means "use automatic clustering".
+func matchRecordPostSpeakerFreeText(text string) (speakers int, ok bool) {
+	if n, ok := parseRecordPostSpeakerCommand(text); ok {
+		return n, true
+	}
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return 0, false
+	}
+	lower := strings.ToLower(t)
+	// Auto / skip pin.
+	switch lower {
+	case "auto", "automatic", "自动", "自動", "auto mode", "自动估计", "自動估計", "自动识别", "自動識別":
+		return 0, true
+	}
+	// Normalize UI button labels ("2 人（推荐）") then extract the first count.
+	stripped := t
+	for _, deco := range []string{
+		"（推荐）", "（推薦）", "(recommended)", "(Recommended)", "（建议）", "（建議）",
+	} {
+		stripped = strings.ReplaceAll(stripped, deco, "")
+	}
+	if n, ok := firstSpeakerCountInText(stripped); ok {
+		return n, true
+	}
+	// Bare "0" remains auto (same as button "auto").
+	if strings.TrimSpace(strings.ReplaceAll(stripped, " ", "")) == "0" {
+		return 0, true
+	}
+	return 0, false
 }
 
 // recordPostChoiceExactAliases is built once: i18n button labels (zh/en) plus
@@ -176,6 +288,14 @@ var recordPostZhHant = map[string]string{
 	i18n.MsgRecordPostSizeBytes:      "%d B",
 	i18n.MsgRecordPostSizeKB:         "約%d KB",
 	i18n.MsgRecordPostSizeMB:         "約%.1f MB",
+	i18n.MsgRecordPostSpeakersHeading:    "**確認說話人數**",
+	i18n.MsgRecordPostSpeakersSuggested:  "系統估計約 **%d** 位說話人。",
+	i18n.MsgRecordPostSpeakersUnknown:    "未能自動估計人數（模型未就緒或音訊過短）。",
+	i18n.MsgRecordPostSpeakersPrompt:     "請確認人數後開始轉寫（點選下方按鈕，或直接回覆如「2人」「自動」）：",
+	i18n.MsgRecordPostSpeakersBtnN:       "%d 人",
+	i18n.MsgRecordPostSpeakersBtnNRec:    "%d 人（推薦）",
+	i18n.MsgRecordPostSpeakersBtnAuto:    "自動",
+	i18n.MsgRecordPostSpeakersEstimating: "正在估計說話人數…",
 }
 
 func recordPostT(key, lang string) string {
@@ -350,6 +470,244 @@ func postRecordingChoiceActions(lang string) []IMResponseAction {
 	}
 }
 
+// formatPostRecordingSpeakerConfirmText builds the step-2 confirm card body.
+// suggested=0 means estimate unavailable yet (or failed). When estimating is
+// true, prefer the "still estimating" copy over the hard-failure unknown text —
+// the background pre-estimate may still land; users can pick a number anytime.
+func formatPostRecordingSpeakerConfirmText(lang string, suggested int, action recordPostChoiceAction, estimating bool) string {
+	var b strings.Builder
+	b.WriteString(recordPostT(i18n.MsgRecordPostSpeakersHeading, lang))
+	b.WriteString("\n\n")
+	if label := recordPostChoiceLabel(action, lang); label != "" {
+		b.WriteString("- ")
+		b.WriteString(label)
+		b.WriteString("\n\n")
+	}
+	switch {
+	case suggested > 0:
+		b.WriteString(recordPostTf(i18n.MsgRecordPostSpeakersSuggested, lang, suggested))
+	case estimating:
+		b.WriteString(recordPostT(i18n.MsgRecordPostSpeakersEstimating, lang))
+	default:
+		b.WriteString(recordPostT(i18n.MsgRecordPostSpeakersUnknown, lang))
+	}
+	b.WriteString("\n\n")
+	b.WriteString(recordPostT(i18n.MsgRecordPostSpeakersPrompt, lang))
+	return b.String()
+}
+
+// postRecordingSpeakerConfirmActions returns 1..5 person buttons (+ recommended
+// highlight) and an Auto button. When the estimate is 6–15, an extra button for
+// that count is inserted so the recommendation is one tap away. Free-text still
+// accepts any 1–15.
+func postRecordingSpeakerConfirmActions(lang string, suggested int) []IMResponseAction {
+	maxFixed := 5
+	actions := make([]IMResponseAction, 0, 8)
+	for n := 1; n <= maxFixed; n++ {
+		style := "default"
+		label := recordPostTf(i18n.MsgRecordPostSpeakersBtnN, lang, n)
+		if suggested == n {
+			style = "primary"
+			label = recordPostTf(i18n.MsgRecordPostSpeakersBtnNRec, lang, n)
+		}
+		actions = append(actions, IMResponseAction{
+			Label:   label,
+			Command: fmt.Sprintf("%s%d", recordPostSpeakersCommandPrefix, n),
+			Style:   style,
+		})
+	}
+	if suggested > maxFixed && suggested <= 15 {
+		actions = append(actions, IMResponseAction{
+			Label:   recordPostTf(i18n.MsgRecordPostSpeakersBtnNRec, lang, suggested),
+			Command: fmt.Sprintf("%s%d", recordPostSpeakersCommandPrefix, suggested),
+			Style:   "primary",
+		})
+	}
+	autoStyle := "default"
+	if suggested <= 0 {
+		autoStyle = "primary"
+	}
+	actions = append(actions, IMResponseAction{
+		Label:   recordPostT(i18n.MsgRecordPostSpeakersBtnAuto, lang),
+		Command: recordPostSpeakersCommandPrefix + "auto",
+		Style:   autoStyle,
+	})
+	return actions
+}
+
+// shouldOfferSpeakerConfirm is true when diarization can usefully pin a count.
+// Skips the confirm card when CAM++ is disabled or the model file is missing so
+// users are not stuck on a step that can only fall back to plain ASR.
+func (h *IMMessageHandler) shouldOfferSpeakerConfirm() bool {
+	if h == nil || h.app == nil {
+		return false
+	}
+	if !h.app.GetDiarizationEnabled() {
+		return false
+	}
+	info := h.app.CheckDiarizationModel()
+	if info == nil {
+		return false
+	}
+	exists, _ := info["exists"].(bool)
+	return exists
+}
+
+// clearPendingPostRecording drops the choice state and any cached speaker estimate.
+func (h *IMMessageHandler) clearPendingPostRecording(userID string) {
+	if h == nil {
+		return
+	}
+	h.pendingPostRecording.Delete(userID)
+	h.pendingSpeakerEstimates.Delete(userID)
+}
+
+// cachedSpeakerEstimate returns a background-precomputed count when present.
+func (h *IMMessageHandler) cachedSpeakerEstimate(userID string) int {
+	if h == nil {
+		return 0
+	}
+	raw, ok := h.pendingSpeakerEstimates.Load(userID)
+	if !ok {
+		return 0
+	}
+	switch n := raw.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+// storeSpeakerEstimate caches a positive estimate for the open post-recording flow.
+func (h *IMMessageHandler) storeSpeakerEstimate(userID string, n int) {
+	if h == nil || n <= 0 {
+		return
+	}
+	if n > 15 {
+		n = 15
+	}
+	h.pendingSpeakerEstimates.Store(userID, n)
+}
+
+// preEstimateSpeakersForPending runs estimation in the background after the
+// first choice card is shown so step-2 confirm is near-instant when the user
+// picks minutes/transcribe. Writes only to pendingSpeakerEstimates (never
+// mutates pendingPostRecording) to avoid races with the confirm state machine.
+func (h *IMMessageHandler) preEstimateSpeakersForPending(userID string, path, format string) {
+	if h == nil || h.app == nil || !h.app.GetDiarizationEnabled() {
+		return
+	}
+	// Avoid spinning CAM++ work when weights are not on disk yet.
+	if info := h.app.CheckDiarizationModel(); info != nil {
+		if exists, _ := info["exists"].(bool); !exists {
+			return
+		}
+	}
+	// Already have a warm cache for this user — skip duplicate background work.
+	if h.cachedSpeakerEstimate(userID) > 0 {
+		return
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	go func() {
+		// Bail if the user already dismissed the choice card.
+		if _, ok := h.pendingPostRecording.Load(userID); !ok {
+			return
+		}
+		wav, errMsg := prepareASRToolWAV(path, strings.TrimSpace(format))
+		if errMsg != "" || len(wav) == 0 {
+			return
+		}
+		n, err := h.app.EstimateSpeakerCountWAVBytes(wav)
+		if err != nil || n <= 0 {
+			return
+		}
+		// Still the same open recording?
+		raw, ok := h.pendingPostRecording.Load(userID)
+		if !ok {
+			return
+		}
+		pending, ok := raw.(*pendingPostRecordingState)
+		if !ok || pending == nil || strings.TrimSpace(pending.Path) != path {
+			return
+		}
+		h.storeSpeakerEstimate(userID, n)
+		if recordDetailEnabled() {
+			log.Printf("[record-audio] pre-estimated speakers user=%s path=%q n=%d", userID, path, n)
+		}
+	}()
+}
+
+// offerPostRecordingSpeakerConfirm stores step-2 state and returns the confirm card.
+// Intentionally non-blocking: uses cache / pending.SuggestedSpeakers only. A cold
+// cache shows "unknown + Auto" immediately; background pre-estimate (started when
+// the first choice card was offered) warms the cache for subsequent opens, and
+// the user can always pick 1–5 without waiting for CAM++.
+func (h *IMMessageHandler) offerPostRecordingSpeakerConfirm(
+	userID string,
+	pending *pendingPostRecordingState,
+	action recordPostChoiceAction,
+	priorHistory []agent.ConversationEntry,
+) *IMAgentResponse {
+	if h == nil || pending == nil {
+		return nil
+	}
+	lang := pending.Lang
+	if strings.TrimSpace(lang) == "" {
+		lang = "zh"
+	}
+	suggested := pending.SuggestedSpeakers
+	if suggested <= 0 {
+		suggested = h.cachedSpeakerEstimate(userID)
+	}
+	// Kick a background estimate if still cold (e.g. user clicked before pre-estimate finished).
+	estimating := false
+	if suggested <= 0 && h.shouldOfferSpeakerConfirm() {
+		h.preEstimateSpeakersForPending(userID, pending.Path, pending.Format)
+		// Model is present; treat cold cache as "still estimating" rather than hard failure.
+		estimating = true
+	}
+	pending.AwaitingSpeakerConfirm = true
+	pending.PendingAction = action
+	pending.SuggestedSpeakers = suggested
+	pending.KnownSpeakers = 0
+	// Refresh TTL anchor so the user has a full window for the second step.
+	pending.CreatedAt = time.Now()
+	h.pendingPostRecording.Store(userID, pending)
+
+	text := formatPostRecordingSpeakerConfirmText(lang, suggested, action, estimating)
+	resp := &IMAgentResponse{
+		Text:           text,
+		ResponseSource: imResponseSourceAskUser.String(),
+		Actions:        postRecordingSpeakerConfirmActions(lang, suggested),
+		SessionKey:     userID,
+	}
+
+	history := cloneConversationEntries(priorHistory)
+	userLabel := recordPostChoiceLabel(action, lang)
+	if strings.TrimSpace(userLabel) == "" {
+		userLabel = string(action)
+	}
+	if !lastUserContentEquals(history, userLabel) {
+		history = append(history, agent.ConversationEntry{Role: "user", Content: userLabel})
+	}
+	history = append(history, agent.ConversationEntry{Role: "assistant", Content: text})
+	h.saveConversationHistoryTimed(userID, history, resp)
+
+	if recordDetailEnabled() {
+		log.Printf("[record-audio] offered speaker confirm user=%s action=%s suggested=%d path=%q",
+			userID, action, suggested, pending.Path)
+	}
+	return resp
+}
+
 // offerPostRecordingChoice builds a deterministic ask_user-style response with
 // engine-injected Actions, persists history, and stores pending state for the
 // next user click/reply. lang is the UI language; empty falls back via app/i18n.
@@ -389,18 +747,21 @@ func (h *IMMessageHandler) offerPostRecordingChoice(userID, title, purpose, repo
 		title = defaultTitle
 	}
 	now := time.Now()
+	format := extractRecordingFieldFromReport(report, "format")
 	h.pendingPostRecording.Store(userID, &pendingPostRecordingState{
 		Title:       title,
 		Purpose:     strings.TrimSpace(purpose),
 		Path:        path,
 		MP3Path:     mp3Path,
-		Format:      extractRecordingFieldFromReport(report, "format"),
+		Format:      format,
 		DurationSec: extractRecordingFieldFromReport(report, "duration_sec"),
 		SizeBytes:   extractRecordingFieldFromReport(report, "size_bytes"),
 		Report:      report,
 		Lang:        lang,
 		CreatedAt:   now,
 	})
+	// Warm speaker estimate so the confirm step is snappy.
+	h.preEstimateSpeakersForPending(userID, path, format)
 	if recordDetailEnabled() {
 		log.Printf("[record-audio] offered post-recording choice user=%s title=%q path=%q mp3=%q lang=%s", userID, title, path, mp3Path, lang)
 	}
@@ -522,11 +883,16 @@ func buildPostRecordingChoiceContext(pending *pendingPostRecordingState, action 
 	b.WriteString("\nExecute NOW according to the chosen action. Do not re-ask with numbered text options.\n")
 	b.WriteString("Write user-facing replies and document body language matching UI language above.\n")
 
-	asrCall := "asr(path=<Audio path>)"
-	asrMinutesCall := "asr(path=<Audio path>, for_minutes=true)"
+	speakersArg := ""
+	if pending.KnownSpeakers > 0 {
+		speakersArg = fmt.Sprintf(", known_speakers=%d", pending.KnownSpeakers)
+		b.WriteString(fmt.Sprintf("User-confirmed speaker count: %d — MUST pass known_speakers=%d to asr for accurate diarization.\n", pending.KnownSpeakers, pending.KnownSpeakers))
+	}
+	asrCall := "asr(path=<Audio path>" + speakersArg + ")"
+	asrMinutesCall := "asr(path=<Audio path>, for_minutes=true" + speakersArg + ")"
 	if path != "" {
-		asrCall = fmt.Sprintf("asr(path=%q)", path)
-		asrMinutesCall = fmt.Sprintf("asr(path=%q, for_minutes=true)", path)
+		asrCall = fmt.Sprintf("asr(path=%q%s)", path, speakersArg)
+		asrMinutesCall = fmt.Sprintf("asr(path=%q, for_minutes=true%s)", path, speakersArg)
 	}
 
 	mdPath := ""
@@ -621,8 +987,13 @@ func (h *IMMessageHandler) consumePendingPostRecordingChoice(userID, trimmed str
 	}
 	pending, fresh := pendingPostRecordingForCurrentHistory(raw, entries)
 	if !fresh {
-		h.pendingPostRecording.Delete(userID)
+		h.clearPendingPostRecording(userID)
 		return "", nil, nil, false
+	}
+
+	// Step 2: speaker-count confirmation after minutes/transcribe was chosen.
+	if pending.AwaitingSpeakerConfirm {
+		return h.consumePendingSpeakerConfirm(userID, trimmed, pending, entries)
 	}
 
 	action, matched := parseRecordPostChoiceCommand(trimmed)
@@ -650,12 +1021,19 @@ func (h *IMMessageHandler) consumePendingPostRecordingChoice(userID, trimmed str
 		return soft, nil, nil, true
 	}
 
+	// When diarization is on, minutes/transcribe go through speaker confirm first.
+	if (action == recordPostActionMinutes || action == recordPostActionTranscribe) && h.shouldOfferSpeakerConfirm() {
+		if resp := h.offerPostRecordingSpeakerConfirm(userID, pending, action, entries); resp != nil {
+			return "", resp, nil, true
+		}
+	}
+
 	// Host-side deterministic paths (no LLM) when safe/cheap enough.
 	// Transcribe is deferred (ASR can be slow); keep_only is immediate (stat + paths).
 	switch action {
 	case recordPostActionTranscribe:
 		if deferred := h.deferHostPostRecordingTranscribe(userID, pending, entries); deferred != nil {
-			h.pendingPostRecording.Delete(userID)
+			h.clearPendingPostRecording(userID)
 			if recordDetailEnabled() {
 				log.Printf("[record-audio] post-choice deferred host transcribe user=%s path=%q", userID, pending.Path)
 			}
@@ -663,7 +1041,7 @@ func (h *IMMessageHandler) consumePendingPostRecordingChoice(userID, trimmed str
 		}
 	case recordPostActionKeepOnly:
 		if resp := h.hostHandlePostRecordingKeepOnly(userID, pending, entries); resp != nil {
-			h.pendingPostRecording.Delete(userID)
+			h.clearPendingPostRecording(userID)
 			if recordDetailEnabled() {
 				log.Printf("[record-audio] post-choice host-handled keep_only user=%s path=%q files=%d",
 					userID, pending.Path, len(resp.LocalFilePaths))
@@ -672,11 +1050,66 @@ func (h *IMMessageHandler) consumePendingPostRecordingChoice(userID, trimmed str
 		}
 	}
 
-	h.pendingPostRecording.Delete(userID)
+	h.clearPendingPostRecording(userID)
 	ctx = buildPostRecordingChoiceContext(pending, action)
 	if recordDetailEnabled() {
 		log.Printf("[record-audio] post-choice selected user=%s action=%s path=%q", userID, action, pending.Path)
 	}
+	return ctx, nil, nil, true
+}
+
+// consumePendingSpeakerConfirm handles step-2 replies (button or free text).
+func (h *IMMessageHandler) consumePendingSpeakerConfirm(
+	userID, trimmed string,
+	pending *pendingPostRecordingState,
+	entries []agent.ConversationEntry,
+) (ctx string, hostResp *IMAgentResponse, deferredHost func() *IMAgentResponse, ok bool) {
+	speakers, matched := matchRecordPostSpeakerFreeText(trimmed)
+	if !matched {
+		if recordDetailEnabled() {
+			log.Printf("[record-audio] speaker-confirm pending, non-matching reply user=%s answer_len=%d",
+				userID, len([]rune(trimmed)))
+		}
+		soft := fmt.Sprintf(
+			"[Context hint] Speaker-count confirmation is still pending for audio path %q (action %s, suggested %d). "+
+				"If unrelated, answer briefly and remind the user to confirm speaker count via the buttons (1–5 or Auto) or a short reply like \"2人\" / \"auto\". "+
+				"Do not start transcription until they confirm. "+
+				"If they want a new recording, call record_audio (clears this pending).",
+			pending.Path, pending.PendingAction, pending.SuggestedSpeakers,
+		)
+		return soft, nil, nil, true
+	}
+
+	action := pending.PendingAction
+	if action != recordPostActionMinutes && action != recordPostActionTranscribe {
+		// Defensive: bad state — clear and soft-fail.
+		h.clearPendingPostRecording(userID)
+		return "", nil, nil, true
+	}
+	pending.KnownSpeakers = speakers
+	pending.AwaitingSpeakerConfirm = false
+	if recordDetailEnabled() {
+		log.Printf("[record-audio] speaker confirmed user=%s action=%s known_speakers=%d path=%q",
+			userID, action, speakers, pending.Path)
+	}
+
+	switch action {
+	case recordPostActionTranscribe:
+		if deferred := h.deferHostPostRecordingTranscribe(userID, pending, entries); deferred != nil {
+			h.clearPendingPostRecording(userID)
+			return "", nil, deferred, true
+		}
+	case recordPostActionMinutes:
+		// Prefer host ASR (with confirmed speaker pin) + draft minutes so the
+		// LLM cannot drop known_speakers on a re-asr. Falls back to agent ctx.
+		if deferred := h.deferHostPostRecordingMinutes(userID, pending, entries); deferred != nil {
+			h.clearPendingPostRecording(userID)
+			return "", nil, deferred, true
+		}
+	}
+
+	h.clearPendingPostRecording(userID)
+	ctx = buildPostRecordingChoiceContext(pending, action)
 	return ctx, nil, nil, true
 }
 
@@ -711,6 +1144,117 @@ func (h *IMMessageHandler) deferHostPostRecordingTranscribe(
 		// Pending already cleared; surface a clear failure instead of a silent empty reply.
 		return hostPostRecordingTranscribeFailureResponse(userID, &snap)
 	}
+}
+
+// deferHostPostRecordingMinutes runs host ASR (with confirmed speaker pin) then
+// a minutes draft after the session lock is released. Returns nil when the
+// recording is too long / ASR unavailable so the agent path can take over.
+func (h *IMMessageHandler) deferHostPostRecordingMinutes(
+	userID string,
+	pending *pendingPostRecordingState,
+	priorHistory []agent.ConversationEntry,
+) func() *IMAgentResponse {
+	if h == nil || h.app == nil || pending == nil {
+		return nil
+	}
+	if !shouldHostHandlePostRecordingTranscribe(pending) {
+		return nil
+	}
+	if !h.app.GetASREnabled() || !h.app.IsASRReady() {
+		return nil
+	}
+	snap := *pending
+	historySnap := cloneConversationEntries(priorHistory)
+	return func() *IMAgentResponse {
+		resp := h.hostHandlePostRecordingMinutes(userID, &snap, historySnap)
+		if resp != nil {
+			if recordDetailEnabled() {
+				log.Printf("[record-audio] post-choice host-handled minutes user=%s path=%q known_speakers=%d files=%d",
+					userID, snap.Path, snap.KnownSpeakers, len(resp.LocalFilePaths))
+			}
+			return resp
+		}
+		// Minutes assembly failed after eligibility checks: still deliver a pin-aware
+		// transcript if ASR works, so the user is not left empty-handed.
+		if tx := h.hostHandlePostRecordingTranscribe(userID, &snap, historySnap); tx != nil {
+			if recordDetailEnabled() {
+				log.Printf("[record-audio] minutes host failed; fell back to host transcribe user=%s path=%q",
+					userID, snap.Path)
+			}
+			// Prefix a short note so the user knows minutes was incomplete.
+			note := ""
+			switch resolveRecordPostUILang(snap.Lang) {
+			case "en":
+				note = "Meeting minutes draft failed; delivering full transcript instead.\n\n"
+			case "zh-Hant":
+				note = "會議紀要草稿失敗，改為交付完整轉寫。\n\n"
+			default:
+				note = "会议纪要草稿失败，改为交付完整转写。\n\n"
+			}
+			tx.Text = note + tx.Text
+			return tx
+		}
+		return hostPostRecordingMinutesFailureResponse(userID, &snap)
+	}
+}
+
+func hostPostRecordingMinutesFailureResponse(userID string, pending *pendingPostRecordingState) *IMAgentResponse {
+	lang := "zh"
+	if pending != nil && strings.TrimSpace(pending.Lang) != "" {
+		lang = pending.Lang
+	}
+	ui := resolveRecordPostUILang(lang)
+	var text string
+	switch ui {
+	case "en":
+		text = "Meeting minutes failed (ASR unavailable, empty result, or audio could not be decoded). Please retry, check ASR settings, or re-record."
+	case "zh-Hant":
+		text = "會議紀要失敗（語音識別不可用、結果為空或音訊無法解碼）。請重試、檢查 ASR 設定，或重新錄音。"
+	default:
+		text = "会议纪要失败（语音识别不可用、结果为空或音频无法解码）。请重试、检查 ASR 设置，或重新录音。"
+	}
+	if pending != nil && strings.TrimSpace(pending.Path) != "" {
+		text += "\n\n`" + pending.Path + "`"
+	}
+	return &IMAgentResponse{
+		Text:           text,
+		SessionKey:     userID,
+		ResponseSource: imResponseSourceAskUser.String(),
+	}
+}
+
+// hostRunPostRecordingASR prepares WAV and transcribes with the pending speaker pin.
+// Returns empty text when host ASR cannot run (caller decides fallback).
+func (h *IMMessageHandler) hostRunPostRecordingASR(pending *pendingPostRecordingState) (path, text string, ok bool) {
+	if h == nil || h.app == nil || pending == nil {
+		return "", "", false
+	}
+	if !shouldHostHandlePostRecordingTranscribe(pending) {
+		return "", "", false
+	}
+	path = strings.TrimSpace(pending.Path)
+	if path == "" {
+		return "", "", false
+	}
+	if !h.app.GetASREnabled() || !h.app.IsASRReady() {
+		return "", "", false
+	}
+	wav, errMsg := prepareASRToolWAV(path, strings.TrimSpace(pending.Format))
+	if errMsg != "" {
+		log.Printf("[record-audio] host ASR prepare failed path=%q: %s", path, errMsg)
+		return path, "", false
+	}
+	out, err := h.app.transcribeWAVBytesWithSpeakers(wav, pending.KnownSpeakers)
+	if err != nil {
+		log.Printf("[record-audio] host ASR failed path=%q known_speakers=%d: %v", path, pending.KnownSpeakers, err)
+		return path, "", false
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		log.Printf("[record-audio] host ASR empty path=%q", path)
+		return path, "", false
+	}
+	return path, out, true
 }
 
 func hostPostRecordingTranscribeFailureResponse(userID string, pending *pendingPostRecordingState) *IMAgentResponse {
@@ -778,38 +1322,12 @@ func (h *IMMessageHandler) hostHandlePostRecordingTranscribe(
 	pending *pendingPostRecordingState,
 	priorHistory []agent.ConversationEntry,
 ) *IMAgentResponse {
-	if h == nil || h.app == nil || pending == nil {
-		return nil
-	}
-	if !shouldHostHandlePostRecordingTranscribe(pending) {
-		if recordDetailEnabled() {
-			log.Printf("[record-audio] host transcribe skipped (too long) path=%q duration=%q",
+	path, text, ok := h.hostRunPostRecordingASR(pending)
+	if !ok {
+		if recordDetailEnabled() && pending != nil {
+			log.Printf("[record-audio] host transcribe skipped path=%q duration=%q",
 				pending.Path, pending.DurationSec)
 		}
-		return nil
-	}
-	path := strings.TrimSpace(pending.Path)
-	if path == "" {
-		return nil
-	}
-	if !h.app.GetASREnabled() || !h.app.IsASRReady() {
-		return nil
-	}
-
-	formatHint := strings.TrimSpace(pending.Format)
-	wav, errMsg := prepareASRToolWAV(path, formatHint)
-	if errMsg != "" {
-		log.Printf("[record-audio] host transcribe prepare failed path=%q: %s", path, errMsg)
-		return nil
-	}
-	text, err := h.app.TranscribeWAVBytes(wav)
-	if err != nil {
-		log.Printf("[record-audio] host transcribe asr failed path=%q: %v", path, err)
-		return nil
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		log.Printf("[record-audio] host transcribe empty path=%q", path)
 		return nil
 	}
 
@@ -832,6 +1350,69 @@ func (h *IMMessageHandler) hostHandlePostRecordingTranscribe(
 	}
 	resp.SessionKey = userID
 	h.appendPostRecordingHostHistory(userID, pending, recordPostActionTranscribe, priorHistory, resp)
+	return resp
+}
+
+// hostHandlePostRecordingMinutes runs pin-aware ASR then a minutes draft (LLM when
+// configured, else extractive). Guarantees speaker labels use the user-confirmed
+// count without relying on the agent to re-call asr(known_speakers=…).
+func (h *IMMessageHandler) hostHandlePostRecordingMinutes(
+	userID string,
+	pending *pendingPostRecordingState,
+	priorHistory []agent.ConversationEntry,
+) *IMAgentResponse {
+	path, text, ok := h.hostRunPostRecordingASR(pending)
+	if !ok {
+		return nil
+	}
+
+	spill := asrShouldSpillToFile(text)
+	txMD, txPDF := writeASRTranscriptArchives(path, text, !spill)
+	txTXT := ""
+	if spill {
+		txTXT = asrTranscriptSidecarPath(path)
+		if werr := os.WriteFile(txTXT, []byte(text), 0o644); werr != nil {
+			log.Printf("[record-audio] host minutes write txt failed path=%q: %v", txTXT, werr)
+			txTXT = ""
+		}
+	}
+
+	title := ""
+	purpose := ""
+	if pending != nil {
+		title = strings.TrimSpace(pending.Title)
+		purpose = strings.TrimSpace(pending.Purpose)
+	}
+	if title == "" {
+		title = "会议纪要"
+	}
+	draft, usedLLM := buildMeetingMinutesDraft(context.Background(), h.app, title, purpose, text, true)
+
+	// Assemble minutes markdown: draft body + mandatory full-transcript section.
+	var body strings.Builder
+	body.WriteString(strings.TrimSpace(draft))
+	body.WriteString("\n\n## 完整转写 / Full transcript\n\n")
+	body.WriteString(text)
+	body.WriteByte('\n')
+	// Dedicated minutes product next to the audio (not the intermediate draft sidecar).
+	minutesMD := ""
+	if ext := filepath.Ext(path); ext != "" {
+		minutesMD = strings.TrimSuffix(path, ext) + "_minutes.md"
+	} else if path != "" {
+		minutesMD = path + "_minutes.md"
+	}
+	if werr := os.WriteFile(minutesMD, []byte(body.String()), 0o644); werr != nil {
+		log.Printf("[record-audio] host minutes write md failed path=%q: %v", minutesMD, werr)
+		minutesMD = ""
+	}
+
+	paths := collectExistingPaths(minutesMD, txMD, txPDF, txTXT, resolvePostRecordingMP3Path(pending))
+	resp := buildPostRecordingMinutesHostResponse(pending, text, draft, paths, usedLLM, spill)
+	if resp == nil {
+		return nil
+	}
+	resp.SessionKey = userID
+	h.appendPostRecordingHostHistory(userID, pending, recordPostActionMinutes, priorHistory, resp)
 	return resp
 }
 
@@ -976,6 +1557,114 @@ func collectExistingPaths(paths ...string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// buildPostRecordingMinutesHostResponse builds the host-side minutes response
+// (ASR with speaker pin + draft). paths are delivered via LocalFilePaths.
+func buildPostRecordingMinutesHostResponse(
+	pending *pendingPostRecordingState,
+	transcript, draft string,
+	paths []string,
+	usedLLM, longTranscript bool,
+) *IMAgentResponse {
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		return nil
+	}
+	lang := "zh"
+	if pending != nil && strings.TrimSpace(pending.Lang) != "" {
+		lang = pending.Lang
+	}
+	ui := resolveRecordPostUILang(lang)
+	title := ""
+	if pending != nil {
+		title = strings.TrimSpace(pending.Title)
+	}
+	var b strings.Builder
+	dur := ""
+	if pending != nil {
+		dur = formatDurationFromSecField(pending.DurationSec)
+	}
+	switch ui {
+	case "en":
+		b.WriteString("Meeting minutes ready")
+		if title != "" {
+			b.WriteString(fmt.Sprintf(" (%s)", title))
+		}
+		b.WriteString(".\n")
+		if dur != "" {
+			b.WriteString(fmt.Sprintf("Duration: %s\n", dur))
+		}
+		if pending != nil && pending.KnownSpeakers > 0 {
+			b.WriteString(fmt.Sprintf("Speakers: %d (confirmed)\n", pending.KnownSpeakers))
+		}
+		if usedLLM {
+			b.WriteString("Draft: LLM map-reduce\n")
+		} else {
+			b.WriteString("Draft: extractive (review recommended)\n")
+		}
+		b.WriteString("\n**Minutes preview:**\n")
+	case "zh-Hant":
+		b.WriteString("會議紀要已生成")
+		if title != "" {
+			b.WriteString(fmt.Sprintf("（%s）", title))
+		}
+		b.WriteString("！\n")
+		if dur != "" {
+			b.WriteString(fmt.Sprintf("時長：%s\n", dur))
+		}
+		if pending != nil && pending.KnownSpeakers > 0 {
+			b.WriteString(fmt.Sprintf("說話人：%d 人（已確認）\n", pending.KnownSpeakers))
+		}
+		if usedLLM {
+			b.WriteString("草稿：LLM 彙總\n")
+		} else {
+			b.WriteString("草稿：抽取式（建議人工核對）\n")
+		}
+		b.WriteString("\n**紀要預覽：**\n")
+	default:
+		b.WriteString("会议纪要已生成")
+		if title != "" {
+			b.WriteString(fmt.Sprintf("（%s）", title))
+		}
+		b.WriteString("！\n")
+		if dur != "" {
+			b.WriteString(fmt.Sprintf("时长：%s\n", dur))
+		}
+		if pending != nil && pending.KnownSpeakers > 0 {
+			b.WriteString(fmt.Sprintf("说话人：%d 人（已确认）\n", pending.KnownSpeakers))
+		}
+		if usedLLM {
+			b.WriteString("草稿：LLM 汇总\n")
+		} else {
+			b.WriteString("草稿：抽取式（建议人工核对）\n")
+		}
+		b.WriteString("\n**纪要预览：**\n")
+	}
+	preview := strings.TrimSpace(draft)
+	if preview == "" {
+		preview = transcript
+	}
+	if longTranscript || utf8RuneCount(preview) > asrPreviewHeadRunes+asrPreviewTailRunes {
+		head, tail, omitted := asrPreviewHeadTail(preview, asrPreviewHeadRunes, asrPreviewTailRunes)
+		b.WriteString(head)
+		if omitted > 0 {
+			b.WriteString(fmt.Sprintf("\n\n… (%d chars omitted; see attached files) …\n\n", omitted))
+			b.WriteString(tail)
+		}
+	} else {
+		b.WriteString(preview)
+	}
+	b.WriteByte('\n')
+	return &IMAgentResponse{
+		Text:           b.String(),
+		LocalFilePaths: paths,
+		ResponseSource: imResponseSourceAskUser.String(),
+	}
+}
+
+func utf8RuneCount(s string) int {
+	return utf8.RuneCountInString(s)
 }
 
 // buildPostRecordingTranscribeHostResponse builds the deterministic UI response for

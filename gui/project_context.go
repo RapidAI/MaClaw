@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ProjectContextSummary holds the structured project context loaded from
@@ -152,8 +154,8 @@ func looksLikeFilePathForContext(s string) bool {
 	if strings.HasPrefix(s, "/") && len(s) > 1 {
 		return true
 	}
-	// Home directory path
-	if strings.HasPrefix(s, "~/") {
+	// Home directory path (~/… or ~\… on Windows)
+	if corelib.IsHomePath(s) {
 		return true
 	}
 	return false

@@ -59,6 +59,10 @@
 	<string>用于从相册导入图片或截图。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>用于将语音提问转成文字。</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

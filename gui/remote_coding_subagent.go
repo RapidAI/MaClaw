@@ -274,7 +274,11 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if r.role == "" || r.role == codingRoleWorker {
 		cb.completeRemotePostEditAudit()
 	}
-	return cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
+	out := cb.applyRemoteVerificationOutcome(remoteCodingSubAgentResultFromLoopResult(result))
+	if out != nil {
+		out.Summary = appendCodingAgentTodoTurnNote(out.Summary, cb.todos.snapshot())
+	}
+	return out
 }
 
 func remoteCodingUserContent(r *RemoteCodingSubAgent, userText string) interface{} {
@@ -1022,6 +1026,9 @@ type remoteCodingCallbacks struct {
 	localExtSelected bool
 	localExtSkills   []codingSubAgentSkillMatch
 	localExtMCP      []codingSubAgentMCPToolMatch
+
+	// Agent-internal Claude Code / Codex-style step checklist for this turn.
+	todos codingAgentTodoState
 }
 
 type remoteCodingFileAuditEvent struct {
@@ -1074,6 +1081,10 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 		}
 	} else {
 		prompt = buildFullCodingEnvironmentPromptPreamble() + buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext)
+	}
+	// In-agent plan/checklist (not workbench multi-task orchestration).
+	if !inspectionRole {
+		prompt += codingAgentTodoPromptSection
 	}
 
 	// Inject knowledge from coding experience store + general knowledge store.
@@ -1168,6 +1179,10 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	// Codex-style nested subagents on pure remote coding workbench root.
 	if c != nil && c.agent != nil && c.agent.canSpawnRemoteCodingAgent() {
 		tools = append(tools, buildSpawnCodingAgentToolDefinition())
+	}
+	// In-agent requirement breakdown + step checklist (workers only).
+	if !inspectionRole {
+		tools = append(tools, buildCodingAgentTodoToolDefinition())
 	}
 	if c != nil && c.agent != nil {
 		tools = filterRemoteCodingToolsForRole(tools, c.agent)
@@ -1347,10 +1362,13 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	case codingSubAgentSpawnToolName:
 		result = c.executeSpawnRemoteCodingAgent(args)
 		return result
+	case codingAgentTodoToolName:
+		result = c.executeRemoteTodoWrite(normalizedArgsJSON)
+		return result
 	}
 
 	if !remoteCodingToolRequiresSSHHandler(canonicalName) {
-		result = fmt.Sprintf("unknown tool: %s (supports: ssh_*, spawn_coding_agent, goal, manage_skill, call_mcp_tool, knowledge search)", name)
+		result = fmt.Sprintf("unknown tool: %s (supports: ssh_*, spawn_coding_agent, goal, todo_write, manage_skill, call_mcp_tool, knowledge search)", name)
 		return result
 	}
 	if c.agent.handler == nil {
@@ -1374,6 +1392,26 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 	}
 
 	return result
+}
+
+func (c *remoteCodingCallbacks) executeRemoteTodoWrite(argsJSON string) string {
+	if c == nil {
+		return "todo_write unavailable"
+	}
+	var onProgress func(string)
+	var userID string
+	if c.agent != nil {
+		onProgress = c.agent.onProgress
+		if c.agent.loopCtx != nil {
+			userID = strings.TrimSpace(c.agent.loopCtx.UserID)
+		}
+	}
+	text, _ := executeCodingAgentTodoWrite(&c.todos, argsJSON, onProgress, func(items []codingAgentTodoItem) {
+		if c.agent != nil && c.agent.handler != nil && userID != "" {
+			publishCodingAgentTodosToUI(c.agent.handler, userID, items)
+		}
+	})
+	return text
 }
 
 func remoteCodingToolRequiresSSHHandler(name string) bool {

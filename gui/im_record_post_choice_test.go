@@ -30,6 +30,259 @@ func TestParseRecordPostChoiceCommand(t *testing.T) {
 	if _, ok := parseRecordPostChoiceCommand("转写并生成会议纪要"); ok {
 		t.Fatal("plain label is not a command")
 	}
+	// Speaker confirm commands must not be parsed as post-choice actions.
+	if _, ok := parseRecordPostChoiceCommand("__record_post__ speakers 2"); ok {
+		t.Fatal("speakers command is not a post-choice action")
+	}
+}
+
+func TestParseAndMatchRecordPostSpeakerConfirm(t *testing.T) {
+	n, ok := parseRecordPostSpeakerCommand("__record_post__ speakers 2")
+	if !ok || n != 2 {
+		t.Fatalf("speakers 2: got (%d,%v)", n, ok)
+	}
+	n, ok = parseRecordPostSpeakerCommand("__record_post__ speakers auto")
+	if !ok || n != 0 {
+		t.Fatalf("speakers auto: got (%d,%v)", n, ok)
+	}
+	if _, ok := parseRecordPostSpeakerCommand("__record_post__ minutes"); ok {
+		t.Fatal("minutes is not a speakers command")
+	}
+
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"2人", 2},
+		{"两人", 2},
+		{"兩人", 2},
+		{"3", 3},
+		{"自动", 0},
+		{"auto", 0},
+		{"大概2", 2},
+		{"__record_post__ speakers 4", 4},
+		{"2 人（推荐）", 2},
+		{"2 人(recommended)", 2},
+		{"确认 2 人吧", 2},
+		{"确认2人吧", 2},
+		{"两个人", 2},
+		{"大概三人", 3},
+		{"0", 0},
+	}
+	for _, tc := range cases {
+		got, ok := matchRecordPostSpeakerFreeText(tc.in)
+		if !ok || got != tc.want {
+			t.Fatalf("%q: got (%d,%v), want %d", tc.in, got, ok, tc.want)
+		}
+	}
+	if _, ok := matchRecordPostSpeakerFreeText("今天天气怎么样"); ok {
+		t.Fatal("casual chat must not match speaker confirm")
+	}
+}
+
+func TestPostRecordingSpeakerConfirmActionsHighlightSuggested(t *testing.T) {
+	actions := postRecordingSpeakerConfirmActions("zh", 2)
+	if len(actions) != 6 {
+		t.Fatalf("want 6 actions (1-5 + auto), got %d", len(actions))
+	}
+	// Button for 2 should be primary/recommended.
+	foundRec := false
+	for _, a := range actions {
+		if a.Command == "__record_post__ speakers 2" {
+			foundRec = true
+			if a.Style != "primary" {
+				t.Fatalf("suggested 2 should be primary, got style=%q label=%q", a.Style, a.Label)
+			}
+			if !strings.Contains(a.Label, "推荐") && !strings.Contains(a.Label, "2") {
+				t.Fatalf("recommended label unexpected: %q", a.Label)
+			}
+		}
+	}
+	if !foundRec {
+		t.Fatal("missing speakers 2 button")
+	}
+	last := actions[len(actions)-1]
+	if last.Command != "__record_post__ speakers auto" {
+		t.Fatalf("last button should be auto, got %q", last.Command)
+	}
+
+	// Estimate above the fixed 1–5 row still gets a one-tap recommended button.
+	wide := postRecordingSpeakerConfirmActions("zh", 7)
+	if len(wide) != 7 { // 1-5 + 7 recommended + auto
+		t.Fatalf("want 7 actions for suggested=7, got %d", len(wide))
+	}
+	found7 := false
+	for _, a := range wide {
+		if a.Command == "__record_post__ speakers 7" {
+			found7 = true
+			if a.Style != "primary" {
+				t.Fatalf("suggested 7 should be primary, got %q", a.Style)
+			}
+		}
+	}
+	if !found7 {
+		t.Fatal("missing extra button for suggested=7")
+	}
+}
+
+func TestClearPendingPostRecordingAlsoClearsEstimateCache(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.pendingPostRecording.Store("u1", &pendingPostRecordingState{Path: "a.wav", CreatedAt: time.Now()})
+	h.storeSpeakerEstimate("u1", 3)
+	if h.cachedSpeakerEstimate("u1") != 3 {
+		t.Fatal("estimate cache not stored")
+	}
+	h.clearPendingPostRecording("u1")
+	if _, ok := h.pendingPostRecording.Load("u1"); ok {
+		t.Fatal("pending should be cleared")
+	}
+	if h.cachedSpeakerEstimate("u1") != 0 {
+		t.Fatal("estimate cache should be cleared with pending")
+	}
+}
+
+func TestShouldOfferSpeakerConfirmRequiresAppAndModel(t *testing.T) {
+	h := &IMMessageHandler{}
+	if h.shouldOfferSpeakerConfirm() {
+		t.Fatal("nil app must not offer speaker confirm")
+	}
+}
+
+func TestBuildPostRecordingMinutesHostResponse(t *testing.T) {
+	pending := &pendingPostRecordingState{
+		Title:         "周会",
+		Lang:          "zh",
+		DurationSec:   "42",
+		KnownSpeakers: 2,
+	}
+	resp := buildPostRecordingMinutesHostResponse(pending, "甲：你好\n乙：好的", "## 摘要\n\n讨论进度", []string{`C:\a_minutes.md`}, false, false)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if !strings.Contains(resp.Text, "会议纪要") {
+		t.Fatalf("missing minutes title language: %q", resp.Text)
+	}
+	if !strings.Contains(resp.Text, "2 人") {
+		t.Fatalf("expected confirmed speaker count: %q", resp.Text)
+	}
+	if len(resp.LocalFilePaths) != 1 {
+		t.Fatalf("paths=%v", resp.LocalFilePaths)
+	}
+}
+
+func TestHostRunPostRecordingASRRejectsNil(t *testing.T) {
+	h := &IMMessageHandler{}
+	if _, _, ok := h.hostRunPostRecordingASR(nil); ok {
+		t.Fatal("nil pending must fail")
+	}
+	if _, _, ok := h.hostRunPostRecordingASR(&pendingPostRecordingState{}); ok {
+		t.Fatal("empty path must fail")
+	}
+}
+
+func TestOfferSpeakerConfirmIsNonBlockingWithoutEstimate(t *testing.T) {
+	// No App / no CAM++: confirm card must still appear instantly with Auto primary.
+	h := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	pending := &pendingPostRecordingState{
+		Title:     "会",
+		Path:      `C:\tmp\a.wav`,
+		Lang:      "zh",
+		CreatedAt: time.Now(),
+	}
+	resp := h.offerPostRecordingSpeakerConfirm("u1", pending, recordPostActionTranscribe, nil)
+	if resp == nil {
+		t.Fatal("expected confirm card without blocking estimate")
+	}
+	if !pending.AwaitingSpeakerConfirm {
+		t.Fatal("expected AwaitingSpeakerConfirm")
+	}
+	if pending.PendingAction != recordPostActionTranscribe {
+		t.Fatalf("PendingAction=%q", pending.PendingAction)
+	}
+	if len(resp.Actions) < 6 {
+		t.Fatalf("actions=%d", len(resp.Actions))
+	}
+	// Unknown estimate → Auto should be primary.
+	last := resp.Actions[len(resp.Actions)-1]
+	if last.Command != "__record_post__ speakers auto" || last.Style != "primary" {
+		t.Fatalf("auto button = %+v", last)
+	}
+	// Uses cache when present without needing app.
+	h2 := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	h2.storeSpeakerEstimate("u2", 2)
+	p2 := &pendingPostRecordingState{Title: "会", Path: `C:\tmp\b.wav`, Lang: "zh", CreatedAt: time.Now()}
+	resp2 := h2.offerPostRecordingSpeakerConfirm("u2", p2, recordPostActionMinutes, nil)
+	if resp2 == nil || p2.SuggestedSpeakers != 2 {
+		t.Fatalf("expected cached suggestion 2, got suggested=%d resp=%v", p2.SuggestedSpeakers, resp2 != nil)
+	}
+}
+
+func TestHostPostRecordingMinutesFailureMessage(t *testing.T) {
+	resp := hostPostRecordingMinutesFailureResponse("u1", &pendingPostRecordingState{Lang: "zh", Path: `C:\a.wav`})
+	if resp == nil || !strings.Contains(resp.Text, "会议纪要") {
+		t.Fatalf("expected minutes-aware failure, got %#v", resp)
+	}
+	en := hostPostRecordingMinutesFailureResponse("u1", &pendingPostRecordingState{Lang: "en", Path: `C:\a.wav`})
+	if en == nil || !strings.Contains(en.Text, "Meeting minutes failed") {
+		t.Fatalf("expected english minutes failure, got %#v", en)
+	}
+}
+
+func TestFormatPostRecordingSpeakerConfirmText(t *testing.T) {
+	text := formatPostRecordingSpeakerConfirmText("zh", 2, recordPostActionTranscribe, false)
+	if !strings.Contains(text, "2") {
+		t.Fatalf("expected suggested count in text: %q", text)
+	}
+	if !strings.Contains(text, "确认") && !strings.Contains(text, "说话人") {
+		t.Fatalf("expected confirm prompt: %q", text)
+	}
+	unknown := formatPostRecordingSpeakerConfirmText("en", 0, recordPostActionMinutes, false)
+	if !strings.Contains(unknown, "Could not") {
+		t.Fatalf("expected unknown estimate message: %q", unknown)
+	}
+	estimating := formatPostRecordingSpeakerConfirmText("zh", 0, recordPostActionTranscribe, true)
+	if !strings.Contains(estimating, "估计") {
+		t.Fatalf("expected estimating copy: %q", estimating)
+	}
+}
+
+func TestBuildPostRecordingChoiceContextIncludesKnownSpeakers(t *testing.T) {
+	pending := &pendingPostRecordingState{
+		Title:         "会",
+		Path:          `C:\tmp\a.wav`,
+		Lang:          "zh",
+		KnownSpeakers: 2,
+	}
+	ctx := buildPostRecordingChoiceContext(pending, recordPostActionTranscribe)
+	if !strings.Contains(ctx, "known_speakers=2") {
+		t.Fatalf("context missing known_speakers pin: %q", ctx)
+	}
+	if !strings.Contains(ctx, "User-confirmed speaker count: 2") {
+		t.Fatalf("context missing confirm note: %q", ctx)
+	}
+}
+
+func TestConsumePendingSpeakerConfirmSoftChat(t *testing.T) {
+	h := &IMMessageHandler{}
+	pending := &pendingPostRecordingState{
+		Title:                  "会",
+		Path:                   `C:\tmp\a.wav`,
+		Lang:                   "zh",
+		CreatedAt:              time.Now(),
+		AwaitingSpeakerConfirm: true,
+		PendingAction:          recordPostActionTranscribe,
+		SuggestedSpeakers:      2,
+	}
+	ctx, resp, deferred, ok := h.consumePendingSpeakerConfirm("u1", "今天天气怎么样", pending, nil)
+	if !ok {
+		t.Fatal("expected ok=true for soft chat while speaker confirm pending")
+	}
+	if resp != nil || deferred != nil {
+		t.Fatal("soft chat should not host-handle")
+	}
+	if !strings.Contains(ctx, "Speaker-count confirmation") {
+		t.Fatalf("soft context unexpected: %q", ctx)
+	}
 }
 
 func TestMatchRecordPostChoiceFreeText(t *testing.T) {

@@ -78,6 +78,18 @@ describe("normalizeInlineListMarkers ordered markers", () => {
         expect(normalizeInlineListMarkers("foo 2. bar")).toBe("foo 2. bar");
     });
 
+    it("does not turn \\n inside home/Windows paths into real newlines", () => {
+        // Escaped-newline rewrite must not corrupt path segments like \notes.
+        const homeWin = "工作目录：~\\.maclaw\\workspace\\notes";
+        expect(normalizeInlineListMarkers(homeWin)).toBe(homeWin);
+
+        const driveWin = "Open C:\\notes\\report.pdf";
+        expect(normalizeInlineListMarkers(driveWin)).toBe(driveWin);
+
+        // Literal escaped newlines in prose still expand.
+        expect(normalizeInlineListMarkers("line1\\nline2")).toBe("line1\nline2");
+    });
+
     it("does not rewrite ordered markers inside fenced code blocks", () => {
         const input = "Before\n```text\n10. keep together\n```\nAfter";
         expect(normalizeInlineListMarkers(input)).toBe(input);

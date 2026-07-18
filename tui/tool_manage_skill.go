@@ -1064,7 +1064,6 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 	}
 	skill.NormalizeSkillForRunner(entry)
 	templateVars := normalizeTUIRunSkillVars(args)
-	extraEnv := extractTUIRunExtraEnv(args)
 
 	// Mechanism: For contractless skills (no declared params, no required_args,
 	// no {{placeholders}}), fold LLM-provided args into the "input" carrier key.
@@ -1073,12 +1072,18 @@ func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResul
 	}
 
 	if skill.IsPipelineSkill(entry) {
+		// Pipeline path re-extracts args and injects workdir itself.
 		result := skillRunPipelineDetailed(app, entry, args, templateVars)
 		if !internalPipelineCall {
 			updateTUISkillRunStatsForApp(app, name, entry, result.OK, result.Output, templateVars)
 		}
 		return result
 	}
+
+	extraEnv := extractTUIRunExtraEnv(args)
+	// Bind third-party skill temp/downloads to the configured workbench dir
+	// (same mechanism as GUI Skill Runner; no per-skill patches required).
+	extraEnv = skill.InjectSkillWorkDirEnv(corelib.EffectiveWorkspaceDir(), extraEnv)
 	if len(entry.Steps) == 0 {
 		return tuiSkillRunResult{Output: skill.FormatNoExecutableStepsMessage(name, entry, skill.RunnerBackendTUI)}
 	}
@@ -1311,6 +1316,7 @@ func skillRunPipelineDetailed(app *TUIApp, entry *corelib.NLSkillEntry, args map
 		vars = map[string]string{}
 	}
 	extraEnv := extractTUIRunExtraEnv(args)
+	extraEnv = skill.InjectSkillWorkDirEnv(corelib.EffectiveWorkspaceDir(), extraEnv)
 	prep, err := skill.PreparePipelineRunnerExecution(entry, vars, args, extraEnv, skill.RunnerBackendTUI)
 	if err != nil {
 		return tuiSkillRunResult{Output: err.Error()}

@@ -55,6 +55,9 @@ func TestRenderTextObserve_NoBase64(t *testing.T) {
 	if !strings.Contains(text, "text-only") {
 		t.Fatalf("missing text-only hint: %s", text)
 	}
+	if !strings.Contains(text, "screen_index=0") {
+		t.Fatalf("missing primary-monitor hint: %s", text)
+	}
 }
 
 func TestResolveRef(t *testing.T) {

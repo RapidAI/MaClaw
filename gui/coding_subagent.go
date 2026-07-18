@@ -529,6 +529,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 	}
 	summary = appendSubAgentQualityReportSummary(summary, &CodingSubAgentResult{QualityStatus: qualityStatus, QualitySummary: qualitySummary, QualityIssueCount: qualityIssueCount})
+	summary = appendCodingAgentTodoTurnNote(summary, cb.todos.snapshot())
 	cb.emitDiffCheckEvent(diffChecked, diffSummary, len(allFilesModified))
 	cb.emitQualitySummaryEventWithAudit(qualityStatus, qualitySummary, qualityIssueCount)
 	cb.emitDiffSummaryEvent(filesModified, filesCreated, diffSummary)
@@ -670,6 +671,9 @@ type codingSubAgentCallbacks struct {
 	firstReadSeq   uint64
 	firstSearchSeq uint64
 	lastDiffSeq    uint64
+
+	// Agent-internal Claude Code / Codex-style step checklist for this turn.
+	todos codingAgentTodoState
 }
 
 type codingFileSnapshot struct {
@@ -943,6 +947,11 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		// Codex-style nested subagents (pure coding workbench root only).
 		if c.subagent != nil && c.subagent.canSpawnCodingAgent() {
 			tools = append(tools, buildSpawnCodingAgentToolDefinition())
+		}
+
+		// In-agent requirement breakdown + step checklist (workers only).
+		if !inspectionRole {
+			tools = append(tools, buildCodingAgentTodoToolDefinition())
 		}
 
 		// Role-based tool surface for nested explorer/reviewer agents.
@@ -1341,15 +1350,42 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 			return codingToolExecutionResult{Text: "web_fetch unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
 		}
 		return codingToolExecutionResult{Text: h.toolWebFetch(args), Outcome: codingToolOutcomeSuccess}
+	case "download_file":
+		if h == nil {
+			return codingToolExecutionResult{Text: "download_file unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+		}
+		return codingToolExecutionResult{Text: h.toolDownloadFile(args), Outcome: codingToolOutcomeSuccess}
 	case "current_datetime":
 		return codingToolExecutionResult{Text: formatBtwCurrentDateTime(), Outcome: codingToolOutcomeSuccess}
 	case "goal":
 		return c.executeGoalTool(args)
 	case codingSubAgentSpawnToolName:
 		return c.executeSpawnCodingAgent(args)
+	case codingAgentTodoToolName:
+		return c.executeTodoWrite(argsJSON)
 	default:
 		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s", name), Outcome: codingToolOutcomeFailed}
 	}
+}
+
+func (c *codingSubAgentCallbacks) executeTodoWrite(argsJSON string) codingToolExecutionResult {
+	if c == nil {
+		return codingToolExecutionResult{Text: "todo_write unavailable", Outcome: codingToolOutcomeFailed}
+	}
+	var onProgress func(string)
+	var userID string
+	if c.subagent != nil {
+		onProgress = c.subagent.onProgress
+		if c.subagent.loopCtx != nil {
+			userID = strings.TrimSpace(c.subagent.loopCtx.UserID)
+		}
+	}
+	text, outcome := executeCodingAgentTodoWrite(&c.todos, argsJSON, onProgress, func(items []codingAgentTodoItem) {
+		if c.subagent != nil && c.subagent.handler != nil && userID != "" {
+			publishCodingAgentTodosToUI(c.subagent.handler, userID, items)
+		}
+	})
+	return codingToolExecutionResult{Text: text, Outcome: outcome}
 }
 
 // executeGoalTool routes goal(action=...) through the host goal store using the
@@ -11076,7 +11112,9 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	}
 
 	b.WriteString(`你是一个专注的编码执行器。目标是像资深工程师一样：先定位和理解，再做最小改动，最后验证并说明风险。
-
+`)
+	b.WriteString(codingAgentTodoPromptSection)
+	b.WriteString(`
 ## 工作流
 - 如果项目根目录存在 .codegraph/，先用 bash 运行 codegraph explore / codegraph node 定位相关符号、调用链和文件；如果没有索引，再用 Glob / ripgrep 定位相关代码，并用 read_file 阅读当前内容。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
 - 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
@@ -11280,6 +11318,7 @@ var codingSubAgentToolOrder = []string{
 var codingSubAgentFullEnvExtraToolOrder = []string{
 	"web_search",
 	"web_fetch",
+	"download_file",
 	"current_datetime",
 }
 
@@ -11300,9 +11339,11 @@ var codingSubAgentDynamicToolNames = map[string]bool{
 	"knowledge_search":          true,
 	"web_search":                true,
 	"web_fetch":                 true,
+	"download_file":             true,
 	"current_datetime":          true,
 	"goal":                      true,
 	codingSubAgentSpawnToolName: true,
+	codingAgentTodoToolName:     true,
 }
 
 func makeCodingSubAgentToolNameSet(names []string) map[string]bool {
@@ -11395,12 +11436,28 @@ func buildCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        "web_fetch",
-				"description": "Fetch and extract text content from a URL (docs, GitHub, RFCs).",
+				"description": "Fetch and extract text content from a URL (docs, GitHub, RFCs). Use save_path to download binary/PDF files.",
 				"parameters": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"url":       map[string]interface{}{"type": "string", "description": "URL to fetch"},
+						"save_path": map[string]interface{}{"type": "string", "description": "Optional path under workdir to save file"},
 						"max_chars": map[string]interface{}{"type": "integer", "description": "Max characters (optional)"},
+					},
+					"required": []string{"url"},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "download_file",
+				"description": "Download HTTP/HTTPS URL into the working directory (preferred for PDFs). Returns absolute path.",
+				"parameters": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"url":       map[string]interface{}{"type": "string", "description": "URL to download"},
+						"save_path": map[string]interface{}{"type": "string", "description": "Optional relative path under workdir"},
 					},
 					"required": []string{"url"},
 				},

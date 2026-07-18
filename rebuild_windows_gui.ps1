@@ -68,5 +68,15 @@ Remove-Item Env:CC -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 
 Copy-Item (Join-Path $root 'dist\MaClaw_amd64.exe') (Join-Path $root 'dist\MaClaw.exe') -Force
+
+# ACP bridge ships next to MaClaw for VS Code integration (production closed loop).
+$env:GOARCH = 'amd64'
+$env:CGO_ENABLED = '0'
+Remove-Item Env:CC -ErrorAction SilentlyContinue
+& go build -ldflags "-s -w -X main.version=$version" -o (Join-Path $root 'dist\maclaw-acp-bridge_amd64.exe') ./cmd/maclaw-acp-bridge/
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+Copy-Item (Join-Path $root 'dist\maclaw-acp-bridge_amd64.exe') (Join-Path $root 'dist\maclaw-acp-bridge.exe') -Force
+# bridge.exe already sits beside MaClaw.exe in dist\ — nothing further to copy.
+
 Pop-Location
 Write-Output 'REBUILT_OK'

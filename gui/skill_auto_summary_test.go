@@ -256,6 +256,9 @@ func TestSkillAutoSummary_DraftSkill_BasicExtraction(t *testing.T) {
 	if draft.Status != "active" {
 		t.Errorf("Status: got %q, want %q", draft.Status, "active")
 	}
+	if draft.Source != "learned" {
+		t.Errorf("Source: got %q, want %q", draft.Source, "learned")
+	}
 	if draft.Name == "" {
 		t.Error("Name should not be empty")
 	}

@@ -98,6 +98,12 @@ func (h *IMMessageHandler) toolListSkills() string {
 				if labels := skillHealthLabels(s); len(labels) > 0 {
 					line += " " + strings.Join(labels, " ")
 				}
+				if st := strings.ToLower(strings.TrimSpace(s.Status)); st == "needs_review" || st == "disabled" || st == "needs_setup" {
+					line += " [do_not_run]"
+				}
+				if isDownloadLikeSkillName(s.Name, s.Description) && (strings.EqualFold(s.Status, "needs_review") || s.FailureCount > s.SuccessCount) {
+					line += " [prefer:download_file]"
+				}
 				if tags := skillListParamTags(s); tags != "" {
 					line += " (" + tags + ")"
 				}
@@ -107,6 +113,9 @@ func (h *IMMessageHandler) toolListSkills() string {
 	} else {
 		b.WriteString("本地没有已注册的 Skill。\n")
 	}
+
+	// Always remind agents: generic downloads are a built-in tool, not a Hub skill.
+	b.WriteString("\n提示：通用 HTTP/PDF 下载请用 download_file 或 web_fetch(save_path=...)；[do_not_run]/[prefer:download_file] 的 skill 不要再安装/重试。\n")
 
 	// If local skills are empty or few, also show Hub recommendations.
 	if len(skills) < 3 && h.getSkillHubClient() != nil {
@@ -172,3 +181,9 @@ func (h *IMMessageHandler) toolSkillInfo(args map[string]interface{}) string {
 	}
 	return cskill.FormatSkillInspectReport(entry)
 }
+
+
+func isDownloadLikeSkillName(name, desc string) bool {
+	return cskill.LooksLikeGenericDownloadSkill(name, desc)
+}
+

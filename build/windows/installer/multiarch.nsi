@@ -23,6 +23,9 @@
 !ifndef CLI_EXECUTABLE
 !define CLI_EXECUTABLE "maclaw-cli.exe"
 !endif
+!ifndef ACP_BRIDGE_EXECUTABLE
+!define ACP_BRIDGE_EXECUTABLE "maclaw-acp-bridge.exe"
+!endif
 !ifndef REQUEST_EXECUTION_LEVEL
     !define REQUEST_EXECUTION_LEVEL "admin"
 !endif
@@ -42,6 +45,12 @@
 !endif
 !ifndef ARG_MACLAWCLI_ARM64_BINARY
 !define ARG_MACLAWCLI_ARM64_BINARY "..\..\..\dist\maclaw-cli_arm64.exe"
+!endif
+!ifndef ARG_ACPBRIDGE_AMD64_BINARY
+!define ARG_ACPBRIDGE_AMD64_BINARY "..\..\..\dist\maclaw-acp-bridge_amd64.exe"
+!endif
+!ifndef ARG_ACPBRIDGE_ARM64_BINARY
+!define ARG_ACPBRIDGE_ARM64_BINARY "..\..\..\dist\maclaw-acp-bridge_arm64.exe"
 !endif
 
 VIProductVersion "${INFO_PRODUCTVERSION}"
@@ -386,10 +395,12 @@ Section
         DetailPrint "Detected ARM64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_ARM64_BINARY}"
         File "/oname=${CLI_EXECUTABLE}" "${ARG_MACLAWCLI_ARM64_BINARY}"
+        File /nonfatal "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_ARM64_BINARY}"
     ${ElseIf} ${IsNativeAMD64}
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_AMD64_BINARY}"
         File "/oname=${CLI_EXECUTABLE}" "${ARG_MACLAWCLI_AMD64_BINARY}"
+        File /nonfatal "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_AMD64_BINARY}"
     ${Else}
         MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
         Abort
@@ -443,6 +454,7 @@ Section "uninstall"
     # Kill app if running
     ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
     ExecWait "taskkill /F /IM ${CLI_EXECUTABLE}"
+    ExecWait "taskkill /F /IM ${ACP_BRIDGE_EXECUTABLE}"
 
     # Remove WebView2 user data directory (Wails stores it in %APPDATA%\<exe_name>)
     RMDir /r "$APPDATA\${PRODUCT_EXECUTABLE}"

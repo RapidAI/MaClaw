@@ -3412,7 +3412,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             return null;
         }
         const sessionKey = normalizeRuntimeSessionKey(event.session_key || activeSessionKeyForEvents() || 'desktop-user');
-        if (!isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) return null;
+        // ACP Mode B (programming agent): accept rounds even if another tab is
+        // active so request_id-matched tokens still stream into the chat.
+        const isAcpModeBRound = requestId.startsWith('acp-');
+        if (!isAcpModeBRound && !isMatchingSessionEvent({ ...event, session_key: sessionKey }, activeSessionKeyForEvents())) {
+            return null;
+        }
         forgottenEventSessionsRef.current.delete(sessionKey);
         const generation = activeRoundRef.current.generation + 1;
         const assistantMessageId = nextId();

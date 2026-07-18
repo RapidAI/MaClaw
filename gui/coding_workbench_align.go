@@ -416,6 +416,7 @@ func (h *IMMessageHandler) setStickyCodingStepStatuses(userID string, steps []co
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = steps
 	})
+	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
 func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int, status, summary string) {
@@ -450,6 +451,7 @@ func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int
 			})
 		}
 	})
+	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
 func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int, cmd string, ok bool, summary string) {
@@ -494,6 +496,7 @@ func (h *IMMessageHandler) updateStickyCodingStepVerify(userID string, index int
 			})
 		}
 	})
+	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
 func (h *IMMessageHandler) clearStickyCodingStepStatuses(userID string) {
@@ -507,6 +510,103 @@ func (h *IMMessageHandler) clearStickyCodingStepStatuses(userID string) {
 	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
 		mem.StepStatuses = nil
 	})
+	h.emitCodingWorkbenchStepsUpdate(userID)
+}
+
+// emitCodingWorkbenchStepsUpdate pushes live Todo checklist state to the GUI
+// (Codex / Claude Code style: pending ○ → running … → passed ☑).
+// Safe no-op without Wails event bus (tests / headless).
+func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
+	if h == nil || h.app == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	projectPath := projectPathFromSessionOwnerID(userID)
+	if projectPath == "" {
+		projectPath = strings.TrimSpace(mem.ProjectPath)
+	}
+	steps := append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+	payload := map[string]interface{}{
+		"user_id":       userID,
+		"project_path":  projectPath,
+		"step_statuses": steps,
+		"execution_plan": strings.TrimSpace(mem.ExecutionPlan),
+	}
+	h.app.emitEvent("coding-workbench-steps", payload)
+}
+
+// markRemainingCodingStepsSkipped marks later pending steps as skipped after a
+// hard failure (sequential plan stops). Mirrors TaskRunner dependency skip UX.
+func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterIndex int, reason string) {
+	if h == nil || afterIndex < 0 {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "skipped: prior step failed"
+	}
+	changed := false
+	h.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
+		now := time.Now().Unix()
+		for i := range mem.StepStatuses {
+			st := &mem.StepStatuses[i]
+			if st.Index <= afterIndex {
+				continue
+			}
+			switch st.Status {
+			case codingStepPending, "":
+				st.Status = codingStepSkipped
+				st.Summary = truncateRunesForSubAgent(reason, 400)
+				st.UpdatedUnix = now
+				changed = true
+			}
+		}
+	})
+	if changed {
+		h.emitCodingWorkbenchStepsUpdate(userID)
+	}
+}
+
+// formatCodingStepsChecklist renders a compact Claude Code-style checklist
+// for streaming into the chat when a multi-step plan is active.
+func formatCodingStepsChecklist(steps []codingWorkbenchStepStatus) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	// Stable order by index.
+	ordered := append([]codingWorkbenchStepStatus(nil), steps...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Index < ordered[j].Index
+	})
+	var b strings.Builder
+	b.WriteString("执行步骤：\n")
+	for _, st := range ordered {
+		mark := "☐"
+		switch st.Status {
+		case codingStepPassed:
+			mark = "☑"
+		case codingStepRunning:
+			mark = "…"
+		case codingStepFailed, codingStepVerifyFail:
+			mark = "✗"
+		case codingStepSkipped:
+			mark = "–"
+		}
+		title := strings.TrimSpace(st.Title)
+		if title == "" {
+			title = st.Status
+		}
+		b.WriteString(fmt.Sprintf("%s T%d %s\n", mark, st.Index, title))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // saveStickyCodingCheckpoint captures a restore point for the pure-coding session.

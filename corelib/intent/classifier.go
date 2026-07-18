@@ -64,6 +64,12 @@ type UnifiedIntentClassifier struct {
 	cacheEpoch  atomic.Uint64
 	fusionCache sync.Map // map[string]FusionResult — stores fusion details for diagnostics
 
+	// Separate cache for ClassifyEmbeddingOnly results. Kept apart from the
+	// main cache so lower-quality L2-only results never satisfy full Classify
+	// calls. Bounded because per-message InvalidateCache is not guaranteed.
+	embOnlyCache sync.Map // map[string]*ClassificationResult
+	embOnlyCount atomic.Int64
+
 	// workflowCandidates is the set of IntentLabels that may trigger a
 	// multi-phase workflow, derived from IntentDefinition.MayTriggerWorkflow.
 	// Pre-computed at construction time. Labels NOT in this set are
@@ -298,6 +304,11 @@ func (u *UnifiedIntentClassifier) InvalidateCache() {
 		u.fusionCache.Delete(key)
 		return true
 	})
+	u.embOnlyCache.Range(func(key, _ any) bool {
+		u.embOnlyCache.Delete(key)
+		return true
+	})
+	u.embOnlyCount.Store(0)
 }
 
 // ClassifyEmbeddingOnly performs L2 embedding-only classification without
@@ -306,10 +317,16 @@ func (u *UnifiedIntentClassifier) InvalidateCache() {
 // intent signal is sufficient (e.g., checking if conversation history
 // contains coding context).
 //
-// Results are NOT cached in the main cache to avoid polluting it with
-// lower-quality embedding-only results that would be returned by subsequent
-// full Classify() calls.
+// Results are cached in a dedicated bounded cache (separate from the main
+// Classify cache, so L2-only results never satisfy full fusion calls). The
+// same text within one message cycle is embedded only once across all
+// consumers. Degraded results (embedding unavailable) are never cached.
 func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) ClassificationResult {
+	cacheKey := classificationCacheKey(u.cacheEpoch.Load(), msg)
+	if cached, ok := u.embOnlyCache.Load(cacheKey); ok {
+		return *cached.(*ClassificationResult)
+	}
+
 	u.mu.RLock()
 	emb := u.embedder
 	anchors := u.anchors
@@ -330,7 +347,25 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 	result, _ := classifyByEmbedding(emb, anchors, msg.Text)
 	applyExecutionAffordances(msg.Text, &result)
 	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
+	if !result.Degraded {
+		u.storeEmbOnly(cacheKey, &result)
+	}
 	return result
+}
+
+// embOnlyCacheMaxEntries bounds the embedding-only cache; when exceeded the
+// whole map is dropped (cheap, and entries are per-message in practice).
+const embOnlyCacheMaxEntries = 256
+
+func (u *UnifiedIntentClassifier) storeEmbOnly(key string, res *ClassificationResult) {
+	if u.embOnlyCount.Add(1) > embOnlyCacheMaxEntries {
+		u.embOnlyCache.Range(func(k, _ any) bool {
+			u.embOnlyCache.Delete(k)
+			return true
+		})
+		u.embOnlyCount.Store(1)
+	}
+	u.embOnlyCache.Store(key, res)
 }
 
 // Ready returns true when Layer 2 anchor embeddings are warmed up.

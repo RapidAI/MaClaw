@@ -15,6 +15,7 @@ import '../../features/assistant/search_history.dart';
 import '../../features/digital_employees/digital_employee_prompt.dart';
 import '../../features/documents/document_draft.dart';
 import '../../features/memory/local_memory_note.dart';
+import '../../features/meeting_recording/meeting_recording_upload.dart';
 import '../../features/servers/server_command.dart';
 import '../../features/servers/server_profile.dart';
 
@@ -165,6 +166,68 @@ class MobileLocalStore {
         await _upsertLocalMemory(db, note);
       }
     });
+  }
+
+  Future<List<MeetingRecordingUpload>> loadMeetingRecordingUploads() async {
+    final db = await _db();
+    final rows = await db
+        .customSelect(
+          'SELECT local_id, local_path, title, purpose, conversation_id, process_mode, content_type, '
+          'recording_id, status, duration_sec, next_chunk_index, updated_at, message '
+          'FROM meeting_recording_uploads ORDER BY updated_at DESC',
+        )
+        .get();
+    return [
+      for (final row in rows)
+        MeetingRecordingUpload(
+          localId: row.read<String>('local_id'),
+          localPath: row.read<String>('local_path'),
+          title: row.read<String>('title'),
+          purpose: row.read<String>('purpose'),
+          conversationId: row.read<String>('conversation_id'),
+          processMode: row.read<String>('process_mode'),
+          contentType: row.readNullable<String>('content_type') ?? 'audio/mp4',
+          recordingId: row.read<String>('recording_id'),
+          status: row.read<String>('status'),
+          durationSec: row.read<double>('duration_sec'),
+          nextChunkIndex: row.read<int>('next_chunk_index'),
+          updatedAt: _readDate(row.read<String>('updated_at')),
+          message: row.read<String>('message'),
+        ),
+    ];
+  }
+
+  Future<void> saveMeetingRecordingUpload(MeetingRecordingUpload upload) async {
+    final db = await _db();
+    await db.customStatement(
+      'INSERT INTO meeting_recording_uploads '
+      '(local_id, local_path, title, purpose, conversation_id, process_mode, content_type, recording_id, status, duration_sec, next_chunk_index, updated_at, message) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) '
+      'ON CONFLICT(local_id) DO UPDATE SET '
+      'content_type = excluded.content_type, recording_id = excluded.recording_id, status = excluded.status, '
+      'next_chunk_index = excluded.next_chunk_index, updated_at = excluded.updated_at, message = excluded.message',
+      [
+        upload.localId,
+        upload.localPath,
+        upload.title,
+        upload.purpose,
+        upload.conversationId,
+        upload.processMode,
+        upload.contentType,
+        upload.recordingId,
+        upload.status,
+        upload.durationSec,
+        upload.nextChunkIndex,
+        _dateWireValue(upload.updatedAt),
+        upload.message,
+      ],
+    );
+  }
+
+  Future<void> removeMeetingRecordingUpload(String localId) async {
+    final db = await _db();
+    await db.customStatement(
+        'DELETE FROM meeting_recording_uploads WHERE local_id = ?', [localId]);
   }
 
   Future<DocumentDraft?> loadLastDocumentDraft() async {
@@ -637,6 +700,16 @@ class MobileLocalStore {
       'active INTEGER NOT NULL DEFAULT 1, '
       'synced_to_hub INTEGER NOT NULL DEFAULT 0)',
     );
+    await db.customStatement(
+      'CREATE TABLE IF NOT EXISTS meeting_recording_uploads ('
+      'local_id TEXT PRIMARY KEY, local_path TEXT NOT NULL, title TEXT NOT NULL, '
+      'purpose TEXT NOT NULL DEFAULT "", conversation_id TEXT NOT NULL DEFAULT "", '
+      'process_mode TEXT NOT NULL DEFAULT "minutes", '
+      'content_type TEXT NOT NULL DEFAULT "audio/mp4", '
+      'recording_id TEXT NOT NULL DEFAULT "", status TEXT NOT NULL, '
+      'duration_sec REAL NOT NULL DEFAULT 0, next_chunk_index INTEGER NOT NULL DEFAULT 0, '
+      'updated_at TEXT NOT NULL, message TEXT NOT NULL DEFAULT "")',
+    );
     await _ensureColumn(
       db,
       table: 'local_memories',
@@ -648,6 +721,18 @@ class MobileLocalStore {
       table: 'local_memories',
       column: 'updated_at',
       definition: "TEXT NOT NULL DEFAULT ''",
+    );
+    await _ensureColumn(
+      db,
+      table: 'meeting_recording_uploads',
+      column: 'process_mode',
+      definition: "TEXT NOT NULL DEFAULT 'minutes'",
+    );
+    await _ensureColumn(
+      db,
+      table: 'meeting_recording_uploads',
+      column: 'content_type',
+      definition: "TEXT NOT NULL DEFAULT 'audio/mp4'",
     );
     await _ensureColumn(
       db,
@@ -1141,6 +1226,7 @@ const _cacheTables = [
   'digital_employee_prompts',
   'digital_employee_tasks',
   'app_preferences',
+  'meeting_recording_uploads',
 ];
 
 const _workCacheTables = [
@@ -1152,6 +1238,7 @@ const _workCacheTables = [
   'digital_employee_prompts',
   'digital_employee_tasks',
   'app_preferences',
+  'meeting_recording_uploads',
 ];
 
 String _dateWireValue(DateTime value) => value.toUtc().toIso8601String();

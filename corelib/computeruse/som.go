@@ -184,7 +184,8 @@ func RenderTextObserve(res *ObserveResult, maxElements int) string {
 	}
 	b.WriteString("hint: Use computer_click with ref=eN (or computer_type/key/scroll). ")
 	b.WriteString("Do NOT invent pixel coordinates. Re-observe after every action. ")
-	b.WriteString("You may be a text-only model — screenshots are NOT included in this result.\n")
+	b.WriteString("You may be a text-only model — screenshots are NOT included in this result. ")
+	b.WriteString("Default observe uses primary monitor (screen_index=0); pass -1 only for all monitors stitched.\n")
 	return b.String()
 }
 

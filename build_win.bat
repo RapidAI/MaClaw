@@ -33,6 +33,7 @@ del /q "%OUTPUT_DIR%\%APP_NAME%-Setup.exe" 2>nul
 del /q "%OUTPUT_DIR%\%APP_NAME%-Windows-Portable.zip" 2>nul
 del /q "%OUTPUT_DIR%\maclaw-tui*.exe" 2>nul
 del /q "%OUTPUT_DIR%\maclaw-cli*.exe" 2>nul
+del /q "%OUTPUT_DIR%\maclaw-acp-bridge*.exe" 2>nul
 del /q "%OUTPUT_DIR%\maclaw-tool*.exe" 2>nul
 del /q "%OUTPUT_DIR%\maclawsrv*.exe" 2>nul
 del /q "%OUTPUT_DIR%\maclawsrv-Setup.exe" 2>nul
@@ -54,7 +55,7 @@ set /p COMPANY_NAME=<"%~dp0temp_COMPANY_NAME.txt"
 set /p COPYRIGHT_TEXT=<"%~dp0temp_COPYRIGHT.txt"
 del /q "%~dp0temp_BUILD_NUM.txt" "%~dp0temp_VERSION.txt" "%~dp0temp_PRODUCT_NAME.txt" "%~dp0temp_COMPANY_NAME.txt" "%~dp0temp_COPYRIGHT.txt" 2>nul
 setlocal DisableDelayedExpansion
-"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME ''%APP_NAME%''','!define PRODUCT_EXECUTABLE ''%APP_NAME%.exe''','!define INFO_PRODUCTNAME ''%PRODUCT_NAME%''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define ARG_WAILS_AMD64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_amd64.exe''','!define ARG_WAILS_ARM64_BINARY ''%OUTPUT_DIR%\%APP_NAME%_arm64.exe''','!define ARG_MACLAWCLI_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-cli_amd64.exe''','!define ARG_MACLAWCLI_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-cli_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PROJECTNAME `%APP_NAME%`','!define PRODUCT_EXECUTABLE `%APP_NAME%.exe`','!define INFO_PRODUCTNAME `%PRODUCT_NAME%`','!define INFO_COMPANYNAME `%COMPANY_NAME%`','!define INFO_COPYRIGHT `%COPYRIGHT_TEXT%`','!define INFO_PRODUCTVERSION `%VERSION%`','!define ARG_WAILS_AMD64_BINARY `%OUTPUT_DIR%\%APP_NAME%_amd64.exe`','!define ARG_WAILS_ARM64_BINARY `%OUTPUT_DIR%\%APP_NAME%_arm64.exe`','!define ARG_MACLAWCLI_AMD64_BINARY `%OUTPUT_DIR%\maclaw-cli_amd64.exe`','!define ARG_MACLAWCLI_ARM64_BINARY `%OUTPUT_DIR%\maclaw-cli_arm64.exe`','!define ARG_ACPBRIDGE_AMD64_BINARY `%OUTPUT_DIR%\maclaw-acp-bridge_amd64.exe`','!define ARG_ACPBRIDGE_ARM64_BINARY `%OUTPUT_DIR%\maclaw-acp-bridge_arm64.exe`') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
 echo [INFO] Building Version: %VERSION%
 
@@ -109,6 +110,10 @@ if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare Windows version resource inputs.
     goto :error
 )
+
+REM -- Refresh first-party VS Code extension VSIX BEFORE the GUI build embeds it (best-effort; committed asset is fallback) --
+echo [Step 5b/14] Refreshing VS Code extension VSIX (best-effort)...
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0vscode-ext\build-vsix.ps1" || echo [WARN] VSIX refresh skipped; using committed gui/vscode_ext_asset/maclaw-acp.vsix
 
 REM -- Build Go Binaries --
 echo [Step 6/14] Compiling GUI binaries...
@@ -240,6 +245,21 @@ if !errorlevel! neq 0 (
     goto :error
 )
 
+REM -- Build maclaw-acp-bridge (VS Code ACP attach to GUI) --
+echo [Step 11a/14] Compiling maclaw-acp-bridge binaries...
+set "GOARCH=amd64"
+call :go_build -p 1 -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\maclaw-acp-bridge_amd64.exe" ./cmd/maclaw-acp-bridge/
+if !errorlevel! neq 0 (
+    echo [ERROR] Go build for maclaw-acp-bridge amd64 failed.
+    goto :error
+)
+set "GOARCH=arm64"
+call :go_build -p 1 -ldflags "-s -w -X main.version=%VERSION%" -o "%OUTPUT_DIR%\maclaw-acp-bridge_arm64.exe" ./cmd/maclaw-acp-bridge/
+if !errorlevel! neq 0 (
+    echo [ERROR] Go build for maclaw-acp-bridge arm64 failed.
+    goto :error
+)
+
 REM Reset Env for NSIS
 set "GOOS="
 set "GOARCH="
@@ -275,7 +295,7 @@ if exist "%OUTPUT_DIR%\%APP_NAME%-Setup.exe" (
 REM -- Create standalone DataSrv NSIS installer --
 echo [Step 13/14] Creating standalone maclawsrv NSIS installer...
 setlocal DisableDelayedExpansion
-"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME ''MaClaw Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclawsrv.exe''','!define ARG_MACLAWSRV_AMD64_BINARY ''%OUTPUT_DIR%\maclawsrv_amd64.exe''','!define ARG_MACLAWSRV_ARM64_BINARY ''%OUTPUT_DIR%\maclawsrv_arm64.exe''') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\maclawsrv_build_params.nsh.tmp', $content, $utf8NoBom)"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $content = @('!define INFO_PRODUCTNAME `MaClaw Service`','!define INFO_COMPANYNAME `%COMPANY_NAME%`','!define INFO_COPYRIGHT `%COPYRIGHT_TEXT%`','!define INFO_PRODUCTVERSION `%VERSION%`','!define PRODUCT_EXECUTABLE `maclawsrv.exe`','!define ARG_MACLAWSRV_AMD64_BINARY `%OUTPUT_DIR%\maclawsrv_amd64.exe`','!define ARG_MACLAWSRV_ARM64_BINARY `%OUTPUT_DIR%\maclawsrv_arm64.exe`') -join [Environment]::NewLine; [System.IO.File]::WriteAllText('%~dp0build\windows\installer\maclawsrv_build_params.nsh.tmp', $content, $utf8NoBom)"
 endlocal
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare maclawsrv installer parameters.
@@ -294,7 +314,7 @@ if exist "%OUTPUT_DIR%\maclawsrv-Setup.exe" (
 REM -- Create standalone DataSrv NSIS installer --
 echo [Step 14/14] Creating standalone maclaw-data-srv NSIS installer...
 setlocal DisableDelayedExpansion
-"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $path = '%~dp0build\windows\installer\datasrv_build_params.nsh.tmp'; $content = @('!define INFO_PRODUCTNAME ''MaClaw Data Service''','!define INFO_COMPANYNAME ''%COMPANY_NAME%''','!define INFO_COPYRIGHT ''%COPYRIGHT_TEXT%''','!define INFO_PRODUCTVERSION ''%VERSION%''','!define PRODUCT_EXECUTABLE ''maclaw-data-srv.exe''','!define ARG_DATASRV_AMD64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_amd64.exe''','!define ARG_DATASRV_ARM64_BINARY ''%OUTPUT_DIR%\maclaw-data-srv_arm64.exe''') -join [Environment]::NewLine; for ($i = 0; $i -lt 8; $i++) { try { [System.IO.File]::WriteAllText($path, $content, $utf8NoBom); exit 0 } catch { Start-Sleep -Milliseconds 300 } }; throw 'Failed to write datasrv_build_params.nsh.tmp after retries.'"
+"%POWERSHELL_EXE%" -NoProfile -Command "$utf8NoBom = [System.Text.UTF8Encoding]::new($false); $path = '%~dp0build\windows\installer\datasrv_build_params.nsh.tmp'; $content = @('!define INFO_PRODUCTNAME `MaClaw Data Service`','!define INFO_COMPANYNAME `%COMPANY_NAME%`','!define INFO_COPYRIGHT `%COPYRIGHT_TEXT%`','!define INFO_PRODUCTVERSION `%VERSION%`','!define PRODUCT_EXECUTABLE `maclaw-data-srv.exe`','!define ARG_DATASRV_AMD64_BINARY `%OUTPUT_DIR%\maclaw-data-srv_amd64.exe`','!define ARG_DATASRV_ARM64_BINARY `%OUTPUT_DIR%\maclaw-data-srv_arm64.exe`') -join [Environment]::NewLine; for ($i = 0; $i -lt 8; $i++) { try { [System.IO.File]::WriteAllText($path, $content, $utf8NoBom); exit 0 } catch { Start-Sleep -Milliseconds 300 } }; throw 'Failed to write datasrv_build_params.nsh.tmp after retries.'"
 endlocal
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to prepare DataSrv installer parameters.
@@ -317,6 +337,7 @@ echo   - Creating main executable copies (amd64)...
 copy /Y "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" "%OUTPUT_DIR%\%APP_NAME%.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-tui_amd64.exe" "%OUTPUT_DIR%\maclaw-tui.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-cli_amd64.exe" "%OUTPUT_DIR%\maclaw-cli.exe" >nul
+copy /Y "%OUTPUT_DIR%\maclaw-acp-bridge_amd64.exe" "%OUTPUT_DIR%\maclaw-acp-bridge.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-tool_amd64.exe" "%OUTPUT_DIR%\maclaw-tool.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclawsrv_amd64.exe" "%OUTPUT_DIR%\maclawsrv.exe" >nul
 copy /Y "%OUTPUT_DIR%\maclaw-data-srv_amd64.exe" "%OUTPUT_DIR%\maclaw-data-srv.exe" >nul
@@ -329,6 +350,9 @@ if exist "%OUTPUT_DIR%\maclaw-tui.exe" (
 )
 if exist "%OUTPUT_DIR%\maclaw-cli.exe" (
     echo [SUCCESS] maclaw-cli binary: %OUTPUT_DIR%\maclaw-cli.exe
+)
+if exist "%OUTPUT_DIR%\maclaw-acp-bridge.exe" (
+    echo [SUCCESS] maclaw-acp-bridge binary: %OUTPUT_DIR%\maclaw-acp-bridge.exe
 )
 if exist "%OUTPUT_DIR%\maclaw-tool.exe" (
     echo [SUCCESS] maclaw-tool binary: %OUTPUT_DIR%\maclaw-tool.exe

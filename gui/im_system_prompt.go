@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -223,8 +224,16 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		EffectiveProjectDir: func() string {
 			return h.resolveToolWorkDirForOwner("", promptUserID)
 		},
+		// Scratch must stay under the session workbench so agents do not park
+		// downloads / intermediate files in the system TEMP (e.g. maclaw-arxiv).
 		ScratchDir: func() string {
-			return os.TempDir()
+			wd := h.resolveToolWorkDirForOwner("", promptUserID)
+			if strings.TrimSpace(wd) == "" {
+				wd = corelib.EffectiveWorkspaceDir()
+			}
+			tmp := filepath.Join(wd, ".maclaw-tmp")
+			_ = os.MkdirAll(tmp, 0o755)
+			return tmp
 		},
 	}
 
@@ -270,7 +279,7 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 
 	// PostSSHRules: inject GUI-specific SSH guidance + skills + MCP + device status etc.
 	deps.PostSSHRules = func(b *strings.Builder) {
-		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg)
+		h.appendGUIPostSSHRules(b, isProMode, currentNickname, cfg, promptUserID)
 	}
 
 	// PostCodingWorkflow: inject GUI full coding workflow (pro mode 9-step).
