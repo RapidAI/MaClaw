@@ -408,6 +408,7 @@ function setStatus(state: string, detail: string): void {
 function setTurnActive(active: boolean): void {
   inputEl.disabled = active;
   sendEl.disabled = active;
+  sendEl.classList.toggle("loading", active);
   cancelEl.hidden = !active;
   if (!active) {
     inputEl.focus();

@@ -332,3 +332,35 @@ body {
   background: var(--vscode-button-secondaryBackground, rgba(90, 93, 94, 0.31));
   color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
 }
+
+/* send button as working-state spinner while a turn is in flight */
+#send.loading {
+  position: relative;
+  color: transparent !important;
+  opacity: 1;
+}
+
+#send.loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--vscode-button-foreground);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: maclaw-spin 0.8s linear infinite;
+}
+
+@keyframes maclaw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #send.loading::after {
+    animation: none;
+  }
+}
