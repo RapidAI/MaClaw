@@ -259,7 +259,7 @@ jobs:
 
           Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp
 
-      - name: Build TUI & maclaw-tool & maclaw-cli
+      - name: Build TUI, CLI & VS Code ACP bridge
         shell: pwsh
         run: |
           $ldflags = "-s -w -X main.version=$env:VERSION"
@@ -277,7 +277,39 @@ jobs:
               go build -ldflags $ldflags -o "dist/maclaw-tool_${arch}.exe" ./cmd/maclaw-tool/
               go build -ldflags $ldflags -o "dist/maclaw-cli_${arch}.exe" ./maclaw-cli/
             }
+            # The desktop app launches this process for the VS Code ACP plugin.
+            # Keep its name brand-neutral because the GUI resolves this exact filename.
+            go build -ldflags $ldflags -o "dist/maclaw-acp-bridge_${arch}.exe" ./cmd/maclaw-acp-bridge/
           }
+
+      - name: Verify VS Code ACP bridge payload (Windows)
+        shell: pwsh
+        run: |
+          foreach ($arch in @('amd64', 'arm64')) {
+            $bridge = "dist/maclaw-acp-bridge_${arch}.exe"
+            if (-not (Test-Path $bridge -PathType Leaf) -or (Get-Item $bridge).Length -le 0) {
+              throw "Required VS Code ACP bridge is missing or empty: $bridge"
+            }
+          }
+          & "dist/maclaw-acp-bridge_amd64.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "ACP bridge smoke check failed" }
+
+      - name: Verify NSIS installer includes the VS Code ACP bridge
+        shell: pwsh
+        run: |
+          $installer = "dist/$($env:BRAND_APP_NAME)-Setup.exe"
+          if (-not (Test-Path $installer -PathType Leaf)) { throw "Installer not found: $installer" }
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'maclaw-nsis-payload'
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          & $installer '/S' "/D=$extractRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Silent NSIS payload verification install failed: $LASTEXITCODE" }
+          $bridge = Join-Path $extractRoot 'maclaw-acp-bridge.exe'
+          if (-not (Test-Path $bridge -PathType Leaf) -or (Get-Item $bridge).Length -le 0) {
+            throw "NSIS installer did not install the required ACP bridge: $bridge"
+          }
+          & $bridge --version
+          if ($LASTEXITCODE -ne 0) { throw "Installed ACP bridge smoke check failed" }
 
       - name: Build maclawsrv, datasrv & srvdemo (default brand only)
         if: matrix.brand == ''
@@ -345,6 +377,8 @@ jobs:
                   /DARG_WAILS_ARM64_BINARY="$root\dist\${outName}_arm64.exe" `
                   /DARG_MACLAWCLI_AMD64_BINARY="$root\dist\${cliPrefix}-cli_amd64.exe" `
                   /DARG_MACLAWCLI_ARM64_BINARY="$root\dist\${cliPrefix}-cli_arm64.exe" `
+                  /DARG_ACPBRIDGE_AMD64_BINARY="$root\dist\maclaw-acp-bridge_amd64.exe" `
+                  /DARG_ACPBRIDGE_ARM64_BINARY="$root\dist\maclaw-acp-bridge_arm64.exe" `
                   /DMUI_ICON_PATH="$root\$($env:BRAND_ICON_ICO)" `
                   build/windows/installer/multiarch.nsi
 
@@ -390,13 +424,15 @@ jobs:
             Copy-Item "dist/${outPrefix}-tui_amd64.exe" "dist/${outPrefix}-tui.exe"
             Copy-Item "dist/${outPrefix}-tool_amd64.exe" "dist/${outPrefix}-tool.exe"
             Copy-Item "dist/${outPrefix}-cli_amd64.exe" "dist/${outPrefix}-cli.exe"
-            Compress-Archive -Path "dist/${outName}.exe","dist/${outPrefix}-tui.exe","dist/${outPrefix}-tool.exe","dist/${outPrefix}-cli.exe" `
+            Copy-Item "dist/maclaw-acp-bridge_amd64.exe" "dist/maclaw-acp-bridge.exe"
+            Compress-Archive -Path "dist/${outName}.exe","dist/${outPrefix}-tui.exe","dist/${outPrefix}-tool.exe","dist/${outPrefix}-cli.exe","dist/maclaw-acp-bridge.exe" `
               -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
           } else {
             Copy-Item "dist/maclaw-tui_amd64.exe" "dist/maclaw-tui.exe"
             Copy-Item "dist/maclaw-tool_amd64.exe" "dist/maclaw-tool.exe"
             Copy-Item "dist/maclaw-cli_amd64.exe" "dist/maclaw-cli.exe"
-            Compress-Archive -Path "dist/${outName}.exe","dist/maclaw-tui.exe","dist/maclaw-tool.exe","dist/maclaw-cli.exe" `
+            Copy-Item "dist/maclaw-acp-bridge_amd64.exe" "dist/maclaw-acp-bridge.exe"
+            Compress-Archive -Path "dist/${outName}.exe","dist/maclaw-tui.exe","dist/maclaw-tool.exe","dist/maclaw-cli.exe","dist/maclaw-acp-bridge.exe" `
               -DestinationPath "dist/${outName}-Windows-Portable.zip" -Force
           }
 
@@ -421,6 +457,8 @@ jobs:
             dist/maclaw-tool_arm64.exe
             dist/maclaw-cli_amd64.exe
             dist/maclaw-cli_arm64.exe
+            dist/maclaw-acp-bridge_amd64.exe
+            dist/maclaw-acp-bridge_arm64.exe
             dist/maclawsrv-Setup.exe
             dist/maclawsrv_amd64.exe
             dist/maclawsrv_arm64.exe
@@ -867,7 +905,7 @@ jobs:
             go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
           node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_arm64"
 
-      - name: Build TUI & maclaw-tool & maclaw-cli (darwin)
+      - name: Build TUI, CLI & VS Code ACP bridge (darwin)
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
           TUI_TAGS=""
@@ -889,6 +927,9 @@ jobs:
               CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
                 go build -ldflags "$LDFLAGS" -o "dist/maclaw-cli_${ARCH}_darwin" ./maclaw-cli/
             fi
+            # The bundled VS Code extension and ACP client both require this helper.
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
+              go build -ldflags "$LDFLAGS" -o "dist/maclaw-acp-bridge_${ARCH}_darwin" ./cmd/maclaw-acp-bridge/
           done
 
       - name: Build maclawsrv, datasrv & srvdemo (default brand only, darwin)
@@ -945,7 +986,9 @@ jobs:
             BUNDLE="dist/${OUT_NAME}_${ARCH}.app"
             mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
             cp "build/bin/${OUT_NAME}_${ARCH}" "$BUNDLE/Contents/MacOS/${OUT_NAME}"
+            cp "dist/maclaw-acp-bridge_${ARCH}_darwin" "$BUNDLE/Contents/MacOS/maclaw-acp-bridge"
             chmod +x "$BUNDLE/Contents/MacOS/${OUT_NAME}"
+            chmod +x "$BUNDLE/Contents/MacOS/maclaw-acp-bridge"
             [ -f build/AppIcon.icns ] && cp build/AppIcon.icns "$BUNDLE/Contents/Resources/"
             cat > "$BUNDLE/Contents/Info.plist" <<PEOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -975,8 +1018,26 @@ jobs:
           mkdir -p "$UBUNDLE/Contents/MacOS" "$UBUNDLE/Contents/Resources"
           lipo -create "build/bin/${OUT_NAME}_amd64" "build/bin/${OUT_NAME}_arm64" \
             -output "$UBUNDLE/Contents/MacOS/${OUT_NAME}"
+          lipo -create "dist/maclaw-acp-bridge_amd64_darwin" "dist/maclaw-acp-bridge_arm64_darwin" \
+            -output "$UBUNDLE/Contents/MacOS/maclaw-acp-bridge"
+          chmod +x "$UBUNDLE/Contents/MacOS/maclaw-acp-bridge"
           cp "dist/${OUT_NAME}_arm64.app/Contents/Info.plist" "$UBUNDLE/Contents/Info.plist"
           cp -R "dist/${OUT_NAME}_arm64.app/Contents/Resources/" "$UBUNDLE/Contents/Resources/"
+
+      - name: Verify VS Code ACP bridge payload (macOS)
+        run: |
+          OUT_NAME="${BRAND_APP_NAME}"
+          for ARCH in amd64 arm64; do
+            BRIDGE="dist/${OUT_NAME}_${ARCH}.app/Contents/MacOS/maclaw-acp-bridge"
+            test -x "$BRIDGE"
+            if [ "$ARCH" = "amd64" ]; then EXPECTED_ARCH="x86_64"; else EXPECTED_ARCH="arm64"; fi
+            test "$(lipo -archs "$BRIDGE")" = "$EXPECTED_ARCH"
+          done
+          BRIDGE="dist/${OUT_NAME}.app/Contents/MacOS/maclaw-acp-bridge"
+          test -x "$BRIDGE"
+          ARCHS="$(lipo -archs "$BRIDGE")"
+          test "$ARCHS" = "x86_64 arm64" -o "$ARCHS" = "arm64 x86_64"
+          "$BRIDGE" --version
 
       - name: Check code signing availability
         id: check-signing
@@ -1016,6 +1077,7 @@ jobs:
               codesign --force --sign "MaClaw Dev" --identifier "$IDENTIFIER" \
                 --options runtime --entitlements build/darwin/entitlements.plist \
                 --deep "$BUNDLE"
+              codesign --verify --deep --strict --verbose=2 "$BUNDLE"
               echo "Signed: $BUNDLE"
             fi
           done
@@ -1042,6 +1104,19 @@ jobs:
             pkgbuild --root "$TEMP_ROOT" --identifier "$IDENTIFIER" --version "$VERSION" \
               --install-location "/" --scripts "$SCRIPTS_DIR" "dist/${PKG_NAME}"
             rm -rf "$TEMP_ROOT"
+          done
+
+      - name: Verify VS Code ACP bridge payload in macOS PKGs
+        run: |
+          OUT_NAME="${BRAND_APP_NAME}"
+          for ARCH in amd64 arm64 Universal; do
+            PKG="dist/${OUT_NAME}-${ARCH}.pkg"
+            EXPANDED="$RUNNER_TEMP/${OUT_NAME}-${ARCH}-pkg"
+            rm -rf "$EXPANDED"
+            pkgutil --expand-full "$PKG" "$EXPANDED"
+            PAYLOAD=$(find "$EXPANDED" -name Payload -type f | head -n 1)
+            test -n "$PAYLOAD"
+            gzip -dc "$PAYLOAD" | cpio -it | grep -Eq '(^|/)Applications/'"$OUT_NAME"'\.app/Contents/MacOS/maclaw-acp-bridge$'
           done
 
       - name: Create DataSrv PKGs (default brand only)
@@ -1197,6 +1272,8 @@ jobs:
             dist/maclaw-tool_arm64_darwin
             dist/maclaw-cli_amd64_darwin
             dist/maclaw-cli_arm64_darwin
+            dist/maclaw-acp-bridge_amd64_darwin
+            dist/maclaw-acp-bridge_arm64_darwin
             dist/maclawsrv-Universal.pkg
             dist/maclawsrv-amd64.pkg
             dist/maclawsrv-arm64.pkg

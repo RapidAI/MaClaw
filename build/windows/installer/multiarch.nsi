@@ -367,6 +367,9 @@ Function .onInit
     appNotRunning:
     # Stop helper CLI if a long-running watch/poll is active before upgrade.
     ExecWait 'taskkill /F /IM ${CLI_EXECUTABLE}'
+    # VS Code owns the ACP bridge process, so it can still be running when
+    # MaClaw itself is closed. Stop it before replacing the bundled binary.
+    ExecWait 'taskkill /F /IM ${ACP_BRIDGE_EXECUTABLE}'
 
     # Check if already installed
     ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString"
@@ -395,12 +398,16 @@ Section
         DetailPrint "Detected ARM64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_ARM64_BINARY}"
         File "/oname=${CLI_EXECUTABLE}" "${ARG_MACLAWCLI_ARM64_BINARY}"
-        File /nonfatal "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_ARM64_BINARY}"
+        # Required by the bundled MaClaw VS Code ACP integration.  Do not let
+        # NSIS quietly produce a broken installer when this build artifact is absent.
+        File "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_ARM64_BINARY}"
     ${ElseIf} ${IsNativeAMD64}
         DetailPrint "Detected AMD64 Architecture"
         File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_AMD64_BINARY}"
         File "/oname=${CLI_EXECUTABLE}" "${ARG_MACLAWCLI_AMD64_BINARY}"
-        File /nonfatal "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_AMD64_BINARY}"
+        # Required by the bundled MaClaw VS Code ACP integration.  Do not let
+        # NSIS quietly produce a broken installer when this build artifact is absent.
+        File "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_AMD64_BINARY}"
     ${Else}
         MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
         Abort
