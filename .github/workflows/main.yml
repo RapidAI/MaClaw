@@ -294,23 +294,6 @@ jobs:
           & "dist/maclaw-acp-bridge_amd64.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "ACP bridge smoke check failed" }
 
-      - name: Verify NSIS installer includes the VS Code ACP bridge
-        shell: pwsh
-        run: |
-          $installer = "dist/$($env:BRAND_APP_NAME)-Setup.exe"
-          if (-not (Test-Path $installer -PathType Leaf)) { throw "Installer not found: $installer" }
-          $extractRoot = Join-Path $env:RUNNER_TEMP 'maclaw-nsis-payload'
-          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
-          & $installer '/S' "/D=$extractRoot"
-          if ($LASTEXITCODE -ne 0) { throw "Silent NSIS payload verification install failed: $LASTEXITCODE" }
-          $bridge = Join-Path $extractRoot 'maclaw-acp-bridge.exe'
-          if (-not (Test-Path $bridge -PathType Leaf) -or (Get-Item $bridge).Length -le 0) {
-            throw "NSIS installer did not install the required ACP bridge: $bridge"
-          }
-          & $bridge --version
-          if ($LASTEXITCODE -ne 0) { throw "Installed ACP bridge smoke check failed" }
-
       - name: Build maclawsrv, datasrv & srvdemo (default brand only)
         if: matrix.brand == ''
         shell: pwsh
@@ -381,6 +364,23 @@ jobs:
                   /DARG_ACPBRIDGE_ARM64_BINARY="$root\dist\maclaw-acp-bridge_arm64.exe" `
                   /DMUI_ICON_PATH="$root\$($env:BRAND_ICON_ICO)" `
                   build/windows/installer/multiarch.nsi
+
+      - name: Verify NSIS installer includes the VS Code ACP bridge
+        shell: pwsh
+        run: |
+          $installer = "dist/$($env:BRAND_APP_NAME)-Setup.exe"
+          if (-not (Test-Path $installer -PathType Leaf)) { throw "Installer not found: $installer" }
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'maclaw-nsis-payload'
+          Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          & $installer '/S' "/D=$extractRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Silent NSIS payload verification install failed: $LASTEXITCODE" }
+          $bridge = Join-Path $extractRoot 'maclaw-acp-bridge.exe'
+          if (-not (Test-Path $bridge -PathType Leaf) -or (Get-Item $bridge).Length -le 0) {
+            throw "NSIS installer did not install the required ACP bridge: $bridge"
+          }
+          & $bridge --version
+          if ($LASTEXITCODE -ne 0) { throw "Installed ACP bridge smoke check failed" }
 
       - name: Create DataSrv NSIS installer (default brand only)
         if: matrix.brand == ''
@@ -1108,6 +1108,7 @@ jobs:
 
       - name: Verify VS Code ACP bridge payload in macOS PKGs
         run: |
+          set -euo pipefail
           OUT_NAME="${BRAND_APP_NAME}"
           for ARCH in amd64 arm64 Universal; do
             PKG="dist/${OUT_NAME}-${ARCH}.pkg"
@@ -1115,8 +1116,54 @@ jobs:
             rm -rf "$EXPANDED"
             pkgutil --expand-full "$PKG" "$EXPANDED"
             PAYLOAD=$(find "$EXPANDED" -name Payload -type f | head -n 1)
-            test -n "$PAYLOAD"
-            gzip -dc "$PAYLOAD" | cpio -it | grep -Eq '(^|/)Applications/'"$OUT_NAME"'\.app/Contents/MacOS/maclaw-acp-bridge$'
+            if [ -z "$PAYLOAD" ]; then
+              echo "No component Payload found in $PKG" >&2
+              find "$EXPANDED" -maxdepth 3 -print >&2
+              exit 1
+            fi
+            # pkgbuild stores the component filesystem as a compressed CPIO
+            # stream. Compression differs across macOS/Xcode versions, so accept
+            # the formats supported by the hosted runner instead of assuming gzip.
+            COMPONENT_DIR=$(dirname "$PAYLOAD")
+            COMPONENT_EXPANDED="$COMPONENT_DIR/payload-root"
+            rm -rf "$COMPONENT_EXPANDED"
+            mkdir -p "$COMPONENT_EXPANDED"
+            PAYLOAD_FORMAT=$(file -b "$PAYLOAD")
+            echo "Verifying $PKG payload: $PAYLOAD_FORMAT"
+            if gzip -t "$PAYLOAD" 2>/dev/null; then
+              gzip -dc "$PAYLOAD" | (cd "$COMPONENT_EXPANDED" && cpio -idm)
+            elif xz -t "$PAYLOAD" 2>/dev/null; then
+              xz -dc "$PAYLOAD" | (cd "$COMPONENT_EXPANDED" && cpio -idm)
+            elif bzip2 -t "$PAYLOAD" 2>/dev/null; then
+              bzip2 -dc "$PAYLOAD" | (cd "$COMPONENT_EXPANDED" && cpio -idm)
+            elif cpio -it < "$PAYLOAD" >/dev/null 2>&1; then
+              (cd "$COMPONENT_EXPANDED" && cpio -idm < "$PAYLOAD")
+            else
+              echo "Unsupported PKG Payload format: $PAYLOAD_FORMAT" >&2
+              exit 1
+            fi
+            BRIDGE="$COMPONENT_EXPANDED/Applications/${OUT_NAME}.app/Contents/MacOS/maclaw-acp-bridge"
+            if [ ! -x "$BRIDGE" ]; then
+              echo "ACP bridge missing from $PKG: $BRIDGE" >&2
+              find "$COMPONENT_EXPANDED" -maxdepth 7 -print >&2
+              exit 1
+            fi
+            if [ "$ARCH" = "Universal" ]; then
+              EXPECTED_ARCHS="x86_64 arm64"
+              ACTUAL_ARCHS=$(lipo -archs "$BRIDGE")
+              if [ "$ACTUAL_ARCHS" != "$EXPECTED_ARCHS" ] && [ "$ACTUAL_ARCHS" != "arm64 x86_64" ]; then
+                echo "Unexpected universal bridge architectures: $ACTUAL_ARCHS" >&2
+                exit 1
+              fi
+            else
+              [ "$ARCH" = "amd64" ] && EXPECTED_ARCH="x86_64" || EXPECTED_ARCH="arm64"
+              ACTUAL_ARCHS=$(lipo -archs "$BRIDGE")
+              if [ "$ACTUAL_ARCHS" != "$EXPECTED_ARCH" ]; then
+                echo "Unexpected $ARCH bridge architectures: $ACTUAL_ARCHS" >&2
+                exit 1
+              fi
+            fi
+            echo "Verified ACP bridge in $PKG ($ACTUAL_ARCHS)"
           done
 
       - name: Create DataSrv PKGs (default brand only)
