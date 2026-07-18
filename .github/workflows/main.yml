@@ -1084,6 +1084,7 @@ jobs:
 
       - name: Create PKGs
         run: |
+          set -euo pipefail
           IDENTIFIER="com.wails.MaClaw"
           OUT_NAME="${BRAND_APP_NAME}"
           for ARCH in amd64 arm64 universal; do
@@ -1100,6 +1101,8 @@ jobs:
             rm -rf "$TEMP_ROOT"
             mkdir -p "$TEMP_ROOT/Applications"
             cp -R "$BUNDLE" "$TEMP_ROOT/Applications/${OUT_NAME}.app"
+            BRIDGE="$TEMP_ROOT/Applications/${OUT_NAME}.app/Contents/MacOS/maclaw-acp-bridge"
+            test -x "$BRIDGE"
             chmod +x "$SCRIPTS_DIR/preinstall" "$SCRIPTS_DIR/postinstall"
             pkgbuild --root "$TEMP_ROOT" --identifier "$IDENTIFIER" --version "$VERSION" \
               --install-location "/" --scripts "$SCRIPTS_DIR" "dist/${PKG_NAME}"
@@ -1115,37 +1118,13 @@ jobs:
             EXPANDED="$RUNNER_TEMP/${OUT_NAME}-${ARCH}-pkg"
             rm -rf "$EXPANDED"
             pkgutil --expand-full "$PKG" "$EXPANDED"
-            PAYLOAD=$(find "$EXPANDED" -name Payload -type f | head -n 1)
-            if [ -z "$PAYLOAD" ]; then
-              echo "No component Payload found in $PKG" >&2
-              find "$EXPANDED" -maxdepth 3 -print >&2
-              exit 1
-            fi
-            # pkgbuild stores the component filesystem as a compressed CPIO
-            # stream. Compression differs across macOS/Xcode versions, so accept
-            # the formats supported by the hosted runner instead of assuming gzip.
-            COMPONENT_DIR=$(dirname "$PAYLOAD")
-            COMPONENT_EXPANDED="$COMPONENT_DIR/payload-root"
-            rm -rf "$COMPONENT_EXPANDED"
-            mkdir -p "$COMPONENT_EXPANDED"
-            PAYLOAD_FORMAT=$(file -b "$PAYLOAD")
-            echo "Verifying $PKG payload: $PAYLOAD_FORMAT"
-            if gzip -t "$PAYLOAD" 2>/dev/null; then
-              gzip -dc "$PAYLOAD" | (cd "$COMPONENT_EXPANDED" && cpio -idm)
-            elif xz -t "$PAYLOAD" 2>/dev/null; then
-              xz -dc "$PAYLOAD" | (cd "$COMPONENT_EXPANDED" && cpio -idm)
-            elif bzip2 -t "$PAYLOAD" 2>/dev/null; then
-              bzip2 -dc "$PAYLOAD" | (cd "$COMPONENT_EXPANDED" && cpio -idm)
-            elif cpio -it < "$PAYLOAD" >/dev/null 2>&1; then
-              (cd "$COMPONENT_EXPANDED" && cpio -idm < "$PAYLOAD")
-            else
-              echo "Unsupported PKG Payload format: $PAYLOAD_FORMAT" >&2
-              exit 1
-            fi
-            BRIDGE="$COMPONENT_EXPANDED/Applications/${OUT_NAME}.app/Contents/MacOS/maclaw-acp-bridge"
+            # `pkgutil --expand-full` on hosted macOS runners fully expands the
+            # component payload, so inspect the installed filesystem directly.
+            # This avoids coupling release checks to private Payload compression.
+            BRIDGE="$EXPANDED/Payload/Applications/${OUT_NAME}.app/Contents/MacOS/maclaw-acp-bridge"
             if [ ! -x "$BRIDGE" ]; then
               echo "ACP bridge missing from $PKG: $BRIDGE" >&2
-              find "$COMPONENT_EXPANDED" -maxdepth 7 -print >&2
+              find "$EXPANDED" -maxdepth 7 -print >&2
               exit 1
             fi
             if [ "$ARCH" = "Universal" ]; then
