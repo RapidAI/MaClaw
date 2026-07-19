@@ -5305,7 +5305,7 @@ function normalizeApprovalWorkflowDecision(value: string, lifecycle: 'done' | 'e
 function approvalWorkflowProgressFromSkillRunStatus(status: SkillRunStatusView | null, lang?: string) {
     const zh = isZh(lang);
     const objects = expandSkillRunApprovalObjects(skillRunApprovalObjects(status));
-    const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (zh ? '\u8fdb\u884c\u4e2d' : 'In progress');
+    const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (localizeText(lang, 'In progress', '\u8fdb\u884c\u4e2d', '\u9032\u884c\u4e2d'));
     const currentNodeIDs = skillRunWorkflowNodeIDs(objects, currentNode);
     const progressText = firstSkillRunResultString(objects, ['progress', 'progress_summary', 'progressSummary', 'message', 'text', 'result'])
         || String(status?.session_progress?.progress_summary || status?.summary?.current_step_status || status?.summary?.last_completed_step || '').trim()
@@ -5322,28 +5322,28 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
     const decision = normalizeApprovalWorkflowDecision(explicitDecision, lifecycle);
     const outputText = skillRunOutputSuffix(status).replace(/^ \u00b7 /, '');
     const fallbackText = lifecycle === 'cancelled'
-        ? (zh ? 'Skill \u5df2\u53d6\u6d88' : 'Skill cancelled')
+        ? (localizeText(lang, 'Skill cancelled', 'Skill \u5df2\u53d6\u6d88', 'Skill \u5df2\u53d6\u6d88'))
         : lifecycle === 'timeout'
-            ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6' : 'Workflow timed out'))
+            ? (skillRunErrorMessage(status) || (localizeText(lang, 'Workflow timed out', '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6', '\u5de5\u4f5c\u6d41\u57f7\u884c\u8d85\u6642')))
             : lifecycle === 'error'
-                ? (skillRunErrorMessage(status) || (zh ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u5f02\u5e38\uff0c\u9700\u5173\u6ce8' : 'Workflow failed and needs attention'))
+                ? (skillRunErrorMessage(status) || (localizeText(lang, 'Workflow failed and needs attention', '\u5de5\u4f5c\u6d41\u8fd0\u884c\u5f02\u5e38\uff0c\u9700\u5173\u6ce8', '\u5de5\u4f5c\u6d41\u57f7\u884c\u7570\u5e38\uff0c\u9700\u95dc\u6ce8')))
                 : decision === 'approved'
-                    ? (zh ? '\u5ba1\u6279\u5df2\u901a\u8fc7' : 'Approval approved')
+                    ? (localizeText(lang, 'Approval approved', '\u5ba1\u6279\u5df2\u901a\u8fc7', '\u5be9\u6279\u5df2\u900f\u904e'))
                     : decision === 'rejected'
-                        ? (zh ? '\u5ba1\u6279\u5df2\u9a73\u56de' : 'Approval rejected')
-                        : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
+                        ? (localizeText(lang, 'Approval rejected', '\u5ba1\u6279\u5df2\u9a73\u56de', '\u5be9\u6279\u5df2\u99c1\u56de'))
+                        : (localizeText(lang, 'Needs attention', '\u9700\u5173\u6ce8', '\u9700\u95dc\u6ce8'));
     const resultText = firstSkillRunResultString(objects, ['message', 'result_message', 'resultMessage', 'approval_message', 'approvalMessage', 'content', 'text', 'result']) || outputText || fallbackText;
     const resultStatus = firstSkillRunResultString(objects, ['result_status', 'resultStatus']) || (lifecycle === 'cancelled' ? 'cancelled' : lifecycle === 'timeout' ? 'timeout' : lifecycle === 'error' ? 'workflow_error' : decision);
     const businessStatus = firstSkillRunResultString(objects, ['business_status', 'businessStatus']) || resultStatus;
     const currentNode = firstSkillRunResultString(objects, ['current_node', 'currentNode', 'approval_node', 'approvalNode', 'node']) || (lifecycle === 'cancelled'
-        ? (zh ? '\u5df2\u53d6\u6d88' : 'Cancelled')
+        ? (localizeText(lang, 'Cancelled', '\u5df2\u53d6\u6d88', '\u5df2\u53d6\u6d88'))
         : lifecycle === 'timeout'
-            ? (zh ? '\u5df2\u8d85\u65f6' : 'Timed out')
+            ? (localizeText(lang, 'Timed out', '\u5df2\u8d85\u65f6', '\u5df2\u8d85\u6642'))
             : lifecycle === 'error'
-                ? (zh ? '\u8fd0\u884c\u5f02\u5e38' : 'Workflow error')
+                ? (localizeText(lang, 'Workflow error', '\u8fd0\u884c\u5f02\u5e38', '\u57f7\u884c\u7570\u5e38'))
                 : decision === 'attention'
-                    ? (zh ? '\u9700\u5173\u6ce8' : 'Needs attention')
-                    : (zh ? '\u5df2\u5b8c\u6210' : 'Completed'));
+                    ? (localizeText(lang, 'Needs attention', '\u9700\u5173\u6ce8', '\u9700\u95dc\u6ce8'))
+                    : (localizeText(lang, 'Completed', '\u5df2\u5b8c\u6210', '\u5df2\u5b8c\u6210')));
     const currentNodeIDs = skillRunWorkflowNodeIDs(objects, currentNode);
     const resultPayload = {
         approval_result: decision,
@@ -5361,7 +5361,7 @@ function approvalWorkflowResultFromSkillRunStatus(status: SkillRunStatusView | n
         businessStatus,
         resultStatus,
         resultPayload,
-        zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
+        localizeText(lang, 'Approval result', '\u5ba1\u6279\u7ed3\u679c', '\u5be9\u6279\u7d50\u679c'),
     );
     return {
         status: lifecycle === 'cancelled' ? 'cancelled' : lifecycle === 'timeout' ? 'timeout' : decision,
@@ -6838,7 +6838,7 @@ function missingWorkspaceRegionRoles(app: AppEntry): string[] {
 function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const layout = appWorkspaceLayoutEvidence(app);
-    if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '\u7f3a\u5c11 workspace layout' : 'Missing workspace layout';
+    if (!layout.schema || !layout.entry || layout.regionCount <= 0) return localizeText(lang, 'Missing workspace layout', '\u7f3a\u5c11 workspace layout', '\u7f3a\u5c11 workspace layout');
     const missingRoles = missingWorkspaceRegionRoles(app);
     if (missingRoles.length > 0) return localizeText(lang, `Missing workspace region roles: ${missingRoles.join(', ')}`, `\u7f3a\u5c11 workspace \u533a\u57df\u89d2\u8272: ${missingRoles.join(', ')}`, `\u7f3a\u5c11 workspace \u5340\u57df\u89d2\u8272: ${missingRoles.join(', ')}`);
     return `${layout.entry} \u00b7  ${layout.template} \u00b7  ${layout.density} \u00b7  ${layout.regionCount} regions`;
@@ -7014,7 +7014,7 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const fingerprint = appTestProtocolFingerprint(protocol);
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
-    if (sampleKeys === 0 || outputKeys === 0) return zh ? '\u7f3a\u5c11 sampleInput \u6216 expectedOutput' : 'Missing sampleInput or expectedOutput';
+    if (sampleKeys === 0 || outputKeys === 0) return localizeText(lang, 'Missing sampleInput or expectedOutput', '\u7f3a\u5c11 sampleInput \u6216 expectedOutput', '\u7f3a\u5c11 sampleInput \u6216 expectedOutput');
     return `${localizeText(lang, 'Protocol fingerprint', '\u534f\u8bae\u6307\u7eb9', '\u5354\u8b70\u6307\u7d0b')} ${fingerprint} \u00b7  ${protocol.riskLevel}`;
 }
 
@@ -7396,7 +7396,7 @@ function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHist
             return localizeText(lang, 'Missing instanceId, status, or approval instance view verification', '\u7f3a\u5c11 instanceId\u3001status \u6216\u5ba1\u6279\u5b9e\u4f8b\u89c6\u56fe\u9a8c\u8bc1', '\u7f3a\u5c11 instanceId\u3001status \u6216\u5be9\u6279\u5be6\u4f8b\u6aa2\u8996\u9a57\u8b49');
         }
         if (!hasCurrentNode || !hasWorkflowSkill || !hasResultStatus) {
-            return zh ? '\u7f3a\u5c11 currentNode\u3001workflowSkillId \u6216 businessStatus/resultStatus' : 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus';
+            return localizeText(lang, 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus', '\u7f3a\u5c11 currentNode\u3001workflowSkillId \u6216 businessStatus/resultStatus', '\u7f3a\u5c11 currentNode\u3001workflowSkillId \u6216 businessStatus/resultStatus');
         }
         return localizeText(lang, 'Approval instance evidence is missing resultPayload, outputs, or artifacts', '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e\u7f3a\u5c11 resultPayload\u3001outputs \u6216 artifacts', '\u5be9\u6279\u5be6\u4f8b\u8b49\u64da\u7f3a\u5c11 resultPayload\u3001outputs \u6216 artifacts');
     };
@@ -7748,7 +7748,7 @@ function formatRecentUsedAt(value?: string) {
 
 function appPanelStatusLabel(app: AppEntry, lang?: string) {
     if (app.source !== 'skill') return '';
-    return isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel';
+    return localizeText(lang, 'In panel', '\u5df2\u52a0\u5165\u9762\u677f', '\u5df2\u52a0\u5165\u9762\u677f');
 }
 
 function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel: string, lang?: string) {
@@ -8463,11 +8463,11 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                                 </button>
                             )}
                         </div>
-                        <button className="apps-studio-button" type="button" title={isZh(lang) ? '\u521b\u5efa\u5e94\u7528' : 'Create App'} aria-label={isZh(lang) ? '\u521b\u5efa\u5e94\u7528' : 'Create App'} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
+                        <button className="apps-studio-button" type="button" title={localizeText(lang, 'Create App', '\u521b\u5efa\u5e94\u7528', '\u5efa\u7acb\u61c9\u7528')} aria-label={localizeText(lang, 'Create App', '\u521b\u5efa\u5e94\u7528', '\u5efa\u7acb\u61c9\u7528')} onClick={() => { setActiveOperation(null); setStudioOpen(true); }}>
                             <span className="apps-studio-button__icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M12 8v8M8 12h8" /></svg>
                             </span>
-                            <span className="apps-studio-button__label">{isZh(lang) ? '\u521b\u5efa\u5e94\u7528' : 'Create App'}</span>
+                            <span className="apps-studio-button__label">{localizeText(lang, 'Create App', '\u521b\u5efa\u5e94\u7528', '\u5efa\u7acb\u61c9\u7528')}</span>
                         </button>
                     </div>
                     <div className="apps-filter-row">
@@ -8535,7 +8535,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                                 style={{ marginLeft: 12 }}
                                 onClick={() => setWorkspaceLaunchHint('')}
                             >
-                                {isZh(lang) ? '关闭' : 'Dismiss'}
+                                {localizeText(lang, 'Dismiss', '关闭', '\u95dc\u9589')}
                             </button>
                         </div>
                     )}
@@ -8735,8 +8735,8 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
     const workflowMapping = app.manifest?.workflow;
     const submitted = runState === 'done' || runState === 'running';
     const draftStatus = submitted ? 'pending' : 'draft';
-    const draftNode = submitted ? (workflowMapping?.approvalNode || (zh ? '\u4e3b\u7ba1\u5ba1\u6279' : 'Manager approval')) : (workflowMapping?.submitNode || (zh ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node'));
-    const draftResult = submitted ? (zh ? '\u5ba1\u6279\u4e2d' : 'Pending') : (zh ? '\u5f85\u63d0\u4ea4' : 'Draft');
+    const draftNode = submitted ? (workflowMapping?.approvalNode || (localizeText(lang, 'Manager approval', '\u4e3b\u7ba1\u5ba1\u6279', '\u4e3b\u7ba1\u5be9\u6279'))) : (workflowMapping?.submitNode || (localizeText(lang, 'Submit node', '\u53d1\u8d77\u8282\u70b9', '\u767c\u8d77\u7bc0\u9ede')));
+    const draftResult = submitted ? (localizeText(lang, 'Pending', '\u5ba1\u6279\u4e2d', '\u5be9\u6279\u4e2d')) : (localizeText(lang, 'Draft', '\u5f85\u63d0\u4ea4', '\u5f85\u63d0\u4ea4'));
     return [
         {
             id: `${app.id}-current`,
@@ -8745,14 +8745,14 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             lane: 'my_requests',
             status: draftStatus,
             currentNode: draftNode,
-            owner: zh ? '\u6211' : 'Me',
-            approver: submitted ? (zh ? '\u76f4\u5c5e\u4e3b\u7ba1 \u00b7  VE' : 'Manager \u00b7  VE') : workflow,
+            owner: localizeText(lang, 'Me', '\u6211', '\u6211'),
+            approver: submitted ? (localizeText(lang, 'Manager \u00b7  VE', '\u76f4\u5c5e\u4e3b\u7ba1 \u00b7  VE', '\u76f4\u5c6c\u4e3b\u7ba1 \u00b7  VE')) : workflow,
             updatedAt: submitted ? new Date().toLocaleString() : '-',
             result: businessNote.trim() || draftResult,
             workflowSkillID: workflow,
             businessStatus: submitted ? 'approval_pending' : 'draft',
             resultStatus: draftStatus,
-            amount: submitted ? (zh ? '\u672c\u6b21\u63d0\u4ea4' : 'Current submission') : undefined,
+            amount: submitted ? (localizeText(lang, 'Current submission', '\u672c\u6b21\u63d0\u4ea4', '\u672c\u6b21\u63d0\u4ea4')) : undefined,
         },
         {
             id: `${app.id}-pending`,
@@ -8760,11 +8760,11 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             title: zh ? `${app.name}\u5f85\u529e` : `${app.name} task`,
             lane: 'pending_my_approval',
             status: 'pending',
-            currentNode: workflowMapping?.approvalNode || (zh ? '\u6211\u5ba1\u6279' : 'My approval'),
-            owner: zh ? '\u540c\u4e8b' : 'Coworker',
-            approver: zh ? '\u6211' : 'Me',
-            updatedAt: zh ? '\u4eca\u5929' : 'Today',
-            result: zh ? '\u7b49\u5f85\u5904\u7406' : 'Waiting',
+            currentNode: workflowMapping?.approvalNode || (localizeText(lang, 'My approval', '\u6211\u5ba1\u6279', '\u6211\u5be9\u6279')),
+            owner: localizeText(lang, 'Coworker', '\u540c\u4e8b', '\u540c\u4e8b'),
+            approver: localizeText(lang, 'Me', '\u6211', '\u6211'),
+            updatedAt: localizeText(lang, 'Today', '\u4eca\u5929', '\u4eca\u5929'),
+            result: localizeText(lang, 'Waiting', '\u7b49\u5f85\u5904\u7406', '\u7b49\u5f85\u8655\u7406'),
             workflowSkillID: workflow,
             businessStatus: 'approval_pending',
             resultStatus: 'pending',
@@ -8775,11 +8775,11 @@ function buildApprovalInstances(app: AppEntry, runState: 'idle' | 'running' | 'd
             title: zh ? `${app.name}\u9700\u5173\u6ce8` : `${app.name} attention`,
             lane: 'attention',
             status: 'attention',
-            currentNode: workflowMapping?.attentionNode || (zh ? '\u98ce\u9669\u590d\u6838' : 'Risk review'),
-            owner: zh ? '\u7cfb\u7edf' : 'System',
-            approver: zh ? '\u4ec5\u67e5\u770b' : 'View only',
-            updatedAt: zh ? '\u6628\u5929' : 'Yesterday',
-            result: zh ? '\u89c4\u5219\u547d\u4e2d\uff0c\u9700\u67e5\u770b' : 'Rule matched, review needed',
+            currentNode: workflowMapping?.attentionNode || (localizeText(lang, 'Risk review', '\u98ce\u9669\u590d\u6838', '\u98a8\u96aa\u8907\u6838')),
+            owner: localizeText(lang, 'System', '\u7cfb\u7edf', '\u7cfb\u7d71'),
+            approver: localizeText(lang, 'View only', '\u4ec5\u67e5\u770b', '\u50c5\u6aa2\u8996'),
+            updatedAt: localizeText(lang, 'Yesterday', '\u6628\u5929', '\u6628\u5929'),
+            result: localizeText(lang, 'Rule matched, review needed', '\u89c4\u5219\u547d\u4e2d\uff0c\u9700\u67e5\u770b', '\u898f\u5247\u547d\u4e2d\uff0c\u9700\u6aa2\u8996'),
             workflowSkillID: workflow,
             businessStatus: 'attention',
             resultStatus: 'attention',
@@ -8965,9 +8965,9 @@ function approvalEvidenceToBackendInstance(app: AppEntry, evidence: AppRunApprov
         current_node: currentNode || undefined,
         current_node_ids: currentNodeIDs.length > 0 ? currentNodeIDs : currentNode ? [currentNode] : undefined,
         workflow_node_ids: currentNodeIDs.length > 0 ? currentNodeIDs : currentNode ? [currentNode] : undefined,
-        owner: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
-        applicant: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
-        approver: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
+        owner: localizeText(lang, 'Current user', '\u5f53\u524d\u7528\u6237', '\u7576\u524d\u4f7f\u7528\u8005'),
+        applicant: localizeText(lang, 'Current user', '\u5f53\u524d\u7528\u6237', '\u7576\u524d\u4f7f\u7528\u8005'),
+        approver: localizeText(lang, 'Approver', '\u5ba1\u6279\u4eba', '\u5be9\u6279\u4eba'),
         updated_at: evidence.verifiedAt || new Date().toISOString(),
         result: String(evidence.result || evidence.resultStatus || evidence.businessStatus || status).trim(),
         workflow_skill_id: workflowSkillID || undefined,
@@ -9249,15 +9249,15 @@ async function syncApprovalInstanceToDataSrvWithEvents(app: AppEntry, instance: 
 
 function approvalStatusLabel(status: ApprovalInstanceView['status'], lang?: string) {
     const zh = isZh(lang);
-    if (status === 'approved') return zh ? '\u5df2\u901a\u8fc7' : 'Approved';
-    if (status === 'rejected') return zh ? '\u5df2\u9a73\u56de' : 'Rejected';
-    if (status === 'attention') return zh ? '\u9700\u5173\u6ce8' : 'Needs attention';
-    if (status === 'requires_input') return zh ? '\u5f85\u8865\u5145' : 'Needs input';
-    if (status === 'failed') return zh ? '\u8fd0\u884c\u5931\u8d25' : 'Failed';
-    if (status === 'cancelled') return zh ? '\u5df2\u53d6\u6d88' : 'Cancelled';
-    if (status === 'timeout') return zh ? '\u5df2\u8d85\u65f6' : 'Timed out';
-    if (status === 'pending' || status === 'running' || status === 'submitted' || status === 'in_progress') return zh ? '\u5ba1\u6279\u4e2d' : 'Pending';
-    return zh ? '\u8349\u7a3f' : 'Draft';
+    if (status === 'approved') return localizeText(lang, 'Approved', '\u5df2\u901a\u8fc7', '\u5df2\u900f\u904e');
+    if (status === 'rejected') return localizeText(lang, 'Rejected', '\u5df2\u9a73\u56de', '\u5df2\u99c1\u56de');
+    if (status === 'attention') return localizeText(lang, 'Needs attention', '\u9700\u5173\u6ce8', '\u9700\u95dc\u6ce8');
+    if (status === 'requires_input') return localizeText(lang, 'Needs input', '\u5f85\u8865\u5145', '\u5f85\u88dc\u5145');
+    if (status === 'failed') return localizeText(lang, 'Failed', '\u8fd0\u884c\u5931\u8d25', '\u57f7\u884c\u5931\u6557');
+    if (status === 'cancelled') return localizeText(lang, 'Cancelled', '\u5df2\u53d6\u6d88', '\u5df2\u53d6\u6d88');
+    if (status === 'timeout') return localizeText(lang, 'Timed out', '\u5df2\u8d85\u65f6', '\u5df2\u8d85\u6642');
+    if (status === 'pending' || status === 'running' || status === 'submitted' || status === 'in_progress') return localizeText(lang, 'Pending', '\u5ba1\u6279\u4e2d', '\u5be9\u6279\u4e2d');
+    return localizeText(lang, 'Draft', '\u8349\u7a3f', '\u8349\u7a3f');
 }
 
 function runStateFromApprovalLifecycleStatus(status?: string): 'running' | 'done' | 'error' | 'cancelled' {
@@ -9304,8 +9304,8 @@ function approvalRequiresInputInfo(instance: ApprovalInstanceView | undefined, l
     const active = status === 'requires_input' || !!raw || !!output;
     if (!active) return null;
     return {
-        title: isZh(lang) ? '\u5f85\u8865\u5145\u6750\u6599' : 'Supplement required',
-        message: message || (isZh(lang) ? '\u8bf7\u8865\u5145\u5fc5\u8981\u6750\u6599\u540e\u7ee7\u7eed\u6d41\u8f6c' : 'Add the missing information and continue the workflow.'),
+        title: localizeText(lang, 'Supplement required', '\u5f85\u8865\u5145\u6750\u6599', '\u5f85\u88dc\u5145\u6750\u6599'),
+        message: message || (localizeText(lang, 'Add the missing information and continue the workflow.', '\u8bf7\u8865\u5145\u5fc5\u8981\u6750\u6599\u540e\u7ee7\u7eed\u6d41\u8f6c', '\u8acb\u88dc\u5145\u5fc5\u8981\u6750\u6599\u5f8c\u7e7c\u7e8c\u6d41\u8f49')),
         fields,
     };
 }
@@ -9367,9 +9367,9 @@ function businessActionRoleForApp(app: AppEntry, businessAction: string): string
 
 function businessActionLabel(action: string, lang?: string) {
     const zh = isZh(lang);
-    if (action === 'query') return zh ? '\u67e5\u8be2\u6570\u636e' : 'Query data';
-    if (action === 'report') return zh ? '\u751f\u6210\u62a5\u8868' : 'Generate report';
-    return zh ? '\u65b0\u5efa\u8bb0\u5f55' : 'Create record';
+    if (action === 'query') return localizeText(lang, 'Query data', '\u67e5\u8be2\u6570\u636e', '\u67e5\u8a62\u8cc7\u6599');
+    if (action === 'report') return localizeText(lang, 'Generate report', '\u751f\u6210\u62a5\u8868', '\u751f\u6210\u5831\u8868');
+    return localizeText(lang, 'Create record', '\u65b0\u5efa\u8bb0\u5f55', '\u65b0\u5efa\u8a18\u9304');
 }
 
 const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, businessNote, lang, style, layoutRegion }: { app: AppEntry; runState: 'idle' | 'running' | 'done' | 'error' | 'cancelled'; businessEntity: string; businessAction: string; businessNote: string; lang?: string; style?: CSSProperties; layoutRegion?: string }) => {
@@ -9384,11 +9384,11 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
     const columnItems = appEnterpriseColumns(app);
     const columnLabel = (column: string) => {
         const labels: Record<string, string> = {
-            title: zh ? '\u8bb0\u5f55' : 'Record',
-            status: zh ? '\u72b6\u6001' : 'Status',
-            owner: zh ? '\u8d1f\u8d23\u4eba' : 'Owner',
-            updated_at: zh ? '\u66f4\u65b0' : 'Updated',
-            current_node: zh ? '\u5f53\u524d\u8282\u70b9' : 'Current node',
+            title: localizeText(lang, 'Record', '\u8bb0\u5f55', '\u8a18\u9304'),
+            status: localizeText(lang, 'Status', '\u72b6\u6001', '\u72c0\u614b'),
+            owner: localizeText(lang, 'Owner', '\u8d1f\u8d23\u4eba', '\u8ca0\u8cac\u4eba'),
+            updated_at: localizeText(lang, 'Updated', '\u66f4\u65b0', '\u66f4\u65b0'),
+            current_node: localizeText(lang, 'Current node', '\u5f53\u524d\u8282\u70b9', '\u7576\u524d\u7bc0\u9ede'),
         };
         return labels[column] || column;
     };
@@ -9396,39 +9396,39 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
         if (column === 'title') return row.name;
         if (column === 'status') return row.status;
         if (column === 'owner') return row.owner;
-        if (column === 'updated_at') return runState === 'done' ? (zh ? '\u521a\u521a' : 'Just now') : '-';
-        if (column === 'current_node') return runState === 'running' ? (zh ? '\u6267\u884c\u4e2d' : 'Running') : (zh ? '\u5f85\u6267\u884c' : 'Ready');
+        if (column === 'updated_at') return runState === 'done' ? (localizeText(lang, 'Just now', '\u521a\u521a', '\u525b\u525b')) : '-';
+        if (column === 'current_node') return runState === 'running' ? (localizeText(lang, 'Running', '\u6267\u884c\u4e2d', '\u57f7\u884c\u4e2d')) : (localizeText(lang, 'Ready', '\u5f85\u6267\u884c', '\u5f85\u57f7\u884c'));
         return '-';
     };
     const bindingItems = [
-        { label: zh ? '\u4e1a\u52a1\u57df' : 'DataSrv', value: datasrv.domain || '-' },
-        { label: zh ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Object', value: objectRole || '-' },
-        { label: zh ? '\u6570\u636e\u96c6' : 'Dataset', value: datasetID || '-' },
+        { label: localizeText(lang, 'DataSrv', '\u4e1a\u52a1\u57df', '\u696d\u52d9\u57df'), value: datasrv.domain || '-' },
+        { label: localizeText(lang, 'Object', '\u4e1a\u52a1\u5bf9\u8c61', '\u696d\u52d9\u7269\u4ef6'), value: objectRole || '-' },
+        { label: localizeText(lang, 'Dataset', '\u6570\u636e\u96c6', '\u8cc7\u6599\u96c6'), value: datasetID || '-' },
         { label: 'appSkill', value: appSkillID || '-' },
     ];
     const operationItems = [
-        { label: zh ? '\u52a8\u4f5c' : 'Action', value: datasrv.preferredAction || '-' },
-        { label: zh ? '\u89c6\u56fe' : 'View', value: datasrv.preferredView || '-' },
-        { label: zh ? '\u62a5\u8868' : 'Report', value: datasrv.preferredReport || '-' },
-        { label: zh ? '\u770b\u677f' : 'Dashboard', value: datasrv.preferredDashboard || '-' },
+        { label: localizeText(lang, 'Action', '\u52a8\u4f5c', '\u52d5\u4f5c'), value: datasrv.preferredAction || '-' },
+        { label: localizeText(lang, 'View', '\u89c6\u56fe', '\u6aa2\u8996'), value: datasrv.preferredView || '-' },
+        { label: localizeText(lang, 'Report', '\u62a5\u8868', '\u5831\u8868'), value: datasrv.preferredReport || '-' },
+        { label: localizeText(lang, 'Dashboard', '\u770b\u677f', '\u770b\u677f'), value: datasrv.preferredDashboard || '-' },
     ];
     const rows = [
-        { id: `${datasrv.domain || app.id}-draft`, name: businessEntity || app.category, status: runState === 'idle' ? (zh ? '\u5f85\u5904\u7406' : 'Ready') : (zh ? '\u5904\u7406\u4e2d' : 'Processing'), owner: zh ? '\u5f53\u524d\u7528\u6237' : 'Current user' },
-        { id: `${datasrv.domain || app.id}-last`, name: app.name, status: runState === 'done' ? (zh ? '\u5df2\u66f4\u65b0' : 'Updated') : (zh ? '\u53ef\u67e5\u8be2' : 'Queryable'), owner: datasrv.domain || 'DataSrv' },
+        { id: `${datasrv.domain || app.id}-draft`, name: businessEntity || app.category, status: runState === 'idle' ? (localizeText(lang, 'Ready', '\u5f85\u5904\u7406', '\u5f85\u8655\u7406')) : (localizeText(lang, 'Processing', '\u5904\u7406\u4e2d', '\u8655\u7406\u4e2d')), owner: localizeText(lang, 'Current user', '\u5f53\u524d\u7528\u6237', '\u7576\u524d\u4f7f\u7528\u8005') },
+        { id: `${datasrv.domain || app.id}-last`, name: app.name, status: runState === 'done' ? (localizeText(lang, 'Updated', '\u5df2\u66f4\u65b0', '\u5df2\u66f4\u65b0')) : (localizeText(lang, 'Queryable', '\u53ef\u67e5\u8be2', '\u53ef\u67e5\u8a62')), owner: datasrv.domain || 'DataSrv' },
     ];
     return (
-        <section className="apps-runtime-section apps-business-workspace" aria-label={zh ? '\u4e1a\u52a1\u5de5\u4f5c\u53f0' : 'Business workspace'} data-region={layoutRegion || 'center'} style={style}>
+        <section className="apps-runtime-section apps-business-workspace" aria-label={localizeText(lang, 'Business workspace', '\u4e1a\u52a1\u5de5\u4f5c\u53f0', '\u696d\u52d9\u5de5\u4f5c\u81fa')} data-region={layoutRegion || 'center'} style={style}>
             <div className="apps-preview-title-row">
-                <div className="apps-runtime-section__title">{zh ? '\u4e1a\u52a1\u5de5\u4f5c\u53f0' : 'Business workspace'}</div>
+                <div className="apps-runtime-section__title">{localizeText(lang, 'Business workspace', '\u4e1a\u52a1\u5de5\u4f5c\u53f0', '\u696d\u52d9\u5de5\u4f5c\u81fa')}</div>
                 <span className="apps-count">{datasrv.domain || 'DataSrv'}</span>
             </div>
-            <div className="apps-business-toolbar" aria-label={zh ? '\u4e1a\u52a1\u64cd\u4f5c' : 'Business actions'}>
-                <button type="button" data-active={businessAction === 'create' ? 'true' : undefined}>{zh ? '\u65b0\u5efa' : 'New'}</button>
-                <button type="button" data-active={businessAction === 'query' ? 'true' : undefined}>{zh ? '\u67e5\u8be2' : 'Query'}</button>
-                <button type="button" data-active={businessAction === 'report' ? 'true' : undefined}>{zh ? '\u62a5\u8868' : 'Report'}</button>
-                <button type="button">{zh ? '\u5bfc\u51fa' : 'Export'}</button>
+            <div className="apps-business-toolbar" aria-label={localizeText(lang, 'Business actions', '\u4e1a\u52a1\u64cd\u4f5c', '\u696d\u52d9\u64cd\u4f5c')}>
+                <button type="button" data-active={businessAction === 'create' ? 'true' : undefined}>{localizeText(lang, 'New', '\u65b0\u5efa', '\u65b0\u5efa')}</button>
+                <button type="button" data-active={businessAction === 'query' ? 'true' : undefined}>{localizeText(lang, 'Query', '\u67e5\u8be2', '\u67e5\u8a62')}</button>
+                <button type="button" data-active={businessAction === 'report' ? 'true' : undefined}>{localizeText(lang, 'Report', '\u62a5\u8868', '\u5831\u8868')}</button>
+                <button type="button">{localizeText(lang, 'Export', '\u5bfc\u51fa', '\u532f\u51fa')}</button>
             </div>
-            <div className="apps-business-binding" aria-label={zh ? '\u4e1a\u52a1\u7ed1\u5b9a' : 'Business binding'}>
+            <div className="apps-business-binding" aria-label={localizeText(lang, 'Business binding', '\u4e1a\u52a1\u7ed1\u5b9a', '\u696d\u52d9\u7e6b\u7d50')}>
                 <dl>
                     {bindingItems.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
                 </dl>
@@ -9437,10 +9437,10 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
                 </dl>
             </div>
             <div className="apps-business-layout">
-                <nav className="apps-business-nav" aria-label={zh ? '\u89c6\u56fe' : 'Views'}>
+                <nav className="apps-business-nav" aria-label={localizeText(lang, 'Views', '\u89c6\u56fe', '\u6aa2\u8996')}>
                     {navigationItems.map((item) => <button key={item} type="button">{item}</button>)}
                 </nav>
-                <div className="apps-business-table" role="table" aria-label={zh ? '\u4e1a\u52a1\u6570\u636e' : 'Business records'}>
+                <div className="apps-business-table" role="table" aria-label={localizeText(lang, 'Business records', '\u4e1a\u52a1\u6570\u636e', '\u696d\u52d9\u8cc7\u6599')}>
                     <div role="row" className="apps-business-table__head">{columnItems.map((column) => <span key={column}>{columnLabel(column)}</span>)}</div>
                     {rows.map((row) => (
                         <div role="row" className="apps-business-table__row" data-state={runState} key={row.id}>
@@ -9450,12 +9450,12 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
                 </div>
                 <aside className="apps-business-detail">
                     <dl>
-                        <div><dt>{zh ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Object'}</dt><dd>{objectRole || '-'}</dd></div>
-                        <div><dt>{zh ? '\u64cd\u4f5c\u89d2\u8272' : 'Action role'}</dt><dd>{actionRole || businessActionLabel(businessAction, lang)}</dd></div>
-                        <div><dt>{zh ? '\u89c6\u56fe' : 'View'}</dt><dd>{viewRole || '-'}</dd></div>
-                        <div><dt>{zh ? '\u8fd0\u884c\u72b6\u6001' : 'Run state'}</dt><dd>{runState === 'done' ? (zh ? '\u5df2\u5b8c\u6210' : 'Done') : runState === 'running' ? (zh ? '\u6267\u884c\u4e2d' : 'Running') : (zh ? '\u5f85\u6267\u884c' : 'Ready')}</dd></div>
+                        <div><dt>{localizeText(lang, 'Object', '\u4e1a\u52a1\u5bf9\u8c61', '\u696d\u52d9\u7269\u4ef6')}</dt><dd>{objectRole || '-'}</dd></div>
+                        <div><dt>{localizeText(lang, 'Action role', '\u64cd\u4f5c\u89d2\u8272', '\u64cd\u4f5c\u89d2\u8272')}</dt><dd>{actionRole || businessActionLabel(businessAction, lang)}</dd></div>
+                        <div><dt>{localizeText(lang, 'View', '\u89c6\u56fe', '\u6aa2\u8996')}</dt><dd>{viewRole || '-'}</dd></div>
+                        <div><dt>{localizeText(lang, 'Run state', '\u8fd0\u884c\u72b6\u6001', '\u57f7\u884c\u72c0\u614b')}</dt><dd>{runState === 'done' ? (localizeText(lang, 'Done', '\u5df2\u5b8c\u6210', '\u5df2\u5b8c\u6210')) : runState === 'running' ? (localizeText(lang, 'Running', '\u6267\u884c\u4e2d', '\u57f7\u884c\u4e2d')) : (localizeText(lang, 'Ready', '\u5f85\u6267\u884c', '\u5f85\u57f7\u884c'))}</dd></div>
                     </dl>
-                    <div className="apps-business-note"><strong>{zh ? '\u64cd\u4f5c\u610f\u56fe' : 'Intent'}</strong><span>{businessNote.trim() || (zh ? '\u7b49\u5f85\u8f93\u5165\u4e1a\u52a1\u610f\u56fe' : 'Waiting for business intent')}</span></div>
+                    <div className="apps-business-note"><strong>{localizeText(lang, 'Intent', '\u64cd\u4f5c\u610f\u56fe', '\u64cd\u4f5c\u610f\u5716')}</strong><span>{businessNote.trim() || (localizeText(lang, 'Waiting for business intent', '\u7b49\u5f85\u8f93\u5165\u4e1a\u52a1\u610f\u56fe', '\u7b49\u5f85\u8f38\u5165\u696d\u52d9\u610f\u5716'))}</span></div>
                 </aside>
             </div>
         </section>
@@ -9633,9 +9633,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         void persistDurableAppRunHistory(nextEntry).then((result) => {
             if (!result.ok) {
                 setValidationMessage((current) => {
-                    const detail = result.error || (isZh(lang) ? '\u6301\u4e45\u5316\u8fd0\u884c\u8bc1\u636e\u5931\u8d25' : 'Failed to persist run evidence');
+                    const detail = result.error || (localizeText(lang, 'Failed to persist run evidence', '\u6301\u4e45\u5316\u8fd0\u884c\u8bc1\u636e\u5931\u8d25', '\u6301\u4e45\u5316\u57f7\u884c\u8b49\u64da\u5931\u6557'));
                     if (current && current.includes(detail)) return current;
-                    const prefix = isZh(lang) ? '\u8fd0\u884c\u8bc1\u636e\u672a\u5199\u5165\u672c\u673a\u5b58\u50a8' : 'Run evidence was not saved to durable store';
+                    const prefix = localizeText(lang, 'Run evidence was not saved to durable store', '\u8fd0\u884c\u8bc1\u636e\u672a\u5199\u5165\u672c\u673a\u5b58\u50a8', '\u57f7\u884c\u8b49\u64da\u672a\u5beb\u5165\u672c\u6a5f\u5132\u5b58');
                     return current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                 });
             }
@@ -9693,7 +9693,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             workflow_decision_id: failureRunID,
             lane: 'handled',
             status: 'failed',
-            current_node: base.current_node || base.currentNode || (isZh(lang) ? '\u8fd0\u884c\u5931\u8d25' : 'Failed'),
+            current_node: base.current_node || base.currentNode || (localizeText(lang, 'Failed', '\u8fd0\u884c\u5931\u8d25', '\u57f7\u884c\u5931\u6557')),
             result: failureText,
             business_status: 'workflow_error',
             result_status: 'failed',
@@ -9931,14 +9931,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                 if (result?.durable_history_error) {
                                     setValidationMessage((current) => {
                                         const detail = String(result.durable_history_error);
-                                        const prefix = isZh(lang) ? 'Skill 证据已写入，但本机运行历史持久化失败' : 'Skill evidence saved, but durable run history failed';
+                                        const prefix = localizeText(lang, 'Skill evidence saved, but durable run history failed', 'Skill 证据已写入，但本机运行历史持久化失败', 'Skill \u8b49\u64da\u5df2\u5beb\u5165\uff0c\u4f46\u672c\u6a5f\u57f7\u884c\u6b77\u53f2\u6301\u4e45\u5316\u5931\u6557');
                                         return current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                                     });
                                 }
                             })
                             .catch((error: any) => {
                                 const detail = String(error?.message || error || '');
-                                const prefix = isZh(lang) ? '写入 Skill 运行证据失败' : 'Failed to record skill run evidence';
+                                const prefix = localizeText(lang, 'Failed to record skill run evidence', '写入 Skill 运行证据失败', '\u5beb\u5165 Skill \u57f7\u884c\u8b49\u64da\u5931\u6557');
                                 setValidationMessage((current) => current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`);
                             });
                     }
@@ -9958,7 +9958,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                     recordRunHistory({ runID, status: 'cancelled', outputMode: currentRunContext.outputMode, inputSummary: currentRunContext.inputSummary, message: text.skillRunCancelled });
                     await finalizeApprovalRunFromStatus(status || null, lifecycle);
                 } else if (lifecycle === 'timeout') {
-                    const message = skillRunErrorMessage(status) || (isZh(lang) ? '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6' : 'Workflow timed out');
+                    const message = skillRunErrorMessage(status) || (localizeText(lang, 'Workflow timed out', '\u5de5\u4f5c\u6d41\u8fd0\u884c\u8d85\u65f6', '\u5de5\u4f5c\u6d41\u57f7\u884c\u8d85\u6642'));
                     setRuntimeBusinessError(null);
                     setValidationMessage(message);
                     setRunState('error');
@@ -10020,12 +10020,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
     const toolInputSummary = showFileInput && showParamInput
         ? `${selectedFileLabel || text.noFile}${(fieldSummary || toolParams.trim()) ? ` \u00b7 ${(fieldSummary || toolParams.trim()).slice(0, 42)}` : ''}`
         : showParamInput
-            ? (fieldSummary || toolParams.trim() || (isZh(lang) ? '\u672a\u586b\u5199\u53c2\u6570' : 'No parameters'))
+            ? (fieldSummary || toolParams.trim() || (localizeText(lang, 'No parameters', '\u672a\u586b\u5199\u53c2\u6570', '\u672a\u586b\u5beb\u5f15\u6578')))
             : (selectedFileLabel || text.noFile);
     const resultText = isTool
         ? `${text.generatedOutput}: ${toolInputSummary} -> ${outputMode.toUpperCase()}${runID ? ` \u00b7 ${text.skillRunCompleted}: ${runID}` : ''}${skillRunOutputSuffix(skillRunStatus)}`
         : isAutomation
-            ? (isZh(lang) ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002' : 'Automation console started. Agent will run and report by app definition.')
+            ? (localizeText(lang, 'Automation console started. Agent will run and report by app definition.', '\u81ea\u52a8\u5316\u63a7\u5236\u53f0\u5df2\u542f\u52a8\uff0cAgent \u5c06\u6309\u5e94\u7528\u5b9a\u4e49\u6267\u884c\u548c\u56de\u62a5\u3002', '\u81ea\u52d5\u5316\u63a7\u5236\u6aaf\u5df2\u555f\u52d5\uff0cAgent \u5c07\u6309\u61c9\u7528\u5b9a\u7fa9\u57f7\u884c\u548c\u56de\u5831\u3002'))
             : `${text.submitted}: ${businessEntity || app.category} \u00b7 ${businessAction} \u00b7 ${isBusiness ? businessActionRole : (app.manifest?.datasrv?.preferredAction || app.manifest?.datasrv?.domain || 'DataSrv')}`;
 	const markDirty = () => {
         if (runState === 'running') return;
@@ -10262,8 +10262,8 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 approval_workflow_id: approvalBinding?.event || workflowSkillID,
                 approval_object_role: approvalObjectRole,
                 object_role: approvalObjectRole,
-                submitted_by: isZh(lang) ? '\u5f53\u524d\u7528\u6237' : 'Current user',
-                current_assignee: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
+                submitted_by: localizeText(lang, 'Current user', '\u5f53\u524d\u7528\u6237', '\u7576\u524d\u4f7f\u7528\u8005'),
+                current_assignee: localizeText(lang, 'Approver', '\u5ba1\u6279\u4eba', '\u5be9\u6279\u4eba'),
                 current_assignee_type: 'user',
                 from_status: 'submitted',
                 to_status: 'approval_pending',
@@ -10299,15 +10299,15 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 title: `${businessEntity || app.category} \u00b7 ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
-                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '经理审批' : 'Manager approval'),
+                current_node: workflowMapping?.approvalNode || (localizeText(lang, 'Manager approval', '经理审批', '\u7d93\u7406\u5be9\u6279')),
                 current_node_ids: [workflowMapping?.approvalNode || workflowSkillID].filter(Boolean) as string[],
-                owner: isZh(lang) ? '当前用户' : 'Current user',
-                applicant: isZh(lang) ? '当前用户' : 'Current user',
-                approver: String(approvalObjectRole || '').trim() || (isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver'),
-                submitted_by: isZh(lang) ? '当前用户' : 'Current user',
-                current_assignee: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
+                owner: localizeText(lang, 'Current user', '当前用户', '\u7576\u524d\u4f7f\u7528\u8005'),
+                applicant: localizeText(lang, 'Current user', '当前用户', '\u7576\u524d\u4f7f\u7528\u8005'),
+                approver: String(approvalObjectRole || '').trim() || (localizeText(lang, 'Approver', '\u5ba1\u6279\u4eba', '\u5be9\u6279\u4eba')),
+                submitted_by: localizeText(lang, 'Current user', '当前用户', '\u7576\u524d\u4f7f\u7528\u8005'),
+                current_assignee: localizeText(lang, 'Approver', '\u5ba1\u6279\u4eba', '\u5be9\u6279\u4eba'),
                 current_assignee_type: 'user',
-                result: isZh(lang) ? '\u5f85\u5ba1\u6279' : 'Pending approval',
+                result: localizeText(lang, 'Pending approval', '\u5f85\u5ba1\u6279', '\u5f85\u5be9\u6279'),
                 business_status: workflowMapping?.statusMapping?.pending || 'approval_pending',
                 result_status: 'pending',
                 from_status: 'submitted',
@@ -10317,7 +10317,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 business_action: businessAction || 'create',
                 business_note: businessNote,
                 result_payload: {
-                    text: businessNote || (isZh(lang) ? '\u5f85\u5ba1\u6279' : 'Pending approval'),
+                    text: businessNote || (localizeText(lang, 'Pending approval', '\u5f85\u5ba1\u6279', '\u5f85\u5be9\u6279')),
                     business_record: { id: fallbackID, status: workflowMapping?.statusMapping?.pending || 'approval_pending' },
                     business_payload: contractInputs.business_payload,
                     form_data: contractInputs,
@@ -10327,9 +10327,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 detail_url: '',
                 events: [{
                     at: now,
-                    actor: isZh(lang) ? '当前用户' : 'Current user',
+                    actor: localizeText(lang, 'Current user', '当前用户', '\u7576\u524d\u4f7f\u7528\u8005'),
                     node: workflowMapping?.submitNode,
-                    action: isZh(lang) ? '\u5df2\u63d0\u4ea4' : 'Submitted',
+                    action: localizeText(lang, 'Submitted', '\u5df2\u63d0\u4ea4', '\u5df2\u63d0\u4ea4'),
                     note: businessNote,
                 }, {
                     at: now,
@@ -10744,12 +10744,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
         const now = new Date().toISOString();
         const zh = isZh(lang);
         const statusText = decision === 'approved'
-            ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved')
+            ? (localizeText(lang, 'Approved', '\u5df2\u901a\u8fc7', '\u5df2\u900f\u904e'))
             : decision === 'rejected'
-                ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected')
-                : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
+                ? (localizeText(lang, 'Rejected', '\u5df2\u9a73\u56de', '\u5df2\u99c1\u56de'))
+                : (localizeText(lang, 'Needs attention', '\u9700\u5173\u6ce8', '\u9700\u95dc\u6ce8'));
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
-        const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
+        const nextNode = decision === 'attention' ? instance.currentNode : (localizeText(lang, 'Completed', '\u5df2\u5b8c\u6210', '\u5df2\u5b8c\u6210'));
         const workflowDecisionID = `decision-${Date.now().toString(36)}`;
         const resultPayload = approvalDecisionResultPayload(instance, decision, {
             resultText: statusText,
@@ -10765,7 +10765,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             decision,
             decision,
             resultPayload,
-            zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
+            localizeText(lang, 'Approval result', '\u5ba1\u6279\u7ed3\u679c', '\u5be9\u6279\u7d50\u679c'),
         );
         const payload: BackendApprovalInstance = {
             instance_id: instance.id,
@@ -10810,7 +10810,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 {
                     at: now,
                     node: nextNode,
-                    actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'),
+                    actor: instance.approver || (localizeText(lang, 'Approver', '\u5ba1\u6279\u4eba', '\u5be9\u6279\u4eba')),
                     decision,
                     message: statusText,
                     action: decision,
@@ -11025,7 +11025,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                                                         setFieldValues((current) => ({ ...current, [field.name]: event.target.checked }));
                                                                         markDirty();
                                                                     }} />
-                                                                    <span>{isZh(lang) ? '\u542f\u7528' : 'Enabled'}</span>
+                                                                    <span>{localizeText(lang, 'Enabled', '\u542f\u7528', '\u555f\u7528')}</span>
                                                                 </label>
                                                             ) : field.type === 'select' ? (
                                                                 <select aria-label={field.label || field.name} value={String(value)} disabled={inputLocked} onChange={(event) => {
@@ -11046,11 +11046,11 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                             </div>
                                         ) : (
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u53c2\u6570' : 'Parameters'}</label>
+                                                <label>{localizeText(lang, 'Parameters', '\u53c2\u6570', '\u5f15\u6578')}</label>
                                                 <textarea value={toolParams} disabled={inputLocked} onChange={(event) => {
                                                     setToolParams(event.target.value);
                                                     markDirty();
-                                                }} placeholder={isZh(lang) ? '\u8f93\u5165\u5904\u7406\u8981\u6c42\u6216\u8868\u5355\u53c2\u6570\u3002' : 'Enter processing instructions or form parameters.'} />
+                                                }} placeholder={localizeText(lang, 'Enter processing instructions or form parameters.', '\u8f93\u5165\u5904\u7406\u8981\u6c42\u6216\u8868\u5355\u53c2\u6570\u3002', '\u8f38\u5165\u8655\u7406\u8981\u6c42\u6216\u8868\u55ae\u5f15\u6578\u3002')} />
                                             </div>
                                         )
                                     )}
@@ -11066,24 +11066,24 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                 </>
                             ) : isAutomation ? (
                                 <>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u8fd0\u884c\u6a21\u5f0f' : 'Mode'}</label><select defaultValue="manual" disabled={inputLocked}><option value="manual">{isZh(lang) ? '\u624b\u52a8\u6267\u884c' : 'Manual run'}</option><option value="schedule">{isZh(lang) ? '\u5b9a\u65f6\u6267\u884c' : 'Scheduled'}</option><option value="monitor">{isZh(lang) ? '\u6301\u7eed\u76d1\u63a7' : 'Continuous monitor'}</option></select></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u72b6\u6001' : 'Status'}</label><input readOnly value={runState === 'done' ? (isZh(lang) ? '\u8fd0\u884c\u4e2d' : 'Running') : text.readyOutput} /></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea disabled={inputLocked} defaultValue={isZh(lang) ? '\u7531 Agent \u7ef4\u62a4\u957f\u8fd0\u884c\u4efb\u52a1\uff0c\u5e76\u5728\u5e94\u7528 tab \u4e2d\u56de\u62a5\u7ed3\u679c\u3002' : 'Agent maintains the long-running task and reports results in the app tab.'} /></div>
+                                    <div className="apps-form-row"><label>{localizeText(lang, 'Mode', '\u8fd0\u884c\u6a21\u5f0f', '\u57f7\u884c\u6a21\u5f0f')}</label><select defaultValue="manual" disabled={inputLocked}><option value="manual">{localizeText(lang, 'Manual run', '\u624b\u52a8\u6267\u884c', '\u624b\u52d5\u57f7\u884c')}</option><option value="schedule">{localizeText(lang, 'Scheduled', '\u5b9a\u65f6\u6267\u884c', '\u5b9a\u6642\u57f7\u884c')}</option><option value="monitor">{localizeText(lang, 'Continuous monitor', '\u6301\u7eed\u76d1\u63a7', '\u6301\u7e8c\u76e3\u63a7')}</option></select></div>
+                                    <div className="apps-form-row"><label>{localizeText(lang, 'Status', '\u72b6\u6001', '\u72c0\u614b')}</label><input readOnly value={runState === 'done' ? (localizeText(lang, 'Running', '\u8fd0\u884c\u4e2d', '\u57f7\u884c\u4e2d')) : text.readyOutput} /></div>
+                                    <div className="apps-form-row"><label>{localizeText(lang, 'Note', '\u5907\u6ce8', '\u5099\u8a3b')}</label><textarea disabled={inputLocked} defaultValue={localizeText(lang, 'Agent maintains the long-running task and reports results in the app tab.', '\u7531 Agent \u7ef4\u62a4\u957f\u8fd0\u884c\u4efb\u52a1\uff0c\u5e76\u5728\u5e94\u7528 tab \u4e2d\u56de\u62a5\u7ed3\u679c\u3002', '\u7531 Agent \u7dad\u8b77\u9577\u57f7\u884c\u4efb\u52d9\uff0c\u4e26\u5728\u61c9\u7528 tab \u4e2d\u56de\u5831\u7d50\u679c\u3002')} /></div>
                                 </>
                             ) : (
                                 <>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u4e1a\u52a1\u5bf9\u8c61' : 'Entity'}</label><input value={businessEntity} disabled={inputLocked} onChange={(event) => {
+                                    <div className="apps-form-row"><label>{localizeText(lang, 'Entity', '\u4e1a\u52a1\u5bf9\u8c61', '\u696d\u52d9\u7269\u4ef6')}</label><input value={businessEntity} disabled={inputLocked} onChange={(event) => {
                                         setBusinessEntity(event.target.value);
                                         markDirty();
                                     }} /></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u64cd\u4f5c' : 'Action'}</label><select value={businessAction} disabled={inputLocked} onChange={(event) => {
+                                    <div className="apps-form-row"><label>{localizeText(lang, 'Action', '\u64cd\u4f5c', '\u64cd\u4f5c')}</label><select value={businessAction} disabled={inputLocked} onChange={(event) => {
                                         setBusinessAction(event.target.value);
                                         markDirty();
-                                    }}><option value="create">{isZh(lang) ? '\u65b0\u5efa\u8bb0\u5f55' : 'Create record'}</option><option value="query">{isZh(lang) ? '\u67e5\u8be2\u6570\u636e' : 'Query data'}</option><option value="report">{isZh(lang) ? '\u751f\u6210\u62a5\u8868' : 'Generate report'}</option></select></div>
-                                    <div className="apps-form-row"><label>{isZh(lang) ? '\u5907\u6ce8' : 'Note'}</label><textarea value={businessNote} disabled={inputLocked} onChange={(event) => {
+                                    }}><option value="create">{localizeText(lang, 'Create record', '\u65b0\u5efa\u8bb0\u5f55', '\u65b0\u5efa\u8a18\u9304')}</option><option value="query">{localizeText(lang, 'Query data', '\u67e5\u8be2\u6570\u636e', '\u67e5\u8a62\u8cc7\u6599')}</option><option value="report">{localizeText(lang, 'Generate report', '\u751f\u6210\u62a5\u8868', '\u751f\u6210\u5831\u8868')}</option></select></div>
+                                    <div className="apps-form-row"><label>{localizeText(lang, 'Note', '\u5907\u6ce8', '\u5099\u8a3b')}</label><textarea value={businessNote} disabled={inputLocked} onChange={(event) => {
                                         setBusinessNote(event.target.value);
                                         markDirty();
-                                    }} placeholder={isZh(lang) ? '\u8f93\u5165\u4e1a\u52a1\u610f\u56fe\uff0cAgent \u751f\u6210\u52a8\u6001\u754c\u9762\u5e76\u901a\u8fc7 DataSrv \u6267\u884c\u3002' : 'Enter business intent. Agent renders a dynamic UI and executes through DataSrv.'} /></div>
+                                    }} placeholder={localizeText(lang, 'Enter business intent. Agent renders a dynamic UI and executes through DataSrv.', '\u8f93\u5165\u4e1a\u52a1\u610f\u56fe\uff0cAgent \u751f\u6210\u52a8\u6001\u754c\u9762\u5e76\u901a\u8fc7 DataSrv \u6267\u884c\u3002', '\u8f38\u5165\u696d\u52d9\u610f\u5716\uff0cAgent \u751f\u6210\u52d5\u614b\u4ecb\u9762\u4e26\u900f\u904e DataSrv \u57f7\u884c\u3002')} /></div>
                                     <div className="apps-capability-strip">
                                         <span>{app.manifest?.datasrv?.domain || 'DataSrv'}</span>
                                         <span>{app.manifest?.datasrv?.preferredAction || businessAction}</span>
@@ -11317,7 +11317,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
         const now = new Date().toISOString();
         const zh = isZh(lang);
         const app = findAppByRuntimeID(apps, instance.appID);
-        const statusText = decision === 'approved' ? (zh ? '\u5df2\u901a\u8fc7' : 'Approved') : decision === 'rejected' ? (zh ? '\u5df2\u9a73\u56de' : 'Rejected') : (zh ? '\u9700\u5173\u6ce8' : 'Needs attention');
+        const statusText = decision === 'approved' ? (localizeText(lang, 'Approved', '\u5df2\u901a\u8fc7', '\u5df2\u900f\u904e')) : decision === 'rejected' ? (localizeText(lang, 'Rejected', '\u5df2\u9a73\u56de', '\u5df2\u99c1\u56de')) : (localizeText(lang, 'Needs attention', '\u9700\u5173\u6ce8', '\u9700\u95dc\u6ce8'));
         // Hub-bound instances must advance WorkflowExecutor via DecideMaclawAppApprovalInstance.
         if ((instance.approvalEngine === 'hub' || instance.hubInstanceID) && (decision === 'approved' || decision === 'rejected')) {
             try {
@@ -11345,7 +11345,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             return;
         }
         const nextLane: ApprovalInstanceView['lane'] = decision === 'attention' ? 'attention' : 'handled';
-        const nextNode = decision === 'attention' ? instance.currentNode : (zh ? '\u5df2\u5b8c\u6210' : 'Completed');
+        const nextNode = decision === 'attention' ? instance.currentNode : (localizeText(lang, 'Completed', '\u5df2\u5b8c\u6210', '\u5df2\u5b8c\u6210'));
         const workflowDecisionID = `decision-${Date.now().toString(36)}`;
         const resultPayload = approvalDecisionResultPayload(instance, decision, {
             resultText: statusText,
@@ -11361,7 +11361,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             decision,
             decision,
             resultPayload,
-            zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval result',
+            localizeText(lang, 'Approval result', '\u5ba1\u6279\u7ed3\u679c', '\u5be9\u6279\u7d50\u679c'),
         );
         const payload: BackendApprovalInstance = {
             instance_id: instance.id,
@@ -11401,7 +11401,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
             hub_instance_id: instance.hubInstanceID,
             hub_node_id: instance.hubNodeID,
             approval_engine: instance.approvalEngine,
-            events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (zh ? '\u5ba1\u6279\u4eba' : 'Approver'), decision, message: statusText, action: decision }],
+            events: [...(instance.events || []), { at: now, node: nextNode, actor: instance.approver || (localizeText(lang, 'Approver', '\u5ba1\u6279\u4eba', '\u5be9\u6279\u4eba')), decision, message: statusText, action: decision }],
         };
         const fallback = backendApprovalInstanceToView(payload, lang);
         if (fallback) setInstances((current) => [fallback, ...current.filter((item) => item.id !== fallback.id)]);
@@ -11460,7 +11460,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
                             <div className="apps-approval-list" role="list" aria-label={text.approvalInstanceData}>
                                 {filteredInstances.length === 0 ? <div className="apps-approval-empty" role="status">{text.noApprovalInstances}</div> : filteredInstances.map((item) => (
                                     <button className="apps-approval-row" data-state={item.status} data-urgency={item.urgency || ''} data-escalation={approvalEscalationDataAttr(item)} data-selected={selected?.id === item.id ? 'true' : 'false'} data-engine={item.approvalEngine || 'local'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
-                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} {'\u00b7'} {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? ` ${'\u00b7'} Hub` : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` ${'\u00b7'} hub:${item.hubInstanceID}` : ''} {'\u00b7'} {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (isZh(lang) ? '\u8d85\u65f6' : 'Overdue') : item.urgency === 'critical' ? (isZh(lang) ? '\u7d27\u6025' : 'Critical') : (isZh(lang) ? '\u5173\u6ce8' : 'Attention')}</span> : null}{approvalEscalationRetryText(item, lang) ? <span className="apps-approval-row__escalation" title={approvalEscalationRetryText(item, lang)}>{approvalEscalationRetryText(item, lang)}</span> : null}{approvalEscalationExhaustedText(item, lang) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={approvalEscalationExhaustedText(item, lang)}>{approvalEscalationExhaustedText(item, lang)}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
+                                        <div><strong>{item.title}</strong><span>{appNameById.get(item.appID || '') || item.appName || item.appID || '-'} {'\u00b7'} {text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.approvalEngine === 'hub' || item.hubInstanceID ? ` ${'\u00b7'} Hub` : ''}</span><small>{text.approvalInstanceId}: {item.id}{item.hubInstanceID ? ` ${'\u00b7'} hub:${item.hubInstanceID}` : ''} {'\u00b7'} {item.updatedAt}</small><div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span>{item.urgency ? <span className={`apps-approval-row__urgency apps-approval-row__urgency--${item.urgency}`}>{item.urgency === 'overdue' ? (localizeText(lang, 'Overdue', '\u8d85\u65f6', '\u8d85\u6642')) : item.urgency === 'critical' ? (localizeText(lang, 'Critical', '\u7d27\u6025', '\u7dca\u6025')) : (localizeText(lang, 'Attention', '\u5173\u6ce8', '\u95dc\u6ce8'))}</span> : null}{approvalEscalationRetryText(item, lang) ? <span className="apps-approval-row__escalation" title={approvalEscalationRetryText(item, lang)}>{approvalEscalationRetryText(item, lang)}</span> : null}{approvalEscalationExhaustedText(item, lang) ? <span className="apps-approval-row__escalation apps-approval-row__escalation--exhausted" title={approvalEscalationExhaustedText(item, lang)}>{approvalEscalationExhaustedText(item, lang)}</span> : null}{item.hubSyncError ? <span className="apps-approval-row__error">{item.hubSyncError}</span> : null}</div></div>
                                         <em>{approvalStatusLabel(item.status, lang)}</em>
                                     </button>
                                 ))}
@@ -11571,7 +11571,7 @@ const ApprovalSupplementPanel = ({ instance, lang, text, onSupplement }: { insta
             {info.fields.length > 0 && <div className="apps-approval-supplement__fields"><span>{text.supplementFieldsLabel}</span>{info.fields.map((field) => <code key={field}>{field}</code>)}</div>}
             {onSupplement && (
                 <div className="apps-approval-supplement__form">
-                    <label><span>{text.supplementNoteLabel}</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder={isZh(lang) ? '\u8bf4\u660e\u5df2\u8865\u5145\u7684\u6750\u6599' : 'Describe what was added'} /></label>
+                    <label><span>{text.supplementNoteLabel}</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder={localizeText(lang, 'Describe what was added', '\u8bf4\u660e\u5df2\u8865\u5145\u7684\u6750\u6599', '\u8aaa\u660e\u5df2\u88dc\u5145\u7684\u6750\u6599')} /></label>
                     <label><span>{text.supplementReferenceLabel}</span><input value={reference} onChange={(event) => setReference(event.target.value)} placeholder="artifact://..." /></label>
                     <button className="apps-primary-button" type="button" disabled={!canSubmit} onClick={() => void submit()}>{submitting ? text.supplementRunning : text.supplementContinue}</button>
                 </div>
@@ -11624,10 +11624,10 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
                         <div><dt>{text.remoteApprovalLabel}</dt><dd>{instance.approvalID || '-'}</dd></div><div><dt>{text.businessStatusLabel}</dt><dd>{instance.businessStatus || '-'}</dd></div><div><dt>{text.resultStatusLabel}</dt><dd>{instance.resultStatus || approvalStatusLabel(instance.status, lang)}</dd></div>
                         <div><dt>{text.currentNodeStatus}</dt><dd>{instance.currentNodeStatus || '-'}</dd></div><div><dt>{text.approvalNodeTasks}</dt><dd>{approvalNodeTaskCountText(instance, lang)}</dd></div>
                         {(instance.escalationPending || (instance.escalationApprovers && instance.escalationApprovers.length > 0)) ? (
-                            <div><dt>{isZh(lang) ? '\u5347\u7ea7\u91cd\u6295' : 'Escalation retry'}</dt><dd>{approvalEscalationRetryText(instance, lang) || '-'}</dd></div>
+                            <div><dt>{localizeText(lang, 'Escalation retry', '\u5347\u7ea7\u91cd\u6295', '\u5347\u7d1a\u91cd\u6295')}</dt><dd>{approvalEscalationRetryText(instance, lang) || '-'}</dd></div>
                         ) : null}
                         {(instance.escalationExhaustedApprovers && instance.escalationExhaustedApprovers.length > 0) ? (
-                            <div><dt>{isZh(lang) ? '\u79bb\u7ebf\u8017\u5c3d' : 'Escalation exhausted'}</dt><dd>{approvalEscalationExhaustedText(instance, lang) || '-'}</dd></div>
+                            <div><dt>{localizeText(lang, 'Escalation exhausted', '\u79bb\u7ebf\u8017\u5c3d', '\u96e2\u7dda\u8017\u76e1')}</dt><dd>{approvalEscalationExhaustedText(instance, lang) || '-'}</dd></div>
                         ) : null}
                     </dl>
 	                    {instance.detailURL && <div className="apps-approval-detail__links"><button className="apps-link-button" type="button" onClick={() => instance.detailURL && BrowserOpenURL(instance.detailURL)}>{text.viewFullWorkflow}</button></div>}
@@ -11649,7 +11649,7 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
                     <ApprovalSupplementPanel instance={instance} lang={lang} text={text} onSupplement={onSupplement} />
 
                     <div className="apps-approval-timeline">
-                        {(instance.events && instance.events.length > 0 ? instance.events : [{ node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' }, { node: approvalCurrentNodeText(instance, lang) }, { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' }] as ApprovalInstanceEventView[]).map((event, index) => {
+                        {(instance.events && instance.events.length > 0 ? instance.events : [{ node: localizeText(lang, 'Submit node', '\u53d1\u8d77\u8282\u70b9', '\u767c\u8d77\u7bc0\u9ede') }, { node: approvalCurrentNodeText(instance, lang) }, { node: localizeText(lang, 'Result feedback', '\u7ed3\u679c\u53cd\u9988', '\u7d50\u679c\u53cd\u994b') }] as ApprovalInstanceEventView[]).map((event, index) => {
                             const primary = [event.node, event.decision].filter(Boolean).join(' \u00b7  ') || event.message || '-';
                             const secondary = [event.actor, event.at].filter(Boolean).join(' \u00b7  ');
                             return <div key={`${instance.id}-event-${index}-${primary}`}><span /><p><strong>{primary}</strong>{secondary && <small>{secondary}</small>}{event.message && primary !== event.message && <small>{event.message}</small>}</p></div>;
@@ -11820,9 +11820,9 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
 
                             <div className="apps-approval-timeline">
                                 {(selected.events && selected.events.length > 0 ? selected.events : [
-                                    { node: isZh(lang) ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node' },
+                                    { node: localizeText(lang, 'Submit node', '\u53d1\u8d77\u8282\u70b9', '\u767c\u8d77\u7bc0\u9ede') },
                                     { node: approvalCurrentNodeText(selected, lang) },
-                                    { node: isZh(lang) ? '\u7ed3\u679c\u53cd\u9988' : 'Result feedback' },
+                                    { node: localizeText(lang, 'Result feedback', '\u7ed3\u679c\u53cd\u9988', '\u7d50\u679c\u53cd\u994b') },
                                 ] as ApprovalInstanceEventView[]).map((event, index) => {
                                     const primary = [event.node, event.decision].filter(Boolean).join(' \u00b7 ') || event.message || '-';
                                     const secondary = [event.actor, event.at].filter(Boolean).join(' \u00b7 ');
@@ -13529,7 +13529,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 	                <div className="apps-detail__actions">
 	                    <DataSrvDiscoverySummary discovery={datasrvDiscovery} lang={lang} onOpenMISDataSettings={onOpenMISDataSettings} />
 	                    {onOpenManual && <button className="apps-secondary-button apps-manual-button" type="button" onClick={onOpenManual} aria-label={text.manualAria} title={text.manualAria}>{text.manual}</button>}
-	                    <button className="apps-secondary-button" type="button" onClick={onClose}>{isZh(lang) ? '\u5173\u95ed' : 'Close'}</button>
+	                    <button className="apps-secondary-button" type="button" onClick={onClose}>{localizeText(lang, 'Close', '\u5173\u95ed', '\u95dc\u9589')}</button>
 	                </div>
             </div>
 	            <div className="apps-detail__body elegant-scrollbar">
@@ -13588,16 +13588,16 @@ const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { d
     const zh = isZh(lang);
     const statusLabel = dataSrvDiscoveryStatusLabel(discovery, text);
     const metrics = [
-        { label: zh ? '\u57df' : 'Domains', value: discovery.domains },
-        { label: zh ? '\u52a8\u4f5c' : 'Actions', value: discovery.actions },
-        { label: zh ? '\u89c6\u56fe' : 'Views', value: discovery.views },
-        { label: zh ? '\u62a5\u8868' : 'Reports', value: discovery.reports },
-        { label: zh ? '\u770b\u677f' : 'Dashboards', value: discovery.dashboards },
+        { label: localizeText(lang, 'Domains', '\u57df', '\u57df'), value: discovery.domains },
+        { label: localizeText(lang, 'Actions', '\u52a8\u4f5c', '\u52d5\u4f5c'), value: discovery.actions },
+        { label: localizeText(lang, 'Views', '\u89c6\u56fe', '\u6aa2\u8996'), value: discovery.views },
+        { label: localizeText(lang, 'Reports', '\u62a5\u8868', '\u5831\u8868'), value: discovery.reports },
+        { label: localizeText(lang, 'Dashboards', '\u770b\u677f', '\u770b\u677f'), value: discovery.dashboards },
     ];
     const endpoint = discovery.endpoint || 'http://127.0.0.1:18180';
     const meta = discovery.error ? `${endpoint} \u00b7 ${discovery.error}` : endpoint;
-    const settingsLabel = zh ? '\u6253\u5f00 MIS \u6570\u636e\u8bbe\u7f6e' : 'Open MIS data settings';
-    const actionLabel = zh ? '\u8bbe\u7f6e' : 'Settings';
+    const settingsLabel = localizeText(lang, 'Open MIS data settings', '\u6253\u5f00 MIS \u6570\u636e\u8bbe\u7f6e', '\u958b\u555f MIS \u8cc7\u6599\u8a2d\u5b9a');
+    const actionLabel = localizeText(lang, 'Settings', '\u8bbe\u7f6e', '\u8a2d\u5b9a');
     return (
         <button className="apps-datasrv-summary" type="button" data-status={discovery.status} aria-label={`${text.datasrvDiscovery} \u00b7 ${settingsLabel}`} title={settingsLabel} onClick={onOpenMISDataSettings}>
             <span className="apps-datasrv-summary__main">
@@ -13605,7 +13605,7 @@ const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { d
                 <span className="apps-datasrv-summary__status">{statusLabel}</span>
                 <span className="apps-datasrv-summary__action">{actionLabel}</span>
             </span>
-            <span className="apps-datasrv-summary__metrics" aria-label={zh ? '\u80fd\u529b\u7edf\u8ba1' : 'Capability counts'}>
+            <span className="apps-datasrv-summary__metrics" aria-label={localizeText(lang, 'Capability counts', '\u80fd\u529b\u7edf\u8ba1', '\u80fd\u529b\u7d71\u8a08')}>
                 {metrics.map((metric) => (
                     <span key={metric.label}><strong>{metric.value}</strong>{metric.label}</span>
                 ))}
@@ -13725,7 +13725,7 @@ function installedSkillChoices(skills: SkillSummary[], lang?: string, mode: Stud
                 name,
                 description: String(skill.description || '').trim(),
                 source: 'installed' as const,
-                sourceLabel: zh ? '\u5df2\u5b89\u88c5' : 'Installed',
+                sourceLabel: localizeText(lang, 'Installed', '\u5df2\u5b89\u88c5', '\u5df2\u5b89\u88dd'),
                 installed: true,
                 productKind: normalizedProductKind(skill),
                 isMaclawApp: isMaclawAppSkillLike(skill),
@@ -13748,7 +13748,7 @@ function mixedSkillChoice(result: any, lang?: string): StudioSkillChoice | null 
         name,
         description: String(result?.description || '').trim(),
         source,
-        sourceLabel: installed ? (zh ? '\u5df2\u5b89\u88c5' : 'Installed') : String(result?.source_label || result?.source || (zh ? '\u80fd\u529b\u5e02\u573a' : 'Market')),
+        sourceLabel: installed ? (localizeText(lang, 'Installed', '\u5df2\u5b89\u88c5', '\u5df2\u5b89\u88dd')) : String(result?.source_label || result?.source || (localizeText(lang, 'Market', '\u80fd\u529b\u5e02\u573a', '\u80fd\u529b\u5e02\u5834'))),
         installed,
         productKind: normalizedProductKind(result || {}),
         isMaclawApp: isMaclawAppSkillLike(result || {}),
@@ -13885,7 +13885,7 @@ const StudioSkillPicker = ({
         ? {
             id: value.trim(),
             name: value.trim(),
-            sourceLabel: zh ? '\u5f53\u524d\u7ed1\u5b9a' : 'Current binding',
+            sourceLabel: localizeText(lang, 'Current binding', '\u5f53\u524d\u7ed1\u5b9a', '\u7576\u524d\u7e6b\u7d50'),
         }
         : null);
     const normalizedQuery = query.trim().toLowerCase();
@@ -13938,12 +13938,12 @@ const StudioSkillPicker = ({
                         }
                     }}
                     placeholder={placeholder || (mode === 'approvalWorkflow'
-                        ? (zh ? '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 \u00b7  Hub' : 'Search approval workflows \u00b7  Hub')
-                        : (zh ? '\u641c\u5df2\u5b89\u88c5 \u00b7  SkillMarket' : 'Search installed \u00b7  SkillMarket'))}
+                        ? (localizeText(lang, 'Search approval workflows \u00b7  Hub', '\u641c\u5ba1\u6279\u5de5\u4f5c\u6d41 \u00b7  Hub', '\u641c\u5be9\u6279\u5de5\u4f5c\u6d41 \u00b7  Hub'))
+                        : (localizeText(lang, 'Search installed \u00b7  SkillMarket', '\u641c\u5df2\u5b89\u88c5 \u00b7  SkillMarket', '\u641c\u5df2\u5b89\u88dd \u00b7  SkillMarket')))}
                     aria-label={label}
                 />
                 <button className="apps-secondary-button" type="button" disabled={!query.trim() || currentQueryIsSearching} onClick={() => void searchMarket()}>
-                    {zh ? '\u641c\u7d22' : 'Search'}
+                    {localizeText(lang, 'Search', '\u641c\u7d22', '\u641c\u5c0b')}
                 </button>
             </div>
             {selectedSummary && (
@@ -13954,7 +13954,7 @@ const StudioSkillPicker = ({
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
                 {(visibleMarket.length > 0 || marketEmpty || currentQueryIsSearching || (marketSearchIsCurrent && searchState === 'error')) && <div className="apps-skill-picker__group apps-skill-picker__group--market">Hub / HubCenter</div>}
-                {currentQueryIsSearching && <div className="apps-skill-picker__empty">{zh ? '\u641c\u7d22\u4e2d...' : 'Searching...'}</div>}
+                {currentQueryIsSearching && <div className="apps-skill-picker__empty">{localizeText(lang, 'Searching...', '\u641c\u7d22\u4e2d...', '\u641c\u5c0b\u4e2d...')}</div>}
                 {visibleMarket.map((choice) => (
                     <button
                         key={`${choice.source}:${choice.id}`}
@@ -13970,11 +13970,11 @@ const StudioSkillPicker = ({
                         <em>{choice.sourceLabel}</em>
                     </button>
                 ))}
-                {marketEmpty && <div className="apps-skill-picker__empty">{zh ? '\u5e02\u573a\u6682\u65e0\u5339\u914d Skill' : 'No matching market skills'}</div>}
+                {marketEmpty && <div className="apps-skill-picker__empty">{localizeText(lang, 'No matching market skills', '\u5e02\u573a\u6682\u65e0\u5339\u914d Skill', '\u5e02\u5834\u66ab\u7121\u5339\u914d Skill')}</div>}
                 {marketSearchIsCurrent && searchState === 'error' && <div className="apps-skill-picker__empty" role="alert">{searchError}</div>}
-                <div className="apps-skill-picker__group apps-skill-picker__group--installed">{zh ? '\u5df2\u5b89\u88c5 Skill' : 'Installed skills'}</div>
+                <div className="apps-skill-picker__group apps-skill-picker__group--installed">{localizeText(lang, 'Installed skills', '\u5df2\u5b89\u88c5 Skill', '\u5df2\u5b89\u88dd Skill')}</div>
                 {visibleInstalled.length === 0 ? (
-                    <div className="apps-skill-picker__empty">{normalizedQuery ? (zh ? '\u672c\u5730\u6ca1\u6709\u5339\u914d\uff0c\u53ef\u7ee7\u7eed\u641c SkillMarket / Hub' : 'No installed match. Search SkillMarket / Hub to continue.') : (zh ? '\u6ca1\u6709\u53ef\u7528\u7684\u5df2\u5b89\u88c5 Skill' : 'No installed skills available')}</div>
+                    <div className="apps-skill-picker__empty">{normalizedQuery ? (localizeText(lang, 'No installed match. Search SkillMarket / Hub to continue.', '\u672c\u5730\u6ca1\u6709\u5339\u914d\uff0c\u53ef\u7ee7\u7eed\u641c SkillMarket / Hub', '\u672c\u5730\u6c92\u6709\u5339\u914d\uff0c\u53ef\u7e7c\u7e8c\u641c SkillMarket / Hub')) : (localizeText(lang, 'No installed skills available', '\u6ca1\u6709\u53ef\u7528\u7684\u5df2\u5b89\u88c5 Skill', '\u6c92\u6709\u53ef\u7528\u7684\u5df2\u5b89\u88dd Skill'))}</div>
                 ) : visibleInstalled.map((choice) => (
                     <button
                         key={`installed:${choice.id}`}
@@ -14265,7 +14265,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const zh = isZh(lang);
     const [name, setName] = useState('');
-    const [category, setCategory] = useState(zh ? '\u6587\u6863\u5904\u7406' : 'Document');
+    const [category, setCategory] = useState(localizeText(lang, 'Document', '\u6587\u6863\u5904\u7406', '\u6587\u4ef6\u8655\u7406'));
     const [kind, setKind] = useState<AppKind>('tool_app');
     const [icon, setIcon] = useState<AppIconName>('shield');
     const [accent, setAccent] = useState(defaultAccentForKind('tool_app'));
@@ -14350,7 +14350,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setKind(nextKind);
         setAccent(defaultAccentForKind(nextKind));
         if (!applyPreset) return;
-        setCategory(nextKind === 'tool_app' ? (zh ? '\u6587\u6863\u5904\u7406' : 'Document') : nextKind === 'automation_app' ? (zh ? '\u81ea\u52a8\u5316' : 'Automation') : 'OA');
+        setCategory(nextKind === 'tool_app' ? (localizeText(lang, 'Document', '\u6587\u6863\u5904\u7406', '\u6587\u4ef6\u8655\u7406')) : nextKind === 'automation_app' ? (localizeText(lang, 'Automation', '\u81ea\u52a8\u5316', '\u81ea\u52d5\u5316')) : 'OA');
         setIcon(nextKind === 'tool_app' ? 'shield' : nextKind === 'automation_app' ? 'sync' : 'sheet');
         setInputMode(nextKind === 'tool_app' ? 'file' : 'mixed');
         setMultipleFiles(false);
@@ -14400,15 +14400,15 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         const nextKind: AppKind = isAutomationPrompt && !isToolPrompt ? 'automation_app' : isToolPrompt ? 'tool_app' : isOaPrompt ? 'enterprise_approval_app' : 'enterprise_normal_app';
         const nextMultipleFiles = /multi|multiple|batch|folder/.test(lower);
         const nextName = prompt.match(/(?:\u505a\u4e00\u4e2a|\u521b\u5efa|build|create)\s*([^,;\uff0c\uff1b]{2,16})/)?.[1]?.trim() || prompt.slice(0, 12);
-        setName(nextName || (zh ? '\u65b0\u5e94\u7528' : 'New app'));
+        setName(nextName || (localizeText(lang, 'New app', '\u65b0\u5e94\u7528', '\u65b0\u61c9\u7528')));
         setKind(nextKind);
         setInputMode(nextKind === 'tool_app' ? (/form|parameter/.test(lower) ? 'mixed' : 'file') : 'mixed');
         setMultipleFiles(nextKind === 'tool_app' && nextMultipleFiles);
         setOutputModes(/excel|xlsx/.test(lower) ? ['xlsx'] : /json/.test(lower) ? ['json'] : /txt|text/.test(lower) ? ['txt'] : ['docx', 'pdf']);
         setSkillFields(nextKind === 'tool_app' && /field|parameter|form/.test(lower)
-            ? [{ name: 'requirement', label: zh ? '\u5904\u7406\u8981\u6c42' : 'Requirement', type: 'text', required: true }]
+            ? [{ name: 'requirement', label: localizeText(lang, 'Requirement', '\u5904\u7406\u8981\u6c42', '\u8655\u7406\u8981\u6c42'), type: 'text', required: true }]
             : []);
-        setCategory(nextKind === 'tool_app' ? (zh ? '\u6587\u6863\u5904\u7406' : 'Document') : nextKind === 'automation_app' ? (zh ? '\u81ea\u52a8\u5316' : 'Automation') : isFinancePrompt ? (zh ? '\u8d22\u52a1' : 'Finance') : isInventoryPrompt ? (zh ? '\u8fdb\u9500\u5b58' : 'Inventory') : isCrmPrompt ? 'CRM' : isOaPrompt ? 'OA' : 'OA');
+        setCategory(nextKind === 'tool_app' ? (localizeText(lang, 'Document', '\u6587\u6863\u5904\u7406', '\u6587\u4ef6\u8655\u7406')) : nextKind === 'automation_app' ? (localizeText(lang, 'Automation', '\u81ea\u52a8\u5316', '\u81ea\u52d5\u5316')) : isFinancePrompt ? (localizeText(lang, 'Finance', '\u8d22\u52a1', '\u8ca1\u52d9')) : isInventoryPrompt ? (localizeText(lang, 'Inventory', '\u8fdb\u9500\u5b58', '\u9032\u92b7\u5b58')) : isCrmPrompt ? 'CRM' : isOaPrompt ? 'OA' : 'OA');
         setIcon(nextKind === 'automation_app' ? 'sync' : nextKind === 'tool_app' ? (/contract/.test(lower) ? 'contract' : /pdf/.test(lower) ? 'pdf' : 'shield') : isFinancePrompt ? 'receipt' : isInventoryPrompt ? 'warehouse' : isCrmPrompt ? 'customer' : 'sheet');
         setAccent(defaultAccentForKind(nextKind));
         const nextLayoutTemplate: StudioLayoutTemplate = nextKind === 'tool_app' ? 'document_workspace' : /nav|menu|\u5bfc\u822a/.test(lower) ? 'left_nav' : 'classic_split';
@@ -14452,7 +14452,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         setDescription(prompt);
         setCopyState('idle');
     };
-    const buildDraftApp = (id: string, cleanName = name.trim() || (zh ? '\u672a\u547d\u540d\u5e94\u7528' : 'Untitled app'), boundSkillID = id, appDefinitionFile = 'maclaw.apps.json'): AppEntry => {
+    const buildDraftApp = (id: string, cleanName = name.trim() || (localizeText(lang, 'Untitled app', '\u672a\u547d\u540d\u5e94\u7528', '\u672a\u547d\u540d\u61c9\u7528')), boundSkillID = id, appDefinitionFile = 'maclaw.apps.json'): AppEntry => {
         const enterpriseAppSkillID = isEnterpriseAppKind(kind) ? (appSkillID.trim() || `${id}-app`) : '';
         const workflowDependency: AppSkillDependency[] = isEnterpriseApprovalAppKind(kind) && workflowSkillID.trim()
             ? [{ id: workflowSkillID.trim(), version: workflowSkillVersion.trim() || undefined, kind: 'workflow_skill', required: true, source: dependencySource || 'hub', install_ref: dependencyInstallRef.trim() || undefined, capabilities: ['approval.workflow'] }]
@@ -14488,8 +14488,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         return {
             id,
             name: cleanName,
-            description: description.trim() || (zh ? '\u7531\u5e94\u7528\u7a0b\u5e8f\u5de5\u4f5c\u5ba4\u521b\u5efa\u7684\u5e94\u7528\u5165\u53e3\u3002' : 'App entry created in App Studio.'),
-            category: category.trim() || (zh ? '\u672a\u5206\u7c7b' : 'Uncategorized'),
+            description: description.trim() || (localizeText(lang, 'App entry created in App Studio.', '\u7531\u5e94\u7528\u7a0b\u5e8f\u5de5\u4f5c\u5ba4\u521b\u5efa\u7684\u5e94\u7528\u5165\u53e3\u3002', '\u7531\u61c9\u7528\u7a0b\u5f0f\u5de5\u4f5c\u5ba4\u5efa\u7acb\u7684\u61c9\u7528\u5165\u53e3\u3002')),
+            category: category.trim() || (localizeText(lang, 'Uncategorized', '\u672a\u5206\u7c7b', '\u672a\u5206\u985e')),
             kind,
             icon,
             accent,
@@ -14537,33 +14537,33 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         {
             id: 'enterprise_approval_app',
             title: appKindLabel('enterprise_approval_app', lang),
-            short: zh ? '\u542b\u5ba1\u6279\u6d41\u7a0b\u548c\u72b6\u6001\u6d41\u8f6c' : 'Approval workflow and status tracking',
-            description: zh ? '\u7528\u5bf9\u8bdd\u5b9a\u4e49\u6570\u636e\u5bf9\u8c61\u3001\u89c6\u56fe\u3001\u52a8\u4f5c\u548c\u9875\u9762\uff0c\u7531 Agent \u603b\u7ed3\u6210 App manifest\u3002' : 'Define entities, views, actions, and screens through chat; Agent writes an app manifest.',
+            short: localizeText(lang, 'Approval workflow and status tracking', '\u542b\u5ba1\u6279\u6d41\u7a0b\u548c\u72b6\u6001\u6d41\u8f6c', '\u542b\u5be9\u6279\u6d41\u7a0b\u548c\u72c0\u614b\u6d41\u8f49'),
+            description: localizeText(lang, 'Define entities, views, actions, and screens through chat; Agent writes an app manifest.', '\u7528\u5bf9\u8bdd\u5b9a\u4e49\u6570\u636e\u5bf9\u8c61\u3001\u89c6\u56fe\u3001\u52a8\u4f5c\u548c\u9875\u9762\uff0c\u7531 Agent \u603b\u7ed3\u6210 App manifest\u3002', '\u7528\u5c0d\u8a71\u5b9a\u7fa9\u8cc7\u6599\u7269\u4ef6\u3001\u6aa2\u8996\u3001\u52d5\u4f5c\u548c\u9801\u9762\uff0c\u7531 Agent \u7e3d\u7d50\u6210 App manifest\u3002'),
         },
         {
             id: 'enterprise_normal_app',
             title: appKindLabel('enterprise_normal_app', lang),
-            short: zh ? '\u4f01\u4e1a\u6570\u636e\u548c\u64cd\u4f5c\u5de5\u4f5c\u53f0' : 'Business data and action workspace',
-            description: zh ? '\u5c06\u4f01\u4e1a\u540e\u53f0\u6570\u636e\u3001\u64cd\u4f5c\u548c\u67e5\u8be2\u5c01\u88c5\u6210\u53ef\u89c6\u5316\u5de5\u4f5c\u53f0\uff0c\u4e0d\u4ea7\u751f\u5ba1\u6279\u5b9e\u4f8b\u3002' : 'Wrap enterprise backend data, actions, and query views as a visual workbench without approval instances.',
+            short: localizeText(lang, 'Business data and action workspace', '\u4f01\u4e1a\u6570\u636e\u548c\u64cd\u4f5c\u5de5\u4f5c\u53f0', '\u4f01\u696d\u8cc7\u6599\u548c\u64cd\u4f5c\u5de5\u4f5c\u81fa'),
+            description: localizeText(lang, 'Wrap enterprise backend data, actions, and query views as a visual workbench without approval instances.', '\u5c06\u4f01\u4e1a\u540e\u53f0\u6570\u636e\u3001\u64cd\u4f5c\u548c\u67e5\u8be2\u5c01\u88c5\u6210\u53ef\u89c6\u5316\u5de5\u4f5c\u53f0\uff0c\u4e0d\u4ea7\u751f\u5ba1\u6279\u5b9e\u4f8b\u3002', '\u5c07\u4f01\u696d\u5f8c\u81fa\u8cc7\u6599\u3001\u64cd\u4f5c\u548c\u67e5\u8a62\u5c01\u88dd\u6210\u8996\u89ba\u5316\u5de5\u4f5c\u81fa\uff0c\u4e0d\u7522\u751f\u5be9\u6279\u5be6\u4f8b\u3002'),
         },
         {
             id: 'tool_app',
             title: appKindLabel('tool_app', lang),
-            short: zh ? 'Skill \u56fa\u5b9a\u4e3a\u4e0a\u4f20\u3001\u53c2\u6570\u548c\u8f93\u51fa\u754c\u9762' : 'Skill UI with upload, parameters, and output',
-            description: zh ? '\u628a\u590d\u6742 Skill \u56fa\u5b9a\u6210\u4e0a\u4f20\u3001\u53c2\u6570\u3001\u8f93\u51fa\u7684\u4f4e\u95e8\u69db\u754c\u9762\u3002' : 'Wrap a complex skill as upload, parameters, and output UI.',
+            short: localizeText(lang, 'Skill UI with upload, parameters, and output', 'Skill \u56fa\u5b9a\u4e3a\u4e0a\u4f20\u3001\u53c2\u6570\u548c\u8f93\u51fa\u754c\u9762', 'Skill \u56fa\u5b9a\u70ba\u4e0a\u50b3\u3001\u5f15\u6578\u548c\u8f38\u51fa\u4ecb\u9762'),
+            description: localizeText(lang, 'Wrap a complex skill as upload, parameters, and output UI.', '\u628a\u590d\u6742 Skill \u56fa\u5b9a\u6210\u4e0a\u4f20\u3001\u53c2\u6570\u3001\u8f93\u51fa\u7684\u4f4e\u95e8\u69db\u754c\u9762\u3002', '\u628a\u8907\u96dc Skill \u56fa\u5b9a\u6210\u4e0a\u50b3\u3001\u5f15\u6578\u3001\u8f38\u51fa\u7684\u4f4e\u9580\u6abb\u4ecb\u9762\u3002'),
         },
         {
             id: 'automation_app',
             title: appKindLabel('automation_app', lang),
-            short: zh ? '\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u5165\u53e3' : 'Long-running sync, collection, and monitor entry',
-            description: zh ? '\u628a\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u80fd\u529b\u56fa\u5b9a\u6210\u5e94\u7528\u5165\u53e3\u3002' : 'Expose sync, collection, and monitoring flows as app entries.',
+            short: localizeText(lang, 'Long-running sync, collection, and monitor entry', '\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u5165\u53e3', '\u540c\u6b65\u3001\u63a1\u96c6\u3001\u76e3\u63a7\u7b49\u9577\u57f7\u884c\u5165\u53e3'),
+            description: localizeText(lang, 'Expose sync, collection, and monitoring flows as app entries.', '\u628a\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u80fd\u529b\u56fa\u5b9a\u6210\u5e94\u7528\u5165\u53e3\u3002', '\u628a\u540c\u6b65\u3001\u63a1\u96c6\u3001\u76e3\u63a7\u7b49\u9577\u57f7\u884c\u80fd\u529b\u56fa\u5b9a\u6210\u61c9\u7528\u5165\u53e3\u3002'),
         },
     ];
     const categorySuggestions = kind === 'tool_app'
         ? (zh ? ['\u6587\u6863\u5904\u7406', '\u6570\u636e\u5206\u6790', '\u6cd5\u52a1', '\u8d22\u52a1'] : ['Document', 'Analytics', 'Legal', 'Finance'])
         : kind === 'automation_app'
             ? (zh ? ['\u81ea\u52a8\u5316', '\u6570\u636e\u96c6\u6210', '\u6570\u636e\u91c7\u96c6', '\u8fd0\u7ef4'] : ['Automation', 'Integration', 'Collection', 'Operations'])
-            : ['OA', zh ? '\u8d22\u52a1' : 'Finance', 'CRM', zh ? '\u8fdb\u9500\u5b58' : 'Inventory'];
+            : ['OA', localizeText(lang, 'Finance', '\u8d22\u52a1', '\u8ca1\u52d9'), 'CRM', localizeText(lang, 'Inventory', '\u8fdb\u9500\u5b58', '\u9032\u92b7\u5b58')];
     const createApp = () => {
         const cleanName = name.trim();
         if (!cleanName) return;
@@ -14631,7 +14631,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         if (!skillDefinitionTargetInstalled) {
             setSkillMarketUploadState('error');
             setSkillAppSaveState('error');
-            setSkillAppSaveMessage(zh ? '\u8bf7\u5148\u9009\u62e9\u5df2\u5b89\u88c5 Skill\uff0c\u518d\u4fdd\u5b58\u6216\u4e0a\u4f20\u5e94\u7528\u5b9a\u4e49\u3002' : 'Choose an installed Skill before saving or uploading this app definition.');
+            setSkillAppSaveMessage(localizeText(lang, 'Choose an installed Skill before saving or uploading this app definition.', '\u8bf7\u5148\u9009\u62e9\u5df2\u5b89\u88c5 Skill\uff0c\u518d\u4fdd\u5b58\u6216\u4e0a\u4f20\u5e94\u7528\u5b9a\u4e49\u3002', '\u8acb\u5148\u9078\u64c7\u5df2\u5b89\u88dd Skill\uff0c\u518d\u5132\u5b58\u6216\u4e0a\u50b3\u61c9\u7528\u5b9a\u7fa9\u3002'));
             return;
         }
         const cleanName = name.trim();
@@ -14653,7 +14653,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         if (!currentRunEvidence) {
             setSkillMarketUploadState('error');
             setSkillAppSaveState('error');
-            setSkillAppSaveMessage(zh ? '\u8bf7\u5148\u4fdd\u5b58\u5230 Skill\uff0c\u5e76\u5728\u5e94\u7528\u9762\u677f\u6210\u529f\u6d4b\u8bd5\u4e00\u6b21\u5f53\u524d\u7248\u672c\uff0c\u518d\u4e0a\u4f20\u5230 SkillMarket\u3002' : 'Save to Skill and run this version successfully in the app panel before uploading to SkillMarket.');
+            setSkillAppSaveMessage(localizeText(lang, 'Save to Skill and run this version successfully in the app panel before uploading to SkillMarket.', '\u8bf7\u5148\u4fdd\u5b58\u5230 Skill\uff0c\u5e76\u5728\u5e94\u7528\u9762\u677f\u6210\u529f\u6d4b\u8bd5\u4e00\u6b21\u5f53\u524d\u7248\u672c\uff0c\u518d\u4e0a\u4f20\u5230 SkillMarket\u3002', '\u8acb\u5148\u5132\u5b58\u5230 Skill\uff0c\u4e26\u5728\u61c9\u7528\u9762\u677f\u6210\u529f\u6e2c\u8a66\u4e00\u6b21\u7576\u524d\u7248\u672c\uff0c\u518d\u4e0a\u50b3\u5230 SkillMarket\u3002'));
             return;
         }
         setSkillMarketUploadState('uploading');
@@ -14679,17 +14679,17 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     return (
         <>
             <section className="apps-create-form">
-                <div className="apps-definition__title">{zh ? '\u5feb\u901f\u521b\u5efa\u9762\u677f\u5e94\u7528' : 'Quick create panel app'}</div>
+                <div className="apps-definition__title">{localizeText(lang, 'Quick create panel app', '\u5feb\u901f\u521b\u5efa\u9762\u677f\u5e94\u7528', '\u5feb\u901f\u5efa\u7acb\u9762\u677f\u61c9\u7528')}</div>
                 <details className="apps-create-section" open>
-                    <summary><span className="apps-create-section__title">{zh ? '\u57fa\u672c\u4fe1\u606f' : 'Basic info'}</span></summary>
-                <section className="apps-studio-kind" aria-label={zh ? '\u5e94\u7528\u7c7b\u578b' : 'App type'}>
+                    <summary><span className="apps-create-section__title">{localizeText(lang, 'Basic info', '\u57fa\u672c\u4fe1\u606f', '\u57fa\u672c\u8cc7\u8a0a')}</span></summary>
+                <section className="apps-studio-kind" aria-label={localizeText(lang, 'App type', '\u5e94\u7528\u7c7b\u578b', '\u61c9\u7528\u578b\u5225')}>
                     <div className="apps-studio-kind__header">
                         <div>
-                            <div className="apps-definition__title">{zh ? '\u5148\u9009\u5e94\u7528\u7c7b\u578b' : 'Start with app type'}</div>
-                            <span>{zh ? '\u7c7b\u578b\u4f1a\u51b3\u5b9a Skill\u3001\u8f93\u5165\u8f93\u51fa\u548c\u8fd0\u884c\u5e03\u5c40\u7684\u9ed8\u8ba4\u503c\u3002' : 'Type sets the default Skill, input/output, and runtime layout.'}</span>
+                            <div className="apps-definition__title">{localizeText(lang, 'Start with app type', '\u5148\u9009\u5e94\u7528\u7c7b\u578b', '\u5148\u9078\u61c9\u7528\u578b\u5225')}</div>
+                            <span>{localizeText(lang, 'Type sets the default Skill, input/output, and runtime layout.', '\u7c7b\u578b\u4f1a\u51b3\u5b9a Skill\u3001\u8f93\u5165\u8f93\u51fa\u548c\u8fd0\u884c\u5e03\u5c40\u7684\u9ed8\u8ba4\u503c\u3002', '\u578b\u5225\u6703\u6c7a\u5b9a Skill\u3001\u8f38\u5165\u8f38\u51fa\u548c\u57f7\u884c\u4f48\u5c40\u7684\u9810\u8a2d\u503c\u3002')}</span>
                         </div>
                     </div>
-                    <div className="apps-studio-kind__list" role="group" aria-label={zh ? '\u5e94\u7528\u7c7b\u578b' : 'App type'}>
+                    <div className="apps-studio-kind__list" role="group" aria-label={localizeText(lang, 'App type', '\u5e94\u7528\u7c7b\u578b', '\u61c9\u7528\u578b\u5225')}>
                         {studioKindOptions.map((option) => (
                             <button
                                 key={option.id}
@@ -14714,14 +14714,14 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <textarea value={draftPrompt} onChange={(event) => setDraftPrompt(event.target.value)} placeholder={text.draftPromptPlaceholder} />
                 </div>
                 <div className="apps-form-row">
-                    <label>{zh ? '\u540d\u79f0' : 'Name'}</label>
-                    <input value={name} onChange={(event) => setName(event.target.value)} placeholder={zh ? '\u4f8b\uff1a\u5408\u540c\u5f52\u6863' : 'Example: Contract filing'} />
+                    <label>{localizeText(lang, 'Name', '\u540d\u79f0', '\u540d\u7a31')}</label>
+                    <input value={name} onChange={(event) => setName(event.target.value)} placeholder={localizeText(lang, 'Example: Contract filing', '\u4f8b\uff1a\u5408\u540c\u5f52\u6863', '\u4f8b\uff1a\u5408\u540c\u6b78\u6a94')} />
                 </div>
                 <div className="apps-form-row">
-                    <label>{zh ? '\u5206\u7c7b' : 'Category'}</label>
+                    <label>{localizeText(lang, 'Category', '\u5206\u7c7b', '\u5206\u985e')}</label>
                     <div className="apps-category-editor">
                         <input value={category} onChange={(event) => setCategory(event.target.value)} />
-                        <div className="apps-category-chips" role="group" aria-label={zh ? '\u5e38\u7528\u5206\u7c7b' : 'Common categories'}>
+                        <div className="apps-category-chips" role="group" aria-label={localizeText(lang, 'Common categories', '\u5e38\u7528\u5206\u7c7b', '\u5e38\u7528\u5206\u985e')}>
                             {categorySuggestions.map((item) => (
                                 <button
                                     key={item}
@@ -14737,8 +14737,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </div>
                 </div>
                 <div className="apps-form-row">
-                    <label>{zh ? '\u56fe\u6807' : 'Icon'}</label>
-                    <div className="apps-icon-picker" role="group" aria-label={zh ? '\u56fe\u6807' : 'Icon'}>
+                    <label>{localizeText(lang, 'Icon', '\u56fe\u6807', '\u5716\u793a')}</label>
+                    <div className="apps-icon-picker" role="group" aria-label={localizeText(lang, 'Icon', '\u56fe\u6807', '\u5716\u793a')}>
                         {appIconNames.map((item) => {
                             const label = appIconLabel(item, lang);
                             return (
@@ -14764,13 +14764,13 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                 </details>
                 {(kind === 'tool_app' || isEnterpriseAppKind(kind)) && (
                     <details className="apps-create-section" open>
-                        <summary><span className="apps-create-section__title">{zh ? '\u80fd\u529b\u914d\u7f6e' : 'Capabilities'}</span></summary>
+                        <summary><span className="apps-create-section__title">{localizeText(lang, 'Capabilities', '\u80fd\u529b\u914d\u7f6e', '\u80fd\u529b\u914d\u7f6e')}</span></summary>
                 {kind === 'tool_app' && (
                     <>
                         <div className="apps-form-row">
-                            <label>{zh ? '\u73b0\u6709 Skill' : 'Existing Skill'}</label>
+                            <label>{localizeText(lang, 'Existing Skill', '\u73b0\u6709 Skill', '\u73fe\u6709 Skill')}</label>
                             <StudioSkillPicker
-                                label={zh ? '\u73b0\u6709 Skill' : 'Existing Skill'}
+                                label={localizeText(lang, 'Existing Skill', '\u73b0\u6709 Skill', '\u73fe\u6709 Skill')}
                                 value={selectedSkill}
                                 installedSkills={appReadySkills}
                                 lang={lang}
@@ -14786,29 +14786,29 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             />
                         </div>
                         <div className="apps-form-row">
-                            <label>{zh ? '\u8f93\u5165\u6a21\u5f0f' : 'Input mode'}</label>
+                            <label>{localizeText(lang, 'Input mode', '\u8f93\u5165\u6a21\u5f0f', '\u8f38\u5165\u6a21\u5f0f')}</label>
                             <select value={inputMode} onChange={(event) => {
                                 const nextMode = event.target.value as 'file' | 'form' | 'mixed';
                                 setInputMode(nextMode);
                                 if (nextMode === 'form') setMultipleFiles(false);
                             }}>
-                                <option value="file">{zh ? '\u6587\u4ef6\u4e0a\u4f20' : 'File upload'}</option>
-                                <option value="form">{zh ? '\u8868\u5355\u53c2\u6570' : 'Form parameters'}</option>
-                                <option value="mixed">{zh ? '\u6587\u4ef6 + \u8868\u5355' : 'File + form'}</option>
+                                <option value="file">{localizeText(lang, 'File upload', '\u6587\u4ef6\u4e0a\u4f20', '\u6a94\u6848\u4e0a\u50b3')}</option>
+                                <option value="form">{localizeText(lang, 'Form parameters', '\u8868\u5355\u53c2\u6570', '\u8868\u55ae\u5f15\u6578')}</option>
+                                <option value="mixed">{localizeText(lang, 'File + form', '\u6587\u4ef6 + \u8868\u5355', '\u6a94\u6848 + \u8868\u55ae')}</option>
                             </select>
                         </div>
                         {inputMode !== 'form' && (
                             <div className="apps-form-row">
-                                <label>{zh ? '\u591a\u6587\u4ef6' : 'Multiple files'}</label>
+                                <label>{localizeText(lang, 'Multiple files', '\u591a\u6587\u4ef6', '\u591a\u6a94\u6848')}</label>
                                 <label className="apps-checkbox-field">
                                     <input type="checkbox" checked={multipleFiles} onChange={(event) => setMultipleFiles(event.target.checked)} />
-                                    <span>{zh ? '\u5141\u8bb8\u4e00\u6b21\u9009\u62e9\u591a\u4e2a\u6587\u4ef6' : 'Allow selecting several files'}</span>
+                                    <span>{localizeText(lang, 'Allow selecting several files', '\u5141\u8bb8\u4e00\u6b21\u9009\u62e9\u591a\u4e2a\u6587\u4ef6', '\u5141\u8a31\u4e00\u6b21\u9078\u64c7\u591a\u500b\u6a94\u6848')}</span>
                                 </label>
                             </div>
                         )}
                         <div className="apps-form-row">
-                            <label>{zh ? '\u8f93\u51fa\u683c\u5f0f' : 'Output modes'}</label>
-                            <div className="apps-output-mode-picker" role="group" aria-label={zh ? '\u8f93\u51fa\u683c\u5f0f' : 'Output modes'}>
+                            <label>{localizeText(lang, 'Output modes', '\u8f93\u51fa\u683c\u5f0f', '\u8f38\u51fa\u683c\u5f0f')}</label>
+                            <div className="apps-output-mode-picker" role="group" aria-label={localizeText(lang, 'Output modes', '\u8f93\u51fa\u683c\u5f0f', '\u8f38\u51fa\u683c\u5f0f')}>
                                 {['docx', 'xlsx', 'pdf', 'json', 'txt'].map((mode) => (
                                     <label key={mode} className="apps-output-mode-choice">
                                         <input
@@ -14832,18 +14832,18 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </>
                 )}
                 {isEnterpriseAppKind(kind) && (
-                    <section className="apps-layout-designer" aria-label={zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}>
+                    <section className="apps-layout-designer" aria-label={localizeText(lang, 'Capabilities and dependencies', '\u80fd\u529b\u4e0e\u4f9d\u8d56', '\u80fd\u529b\u8207\u4f9d\u8cf4')}>
                         <div className="apps-preview-title-row">
-                            <div className="apps-definition__title">{zh ? '\u80fd\u529b\u4e0e\u4f9d\u8d56' : 'Capabilities and dependencies'}</div>
+                            <div className="apps-definition__title">{localizeText(lang, 'Capabilities and dependencies', '\u80fd\u529b\u4e0e\u4f9d\u8d56', '\u80fd\u529b\u8207\u4f9d\u8cf4')}</div>
                             <span className="apps-count">appSkill \u00b7  workflow_skill</span>
                         </div>
                         <div className="apps-capability-skill-grid">
                             <div className="apps-capability-skill-card">
                                 <div className="apps-capability-skill-card__head">
-                                    <label>{zh ? '\u5e94\u7528 Skill' : 'App Skill'}</label>
+                                    <label>{localizeText(lang, 'App Skill', '\u5e94\u7528 Skill', '\u61c9\u7528 Skill')}</label>
                                 </div>
                                 <StudioSkillPicker
-                                    label={zh ? '\u5e94\u7528 Skill' : 'App Skill'}
+                                    label={localizeText(lang, 'App Skill', '\u5e94\u7528 Skill', '\u61c9\u7528 Skill')}
                                     value={appSkillID}
                                     installedSkills={appReadySkills}
                                     lang={lang}
@@ -14858,13 +14858,13 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             {isEnterpriseApprovalAppKind(kind) && (
                                 <div className="apps-capability-skill-card">
                                     <div className="apps-capability-skill-card__head">
-                                        <label>{zh ? '\u5ba1\u6279 workflow Skill' : 'Approval workflow skill'}</label>
-                                        <button className="apps-secondary-button apps-skill-design-button" type="button" title={zh ? '\u6253\u5f00\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668' : 'Open approval workflow designer'} onClick={() => void openApprovalWorkflowDesigner()}>
-                                            {zh ? '\u8bbe\u8ba1' : 'Design'}
+                                        <label>{localizeText(lang, 'Approval workflow skill', '\u5ba1\u6279 workflow Skill', '\u5be9\u6279 workflow Skill')}</label>
+                                        <button className="apps-secondary-button apps-skill-design-button" type="button" title={localizeText(lang, 'Open approval workflow designer', '\u6253\u5f00\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668', '\u958b\u555f\u5be9\u6279\u5de5\u4f5c\u6d41\u8a2d\u8a08\u5668')} onClick={() => void openApprovalWorkflowDesigner()}>
+                                            {localizeText(lang, 'Design', '\u8bbe\u8ba1', '\u8a2d\u8a08')}
                                         </button>
                                     </div>
                                     <StudioSkillPicker
-                                        label={zh ? '\u5ba1\u6279 workflow Skill' : 'Approval workflow skill'}
+                                        label={localizeText(lang, 'Approval workflow skill', '\u5ba1\u6279 workflow Skill', '\u5be9\u6279 workflow Skill')}
                                         value={workflowSkillID}
                                         installedSkills={approvalWorkflowSkills}
                                         lang={lang}
@@ -14883,27 +14883,27 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             {kind === 'enterprise_normal_app' && (
                                 <>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u4e1a\u52a1\u57df' : 'DataSrv domain'}</label>
+                                        <label>{localizeText(lang, 'DataSrv domain', '\u4e1a\u52a1\u57df', '\u696d\u52d9\u57df')}</label>
                                         <input data-testid="studio-business-domain" value={businessDomain} onChange={(event) => setBusinessDomain(event.target.value)} placeholder="sales" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                        <label>{localizeText(lang, 'Object role', '\u5bf9\u8c61\u89d2\u8272', '\u7269\u4ef6\u89d2\u8272')}</label>
                                         <input data-testid="studio-business-object-role" value={businessObjectRole} onChange={(event) => setBusinessObjectRole(event.target.value)} placeholder="customer" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u9ed8\u8ba4\u52a8\u4f5c' : 'Default action'}</label>
+                                        <label>{localizeText(lang, 'Default action', '\u9ed8\u8ba4\u52a8\u4f5c', '\u9810\u8a2d\u52d5\u4f5c')}</label>
                                         <input data-testid="studio-business-preferred-action" value={businessPreferredAction} onChange={(event) => setBusinessPreferredAction(event.target.value)} placeholder="sales.customer_upsert" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u9ed8\u8ba4\u89c6\u56fe' : 'Default view'}</label>
+                                        <label>{localizeText(lang, 'Default view', '\u9ed8\u8ba4\u89c6\u56fe', '\u9810\u8a2d\u6aa2\u8996')}</label>
                                         <input data-testid="studio-business-preferred-view" value={businessPreferredView} onChange={(event) => setBusinessPreferredView(event.target.value)} placeholder="sales.customer_directory" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u62a5\u8868' : 'Report'}</label>
+                                        <label>{localizeText(lang, 'Report', '\u62a5\u8868', '\u5831\u8868')}</label>
                                         <input data-testid="studio-business-preferred-report" value={businessPreferredReport} onChange={(event) => setBusinessPreferredReport(event.target.value)} placeholder="sales.customer_activity" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u770b\u677f' : 'Dashboard'}</label>
+                                        <label>{localizeText(lang, 'Dashboard', '\u770b\u677f', '\u770b\u677f')}</label>
                                         <input data-testid="studio-business-preferred-dashboard" value={businessPreferredDashboard} onChange={(event) => setBusinessPreferredDashboard(event.target.value)} placeholder="sales.overview" />
                                     </div>
                                 </>
@@ -14911,24 +14911,24 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             {isEnterpriseApprovalAppKind(kind) && (
                                 <>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u7248\u672c' : 'Version'}</label>
+                                        <label>{localizeText(lang, 'Version', '\u7248\u672c', '\u7248\u672c')}</label>
                                         <input data-testid="studio-workflow-skill-version" value={workflowSkillVersion} onChange={(event) => setWorkflowSkillVersion(event.target.value)} placeholder="1.0.0" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u5ba1\u6279\u4e8b\u4ef6' : 'Approval event'}</label>
+                                        <label>{localizeText(lang, 'Approval event', '\u5ba1\u6279\u4e8b\u4ef6', '\u5be9\u6279\u4e8b\u4ef6')}</label>
                                         <input data-testid="studio-approval-event" value={approvalEvent} onChange={(event) => setApprovalEvent(event.target.value)} placeholder="record.submitted" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                        <label>{localizeText(lang, 'Object role', '\u5bf9\u8c61\u89d2\u8272', '\u7269\u4ef6\u89d2\u8272')}</label>
                                         <input data-testid="studio-approval-object-role" value={approvalObjectRole} onChange={(event) => setApprovalObjectRole(event.target.value)} placeholder="record" />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u4f9d\u8d56\u6765\u6e90' : 'Dependency source'}</label>
+                                        <label>{localizeText(lang, 'Dependency source', '\u4f9d\u8d56\u6765\u6e90', '\u4f9d\u8cf4\u4f86\u6e90')}</label>
                                         <div className="apps-skill-source-readonly" data-testid="studio-dependency-source">{dependencySource || 'local'}</div>
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{zh ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={zh ? '\u80fd\u529b ID \u00b7  GitHub URL' : 'Capability ID \u00b7  GitHub URL'} />
+                                        <label>{localizeText(lang, 'Install ref', '\u5b89\u88c5\u5f15\u7528', '\u5b89\u88dd\u5f15\u7528')}</label>
+                                        <input data-testid="studio-dependency-install-ref" value={dependencyInstallRef} onChange={(event) => setDependencyInstallRef(event.target.value)} placeholder={localizeText(lang, 'Capability ID \u00b7  GitHub URL', '\u80fd\u529b ID \u00b7  GitHub URL', '\u80fd\u529b ID \u00b7  GitHub URL')} />
                                     </div>
                                 </>
                             )}
@@ -14939,20 +14939,20 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </details>
                 )}
                 <details className="apps-create-section" open>
-                    <summary><span className="apps-create-section__title">{zh ? '\u754c\u9762\u4e0e\u5e03\u5c40' : 'UI & layout'}</span></summary>
+                    <summary><span className="apps-create-section__title">{localizeText(lang, 'UI & layout', '\u754c\u9762\u4e0e\u5e03\u5c40', '\u4ecb\u9762\u8207\u4f48\u5c40')}</span></summary>
                 {isEnterpriseAppKind(kind) && <EnterpriseUIConfigDesigner kind={kind} navigation={uiNavigation} columns={uiColumns} onNavigationChange={setUiNavigation} onColumnsChange={setUiColumns} lang={lang} testIdPrefix="studio" />}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
                 </details>
                 <details className="apps-create-section" open>
-                    <summary><span className="apps-create-section__title">{zh ? '\u7ed3\u679c\u4e0e\u6d4b\u8bd5' : 'Result & test'}</span></summary>
+                    <summary><span className="apps-create-section__title">{localizeText(lang, 'Result & test', '\u7ed3\u679c\u4e0e\u6d4b\u8bd5', '\u7d50\u679c\u8207\u6e2c\u8a66')}</span></summary>
                 <ResultContractDesigner contract={draftResultContract} onChange={setResultContractDraft} lang={lang} testIdPrefix="studio" />
                 <TestProtocolDesigner protocol={draftTestProtocol} onChange={setTestProtocolDraft} lang={lang} testIdPrefix="studio" kind={kind} />
                 </details>
                 <details className="apps-create-section" open>
-                    <summary><span className="apps-create-section__title">{zh ? '\u63cf\u8ff0\u4e0e\u5173\u4e8e' : 'Description & about'}</span></summary>
+                    <summary><span className="apps-create-section__title">{localizeText(lang, 'Description & about', '\u63cf\u8ff0\u4e0e\u5173\u4e8e', '\u63cf\u8ff0\u8207\u95dc\u65bc')}</span></summary>
                 <div className="apps-form-row apps-form-row--description">
-                    <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
-                    <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
+                    <label>{localizeText(lang, 'Description', '\u63cf\u8ff0', '\u63cf\u8ff0')}</label>
+                    <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={localizeText(lang, 'Used in tooltip and right runtime area', '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e', '\u7528\u65bc tooltip \u548c\u53f3\u5074\u57f7\u884c\u5340\u8aaa\u660e')} />
                 </div>
                 <AppAboutInfoFields
                     text={text}
@@ -14964,12 +14964,12 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     {kind === 'tool_app' && canWriteSkillDefinition ? (
                         <>
                             <button className="apps-primary-button" type="button" disabled={!name.trim() || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
-                                {skillAppSaveState === 'saving' ? (zh ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : (zh ? '\u4fdd\u5b58\u5230 Skill' : 'Save to Skill')}
+                                {skillAppSaveState === 'saving' ? (localizeText(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u5132\u5b58\u4e2d...')) : (localizeText(lang, 'Save to Skill', '\u4fdd\u5b58\u5230 Skill', '\u5132\u5b58\u5230 Skill'))}
                             </button>
                             <button className="apps-secondary-button" type="button" disabled={!skillDefinitionTargetID || !skillDefinitionTargetInstalled || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
-                                {skillMarketUploadState === 'uploading' ? (zh ? '\u4e0a\u4f20\u4e2d...' : 'Uploading...') : (zh ? '\u4e0a\u4f20\u5230 SkillMarket' : 'Upload to SkillMarket')}
+                                {skillMarketUploadState === 'uploading' ? (localizeText(lang, 'Uploading...', '\u4e0a\u4f20\u4e2d...', '\u4e0a\u50b3\u4e2d...')) : (localizeText(lang, 'Upload to SkillMarket', '\u4e0a\u4f20\u5230 SkillMarket', '\u4e0a\u50b3\u5230 SkillMarket'))}
                             </button>
-                            <button className="apps-secondary-button" type="button" disabled={!name.trim()} onClick={createApp}>{zh ? '\u4ec5\u6dfb\u52a0\u5230\u9762\u677f' : 'Add to panel only'}</button>
+                            <button className="apps-secondary-button" type="button" disabled={!name.trim()} onClick={createApp}>{localizeText(lang, 'Add to panel only', '\u4ec5\u6dfb\u52a0\u5230\u9762\u677f', '\u50c5\u65b0\u589e\u5230\u9762\u677f')}</button>
                         </>
                     ) : (
                         <>
@@ -14977,10 +14977,10 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                             {(kind === 'tool_app' || isEnterpriseAppKind(kind)) && (
                                 <>
                                     <button className="apps-secondary-button" type="button" disabled={!canWriteSkillDefinition || skillAppSaveState === 'saving'} onClick={() => void saveAsSkillApp()}>
-                                        {skillAppSaveState === 'saving' ? (zh ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : (zh ? '\u4fdd\u5b58\u5230 Skill' : 'Save to Skill')}
+                                        {skillAppSaveState === 'saving' ? (localizeText(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u5132\u5b58\u4e2d...')) : (localizeText(lang, 'Save to Skill', '\u4fdd\u5b58\u5230 Skill', '\u5132\u5b58\u5230 Skill'))}
                                     </button>
                                     <button className="apps-secondary-button" type="button" disabled={!skillDefinitionTargetID || !skillDefinitionTargetInstalled || skillMarketUploadState === 'uploading'} onClick={() => void uploadSelectedSkillApp()}>
-                                        {skillMarketUploadState === 'uploading' ? (zh ? '\u4e0a\u4f20\u4e2d...' : 'Uploading...') : (zh ? '\u4e0a\u4f20\u5230 SkillMarket' : 'Upload to SkillMarket')}
+                                        {skillMarketUploadState === 'uploading' ? (localizeText(lang, 'Uploading...', '\u4e0a\u4f20\u4e2d...', '\u4e0a\u50b3\u4e2d...')) : (localizeText(lang, 'Upload to SkillMarket', '\u4e0a\u4f20\u5230 SkillMarket', '\u4e0a\u50b3\u5230 SkillMarket'))}
                                     </button>
                                 </>
                             )}
@@ -15060,9 +15060,9 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
             label: localizeText(lang, 'Capability binding', '\u7ed1\u5b9a\u80fd\u529b', '\u7e6b\u7d50\u80fd\u529b'),
             ok: hasBinding,
             detail: isEnterpriseAppKind(app.kind)
-                ? (manifest?.datasrv?.domain || (zh ? '\u7f3a\u5c11 DataSrv domain' : 'Missing DataSrv domain'))
+                ? (manifest?.datasrv?.domain || (localizeText(lang, 'Missing DataSrv domain', '\u7f3a\u5c11 DataSrv domain', '\u7f3a\u5c11 DataSrv domain')))
                 : app.kind === 'tool_app'
-                    ? (manifest?.skill?.id || (zh ? '\u7f3a\u5c11 Skill id' : 'Missing Skill id'))
+                    ? (manifest?.skill?.id || (localizeText(lang, 'Missing Skill id', '\u7f3a\u5c11 Skill id', '\u7f3a\u5c11 Skill id')))
                     : (localizeText(lang, 'Automation console', '\u81ea\u52a8\u5316\u63a7\u5236\u53f0', '\u81ea\u52d5\u5316\u63a7\u5236\u6aaf')),
         },
         {
@@ -15809,7 +15809,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
 };
 
 const AppAccentPicker = ({ value, lang, onChange }: { value: string; lang?: string; onChange: (value: string) => void }) => (
-    <div className="apps-accent-picker" role="group" aria-label={isZh(lang) ? '\u56fe\u6807\u989c\u8272' : 'Icon color'}>
+    <div className="apps-accent-picker" role="group" aria-label={localizeText(lang, 'Icon color', '\u56fe\u6807\u989c\u8272', '\u5716\u793a\u984f\u8272')}>
         {appAccentSwatches.map((swatch) => {
             const label = appAccentLabel(swatch, lang);
             return (
@@ -16132,9 +16132,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             setEditIconUploadState('idle');
         } catch {
             setEditIconUploadState('error');
-            setEditIconUploadMessage(isZh(lang)
-                ? '\u8bf7\u4e0a\u4f20 5 MB \u4ee5\u5185\u7684 PNG\u3001JPEG \u6216 WebP \u56fe\u7247\u3002'
-                : 'Upload a PNG, JPEG, or WebP image under 5 MB.');
+            setEditIconUploadMessage(localizeText(lang, 'Upload a PNG, JPEG, or WebP image under 5 MB.', '\u8bf7\u4e0a\u4f20 5 MB \u4ee5\u5185\u7684 PNG\u3001JPEG \u6216 WebP \u56fe\u7247\u3002', '\u8acb\u4e0a\u50b3 5 MB \u4ee5\u5167\u7684 PNG\u3001JPEG \u6216 WebP \u5716\u7247\u3002'));
         }
     }, [lang]);
     const updateEditAboutInfo = useCallback((patch: Partial<AppAboutInfo>) => {
@@ -16221,7 +16219,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
         const updatedApp: AppEntry = {
             ...app,
             name,
-            category: editDraft.category.trim() || (isZh(lang) ? '\u672a\u5206\u7c7b' : 'Uncategorized'),
+            category: editDraft.category.trim() || (localizeText(lang, 'Uncategorized', '\u672a\u5206\u7c7b', '\u672a\u5206\u985e')),
             description: editDraft.description.trim(),
             icon: editDraft.icon,
             customIconDataUrl: normalizeCustomIconDataUrl(editDraft.customIconDataUrl),
@@ -16304,10 +16302,10 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <option value="all">{text.all} ({manageQueryMatchedApps.length})</option>
                     {manageCategories.map((item) => <option key={item} value={item} disabled={!!normalizedManageQuery && (manageCategoryCounts.get(item) || 0) === 0}>{categoryOptionLabel(item, manageCategoryCounts)}</option>)}
                 </select>
-                <select className="apps-manage-category-select" value={managePanelStatus} onChange={(event) => setManagePanelStatus(event.target.value as 'all' | 'in_panel' | 'not_in_panel')} aria-label={isZh(lang) ? '\u9762\u677f\u72b6\u6001' : 'Panel status'}>
-                    <option value="all">{isZh(lang) ? '\u5168\u90e8\u72b6\u6001' : 'All statuses'}</option>
-                    <option value="in_panel">{isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}</option>
-                    <option value="not_in_panel" disabled={notInPanelApps.length === 0}>{isZh(lang) ? '\u672a\u52a0\u5165\u9762\u677f' : 'Not in panel'}{notInPanelApps.length > 0 ? ` (${notInPanelApps.length})` : ''}</option>
+                <select className="apps-manage-category-select" value={managePanelStatus} onChange={(event) => setManagePanelStatus(event.target.value as 'all' | 'in_panel' | 'not_in_panel')} aria-label={localizeText(lang, 'Panel status', '\u9762\u677f\u72b6\u6001', '\u9762\u677f\u72c0\u614b')}>
+                    <option value="all">{localizeText(lang, 'All statuses', '\u5168\u90e8\u72b6\u6001', '\u5168\u90e8\u72c0\u614b')}</option>
+                    <option value="in_panel">{localizeText(lang, 'In panel', '\u5df2\u52a0\u5165\u9762\u677f', '\u5df2\u52a0\u5165\u9762\u677f')}</option>
+                    <option value="not_in_panel" disabled={notInPanelApps.length === 0}>{localizeText(lang, 'Not in panel', '\u672a\u52a0\u5165\u9762\u677f', '\u672a\u52a0\u5165\u9762\u677f')}{notInPanelApps.length > 0 ? ` (${notInPanelApps.length})` : ''}</option>
                 </select>
                 <button
                     className="apps-secondary-button"
@@ -16324,7 +16322,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {manageFilterSummary && <div className="apps-filter-summary apps-filter-summary--manage" aria-live="polite">{manageFilterSummary}</div>}
             {skillDiscovery.status === 'error' && (
                 <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--error-color, #ef4444)' }}>
-                    {isZh(lang) ? '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898' : 'Could not check installed capabilities'}
+                    {localizeText(lang, 'Could not check installed capabilities', '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898', '\u6aa2\u67e5\u5df2\u5b89\u88dd\u80fd\u529b\u6642\u9047\u5230\u554f\u984c')}
                     {skillDiscovery.error && <span> &middot; {skillDiscovery.error}</span>}
                 </div>
             )}
@@ -16339,8 +16337,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <div className="apps-manage-row">
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabelText(app.source, lang)} \u00b7 ${isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}`}>
-                            {app.category} &middot; {sourceLabelText(app.source, lang)} &middot; {isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}
+                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabelText(app.source, lang)} \u00b7 ${localizeText(lang, 'In panel', '\u5df2\u52a0\u5165\u9762\u677f', '\u5df2\u52a0\u5165\u9762\u677f')}`}>
+                            {app.category} &middot; {sourceLabelText(app.source, lang)} &middot; {localizeText(lang, 'In panel', '\u5df2\u52a0\u5165\u9762\u677f', '\u5df2\u52a0\u5165\u9762\u677f')}
                         </div>
                         <div className="apps-manage-actions">
                             <div className="apps-manage-actions__moves">
@@ -16394,7 +16392,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {filteredNotInPanelApps.length > 0 && (
                 <section className="apps-hidden-section">
                     <div className="apps-section__title-row">
-                        <h3 className="apps-section__title">{isZh(lang) ? '\u672a\u52a0\u5165\u9762\u677f' : 'Not in panel'}</h3>
+                        <h3 className="apps-section__title">{localizeText(lang, 'Not in panel', '\u672a\u52a0\u5165\u9762\u677f', '\u672a\u52a0\u5165\u9762\u677f')}</h3>
                         <span className="apps-count">{filteredNotInPanelApps.length}/{notInPanelApps.length}</span>
                     </div>
                     {filteredNotInPanelApps.map((app) => (
@@ -16426,9 +16424,9 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         </div>
                         <div className="apps-manage-edit">
                             <div className="apps-manage-edit__section">
-                            <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u57fa\u672c\u4fe1\u606f' : 'Basic info'}</div>
+                            <div className="apps-manage-edit__section-title">{localizeText(lang, 'Basic info', '\u57fa\u672c\u4fe1\u606f', '\u57fa\u672c\u8cc7\u8a0a')}</div>
                             <div className="apps-form-row">
-                                <label>{isZh(lang) ? '\u540d\u79f0' : 'Name'}</label>
+                                <label>{localizeText(lang, 'Name', '\u540d\u79f0', '\u540d\u7a31')}</label>
                                 <input data-testid="edit-app-name" ref={editNameInputRef} value={editDraft.name} onChange={(event) => setEditDraft((current) => ({ ...current, name: event.target.value }))} />
                             </div>
                             <div className="apps-form-row">
@@ -16436,8 +16434,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                 <input data-testid="edit-app-category" value={editDraft.category} onChange={(event) => setEditDraft((current) => ({ ...current, category: event.target.value }))} />
                             </div>
                             <div className="apps-form-row">
-                                <label>{isZh(lang) ? '\u56fe\u6807' : 'Icon'}</label>
-                                <div className="apps-icon-picker" role="group" aria-label={isZh(lang) ? '\u56fe\u6807' : 'Icon'}>
+                                <label>{localizeText(lang, 'Icon', '\u56fe\u6807', '\u5716\u793a')}</label>
+                                <div className="apps-icon-picker" role="group" aria-label={localizeText(lang, 'Icon', '\u56fe\u6807', '\u5716\u793a')}>
                                     {appIconNames.map((item) => {
                                         const label = appIconLabel(item, lang);
                                         return (
@@ -16457,7 +16455,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                 </div>
                             </div>
                             <div className="apps-form-row apps-form-row--wide">
-                                <label>{isZh(lang) ? '\u81ea\u5b9a\u4e49\u56fe\u6807' : 'Custom icon'}</label>
+                                <label>{localizeText(lang, 'Custom icon', '\u81ea\u5b9a\u4e49\u56fe\u6807', '\u81ea\u5b9a\u7fa9\u5716\u793a')}</label>
                                 <div className="apps-custom-icon-field">
                                     <span className="apps-app-icon apps-custom-icon-preview" style={{ '--apps-icon-color': editDraft.accent } as CSSProperties}>
                                         <AppIcon icon={editDraft.icon} customIconDataUrl={editDraft.customIconDataUrl} />
@@ -16474,17 +16472,17 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                                 void setUploadedCustomIcon(file);
                                             }}
                                         />
-                                        <span>{editIconUploadState === 'processing' ? (isZh(lang) ? '\u5904\u7406\u4e2d...' : 'Processing...') : (isZh(lang) ? '\u4e0a\u4f20\u56fe\u7247' : 'Upload image')}</span>
+                                        <span>{editIconUploadState === 'processing' ? (localizeText(lang, 'Processing...', '\u5904\u7406\u4e2d...', '\u8655\u7406\u4e2d...')) : (localizeText(lang, 'Upload image', '\u4e0a\u4f20\u56fe\u7247', '\u4e0a\u50b3\u5716\u7247'))}</span>
                                     </label>
                                     {editDraft.customIconDataUrl && (
                                         <button className="apps-secondary-button" type="button" onClick={() => {
                                             setEditIconUploadState('idle');
                                             setEditIconUploadMessage('');
                                             setEditDraft((current) => ({ ...current, customIconDataUrl: undefined }));
-                                        }}>{isZh(lang) ? '\u4f7f\u7528\u5185\u7f6e\u56fe\u6807' : 'Use built-in icon'}</button>
+                                        }}>{localizeText(lang, 'Use built-in icon', '\u4f7f\u7528\u5185\u7f6e\u56fe\u6807', '\u4f7f\u7528\u5167\u5efa\u5716\u793a')}</button>
                                     )}
                                     <small className={editIconUploadState === 'error' ? 'is-error' : ''} role={editIconUploadState === 'error' ? 'alert' : undefined}>
-                                        {editIconUploadMessage || (isZh(lang) ? '\u81ea\u52a8\u88c1\u526a\u4e3a 96\u00d796 PNG\uff0c\u652f\u6301 5 MB \u4ee5\u5185\u56fe\u7247\uff0c\u5185\u7f6e\u56fe\u6807\u4f5c\u4e3a\u56de\u9000\u3002' : 'Crops to a 96x96 PNG automatically. Supports images under 5 MB; built-in icon stays as fallback.')}
+                                        {editIconUploadMessage || (localizeText(lang, 'Crops to a 96x96 PNG automatically. Supports images under 5 MB; built-in icon stays as fallback.', '\u81ea\u52a8\u88c1\u526a\u4e3a 96\u00d796 PNG\uff0c\u652f\u6301 5 MB \u4ee5\u5185\u56fe\u7247\uff0c\u5185\u7f6e\u56fe\u6807\u4f5c\u4e3a\u56de\u9000\u3002', '\u81ea\u52d5\u88c1\u526a\u70ba 96\u00d796 PNG\uff0c\u652f\u63f4 5 MB \u4ee5\u5167\u5716\u7247\uff0c\u5167\u5efa\u5716\u793a\u4f5c\u70ba\u56de\u9000\u3002'))}
                                     </small>
                                 </div>
                             </div>
@@ -16493,13 +16491,13 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                 <AppAccentPicker value={editDraft.accent} lang={lang} onChange={(accent) => setEditDraft((current) => ({ ...current, accent }))} />
                             </div>
                             <div className="apps-form-row apps-form-row--wide apps-form-row--description">
-                                <label>{isZh(lang) ? '\u63cf\u8ff0' : 'Description'}</label>
+                                <label>{localizeText(lang, 'Description', '\u63cf\u8ff0', '\u63cf\u8ff0')}</label>
                                 <textarea data-testid="edit-app-description" value={editDraft.description} onChange={(event) => setEditDraft((current) => ({ ...current, description: event.target.value }))} />
                             </div>
                             <AppAboutInfoFields text={text} value={editDraft.aboutInfo} onChange={updateEditAboutInfo} testIdPrefix="edit-app" />
                             </div>
                             <div className="apps-manage-edit__section">
-                            <div className="apps-manage-edit__section-title">{isZh(lang) ? '\u80fd\u529b\u7ed1\u5b9a' : 'Capability binding'}</div>
+                            <div className="apps-manage-edit__section-title">{localizeText(lang, 'Capability binding', '\u80fd\u529b\u7ed1\u5b9a', '\u80fd\u529b\u7e6b\u7d50')}</div>
                             {editingApp.kind === 'tool_app' && (
                                 <>
                                     <div className="apps-form-row">
@@ -16517,25 +16515,25 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                         />
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{isZh(lang) ? '\u8f93\u5165\u6a21\u5f0f' : 'Input mode'}</label>
+                                        <label>{localizeText(lang, 'Input mode', '\u8f93\u5165\u6a21\u5f0f', '\u8f38\u5165\u6a21\u5f0f')}</label>
                                         <select value={editDraft.inputMode} onChange={(event) => setEditDraft((current) => ({ ...current, inputMode: event.target.value as SkillInputMode, multipleFiles: event.target.value === 'form' ? false : current.multipleFiles }))}>
-                                            <option value="file">{isZh(lang) ? '\u6587\u4ef6\u4e0a\u4f20' : 'File upload'}</option>
-                                            <option value="form">{isZh(lang) ? '\u8868\u5355\u53c2\u6570' : 'Form parameters'}</option>
-                                            <option value="mixed">{isZh(lang) ? '\u6587\u4ef6 + \u8868\u5355' : 'File + form'}</option>
+                                            <option value="file">{localizeText(lang, 'File upload', '\u6587\u4ef6\u4e0a\u4f20', '\u6a94\u6848\u4e0a\u50b3')}</option>
+                                            <option value="form">{localizeText(lang, 'Form parameters', '\u8868\u5355\u53c2\u6570', '\u8868\u55ae\u5f15\u6578')}</option>
+                                            <option value="mixed">{localizeText(lang, 'File + form', '\u6587\u4ef6 + \u8868\u5355', '\u6a94\u6848 + \u8868\u55ae')}</option>
                                         </select>
                                     </div>
                                     {editDraft.inputMode !== 'form' && (
                                         <div className="apps-form-row">
-                                            <label>{isZh(lang) ? '\u591a\u6587\u4ef6' : 'Multiple files'}</label>
+                                            <label>{localizeText(lang, 'Multiple files', '\u591a\u6587\u4ef6', '\u591a\u6a94\u6848')}</label>
                                             <label className="apps-checkbox-field">
                                                 <input type="checkbox" checked={editDraft.multipleFiles} onChange={(event) => setEditDraft((current) => ({ ...current, multipleFiles: event.target.checked }))} />
-                                                <span>{isZh(lang) ? '\u5141\u8bb8\u4e00\u6b21\u9009\u62e9\u591a\u4e2a\u6587\u4ef6' : 'Allow selecting several files'}</span>
+                                                <span>{localizeText(lang, 'Allow selecting several files', '\u5141\u8bb8\u4e00\u6b21\u9009\u62e9\u591a\u4e2a\u6587\u4ef6', '\u5141\u8a31\u4e00\u6b21\u9078\u64c7\u591a\u500b\u6a94\u6848')}</span>
                                             </label>
                                         </div>
                                     )}
                                     <div className="apps-form-row">
-                                        <label>{isZh(lang) ? '\u8f93\u51fa\u683c\u5f0f' : 'Output modes'}</label>
-                                        <div className="apps-output-mode-picker" role="group" aria-label={isZh(lang) ? '\u8f93\u51fa\u683c\u5f0f' : 'Output modes'}>
+                                        <label>{localizeText(lang, 'Output modes', '\u8f93\u51fa\u683c\u5f0f', '\u8f38\u51fa\u683c\u5f0f')}</label>
+                                        <div className="apps-output-mode-picker" role="group" aria-label={localizeText(lang, 'Output modes', '\u8f93\u51fa\u683c\u5f0f', '\u8f38\u51fa\u683c\u5f0f')}>
                                             {['docx', 'xlsx', 'pdf', 'json', 'txt'].map((mode) => (
                                                 <label key={mode} className="apps-output-mode-choice">
                                                     <input
@@ -16563,27 +16561,27 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                     {editingApp.kind === 'enterprise_normal_app' && (
                                         <>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u4e1a\u52a1\u57df' : 'DataSrv domain'}</label>
+                                                <label>{localizeText(lang, 'DataSrv domain', '\u4e1a\u52a1\u57df', '\u696d\u52d9\u57df')}</label>
                                                 <input data-testid="edit-business-domain" value={editDraft.businessDomain} onChange={(event) => setEditDraft((current) => ({ ...current, businessDomain: event.target.value }))} placeholder="sales" />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                                <label>{localizeText(lang, 'Object role', '\u5bf9\u8c61\u89d2\u8272', '\u7269\u4ef6\u89d2\u8272')}</label>
                                                 <input data-testid="edit-business-object-role" value={editDraft.businessObjectRole} onChange={(event) => setEditDraft((current) => ({ ...current, businessObjectRole: event.target.value }))} placeholder="customer" />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u9ed8\u8ba4\u52a8\u4f5c' : 'Default action'}</label>
+                                                <label>{localizeText(lang, 'Default action', '\u9ed8\u8ba4\u52a8\u4f5c', '\u9810\u8a2d\u52d5\u4f5c')}</label>
                                                 <input data-testid="edit-business-preferred-action" value={editDraft.businessPreferredAction} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredAction: event.target.value }))} placeholder="sales.customer_upsert" />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u9ed8\u8ba4\u89c6\u56fe' : 'Default view'}</label>
+                                                <label>{localizeText(lang, 'Default view', '\u9ed8\u8ba4\u89c6\u56fe', '\u9810\u8a2d\u6aa2\u8996')}</label>
                                                 <input data-testid="edit-business-preferred-view" value={editDraft.businessPreferredView} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredView: event.target.value }))} placeholder="sales.customer_directory" />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u62a5\u8868' : 'Report'}</label>
+                                                <label>{localizeText(lang, 'Report', '\u62a5\u8868', '\u5831\u8868')}</label>
                                                 <input data-testid="edit-business-preferred-report" value={editDraft.businessPreferredReport} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredReport: event.target.value }))} placeholder="sales.customer_activity" />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u770b\u677f' : 'Dashboard'}</label>
+                                                <label>{localizeText(lang, 'Dashboard', '\u770b\u677f', '\u770b\u677f')}</label>
                                                 <input data-testid="edit-business-preferred-dashboard" value={editDraft.businessPreferredDashboard} onChange={(event) => setEditDraft((current) => ({ ...current, businessPreferredDashboard: event.target.value }))} placeholder="sales.overview" />
                                             </div>
                                         </>
@@ -16591,10 +16589,10 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                     <div className="apps-capability-skill-grid">
                                         <div className="apps-capability-skill-card">
                                             <div className="apps-capability-skill-card__head">
-                                                <label>{isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}</label>
+                                                <label>{localizeText(lang, 'appSkill', '\u5e94\u7528 Skill', '\u61c9\u7528 Skill')}</label>
                                             </div>
                                             <StudioSkillPicker
-                                                label={isZh(lang) ? '\u5e94\u7528 Skill' : 'appSkill'}
+                                                label={localizeText(lang, 'appSkill', '\u5e94\u7528 Skill', '\u61c9\u7528 Skill')}
                                                 value={editDraft.appSkillID}
                                                 installedSkills={appReadySkills}
                                                 lang={lang}
@@ -16609,13 +16607,13 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                         {editingApp.kind === 'enterprise_approval_app' && (
                                             <div className="apps-capability-skill-card">
                                                 <div className="apps-capability-skill-card__head">
-                                                    <label>{isZh(lang) ? '\u5ba1\u6279 workflow Skill' : 'workflow skill'}</label>
-                                                    <button className="apps-secondary-button apps-skill-design-button" type="button" title={isZh(lang) ? '\u6253\u5f00\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668' : 'Open approval workflow designer'} onClick={() => void openApprovalWorkflowDesigner()}>
-                                                        {isZh(lang) ? '\u8bbe\u8ba1' : 'Design'}
+                                                    <label>{localizeText(lang, 'workflow skill', '\u5ba1\u6279 workflow Skill', '\u5be9\u6279 workflow Skill')}</label>
+                                                    <button className="apps-secondary-button apps-skill-design-button" type="button" title={localizeText(lang, 'Open approval workflow designer', '\u6253\u5f00\u5ba1\u6279\u5de5\u4f5c\u6d41\u8bbe\u8ba1\u5668', '\u958b\u555f\u5be9\u6279\u5de5\u4f5c\u6d41\u8a2d\u8a08\u5668')} onClick={() => void openApprovalWorkflowDesigner()}>
+                                                        {localizeText(lang, 'Design', '\u8bbe\u8ba1', '\u8a2d\u8a08')}
                                                     </button>
                                                 </div>
                                                 <StudioSkillPicker
-                                                    label={isZh(lang) ? '\u5ba1\u6279 workflow Skill' : 'workflow skill'}
+                                                    label={localizeText(lang, 'workflow skill', '\u5ba1\u6279 workflow Skill', '\u5be9\u6279 workflow Skill')}
                                                     value={editDraft.workflowSkillID}
                                                     installedSkills={approvalWorkflowSkills}
                                                     lang={lang}
@@ -16631,25 +16629,25 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                                         )}
                                     </div>
                                     <div className="apps-form-row">
-                                        <label>{isZh(lang) ? '\u5e94\u7528 Skill \u7248\u672c' : 'appSkill version'}</label>
+                                        <label>{localizeText(lang, 'appSkill version', '\u5e94\u7528 Skill \u7248\u672c', '\u61c9\u7528 Skill \u7248\u672c')}</label>
                                         <input value={editDraft.appSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, appSkillVersion: event.target.value }))} placeholder="1.0.0" />
                                     </div>
                                     {editingApp.kind === 'enterprise_approval_app' && (
                                         <>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u5ba1\u6279 workflow \u7248\u672c' : 'workflow version'}</label>
+                                                <label>{localizeText(lang, 'workflow version', '\u5ba1\u6279 workflow \u7248\u672c', '\u5be9\u6279 workflow \u7248\u672c')}</label>
                                                 <input value={editDraft.workflowSkillVersion} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillVersion: event.target.value }))} placeholder="1.0.0" />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u5b89\u88c5\u5f15\u7528' : 'Install ref'}</label>
-                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={isZh(lang) ? '\u80fd\u529b ID \u00b7  GitHub URL' : 'Capability ID \u00b7  GitHub URL'} />
+                                                <label>{localizeText(lang, 'Install ref', '\u5b89\u88c5\u5f15\u7528', '\u5b89\u88dd\u5f15\u7528')}</label>
+                                                <input data-testid="edit-workflow-skill-install-ref" value={editDraft.workflowSkillInstallRef} onChange={(event) => setEditDraft((current) => ({ ...current, workflowSkillInstallRef: event.target.value }))} placeholder={localizeText(lang, 'Capability ID \u00b7  GitHub URL', '\u80fd\u529b ID \u00b7  GitHub URL', '\u80fd\u529b ID \u00b7  GitHub URL')} />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u5ba1\u6279\u4e8b\u4ef6' : 'Approval event'}</label>
+                                                <label>{localizeText(lang, 'Approval event', '\u5ba1\u6279\u4e8b\u4ef6', '\u5be9\u6279\u4e8b\u4ef6')}</label>
                                                 <input value={editDraft.approvalEvent} onChange={(event) => setEditDraft((current) => ({ ...current, approvalEvent: event.target.value }))} placeholder={`${editingApp.manifest?.datasrv?.domain || 'record'}.submitted`} />
                                             </div>
                                             <div className="apps-form-row">
-                                                <label>{isZh(lang) ? '\u5bf9\u8c61\u89d2\u8272' : 'Object role'}</label>
+                                                <label>{localizeText(lang, 'Object role', '\u5bf9\u8c61\u89d2\u8272', '\u7269\u4ef6\u89d2\u8272')}</label>
                                                 <input value={editDraft.approvalObjectRole} onChange={(event) => setEditDraft((current) => ({ ...current, approvalObjectRole: event.target.value }))} placeholder={editingApp.manifest?.datasrv?.domain || 'record'} />
                                             </div>
                                         </>
@@ -16665,7 +16663,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                             <div className="apps-actions apps-manage-edit__actions">
                                 {editSaveMessage && <span className="apps-manage-edit__message" data-state={editSaveState} role="alert">{editSaveMessage}</span>}
                                 <button className="apps-secondary-button" type="button" onClick={cancelEdit}>{text.cancel}</button>
-                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim() || editSaveState === 'saving'} onClick={() => void saveEdit(editingApp)}>{editSaveState === 'saving' ? (isZh(lang) ? '\u4fdd\u5b58\u4e2d...' : 'Saving...') : text.save}</button>
+                                <button className="apps-primary-button" type="button" disabled={!editDraft.name.trim() || editSaveState === 'saving'} onClick={() => void saveEdit(editingApp)}>{editSaveState === 'saving' ? (localizeText(lang, 'Saving...', '\u4fdd\u5b58\u4e2d...', '\u5132\u5b58\u4e2d...')) : text.save}</button>
                             </div>
                         </div>
                     </div>
@@ -16932,9 +16930,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                 });
                 if (!discovered) {
                     throw new Error(
-                        isZh(lang)
-                            ? '\u6280\u80fd\u5df2\u4e0b\u8f7d\uff0c\u4f46\u672a\u53d1\u73b0\u53ef\u5b89\u88c5\u7684 MaClaw App \u5b9a\u4e49\uff08\u7f3a\u5c11 maclaw.app.json\uff09\u3002'
-                            : 'Skill installed, but no installable MaClaw App definition was found (missing maclaw.app.json).',
+                        localizeText(lang, 'Skill installed, but no installable MaClaw App definition was found (missing maclaw.app.json).', '\u6280\u80fd\u5df2\u4e0b\u8f7d\uff0c\u4f46\u672a\u53d1\u73b0\u53ef\u5b89\u88c5\u7684 MaClaw App \u5b9a\u4e49\uff08\u7f3a\u5c11 maclaw.app.json\uff09\u3002', '\u6280\u80fd\u5df2\u4e0b\u8f09\uff0c\u4f46\u672a\u767c\u73fe\u53ef\u5b89\u88dd\u7684 MaClaw App \u5b9a\u7fa9\uff08\u7f3a\u5c11 maclaw.app.json\uff09\u3002'),
                     );
                 }
                 installTarget = {

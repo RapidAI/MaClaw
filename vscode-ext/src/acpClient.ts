@@ -148,6 +148,16 @@ export class AcpClient extends EventEmitter {
     })) as { stopReason: string };
   }
 
+  /**
+   * session/steer (MaClaw extension): inject guide-launch text into the
+   * session's running agent loop — the GUI drains it between iterations
+   * without cancelling the turn. accepted=false (or an RPC error on hosts
+   * without this method) means: fall back to queueing for the next turn.
+   */
+  async steer(sessionId: string, text: string): Promise<{ accepted: boolean }> {
+    return (await this.request("session/steer", { sessionId, text })) as { accepted: boolean };
+  }
+
   /** session/cancel is a notification — no response expected. */
   cancel(sessionId: string): void {
     this.notify("session/cancel", { sessionId });

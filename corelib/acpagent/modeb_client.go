@@ -183,6 +183,20 @@ func (c *ModeBClient) SessionCancel(sessionID string) error {
 	return c.notify("session/cancel", map[string]any{"sessionId": sessionID})
 }
 
+// SessionSteer forwards a guide-launch injection to the GUI host: the running
+// agent loop drains the text between iterations without cancelling the turn.
+func (c *ModeBClient) SessionSteer(ctx context.Context, sessionID string, text string) (bool, error) {
+	raw, err := c.call(ctx, "session/steer", map[string]any{"sessionId": sessionID, "text": text})
+	if err != nil {
+		return false, err
+	}
+	var res SessionSteerResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return false, err
+	}
+	return res.Accepted, nil
+}
+
 func (c *ModeBClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 	idRaw, _ := json.Marshal(id)
@@ -557,6 +571,22 @@ func ServeStdioModeBProxy(r io.Reader, w io.Writer, logger interface {
 			if hasRequestID(req.ID) {
 				_ = stdio.WriteResponse(req.ID, map[string]any{}, nil)
 			}
+		case "session/steer":
+			// Guide-launch injection into the running GUI loop; deliberately not
+			// gated on the prompt lock — steering only makes sense mid-turn.
+			var params SessionSteerParams
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				_ = stdio.WriteResponse(req.ID, nil, newRPCError(CodeInvalidParams, err.Error()))
+				continue
+			}
+			callCtx, callCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			accepted, err := client.SessionSteer(callCtx, strings.TrimSpace(params.SessionID), params.Text)
+			callCancel()
+			if err != nil {
+				_ = stdio.WriteResponse(req.ID, nil, newRPCError(CodeInternalError, err.Error()))
+				continue
+			}
+			_ = stdio.WriteResponse(req.ID, SessionSteerResult{Accepted: accepted}, nil)
 		default:
 			if hasRequestID(req.ID) {
 				_ = stdio.WriteResponse(req.ID, nil, newRPCError(CodeMethodNotFound, "method not found: "+req.Method))

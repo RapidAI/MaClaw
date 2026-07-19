@@ -181,7 +181,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.removeQueued(msg.id);
         return;
       case "queueFire":
-        this.fireQueued(msg.id);
+        await this.fireQueued(msg.id);
         return;
       case "queueClear":
         this.queue = [];
@@ -275,23 +275,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   /**
-   * User picked a queued prompt to fire: when idle it runs right away; while
-   * a turn is in flight it jumps to the head of the queue so it steers the
-   * very next turn.
+   * User picked a queued prompt to fire: when idle it runs right away. While
+   * a turn is in flight it first tries real mid-turn steering (the GUI's
+   * 引导发射 semantics via session/steer); when the host can't steer, the
+   * prompt jumps to the head of the queue so it leads the very next turn.
    */
-  private fireQueued(id?: number): void {
+  private async fireQueued(id?: number): Promise<void> {
     const at = this.queue.findIndex((item) => item.id === id);
     if (at < 0) {
       return; // already fired or removed
     }
     const [item] = this.queue.splice(at, 1);
     if (this.turnActive) {
-      this.queue.unshift(item);
-      this.postQueue();
+      // Generation guard for the steer round-trip: a newSession mid-await
+      // clears the queue — re-adding the stale item below must not leak the
+      // old session's prompt into the fresh queue (or steer it there).
+      const generation = this.turnGeneration;
+      if (await this.trySteer(item.text, generation)) {
+        this.postQueue();
+        return;
+      }
+      if (generation === this.turnGeneration) {
+        this.queue.unshift(item);
+        this.postQueue();
+      }
       return;
     }
     this.postQueue();
     void this.runPrompt(item.text);
+  }
+
+  /**
+   * Attempt to inject text into the running turn via session/steer. Returns
+   * true when the loop accepted the injection (a receipt is echoed to the
+   * chat). Any failure — no session, dead bridge, a host without the method,
+   * or a session swap while we were awaiting — returns false so the caller
+   * can queue instead.
+   */
+  private async trySteer(text: string, generation: number): Promise<boolean> {
+    const sessionId = this.sessionId;
+    if (!sessionId || !this.client.isRunning || generation !== this.turnGeneration) {
+      return false;
+    }
+    try {
+      const res = await this.client.steer(sessionId, text);
+      if (res.accepted) {
+        // The injection already landed on the old loop; only echo the receipt
+        // when the session is still ours — a mid-RPC newSession must not find
+        // an old-turn receipt in its fresh transcript.
+        if (generation === this.turnGeneration) {
+          this.post({ type: "steerAccepted", text });
+        }
+        return true;
+      }
+    } catch {
+      /* host predates session/steer — queueing still works */
+    }
+    return false;
   }
 
   /** Fire the oldest queued prompt, if any. Called when a turn winds down. */

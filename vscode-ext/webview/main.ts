@@ -412,6 +412,7 @@ const PLACEHOLDER_BUSY = "MaClaw is working… (Enter to queue — queued prompt
 function setTurnActive(active: boolean): void {
   // The composer stays enabled while a turn runs: submitting queues the text
   // host-side instead of dropping it (the bridge rejects concurrent prompts).
+  turnActiveNow = active;
   sendEl.classList.toggle("loading", active);
   sendEl.title = active ? "Queue message" : "Send";
   inputEl.placeholder = active ? PLACEHOLDER_BUSY : PLACEHOLDER_IDLE;
@@ -434,6 +435,8 @@ interface QueueItem {
 
 /** Last queue state pushed by the host — used by the ↑-recall shortcut. */
 let currentQueue: QueueItem[] = [];
+/** Mirrors the latest turnState so the queue strip can explain fire timing. */
+let turnActiveNow = false;
 
 function renderQueue(items: QueueItem[], paused: boolean): void {
   currentQueue = items;
@@ -446,11 +449,17 @@ function renderQueue(items: QueueItem[], paused: boolean): void {
   label.className = paused ? "queue-label queue-paused" : "queue-label";
   label.textContent = paused
     ? `Queued (${items.length}) — paused after error, ▲ to resume`
-    : `Queued (${items.length})`;
+    : turnActiveNow
+      ? `Queued (${items.length}) — fires in order when the current turn ends`
+      : `Queued (${items.length})`;
   queueEl.appendChild(label);
-  for (const item of items) {
+  items.forEach((item, index) => {
     const chip = document.createElement("span");
     chip.className = "queue-chip";
+    if (turnActiveNow && !paused && index === 0) {
+      chip.classList.add("queue-chip--next");
+      chip.title = "Fires when the current turn ends";
+    }
 
     const body = document.createElement("span");
     body.className = "queue-text";
@@ -470,7 +479,9 @@ function renderQueue(items: QueueItem[], paused: boolean): void {
     fire.type = "button";
     fire.className = "queue-btn";
     fire.textContent = "▲";
-    fire.title = "Fire now (while busy: jump to the front of the queue)";
+    fire.title = turnActiveNow && !paused
+      ? "Steer into the running turn (falls back to next in line)"
+      : "Fire now";
     fire.addEventListener("click", () => vscode.postMessage({ type: "queueFire", id: item.id }));
     chip.appendChild(fire);
 
@@ -483,7 +494,7 @@ function renderQueue(items: QueueItem[], paused: boolean): void {
     chip.appendChild(del);
 
     queueEl.appendChild(chip);
-  }
+  });
 
   const clear = document.createElement("button");
   clear.type = "button";
@@ -542,6 +553,15 @@ function handleEvent(msg: { type: string; [key: string]: unknown }): void {
       const el = document.createElement("div");
       el.className = "msg msg-error";
       el.textContent = String(msg.message ?? "turn failed");
+      messagesEl.appendChild(el);
+      scrollToBottomIfStuck();
+      break;
+    }
+    case "steerAccepted": {
+      // The running loop accepted our guide-launch injection (引导发射).
+      const el = document.createElement("div");
+      el.className = "msg msg-steer";
+      el.textContent = `⇢ 已引导发射到当前回合：${String(msg.text ?? "")}`;
       messagesEl.appendChild(el);
       scrollToBottomIfStuck();
       break;

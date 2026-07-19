@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -170,51 +171,16 @@ func llmProviderDisplayName(providerName string) string {
 }
 
 func classifyHubErrorBody(body []byte) string {
-	var hubErr map[string]any
-	_ = json.Unmarshal(body, &hubErr)
-	hubCode, _ := hubErr["code"].(string)
-	if hubCode == "" {
+	// Classification lives in corelib; GUI only appends request_id / upstream diagnostics.
+	friendly := llm.ClassifyHubErrorBody(body)
+	if friendly == "" {
 		return ""
 	}
-	hubMessage, _ := hubErr["message"].(string)
-	retryAfterAt, _ := hubErr["retry_after_at"].(string)
-	retryAfterSeconds := int64(0)
-	switch v := hubErr["retry_after_seconds"].(type) {
-	case float64:
-		retryAfterSeconds = int64(v)
-	case int64:
-		retryAfterSeconds = v
-	case int:
-		retryAfterSeconds = int64(v)
-	case string:
-		if parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-			retryAfterSeconds = parsed
-		}
+	var hubErr map[string]any
+	if json.Unmarshal(body, &hubErr) != nil {
+		return friendly
 	}
-	if friendly := classifyHubLLMServiceError(hubCode, hubMessage, retryAfterSeconds, retryAfterAt); friendly != "" {
-		return appendHubErrorDiagnostics(friendly, hubErr)
-	}
-	switch hubCode {
-	case "LLM_ENDPOINT_USER_RATE_LIMITED":
-		// Hub queues bursts before 429; surface that so users don't think the model itself failed.
-		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
-		if retryText != "" {
-			return appendHubErrorDiagnostics("MaClaw官方请求过快，Hub 排队已超时，请约 "+retryText+" 后重试。", hubErr)
-		}
-		return appendHubErrorDiagnostics("MaClaw官方请求过快，Hub 本地排队已超时，请稍后再试。", hubErr)
-	case "LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED":
-		return appendHubErrorDiagnostics("请求在 Hub 限流排队等待时被取消。", hubErr)
-	case "LLM_PROVIDER_QUEUE_FULL":
-		return appendHubErrorDiagnostics("MaClaw官方上游队列已满，请稍后再试。", hubErr)
-	case "LLM_PROVIDER_QUEUE_TIMEOUT":
-		return appendHubErrorDiagnostics("MaClaw官方上游排队等待超时，请稍后再试。", hubErr)
-	case "LLM_ENDPOINT_CONCURRENCY_FULL":
-		return appendHubErrorDiagnostics("MaClaw官方网关并发已满，请稍后再试。", hubErr)
-	}
-	if (strings.HasPrefix(hubCode, "LLM_UPSTREAM_") || strings.HasPrefix(hubCode, "LLM_OFFICIAL_")) && strings.TrimSpace(hubMessage) != "" {
-		return appendHubErrorDiagnostics(hubMessage, hubErr)
-	}
-	return ""
+	return appendHubErrorDiagnostics(friendly, hubErr)
 }
 
 func appendHubErrorDiagnostics(message string, hubErr map[string]any) string {
@@ -277,93 +243,20 @@ func hubErrorNumberString(value any) string {
 
 // classifyOpenAIHTTPError parses OpenAI-compatible API error responses and
 // returns a user-friendly message that names the configured provider, not the
-// wire protocol.
+// wire protocol. Core classification is shared with the agent loop; GUI only
+// appends Hub diagnostics (request_id / upstream_host / …).
 func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) string {
-	providerDisplay := llmProviderDisplayName(providerName)
-	// 尝试解析 OpenAI 标准错误格式
-	var errBody struct {
-		Error struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Code    string `json:"code"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(body, &errBody)
-	code := errBody.Error.Code
-	typ := errBody.Error.Type
-	msg := extractOpenAIHTTPErrorMessage(body, errBody.Error.Message)
-
-	if friendly := classifyHubErrorBody(body); friendly != "" {
-		return friendly
-	}
-	if code == "LLM_MODEL_FORBIDDEN" || strings.Contains(strings.ToLower(msg), "no active model service entitlement") {
-		return "当前账号没有可用的模型服务权益，请开通模型服务、检查订阅状态，或切换其他模型提供方 (HTTP 403)"
-	}
-
-	// Hub wraps upstream provider auth failures as LLM_UPSTREAM_AUTH_FAILED
-	// and rate limits as LLM_UPSTREAM_RATE_LIMITED with descriptive Chinese
-	// messages. Surface them directly so the user (or admin) knows the
-	// problem is the upstream provider, not their own credentials.
-	if (code == "LLM_UPSTREAM_AUTH_FAILED" || code == "LLM_UPSTREAM_RATE_LIMITED") && msg != "" {
-		return msg
-	}
-
-	switch {
-	case typ == "overloaded_error" || strings.Contains(typ, "overloaded"):
-		return fmt.Sprintf("%s 服务器超载，请稍后再试 (overloaded)", providerDisplay)
-	case code == "insufficient_quota" || typ == "insufficient_quota":
-		return fmt.Sprintf("%s 账号额度不足，请检查账单和付费计划 (insufficient_quota)", providerDisplay)
-	case statusCode == http.StatusBadRequest && strings.TrimSpace(msg) != "":
-		return fmt.Sprintf("%s API invalid request (HTTP 400): %s", providerDisplay, summarizeProviderHTTPErrorMessage(msg))
-	case statusCode == http.StatusTooManyRequests:
-		if strings.Contains(string(body), "rate_limit") {
-			return fmt.Sprintf("%s API 请求频率超限，请稍后再试 (rate_limit)", providerDisplay)
-		}
-		return fmt.Sprintf("%s API 请求过于频繁，请稍后再试 (HTTP 429)", providerDisplay)
-	case statusCode == http.StatusUnauthorized:
-		return fmt.Sprintf("%s 认证失败，API Key 无效或已过期，请重新登录 (HTTP 401)", providerDisplay)
-	case statusCode == http.StatusForbidden:
-		return fmt.Sprintf("%s 拒绝访问，账号可能被限制或无权使用该模型 (HTTP 403)", providerDisplay)
-	case statusCode == http.StatusBadGateway:
-		// Hub wraps upstream provider errors with specific error codes.
-		if code == "LLM_UPSTREAM_AUTH_FAILED" || code == "LLM_UPSTREAM_FAILED" || code == "LLM_UPSTREAM_RATE_LIMITED" {
-			if msg != "" {
-				return msg
-			}
-		}
-		return "API 网关错误，上游服务不可用，请稍后再试 (HTTP 502)"
-	case statusCode == http.StatusServiceUnavailable:
-		return "API service temporarily unavailable; retry later (HTTP 503)"
-	case statusCode == http.StatusGatewayTimeout:
-		return "API gateway timeout; upstream is slow; retry later (HTTP 504)"
-	case statusCode >= 500:
-		return fmt.Sprintf("API server error; retry later (HTTP %d)", statusCode)
-	default:
-		// Check for overloaded signals in body even when JSON parse failed
-		// (e.g. body is wrapped with non-JSON prefix from SDK error formatting).
-		bodyLower := strings.ToLower(string(body))
-		if strings.Contains(bodyLower, "overloaded") {
-			return fmt.Sprintf("%s 服务器超载，请稍后再试 (overloaded)", providerDisplay)
-		}
-		return fmt.Sprintf("%s API 错误 (HTTP %d)", providerDisplay, statusCode)
-	}
-}
-
-func extractOpenAIHTTPErrorMessage(body []byte, fallback string) string {
-	if strings.TrimSpace(fallback) != "" {
-		return fallback
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return ""
-	}
-	for _, key := range []string{"message", "msg", "detail"} {
-		msg, _ := payload[key].(string)
-		if strings.TrimSpace(msg) != "" {
-			return msg
+	msg := llm.UserFacingHTTPStatusWithProvider(statusCode, body, llmProviderDisplayName(providerName))
+	// Only parse again when Hub diagnostic keys might be present.
+	if len(body) > 0 && (bytes.Contains(body, []byte(`"request_id"`)) ||
+		bytes.Contains(body, []byte(`"upstream_host"`)) ||
+		bytes.Contains(body, []byte(`"failure_stage"`))) {
+		var hubErr map[string]any
+		if json.Unmarshal(body, &hubErr) == nil {
+			msg = appendHubErrorDiagnostics(msg, hubErr)
 		}
 	}
-	return ""
+	return msg
 }
 
 func summarizeProviderHTTPErrorMessage(msg string) string {
@@ -374,58 +267,6 @@ func summarizeProviderHTTPErrorMessage(msg string) string {
 		return msg
 	}
 	return string(runes[:limit]) + "..."
-}
-
-func classifyHubLLMServiceError(code, message string, retryAfterSeconds int64, retryAfterAt string) string {
-	switch code {
-	case "LLM_SERVICE_PERIOD_LIMITED":
-		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
-		if retryText != "" {
-			return "MaClaw official quota is rate-limited; retry after " + retryText + "."
-		}
-		return "MaClaw official quota is rate-limited."
-	case "LLM_SERVICE_CREDITS_EXHAUSTED":
-		return "MaClaw official credits are exhausted. Redeem credits or switch provider."
-	case "LLM_SERVICE_GRANT_QUEUED":
-		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
-		if retryText != "" {
-			return "MaClaw official grant is not active yet; retry after " + retryText + "."
-		}
-		return "MaClaw official grant is not active yet; retry later."
-	case "LLM_SERVICE_GRANT_EXPIRED":
-		return "MaClaw official grant expired. Redeem a new grant or switch provider."
-	case "LLM_SERVICE_CREDITS_REQUIRED":
-		return "MaClaw official provider requires valid credits. Redeem credits or switch provider."
-	}
-	if strings.HasPrefix(code, "LLM_SERVICE_") && message != "" {
-		return message
-	}
-	return ""
-}
-
-func formatHubRetryText(seconds int64, retryAfterAt string) string {
-	if seconds <= 0 && retryAfterAt != "" {
-		if retryAt, err := time.Parse(time.RFC3339, retryAfterAt); err == nil {
-			seconds = int64((time.Until(retryAt) + time.Second - 1) / time.Second)
-		}
-	}
-	if seconds <= 0 {
-		return ""
-	}
-	// Keep units Chinese — messages that embed this text are user-facing CN strings.
-	if seconds < 60 {
-		return fmt.Sprintf("%d 秒", seconds)
-	}
-	minutes := (seconds + 59) / 60
-	if minutes < 60 {
-		return fmt.Sprintf("%d 分钟", minutes)
-	}
-	hours := (minutes + 59) / 60
-	if hours < 24 {
-		return fmt.Sprintf("%d 小时", hours)
-	}
-	days := (hours + 23) / 24
-	return fmt.Sprintf("%d 天", days)
 }
 
 func classifyOpenAICompatibleHTTPError(err error, providerName string) (string, bool) {
@@ -448,6 +289,15 @@ func classifyOpenAICompatibleHTTPError(err error, providerName string) (string, 
 	body := ""
 	if colon := strings.Index(msg[match[1]:], ":"); colon >= 0 {
 		body = strings.TrimSpace(msg[match[1]+colon+1:])
+	}
+	// Legacy Error() embeds "body_len=N" then may append SDK text + JSON.
+	// Strip the length prefix; if a JSON object follows, keep it for classification.
+	if strings.HasPrefix(body, "body_len=") {
+		if i := strings.Index(body, "{"); i >= 0 {
+			body = body[i:]
+		} else {
+			body = ""
+		}
 	}
 	return classifyOpenAIHTTPError(statusCode, []byte(body), providerName), true
 }

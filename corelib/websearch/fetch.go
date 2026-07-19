@@ -185,36 +185,75 @@ func fetchHTTPWithClientCtx(parent context.Context, rawURL string, opts *FetchOp
 	return fetchTextHTTP(ctx, rawURL, opts, client)
 }
 
-// fetchTextHTTP is the original text-extraction path (no save_path): single
-// attempt, body capped by MaxBytes, readable-content extraction.
+// fetchTextHTTP is the text-extraction path (no save_path). It runs through
+// the same anti-bot escalation chain as file downloads: retries on transient
+// errors, browser-like headers, chrome TLS fingerprint, and browser-session
+// cookies when a plain fetch is blocked.
 func fetchTextHTTP(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
+	return runFetchChain(ctx, rawURL, "[fetch]", maxDownloadAttemptsPerLevel, opts, client, func(c *http.Client, extra map[string]string) *fetchAttempt {
+		return performTextFetch(ctx, rawURL, opts, c, extra, false)
+	})
+}
+
+// performTextFetch executes a single GET and extracts readable content.
+// In rawMode it returns the raw (UTF-8-normalized) body without readable-text
+// extraction — used by the HTML search endpoints that parse the page
+// structure themselves.
+func performTextFetch(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client, extra map[string]string, rawMode bool) *fetchAttempt {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
-		return nil, err
+		return &fetchAttempt{err: err}
 	}
-	applyRequestHeaders(req, opts, nil)
+	applyRequestHeaders(req, opts, extra)
 
-	// The shared client's 30s Timeout covers body streaming and would
-	// contradict the tool's timeout parameter (up to 600s); the ctx deadline
-	// is authoritative here.
-	c := *client
-	c.Timeout = 0
-	resp, err := c.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return &fetchAttempt{err: fmt.Errorf("HTTP request failed: %w", err), retryable: true}
 	}
 	defer resp.Body.Close()
 
+	// A leftover 3xx means the redirect policy gave up or Location was
+	// missing/invalid; treat it as a failure, never as content.
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return &fetchAttempt{
+			err:     fmt.Errorf("HTTP %d: redirect not followed (loop or missing Location)", resp.StatusCode),
+			blocked: bodyContainsAntiBotMarker(peek),
+		}
+	}
+
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		blocked := looksLikeAntiBot(resp.StatusCode, resp.Header, peek)
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		var retryAfter time.Duration
+		if retryable {
+			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+		}
+		return &fetchAttempt{
+			err:        fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status),
+			blocked:    blocked,
+			retryable:  retryable,
+			retryAfter: retryAfter,
+		}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, opts.MaxBytes))
 	if err != nil {
-		return nil, fmt.Errorf("read body failed: %w", err)
+		return &fetchAttempt{err: fmt.Errorf("read body failed: %w", err), retryable: true}
 	}
 
 	ct := resp.Header.Get("Content-Type")
+	// A WAF challenge page disguised as a successful response: escalate
+	// instead of returning the interstitial HTML as if it were the page
+	// content.
+	if isHTMLContent(ct) && bodyContainsAntiBotMarker(body) {
+		return &fetchAttempt{
+			err:     fmt.Errorf("HTTP %d but body is an anti-bot challenge page", resp.StatusCode),
+			blocked: true,
+		}
+	}
+
 	finalURL := rawURL
 	if resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL.String()
@@ -228,6 +267,12 @@ func fetchTextHTTP(ctx context.Context, rawURL string, opts *FetchOptions, clien
 	// Detect and convert encoding
 	body = ensureUTF8(body, ct)
 
+	if rawMode {
+		result.Content = string(body)
+		applyContentWindow(result, opts.Offset, opts.MaxChars)
+		return &fetchAttempt{result: result}
+	}
+
 	// Extract content based on content type
 	if isHTMLContent(ct) {
 		title, text := extractReadableContent(body)
@@ -240,7 +285,7 @@ func fetchTextHTTP(ctx context.Context, rawURL string, opts *FetchOptions, clien
 	}
 
 	applyContentWindow(result, opts.Offset, opts.MaxChars)
-	return result, nil
+	return &fetchAttempt{result: result}
 }
 
 // ---------------------------------------------------------------------------

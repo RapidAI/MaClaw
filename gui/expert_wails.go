@@ -247,6 +247,10 @@ func (a *App) ListAvailableToolNames() (string, error) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Deferred    bool   `json:"deferred"`
+		Category    string `json:"category"`
+		Risk        string `json:"risk"`
+		LabelZh     string `json:"label_zh"`
+		LabelEn     string `json:"label_en"`
 	}
 	out := make([]toolEntry, 0, len(tools))
 	seen := make(map[string]bool, len(tools))
@@ -256,10 +260,15 @@ func (a *App) ListAvailableToolNames() (string, error) {
 			continue
 		}
 		seen[name] = true
+		meta := lookupExpertToolMeta(name)
 		out = append(out, toolEntry{
 			Name:        name,
 			Description: truncateForLogGUI(extractToolDescription(def), 100),
 			Deferred:    deferred[name],
+			Category:    meta.Category,
+			Risk:        meta.Risk,
+			LabelZh:     meta.LabelZh,
+			LabelEn:     meta.LabelEn,
 		})
 	}
 	data, err := json.Marshal(out)

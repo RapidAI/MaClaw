@@ -20,8 +20,10 @@ queued prompts fire FIFO, one turn at a time, as each turn ends.
 
 - Queued prompts appear as chips above the composer. Click a chip's text to
   pull it back into the composer for editing (appended if the composer already
-  has a draft); `▲` fires it immediately — while busy, that moves it to the
-  front so it steers the next turn; `✕` removes it; `Clear all` empties the queue.
+  has a draft); `▲` **steers it into the running turn** when the MaClaw host
+  supports `session/steer` (the text is injected between agent iterations,
+  like the GUI's 引导发射) — on older hosts it instead jumps to the front of
+  the queue and leads the next turn; `✕` removes it; `Clear all` empties the queue.
 - With the composer empty, `↑` pulls the newest queued prompt back for editing.
 - If a turn fails (bridge down, quota, …), auto-fire pauses and the strip shows
   a hint — click `▲` on any chip to resume. Cancelling a turn is not an error:

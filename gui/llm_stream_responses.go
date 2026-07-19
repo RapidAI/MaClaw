@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,26 +29,35 @@ type responsesItemAccum struct {
 	args     strings.Builder
 }
 
-// classifyResponsesAPIHTTPError maps HTTP error status codes from the
-// Responses API to user-friendly Chinese error messages.
+// classifyResponsesAPIHTTPError maps Responses API HTTP errors to user-facing text.
+// Shared classification comes from corelib; this layer adds Responses-specific
+// bare-status phrasing and attaches endpoint/model for debugging.
 func classifyResponsesAPIHTTPError(statusCode int, body []byte, endpoint, model, providerName string) string {
 	providerDisplay := llmProviderDisplayName(providerName)
 	if friendly := classifyHubErrorBody(body); friendly != "" {
 		return friendly
 	}
-	switch statusCode {
-	case 401:
-		return fmt.Sprintf("%s OAuth token 已过期，请重新登录账号 (HTTP 401)", providerDisplay)
-	case 429:
-		return fmt.Sprintf("%s 订阅额度已达上限，请稍后再试 (HTTP 429)", providerDisplay)
-	case 403:
-		if strings.Contains(strings.ToLower(string(body)), "insufficient_quota") {
-			return fmt.Sprintf("%s 订阅状态异常，请检查订阅是否有效 (HTTP 403)", providerDisplay)
+
+	// Bare status with no structured body: Responses product-specific wording.
+	if len(bytes.TrimSpace(body)) == 0 {
+		switch statusCode {
+		case http.StatusUnauthorized:
+			return fmt.Sprintf("%s OAuth token 已过期，请重新登录账号 (HTTP 401)", providerDisplay)
+		case http.StatusTooManyRequests:
+			return fmt.Sprintf("%s 订阅额度已达上限，请稍后再试 (HTTP 429)", providerDisplay)
+		case http.StatusForbidden:
+			return fmt.Sprintf("%s 拒绝访问 (HTTP 403)", providerDisplay)
 		}
-		return fmt.Sprintf("%s 拒绝访问 (HTTP 403)", providerDisplay)
-	default:
+	}
+	if statusCode == http.StatusForbidden && strings.Contains(strings.ToLower(string(body)), "insufficient_quota") {
+		return fmt.Sprintf("%s 订阅状态异常，请检查订阅是否有效 (HTTP 403)", providerDisplay)
+	}
+
+	base := llm.UserFacingHTTPStatusWithProvider(statusCode, body, providerDisplay)
+	if base == "" {
 		return fmt.Sprintf("%s Responses API 错误 (HTTP %d) [url=%s model=%s]", providerDisplay, statusCode, endpoint, model)
 	}
+	return fmt.Sprintf("%s [url=%s model=%s]", base, endpoint, model)
 }
 
 // doResponsesAPILLMRequest sends a non-streaming request using the Responses API

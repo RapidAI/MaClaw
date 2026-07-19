@@ -64,8 +64,8 @@ type downloadLevel struct {
 	utls    bool // dial with the Chrome TLS fingerprint (uTLS) for this level
 }
 
-// downloadToFile streams a URL to opts.SavePath with retries and an automatic
-// anti-bot escalation chain:
+// The automatic anti-bot escalation chain shared by file downloads and text
+// fetches:
 //
 //	L0:   default headers (random desktop UA).
 //	L1:   full Chrome-like header set, when the response looks like an
@@ -75,17 +75,27 @@ type downloadLevel struct {
 //	      HelloChrome_Auto), defeating JA3/JA4-based detection.
 //	L2:   cookies + UA exported from the persistent browser session over the
 //	      fingerprint client, when the GUI registered a BrowserAuthProvider.
-func downloadToFile(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
+//
+// runFetchChain drives attemptFn through that chain with retries (network
+// errors, 429, 5xx; Retry-After honored) and returns the first success.
+// logTag is the download.log prefix ("[download]" / "[fetch]").
+// maxAttemptsPerLevel caps same-level retries; pass 1 for fail-fast callers
+// that iterate over multiple endpoints with a tight shared time budget.
+func runFetchChain(ctx context.Context, rawURL, logTag string, maxAttemptsPerLevel int, opts *FetchOptions, client *http.Client, attemptFn func(client *http.Client, extra map[string]string) *fetchAttempt) (*FetchResult, error) {
+	if maxAttemptsPerLevel <= 0 {
+		maxAttemptsPerLevel = 1
+	}
 	// The shared client's fixed 30s Timeout covers body streaming and would
-	// kill large/slow downloads; the ctx deadline (opts.TimeoutS, up to 600s)
-	// is authoritative here, so disable the client-level timeout on a copy.
+	// contradict the tool's timeout parameter; the ctx deadline (opts.TimeoutS,
+	// up to 600s) is authoritative here, so disable the client-level timeout
+	// on a copy.
 	c := *client
 	c.Timeout = 0
 
 	start := time.Now()
 	logURL := sanitizeURLForLog(rawURL)
-	dlogf("[download] start url=%q save_path=%q max_bytes=%d timeout=%ds custom_headers=%s",
-		logURL, opts.SavePath, opts.MaxBytes, opts.TimeoutS, redactHeaderKeys(opts.Headers))
+	dlogf("%s start url=%q save_path=%q max_bytes=%d timeout=%ds custom_headers=%s",
+		logTag, logURL, opts.SavePath, opts.MaxBytes, opts.TimeoutS, redactHeaderKeys(opts.Headers))
 
 	levels := []downloadLevel{{}} // L0: default headers, plain client
 	var utlsClient *http.Client   // built lazily on first fingerprint level
@@ -96,7 +106,7 @@ func downloadToFile(ctx context.Context, rawURL string, opts *FetchOptions, clie
 		if utlsClient == nil {
 			// Share the cookie jar and redirect policy with the plain client.
 			utlsClient = chromeTLSClient(c.Jar, c.CheckRedirect)
-			dlogf("[download] chrome TLS fingerprint client engaged url=%q", logURL)
+			dlogf("%s chrome TLS fingerprint client engaged url=%q", logTag, logURL)
 		}
 		return utlsClient
 	}
@@ -107,7 +117,7 @@ func downloadToFile(ctx context.Context, rawURL string, opts *FetchOptions, clie
 	attempt := 0
 	for level := 0; level < len(levels); level++ {
 		lv := levels[level]
-		for try := 0; try < maxDownloadAttemptsPerLevel; try++ {
+		for try := 0; try < maxAttemptsPerLevel; try++ {
 			attempt++
 			if try > 0 {
 				backoff := time.Duration(1<<uint(try-1)) * time.Second // 1s, 2s
@@ -117,78 +127,86 @@ func downloadToFile(ctx context.Context, rawURL string, opts *FetchOptions, clie
 				if backoff > 30*time.Second {
 					backoff = 30 * time.Second
 				}
-				dlogf("[download] retry attempt=%d level=%d backoff=%s", attempt, level, backoff)
+				dlogf("%s retry attempt=%d level=%d backoff=%s", logTag, attempt, level, backoff)
 				select {
 				case <-ctx.Done():
-					dlogf("[download] aborted url=%q: %v", logURL, ctx.Err())
+					dlogf("%s aborted url=%q: %v", logTag, logURL, ctx.Err())
 					return nil, ctx.Err()
 				case <-time.After(backoff):
 				}
 			}
-			out := performDownload(ctx, rawURL, logURL, opts, clientFor(lv), lv.headers)
+			out := attemptFn(clientFor(lv), lv.headers)
 			waitHint = out.retryAfter
 			if out.err == nil {
 				dur := time.Since(start)
-				dlogf("[download] success url=%q final=%q bytes=%d dur=%s speed=%s saved=%q attempts=%d level=%d",
-					logURL, sanitizeURLForLog(out.result.URL), out.result.BytesRead, dur.Round(time.Millisecond),
+				dlogf("%s success url=%q final=%q bytes=%d dur=%s speed=%s saved=%q attempts=%d level=%d",
+					logTag, logURL, sanitizeURLForLog(out.result.URL), out.result.BytesRead, dur.Round(time.Millisecond),
 					humanSpeed(int64(out.result.BytesRead), dur), out.result.SavedTo, attempt, level)
 				return out.result, nil
 			}
 			lastErr = out.err
 			lastBlocked = out.blocked
-			dlogf("[download] attempt=%d level=%d try=%d failed: %v (blocked=%t retryable=%t)",
-				attempt, level, try+1, out.err, out.blocked, out.retryable)
+			dlogf("%s attempt=%d level=%d try=%d failed: %v (blocked=%t retryable=%t)",
+				logTag, attempt, level, try+1, out.err, out.blocked, out.retryable)
 			if out.blocked {
 				levels = appendNextLevel(levels, level, ctx, rawURL)
 				break // escalate to next level
 			}
 			if !out.retryable {
-				dlogf("[download] failed url=%q err=%v dur=%s", logURL, out.err, time.Since(start).Round(time.Millisecond))
+				dlogf("%s failed url=%q err=%v dur=%s", logTag, logURL, out.err, time.Since(start).Round(time.Millisecond))
 				return nil, out.err
 			}
 		}
 	}
-	dlogf("[download] failed url=%q err=%v dur=%s", logURL, lastErr, time.Since(start).Round(time.Millisecond))
+	dlogf("%s failed url=%q err=%v dur=%s", logTag, logURL, lastErr, time.Since(start).Round(time.Millisecond))
 	if lastBlocked {
 		return nil, fmt.Errorf("%v（目标站点存在反爬验证。请先用 browser 工具打开 %s 完成人机验证后重试；仍失败则用 download_file(url, save_path, via_browser=true) 让浏览器直接下载）", lastErr, rawURL)
 	}
 	return nil, lastErr
 }
 
+// downloadToFile streams a URL to opts.SavePath through the chain.
+func downloadToFile(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
+	logURL := sanitizeURLForLog(rawURL)
+	return runFetchChain(ctx, rawURL, "[download]", maxDownloadAttemptsPerLevel, opts, client, func(c *http.Client, extra map[string]string) *fetchAttempt {
+		return performDownload(ctx, rawURL, logURL, opts, c, extra)
+	})
+}
+
 // appendNextLevel prepares the header set for the next escalation level.
 func appendNextLevel(levels []downloadLevel, level int, ctx context.Context, rawURL string) []downloadLevel {
 	switch level {
 	case 0:
-		dlogf("[download] escalate to L1: browser-like headers url=%q", sanitizeURLForLog(rawURL))
+		dlogf("[fetch-chain] escalate to L1: browser-like headers url=%q", sanitizeURLForLog(rawURL))
 		return append(levels, downloadLevel{headers: browserLikeHeaders()})
 	case 1:
-		dlogf("[download] escalate to L1.5: chrome TLS fingerprint url=%q", sanitizeURLForLog(rawURL))
+		dlogf("[fetch-chain] escalate to L1.5: chrome TLS fingerprint url=%q", sanitizeURLForLog(rawURL))
 		return append(levels, downloadLevel{headers: browserLikeHeaders(), utls: true})
 	case 2:
 		if u, err := url.Parse(rawURL); (err != nil || !strings.EqualFold(u.Scheme, "https")) && !allowInsecureL2Hook {
 			// Injecting the browser session's cookies (including Secure and
 			// HttpOnly ones like cf_clearance) into a plaintext http:// request
 			// would leak session credentials; skip L2 for non-https URLs.
-			dlogf("[download] L2 skipped: non-https URL, not injecting session cookies")
+			dlogf("[fetch-chain] L2 skipped: non-https URL, not injecting session cookies")
 			return levels
 		}
 		p := getBrowserAuthProvider()
 		if p == nil {
-			dlogf("[download] L2 unavailable: no browser auth provider registered")
+			dlogf("[fetch-chain] L2 unavailable: no browser auth provider registered")
 			return levels
 		}
 		hdrs, err := p(ctx, rawURL)
 		if err != nil || len(hdrs) == 0 {
-			dlogf("[download] L2 unavailable: %v", err)
+			dlogf("[fetch-chain] L2 unavailable: %v", err)
 			return levels
 		}
-		dlogf("[download] escalate to L2: browser session auth injected headers=%s", redactHeaderKeys(hdrs))
+		dlogf("[fetch-chain] escalate to L2: browser session auth injected headers=%s", redactHeaderKeys(hdrs))
 		return append(levels, downloadLevel{headers: hdrs, utls: true})
 	}
 	return levels
 }
 
-type downloadOutcome struct {
+type fetchAttempt struct {
 	result     *FetchResult
 	err        error
 	blocked    bool          // anti-bot interstitial detected → escalate to next level
@@ -197,16 +215,16 @@ type downloadOutcome struct {
 }
 
 // performDownload executes a single HTTP GET and streams the body to disk.
-func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOptions, client *http.Client, extraHeaders map[string]string) *downloadOutcome {
+func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOptions, client *http.Client, extraHeaders map[string]string) *fetchAttempt {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
-		return &downloadOutcome{err: err}
+		return &fetchAttempt{err: err}
 	}
 	applyRequestHeaders(req, opts, extraHeaders)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return &downloadOutcome{err: fmt.Errorf("HTTP request failed: %w", err), retryable: true}
+		return &fetchAttempt{err: fmt.Errorf("HTTP request failed: %w", err), retryable: true}
 	}
 	defer resp.Body.Close()
 
@@ -219,7 +237,7 @@ func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOpti
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		blocked := bodyContainsAntiBotMarker(peek)
 		dlogf("[download] http_error status=%d redirect-not-followed blocked=%t", resp.StatusCode, blocked)
-		return &downloadOutcome{
+		return &fetchAttempt{
 			err:     fmt.Errorf("HTTP %d: redirect not followed (loop or missing Location)", resp.StatusCode),
 			blocked: blocked,
 		}
@@ -234,7 +252,7 @@ func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOpti
 			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 		}
 		dlogf("[download] http_error status=%d server=%q blocked=%t", resp.StatusCode, resp.Header.Get("Server"), blocked)
-		return &downloadOutcome{
+		return &fetchAttempt{
 			err:        fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status),
 			blocked:    blocked,
 			retryable:  retryable,
@@ -244,11 +262,11 @@ func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOpti
 
 	dir := filepath.Dir(opts.SavePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return &downloadOutcome{err: fmt.Errorf("create directory failed: %w", err)}
+		return &fetchAttempt{err: fmt.Errorf("create directory failed: %w", err)}
 	}
 	f, err := os.Create(opts.SavePath)
 	if err != nil {
-		return &downloadOutcome{err: fmt.Errorf("create file failed: %w", err)}
+		return &fetchAttempt{err: fmt.Errorf("create file failed: %w", err)}
 	}
 	pw := &progressWriter{w: f, url: logURL, total: resp.ContentLength, lastLog: time.Now()}
 	// Read one byte past MaxBytes so an oversized body is detected as an
@@ -257,15 +275,15 @@ func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOpti
 	closeErr := f.Close()
 	if copyErr == nil && n > opts.MaxBytes {
 		_ = os.Remove(opts.SavePath)
-		return &downloadOutcome{err: fmt.Errorf("file exceeds max_bytes limit (%d bytes)", opts.MaxBytes)}
+		return &fetchAttempt{err: fmt.Errorf("file exceeds max_bytes limit (%d bytes)", opts.MaxBytes)}
 	}
 	if copyErr != nil {
 		_ = os.Remove(opts.SavePath)
-		return &downloadOutcome{err: fmt.Errorf("download interrupted after %d bytes: %w", n, copyErr), retryable: true}
+		return &fetchAttempt{err: fmt.Errorf("download interrupted after %d bytes: %w", n, copyErr), retryable: true}
 	}
 	if closeErr != nil {
 		_ = os.Remove(opts.SavePath)
-		return &downloadOutcome{err: fmt.Errorf("write file failed: %w", closeErr)}
+		return &fetchAttempt{err: fmt.Errorf("write file failed: %w", closeErr)}
 	}
 
 	finalURL := rawURL
@@ -279,14 +297,14 @@ func performDownload(ctx context.Context, rawURL, logURL string, opts *FetchOpti
 	// and treat it as blocked so the escalation chain continues.
 	if savedFileLooksLikeChallenge(opts.SavePath, resp.Header.Get("Content-Type")) {
 		_ = os.Remove(opts.SavePath)
-		dlogf("[download] http_error status=200 challenge page disguised as file url=%q", logURL)
-		return &downloadOutcome{
-			err:     fmt.Errorf("HTTP 200 but body is an anti-bot challenge page, not the requested file"),
+		dlogf("[download] http_error status=%d challenge page disguised as file url=%q", resp.StatusCode, logURL)
+		return &fetchAttempt{
+			err:     fmt.Errorf("HTTP %d but body is an anti-bot challenge page, not the requested file", resp.StatusCode),
 			blocked: true,
 		}
 	}
 
-	return &downloadOutcome{result: &FetchResult{
+	return &fetchAttempt{result: &FetchResult{
 		URL:         finalURL,
 		ContentType: resp.Header.Get("Content-Type"),
 		BytesRead:   int(n),
@@ -335,10 +353,15 @@ func browserLikeHeaders() map[string]string {
 }
 
 // antiBotBodyMarkers are lowercase substrings found in anti-bot challenge /
-// interstitial pages (Cloudflare and similar WAFs).
+// interstitial pages (Cloudflare, captcha widgets, and similar WAFs). Widget
+// markers (g-recaptcha/h-captcha/cf-turnstile/captcha-box) virtually never
+// appear in real content pages, so false positives only cost one retry.
 var antiBotBodyMarkers = []string{
 	"just a moment", "cf-chl", "challenge-platform", "cf_clearance",
 	"attention required! | cloudflare", "verify you are human",
+	"anomaly-modal", "bots use duckduckgo", // DuckDuckGo anomaly challenge
+	"g-recaptcha", "h-captcha", "cf-turnstile", "captcha-box", "challenge-form",
+	"百度安全验证", "wappass.baidu.com/static/captcha", // Baidu security check
 }
 
 // looksLikeAntiBot reports whether a failed response is an anti-bot

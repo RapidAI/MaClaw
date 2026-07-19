@@ -496,7 +496,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			}
 			finishLLMRequest(err)
 			if err != nil {
-				return finish(LoopResult{Error: fmt.Sprintf("LLM call failed: %v", err), Iterations: iteration, ToolCalls: totalToolCalls})
+				return finish(LoopResult{Error: fmt.Sprintf("LLM call failed: %s", llm.UserFacingError(err)), Iterations: iteration, ToolCalls: totalToolCalls})
 			}
 		} else {
 			finishLLMRequest(nil)
@@ -1130,7 +1130,7 @@ func doResponsesRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfi
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, newLLMHTTPError(resp.StatusCode, fmt.Sprintf("llm responses request failed body_len=%d", len(body)))
+		return nil, &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
 	}
 	parsed, err := llm.ParseNonStreamResponsesAPIBody(body)
 	if err != nil {

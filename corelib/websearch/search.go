@@ -199,31 +199,18 @@ func searchDuckDuckGo(ctx context.Context, provider corelib.WebSearchProvider, q
 	if baseURL == "" {
 		baseURL = "https://lite.duckduckgo.com/lite/"
 	}
-	form := url.Values{}
-	form.Set("q", query)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, strings.NewReader(form.Encode()))
+	sep := "?"
+	if strings.Contains(baseURL, "?") {
+		sep = "&"
+	}
+	// GET through the anti-bot chain: the DDG HTML endpoints accept GET, and
+	// anomaly challenges (HTTP 202 + challenge page) then escalate instead of
+	// failing flat.
+	html, err := fetchRawHTMLWithChain(ctx, baseURL+sep+"q="+url.QueryEscape(query), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", pickUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-
-	resp, err := httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-		return nil, duckDuckGoHTTPError(resp.StatusCode, body)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		return nil, err
-	}
-	return parseDDGResults(string(body), maxResults), nil
+	return parseDDGResults(html, maxResults), nil
 }
 
 func fallbackDirectSearch(ctx context.Context, query string, maxResults int, provider corelib.WebSearchProvider, providerErr error, providerResults []SearchResult) ([]SearchResult, error) {
@@ -249,6 +236,37 @@ func fallbackDirectSearch(ctx context.Context, query string, maxResults int, pro
 	return providerResults, nil
 }
 
+// BrowserSearchHit mirrors browser.SearchHit without an import dependency
+// (websearch must not import corelib/browser; the GUI wires the hook).
+type BrowserSearchHit struct {
+	Title   string
+	URL     string
+	Snippet string
+}
+
+// BrowserSearchProvider searches the web with the managed real browser
+// (last-resort path when every HTTP-level endpoint fails).
+type BrowserSearchProvider func(ctx context.Context, query string, maxResults int) ([]BrowserSearchHit, error)
+
+var (
+	browserSearchProviderMu sync.RWMutex
+	browserSearchProvider   BrowserSearchProvider
+)
+
+// SetBrowserSearchProvider installs the browser-based search fallback. Safe
+// to call multiple times; nil disables the fallback.
+func SetBrowserSearchProvider(p BrowserSearchProvider) {
+	browserSearchProviderMu.Lock()
+	browserSearchProvider = p
+	browserSearchProviderMu.Unlock()
+}
+
+func getBrowserSearchProvider() BrowserSearchProvider {
+	browserSearchProviderMu.RLock()
+	defer browserSearchProviderMu.RUnlock()
+	return browserSearchProvider
+}
+
 func searchDirectFallbackChain(ctx context.Context, query string, maxResults int, skipFailureDomain string) ([]SearchResult, error) {
 	endpoints := orderedDirectSearchEndpoints()
 	var failures []string
@@ -270,6 +288,24 @@ func searchDirectFallbackChain(ctx context.Context, query string, maxResults int
 		}
 		if ctx.Err() != nil {
 			break
+		}
+	}
+	// Ultimate fallback: the managed real browser (cookies, TLS fingerprint,
+	// JS execution) searches Bing/Google directly. Registered by the GUI.
+	if hook := getBrowserSearchProvider(); hook != nil && ctx.Err() == nil {
+		dlogf("[search] all direct endpoints failed; trying browser search fallback")
+		hits, herr := hook(ctx, query, maxResults)
+		if herr == nil && len(hits) > 0 {
+			results := make([]SearchResult, 0, len(hits))
+			for _, h := range hits {
+				results = append(results, SearchResult{Title: h.Title, URL: h.URL, Snippet: h.Snippet})
+			}
+			return results, nil
+		}
+		if herr != nil {
+			failures = append(failures, fmt.Sprintf("browser-search failed: %v", herr))
+		} else {
+			failures = append(failures, "browser-search returned no results")
 		}
 	}
 	if len(failures) == 0 {
@@ -778,77 +814,43 @@ func FetchWithTinyFish(ctx context.Context, rawURL string, apiKey string, fetchU
 	}, nil
 }
 
+// fetchRawHTMLWithChain fetches a URL through the anti-bot escalation chain
+// and returns the raw HTML (no readable-text extraction). Used by the direct
+// HTML search endpoints so a blocked search page (Cloudflare/rate limit)
+// escalates the same way downloads do.
+//
+// maxAttemptsPerLevel=1: the search fallback chain walks several endpoints
+// under a tight shared time budget, so a failing endpoint must fail fast and
+// yield to the next one instead of burning the budget on same-URL retries.
+func fetchRawHTMLWithChain(ctx context.Context, rawURL string, headers map[string]string) (string, error) {
+	opts := &FetchOptions{TimeoutS: 30, MaxBytes: 2 * 1024 * 1024, Headers: headers}
+	result, err := runFetchChain(ctx, rawURL, "[search]", 1, opts, httpClient(), func(c *http.Client, extra map[string]string) *fetchAttempt {
+		return performTextFetch(ctx, rawURL, opts, c, extra, true)
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
 // searchDirectLegacy scrapes DuckDuckGo HTML lite for search results.
 func searchDirectLegacy(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
 	searchURL := defaultLegacySearchURL + "?q=" + url.QueryEscape(query)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", pickUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-
-	resp, err := httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
-		return nil, duckDuckGoHTTPError(resp.StatusCode, body)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		return nil, err
-	}
-
-	return parseDDGResults(string(body), maxResults), nil
-}
-
-func duckDuckGoHTTPError(statusCode int, body []byte) error {
-	bodyText := strings.ToLower(string(body))
-	if statusCode == http.StatusAccepted {
-		if strings.Contains(bodyText, "anomaly-modal") ||
-			strings.Contains(bodyText, "bots use duckduckgo too") ||
-			strings.Contains(bodyText, "challenge-form") {
-			return fmt.Errorf("DuckDuckGo blocked this automated request with a human verification challenge (HTTP %d)", statusCode)
-		}
-	}
-	return fmt.Errorf("DuckDuckGo returned HTTP %d", statusCode)
+	return parseDDGResults(html, maxResults), nil
 }
 
 // searchMojeekDirect scrapes Mojeek HTML as a provider-diverse direct fallback.
 func searchMojeekDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
 	searchURL := defaultMojeekSearchURL + "?q=" + url.QueryEscape(query)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", pickUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-
-	resp, err := httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Mojeek returned HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		return nil, err
-	}
-
-	return parseMojeekResults(string(body), maxResults), nil
+	return parseMojeekResults(html, maxResults), nil
 }
 
 // parseDDGResults extracts search results from DuckDuckGo HTML lite response.
@@ -878,6 +880,12 @@ func parseDDGResults(html string, maxResults int) []SearchResult {
 		// DuckDuckGo wraps URLs in redirect: //duckduckgo.com/l/?uddg=...
 		href = resolveDDGURL(href)
 		href = normalizeSearchResultURL(href)
+		if isDDGAdURL(href) {
+			// Ad entries share the result__a class but redirect through DDG's
+			// ad tracker; they are not organic results.
+			remaining = remaining[17:]
+			continue
+		}
 
 		// Extract title (text between > and </a>)
 		title := extractTagText(remaining, "a")
@@ -977,6 +985,13 @@ func isSearchResultAnchor(contextBefore, anchorOpen string) bool {
 }
 
 // resolveDDGURL extracts the actual URL from DuckDuckGo's redirect wrapper.
+// isDDGAdURL reports whether a DDG result URL is an ad-tracker redirect
+// rather than an organic result.
+func isDDGAdURL(href string) bool {
+	return strings.Contains(href, "://duckduckgo.com/y.js") ||
+		strings.Contains(href, "://duckduckgo.com/aclick")
+}
+
 func resolveDDGURL(href string) string {
 	if strings.Contains(href, "uddg=") {
 		if u, err := url.Parse(href); err == nil {
@@ -1155,31 +1170,11 @@ func cleanHTML(s string) string {
 
 func searchBingDirect(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
 	searchURL := defaultBingSearchURL + "?q=" + url.QueryEscape(query) + "&count=" + fmt.Sprintf("%d", maxResults)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	html, err := fetchRawHTMLWithChain(ctx, searchURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", pickUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-
-	resp, err := httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Bing returned HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		return nil, err
-	}
-
-	return parseBingResults(string(body), maxResults), nil
+	return parseBingResults(html, maxResults), nil
 }
 
 // parseBingResults extracts search results from Bing's HTML response.
@@ -1270,32 +1265,12 @@ func searchBaiduDirect(ctx context.Context, query string, maxResults int) ([]Sea
 	cookie := acquireBaiduCookie(ctx)
 
 	searchURL := defaultBaiduSearchURL + "?wd=" + url.QueryEscape(query) + "&rn=" + fmt.Sprintf("%d", maxResults)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", pickUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-	req.Header.Set("Cookie", cookie)
-
-	resp, err := httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Baidu returned HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	html, err := fetchRawHTMLWithChain(ctx, searchURL, map[string]string{"Cookie": cookie})
 	if err != nil {
 		return nil, err
 	}
 
-	results := parseBaiduResults(string(body), maxResults)
+	results := parseBaiduResults(html, maxResults)
 	if len(results) == 0 {
 		return nil, fmt.Errorf("Baidu returned no parseable results (possibly captcha page)")
 	}
@@ -1375,70 +1350,48 @@ func acquireBaiduCookie(ctx context.Context) string {
 // parseBaiduResults extracts search results from Baidu's HTML response.
 // Baidu uses <div class="result ..."> or <div class="c-container"> for each result,
 // with <h3 class="t"><a href="...">title</a></h3> and various snippet containers.
+// parseBaiduResults extracts organic results from Baidu's current SERP markup.
+// Organic blocks are <div class="result c-container ..." mu="REAL_URL">; the
+// mu attribute carries the direct target URL (better than the /link redirect),
+// the title is the first <h3> inside the block, and the snippet text lives in
+// the <!--s-data:{"summaryData":...}--> JSON comment as "text":"...".
 func parseBaiduResults(html string, maxResults int) []SearchResult {
 	var results []SearchResult
 	remaining := html
 
 	for len(results) < maxResults {
-		// Find result containers — Baidu uses <h3 class="t"> for result titles
-		idx := strings.Index(remaining, `<h3 class="t"`)
+		idx := strings.Index(remaining, `class="result c-container`)
+		if op := strings.Index(remaining, `class="result-op c-container`); op >= 0 && (idx < 0 || op < idx) {
+			idx = op
+		}
 		if idx < 0 {
-			// Try alternative: <h3 class="c-title">
-			idx = strings.Index(remaining, `<h3 class="c-title"`)
-			if idx < 0 {
-				break
-			}
+			break
 		}
 		remaining = remaining[idx:]
 
-		// Extract the <a> inside <h3>
-		aIdx := strings.Index(remaining, "<a ")
-		if aIdx < 0 || aIdx > 200 {
-			if len(remaining) > 10 {
-				remaining = remaining[10:]
-			} else {
-				break
-			}
-			continue
+		// Scope the block to the next result container (or a 30KB window).
+		block := remaining
+		next := strings.Index(remaining[10:], `class="result`)
+		if next > 0 {
+			block = remaining[:next+10]
+		} else if len(block) > 30*1024 {
+			block = block[:30*1024]
 		}
 
-		href := extractAttr(remaining[aIdx:], "href")
-		// Baidu returns redirect URLs (www.baidu.com/link?url=...) rather than
-		// direct links. These are functional — HTTP clients follow the 302 redirect.
-		// Resolving to real URLs would require N extra HTTP calls per search.
-		href = normalizeSearchResultURL(href)
-		title := cleanHTML(extractTagText(remaining[aIdx:], "a"))
-
-		// Extract snippet: look for the content-right or abstract div after h3
-		snippet := ""
-		// Baidu puts snippets in various containers; try common patterns
-		h3End := strings.Index(remaining, "</h3>")
-		if h3End > 0 && h3End < 500 {
-			afterH3 := remaining[h3End:]
-			// Try <span class="content-right_...">
-			crIdx := strings.Index(afterH3, `class="content-right`)
-			if crIdx >= 0 && crIdx < 1000 {
-				snippet = cleanHTML(extractTagText(afterH3[crIdx:], "span"))
-			}
-			if snippet == "" {
-				// Try <span class="c-font-normal c-color-text">
-				fnIdx := strings.Index(afterH3, `c-color-text`)
-				if fnIdx >= 0 && fnIdx < 1000 {
-					// Go back to find the <span
-					spStart := strings.LastIndex(afterH3[:fnIdx], "<span")
-					if spStart >= 0 {
-						snippet = cleanHTML(extractTagText(afterH3[spStart:], "span"))
-					}
-				}
-			}
-			if snippet == "" {
-				// Generic: first <p> or first long text span
-				pIdx := strings.Index(afterH3, "<p")
-				if pIdx >= 0 && pIdx < 800 {
-					snippet = cleanHTML(extractTagText(afterH3[pIdx:], "p"))
-				}
+		href := extractBaiduMuURL(block)
+		if href == "" {
+			// Fallback: the title anchor's /link redirect (still functional).
+			if aIdx := strings.Index(block, "<a "); aIdx >= 0 {
+				href = normalizeSearchResultURL(extractAttr(block[aIdx:], "href"))
 			}
 		}
+
+		title := ""
+		if h3Idx := strings.Index(block, "<h3"); h3Idx >= 0 {
+			title = cleanHTML(extractTagText(block[h3Idx:], "h3"))
+		}
+
+		snippet := extractBaiduSnippet(block)
 
 		if href != "" && title != "" {
 			results = append(results, SearchResult{
@@ -1448,7 +1401,6 @@ func parseBaiduResults(html string, maxResults int) []SearchResult {
 			})
 		}
 
-		// Advance
 		if len(remaining) > 10 {
 			remaining = remaining[10:]
 		} else {
@@ -1457,4 +1409,53 @@ func parseBaiduResults(html string, maxResults int) []SearchResult {
 	}
 
 	return results
+}
+
+// extractBaiduMuURL pulls the direct target URL from the container's mu
+// attribute. extractAttr's 200-char window is too small (the attribute sits
+// behind srcid/id/tpl), so this uses a wider window.
+func extractBaiduMuURL(block string) string {
+	const marker = `mu="http`
+	idx := strings.Index(block, marker)
+	if idx < 0 || idx > 2000 {
+		return ""
+	}
+	start := idx + len(`mu="`)
+	end := strings.IndexByte(block[start:], '"')
+	if end < 0 {
+		return ""
+	}
+	return block[start : start+end]
+}
+
+// extractBaiduSnippet pulls the first "text":"..." payload from the
+// summaryData JSON comment, unescaping the minimal JSON escapes.
+func extractBaiduSnippet(block string) string {
+	const marker = `"text":"`
+	idx := strings.Index(block, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := block[idx+len(marker):]
+	var sb strings.Builder
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c == '\\' && i+1 < len(rest) {
+			switch rest[i+1] {
+			case '"', '\\', '/':
+				sb.WriteByte(rest[i+1])
+				i++
+				continue
+			case 'n', 't', 'r':
+				sb.WriteByte(' ')
+				i++
+				continue
+			}
+		}
+		if c == '"' {
+			break
+		}
+		sb.WriteByte(c)
+	}
+	return strings.TrimSpace(sb.String())
 }

@@ -7195,7 +7195,7 @@
     min-width: 0;
 }
 
-.apps-preview--studio .apps-create-form > .apps-form-row > .apps-category-editor > input,
+.apps-preview--studio .apps-create-form .apps-form-row > .apps-category-editor > input,
 .apps-preview--studio .apps-skill-picker__search > input {
     width: 100%;
     max-width: 100%;

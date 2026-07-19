@@ -1617,10 +1617,13 @@ export function ListSurveyResponses(arg1:string):Promise<string>;
 export function ExportSurveyXLSXFiltered(arg1:string,arg2:string):Promise<string>;
 // AI Expert definitions (manually maintained until `wails generate module` re-runs).
 // ListExperts/SaveExpert exchange ExpertDefinition JSON; ListAvailableToolNames returns
-// JSON [{name, description, deferred?}] (deferred tools are discovered on demand).
+// JSON [{name, description, deferred?, category?, risk?, label_zh?, label_en?}].
+// ResolveExpertCapabilityTier returns JSON {tier, tools, skills} for a preset profile.
 export function ListExperts():Promise<string>;
 export function SaveExpert(arg1:string):Promise<string>;
 export function DeleteExpert(arg1:string):Promise<void>;
 export function ResetBuiltinExpert(arg1:string):Promise<void>;
 export function GenerateExpertProfile(arg1:string):Promise<string>;
 export function ListAvailableToolNames():Promise<string>;
+export function ResolveExpertCapabilityTier(arg1:string):Promise<string>;
+export function InferExpertCapabilityTier(arg1:string,arg2:string):Promise<string>;

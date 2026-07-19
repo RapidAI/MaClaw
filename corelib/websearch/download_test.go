@@ -586,3 +586,297 @@ func TestTextFetchClientTimeoutDisabled(t *testing.T) {
 		t.Fatalf("content mismatch: %q", result.Content)
 	}
 }
+
+// --- Text-path (web_fetch) anti-bot chain ---
+
+func TestTextFetchEscalatesOnCloudflare(t *testing.T) {
+	setupDownloadTestLog(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.Header.Get("sec-ch-ua") == "" {
+			w.Header().Set("cf-mitigated", "challenge")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("the real article body"))
+	}))
+	t.Cleanup(srv.Close)
+
+	result, err := FetchCtx(context.Background(), srv.URL+"/article", &FetchOptions{
+		TimeoutS: 30, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("FetchCtx: %v", err)
+	}
+	if !strings.Contains(result.Content, "the real article body") {
+		t.Fatalf("content mismatch: %q", result.Content)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected L0 blocked then L1 success, got %d requests", got)
+	}
+}
+
+func TestTextFetchEscalatesOnDisguised200(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("sec-ch-ua") == "" {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<html><title>Just a moment...</title></html>"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><article><p>real page text</p></article></body></html>"))
+	}))
+	t.Cleanup(srv.Close)
+
+	result, err := FetchCtx(context.Background(), srv.URL+"/p", &FetchOptions{
+		TimeoutS: 30, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("FetchCtx: %v", err)
+	}
+	if !strings.Contains(result.Content, "real page text") {
+		t.Fatalf("challenge HTML must not be returned as content: %q", result.Content)
+	}
+}
+
+func TestTextFetchRetries429(t *testing.T) {
+	setupDownloadTestLog(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok after retries"))
+	}))
+	t.Cleanup(srv.Close)
+
+	result, err := FetchCtx(context.Background(), srv.URL+"/t", &FetchOptions{
+		TimeoutS: 30, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("FetchCtx: %v", err)
+	}
+	if !strings.Contains(result.Content, "ok after retries") {
+		t.Fatalf("content mismatch: %q", result.Content)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestTextFetchBlockedErrorGuidance(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "cloudflare")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Just a moment..."))
+	}))
+	t.Cleanup(srv.Close)
+
+	SetBrowserAuthProvider(nil)
+	_, err := FetchCtx(context.Background(), srv.URL+"/p", &FetchOptions{
+		TimeoutS: 30, MaxBytes: 1 << 20,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "反爬") || !strings.Contains(err.Error(), "browser") {
+		t.Fatalf("error should guide to browser verification, got: %v", err)
+	}
+}
+
+// --- Search endpoints through the anti-bot chain ---
+
+func TestSearchBingDirectEscalatesOnCloudflare(t *testing.T) {
+	setupDownloadTestLog(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.Header.Get("sec-ch-ua") == "" {
+			w.Header().Set("cf-mitigated", "challenge")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><li class="b_algo"><h2><a href="https://example.com/paper">Deep Paper</a></h2><div class="b_caption"><p>great snippet</p></div></li></body></html>`))
+	}))
+	t.Cleanup(srv.Close)
+
+	orig := defaultBingSearchURL
+	defaultBingSearchURL = srv.URL
+	t.Cleanup(func() { defaultBingSearchURL = orig })
+
+	results, err := searchBingDirect(context.Background(), "test query", 5)
+	if err != nil {
+		t.Fatalf("searchBingDirect: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Deep Paper" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected L0 blocked then L1 success, got %d requests", got)
+	}
+}
+
+func TestFetchRawHTMLReturnsUnextractedBody(t *testing.T) {
+	setupDownloadTestLog(t)
+	const body = `<html><body><li class="b_algo"><h2><a href="https://x/">T</a></h2></li>raw <b>markup</b> kept</body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	html, err := fetchRawHTMLWithChain(context.Background(), srv.URL+"/s", nil)
+	if err != nil {
+		t.Fatalf("fetchRawHTMLWithChain: %v", err)
+	}
+	if html != body {
+		t.Fatalf("raw mode must return the unextracted body:\ngot:  %q\nwant: %q", html, body)
+	}
+}
+
+func TestSearchMojeekEscalatesOnCaptchaPage(t *testing.T) {
+	setupDownloadTestLog(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.Header.Get("sec-ch-ua") == "" {
+			// Mojeek-style 200 captcha page (no CF status markers at all).
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><head><title>Captcha</title></head><body><div class="captcha-box">verify</div></body></html>`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><a class="title" href="https://example.com/go">Go Result</a></body></html>`))
+	}))
+	t.Cleanup(srv.Close)
+
+	orig := defaultMojeekSearchURL
+	defaultMojeekSearchURL = srv.URL
+	t.Cleanup(func() { defaultMojeekSearchURL = orig })
+
+	if _, err := searchMojeekDirect(context.Background(), "golang", 3); err != nil {
+		t.Fatalf("searchMojeekDirect: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected captcha page to trigger L1 escalation, got %d requests", got)
+	}
+}
+
+func TestParseDDGResultsSkipsAdTrackerLinks(t *testing.T) {
+	html := `<html><body>` +
+		`<a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=codecademy.com&u3=https%3A%2F%2Fwww.codecademy.com">Codecademy Ad</a>` +
+		`<a class="result__snippet">ad snippet</a>` +
+		`<a class="result__a" href="https://go.dev/">The Go Programming Language</a>` +
+		`<a class="result__snippet">go snippet</a>` +
+		`</body></html>`
+	results := parseDDGResults(html, 5)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 organic result, got %d: %+v", len(results), results)
+	}
+	if results[0].URL != "https://go.dev/" {
+		t.Fatalf("ad tracker link was not filtered: %+v", results[0])
+	}
+}
+
+func TestBaiduCaptchaRedirectTriggersEscalation(t *testing.T) {
+	setupDownloadTestLog(t)
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/s", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.Header.Get("sec-ch-ua") == "" {
+			// Baidu-style: 302 to a wappass captcha page rather than a 403.
+			http.Redirect(w, r, "/static/captcha/tuxing_v2.html", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><div class="result c-container"><h3 class="t"><a href="https://example.com/go">Go Result</a></h3></div></body></html>`))
+	})
+	mux.HandleFunc("/static/captcha/tuxing_v2.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><head><title>百度安全验证</title></head><body>captcha</body></html>`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	orig := defaultBaiduSearchURL
+	defaultBaiduSearchURL = srv.URL + "/s"
+	t.Cleanup(func() { defaultBaiduSearchURL = orig })
+
+	if _, err := searchBaiduDirect(context.Background(), "golang", 3); err != nil {
+		t.Fatalf("searchBaiduDirect: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("expected captcha redirect to trigger escalation, got %d /s requests", got)
+	}
+}
+
+func TestParseBaiduResultsCurrentMarkup(t *testing.T) {
+	// Mirrors Baidu's current SERP structure (captured from a live page):
+	// container carries mu="REAL_URL", title in first <h3>, snippet in the
+	// summaryData JSON comment.
+	html := `<div class="result c-container xpath-log new-pmd"
+			srcid="1599" id="2" tpl="www_index"
+			mu="https://www.jianshu.com/p/bb8d36af8807"
+			data-op="{'y':'F1FE9'}">
+			<div class="cosc-card"><div class="title-wrapper_4oy6O"><h3 class="cosc-title t cos-line-clamp-1 title_4QsBx">
+			<a class="cosc-title-a cos-link cosc-title-md " href="http://www.baidu.com/link?url=c7NJxxxx"><span><!--s-text--><em>Golang</em>并发编程: 从原理到实战<!--/s-text--></span></a></h3></div>
+			<!--s-data:{"summaryData":{"generalLines":[{"prefixTime":"2025年6月","data":[{"text":"在构建大型并发系统时,**并发编程**(Concurrent Programming)已成为核心技术。"}]},"isSingleLine":false}}-->
+			</div>`
+	results := parseBaiduResults(html, 5)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d: %+v", len(results), results)
+	}
+	r := results[0]
+	if r.URL != "https://www.jianshu.com/p/bb8d36af8807" {
+		t.Fatalf("mu URL not used: %q", r.URL)
+	}
+	if !strings.Contains(r.Title, "并发编程") {
+		t.Fatalf("title mismatch: %q", r.Title)
+	}
+	if !strings.Contains(r.Snippet, "并发编程") {
+		t.Fatalf("snippet mismatch: %q", r.Snippet)
+	}
+}
+
+func TestFallbackChainUsesBrowserSearchHook(t *testing.T) {
+	setupDownloadTestLog(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	for _, p := range []*string{&defaultBingSearchURL, &defaultBaiduSearchURL, &defaultLegacySearchURL, &defaultMojeekSearchURL} {
+		orig := *p
+		*p = srv.URL
+		t.Cleanup(func() { *p = orig })
+	}
+	lastGoodEndpointMu.Lock()
+	lastGoodEndpointName = ""
+	lastGoodEndpointMu.Unlock()
+
+	SetBrowserSearchProvider(func(ctx context.Context, query string, maxResults int) ([]BrowserSearchHit, error) {
+		return []BrowserSearchHit{{Title: "Browser Hit", URL: "https://go.dev/", Snippet: "via browser"}}, nil
+	})
+	t.Cleanup(func() { SetBrowserSearchProvider(nil) })
+
+	results, err := searchDirectFallbackChain(context.Background(), "golang", 3, "")
+	if err != nil {
+		t.Fatalf("searchDirectFallbackChain: %v", err)
+	}
+	if len(results) != 1 || results[0].Title != "Browser Hit" {
+		t.Fatalf("hook results not used: %+v", results)
+	}
+
+	// Without the hook the same failures must surface as an error.
+	SetBrowserSearchProvider(nil)
+	if _, err := searchDirectFallbackChain(context.Background(), "golang", 3, ""); err == nil {
+		t.Fatal("expected error when hook is nil and all endpoints fail")
+	}
+}

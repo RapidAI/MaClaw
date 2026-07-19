@@ -205,3 +205,75 @@ func TestModeBRoundTripLocal(t *testing.T) {
 		t.Fatal("no session/update")
 	}
 }
+
+// SessionSteer round-trips params and the accepted flag against a fake
+// Mode B host, for both accepted and rejected outcomes.
+func TestModeBSessionSteerRoundTrip(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	token := "test-token-modeb-steer"
+	seen := make(chan SessionSteerParams, 2)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		conn := NewConn(c, c)
+		for {
+			req, err := conn.ReadRequest()
+			if err != nil {
+				return
+			}
+			switch req.Method {
+			case "initialize":
+				_ = conn.WriteResponse(req.ID, InitializeResult{
+					ProtocolVersion:   1,
+					AgentCapabilities: DefaultAgentCapabilities(),
+					AgentInfo:         ImplementationInfo{Name: "test"},
+				}, nil)
+			case "session/new":
+				_ = conn.WriteResponse(req.ID, SessionNewResult{SessionID: "s1"}, nil)
+			case "session/steer":
+				var params SessionSteerParams
+				_ = json.Unmarshal(req.Params, &params)
+				seen <- params
+				_ = conn.WriteResponse(req.ID, SessionSteerResult{Accepted: params.Text == "ok-text"}, nil)
+			}
+		}
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	ep := ModeBEndpoint{Host: "127.0.0.1", Port: port, Token: token}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cli, err := DialModeB(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	sid, err := cli.SessionNew(ctx, t.TempDir())
+	if err != nil || sid != "s1" {
+		t.Fatalf("session new: sid=%q err=%v", sid, err)
+	}
+
+	accepted, err := cli.SessionSteer(ctx, sid, "ok-text")
+	if err != nil || !accepted {
+		t.Fatalf("steer ok-text: accepted=%v err=%v", accepted, err)
+	}
+	got := <-seen
+	if got.SessionID != "s1" || got.Text != "ok-text" {
+		t.Fatalf("host saw %+v", got)
+	}
+
+	rejected, err := cli.SessionSteer(ctx, sid, "bad-text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected {
+		t.Fatal("expected accepted=false for bad-text")
+	}
+}

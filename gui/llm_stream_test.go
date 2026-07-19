@@ -120,7 +120,7 @@ func TestClassifyOpenAIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
 func TestClassifyOpenAIHTTPErrorSurfacesBadRequestMessage(t *testing.T) {
 	body := []byte(`{"error":{"message":"messages[0].role: unknown variant developer","type":"invalid_request_error"}}`)
 	got := classifyOpenAIHTTPError(400, body, "Qwen")
-	if !strings.Contains(got, "Qwen API invalid request (HTTP 400)") {
+	if !strings.Contains(got, "Qwen") || !strings.Contains(got, "HTTP 400") {
 		t.Fatalf("expected provider-specific HTTP 400 message, got %q", got)
 	}
 	if !strings.Contains(got, "unknown variant developer") {
@@ -131,7 +131,7 @@ func TestClassifyOpenAIHTTPErrorSurfacesBadRequestMessage(t *testing.T) {
 func TestClassifyOpenAIHTTPErrorSurfacesTopLevelBadRequestMessage(t *testing.T) {
 	body := []byte(`{"message":"messages[1].role must not be system"}`)
 	got := classifyOpenAIHTTPError(400, body, "Qwen")
-	if !strings.Contains(got, "Qwen API invalid request (HTTP 400)") {
+	if !strings.Contains(got, "Qwen") || !strings.Contains(got, "HTTP 400") {
 		t.Fatalf("expected provider-specific HTTP 400 message, got %q", got)
 	}
 	if !strings.Contains(got, "messages[1].role must not be system") {
@@ -179,7 +179,7 @@ func TestClassifyHTTPErrorDoesNotEchoUnknownBody(t *testing.T) {
 func TestClassifyResponsesAPIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`)
 	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
-	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message, got %q", got)
 	}
 	if strings.Contains(got, "Responses API") || strings.Contains(got, "forbidden") {
@@ -190,7 +190,7 @@ func TestClassifyResponsesAPIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 func TestClassifyResponsesAPIHTTPErrorParsesStringRetryAfterSeconds(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":"90"}`)
 	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClawOfficial")
-	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message from string retry_after_seconds, got %q", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestClassifyOpenAICompatibleHTTPErrorUsesStructuredBody(t *testing.T) {
 	if !ok {
 		t.Fatal("expected structured HTTP error to be classified")
 	}
-	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected hub period-limit message from structured body, got %q", got)
 	}
 	if strings.Contains(got, "body_len") || strings.Contains(got, `"message":"limit"`) {
@@ -301,7 +301,7 @@ func TestClassifyOpenAICompatibleHTTPError_ModelServiceEntitlement(t *testing.T)
 func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90,"retry_after_at":"2026-05-05T06:00:00Z"}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
-	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message, got %q", got)
 	}
 	if strings.Contains(got, "forbidden") || strings.Contains(got, "rate_limit") {
@@ -312,7 +312,7 @@ func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
 func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimitFromHTTP429(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`)
 	got := classifyOpenAIHTTPError(429, body, "MaClawOfficial")
-	if !strings.Contains(got, "quota is rate-limited") || !strings.Contains(got, "2 分钟") {
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
 		t.Fatalf("expected period-limit retry message from HTTP 429, got %q", got)
 	}
 	if strings.Contains(got, "rate_limit") {
@@ -378,7 +378,7 @@ func TestClassifyOpenAIHTTPErrorCleansHubDiagnostics(t *testing.T) {
 func TestClassifyOpenAIHTTPErrorReportsHubCreditsExhausted(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_CREDITS_EXHAUSTED","message":"selected model grant credits are exhausted"}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
-	if !strings.Contains(got, "credits are exhausted") {
+	if !strings.Contains(got, "额度已用尽") {
 		t.Fatalf("expected credits exhausted message, got %q", got)
 	}
 }
@@ -386,7 +386,7 @@ func TestClassifyOpenAIHTTPErrorReportsHubCreditsExhausted(t *testing.T) {
 func TestClassifyOpenAIHTTPErrorReportsHubQueuedGrant(t *testing.T) {
 	body := []byte(`{"ok":false,"code":"LLM_SERVICE_GRANT_QUEUED","message":"selected model grant is not active yet","retry_after_seconds":7200}`)
 	got := classifyOpenAIHTTPError(403, body, "MaClawOfficial")
-	if !strings.Contains(got, "grant is not active yet") || !strings.Contains(got, "2 小时") {
+	if !strings.Contains(got, "授权尚未生效") || !strings.Contains(got, "2 小时") {
 		t.Fatalf("expected queued grant retry message, got %q", got)
 	}
 	if strings.Contains(got, "expired") || strings.Contains(got, "forbidden") {

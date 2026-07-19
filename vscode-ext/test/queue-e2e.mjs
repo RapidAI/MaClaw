@@ -5,7 +5,8 @@
  *   A  FIFO chaining while a turn is busy
  *   B  id-based queueRemove
  *   C  pause-on-error + explicit resume via queueFire
- *   D  queueFire while busy jumps to the front
+ *   D  fire-while-busy steers into the running turn via session/steer
+ *   S  steer rejected by the agent falls back to head-of-queue
  *   E  newSession clears the queue and the stale turn never fires it
  *   F  queue cap notification
  *   G  queueClear empties a busy queue in one shot
@@ -159,18 +160,38 @@ await waitFor(() => idle(provider), "C: resumed queue drains");
 check("C4 resume fired the held prompt", promptLog().includes("PROMPT:after"));
 check("C5 pause cleared after healthy turn", provider.queuePaused === false);
 
-// ---- D: fire-while-busy jumps to the front ------------------------------------
+// ---- D: fire-while-busy steers into the running turn (session/steer) ---------
 
 send("a");
 send("b");
 send("c");
 const cId = provider.queue.find((q) => q.text === "c")?.id;
-provider.handleWebviewMessage({ type: "queueFire", id: cId });
-check("D1 picked item moved to front", provider.queue[0]?.text === "c");
+await provider.handleWebviewMessage({ type: "queueFire", id: cId });
+check("D1 steered entry left the queue immediately", provider.queue.length === 1 && provider.queue[0].text === "b");
+check(
+  "D2 steer RPC delivered to the agent",
+  outputLines.filter((l) => l.startsWith("STEER:")).includes("STEER:c")
+);
 await waitFor(() => idle(provider), "D: queue drains");
 check(
-  "D2 fired a, c, b",
-  JSON.stringify(promptLog().slice(-3)) === JSON.stringify(["PROMPT:a", "PROMPT:c", "PROMPT:b"])
+  "D3 remaining prompts fired in order",
+  JSON.stringify(promptLog().slice(-2)) === JSON.stringify(["PROMPT:a", "PROMPT:b"])
+);
+check("D4 steered text never became a prompt", !promptLog().includes("PROMPT:c"));
+
+// ---- S: steer rejected falls back to head-of-queue ----------------------------
+
+send("s-main");
+send("NOSTEER-x");
+send("s-tail");
+const nsId = provider.queue.find((q) => q.text === "NOSTEER-x")?.id;
+await provider.handleWebviewMessage({ type: "queueFire", id: nsId });
+check("S1 rejected steer moved to the front", provider.queue[0]?.text === "NOSTEER-x");
+await waitFor(() => idle(provider), "S: queue drains");
+check(
+  "S2 rejected steer fired as the next prompt",
+  promptLog().indexOf("PROMPT:NOSTEER-x") > promptLog().indexOf("PROMPT:s-main") &&
+    promptLog().indexOf("PROMPT:NOSTEER-x") < promptLog().indexOf("PROMPT:s-tail")
 );
 
 // ---- E: newSession clears queue; stale turn never fires it --------------------

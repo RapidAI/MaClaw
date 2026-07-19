@@ -24,10 +24,7 @@ import (
 var maxOutputTokensCache sync.Map
 
 func streamHTTPStatusError(statusCode int, body []byte) error {
-	if statusCode <= 0 {
-		return nil
-	}
-	return &HTTPStatusError{StatusCode: statusCode, Body: append([]byte(nil), body...)}
+	return newHTTPStatusError(statusCode, body)
 }
 
 // LoadMaxOutputTokensCache returns the cached output token limit for a model (if any).
@@ -209,8 +206,10 @@ func DoOpenAIRequestStreamWithReasoning(
 			log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 		}
 		if err != nil {
-			if statusCode != http.StatusOK {
-				return nil, streamHTTPStatusError(statusCode, body)
+			// Prefer structured HTTP error only for real non-OK statuses.
+			// statusCode==0 must keep the transport/parse error (streamHTTPStatusError is nil).
+			if se := streamHTTPStatusError(statusCode, body); se != nil {
+				return nil, se
 			}
 			return nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}
@@ -238,13 +237,14 @@ func DoAnthropicRequestStream(
 	log.Printf("[LLM-stream] POST %s model=%s configured_model=%s protocol=anthropic sdk=anthropic-sdk-go %s", endpoint, upstreamModel, cfg.Model, traceFields)
 	startedAt := time.Now()
 	result, statusCode, body, err := anthropicSDKMessageStream(ctx, cfg, data, client, onToken)
+	// statusCode==0: no HTTP response (network/cancel). newHTTPStatusError is nil then.
+	if se := streamHTTPStatusError(statusCode, body); se != nil {
+		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
+		return nil, se
+	}
 	if err != nil {
 		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), err, traceFields)
-		return nil, fmt.Errorf("HTTP %d: body_len=%d: %w", statusCode, len(body), err)
-	}
-	if statusCode != http.StatusOK {
-		log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s body_len=%d %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), traceFields)
-		return nil, fmt.Errorf("HTTP %d: body_len=%d", statusCode, len(body))
+		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	log.Printf("[LLM-stream] done %s model=%s configured_model=%s protocol=anthropic status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), traceFields)
 	return result, nil

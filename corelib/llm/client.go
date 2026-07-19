@@ -40,6 +40,17 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d: body_len=%d", e.StatusCode, len(e.Body))
 }
 
+// newHTTPStatusError returns a structured non-OK HTTP error with a copied body.
+// status<=0 means no HTTP response (network/cancel) — returns nil so callers
+// keep the original transport error instead of inventing "HTTP 0".
+// status==200 also returns nil (not an error status).
+func newHTTPStatusError(status int, body []byte) error {
+	if status <= 0 || status == http.StatusOK {
+		return nil
+	}
+	return &HTTPStatusError{StatusCode: status, Body: append([]byte(nil), body...)}
+}
+
 // OpenAIChatRequestOptions controls how an OpenAI-compatible chat/completions
 // request is built.
 type OpenAIChatRequestOptions struct {
@@ -50,7 +61,6 @@ type OpenAIChatRequestOptions struct {
 	ToolChoice     interface{}
 	ResponseFormat interface{}
 }
-
 
 var openAIChatPassThroughKeys = []string{
 	"temperature",
@@ -2185,7 +2195,14 @@ func DoOpenAIRequestRaw(
 				}
 			}
 		}
-		return nil, body, &HTTPStatusError{StatusCode: statusCode, Body: body}
+		if se := newHTTPStatusError(statusCode, body); se != nil {
+			return nil, body, se
+		}
+		// Defensive: non-OK branch with no usable status.
+		if err != nil {
+			return nil, body, err
+		}
+		return nil, body, fmt.Errorf("llm http status %d body_len=%d", statusCode, len(body))
 	}
 
 	result, err := ParseNonStreamOpenAIResponseBody(body)

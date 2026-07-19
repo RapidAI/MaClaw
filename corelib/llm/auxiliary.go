@@ -71,7 +71,7 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 		Model:    c.Config.Model,
 		Protocol: c.Config.Protocol,
 	}
-	req, data, _, err := NewOpenAIChatRequest(context.Background(), cfg, interfaceMessages(msgs), OpenAIChatRequestOptions{Stream: false})
+	req, _, _, err := NewOpenAIChatRequest(context.Background(), cfg, interfaceMessages(msgs), OpenAIChatRequestOptions{Stream: false})
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
@@ -84,7 +84,7 @@ func (c *AuxiliaryCaller) ChatCall(messages []map[string]string) (string, error)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("HTTP %d: body_len=%d request=%s", resp.StatusCode, len(respBody), SummarizeOpenAIChatRequestBody(data))
+		return "", newHTTPStatusError(resp.StatusCode, respBody)
 	}
 
 	var result struct {

@@ -111,10 +111,12 @@ const activeRunStorageKey = 'maclaw:apps-active-runs:v1';
 function getStudioButton() {
     return screen.queryByTitle('Create App')
         || screen.queryByTitle('创建应用')
+        || screen.queryByTitle('建立應用')
         || screen.queryByTitle('App Studio')
         || screen.queryByTitle('MaClaw App Studio')
         || screen.queryByTitle('MaClaw 应用工作室')
-        || screen.getByRole('button', { name: /Create App|创建应用|MaClaw App Studio|App Studio|MaClaw 应用工作室/ });
+        || screen.queryByTitle('MaClaw 應用工作室')
+        || screen.getByRole('button', { name: /Create App|创建应用|建立應用|MaClaw App Studio|App Studio|MaClaw 应用工作室|MaClaw 應用工作室/ });
 }
 
 async function findRuntimeGovernancePanel() {
@@ -151,7 +153,9 @@ function getMarketTab() {
 }
 
 function getCreateAppNameInput() {
-    return screen.queryByPlaceholderText('\u4f8b\uff1a\u5408\u540c\u5f52\u6863') || screen.getByPlaceholderText('Example: Contract filing');
+    return screen.queryByPlaceholderText('\u4f8b\uff1a\u5408\u540c\u5f52\u6863')
+        || screen.queryByPlaceholderText('\u4f8b\uff1a\u5408\u540c\u6b78\u6a94')
+        || screen.getByPlaceholderText('Example: Contract filing');
 }
 
 /** Primary create action in App Studio (not the studio entry button or create tab). */
@@ -5442,6 +5446,34 @@ describe('AppsPage', () => {
         fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Contract archive' } });
 
         await waitFor(() => expect(within(preview).getByText('Copy')).not.toBeNull());
+    });
+
+    it('groups the create pane into collapsible sections, all open by default', () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(getStudioButton());
+        const sections = Array.from(document.querySelectorAll('.apps-create-form > details.apps-create-section')) as HTMLDetailsElement[];
+        expect(sections.length).toBeGreaterThanOrEqual(4);
+        expect(sections.every((section) => section.open)).toBe(true);
+        // The sticky action bar stays a direct child of the form, outside the sections.
+        expect(document.querySelector('.apps-create-form > .apps-actions')).not.toBeNull();
+
+        fireEvent.click(sections[0].querySelector('summary') as HTMLElement);
+        expect(sections[0].open).toBe(false);
+    });
+
+    it('cycles workspace region placement by clicking the region pill', () => {
+        render(<AppsPage lang="en" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用?/ }));
+        expect((screen.getByTestId('studio-layout-region-record_list') as HTMLSelectElement).value).toBe('center');
+
+        fireEvent.click(screen.getByTestId('studio-layout-region-record_list-cycle'));
+
+        // The pill remounts into the target slot; assert on freshly queried nodes.
+        expect((screen.getByTestId('studio-layout-region-record_list') as HTMLSelectElement).value).toBe('right');
+        expect(screen.getByTestId('studio-layout-region-record_list-cycle').getAttribute('aria-label')).toContain('Placement: Right');
     });
 
     it('keeps the draft manifest preview target mounted when collapsed', () => {

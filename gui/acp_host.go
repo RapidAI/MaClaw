@@ -507,6 +507,12 @@ func (s *acpHostSession) handle(req acpagent.Request) error {
 			return s.reply(req, map[string]any{}, nil)
 		}
 		return nil
+	case "session/steer":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onSessionSteer(req.Params)
+		return s.reply(req, result, rpcErr)
 	case "authenticated", "initialized", "notifications/initialized":
 		if !isNotif {
 			return s.reply(req, map[string]any{}, nil)
@@ -619,6 +625,39 @@ func (s *acpHostSession) onSessionCancel(raw json.RawMessage) {
 			s.app.cancelProjectTaskLoop(sess.Cwd)
 		}
 	}
+}
+
+// onSessionSteer injects guide-launch text into the session's running agent
+// loop — the same semantics as the GUI input-buffer 引导发射: the text lands
+// as a user-role supplement the loop drains between iterations, without
+// cancelling the current turn. accepted=false tells the client to fall back
+// to queueing for the next turn.
+func (s *acpHostSession) onSessionSteer(raw json.RawMessage) (any, *acpagent.RPCError) {
+	var params acpagent.SessionSteerParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, acpErr(acpagent.CodeInvalidParams, err.Error())
+	}
+	sid := strings.TrimSpace(params.SessionID)
+	text := strings.TrimSpace(params.Text)
+	if sid == "" || text == "" {
+		return nil, acpErr(acpagent.CodeInvalidParams, "sessionId and text required")
+	}
+	s.mu.Lock()
+	sess := s.sessions[sid]
+	s.mu.Unlock()
+	if sess == nil {
+		return nil, acpErr(acpagent.CodeInvalidParams, "unknown sessionId")
+	}
+	if s.app == nil {
+		return map[string]any{"accepted": false}, nil
+	}
+	s.app.ensureInteractionInfra()
+	hubClient := s.app.ensureHubClient()
+	if hubClient == nil {
+		return map[string]any{"accepted": false}, nil
+	}
+	accepted := hubClient.ensureIMHandler().InjectGuideReference(sess.UserID, text)
+	return map[string]any{"accepted": accepted}, nil
 }
 
 func (s *acpHostSession) onSessionPrompt(raw json.RawMessage) (any, *acpagent.RPCError) {

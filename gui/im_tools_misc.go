@@ -2940,20 +2940,23 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		opts.TimeoutS = corelib.MaxAgentTimeoutSec
 	}
 
+	// via_browser: let the managed browser itself download (requires save_path).
+	// Checked before buildFetchHeaders: via_browser does not need
+	// use_browser_cookies to succeed (the browser has its own session), so a
+	// failing cookie injection must not block it.
+	if viaBrowser, _ := args["via_browser"].(bool); viaBrowser {
+		if opts.SavePath == "" {
+			return "via_browser 需要配合 save_path 使用（浏览器下载直接落盘，不返回文本）"
+		}
+		return h.downloadViaBrowserTool(rawURL, opts.SavePath, args)
+	}
+
 	// Optional request headers: explicit `headers` object, `cookie` shortcut,
 	// and `use_browser_cookies` (reuse the live browser session's auth).
 	if hdrs, errMsg := buildFetchHeaders(args, rawURL); errMsg != "" {
 		return errMsg
 	} else if len(hdrs) > 0 {
 		opts.Headers = hdrs
-	}
-
-	// via_browser: let the managed browser itself download (requires save_path).
-	if viaBrowser, _ := args["via_browser"].(bool); viaBrowser {
-		if opts.SavePath == "" {
-			return "via_browser 需要配合 save_path 使用（浏览器下载直接落盘，不返回文本）"
-		}
-		return h.downloadViaBrowserTool(rawURL, opts.SavePath, args)
 	}
 
 	// Use provider-aware fetch: TinyFish has better content extraction.

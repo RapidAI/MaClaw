@@ -20,7 +20,6 @@ type AnthropicMessagesRequestOptions struct {
 	MaxTokens int
 }
 
-
 func BuildAnthropicMessagesRequestBody(
 	cfg corelib.MaclawLLMConfig,
 	messages []interface{},
@@ -102,11 +101,12 @@ func DoAnthropicRequestWithOptions(
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	resp, status, body, err := anthropicSDKMessage(ctx, cfg, data, client)
-	if err != nil {
-		return nil, fmt.Errorf("[%s] HTTP %d: body_len=%d: %w", endpoint, status, len(body), err)
+	// status==0 means no HTTP response (network/cancel); keep the original error.
+	if se := newHTTPStatusError(status, body); se != nil {
+		return nil, se
 	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: body_len=%d", status, len(body))
+	if err != nil {
+		return nil, fmt.Errorf("[%s] %w", endpoint, err)
 	}
 	return resp, nil
 }

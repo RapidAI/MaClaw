@@ -34,6 +34,19 @@ func init() {
 	agent.BrowserAuthFunc = func(_ context.Context, rawURL string) (map[string]string, error) {
 		return browser.ExportAuthHeadersForURL(rawURL)
 	}
+	// Browser-based search is the ultimate web_search fallback when every
+	// HTTP-level endpoint (API + direct scraping) fails.
+	websearch.SetBrowserSearchProvider(func(ctx context.Context, query string, maxResults int) ([]websearch.BrowserSearchHit, error) {
+		hits, err := browser.SearchViaBrowser(ctx, query, maxResults)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]websearch.BrowserSearchHit, 0, len(hits))
+		for _, h := range hits {
+			out = append(out, websearch.BrowserSearchHit{Title: h.Title, URL: h.URL, Snippet: h.Snippet})
+		}
+		return out, nil
+	})
 }
 
 // buildFetchHeaders collects request headers for web_fetch / download_file

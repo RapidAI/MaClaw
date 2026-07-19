@@ -89,7 +89,10 @@ func TestTestProvider_DuckDuckGoHTTP202ChallengeFailsClearly(t *testing.T) {
 	if err == nil {
 		t.Fatal("TestProvider() error = nil, want challenge failure")
 	}
-	if !strings.Contains(err.Error(), "human verification challenge") {
+	// The anti-bot chain must surface the challenge clearly (and escalate
+	// through browser headers / fingerprint before giving up) rather than
+	// returning the anomaly page as if it were search results.
+	if !strings.Contains(err.Error(), "challenge") {
 		t.Fatalf("TestProvider() error = %v, want challenge error", err)
 	}
 }

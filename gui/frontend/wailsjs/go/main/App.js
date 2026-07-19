@@ -3310,7 +3310,8 @@ export function ExportSurveyXLSXFiltered(arg1, arg2) {
 
 // AI Expert definitions (manually maintained until `wails generate module` re-runs).
 // ListExperts/SaveExpert exchange ExpertDefinition JSON; ListAvailableToolNames returns
-// JSON [{name, description, deferred?}] (deferred tools are discovered on demand).
+// JSON [{name, description, deferred?, category?, risk?, label_zh?, label_en?}].
+// ResolveExpertCapabilityTier returns JSON {tier, tools, skills} for a preset profile.
 export function ListExperts() {
   return window['go']['main']['App']['ListExperts']();
 }
@@ -3333,4 +3334,12 @@ export function GenerateExpertProfile(arg1) {
 
 export function ListAvailableToolNames() {
   return window['go']['main']['App']['ListAvailableToolNames']();
+}
+
+export function ResolveExpertCapabilityTier(arg1) {
+  return window['go']['main']['App']['ResolveExpertCapabilityTier'](arg1);
+}
+
+export function InferExpertCapabilityTier(arg1, arg2) {
+  return window['go']['main']['App']['InferExpertCapabilityTier'](arg1, arg2);
 }

@@ -73,6 +73,19 @@ type SessionCancelParams struct {
 	SessionID string `json:"sessionId"`
 }
 
+// SessionSteerParams injects guide-launch text into the session's running
+// agent loop (MaClaw extension: mirrors the GUI input-buffer 引导发射).
+type SessionSteerParams struct {
+	SessionID string `json:"sessionId"`
+	Text      string `json:"text"`
+}
+
+// SessionSteerResult reports whether the running loop accepted the injection.
+// accepted=false tells the client to fall back to queueing for the next turn.
+type SessionSteerResult struct {
+	Accepted bool `json:"accepted"`
+}
+
 // SessionUpdateParams is an agent → client streaming notification.
 type SessionUpdateParams struct {
 	SessionID string         `json:"sessionId"`

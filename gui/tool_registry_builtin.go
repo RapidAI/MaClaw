@@ -674,7 +674,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolManageUserModel(args) })
 
 	// --- Web search & fetch tools ---
-	reg("web_search", "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。",
+	reg("web_search", "搜索互联网内容。返回搜索结果列表（标题、URL、摘要）。适用于查找资料、技术文档、最新信息等。搜索 API 失效或额度耗尽时自动降级为搜索引擎页面抓取（内置反爬升级链，无需任何 API key）；抓取端点全部失败时用真实浏览器兜底搜索 Bing/Google。",
 		ToolCategoryBuiltin, []string{"web", "search", "internet", "google", "query", "network"},
 		map[string]interface{}{
 			"query":       map[string]string{"type": "string", "description": "搜索关键词"},
@@ -682,7 +682,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"query"},
 		func(args map[string]interface{}) string { return h.toolWebSearch(args) })
 
-	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。save_path 下载内置反爬升级：遇 Cloudflare/403 拦截会自动换浏览器请求头重试，仍被拦时尝试复用浏览器会话 cookie（需先用 browser 工具打开过该网站）。下载过程日志见 ~/.maclaw/logs/download.log。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
+	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。抓取与下载都内置反爬升级：遇 Cloudflare/403 拦截自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie，后者需先用 browser 工具打开过该网站）。下载过程日志见 ~/.maclaw/logs/download.log。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
 		ToolCategoryBuiltin, []string{"web", "fetch", "download", "url", "browse", "network"},
 		map[string]interface{}{
 			"url":                 map[string]string{"type": "string", "description": "要抓取的 URL"},

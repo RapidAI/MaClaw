@@ -51,6 +51,17 @@ rl.on("line", async (line) => {
       respond(msg.id, { sessionId: "sess-queue-1" });
       break;
 
+    case "session/steer": {
+      const text = msg.params?.text ?? "";
+      console.error(`STEER:${text}`);
+      if (text.startsWith("NOSTEER")) {
+        respond(msg.id, { accepted: false });
+      } else {
+        respond(msg.id, { accepted: true });
+      }
+      break;
+    }
+
     case "session/prompt": {
       const text = msg.params?.prompt?.[0]?.text ?? "";
       if (inFlight) {

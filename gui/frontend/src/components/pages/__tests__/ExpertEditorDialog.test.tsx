@@ -20,13 +20,27 @@ function installAppSpies(): AppSpies {
         GenerateExpertProfile: vi.fn(),
         SaveExpert: vi.fn(),
         ListAvailableToolNames: vi.fn().mockResolvedValue(JSON.stringify([
+            { name: 'memory', description: 'Memory' },
+            { name: 'ask_user', description: 'Ask user' },
             { name: 'fs_read', description: 'Read files' },
             { name: 'fs_write', description: 'Write files' },
+            { name: 'web_search', description: 'Search web' },
+            { name: 'ssh', description: 'SSH' },
+            { name: 'screenshot', description: 'Screenshot' },
+            { name: 'send_file', description: 'Send file' },
         ])),
-        ListNLSkills: vi.fn().mockResolvedValue([{ name: 'pptx-gen' }, { name: 'pdf-word' }]),
+        ListNLSkills: vi.fn().mockResolvedValue([{ name: 'pptx-gen' }, { name: 'pdf-word' }, { name: 'sheet-analysis' }]),
     };
     (window as any).go = { main: { App: spies } };
     return spies;
+}
+
+async function expandAdvanced() {
+    const toggle = screen.getByTestId('expert-advanced-toggle');
+    if (toggle.getAttribute('aria-expanded') !== 'true') {
+        fireEvent.click(toggle);
+    }
+    await waitFor(() => expect(screen.getByTestId('expert-advanced-body')).toBeTruthy());
 }
 
 describe('ExpertEditorDialog', () => {
@@ -62,9 +76,25 @@ describe('ExpertEditorDialog', () => {
         expect((screen.getByTestId('expert-icon-input') as HTMLInputElement).value).toBe('🌐');
         expect((screen.getByTestId('expert-desc-input') as HTMLInputElement).value).toBe('中英互译');
         expect((screen.getByTestId('expert-prompt-input') as HTMLTextAreaElement).value).toBe('你是翻译专家');
-        // Suggested tools/skills land as checked entries in the pickers.
-        const toolsList = screen.getByTestId('expert-tools-list');
-        expect((toolsList.querySelector('input') as HTMLInputElement).checked).toBe(true);
+
+        // Suggestions show as summary chips (friendly labels); whitelist is NOT auto-applied.
+        const chips = await screen.findByTestId('expert-suggestion-chips');
+        expect(chips.textContent).toMatch(/读取文件|Read files|fs_read/);
+        expect(chips.textContent).toMatch(/PPT 生成|pptx-gen/);
+        expect(chips.querySelector('[title="fs_read"]')).toBeTruthy();
+        expect((screen.getByTestId('expert-adopt-suggestions').querySelector('input') as HTMLInputElement).checked).toBe(false);
+
+        // Advanced is collapsed by default; tools list is not mounted.
+        expect(screen.queryByTestId('expert-tools-list')).toBeNull();
+        expect(screen.getByTestId('expert-default-access').textContent).toContain('默认不限制');
+
+        // Save without adopting keeps unrestricted empty allow-lists.
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.tools).toEqual([]);
+        expect(payload.skills).toEqual([]);
     });
 
     it('shows a retryable error when generation fails', async () => {
@@ -119,6 +149,8 @@ describe('ExpertEditorDialog', () => {
         };
         render(<ExpertEditorDialog lang="zh-Hans" expert={expert} onClose={vi.fn()} onSaved={vi.fn()} />);
         expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('论文润色');
+        // Existing restrictions open advanced so the user can see them.
+        await waitFor(() => expect(screen.getByTestId('expert-advanced-body')).toBeTruthy());
         fireEvent.change(screen.getByTestId('expert-prompt-input'), { target: { value: '改后的提示词' } });
         fireEvent.click(screen.getByTestId('expert-save-button'));
         await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
@@ -128,7 +160,7 @@ describe('ExpertEditorDialog', () => {
         expect(payload.tools).toEqual(['fs_read']);
     });
 
-    it('intersects AI suggestions with available tools/skills and shows ignored ones as chips', async () => {
+    it('does not auto-apply AI suggestions as whitelist; adopt toggle applies them', async () => {
         spies.GenerateExpertProfile.mockResolvedValue(JSON.stringify({
             name: '翻译专家',
             description: '中英互译',
@@ -137,9 +169,12 @@ describe('ExpertEditorDialog', () => {
             suggested_tools: ['fs_read', 'ghost_tool'],
             suggested_skills: ['pptx-gen', 'ghost_skill'],
         }));
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
         render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
-        // Wait until the available tool list is loaded so the intersection applies.
-        await waitFor(() => expect(screen.getByTestId('expert-tools-list').textContent).toContain('fs_read'));
+
+        // Wait until catalogs load so intersection can drop ghosts.
+        await waitFor(() => expect(spies.ListAvailableToolNames).toHaveBeenCalled());
+        await waitFor(() => expect(spies.ListNLSkills).toHaveBeenCalled());
 
         fireEvent.change(screen.getByTestId('expert-idea-input'), { target: { value: '论文翻译' } });
         fireEvent.click(screen.getByTestId('expert-generate-button'));
@@ -150,13 +185,20 @@ describe('ExpertEditorDialog', () => {
         expect(ignored.textContent).toContain('ghost_tool');
         expect(ignored.textContent).toContain('ghost_skill');
 
-        // Only matched suggestions are checked.
+        // Without adopt, default access stays unrestricted.
+        expect(screen.getByTestId('expert-default-access').textContent).toContain('默认不限制');
+        expect((screen.getByTestId('expert-adopt-suggestions').querySelector('input') as HTMLInputElement).checked).toBe(false);
+
+        // Adopt as whitelist → advanced opens with matched suggestions only.
+        const adopt = screen.getByTestId('expert-adopt-suggestions').querySelector('input') as HTMLInputElement;
+        fireEvent.click(adopt);
+        expect(adopt.checked).toBe(true);
+        await waitFor(() => expect(screen.getByTestId('expert-tools-list')).toBeTruthy());
         const toolBoxes = screen.getByTestId('expert-tools-list').querySelectorAll('input[type="checkbox"]');
         const checked = Array.from(toolBoxes).filter((b) => (b as HTMLInputElement).checked);
         expect(checked.length).toBe(1);
+        expect(screen.getByTestId('expert-default-access').textContent).toMatch(/已限制/);
 
-        // Save never persists unmatched names.
-        spies.SaveExpert.mockImplementation(async (json: string) => json);
         fireEvent.click(screen.getByTestId('expert-save-button'));
         await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
         const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
@@ -164,12 +206,13 @@ describe('ExpertEditorDialog', () => {
         expect(payload.skills).toEqual(['pptx-gen']);
     });
 
-    it('marks deferred tools with an on-demand tag', async () => {
+    it('marks deferred tools with an on-demand tag when advanced is expanded', async () => {
         spies.ListAvailableToolNames.mockResolvedValue(JSON.stringify([
             { name: 'fs_read', description: 'Read files' },
             { name: 'deep_search', description: 'Search', deferred: true },
         ]));
         render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        await expandAdvanced();
         await waitFor(() => expect(screen.getByTestId('expert-tools-list').textContent).toContain('deep_search'));
         expect(screen.getByTestId('expert-tools-list').textContent).toContain('（按需发现）');
     });
@@ -190,5 +233,139 @@ describe('ExpertEditorDialog', () => {
         fireEvent.keyDown(window, { key: 'Escape' });
         expect(onClose).not.toHaveBeenCalled();
         resolveGenerate?.('{}');
+        // Flush generate completion so React does not warn about unwrapped act updates.
+        await waitFor(() => expect((screen.getByTestId('expert-generate-button') as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it('defaults to full capability tier and applies docs tier allow-list on save', async () => {
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        expect(screen.getByTestId('expert-tier-full').getAttribute('aria-checked')).toBe('true');
+        expect(screen.getByTestId('expert-default-access').textContent).toContain('默认不限制');
+        expect(screen.queryByTestId('expert-access-card')).toBeNull();
+
+        // Wait for catalog so docs resolution intersects live tools.
+        await waitFor(() => expect(spies.ListAvailableToolNames).toHaveBeenCalled());
+        fireEvent.click(screen.getByTestId('expert-tier-docs'));
+        expect(screen.getByTestId('expert-tier-docs').getAttribute('aria-checked')).toBe('true');
+        await waitFor(() => expect(screen.getByTestId('expert-default-access').textContent).toMatch(/已限制/));
+        // Boundary card shows current tier without high-risk items for docs.
+        expect(screen.getByTestId('expert-access-card-tier').textContent).toContain('文档助手');
+        expect(screen.getByTestId('expert-access-card-no-danger')).toBeTruthy();
+
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '文档专家' } });
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.tools).toEqual(expect.arrayContaining(['fs_read', 'fs_write', 'web_search', 'memory']));
+        expect(payload.tools).not.toContain('ssh');
+        expect(payload.skills).toEqual(expect.arrayContaining(['pdf-word']));
+        expect(payload.skills).not.toContain('pptx-gen');
+    });
+
+    it('uses backend ResolveExpertCapabilityTier when available', async () => {
+        (spies as any).ResolveExpertCapabilityTier = vi.fn().mockResolvedValue(JSON.stringify({
+            tier: 'advisor',
+            tools: ['memory', 'ask_user'],
+            skills: [],
+        }));
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        await waitFor(() => expect(spies.ListAvailableToolNames).toHaveBeenCalled());
+
+        fireEvent.click(screen.getByTestId('expert-tier-advisor'));
+        await waitFor(() => expect((spies as any).ResolveExpertCapabilityTier).toHaveBeenCalledWith('advisor'));
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '顾问' } });
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.tools).toEqual(['memory', 'ask_user']);
+        expect(payload.skills).toEqual([]);
+    });
+
+    it('ignores stale backend tier responses after a later tier click', async () => {
+        let resolveAdvisor: ((v: string) => void) | undefined;
+        (spies as any).ResolveExpertCapabilityTier = vi.fn().mockImplementation((tier: string) => {
+            if (tier === 'advisor') {
+                return new Promise<string>((resolve) => { resolveAdvisor = resolve; });
+            }
+            return Promise.resolve(JSON.stringify({
+                tier: 'docs',
+                tools: ['fs_read', 'web_search'],
+                skills: ['pdf-word'],
+            }));
+        });
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        await waitFor(() => expect(spies.ListAvailableToolNames).toHaveBeenCalled());
+
+        fireEvent.click(screen.getByTestId('expert-tier-advisor'));
+        await waitFor(() => expect((spies as any).ResolveExpertCapabilityTier).toHaveBeenCalledWith('advisor'));
+        fireEvent.click(screen.getByTestId('expert-tier-docs'));
+        await waitFor(() => expect((spies as any).ResolveExpertCapabilityTier).toHaveBeenCalledWith('docs'));
+
+        // Late advisor response must not clobber docs.
+        resolveAdvisor?.(JSON.stringify({ tier: 'advisor', tools: ['memory'], skills: [] }));
+        await waitFor(() => expect(screen.getByTestId('expert-tier-docs').getAttribute('aria-checked')).toBe('true'));
+
+        fireEvent.change(screen.getByTestId('expert-name-input'), { target: { value: '文档' } });
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.tools).toEqual(expect.arrayContaining(['fs_read', 'web_search']));
+        expect(payload.tools).not.toEqual(['memory']);
+    });
+
+    it('starter template fills seed fields and selects a capability tier', async () => {
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        await waitFor(() => expect(spies.ListAvailableToolNames).toHaveBeenCalled());
+        // Ensure catalog state is applied before starter resolve.
+        await waitFor(() => expect(screen.getByTestId('expert-tier-full')).toBeTruthy());
+        fireEvent.click(screen.getByTestId('expert-starter-office'));
+
+        expect((screen.getByTestId('expert-name-input') as HTMLInputElement).value).toBe('办公助手');
+        expect((screen.getByTestId('expert-icon-input') as HTMLInputElement).value).toBe('📊');
+        expect((screen.getByTestId('expert-idea-input') as HTMLInputElement).value).toContain('办公');
+        expect(screen.getByTestId('expert-tier-office').getAttribute('aria-checked')).toBe('true');
+        await waitFor(() => expect(screen.getByTestId('expert-default-access').textContent).toMatch(/已限制/));
+
+        fireEvent.click(screen.getByTestId('expert-save-button'));
+        await waitFor(() => expect(spies.SaveExpert).toHaveBeenCalledTimes(1));
+        const payload = JSON.parse(spies.SaveExpert.mock.calls[0][0] as string);
+        expect(payload.tools).toEqual(expect.arrayContaining(['screenshot', 'send_file']));
+        expect(payload.skills).toEqual(expect.arrayContaining(['pptx-gen', 'sheet-analysis']));
+    });
+
+    it('custom tier expands advanced whitelist', async () => {
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        fireEvent.click(screen.getByTestId('expert-tier-custom'));
+        expect(screen.getByTestId('expert-tier-custom').getAttribute('aria-checked')).toBe('true');
+        await waitFor(() => expect(screen.getByTestId('expert-advanced-body')).toBeTruthy());
+    });
+
+    it('groups advanced tools with Chinese labels and danger markers', async () => {
+        spies.SaveExpert.mockImplementation(async (json: string) => json);
+        render(<ExpertEditorDialog lang="zh-Hans" onClose={vi.fn()} onSaved={vi.fn()} />);
+        await waitFor(() => expect(spies.ListAvailableToolNames).toHaveBeenCalled());
+        await expandAdvanced();
+
+        expect(screen.getByTestId('expert-tool-group-system')).toBeTruthy();
+        expect(screen.getByTestId('expert-tool-group-files')).toBeTruthy();
+        expect(screen.getByTestId('expert-tools-list').textContent).toContain('读取文件');
+        expect(screen.getByTestId('expert-tools-list').textContent).toContain('SSH 远程');
+        expect(screen.getByTestId('expert-tools-list').textContent).toContain('高风险');
+
+        // Selecting a dangerous tool surfaces the risk note + summary danger count.
+        const sshLabel = Array.from(screen.getByTestId('expert-tools-list').querySelectorAll('label'))
+            .find((el) => el.textContent?.includes('SSH 远程')) as HTMLLabelElement;
+        expect(sshLabel).toBeTruthy();
+        fireEvent.click(sshLabel.querySelector('input') as HTMLInputElement);
+        expect(await screen.findByTestId('expert-danger-note')).toBeTruthy();
+        expect(screen.getByTestId('expert-tier-custom').getAttribute('aria-checked')).toBe('true');
+        expect(screen.getByTestId('expert-default-access').textContent).toMatch(/高风险/);
+        expect(screen.getByTestId('expert-access-card-danger-list').textContent).toContain('SSH 远程');
     });
 });

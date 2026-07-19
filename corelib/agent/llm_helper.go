@@ -63,6 +63,10 @@ func shouldRetrySimpleLLMError(err error) bool {
 	if errors.As(err, &httpErr) {
 		return httpErr.statusCode == http.StatusRequestTimeout || httpErr.statusCode == http.StatusTooManyRequests || httpErr.statusCode >= http.StatusInternalServerError
 	}
+	var statusErr *llm.HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		return statusErr.StatusCode == http.StatusRequestTimeout || statusErr.StatusCode == http.StatusTooManyRequests || statusErr.StatusCode >= http.StatusInternalServerError
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
@@ -160,8 +164,16 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("llm request failed body_len=%d", len(body))
-		return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		// Keep Body for UserFacingError (structured detail). HTTP 500 still uses
+		// dumpLLMContext so prompt bodies are never written to disk.
+		if resp.StatusCode == http.StatusInternalServerError {
+			msg := llm.UserFacingHTTPStatus(resp.StatusCode, body)
+			if msg == "" {
+				msg = fmt.Sprintf("llm request failed body_len=%d", len(body))
+			}
+			return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		}
+		return nil, &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
 	}
 
 	parsed, err := llm.ParseNonStreamOpenAIResponseBody(body)
@@ -201,8 +213,14 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		return nil, readErr
 	}
 	if resp.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("llm responses request failed body_len=%d", len(body))
-		return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		if resp.StatusCode == http.StatusInternalServerError {
+			msg := llm.UserFacingHTTPStatus(resp.StatusCode, body)
+			if msg == "" {
+				msg = fmt.Sprintf("llm responses request failed body_len=%d", len(body))
+			}
+			return nil, dumpLLMContext(resp.StatusCode, msg, data)
+		}
+		return nil, &llm.HTTPStatusError{StatusCode: resp.StatusCode, Body: append([]byte(nil), body...)}
 	}
 
 	parsed, err := llm.ParseNonStreamResponsesAPIBody(body)

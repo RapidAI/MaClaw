@@ -93,7 +93,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 		// Preserve the bounded response body for callers that can classify
 		// provider-specific errors (for example, hub entitlement failures).
 		// HTTPStatusError.Error intentionally exposes only status and length.
-		return nil, status, raw, &HTTPStatusError{StatusCode: status, Body: raw}
+		return nil, status, raw, newHTTPStatusError(status, raw)
 	}
 	if !strings.Contains(contentType, "text/event-stream") {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
