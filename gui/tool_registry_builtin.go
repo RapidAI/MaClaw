@@ -682,25 +682,33 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"query"},
 		func(args map[string]interface{}) string { return h.toolWebSearch(args) })
 
-	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
+	reg("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。下载文件时务必传 save_path（相对路径落在当前工作目录）。通用 HTTP/PDF 下载优先用 download_file 或本工具+save_path，不要安装 ClawHub 的 wget/curl skill。save_path 下载内置反爬升级：遇 Cloudflare/403 拦截会自动换浏览器请求头重试，仍被拦时尝试复用浏览器会话 cookie（需先用 browser 工具打开过该网站）。下载过程日志见 ~/.maclaw/logs/download.log。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。",
 		ToolCategoryBuiltin, []string{"web", "fetch", "download", "url", "browse", "network"},
 		map[string]interface{}{
-			"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
-			"render_js": map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false）"},
-			"save_path": map[string]string{"type": "string", "description": "保存文件路径（可选，指定后下载文件而非返回文本；相对路径相对当前工作目录）"},
-			"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
-			"offset":    map[string]string{"type": "integer", "description": "从第几个字符开始读取（用于长页面续读，默认 0）"},
-			"max_chars": map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
+			"url":                 map[string]string{"type": "string", "description": "要抓取的 URL"},
+			"render_js":           map[string]string{"type": "boolean", "description": "是否使用 Chrome 渲染 JS（可选，默认 false）"},
+			"save_path":           map[string]string{"type": "string", "description": "保存文件路径（可选，指定后下载文件而非返回文本；相对路径相对当前工作目录）"},
+			"timeout":             map[string]string{"type": "integer", "description": "超时秒数（可选，默认 600，范围 240-600）"},
+			"offset":              map[string]string{"type": "integer", "description": "从第几个字符开始读取（用于长页面续读，默认 0）"},
+			"max_chars":           map[string]string{"type": "integer", "description": "本次最多返回字符数（可选；不传表示返回全部提取内容）"},
+			"headers":             map[string]string{"type": "object", "description": "自定义请求头（可选，如 {\"Referer\": \"...\"})"},
+			"cookie":              map[string]string{"type": "string", "description": "Cookie 请求头快捷参数（可选）"},
+			"use_browser_cookies": map[string]string{"type": "boolean", "description": "复用浏览器会话的 cookie/UA 发起请求（可选；需先用 browser 工具打开过该网站，适用于 Cloudflare 等验证场景）"},
+			"via_browser":         map[string]string{"type": "boolean", "description": "让浏览器亲自下载该 URL（可选，需配合 save_path；用于 HTTP 级下载全部被反爬拦截时）"},
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolWebFetch(args) })
 
-	reg("download_file", "将 HTTP/HTTPS URL 下载到当前工作目录（顶栏 working_directory / 项目工作区）。通用文件与 PDF 下载的首选工具；返回绝对路径。不要为简单下载去 Hub 安装 wget/curl/Paper Fetch。",
+	reg("download_file", "将 HTTP/HTTPS URL 下载到当前工作目录（顶栏 working_directory / 项目工作区）。通用文件与 PDF 下载的首选工具；返回绝对路径。不要为简单下载去 Hub 安装 wget/curl/Paper Fetch。内置反爬升级链：被 Cloudflare/403 拦截时自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie）；网络错误与 429/5xx 自动退避重试。终极手段：via_browser=true 让浏览器亲自下载（真实内核 cookie/指纹/JS 环境，可过强反爬与内联 PDF）。下载过程日志见 ~/.maclaw/logs/download.log。",
 		ToolCategoryBuiltin, []string{"download", "file", "http", "https", "pdf", "url", "wget", "curl", "fetch"},
 		map[string]interface{}{
-			"url":       map[string]string{"type": "string", "description": "要下载的 URL"},
-			"save_path": map[string]string{"type": "string", "description": "保存路径（可选；相对路径相对当前工作目录；省略则用 URL 文件名）"},
-			"output":    map[string]string{"type": "string", "description": "save_path 的别名"},
-			"timeout":   map[string]string{"type": "integer", "description": "超时秒数（可选）"},
+			"url":                 map[string]string{"type": "string", "description": "要下载的 URL"},
+			"save_path":           map[string]string{"type": "string", "description": "保存路径（可选；相对路径相对当前工作目录；省略则用 URL 文件名）"},
+			"output":              map[string]string{"type": "string", "description": "save_path 的别名"},
+			"timeout":             map[string]string{"type": "integer", "description": "超时秒数（可选）"},
+			"headers":             map[string]string{"type": "object", "description": "自定义请求头（可选，如 {\"Referer\": \"...\"})"},
+			"cookie":              map[string]string{"type": "string", "description": "Cookie 请求头快捷参数（可选）"},
+			"use_browser_cookies": map[string]string{"type": "boolean", "description": "复用浏览器会话的 cookie/UA 下载（可选；需先用 browser 工具打开过该网站，适用于 Cloudflare 等验证场景）"},
+			"via_browser":         map[string]string{"type": "boolean", "description": "让浏览器亲自下载该 URL（可选；浏览器内核发起请求，带其 cookie/指纹，内联 PDF 也会强制存盘；用于 HTTP 级下载全部被反爬拦截时）"},
 		}, []string{"url"},
 		func(args map[string]interface{}) string { return h.toolDownloadFile(args) })
 

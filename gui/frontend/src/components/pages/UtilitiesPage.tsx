@@ -42,6 +42,9 @@ import {
 } from './utilitiesSurveyEditor';
 import { mapLansengerGroupsForSurveyBind, parseWailsJSON } from './utilitiesParse';
 import { meetingRecordBaseTitle, meetingRecordCardDesc } from './utilitiesMeetingRecord';
+import { ExpertEditorDialog } from './ExpertEditorDialog';
+import type { ExpertDefinition } from '../ai/expertTypes';
+import { DEFAULT_EXPERT_ICON, parseExpertListJSON } from '../ai/expertTypes';
 
 export { parseWailsJSON, mapLansengerGroupsForSurveyBind } from './utilitiesParse';
 
@@ -256,10 +259,13 @@ const SurveyHelpPanel = ({ title, groups }: { title: string; groups: SurveyOpera
 export const UtilitiesPage = ({
     lang,
     onStartMeetingRecord,
+    onOpenExpert,
 }: {
     lang?: string;
     /** Open a new agent tab and send the meeting-recording command. */
     onStartMeetingRecord?: () => void | Promise<void>;
+    /** Open an expert conversation tab in the AI assistant panel. */
+    onOpenExpert?: (expert: ExpertDefinition) => void;
 }) => {
     const isZh = !lang || lang.startsWith('zh');
     const [view, setView] = useState<View>('home');
@@ -302,6 +308,11 @@ export const UtilitiesPage = ({
     const [responseQuery, setResponseQuery] = useState('');
     const [textAnswerQuery, setTextAnswerQuery] = useState('');
     const [showHelp, setShowHelp] = useState(false);
+    const [experts, setExperts] = useState<ExpertDefinition[]>([]);
+    const [expertEditor, setExpertEditor] = useState<{ mode: 'new' } | { mode: 'edit'; expert: ExpertDefinition } | null>(null);
+    const [expertDeleteTarget, setExpertDeleteTarget] = useState<ExpertDefinition | null>(null);
+    const [expertResetTarget, setExpertResetTarget] = useState<ExpertDefinition | null>(null);
+    const [expertActionBusy, setExpertActionBusy] = useState(false);
     const meetingStartingRef = useRef(false);
     const vscodeStartingRef = useRef(false);
     const vscodeExtStartingRef = useRef(false);
@@ -353,6 +364,61 @@ export const UtilitiesPage = ({
         })();
         return () => { cancelled = true; };
     }, [isZh, view]);
+
+    // AI experts: load the card list whenever the home view is shown.
+    const loadExperts = useCallback(async () => {
+        try {
+            const mod = await getApp();
+            if (!mod?.ListExperts) return;
+            const raw = await mod.ListExperts();
+            if (!mountedRef.current) return;
+            setExperts(parseExpertListJSON(raw));
+        } catch {
+            // Backend unavailable (tests / pre-wails) — keep the section empty.
+        }
+    }, []);
+
+    useEffect(() => {
+        if (view !== 'home') return;
+        void loadExperts();
+    }, [view, loadExperts]);
+
+    const handleDeleteExpert = useCallback(async () => {
+        const target = expertDeleteTarget;
+        if (!target || expertActionBusy) return;
+        setExpertActionBusy(true);
+        try {
+            const mod = await getApp();
+            if (!mod?.DeleteExpert) throw new Error(isZh ? '当前版本不支持删除专家' : 'Deleting experts is not supported by this build');
+            await mod.DeleteExpert(target.id);
+            setExpertDeleteTarget(null);
+            window.dispatchEvent(new CustomEvent('maclaw:expert-deleted', { detail: { expertId: target.id } }));
+            await loadExperts();
+        } catch (e: any) {
+            if (mountedRef.current) setError(String(e?.message || e));
+        } finally {
+            if (mountedRef.current) setExpertActionBusy(false);
+        }
+    }, [expertDeleteTarget, expertActionBusy, loadExperts, isZh]);
+
+    const handleResetBuiltinExpert = useCallback(async () => {
+        const target = expertResetTarget;
+        if (!target || expertActionBusy) return;
+        setExpertActionBusy(true);
+        try {
+            const mod = await getApp();
+            if (!mod?.ResetBuiltinExpert) throw new Error(isZh ? '当前版本不支持恢复默认专家' : 'Resetting builtin experts is not supported by this build');
+            await mod.ResetBuiltinExpert(target.id);
+            setExpertResetTarget(null);
+            // The override is gone — close any open tab so it reopens with defaults.
+            window.dispatchEvent(new CustomEvent('maclaw:expert-deleted', { detail: { expertId: target.id } }));
+            await loadExperts();
+        } catch (e: any) {
+            if (mountedRef.current) setError(String(e?.message || e));
+        } finally {
+            if (mountedRef.current) setExpertActionBusy(false);
+        }
+    }, [expertResetTarget, expertActionBusy, loadExperts, isZh]);
 
     const copyText = async (text: string, okMsg: string) => {
         const value = (text || '').trim();
@@ -651,6 +717,18 @@ export const UtilitiesPage = ({
         help: isZh ? '使用说明' : 'How to use',
         hideHelp: isZh ? '收起说明' : 'Hide help',
         dismiss: isZh ? '关闭提示' : 'Dismiss',
+        expertsTitle: lang === 'zh-Hant' ? 'AI 專家' : isZh ? 'AI 专家' : 'AI Experts',
+        expertsSubtitle: lang === 'zh-Hant'
+            ? '點擊卡片與專家對話；也可以建立自己的專家'
+            : isZh
+                ? '点击卡片与专家对话；也可以创建自己的专家'
+                : 'Click a card to chat with an expert, or create your own',
+        expertNew: lang === 'zh-Hant' ? '新建專家' : isZh ? '新建专家' : 'New expert',
+        expertEdit: lang === 'zh-Hant' ? '編輯' : isZh ? '编辑' : 'Edit',
+        expertResetDefault: lang === 'zh-Hant' ? '恢復預設' : isZh ? '恢复默认' : 'Reset default',
+        expertDeleteTitle: lang === 'zh-Hant' ? '刪除專家' : isZh ? '删除专家' : 'Delete expert',
+        expertResetTitle: lang === 'zh-Hant' ? '恢復預設專家' : isZh ? '恢复默认专家' : 'Reset builtin expert',
+        expertOpen: lang === 'zh-Hant' ? '開始對話' : isZh ? '开始对话' : 'Start chat',
     }), [isZh, lang]);
 
     const handleMeetingRecord = useCallback(async () => {
@@ -1445,6 +1523,104 @@ export const UtilitiesPage = ({
                         </button>
                     ))}
                 </div>
+                <div className="utilities-experts" data-testid="utilities-experts-section">
+                    <div className="utilities-experts__header">
+                        <h2 className="utilities-experts__title">{t.expertsTitle}</h2>
+                        <p className="utilities-experts__subtitle">{t.expertsSubtitle}</p>
+                    </div>
+                    <div className="utilities-experts__grid">
+                        {experts.map((expert) => (
+                            <div key={expert.id} className="utilities-expert-card" data-testid={`utilities-expert-card-${expert.id}`}>
+                                <button
+                                    type="button"
+                                    className="utilities-expert-card__main"
+                                    aria-label={expert.name}
+                                    title={expert.description}
+                                    onClick={() => onOpenExpert?.(expert)}
+                                >
+                                    <div className="utilities-expert-card__icon" aria-hidden>{expert.icon || DEFAULT_EXPERT_ICON}</div>
+                                    <div className="utilities-expert-card__body">
+                                        <div className="utilities-expert-card__title">{expert.name}</div>
+                                        <div className="utilities-expert-card__desc">{expert.description}</div>
+                                    </div>
+                                    <span className="utilities-expert-card__cta">{t.expertOpen}</span>
+                                </button>
+                                <div className="utilities-expert-card__actions">
+                                    <button
+                                        type="button"
+                                        data-testid={`utilities-expert-edit-${expert.id}`}
+                                        className="utilities-expert-card__action"
+                                        onClick={() => setExpertEditor({ mode: 'edit', expert })}
+                                    >{t.expertEdit}</button>
+                                    {expert.builtin ? (
+                                        <button
+                                            type="button"
+                                            data-testid={`utilities-expert-reset-${expert.id}`}
+                                            className="utilities-expert-card__action"
+                                            disabled={expertActionBusy}
+                                            onClick={() => setExpertResetTarget(expert)}
+                                        >{t.expertResetDefault}</button>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            data-testid={`utilities-expert-delete-${expert.id}`}
+                                            className="utilities-expert-card__action utilities-expert-card__action--danger"
+                                            disabled={expertActionBusy}
+                                            onClick={() => setExpertDeleteTarget(expert)}
+                                        >{t.delete}</button>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                        <button
+                            type="button"
+                            className="utilities-expert-card utilities-expert-card--new"
+                            data-testid="utilities-expert-new-card"
+                            onClick={() => setExpertEditor({ mode: 'new' })}
+                        >
+                            <span className="utilities-expert-card__new-icon" aria-hidden>➕</span>
+                            <span>{t.expertNew}</span>
+                        </button>
+                    </div>
+                </div>
+                {expertDeleteTarget ? (
+                    <ConfirmDialog
+                        title={t.expertDeleteTitle}
+                        message={lang === 'zh-Hant'
+                            ? `確定刪除專家「${expertDeleteTarget.name}」嗎？此操作無法復原。`
+                            : isZh
+                                ? `确定删除专家「${expertDeleteTarget.name}」吗？此操作无法撤销。`
+                                : `Delete expert "${expertDeleteTarget.name}"? This cannot be undone.`}
+                        t={(key: string) => (key === 'confirm' ? t.delete : t.cancel)}
+                        onCancel={() => setExpertDeleteTarget(null)}
+                        onConfirm={() => { void handleDeleteExpert(); }}
+                    />
+                ) : null}
+                {expertResetTarget ? (
+                    <ConfirmDialog
+                        title={t.expertResetTitle}
+                        message={lang === 'zh-Hant'
+                            ? `恢復「${expertResetTarget.name}」為預設定義？你的自訂修改將被覆蓋。`
+                            : isZh
+                                ? `恢复「${expertResetTarget.name}」为默认定义？你的自定义修改将被覆盖。`
+                                : `Reset "${expertResetTarget.name}" to its default definition? Your customizations will be overwritten.`}
+                        t={(key: string) => (key === 'confirm' ? t.expertResetDefault : t.cancel)}
+                        onCancel={() => setExpertResetTarget(null)}
+                        onConfirm={() => { void handleResetBuiltinExpert(); }}
+                    />
+                ) : null}
+                {expertEditor ? (
+                    <ExpertEditorDialog
+                        lang={lang}
+                        expert={expertEditor.mode === 'edit' ? expertEditor.expert : null}
+                        onClose={() => setExpertEditor(null)}
+                        onSaved={(saved) => {
+                            setExpertEditor(null);
+                            window.dispatchEvent(new CustomEvent('maclaw:expert-updated', { detail: { expert: saved } }));
+                            void loadExperts();
+                        }}
+                    />
+                ) : null}
             </div>
         );
     }

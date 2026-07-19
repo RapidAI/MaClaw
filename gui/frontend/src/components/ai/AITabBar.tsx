@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AITabItem, getAITabDisplayTitle } from "./AITabItem";
+import { DEFAULT_EXPERT_ICON } from "./expertTypes";
 import { hasLocalAIParticipant } from "./localAIIdentity";
 
 export interface AITabBarProps {
@@ -204,7 +205,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                         >
                             <span style={{ fontSize: 13, flexShrink: 0 }}>
-                                {tab.type === "project" ? (tab.archived ? "P" : "D") : tab.type === "ve" ? "VE" : "AI"}
+                                {tab.type === "project" ? (tab.archived ? "P" : "D") : tab.type === "ve" ? "VE" : tab.type === "expert" ? (tab.expertIcon || DEFAULT_EXPERT_ICON) : "AI"}
                             </span>
                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                 {getAITabDisplayTitle(tab, lang)}

@@ -127,6 +127,10 @@ func TestGroupDiscussionSendInvitationWaitsForTrustedInviteJoin(t *testing.T) {
 				t.Fatalf("participant_id = %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{Session: &a2a.Session{ID: "disc-join", Participants: []a2a.Participant{{ID: "machine-1", RoleCode: "initiator"}, {ID: "machine-xiaoyan", RoleCode: "speak"}}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/a2a/invites/mine":
+			// Wait loop polls invite status in parallel with the detail check;
+			// keep it pending so the join is driven by the detail response.
+			_ = json.NewEncoder(w).Encode(a2a.InviteListResponse{Invites: []a2a.GroupInviteSummary{{ID: "invite-join", Status: "pending"}}})
 		default:
 			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 		}

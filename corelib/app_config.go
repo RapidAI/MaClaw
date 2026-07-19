@@ -148,7 +148,9 @@ type AppConfig struct {
 	CapabilityMarketPolicy             CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
 	MaclawDebugToolCalls               bool                   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry                   bool                   `json:"show_ai_trace_entry,omitempty"`
-	ShowAppEntry                       bool                   `json:"show_app_entry"`
+	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
+	// (same default-on contract as show_workflow_entry / show_utilities_entry).
+	ShowAppEntry                       *bool                  `json:"show_app_entry,omitempty"`
 	ShowWorkflowEntry                  *bool                  `json:"show_workflow_entry,omitempty"`
 	ShowUtilitiesEntry                 *bool                  `json:"show_utilities_entry,omitempty"`
 	SurveyEnabled                      *bool                  `json:"survey_enabled,omitempty"`
@@ -595,6 +597,12 @@ func NormalizeSubAgentConcurrency(n int) int {
 	return n
 }
 
+// IsShowAppEntryEnabled reports whether the MaClaw Apps sidebar entry is shown.
+// Default true when the field has never been set (nil).
+func (c AppConfig) IsShowAppEntryEnabled() bool {
+	return c.ShowAppEntry == nil || *c.ShowAppEntry
+}
+
 func (c AppConfig) IsIMProgressNudgeEnabled() bool {
 	return c.IMProgressNudgeEnabled == nil || *c.IMProgressNudgeEnabled
 }
@@ -939,6 +947,7 @@ func AppConfigDefaults() AppConfig {
 	return AppConfig{
 		MaclawRoleDescription:      DefaultMaclawRoleDescription,
 		ShowAssistantEntry:         true,
+		// ShowAppEntry left nil: absent/nil means enabled (default-on).
 		ShowCodex:                  true,
 		ShowOpenCode:               true,
 		ShowCodeBuddy:              true,

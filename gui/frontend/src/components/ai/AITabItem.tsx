@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { AITab } from "./AITabTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { DEFAULT_EXPERT_ICON } from "./expertTypes";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
 import { participantIdentityMatches, participantNameForIdentity } from "./participantIdentity";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";

@@ -33,12 +33,13 @@ import (
 
 // FetchOptions configures the Fetch operation.
 type FetchOptions struct {
-	MaxBytes int64  // max response body size (default 2MB text / 100MB save_path; hard caps apply)
-	RenderJS bool   // attempt headless Chrome rendering
-	SavePath string // if set, save raw content to this file path instead of returning text
-	TimeoutS int    // timeout in seconds (default 30, max 600)
-	Offset   int    // rune offset for continued reading
-	MaxChars int    // max characters to return in Content (0 = full content)
+	MaxBytes int64             // max response body size (default 2MB text / 100MB save_path; hard caps apply)
+	RenderJS bool              // attempt headless Chrome rendering
+	SavePath string            // if set, save raw content to this file path instead of returning text
+	TimeoutS int               // timeout in seconds (default 30, max 600)
+	Offset   int               // rune offset for continued reading
+	MaxChars int               // max characters to return in Content (0 = full content)
+	Headers  map[string]string // extra request headers (e.g. Cookie, Referer); applied after defaults
 }
 
 // FetchResult contains the fetched content.
@@ -132,6 +133,14 @@ func FetchWithClientCtx(parent context.Context, rawURL string, opts *FetchOption
 		return fetchFTPCtx(parent, rawURL, opts)
 	}
 
+	// render_js only affects text extraction; with save_path the caller wants
+	// the raw file, so skip headless Chrome entirely (it cannot save files
+	// and is Cloudflare's favorite headless target).
+	if opts.RenderJS && strings.TrimSpace(opts.SavePath) != "" {
+		dlogf("[download] render_js ignored for save_path download url=%q", rawURL)
+		opts.RenderJS = false
+	}
+
 	// Try headless Chrome first if requested
 	if opts.RenderJS {
 		if client != nil {
@@ -163,19 +172,34 @@ func fetchHTTPWithClientCtx(parent context.Context, rawURL string, opts *FetchOp
 	ctx, cancel := context.WithTimeout(parent, time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 
+	if client == nil {
+		client = httpClient()
+	}
+
+	// File downloads get their own pipeline: retries, streaming to disk,
+	// progress logging, and the anti-bot escalation chain.
+	if strings.TrimSpace(opts.SavePath) != "" {
+		return downloadToFile(ctx, rawURL, opts, client)
+	}
+
+	return fetchTextHTTP(ctx, rawURL, opts, client)
+}
+
+// fetchTextHTTP is the original text-extraction path (no save_path): single
+// attempt, body capped by MaxBytes, readable-content extraction.
+func fetchTextHTTP(ctx context.Context, rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", pickUserAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,ja;q=0.6")
-	req.Header.Set("Accept-Encoding", "identity") // avoid compressed responses for simplicity
+	applyRequestHeaders(req, opts, nil)
 
-	if client == nil {
-		client = httpClient()
-	}
-	resp, err := client.Do(req)
+	// The shared client's 30s Timeout covers body streaming and would
+	// contradict the tool's timeout parameter (up to 600s); the ctx deadline
+	// is authoritative here.
+	c := *client
+	c.Timeout = 0
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -199,20 +223,6 @@ func fetchHTTPWithClientCtx(parent context.Context, rawURL string, opts *FetchOp
 		URL:         finalURL,
 		ContentType: ct,
 		BytesRead:   len(body),
-	}
-
-	// If save path is specified, write raw bytes to file
-	if opts.SavePath != "" {
-		dir := filepath.Dir(opts.SavePath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("create directory failed: %w", err)
-		}
-		if err := os.WriteFile(opts.SavePath, body, 0o644); err != nil {
-			return nil, fmt.Errorf("write file failed: %w", err)
-		}
-		result.SavedTo = opts.SavePath
-		result.Content = fmt.Sprintf("文件已保存到 %s (%d 字节)", opts.SavePath, len(body))
-		return result, nil
 	}
 
 	// Detect and convert encoding

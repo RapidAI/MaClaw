@@ -83,6 +83,9 @@ func (h *IMMessageHandler) finalizeInjectionAugmentedTools(ctx *LoopContext, use
 	if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
 		tools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, tools, h.getTools())
 	}
+	// Re-apply the expert allow-list as well — injection re-routing must not
+	// pull tools outside the expert's whitelist back into the loop.
+	tools = h.filterToolsForExpertUser(userID, tools)
 	tools = stripExecutionContractMetadataForLLM(tools)
 	return tools, estimateToolsTokens(tools)
 }
@@ -138,7 +141,6 @@ func stripGuideLaunchReferenceWrappers(text string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
-
 // augmentToolsFromSessionPins checks if any session-pinned conditional tools
 // are missing from the current tool list and adds their definitions.
 //
@@ -190,6 +192,9 @@ func (h *IMMessageHandler) augmentToolsFromSessionPins(ctx *LoopContext, userID 
 		if policyOwnerID, applyFilter := h.workflowToolFilterOwnerAndDecision(userID, ctx); applyFilter {
 			currentTools = h.applyWorkflowToolFilterWithCatalog(policyOwnerID, currentTools, allTools)
 		}
+		// Re-apply the expert allow-list for the same reason: session-pinned
+		// tools outside the expert whitelist must not re-enter the loop.
+		currentTools = h.filterToolsForExpertUser(userID, currentTools)
 		currentTools = stripExecutionContractMetadataForLLM(currentTools)
 		currentBudget = estimateToolsTokens(currentTools)
 

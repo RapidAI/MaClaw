@@ -2940,6 +2940,22 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		opts.TimeoutS = corelib.MaxAgentTimeoutSec
 	}
 
+	// Optional request headers: explicit `headers` object, `cookie` shortcut,
+	// and `use_browser_cookies` (reuse the live browser session's auth).
+	if hdrs, errMsg := buildFetchHeaders(args, rawURL); errMsg != "" {
+		return errMsg
+	} else if len(hdrs) > 0 {
+		opts.Headers = hdrs
+	}
+
+	// via_browser: let the managed browser itself download (requires save_path).
+	if viaBrowser, _ := args["via_browser"].(bool); viaBrowser {
+		if opts.SavePath == "" {
+			return "via_browser 需要配合 save_path 使用（浏览器下载直接落盘，不返回文本）"
+		}
+		return h.downloadViaBrowserTool(rawURL, opts.SavePath, args)
+	}
+
 	// Use provider-aware fetch: TinyFish has better content extraction.
 	// FetchWithProvider handles TinyFish routing, offset/maxChars windowing, and fallback.
 	var fetchProvider corelib.WebSearchProvider
@@ -2978,6 +2994,10 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		if result.BytesRead > 0 && !strings.Contains(msg, "字节") && !strings.Contains(strings.ToLower(msg), "bytes") {
 			msg = fmt.Sprintf("%s\nsize_bytes: %d", msg, result.BytesRead)
 		}
+		if result.URL != "" && result.URL != rawURL {
+			msg = fmt.Sprintf("%s\nfinal_url: %s", msg, result.URL)
+		}
+		msg = fmt.Sprintf("%s\n下载过程日志: ~/.maclaw/logs/download.log", msg)
 		return msg
 	}
 
@@ -3033,12 +3053,23 @@ func (h *IMMessageHandler) toolDownloadFile(args map[string]interface{}) string 
 		return errMsg
 	}
 	log.Printf("[download_file] url=%q save_path=%q workdir=%q abs=%q owner=%q", rawURL, savePath, base, absPath, ownerID)
+	// via_browser: let the managed browser itself perform the download
+	// (Browser.setDownloadBehavior); used when HTTP-level fetching is blocked.
+	if viaBrowser, _ := args["via_browser"].(bool); viaBrowser {
+		return h.downloadViaBrowserTool(rawURL, absPath, args)
+	}
 	fetchArgs := map[string]interface{}{
 		"url":       rawURL,
 		"save_path": absPath, // absolute under workdir; toolWebFetch re-checks with same owner base
 	}
 	if t, ok := args["timeout"]; ok {
 		fetchArgs["timeout"] = t
+	}
+	// Pass through optional request-header controls (anti-bot scenarios).
+	for _, key := range []string{"headers", "cookie", "use_browser_cookies"} {
+		if v, ok := args[key]; ok {
+			fetchArgs[key] = v
+		}
 	}
 	// Re-inject owner so toolWebFetch resolves the same workbench (consume removed it above).
 	if strings.TrimSpace(ownerID) != "" {

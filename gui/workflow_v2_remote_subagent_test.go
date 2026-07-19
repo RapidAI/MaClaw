@@ -293,3 +293,189 @@ func TestClearPerUserSessionStateClearsTemplateSubAgentPendingState(t *testing.T
 		t.Fatalf("pendingTemplateRemoteCoding should be cleared")
 	}
 }
+
+func TestSSHConnectFailureMessage(t *testing.T) {
+	// Empty reason keeps the original generic guidance.
+	generic := sshConnectFailureMessage("root", "example.com", 22, "")
+	if generic != "无法连接到远程服务器 root@example.com:22，请检查网络和凭据" {
+		t.Fatalf("generic message = %q", generic)
+	}
+	// Reason is appended single-line so users see the actual cause
+	// (auth failure vs dial timeout) instead of a bare generic hint.
+	reason := sshConnectFailureMessage("root", "example.com", 22, "SSH 连接失败: dial tcp 1.2.3.4:22: i/o timeout\n\nextra detail")
+	if !strings.HasPrefix(reason, "无法连接到远程服务器 root@example.com:22：") {
+		t.Fatalf("reason message should keep base context, got %q", reason)
+	}
+	if !strings.Contains(reason, "i/o timeout extra detail") {
+		t.Fatalf("reason should be whitespace-collapsed, got %q", reason)
+	}
+	if strings.Contains(reason, "\n") {
+		t.Fatalf("reason should be single-line, got %q", reason)
+	}
+	// Long reasons are truncated so dialog error boxes stay readable.
+	long := sshConnectFailureMessage("root", "example.com", 22, strings.Repeat("x", 500))
+	if n := len([]rune(long)); n > 200 {
+		t.Fatalf("long reason should be truncated, got %d runes", n)
+	}
+}
+
+
+func TestBuildRemoteCodingPlanStepTextStopsAtCurrentStep(t *testing.T) {
+	tasks := []*v2.TaskItem{
+		{Index: 1, Title: "检查远程环境与工作目录", Description: "ls -la /home; python3 --version"},
+		{Index: 2, Title: "初始化项目结构", Description: "mkdir /home/sysinfo-viewer; 创建 main.py 空框架"},
+		{Index: 3, Title: "实现系统信息查看功能", Description: "在 main.py 中编写 get_os_info 等函数"},
+		{Index: 4, Title: "验证运行并生成输出", Description: "python3 main.py 并保存 verification_output.txt"},
+		{Index: 5, Title: "输出项目结构与验收结果", Description: "写 final_report.txt"},
+	}
+	fullPlan := `### T1: 检查远程环境与工作目录
+描述: ls
+### T2: 初始化项目结构
+描述: mkdir 并创建 main.py 空框架
+### T3: 实现系统信息查看功能
+描述: 编写 get_os_info get_cpu_info get_memory_info get_disk_info
+### T4: 验证运行并生成输出
+描述: python3 main.py
+### T5: 输出项目结构与验收结果
+描述: final_report.txt`
+
+	_ = fullPlan // recipes must not appear in planned step prompt
+	text := buildRemoteCodingPlanStepText(
+		tasks[0], 1, 5, true,
+		"开发一个系统信息查看软件",
+		tasks,
+		0,
+		"开发一个系统信息查看软件",
+		"",
+		nil,
+	)
+
+	// Local-parity stop constraints.
+	for _, want := range []string{
+		"[Plan step T1/5] 检查远程环境与工作目录",
+		"You are executing plan step T1/5: 检查远程环境与工作目录",
+		"Focus on this step only; do not skip ahead.",
+		"Complete the CURRENT step fully, then stop; later steps run as separate tasks.",
+		"Do not implement, create files for, verify, or report on work that belongs to later plan steps.",
+		"If you use todo_write, only subdivide THIS step — do not re-list the whole plan as todos.",
+		"## Overall user request (context only — not a license to finish later steps)",
+		"开发一个系统信息查看软件",
+		"Plan outline (titles only; later steps are separate remote tasks — do not execute them now):",
+		"- T1: 检查远程环境与工作目录  ← current (do only this)",
+		"- T2: 初始化项目结构",
+		"- T5: 输出项目结构与验收结果",
+		"ls -la /home; python3 --version",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("planned T1 prompt missing %q\n---\n%s", want, text)
+		}
+	}
+
+	// Must NOT dump later-step implementation recipes that caused T1 rush-ahead.
+	for _, banned := range []string{
+		"Active multi-step execution plan:",
+		"Session plan / overall goal:",
+		"创建 main.py 空框架",
+		"get_os_info get_cpu_info",
+		"verification_output.txt",
+		"final_report.txt",
+		"在 main.py 中编写 get_os_info",
+	} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("planned T1 prompt must not include later-step details %q\n---\n%s", banned, text)
+		}
+	}
+}
+
+func TestBuildRemoteCodingPlanStepTextUnplannedKeepsFullPlanContext(t *testing.T) {
+	text := buildRemoteCodingPlanStepText(
+		nil, 1, 1, false,
+		"fix remote project",
+		nil,
+		1,
+		"keep improving remote",
+		"previous summary here",
+		[]string{"/home/app/main.py"},
+	)
+	for _, want := range []string{
+		"fix remote project",
+		"[Session continuity turn 2]",
+		"Session plan / overall goal:",
+		"keep improving remote",
+		"Previous turn summary:",
+		"previous summary here",
+		"Files modified earlier: /home/app/main.py",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("unplanned prompt missing %q\n---\n%s", want, text)
+		}
+	}
+	// Stale sticky multi-step recipes must not re-enter free-form follow-ups.
+	for _, banned := range []string{
+		"Active multi-step execution plan:",
+		"Focus on this step only",
+	} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("unplanned prompt must not include %q\n---\n%s", banned, text)
+		}
+	}
+}
+
+func TestBuildRemoteCodingPlanStepTextLaterStepUsesOwnDescriptionOnly(t *testing.T) {
+	tasks := []*v2.TaskItem{
+		{Index: 1, Title: "检查环境", Description: "仅检查"},
+		{Index: 2, Title: "实现功能", Description: "编写 get_cpu_info 并格式化输出"},
+	}
+	carry := formatRemotePlanStepCarrySummary(1, "检查环境", "success", "✅ 全部完成 — 项目总结\nmain.py written")
+	text := buildRemoteCodingPlanStepText(
+		tasks[1], 2, 2, true,
+		"做系统信息工具",
+		tasks,
+		1,
+		"",
+		carry,
+		[]string{"/home/a.txt"},
+	)
+	if !strings.Contains(text, "[Plan step T2/2] 实现功能") {
+		t.Fatalf("expected current step header, got:\n%s", text)
+	}
+	if !strings.Contains(text, "编写 get_cpu_info 并格式化输出") {
+		t.Fatalf("current step description should be present, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Prior plan step T1") || !strings.Contains(text, "still execute the CURRENT step fully") {
+		t.Fatalf("sanitized prior summary should carry forward, got:\n%s", text)
+	}
+	if !strings.Contains(text, "- T2: 实现功能  ← current (do only this)") {
+		t.Fatalf("current step should be marked in outline, got:\n%s", text)
+	}
+}
+
+func TestFormatRemotePlanStepCarrySummary(t *testing.T) {
+	got := formatRemotePlanStepCarrySummary(1, "检查", "success", "全部完成 — 项目总结\n"+strings.Repeat("x", 500))
+	if !strings.Contains(got, "Prior plan step T1 (检查) status=success") {
+		t.Fatalf("header missing: %q", got)
+	}
+	if !strings.Contains(got, "still execute the CURRENT step fully") {
+		t.Fatalf("guard missing: %q", got)
+	}
+	// Body is truncated; full 500 x's should not all fit after prefix.
+	if strings.Count(got, "x") >= 500 {
+		t.Fatalf("expected body truncation, got %d x runes in %d-len string", strings.Count(got, "x"), len(got))
+	}
+}
+
+func TestSetRemotePlanLastSummary(t *testing.T) {
+	var mem stickyCodingWorkbenchMemory
+	setRemotePlanLastSummary(&mem, true, 1, "检查", "success", "全部完成 — 项目总结")
+	if !strings.Contains(mem.LastSummary, "Prior plan step T1") || !strings.Contains(mem.LastSummary, "CURRENT step fully") {
+		t.Fatalf("planned carry: %q", mem.LastSummary)
+	}
+	setRemotePlanLastSummary(&mem, false, 1, "检查", "success", "plain summary")
+	if mem.LastSummary != "plain summary" {
+		t.Fatalf("unplanned should store raw summary: %q", mem.LastSummary)
+	}
+	setRemotePlanLastSummary(&mem, true, 2, "x", "ok", "   ")
+	if mem.LastSummary != "plain summary" {
+		t.Fatalf("empty sum should not clear: %q", mem.LastSummary)
+	}
+}

@@ -83,6 +83,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	}
 	BrowserDiagCP2_WorkflowFilter(browserBeforeWF, tools, workflowFilterPolicy.String(), workflowFilterSkipped)
 
+	// Expert session: apply the expert's tool allow-list last so no pipeline
+	// stage above can re-introduce tools outside the whitelist.
+	tools = h.filterToolsForExpertUser(userID, tools)
+
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
 	return agentLoopToolSet{

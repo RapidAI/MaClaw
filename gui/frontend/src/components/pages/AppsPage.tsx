@@ -10,6 +10,7 @@ import {
     isEnterpriseAppKindForWorkspace,
     setWorkspaceLaunchIssue,
 } from './appsWorkspaceLaunch';
+import { localizeText, normalizeLang } from '../../i18n';
 import './AppsPage.css';
 
 type AppKind = 'enterprise_approval_app' | 'enterprise_normal_app' | 'tool_app' | 'automation_app';
@@ -1074,6 +1075,7 @@ const labels = {
         submissionId: '\u63d0\u4ea4\u7f16\u53f7',
         withdrawSubmission: '\u64a4\u56de\u63d0\u4ea4',
         run: '\u6267\u884c',
+        runAgain: '\u91cd\u65b0\u6267\u884c',
         reset: '\u91cd\u7f6e',
         output: '\u8f93\u51fa\u7ed3\u679c',
         upload: '\u62d6\u5165\u6216\u9009\u62e9\u6587\u4ef6',
@@ -1490,6 +1492,7 @@ const labels = {
         submissionId: 'Submission ID',
         withdrawSubmission: 'Withdraw submission',
         run: 'Run',
+        runAgain: 'Run again',
         reset: 'Reset',
         output: 'Output',
         upload: 'Drop or choose files',
@@ -1795,21 +1798,380 @@ const labels = {
         aboutVersion: 'Version',
         aboutNoInfo: 'No about information provided by the developer',
     },
+    zhHant: {
+        search: '\u641c\u5c0b\u61c9\u7528',
+        clearSearch: '\u6e05\u7a7a\u641c\u5c0b',
+        resetFilter: '\u91cd\u7f6e\u7be9\u9078',
+        create: '\u5efa\u7acb',
+        category: '\u5206\u985e',
+        approvalStatus: '\u5be9\u6279\u72c0\u614b',
+        approvalStatusHint: '\u958b\u555f\u5be9\u6279\u5be6\u4f8b\u7ba1\u7406',
+        runHistoryOps: '\u57f7\u884c\u8a18\u9304',
+        runHistoryOpsHint: '\u6aa2\u8996\u61c9\u7528\u57f7\u884c\u6b77\u53f2',
+        marketOps: '\u61c9\u7528\u5e02\u5834',
+        marketOpsHint: '\u641c\u5c0b\u4e0b\u8f09\u5b89\u88dd\u61c9\u7528',
+        all: '\u5168\u90e8\u61c9\u7528',
+        otherApps: '\u5176\u4ed6\u61c9\u7528',
+        pinned: '\u5e38\u7528\u61c9\u7528',
+        searchResults: '\u641c\u5c0b\u7d50\u679c',
+        appStatus: '\u72c0\u614b',
+        appOpened: '\u5df2\u958b\u555f',
+        appRunning: '\u57f7\u884c\u4e2d',
+        appDisabledReason: '\u4f01\u696d\u7ba1\u7406\u54e1\u5df2\u505c\u7528\u6b64\u61c9\u7528\uff0c\u5165\u53e3\u548c\u6b77\u53f2\u5df2\u4fdd\u7559',
+        appHubDeprecatedReason: '\u4f01\u696d\u80fd\u529b\u5e02\u5834\u5df2\u505c\u6b62\u6b64\u61c9\u7528\u7684\u65b0\u88dd\u6216\u57f7\u884c\uff0c\u5165\u53e3\u548c\u6b77\u53f2\u5df2\u4fdd\u7559',
+        appHubRevokedReason: '\u4f01\u696d\u80fd\u529b\u5e02\u5834\u5df2\u64a4\u56de\u6b64\u61c9\u7528\uff0c\u5165\u53e3\u548c\u6b77\u53f2\u5df2\u4fdd\u7559',
+        apps: '\u61c9\u7528',
+        appStudio: 'MaClaw \u61c9\u7528\u5de5\u4f5c\u5ba4',
+        studioSubtitle: '\u5efa\u7acb\u3001\u7ba1\u7406\u3001\u5f9e\u4f01\u696d\u80fd\u529b\u5e02\u5834\u65b0\u589e\u61c9\u7528\u3002',
+        manual: '\u4f7f\u7528\u8aaa\u660e',
+        manualAria: '\u958b\u555f MaClaw \u61c9\u7528\u5de5\u4f5c\u5ba4\u4f7f\u7528\u8aaa\u660e',
+        createTab: '\u5efa\u7acb\u61c9\u7528',
+        promptDraft: '\u7528\u5c0d\u8a71\u751f\u6210\u8349\u7a3f',
+        draftPromptPlaceholder: '\u4f8b\uff1a\u505a\u4e00\u500b\u5408\u540c\u6b78\u6a94\u61c9\u7528\uff0c\u4e0a\u50b3 Word/PDF\uff0c\u8f38\u51fa\u6b78\u6a94\u7de8\u865f\u548c\u7a3d\u6838\u7d50\u679c',
+        manageTab: '\u61c9\u7528\u7ba1\u7406',
+        publishTab: '\u7a3d\u6838/\u91cb\u51fa',
+        publishSubtitle: '\u6aa2\u67e5\u672c\u5730\u61c9\u7528\u662f\u5426\u53ef\u4e0a\u50b3\u5230\u4f01\u696d\u80fd\u529b\u5e02\u5834\u3002',
+        publishChecklist: '\u91cb\u51fa\u6aa2\u67e5',
+        packagePreview: '\u63d0\u4ea4\u5305\u9810\u89bd',
+        packagePreviewHint: '\u50c5\u5305\u542b\u6aa2\u67e5\u5168\u90e8\u900f\u904e\u7684\u61c9\u7528\uff1b\u672a\u900f\u904e\u8005\u4e0d\u6703\u5beb\u5165\u63d0\u4ea4\u5305\u3002',
+        needsWork: '\u9700\u88dc\u9f4a',
+        noPublishApps: '\u66ab\u7121\u672c\u5730\u61c9\u7528\u53ef\u91cb\u51fa',
+        submitReview: '\u63d0\u4ea4\u7a3d\u6838',
+        pendingReview: '\u7b49\u5f85\u4f01\u696d\u5e02\u5834\u7a3d\u6838',
+        submitReviewLocalFallback: '\u4f01\u696d\u5e02\u5834\u66ab\u672a\u9023\u7dda\uff0c\u5df2\u5132\u5b58\u70ba\u672c\u5730\u5f85\u540c\u6b65\u63d0\u4ea4\u3002',
+        localSubmissionQueue: '\u672c\u6a5f\u63d0\u4ea4\u4f47\u5217',
+        noLocalSubmissionQueue: '\u66ab\u7121\u672c\u6a5f\u5f85\u540c\u6b65\u63d0\u4ea4',
+        localSubmissionQueueError: '\u63d0\u4ea4\u4f47\u5217\u8b80\u53d6\u5931\u6557',
+        localSubmissionQueueLoading: '\u63d0\u4ea4\u4f47\u5217\u8b80\u53d6\u4e2d',
+        reviewEvidence: '\u7a3d\u6838\u8b49\u64da',
+        installGovernance: '\u5b89\u88dd\u6cbb\u7406',
+        runtimeEvidence: '\u57f7\u884c\u8b49\u64da',
+        packageSignature: 'Hub \u5305\u7c3d\u540d',
+        approval: '\u5be9\u6279',
+        progress: '\u9032\u5ea6',
+        refreshQueue: '\u91cd\u65b0\u6574\u7406',
+        refreshingQueue: '\u91cd\u65b0\u6574\u7406\u4e2d',
+        oneClickPublish: '\u4e00\u9375\u91cb\u51fa',
+        oneClickPublishBusy: '\u91cb\u51fa\u4e2d\u2026',
+        oneClickPublishHint: '\u672c\u5730\u5165\u968a + \u4f01\u696d Hub + SkillMarket/HubCenter\uff08\u6309\u914d\u7f6e\uff09',
+        refreshQueueFromHub: '\u91cd\u65b0\u6574\u7406 Hub \u72c0\u614b',
+        refreshingQueueFromHub: '\u91cd\u65b0\u6574\u7406\u4e2d',
+        queueHubSyncFailed: 'Hub \u540c\u6b65\u5931\u6557',
+        queueOneClickPartial: '\u4e00\u9375\u91cb\u51fa\u90e8\u5206\u5931\u6557',
+        installApprovedHubApp: '\u5b89\u88dd\u5df2\u7a3d\u6838\u61c9\u7528',
+        installingApprovedHubApp: '\u5b89\u88dd\u4e2d',
+        approvedHubAppInstalled: '\u5df2\u5b89\u88dd',
+        approvedHubAppInstallFailed: '\u5b89\u88dd\u5931\u6557',
+        queueRefreshedAt: '\u6700\u5f8c\u91cd\u65b0\u6574\u7406',
+        copyQueuePackage: '\u8907\u88fd\u4f47\u5217\u5305',
+        copyQueueAudit: '\u8907\u88fd\u5be9\u8a08',
+        viewQueueDetail: '\u6aa2\u8996\u8a73\u60c5',
+        hideQueueDetail: '\u6536\u8d77\u8a73\u60c5',
+        queueDetailLoading: '\u8a73\u60c5\u8b80\u53d6\u4e2d',
+        queueDetailTitle: '\u63d0\u4ea4\u8a73\u60c5',
+        queueDetailPackageApps: '\u5305\u542b\u61c9\u7528',
+        queueDetailEvents: '\u5be9\u8a08\u4e8b\u4ef6',
+        copyingQueuePackage: '\u8907\u88fd\u4e2d',
+        queuePackageCopied: '\u5df2\u8907\u88fd',
+        queueAuditCopied: '\u5be9\u8a08\u5df2\u8907\u88fd',
+        queuePackageUnavailable: '\u7121\u6cd5\u8b80\u53d6\u5b8c\u6574\u5305',
+        reviewIssues: '\u7a3d\u6838\u554f\u984c',
+        reviewIssuesMoreUnit: '\u9805',
+        fixReviewIssue: '\u53bb\u4fee\u5fa9',
+        resolveReviewDependencies: '\u8655\u7406\u4f9d\u8cf4',
+        reviewer: '\u7a3d\u6838\u4eba',
+        riskLevel: '\u98a8\u96aa',
+        approvedScopes: '\u6279\u51c6\u8a31\u53ef\u6b0a',
+        reviewFailed: '\u7a3d\u6838\u9700\u4fee\u6539',
+        reviewApproved: '\u7a3d\u6838\u900f\u904e',
+        reviewPublished: '\u5df2\u91cb\u51fa',
+        reviewDeprecated: '\u5df2\u505c\u6b62\u65b0\u88dd',
+        submissionId: '\u63d0\u4ea4\u7de8\u865f',
+        run: '\u57f7\u884c',
+        runAgain: '\u91cd\u65b0\u57f7\u884c',
+        output: '\u8f38\u51fa\u7d50\u679c',
+        upload: '\u62d6\u5165\u6216\u9078\u64c7\u6a94\u6848',
+        chooseFile: '\u9078\u64c7\u6a94\u6848',
+        selectedFile: '\u5df2\u9078\u64c7',
+        noFile: '\u672a\u9078\u64c7\u6a94\u6848',
+        readyOutput: '\u7b49\u5f85\u57f7\u884c',
+        generatedOutput: '\u5df2\u751f\u6210\u8f38\u51fa',
+        skillRunStarted: 'Skill \u5df2\u555f\u52d5',
+        skillRunRunning: 'Skill \u57f7\u884c\u4e2d',
+        skillRunFailed: 'Skill \u57f7\u884c\u5931\u6557',
+        activeRunLost: '\u57f7\u884c\u6703\u8a71\u5df2\u5931\u6548\uff0c\u53ef\u80fd\u662f\u61c9\u7528\u5df2\u91cd\u555f\u6216\u5f8c\u81fa\u4efb\u52d9\u5df2\u6e05\u7406\uff0c\u8acb\u6aa2\u8996\u6b77\u53f2\u6216\u91cd\u65b0\u57f7\u884c\u3002',
+        runSteps: '\u57f7\u884c\u6b65\u9a5f',
+        runArtifacts: '\u8f38\u51fa\u7522\u7269',
+        runtimeInput: '\u8f38\u5165',
+        noOutputYet: '\u57f7\u884c\u5b8c\u6210\u5f8c\uff0c\u9019\u88e1\u986f\u793a\u8f38\u51fa\u6a94\u6848\u6216\u6587\u5b57\u7d50\u679c\u3002',
+        runCompleted: '\u57f7\u884c\u5b8c\u6210',
+        setAsPinned: '\u8a2d\u70ba\u5e38\u7528',
+        artifactPending: '\u7b49\u5f85\u7522\u7269',
+        artifactReady: '\u7522\u7269\u5df2\u751f\u6210',
+        openArtifact: '\u958b\u555f',
+        downloadArtifact: '\u4e0b\u8f09\u4e26\u958b\u555f',
+        noRunEvidence: '\u57f7\u884c\u5f8c\u986f\u793a\u6b65\u9a5f\u548c\u7522\u7269\u72c0\u614b',
+        fileTooLarge: '\u6a94\u6848\u8d85\u904e 25MB\uff0c\u66ab\u4e0d\u652f\u63f4\u6b64\u65b9\u5f0f\u4e0a\u50b3',
+        cancelRun: '\u53d6\u6d88\u57f7\u884c',
+        runHistory: '\u57f7\u884c\u6b77\u53f2',
+        runDetails: '\u57f7\u884c\u8a73\u60c5',
+        runHistoryManager: '\u57f7\u884c\u8a18\u9304',
+        runHistoryManagerHint: '\u805a\u5408\u5c55\u793a\u672c\u6a5f\u5132\u5b58\u7684\u61c9\u7528\u57f7\u884c\u6b77\u53f2\u3002',
+        runHistoryAllApps: '\u5168\u90e8\u61c9\u7528',
+        noGlobalRunHistory: '\u66ab\u7121\u61c9\u7528\u57f7\u884c\u8a18\u9304',
+        approvalWorkspace: '\u5be9\u6279\u5be6\u4f8b',
+        approvalManagerTitle: '\u5be9\u6279\u5be6\u4f8b\u7ba1\u7406',
+        approvalManagerHint: '\u6240\u6709\u5be9\u6279\u578b\u61c9\u7528\u7684\u7533\u8acb\u3001\u5f85\u8fa6\u548c\u7d50\u679c\u5728\u9019\u88e1\u7d71\u4e00\u7ba1\u7406\u3002',
+        approvalManagerLocalSection: '\u672c\u5730\u5be9\u6279\u5be6\u4f8b',
+        approvalManagerLocalHint: '\u5de6\u5074\u9078\u64c7\u4e00\u689d\u5be6\u4f8b\uff0c\u53f3\u5074\u6aa2\u8996\u8a73\u60c5\u548c\u53ef\u7528\u8655\u7406\u52d5\u4f5c\u3002',
+        approvalDetailSection: '\u5be9\u6279\u5be6\u4f8b\u8a73\u60c5',
+        approvalDetailHint: '\u9078\u4e2d\u5de6\u5074\u5be6\u4f8b\u5f8c\uff0c\u9019\u88e1\u986f\u793a\u8ecc\u8de1\u3001\u7d50\u679c\u548c\u5be9\u6279\u52d5\u4f5c\u3002',
+        approvalSearch: '\u641c\u5c0b\u5be9\u6279\u5be6\u4f8b',
+        approvalAppFilter: '\u61c9\u7528',
+        approvalStatusFilter: '\u72c0\u614b',
+        approvalAllApps: '\u5168\u90e8\u61c9\u7528',
+        approvalAllStatuses: '\u5168\u90e8\u72c0\u614b',
+        approvalRefresh: '\u91cd\u65b0\u6574\u7406',
+        approvalLoading: '\u6b63\u5728\u8b80\u53d6\u5be9\u6279\u5be6\u4f8b',
+        approvalLoadError: '\u5be9\u6279\u5be6\u4f8b\u8b80\u53d6\u5931\u6557',
+        approvalRecentCount: '\u6700\u8fd1\u5be6\u4f8b',
+        approvalPendingCount: '\u5f85\u8655\u7406',
+        viewAllApprovals: '\u6aa2\u8996\u5168\u90e8\u5be9\u6279\u72c0\u614b',
+        viewAppApprovals: '\u6aa2\u8996\u672c\u61c9\u7528\u5be9\u6279',
+        myRequests: '\u6211\u7684\u7533\u8acb',
+        pendingMyApproval: '\u5f85\u6211\u5be9\u6279',
+        handledApprovals: '\u5df2\u8655\u7406',
+        approvedApprovals: '\u5df2\u900f\u904e',
+        rejectedApprovals: '\u5df2\u99c1\u56de',
+        attentionApprovals: '\u9700\u95dc\u6ce8',
+        documentOutputs: '\u6587\u4ef6\u8f38\u51fa',
+        inlineContentOutputs: '\u6587\u5b57\u8f38\u51fa',
+        datasrvApprovalSummary: 'DataSrv \u5be9\u6279\u6982\u89bd',
+        datasrvApprovalSummaryHint: '\u6309 DataSrv app-installations \u67e5\u8a62\u805a\u5408\u6211\u7684\u7533\u8acb\u3001\u5f85\u5be9\u3001\u5be9\u6279\u7d50\u679c\u548c\u8f38\u51fa\u578b\u5225\u3002',
+        datasrvApprovalSummaryDisabled: 'DataSrv \u672a\u555f\u7528\uff0c\u53ea\u986f\u793a\u672c\u5730\u5be9\u6279\u5be6\u4f8b\u3002',
+        datasrvApprovalSummaryLoading: '\u6b63\u5728\u805a\u5408 DataSrv \u5be9\u6279\u7d50\u679c',
+        datasrvApprovalSummaryError: 'DataSrv \u5be9\u6279\u6982\u89bd\u8b80\u53d6\u5931\u6557',
+        datasrvApprovalSummaryEmpty: '\u66ab\u7121\u5339\u914d\u7684\u5be9\u6279\u578b\u61c9\u7528',
+        datasrvApprovalDetails: 'DataSrv \u5be9\u6279\u660e\u7d30',
+        openDataSrvApproval: '\u958b\u555f\u5be9\u6279',
+        openDataSrvRecord: '\u958b\u555f\u8a18\u9304',
+        approvalInstanceData: '\u5be6\u4f8b\u8cc7\u6599',
+        currentApprovalNode: '\u7576\u524d\u7bc0\u9ede',
+        currentNodeStatus: '\u7bc0\u9ede\u72c0\u614b',
+        approvalNodeTasks: '\u7bc0\u9ede\u4efb\u52d9',
+        approvalApplicantLabel: '\u7533\u8acb\u4eba',
+        approvalApproverLabel: '\u5be9\u6279\u4eba',
+        currentAssigneeLabel: '\u7576\u524d\u8655\u7406\u4eba',
+        assigneeTypeLabel: '\u8655\u7406\u4eba\u578b\u5225',
+        statusTransitionLabel: '\u72c0\u614b\u6d41\u8f49',
+        approvalTimeline: '\u5be9\u6279\u8ecc\u8de1',
+        approvalDetailEmpty: '\u53f3\u5074\u662f\u5be6\u4f8b\u8a73\u60c5\u548c\u8655\u7406\u52d5\u4f5c\u5340\uff0c\u8acb\u5148\u5728\u5de6\u5074\u9078\u64c7\u4e00\u689d\u5be9\u6279\u5be6\u4f8b\u3002',
+        approvalActions: '\u5be9\u6279\u64cd\u4f5c',
+        approve: '\u900f\u904e',
+        reject: '\u99c1\u56de',
+        markAttention: '\u6a19\u8a18\u95dc\u6ce8',
+        supplementContinue: '\u88dc\u5145\u4e26\u7e7c\u7e8c',
+        supplementNoteLabel: '\u88dc\u5145\u8aaa\u660e',
+        supplementFieldsLabel: '\u7f3a\u5931\u9805',
+        supplementRunning: '\u6b63\u5728\u7e7c\u7e8c\u6d41\u8f49',
+        workflowSkill: '\u81ea\u52d5\u5be9\u6279\u6d41\u7a0b',
+        dataSrvRecord: '\u696d\u52d9\u8a18\u9304',
+        approvalObjectRoleLabel: '\u696d\u52d9\u7269\u4ef6',
+        remoteApprovalLabel: '\u9060\u7aef\u5be9\u6279',
+        businessStatusLabel: '\u696d\u52d9\u72c0\u614b',
+        resultStatusLabel: '\u7d50\u679c\u72c0\u614b',
+        viewFullWorkflow: '\u6aa2\u8996\u5b8c\u6574\u6d41\u7a0b',
+        noRunHistory: '\u66ab\u7121\u57f7\u884c\u8a18\u9304',
+        noApprovalInstances: '\u7576\u524d\u5206\u985e\u66ab\u7121\u5be9\u6279\u5be6\u4f8b',
+        clearHistory: '\u6e05\u7a7a\u6b77\u53f2',
+        noOpenAppTitle: '\u9078\u64c7\u61c9\u7528',
+        noOpenAppHint: '\u9ede\u9078\u5de6\u5074\u61c9\u7528\u5716\u793a\uff0c\u4ee5\u958b\u555f\u61c9\u7528\u3002',
+        noApps: '\u6c92\u6709\u5339\u914d\u7684\u61c9\u7528',
+        noMoreApps: '\u6c92\u6709\u66f4\u591a\u61c9\u7528',
+        pin: '\u7f6e\u9802',
+        pinLimitReached: '\u5e38\u7528\u61c9\u7528\u5df2\u6eff 8 \u500b\uff0c\u8acb\u5148\u53d6\u6d88\u4e00\u500b',
+        edit: '\u7de8\u8f2f',
+        duplicate: '\u8907\u88fd\u61c9\u7528',
+        save: '\u5132\u5b58',
+        moveTop: '\u79fb\u5230\u9802\u90e8',
+        moveTopShort: '\u9802\u90e8',
+        clearFilterToSort: '\u6e05\u7a7a\u7be9\u9078\u5f8c\u8abf\u6574\u9806\u5e8f',
+        hidden: '\u96b1\u85cf',
+        enable: '\u555f\u7528',
+        restore: '\u6062\u5fa9',
+        hiddenApps: '\u5df2\u96b1\u85cf\u61c9\u7528',
+        datasrvDiscovery: 'DataSrv \u80fd\u529b\u767c\u73fe',
+        datasrvReady: '\u5df2\u9023\u7dda',
+        datasrvLoading: '\u8b80\u53d6\u4e2d',
+        datasrvDisabled: '\u672a\u555f\u7528',
+        added: '\u5df2\u65b0\u589e',
+        discoveredApps: '\u53ef\u751f\u6210\u61c9\u7528',
+        skillApps: '\u767c\u73fe\u7684\u61c9\u7528',
+        skillAppsMeta: '\u5f9e\u5df2\u5b89\u88dd\u80fd\u529b\u4e2d\u627e\u5230\uff0c\u5df2\u81ea\u52d5\u540c\u6b65\u5230\u5de6\u5074\u61c9\u7528\u9762\u677f',
+        skillAppsErrorMeta: '\u6aa2\u67e5\u5df2\u5b89\u88dd\u80fd\u529b\u6642\u9047\u5230\u554f\u984c',
+        manifestPreview: '\u7576\u524d\u8349\u7a3f manifest',
+        manifestPreviewHint: '\u7528\u65bc\u7a3d\u6838\u548c\u8907\u88fd\u7684\u5be6\u6642 JSON\uff0c\u5df2\u6839\u64da\u4e0a\u65b9\u914d\u7f6e\u540c\u6b65\u66f4\u65b0',
+        manifest: '\u6e05\u55ae',
+        exportPack: '\u8907\u88fd\u61c9\u7528\u5305',
+        copy: '\u8907\u88fd',
+        copied: '\u5df2\u8907\u88fd',
+        fields: '\u8868\u55ae\u6b04\u4f4d',
+        addField: '\u65b0\u589e\u6b04\u4f4d',
+        deleteField: '\u522a\u9664\u6b04\u4f4d',
+        fieldName: '\u6b04\u4f4d\u540d',
+        fieldLabel: '\u986f\u793a\u540d',
+        fieldType: '\u578b\u5225',
+        defaultValue: '\u9810\u8a2d\u503c',
+        options: '\u9078\u9805',
+        appColor: '\u5716\u793a\u984f\u8272',
+        validationMissing: '\u8acb\u88dc\u5145\u5fc5\u586b\u8f38\u5165',
+        installManifest: '\u5b89\u88dd\u61c9\u7528\u5305',
+        marketApps: '\u5e02\u5834\u61c9\u7528\u5217\u8868',
+        marketAdvancedImport: '\u532f\u5165\u61c9\u7528\u5305',
+        marketAdvancedImportHint: '\u8cbc\u4e0a\u5df2\u7a3d\u6838\u7684\u61c9\u7528\u5305 JSON\uff0c\u9069\u5408\u7ba1\u7406\u54e1\u6216\u79c1\u6709\u61c9\u7528\u3002',
+        marketSource: '\u4f86\u6e90',
+        marketAddableCount: '\u53ef\u65b0\u589e',
+        marketUpgradeableCount: '\u53ef\u5347\u7d1a',
+        marketHubSearchPlaceholder: '\u641c\u5c0b\u4f01\u696d Hub \u61c9\u7528',
+        marketHubSearch: '\u641c\u5c0b Hub',
+        marketHubSearching: '\u641c\u5c0b\u4e2d',
+        marketHubEmpty: '\u672a\u627e\u5230\u61c9\u7528',
+        marketHubError: '\u641c\u5c0b\u5931\u6557',
+        marketAdd: '\u65b0\u589e',
+        pasteManifest: '\u8cbc\u4e0a\u61c9\u7528\u5305 JSON\uff08maclaw.app.v1 / maclaw.app.pack.v1 / maclaw.apps.json\uff09',
+        install: '\u5b89\u88dd',
+        installing: '\u5b89\u88dd\u4e2d',
+        confirmHighRiskInstall: '\u78ba\u8a8d\u5b89\u88dd',
+        highRiskInstallWarning: '\u9078\u4e2d\u7684\u5347\u7d1a\u5305\u5305\u542b\u9ad8\u98a8\u96aa\u65b0\u8a31\u53ef\u6b0a\uff0c\u9700\u518d\u6b21\u78ba\u8a8d\u3002',
+        dependencyPlanLoading: '\u6b63\u5728\u6aa2\u67e5 Skill \u4f9d\u8cf4',
+        dependencyReady: '\u4f9d\u8cf4 Skill \u5df2\u5c31\u7dd2',
+        installDependenciesAndRun: '\u5b89\u88dd\u4f9d\u8cf4\u4e26\u57f7\u884c',
+        installingDependencies: '\u6b63\u5728\u5b89\u88dd\u4f9d\u8cf4',
+        missingRequiredDependency: '\u5fc5\u9700 Skill \u4f9d\u8cf4\u7f3a\u5931\u6216\u4e0d\u53ef\u7528\uff0c\u8acb\u5148\u5b89\u88dd\u6216\u555f\u7528\u4f9d\u8cf4',
+        dependencyPlanError: '\u4f9d\u8cf4\u6aa2\u67e5\u5931\u6557',
+        dependencyVerification: '\u4f9d\u8cf4\u9a57\u8b49',
+        dependencyDiagnostics: '\u4f9d\u8cf4\u8a3a\u65b7',
+        dependencyInstallTrace: '\u5b89\u88dd\u904e\u7a0b',
+        dependencyPreflightStage: '\u9810\u6aa2',
+        dependencyDownloadStage: '\u4e0b\u8f09',
+        dependencyInstallStage: '\u5b89\u88dd\u57f7\u884c',
+        dependencyErrorStage: '\u932f\u8aa4',
+        dependencyVerificationReady: '\u4f9d\u8cf4\u9a57\u8b49\u5df2\u5b8c\u6210',
+        dependencyVerificationBlocked: '\u4f9d\u8cf4\u9a57\u8b49\u767c\u73fe\u963b\u65b7\u9805',
+        workspaceLayout: '\u4ecb\u9762\u4f48\u5c40',
+        resultContract: '\u7d50\u679c\u5951\u7d04',
+        resultCoverage: '\u7d50\u679c\u8986\u84cb',
+        resultCovered: '\u5df2\u8986\u84cb',
+        testEvidence: '\u6e2c\u8a66\u8b49\u64da',
+        appSkill: '\u61c9\u7528 Skill',
+        workflowContract: '\u57f7\u884c\u5951\u7d04',
+        workflowContractReady: '\u57f7\u884c\u5951\u7d04\u5df2\u5c0d\u9f4a',
+        workflowContractBlocked: '\u57f7\u884c\u5951\u7d04\u9700\u8655\u7406',
+        workflowContractInputs: '\u8f38\u5165',
+        workflowContractOutputs: '\u8f38\u51fa',
+        workflowContractMissing: '\u672a\u5ba3\u544a\u57f7\u884c\u5951\u7d04',
+        approvalBinding: '\u5be9\u6279\u7e6b\u7d50',
+        skillDependencies: '\u4f9d\u8cf4 Skill',
+        installedDependency: '\u5df2\u5b89\u88dd',
+        installPreview: '\u5b89\u88dd\u9810\u89bd',
+        willInstall: '\u5c07\u5b89\u88dd',
+        willUpgrade: '\u5c07\u5347\u7d1a',
+        permissionChanges: '\u8a31\u53ef\u6b0a\u8b8a\u5316',
+        highRiskPermission: '\u9ad8\u98a8\u96aa',
+        willSkip: '\u5c07\u8df3\u904e',
+        alreadyInstalled: '\u5df2\u5b89\u88dd',
+        duplicateApp: '\u91cd\u8907\u61c9\u7528',
+        notSelected: '\u672a\u9078\u64c7',
+        selectAll: '\u5168\u9078',
+        clearSelection: '\u5168\u4e0d\u9078',
+        installableCount: '\u53ef\u5b89\u88dd',
+        upgradeableCount: '\u53ef\u5347\u7d1a',
+        installedCount: '\u5df2\u5b89\u88dd',
+        upgradedCount: '\u5df2\u5347\u7d1a',
+        upgradedItem: '\u5df2\u5347\u7d1a',
+        skippedItem: '\u5df2\u8df3\u904e',
+        installDetails: '\u5b89\u88dd\u660e\u7d30',
+        hubInstallSummary: '\u6e90\u5305 {source} \u500b \u00b7 \u5df2\u5b89\u88dd {installed} \u500b',
+        hubInstallDependencySummary: '\u4f9d\u8cf4 {count} \u500b',
+        installRecords: '\u6700\u8fd1\u5b89\u88dd',
+        installRecordsHint: '\u672c\u6a5f\u61c9\u7528\u5305\u5b89\u88dd\u548c Skill \u4f9d\u8cf4\u5be9\u8a08',
+        datasrvRegistrationReady: 'DataSrv \u7e6b\u7d50\u5df2\u8a3b\u518a',
+        datasrvRegistrationPartial: 'DataSrv \u7e6b\u7d50\u90e8\u5206\u8a3b\u518a',
+        datasrvRegistrationSkipped: 'DataSrv \u7e6b\u7d50\u672a\u8a3b\u518a',
+        datasrvRegistrationFailed: 'DataSrv \u7e6b\u7d50\u8a3b\u518a\u5931\u6557',
+        auditDataSrvRegistration: '\u5be9\u8a08 DataSrv',
+        auditingDataSrvRegistration: '\u5be9\u8a08\u4e2d',
+        dataSrvRegistrationAuditFound: 'DataSrv \u5b89\u88dd\u8a18\u9304',
+        dataSrvRegistrationAuditMissing: 'DataSrv \u5b89\u88dd\u8a18\u9304\u672a\u627e\u5230',
+        installRecordsLoading: '\u6b63\u5728\u8b80\u53d6\u5b89\u88dd\u8a18\u9304',
+        installRecordsError: '\u5b89\u88dd\u8a18\u9304\u8b80\u53d6\u5931\u6557',
+        noInstallRecords: '\u66ab\u7121\u61c9\u7528\u5b89\u88dd\u8a18\u9304',
+        refreshInstallRecords: '\u91cd\u65b0\u6574\u7406\u8a18\u9304',
+        recheckInstallDependencies: '\u6aa2\u67e5\u4f9d\u8cf4',
+        checkingInstallDependencies: '\u6aa2\u67e5\u4e2d',
+        repairInstallDependencies: '\u4fee\u5fa9\u4f9d\u8cf4',
+        repairingInstallDependencies: '\u4fee\u5fa9\u4e2d',
+        installRecordPackageMissing: '\u5b89\u88dd\u8a18\u9304\u7f3a\u5c11\u61c9\u7528\u5305\u5feb\u7167',
+        packageSha: '\u5305\u6307\u7d0b',
+        installedAt: '\u5b89\u88dd\u6642\u9593',
+        missingDependencyCount: '\u963b\u65b7\u4f9d\u8cf4',
+        skippedCount: '\u5df2\u8df3\u904e',
+        installAuditRequired: '\u4f01\u696d\u61c9\u7528\u5b89\u88dd\u8b49\u64da\u672a\u5132\u5b58\uff0c\u8acb\u91cd\u8a66\u6216\u6aa2\u67e5 DataSrv \u8a3b\u518a',
+        installError: '\u61c9\u7528\u5305\u7121\u6548',
+        installErrorShowDetail: '\u6aa2\u8996\u8a73\u60c5',
+        installErrorHideDetail: '\u6536\u8d77\u8a73\u60c5',
+        installErrorFriendlyGovernance: '\u5b89\u88dd\u5931\u6557\uff1a\u61c9\u7528\u672a\u900f\u904e\u5b89\u88dd\u524d\u6aa2\uff0c\u53ef\u80fd\u7f3a\u5c11\u5fc5\u8981\u7684\u57f7\u884c\u8b49\u64da\u6216\u4f9d\u8cf4\u3002',
+        installErrorFriendlyDependency: '\u5b89\u88dd\u5931\u6557\uff1a\u6240\u9700\u7684 Skill \u4f9d\u8cf4\u4e0d\u53ef\u7528\u6216\u4e0b\u8f09\u5931\u6557\uff0c\u8acb\u6aa2\u67e5\u7db2\u8def\u6216\u806f\u7d61\u7ba1\u7406\u54e1\u3002',
+        installErrorFriendlyGeneric: '\u5b89\u88dd\u5931\u6557\uff1a\u61c9\u7528\u7121\u6cd5\u6b63\u5e38\u5b89\u88dd\uff0c\u8acb\u91cd\u8a66\u6216\u806f\u7d61\u7ba1\u7406\u54e1\u3002',
+        installErrorFriendlyWorkflow: '\u5b89\u88dd\u5931\u6557\uff1a\u61c9\u7528\u57f7\u884c\u5951\u7d04\u672a\u5c0d\u9f4a\uff0c\u8acb\u806f\u7d61\u61c9\u7528\u91cb\u51fa\u8005\u4fee\u5fa9\u3002',
+        parseError: 'JSON \u89e3\u6790\u5931\u6557',
+        schemaError: '\u672a\u8b58\u5225\u61c9\u7528\u5305\u683c\u5f0f',
+        close: '\u95dc\u9589',
+        aboutInfoSection: '\u95dc\u65bc\u8cc7\u8a0a',
+        aboutInfoSectionDesc: '\u91cb\u51fa\u5f8c\u5728\u61c9\u7528\u57f7\u884c\u6642\u986f\u793a\u7d66\u4f7f\u7528\u8005',
+        aboutAuthorPlaceholder: '\u4f8b\u5982\uff1a\u5f35\u4e09',
+        aboutCopyright: '\u7248\u6b0a\u5ba3\u544a',
+        aboutWebsite: '\u5b98\u7db2',
+        aboutEmail: '\u806f\u7d61\u90f5\u7bb1',
+        aboutDialogTitle: '\u95dc\u65bc',
+        aboutNoInfo: '\u958b\u767c\u8005\u672a\u63d0\u4f9b\u95dc\u65bc\u8cc7\u8a0a',
+    },
 };
 
-const appKinds: Record<AppKind, { zh: string; en: string }> = {
-    enterprise_approval_app: { zh: '\u4f01\u4e1a\u5ba1\u6279\u578b', en: 'Approval app' },
-    enterprise_normal_app: { zh: '\u4f01\u4e1a\u666e\u901a\u5e94\u7528', en: 'Business app' },
-    tool_app: { zh: '\u5de5\u5177\u5e94\u7528', en: 'Tool app' },
-    automation_app: { zh: '\u81ea\u52a8\u5316', en: 'Automation' },
+/**
+ * zh-Hant override block (publish pane scope): merged over labels.zh once at
+ * module load; keys not listed in labels.zhHant fall back to zh-Hans.
+ */
+const labelsZhHantMerged: typeof labels.zh = { ...labels.zh, ...labels.zhHant };
+
+const appKinds: Record<AppKind, { zh: string; en: string; hant?: string }> = {
+    enterprise_approval_app: { zh: '\u4f01\u4e1a\u5ba1\u6279\u578b', en: 'Approval app', hant: '\u4f01\u696d\u5be9\u6279\u578b' },
+    enterprise_normal_app: { zh: '\u4f01\u4e1a\u666e\u901a\u5e94\u7528', en: 'Business app', hant: '\u4f01\u696d\u666e\u901a\u61c9\u7528' },
+    tool_app: { zh: '\u5de5\u5177\u5e94\u7528', en: 'Tool app', hant: '\u5de5\u5177\u61c9\u7528' },
+    automation_app: { zh: '\u81ea\u52a8\u5316', en: 'Automation', hant: '\u81ea\u52d5\u5316' },
 };
 
-const sourceLabels: Record<AppEntry['source'], { zh: string; en: string }> = {
-    builtin: { zh: '\u5185\u7f6e', en: 'Built-in' },
+const sourceLabels: Record<AppEntry['source'], { zh: string; en: string; hant?: string }> = {
+    builtin: { zh: '\u5185\u7f6e', en: 'Built-in', hant: '\u5167\u7f6e' },
     skill: { zh: 'Skill', en: 'Skill' },
     datasrv: { zh: 'DataSrv', en: 'DataSrv' },
-    market: { zh: '\u5e02\u573a', en: 'Market' },
-    local: { zh: '\u672c\u5730', en: 'Local' },
+    market: { zh: '\u5e02\u573a', en: 'Market', hant: '\u5e02\u5834' },
+    local: { zh: '\u672c\u5730', en: 'Local', hant: '\u672c\u6a5f' },
+};
+
+/** Localized app-kind label (zh-Hant uses the hant variant when present). */
+const appKindLabel = (kind: AppKind, lang?: string): string => {
+    const entry = appKinds[kind];
+    if (isZhHant(lang) && entry.hant) return entry.hant;
+    return entry[isZh(lang) ? 'zh' : 'en'];
+};
+
+/** Localized app-source label with the same fallback as before (raw source). */
+const sourceLabelText = (source: AppEntry['source'], lang?: string): string => {
+    const entry = sourceLabels[source];
+    if (!entry) return String(source);
+    if (isZhHant(lang) && entry.hant) return entry.hant;
+    return entry[isZh(lang) ? 'zh' : 'en'];
 };
 
 // initialApps is intentionally empty \u00b7 apps are discovered at runtime from
@@ -1828,46 +2190,46 @@ const marketCatalogApps: AppEntry[] = [
 
 const builtInAppIds = new Set(initialApps.map((app) => app.id));
 
-const appIconMeta: Record<AppIconName, { zh: string; en: string }> = {
-    receipt: { zh: '\u62a5\u9500/\u8d39\u7528', en: 'Expense' },
-    wallet: { zh: '\u4ed8\u6b3e/\u8d22\u52a1', en: 'Payment' },
-    invoice: { zh: '\u53d1\u7968/\u7968\u636e', en: 'Invoice' },
-    warehouse: { zh: '\u4ed3\u50a8/\u5165\u5e93', en: 'Warehouse' },
-    inventory: { zh: '\u5e93\u5b58/\u76d8\u70b9', en: 'Inventory' },
-    customer: { zh: '\u5ba2\u6237/\u5efa\u6863', en: 'Customer' },
-    users: { zh: '\u4eba\u5458/\u7ec4\u7ec7', en: 'People' },
-    contract: { zh: '\u5408\u540c/\u6cd5\u52a1', en: 'Contract' },
-    pdf: { zh: 'PDF/\u8f6c\u6362', en: 'PDF' },
-    shield: { zh: '\u5ba1\u67e5/\u8131\u654f', en: 'Review' },
-    sheet: { zh: '\u8868\u683c/\u6570\u636e', en: 'Sheet' },
-    chart: { zh: '\u62a5\u8868/\u5206\u6790', en: 'Report' },
-    dashboard: { zh: '\u770b\u677f/\u6307\u6807', en: 'Dashboard' },
-    database: { zh: '\u6570\u636e\u5e93/\u5904\u7406', en: 'Database' },
-    eraser: { zh: '\u6e05\u6d17/\u8131\u654f', en: 'Clean' },
-    truck: { zh: '\u7269\u6d41/\u914d\u9001', en: 'Logistics' },
-    calendar: { zh: '\u65e5\u7a0b/\u8003\u52e4', en: 'Calendar' },
-    web: { zh: '\u7f51\u9875/\u91c7\u96c6', en: 'Web' },
-    sync: { zh: '\u540c\u6b65/\u81ea\u52a8\u5316', en: 'Sync' },
-    bot: { zh: 'Agent/\u81ea\u52a8\u5316', en: 'Agent' },
-    shop: { zh: '\u95e8\u5e97/\u96f6\u552e', en: 'Store' },
+const appIconMeta: Record<AppIconName, { zh: string; en: string; hant?: string }> = {
+    receipt: { zh: '\u62a5\u9500/\u8d39\u7528', en: 'Expense', hant: '\u5831\u92b7/\u8cbb\u7528' },
+    wallet: { zh: '\u4ed8\u6b3e/\u8d22\u52a1', en: 'Payment', hant: '\u4ed8\u6b3e/\u8ca1\u52d9' },
+    invoice: { zh: '\u53d1\u7968/\u7968\u636e', en: 'Invoice', hant: '\u767c\u7968/\u7968\u64da' },
+    warehouse: { zh: '\u4ed3\u50a8/\u5165\u5e93', en: 'Warehouse', hant: '\u5009\u5132/\u5165\u5eab' },
+    inventory: { zh: '\u5e93\u5b58/\u76d8\u70b9', en: 'Inventory', hant: '\u5eab\u5b58/\u76e4\u9ede' },
+    customer: { zh: '\u5ba2\u6237/\u5efa\u6863', en: 'Customer', hant: '\u5ba2\u6236/\u5efa\u6a94' },
+    users: { zh: '\u4eba\u5458/\u7ec4\u7ec7', en: 'People', hant: '\u4eba\u54e1/\u7d44\u7e54' },
+    contract: { zh: '\u5408\u540c/\u6cd5\u52a1', en: 'Contract', hant: '\u5408\u540c/\u6cd5\u52d9' },
+    pdf: { zh: 'PDF/\u8f6c\u6362', en: 'PDF', hant: 'PDF/\u8f49\u63db' },
+    shield: { zh: '\u5ba1\u67e5/\u8131\u654f', en: 'Review', hant: '\u5be9\u67e5/\u812b\u654f' },
+    sheet: { zh: '\u8868\u683c/\u6570\u636e', en: 'Sheet', hant: '\u8868\u683c/\u8cc7\u6599' },
+    chart: { zh: '\u62a5\u8868/\u5206\u6790', en: 'Report', hant: '\u5831\u8868/\u5206\u6790' },
+    dashboard: { zh: '\u770b\u677f/\u6307\u6807', en: 'Dashboard', hant: '\u770b\u677f/\u6307\u6a19' },
+    database: { zh: '\u6570\u636e\u5e93/\u5904\u7406', en: 'Database', hant: '\u8cc7\u6599\u5eab/\u8655\u7406' },
+    eraser: { zh: '\u6e05\u6d17/\u8131\u654f', en: 'Clean', hant: '\u6e05\u6d17/\u812b\u654f' },
+    truck: { zh: '\u7269\u6d41/\u914d\u9001', en: 'Logistics', hant: '\u7269\u6d41/\u914d\u9001' },
+    calendar: { zh: '\u65e5\u7a0b/\u8003\u52e4', en: 'Calendar', hant: '\u65e5\u7a0b/\u8003\u52e4' },
+    web: { zh: '\u7f51\u9875/\u91c7\u96c6', en: 'Web', hant: '\u7db2\u9801/\u63a1\u96c6' },
+    sync: { zh: '\u540c\u6b65/\u81ea\u52a8\u5316', en: 'Sync', hant: '\u540c\u6b65/\u81ea\u52d5\u5316' },
+    bot: { zh: 'Agent/\u81ea\u52a8\u5316', en: 'Agent', hant: 'Agent/\u81ea\u52d5\u5316' },
+    shop: { zh: '\u95e8\u5e97/\u96f6\u552e', en: 'Store', hant: '\u9580\u5e97/\u96f6\u552e' },
 };
 
 const appIconNames = Object.keys(appIconMeta) as AppIconName[];
 
 const appIconLabel = (icon: AppIconName, lang?: string) => {
     const meta = appIconMeta[icon];
-    return `${meta[isZh(lang) ? 'zh' : 'en']} (${icon})`;
+    return `${meta[locale3(lang)] ?? meta[isZh(lang) ? 'zh' : 'en']} (${icon})`;
 };
 
 const appAccentSwatches = [
-    { value: '#2f5f98', zh: '\u84dd\u8272', en: 'Blue' },
-    { value: '#657a42', zh: '\u7eff\u8272', en: 'Green' },
-    { value: '#7c3f58', zh: '\u7d2b\u7ea2', en: 'Plum' },
-    { value: '#b45309', zh: '\u7425\u73c0', en: 'Amber' },
-    { value: '#28705f', zh: '\u9752\u7eff', en: 'Teal' },
-    { value: '#4b6572', zh: '\u7070\u84dd', en: 'Slate' },
-    { value: '#8a5a44', zh: '\u68d5\u8272', en: 'Brown' },
-    { value: '#5b5ea6', zh: '\u975b\u84dd', en: 'Indigo' },
+    { value: '#2f5f98', zh: '\u84dd\u8272', hant: '\u85cd\u8272', en: 'Blue' },
+    { value: '#657a42', zh: '\u7eff\u8272', hant: '\u7da0\u8272', en: 'Green' },
+    { value: '#7c3f58', zh: '\u7d2b\u7ea2', hant: '\u7d2b\u7d05', en: 'Plum' },
+    { value: '#b45309', zh: '\u7425\u73c0', hant: '\u7425\u73c0', en: 'Amber' },
+    { value: '#28705f', zh: '\u9752\u7eff', hant: '\u9752\u7da0', en: 'Teal' },
+    { value: '#4b6572', zh: '\u7070\u84dd', hant: '\u7070\u85cd', en: 'Slate' },
+    { value: '#8a5a44', zh: '\u68d5\u8272', hant: '\u68d5\u8272', en: 'Brown' },
+    { value: '#5b5ea6', zh: '\u975b\u84dd', hant: '\u975b\u85cd', en: 'Indigo' },
     { value: '#6b7280', zh: '\u4e2d\u6027\u7070', en: 'Gray' },
 ];
 
@@ -1884,7 +2246,7 @@ function normalizeAppKind(raw: unknown): AppKind {
 const isEnterpriseAppKind = (kind: AppKind) => kind === 'enterprise_approval_app' || kind === 'enterprise_normal_app';
 const isEnterpriseApprovalAppKind = (kind: AppKind) => kind === 'enterprise_approval_app';
 
-const appAccentLabel = (swatch: { value: string; zh: string; en: string }, lang?: string) => `${swatch[isZh(lang) ? 'zh' : 'en']} ${swatch.value}`;
+const appAccentLabel = (swatch: { value: string; zh: string; en: string; hant?: string }, lang?: string) => `${swatch[locale3(lang)] ?? swatch[isZh(lang) ? 'zh' : 'en']} ${swatch.value}`;
 
 function makeEnterpriseManifest(kind: 'enterprise_approval_app' | 'enterprise_normal_app', domain: string, preferredAction: string, preferredView: string, preferredReport: string, preferredDashboard: string, appSkillID = '', dependencies: AppSkillDependency[] = [], approvalBinding?: Pick<AppApprovalBinding, 'event' | 'objectRole'>, appSkillSource: AppSkillDependency['source'] = 'local'): AppManifestBinding {
     const approvalWorkflow = kind === 'enterprise_approval_app' ? dependencies.find((dep) => dep.kind === 'workflow_skill' && dep.id) : undefined;
@@ -2208,26 +2570,26 @@ function runtimeWorkspaceOrder(layout: RuntimeWorkspaceLayout) {
         history: 60,
     };
 }
-const studioLayoutTemplateOptions: Array<{ value: StudioLayoutTemplate; zh: string; en: string }> = [
-    { value: 'document_workspace', zh: '\u6587\u6863\u5de5\u4f5c\u53f0', en: 'Document workspace' },
-    { value: 'classic_split', zh: '\u7ecf\u5178\u5206\u680f', en: 'Classic split' },
-    { value: 'left_nav', zh: '\u5de6\u4fa7\u5bfc\u822a', en: 'Left navigation' },
-    { value: 'dashboard', zh: '\u770b\u677f\u5de5\u4f5c\u53f0', en: 'Dashboard' },
+const studioLayoutTemplateOptions: Array<{ value: StudioLayoutTemplate; zh: string; en: string; hant?: string }> = [
+    { value: 'document_workspace', zh: '\u6587\u6863\u5de5\u4f5c\u53f0', en: 'Document workspace', hant: '\u6587\u4ef6\u5de5\u4f5c\u81fa' },
+    { value: 'classic_split', zh: '\u7ecf\u5178\u5206\u680f', en: 'Classic split', hant: '\u7d93\u5178\u5206\u6b04' },
+    { value: 'left_nav', zh: '\u5de6\u4fa7\u5bfc\u822a', en: 'Left navigation', hant: '\u5de6\u5074\u5c0e\u822a' },
+    { value: 'dashboard', zh: '\u770b\u677f\u5de5\u4f5c\u53f0', en: 'Dashboard', hant: '\u770b\u677f\u5de5\u4f5c\u81fa' },
 ];
-const studioLayoutDensityOptions: Array<{ value: StudioLayoutDensity; zh: string; en: string }> = [
-    { value: 'comfortable', zh: '\u6807\u51c6', en: 'Comfortable' },
-    { value: 'compact', zh: '\u7d27\u51d1', en: 'Compact' },
-    { value: 'spacious', zh: '\u5bbd\u677e', en: 'Spacious' },
+const studioLayoutDensityOptions: Array<{ value: StudioLayoutDensity; zh: string; en: string; hant?: string }> = [
+    { value: 'comfortable', zh: '\u6807\u51c6', en: 'Comfortable', hant: '\u6a19\u6e96' },
+    { value: 'compact', zh: '\u7d27\u51d1', en: 'Compact', hant: '\u7dca\u6e4a' },
+    { value: 'spacious', zh: '\u5bbd\u677e', en: 'Spacious', hant: '\u5bec\u9b06' },
 ];
-const studioPrimaryRegionOptions: Array<{ value: StudioPrimaryRegion; zh: string; en: string }> = [
-    { value: 'left', zh: '\u5de6\u4fa7', en: 'Left' },
-    { value: 'center', zh: '\u4e2d\u95f4', en: 'Center' },
-    { value: 'right', zh: '\u53f3\u4fa7', en: 'Right' },
+const studioPrimaryRegionOptions: Array<{ value: StudioPrimaryRegion; zh: string; en: string; hant?: string }> = [
+    { value: 'left', zh: '\u5de6\u4fa7', en: 'Left', hant: '\u5de6\u5074' },
+    { value: 'center', zh: '\u4e2d\u95f4', en: 'Center', hant: '\u4e2d\u9593' },
+    { value: 'right', zh: '\u53f3\u4fa7', en: 'Right', hant: '\u53f3\u5074' },
 ];
-const studioOutputRegionOptions: Array<{ value: StudioOutputRegion; zh: string; en: string }> = [
-    { value: 'right', zh: '\u53f3\u4fa7', en: 'Right' },
-    { value: 'bottom', zh: '\u5e95\u90e8', en: 'Bottom' },
-    { value: 'modal', zh: '\u5f39\u7a97', en: 'Modal' },
+const studioOutputRegionOptions: Array<{ value: StudioOutputRegion; zh: string; en: string; hant?: string }> = [
+    { value: 'right', zh: '\u53f3\u4fa7', en: 'Right', hant: '\u53f3\u5074' },
+    { value: 'bottom', zh: '\u5e95\u90e8', en: 'Bottom', hant: '\u5e95\u90e8' },
+    { value: 'modal', zh: '\u5f39\u7a97', en: 'Modal', hant: '\u5f48\u7a97' },
 ];
 const studioLayoutSlotIds = ['left', 'center', 'right'] as const;
 
@@ -2239,41 +2601,41 @@ type StudioLayoutDesignerProps = {
     testIdPrefix?: string;
 };
 
-function studioLayoutOptionLabel<T extends string>(options: Array<{ value: T; zh: string; en: string }>, value: T, lang?: string) {
+function studioLayoutOptionLabel<T extends string>(options: Array<{ value: T; zh: string; en: string; hant?: string }>, value: T, lang?: string) {
     const option = options.find((item) => item.value === value) || options[0];
-    return option[isZh(lang) ? 'zh' : 'en'];
+    return option[locale3(lang)] ?? option[isZh(lang) ? 'zh' : 'en'];
 }
 
 function studioLayoutRegionLabel(kind: AppKind, id: string, lang?: string) {
     const zh = isZh(lang);
-    const labelsById: Record<string, { zh: string; en: string }> = {
-        request_form: { zh: '\u53d1\u8d77\u8868\u5355', en: 'Request form' },
-        approval_inbox: { zh: '\u5ba1\u6279\u5b9e\u4f8b', en: 'Approval instances' },
-        approval_detail: { zh: '\u8282\u70b9\u72b6\u6001', en: 'Node status' },
-        result_panel: { zh: '\u7ed3\u679c\u53cd\u9988', en: 'Result feedback' },
-        operation_form: { zh: '\u64cd\u4f5c\u8868\u5355', en: 'Operation form' },
-        record_list: { zh: '\u6570\u636e\u5217\u8868', en: 'Record list' },
-        record_detail: { zh: '\u6570\u636e\u660e\u7ec6', en: 'Record detail' },
-        output_panel: { zh: '\u8f93\u51fa\u9762\u677f', en: 'Output panel' },
-        file_queue: { zh: '\u6587\u4ef6\u961f\u5217', en: 'File queue' },
-        settings_panel: { zh: '\u53c2\u6570\u533a', en: 'Parameters' },
-        preview_panel: { zh: '\u9884\u89c8\u533a', en: 'Preview' },
+    const labelsById: Record<string, { zh: string; en: string; hant?: string }> = {
+        request_form: { zh: '\u53d1\u8d77\u8868\u5355', en: 'Request form', hant: '\u767c\u8d77\u8868\u55ae' },
+        approval_inbox: { zh: '\u5ba1\u6279\u5b9e\u4f8b', en: 'Approval instances', hant: '\u5be9\u6279\u5be6\u4f8b' },
+        approval_detail: { zh: '\u8282\u70b9\u72b6\u6001', en: 'Node status', hant: '\u7bc0\u9ede\u72c0\u614b' },
+        result_panel: { zh: '\u7ed3\u679c\u53cd\u9988', en: 'Result feedback', hant: '\u7d50\u679c\u53cd\u994b' },
+        operation_form: { zh: '\u64cd\u4f5c\u8868\u5355', en: 'Operation form', hant: '\u64cd\u4f5c\u8868\u55ae' },
+        record_list: { zh: '\u6570\u636e\u5217\u8868', en: 'Record list', hant: '\u8cc7\u6599\u5217\u8868' },
+        record_detail: { zh: '\u6570\u636e\u660e\u7ec6', en: 'Record detail', hant: '\u8cc7\u6599\u660e\u7d30' },
+        output_panel: { zh: '\u8f93\u51fa\u9762\u677f', en: 'Output panel', hant: '\u8f38\u51fa\u9762\u677f' },
+        file_queue: { zh: '\u6587\u4ef6\u961f\u5217', en: 'File queue', hant: '\u6a94\u6848\u4f47\u5217' },
+        settings_panel: { zh: '\u53c2\u6570\u533a', en: 'Parameters', hant: '\u5f15\u6578\u5340' },
+        preview_panel: { zh: '\u9884\u89c8\u533a', en: 'Preview', hant: '\u9810\u89bd\u5340' },
     };
-    return labelsById[id]?.[zh ? 'zh' : 'en'] || (kind === 'tool_app' ? (zh ? '\u5de5\u5177\u9762\u677f' : 'Tool panel') : id);
+    return labelsById[id]?.[locale3(lang)] || (kind === 'tool_app' ? (localizeText(lang, 'Tool panel', '\u5de5\u5177\u9762\u677f', '\u5de5\u5177\u9762\u677f')) : id);
 }
 
 function studioLayoutRoleLabel(role: string, lang?: string) {
     const zh = isZh(lang);
-    const labelsByRole: Record<string, { zh: string; en: string }> = {
-        input: { zh: '\u8f93\u5165', en: 'Input' },
-        parameters: { zh: '\u53c2\u6570', en: 'Parameters' },
-        preview: { zh: '\u9884\u89c8', en: 'Preview' },
-        output: { zh: '\u8f93\u51fa', en: 'Output' },
-        instance_list: { zh: '\u5b9e\u4f8b', en: 'Instances' },
-        detail: { zh: '\u660e\u7ec6', en: 'Detail' },
-        record_list: { zh: '\u5217\u8868', en: 'List' },
+    const labelsByRole: Record<string, { zh: string; en: string; hant?: string }> = {
+        input: { zh: '\u8f93\u5165', en: 'Input', hant: '\u8f38\u5165' },
+        parameters: { zh: '\u53c2\u6570', en: 'Parameters', hant: '\u5f15\u6578' },
+        preview: { zh: '\u9884\u89c8', en: 'Preview', hant: '\u9810\u89bd' },
+        output: { zh: '\u8f93\u51fa', en: 'Output', hant: '\u8f38\u51fa' },
+        instance_list: { zh: '\u5b9e\u4f8b', en: 'Instances', hant: '\u5be6\u4f8b' },
+        detail: { zh: '\u660e\u7ec6', en: 'Detail', hant: '\u660e\u7d30' },
+        record_list: { zh: '\u5217\u8868', en: 'List', hant: '\u5217\u8868' },
     };
-    return labelsByRole[role]?.[zh ? 'zh' : 'en'] || role;
+    return labelsByRole[role]?.[locale3(lang)] || role;
 }
 
 const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'studio' }: StudioLayoutDesignerProps) => {
@@ -2284,12 +2646,12 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
         const resetRegions = patch.template !== undefined || patch.primaryRegion !== undefined || patch.outputRegion !== undefined;
         onChange({ ...next, regions: resetRegions ? studioRegionsForLayout(kind, next.template, next.primaryRegion, next.outputRegion) : regions });
     };
-    const placementOptions: Array<{ value: RuntimeWorkspaceRegion['placement']; zh: string; en: string }> = [
-        { value: 'left', zh: '\u5de6\u4fa7', en: 'Left' },
-        { value: 'center', zh: '\u4e2d\u95f4', en: 'Center' },
-        { value: 'right', zh: '\u53f3\u4fa7', en: 'Right' },
-        { value: 'bottom', zh: '\u5e95\u90e8', en: 'Bottom' },
-        { value: 'modal', zh: '\u5f39\u7a97', en: 'Modal' },
+    const placementOptions: Array<{ value: RuntimeWorkspaceRegion['placement']; zh: string; en: string; hant?: string }> = [
+        { value: 'left', zh: '\u5de6\u4fa7', en: 'Left', hant: '\u5de6\u5074' },
+        { value: 'center', zh: '\u4e2d\u95f4', en: 'Center', hant: '\u4e2d\u9593' },
+        { value: 'right', zh: '\u53f3\u4fa7', en: 'Right', hant: '\u53f3\u5074' },
+        { value: 'bottom', zh: '\u5e95\u90e8', en: 'Bottom', hant: '\u5e95\u90e8' },
+        { value: 'modal', zh: '\u5f39\u7a97', en: 'Modal', hant: '\u5f48\u7a97' },
     ];
     const updateRegionPlacement = (regionID: string, placement: RuntimeWorkspaceRegion['placement']) => {
         const nextRegions = regions.map((region) => region.id === regionID ? { ...region, placement } : region);
@@ -2314,40 +2676,56 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
     const orderedRegions = [...regions].sort((a, b) => (a.order || regions.indexOf(a) + 1) - (b.order || regions.indexOf(b) + 1));
     const visibleRegionCount = orderedRegions.filter((region) => region.visible !== false).length;
     const layoutFingerprint = workspaceLayoutFingerprint(workspaceEntryForKind(kind), { ...value, regions: orderedRegions });
-    const regionsForPlacement = (placement: StudioPrimaryRegion | 'bottom') => orderedRegions.filter((region) => region.visible !== false && (region.placement === placement || (placement === 'right' && region.placement === 'modal')));
+    const regionsForPlacement = (placement: RuntimeWorkspaceRegion['placement']) => orderedRegions.filter((region) => region.placement === placement);
     const handleSlotKeyDown = (event: KeyboardEvent, action: () => void) => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         action();
     };
-    const renderRegionPill = (region: { id: string; role: string; placement: string }) => (
-        <span className="apps-layout-designer__region" data-role={region.role} key={region.id}>
-            <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
-            <small>{studioLayoutRoleLabel(region.role, lang)}</small>
-            <span className="apps-layout-designer__region-actions" aria-label={zh ? '\u79fb\u52a8\u533a\u57df' : 'Move region'}>
-                {placementOptions.map((option) => (
-                    <button
-                        key={option.value}
-                        type="button"
-                        data-active={region.placement === option.value ? 'true' : undefined}
-                        data-testid={`${testIdPrefix}-layout-region-${region.id}-move-${option.value}`}
-                        aria-label={`${zh ? '\u79fb\u52a8' : 'Move'} ${studioLayoutRegionLabel(kind, region.id, lang)} ${zh ? '\u5230' : 'to'} ${option[zh ? 'zh' : 'en']}`}
-                        title={option[zh ? 'zh' : 'en']}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            updateRegionPlacement(region.id, option.value);
-                        }}
-                    >
-                        {option[zh ? 'zh' : 'en'].slice(0, 1)}
-                    </button>
-                ))}
+    const renderRegionPill = (region: RuntimeWorkspaceRegion) => {
+        const hiddenRegion = region.visible === false;
+        const currentIndex = Math.max(0, placementOptions.findIndex((option) => option.value === region.placement));
+        const nextOption = placementOptions[(currentIndex + 1) % placementOptions.length];
+        const currentLabel = placementOptions[currentIndex][locale3(lang)];
+        const cyclePlacement = () => {
+            if (hiddenRegion) {
+                updateRegionVisibility(region.id, true);
+                return;
+            }
+            updateRegionPlacement(region.id, nextOption.value);
+        };
+        const hintText = hiddenRegion
+            ? (localizeText(lang, 'Hidden - click to show', '\u5df2\u9690\u85cf\uff0c\u70b9\u51fb\u663e\u793a', '\u5df2\u96b1\u85cf\uff0c\u9ede\u9078\u986f\u793a'))
+            : (localizeText(lang, `Placement: ${currentLabel} - click to move to ${nextOption.en}`, `\u4f4d\u7f6e\uff1a${currentLabel}\uff0c\u70b9\u51fb\u5207\u6362\u5230 ${nextOption.zh}`, `\u4f4d\u7f6e\uff1a${currentLabel}\uff0c\u9ede\u9078\u5207\u63db\u5230 ${nextOption.hant ?? nextOption.zh}`));
+        return (
+            <span
+                className="apps-layout-designer__region"
+                data-role={region.role}
+                data-visible={hiddenRegion ? 'false' : undefined}
+                key={region.id}
+                role="button"
+                tabIndex={0}
+                data-testid={`${testIdPrefix}-layout-region-${region.id}-cycle`}
+                aria-label={`${studioLayoutRegionLabel(kind, region.id, lang)}: ${hintText}`}
+                title={hintText}
+                onClick={(event) => {
+                    event.stopPropagation();
+                    cyclePlacement();
+                }}
+                onKeyDown={(event) => {
+                    event.stopPropagation();
+                    handleSlotKeyDown(event, cyclePlacement);
+                }}
+            >
+                <strong>{studioLayoutRegionLabel(kind, region.id, lang)}</strong>
+                <small>{hiddenRegion ? (localizeText(lang, 'Hidden', '\u5df2\u9690\u85cf', '\u5df2\u96b1\u85cf')) : currentLabel}</small>
             </span>
-        </span>
-    );
+        );
+    };
     const renderSlot = (slot: typeof studioLayoutSlotIds[number]) => {
         const slotRegions = regionsForPlacement(slot);
         const isPrimary = value.primaryRegion === slot;
-        const hasOutput = value.outputRegion === slot || (slot === 'right' && value.outputRegion === 'modal');
+        const hasOutput = value.outputRegion === slot;
         return (
             <div
                 key={slot}
@@ -2359,31 +2737,35 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                 role="button"
                 tabIndex={0}
                 aria-pressed={isPrimary}
+                title={localizeText(lang, 'Click to make this the primary region', '\u70b9\u51fb\u8bbe\u4e3a\u4e3b\u64cd\u4f5c\u533a', '\u9ede\u9078\u8a2d\u70ba\u4e3b\u64cd\u4f5c\u5340')}
                 onClick={() => updateLayout({ primaryRegion: slot })}
                 onKeyDown={(event) => handleSlotKeyDown(event, () => updateLayout({ primaryRegion: slot }))}
             >
                 <span className="apps-layout-designer__slot-title">
                     {studioLayoutOptionLabel(studioPrimaryRegionOptions, slot, lang)}
-                    {isPrimary && <em>{zh ? '\u4e3b\u64cd\u4f5c' : 'Primary'}</em>}
+                    {isPrimary && <em>{localizeText(lang, 'Primary', '\u4e3b\u64cd\u4f5c', '\u4e3b\u64cd\u4f5c')}</em>}
                 </span>
                 <span className="apps-layout-designer__slot-body">
-                    {slotRegions.length ? slotRegions.map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{zh ? '\u53ef\u653e\u7f6e\u533a\u57df' : 'Available region'}</span>}
+                    {slotRegions.length ? slotRegions.map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{localizeText(lang, 'Available region', '\u53ef\u653e\u7f6e\u533a\u57df', '\u53ef\u653e\u7f6e\u5340\u57df')}</span>}
                 </span>
             </div>
         );
     };
     return (
-        <section className="apps-layout-designer" aria-label={zh ? '\u754c\u9762\u5e03\u5c40' : 'UI layout'}>
+        <section className="apps-layout-designer" aria-label={localizeText(lang, 'UI layout', '\u754c\u9762\u5e03\u5c40', '\u4ecb\u9762\u4f48\u5c40')}>
             <div className="apps-preview-title-row">
                 <div>
-                    <div className="apps-definition__title">{zh ? '\u754c\u9762\u5e03\u5c40' : 'UI layout'}</div>
-                    <small className="apps-layout-designer__hint">{zh ? '\u70b9\u51fb\u9884\u89c8\u533a\u57df\u8c03\u6574\u4e3b\u64cd\u4f5c\u4f4d\u7f6e\uff0c\u8f93\u51fa\u4f4d\u7f6e\u4f1a\u5199\u5165 manifest\u3002' : 'Click the preview regions to place the primary work area; output placement is saved to the manifest.'}</small>
+                    <div className="apps-definition__title">{localizeText(lang, 'UI layout', '\u754c\u9762\u5e03\u5c40', '\u4ecb\u9762\u4f48\u5c40')}</div>
+                    <small className="apps-layout-designer__hint">{localizeText(lang, 'Click a slot to set the primary region; click a region pill to cycle placement. Saved to the manifest.', '\u70b9\u51fb\u69fd\u4f4d\u8bbe\u4e3b\u64cd\u4f5c\u533a\uff0c\u70b9\u51fb\u533a\u57df\u6807\u7b7e\u5207\u6362\u4f4d\u7f6e\uff0c\u5e03\u5c40\u5199\u5165 manifest\u3002', '\u9ede\u9078\u69fd\u4f4d\u8a2d\u4e3b\u64cd\u4f5c\u5340\uff0c\u9ede\u9078\u5340\u57df\u6a19\u7c64\u5207\u63db\u4f4d\u7f6e\uff0c\u4f48\u5c40\u5beb\u5165 manifest\u3002')}</small>
                 </div>
-                <span className="apps-count">{zh ? '\u4fdd\u5b58\u5230 manifest' : 'Saved in manifest'}</span>
+                <div className="apps-layout-designer__title-tools">
+                    <button className="apps-secondary-button" type="button" data-testid={`${testIdPrefix}-layout-reset`} onClick={() => onChange(defaultRuntimeWorkspaceLayout(kind))}>{localizeText(lang, 'Reset default', '\u91cd\u7f6e\u9ed8\u8ba4', '\u91cd\u7f6e\u9810\u8a2d')}</button>
+                    <span className="apps-count">{localizeText(lang, 'Saved in manifest', '\u4fdd\u5b58\u5230 manifest', '\u5132\u5b58\u5230 manifest')}</span>
+                </div>
             </div>
             <div className="apps-layout-designer__body">
                 <div className="apps-layout-designer__preview" data-template={value.template} data-density={value.density}>
-                    <div className="apps-layout-designer__template-row" role="group" aria-label={zh ? '\u5e03\u5c40\u6a21\u677f' : 'Layout template'}>
+                    <div className="apps-layout-designer__template-row" role="group" aria-label={localizeText(lang, 'Layout template', '\u5e03\u5c40\u6a21\u677f', '\u4f48\u5c40\u6a21\u677f')}>
                         {studioLayoutTemplateOptions.map((option) => (
                             <button
                                 key={option.value}
@@ -2394,29 +2776,29 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                                 aria-pressed={value.template === option.value}
                                 onClick={() => updateLayout({ template: option.value })}
                             >
-                                {option[zh ? 'zh' : 'en']}
+                                {option[locale3(lang)]}
                             </button>
                         ))}
                     </div>
                     <div className="apps-layout-designer__evidence" data-testid={`${testIdPrefix}-layout-evidence`}>
                         <span>
-                            <strong>{zh ? '\u5e03\u5c40' : 'Layout'}</strong>
-                            <small>{value.template} \u00b7 {value.density}</small>
+                            <strong>{localizeText(lang, 'Layout', '\u5e03\u5c40', '\u4f48\u5c40')}</strong>
+                            <small>{value.template} &middot; {value.density}</small>
                         </span>
                         <span>
-                            <strong>{zh ? '\u4e3b\u533a' : 'Primary'}</strong>
+                            <strong>{localizeText(lang, 'Primary', '\u4e3b\u533a', '\u4e3b\u5340')}</strong>
                             <small>{value.primaryRegion}</small>
                         </span>
                         <span>
-                            <strong>{zh ? '\u8f93\u51fa' : 'Output'}</strong>
+                            <strong>{localizeText(lang, 'Output', '\u8f93\u51fa', '\u8f38\u51fa')}</strong>
                             <small>{value.outputRegion}</small>
                         </span>
                         <span>
-                            <strong>{zh ? '\u533a\u57df' : 'Regions'}</strong>
+                            <strong>{localizeText(lang, 'Regions', '\u533a\u57df', '\u5340\u57df')}</strong>
                             <small>{visibleRegionCount}/{orderedRegions.length}</small>
                         </span>
                         <span>
-                            <strong>{zh ? '\u6307\u7eb9' : 'Fingerprint'}</strong>
+                            <strong>{localizeText(lang, 'Fingerprint', '\u6307\u7eb9', '\u6307\u7d0b')}</strong>
                             <code>{layoutFingerprint}</code>
                         </span>
                     </div>
@@ -2430,15 +2812,36 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                             role="button"
                             tabIndex={0}
                             aria-pressed={value.outputRegion === 'bottom'}
+                            title={localizeText(lang, 'Click to make this the output region', '\u70b9\u51fb\u8bbe\u4e3a\u8f93\u51fa\u533a', '\u9ede\u9078\u8a2d\u70ba\u8f38\u51fa\u5340')}
                             onClick={() => updateLayout({ outputRegion: 'bottom' })}
                             onKeyDown={(event) => handleSlotKeyDown(event, () => updateLayout({ outputRegion: 'bottom' }))}
                         >
                             <span className="apps-layout-designer__slot-title">
-                                {zh ? '\u5e95\u90e8' : 'Bottom'}
-                                {value.outputRegion === 'bottom' && <em>{zh ? '\u8f93\u51fa' : 'Output'}</em>}
+                                {localizeText(lang, 'Bottom', '\u5e95\u90e8', '\u5e95\u90e8')}
+                                {value.outputRegion === 'bottom' && <em>{localizeText(lang, 'Output', '\u8f93\u51fa', '\u8f38\u51fa')}</em>}
                             </span>
                             <span className="apps-layout-designer__slot-body">
-                                {regionsForPlacement('bottom').length ? regionsForPlacement('bottom').map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{zh ? '\u7ed3\u679c\u533a\u6216\u65e5\u5fd7\u533a' : 'Results or log lane'}</span>}
+                                {regionsForPlacement('bottom').length ? regionsForPlacement('bottom').map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{localizeText(lang, 'Results or log lane', '\u7ed3\u679c\u533a\u6216\u65e5\u5fd7\u533a', '\u7d50\u679c\u5340\u6216\u65e5\u8a8c\u5340')}</span>}
+                            </span>
+                        </div>
+                        <div
+                            className="apps-layout-designer__slot apps-layout-designer__slot--modal"
+                            data-slot="modal"
+                            data-output={value.outputRegion === 'modal' ? 'modal' : undefined}
+                            data-testid={`${testIdPrefix}-layout-slot-modal`}
+                            role="button"
+                            tabIndex={0}
+                            aria-pressed={value.outputRegion === 'modal'}
+                            title={localizeText(lang, 'Click to make this the output region', '\u70b9\u51fb\u8bbe\u4e3a\u8f93\u51fa\u533a', '\u9ede\u9078\u8a2d\u70ba\u8f38\u51fa\u5340')}
+                            onClick={() => updateLayout({ outputRegion: 'modal' })}
+                            onKeyDown={(event) => handleSlotKeyDown(event, () => updateLayout({ outputRegion: 'modal' }))}
+                        >
+                            <span className="apps-layout-designer__slot-title">
+                                {localizeText(lang, 'Modal', '\u5f39\u7a97', '\u5f48\u7a97')}
+                                {value.outputRegion === 'modal' && <em>{localizeText(lang, 'Output', '\u8f93\u51fa', '\u8f38\u51fa')}</em>}
+                            </span>
+                            <span className="apps-layout-designer__slot-body">
+                                {regionsForPlacement('modal').length ? regionsForPlacement('modal').map(renderRegionPill) : <span className="apps-layout-designer__empty-slot">{localizeText(lang, 'Overlay region', '\u5f39\u51fa\u5c42\u533a\u57df', '\u5f48\u51fa\u5c64\u5340\u57df')}</span>}
                             </span>
                         </div>
                     </div>
@@ -2446,52 +2849,28 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                 <div className="apps-layout-designer__controls">
                     <div className="apps-layout-designer__grid">
                         <div className="apps-form-row">
-                            <label>{zh ? '\u5e03\u5c40\u6a21\u677f' : 'Layout template'}</label>
-                            <select data-testid={`${testIdPrefix}-layout-template`} value={value.template} onChange={(event) => updateLayout({ template: event.target.value as StudioLayoutTemplate })}>
-                                {studioLayoutTemplateOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
-                            </select>
-                        </div>
-                        <div className="apps-form-row">
-                            <label>{zh ? '\u5bc6\u5ea6' : 'Density'}</label>
+                            <label>{localizeText(lang, 'Density', '\u5bc6\u5ea6', '\u5bc6\u5ea6')}</label>
                             <select data-testid={`${testIdPrefix}-layout-density`} value={value.density} onChange={(event) => updateLayout({ density: event.target.value as StudioLayoutDensity })}>
-                                {studioLayoutDensityOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                                {studioLayoutDensityOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
                             </select>
                         </div>
                         <div className="apps-form-row">
-                            <label>{zh ? '\u4e3b\u64cd\u4f5c\u533a' : 'Primary region'}</label>
+                            <label>{localizeText(lang, 'Primary region', '\u4e3b\u64cd\u4f5c\u533a', '\u4e3b\u64cd\u4f5c\u5340')}</label>
                             <select data-testid={`${testIdPrefix}-primary-region`} value={value.primaryRegion} onChange={(event) => updateLayout({ primaryRegion: event.target.value as StudioPrimaryRegion })}>
-                                {studioPrimaryRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                                {studioPrimaryRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
                             </select>
                         </div>
                         <div className="apps-form-row">
-                            <label>{zh ? '\u8f93\u51fa\u533a' : 'Output region'}</label>
+                            <label>{localizeText(lang, 'Output region', '\u8f93\u51fa\u533a', '\u8f38\u51fa\u5340')}</label>
                             <select data-testid={`${testIdPrefix}-output-region`} value={value.outputRegion} onChange={(event) => updateLayout({ outputRegion: event.target.value as StudioOutputRegion })}>
-                                {studioOutputRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                                {studioOutputRegionOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
                             </select>
                         </div>
                     </div>
-                    <div className="apps-form-row apps-layout-designer__output-control-row">
-                        <span className="apps-layout-designer__control-spacer" aria-hidden="true" />
-                        <div className="apps-layout-designer__output-row" role="group" aria-label={zh ? '\u8f93\u51fa\u4f4d\u7f6e' : 'Output placement'}>
-                            {studioOutputRegionOptions.map((option) => (
-                                <button
-                                    key={option.value}
-                                    className="apps-layout-designer__output"
-                                    data-active={value.outputRegion === option.value ? 'true' : undefined}
-                                    data-testid={`${testIdPrefix}-layout-output-${option.value}`}
-                                    type="button"
-                                    aria-pressed={value.outputRegion === option.value}
-                                    onClick={() => updateLayout({ outputRegion: option.value })}
-                                >
-                                    {option[zh ? 'zh' : 'en']}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                    <div className="apps-layout-designer__region-controls" aria-label={zh ? '\u533a\u57df\u4f4d\u7f6e' : 'Region placement'}>
+                    <div className="apps-layout-designer__region-controls" aria-label={localizeText(lang, 'Region placement', '\u533a\u57df\u4f4d\u7f6e', '\u5340\u57df\u4f4d\u7f6e')}>
                         <div className="apps-layout-designer__region-controls-head">
-                            <strong>{zh ? '\u533a\u57df\u4f4d\u7f6e' : 'Region placement'}</strong>
-                            <span>{zh ? '\u5199\u5165 manifest.regions' : 'Saved to manifest.regions'}</span>
+                            <strong>{localizeText(lang, 'Region placement', '\u533a\u57df\u4f4d\u7f6e', '\u5340\u57df\u4f4d\u7f6e')}</strong>
+                            <span>{localizeText(lang, 'Saved to manifest.regions', '\u5199\u5165 manifest.regions', '\u5beb\u5165 manifest.regions')}</span>
                         </div>
                         {orderedRegions.map((region, index) => (
                             <div className="apps-layout-designer__region-control" data-visible={region.visible === false ? 'false' : 'true'} key={region.id}>
@@ -2513,11 +2892,11 @@ const StudioLayoutDesigner = ({ kind, value, onChange, lang, testIdPrefix = 'stu
                                     value={region.placement}
                                     onChange={(event) => updateRegionPlacement(region.id, event.target.value as RuntimeWorkspaceRegion['placement'])}
                                 >
-                                    {placementOptions.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}
+                                    {placementOptions.map((option) => <option key={option.value} value={option.value}>{option[locale3(lang)]}</option>)}
                                 </select>
-                                <div className="apps-layout-designer__order" role="group" aria-label={zh ? '\u533a\u57df\u987a\u5e8f' : 'Region order'}>
-                                    <button type="button" data-testid={`${testIdPrefix}-layout-region-${region.id}-order-up`} disabled={index === 0} onClick={() => reorderRegion(region.id, -1)}>{zh ? '\u4e0a\u79fb' : 'Up'}</button>
-                                    <button type="button" data-testid={`${testIdPrefix}-layout-region-${region.id}-order-down`} disabled={index === orderedRegions.length - 1} onClick={() => reorderRegion(region.id, 1)}>{zh ? '\u4e0b\u79fb' : 'Down'}</button>
+                                <div className="apps-layout-designer__order" role="group" aria-label={localizeText(lang, 'Region order', '\u533a\u57df\u987a\u5e8f', '\u5340\u57df\u9806\u5e8f')}>
+                                    <button type="button" data-testid={`${testIdPrefix}-layout-region-${region.id}-order-up`} disabled={index === 0} onClick={() => reorderRegion(region.id, -1)}>{localizeText(lang, 'Up', '\u4e0a\u79fb', '\u4e0a\u79fb')}</button>
+                                    <button type="button" data-testid={`${testIdPrefix}-layout-region-${region.id}-order-down`} disabled={index === orderedRegions.length - 1} onClick={() => reorderRegion(region.id, 1)}>{localizeText(lang, 'Down', '\u4e0b\u79fb', '\u4e0b\u79fb')}</button>
                                 </div>
                             </div>
                         ))}
@@ -2655,12 +3034,12 @@ function extractSkillPackageIDFromHubRef(ref: string): string {
     return rest;
 }
 
-/** Mirrors corelib.IsUploadSubmissionSkillRef 鈥?do not treat ordinary "sub-*" package names as submissions. */
+/** Mirrors corelib.IsUploadSubmissionSkillRef — do not treat ordinary "sub-*" package names as submissions. */
 function isUploadSubmissionSkillRef(ref: string): boolean {
     const lower = String(ref || '').trim().toLowerCase();
     if (!lower) return false;
     if (lower.includes(';enterprise_hub=') || lower.startsWith('enterprise_hub=')) return true;
-    // Lifecycle ids: sub-<digits>鈥?(not sub-process-monitor style package names).
+    // Lifecycle ids: sub-<digits>— (not sub-process-monitor style package names).
     if (lower.startsWith('sub-') && lower.length > 4) {
         const c = lower.charCodeAt(4);
         if (c >= 48 && c <= 57) return true; // '0'..'9'
@@ -2711,7 +3090,7 @@ function skillIdentityKeysOverlap(a: string, b: string): boolean {
 /**
  * Resolve the skill id used for RunNLSkillAsync.
  *
- * Coordinate model (authoring 鈫?plan 鈫?run):
+ * Coordinate model (authoring → plan → run):
  * 1. Declared appSkill.id / skill.id (stable hub/package id preferred at authoring)
  * 2. After PlanMaclawAppInstall: dependency.runtime_skill_ref (HubSkillID) or
  *    installed_name when the local registry display name is the only handle
@@ -2839,7 +3218,7 @@ function normalizeAppVersion(value: unknown) {
     return Number.isFinite(version) && version > 0 ? Math.floor(version) : 1;
 }
 
-/** Panel apps eligible for the 瀹℃牳/鍙戝竷 surface (not market/DataSrv/disabled installs). */
+/** Panel apps eligible for the 审核/发布 surface (not market/DataSrv/disabled installs). */
 function isAppPublishCandidate(app: AppEntry): boolean {
     if (app.disabled) return false;
     return app.source === 'local' || app.source === 'skill' || app.studioOrigin === 'app_studio';
@@ -4276,23 +4655,23 @@ function outputModeLabel(mode: string) {
 
 function appContractTypeLabel(type: string, lang?: string) {
     const normalized = String(type || '').trim();
-    const labels: Record<string, { zh: string; en: string }> = {
-        approval_result: { zh: '瀹℃壒缁撴灉', en: 'Approval result' },
-        business_status: { zh: '\u4e1a\u52a1\u72b6\u6001', en: 'Business status' },
-        business_record: { zh: '涓氬姟璁板綍', en: 'Business record' },
-        content: { zh: '鍐呭', en: 'Content' },
-        text: { zh: '鏂囨湰', en: 'Text' },
-        artifact: { zh: '浜х墿', en: 'Artifact' },
-        artifacts: { zh: '浜х墿', en: 'Artifacts' },
-        document: { zh: '鏂囦欢', en: 'Document' },
-        file: { zh: '鏂囦欢', en: 'File' },
-        notification: { zh: '閫氱煡', en: 'Notification' },
-        workflow_result: { zh: '\u5de5\u4f5c\u6d41\u7ed3\u679c', en: 'Workflow result' },
-        approval_instance: { zh: '瀹℃壒瀹炰緥', en: 'Approval instance' },
-        outputs: { zh: '杈撳嚭', en: 'Outputs' },
+    const labels: Record<string, { zh: string; en: string; hant?: string }> = {
+        approval_result: { zh: '审批结果', en: 'Approval result', hant: '\u5be9\u6279\u7d50\u679c' },
+        business_status: { zh: '\u4e1a\u52a1\u72b6\u6001', en: 'Business status', hant: '\u696d\u52d9\u72c0\u614b' },
+        business_record: { zh: '业务记录', en: 'Business record', hant: '\u696d\u52d9\u8a18\u9304' },
+        content: { zh: '内容', en: 'Content', hant: '\u5167\u5bb9' },
+        text: { zh: '文本', en: 'Text', hant: '\u6587\u5b57' },
+        artifact: { zh: '产物', en: 'Artifact', hant: '\u7522\u7269' },
+        artifacts: { zh: '产物', en: 'Artifacts', hant: '\u7522\u7269' },
+        document: { zh: '文件', en: 'Document', hant: '\u6a94\u6848' },
+        file: { zh: '文件', en: 'File', hant: '\u6a94\u6848' },
+        notification: { zh: '通知', en: 'Notification', hant: '\u901a\u77e5' },
+        workflow_result: { zh: '\u5de5\u4f5c\u6d41\u7ed3\u679c', en: 'Workflow result', hant: '\u5de5\u4f5c\u6d41\u7d50\u679c' },
+        approval_instance: { zh: '审批实例', en: 'Approval instance', hant: '\u5be9\u6279\u5be6\u4f8b' },
+        outputs: { zh: '输出', en: 'Outputs', hant: '\u8f38\u51fa' },
     };
     const label = labels[normalized];
-    return label ? label[isZh(lang) ? 'zh' : 'en'] : normalized;
+    return label ? (label[locale3(lang)] ?? label[isZh(lang) ? 'zh' : 'en']) : normalized;
 }
 
 function buildSkillFieldPayload(fields: SkillAppField[], values: Record<string, string | boolean>) {
@@ -4609,7 +4988,7 @@ function normalizeSkillRunResultStringList(value: unknown): string[] {
     if (text.startsWith('[') || text.startsWith('{')) {
         try { return normalizeSkillRunResultStringList(JSON.parse(text)); } catch { /* fall through to delimiter parsing */ }
     }
-    return Array.from(new Set(text.split(/\s*(?:->|鈫抾,|;|>|\||\n)\s*/).map((item) => item.trim()).filter(Boolean)));
+    return Array.from(new Set(text.split(/\s*(?:->|→|,|;|>|\||\n)\s*/).map((item) => item.trim()).filter(Boolean)));
 }
 
 function skillRunWorkflowNodeIDs(objects: Record<string, any>[], currentNode: string): string[] | undefined {
@@ -5680,7 +6059,7 @@ async function submitAppPackageToEnterpriseMarket(
             const response = await bridge(existingID);
             return parseOneClickPublishSubmission(app, response);
         } catch (error) {
-            // Stale card id after hub rename / queue prune 鈫?fall through to a fresh one-click.
+            // Stale card id after hub rename / queue prune → fall through to a fresh one-click.
             if (!isMissingPublishSubmissionError(error)) throw error;
         }
     }
@@ -6186,12 +6565,12 @@ function appRunEvidenceFreshnessCheck(app: AppEntry, lang?: string) {
     return {
         ok,
         detail: !evidence
-            ? (zh ? '\u8bf7\u5148\u8fd0\u884c\u5f53\u524d\u5e94\u7528\u518d\u8bc4\u5ba1' : 'Run the current app before review')
+            ? (localizeText(lang, 'No run evidence yet — run the app once on the Apps page, then submit for review', '\u5c1a\u65e0\u8fd0\u884c\u8bc1\u636e \u2014 \u8bf7\u5148\u5728\u300c\u5e94\u7528\u300d\u9875\u6267\u884c\u4e00\u6b21\u8be5\u5e94\u7528\uff0c\u518d\u63d0\u4ea4\u8bc4\u5ba1', '\u5c1a\u7121\u57f7\u884c\u8b49\u64da \u2014 \u8acb\u5148\u5728\u300c\u61c9\u7528\u300d\u9801\u57f7\u884c\u4e00\u6b21\u8a72\u61c9\u7528\uff0c\u518d\u63d0\u4ea4\u8a55\u5be9'))
             : !actualHash
-                ? (zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is missing the current app definition fingerprint; rerun the test')
+                ? (localizeText(lang, 'Run evidence lacks the current definition fingerprint — rerun the app to refresh it', '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\u6307\u7eb9 \u2014 \u8bf7\u91cd\u65b0\u8fd0\u884c\u4e00\u6b21\u8be5\u5e94\u7528\u4ee5\u5237\u65b0\u8bc1\u636e', '\u57f7\u884c\u8b49\u64da\u7f3a\u5c11\u7576\u524d\u61c9\u7528\u5b9a\u7fa9\u6307\u7d0b \u2014 \u8acb\u91cd\u65b0\u57f7\u884c\u4e00\u6b21\u8a72\u61c9\u7528\u4ee5\u91cd\u65b0\u6574\u7406\u8b49\u64da'))
                 : ok
                     ? `${evidence.runID || ''} \u00b7  ${actualHash}`.trim()
-                    : (zh ? '\u8fd0\u884c\u8bc1\u636e\u5df2\u4e0d\u5339\u914d\u5f53\u524d\u5e94\u7528\u5b9a\u4e49\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Run evidence is stale for the current app definition; rerun the test'),
+                    : (localizeText(lang, 'Definition changed; run evidence is stale — rerun the app to refresh it', '\u5e94\u7528\u5b9a\u4e49\u5df2\u53d8\u66f4\uff0c\u8fd0\u884c\u8bc1\u636e\u5df2\u8fc7\u671f \u2014 \u8bf7\u91cd\u65b0\u8fd0\u884c\u4e00\u6b21\u8be5\u5e94\u7528\u4ee5\u5237\u65b0\u8bc1\u636e', '\u61c9\u7528\u5b9a\u7fa9\u5df2\u8b8a\u66f4\uff0c\u57f7\u884c\u8b49\u64da\u5df2\u904e\u671f \u2014 \u8acb\u91cd\u65b0\u57f7\u884c\u4e00\u6b21\u8a72\u61c9\u7528\u4ee5\u91cd\u65b0\u6574\u7406\u8b49\u64da')),
     };
 }
 
@@ -6202,19 +6581,19 @@ function appRunEvidenceDesignConsistencyCheck(app: AppEntry, evidence: AppRunHis
     const actualProtocol = String(evidence?.testProtocolFingerprint || '').trim();
     const actualLayout = String(evidence?.workspaceLayoutFingerprint || '').trim();
     if (!evidence) {
-        return { ok: false, detail: zh ? '\u8bf7\u5148\u8fd0\u884c\u5f53\u524d\u8bbe\u8ba1\u7684\u6d4b\u8bd5\u7528\u4f8b' : 'Run the test case for the current design first' };
+        return { ok: false, detail: localizeText(lang, 'Run the test case for the current design first', '\u8bf7\u5148\u8fd0\u884c\u5f53\u524d\u8bbe\u8ba1\u7684\u6d4b\u8bd5\u7528\u4f8b', '\u8acb\u5148\u57f7\u884c\u7576\u524d\u8a2d\u8a08\u7684\u6e2c\u8a66\u7528\u4f8b') };
     }
     if (!actualProtocol) {
-        return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u6d4b\u8bd5\u534f\u8bae\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the test protocol fingerprint; rerun the test' };
+        return { ok: false, detail: localizeText(lang, 'Run evidence is missing the test protocol fingerprint; rerun the test', '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u6d4b\u8bd5\u534f\u8bae\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5', '\u57f7\u884c\u8b49\u64da\u7f3a\u5c11\u6e2c\u8a66\u5354\u8b70\u6307\u7d0b\uff1b\u8acb\u91cd\u65b0\u6e2c\u8a66') };
     }
     if (actualProtocol !== expectedProtocol) {
-        return { ok: false, detail: zh ? '\u6d4b\u8bd5\u534f\u8bae\u5df2\u53d8\u66f4\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Test protocol changed; rerun the test' };
+        return { ok: false, detail: localizeText(lang, 'Test protocol changed; rerun the test', '\u6d4b\u8bd5\u534f\u8bae\u5df2\u53d8\u66f4\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5', '\u6e2c\u8a66\u5354\u8b70\u5df2\u8b8a\u66f4\uff1b\u8acb\u91cd\u65b0\u57f7\u884c\u6e2c\u8a66') };
     }
     if (!actualLayout) {
-        return { ok: false, detail: zh ? '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u754c\u9762\u5e03\u5c40\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5' : 'Run evidence is missing the workspace layout fingerprint; rerun the test' };
+        return { ok: false, detail: localizeText(lang, 'Run evidence is missing the workspace layout fingerprint; rerun the test', '\u8fd0\u884c\u8bc1\u636e\u7f3a\u5c11\u754c\u9762\u5e03\u5c40\u6307\u7eb9\uff1b\u8bf7\u91cd\u65b0\u6d4b\u8bd5', '\u57f7\u884c\u8b49\u64da\u7f3a\u5c11\u4ecb\u9762\u4f48\u5c40\u6307\u7d0b\uff1b\u8acb\u91cd\u65b0\u6e2c\u8a66') };
     }
     if (actualLayout !== expectedLayout) {
-        return { ok: false, detail: zh ? '\u754c\u9762\u5e03\u5c40\u5df2\u53d8\u66f4\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5' : 'Workspace layout changed; rerun the test' };
+        return { ok: false, detail: localizeText(lang, 'Workspace layout changed; rerun the test', '\u754c\u9762\u5e03\u5c40\u5df2\u53d8\u66f4\uff1b\u8bf7\u91cd\u65b0\u8fd0\u884c\u6d4b\u8bd5', '\u4ecb\u9762\u4f48\u5c40\u5df2\u8b8a\u66f4\uff1b\u8acb\u91cd\u65b0\u57f7\u884c\u6e2c\u8a66') };
     }
     return {
         ok: true,
@@ -6355,7 +6734,7 @@ function backendDependencyMatchesDeclaredSkill(verified: BackendAppInstallDepend
 function appDependencyPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const deps = appDependencyEvidence(app);
-    if (deps.length === 0) return zh ? '\u65e0 Skill \u4f9d\u8d56' : 'No Skill dependencies';
+    if (deps.length === 0) return localizeText(lang, 'No Skill dependencies', '\u65e0 Skill \u4f9d\u8d56', '\u7121 Skill \u4f9d\u8cf4');
     return deps.map((dep) => {
         const state = [dep.health, dep.action].map((item) => String(item || '').trim()).find(Boolean);
         return `${dep.id}${dep.version ? `@${dep.version}` : ''} (${[dep.kind, dep.required ? '' : 'optional', state].filter(Boolean).join(', ')})`;
@@ -6374,29 +6753,29 @@ function appDependencyVerificationPublishCheckForPlan(app: AppEntry, plan: Backe
     const zh = isZh(lang);
     const declared = appSkillDependencies(app).filter((dep) => String(dep.id || '').trim());
     if (declared.length === 0) {
-        return { ok: app.kind === 'automation_app', detail: zh ? '\u672a\u58f0\u660e Skill \u4f9d\u8d56' : 'No Skill dependencies declared' };
+        return { ok: app.kind === 'automation_app', detail: localizeText(lang, 'No Skill dependencies declared', '\u672a\u58f0\u660e Skill \u4f9d\u8d56', '\u672a\u5ba3\u544a Skill \u4f9d\u8cf4') };
     }
     if (!plan) {
-        return { ok: false, detail: zh ? '\u7f3a\u5c11\u4f9d\u8d56\u9a8c\u8bc1\u8bc1\u636e' : 'Missing dependency verification evidence' };
+        return { ok: false, detail: localizeText(lang, 'Missing dependency verification — click "Resolve dependencies" below to install and verify', '\u7f3a\u5c11\u4f9d\u8d56\u9a8c\u8bc1\u8bc1\u636e \u2014 \u8bf7\u70b9\u51fb\u4e0b\u65b9\u300c\u5904\u7406\u4f9d\u8d56\u300d\u5b89\u88c5\u5e76\u9a8c\u8bc1\u4f9d\u8d56 Skill', '\u7f3a\u5c11\u4f9d\u8cf4\u9a57\u8b49\u8b49\u64da \u2014 \u8acb\u9ede\u9078\u4e0b\u65b9\u300c\u8655\u7406\u4f9d\u8cf4\u300d\u5b89\u88dd\u4e26\u9a57\u8b49\u4f9d\u8cf4 Skill') };
     }
     if (plan.schema && plan.schema !== 'maclaw.app.install_plan.v1') {
-        return { ok: false, detail: zh ? '\u4f9d\u8d56\u9a8c\u8bc1 schema \u65e0\u6548' : 'Invalid dependency verification schema' };
+        return { ok: false, detail: localizeText(lang, 'Invalid dependency verification schema', '\u4f9d\u8d56\u9a8c\u8bc1 schema \u65e0\u6548', '\u4f9d\u8cf4\u9a57\u8b49 schema \u7121\u6548') };
     }
     const appIDs = appDependencyVerificationAppIDs(app);
     const verifiedDependencies = parseBackendAppInstallDependencies(plan.dependencies).filter((dep) => backendDependencyMatchesAppIDs(dep, appIDs));
     if (workflowContractHasIssueForAppIDs(plan, appIDs)) {
-        return { ok: false, detail: zh ? '\u5ba1\u6279 workflow \u5408\u540c\u9a8c\u8bc1\u672a\u901a\u8fc7' : 'Approval workflow contract verification failed' };
+        return { ok: false, detail: localizeText(lang, 'Approval workflow contract verification failed', '\u5ba1\u6279 workflow \u5408\u540c\u9a8c\u8bc1\u672a\u901a\u8fc7', '\u5be9\u6279 workflow \u5408\u540c\u9a57\u8b49\u672a\u900f\u904e') };
     }
     if (governanceReviewHasIssueForAppIDs(plan, appIDs)) {
-        return { ok: false, detail: zh ? '\u4f9d\u8d56\u6cbb\u7406\u590d\u6838\u672a\u901a\u8fc7' : 'Dependency governance review failed' };
+        return { ok: false, detail: localizeText(lang, 'Dependency governance review failed', '\u4f9d\u8d56\u6cbb\u7406\u590d\u6838\u672a\u901a\u8fc7', '\u4f9d\u8cf4\u6cbb\u7406\u8907\u6838\u672a\u900f\u904e') };
     }
     if (hasMissingRequiredBackendDependency(plan, appIDs)) {
-        return { ok: false, detail: zh ? '\u5fc5\u9700 Skill \u4f9d\u8d56\u7f3a\u5931\u6216\u88ab\u963b\u65ad' : 'Required Skill dependency is missing or blocked' };
+        return { ok: false, detail: localizeText(lang, 'Required Skill dependency missing or blocked — click "Resolve dependencies" to install, then retry', '\u5fc5\u9700 Skill \u4f9d\u8d56\u7f3a\u5931\u6216\u88ab\u963b\u65ad \u2014 \u8bf7\u70b9\u51fb\u4e0b\u65b9\u300c\u5904\u7406\u4f9d\u8d56\u300d\u5b89\u88c5\u540e\u91cd\u8bd5', '\u5fc5\u9700 Skill \u4f9d\u8cf4\u7f3a\u5931\u6216\u88ab\u963b\u65b7 \u2014 \u8acb\u9ede\u9078\u4e0b\u65b9\u300c\u8655\u7406\u4f9d\u8cf4\u300d\u5b89\u88dd\u5f8c\u91cd\u8a66') };
     }
     const missing = declared.filter((dep) => !verifiedDependencies.some((verified) => backendDependencyMatchesDeclaredSkill(verified, dep)));
     if (missing.length > 0) {
         const names = missing.map((dep) => dep.id).join(', ');
-        return { ok: false, detail: zh ? `\u4f9d\u8d56\u9a8c\u8bc1\u7f3a\u5c11\u58f0\u660e Skill: ${names}` : `Dependency verification is missing declared Skill: ${names}` };
+        return { ok: false, detail: localizeText(lang, `Dependency verification is missing declared Skill: ${names}`, `\u4f9d\u8d56\u9a8c\u8bc1\u7f3a\u5c11\u58f0\u660e Skill: ${names}`, `\u4f9d\u8cf4\u9a57\u8b49\u7f3a\u5c11\u5ba3\u544a Skill: ${names}`) };
     }
     return { ok: true, detail: appDependencyPublishSummary(app, lang) };
 }
@@ -6461,7 +6840,7 @@ function appWorkspaceLayoutPublishSummary(app: AppEntry, lang?: string) {
     const layout = appWorkspaceLayoutEvidence(app);
     if (!layout.schema || !layout.entry || layout.regionCount <= 0) return zh ? '\u7f3a\u5c11 workspace layout' : 'Missing workspace layout';
     const missingRoles = missingWorkspaceRegionRoles(app);
-    if (missingRoles.length > 0) return zh ? `\u7f3a\u5c11 workspace \u533a\u57df\u89d2\u8272: ${missingRoles.join(', ')}` : `Missing workspace region roles: ${missingRoles.join(', ')}`;
+    if (missingRoles.length > 0) return localizeText(lang, `Missing workspace region roles: ${missingRoles.join(', ')}`, `\u7f3a\u5c11 workspace \u533a\u57df\u89d2\u8272: ${missingRoles.join(', ')}`, `\u7f3a\u5c11 workspace \u5340\u57df\u89d2\u8272: ${missingRoles.join(', ')}`);
     return `${layout.entry} \u00b7  ${layout.template} \u00b7  ${layout.density} \u00b7  ${layout.regionCount} regions`;
 }
 function buildAppResultContract(kind: AppKind, outputModes: string[] = []): AppResultContract {
@@ -6636,7 +7015,7 @@ function appTestProtocolPublishSummary(app: AppEntry, lang?: string): string {
     const sampleKeys = Object.keys(protocol.sampleInput || {}).length;
     const outputKeys = Object.keys(protocol.expectedOutput || {}).length;
     if (sampleKeys === 0 || outputKeys === 0) return zh ? '\u7f3a\u5c11 sampleInput \u6216 expectedOutput' : 'Missing sampleInput or expectedOutput';
-    return `${zh ? '\u534f\u8bae\u6307\u7eb9' : 'Protocol fingerprint'} ${fingerprint} \u00b7  ${protocol.riskLevel}`;
+    return `${localizeText(lang, 'Protocol fingerprint', '\u534f\u8bae\u6307\u7eb9', '\u5354\u8b70\u6307\u7d0b')} ${fingerprint} \u00b7  ${protocol.riskLevel}`;
 }
 
 function appHasPublishableTestProtocol(app: AppEntry): boolean {
@@ -6799,15 +7178,15 @@ const WorkflowContractSummary = ({ contract, state, issue, text }: { contract?: 
 function appWorkflowContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const contract = workflowContractForApp(app);
-    if (!contract) return zh ? '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6' : 'Runtime contract not declared';
+    if (!contract) return localizeText(lang, 'Runtime contract not declared', '\u672a\u58f0\u660e\u8fd0\u884c\u5951\u7ea6', '\u672a\u5ba3\u544a\u57f7\u884c\u5951\u7d04');
     const workflow = [contract.workflowSkillId, contract.workflowVersion ? `v${contract.workflowVersion}` : ''].filter(Boolean).join('@');
-    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${zh ? '\u8f93\u5165' : 'inputs'} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${zh ? '\u8f93\u51fa' : 'outputs'} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' \u00b7  ');
+    return [workflow, contract.objectRole, contract.requiredInputs.length ? `${localizeText(lang, 'inputs', '\u8f93\u5165', '\u8f38\u5165')} ${contract.requiredInputs.length}` : '', contract.decisionOutputs.length ? `${localizeText(lang, 'outputs', '\u8f93\u51fa', '\u8f38\u51fa')} ${contract.decisionOutputs.length}` : ''].filter(Boolean).join(' \u00b7  ');
 }
 function appResultContractPublishSummary(app: AppEntry, lang?: string) {
     const zh = isZh(lang);
     const contract = appResultContractForManifest(app);
     const types = contract.types.slice(0, 4).join(', ');
-    return `${zh ? '\u7ed3\u679c' : 'Result'}: ${contract.primary}${types ? ` \u00b7  ${types}` : ''}`;
+    return `${localizeText(lang, 'Result', '\u7ed3\u679c', '\u7d50\u679c')}: ${contract.primary}${types ? ` \u00b7  ${types}` : ''}`;
 }
 
 function appRunEvidencePayloadValue(payload: Record<string, unknown> | undefined, keys: string[]): unknown {
@@ -7000,7 +7379,7 @@ function saveApprovalDecisionRunEvidence(app: AppEntry | undefined, instance: Ba
 function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHistoryEntry | null, lang?: string) {
     const zh = isZh(lang);
     if (!isEnterpriseApprovalAppKind(app.kind)) {
-        return { ok: true, detail: zh ? '\u975e\u5ba1\u6279\u5e94\u7528\u65e0\u9700\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e' : 'Not required for non-approval apps' };
+        return { ok: true, detail: localizeText(lang, 'Not required for non-approval apps', '\u975e\u5ba1\u6279\u5e94\u7528\u65e0\u9700\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e', '\u975e\u5be9\u6279\u61c9\u7528\u7121\u9700\u5be9\u6279\u5be6\u4f8b\u8b49\u64da') };
     }
     const approvalInstance = normalizeAppRunApprovalInstanceEvidence(evidence?.approvalInstance);
     const hasStatus = !!String(approvalInstance?.status || '').trim();
@@ -7014,18 +7393,18 @@ function appRunEvidenceApprovalInstanceCheck(app: AppEntry, evidence: AppRunHist
     const ok = !!approvalInstance?.instanceId && hasStatus && hasCurrentNode && hasWorkflowSkill && hasResultStatus && hasResultPackage && viewVerified;
     const missingDetail = () => {
         if (!approvalInstance?.instanceId || !hasStatus || !viewVerified) {
-            return zh ? '\u7f3a\u5c11 instanceId\u3001status \u6216\u5ba1\u6279\u5b9e\u4f8b\u89c6\u56fe\u9a8c\u8bc1' : 'Missing instanceId, status, or approval instance view verification';
+            return localizeText(lang, 'Missing instanceId, status, or approval instance view verification', '\u7f3a\u5c11 instanceId\u3001status \u6216\u5ba1\u6279\u5b9e\u4f8b\u89c6\u56fe\u9a8c\u8bc1', '\u7f3a\u5c11 instanceId\u3001status \u6216\u5be9\u6279\u5be6\u4f8b\u6aa2\u8996\u9a57\u8b49');
         }
         if (!hasCurrentNode || !hasWorkflowSkill || !hasResultStatus) {
             return zh ? '\u7f3a\u5c11 currentNode\u3001workflowSkillId \u6216 businessStatus/resultStatus' : 'Missing currentNode, workflowSkillId, or businessStatus/resultStatus';
         }
-        return zh ? '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e\u7f3a\u5c11 resultPayload\u3001outputs \u6216 artifacts' : 'Approval instance evidence is missing resultPayload, outputs, or artifacts';
+        return localizeText(lang, 'Approval instance evidence is missing resultPayload, outputs, or artifacts', '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e\u7f3a\u5c11 resultPayload\u3001outputs \u6216 artifacts', '\u5be9\u6279\u5be6\u4f8b\u8b49\u64da\u7f3a\u5c11 resultPayload\u3001outputs \u6216 artifacts');
     };
     return {
         ok,
         approvalInstance,
         detail: !evidence
-            ? (zh ? '\u8bf7\u5148\u8fd0\u884c\u4e00\u6b21\u5ba1\u6279\u5de5\u4f5c\u6d41\u518d\u8bc4\u5ba1' : 'Run the approval workflow once before review')
+            ? (localizeText(lang, 'Run the approval workflow once before review', '\u8bf7\u5148\u8fd0\u884c\u4e00\u6b21\u5ba1\u6279\u5de5\u4f5c\u6d41\u518d\u8bc4\u5ba1', '\u8acb\u5148\u57f7\u884c\u4e00\u6b21\u5be9\u6279\u5de5\u4f5c\u6d41\u518d\u8a55\u5be9'))
             : ok
                 ? `${approvalInstance?.instanceId} / ${approvalInstance?.status}${approvalInstance?.currentNode ? ` / ${approvalInstance.currentNode}` : ''}`
                 : missingDetail(),
@@ -7044,17 +7423,17 @@ function appRunEvidenceContractCoverage(app: AppEntry, evidence: AppRunHistoryEn
     const primaryCovered = !primary || covered.has(primary) || (primary === 'document' && covered.has('artifact')) || (primary === 'artifact' && covered.has('document')) || (primary === 'text' && covered.has('content')) || (primary === 'content' && covered.has('text'));
     const missingTypes = explicitMissingTypes.length ? explicitMissingTypes : primaryCovered || !primary ? [] : [primary];
     const evidenceLabel = evidence ? `${evidence.runID || ''} \u00b7  ${evidence.at || ''}`.trim() : '';
-    const coveredLabel = effectiveCoveredTypes.length > 0 ? effectiveCoveredTypes.join(', ') : (zh ? '\u672a\u8bc6\u522b\u7ed3\u679c\u7c7b\u578b' : 'No result type recognized');
+    const coveredLabel = effectiveCoveredTypes.length > 0 ? effectiveCoveredTypes.join(', ') : (localizeText(lang, 'No result type recognized', '\u672a\u8bc6\u522b\u7ed3\u679c\u7c7b\u578b', '\u672a\u8b58\u5225\u7d50\u679c\u578b\u5225'));
     return {
         ok: !!evidence && primaryCovered && missingTypes.length === 0,
         primary,
         coveredTypes: effectiveCoveredTypes,
         missingTypes,
         detail: !evidence
-            ? (zh ? '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21' : 'Run the app once before review')
+            ? (localizeText(lang, 'Run the app once before review', '\u63d0\u4ea4\u5ba1\u6838\u524d\u5efa\u8bae\u5148\u8bd5\u8fd0\u884c\u4e00\u6b21', '\u63d0\u4ea4\u7a3d\u6838\u524d\u5efa\u8b70\u5148\u8a66\u57f7\u884c\u4e00\u6b21'))
             : primaryCovered && missingTypes.length === 0
-                ? `${evidenceLabel}${primary ? ` \u00b7  primary: ${primary}` : ''} \u00b7  ${zh ? '\u8986\u76d6' : 'covered'}: ${coveredLabel}`
-                : `${evidenceLabel} \u00b7  ${zh ? '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6' : 'Run evidence does not cover result contract'}: ${missingTypes.join(', ')}`,
+                ? `${evidenceLabel}${primary ? ` \u00b7  primary: ${primary}` : ''} \u00b7  ${localizeText(lang, 'covered', '\u8986\u76d6', '\u8986\u84cb')}: ${coveredLabel}`
+                : `${evidenceLabel} \u00b7  ${localizeText(lang, 'Run evidence does not cover result contract', '\u8fd0\u884c\u8bc1\u636e\u672a\u8986\u76d6\u7ed3\u679c\u5951\u7ea6', '\u57f7\u884c\u8b49\u64da\u672a\u8986\u84cb\u7d50\u679c\u5951\u7d04')}: ${missingTypes.join(', ')}`,
     };
 }
 function defaultAppWorkflowMapping(kind: AppKind, domain = 'business', objectRole = 'record'): AppWorkflowMapping | undefined {
@@ -7378,15 +7757,14 @@ function buildAppTileTooltip(app: AppEntry, text: typeof labels.zh, statusLabel:
     return [
         app.name,
         app.description,
-        [appKinds[app.kind][isZh(lang) ? 'zh' : 'en'], sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'], panelStatus].filter(Boolean).join(' \u00b7 '),
+        [appKindLabel(app.kind, lang), sourceLabelText(app.source, lang), panelStatus].filter(Boolean).join(' \u00b7 '),
         `${text.appStatus}: ${statusLabel}`,
         `${text.recentUsed}: ${recent || text.neverUsed}`,
     ].filter(Boolean).join('\n');
 }
 
 function buildAppTileAriaLabel(app: AppEntry, text: typeof labels.zh, statusLabel: string, lang?: string) {
-    const locale = isZh(lang) ? 'zh' : 'en';
-    return [app.name, appKinds[app.kind][locale], sourceLabels[app.source][locale], appPanelStatusLabel(app, lang), `${text.appStatus}: ${statusLabel}`].filter(Boolean).join(', ');
+    return [app.name, appKindLabel(app.kind, lang), sourceLabelText(app.source, lang), appPanelStatusLabel(app, lang), `${text.appStatus}: ${statusLabel}`].filter(Boolean).join(', ');
 }
 
 function buildAppSearchText(app: AppEntry, lang?: string) {
@@ -7398,9 +7776,9 @@ function buildAppSearchText(app: AppEntry, lang?: string) {
         app.name,
         app.description,
         app.category,
-        appKinds[app.kind][isZh(lang) ? 'zh' : 'en'],
+        appKindLabel(app.kind, lang),
         app.kind,
-        sourceLabels[app.source][isZh(lang) ? 'zh' : 'en'],
+        sourceLabelText(app.source, lang),
         app.source,
         appPanelStatusLabel(app, lang),
         manifest?.launchMode,
@@ -7579,9 +7957,11 @@ const AppIcon = ({ icon, customIconDataUrl }: { icon: AppIconName; customIconDat
 };
 
 const isZh = (lang?: string) => !lang || lang.startsWith('zh');
+const isZhHant = (lang?: string) => normalizeLang(lang) === 'zh-Hant';
+const locale3 = (lang?: string): 'zh' | 'en' | 'hant' => isZhHant(lang) ? 'hant' : isZh(lang) ? 'zh' : 'en';
 
 export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPageProps) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [apps, setApps] = useState(() => applyLayoutState(initialApps, readLayoutState()));
     const [query, setQuery] = useState('');
     const [category, setCategory] = useState('all');
@@ -8155,7 +8535,7 @@ export const AppsPage = ({ lang, onOpenMISDataSettings, onOpenManual }: AppsPage
                                 style={{ marginLeft: 12 }}
                                 onClick={() => setWorkspaceLaunchHint('')}
                             >
-                                {isZh(lang) ? '鍏抽棴' : 'Dismiss'}
+                                {isZh(lang) ? '关闭' : 'Dismiss'}
                             </button>
                         </div>
                     )}
@@ -8255,7 +8635,7 @@ const AppRuntime = ({ tabs, activeApp, lang, onActivate, onClose, onUse, onOpenA
     onOpenApprovalManager: (appId?: string) => void;
     onActiveRunChange: () => void;
 }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     if (tabs.length === 0) {
         return <EmptyRuntime text={text} />;
     }
@@ -9082,7 +9462,7 @@ const BusinessWorkspace = ({ app, runState, businessEntity, businessAction, busi
     );
 };
 const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange }: { app?: AppEntry; lang?: string; onUse?: (appId: string) => void; onOpenApprovalManager?: (appId?: string) => void; onActiveRunChange?: () => void }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [fileName, setFileName] = useState('');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -9551,14 +9931,14 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                 if (result?.durable_history_error) {
                                     setValidationMessage((current) => {
                                         const detail = String(result.durable_history_error);
-                                        const prefix = isZh(lang) ? 'Skill 璇佹嵁宸插啓鍏ワ紝浣嗘湰鏈鸿繍琛屽巻鍙叉寔涔呭寲澶辫触' : 'Skill evidence saved, but durable run history failed';
+                                        const prefix = isZh(lang) ? 'Skill 证据已写入，但本机运行历史持久化失败' : 'Skill evidence saved, but durable run history failed';
                                         return current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`;
                                     });
                                 }
                             })
                             .catch((error: any) => {
                                 const detail = String(error?.message || error || '');
-                                const prefix = isZh(lang) ? '鍐欏叆 Skill 杩愯璇佹嵁澶辫触' : 'Failed to record skill run evidence';
+                                const prefix = isZh(lang) ? '写入 Skill 运行证据失败' : 'Failed to record skill run evidence';
                                 setValidationMessage((current) => current ? `${current} \u00b7 ${prefix}: ${detail}` : `${prefix}: ${detail}`);
                             });
                     }
@@ -9680,7 +10060,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             try {
                 const packageJSON = JSON.stringify(appToManifest(app));
                 let dependencyPlan: BackendAppInstallPlan | null = runtimeDependencyPlan || activeRunDependencyPlanRef.current || null;
-                // Reuse open-time health/plan when already ready 鈥?avoid a second full Plan/Health round-trip.
+                // Reuse open-time health/plan when already ready — avoid a second full Plan/Health round-trip.
                 const canReuseReadyPlan = runtimeDependencyCheckState === 'ready'
                     && !!dependencyPlan
                     && !runtimeInstallPlanBlocked(dependencyPlan, app);
@@ -9691,7 +10071,9 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                         dependencyPlan = (health?.plan || null) as BackendAppInstallPlan | null;
                         setRuntimeDependencyPlan(dependencyPlan);
                         activeRunDependencyPlanRef.current = dependencyPlan;
-                        if (health?.blocked || runtimeInstallPlanBlocked(dependencyPlan, app)) {
+                        // health.blocked is plan-wide: a dependency blocking another app must not
+                        // block this run. Trust it only when no plan is available to scope against.
+                        if (runtimeInstallPlanBlocked(dependencyPlan, app) || (!!health?.blocked && !dependencyPlan)) {
                             // If health says blocked only because deps are installable, fall through to auto-install.
                             const canAutoInstall = (dependencyPlan?.dependencies || []).some((dep: any) => {
                                 const appIDs = appDependencyVerificationAppIDs(app);
@@ -9917,12 +10299,12 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 title: `${businessEntity || app.category} \u00b7 ${businessAction || 'create'}`,
                 lane: 'my_requests',
                 status: 'pending',
-                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '缁忕悊瀹℃壒' : 'Manager approval'),
+                current_node: workflowMapping?.approvalNode || (isZh(lang) ? '经理审批' : 'Manager approval'),
                 current_node_ids: [workflowMapping?.approvalNode || workflowSkillID].filter(Boolean) as string[],
-                owner: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
-                applicant: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
+                owner: isZh(lang) ? '当前用户' : 'Current user',
+                applicant: isZh(lang) ? '当前用户' : 'Current user',
                 approver: String(approvalObjectRole || '').trim() || (isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver'),
-                submitted_by: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
+                submitted_by: isZh(lang) ? '当前用户' : 'Current user',
                 current_assignee: isZh(lang) ? '\u5ba1\u6279\u4eba' : 'Approver',
                 current_assignee_type: 'user',
                 result: isZh(lang) ? '\u5f85\u5ba1\u6279' : 'Pending approval',
@@ -9945,7 +10327,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 detail_url: '',
                 events: [{
                     at: now,
-                    actor: isZh(lang) ? '褰撳墠鐢ㄦ埛' : 'Current user',
+                    actor: isZh(lang) ? '当前用户' : 'Current user',
                     node: workflowMapping?.submitNode,
                     action: isZh(lang) ? '\u5df2\u63d0\u4ea4' : 'Submitted',
                     note: businessNote,
@@ -10120,7 +10502,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
             setBusinessResult(null);
             setCurrentRunContext({ inputSummary, outputMode: 'business' });
             try {
-                // Open right-pane AppView workspace (DataSrv 鈫?table/result_browser) while
+                // Open right-pane AppView workspace (DataSrv → table/result_browser) while
                 // still returning the same business operation result package for AppsPage UI.
                 const openWorkspace = typeof OpenMaclawAppBusinessWorkspace === 'function'
                     ? OpenMaclawAppBusinessWorkspace
@@ -10518,7 +10900,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                 : runtimeVisibleDependencyPlan
                     ? 'ready'
                     : 'idle';
-    const showRunButton = runState === 'idle' && dependencyRepairState !== 'installing';
+    const showRunButton = dependencyRepairState !== 'installing';
     // Keep post-success evidence/persistence warnings visible even when runState is done.
     // Previously validationMessage was only shown for error, so durable/skill evidence
     // write failures were set but never rendered after a successful run.
@@ -10761,7 +11143,7 @@ const AppPreview = ({ app, lang, onUse, onOpenApprovalManager, onActiveRunChange
                                 approvalRunContextRef.current = null;
                             }}>{text.reset}</button>
                             {runState === 'running' && runID && <button className="apps-secondary-button" type="button" onClick={cancelRun}>{text.cancelRun}</button>}
-                            {showRunButton && <button className="apps-primary-button" type="button" onClick={() => runApp()}>{text.run}</button>}
+                            {showRunButton && <button className="apps-primary-button" type="button" disabled={runState === 'running'} onClick={() => runApp()}>{runState === 'done' || runState === 'error' || runState === 'cancelled' ? text.runAgain : text.run}</button>}
                         </div>}
                         {showOutputShell && <AppRunOutput status={skillRunStatus} runState={runState} resultText={resultText} businessResult={businessResult} isTool={isTool} text={text} style={{ order: runtimeOrder.output }} layoutRegion={outputRegion} hidden={!showCompletedOutputRegion} />}
                         {showOutputRegion && (isTool || isBusiness) && (
@@ -10829,7 +11211,7 @@ function dataSrvSummaryItemMatchesApprovalInstance(summary: DataSrvApprovalSumma
 }
 
 const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; lang?: string; initialAppFilter: string }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [lane, setLane] = useState<ApprovalLaneFilter>('all');
     const [query, setQuery] = useState('');
     const [appFilter, setAppFilter] = useState(initialAppFilter || 'all');
@@ -10854,7 +11236,7 @@ const ApprovalManager = ({ apps, lang, initialAppFilter }: { apps: AppEntry[]; l
     const loadInstances = useCallback(async () => {
         setLoadingState('loading');
         try {
-            // Best-effort Hub鈫攍ocal reconcile (also runs inside List鈥ll).
+            // Best-effort Hub→local reconcile (also runs inside List…All).
             try { await ReconcileMaclawAppApprovalProjections(); } catch { /* offline ok */ }
             const records = await ListMaclawAppApprovalInstancesAll('all', 200) as BackendApprovalInstance[];
             const remoteViews = (records || []).map((item) => backendApprovalInstanceToView(item, lang)).filter(Boolean) as ApprovalInstanceView[];
@@ -11287,7 +11669,7 @@ const ApprovalDetail = ({ instance, resultContract, lang, text, onDecision, onSu
 };
 
 const RunHistoryManager = ({ apps, lang }: { apps: AppEntry[]; lang?: string }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [appFilter, setAppFilter] = useState('all');
     const [items, setItems] = useState<AppRunHistoryEntry[]>(() => loadAllAppRunHistory());
     const appNameById = useMemo(() => {
@@ -11361,8 +11743,8 @@ const ApprovalWorkspace = ({ app, runState, businessEntity, businessAction, busi
                         <button className="apps-approval-row" data-state={item.status} data-selected={selected?.id === item.id ? 'true' : 'false'} role="listitem" type="button" key={item.id} onClick={() => setSelectedInstanceId(item.id)} aria-pressed={selected?.id === item.id}>
                             <div>
                                 <strong>{item.title}</strong>
-                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ?  `\u00b7${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} \u00b7 {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
-                                <small>{text.approvalInstanceId}: {item.id} \u00b7 {item.updatedAt}</small>
+                                <span>{text.currentApprovalNode}: {approvalCurrentNodeText(item, lang)}{item.currentNodeStatus ?  `\u00b7${text.currentNodeStatus}: ${item.currentNodeStatus}` : ''} &middot; {text.approvalResult}: {approvalStatusLabel(item.status, lang)}</span>
+                                <small>{text.approvalInstanceId}: {item.id} &middot; {item.updatedAt}</small>
                                 <div className="apps-approval-row__meta"><span>{text.approvalApplicantLabel}: {approvalApplicantText(item)}</span><span>{text.currentAssigneeLabel}: {approvalCurrentAssigneeText(item)}</span><span>{text.statusTransitionLabel}: {approvalStatusTransitionText(item, lang)}</span></div>
                             </div>
                             <em>{approvalStatusLabel(item.status, lang)}</em>
@@ -12935,7 +13317,7 @@ const DependencyVerificationPanel = ({ plan, state, error, selectedAppIDs, text,
             <div className="apps-dependency-verification__head">
                 <strong>{text.dependencyVerification}</strong>
                 <span>{status}</span>
-                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} \u00b7 {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` \u00b7 ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` \u00b7 ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
+                {state === 'ready' && <em>{text.skillDependencies}: {dependencyCount} &middot; {text.missingDependencyCount}: {blockingCount}{hasWorkflowIssue ? ` \u00b7 ${text.workflowContract}: ${workflowIssues.length || 1}` : ''}{hasGovernanceIssue ? ` \u00b7 ${text.reviewIssues}: ${governanceIssues.length || 1}` : ''}</em>}
                 {hasDetailContent && state !== 'loading' && state !== 'repairing' && (
                     <button className="apps-dependency-verification__detail-toggle" type="button" onClick={() => setDetailOpen((prev) => !prev)}>
                         {detailOpen ? text.installErrorHideDetail : text.installErrorShowDetail}
@@ -13077,7 +13459,7 @@ const AppStudio = ({ apps, hiddenApps, lang, tab, setTab, onClose, onTogglePin, 
 	onInstallDependencies: (appId: string) => void;
 	onSyncHubAppGovernance: (summaries: AppPackageSubmissionSummary[]) => void;
 }) => {
-	const text = isZh(lang) ? labels.zh : labels.en;
+	const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [focusPublishAppId, setFocusPublishAppId] = useState('');
     /** Bumps on every post-edit navigation so re-saving the same app re-triggers highlight. */
     const [focusPublishNonce, setFocusPublishNonce] = useState(0);
@@ -13202,7 +13584,7 @@ const dataSrvDiscoveryStatusLabel = (discovery: DataSrvDiscovery, text: typeof l
             discovery.status === 'error' ? text.datasrvError : '-';
 
 const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { discovery: DataSrvDiscovery; lang?: string; onOpenMISDataSettings?: () => void }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const zh = isZh(lang);
     const statusLabel = dataSrvDiscoveryStatusLabel(discovery, text);
     const metrics = [
@@ -13236,7 +13618,7 @@ const DataSrvDiscoverySummary = ({ discovery, lang, onOpenMISDataSettings }: { d
 };
 
 const DataSrvDiscoveryPanel = ({ discovery, apps, lang, onAddApp }: { discovery: DataSrvDiscovery; apps: AppEntry[]; lang?: string; onAddApp: (app: AppEntry) => void }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const installedIds = new Set(apps.map((app) => app.id));
     if (discovery.candidates.length === 0) return null;
     return (
@@ -13567,7 +13949,7 @@ const StudioSkillPicker = ({
             {selectedSummary && (
                 <div className="apps-skill-picker__selected">
                     <strong>{selectedSummary.name}</strong>
-                    <span>{selectedSummary.id} \u00b7 {selectedSummary.sourceLabel}</span>
+                    <span>{selectedSummary.id} &middot; {selectedSummary.sourceLabel}</span>
                 </div>
             )}
             <div className="apps-skill-picker__list" role="listbox" aria-label={label}>
@@ -13616,32 +13998,32 @@ const StudioSkillPicker = ({
 const ResultContractPreview = ({ contract, lang, testId }: { contract: AppResultContract; lang?: string; testId?: string }) => {
     const zh = isZh(lang);
     const deliveryItems = [
-        { id: 'inlineContent', label: zh ? '\u5185\u5bb9' : 'Content', enabled: contract.delivery.inlineContent },
-        { id: 'artifacts', label: zh ? '\u6587\u4ef6' : 'Files', enabled: contract.delivery.artifacts },
-        { id: 'businessRecord', label: zh ? '\u4e1a\u52a1\u8bb0\u5f55' : 'Business record', enabled: contract.delivery.businessRecord },
-        { id: 'notifications', label: zh ? '\u901a\u77e5' : 'Notifications', enabled: contract.delivery.notifications },
+        { id: 'inlineContent', label: localizeText(lang, 'Content', '\u5185\u5bb9', '\u5167\u5bb9'), enabled: contract.delivery.inlineContent },
+        { id: 'artifacts', label: localizeText(lang, 'Files', '\u6587\u4ef6', '\u6a94\u6848'), enabled: contract.delivery.artifacts },
+        { id: 'businessRecord', label: localizeText(lang, 'Business record', '\u4e1a\u52a1\u8bb0\u5f55', '\u696d\u52d9\u8a18\u9304'), enabled: contract.delivery.businessRecord },
+        { id: 'notifications', label: localizeText(lang, 'Notifications', '\u901a\u77e5', '\u901a\u77e5'), enabled: contract.delivery.notifications },
     ];
     return (
-        <section className="apps-result-contract" aria-label={zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract'} data-testid={testId}>
+        <section className="apps-result-contract" aria-label={localizeText(lang, 'Result contract', '\u7ed3\u679c\u5951\u7ea6', '\u7d50\u679c\u5951\u7d04')} data-testid={testId}>
             <div className="apps-preview-title-row">
-                <div className="apps-definition__title">{zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract'}</div>
+                <div className="apps-definition__title">{localizeText(lang, 'Result contract', '\u7ed3\u679c\u5951\u7ea6', '\u7d50\u679c\u5951\u7d04')}</div>
                 <span className="apps-count">maclaw.app.result.v1</span>
             </div>
             <div className="apps-result-contract__summary">
-                <span>{zh ? '\u4e3b\u7ed3\u679c' : 'Primary'}</span>
+                <span>{localizeText(lang, 'Primary', '\u4e3b\u7ed3\u679c', '\u4e3b\u7d50\u679c')}</span>
                 <strong title={contract.primary}>{appContractTypeLabel(contract.primary, lang)}</strong>
             </div>
-            <div className="apps-result-contract__chips" aria-label={zh ? '\u7ed3\u679c\u7c7b\u578b' : 'Result types'}>
+            <div className="apps-result-contract__chips" aria-label={localizeText(lang, 'Result types', '\u7ed3\u679c\u7c7b\u578b', '\u7d50\u679c\u578b\u5225')}>
                 {contract.types.map((type) => <span key={type} title={type}>{appContractTypeLabel(type, lang)}</span>)}
             </div>
-            <div className="apps-result-contract__delivery" aria-label={zh ? '\u4ea4\u4ed8\u65b9\u5f0f' : 'Delivery'}>
+            <div className="apps-result-contract__delivery" aria-label={localizeText(lang, 'Delivery', '\u4ea4\u4ed8\u65b9\u5f0f', '\u4ea4\u4ed8\u65b9\u5f0f')}>
                 {deliveryItems.map((item) => (
                     <span key={item.id} data-enabled={item.enabled ? 'true' : 'false'}>{item.label}</span>
                 ))}
             </div>
             {contract.approvalDecisions?.length ? (
                 <div className="apps-result-contract__decisions">
-                    <span>{zh ? '\u5ba1\u6279\u7ed3\u679c' : 'Approval decisions'}</span>
+                    <span>{localizeText(lang, 'Approval decisions', '\u5ba1\u6279\u7ed3\u679c', '\u5be9\u6279\u7d50\u679c')}</span>
                     <small>{contract.approvalDecisions.join(' / ')}</small>
                 </div>
             ) : null}
@@ -13651,24 +14033,24 @@ const ResultContractPreview = ({ contract, lang, testId }: { contract: AppResult
 const ResultContractDesigner = ({ contract, onChange, lang, testIdPrefix = 'studio' }: { contract: AppResultContract; onChange: (contract: AppResultContract) => void; lang?: string; testIdPrefix?: string }) => {
     const zh = isZh(lang);
     const deliveryItems = [
-        { id: 'inlineContent', label: zh ? '\u5185\u5bb9' : 'Content' },
-        { id: 'artifacts', label: zh ? '\u6587\u4ef6' : 'Files' },
-        { id: 'businessRecord', label: zh ? '\u4e1a\u52a1\u8bb0\u5f55' : 'Business record' },
-        { id: 'notifications', label: zh ? '\u901a\u77e5' : 'Notifications' },
+        { id: 'inlineContent', label: localizeText(lang, 'Content', '\u5185\u5bb9', '\u5167\u5bb9') },
+        { id: 'artifacts', label: localizeText(lang, 'Files', '\u6587\u4ef6', '\u6a94\u6848') },
+        { id: 'businessRecord', label: localizeText(lang, 'Business record', '\u4e1a\u52a1\u8bb0\u5f55', '\u696d\u52d9\u8a18\u9304') },
+        { id: 'notifications', label: localizeText(lang, 'Notifications', '\u901a\u77e5', '\u901a\u77e5') },
     ] as const;
     const updateDelivery = (id: typeof deliveryItems[number]['id'], enabled: boolean) => onChange({ ...contract, delivery: { ...contract.delivery, [id]: enabled } });
     const typeOptions = contract.types.length ? contract.types : [contract.primary];
     return (
-        <section className="apps-result-contract-designer" aria-label={zh ? '\u7ed3\u679c\u5951\u7ea6\u8bbe\u8ba1' : 'Result contract designer'}>
+        <section className="apps-result-contract-designer" aria-label={localizeText(lang, 'Result contract designer', '\u7ed3\u679c\u5951\u7ea6\u8bbe\u8ba1', '\u7d50\u679c\u5951\u7d04\u8a2d\u8a08')}>
             <ResultContractPreview contract={contract} lang={lang} testId={testIdPrefix + '-result-contract'} />
             <div className="apps-result-contract-designer__controls">
                 <div className="apps-form-row">
-                    <label>{zh ? '\u4e3b\u7ed3\u679c' : 'Primary result'}</label>
+                    <label>{localizeText(lang, 'Primary result', '\u4e3b\u7ed3\u679c', '\u4e3b\u7d50\u679c')}</label>
                     <select data-testid={testIdPrefix + '-result-primary'} value={contract.primary} onChange={(event) => onChange({ ...contract, primary: event.target.value })}>
                         {typeOptions.map((type) => <option value={type} key={type}>{appContractTypeLabel(type, lang)}</option>)}
                     </select>
                 </div>
-                <div className="apps-result-contract-designer__delivery" aria-label={zh ? '\u4ea4\u4ed8\u65b9\u5f0f' : 'Delivery channels'}>
+                <div className="apps-result-contract-designer__delivery" aria-label={localizeText(lang, 'Delivery channels', '\u4ea4\u4ed8\u65b9\u5f0f', '\u4ea4\u4ed8\u65b9\u5f0f')}>
                     {deliveryItems.map((item) => (
                         <label key={item.id}>
                             <input data-testid={testIdPrefix + '-result-delivery-' + item.id} type="checkbox" checked={!!contract.delivery[item.id]} onChange={(event) => updateDelivery(item.id, event.target.checked)} />
@@ -13700,61 +14082,61 @@ const TestProtocolDesigner = ({ protocol, onChange, lang, testIdPrefix = 'studio
     const workflowDecisionOutputs = protocol.workflowDecisionOutputs || [];
     const workflowRequiredOutputs = protocol.workflowRequiredOutputs || [];
     return (
-        <section className="apps-test-protocol" aria-label={zh ? '\u53ef\u590d\u73b0\u6d4b\u8bd5\u534f\u8bae' : 'Reproducible test protocol'} data-testid={testIdPrefix + '-test-protocol'}>
+        <section className="apps-test-protocol" aria-label={localizeText(lang, 'Reproducible test protocol', '\u53ef\u590d\u73b0\u6d4b\u8bd5\u534f\u8bae', '\u53ef\u5fa9\u73fe\u6e2c\u8a66\u5354\u8b70')} data-testid={testIdPrefix + '-test-protocol'}>
             <div className="apps-preview-title-row">
-                <div className="apps-definition__title">{zh ? '\u53ef\u590d\u73b0\u6d4b\u8bd5\u534f\u8bae' : 'Reproducible test protocol'}</div>
+                <div className="apps-definition__title">{localizeText(lang, 'Reproducible test protocol', '\u53ef\u590d\u73b0\u6d4b\u8bd5\u534f\u8bae', '\u53ef\u5fa9\u73fe\u6e2c\u8a66\u5354\u8b70')}</div>
                 <span className="apps-count">maclaw.app.test_protocol.v1</span>
             </div>
             <div className="apps-test-protocol__summary">
-                <span>{zh ? '\u6307\u7eb9' : 'Fingerprint'}</span>
+                <span>{localizeText(lang, 'Fingerprint', '\u6307\u7eb9', '\u6307\u7d0b')}</span>
                 <code>{fingerprint}</code>
-                <span>{zh ? '\u98ce\u9669' : 'Risk'}</span>
+                <span>{localizeText(lang, 'Risk', '\u98ce\u9669', '\u98a8\u96aa')}</span>
                 <select data-testid={testIdPrefix + '-test-risk'} value={protocol.riskLevel} onChange={(event) => updateRisk(event.target.value)}>
                     {['low', 'medium', 'high', 'critical'].map((level) => <option value={level} key={level}>{level}</option>)}
                 </select>
             </div>
             {isApprovalProtocol && (
-                <div className="apps-test-protocol__workflow" aria-label={zh ? '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8f93\u51fa\u5951\u7ea6' : 'Approval workflow output contract'}>
+                <div className="apps-test-protocol__workflow" aria-label={localizeText(lang, 'Approval workflow output contract', '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8f93\u51fa\u5951\u7ea6', '\u5be9\u6279\u5de5\u4f5c\u6d41\u8f38\u51fa\u5951\u7d04')}>
                     <div className="apps-test-protocol__workflow-head">
-                        <strong>{zh ? '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8f93\u51fa\u5951\u7ea6' : 'Approval workflow output contract'}</strong>
-                        <span>{zh ? 'Hub \u8bc4\u5ba1\u95e8\u7981' : 'Hub review gate'}</span>
+                        <strong>{localizeText(lang, 'Approval workflow output contract', '\u5ba1\u6279\u5de5\u4f5c\u6d41\u8f93\u51fa\u5951\u7ea6', '\u5be9\u6279\u5de5\u4f5c\u6d41\u8f38\u51fa\u5951\u7d04')}</strong>
+                        <span>{localizeText(lang, 'Hub review gate', 'Hub \u8bc4\u5ba1\u95e8\u7981', 'Hub \u8a55\u5be9\u9580\u7981')}</span>
                     </div>
                     <div className="apps-test-protocol__workflow-grid">
                         <div className="apps-form-row">
-                            <label>{zh ? '\u5fc5\u586b\u8f93\u5165' : 'Required inputs'}</label>
+                            <label>{localizeText(lang, 'Required inputs', '\u5fc5\u586b\u8f93\u5165', '\u5fc5\u586b\u8f38\u5165')}</label>
                             <input data-testid={testIdPrefix + '-test-workflow-required-inputs'} value={workflowRequiredInputs.join(', ')} onChange={(event) => updateList('workflowRequiredInputs', event.target.value)} />
                         </div>
                         <div className="apps-form-row">
-                            <label>{zh ? '\u51b3\u7b56\u8f93\u51fa' : 'Decision outputs'}</label>
+                            <label>{localizeText(lang, 'Decision outputs', '\u51b3\u7b56\u8f93\u51fa', '\u6c7a\u7b56\u8f38\u51fa')}</label>
                             <input data-testid={testIdPrefix + '-test-workflow-decision-outputs'} value={workflowDecisionOutputs.join(', ')} onChange={(event) => updateList('workflowDecisionOutputs', event.target.value)} />
                         </div>
                         <div className="apps-form-row apps-form-row--wide">
-                            <label>{zh ? '\u5fc5\u586b\u7ed3\u679c\u5b57\u6bb5' : 'Required result fields'}</label>
+                            <label>{localizeText(lang, 'Required result fields', '\u5fc5\u586b\u7ed3\u679c\u5b57\u6bb5', '\u5fc5\u586b\u7d50\u679c\u6b04\u4f4d')}</label>
                             <input data-testid={testIdPrefix + '-test-workflow-required-outputs'} value={workflowRequiredOutputs.join(', ')} onChange={(event) => updateList('workflowRequiredOutputs', event.target.value)} />
                         </div>
                     </div>
-                    <div className="apps-test-protocol__workflow-chips" aria-label={zh ? '\u5fc5\u586b\u7ed3\u679c\u5b57\u6bb5' : 'Required result fields'}>
+                    <div className="apps-test-protocol__workflow-chips" aria-label={localizeText(lang, 'Required result fields', '\u5fc5\u586b\u7ed3\u679c\u5b57\u6bb5', '\u5fc5\u586b\u7d50\u679c\u6b04\u4f4d')}>
                         {workflowRequiredOutputs.map((item, index) => <span data-testid={testIdPrefix + '-test-workflow-required-output-' + index} key={item + '-' + index}>{item}</span>)}
                     </div>
                 </div>
             )}
             <div className="apps-test-protocol__grid">
                 <div className="apps-form-row apps-form-row--description">
-                    <label>{zh ? '\u793a\u4f8b\u8f93\u5165' : 'Sample input'}</label>
+                    <label>{localizeText(lang, 'Sample input', '\u793a\u4f8b\u8f93\u5165', '\u793a\u4f8b\u8f38\u5165')}</label>
                     <textarea data-testid={testIdPrefix + '-test-sample-input'} value={sampleInputText} onChange={(event) => updateJson('sampleInput', event.target.value)} />
                 </div>
                 <div className="apps-form-row apps-form-row--description">
-                    <label>{zh ? '\u9884\u671f\u8f93\u51fa' : 'Expected output'}</label>
+                    <label>{localizeText(lang, 'Expected output', '\u9884\u671f\u8f93\u51fa', '\u9810\u671f\u8f38\u51fa')}</label>
                     <textarea data-testid={testIdPrefix + '-test-expected-output'} value={expectedOutputText} onChange={(event) => updateJson('expectedOutput', event.target.value)} />
                 </div>
             </div>
             <div className="apps-test-protocol__grid apps-test-protocol__grid--compact">
                 <div className="apps-form-row">
-                    <label>{zh ? '\u89d2\u8272' : 'Roles'}</label>
+                    <label>{localizeText(lang, 'Roles', '\u89d2\u8272', '\u89d2\u8272')}</label>
                     <input data-testid={testIdPrefix + '-test-roles'} value={protocol.requiredRoles.join(', ')} onChange={(event) => updateList('requiredRoles', event.target.value)} />
                 </div>
                 <div className="apps-form-row">
-                    <label>{zh ? '\u6743\u9650\u8303\u56f4' : 'Scopes'}</label>
+                    <label>{localizeText(lang, 'Scopes', '\u6743\u9650\u8303\u56f4', '\u8a31\u53ef\u6b0a\u7bc4\u570d')}</label>
                     <input data-testid={testIdPrefix + '-test-scopes'} value={protocol.requiredScopes.join(', ')} onChange={(event) => updateList('requiredScopes', event.target.value)} />
                 </div>
             </div>
@@ -13767,12 +14149,12 @@ const StringListDesigner = ({ title, items, onChange, lang, testIdPrefix }: { ti
     const remove = (index: number) => onChange(items.filter((_, itemIndex) => itemIndex !== index));
     return (
         <div className="apps-ui-list-designer" aria-label={title}>
-            <div className="apps-preview-title-row"><div className="apps-definition__title">{title}</div><button className="apps-secondary-button" type="button" onClick={() => onChange([...items, ''])}>{zh ? '\u6dfb\u52a0' : 'Add'}</button></div>
+            <div className="apps-preview-title-row"><div className="apps-definition__title">{title}</div><button className="apps-secondary-button" type="button" onClick={() => onChange([...items, ''])}>{localizeText(lang, 'Add', '\u6dfb\u52a0', '\u65b0\u589e')}</button></div>
             <div className="apps-ui-list-designer__items">
                 {items.map((item, index) => (
                     <div className="apps-ui-list-designer__item" key={`${testIdPrefix}-${index}`}>
-                        <input data-testid={`${testIdPrefix}-${index}`} value={item} onChange={(event) => update(index, event.target.value)} placeholder={zh ? '\u8f93\u5165 key' : 'Enter key'} />
-                        <button className="apps-secondary-button" type="button" onClick={() => remove(index)}>{zh ? '\u5220\u9664' : 'Remove'}</button>
+                        <input data-testid={`${testIdPrefix}-${index}`} value={item} onChange={(event) => update(index, event.target.value)} placeholder={localizeText(lang, 'Enter key', '\u8f93\u5165 key', '\u8f38\u5165 key')} />
+                        <button className="apps-secondary-button" type="button" onClick={() => remove(index)}>{localizeText(lang, 'Remove', '\u5220\u9664', '\u522a\u9664')}</button>
                     </div>
                 ))}
             </div>
@@ -13783,11 +14165,11 @@ const StringListDesigner = ({ title, items, onChange, lang, testIdPrefix }: { ti
 const EnterpriseUIConfigDesigner = ({ kind, navigation, columns, onNavigationChange, onColumnsChange, lang, testIdPrefix = 'studio' }: { kind: AppKind; navigation: string[]; columns: string[]; onNavigationChange: (items: string[]) => void; onColumnsChange: (items: string[]) => void; lang?: string; testIdPrefix?: string }) => {
     const zh = isZh(lang);
     return (
-        <section className="apps-enterprise-ui-designer" aria-label={zh ? '\u4f01\u4e1a\u754c\u9762\u914d\u7f6e' : 'Enterprise UI configuration'}>
-            <div className="apps-preview-title-row"><div className="apps-definition__title">{zh ? '\u5bfc\u822a\u548c\u5217' : 'Navigation and columns'}</div><span className="apps-count">{workspaceEntryForKind(kind)}</span></div>
+        <section className="apps-enterprise-ui-designer" aria-label={localizeText(lang, 'Enterprise UI configuration', '\u4f01\u4e1a\u754c\u9762\u914d\u7f6e', '\u4f01\u696d\u4ecb\u9762\u914d\u7f6e')}>
+            <div className="apps-preview-title-row"><div className="apps-definition__title">{localizeText(lang, 'Navigation and columns', '\u5bfc\u822a\u548c\u5217', '\u5c0e\u822a\u548c\u5217')}</div><span className="apps-count">{workspaceEntryForKind(kind)}</span></div>
             <div className="apps-enterprise-ui-designer__grid">
-                <StringListDesigner title={zh ? '\u5bfc\u822a' : 'Navigation'} items={navigation} onChange={onNavigationChange} lang={lang} testIdPrefix={testIdPrefix + '-ui-navigation'} />
-                <StringListDesigner title={zh ? '\u5217' : 'Columns'} items={columns} onChange={onColumnsChange} lang={lang} testIdPrefix={testIdPrefix + '-ui-column'} />
+                <StringListDesigner title={localizeText(lang, 'Navigation', '\u5bfc\u822a', '\u5c0e\u822a')} items={navigation} onChange={onNavigationChange} lang={lang} testIdPrefix={testIdPrefix + '-ui-navigation'} />
+                <StringListDesigner title={localizeText(lang, 'Columns', '\u5217', '\u5217')} items={columns} onChange={onColumnsChange} lang={lang} testIdPrefix={testIdPrefix + '-ui-column'} />
             </div>
         </section>
     );
@@ -13797,25 +14179,25 @@ const WorkflowMappingDesigner = ({ value, onChange, lang, testIdPrefix = 'studio
     const update = (patch: Partial<AppWorkflowMapping>) => onChange(normalizeAppWorkflowMapping({ ...value, ...patch }, 'enterprise_approval_app') || value);
     const updateStatus = (key: keyof AppWorkflowMapping['statusMapping'], nextValue: string) => update({ statusMapping: { ...value.statusMapping, [key]: nextValue } });
     const nodeItems = [
-        { id: 'submitNode', label: zh ? '\u53d1\u8d77\u8282\u70b9' : 'Submit node', value: value.submitNode },
-        { id: 'approvalNode', label: zh ? '\u5ba1\u6279\u8282\u70b9' : 'Approval node', value: value.approvalNode },
-        { id: 'resultNode', label: zh ? '\u7ed3\u679c\u8282\u70b9' : 'Result node', value: value.resultNode },
-        { id: 'attentionNode', label: zh ? '\u9700\u5173\u6ce8\u8282\u70b9' : 'Attention node', value: value.attentionNode || '' },
+        { id: 'submitNode', label: localizeText(lang, 'Submit node', '\u53d1\u8d77\u8282\u70b9', '\u767c\u8d77\u7bc0\u9ede'), value: value.submitNode },
+        { id: 'approvalNode', label: localizeText(lang, 'Approval node', '\u5ba1\u6279\u8282\u70b9', '\u5be9\u6279\u7bc0\u9ede'), value: value.approvalNode },
+        { id: 'resultNode', label: localizeText(lang, 'Result node', '\u7ed3\u679c\u8282\u70b9', '\u7d50\u679c\u7bc0\u9ede'), value: value.resultNode },
+        { id: 'attentionNode', label: localizeText(lang, 'Attention node', '\u9700\u5173\u6ce8\u8282\u70b9', '\u9700\u95dc\u6ce8\u7bc0\u9ede'), value: value.attentionNode || '' },
     ] as const;
     const statusItems = [
-        { id: 'pending', label: zh ? '\u5ba1\u6279\u4e2d' : 'Pending', value: value.statusMapping.pending },
-        { id: 'approved', label: zh ? '\u901a\u8fc7' : 'Approved', value: value.statusMapping.approved },
-        { id: 'rejected', label: zh ? '\u9a73\u56de' : 'Rejected', value: value.statusMapping.rejected },
-        { id: 'attention', label: zh ? '\u9700\u5173\u6ce8' : 'Attention', value: value.statusMapping.attention },
-        { id: 'requiresInput', label: zh ? '\u9700\u8865\u5145' : 'Needs input', value: value.statusMapping.requiresInput || '' },
+        { id: 'pending', label: localizeText(lang, 'Pending', '\u5ba1\u6279\u4e2d', '\u5be9\u6279\u4e2d'), value: value.statusMapping.pending },
+        { id: 'approved', label: localizeText(lang, 'Approved', '\u901a\u8fc7', '\u900f\u904e'), value: value.statusMapping.approved },
+        { id: 'rejected', label: localizeText(lang, 'Rejected', '\u9a73\u56de', '\u99c1\u56de'), value: value.statusMapping.rejected },
+        { id: 'attention', label: localizeText(lang, 'Attention', '\u9700\u5173\u6ce8', '\u9700\u95dc\u6ce8'), value: value.statusMapping.attention },
+        { id: 'requiresInput', label: localizeText(lang, 'Needs input', '\u9700\u8865\u5145', '\u9700\u88dc\u5145'), value: value.statusMapping.requiresInput || '' },
     ] as const;
     return (
-        <section className="apps-workflow-mapping" aria-label={zh ? '\u5de5\u4f5c\u6d41\u8282\u70b9\u6620\u5c04' : 'Workflow node mapping'} data-testid={`${testIdPrefix}-workflow-mapping`}>
+        <section className="apps-workflow-mapping" aria-label={localizeText(lang, 'Workflow node mapping', '\u5de5\u4f5c\u6d41\u8282\u70b9\u6620\u5c04', '\u5de5\u4f5c\u6d41\u7bc0\u9ede\u5c0d\u6620')} data-testid={`${testIdPrefix}-workflow-mapping`}>
             <div className="apps-preview-title-row">
-                <div className="apps-definition__title">{zh ? '\u5de5\u4f5c\u6d41\u8282\u70b9\u6620\u5c04' : 'Workflow node mapping'}</div>
+                <div className="apps-definition__title">{localizeText(lang, 'Workflow node mapping', '\u5de5\u4f5c\u6d41\u8282\u70b9\u6620\u5c04', '\u5de5\u4f5c\u6d41\u7bc0\u9ede\u5c0d\u6620')}</div>
                 <span className="apps-count">maclaw.app.workflow.v1</span>
             </div>
-            <div className="apps-workflow-mapping__flow" aria-label={zh ? '\u8282\u70b9\u6d41\u8f6c' : 'Node flow'}>
+            <div className="apps-workflow-mapping__flow" aria-label={localizeText(lang, 'Node flow', '\u8282\u70b9\u6d41\u8f6c', '\u7bc0\u9ede\u6d41\u8f49')}>
                 <span>{value.submitNode}</span>
                 <span>{value.approvalNode}</span>
                 <span>{value.resultNode}</span>
@@ -13880,7 +14262,7 @@ const AppAboutInfoFields = ({ text, value, onChange, testIdPrefix }: { text: App
 };
 
 const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app: AppEntry, options?: { keepStudioCreate?: boolean }) => void }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const zh = isZh(lang);
     const [name, setName] = useState('');
     const [category, setCategory] = useState(zh ? '\u6587\u6863\u5904\u7406' : 'Document');
@@ -13904,7 +14286,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const [skillAppSaveState, setSkillAppSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
     const [skillAppSaveMessage, setSkillAppSaveMessage] = useState('');
     const [skillMarketUploadState, setSkillMarketUploadState] = useState<'idle' | 'uploading' | 'uploaded' | 'error'>('idle');
-    const [manifestPreviewOpen, setManifestPreviewOpen] = useState(true);
+    const [manifestPreviewOpen, setManifestPreviewOpen] = useState(false);
     const [layoutTemplate, setLayoutTemplate] = useState<StudioLayoutTemplate>('document_workspace');
     const [layoutDensity, setLayoutDensity] = useState<StudioLayoutDensity>('comfortable');
     const [primaryRegion, setPrimaryRegion] = useState<StudioPrimaryRegion>('left');
@@ -14154,25 +14536,25 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
     const studioKindOptions: Array<{ id: AppKind; title: string; short: string; description: string }> = [
         {
             id: 'enterprise_approval_app',
-            title: appKinds.enterprise_approval_app[zh ? 'zh' : 'en'],
+            title: appKindLabel('enterprise_approval_app', lang),
             short: zh ? '\u542b\u5ba1\u6279\u6d41\u7a0b\u548c\u72b6\u6001\u6d41\u8f6c' : 'Approval workflow and status tracking',
             description: zh ? '\u7528\u5bf9\u8bdd\u5b9a\u4e49\u6570\u636e\u5bf9\u8c61\u3001\u89c6\u56fe\u3001\u52a8\u4f5c\u548c\u9875\u9762\uff0c\u7531 Agent \u603b\u7ed3\u6210 App manifest\u3002' : 'Define entities, views, actions, and screens through chat; Agent writes an app manifest.',
         },
         {
             id: 'enterprise_normal_app',
-            title: appKinds.enterprise_normal_app[zh ? 'zh' : 'en'],
+            title: appKindLabel('enterprise_normal_app', lang),
             short: zh ? '\u4f01\u4e1a\u6570\u636e\u548c\u64cd\u4f5c\u5de5\u4f5c\u53f0' : 'Business data and action workspace',
             description: zh ? '\u5c06\u4f01\u4e1a\u540e\u53f0\u6570\u636e\u3001\u64cd\u4f5c\u548c\u67e5\u8be2\u5c01\u88c5\u6210\u53ef\u89c6\u5316\u5de5\u4f5c\u53f0\uff0c\u4e0d\u4ea7\u751f\u5ba1\u6279\u5b9e\u4f8b\u3002' : 'Wrap enterprise backend data, actions, and query views as a visual workbench without approval instances.',
         },
         {
             id: 'tool_app',
-            title: appKinds.tool_app[zh ? 'zh' : 'en'],
+            title: appKindLabel('tool_app', lang),
             short: zh ? 'Skill \u56fa\u5b9a\u4e3a\u4e0a\u4f20\u3001\u53c2\u6570\u548c\u8f93\u51fa\u754c\u9762' : 'Skill UI with upload, parameters, and output',
             description: zh ? '\u628a\u590d\u6742 Skill \u56fa\u5b9a\u6210\u4e0a\u4f20\u3001\u53c2\u6570\u3001\u8f93\u51fa\u7684\u4f4e\u95e8\u69db\u754c\u9762\u3002' : 'Wrap a complex skill as upload, parameters, and output UI.',
         },
         {
             id: 'automation_app',
-            title: appKinds.automation_app[zh ? 'zh' : 'en'],
+            title: appKindLabel('automation_app', lang),
             short: zh ? '\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u5165\u53e3' : 'Long-running sync, collection, and monitor entry',
             description: zh ? '\u628a\u540c\u6b65\u3001\u91c7\u96c6\u3001\u76d1\u63a7\u7b49\u957f\u8fd0\u884c\u80fd\u529b\u56fa\u5b9a\u6210\u5e94\u7528\u5165\u53e3\u3002' : 'Expose sync, collection, and monitoring flows as app entries.',
         },
@@ -14298,6 +14680,8 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
         <>
             <section className="apps-create-form">
                 <div className="apps-definition__title">{zh ? '\u5feb\u901f\u521b\u5efa\u9762\u677f\u5e94\u7528' : 'Quick create panel app'}</div>
+                <details className="apps-create-section" open>
+                    <summary><span className="apps-create-section__title">{zh ? '\u57fa\u672c\u4fe1\u606f' : 'Basic info'}</span></summary>
                 <section className="apps-studio-kind" aria-label={zh ? '\u5e94\u7528\u7c7b\u578b' : 'App type'}>
                     <div className="apps-studio-kind__header">
                         <div>
@@ -14377,6 +14761,10 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     <label>{text.appColor}</label>
                     <AppAccentPicker value={accent} lang={lang} onChange={setAccent} />
                 </div>
+                </details>
+                {(kind === 'tool_app' || isEnterpriseAppKind(kind)) && (
+                    <details className="apps-create-section" open>
+                        <summary><span className="apps-create-section__title">{zh ? '\u80fd\u529b\u914d\u7f6e' : 'Capabilities'}</span></summary>
                 {kind === 'tool_app' && (
                     <>
                         <div className="apps-form-row">
@@ -14548,10 +14936,20 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     </section>
                 )}
                 {isEnterpriseApprovalAppKind(kind) && <WorkflowMappingDesigner value={workflowMapping} onChange={setWorkflowMapping} lang={lang} />}
+                    </details>
+                )}
+                <details className="apps-create-section" open>
+                    <summary><span className="apps-create-section__title">{zh ? '\u754c\u9762\u4e0e\u5e03\u5c40' : 'UI & layout'}</span></summary>
                 {isEnterpriseAppKind(kind) && <EnterpriseUIConfigDesigner kind={kind} navigation={uiNavigation} columns={uiColumns} onNavigationChange={setUiNavigation} onColumnsChange={setUiColumns} lang={lang} testIdPrefix="studio" />}
                 <StudioLayoutDesigner kind={kind} value={studioLayoutValue} onChange={updateStudioLayout} lang={lang} />
+                </details>
+                <details className="apps-create-section" open>
+                    <summary><span className="apps-create-section__title">{zh ? '\u7ed3\u679c\u4e0e\u6d4b\u8bd5' : 'Result & test'}</span></summary>
                 <ResultContractDesigner contract={draftResultContract} onChange={setResultContractDraft} lang={lang} testIdPrefix="studio" />
                 <TestProtocolDesigner protocol={draftTestProtocol} onChange={setTestProtocolDraft} lang={lang} testIdPrefix="studio" kind={kind} />
+                </details>
+                <details className="apps-create-section" open>
+                    <summary><span className="apps-create-section__title">{zh ? '\u63cf\u8ff0\u4e0e\u5173\u4e8e' : 'Description & about'}</span></summary>
                 <div className="apps-form-row apps-form-row--description">
                     <label>{zh ? '\u63cf\u8ff0' : 'Description'}</label>
                     <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={zh ? '\u7528\u4e8e tooltip \u548c\u53f3\u4fa7\u8fd0\u884c\u533a\u8bf4\u660e' : 'Used in tooltip and right runtime area'} />
@@ -14561,6 +14959,7 @@ const CreateAppPane = ({ lang, onCreateApp }: { lang?: string; onCreateApp: (app
                     value={{ author: aboutAuthor, copyright: aboutCopyright, website: aboutWebsite, email: aboutEmail }}
                     onChange={updateAboutInfo}
                 />
+                </details>
                 <div className="apps-actions">
                     {kind === 'tool_app' && canWriteSkillDefinition ? (
                         <>
@@ -14625,7 +15024,7 @@ type PublishCheck = {
 };
 
 function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const zh = isZh(lang);
     const manifest = app.manifest;
     const expectedLaunch = defaultLaunchModeForKind(app.kind);
@@ -14648,23 +15047,23 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
     const hasTestProtocol = appHasPublishableTestProtocol(app);
     return [
         {
-            label: zh ? '\u57fa\u672c\u4fe1\u606f' : 'Basic information',
+            label: localizeText(lang, 'Basic information', '\u57fa\u672c\u4fe1\u606f', '\u57fa\u672c\u8cc7\u8a0a'),
             ok: !!app.id && !!app.name && !!app.category && !!app.icon,
-            detail: zh ? '\u540d\u79f0\u3001\u5206\u7c7b\u3001\u56fe\u6807\u5b8c\u6574' : 'Name, category, and icon are present',
+            detail: localizeText(lang, 'Name, category, and icon are present', '\u540d\u79f0\u3001\u5206\u7c7b\u3001\u56fe\u6807\u5b8c\u6574', '\u540d\u7a31\u3001\u5206\u985e\u3001\u5716\u793a\u5b8c\u6574'),
         },
         {
-            label: zh ? 'Manifest \u7ed3\u6784' : 'Manifest structure',
+            label: localizeText(lang, 'Manifest structure', 'Manifest \u7ed3\u6784', 'Manifest \u7d50\u69cb'),
             ok: !!manifest && manifest.privateMarker === 'x_maclaw_apps' && manifest.entryKind === app.kind && manifest.launchMode === expectedLaunch,
             detail: zh ? `${app.kind} -> ${expectedLaunch}` : `${app.kind} -> ${expectedLaunch}`,
         },
         {
-            label: zh ? '\u7ed1\u5b9a\u80fd\u529b' : 'Capability binding',
+            label: localizeText(lang, 'Capability binding', '\u7ed1\u5b9a\u80fd\u529b', '\u7e6b\u7d50\u80fd\u529b'),
             ok: hasBinding,
             detail: isEnterpriseAppKind(app.kind)
                 ? (manifest?.datasrv?.domain || (zh ? '\u7f3a\u5c11 DataSrv domain' : 'Missing DataSrv domain'))
                 : app.kind === 'tool_app'
                     ? (manifest?.skill?.id || (zh ? '\u7f3a\u5c11 Skill id' : 'Missing Skill id'))
-                    : (zh ? '\u81ea\u52a8\u5316\u63a7\u5236\u53f0' : 'Automation console'),
+                    : (localizeText(lang, 'Automation console', '\u81ea\u52a8\u5316\u63a7\u5236\u53f0', '\u81ea\u52d5\u5316\u63a7\u5236\u6aaf')),
         },
         {
             label: text.skillDependencies,
@@ -14679,25 +15078,25 @@ function buildPublishChecks(app: AppEntry, lang?: string): PublishCheck[] {
         {
             label: text.workflowContract,
             ok: hasWorkflowContract,
-            detail: app.kind === 'enterprise_approval_app' ? appWorkflowContractPublishSummary(app, lang) : (zh ? '\u975e\u5ba1\u6279\u5e94\u7528\u4e0d\u9700\u8981\u5ba1\u6279\u8fd0\u884c\u5951\u7ea6' : 'Not required for non-approval apps'),
+            detail: app.kind === 'enterprise_approval_app' ? appWorkflowContractPublishSummary(app, lang) : (localizeText(lang, 'Not required for non-approval apps', '\u975e\u5ba1\u6279\u5e94\u7528\u4e0d\u9700\u8981\u5ba1\u6279\u8fd0\u884c\u5951\u7ea6', '\u975e\u5be9\u6279\u61c9\u7528\u4e0d\u9700\u8981\u5be9\u6279\u57f7\u884c\u5951\u7d04')),
         },
         {
-            label: zh ? '\u7ed3\u679c\u5951\u7ea6' : 'Result contract',
+            label: localizeText(lang, 'Result contract', '\u7ed3\u679c\u5951\u7ea6', '\u7d50\u679c\u5951\u7d04'),
             ok: appResultContractForManifest(app).types.length > 0,
             detail: appResultContractPublishSummary(app, lang),
         },
         {
-            label: zh ? '\u6d4b\u8bd5\u534f\u8bae' : 'Test protocol',
+            label: localizeText(lang, 'Test protocol', '\u6d4b\u8bd5\u534f\u8bae', '\u6e2c\u8a66\u5354\u8b70'),
             ok: hasTestProtocol,
             detail: appTestProtocolPublishSummary(app, lang),
         },
         {
-            label: zh ? '\u8fd0\u884c\u8bc1\u636e' : 'Run evidence',
+            label: localizeText(lang, 'Run evidence', '\u8fd0\u884c\u8bc1\u636e', '\u57f7\u884c\u8b49\u64da'),
             ok: evidenceFreshness.ok && designConsistency.ok && resultCoverage.ok,
             detail: !evidenceFreshness.ok ? evidenceFreshness.detail : !designConsistency.ok ? designConsistency.detail : resultCoverage.detail,
         },
         {
-            label: zh ? '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e' : 'Approval instance evidence',
+            label: localizeText(lang, 'Approval instance evidence', '\u5ba1\u6279\u5b9e\u4f8b\u8bc1\u636e', '\u5be9\u6279\u5be6\u4f8b\u8b49\u64da'),
             ok: approvalInstanceEvidence.ok,
             detail: approvalInstanceEvidence.detail,
         },
@@ -14717,7 +15116,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
     focusNonce?: number;
     onFocusAppConsumed?: () => void;
 }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const zh = isZh(lang);
     const [submissions, setSubmissions] = useState<Record<string, AppPublishSubmission>>(() => readPublishSubmissions());
     const [submittingAppId, setSubmittingAppId] = useState('');
@@ -15116,9 +15515,9 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                         const submission = submissions[app.id];
                         const submissionStatus = submission ? publishSubmissionStatusLabel(submission, text) : '';
                         // Allow re-publish when content changed, review failed, or remote targets partially failed.
-                        const terminalPublish = submission?.status === 'published'
+                        const terminalPublish = !submission?.modifiedAt && (submission?.status === 'published'
                             || submission?.status === 'revoked'
-                            || submission?.status === 'deprecated';
+                            || submission?.status === 'deprecated');
                         const canResubmit = !terminalPublish && (
                             submission?.status === 'review_failed'
                             || !!submission?.modifiedAt
@@ -15144,7 +15543,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                                     <div>
                                         <strong>{app.name}</strong>
-                                        <span>{app.category} \u00b7 {appKinds[app.kind][zh ? 'zh' : 'en']}</span>
+                                        <span>{app.category} &middot; {appKindLabel(app.kind, lang)}</span>
                                     </div>
                                     <em>{submission ? submissionStatus : ready ? text.readyToSubmit : text.needsWork}</em>
                                 </div>
@@ -15171,9 +15570,10 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                 )}
                                 <div className="apps-publish-checks">
                                     <div className="apps-publish-checks__summary">
-                                        {isZh(lang)
-                                            ? `妫€鏌ラ」锛?{checks.filter(c => c.ok).length}/${checks.length} 閫氳繃`
-                                            : `Checks: ${checks.filter(c => c.ok).length}/${checks.length} passed`}
+                                        {localizeText(lang,
+                                            `Checks: ${checks.filter(c => c.ok).length}/${checks.length} passed`,
+                                            `\u68c0\u67e5\u9879\uff1a${checks.filter(c => c.ok).length}/${checks.length} \u901a\u8fc7`,
+                                            `\u6aa2\u67e5\u9805\uff1a${checks.filter(c => c.ok).length}/${checks.length} \u900f\u904e`)}
                                     </div>
                                     {checks.map((check) => (
                                         <div className="apps-publish-check" data-ok={check.ok ? 'true' : 'false'} key={check.label}>
@@ -15274,7 +15674,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                     <div className="apps-publish-queue__row" key={item.submissionID}>
                                         <div className="apps-publish-queue__body">
                                             <strong>{item.submissionID}</strong>
-                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} \u00b7 {item.channel || 'local'} \u00b7 {item.status || 'submitted'}</span>
+                                            <span>{item.appNames.join(', ') || item.appIDs.join(', ') || '-'} &middot; {item.channel || 'local'} &middot; {item.status || 'submitted'}</span>
                                             <small>
                                                 {item.submittedAt}
                                                 {item.packageSHA ? ` \u00b7 sha256:${item.packageSHA.slice(0, 12)}` : ''}
@@ -15336,7 +15736,7 @@ const PublishPane = ({ apps, lang, onFixApp, onInstallDependencies, onInstallApp
                                             )}
                                             {canInstallApprovedHubApp && (
                                                 <button
-                                                    className="apps-primary-button apps-publish-queue__copy"
+                                                    className={`${canOneClickItem ? 'apps-secondary-button' : 'apps-primary-button'} apps-publish-queue__copy`}
                                                     type="button"
                                                     disabled={queueInstallingId === item.submissionID}
                                                     onClick={() => void installApprovedQueuedApp(item)}
@@ -15431,7 +15831,7 @@ const AppAccentPicker = ({ value, lang, onChange }: { value: string; lang?: stri
 const emptyToolField = (): SkillAppField => ({ name: '', label: '', type: 'text', required: false, default: '', options: [] });
 
 const ToolFieldEditor = ({ fields, lang, onChange }: { fields: SkillAppField[]; lang?: string; onChange: (fields: SkillAppField[]) => void }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const updateField = (index: number, patch: Partial<SkillAppField>) => {
         onChange(fields.map((field, fieldIndex) => fieldIndex === index ? normalizeEditorField({ ...field, ...patch }) : field));
     };
@@ -15554,10 +15954,10 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
     onAddDiscoveredApp: (app: AppEntry) => void;
     pendingEditAppId: string;
     onPendingEditConsumed: () => void;
-    /** After a successful edit save, jump to 瀹℃牳/鍙戝竷 so the user can submit. */
+    /** After a successful edit save, jump to 审核/发布 so the user can submit. */
     onAfterEditSave?: (appId: string) => void;
 }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [manifestAppId, setManifestAppId] = useState('');
     const [editingAppId, setEditingAppId] = useState('');
     const emptyEditDraft = useMemo<AppEditDraft>(() => ({ name: '', description: '', category: '', icon: 'contract', customIconDataUrl: undefined, accent: defaultAccentForKind('tool_app'), aboutInfo: undefined, businessDomain: 'business', businessObjectRole: 'record', businessPreferredAction: '', businessPreferredView: '', businessPreferredReport: '', businessPreferredDashboard: '', skillID: '', skillSource: 'local', appSkillID: '', appSkillSource: 'local', appSkillVersion: '', workflowSkillID: '', workflowSkillSource: 'hub', workflowSkillVersion: '', workflowSkillInstallRef: '', approvalEvent: '', approvalObjectRole: '', workflowMapping: defaultAppWorkflowMapping('enterprise_approval_app') as AppWorkflowMapping, inputMode: 'file', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [], layout: defaultRuntimeWorkspaceLayout('tool_app'), resultContract: buildAppResultContract('tool_app', ['docx', 'pdf']), testProtocol: buildAppTestProtocol('tool_app', ['docx', 'pdf']), uiNavigation: defaultEnterpriseNavigation('tool_app'), uiColumns: defaultEnterpriseColumns('tool_app') }), []);
@@ -15841,7 +16241,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             aboutInfo: updatedApp.aboutInfo,
             version: updatedApp.version,
             manifest: updatedApp.manifest,
-            // Editing in App Studio marks the app as studio-managed so it can enter 瀹℃牳/鍙戝竷.
+            // Editing in App Studio marks the app as studio-managed so it can enter 审核/发布.
             studioOrigin,
             importedRunEvidence: undefined,
             versionSnapshot: undefined,
@@ -15864,7 +16264,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             setEditSaveState('idle');
             setEditSaveMessage('');
             cancelEdit();
-            // Enter 瀹℃牳/鍙戝竷 with this app focused so the user can submit immediately.
+            // Enter 审核/发布 with this app focused so the user can submit immediately.
             onAfterEditSave?.(app.id);
         } catch (error) {
             setEditSaveState('error');
@@ -15925,7 +16325,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
             {skillDiscovery.status === 'error' && (
                 <div className="apps-filter-summary apps-filter-summary--manage" style={{ color: 'var(--error-color, #ef4444)' }}>
                     {isZh(lang) ? '\u68c0\u67e5\u5df2\u5b89\u88c5\u80fd\u529b\u65f6\u9047\u5230\u95ee\u9898' : 'Could not check installed capabilities'}
-                    {skillDiscovery.error && <span> \u00b7 {skillDiscovery.error}</span>}
+                    {skillDiscovery.error && <span> &middot; {skillDiscovery.error}</span>}
                 </div>
             )}
             {manageMatchCount === 0 && <div className="apps-empty">{text.noApps}</div>}
@@ -15939,20 +16339,22 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                     <div className="apps-manage-row">
                         <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                         <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 ${isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}`}>
-                            {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source} \u00b7 {isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}
+                        <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabelText(app.source, lang)} \u00b7 ${isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}`}>
+                            {app.category} &middot; {sourceLabelText(app.source, lang)} &middot; {isZh(lang) ? '\u5df2\u52a0\u5165\u9762\u677f' : 'In panel'}
                         </div>
                         <div className="apps-manage-actions">
+                            <div className="apps-manage-actions__moves">
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveTop} onClick={() => onMoveApp(app.id, "top")}>{text.moveTopShort}</button>
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === 0} title={manageFilterActive ? text.clearFilterToSort : text.moveUp} onClick={() => onMoveApp(app.id, -1)}>{text.moveUpShort}</button>
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveDown} onClick={() => onMoveApp(app.id, 1)}>{text.moveDownShort}</button>
                             <button className="apps-icon-button" type="button" disabled={manageFilterActive || index === apps.length - 1} title={manageFilterActive ? text.clearFilterToSort : text.moveBottom} onClick={() => onMoveApp(app.id, "bottom")}>{text.moveBottomShort}</button>
-                            <button className="apps-secondary-button" type="button" title={text.edit} onClick={() => startEdit(app)}>{text.edit}</button>
+                            </div>
+                            <button className="apps-tonal-button" type="button" title={text.edit} onClick={() => startEdit(app)}>{text.edit}</button>
                             <button className="apps-secondary-button" type="button" title={text.duplicate} onClick={() => onDuplicateApp(app.id)}>{text.copy}</button>
                             <button className="apps-secondary-button" type="button" title={text.manifest} onClick={() => setManifestAppId((current) => current === app.id ? '' : app.id)}>{text.manifest}</button>
                             <button className="apps-secondary-button" type="button" title={app.disabled ? text.enable : text.disable} onClick={() => onToggleDisableApp(app.id)}>{app.disabled ? text.enable : text.disable}</button>
                             <button className="apps-secondary-button" type="button" disabled={pinDisabled} title={pinTitle} onClick={() => onTogglePin(app.id)}>{app.pinned ? text.unpin : text.pin}</button>
-                            <button className="apps-secondary-button" type="button" title={removalLabel} onClick={() => onRemoveApp(app.id)}>{removalLabel}</button>
+                            <button className="apps-danger-button" type="button" title={removalLabel} onClick={() => onRemoveApp(app.id)}>{removalLabel}</button>
                         </div>
                     </div>
                     {manifestAppId === app.id && (
@@ -15979,8 +16381,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div key={app.id} className="apps-manage-row apps-manage-row--hidden">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                            <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}`}>
-                                {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || app.source}
+                            <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabelText(app.source, lang)}`}>
+                                {app.category} &middot; {sourceLabelText(app.source, lang)}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.restore} onClick={() => onRestoreApp(app.id)}>{text.restore}</button>
@@ -15999,8 +16401,8 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div key={app.id} className="apps-manage-row apps-manage-row--not-in-panel">
                             <span className="apps-app-icon" style={{ '--apps-icon-color': app.accent } as CSSProperties}><AppIcon icon={app.icon} customIconDataUrl={app.customIconDataUrl} /></span>
                             <div className="apps-manage-row__name" title={app.name}>{app.name}</div>
-                            <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}`}>
-                                {app.category} \u00b7 {sourceLabels[app.source]?.[isZh(lang) ? 'zh' : 'en'] || 'Skill'}
+                            <div className="apps-manage-row__desc" title={`${app.category} \u00b7 ${sourceLabelText(app.source, lang)}`}>
+                                {app.category} &middot; {sourceLabelText(app.source, lang)}
                             </div>
                             <div className="apps-manage-actions">
                                 <button className="apps-secondary-button" type="button" title={text.addToPanel} onClick={() => onAddDiscoveredApp(app)}>{text.addToPanel}</button>
@@ -16016,7 +16418,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
                         <div className="apps-manage-edit-dialog__header">
                             <div>
                                 <div className="apps-definition__title" id="apps-manage-edit-title">{text.edit}</div>
-                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} \u00b7 {editingApp.category}</div>
+                                <div className="apps-manage-edit-dialog__subtitle">{editingApp.name} &middot; {editingApp.category}</div>
                             </div>
                             <button className="apps-icon-button" type="button" title={text.cancel} aria-label={text.cancel} onClick={cancelEdit}>
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
@@ -16274,7 +16676,7 @@ const ManageAppsPane = ({ apps, hiddenApps, skillDiscovery, lang, onTogglePin, o
 };
 
 const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleChange, onManageApps }: { apps: AppEntry[]; lang?: string; onInstallApp: (app: AppEntry) => void; prefill?: { key: number; manifestText: string }; onInstallResultVisibleChange?: (visible: boolean) => void; onManageApps?: () => void }) => {
-    const text = isZh(lang) ? labels.zh : labels.en;
+    const text = isZh(lang) ? (isZhHant(lang) ? labelsZhHantMerged : labels.zh) : labels.en;
     const [manifestText, setManifestText] = useState('');
     const [installState, setInstallState] = useState<'idle' | 'installed' | 'error'>('idle');
     const [installMessage, setInstallMessage] = useState('');
@@ -16781,7 +17183,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
 	                <div className="apps-preview-title-row">
 	                    <div>
 	                        <div className="apps-definition__title">{text.marketApps}</div>
-	                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount} \u00b7 {text.marketUpgradeableCount} {upgradeableMarketCount}</div>
+	                        <div className="apps-market-list__meta">{text.marketAddableCount} {addableMarketCount}{' · '}{text.marketUpgradeableCount} {upgradeableMarketCount}</div>
 	                    </div>
 	                    {onManageApps && <button className="apps-secondary-button" type="button" onClick={onManageApps}>{text.manageTab}</button>}
 	                </div>
@@ -16815,7 +17217,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-market-row__main">
                                     <strong>{app.name}</strong>
                                     <span>{app.description}</span>
-                                    <small>{app.category} \u00b7 {appKinds[app.kind][isZh(lang) ? 'zh' : 'en']} \u00b7 {app.marketSourceLabel || sourceLabels[app.source][isZh(lang) ? 'zh' : 'en']}</small>
+                                    <small>{app.category} &middot; {appKindLabel(app.kind, lang)} &middot; {app.marketSourceLabel || sourceLabelText(app.source, lang)}</small>
                                     {app.marketReviewEvidence && <PublishReviewEvidenceStrip evidence={app.marketReviewEvidence} text={text} />}
 	                                </div>
 	                                <div className="apps-actions">
@@ -16877,8 +17279,8 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                 <div className="apps-install-record" key={recordKey} data-missing={missingCount > 0 ? 'true' : 'false'}>
                                     <div className="apps-install-record__main">
                                         <strong>{appNames}</strong>
-                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} \u00b7 {text.marketSource}: {record.source || '-'}</span>
-                                        <small>{text.packageSha}: {sha} \u00b7 {text.skillDependencies}: {dependencyCount} \u00b7 {text.missingDependencyCount}: {missingCount}</small>
+                                        <span>{text.installedAt}: {formatInstallRecordTime(record.installed_at)} &middot; {text.marketSource}: {record.source || '-'}</span>
+                                        <small>{text.packageSha}: {sha} &middot; {text.skillDependencies}: {dependencyCount} &middot; {text.missingDependencyCount}: {missingCount}</small>
                                         <InstallVersionSnapshot snapshot={record.version_snapshot} text={text} />
                                         <InstallRecordEvidenceSnapshot record={record} text={text} />
                                         <InstallRecordDependencies dependencies={dependencies} text={text} />
@@ -16992,7 +17394,7 @@ const MarketPane = ({ apps, lang, onInstallApp, prefill, onInstallResultVisibleC
                                         <span className="apps-app-icon" style={{ '--apps-icon-color': item.app.accent } as CSSProperties}><AppIcon icon={item.app.icon} customIconDataUrl={item.app.customIconDataUrl} /></span>
                                         <div>
                                             <strong>{item.app.name}</strong>
-                                            <span>{item.app.category} \u00b7 {appKinds[item.app.kind][isZh(lang) ? 'zh' : 'en']}</span>
+                                            <span>{item.app.category} &middot; {appKindLabel(item.app.kind, lang)}</span>
                                             {dependencyText && <small>{text.skillDependencies}: {dependencyText}</small>}
                                             {governanceIssue && <small>{text.reviewIssues}: {reviewIssueSummary(governanceIssue)}</small>}
                                             {workflowIssue && <small>{text.workflowContract}: {reviewIssueSummary(workflowIssue)}</small>}

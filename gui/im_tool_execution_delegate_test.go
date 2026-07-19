@@ -403,6 +403,13 @@ func TestExecuteAgentLoopDelegateTaskRejectsWhenClassifierUnavailable(t *testing
 	original := runTaskWithSubAgent
 	defer func() { runTaskWithSubAgent = original }()
 
+	// Isolate from the package-global classifier other tests may have
+	// installed: this scenario requires classifyCodingWorkflowDelegateIntent
+	// to find no classifier at all.
+	savedClassifier := unifiedClassifierPtr.Load()
+	unifiedClassifierPtr.Store(nil)
+	defer unifiedClassifierPtr.Store(savedClassifier)
+
 	called := false
 	runTaskWithSubAgent = func(handler *IMMessageHandler, cfg corelib.MaclawLLMConfig, httpClient *http.Client, task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string, loopCtx *LoopContext, onToken func(string), onProgress func(string)) *CodingSubAgentResult {
 		called = true

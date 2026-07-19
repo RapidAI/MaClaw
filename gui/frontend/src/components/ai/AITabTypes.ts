@@ -5,10 +5,11 @@
  * - First tab (id="local", type="local") is always present and not closable.
  * - Digital employee tabs have type="ve" and include veId.
  * - Group tabs have type="group" and include participants array.
+ * - Expert tabs have type="expert" and include expertId (title holds the expert name).
  * - Max 8 digital employee tabs (configurable via maxVETabs).
  */
 /** Tab type discriminator */
-export type AITabType = "local" | "ve" | "group" | "project";
+export type AITabType = "local" | "ve" | "group" | "project" | "expert";
 /** A single tab in the AI Assistant Panel */
 export interface AITab {
     /** Unique tab identifier. "local" for the fixed AI assistant tab. */
@@ -35,6 +36,12 @@ export interface AITab {
     role?: string;
     /** Bound project path (required when type="project") */
     projectPath?: string;
+    /** AI expert ID (required when type="expert"); title carries the expert name. */
+    expertId?: string;
+    /** Expert emoji badge (only for type="expert"). */
+    expertIcon?: string;
+    /** Short expert description (only for type="expert"; used by the empty-tab intro). */
+    expertDescription?: string;
     /**
      * Agent execution mode for project tabs.
      * "coding_dev" — local pure coding environment.

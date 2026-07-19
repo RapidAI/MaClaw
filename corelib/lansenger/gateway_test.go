@@ -3,10 +3,11 @@ package lansenger
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -770,6 +771,43 @@ func TestRedactWebSocketURLRemovesConnectionCredentials(t *testing.T) {
 	}
 	if got := redactWebSocketURL("%not-a-url"); got != "[invalid websocket URL]" {
 		t.Fatalf("invalid URL redaction = %q", got)
+	}
+}
+
+func TestRedactHTTPErrorStripsSecretQuery(t *testing.T) {
+	raw := &url.Error{
+		Op:  "Get",
+		URL: "https://apigw.example.test/v1/apptoken/create?grant_type=client_credential&appid=APP&secret=SUPERSECRET",
+		Err: io.EOF,
+	}
+	got := redactHTTPError(raw)
+	if got == nil {
+		t.Fatal("expected redacted error")
+	}
+	msg := got.Error()
+	if strings.Contains(msg, "SUPERSECRET") {
+		t.Fatalf("secret leaked in error: %q", msg)
+	}
+	if !strings.Contains(msg, "secret=%2A%2A%2A") && !strings.Contains(msg, "secret=***") {
+		t.Fatalf("expected redacted secret placeholder, got %q", msg)
+	}
+
+	// String-only errors (no *url.Error) must also be scrubbed.
+	plain := errors.New(`Get "https://x/y?secret=ABC123": EOF`)
+	got2 := redactHTTPError(plain)
+	if strings.Contains(got2.Error(), "ABC123") {
+		t.Fatalf("secret leaked in plain error: %q", got2.Error())
+	}
+
+	// Message-send URLs embed app_token in the query string.
+	appTok := &url.Error{
+		Op:  "Post",
+		URL: "https://apigw.example.test/v1/messages/create?app_token=LIVE_APP_TOKEN_XYZ",
+		Err: io.EOF,
+	}
+	got3 := redactHTTPError(appTok)
+	if strings.Contains(got3.Error(), "LIVE_APP_TOKEN_XYZ") {
+		t.Fatalf("app_token leaked in error: %q", got3.Error())
 	}
 }
 

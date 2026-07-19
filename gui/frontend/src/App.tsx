@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw-agent-mark.svg';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, PatchConfigFields, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, SetDefaultLaunchMode, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, DownloadUpdateWithSHA256, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, GetQQBotStatus, GetQQBotLocalMode, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, ListTasks, CreateTask, CreateTaskWithMode, CreateRemoteCodingTask, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, EnsureCodingWorkbenchArmed, ResumeTask, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest, FetchProviderModels, SetMaclawLLMCurrentModel, IsNativeRoundedCorners, IsWebviewTransparent, GetAdaptiveWindowSize, GetMoASessionState, SetMoASticky, SetMoAStickyPreset } from "../wailsjs/go/main/App";
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised, WindowUnmaximise } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
@@ -32,6 +32,7 @@ import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } 
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
+import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
 import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
 import { translations } from './i18n/appTranslations';
@@ -62,6 +63,7 @@ import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage } from './appLazyComponents';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
+import type { ExpertDefinition } from './components/ai/expertTypes';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
@@ -109,8 +111,28 @@ type SensitivePermissionRequest = {
 };
 
 type SidebarProviderStateWire = {
-    providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
-    Providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
+    providers?: Array<{
+        name?: string; Name?: string;
+        url?: string; URL?: string;
+        key?: string; Key?: string;
+        model?: string; Model?: string;
+        models?: string[]; Models?: string[];
+        protocol?: string; Protocol?: string;
+        agent_type?: string; AgentType?: string;
+        auth_type?: string; AuthType?: string;
+        is_hub_service?: boolean; IsHubService?: boolean;
+    }>;
+    Providers?: Array<{
+        name?: string; Name?: string;
+        url?: string; URL?: string;
+        key?: string; Key?: string;
+        model?: string; Model?: string;
+        models?: string[]; Models?: string[];
+        protocol?: string; Protocol?: string;
+        agent_type?: string; AgentType?: string;
+        auth_type?: string; AuthType?: string;
+        is_hub_service?: boolean; IsHubService?: boolean;
+    }>;
     current?: string;
     Current?: string;
 } | null;
@@ -346,7 +368,7 @@ function App() {
         navTabRef.current = tab;
         setNavTab(tab);
     }, []);
-    const showAppEntryEnabled = config?.show_app_entry === true;
+    const showAppEntryEnabled = config?.show_app_entry !== false;
     const showWorkflowEntryEnabled = config?.show_workflow_entry !== false;
     const showUtilitiesEntryEnabled = (config as any)?.show_utilities_entry !== false;
     useEffect(() => {
@@ -487,6 +509,7 @@ function App() {
         remoteHost?: string;
         remoteNeedsReconnect?: boolean;
     } | null>(null);
+    const [pendingExpertOpen, setPendingExpertOpen] = useState<{ expert: ExpertDefinition } | null>(null);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -1212,7 +1235,7 @@ function App() {
         try {
             await callBackend(() => RespondDigitalEmployeeSensitiveRequest(request.request_id, decision));
         } catch (err: any) {
-            showToastMessage(err?.message || String(err || localizeText('Failed to respond', '鍝嶅簲澶辫触', '鍥炴噳澶辨晽')));
+            showToastMessage(err?.message || String(err || localizeText('Failed to respond', '响应失败', '回應失敗')));
         }
     }, [sensitivePermissionRequest]);
 
@@ -2406,14 +2429,25 @@ function App() {
                 }
                 // Connect SSH and arm RemoteCodingSubAgent before opening the tab so
                 // autoSend runs pure remote coding (with source preview events).
-                await PrepareRemoteCodingEnvironment(
-                    created.project_path,
-                    remoteHost,
-                    remote.user.trim(),
-                    remote.password,
-                    remote.workDir.trim(),
-                    remote.port || 22,
-                );
+                try {
+                    await PrepareRemoteCodingEnvironment(
+                        created.project_path,
+                        remoteHost,
+                        remote.user.trim(),
+                        remote.password,
+                        remote.workDir.trim(),
+                        remote.port || 22,
+                    );
+                } catch (prepareError) {
+                    // Task record was already created; hide it so failed attempts
+                    // don't pile up as orphan tasks in the task list.
+                    try {
+                        await HideTask(created.project_path);
+                    } catch (hideError) {
+                        console.warn("HideTask after prepare failure failed:", hideError);
+                    }
+                    throw prepareError;
+                }
                 // Remember password on this device for later SSH reconnect in the control panel.
                 saveRemoteSSHPassword(
                     remoteHost,
@@ -2430,7 +2464,18 @@ function App() {
                 }
                 // Arm local CodingSubAgent so the first auto-sent message executes
                 // with tool-using coding path and source preview file events.
-                await PrepareLocalCodingEnvironment(created.project_path, localWorkDir);
+                try {
+                    await PrepareLocalCodingEnvironment(created.project_path, localWorkDir);
+                } catch (prepareError) {
+                    // Task record was already created; hide it so failed attempts
+                    // don't pile up as orphan tasks in the task list.
+                    try {
+                        await HideTask(created.project_path);
+                    } catch (hideError) {
+                        console.warn("HideTask after prepare failure failed:", hideError);
+                    }
+                    throw prepareError;
+                }
             } else {
                 created = await CreateTask(taskName, localWorkDir);
             }
@@ -2499,13 +2544,23 @@ function App() {
         const list = (data?.providers ?? data?.Providers ?? [])
             .map((provider): SidebarLLMProviderSummary => {
                 const url = provider?.url ?? provider?.URL ?? '';
-                const key = (provider as any)?.key ?? (provider as any)?.Key ?? '';
+                const key = provider?.key ?? provider?.Key ?? '';
                 const isHub = !!(provider?.is_hub_service ?? provider?.IsHubService);
+                const model = String(provider?.model ?? provider?.Model ?? '').trim();
+                const rawModels = provider?.models ?? provider?.Models ?? [];
+                const models = Array.isArray(rawModels)
+                    ? rawModels.map((m) => String(m || '').trim()).filter(Boolean)
+                    : [];
                 return {
                     name: provider?.name ?? provider?.Name ?? '',
                     url,
                     isHubService: isHub,
                     configured: isHub || (!!url && !!key),
+                    model,
+                    models,
+                    protocol: String(provider?.protocol ?? provider?.Protocol ?? '').trim() || undefined,
+                    agentType: String(provider?.agent_type ?? provider?.AgentType ?? '').trim() || undefined,
+                    authType: String(provider?.auth_type ?? provider?.AuthType ?? '').trim() || undefined,
                 };
             })
             .filter((provider) => !!provider.name);
@@ -2633,7 +2688,18 @@ function App() {
         const result: SidebarLLMProviderSummary[] = [];
         // Current provider is always "available" (it's what we just pinged successfully)
         if (currentName) {
-            result.push({ name: currentName, url: '', isHubService: sidebarCurrentProviderTokenUsage.isHubService });
+            const currentSummary = sidebarProviderSummaries.find((p) => p.name === currentName);
+            result.push({
+                name: currentName,
+                url: currentSummary?.url || '',
+                isHubService: sidebarCurrentProviderTokenUsage.isHubService,
+                model: currentSummary?.model,
+                models: currentSummary?.models,
+                protocol: currentSummary?.protocol,
+                agentType: currentSummary?.agentType,
+                authType: currentSummary?.authType,
+                configured: true,
+            });
         }
         // Add other configured providers from the backend's GetMaclawLLMProviders() result
         for (const p of sidebarProviderSummaries) {
@@ -2681,6 +2747,163 @@ function App() {
             showAlert(errMsg);
         });
     }, [lang, refreshSidebarTokenUsage, showAlert]);
+
+    // Sidebar model quick-switch: options + current model for the active provider.
+    const [sidebarModelOptions, setSidebarModelOptions] = useState<string[]>([]);
+    const [sidebarCurrentModel, setSidebarCurrentModel] = useState('');
+    const [sidebarModelsLoading, setSidebarModelsLoading] = useState(false);
+    const sidebarModelsSeqRef = useRef(0);
+    const sidebarProviderSummariesRef = useRef(sidebarProviderSummaries);
+    const availableProvidersForSwitchRef = useRef(availableProvidersForSwitch);
+    sidebarProviderSummariesRef.current = sidebarProviderSummaries;
+    availableProvidersForSwitchRef.current = availableProvidersForSwitch;
+
+    const lookupProviderSnapshot = useCallback((providerName: string) => {
+        const name = String(providerName || '').trim();
+        return sidebarProviderSummariesRef.current.find((p) => p.name === name)
+            || availableProvidersForSwitchRef.current.find((p) => p.name === name)
+            || null;
+    }, []);
+
+    // Provider name change only: drop previous catalog to avoid cross-provider flash.
+    useEffect(() => {
+        const currentName = sidebarCurrentProviderTokenUsage.provider;
+        const current = lookupProviderSnapshot(currentName);
+        const configured = String(current?.model || '').trim();
+        setSidebarCurrentModel(configured);
+        setSidebarModelOptions(buildSidebarModelOptions({
+            configuredModel: configured,
+            cachedModels: current?.models,
+        }));
+        sidebarModelsSeqRef.current += 1;
+        setSidebarModelsLoading(false);
+    }, [sidebarCurrentProviderTokenUsage.provider, lookupProviderSnapshot]);
+
+    // Summaries arrived/updated for the same provider: seed configured model without wiping a fetched catalog.
+    useEffect(() => {
+        const currentName = sidebarCurrentProviderTokenUsage.provider;
+        const current = lookupProviderSnapshot(currentName);
+        const configured = String(current?.model || '').trim();
+        if (!configured) return;
+        setSidebarCurrentModel((prev) => (prev === configured ? prev : configured));
+        setSidebarModelOptions((prev) => {
+            if (prev.length === 0) {
+                return buildSidebarModelOptions({
+                    configuredModel: configured,
+                    cachedModels: current?.models,
+                });
+            }
+            if (prev.includes(configured)) return prev;
+            return buildSidebarModelOptions({
+                configuredModel: configured,
+                cachedModels: current?.models,
+                fetchedModels: prev,
+            });
+        });
+    }, [sidebarProviderSummaries, sidebarCurrentProviderTokenUsage.provider, lookupProviderSnapshot]);
+
+    const refreshSidebarModelOptions = useCallback(async () => {
+        const seq = ++sidebarModelsSeqRef.current;
+        const providerAtStart = sidebarCurrentProviderTokenUsage.provider;
+        // Immediate local fallback so the open menu never shows another provider's models.
+        const snapshot = lookupProviderSnapshot(providerAtStart);
+        const snapshotConfigured = String(snapshot?.model || '').trim();
+        setSidebarCurrentModel(snapshotConfigured);
+        setSidebarModelOptions(buildSidebarModelOptions({
+            configuredModel: snapshotConfigured,
+            cachedModels: snapshot?.models,
+        }));
+        setSidebarModelsLoading(true);
+        try {
+            // Prefer full provider payload (includes key for fetch); summaries may omit secrets.
+            const raw = await callBackend(() => GetMaclawLLMProviders()) as SidebarProviderStateWire;
+            if (seq !== sidebarModelsSeqRef.current) return;
+            const normalized = normalizeSidebarProviderState(raw);
+            const currentName = normalized.current || providerAtStart;
+            const list = (raw?.providers ?? raw?.Providers ?? []) as Array<Record<string, any>>;
+            const wire = list.find((p) => String(p?.name ?? p?.Name ?? '') === currentName)
+                || list.find((p) => String(p?.name ?? p?.Name ?? '') === providerAtStart);
+            const summary = normalized.providers.find((p) => p.name === currentName)
+                || normalized.providers.find((p) => p.name === providerAtStart);
+            const configured = String(wire?.model ?? wire?.Model ?? summary?.model ?? snapshotConfigured).trim();
+            const cached = Array.isArray(wire?.models ?? wire?.Models)
+                ? (wire?.models ?? wire?.Models).map((m: any) => String(m || '').trim()).filter(Boolean)
+                : (summary?.models || snapshot?.models || []);
+            const url = String(wire?.url ?? wire?.URL ?? summary?.url ?? snapshot?.url ?? '').trim();
+            const key = String(wire?.key ?? wire?.Key ?? '').trim();
+            const protocol = String(wire?.protocol ?? wire?.Protocol ?? summary?.protocol ?? 'openai').trim() || 'openai';
+            const agentType = String(wire?.agent_type ?? wire?.AgentType ?? summary?.agentType ?? 'openclaw').trim() || 'openclaw';
+            const authType = String(wire?.auth_type ?? wire?.AuthType ?? summary?.authType ?? '').trim().toLowerCase();
+            const isManagedAuth = authType === 'oauth' || authType === 'sso';
+            const isHub = !!(summary?.isHubService || wire?.is_hub_service || wire?.IsHubService);
+
+            let fetched: string[] = [];
+            if (url && (key || isManagedAuth || isHub)) {
+                try {
+                    const items = await callBackend(() => FetchProviderModels(url, key, protocol, agentType)) as Array<{ id?: string; name?: string }>;
+                    if (seq !== sidebarModelsSeqRef.current) return;
+                    fetched = (items || []).map((m) => String(m?.id || m?.name || '').trim()).filter(Boolean);
+                } catch {
+                    // Fall back to configured / cached models below.
+                    fetched = [];
+                }
+            }
+
+            if (seq !== sidebarModelsSeqRef.current) return;
+            const options = buildSidebarModelOptions({
+                configuredModel: configured,
+                cachedModels: cached,
+                fetchedModels: fetched,
+            });
+            setSidebarCurrentModel(configured);
+            setSidebarModelOptions(options);
+        } catch {
+            if (seq !== sidebarModelsSeqRef.current) return;
+            const current = lookupProviderSnapshot(providerAtStart);
+            const configured = String(current?.model || snapshotConfigured).trim();
+            setSidebarCurrentModel(configured);
+            setSidebarModelOptions(buildSidebarModelOptions({
+                configuredModel: configured,
+                cachedModels: current?.models,
+            }));
+        } finally {
+            if (seq === sidebarModelsSeqRef.current) setSidebarModelsLoading(false);
+        }
+    }, [
+        normalizeSidebarProviderState,
+        sidebarCurrentProviderTokenUsage.provider,
+        lookupProviderSnapshot,
+    ]);
+
+    const handleQuickSwitchModel = useCallback((modelId: string) => {
+        const next = String(modelId || '').trim();
+        if (!next) return;
+        const previous = sidebarCurrentModel;
+        setSidebarCurrentModel(next);
+        setSidebarModelOptions((prev) => (
+            prev.includes(next) ? prev : buildSidebarModelOptions({ configuredModel: next, fetchedModels: prev })
+        ));
+        callBackend(() => SetMaclawLLMCurrentModel(next)).then(() => {
+            void refreshSidebarTokenUsage();
+            const toastMsg = lang === 'en'
+                ? `Model switched to "${next}". Effective on next AI request.`
+                : lang === 'zh-Hant'
+                    ? `\u5df2\u5207\u63db\u6a21\u578b\u70ba\u300c${next}\u300d\uff0c\u4e0b\u6b21 AI \u5c0d\u8a71\u6642\u751f\u6548`
+                    : `\u5df2\u5207\u6362\u6a21\u578b\u4e3a\u300c${next}\u300d\uff0c\u4e0b\u6b21 AI \u5bf9\u8bdd\u65f6\u751f\u6548`;
+            showToastMessage?.(toastMsg);
+        }).catch((err) => {
+            console.error('Failed to switch LLM model:', err);
+            setSidebarCurrentModel(previous);
+            void refreshSidebarTokenUsage();
+            void refreshSidebarModelOptions();
+            const errMsg = lang === 'en'
+                ? `Failed to switch model: ${err}`
+                : lang === 'zh-Hant'
+                    ? `\u5207\u63db\u6a21\u578b\u5931\u6557\uff1a${err}`
+                    : `\u5207\u6362\u6a21\u578b\u5931\u8d25\uff1a${err}`;
+            showAlert(errMsg);
+        });
+    }, [lang, refreshSidebarTokenUsage, refreshSidebarModelOptions, showAlert, sidebarCurrentModel]);
 
     const refreshMoASession = useCallback(() => {
         callBackend(() => GetMoASessionState()).then((raw: any) => {
@@ -3144,8 +3367,8 @@ function App() {
             if (p.includes("aigocode")) return "claude-3-5-sonnet-20241022";
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
-            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
+            if (p.includes("摩尔线程")) return "GLM-4.7";
+            if (p.includes("快手")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -3161,8 +3384,8 @@ function App() {
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
-            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
-            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
+            if (p.includes("摩尔线程")) return "GLM-4.7";
+            if (p.includes("快手")) return "kat-coder-pro-v1";
         }
         return "";
     };
@@ -3356,7 +3579,7 @@ function App() {
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '姝ｅ湪鍚姩杩滅▼...' : lang === 'zh-Hant' ? '姝ｅ湪鍟熷嫊閬犵...' : 'Starting remotely...');
+            setStatus(lang === 'zh-Hans' ? '正在启动远程...' : lang === 'zh-Hant' ? '正在啟動遠端...' : 'Starting remotely...');
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -3698,6 +3921,11 @@ ${instruction}`;
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
                 availableProviders={availableProvidersForSwitch}
                 onSwitchProvider={handleQuickSwitchProvider}
+                currentModel={sidebarCurrentModel}
+                modelOptions={sidebarModelOptions}
+                modelsLoading={sidebarModelsLoading}
+                onSwitchModel={handleQuickSwitchModel}
+                onOpenModelMenu={refreshSidebarModelOptions}
                 moaSticky={moaSession}
                 onToggleMoASticky={handleToggleMoASticky}
             />
@@ -3727,6 +3955,8 @@ ${instruction}`;
                             onPendingHistoryDiscussionOpenHandled={() => setPendingHistoryDiscussionOpen(null)}
                             pendingProjectTabOpen={pendingProjectTabOpen}
                             onPendingProjectTabOpenHandled={() => setPendingProjectTabOpen(null)}
+                            pendingExpertOpen={pendingExpertOpen}
+                            onPendingExpertOpenHandled={() => setPendingExpertOpen(null)}
                             onOpenProjectTabsChange={handleOpenProjectTabsChange}
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppUpdate={handleOpenAppUpdate}
@@ -3936,7 +4166,7 @@ ${instruction}`;
                     )}
 
                     {navTab === 'utilities' && showUtilitiesEntryEnabled && (
-                        <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} />
+                        <UtilitiesPage lang={lang} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => { switchTool('ai'); setPendingExpertOpen({ expert }); }} />
                     )}
 
                     {navTab === 'skills' && (
@@ -4094,7 +4324,7 @@ ${instruction}`;
                                                 openRemoteActivationModal(activeTool);
                                             }
                                         }}
-                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '鐐瑰嚮娉ㄥ唽' : lang === 'zh-Hant' ? '榛炴搳瑷诲唺' : 'Click to register')}
+                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
                                     >
                                         <span>
                                             {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
@@ -4166,7 +4396,7 @@ ${instruction}`;
                                             }}
                                             title={t("proxySettings")}
                                         >
-                                            {lang === 'zh-Hans' ? '璁剧疆' : lang === 'zh-Hant' ? '瑷畾' : 'Edit'}
+                                            {lang === 'zh-Hans' ? '设置' : lang === 'zh-Hant' ? '設定' : 'Edit'}
                                         </span>
                                     </label>
                                 )}
@@ -4223,14 +4453,14 @@ ${instruction}`;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus(localizeText("This tool does not support remote launch", "姝ゅ伐鍏蜂笉鏀寔杩滅▼鍚姩", "姝ゅ伐鍏蜂笉鏀彺閬犵鍟熷嫊"));
+                                                    setStatus(localizeText("This tool does not support remote launch", "此工具不支持远程启动", "此工具不支持遠端啟動"));
                                                     return;
                                                 }
                                                 if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                     openRemoteActivationModal(activeTool);
                                                     return;
                                                 }
-                                                setStatus(localizeText("Starting remotely...", "姝ｅ湪鍚姩杩滅▼...", "姝ｅ湪鍟熷嫊閬犵..."));
+                                                setStatus(localizeText("Starting remotely...", "正在启动远程...", "正在啟動遠端..."));
                                                 setLaunchingTool(activeTool);
                                                 try {
                                                     await quickStartRemoteSession(activeTool as any);
@@ -4250,8 +4480,8 @@ ${instruction}`;
                                                     // Tool is being installed in background, just wait
                                                     setStatus(localizeText(
                                                         `${activeTool} is being installed in background, please wait...`,
-                                                        `${activeTool} 姝ｅ湪鍚庡彴瀹夎锛岃绋嶅€?..`,
-                                                        `${activeTool} 姝ｅ湪鑳屾櫙瀹夎锛岃珛绋嶅€?..`,
+                                                        `${activeTool} 正在后台安装，请稍候…`,
+                                                        `${activeTool} 正在背景安裝，請稍候…`,
                                                     ));
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {

@@ -439,6 +439,9 @@ func TestSkillRunnerStartRunDoesNotWaitForExecutorMutationLock(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
 	app.testHomeDir = tempHome
+	// StartRun triggers ensureMemoryStore (SQLite memory.db under TempDir);
+	// release file handles before testing.T removes the temp dir on Windows.
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -500,6 +503,9 @@ func TestSkillRunnerUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
 	app.testHomeDir = tempHome
+	// StartRunForOwner triggers ensureMemoryStore (SQLite memory.db under TempDir);
+	// release file handles before testing.T removes the temp dir on Windows.
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
@@ -564,6 +570,9 @@ func TestSkillRunnerReloadsFileSkillDefinitionBeforeRun(t *testing.T) {
 	h, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
 	app := h.app
 	app.testHomeDir = tempHome
+	// StartRunForOwner triggers ensureMemoryStore (SQLite memory.db under TempDir);
+	// release file handles before testing.T removes the temp dir on Windows.
+	t.Cleanup(func() { app.shutdown(context.Background()) })
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)

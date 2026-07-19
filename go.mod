@@ -25,6 +25,7 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
+	github.com/refraction-networking/utls v1.8.2
 	github.com/shakinm/xlsReader v0.9.12
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
@@ -43,6 +44,11 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
 	pgregory.net/rapid v1.2.0
+)
+
+require (
+	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/klauspost/compress v1.17.4 // indirect
 )
 
 require (

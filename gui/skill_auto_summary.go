@@ -7,9 +7,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -296,42 +298,184 @@ func (e *ValidationError) Error() string {
 	return strings.Join(e.Reasons, "; ")
 }
 
+// actionTokenMatch reports whether action equals needle or contains it as a
+// snake/kebab token (avoids "run" matching "runtime", "api" matching "capital").
+func actionTokenMatch(action, needle string) bool {
+	if action == needle {
+		return true
+	}
+	if strings.Contains(action, "_"+needle+"_") ||
+		strings.HasPrefix(action, needle+"_") ||
+		strings.HasSuffix(action, "_"+needle) {
+		return true
+	}
+	if strings.Contains(action, "-"+needle+"-") ||
+		strings.HasPrefix(action, needle+"-") ||
+		strings.HasSuffix(action, "-"+needle) {
+		return true
+	}
+	return false
+}
+
+// labelsForAction returns security labels for a single step action name.
+func labelsForAction(action string) []string {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action == "" {
+		return nil
+	}
+	var labels []string
+	// Token match covers shell_exec / exec_cmd / run_terminal / run_shell via separators.
+	if actionTokenMatch(action, "exec") || actionTokenMatch(action, "cmd") ||
+		actionTokenMatch(action, "shell") || actionTokenMatch(action, "bash") ||
+		actionTokenMatch(action, "powershell") || actionTokenMatch(action, "terminal") ||
+		actionTokenMatch(action, "script") || actionTokenMatch(action, "run") {
+		labels = append(labels, "shell_exec")
+	}
+	if actionTokenMatch(action, "http") || actionTokenMatch(action, "https") ||
+		actionTokenMatch(action, "api") || actionTokenMatch(action, "fetch") ||
+		actionTokenMatch(action, "request") || actionTokenMatch(action, "network") ||
+		actionTokenMatch(action, "url") || actionTokenMatch(action, "curl") ||
+		actionTokenMatch(action, "wget") {
+		labels = append(labels, "network_access")
+	}
+	if actionTokenMatch(action, "file") || actionTokenMatch(action, "read") ||
+		actionTokenMatch(action, "write") || actionTokenMatch(action, "open") ||
+		actionTokenMatch(action, "save") || actionTokenMatch(action, "path") {
+		labels = append(labels, "file_system_access")
+	}
+	// "query" alone is too broad (search_query); require db/sql context or exact.
+	if actionTokenMatch(action, "db") || actionTokenMatch(action, "sql") ||
+		actionTokenMatch(action, "database") || action == "query" {
+		labels = append(labels, "database_access")
+	}
+	return labels
+}
+
 // inferSecurityLabels maps step actions to security labels.
+// Matching is token-aware so benign names like "runtime_info" / "capital" are not
+// mis-tagged as shell_exec / network_access. Result order is sorted for stable logs.
 func inferSecurityLabels(steps []skill.SkillYAMLStep) []string {
 	labelSet := make(map[string]bool)
 	for _, step := range steps {
-		action := strings.ToLower(step.Action)
-		if strings.Contains(action, "exec") || strings.Contains(action, "cmd") ||
-			strings.Contains(action, "shell") || strings.Contains(action, "run") ||
-			strings.Contains(action, "bash") || strings.Contains(action, "powershell") ||
-			strings.Contains(action, "terminal") || strings.Contains(action, "script") {
-			labelSet["shell_exec"] = true
+		for _, l := range labelsForAction(step.Action) {
+			labelSet[l] = true
 		}
-		if strings.Contains(action, "http") || strings.Contains(action, "api") ||
-			strings.Contains(action, "fetch") || strings.Contains(action, "request") ||
-			strings.Contains(action, "network") || strings.Contains(action, "url") ||
-			strings.Contains(action, "curl") || strings.Contains(action, "wget") {
-			labelSet["network_access"] = true
-		}
-		if strings.Contains(action, "file") || strings.Contains(action, "read") ||
-			strings.Contains(action, "write") || strings.Contains(action, "open") ||
-			strings.Contains(action, "save") || strings.Contains(action, "path") {
-			labelSet["file_system_access"] = true
-		}
-		if strings.Contains(action, "db") || strings.Contains(action, "sql") ||
-			strings.Contains(action, "query") || strings.Contains(action, "database") {
-			labelSet["database_access"] = true
-		}
+	}
+	if len(labelSet) == 0 {
+		return nil
 	}
 	labels := make([]string, 0, len(labelSet))
 	for l := range labelSet {
 		labels = append(labels, l)
 	}
+	sort.Strings(labels)
 	return labels
+}
+
+// maxSkillDescriptionBytes is the hard limit enforced by skill.yaml schema.
+const maxSkillDescriptionBytes = 500
+
+// truncateSkillDescription shortens description to at most maxBytes, cutting on a
+// UTF-8 rune boundary and appending an ellipsis when room allows.
+func truncateSkillDescription(desc string, maxBytes int) string {
+	if maxBytes <= 0 || len(desc) <= maxBytes {
+		return desc
+	}
+	ellipsis := "…"
+	limit := maxBytes
+	if maxBytes > len(ellipsis) {
+		limit = maxBytes - len(ellipsis)
+	}
+	n := 0
+	for _, r := range desc {
+		size := utf8.RuneLen(r)
+		if size < 0 {
+			size = 1
+		}
+		if n+size > limit {
+			break
+		}
+		n += size
+	}
+	if n == 0 {
+		// First rune alone exceeds the ellipsis budget: take as many full runes
+		// as fit in maxBytes (never split a multi-byte code point).
+		n = 0
+		for _, r := range desc {
+			size := utf8.RuneLen(r)
+			if size < 0 {
+				size = 1
+			}
+			if n+size > maxBytes {
+				break
+			}
+			n += size
+		}
+		if n == 0 {
+			return ""
+		}
+		return desc[:n]
+	}
+	if maxBytes-n >= len(ellipsis) {
+		return desc[:n] + ellipsis
+	}
+	return desc[:n]
+}
+
+func stripStepsRequiringLabels(steps []skill.SkillYAMLStep, blocked []string) (kept []skill.SkillYAMLStep, removed int) {
+	if len(blocked) == 0 {
+		return steps, 0
+	}
+	blockSet := make(map[string]bool, len(blocked))
+	for _, b := range blocked {
+		blockSet[b] = true
+	}
+	kept = make([]skill.SkillYAMLStep, 0, len(steps))
+	for _, step := range steps {
+		deny := false
+		for _, l := range labelsForAction(step.Action) {
+			if blockSet[l] {
+				deny = true
+				break
+			}
+		}
+		if deny {
+			removed++
+			continue
+		}
+		kept = append(kept, step)
+	}
+	return kept, removed
+}
+
+// deniedSecurityLabels returns labels the policy would reject for this skill.
+// Evaluates every label (unlike CheckLabels fail-fast) so callers can sanitize.
+// Mirrors CheckLabels semantics: Deny always denies; Ask denies only when askFn
+// is set and returns false; nil askFn on Ask means allow.
+func deniedSecurityLabels(checker *SecurityPolicyChecker, skillName string, labels []string) []string {
+	if checker == nil || len(labels) == 0 {
+		return nil
+	}
+	var denied []string
+	for _, label := range labels {
+		switch checker.getModeForLabel(label) {
+		case SecurityDeny:
+			denied = append(denied, label)
+		case SecurityAsk:
+			if checker.askFn != nil && !checker.askFn(label, skillName) {
+				denied = append(denied, label)
+			}
+		}
+	}
+	return denied
 }
 
 // ValidateSkillDraft validates a Skill draft against structural rules and security policy.
 // It collects ALL failure reasons and returns a ValidationError if any rule is violated.
+// Soft fixes applied before hard failure:
+//   - description longer than 500 bytes is truncated (not rejected)
+//   - steps requiring security labels the user/policy denies are stripped first; only if
+//     zero steps remain is validation failed (background auto-summary cannot pop UI)
 // If the name conflicts with existingNames, a timestamp suffix is appended.
 // Returns the (possibly modified) draft and nil error on success.
 func ValidateSkillDraft(
@@ -339,6 +483,9 @@ func ValidateSkillDraft(
 	checker *SecurityPolicyChecker,
 	existingNames map[string]bool,
 ) (*skill.SkillYAMLFile, error) {
+	if draft == nil {
+		return nil, &ValidationError{Reasons: []string{"draft must not be nil"}}
+	}
 	var reasons []string
 
 	// Validate name.
@@ -348,22 +495,14 @@ func ValidateSkillDraft(
 		reasons = append(reasons, "name must be <= 60 characters")
 	}
 
-	// Validate description.
+	// Validate description — soft-truncate oversize drafts from LLM.
 	if strings.TrimSpace(draft.Description) == "" {
 		reasons = append(reasons, "description must not be empty")
-	} else if len(draft.Description) > 500 {
-		reasons = append(reasons, "description must be <= 500 characters")
-	}
-
-	// Validate steps.
-	if len(draft.Steps) == 0 {
-		reasons = append(reasons, "at least 1 step is required")
-	} else {
-		for i, step := range draft.Steps {
-			if strings.TrimSpace(step.Action) == "" {
-				reasons = append(reasons, fmt.Sprintf("step[%d] action must not be empty", i))
-			}
-		}
+	} else if len(draft.Description) > maxSkillDescriptionBytes {
+		before := len(draft.Description)
+		draft.Description = truncateSkillDescription(draft.Description, maxSkillDescriptionBytes)
+		log.Printf("[skill-auto-summary] truncated description from %d to %d bytes for skill=%s",
+			before, len(draft.Description), draft.Name)
 	}
 
 	// Validate triggers.
@@ -371,12 +510,44 @@ func ValidateSkillDraft(
 		reasons = append(reasons, "at least 1 trigger is required")
 	}
 
-	// Security policy check.
+	// Security policy FIRST: strip blocked-capability steps before counting /
+	// validating actions so empty-action errors don't refer to steps we drop.
 	if checker != nil && len(draft.Steps) > 0 {
 		labels := inferSecurityLabels(draft.Steps)
 		if len(labels) > 0 {
-			if err := checker.CheckLabels(draft.Name, labels); err != nil {
-				reasons = append(reasons, fmt.Sprintf("security policy: %s", err.Error()))
+			denied := deniedSecurityLabels(checker, draft.Name, labels)
+			if len(denied) > 0 {
+				kept, removed := stripStepsRequiringLabels(draft.Steps, denied)
+				if removed > 0 {
+					log.Printf("[skill-auto-summary] stripped %d step(s) blocked by security labels %v for skill=%s (kept=%d)",
+						removed, denied, draft.Name, len(kept))
+					draft.Steps = kept
+				}
+				if len(draft.Steps) == 0 {
+					reasons = append(reasons, fmt.Sprintf(
+						"security policy: all steps require denied capabilities %v", denied))
+				}
+			}
+		}
+	}
+
+	// Validate remaining steps (after security strip).
+	if len(draft.Steps) == 0 {
+		// Avoid duplicate "at least 1 step" when security already explained why.
+		hasSecurityEmpty := false
+		for _, r := range reasons {
+			if strings.Contains(r, "security policy") {
+				hasSecurityEmpty = true
+				break
+			}
+		}
+		if !hasSecurityEmpty {
+			reasons = append(reasons, "at least 1 step is required")
+		}
+	} else {
+		for i, step := range draft.Steps {
+			if strings.TrimSpace(step.Action) == "" {
+				reasons = append(reasons, fmt.Sprintf("step[%d] action must not be empty", i))
 			}
 		}
 	}

@@ -81,12 +81,13 @@ describe('GeneralSettingsPanel', () => {
 
         const languageSelect = screen.getByRole('combobox');
         const toggle = screen.getByLabelText('MaClaw应用入口') as HTMLInputElement;
-        expect(toggle.checked).toBe(false);
+        // Default-on when field is absent (same as workflow / utilities entry).
+        expect(toggle.checked).toBe(true);
         expect(languageSelect.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
         fireEvent.click(toggle);
 
-        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: true });
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: false });
     });
 
     it('persists disabling the MaClaw app entry switch', () => {

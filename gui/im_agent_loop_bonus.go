@@ -214,6 +214,11 @@ func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress too
 	if allowed, result := h.workflowAllowsBonusRoundToolCall(userID, ctx, tc); !allowed {
 		return result
 	}
+	// Expert allow-list gate (execution layer), same as the main loop path.
+	if text := expertToolExecutionRejection(userID, tc.Function.Name, tc.Function.Arguments); text != "" {
+		log.Printf("[agent-loop] rejected bonus-round tool outside expert allow-list %q (user=%s)", tc.Function.Name, userID)
+		return toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	if phase != nil && phase.TruncationBlockedTools[tc.Function.Name] {
 		result := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
 		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}

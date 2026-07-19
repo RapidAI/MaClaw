@@ -539,8 +539,13 @@ func (h *IMMessageHandler) emitCodingWorkbenchStepsUpdate(userID string) {
 	h.app.emitEvent("coding-workbench-steps", payload)
 }
 
-// markRemainingCodingStepsSkipped marks later pending steps as skipped after a
+// markRemainingCodingStepsSkipped marks later plan steps as skipped after a
 // hard failure (sequential plan stops). Mirrors TaskRunner dependency skip UX.
+//
+// Also rewrites premature agent-side "passed"/"running" marks on later steps
+// (e.g. todo_write mirrored into UI before orchestrator isolation, or a rushed
+// subagent that claimed later work done). Terminal failed/verify_failed/skipped
+// statuses are left alone.
 func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterIndex int, reason string) {
 	if h == nil || afterIndex < 0 {
 		return
@@ -562,7 +567,7 @@ func (h *IMMessageHandler) markRemainingCodingStepsSkipped(userID string, afterI
 				continue
 			}
 			switch st.Status {
-			case codingStepPending, "":
+			case codingStepPending, "", codingStepRunning, codingStepPassed:
 				st.Status = codingStepSkipped
 				st.Summary = truncateRunesForSubAgent(reason, 400)
 				st.UpdatedUnix = now

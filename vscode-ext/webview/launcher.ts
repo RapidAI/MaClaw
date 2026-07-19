@@ -107,6 +107,7 @@ window.addEventListener("message", (event) => {
       sessionId: string;
       cwd: string;
       turnActive: boolean;
+      queued: number;
     };
     hasSelection?: boolean;
     hasFile?: boolean;
@@ -119,6 +120,9 @@ window.addEventListener("message", (event) => {
     const s = msg.snap;
     statusDot.className = `dot dot-${s.state}`;
     statusText.textContent = STATE_LABEL[s.state] ?? s.state;
+    if ((s.queued ?? 0) > 0) {
+      statusText.textContent += ` · 排队 ${s.queued} 条`;
+    }
     statusDetail.textContent =
       s.state === "connected"
         ? s.bridge

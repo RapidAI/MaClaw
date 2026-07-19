@@ -436,12 +436,16 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "download_file",
-		Description: "Download an HTTP/HTTPS URL into the session working directory and return the absolute saved path. Preferred for PDFs and generic file downloads; do not install ClawHub wget/curl skills for this.",
+		Description: "Download an HTTP/HTTPS URL into the session working directory and return the absolute saved path. Preferred for PDFs and generic file downloads; do not install ClawHub wget/curl skills for this. Has a built-in anti-bot escalation chain (browser-like headers, then a simulated Chrome TLS fingerprint, then browser-session cookies) and automatic retries; via_browser=true makes the browser itself download (strongest anti-bot bypass, also forces inline PDFs to disk); progress log at ~/.maclaw/logs/download.log.",
 		Properties: map[string]interface{}{
-			"url":       map[string]string{"type": "string", "description": "URL to download"},
-			"save_path": map[string]string{"type": "string", "description": "Destination path (optional; relative to working directory; defaults to URL basename)"},
-			"output":    map[string]string{"type": "string", "description": "Alias for save_path"},
-			"timeout":   map[string]string{"type": "integer", "description": "Timeout seconds (optional)"},
+			"url":                 map[string]string{"type": "string", "description": "URL to download"},
+			"save_path":           map[string]string{"type": "string", "description": "Destination path (optional; relative to working directory; defaults to URL basename)"},
+			"output":              map[string]string{"type": "string", "description": "Alias for save_path"},
+			"timeout":             map[string]string{"type": "integer", "description": "Timeout seconds (optional)"},
+			"headers":             map[string]string{"type": "object", "description": "Extra request headers (optional, e.g. {\"Referer\": \"...\"})"},
+			"cookie":              map[string]string{"type": "string", "description": "Cookie request header shortcut (optional)"},
+			"use_browser_cookies": map[string]string{"type": "boolean", "description": "Reuse the live browser session's cookies/UA for this download (optional; open the site with the browser tool first for Cloudflare-protected sites)"},
+			"via_browser":         map[string]string{"type": "boolean", "description": "Let the browser itself download the URL (optional; browser cookies/fingerprint, inline PDFs are forced to disk; last resort when HTTP-level downloads are blocked)"},
 		},
 		Required: []string{"url"},
 		HandlerCtx: guardedHandlerCtx(deps, "download_file", func(ctx context.Context, args map[string]interface{}) string {

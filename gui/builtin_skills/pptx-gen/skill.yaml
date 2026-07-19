@@ -1,0 +1,32 @@
+name: pptx-gen
+description: "PPT 生成 — 根据 JSON 大纲生成 PowerPoint 演示文稿（.pptx）。输入为包含 title 与 slides（标题/要点/备注）的 JSON 文件，支持中文。"
+triggers:
+    - 生成PPT
+    - 制作PPT
+    - PPT制作
+    - 做PPT
+    - make pptx
+    - generate pptx
+    - create presentation
+requires:
+    python:
+        - python-pptx
+steps:
+    - action: bash
+      params:
+        command: python -m pip install python-pptx --quiet 2>&1
+        timeout: 60000
+      continue_on_error: true
+
+    - action: bash
+      params:
+        command: python "{baseDir}/scripts/build_pptx.py" --input "{{input}}" --output "{{output}}"
+        timeout: 120000
+      continue_on_error: false
+      on_error: "PPTX 生成失败，请检查输入的大纲 JSON 文件是否合法（需含 title 与 slides 数组）"
+
+status: active
+platforms:
+    - universal
+requires_gui: false
+produces_artifact: true

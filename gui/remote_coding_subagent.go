@@ -1406,11 +1406,18 @@ func (c *remoteCodingCallbacks) executeRemoteTodoWrite(argsJSON string) string {
 			userID = strings.TrimSpace(c.agent.loopCtx.UserID)
 		}
 	}
-	text, _ := executeCodingAgentTodoWrite(&c.todos, argsJSON, onProgress, func(items []codingAgentTodoItem) {
-		if c.agent != nil && c.agent.handler != nil && userID != "" {
-			publishCodingAgentTodosToUI(c.agent.handler, userID, items)
+	var handler *IMMessageHandler
+	if c.agent != nil {
+		handler = c.agent.handler
+	}
+	text, outcome := executeCodingAgentTodoWrite(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
+		if handler != nil && userID != "" {
+			publishCodingAgentTodosToUI(handler, userID, items)
 		}
 	})
+	if outcome == codingToolOutcomeSuccess {
+		text = annotateTodoChecklistForOrchestratedPlan(handler, userID, text)
+	}
 	return text
 }
 

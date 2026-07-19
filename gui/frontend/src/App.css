@@ -25,6 +25,12 @@
     --radius-md: 6px;
     --radius-lg: 8px;
     --radius-xl: 10px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
     --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-normal: 180ms cubic-bezier(0.4, 0, 0.2, 1);
     --theme-primary: #2f5f98;
@@ -1335,20 +1341,31 @@ body {
 
 .sidebar-system-status__provider-dropdown {
     /* position: fixed applied via inline style with computed coordinates */
+    /* max-width 280 must stay in sync with DROPDOWN_EST_MAX_WIDTH in sidebarProviderDropdownPos.ts */
     min-width: 160px;
-    max-width: 240px;
+    max-width: min(280px, calc(100vw - 16px));
     padding: 4px 0;
     border: 1px solid var(--theme-border);
     border-radius: 6px;
     background: var(--theme-surface);
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.12), 0 0 1px rgba(0, 0, 0, 0.08);
     z-index: 99999;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* Opacity-only appear: avoid transform on position:fixed (can create a containing-block edge case). */
     animation: provider-dropdown-appear 120ms ease-out;
 }
 
 @keyframes provider-dropdown-appear {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar-system-status__provider-dropdown {
+        animation: none;
+    }
 }
 
 .sidebar-system-status__provider-dropdown-item {
@@ -1356,6 +1373,7 @@ body {
     align-items: center;
     gap: 6px;
     width: 100%;
+    box-sizing: border-box;
     padding: 6px 12px;
     border: none;
     background: transparent;
@@ -1365,9 +1383,6 @@ body {
     line-height: 1.4;
     text-align: left;
     cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     transition: background var(--transition-fast);
 }
 
@@ -1396,8 +1411,30 @@ body {
 .sidebar-system-status__provider-dropdown-check {
     flex: 0 0 auto;
     width: 14px;
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
     text-align: center;
+    color: var(--theme-primary);
+}
+
+/* Flex child needs min-width:0 for ellipsis to work on long provider names. */
+.sidebar-system-status__provider-dropdown-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-system-status__provider-dropdown-section-label {
+    padding: 4px 12px 2px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--theme-text-secondary);
+    text-transform: none;
+    user-select: none;
 }
 
 .sidebar-system-status__provider-dropdown-sep {

@@ -1,4 +1,4 @@
-﻿import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const executeMaclawAppBusinessOperationMock = vi.hoisted(() => vi.fn());
@@ -127,26 +127,27 @@ async function findRuntimeGovernancePanel() {
 }
 
 function getManageTab() {
-    return screen.queryByRole('tab', { name: /\u5e94\u7528\u7ba1\u7406|Manage/ })
-        || screen.queryByRole('button', { name: /\u5e94\u7528\u7ba1\u7406|Manage apps/ })
-        || screen.getByText('\u5e94\u7528\u7ba1\u7406');
+    return screen.queryByRole('tab', { name: /\u5e94\u7528\u7ba1\u7406|\u61c9\u7528\u7ba1\u7406|Manage/ })
+        || screen.queryByRole('button', { name: /\u5e94\u7528\u7ba1\u7406|\u61c9\u7528\u7ba1\u7406|Manage apps/ })
+        || screen.getByText(/\u5e94\u7528\u7ba1\u7406|\u61c9\u7528\u7ba1\u7406/);
 }
 
 function getCreateTab() {
-    return screen.queryByRole('tab', { name: /Create app|\u521b\u5efa\u5e94\u7528/ })
-        || screen.getByText('\u521b\u5efa\u5e94\u7528');
+    return screen.queryByRole('tab', { name: /Create app|\u521b\u5efa\u5e94\u7528|\u5efa\u7acb\u61c9\u7528/ })
+        || screen.getByText(/\u521b\u5efa\u5e94\u7528|\u5efa\u7acb\u61c9\u7528/);
 }
 
 function getPublishTab() {
     return screen.queryByText('\u5ba1\u6838/\u53d1\u5e03')
-        || screen.getByRole('tab', { name: /Review \/ publish|\u5ba1\u6838\/\u53d1\u5e03/ });
+        || screen.queryByText('\u7a3d\u6838/\u91cb\u51fa')
+        || screen.getByRole('tab', { name: /Review \/ publish|\u5ba1\u6838\/\u53d1\u5e03|\u7a3d\u6838\/\u91cb\u51fa/ });
 }
 
 function getMarketTab() {
-    return screen.queryByRole('button', { name: /App Market|\u5e94\u7528\u5e02\u573a/ })
+    return screen.queryByRole('button', { name: /App Market|\u5e94\u7528\u5e02\u573a|\u61c9\u7528\u5e02\u5834/ })
         || screen.queryByText('App Market')
-        || screen.queryByText('\u5e94\u7528\u5e02\u573a')
-        || screen.getByText('\u5e94\u7528\u5e02\u573a');
+        || screen.queryByText(/\u5e94\u7528\u5e02\u573a|\u61c9\u7528\u5e02\u5834/)
+        || screen.getByText(/\u5e94\u7528\u5e02\u573a|\u61c9\u7528\u5e02\u5834/);
 }
 
 function getCreateAppNameInput() {
@@ -155,11 +156,11 @@ function getCreateAppNameInput() {
 
 /** Primary create action in App Studio (not the studio entry button or create tab). */
 function getCreateLocalAppButton() {
-    const byPanelOnly = screen.queryByRole('button', { name: /仅添加到面板|Add to panel only/ });
+    const byPanelOnly = screen.queryByRole('button', { name: /仅添加到面板|僅新增到面板|Add to panel only/ });
     if (byPanelOnly) return byPanelOnly;
     const primary = document.querySelector('.apps-actions .apps-primary-button') as HTMLButtonElement | null;
-    if (primary && /创建应用|Create app/i.test(primary.textContent || '')) return primary;
-    const matches = screen.getAllByRole('button', { name: /创建应用|Create app/ });
+    if (primary && /创建应用|建立應用|Create app/i.test(primary.textContent || '')) return primary;
+    const matches = screen.getAllByRole('button', { name: /创建应用|建立應用|Create app/ });
     const action = matches.find((node) => node.classList.contains('apps-primary-button'));
     if (action) return action;
     throw new Error('local app create button not found');
@@ -1568,10 +1569,10 @@ describe('AppsPage', () => {
         const workflowSkillPicker = screen.getByTestId('studio-workflow-skill-id');
         await waitFor(() => expect(within(workflowSkillPicker).getAllByText('expense-workflow').length).toBeGreaterThan(0));
         fireEvent.change(screen.getByTestId('studio-dependency-install-ref'), { target: { value: 'cap-hub-expense-workflow' } });
-        fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'left_nav' } });
+        fireEvent.click(screen.getByTestId('studio-layout-template-left_nav'));
         fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'compact' } });
         fireEvent.click(screen.getByTestId('studio-layout-slot-right'));
-        fireEvent.click(screen.getByTestId('studio-layout-output-bottom'));
+        fireEvent.change(screen.getByTestId('studio-output-region'), { target: { value: 'bottom' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-result_panel'), { target: { value: 'bottom' } });
         fireEvent.click(screen.getByTestId('studio-layout-region-visible-approval_detail'));
         fireEvent.click(screen.getByTestId('studio-layout-region-request_form-order-down'));
@@ -1648,10 +1649,10 @@ describe('AppsPage', () => {
         fireEvent.change(screen.getByTestId('studio-business-preferred-view'), { target: { value: 'sales.customer_directory' } });
         fireEvent.change(screen.getByTestId('studio-business-preferred-report'), { target: { value: 'sales.customer_activity' } });
         fireEvent.change(screen.getByTestId('studio-business-preferred-dashboard'), { target: { value: 'sales.overview' } });
-        fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'dashboard' } });
+        fireEvent.click(screen.getByTestId('studio-layout-template-dashboard'));
         fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'spacious' } });
         fireEvent.click(screen.getByTestId('studio-layout-slot-center'));
-        fireEvent.click(screen.getByTestId('studio-layout-output-right'));
+        fireEvent.change(screen.getByTestId('studio-output-region'), { target: { value: 'right' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-output_panel'), { target: { value: 'right' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-operation_form'), { target: { value: 'center' } });
         fireEvent.click(screen.getByTestId('studio-layout-region-record_detail-order-up'));
@@ -1747,10 +1748,10 @@ describe('AppsPage', () => {
         fireEvent.change(screen.getByTestId('studio-approval-event'), { target: { value: 'expense.submitted' } });
         fireEvent.change(screen.getByTestId('studio-approval-object-role'), { target: { value: 'expense_report' } });
         fireEvent.change(screen.getByTestId('studio-dependency-install-ref'), { target: { value: 'cap-hub-expense-workflow' } });
-        fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'left_nav' } });
+        fireEvent.click(screen.getByTestId('studio-layout-template-left_nav'));
         fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'compact' } });
         fireEvent.click(screen.getByTestId('studio-layout-slot-right'));
-        fireEvent.click(screen.getByTestId('studio-layout-output-bottom'));
+        fireEvent.change(screen.getByTestId('studio-output-region'), { target: { value: 'bottom' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-result_panel'), { target: { value: 'bottom' } });
         fireEvent.click(screen.getByTestId('studio-layout-region-visible-approval_detail'));
         fireEvent.click(screen.getByTestId('studio-layout-region-request_form-order-down'));
@@ -1878,10 +1879,10 @@ describe('AppsPage', () => {
         await waitFor(() => expect(within(toolSkillPicker).getAllByText('invoice-review').length).toBeGreaterThan(0));
         fireEvent.click(within(toolSkillPicker).getByRole('option', { name: /invoice-review/ }) as HTMLButtonElement);
         fireEvent.change(getCreateAppNameInput(), { target: { value: '发票审核' } });
-        fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'dashboard' } });
+        fireEvent.click(screen.getByTestId('studio-layout-template-dashboard'));
         fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'compact' } });
         fireEvent.click(screen.getByTestId('studio-layout-slot-center'));
-        fireEvent.click(screen.getByTestId('studio-layout-output-bottom'));
+        fireEvent.change(screen.getByTestId('studio-output-region'), { target: { value: 'bottom' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-output_panel'), { target: { value: 'bottom' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-file_queue'), { target: { value: 'center' } });
         fireEvent.click(screen.getByTestId('studio-layout-region-visible-settings_panel'));
@@ -2103,6 +2104,28 @@ describe('AppsPage', () => {
         expect(packagePreview.apps).toEqual([]);
         expect(screen.getByText('Workspace layout')).not.toBeNull();
         expect(screen.getByText('结果契约')).not.toBeNull();
+    });
+
+    it('renders the publish checklist in zh-Hant', () => {
+        window.localStorage.clear();
+        render(<AppsPage lang="zh-Hant" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.change(getCreateAppNameInput(), { target: { value: '合約歸檔' } });
+        // Shared studio designers render zh-Hant (layout template + region pill).
+        expect(screen.getAllByText('文件工作臺').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('檔案佇列').length).toBeGreaterThan(0);
+        clickCreateLocalApp();
+        fireEvent.click(getPublishTab());
+
+        expect(screen.getByText('釋出檢查')).not.toBeNull();
+        expect(screen.getByText('需補齊')).not.toBeNull();
+        expect(screen.getByText('Manifest 結構')).not.toBeNull();
+        expect(screen.getByText('執行證據')).not.toBeNull();
+        expect(screen.getByText('依賴 Skill')).not.toBeNull();
+        expect(screen.getByText(/尚無執行證據/)).not.toBeNull();
+        expect(screen.getByText(/檢查項：\d+\/\d+ 透過/)).not.toBeNull();
+        expect(screen.queryByText('运行证据')).toBeNull();
     });
 
     it('blocks publish readiness when workspace layout misses required region roles', () => {
@@ -3748,7 +3771,7 @@ describe('AppsPage', () => {
         expect(card).toBeTruthy();
         const submitButton = within(card).getByText('One-click publish') as HTMLButtonElement;
         expect(submitButton.disabled).toBe(true);
-        expect(within(card).getByText('Run evidence is stale for the current app definition; rerun the test')).not.toBeNull();
+        expect(within(card).getByText('Definition changed; run evidence is stale — rerun the app to refresh it')).not.toBeNull();
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
     });
 
@@ -3847,7 +3870,7 @@ describe('AppsPage', () => {
         fireEvent.click(screen.getByText('Review / publish'));
         const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes(app.name)) as HTMLElement;
         expect(card).toBeTruthy();
-        expect(within(card).getByText('Run evidence is stale for the current app definition; rerun the test')).not.toBeNull();
+        expect(within(card).getByText('Definition changed; run evidence is stale — rerun the app to refresh it')).not.toBeNull();
         expect((within(card).getByText('One-click publish') as HTMLButtonElement).disabled).toBe(true);
         expect(submitMaclawAppPackage).not.toHaveBeenCalled();
     });
@@ -5119,10 +5142,10 @@ describe('AppsPage', () => {
 
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
         fireEvent.change(document.querySelector('.apps-create-form input[placeholder]') as HTMLInputElement, { target: { value: 'layout-workbench' } });
-        fireEvent.change(screen.getByTestId('studio-layout-template'), { target: { value: 'left_nav' } });
+        fireEvent.click(screen.getByTestId('studio-layout-template-left_nav'));
         fireEvent.change(screen.getByTestId('studio-layout-density'), { target: { value: 'compact' } });
         fireEvent.click(screen.getByTestId('studio-layout-slot-center'));
-        fireEvent.click(screen.getByTestId('studio-layout-output-bottom'));
+        fireEvent.change(screen.getByTestId('studio-output-region'), { target: { value: 'bottom' } });
         fireEvent.change(screen.getByTestId('studio-layout-region-output_panel'), { target: { value: 'left' } });
 
         expect(screen.getByText(/"template": "left_nav"/)).not.toBeNull();
@@ -5335,8 +5358,8 @@ describe('AppsPage', () => {
         fireEvent.click(getStudioButton());
         fireEvent.click(screen.getByRole('button', { name: /^Business app$|^企业普通应用?/ }));
         fireEvent.change(screen.getByPlaceholderText('Example: Contract filing'), { target: { value: 'Visual Layout Desk' } });
-        fireEvent.click(screen.getByTestId('studio-layout-region-record_list-move-right'));
-        fireEvent.click(screen.getByTestId('studio-layout-region-output_panel-move-bottom'));
+        fireEvent.change(screen.getByTestId('studio-layout-region-record_list'), { target: { value: 'right' } });
+        fireEvent.change(screen.getByTestId('studio-layout-region-output_panel'), { target: { value: 'bottom' } });
         fireEvent.click(screen.getByRole('button', { name: 'Create app' }));
 
         const stored = JSON.parse(window.localStorage.getItem('maclaw:apps-panel:v1') || '{}');
@@ -5429,15 +5452,16 @@ describe('AppsPage', () => {
         const toggle = within(preview).getByRole('button', { name: /Current draft manifest/ });
         const manifest = document.getElementById('apps-create-manifest-preview') as HTMLPreElement;
 
-        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        // Collapsed by default so the sticky action bar stays in view.
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
         expect(toggle.getAttribute('aria-controls')).toBe('apps-create-manifest-preview');
-        expect(manifest.hidden).toBe(false);
+        expect(manifest.hidden).toBe(true);
 
         fireEvent.click(toggle);
 
-        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
         expect(document.getElementById('apps-create-manifest-preview')).toBe(manifest);
-        expect(manifest.hidden).toBe(true);
+        expect(manifest.hidden).toBe(false);
     });
 
     it('creates a local app entry from app studio', () => {
@@ -7690,7 +7714,7 @@ describe('AppsPage', () => {
         })));
     });
 
-    it('keeps the run button hidden after a skill app run completes', async () => {
+    it('shows a run-again button after a skill app run completes', async () => {
         const { container } = render(<AppsPage lang="zh-Hans" />);
 
         fireEvent.click(screen.getAllByText('PDF 转 Word')[0]);
@@ -7702,7 +7726,8 @@ describe('AppsPage', () => {
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-to-word', expect.any(Object)));
         await waitFor(() => expect(document.querySelector('.apps-result-panel[data-state="done"]')).not.toBeNull());
         const actions = document.querySelector('.apps-runtime-actions') as HTMLElement;
-        expect(within(actions).queryByText('执行')).toBeNull();
+        const runAgainButton = within(actions).getByText('重新执行') as HTMLButtonElement;
+        expect(runAgainButton.disabled).toBe(false);
         expect(screen.queryByRole('progressbar')).toBeNull();
         await waitFor(() => {
             const activeRuns = JSON.parse(window.localStorage.getItem(activeRunStorageKey) || '{}') as Record<string, unknown>;
@@ -7710,7 +7735,7 @@ describe('AppsPage', () => {
         });
     });
 
-    it('hides the run button and shows running progress while a skill app is executing', async () => {
+    it('disables the run button and shows running progress while a skill app is executing', async () => {
         getNLSkillRunStatusMock.mockResolvedValue({
             run_id: 'run-test-1',
             status: 'running',
@@ -7727,7 +7752,8 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalledWith('pdf-to-word', expect.any(Object)));
         const actions = document.querySelector('.apps-runtime-actions') as HTMLElement;
-        expect(within(actions).queryByText('执行')).toBeNull();
+        const runButton = within(actions).getByText('执行') as HTMLButtonElement;
+        expect(runButton.disabled).toBe(true);
         expect(within(actions).getByText('取消执行')).not.toBeNull();
         expect(document.querySelector('.apps-result-panel[data-state="running"] .apps-result-progress')).not.toBeNull();
         expect(screen.getByRole('progressbar')).not.toBeNull();
@@ -8385,7 +8411,7 @@ describe('AppsPage', () => {
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Operations Dashboard')) as HTMLElement;
         fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
         const dialog = screen.getByRole('dialog');
-        expect((within(dialog).getByTestId('edit-layout-template') as HTMLSelectElement).value).toBe('dashboard');
+        expect(within(dialog).getByTestId('edit-layout-template-dashboard').getAttribute('aria-pressed')).toBe('true');
         expect((within(dialog).getByTestId('edit-layout-density') as HTMLSelectElement).value).toBe('spacious');
     });
     it('saves enterprise normal business bindings from App Studio into the manifest', () => {
@@ -8700,7 +8726,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
 
         const manageRows = document.querySelectorAll('.apps-manage-row');
-        const editButton = (manageRows[0] as HTMLElement).querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement;
+        const editButton = (manageRows[0] as HTMLElement).querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement;
         editButton.focus();
         fireEvent.click(editButton);
 
@@ -8880,7 +8906,7 @@ describe('AppsPage', () => {
         const dialog = screen.getByRole('dialog');
         fireEvent.click(within(dialog).getByTestId('edit-layout-template-left_nav'));
         fireEvent.click(within(dialog).getByTestId('edit-layout-slot-center'));
-        fireEvent.click(within(dialog).getByTestId('edit-layout-output-bottom'));
+        fireEvent.change(within(dialog).getByTestId('edit-output-region'), { target: { value: 'bottom' } });
         fireEvent.click(within(dialog).getByText('保存'));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         fireEvent.click(getManageTab());
@@ -8949,7 +8975,7 @@ describe('AppsPage', () => {
         fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
         const dialog = screen.getByRole('dialog');
         fireEvent.click(within(dialog).getByTestId('edit-layout-template-dashboard'));
-        fireEvent.click(within(dialog).getByTestId('edit-layout-output-bottom'));
+        fireEvent.change(within(dialog).getByTestId('edit-output-region'), { target: { value: 'bottom' } });
         fireEvent.click(within(dialog).getByText('Save'));
 
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -8995,7 +9021,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelector('.apps-studio-button') as HTMLButtonElement);
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Editable Approval Nodes')) as HTMLElement;
-        fireEvent.click((row.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
+        fireEvent.click((row.querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement));
         const dialog = screen.getByRole('dialog');
         expect((within(dialog).getByTestId('edit-workflow-skill-install-ref') as HTMLInputElement).value).toBe('cap-hub-expense-flow');
         fireEvent.change(within(dialog).getByTestId('edit-workflow-skill-install-ref'), { target: { value: 'cap-hub-expense-flow-v2' } });
@@ -9024,7 +9050,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
 
         const pdfWordRow = Array.from(document.querySelectorAll('.apps-manage-row')).find((row) => row.textContent?.includes('PDF')) as HTMLElement;
-        fireEvent.click((pdfWordRow.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
+        fireEvent.click((pdfWordRow.querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement));
 
         const dialog = screen.getByRole('dialog');
         await waitFor(() => expect(within(dialog).getByRole('option', { name: /pdf-word-v2/ })).not.toBeNull());
@@ -9047,7 +9073,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
 
         const firstRow = document.querySelector('.apps-manage-row') as HTMLElement;
-        fireEvent.click((firstRow.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement));
+        fireEvent.click((firstRow.querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement));
 
         const dialog = screen.getByRole('dialog');
         const fileInput = dialog.querySelector('.apps-custom-icon-upload input[type="file"]') as HTMLInputElement;
@@ -9094,7 +9120,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
 
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Portable Icon App')) as HTMLElement;
-        fireEvent.click(row.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement);
+        fireEvent.click(row.querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement);
         fireEvent.click(within(screen.getByRole('dialog')).getByText('Save'));
 
         await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
@@ -9187,7 +9213,7 @@ describe('AppsPage', () => {
         fireEvent.click(document.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement);
 
         const row = Array.from(document.querySelectorAll('.apps-manage-row')).find((item) => item.textContent?.includes('Reimbursement Approval')) as HTMLElement;
-        fireEvent.click(row.querySelector('.apps-manage-actions .apps-secondary-button') as HTMLButtonElement);
+        fireEvent.click(row.querySelector('.apps-manage-actions .apps-tonal-button') as HTMLButtonElement);
         fireEvent.click(within(screen.getByRole('dialog')).getByText('Save'));
 
         await waitFor(() => expect(saveMaclawAppDefinitionForSkillMock).toHaveBeenCalledTimes(1));
@@ -10747,7 +10773,7 @@ describe('AppsPage', () => {
             source: 'market',
             installed_at: '2026-06-27T09:05:00Z',
             app_count: 1,
-            apps: [{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱', kind: 'tool_app' }],
+            apps: [{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }],
             dependencies: installPlan.dependencies,
             dependency_verification: {
                 schema: 'maclaw.app.install_plan.v1',
@@ -10801,7 +10827,7 @@ describe('AppsPage', () => {
             expect(installed?.installEvidence?.package_sha256).toBe('sha256-top-level-install');
             expect(installed?.installEvidence?.source).toBe('market');
             expect(installed?.installEvidence?.installed_at).toBe('2026-06-27T09:05:00Z');
-            expect(installed?.installEvidence?.apps).toEqual([{ id: 'market-contract-archive', name: '閸氬牆鎮撹ぐ鎺撱', kind: 'tool_app' }]);
+            expect(installed?.installEvidence?.apps).toEqual([{ id: 'market-contract-archive', name: '合同归档', kind: 'tool_app' }]);
             expect(installed?.installEvidence?.test_evidence?.run_id).toBe('run-top-level-install');
             expect(installed?.installEvidence?.dependency_verification?.dependencies).toHaveLength(1);
             expect(installed?.installEvidence?.dependency_verification?.dependencies?.[0]?.id).toBe('contract-archive-skill');

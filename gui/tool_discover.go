@@ -97,6 +97,13 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 			ranked = append(ranked, discoveredToolScore{name: name, score: score})
 		}
 	}
+	// Expert session: drop matches outside the expert allow-list so discovery
+	// neither leaks unauthorized tool names nor activates them below.
+	if ownerID, ok := h.currentRuntimePolicyOwnerState(); ok {
+		if def := expertDefForUserID(ownerID); def != nil && len(def.Tools) > 0 {
+			ranked = filterDiscoveredToolsForExpert(ranked, mcpMatches, def)
+		}
+	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].score != ranked[j].score {
 			return ranked[i].score > ranked[j].score
@@ -189,6 +196,29 @@ func (h *IMMessageHandler) toolDiscoverTool(args map[string]interface{}) string 
 func shouldHideToolFromDiscovery(name string) bool {
 	name = strings.TrimSpace(name)
 	return name != MergedBrowserToolName && strings.HasPrefix(name, "browser_")
+}
+
+// filterDiscoveredToolsForExpert removes discovery matches outside the expert's
+// tool allow-list. MCP matches map to the call_mcp_tool gateway tool: they are
+// kept only when call_mcp_tool itself is allowed.
+func filterDiscoveredToolsForExpert(ranked []discoveredToolScore, mcpMatches map[string]discoverableMCPTool, def *ExpertDefinition) []discoveredToolScore {
+	if def == nil || len(def.Tools) == 0 {
+		return ranked
+	}
+	allow := expertToolAllowSet(def)
+	out := make([]discoveredToolScore, 0, len(ranked))
+	for _, item := range ranked {
+		if _, isMCP := mcpMatches[item.name]; isMCP {
+			if allow["call_mcp_tool"] {
+				out = append(out, item)
+			}
+			continue
+		}
+		if allow[item.name] {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 type discoverableMCPTool struct {

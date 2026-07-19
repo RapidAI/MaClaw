@@ -896,8 +896,8 @@ func TestAppendSkillRunSummary_RunningSkillStillShowsPollingGuidance(t *testing.
 		},
 	}, "run-poll-1")
 	got := b.String()
-	// Running skill should still suggest polling.
-	if !strings.Contains(got, "get_skill_run") {
+	// Running skill should still suggest polling (manage_skill status action).
+	if !strings.Contains(got, `manage_skill(action="status"`) {
 		t.Fatalf("expected polling guidance for running skill, got %s", got)
 	}
 	// But completed step output should still be visible.

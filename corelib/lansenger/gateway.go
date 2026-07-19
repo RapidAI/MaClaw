@@ -34,7 +34,7 @@ const (
 	lansengerPongWait     = 45 * time.Second
 	lansengerMaxConnAge   = 12 * time.Hour
 	lansengerMaxBackoff   = 30 * time.Second
-	lansengerAPIMaxRetry  = 3
+	lansengerAPIMaxRetry  = 5 // more attempts for flaky enterprise gateways (EOF / TLS drop)
 )
 
 // Config holds the credentials and endpoints for a Lansenger bot.
@@ -570,8 +570,16 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 				case websocket.IsUnexpectedCloseError(err):
 					errType = "unexpected_close"
 				}
-				log.Printf("[lansenger] error: WS read failed: type=%s err=%v (idle=%v, msgs=%d, uptime=%v)",
-					errType, err, idleDuration.Truncate(time.Second),
+				// Idle NAT/proxy drops are expected for long-lived IM sockets;
+				// log as warning so reconnect noise is not treated as a hard fault.
+				level := "error"
+				if errType == "connection_closed" || errType == "eof" {
+					if idleDuration >= 2*time.Minute || msgCount == 0 {
+						level = "warning"
+					}
+				}
+				log.Printf("[lansenger] %s: WS read failed: type=%s err=%v (idle=%v, msgs=%d, uptime=%v)",
+					level, errType, err, idleDuration.Truncate(time.Second),
 					msgCount, time.Since(loopStart).Truncate(time.Second))
 			}
 			return
@@ -1120,7 +1128,9 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 	}
 
 	log.Printf("[lansenger] refreshing app token from %s", g.config.ApiGatewayURL)
-	url := fmt.Sprintf("%s/v1/apptoken/create?grant_type=client_credential&appid=%s&secret=%s",
+	// Secret is intentionally kept out of log lines; errors from net/http embed
+	// the full request URL, so every log/return path must go through redactHTTPError.
+	tokenURL := fmt.Sprintf("%s/v1/apptoken/create?grant_type=client_credential&appid=%s&secret=%s",
 		strings.TrimRight(g.config.ApiGatewayURL, "/"),
 		url.QueryEscape(g.config.AppID),
 		url.QueryEscape(g.config.AppSecret),
@@ -1128,11 +1138,15 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 
 	var lastErr error
 	for attempt := 1; attempt <= lansengerAPIMaxRetry; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", tokenURL, nil)
 		if err != nil {
 			return "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		// Credential GETs put secret in the query string. Force a non-reused
+		// connection: stale keep-alives to enterprise gateways often surface as EOF.
+		req.Close = true
+		req.Header.Set("Connection", "close")
 
 		reqStart := time.Now()
 		resp, err := g.client.Do(req)
@@ -1141,9 +1155,11 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-			lastErr = fmt.Errorf("token request failed (took %v): %w", reqDuration, err)
-			log.Printf("[lansenger] error: token request failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, err)
+			safeErr := redactHTTPError(err)
+			lastErr = fmt.Errorf("token request failed (took %v): %w", reqDuration, safeErr)
+			log.Printf("[lansenger] error: token request failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
@@ -1153,9 +1169,11 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			lastErr = fmt.Errorf("token body read failed (took %v): %w", reqDuration, readErr)
-			log.Printf("[lansenger] error: token body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, readErr)
+			safeErr := redactHTTPError(readErr)
+			lastErr = fmt.Errorf("token body read failed (took %v): %w", reqDuration, safeErr)
+			log.Printf("[lansenger] error: token body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
@@ -1214,6 +1232,7 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 			return "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Close = true
 
 		reqStart := time.Now()
 		resp, err := g.client.Do(req)
@@ -1222,9 +1241,11 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-			lastErr = fmt.Errorf("ws endpoint request failed (took %v): %w", reqDuration, err)
-			log.Printf("[lansenger] error: ws endpoint request failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, err)
+			safeErr := redactHTTPError(err)
+			lastErr = fmt.Errorf("ws endpoint request failed (took %v): %w", reqDuration, safeErr)
+			log.Printf("[lansenger] error: ws endpoint request failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
@@ -1234,9 +1255,11 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			lastErr = fmt.Errorf("ws endpoint body read failed (took %v): %w", reqDuration, readErr)
-			log.Printf("[lansenger] error: ws endpoint body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, readErr)
+			safeErr := redactHTTPError(readErr)
+			lastErr = fmt.Errorf("ws endpoint body read failed (took %v): %w", reqDuration, safeErr)
+			log.Printf("[lansenger] error: ws endpoint body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
@@ -1327,6 +1350,121 @@ func redactWebSocketURL(raw string) string {
 	u.ForceQuery = false
 	u.Fragment = ""
 	return u.String()
+}
+
+// sensitiveQueryKeys are credential-bearing query parameter names (any case).
+var sensitiveQueryKeys = []string{
+	"secret", "appsecret", "app_secret", "apptoken", "app_token", "token", "access_token",
+}
+
+// redactSecretURL strips credentials from request URLs before logging.
+// Handles ?secret= / appToken= / token= query params and userinfo.
+func redactSecretURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		return redactSecretQueryInString(raw)
+	}
+	if u.User != nil {
+		u.User = url.User("***")
+	}
+	if u.RawQuery != "" {
+		q := u.Query()
+		for key := range q {
+			lk := strings.ToLower(key)
+			for _, sk := range sensitiveQueryKeys {
+				if lk == sk {
+					q.Set(key, "***")
+					break
+				}
+			}
+		}
+		u.RawQuery = q.Encode()
+	}
+	u.Fragment = ""
+	return u.String()
+}
+
+func redactSecretQueryInString(s string) string {
+	// Fallback when err.Error() embeds a URL that url.Parse cannot fully handle.
+	// Only match real query/form parameter boundaries so path segments like
+	// "/v1/apptoken/create" or already-redacted "secret=***" cannot loop forever.
+	out := s
+	for _, key := range sensitiveQueryKeys {
+		needle := key + "="
+		searchFrom := 0
+		for {
+			if searchFrom > len(out) {
+				break
+			}
+			lower := strings.ToLower(out)
+			rel := strings.Index(lower[searchFrom:], needle)
+			if rel < 0 {
+				break
+			}
+			idx := searchFrom + rel
+			// Require start / ? / & / space / quote before the key (param boundary).
+			if idx > 0 {
+				prev := out[idx-1]
+				if prev != '?' && prev != '&' && prev != ' ' && prev != '"' && prev != '\'' {
+					searchFrom = idx + 1
+					continue
+				}
+			}
+			start := idx + len(needle)
+			end := start
+			for end < len(out) {
+				c := out[end]
+				if c == '&' || c == ' ' || c == '"' || c == '\'' || c == ')' || c == '\n' || c == '\r' || c == '\t' {
+					break
+				}
+				end++
+			}
+			out = out[:start] + "***" + out[end:]
+			// Advance past the placeholder so a second pass cannot re-match forever.
+			searchFrom = start + len("***")
+		}
+	}
+	return out
+}
+
+// redactHTTPError returns an error safe to log. net/http wraps the request URL
+// (including ?secret=) in *url.Error; strip credentials before surfaces.
+func redactHTTPError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		cp := *ue
+		cp.URL = redactSecretURL(ue.URL)
+		if cp.Err != nil {
+			// Nested errors may still embed the raw URL string.
+			cp.Err = errors.New(redactSecretQueryInString(cp.Err.Error()))
+		}
+		return &cp
+	}
+	msg := err.Error()
+	redacted := redactSecretQueryInString(msg)
+	if redacted == msg {
+		return err
+	}
+	return errors.New(redacted)
+}
+
+// closeIdleHTTPConns drops keep-alive sockets so the next attempt opens a new
+// TCP/TLS session. Useful after EOF / broken pipe from intermediate proxies.
+func (g *Gateway) closeIdleHTTPConns() {
+	if g == nil || g.client == nil {
+		return
+	}
+	if tr, ok := g.client.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	if g.mediaClient != nil {
+		if tr, ok := g.mediaClient.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,7 +1773,7 @@ func (g *Gateway) uploadMedia(ctx context.Context, appToken string, data []byte,
 
 	resp, err := g.mediaClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("upload request: %w", err)
+		return "", fmt.Errorf("upload request: %w", redactHTTPError(err))
 	}
 	defer resp.Body.Close()
 
@@ -1683,7 +1821,7 @@ func (g *Gateway) downloadMedia(ctx context.Context, mediaID string) ([]byte, st
 	}
 	resp, err := g.mediaClient.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, "", redactHTTPError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -1780,10 +1918,10 @@ func (g *Gateway) sendGroupMessage(ctx context.Context, token, groupID, msgType 
 	return g.doPost(ctx, url, body)
 }
 
-func (g *Gateway) doPost(ctx context.Context, url string, body []byte) error {
+func (g *Gateway) doPost(ctx context.Context, rawURL string, body []byte) error {
 	var lastErr error
 	for attempt := 1; attempt <= lansengerAPIMaxRetry; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", rawURL, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
@@ -1795,25 +1933,31 @@ func (g *Gateway) doPost(ctx context.Context, url string, body []byte) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			lastErr = err
-			log.Printf("[lansenger] error: API POST failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), err)
+			// app_token lives in the query string — never log/return raw net/http errors.
+			safeErr := redactHTTPError(err)
+			lastErr = safeErr
+			log.Printf("[lansenger] error: API POST failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				// Drop bad keep-alives only on transport failure (not on every send).
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
-			return err
+			return safeErr
 		}
 
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			lastErr = readErr
-			log.Printf("[lansenger] error: API POST body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), readErr)
+			safeErr := redactHTTPError(readErr)
+			lastErr = safeErr
+			log.Printf("[lansenger] error: API POST body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
-			return readErr
+			return safeErr
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -1844,9 +1988,14 @@ func (g *Gateway) doPost(ctx context.Context, url string, body []byte) error {
 }
 
 func apiRetryBackoff(ctx context.Context, attempt int) {
+	// Linear backoff capped at 3s: 500ms, 1s, 1.5s, 2s, 2.5s… — enough to ride
+	// out short enterprise-gateway TLS drops without stalling permanent failures.
+	if attempt < 1 {
+		attempt = 1
+	}
 	delay := time.Duration(attempt) * 500 * time.Millisecond
-	if delay > 2*time.Second {
-		delay = 2 * time.Second
+	if delay > 3*time.Second {
+		delay = 3 * time.Second
 	}
 	select {
 	case <-ctx.Done():

@@ -606,6 +606,48 @@ func (a *App) isMaclawLLMConfigured() bool {
 	return strings.TrimSpace(cfg.URL) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
+// SetMaclawLLMCurrentModel updates only the model id/name for the currently
+// selected MaClaw LLM provider. Unlike SaveMaclawLLMProviders, this does not
+// clear session multi-model council sticky state.
+func (a *App) SetMaclawLLMCurrentModel(model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return fmt.Errorf("model is required")
+	}
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		currentRaw := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+		currentCanon := canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(currentRaw))
+		for i := range cfg.MaclawLLMProviders {
+			pName := strings.TrimSpace(cfg.MaclawLLMProviders[i].Name)
+			pCanon := canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(pName))
+			if pName != currentRaw && (currentCanon == "" || pCanon != currentCanon) {
+				continue
+			}
+			cfg.MaclawLLMProviders[i].Model = model
+			has := false
+			for _, m := range cfg.MaclawLLMProviders[i].Models {
+				if strings.TrimSpace(m) == model {
+					has = true
+					break
+				}
+			}
+			if !has {
+				cfg.MaclawLLMProviders[i].Models = append(cfg.MaclawLLMProviders[i].Models, model)
+			}
+			break
+		}
+		// Always keep the legacy flat field aligned (used by some status paths).
+		cfg.MaclawLLMModel = model
+	}); err != nil {
+		return err
+	}
+	if a.ctx != nil {
+		a.emitEvent("llm-token-usage-changed", model)
+	}
+	a.refreshMemoryEvolutionLLM()
+	return nil
+}
+
 // isProMode returns true if the UI is in "pro" mode (full coding tools).
 // In lite/simple mode, coding session tools are not available because the
 // user has not configured coding LLM providers.

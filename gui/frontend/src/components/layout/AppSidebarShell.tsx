@@ -92,8 +92,13 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showWorkflowEntry?: boolean;
     showUtilitiesEntry?: boolean;
     utilitiesLabel?: string;
-    availableProviders?: Array<{ name: string; url: string; isHubService: boolean }>;
+    availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
     onSwitchProvider?: (providerName: string) => void;
+    currentModel?: string;
+    modelOptions?: string[];
+    modelsLoading?: boolean;
+    onSwitchModel?: (modelId: string) => void;
+    onOpenModelMenu?: () => void;
     moaSticky?: {
         available: boolean;
         active: boolean;
@@ -186,6 +191,11 @@ export const AppSidebarShell = ({
     utilitiesLabel,
     availableProviders = [],
     onSwitchProvider,
+    currentModel = '',
+    modelOptions = [],
+    modelsLoading = false,
+    onSwitchModel,
+    onOpenModelMenu,
     moaSticky,
     onToggleMoASticky,
 }: AppSidebarShellProps) => (
@@ -285,6 +295,11 @@ export const AppSidebarShell = ({
                         onOpenHistoryDiscussion={onOpenHistoryDiscussion}
                         availableProviders={availableProviders}
                         onSwitchProvider={onSwitchProvider}
+                        currentModel={currentModel}
+                        modelOptions={modelOptions}
+                        modelsLoading={modelsLoading}
+                        onSwitchModel={onSwitchModel}
+                        onOpenModelMenu={onOpenModelMenu}
                         moaSticky={moaSticky}
                         onToggleMoASticky={onToggleMoASticky}
                     />

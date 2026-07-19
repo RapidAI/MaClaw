@@ -514,8 +514,12 @@ export const SidebarTaskManagement = ({
         name?: string;
         workingDir?: string;
         remote?: OpenCreateCodingTaskDetail['remote'];
-    }) => {
-        if (creatingTaskRef.current || editSaving || editTesting) return;
+    }, opts?: { force?: boolean }) => {
+        // The in-flight create guard applies to the manual "+" path. Event-driven
+        // fallbacks pass force so a request is never dropped silently; dialog
+        // controls stay disabled by `creatingTask` until the in-flight create settles.
+        if (editSaving || editTesting) return;
+        if (!opts?.force && creatingTaskRef.current) return;
         if (taskContextMenu) setTaskContextMenu(null);
         // Avoid stacking create + edit modals.
         if (editRemoteOpen) {
@@ -590,6 +594,11 @@ export const SidebarTaskManagement = ({
                             }
                         } catch (err) {
                             console.error('[SidebarTaskManagement] autoCreate coding task failed:', err);
+                            // Release the in-flight flag first: openCreateDialog refuses to
+                            // open while creatingTaskRef is set, which would silently swallow
+                            // the failure (the welcome param dialog is already closed).
+                            creatingTaskRef.current = false;
+                            if (mountedRef.current) setCreatingTask(false);
                             // Fall back to dialog with prefilled fields so user can fix and retry.
                             openCreateDialogRef.current({
                                 mode,
@@ -608,12 +617,17 @@ export const SidebarTaskManagement = ({
                 }
             }
 
-            openCreateDialogRef.current({
-                mode,
-                name,
-                workingDir,
-                remote,
-            });
+            // Fall back to the prefilled dialog (force: a create may still be in
+            // flight — the dialog shows it as busy instead of dropping the request).
+            openCreateDialogRef.current(
+                {
+                    mode,
+                    name,
+                    workingDir,
+                    remote,
+                },
+                { force: true },
+            );
         };
         window.addEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
         return () => window.removeEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
@@ -866,6 +880,18 @@ export const SidebarTaskManagement = ({
                 </button>
             </span>
         </div>
+        {creatingTask && !createDialogOpen && (
+            <div
+                role="status"
+                data-testid="task-autocreate-progress"
+                style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', lineHeight: 1.4 }}
+            >
+                <span>{textForLang(lang, 'Creating task… SSH connect may take a few seconds.', '正在创建任务…SSH 连接可能需要几秒钟。', '正在建立任務…SSH 連線可能需要幾秒鐘。')}</span>
+                <span style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
+                    <span style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
+                </span>
+            </div>
+        )}
         {visibleTasks.length === 0 ? (
             <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
                 {textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')}
@@ -1037,7 +1063,7 @@ export const SidebarTaskManagement = ({
                                     <input id="task-remote-workdir" value={remoteWorkDir} onChange={e => setRemoteWorkDir(e.target.value)} disabled={creatingTask} placeholder="/home/user/project" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
                                 </div>
                                 <div style={{ fontSize: '0.66rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
-                                    {textForLang(lang, 'Password is used only for this connection and is not saved. Source preview opens on the right like local coding.', '密码仅用于本次连接，不会落盘保存。执行时右侧会像本地编程一样显示源码预览。', '密碼僅用於本次連線，不會落盤保存。執行時右側會像本機程式開發一樣顯示原始碼預覽。')}
+                                    {textForLang(lang, 'Password is remembered only on this device for reconnect; it is never saved to the task or uploaded. Source preview opens on the right like local coding.', '密码仅保存在本机用于断线重连，不会写入任务或上传。执行时右侧会像本地编程一样显示源码预览。', '密碼僅儲存在本機用於斷線重連，不會寫入任務或上傳。執行時右側會像本機程式開發一樣顯示原始碼預覽。')}
                                 </div>
                             </div>
                         )}

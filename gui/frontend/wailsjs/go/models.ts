@@ -594,7 +594,7 @@ export namespace main {
 	    skill_hub_urls: any[];
 	    maclaw_debug_tool_calls: boolean;
 	    show_ai_trace_entry: boolean;
-	    show_app_entry: boolean;
+	    show_app_entry?: boolean;
 	    show_workflow_entry?: boolean;
 	    log_detail_enabled: boolean;
 	    security_policy_mode: string;

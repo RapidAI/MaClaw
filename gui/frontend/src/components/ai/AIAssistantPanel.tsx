@@ -72,7 +72,8 @@ import { renderCodingAgentActivityFeed } from "./CodingAgentProgressStatus";
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { buildProjectTabRecentMessages, chatHistoriesEquivalent, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { buildProjectTabRecentMessages, chatHistoriesEquivalent, expertSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
@@ -100,7 +101,7 @@ type ConversationBranchPointLike = {
     labels?: string[];
 };
 
-export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project"; }
+export function canShowAssistantCodingPreviewForTab(tab: Pick<AITab, "type"> | null | undefined): boolean { return tab?.type === "local" || tab?.type === "project" || tab?.type === "expert"; }
 
 /** Source files are only evidence for a programming workflow, including its review state. */
 export function shouldShowSourcePreviewForWorkflow(workflowType: string): boolean {
@@ -748,7 +749,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).catch(() => { /* ignore */ });
         }
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, clearTabConversation, saveTabState, getTabState, getLastActiveAt, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, tabLimitError, clearTabLimitError } = useAITabManager();
     // Publish open project-tab paths so the sidebar can block deleting active tasks.
     useEffect(() => {
         const onChange = props.onOpenProjectTabsChange as ((paths: string[]) => void) | undefined;
@@ -2086,14 +2087,30 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             clearTabConversation(activeTab.id);
             return;
         }
+        if (activeTab.type === "expert") {
+            // Expert tab: clear the tab-local history and cancel any running
+            // backend session for this expert (fire-and-forget).
+            clearTabConversation(activeTab.id);
+            setProjectTabMessages([]);
+            // Mark as explicitly cleared: blocks residual session events from
+            // resurrecting the old conversation until the user sends again.
+            clearedProjectTabIdsRef.current.add(activeTab.id);
+            setQueueInteractionStarted(false);
+            setQueueEditDraftActive(false);
+            setEditingEntryId(null);
+            const sessionKey = expertSessionKey(activeTab.expertId);
+            if (sessionKey) CancelAIAssistantSessionForSession(sessionKey).catch(() => {});
+            return;
+        }
         // Local tab: full reset to show welcome/guide page.
         setQueueInteractionStarted(false);
         setQueueEditDraftActive(false);
         setEditingEntryId(null);
         await clearHistory();
-    }, [activeTab.id, activeTab.type, activeTab.projectPath, clearHistory, clearTabConversation]);
+    }, [activeTab.id, activeTab.type, activeTab.projectPath, activeTab.expertId, clearHistory, clearTabConversation]);
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
+    const isExpertTabActive = activeTab.type === "expert";
     const isCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "coding_dev";
     const isRemoteCodingDevEnvironment = isProjectTabActive && activeTab.agentMode === "remote_coding_dev";
     const isPureCodingEnvironment = isCodingDevEnvironment || isRemoteCodingDevEnvironment;
@@ -2152,8 +2169,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevCodingInterruptRef.current = { key: codingInterruptScopeKey, pending, conflicts, reconnect };
     }, [isPureCodingEnvironment, codingInterruptScopeKey, codingPendingApproval, codingConflictCount, remoteReconnect.needsReconnect]);
-    const showChatUI = isLocalTabActive || isProjectTabActive;
-    const activeSessionKey = isProjectTabActive && activeTab.projectPath ? `desktop-user:${activeTab.projectPath}` : 'desktop-user';
+    const showChatUI = isLocalTabActive || isProjectTabActive || isExpertTabActive;
+    const activeSessionKey = isProjectTabActive && activeTab.projectPath
+        ? `desktop-user:${activeTab.projectPath}`
+        : (isExpertTabActive && activeTab.expertId ? expertSessionKey(activeTab.expertId) : 'desktop-user');
     const {
         handlePaste: handlePasteBase,
         handleDragOver: handleDragOverBase,
@@ -2301,7 +2320,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
 
         const prevTab = tabState.tabs.find(t => t.id === prevTabId);
-        if (prevTab && prevTab.type === "project") {
+        if (prevTab && (prevTab.type === "project" || prevTab.type === "expert")) {
             const scrollTop = outputContainerRef.current?.scrollTop || 0;
             let historyToSave = projectTabMessages;
             const prevRound = findProjectRoundForTab(prevTabId, prevTab.projectPath);
@@ -2324,9 +2343,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 inputText: localDraftInputValue,
             });
         }
-        if (activeTab.type === "project") {
+        if (activeTab.type === "project" || activeTab.type === "expert") {
             const restored = getTabState(currentTabId);
-            const hasPendingRoundForTab = !!findProjectRoundForTab(currentTabId, activeTab.projectPath);
+            const hasPendingRoundForTab = activeTab.type === "project" && !!findProjectRoundForTab(currentTabId, activeTab.projectPath);
             if (!sending && !hasPendingRoundForTab) {
                 projectTabRoundsRef.current.clear();
             }
@@ -2431,10 +2450,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (changed) setDetachedProjectRoundVersion(version => version + 1);
     }, [getTabState, messages, saveTabState]);
     useEffect(() => {
-        const projectTabs = getTabs().filter(tab => tab.type === "project" && tab.projectPath);
+        const projectTabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
         if (projectTabs.length === 0) return;
         for (const tab of projectTabs) {
-            const sessionKey = `desktop-user:${tab.projectPath}`;
+            const sessionKey = tab.type === "expert" ? expertSessionKey(tab.expertId) : `desktop-user:${tab.projectPath}`;
             const liveMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, sessionKey));
             if (liveMessages.length === 0) continue;
             const existingState = getTabState(tab.id);
@@ -2442,8 +2461,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // residual streaming tokens from resurrecting after "New Task" clears
             // the conversation. New rounds populate tab state via the wasSending
             // effect and displayMessages' liveProjectMessages merge instead.
+            // Expert tabs: only block when the tab was explicitly cleared (tracked
+            // in clearedProjectTabIdsRef). A fresh expert tab may backfill live
+            // session messages into an empty state — this is the channel that
+            // persists the new conversation after clear → re-chat.
             const existingHistory = existingState?.history as unknown[] | undefined;
-            if (!existingHistory || existingHistory.length === 0) continue;
+            if (!existingHistory || existingHistory.length === 0) {
+                if (tab.type === "project" || clearedProjectTabIdsRef.current.has(tab.id)) continue;
+            }
             const nextHistory = mergeChatMessages(existingHistory, liveMessages);
             if (chatHistoriesEquivalent(existingHistory as ChatMessage[] | undefined, nextHistory)) continue;
             saveTabState(tab.id, {
@@ -2460,7 +2485,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState]);
     const displayMessages = useMemo(() => {
-        if (!isProjectTabActive) {
+        if (!isProjectTabActive && !isExpertTabActive) {
             if (projectTabRoundsRef.current.size > 0) {
                 const earliestProjectBaseline = Math.min(...Array.from(projectTabRoundsRef.current.values()).map(round => round.baseline));
                 return messages.filter((message: ChatMessage, index: number) => {
@@ -2473,6 +2498,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 return messages.filter((m: ChatMessage) => messageIsLocalSession(m) && !projectTabMsgIdsRef.current.has(m.id));
             }
             return messages.filter(messageIsLocalSession);
+        }
+        if (isExpertTabActive) {
+            // Expert tab: tab-state history (welcome seed + persisted conversation)
+            // merged with live session events keyed by desktop-user:expert:<id>.
+            const liveExpertMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, activeSessionKey));
+            if (liveExpertMessages.length === 0) return projectTabMessages;
+            if (projectTabMessages.length === 0) {
+                // After an explicit clear, ignore residual session events until the user sends again.
+                return clearedProjectTabIdsRef.current.has(activeTab.id) ? projectTabMessages : liveExpertMessages;
+            }
+            return mergeChatMessages(projectTabMessages, liveExpertMessages);
         }
         const liveProjectMessages = messages.filter((message: ChatMessage) => messageBelongsToSession(message, activeSessionKey));
         // When projectTabMessages is empty (tab was cleared), don't merge residual
@@ -2491,7 +2527,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const roundMessages = messages.slice(activeProjectRound.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, activeSessionKey));
         if (roundMessages.length === 0) return mergedProjectMessages;
         return mergeChatMessages(mergedProjectMessages, roundMessages);
-    }, [activeSessionKey, activeTab.id, activeTab.projectPath, findProjectRoundForTab, isProjectTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
+    }, [activeSessionKey, activeTab.id, activeTab.projectPath, findProjectRoundForTab, isProjectTabActive, isExpertTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
     latestDisplayMessagesRef.current = displayMessages;
     displayMessagesForPlanRef.current = displayMessages as Array<{ role?: string; content?: string }>;
     const prevSendingRef = useRef(sending);
@@ -2784,6 +2820,33 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 throw err;
             });
         }
+        if (liveActiveTab.type === "expert" && liveActiveTab.expertId) {
+            // Expert route: no project path — the backend derives the session
+            // userID (desktop-user:expert:<id>) and persona from expert_id.
+            const expertKey = expertSessionKey(liveActiveTab.expertId);
+            clearedProjectTabIdsRef.current.delete(liveActiveTab.id);
+            const mergedOptions: Record<string, unknown> = {
+                ...options,
+                tabId: liveActiveTab.id,
+                expert_id: liveActiveTab.expertId,
+            };
+            (mergedOptions as Record<string, unknown>).recentMessages = buildProjectTabRecentMessages(projectTabMessages);
+            console.info("[AIAssistantPanel] send route expert", {
+                tabId: liveActiveTab.id,
+                expertId: liveActiveTab.expertId,
+                sessionKey: expertKey,
+                textLength: text.trim().length,
+            });
+            logAIPanelDiagnostic({
+                event: "send_route_expert",
+                tabId: liveActiveTab.id,
+                expertId: liveActiveTab.expertId,
+                sessionKey: expertKey,
+                textLength: text.trim().length,
+            });
+            markPanelSendInFlight(expertKey, true);
+            return sendMessage(text, mergedOptions).finally(() => markPanelSendInFlight(expertKey, false));
+        }
         const activeProjectRounds = Array.from(projectTabRoundsRef.current.values());
         console.info("[AIAssistantPanel] send route local", {
             activeTabId: liveActiveTab.id,
@@ -2977,6 +3040,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         createVETab,
         createGroupTab,
         createProjectTab: createProjectTabWithContext,
+        createExpertTab,
         activateTab,
         getTabState,
         saveTabState,
@@ -2989,6 +3053,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         onPendingHistoryDiscussionOpenHandled,
         pendingProjectTabOpen: props.pendingProjectTabOpen,
         onPendingProjectTabOpenHandled: props.onPendingProjectTabOpenHandled,
+        pendingExpertOpen: props.pendingExpertOpen,
+        onPendingExpertOpenHandled: props.onPendingExpertOpenHandled,
     });
     useEffect(() => {
         if (!tabLimitError) return;
@@ -3326,12 +3392,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ? busySessionKeys.includes(activeSessionKey)
         : sending && (sendingSessionKey
             ? sendingSessionKey === activeSessionKey
-            : (isProjectTabActive ? hasForegroundRoundForActiveProject : (isLocalTabActive && !hasForegroundProjectRound))));
+            : (isProjectTabActive ? hasForegroundRoundForActiveProject : ((isLocalTabActive || isExpertTabActive) && !hasForegroundProjectRound))));
     const activeSessionIsStreaming = hasExplicitStreamingSessionList
         ? streamingSessionKeys.includes(activeSessionKey)
         : streaming && (streamingSessionKey
             ? streamingSessionKey === activeSessionKey
-            : (isProjectTabActive ? hasForegroundRoundForActiveProject : (isLocalTabActive && !hasForegroundProjectRound)));
+            : (isProjectTabActive ? hasForegroundRoundForActiveProject : ((isLocalTabActive || isExpertTabActive) && !hasForegroundProjectRound)));
     const isBusy = (hasExplicitBusySessionList ? activeSessionIsSending : hasActiveDetachedProjectRound || activeSessionIsSending);
     useEffect(() => {
         if (!workflowFormGeneratingPhaseID) return;
@@ -3625,7 +3691,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const inputValue = localDraftInputValue;
     const updateInputValue = useCallback((nextValue: string) => {
         setLocalDraftInputValue(nextValue);
-        if (activeTab.type === "project") {
+        if (activeTab.type === "project" || activeTab.type === "expert") {
             saveTabState(activeTab.id, { inputText: nextValue });
             return;
         }
@@ -3727,7 +3793,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [scrollToBottom]);
     const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputValue, handleInputResizeEnd);
     useEffect(() => {
-        if (activeTab.type === "project") return;
+        if (activeTab.type === "project" || activeTab.type === "expert") return;
         setLocalDraftInputValue(draftInputValue);
     }, [activeTab.type, draftInputValue]);
     useEffect(() => {
@@ -4186,12 +4252,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const appendProjectGuideReferenceEcho = useCallback((text: string, targetTabId: string | null, accepted = true) => {
         if (!targetTabId) return;
         const targetTab = tabState.tabs.find(tab => tab.id === targetTabId);
-        if (!targetTab || targetTab.type !== "project") return;
+        if (!targetTab || (targetTab.type !== "project" && targetTab.type !== "expert")) return;
         const echo: ChatMessage = {
             id: `guide-reference-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             role: 'system',
             kind: accepted ? 'guideReceipt' : 'guideRejection',
             content: accepted ? buildGuideReferenceAcceptedNotice(text, lang || "en") : buildGuideReferenceRejectedNotice(text, lang || "en"),
+            sessionKey: targetTab.type === "expert" ? expertSessionKey(targetTab.expertId) || undefined : undefined,
             timestamp: Date.now(),
         };
         const existingState = getTabState(targetTabId);
@@ -4254,7 +4321,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             firingEntryIdsRef.current.delete(id);
             refreshQueueInFlight();
         }
-    }, [activeSessionKey, activeTab.id, appendProjectGuideReferenceEcho, dispatchBtwText, guideLaunchReference, injectSupplementary, isProjectTabActive, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage]);
+    }, [activeSessionKey, activeTab.id, appendProjectGuideReferenceEcho, dispatchBtwText, guideLaunchReference, injectSupplementary, isProjectTabActive, isExpertTabActive, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage]);
     const handleDeleteEntry = useCallback((id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         removeEntry(id);
@@ -5372,6 +5439,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </div>
                 ) : (
                 <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }} onScroll={handleScroll}>
+                    {isExpertTabActive && displayMessages.length === 0 ? (
+                        // Expert tab empty state (e.g. after a conversation clear):
+                        // expert name + intro instead of the generic welcome view.
+                        <div data-testid="ai-expert-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "40px 20px", textAlign: "center", color: t.textMuted }}>
+                            <div aria-hidden="true" style={{ fontSize: 36, lineHeight: 1 }}>{activeTab.expertIcon || DEFAULT_EXPERT_ICON}</div>
+                            <div style={{ fontSize: "0.95rem", fontWeight: 600, color: t.text }}>{activeTab.title}</div>
+                            {activeTab.expertDescription ? (
+                                <div style={{ fontSize: "0.8rem", maxWidth: 420, lineHeight: 1.5 }}>{activeTab.expertDescription}</div>
+                            ) : null}
+                            <div style={{ fontSize: "0.78rem", opacity: 0.8, maxWidth: 420, lineHeight: 1.5 }}>
+                                {expertWelcomeMessageText({ name: activeTab.title, description: activeTab.expertDescription || "" }, lang)}
+                            </div>
+                        </div>
+                    ) : null}
                     <AssistantConversationBody initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
                     <div ref={outputEndRef} />
                 </div>

@@ -94,9 +94,7 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
     "en": {
         "Custom": "Custom",
         "摩尔线程": "MooreThreads",
-        "快手": "Kuaishou",
-        "鎽╁皵绾跨▼": "MooreThreads",
-        "蹇墜": "Kuaishou"
+        "快手": "Kuaishou"
     },
     "zh-Hans": {
         "Claude Official": "原厂",
@@ -117,9 +115,7 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
         "Moore Threads": "摩尔线程",
         "Kuaishou": "快手",
         "摩尔线程": "摩尔线程",
-        "快手": "快手",
-        "鎽╁皵绾跨▼": "摩尔线程",
-        "蹇墜": "快手"
+        "快手": "快手"
     },
     "zh-Hant": {
         "Claude Official": "原廠",
@@ -140,9 +136,7 @@ const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
         "Moore Threads": "摩爾線程",
         "Kuaishou": "快手",
         "摩尔线程": "摩爾線程",
-        "快手": "快手",
-        "鎽╁皵绾跨▼": "摩爾線程",
-        "蹇墜": "快手"
+        "快手": "快手"
     }
 };
 

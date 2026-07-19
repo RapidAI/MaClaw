@@ -2,7 +2,7 @@ import type { AIAssistantInitStatus, CancelAIAssistantResult, ChatMessage } from
 import type { AgentView } from "./agentViewTypes";
 export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
-import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
+import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen, PendingExpertOpen } from "./usePendingAssistantTabOpen";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
 import type { AssistantDarkSchemeId } from "./assistantDarkSchemes";
@@ -112,6 +112,8 @@ export interface AIAssistantPanelProps {
     onPendingHistoryDiscussionOpenHandled?: () => void;
     pendingProjectTabOpen?: PendingProjectTabOpen | null;
     onPendingProjectTabOpenHandled?: () => void;
+    pendingExpertOpen?: PendingExpertOpen | null;
+    onPendingExpertOpenHandled?: () => void;
     appUpdateAvailable?: AssistantUpdatePayload | null;
     onOpenAppUpdate?: () => void;
     onDismissAppUpdate?: (latestVersion: string) => void;

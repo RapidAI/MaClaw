@@ -1913,7 +1913,7 @@ describe('useAIAssistant property tests', () => {
             });
 
             expect(result.current.sending).toBe(true);
-            expect(messageContents(result.current.messages).join('\n')).not.toContain('璇锋眰瓒呮椂');
+            expect(messageContents(result.current.messages).join('\n')).not.toContain('请求超时');
 
             await act(async () => {
                 await vi.advanceTimersByTimeAsync(360_000);

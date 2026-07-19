@@ -111,6 +111,8 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	// Skills with usage stats
 	if h.getSkillExecutor() != nil {
 		skills := h.getSkillExecutor().List()
+		// Expert session: only advertise the expert's bound skills (empty = all).
+		skills = h.filterSkillsForExpertUser(ownerID, skills)
 		if len(skills) > 0 {
 			b.WriteString("\n## 已注册 Skill\n")
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
@@ -137,6 +139,8 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 ## Skill 优先策略（重要）
 当你需要完成一个现有内置工具无法直接处理的任务时，按以下优先级尝试：
 1. **内置下载工具（HTTP/PDF）**：通用「下载 URL / 保存 PDF」优先用 download_file（或 web_fetch + save_path）。禁止为简单下载去 Hub 安装 wget/curl/Paper Fetch。
+   - download_file 内置反爬升级链与自动重试：被 Cloudflare/403 拦截时会自动逐级升级（浏览器请求头 → 模拟 Chrome TLS 指纹 → 复用浏览器会话 cookie）。若返回"存在反爬验证"的错误，标准解法是：先用 browser 工具打开目标网页完成人机验证，然后重试 download_file（可加 use_browser_cookies=true 直接复用会话）；仍失败则用 download_file(via_browser=true) 让浏览器亲自下载。不要写 Python/CDP 脚本绕道抓 cookie。
+   - 下载过程日志在 ~/.maclaw/logs/download.log，排障时可读取。
 2. **本地已安装 Skill**：检查上面「已注册 Skill」列表；领域流水线（如 paper_pdf_translator 论文翻译）用 manage_skill(action="run", name="...")。若列表未出现某 skill，不要假设可用。
 3. **搜索并安装 Skill**：只有当前工具列表明确包含 search_and_install_skill，且任务确实需要新能力（非简单下载）时，才可从 SkillMarket/ClawHub/GitHub 搜索安装
 4. **craft_tool 自建**：只有在搜索也找不到合适 Skill 时，才用 craft_tool 自己生成脚本

@@ -128,6 +128,11 @@ func structuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskU
 func hardStructuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, bool) {
 	text := strings.TrimSpace(msg.Text)
 	switch {
+	case expertDefForUserID(msg.UserID) != nil:
+		// Expert sessions always run the full profile: the light prompt carries
+		// a hard "do not inspect files / do not manage tasks" fence and a
+		// generic persona that would contradict the expert's system prompt.
+		return fullExecutionProfile("expert session"), true
 	case text == "":
 		return fullExecutionProfile("empty message"), true
 	case workflowAgentLoop:

@@ -116,10 +116,22 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 func buildLightIMSystemPrompt(msg IMUserMessage, profile ExecutionProfile) string {
 	// Shared light PromptBundle (identity + short principles + project paths)
 	// plus a hard capability fence for the GUI light execution layer.
+	roleName := "MaClaw"
+	roleDesc := "a careful personal assistant for low-complexity lookup tasks"
+	// Expert session: same persona swap as the full prompt path.
+	if expertDef := expertDefForUserID(msg.UserID); expertDef != nil {
+		if name := strings.TrimSpace(expertDef.Name); name != "" {
+			roleName = name
+		}
+		if sp := strings.TrimSpace(expertDef.SystemPrompt); sp != "" {
+			roleDesc = sp
+		}
+		roleDesc += fmt.Sprintf("\n你是%s，请始终以该专家身份回应，不越界处理无关事务。", roleName)
+	}
 	prompt := agent.BuildSystemPrompt(agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
-			RoleName:        "MaClaw",
-			RoleDescription: "a careful personal assistant for low-complexity lookup tasks",
+			RoleName:        roleName,
+			RoleDescription: roleDesc,
 			PromptProfile:   agent.PromptProfileLight,
 		},
 	}, msg.Text, true)
@@ -165,6 +177,18 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		msg = userMessage[0]
 	}
 	promptUserID := h.promptRuntimeUserID(loopCtx)
+
+	// Expert session: replace the global role persona with the expert's own
+	// name + system prompt (capability sections are appended unchanged below).
+	if expertDef := expertDefForUserID(promptUserID); expertDef != nil {
+		if name := strings.TrimSpace(expertDef.Name); name != "" {
+			roleName = name
+		}
+		if sp := strings.TrimSpace(expertDef.SystemPrompt); sp != "" {
+			roleDesc = sp
+		}
+		roleDesc += fmt.Sprintf("\n你是%s，请始终以该专家身份回应，不越界处理无关事务。", roleName)
+	}
 
 	// Build deps for the shared BuildSystemPrompt.
 	// During V2 workflow agent loops, suppress the coding confirmation gate rules

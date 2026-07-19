@@ -242,9 +242,11 @@ func TestFilteredToolProgressCallback_DropsNoise(t *testing.T) {
 }
 
 func TestIMUILang_PrefersAppCurrentLanguage(t *testing.T) {
+	// CurrentLanguage is normalized to its i18n translation tag (en-US -> en)
+	// so downstream i18n.NormalizeLang mapping works correctly.
 	h := &IMMessageHandler{app: &App{CurrentLanguage: "en-US"}}
-	if got := h.imUILang(); got != "en-US" {
-		t.Fatalf("imUILang = %q, want en-US", got)
+	if got := h.imUILang(); got != "en" {
+		t.Fatalf("imUILang = %q, want en", got)
 	}
 	h2 := &IMMessageHandler{}
 	if got := h2.imUILang(); got != "zh" {

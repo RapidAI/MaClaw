@@ -274,6 +274,84 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+/* ---- pre-input queue ---- */
+
+.queue {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 0;
+}
+
+.queue-label {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.queue-paused {
+  color: var(--vscode-inputValidation-warningForeground, #cca700);
+}
+
+.queue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  border: 1px solid var(--vscode-panel-border, #555);
+  border-radius: 10px;
+  padding: 2px 4px 2px 8px;
+  font-size: 0.85em;
+  background: var(--vscode-badge-background, rgba(90, 93, 94, 0.31));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+}
+
+.queue-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+  cursor: pointer;
+}
+
+.queue-text:hover {
+  text-decoration: underline;
+}
+
+.queue-btn {
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: transparent;
+}
+
+.queue-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(90, 93, 94, 0.5));
+}
+
+.queue-clear {
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+}
+
+.queue-clear:hover {
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-button-secondaryHoverBackground, rgba(90, 93, 94, 0.5));
+}
+
 /* ---- composer ---- */
 
 .composer {

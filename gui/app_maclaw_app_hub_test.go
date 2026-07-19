@@ -4497,6 +4497,10 @@ func TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegi
 				t.Fatalf("inventory method = %s", r.Method)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case "/api/v1/directory/pending-action", "/api/v1/directory/initiated", "/api/v1/directory/completed":
+			// Hub-authoritative approval directory (reconcile/list best-effort merge):
+			// this fixture has no hub-bound workflow items.
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0, "page": 1, "page_size": 50})
 		default:
 			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
 		}
@@ -4953,6 +4957,10 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 				t.Fatalf("inventory method = %s", r.Method)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case "/api/v1/directory/pending-action", "/api/v1/directory/initiated", "/api/v1/directory/completed":
+			// Hub-authoritative approval directory (reconcile/list best-effort merge):
+			// this fixture has no hub-bound workflow items.
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0, "page": 1, "page_size": 50})
 		default:
 			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
 		}

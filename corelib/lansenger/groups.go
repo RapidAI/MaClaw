@@ -387,23 +387,29 @@ func (g *Gateway) doGetJSON(ctx context.Context, endpoint string, out any) error
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			lastErr = err
-			log.Printf("[lansenger] error: API GET failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), err)
+			// app_token lives in the query string — never log/return raw net/http errors.
+			safeErr := redactHTTPError(err)
+			lastErr = safeErr
+			log.Printf("[lansenger] error: API GET failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), safeErr)
 			if attempt < lansengerAPIMaxRetry {
+				// Drop bad keep-alives only on transport failure (not on every list call).
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
-			return err
+			return safeErr
 		}
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			lastErr = readErr
+			safeErr := redactHTTPError(readErr)
+			lastErr = safeErr
 			if attempt < lansengerAPIMaxRetry {
+				g.closeIdleHTTPConns()
 				apiRetryBackoff(ctx, attempt)
 				continue
 			}
-			return readErr
+			return safeErr
 		}
 		if resp.StatusCode != http.StatusOK {
 			err := fmt.Errorf("lansenger API HTTP %d: %s", resp.StatusCode, string(respBody))

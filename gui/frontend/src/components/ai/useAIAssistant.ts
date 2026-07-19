@@ -5,7 +5,7 @@ import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
-import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey } from "./aiAssistantPanelSessionUtils";
+import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
 
 export interface CancelAIAssistantResult {
@@ -144,6 +144,8 @@ interface SendMessageOptions {
     markConfirmationRunning?: boolean;
     /** Project path to include when sending from a Project Tab */
     project_path?: string;
+    /** Expert ID to include when sending from an Expert Tab (routes to the expert persona session). */
+    expert_id?: string;
     /** Tab ID (informational, not used for routing) */
     tabId?: string;
     /** Explicit context window for non-local tabs. Prevents local history bleed. */
@@ -170,6 +172,8 @@ function projectPathFromSessionKey(sessionKey?: string): string {
 }
 
 function deriveSendSessionKey(options?: SendMessageOptions): string {
+    const expertKey = expertSessionKey(options?.expert_id);
+    if (expertKey) return expertKey;
     const sessionKey = projectSessionKey(options?.project_path);
     return sessionKey || 'desktop-user';
 }
@@ -856,6 +860,7 @@ function buildAIAssistantSendPayload(
     if (options?.lang) payload.lang = options.lang;
     if (options?.uiAction !== undefined) payload.ui_action = options.uiAction;
     if (options?.project_path) payload.project_path = normalizeProjectSessionPath(options.project_path);
+    if (options?.expert_id) payload.expert_id = String(options.expert_id).trim();
     if (options?.tabId) payload.event_scope_id = options.tabId;
     return payload;
 }
@@ -4304,6 +4309,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const optionsForActiveSession = useCallback((options?: SendMessageOptions): SendMessageOptions | undefined => {
         const explicitProjectPath = typeof options?.project_path === 'string' ? options.project_path.trim() : '';
         if (explicitProjectPath) return options;
+        const explicitExpertId = typeof options?.expert_id === 'string' ? options.expert_id.trim() : '';
+        if (explicitExpertId) return options;
         const isSessionScopedAction = !!options && (
             options.uiAction === true
             || !!options.resumeSlotID
@@ -4314,7 +4321,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             || options.markConfirmationRunning === true
         );
         if (!isSessionScopedAction) return options;
-        const activeProjectPath = projectPathFromSessionKey(activeSessionKeyForEvents());
+        const activeSessionKey = activeSessionKeyForEvents();
+        const activeExpertId = expertIdFromSessionKey(activeSessionKey);
+        if (activeExpertId) return { ...(options || {}), expert_id: activeExpertId };
+        const activeProjectPath = projectPathFromSessionKey(activeSessionKey);
         if (!activeProjectPath) return options;
         return { ...(options || {}), project_path: activeProjectPath };
     }, [activeSessionKeyForEvents]);

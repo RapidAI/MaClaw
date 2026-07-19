@@ -10,6 +10,8 @@ export interface StatusSnapshot {
   sessionId: string;
   cwd: string;
   turnActive: boolean;
+  /** Number of prompts waiting in the pre-input queue. */
+  queued: number;
 }
 
 /**
@@ -33,6 +35,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private transcript: Record<string, unknown>[] = [];
   private readonly statusListeners = new Set<(s: StatusSnapshot) => void>();
   private static readonly transcriptCap = 800;
+  /**
+   * Pre-input queue: prompts typed while a turn is in flight wait here and
+   * fire FIFO once the current turn ends. The bridge rejects concurrent
+   * prompts ("session busy"), so queueing is the only way to not lose input.
+   * Items carry stable ids — the webview addresses them by id, so a shift
+   * from fireNextQueued racing a user click can't hit the wrong entry.
+   */
+  private queue: { id: number; text: string }[] = [];
+  private queueSeq = 0;
+  /** Set when the last turn errored: auto-fire pauses until the user resumes. */
+  private queuePaused = false;
+  private static readonly queueCap = 50;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -58,6 +72,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       sessionId: this.sessionId ?? "",
       cwd: this.workspaceCwd(),
       turnActive: this.turnActive,
+      queued: this.queue.length,
     };
   }
 
@@ -75,12 +90,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   /** Focus the chat view and send a prompt on the user's behalf (launcher). */
   async sendPromptFromLauncher(text: string): Promise<void> {
-    if (this.turnActive) {
-      void vscode.window.showInformationMessage("MaClaw: 当前回合进行中，请先等待完成或停止。");
-      return;
-    }
     await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
-    await this.runPrompt(text);
+    // Busy turn: queue instead of dropping — same path as the composer.
+    this.submitPrompt(text);
   }
 
   async reconnect(): Promise<void> {
@@ -120,6 +132,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.turnActive = false;
     this.sessionId = undefined;
     this.transcript = [];
+    // A fresh session must not inherit prompts queued for the old one.
+    this.queue = [];
+    this.queuePaused = false;
+    this.postQueue();
     this.post({ type: "reset" }, false);
     if (this.client.isRunning) {
       try {
@@ -145,6 +161,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     requestId?: number;
     optionId?: string;
     path?: string;
+    id?: number;
   }): Promise<void> {
     switch (msg.type) {
       case "ready":
@@ -153,11 +170,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         // handshake is still in flight — deriving from isRunning would lie).
         this.post({ type: "status", state: this.lastStatus.state, detail: this.lastStatus.detail }, false);
         this.postTurnState();
+        this.postQueue();
         return;
       case "prompt":
         if (typeof msg.text === "string" && msg.text.trim() !== "") {
-          await this.runPrompt(msg.text);
+          this.submitPrompt(msg.text);
         }
+        return;
+      case "queueRemove":
+        this.removeQueued(msg.id);
+        return;
+      case "queueFire":
+        this.fireQueued(msg.id);
+        return;
+      case "queueClear":
+        this.queue = [];
+        this.queuePaused = false;
+        this.postQueue();
         return;
       case "cancel":
         this.cancelTurn();
@@ -220,13 +249,64 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   // ---- prompt flow -------------------------------------------------------
 
-  private async runPrompt(text: string): Promise<void> {
+  /** Entry point for user text: run immediately when idle, queue when busy. */
+  private submitPrompt(text: string): void {
     if (this.turnActive) {
-      void vscode.window.showInformationMessage("MaClaw: 当前回合进行中，请先等待完成或停止。");
+      if (this.queue.length >= ChatViewProvider.queueCap) {
+        // Hand the text back so the composer doesn't silently lose it.
+        this.post({ type: "inputRestore", text }, false);
+        void vscode.window.showInformationMessage(`MaClaw: 队列已满（${ChatViewProvider.queueCap} 条），请先等待或删除部分排队消息。`);
+        return;
+      }
+      this.queue.push({ id: ++this.queueSeq, text });
+      this.postQueue();
       return;
     }
-    // Set synchronously before any await: a second prompt message arriving
-    // while we connect/create a session must not start a concurrent turn.
+    void this.runPrompt(text);
+  }
+
+  private removeQueued(id?: number): void {
+    const at = this.queue.findIndex((item) => item.id === id);
+    if (at < 0) {
+      return; // already fired or removed — nothing to do
+    }
+    this.queue.splice(at, 1);
+    this.postQueue();
+  }
+
+  /**
+   * User picked a queued prompt to fire: when idle it runs right away; while
+   * a turn is in flight it jumps to the head of the queue so it steers the
+   * very next turn.
+   */
+  private fireQueued(id?: number): void {
+    const at = this.queue.findIndex((item) => item.id === id);
+    if (at < 0) {
+      return; // already fired or removed
+    }
+    const [item] = this.queue.splice(at, 1);
+    if (this.turnActive) {
+      this.queue.unshift(item);
+      this.postQueue();
+      return;
+    }
+    this.postQueue();
+    void this.runPrompt(item.text);
+  }
+
+  /** Fire the oldest queued prompt, if any. Called when a turn winds down. */
+  private fireNextQueued(): void {
+    const next = this.queue.shift();
+    if (next === undefined) {
+      return;
+    }
+    this.postQueue();
+    void this.runPrompt(next.text);
+  }
+
+  private async runPrompt(text: string): Promise<void> {
+    // Callers (submitPrompt/fireQueued/fireNextQueued) gate on turnActive, so
+    // this never overlaps a live turn — the bridge rejects concurrent prompts.
     this.turnActive = true;
     // Generation guards the finally-block: if the user resets the session
     // mid-turn, our stale finally must not clear a NEWER turn's flag.
@@ -235,9 +315,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // bridge is missing and the turn fails below).
     this.post({ type: "userPrompt", text });
     this.postTurnState();
+    // A failed turn pauses queue auto-fire: e.g. with a dead bridge we must
+    // not burn through every queued prompt producing an error bubble each.
+    // The user resumes explicitly via the chip's ▲ button.
+    let failed = false;
     try {
       const connected = await this.ensureConnected();
       if (!connected) {
+        failed = true;
         this.post({ type: "turnError", message: "MaClaw bridge is not connected" });
         return;
       }
@@ -252,13 +337,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }
       this.post({ type: "turnEnd", stopReason: res.stopReason ?? "end_turn" });
     } catch (err) {
+      failed = true;
       this.post({ type: "turnError", message: errMessage(err) });
     } finally {
       // Skip when a newer turn/session invalidated this one (generation
       // mismatch) — clearing here would clobber the newer turn's state.
       if (generation === this.turnGeneration) {
         this.turnActive = false;
-        this.postTurnState();
+        this.queuePaused = failed;
+        if (!failed && this.queue.length > 0) {
+          // Chain straight into the next queued turn: runPrompt posts its own
+          // turnState(active), so the UI never flickers through an idle frame
+          // (and doesn't yank focus back to the composer between turns).
+          this.fireNextQueued();
+        } else {
+          this.postTurnState();
+          if (failed) {
+            // Refresh the queue strip so it shows the paused hint.
+            this.postQueue();
+          }
+        }
       }
     }
   }
@@ -393,6 +491,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.emitStatus();
   }
 
+  /** Sync the pre-input queue to the view (not part of the replay transcript). */
+  private postQueue(): void {
+    this.post(
+      {
+        type: "queue",
+        items: this.queue.map((item) => ({ id: item.id, text: item.text })),
+        paused: this.queuePaused && !this.turnActive,
+      },
+      false
+    );
+    // The sidebar snapshot carries the queue length — keep it in sync too.
+    this.emitStatus();
+  }
+
   private renderHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview.js")
@@ -411,6 +523,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <div id="app">
     <div id="status" class="status"></div>
     <div id="messages" class="messages"></div>
+    <div id="queue" class="queue" hidden></div>
     <form id="composer" class="composer">
       <textarea id="input" rows="2" placeholder="Ask MaClaw… (Enter to send, Shift+Enter for newline)"></textarea>
       <div class="composer-buttons">

@@ -57,7 +57,20 @@ const configTestConfig = {
   target: "node18",
 };
 
-for (const cfg of [extensionConfig, webviewConfig, launcherConfig, smokeConfig, configTestConfig]) {
+// chatViewProvider with `vscode` left external: test/queue-e2e.mjs installs a
+// vscode stub via a require hook and drives the provider against the fake
+// queue agent over real stdio JSON-RPC.
+const queueTestConfig = {
+  ...shared,
+  entryPoints: ["src/chatViewProvider.ts"],
+  outfile: "test/out/chatViewProvider.cjs",
+  platform: "node",
+  format: "cjs",
+  target: "node18",
+  external: ["vscode"],
+};
+
+for (const cfg of [extensionConfig, webviewConfig, launcherConfig, smokeConfig, configTestConfig, queueTestConfig]) {
   if (watch) {
     const ctx = await esbuild.context(cfg);
     await ctx.watch();

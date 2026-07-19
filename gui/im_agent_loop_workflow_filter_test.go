@@ -1115,8 +1115,16 @@ func TestPolicyRejectedBrowserToolCallRedactedFromConversation(t *testing.T) {
 		},
 	})
 
-	text := strings.ToLower(fmt.Sprintf("%#v %#v %s", result.Conversation, result.History, recordedResultID))
-	for _, leaked := range []string{`name:"browser"`, "call_browser"} {
+	// The redaction contract covers what the model can see: the conversation
+	// payload plus the model-facing projection of history (ConversationEntry
+	// metadata such as ToolName is trajectory/audit data and is never
+	// serialized into model messages — see ConversationEntry.ToMessage).
+	historyProjection := ""
+	for _, entry := range result.History {
+		historyProjection += fmt.Sprintf("%#v ", entry.ToMessage())
+	}
+	text := strings.ToLower(fmt.Sprintf("%#v %s %s", result.Conversation, historyProjection, recordedResultID))
+	for _, leaked := range []string{`name:"browser"`, "call_browser", "browser"} {
 		if strings.Contains(text, leaked) {
 			t.Fatalf("policy-rejected browser call should redact %q from model context, got %s", leaked, text)
 		}

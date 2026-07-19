@@ -87,11 +87,11 @@ func (h *IMMessageHandler) launchRemoteExperimentOrchestrator(userID string, sta
 	}
 
 	// Connect (or reuse) SSH session to the target host
-	sessionID := h.findOrCreateSSHSession(sshUser, sshHostAddr, sshPort, sshPassword)
+	sessionID, failReason := h.findOrCreateSSHSessionWithAuth(sshUser, sshHostAddr, sshPort, sshPassword, "", "")
 	if sessionID == "" {
 		log.Printf("[workflow-v2-remote] failed to establish SSH session to %s@%s:%d", sshUser, sshHostAddr, sshPort)
 		return &IMAgentResponse{
-			Text: fmt.Sprintf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据。", sshUser, sshHostAddr, sshPort),
+			Text: sshConnectFailureMessage(sshUser, sshHostAddr, sshPort, failReason),
 		}
 	}
 
@@ -315,9 +315,9 @@ func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, s
 	if h.ensureSSHManager() == nil {
 		return "", "", "SSH 会话管理器不可用"
 	}
-	sessionID = h.findOrCreateSSHSessionWithAuth(user, host, port, password, keyPath, label)
+	sessionID, failReason := h.findOrCreateSSHSessionWithAuth(user, host, port, password, keyPath, label)
 	if sessionID == "" {
-		return "", "", fmt.Sprintf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据", user, host, port)
+		return "", "", sshConnectFailureMessage(user, host, port, failReason)
 	}
 	// Refresh sticky session id for multi-turn remote continuity.
 	h.bindStickyRemoteCodingContext(userID, remoteCodingTemplateContext{
@@ -329,9 +329,11 @@ func (h *IMMessageHandler) ensureCodingWorkflowRemoteSSHSession(userID string, s
 }
 
 // findOrCreateSSHSessionWithAuth connects with password and/or key_path/label.
-func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, port int, password, keyPath, label string) string {
+// Returns the session ID on success; on failure returns "" plus a short
+// human-readable reason suitable for user-facing error messages.
+func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, port int, password, keyPath, label string) (string, string) {
 	if h == nil {
-		return ""
+		return "", ""
 	}
 	if port <= 0 {
 		port = 22
@@ -357,10 +359,21 @@ func (h *IMMessageHandler) findOrCreateSSHSessionWithAuth(user, host string, por
 	}
 	result := h.sshConnect(args)
 	if match := extractSSHSessionIDFromConnectResult(result); match != "" {
-		return match
+		return match, ""
 	}
 	log.Printf("[workflow-v2-remote] SSH connect with auth failed to extract session_id: %s", truncateRunesV2(result, 200))
-	return ""
+	return "", result
+}
+
+// sshConnectFailureMessage builds the user-facing SSH connect failure message,
+// appending a short sanitized reason when the connect attempt produced one.
+func sshConnectFailureMessage(user, host string, port int, reason string) string {
+	base := fmt.Sprintf("无法连接到远程服务器 %s@%s:%d", user, host, port)
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
+		return base + "，请检查网络和凭据"
+	}
+	return base + "：" + truncateRunesV2(reason, 160)
 }
 
 // parseSSHHostString parses "user@host:port" into components.
@@ -426,9 +439,12 @@ func parseSSHPort(portStr string) (int, bool) {
 }
 
 // findOrCreateSSHSession finds an existing SSH session to the target host,
-// or creates a new one using the provided credentials.
+// or creates a new one using the provided credentials. The failure reason is
+// discarded; callers needing a user-facing reason should use
+// findOrCreateSSHSessionWithAuth.
 func (h *IMMessageHandler) findOrCreateSSHSession(user, host string, port int, password string) string {
-	return h.findOrCreateSSHSessionWithAuth(user, host, port, password, "", "")
+	sessionID, _ := h.findOrCreateSSHSessionWithAuth(user, host, port, password, "", "")
+	return sessionID
 }
 
 func extractSSHSessionIDFromConnectResult(result string) string {

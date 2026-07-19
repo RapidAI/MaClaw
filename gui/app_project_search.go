@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -87,7 +88,13 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 	if ownerID == "" || ownerID == desktopUserID || !strings.HasPrefix(ownerID, desktopUserID+":") {
 		return ""
 	}
-	return normalizeProjectSessionPath(strings.TrimPrefix(ownerID, desktopUserID+":"))
+	rest := strings.TrimPrefix(ownerID, desktopUserID+":")
+	// Expert sessions ("desktop-user:expert:<id>") carry an expert id, not a
+	// project path — never let downstream code treat it as a directory.
+	if strings.HasPrefix(rest, "expert:") {
+		return ""
+	}
+	return normalizeProjectSessionPath(rest)
 }
 
 // ProjectSearchResult is the frontend-facing search result type.
@@ -922,9 +929,9 @@ func (a *App) TestRemoteSSHConnection(sshHost, sshUser, sshPassword, workDir str
 	if handler.ensureSSHManager() == nil {
 		return "", fmt.Errorf("SSH 会话管理器不可用")
 	}
-	sessionID := handler.findOrCreateSSHSession(user, host, sshPort, password)
+	sessionID, failReason := handler.findOrCreateSSHSessionWithAuth(user, host, sshPort, password, "", "")
 	if sessionID == "" {
-		return "", fmt.Errorf("无法连接到 %s@%s:%d，请检查网络和凭据", user, host, sshPort)
+		return "", errors.New(sshConnectFailureMessage(user, host, sshPort, failReason))
 	}
 	// Optional workdir existence check (non-fatal for empty workDir).
 	if remoteWorkDir != "" {
@@ -1010,8 +1017,14 @@ func projectRecordHasTagLike(tags []string, want string) bool {
 // CreateRemoteCodingTask creates a remote-coding task record with non-sensitive
 // SSH metadata tags (host/user/port/workdir). The password is never persisted;
 // call PrepareRemoteCodingEnvironment to connect and arm one-shot execution.
-// extraTags may include origin markers such as source:coding_workflow.
-func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
+// Note: keep this signature fixed-arity — Wails cannot bind variadic methods.
+func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int) ProjectSearchResult {
+	return a.createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir, sshPort)
+}
+
+// createRemoteCodingTaskWithTags is the internal variadic form; extraTags may
+// include origin markers such as source:coding_workflow.
+func (a *App) createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
 	taskName := normalizeRecentTaskName(name)
 	if taskName == "" {
 		return ProjectSearchResult{}
@@ -1129,9 +1142,9 @@ func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshP
 		return fmt.Errorf("SSH 会话管理器不可用")
 	}
 
-	sessionID := handler.findOrCreateSSHSession(user, host, sshPort, password)
+	sessionID, failReason := handler.findOrCreateSSHSessionWithAuth(user, host, sshPort, password, "", "")
 	if sessionID == "" {
-		return fmt.Errorf("无法连接到远程服务器 %s@%s:%d，请检查网络和凭据", user, host, sshPort)
+		return errors.New(sshConnectFailureMessage(user, host, sshPort, failReason))
 	}
 
 	userID := projectSessionOwnerID(projectPath)

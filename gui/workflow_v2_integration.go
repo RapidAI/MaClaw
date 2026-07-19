@@ -2744,11 +2744,77 @@ func truncateRunesV2(s string, max int) string {
 }
 
 func formatTaskListBrief(tasks []*v2.TaskItem) string {
+	return formatTaskListBriefWithCurrent(tasks, 0)
+}
+
+// formatTaskListBriefWithCurrent renders a titles-only plan outline.
+// When currentIdx > 0, that step is marked as the active plan step.
+// Tasks with Index<=0 are renumbered by stable 1-based position among non-nil tasks.
+func formatTaskListBriefWithCurrent(tasks []*v2.TaskItem, currentIdx int) string {
 	var sb strings.Builder
+	pos := 0
 	for _, t := range tasks {
-		sb.WriteString(fmt.Sprintf("- T%d: %s\n", t.Index, t.Title))
+		if t == nil {
+			continue
+		}
+		pos++
+		idx := t.Index
+		if idx <= 0 {
+			idx = pos
+		}
+		title := strings.TrimSpace(t.Title)
+		if title == "" {
+			title = "(untitled)"
+		}
+		if currentIdx > 0 && idx == currentIdx {
+			sb.WriteString(fmt.Sprintf("- T%d: %s  ← current (do only this)\n", idx, title))
+		} else {
+			sb.WriteString(fmt.Sprintf("- T%d: %s\n", idx, title))
+		}
 	}
 	return sb.String()
+}
+
+// formatRemotePlanStepCarrySummary builds a short prior-step note for the next
+// remote plan step. Full agent summaries often claim "全部完成"; that must not
+// license later steps to no-op.
+func formatRemotePlanStepCarrySummary(stepIndex int, title, status, sum string) string {
+	title = strings.TrimSpace(title)
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "unknown"
+	}
+	body := strings.TrimSpace(sum)
+	if body != "" {
+		body = truncateRunesV2(body, 400)
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(
+		"Prior plan step T%d (%s) status=%s. Context only — still execute the CURRENT step fully; ignore any claim that the whole project is already done.",
+		stepIndex, title, status,
+	))
+	if body != "" {
+		b.WriteString("\n")
+		b.WriteString(body)
+	}
+	return b.String()
+}
+
+// setRemotePlanLastSummary records prior-step context for the next remote step.
+// When planned, uses a sanitized carry note so "全部完成" claims do not leak.
+func setRemotePlanLastSummary(sessionMem *stickyCodingWorkbenchMemory, planned bool, stepIndex int, title, status, sum string) {
+	if sessionMem == nil {
+		return
+	}
+	sum = strings.TrimSpace(sum)
+	if sum == "" {
+		return
+	}
+	if planned {
+		sessionMem.LastSummary = formatRemotePlanStepCarrySummary(stepIndex, title, status, sum)
+		return
+	}
+	sessionMem.LastSummary = truncateRunesV2(sum, 800)
 }
 
 // --- Helper: emit frontend event ---
@@ -3332,6 +3398,111 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 	return resp
 }
 
+// buildRemoteCodingPlanStepText builds the user prompt for one remote pure-coding
+// plan step. When planned, it mirrors local pure-coding constraints: complete only
+// the CURRENT step, then stop; later steps run as separate RemoteCodingSubAgent runs.
+// Full multi-step implementation details are replaced with a titles-only outline so
+// the model is not encouraged to implement T2–Tn during T1.
+//
+// stepIdx should be the 1-based plan index (prefer step.Index). stepTotal is the
+// plan length used for "Tn/N" display.
+// lastSummary should already be carry-sanitized for planned multi-step runs
+// (see formatRemotePlanStepCarrySummary).
+func buildRemoteCodingPlanStepText(
+	step *v2.TaskItem,
+	stepIdx, stepTotal int,
+	planned bool,
+	userText string,
+	tasks []*v2.TaskItem,
+	turnCount int,
+	sessionPlan string,
+	lastSummary string,
+	filesModified []string,
+) string {
+	userText = strings.TrimSpace(userText)
+	if step != nil && planned {
+		if step.Index > 0 {
+			stepIdx = step.Index
+		}
+		if stepTotal < 1 {
+			stepTotal = 0
+			for _, t := range tasks {
+				if t != nil {
+					stepTotal++
+				}
+			}
+		}
+		if stepTotal < 1 {
+			stepTotal = stepIdx
+		}
+	}
+
+	var cont strings.Builder
+	// Typical remote step prompt is 1–2KB; pre-size to avoid mid-build growth.
+	cont.Grow(1280)
+
+	if step != nil && planned {
+		title := strings.TrimSpace(step.Title)
+		cont.WriteString(fmt.Sprintf("[Plan step T%d/%d] %s\n\n", stepIdx, stepTotal, title))
+		if d := strings.TrimSpace(step.Description); d != "" {
+			cont.WriteString(d)
+			cont.WriteString("\n\n")
+		}
+		// Parity with local pure-coding stepReqCtx (same file, local path).
+		cont.WriteString(fmt.Sprintf(
+			"You are executing plan step T%d/%d: %s\n"+
+				"Focus on this step only; do not skip ahead.\n"+
+				"Complete the CURRENT step fully, then stop; later steps run as separate tasks.\n"+
+				"Do not implement, create files for, verify, or report on work that belongs to later plan steps.\n"+
+				"If you use todo_write, only subdivide THIS step — do not re-list the whole plan as todos.\n",
+			stepIdx, stepTotal, title,
+		))
+		// Overall goal is context only; keep short so it does not dominate the step brief.
+		if userText != "" {
+			cont.WriteString("\n## Overall user request (context only — not a license to finish later steps)\n")
+			cont.WriteString(truncateRunesV2(userText, 600))
+		}
+	} else {
+		cont.WriteString(userText)
+	}
+	if turnCount > 0 || planned {
+		cont.WriteString("\n\n[Session continuity")
+		if turnCount > 0 {
+			cont.WriteString(fmt.Sprintf(" turn %d", turnCount+1))
+		}
+		cont.WriteString("]")
+	}
+	// Multi-step planned: titles-only outline with current marker (never full later-step recipes).
+	// Unplanned: session goal + prior summary only — never re-inject sticky full ExecutionPlan.
+	if planned {
+		outline := strings.TrimSpace(formatTaskListBriefWithCurrent(tasks, stepIdx))
+		if outline == "" && step != nil {
+			outline = fmt.Sprintf("- T%d: %s  ← current (do only this)", stepIdx, strings.TrimSpace(step.Title))
+		}
+		if outline != "" {
+			cont.WriteString("\nPlan outline (titles only; later steps are separate remote tasks — do not execute them now):\n")
+			cont.WriteString(outline)
+		}
+	} else if plan := strings.TrimSpace(sessionPlan); plan != "" {
+		cont.WriteString("\nSession plan / overall goal:\n")
+		cont.WriteString(truncateRunesV2(plan, 800))
+	}
+	if sum := strings.TrimSpace(lastSummary); sum != "" {
+		cont.WriteString("\nPrevious turn summary:\n")
+		// Carry summaries are pre-truncated for planned runs; still cap hard here.
+		cont.WriteString(truncateRunesV2(sum, 600))
+	}
+	if len(filesModified) > 0 {
+		files := uniqueSortedSubAgentStrings(filesModified)
+		if len(files) > 12 {
+			files = files[:12]
+		}
+		cont.WriteString("\nFiles modified earlier: ")
+		cont.WriteString(strings.Join(files, ", "))
+	}
+	return cont.String()
+}
+
 func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText string, remoteCtx remoteCodingTemplateContext, loopCtx *LoopContext, onProgress func(string), onToken func(string)) *IMAgentResponse {
 	ensureLoopCtxUserID(loopCtx, userID)
 	userText = strings.TrimSpace(userText)
@@ -3425,46 +3596,18 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	}
 
 	buildRemoteTaskText := func(step *v2.TaskItem, stepIdx, stepTotal int) string {
-		var cont strings.Builder
-		if step != nil && planned {
-			cont.WriteString(fmt.Sprintf("[Plan step T%d/%d] %s\n\n", stepIdx, stepTotal, strings.TrimSpace(step.Title)))
-			cont.WriteString(strings.TrimSpace(step.Description))
-			cont.WriteString("\n\n## Overall user request\n")
-			cont.WriteString(userText)
-		} else {
-			cont.WriteString(userText)
-		}
-		if sessionMem.TurnCount > 0 || planned {
-			cont.WriteString("\n\n[Session continuity")
-			if sessionMem.TurnCount > 0 {
-				cont.WriteString(fmt.Sprintf(" turn %d", sessionMem.TurnCount+1))
-			}
-			cont.WriteString("]")
-		}
-		if plan := strings.TrimSpace(sessionMem.SessionPlan); plan != "" {
-			cont.WriteString("\nSession plan / overall goal:\n")
-			cont.WriteString(truncateRunesV2(plan, 800))
-		}
-		if planMarkdown != "" {
-			cont.WriteString("\nActive multi-step execution plan:\n")
-			cont.WriteString(truncateRunesV2(planMarkdown, 1200))
-		} else if ep := strings.TrimSpace(sessionMem.ExecutionPlan); ep != "" {
-			cont.WriteString("\nActive multi-step execution plan:\n")
-			cont.WriteString(truncateRunesV2(ep, 1200))
-		}
-		if sum := strings.TrimSpace(sessionMem.LastSummary); sum != "" {
-			cont.WriteString("\nPrevious turn summary:\n")
-			cont.WriteString(truncateRunesV2(sum, 800))
-		}
-		if len(sessionMem.FilesModified) > 0 {
-			files := uniqueSortedSubAgentStrings(sessionMem.FilesModified)
-			if len(files) > 12 {
-				files = files[:12]
-			}
-			cont.WriteString("\nFiles modified earlier: ")
-			cont.WriteString(strings.Join(files, ", "))
-		}
-		return cont.String()
+		return buildRemoteCodingPlanStepText(
+			step,
+			stepIdx,
+			stepTotal,
+			planned,
+			userText,
+			tasks,
+			sessionMem.TurnCount,
+			sessionMem.SessionPlan,
+			sessionMem.LastSummary,
+			sessionMem.FilesModified,
+		)
 	}
 
 	log.Printf("[workflow-v2] pure remote coding: user=%s session=%s project=%s task=%q sticky_turn=%d planned=%v steps=%d",
@@ -3533,7 +3676,11 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 				break
 			}
 		}
-		taskText := buildRemoteTaskText(step, i+1, len(tasks))
+		stepIdx := i + 1
+		if step.Index > 0 {
+			stepIdx = step.Index
+		}
+		taskText := buildRemoteTaskText(step, stepIdx, len(tasks))
 
 		// Remote write isolation (temp dir copy) when worktree mode allows.
 		stepRemoteCtx := remoteCtx
@@ -3638,7 +3785,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 					}
 					h.updateStickyCodingStepStatus(userID, step.Index, stepStatus, sum)
 					reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
-					sessionMem.LastSummary = truncateRunesV2(sum, 800)
+					setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, "verify_failed", sum)
 					_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 					h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
 					break
@@ -3670,7 +3817,7 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 						h.updateStickyCodingStepVerify(userID, step.Index, vcmd, false, gateSum)
 						if sum != "" {
 							reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: verify_failed\n%s", step.Index, step.Title, truncateRunesV2(sum, 800)))
-							sessionMem.LastSummary = truncateRunesV2(sum, 800)
+							setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, "verify_failed", sum)
 						}
 						_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 						h.markRemainingCodingStepsSkipped(userID, step.Index, "skipped: prior step failed")
@@ -3691,8 +3838,8 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 			_ = runCodingWorkbenchHookPhase(localHooksPath, hooks, "post_step")
 			if sum != "" {
 				reportParts = append(reportParts, fmt.Sprintf("### T%d: %s\n状态: %s\n%s", step.Index, step.Title, stepResult.Status, truncateRunesV2(sum, 800)))
-				// Feed prior step outcome into subsequent steps.
-				sessionMem.LastSummary = truncateRunesV2(sum, 800)
+				// Feed prior step outcome into subsequent steps (sanitized when multi-step).
+				setRemotePlanLastSummary(&sessionMem, planned, step.Index, step.Title, stepResult.Status, sum)
 			}
 			// Stream a one-line checkmark update (Claude Code-style).
 			if planned && onProgress != nil {

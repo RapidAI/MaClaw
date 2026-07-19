@@ -1253,7 +1253,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	}))
 	defer server.Close()
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, CurrentLanguage: "zh"}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -1312,7 +1312,7 @@ func TestRunAgentLoop_NonDebugStillReportsBaseToolStageProgress(t *testing.T) {
 	}
 	foundBaseStage := false
 	for _, msg := range progress {
-		if strings.Contains(msg, "正在整理并发送文件") {
+		if strings.Contains(msg, "【工具】发送文件") {
 			foundBaseStage = true
 		}
 		if strings.Contains(msg, "internal debug-only progress") {
@@ -3357,7 +3357,7 @@ func TestRunAgentLoop_RemoteSkillSearchPromptAppearsWhenNoLocalSkillMatches(t *t
 	for _, msg := range secondMessages {
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
-		if role == "system" && strings.Contains(content, "Search/install a reusable Skill first") && strings.Contains(content, "Only switch to craft_tool or bash") {
+		if role == "system" && strings.Contains(content, "search/install a reusable Skill first") && strings.Contains(content, "only switch to craft_tool or bash") {
 			foundRemotePrompt = true
 			break
 		}
@@ -3399,7 +3399,7 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 	}))
 	defer server.Close()
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, CurrentLanguage: "zh"}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -3494,9 +3494,9 @@ func TestRunAgentLoop_PromiseOnlyPDFCraftTimeoutFallsBackToBashAndDeliversFile(t
 		t.Fatalf("LLM call count = %d, want 4", callNum)
 	}
 	wantProgress := []string{
-		"正在生成并执行脚本，准备继续完成交付...",
-		"正在执行命令处理文件，请稍候...",
-		"正在整理并发送文件...",
+		"【工具】生成脚本",
+		"【工具】执行命令",
+		"【工具】发送文件",
 	}
 	for _, want := range wantProgress {
 		found := false
@@ -3753,7 +3753,7 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 	}))
 	defer server.Close()
 
-	app := &App{testHomeDir: tempHome}
+	app := &App{testHomeDir: tempHome, CurrentLanguage: "zh"}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -3818,7 +3818,7 @@ func TestRunAgentLoop_LongChainUsesGraceRoundsToFinishFileDelivery(t *testing.T)
 	if strings.Contains(resp.Text, "已达到最大推理轮次") {
 		t.Fatalf("resp.Text = %q, did not expect generic iteration limit message", resp.Text)
 	}
-	if !strings.Contains(resp.TraceSummary, "文件 review.pdf 已准备好") {
+	if !strings.Contains(resp.TraceSummary, "文件已在当前对话中准备好：review.pdf") {
 		t.Fatalf("TraceSummary = %q, want readable file delivery summary", resp.TraceSummary)
 	}
 }

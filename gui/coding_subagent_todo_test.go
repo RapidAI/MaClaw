@@ -193,9 +193,164 @@ func TestCodingAgentTodosToStepStatuses(t *testing.T) {
 	}
 }
 
+func TestPublishCodingAgentTodosDoesNotOverwriteOrchestratedPlan(t *testing.T) {
+	userID := "desktop-user:todo-plan-guard"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	planSteps := []codingWorkbenchStepStatus{
+		{Index: 1, Title: "检查远程环境", Status: codingStepRunning},
+		{Index: 2, Title: "初始化项目", Status: codingStepPending},
+		{Index: 3, Title: "实现功能", Status: codingStepPending},
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.ExecutionPlan = "### T1: 检查\n### T2: 初始化\n### T3: 实现"
+		mem.StepStatuses = append([]codingWorkbenchStepStatus(nil), planSteps...)
+	})
+	if !stickyHasOrchestratedPlanSteps(h.getStickyCodingWorkbenchMemory(userID)) {
+		t.Fatal("expected orchestrated plan detection")
+	}
+
+	// Agent re-lists whole plan and marks everything done (the rush-ahead bug).
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "检查远程环境", Status: codingAgentTodoCompleted},
+		{ID: "2", Content: "初始化项目", Status: codingAgentTodoCompleted},
+		{ID: "3", Content: "实现功能", Status: codingAgentTodoCompleted},
+	})
+
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) != 3 {
+		t.Fatalf("plan steps replaced: %+v", mem.StepStatuses)
+	}
+	if mem.StepStatuses[0].Status != codingStepRunning || mem.StepStatuses[0].Title != "检查远程环境" {
+		t.Fatalf("T1 should stay orchestrator-owned running: %+v", mem.StepStatuses[0])
+	}
+	if mem.StepStatuses[1].Status != codingStepPending || mem.StepStatuses[2].Status != codingStepPending {
+		t.Fatalf("later plan steps must not be agent-passed: %+v", mem.StepStatuses)
+	}
+}
+
+func TestPublishCodingAgentTodosStillMirrorsWithoutPlan(t *testing.T) {
+	userID := "desktop-user:todo-no-plan"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "探查", Status: codingAgentTodoInProgress},
+		{ID: "2", Content: "改码", Status: codingAgentTodoPending},
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) != 2 || mem.StepStatuses[0].Status != codingStepRunning {
+		t.Fatalf("without plan, todos should mirror to UI: %+v", mem.StepStatuses)
+	}
+}
+
+func TestPublishCodingAgentTodosMirrorsAfterTerminalPlan(t *testing.T) {
+	userID := "desktop-user:todo-after-plan"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	// Plan finished: all steps terminal — free-form follow-up todos should own UI again.
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.ExecutionPlan = "### T1\n### T2\n### T3"
+		mem.StepStatuses = []codingWorkbenchStepStatus{
+			{Index: 1, Title: "检查", Status: codingStepPassed},
+			{Index: 2, Title: "实现", Status: codingStepPassed},
+			{Index: 3, Title: "验收", Status: codingStepPassed},
+		}
+	})
+	if stickyHasOrchestratedPlanSteps(h.getStickyCodingWorkbenchMemory(userID)) {
+		t.Fatal("terminal plan must not freeze todo UI")
+	}
+	publishCodingAgentTodosToUI(h, userID, []codingAgentTodoItem{
+		{ID: "1", Content: "补一个 typo", Status: codingAgentTodoInProgress},
+	})
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) != 1 || mem.StepStatuses[0].Title != "补一个 typo" {
+		t.Fatalf("after terminal plan, todos should mirror: %+v", mem.StepStatuses)
+	}
+}
+
+func TestStickyPlanHasOpenSteps(t *testing.T) {
+	if stickyPlanHasOpenSteps(nil) {
+		t.Fatal("nil should be closed")
+	}
+	if !stickyPlanHasOpenSteps([]codingWorkbenchStepStatus{{Status: codingStepPending}}) {
+		t.Fatal("pending is open")
+	}
+	if stickyPlanHasOpenSteps([]codingWorkbenchStepStatus{
+		{Status: codingStepPassed},
+		{Status: codingStepFailed},
+		{Status: codingStepSkipped},
+		{Status: codingStepVerifyFail},
+	}) {
+		t.Fatal("all terminal should be closed")
+	}
+}
+
+func TestAnnotateTodoChecklistForOrchestratedPlan(t *testing.T) {
+	userID := "desktop-user:todo-annotate"
+	h := &IMMessageHandler{}
+	// Sticky memory cold-loads from disk; isolate this test user fully.
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	// No plan: unchanged.
+	base := "执行步骤：\n☑ 1. a\n… 2. b"
+	if got := annotateTodoChecklistForOrchestratedPlan(h, userID, base); got != base {
+		t.Fatalf("no plan should leave checklist alone: %q", got)
+	}
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.ExecutionPlan = "T1\nT2"
+		mem.StepStatuses = []codingWorkbenchStepStatus{
+			{Index: 1, Title: "T1", Status: codingStepRunning},
+			{Index: 2, Title: "T2", Status: codingStepPending},
+		}
+	})
+	got := annotateTodoChecklistForOrchestratedPlan(h, userID, base)
+	if !strings.Contains(got, base) || !strings.Contains(got, "外层多步计划进度由编排器维护") {
+		t.Fatalf("expected plan annotation: %q", got)
+	}
+	// Idempotent.
+	got2 := annotateTodoChecklistForOrchestratedPlan(h, userID, got)
+	if got2 != got {
+		t.Fatalf("annotate should be idempotent:\n%s\nvs\n%s", got, got2)
+	}
+}
+
+func TestWrapTodoProgressForOrchestratedPlan(t *testing.T) {
+	userID := "desktop-user:todo-progress-wrap"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+
+	var got string
+	wrap := wrapTodoProgressForOrchestratedPlan(h, userID, func(s string) { got = s })
+	wrap("完成 2/2 · 全部完成")
+	if got != "完成 2/2 · 全部完成" {
+		t.Fatalf("without plan, progress should be unchanged: %q", got)
+	}
+
+	h.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+		mem.ExecutionPlan = "T1\nT2"
+		mem.StepStatuses = []codingWorkbenchStepStatus{
+			{Index: 1, Status: codingStepRunning},
+			{Index: 2, Status: codingStepPending},
+		}
+	})
+	wrap("完成 2/2 · 全部完成")
+	if !strings.Contains(got, "本步内部清单已勾完") || !strings.Contains(got, "外层计划另计") {
+		t.Fatalf("with open plan, progress should be softened: %q", got)
+	}
+	if strings.Contains(got, " · 全部完成") {
+		t.Fatalf("whole-plan completion wording should be rewritten: %q", got)
+	}
+}
+
 func TestLocalCodingSubAgentTodoWriteTool(t *testing.T) {
 	userID := "desktop-user:todo-local-test"
 	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
 	cb := &codingSubAgentCallbacks{
 		subagent: &CodingSubAgent{
 			handler: h,
@@ -235,6 +390,8 @@ func TestLocalCodingSubAgentTodoWriteTool(t *testing.T) {
 func TestRemoteCodingSubAgentTodoWriteTool(t *testing.T) {
 	userID := "desktop-user:todo-remote-test"
 	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
 	cb := &remoteCodingCallbacks{
 		agent: &RemoteCodingSubAgent{
 			handler: h,

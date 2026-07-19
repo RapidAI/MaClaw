@@ -41,9 +41,11 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
   String _phase = 'ready';
   String? _error;
   bool _recoveringInterruptedRecording = false;
+  bool _disposed = false;
 
   bool get _recording => _phase == 'recording';
   bool get _paused => _phase == 'paused';
+  bool get _active => mounted && !_disposed;
 
   @override
   void initState() {
@@ -52,15 +54,27 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
     // system recorder shutdown ends capture. Treat a successfully materialized
     // file as a completed recording: persist it first, then let the existing
     // restart-safe upload queue resume delivery.
-    _recorderStateSubscription = _recorder.onStateChanged().listen((state) {
-      if (state == RecordState.stop) {
-        unawaited(_recoverInterruptedRecording());
-      }
-    });
+    _recorderStateSubscription = _recorder.onStateChanged().listen(
+      (state) {
+        if (_active && state == RecordState.stop) {
+          unawaited(_recoverInterruptedRecording());
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (_active) {
+          setState(() => _error = '录音服务异常：$error');
+        }
+      },
+    );
   }
 
   @override
   void dispose() {
+    // `AudioRecorder.dispose()` can cause the platform state stream to emit a
+    // final stop event. Mark this State inactive before releasing either
+    // resource so that event cannot start an async recovery which later calls
+    // setState or Navigator on a deactivated widget tree.
+    _disposed = true;
     _ticker?.cancel();
     unawaited(_recorderStateSubscription?.cancel());
     unawaited(_recorder.dispose());
@@ -68,7 +82,8 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
   }
 
   Future<void> _recoverInterruptedRecording() async {
-    if (_recoveringInterruptedRecording ||
+    if (!_active ||
+        _recoveringInterruptedRecording ||
         _phase == 'finalizing' ||
         _phase == 'uploading' ||
         _phase == 'done' ||
@@ -82,9 +97,10 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
       // still the only cross-platform way for the record package to return its
       // final path, so retain the path captured at start as a fallback.
       final stoppedPath = await _recorder.stop();
+      if (!_active) return;
       final path = stoppedPath ?? _path;
       if (path == null || !await File(path).exists()) {
-        if (mounted) {
+        if (_active) {
           setState(() {
             _phase = 'failed';
             _error = '录音被系统中断，未找到可恢复的音频文件。请重新开始录音。';
@@ -92,8 +108,9 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
         }
         return;
       }
+      if (!_active) return;
       _path = path;
-      if (mounted) {
+      if (_active) {
         setState(() {
           _phase = 'finalizing';
           _error = '录音被系统中断，正在保存并恢复上传。';
@@ -101,7 +118,7 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
       }
       await _upload(File(path));
     } on Object catch (error) {
-      if (mounted) {
+      if (_active) {
         setState(() {
           _phase = 'failed';
           _error = '录音被系统中断，音频已保留在本机：$error';
@@ -115,11 +132,13 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
   Future<void> _start() async {
     try {
       final granted = await _recorder.hasPermission();
+      if (!_active) return;
       if (!granted) {
         setState(() => _error = '无法访问麦克风，请在系统设置中允许 MaClaw 使用麦克风。');
         return;
       }
       final dir = await getApplicationDocumentsDirectory();
+      if (!_active) return;
       final safeTitle = widget.title
           .replaceAll(RegExp(r'[^a-zA-Z0-9_\-\u4e00-\u9fff]+'), '_');
       final path =
@@ -134,7 +153,7 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
           autoGain: true,
           echoCancel: true,
           noiseSuppress: true,
-          androidConfig: const AndroidRecordConfig(
+          androidConfig: AndroidRecordConfig(
             service: AndroidService(
               title: 'MaClaw 正在录制会议',
               content: '点击 MaClaw 返回会议录音',
@@ -143,6 +162,10 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
         ),
         path: path,
       );
+      if (!_active) {
+        await _recorder.stop();
+        return;
+      }
       _path = path;
       _startedAt = DateTime.now();
       _elapsedBeforePause = Duration.zero;
@@ -153,30 +176,40 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
         _error = null;
       });
     } on Object catch (e) {
-      setState(() => _error = '无法开始录音：$e');
+      if (_active) {
+        setState(() => _error = '无法开始录音：$e');
+      }
     }
   }
 
   Future<void> _pauseOrResume() async {
+    if (!_active) return;
     try {
       if (_recording) {
         await _recorder.pause();
+        if (!_active) return;
         _elapsedBeforePause = _elapsed;
         _ticker?.cancel();
         setState(() => _phase = 'paused');
       } else if (_paused) {
         await _recorder.resume();
+        if (!_active) return;
         _startedAt = DateTime.now();
         _startElapsedTicker();
         setState(() => _phase = 'recording');
       }
     } on Object catch (e) {
-      setState(() => _error = '无法更新录音状态：$e');
+      if (_active) {
+        setState(() => _error = '无法更新录音状态：$e');
+      }
     }
   }
 
   Future<void> _stopAndUpload() async {
-    if (_phase == 'finalizing' || _phase == 'uploading' || _phase == 'done') {
+    if (!_active ||
+        _phase == 'finalizing' ||
+        _phase == 'uploading' ||
+        _phase == 'done') {
       return;
     }
     _ticker?.cancel();
@@ -186,21 +219,26 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
     });
     try {
       final output = await _recorder.stop();
+      if (!_active) return;
       final path = output ?? _path;
-      if (path == null || !await File(path).exists())
+      if (path == null || !await File(path).exists()) {
         throw StateError('录音文件不存在');
+      }
+      if (!_active) return;
       _path = path;
       await _upload(File(path));
     } on Object catch (e) {
-      if (mounted)
+      if (_active) {
         setState(() {
           _phase = 'failed';
           _error = '录音已保存在本机，上传失败：$e';
         });
+      }
     }
   }
 
   Future<void> _upload(File file) async {
+    if (!_active) return;
     setState(() => _phase = 'uploading');
     final queue = MeetingRecordingUploadQueue();
     final task = await queue.enqueue(
@@ -216,9 +254,10 @@ class _MeetingRecordingScreenState extends State<MeetingRecordingScreen> {
     if (uploaded.status != 'processing' && uploaded.status != 'ready') {
       throw StateError(uploaded.message);
     }
-    if (!mounted) return;
+    if (!_active) return;
     setState(() => _phase = 'done');
-    Navigator.of(context).pop(MeetingRecordingResult(
+    if (!mounted) return;
+    Navigator.pop(context, MeetingRecordingResult(
       recordingId: uploaded.recordingId,
       duration: _elapsed,
       // Hub takes custody before the queue may delete this duplicate file.

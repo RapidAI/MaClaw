@@ -1347,10 +1347,17 @@ func (a *App) buildSkillAutoSummaryPipeline() *SkillAutoSummaryPipeline {
 		return nil
 	}
 	a.ensureSkillLifecycleManager()
-	checker := NewSecurityPolicyChecker(DefaultSkillSecurityPolicy(), func(label, skillName string) bool {
-		log.Printf("[skill-auto-summary] background policy requires explicit approval: skill=%s label=%s", skillName, label)
-		return false
-	})
+	// Auto-summary runs after the user already executed these tools in-session.
+	// DefaultSkillSecurityPolicy uses Ask for shell/network, but background
+	// pipelines cannot surface a UI prompt — the old askFn always returned false
+	// and dropped every learned skill that touched shell/network. Allow here;
+	// execution-time tool guards still enforce policy when the skill is run.
+	checker := NewSecurityPolicyChecker(SkillSecurityPolicy{
+		NetworkAccess:    SecurityAllow,
+		FileSystemAccess: SecurityAllow,
+		ShellExec:        SecurityAllow,
+		DatabaseAccess:   SecurityAllow,
+	}, nil)
 	return NewSkillAutoSummaryPipeline(
 		NewTagGenerator(),
 		checker,
@@ -7002,7 +7009,7 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				a.configMu.Unlock()
 				return corelib.AppConfig{}, err
 			}
-			cfg.ShowAppEntry = v
+			cfg.ShowAppEntry = &v
 		case "show_workflow_entry":
 			v, err := boolField(key, value)
 			if err != nil {

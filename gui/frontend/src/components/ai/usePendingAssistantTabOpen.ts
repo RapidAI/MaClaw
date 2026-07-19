@@ -1,7 +1,10 @@
-﻿import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { CreateGroupTabOptions, CreateProjectTabOptions, CreateVETabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import type { ExpertDefinition } from "./expertTypes";
+import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
+import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys } from "./participantIdentity";
@@ -22,6 +25,11 @@ export interface PendingProjectTabOpen {
     remoteHost?: string;
     /** When true, remote coding SSH needs reconnect (password) before SubAgent runs. */
     remoteNeedsReconnect?: boolean;
+}
+
+/** Pending expert tab open request (e.g. clicking an expert card on the utilities page). */
+export interface PendingExpertOpen {
+    expert: ExpertDefinition;
 }
 
 export interface PendingHistoryDiscussionOpen {
@@ -81,6 +89,7 @@ interface PendingAssistantTabOpenOptions {
     createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
+    createExpertTab?: (expert: ExpertDefinition) => AITab | null;
     activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
@@ -93,6 +102,8 @@ interface PendingAssistantTabOpenOptions {
     onPendingHistoryDiscussionOpenHandled?: () => void;
     pendingProjectTabOpen?: PendingProjectTabOpen | null;
     onPendingProjectTabOpenHandled?: () => void;
+    pendingExpertOpen?: PendingExpertOpen | null;
+    onPendingExpertOpenHandled?: () => void;
 }
 
 export function usePendingAssistantTabOpen({
@@ -100,6 +111,7 @@ export function usePendingAssistantTabOpen({
     createVETab,
     createGroupTab,
     createProjectTab,
+    createExpertTab,
     activateTab,
     getTabState,
     saveTabState,
@@ -112,6 +124,8 @@ export function usePendingAssistantTabOpen({
     onPendingHistoryDiscussionOpenHandled,
     pendingProjectTabOpen,
     onPendingProjectTabOpenHandled,
+    pendingExpertOpen,
+    onPendingExpertOpenHandled,
 }: PendingAssistantTabOpenOptions) {
     const openHistoryDiscussion = useCallback((discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
@@ -277,4 +291,57 @@ export function usePendingAssistantTabOpen({
     // ↑ ONLY pendingProjectTabOpen in deps. All callbacks accessed via refs.
     // This ensures the effect fires exactly once per non-null pendingProjectTabOpen,
     // regardless of how often the parent re-renders.
+
+    // --- Expert Tab: open (or focus) an expert conversation tab ---
+    // First creation seeds a local welcome message (no LLM call); re-opening an
+    // existing tab only activates it and never re-seeds.
+    const createExpertTabRef = useRef(createExpertTab);
+    createExpertTabRef.current = createExpertTab;
+    const saveTabStateForExpertRef = useRef(saveTabState);
+    saveTabStateForExpertRef.current = saveTabState;
+    const getTabListForExpertRef = useRef(getTabList);
+    getTabListForExpertRef.current = getTabList;
+    const onExpertHandledRef = useRef(onPendingExpertOpenHandled);
+    onExpertHandledRef.current = onPendingExpertOpenHandled;
+    const expertLangRef = useRef(lang);
+    expertLangRef.current = lang;
+
+    useEffect(() => {
+        if (!pendingExpertOpen) return;
+        const expert = pendingExpertOpen.expert;
+        onExpertHandledRef.current?.();
+        const expertId = String(expert?.id || "").trim();
+        if (!expertId) return;
+        const create = createExpertTabRef.current;
+        if (!create) return;
+
+        // Check existence BEFORE creating so the welcome seed only happens on
+        // first creation (dedupe-activation must not re-seed).
+        const tabId = expertTabId(expertId);
+        const existedBefore = (getTabListForExpertRef.current?.() || [])
+            .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
+
+        const tab = create(expert);
+        if (!tab || existedBefore) return;
+
+        const existing = getTabStateRef.current?.(tab.id);
+        const hasConversation = Array.isArray(existing?.history)
+            && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+        if (hasConversation) return;
+
+        const sessionKey = expertSessionKey(expertId) || undefined;
+        saveTabStateForExpertRef.current?.(tab.id, {
+            history: [{
+                id: `expert-welcome-${expertId}`,
+                role: "assistant",
+                content: expertWelcomeMessageText(expert, expertLangRef.current),
+                sessionKey,
+                timestamp: Date.now(),
+            }],
+            scrollTop: 0,
+            inputText: "",
+            lastActiveAt: Date.now(),
+        });
+    }, [pendingExpertOpen]);
+    // ↑ ONLY pendingExpertOpen in deps. All callbacks accessed via refs.
 }

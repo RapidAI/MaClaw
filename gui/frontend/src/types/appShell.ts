@@ -146,4 +146,12 @@ export interface SidebarLLMProviderSummary {
     isHubService: boolean;
     /** True when the provider has enough configuration to be usable (URL + key, or hub service). */
     configured?: boolean;
+    /** Model id/name currently configured for this provider (from LLM settings). */
+    model?: string;
+    /** Optional previously discovered model ids for this provider. */
+    models?: string[];
+    protocol?: string;
+    agentType?: string;
+    /** Auth type hint (oauth/sso/api_key); key itself is not exposed here. */
+    authType?: string;
 }

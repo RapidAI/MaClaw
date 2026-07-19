@@ -12,6 +12,23 @@ MaClaw AI coding assistant chat, living in the **bottom panel** so it never hide
 - `MaClaw: New Session` — start a fresh ACP session.
 - `MaClaw: Cancel Current Turn` — cancel the in-flight prompt.
 
+## Pre-input queue
+
+The composer stays usable while a turn is running: pressing Enter queues the
+message instead of dropping it (the bridge rejects concurrent prompts), and
+queued prompts fire FIFO, one turn at a time, as each turn ends.
+
+- Queued prompts appear as chips above the composer. Click a chip's text to
+  pull it back into the composer for editing (appended if the composer already
+  has a draft); `▲` fires it immediately — while busy, that moves it to the
+  front so it steers the next turn; `✕` removes it; `Clear all` empties the queue.
+- With the composer empty, `↑` pulls the newest queued prompt back for editing.
+- If a turn fails (bridge down, quota, …), auto-fire pauses and the strip shows
+  a hint — click `▲` on any chip to resume. Cancelling a turn is not an error:
+  the queue keeps going.
+- `MaClaw: New Session` discards the queue together with the old session.
+- The queue holds at most 50 prompts; when full, the composer keeps your text.
+
 ## Settings
 
 - `maclaw-acp.bridgePath` — optional explicit path to `maclaw-acp-bridge`; empty means auto-resolve (`MACLAW_ACP_BRIDGE` env, `<maclaw data dir>/bin`, then `PATH`).

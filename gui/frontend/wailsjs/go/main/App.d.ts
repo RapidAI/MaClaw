@@ -612,6 +612,8 @@ export function GetMaclawLLMProviders():Promise<any>;
 
 export function SaveMaclawLLMProviders(arg1:any, arg2:string):Promise<void>;
 
+export function SetMaclawLLMCurrentModel(arg1:string):Promise<void>;
+
 export function GetWebSearchProviders():Promise<any>;
 
 export function SaveWebSearchProviders(arg1:any, arg2:string):Promise<void>;
@@ -1613,3 +1615,12 @@ export function UpdateSurvey(arg1:string,arg2:string):Promise<string>;
 export function UnbindSurveyGroup(arg1:string,arg2:string,arg3:string):Promise<void>;
 export function ListSurveyResponses(arg1:string):Promise<string>;
 export function ExportSurveyXLSXFiltered(arg1:string,arg2:string):Promise<string>;
+// AI Expert definitions (manually maintained until `wails generate module` re-runs).
+// ListExperts/SaveExpert exchange ExpertDefinition JSON; ListAvailableToolNames returns
+// JSON [{name, description, deferred?}] (deferred tools are discovered on demand).
+export function ListExperts():Promise<string>;
+export function SaveExpert(arg1:string):Promise<string>;
+export function DeleteExpert(arg1:string):Promise<void>;
+export function ResetBuiltinExpert(arg1:string):Promise<void>;
+export function GenerateExpertProfile(arg1:string):Promise<string>;
+export function ListAvailableToolNames():Promise<string>;

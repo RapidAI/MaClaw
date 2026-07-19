@@ -397,6 +397,7 @@ const codingAgentTodoPromptSection = `
 3. 做完立刻勾：将该步改为 completed，并把下一步改为 in_progress（可 merge=true 只更新 id+status）。
 4. 失败或取消：标 cancelled，并在摘要里说明原因。
 5. 禁止空口报完成：未勾选的步骤不得在最终回复里声称已完成。
+6. 若用户消息带 [Plan step Tn/N] 或写明只执行当前计划步：todo 只能拆解**当前这一步**的内部子工作，禁止把整份多步计划（T1…Tn）重新列成清单并在本回合全部做完；后续计划步由编排器另开任务执行。
 琐碎单点修改（改一个 typo、跑一条命令）可不建清单。
 `
 
@@ -552,10 +553,80 @@ func executeCodingAgentTodoWrite(
 	return checklist, codingToolOutcomeSuccess
 }
 
+const codingAgentTodoPlanOwnedNote = "注：外层多步计划进度由编排器维护；上述 todo 仅表示本步内部子任务。" +
+	"完成本计划步后请停止，勿继续后续 Tn。"
+
+// annotateTodoChecklistForOrchestratedPlan appends a reminder when outer multi-step
+// plan progress is orchestrator-owned, so models don't treat agent todo 5/5 as
+// "whole plan done". Idempotent if the note is already present.
+func annotateTodoChecklistForOrchestratedPlan(handler *IMMessageHandler, userID, checklist string) string {
+	checklist = strings.TrimRight(checklist, "\n")
+	if handler == nil || strings.TrimSpace(userID) == "" || checklist == "" {
+		return checklist
+	}
+	if strings.Contains(checklist, "外层多步计划进度由编排器维护") {
+		return checklist
+	}
+	if !stickyHasOrchestratedPlanSteps(handler.getStickyCodingWorkbenchMemory(userID)) {
+		return checklist
+	}
+	return checklist + "\n\n" + codingAgentTodoPlanOwnedNote
+}
+
+// wrapTodoProgressForOrchestratedPlan softens onProgress lines so
+// "完成 5/5 · 全部完成" is not read as whole multi-step plan completion.
+func wrapTodoProgressForOrchestratedPlan(handler *IMMessageHandler, userID string, onProgress func(string)) func(string) {
+	if onProgress == nil {
+		return nil
+	}
+	userID = strings.TrimSpace(userID)
+	return func(line string) {
+		line = strings.TrimSpace(line)
+		if line != "" && handler != nil && userID != "" &&
+			stickyHasOrchestratedPlanSteps(handler.getStickyCodingWorkbenchMemory(userID)) {
+			line = strings.Replace(line, " · 全部完成", " · 本步内部清单已勾完", 1)
+			if !strings.Contains(line, "外层计划另计") {
+				line = line + " · 外层计划另计"
+			}
+		}
+		onProgress(line)
+	}
+}
+
+// stickyPlanHasOpenSteps reports whether any plan step is still pending/running
+// (not yet terminal: passed / failed / verify_failed / skipped).
+func stickyPlanHasOpenSteps(steps []codingWorkbenchStepStatus) bool {
+	for _, st := range steps {
+		switch st.Status {
+		case codingStepPending, codingStepRunning, "":
+			return true
+		}
+	}
+	return false
+}
+
+// stickyHasOrchestratedPlanSteps reports whether sticky memory holds an
+// in-progress multi-step workbench plan owned by the pure-coding orchestrator.
+// When true, agent-internal todo_write must not replace StepStatuses (that would
+// let a RemoteCodingSubAgent mark T2–Tn "passed" during T1 and corrupt UI/state).
+// Fully terminal plans (all passed/failed/skipped) no longer freeze the UI so
+// free-form follow-up turns can use agent todos again.
+func stickyHasOrchestratedPlanSteps(mem stickyCodingWorkbenchMemory) bool {
+	if strings.TrimSpace(mem.ExecutionPlan) == "" {
+		return false
+	}
+	if len(mem.StepStatuses) < codingWorkbenchPlanMinTasks {
+		return false
+	}
+	return stickyPlanHasOpenSteps(mem.StepStatuses)
+}
+
 // publishCodingAgentTodosToUI mirrors agent todos into sticky step statuses + event
 // so the pure-coding banner can show ☑/☐ live (local and remote).
 // Uses debounced disk persist: mid-turn todo updates are frequent.
 // No-op emit when the visible checklist is unchanged (reduces UI churn).
+// When an in-progress orchestrated multi-step plan owns StepStatuses, todos stay
+// agent-local (tool result / progress line only) and do not overwrite plan progress.
 func publishCodingAgentTodosToUI(handler *IMMessageHandler, userID string, items []codingAgentTodoItem) {
 	if handler == nil {
 		return
@@ -565,14 +636,23 @@ func publishCodingAgentTodosToUI(handler *IMMessageHandler, userID string, items
 		return
 	}
 	steps := codingAgentTodosToStepStatuses(items)
+	// Single sticky snapshot for guard + equality (avoid double map lookup).
+	cur := handler.getStickyCodingWorkbenchMemory(userID)
+	if stickyHasOrchestratedPlanSteps(cur) {
+		return
+	}
 	// Fast path: skip RMW + debounced disk schedule when nothing visible changed.
 	// Agent loop is single-threaded per session; a tiny race is acceptable.
-	if codingWorkbenchStepStatusesEqual(handler.getStickyCodingWorkbenchMemory(userID).StepStatuses, steps) {
+	if codingWorkbenchStepStatusesEqual(cur.StepStatuses, steps) {
 		return
 	}
 	changed := false
 	// Memory + debounce only (not full disk write each step).
 	handler.updateStickyCodingWorkbenchMemoryOpts(userID, false, func(mem *stickyCodingWorkbenchMemory) {
+		// Re-check under lock: plan may have been armed between the outer read and here.
+		if mem != nil && stickyHasOrchestratedPlanSteps(*mem) {
+			return
+		}
 		// Re-check under lock in case another writer raced (defensive).
 		if codingWorkbenchStepStatusesEqual(mem.StepStatuses, steps) {
 			return

@@ -174,7 +174,9 @@ func TestHubSkillCapabilityInstalledChecksCapabilityRef(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{Name: "Existing Skill", HubSkillID: "skill-1", Capability: &corelib.SkillCapabilityRef{CapabilityID: "cap-1", VersionKey: "v1"}}}}); err != nil {
+	// Status is preset to "active" so loadSkills does not schedule an async
+	// persistSkillStatusOverlays write that would race t.TempDir cleanup.
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{Name: "Existing Skill", Status: "active", HubSkillID: "skill-1", Capability: &corelib.SkillCapabilityRef{CapabilityID: "cap-1", VersionKey: "v1"}}}}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)

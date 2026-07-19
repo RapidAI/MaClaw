@@ -212,7 +212,11 @@ func remoteLaunchPolicyOwnerID(source RemoteLaunchSource) string {
 }
 
 func remoteLaunchPolicyOwnerIDForProject(source RemoteLaunchSource, projectPath string) string {
-	if normalizeRemoteLaunchSource(source) == RemoteLaunchSourceDesktop {
+	// Desktop quick-start and handoff launches are project-scoped (the desktop
+	// UI requires a selected project), so they are governed by the project's
+	// workflow policy, not by a synthetic remote:* owner that never has one.
+	switch normalizeRemoteLaunchSource(source) {
+	case RemoteLaunchSourceDesktop, RemoteLaunchSourceHandoff:
 		return projectSessionOwnerID(projectPath)
 	}
 	return remoteLaunchPolicyOwnerID(source)

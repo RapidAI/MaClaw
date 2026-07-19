@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
@@ -398,16 +399,38 @@ func (s *RapidOCRSidecar) ensureReadyLocked() error {
 		return nil
 	}
 	// Previously installed but startup failed — commonly a stale lib whose
-	// wheels target a different Python (ABI mismatch). Force one reinstall
-	// with the current interpreter, then retry once.
+	// wheels target a different Python (ABI mismatch / broken numpy C-ext).
+	// Force one reinstall with the current interpreter, then retry once.
 	s.log("OCR sidecar start failed: %v; forcing one reinstall", startErr)
 	if rerr := s.installLockedForce(true); rerr != nil {
 		return fmt.Errorf("OCR sidecar start failed: %v (reinstall also failed: %v)", startErr, rerr)
 	}
 	if err2 := s.startLocked(); err2 != nil {
-		return fmt.Errorf("OCR sidecar start failed after reinstall: %v", err2)
+		combined := startErr.Error() + "\n" + err2.Error()
+		if tail := s.stderrTailLocked(); tail != "" {
+			combined += "\n" + tail
+		}
+		hint := ""
+		if isOCRNumpyBroken(combined) {
+			hint = " (numpy ABI mismatch: try deleting ~/.maclaw/ocr and re-open Computer Use)"
+		}
+		return fmt.Errorf("OCR sidecar start failed after reinstall: %v%s", err2, hint)
 	}
 	return nil
+}
+
+// isOCRNumpyBroken detects the classic broken-numpy / multiarray import failure
+// that RapidOCR surfaces when --target wheels and system site-packages mix.
+func isOCRNumpyBroken(msg string) bool {
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "numpy") {
+		return false
+	}
+	return strings.Contains(lower, "multiarray") ||
+		strings.Contains(lower, "c-extensions") ||
+		strings.Contains(lower, "importing the numpy") ||
+		strings.Contains(lower, "dll load failed") ||
+		strings.Contains(lower, "no module named")
 }
 
 func (s *RapidOCRSidecar) installLocked() error {
@@ -468,8 +491,9 @@ func (s *RapidOCRSidecar) installLockedForce(force bool) error {
 		}
 	}
 
-	// pip install --target=~/.maclaw/ocr/lib/ rapidocr-onnxruntime
-	// This keeps all packages in our private directory, easy to manage and uninstall
+	// pip install --target=~/.maclaw/ocr/lib/ numpy + rapidocr-onnxruntime
+	// Install numpy first (same interpreter ABI) so rapidocr does not pick up a
+	// broken/mismatched system numpy when PYTHONPATH mixes packages.
 	pipArgs := []string{"-m", "pip", "install",
 		"--target", libDir,
 		"--no-warn-script-location",
@@ -477,13 +501,14 @@ func (s *RapidOCRSidecar) installLockedForce(force bool) error {
 	if force {
 		pipArgs = append(pipArgs, "--upgrade", "--force-reinstall", "--no-cache-dir")
 	}
-	pipArgs = append(pipArgs, "rapidocr-onnxruntime")
+	pipArgs = append(pipArgs, "numpy", "rapidocr-onnxruntime")
 	cmd := exec.Command(pythonPath, pipArgs...)
 	coretool.HideCommandWindow(cmd)
+	cmd.Env = append(os.Environ(), "PYTHONNOUSERSITE=1")
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
-		s.emitStatus("OCR 引擎安装失败，请手动执行: pip install --target=" + libDir + " rapidocr-onnxruntime")
+		s.emitStatus("OCR 引擎安装失败，请手动执行: pip install --target=" + libDir + " numpy rapidocr-onnxruntime")
 		return fmt.Errorf("pip install: %w", err)
 	}
 
@@ -519,8 +544,10 @@ func (s *RapidOCRSidecar) startLocked() error {
 
 	cmd := exec.Command(pythonPath, scriptPath)
 	coretool.HideCommandWindow(cmd)
-	// Set PYTHONPATH so the sidecar can find rapidocr in our private lib dir
-	cmd.Env = append(os.Environ(), "PYTHONPATH="+libDir)
+	// Set PYTHONPATH so the sidecar can find rapidocr in our private lib dir.
+	// PYTHONNOUSERSITE avoids mixing user-site numpy with --target wheels (common
+	// cause of "No module named numpy._core._multiarray_umath").
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+libDir, "PYTHONNOUSERSITE=1")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -660,7 +687,7 @@ func readOCRPong(scanner *bufio.Scanner, timeout time.Duration) (skipped []strin
 }
 
 // stderrTailLocked returns a compact tail of recent sidecar stderr lines for
-// error messages. Caller must hold s.mu; stderrLines itself uses stderrMu.
+// error messages. Thread-safe via stderrMu (does not require s.mu).
 func (s *RapidOCRSidecar) stderrTailLocked() string {
 	s.stderrMu.Lock()
 	defer s.stderrMu.Unlock()
@@ -670,7 +697,12 @@ func (s *RapidOCRSidecar) stderrTailLocked() string {
 	tail := strings.Join(s.stderrLines, " | ")
 	const max = 400
 	if len(tail) > max {
-		tail = tail[len(tail)-max:]
+		// Cut on a rune boundary so multi-byte UTF-8 is not split mid-character.
+		start := len(tail) - max
+		for start < len(tail) && !utf8.RuneStart(tail[start]) {
+			start++
+		}
+		tail = tail[start:]
 	}
 	return tail
 }

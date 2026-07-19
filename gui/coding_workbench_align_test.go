@@ -205,3 +205,37 @@ func TestPrevOutputsIncludesProjectInstructions(t *testing.T) {
 		t.Fatalf("prevOutputs missing instructions: %q", joined)
 	}
 }
+
+func TestMarkRemainingCodingStepsSkippedRewritesPrematurePassed(t *testing.T) {
+	userID := "desktop-user:skip-premature"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "T1", Status: codingStepFailed},
+		{Index: 2, Title: "T2", Status: codingStepPassed},   // premature agent mark
+		{Index: 3, Title: "T3", Status: codingStepRunning},  // should also skip
+		{Index: 4, Title: "T4", Status: codingStepPending},
+		{Index: 5, Title: "T5", Status: codingStepSkipped}, // already skipped
+	})
+	h.markRemainingCodingStepsSkipped(userID, 1, "skipped: prior step failed")
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	byIdx := map[int]codingWorkbenchStepStatus{}
+	for _, st := range mem.StepStatuses {
+		byIdx[st.Index] = st
+	}
+	if byIdx[1].Status != codingStepFailed {
+		t.Fatalf("T1 must stay failed: %+v", byIdx[1])
+	}
+	for _, idx := range []int{2, 3, 4} {
+		if byIdx[idx].Status != codingStepSkipped {
+			t.Fatalf("T%d want skipped, got %+v", idx, byIdx[idx])
+		}
+		if !strings.Contains(byIdx[idx].Summary, "prior step failed") {
+			t.Fatalf("T%d summary=%q", idx, byIdx[idx].Summary)
+		}
+	}
+	if byIdx[5].Status != codingStepSkipped {
+		t.Fatalf("already-skipped T5 should remain skipped: %+v", byIdx[5])
+	}
+}

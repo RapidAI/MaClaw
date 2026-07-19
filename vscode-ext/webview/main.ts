@@ -32,6 +32,7 @@ const inputEl = document.getElementById("input") as HTMLTextAreaElement;
 const sendEl = document.getElementById("send") as HTMLButtonElement;
 const cancelEl = document.getElementById("cancel") as HTMLButtonElement;
 const newSessionEl = document.getElementById("new-session") as HTMLButtonElement;
+const queueEl = document.getElementById("queue") as HTMLDivElement;
 
 // ---------------------------------------------------------------------------
 // Rendering state
@@ -405,14 +406,92 @@ function setStatus(state: string, detail: string): void {
   }
 }
 
+const PLACEHOLDER_IDLE = "Ask MaClaw… (Enter to send, Shift+Enter for newline)";
+const PLACEHOLDER_BUSY = "MaClaw is working… (Enter to queue — queued prompts fire in order)";
+
 function setTurnActive(active: boolean): void {
-  inputEl.disabled = active;
-  sendEl.disabled = active;
+  // The composer stays enabled while a turn runs: submitting queues the text
+  // host-side instead of dropping it (the bridge rejects concurrent prompts).
   sendEl.classList.toggle("loading", active);
+  sendEl.title = active ? "Queue message" : "Send";
+  inputEl.placeholder = active ? PLACEHOLDER_BUSY : PLACEHOLDER_IDLE;
   cancelEl.hidden = !active;
-  if (!active) {
+  // Only re-focus when the user is already looking at the chat — never yank
+  // focus out of the editor just because a turn ended.
+  if (!active && document.hasFocus()) {
     inputEl.focus();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-input queue
+// ---------------------------------------------------------------------------
+
+interface QueueItem {
+  id: number;
+  text: string;
+}
+
+/** Last queue state pushed by the host — used by the ↑-recall shortcut. */
+let currentQueue: QueueItem[] = [];
+
+function renderQueue(items: QueueItem[], paused: boolean): void {
+  currentQueue = items;
+  queueEl.innerHTML = "";
+  queueEl.hidden = items.length === 0;
+  if (items.length === 0) {
+    return;
+  }
+  const label = document.createElement("span");
+  label.className = paused ? "queue-label queue-paused" : "queue-label";
+  label.textContent = paused
+    ? `Queued (${items.length}) — paused after error, ▲ to resume`
+    : `Queued (${items.length})`;
+  queueEl.appendChild(label);
+  for (const item of items) {
+    const chip = document.createElement("span");
+    chip.className = "queue-chip";
+
+    const body = document.createElement("span");
+    body.className = "queue-text";
+    body.textContent = item.text;
+    body.title = `${item.text}\n\nClick to edit`;
+    body.addEventListener("click", () => {
+      // Pull back into the composer for editing. If the item already fired
+      // (raced the turn end), the host no-ops and the text is still safe here.
+      vscode.postMessage({ type: "queueRemove", id: item.id });
+      // Never clobber an in-progress draft — append on a new line instead.
+      inputEl.value = inputEl.value.trim() === "" ? item.text : `${inputEl.value}\n${item.text}`;
+      inputEl.focus();
+    });
+    chip.appendChild(body);
+
+    const fire = document.createElement("button");
+    fire.type = "button";
+    fire.className = "queue-btn";
+    fire.textContent = "▲";
+    fire.title = "Fire now (while busy: jump to the front of the queue)";
+    fire.addEventListener("click", () => vscode.postMessage({ type: "queueFire", id: item.id }));
+    chip.appendChild(fire);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "queue-btn";
+    del.textContent = "✕";
+    del.title = "Remove from queue";
+    del.addEventListener("click", () => vscode.postMessage({ type: "queueRemove", id: item.id }));
+    chip.appendChild(del);
+
+    queueEl.appendChild(chip);
+  }
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "queue-clear";
+  clear.textContent = "Clear all";
+  clear.title = "Remove all queued prompts";
+  clear.addEventListener("click", () => vscode.postMessage({ type: "queueClear" }));
+  queueEl.appendChild(clear);
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +568,18 @@ window.addEventListener("message", (event) => {
       toolChips.clear();
       permCards.clear();
       closeStreamingBlocks();
+      renderQueue([], false);
+      break;
+    case "queue":
+      renderQueue((msg.items as QueueItem[]) ?? [], Boolean(msg.paused));
+      break;
+    case "inputRestore":
+      // Host refused a queued prompt (queue full) — hand the text back, but
+      // never clobber something the user typed in the meantime.
+      if (inputEl.value.trim() === "") {
+        inputEl.value = String(msg.text ?? "");
+        inputEl.focus();
+      }
       break;
     case "status":
       setStatus(String(msg.state ?? ""), String(msg.detail ?? ""));
@@ -516,9 +607,18 @@ formEl.addEventListener("submit", (ev) => {
 });
 
 inputEl.addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter" && !ev.shiftKey) {
+  // isComposing: Enter that confirms an IME candidate must not submit.
+  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
     ev.preventDefault();
     formEl.requestSubmit();
+    return;
+  }
+  // Empty composer + ↑: pull the newest queued prompt back for editing.
+  if (ev.key === "ArrowUp" && inputEl.value.trim() === "" && currentQueue.length > 0) {
+    ev.preventDefault();
+    const last = currentQueue[currentQueue.length - 1];
+    vscode.postMessage({ type: "queueRemove", id: last.id });
+    inputEl.value = last.text;
   }
 });
 

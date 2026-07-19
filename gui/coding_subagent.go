@@ -1380,11 +1380,18 @@ func (c *codingSubAgentCallbacks) executeTodoWrite(argsJSON string) codingToolEx
 			userID = strings.TrimSpace(c.subagent.loopCtx.UserID)
 		}
 	}
-	text, outcome := executeCodingAgentTodoWrite(&c.todos, argsJSON, onProgress, func(items []codingAgentTodoItem) {
-		if c.subagent != nil && c.subagent.handler != nil && userID != "" {
-			publishCodingAgentTodosToUI(c.subagent.handler, userID, items)
+	var handler *IMMessageHandler
+	if c.subagent != nil {
+		handler = c.subagent.handler
+	}
+	text, outcome := executeCodingAgentTodoWrite(&c.todos, argsJSON, wrapTodoProgressForOrchestratedPlan(handler, userID, onProgress), func(items []codingAgentTodoItem) {
+		if handler != nil && userID != "" {
+			publishCodingAgentTodosToUI(handler, userID, items)
 		}
 	})
+	if outcome == codingToolOutcomeSuccess {
+		text = annotateTodoChecklistForOrchestratedPlan(handler, userID, text)
+	}
 	return codingToolExecutionResult{Text: text, Outcome: outcome}
 }
 

@@ -186,9 +186,9 @@ func TestSpecWorkflowProperty5_PDFGenerationAndDelivery(t *testing.T) {
 			return false
 		}
 
-		// (b) send_file with forward_to_im=true
-		if !strings.Contains(prompt, "send_file") || !strings.Contains(prompt, "forward_to_im=true") {
-			t.Logf("missing send_file with forward_to_im=true")
+		// (b) IM delivery via send_to_im or send_file with the forward_to_im flag
+		if !strings.Contains(prompt, "send_file") || !strings.Contains(prompt, "forward_to_im") {
+			t.Logf("missing send_file with forward_to_im delivery path")
 			return false
 		}
 

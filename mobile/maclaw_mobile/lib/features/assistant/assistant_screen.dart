@@ -198,12 +198,26 @@ class _AssistantScreenState extends ConsumerState<AssistantScreen> {
 
   bool _isMeetingRecordingIntent(String query) {
     final normalized = query.trim().toLowerCase();
-    return (normalized.contains('会议') || normalized.contains('会')) &&
-            (normalized.contains('录音') ||
-                normalized.contains('记录') ||
-                normalized.contains('纪要')) ||
-        normalized.contains('record this meeting') ||
-        normalized.contains('start meeting recording');
+    const directRecordingCommands = {
+      '录音',
+      '开始录音',
+      '打开录音',
+      '开启录音',
+      '开始会议录音',
+      '开始会议记录',
+      'record',
+      'start recording',
+      'record this meeting',
+      'start meeting recording',
+    };
+    if (directRecordingCommands.contains(normalized)) return true;
+
+    final mentionsMeeting = normalized.contains('会议') || normalized.contains('会');
+    final mentionsRecording = normalized.contains('录音') ||
+        normalized.contains('记录') ||
+        normalized.contains('纪要') ||
+        normalized.contains('meeting recording');
+    return mentionsMeeting && mentionsRecording;
   }
 
   Future<void> _confirmAndStartMeetingRecording(

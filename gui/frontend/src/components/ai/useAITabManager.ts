@@ -8,6 +8,8 @@ import { addParticipantIdentityKeys, participantIdentityMatches } from "./partic
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
+import type { ExpertDefinition } from "./expertTypes";
+import { expertTabId } from "./expertTypes";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -185,6 +187,8 @@ export interface UseAITabManagerResult {
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Create a new project tab. Returns the tab or null if limit reached. */
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
+    /** Create (or activate) an expert conversation tab. Returns the tab or null if limit reached. */
+    createExpertTab: (expert: ExpertDefinition) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
@@ -228,10 +232,10 @@ function persistableProjectHistory(history: unknown[]): unknown[] {
         .slice(-MAX_PERSISTED_HISTORY_PER_TAB);
 }
 
-/** Persist project tab conversation histories to localStorage. Debounced externally. */
+/** Persist project/expert tab conversation histories to localStorage. Debounced externally. */
 function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AITab[]) {
     try {
-        const projectTabs = tabs.filter(t => t.type === "project" && t.projectPath);
+        const projectTabs = tabs.filter(t => (t.type === "project" && t.projectPath) || (t.type === "expert" && t.expertId));
         const projectTabIds = new Set(projectTabs.map(t => t.id));
         const serialized: Record<string, unknown[]> = {};
 
@@ -252,7 +256,7 @@ function persistProjectTabHistories(tabStates: Map<string, AITabState>, tabs: AI
         const orphans: Array<[string, AITabState]> = [];
         for (const [tabId, state] of tabStates) {
             if (projectTabIds.has(tabId)) continue;
-            if (!tabId.startsWith("proj-")) continue;
+            if (!tabId.startsWith("proj-") && !tabId.startsWith("expert-")) continue;
             if (state && Array.isArray(state.history) && state.history.length > 0) {
                 orphans.push([tabId, state]);
             }
@@ -291,17 +295,27 @@ function loadPersistedProjectTabHistories(): Record<string, unknown[]> {
     }
 }
 
-/** Persist project tabs to localStorage for cross-session recovery. */
+/** Persist project and expert tabs to localStorage for cross-session recovery. */
 function persistProjectTabs(tabs: AITab[]) {
     try {
-        const projectTabs = tabs.filter(t => t.type === "project" && t.projectPath);
-        const serialized = projectTabs.map(t => ({
-            id: t.id,
-            title: t.title,
-            projectPath: t.projectPath,
-            agentMode: t.agentMode,
-            remoteHost: t.remoteHost,
-        }));
+        const projectTabs = tabs.filter(t => (t.type === "project" && t.projectPath) || (t.type === "expert" && t.expertId));
+        const serialized = projectTabs.map(t => t.type === "expert"
+            ? {
+                id: t.id,
+                type: "expert" as const,
+                title: t.title,
+                expertId: t.expertId,
+                expertIcon: t.expertIcon,
+                expertDescription: t.expertDescription,
+            }
+            : {
+                id: t.id,
+                type: "project" as const,
+                title: t.title,
+                projectPath: t.projectPath,
+                agentMode: t.agentMode,
+                remoteHost: t.remoteHost,
+            });
         if (serialized.length === 0) {
             localStorage.removeItem(PROJECT_TABS_STORAGE_KEY);
         } else {
@@ -315,16 +329,29 @@ function persistProjectTabs(tabs: AITab[]) {
 /** Load persisted project tabs from localStorage.
  * Note: restored tabs may have empty conversation if the backend session was
  * evicted (30-day TTL). The user will see an empty chat area but can continue
- * working — the backend creates a fresh session on the next message. */
+ * working — the backend creates a fresh session on the next message.
+ * Expert tabs ride the same storage slot (type field distinguishes them). */
 function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; agentMode?: string; remoteHost?: string; expertId?: string; expertIcon?: string; expertDescription?: string }>;
         if (!Array.isArray(parsed)) return [];
         return parsed
-            .filter(t => t.id && t.projectPath)
+            .filter(t => t.id && (t.projectPath || (t.type === "expert" && t.expertId)))
             .map(t => {
+                if (t.type === "expert") {
+                    const expertId = String(t.expertId || "").trim();
+                    return {
+                        id: t.id,
+                        type: "expert" as AITabType,
+                        title: String(t.title || "").trim() || expertId,
+                        expertId,
+                        expertIcon: String(t.expertIcon || "").trim() || undefined,
+                        expertDescription: String(t.expertDescription || "").trim() || undefined,
+                        closable: true,
+                    };
+                }
                 const projectPath = normalizeProjectSessionPath(t.projectPath);
                 const agentMode = t.agentMode === "remote_coding_dev"
                     ? "remote_coding_dev" as const
@@ -340,7 +367,7 @@ function loadPersistedProjectTabs(): AITab[] {
                     closable: true,
                 };
             })
-            .filter(t => !!t.projectPath);
+            .filter(t => t.type === "expert" ? !!t.expertId : !!t.projectPath);
     } catch {
         return [];
     }
@@ -681,7 +708,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             persistProjectTabHistories(tabStatesRef.current, tabStateRef.current.tabs);
             persistVETabs(tabStateRef.current.tabs, tabStatesRef.current);
             // Also flush to backend session files for reliability
-            const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" && t.projectPath);
+            const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && t.projectPath) || t.type === "expert");
             for (const tab of projectTabs) {
                 const state = tabStatesRef.current.get(tab.id);
                 if (state && Array.isArray(state.history) && state.history.length > 0) {
@@ -709,7 +736,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     const hydrateHistoriesFromBackend = useCallback(() => {
         if (backendHydrationDoneRef.current) return;
         backendHydrationDoneRef.current = true;
-        const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project");
+        // Expert tabs share the backend session-file persistence (keyed by tab id;
+        // SaveProjectTabConversation/LoadProjectTabConversation tolerate tab ids
+        // that were never registered via CreateProjectTabSession).
+        const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" || t.type === "expert");
         for (const tab of projectTabs) {
             LoadProjectTabConversation(tab.id).then(conversation => {
                 if (!conversation || !Array.isArray(conversation) || conversation.length === 0) return;
@@ -1000,6 +1030,68 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return newTab;
     }, [updateTabState]);
 
+    const createExpertTab = useCallback((expert: ExpertDefinition): AITab | null => {
+        const expertId = String(expert?.id || "").trim();
+        if (!expertId) return null;
+        const prev = tabStateRef.current;
+        const tabId = expertTabId(expertId);
+        const title = String(expert?.name || "").trim() || expertId;
+        const icon = String(expert?.icon || "").trim() || undefined;
+        const description = String(expert?.description || "").trim() || undefined;
+
+        // Deduplicate: an already-open expert tab is refreshed and activated.
+        const existing = prev.tabs.find(t => t.id === tabId)
+            || prev.tabs.find(t => t.type === "expert" && t.expertId === expertId);
+        if (existing) {
+            const updated: AITab = { ...existing, title, expertId, expertIcon: icon || existing.expertIcon, expertDescription: description || existing.expertDescription };
+            const saved = tabStatesRef.current.get(existing.id);
+            if (saved) {
+                saved.lastActiveAt = Date.now();
+            } else {
+                tabStatesRef.current.set(existing.id, { history: [], scrollTop: 0, inputText: "", lastActiveAt: Date.now() });
+            }
+            updateTabState(() => ({
+                ...prev,
+                tabs: prev.tabs.map(t => t.id === existing.id ? updated : t),
+                activeTabId: existing.id,
+            }));
+            return updated;
+        }
+
+        // Expert tabs count toward the same cap as project tabs (maxVETabs).
+        const expertTabCount = prev.tabs.filter(t => t.type === "expert").length;
+        if (expertTabCount >= prev.maxVETabs) {
+            setTabLimitError(`Expert tab limit reached (max ${prev.maxVETabs})`);
+            return null;
+        }
+
+        const newTab: AITab = {
+            id: tabId,
+            type: "expert",
+            title,
+            expertId,
+            expertIcon: icon,
+            expertDescription: description,
+            closable: true,
+        };
+        const cachedState = tabStatesRef.current.get(tabId);
+        tabStatesRef.current.set(tabId, {
+            history: [],
+            scrollTop: 0,
+            inputText: "",
+            ...cachedState,
+            lastActiveAt: Date.now(),
+        });
+
+        updateTabState(() => ({
+            ...prev,
+            tabs: [...prev.tabs, newTab],
+            activeTabId: newTab.id,
+        }));
+
+        return newTab;
+    }, [updateTabState]);
+
     const closeTab = useCallback((tabId: string) => {
         updateTabState(prev => {
             const tab = prev.tabs.find(t => t.id === tabId);
@@ -1036,7 +1128,48 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         evictClosedTabStates(tabStatesRef.current, openTabIds, "ve-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "history-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "group-", 32);
+        evictClosedTabStates(tabStatesRef.current, openTabIds, "expert-", 32);
     }, [updateTabState]);
+
+    // Sync open expert tabs with expert definition changes from the utilities page:
+    // "maclaw:expert-deleted" closes the tab; "maclaw:expert-updated" patches its
+    // title/icon/description in place (no foreground switch).
+    useEffect(() => {
+        const onDeleted = (e: Event) => {
+            const expertId = String((e as CustomEvent)?.detail?.expertId || "").trim();
+            if (!expertId) return;
+            const tab = tabStateRef.current.tabs.find(t => t.type === "expert" && t.expertId === expertId);
+            if (tab) closeTab(tab.id);
+        };
+        const onUpdated = (e: Event) => {
+            const expert = (e as CustomEvent)?.detail?.expert;
+            const expertId = String(expert?.id || "").trim();
+            if (!expertId) return;
+            const title = String(expert?.name || "").trim();
+            const icon = String(expert?.icon || "").trim() || undefined;
+            const description = String(expert?.description || "").trim() || undefined;
+            updateTabState(prev => {
+                if (!prev.tabs.some(t => t.type === "expert" && t.expertId === expertId)) return prev;
+                return {
+                    ...prev,
+                    tabs: prev.tabs.map(t => t.type === "expert" && t.expertId === expertId
+                        ? {
+                            ...t,
+                            title: title || t.title,
+                            expertIcon: icon || t.expertIcon,
+                            expertDescription: description || t.expertDescription,
+                        }
+                        : t),
+                };
+            });
+        };
+        window.addEventListener("maclaw:expert-deleted", onDeleted);
+        window.addEventListener("maclaw:expert-updated", onUpdated);
+        return () => {
+            window.removeEventListener("maclaw:expert-deleted", onDeleted);
+            window.removeEventListener("maclaw:expert-updated", onUpdated);
+        };
+    }, [closeTab, updateTabState]);
 
     const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const dirtyTabIdsRef = useRef<Set<string>>(new Set());
@@ -1048,7 +1181,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             // 2. Backend session file (reliable, survives process kill) — only dirty tabs
             const dirtyIds = dirtyTabIdsRef.current;
             if (dirtyIds.size > 0) {
-                const projectTabs = tabStateRef.current.tabs.filter(t => t.type === "project" && t.projectPath && dirtyIds.has(t.id));
+                const projectTabs = tabStateRef.current.tabs.filter(t => (t.type === "project" && t.projectPath || t.type === "expert") && dirtyIds.has(t.id));
                 for (const tab of projectTabs) {
                     const state = tabStatesRef.current.get(tab.id);
                     if (state && Array.isArray(state.history) && state.history.length > 0) {
@@ -1089,8 +1222,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             inputText: "",
         };
         tabStatesRef.current.set(tabId, { ...existing, ...state });
-        // Debounce-persist history for project tabs
-        if (openTab && openTab.type === "project" && state.history) {
+        // Debounce-persist history for project/expert tabs
+        if (openTab && (openTab.type === "project" || openTab.type === "expert") && state.history) {
             dirtyTabIdsRef.current.add(tabId);
             scheduleHistoryPersist();
         }
@@ -1182,6 +1315,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         createVETab,
         createGroupTab,
         createProjectTab,
+        createExpertTab,
         closeTab,
         clearTabConversation,
         saveTabState,

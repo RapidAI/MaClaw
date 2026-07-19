@@ -1235,6 +1235,10 @@ export function SaveMaclawLLMProviders(arg1, arg2) {
   return window['go']['main']['App']['SaveMaclawLLMProviders'](arg1, arg2);
 }
 
+export function SetMaclawLLMCurrentModel(arg1) {
+  return window['go']['main']['App']['SetMaclawLLMCurrentModel'](arg1);
+}
+
 export function GetWebSearchProviders() {
   return window['go']['main']['App']['GetWebSearchProviders']();
 }
@@ -3302,4 +3306,31 @@ export function ListSurveyResponses(arg1) {
 
 export function ExportSurveyXLSXFiltered(arg1, arg2) {
   return window['go']['main']['App']['ExportSurveyXLSXFiltered'](arg1, arg2);
+}
+
+// AI Expert definitions (manually maintained until `wails generate module` re-runs).
+// ListExperts/SaveExpert exchange ExpertDefinition JSON; ListAvailableToolNames returns
+// JSON [{name, description, deferred?}] (deferred tools are discovered on demand).
+export function ListExperts() {
+  return window['go']['main']['App']['ListExperts']();
+}
+
+export function SaveExpert(arg1) {
+  return window['go']['main']['App']['SaveExpert'](arg1);
+}
+
+export function DeleteExpert(arg1) {
+  return window['go']['main']['App']['DeleteExpert'](arg1);
+}
+
+export function ResetBuiltinExpert(arg1) {
+  return window['go']['main']['App']['ResetBuiltinExpert'](arg1);
+}
+
+export function GenerateExpertProfile(arg1) {
+  return window['go']['main']['App']['GenerateExpertProfile'](arg1);
+}
+
+export function ListAvailableToolNames() {
+  return window['go']['main']['App']['ListAvailableToolNames']();
 }

@@ -844,18 +844,27 @@ func TestUnstableBrowserToolCallRejectedBeforeExecution(t *testing.T) {
 func TestAgentLoopRejectsUnstableBrowserBeforeAudit(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	recorded := false
+	progressSent := false
 
 	result := h.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
 		ToolCall: llm.ToolCall{ID: "call-1", Function: llm.ToolCallFunction{Name: "browser_eval", Arguments: `{"expression":"fetch('/api', {method: 'POST'})"}`}},
 		RecordToolCall: func(string, string, string) {
 			recorded = true
 		},
+		SendToolProgress: func(string) {
+			progressSent = true
+		},
 	})
 	if result.Outcome != toolOutcomeFailed || result.FailureKind != toolFailurePolicyRejected {
 		t.Fatalf("expected policy rejection, got outcome=%v failure=%v text=%q", result.Outcome, result.FailureKind, result.Text)
 	}
-	if recorded {
-		t.Fatal("unstable browser action should be rejected before tool-call audit/progress")
+	// The trajectory records the call before the reject paths on purpose so the
+	// policy-rejected tool_result can pair with its tool_call entry.
+	if !recorded {
+		t.Fatal("tool call should still be recorded for trajectory pairing before the rejection")
+	}
+	if progressSent {
+		t.Fatal("unstable browser action should be rejected before user-facing tool progress")
 	}
 }
 
@@ -1042,10 +1051,10 @@ func TestParseToolPayloadResult(t *testing.T) {
 
 func TestBuildRemoteSkillSearchPrompt(t *testing.T) {
 	prompt := buildRemoteSkillSearchPrompt()
-	if !containsText(prompt, "Search/install a reusable Skill first") {
+	if !containsText(prompt, "search/install a reusable Skill first") {
 		t.Fatalf("expected reusable Skill guidance, got %q", prompt)
 	}
-	if !containsText(prompt, "Only switch to craft_tool or bash") {
+	if !containsText(prompt, "only switch to craft_tool or bash") {
 		t.Fatalf("expected craft_tool restriction, got %q", prompt)
 	}
 }

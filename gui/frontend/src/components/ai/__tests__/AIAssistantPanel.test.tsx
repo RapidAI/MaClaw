@@ -4776,3 +4776,108 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('ai-history-group-tab-disc-1')).toBeTruthy();
     });
 });
+
+describe('expert tabs', () => {
+    const expert = {
+        id: 'exp-1',
+        name: 'Polisher',
+        description: 'Polishes prose',
+        icon: '📝',
+        system_prompt: 'You polish.',
+        tools: [],
+        skills: [],
+        builtin: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+    };
+
+    afterEach(() => {
+        cleanup();
+        vi.useRealTimers();
+        window.localStorage.clear();
+        cancelSessionForSessionMock.mockReset();
+        cancelSessionForSessionMock.mockResolvedValue('');
+    });
+
+    it('opens an expert tab from pendingExpertOpen and seeds a local welcome message', async () => {
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+    });
+
+    it('routes expert tab sends with expert_id and no project path', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn(), actions: { sendMessage } });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'hello expert' } });
+        const sendButton = within(screen.getByTestId('ai-input-bar')).getByLabelText('Send');
+        fireEvent.click(sendButton);
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        const [text, options] = sendMessage.mock.calls[0] as [string, Record<string, unknown>];
+        expect(text).toContain('hello expert');
+        expect(options.expert_id).toBe('exp-1');
+        expect(options.project_path).toBeUndefined();
+    });
+
+    it('clears an expert conversation via the expert session key and shows the expert empty state', async () => {
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+        fireEvent.click(screen.getByTitle('New conversation'));
+        await waitFor(() => expect(cancelSessionForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
+        // Expert-specific empty state shows the persona; generic welcome does not render.
+        // (ai-expert-empty only renders when displayMessages is empty, so its
+        // presence already proves the seed chat message was cleared.)
+        await screen.findByTestId('ai-expert-empty');
+        expect(screen.getByTestId('ai-expert-empty').textContent).toContain('Polisher');
+        expect(screen.queryByTestId('ai-welcome-container')).toBeNull();
+    });
+
+    it('does not resurrect cleared history after tab switches, then persists a fresh re-chat', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const base = defaultPanelProps();
+        const props: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...base,
+            pendingExpertOpen: { expert } as any,
+            onPendingExpertOpenHandled: vi.fn(),
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+
+        // Clear, then switch local → expert: the cleared conversation must not come back.
+        fireEvent.click(screen.getByTitle('New conversation'));
+        await waitFor(() => expect(cancelSessionForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
+        fireEvent.click(screen.getByTestId('ai-tab-local'));
+        // jsdom has no layout width, so the inactive expert tab lives in the overflow menu.
+        fireEvent.click(screen.getByTestId('ai-tab-overflow-btn'));
+        fireEvent.click(within(screen.getByTestId('ai-tab-overflow-dropdown')).getByText('Polisher'));
+        // ai-expert-empty only renders when displayMessages is empty — its presence
+        // after the local → expert roundtrip proves the cleared history did not resurrect.
+        await screen.findByTestId('ai-expert-empty');
+
+        // Re-chat: user sends a new message (clears the "explicitly cleared" mark).
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'fresh question' } });
+        fireEvent.click(within(screen.getByTestId('ai-input-bar')).getByLabelText('Send'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+
+        // Backend streams a reply in the expert session; live-sync must backfill it
+        // into the tab state and persist it to localStorage.
+        const reply = makeMsg({ id: 'exp-reply-1', role: 'assistant', content: 'fresh answer', sessionKey: 'desktop-user:expert:exp-1' });
+        const nextProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...(props.state as any), messages: [reply] },
+        };
+        rerender(<AIAssistantPanel {...nextProps} />);
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain('fresh answer'));
+        await waitFor(() => {
+            const raw = window.localStorage.getItem('ai_assistant_project_tab_histories') || '';
+            expect(raw).toContain('expert-exp-1');
+            expect(raw).toContain('fresh answer');
+        }, { timeout: 3000 });
+    });
+});

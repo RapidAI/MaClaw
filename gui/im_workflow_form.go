@@ -599,7 +599,7 @@ func (h *IMMessageHandler) syncCodingWorkflowRemoteTask(userID string, data map[
 		}
 	}
 
-	created := h.app.CreateRemoteCodingTask(taskName, host, user, workDir, port, taskSourceCodingWorkflowTag)
+	created := h.app.createRemoteCodingTaskWithTags(taskName, host, user, workDir, port, taskSourceCodingWorkflowTag)
 	if strings.TrimSpace(created.ProjectPath) == "" {
 		log.Printf("[workflow-remote-task] CreateRemoteCodingTask returned empty path name=%s", taskName)
 		return

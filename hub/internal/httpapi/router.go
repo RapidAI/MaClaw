@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/dingtalk"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
+	"github.com/RapidAI/CodeClaw/hub/internal/expert"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
@@ -1030,6 +1031,17 @@ func NewRouter(
 		} else {
 			surveyHandler := NewSurveyHandler(surveyStore)
 			surveyHandler.Register(mux, identity)
+		}
+	}
+
+	// Experts (Hub-first authority): machine-authenticated tenant APIs.
+	if hubDB != nil {
+		expertStore := expert.NewStore(hubDB)
+		if err := expertStore.InitSchema(context.Background()); err != nil {
+			log.Printf("[hub] expert schema init failed: %v", err)
+		} else {
+			expertHandler := NewExpertHandler(expertStore)
+			expertHandler.Register(mux, identity)
 		}
 	}
 

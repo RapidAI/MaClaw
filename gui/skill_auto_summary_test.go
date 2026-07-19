@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -487,19 +488,15 @@ func TestSkillAutoSummary_ValidateSkillDraft_EmptyDescription(t *testing.T) {
 func TestSkillAutoSummary_ValidateSkillDraft_DescriptionTooLong(t *testing.T) {
 	draft := makeValidDraft()
 	draft.Description = strings.Repeat("x", 501)
-	_, err := ValidateSkillDraft(draft, allowAllChecker(), nil)
-	if err == nil {
-		t.Fatal("expected error for description > 500 chars")
+	result, err := ValidateSkillDraft(draft, allowAllChecker(), nil)
+	if err != nil {
+		t.Fatalf("expected soft-truncate, got error: %v", err)
 	}
-	ve := err.(*ValidationError)
-	found := false
-	for _, r := range ve.Reasons {
-		if strings.Contains(r, "500") {
-			found = true
-		}
+	if len(result.Description) > maxSkillDescriptionBytes {
+		t.Fatalf("description still too long: %d bytes", len(result.Description))
 	}
-	if !found {
-		t.Errorf("expected reason about 500 char limit, got: %v", ve.Reasons)
+	if len(result.Description) == 0 {
+		t.Fatal("description was emptied by truncate")
 	}
 }
 
@@ -611,7 +608,7 @@ func TestSkillAutoSummary_ValidateSkillDraft_SecurityDenied(t *testing.T) {
 	}, nil)
 	_, err := ValidateSkillDraft(draft, checker, nil)
 	if err == nil {
-		t.Fatal("expected error for security denial")
+		t.Fatal("expected error when all steps require denied capabilities")
 	}
 	ve := err.(*ValidationError)
 	found := false
@@ -622,6 +619,59 @@ func TestSkillAutoSummary_ValidateSkillDraft_SecurityDenied(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected security-related reason, got: %v", ve.Reasons)
+	}
+}
+
+func TestSkillAutoSummary_ValidateSkillDraft_SecurityStripKeepsSafeSteps(t *testing.T) {
+	draft := makeValidDraft()
+	draft.Steps = []skill.SkillYAMLStep{
+		{Action: "read_file", Params: map[string]interface{}{"path": "a.go"}},
+		{Action: "exec_cmd", Params: map[string]interface{}{"cmd": "ls"}},
+		{Action: "http_fetch", Params: map[string]interface{}{"url": "https://example.com"}},
+	}
+	checker := NewSecurityPolicyChecker(SkillSecurityPolicy{
+		ShellExec:        SecurityDeny,
+		NetworkAccess:    SecurityDeny,
+		FileSystemAccess: SecurityAllow,
+		DatabaseAccess:   SecurityAllow,
+	}, nil)
+	result, err := ValidateSkillDraft(draft, checker, nil)
+	if err != nil {
+		t.Fatalf("expected soft-strip of blocked steps, got: %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("expected 1 kept step, got %d: %+v", len(result.Steps), result.Steps)
+	}
+	if result.Steps[0].Action != "read_file" {
+		t.Fatalf("kept step action = %q, want read_file", result.Steps[0].Action)
+	}
+}
+
+func TestInferSecurityLabels_NoFalsePositivesOnBenignNames(t *testing.T) {
+	labels := inferSecurityLabels([]skill.SkillYAMLStep{
+		{Action: "runtime_info"},
+		{Action: "capital_summary"},
+		{Action: "search_query"},
+	})
+	for _, l := range labels {
+		if l == "shell_exec" || l == "network_access" || l == "database_access" {
+			t.Fatalf("unexpected label %q for benign actions: %v", l, labels)
+		}
+	}
+}
+
+func TestTruncateSkillDescription_UTF8Safe(t *testing.T) {
+	// 200 Chinese runes (~600 bytes) must truncate without splitting code points.
+	desc := strings.Repeat("测", 200)
+	got := truncateSkillDescription(desc, 50)
+	if len(got) > 50 {
+		t.Fatalf("truncated length %d > 50", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("truncated produced invalid UTF-8")
+	}
+	if got == "" {
+		t.Fatal("expected non-empty truncate")
 	}
 }
 
@@ -937,7 +987,11 @@ func TestRunAutoUpload_FailsOverToBackupHubCenter(t *testing.T) {
 	if saved.RemoteHubCenterURL != backup.URL {
 		t.Fatalf("RemoteHubCenterURL = %q, want %q", saved.RemoteHubCenterURL, backup.URL)
 	}
-	if len(saved.NLSkills) != 1 || saved.NLSkills[0].HubSkillID != "sub-123" {
+	// MarkUploaded persists only a stable package identity as HubSkillID;
+	// a bare upload tracking id ("sub-<digits>…") is rejected by design
+	// (corelib.StableSkillIdentityFromRef) and falls back to the skill name.
+	// The submission id itself is tracked in the upload queue (asserted above).
+	if len(saved.NLSkills) != 1 || saved.NLSkills[0].HubSkillID != "auto-upload-skill" {
 		t.Fatalf("HubSkillID not recorded in config: %+v", saved.NLSkills)
 	}
 	if !containsString(saved.RemoteHubCenterURLs, "https://upload-backup.example") {

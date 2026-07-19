@@ -427,6 +427,111 @@ describe('SidebarTaskManagement', () => {
         });
     });
 
+    it('falls back to a prefilled create dialog when welcome auto-create fails', async () => {
+        const createTask = vi.fn().mockRejectedValue(new Error('无法连接到远程服务器 root@10.0.0.8:22，请检查网络和凭据'));
+        renderTaskManagement({ createTask });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: {
+                    mode: 'remote_coding_dev',
+                    name: 'Develop a new project remotely',
+                    autoCreate: true,
+                    remote: {
+                        host: '10.0.0.8',
+                        port: 22,
+                        user: 'root',
+                        password: 'bad-password',
+                        workDir: '/home',
+                    },
+                },
+            }));
+        });
+
+        await waitFor(() => expect(createTask).toHaveBeenCalled());
+        // The fallback dialog must open with the error visible. Previously the
+        // in-flight create guard swallowed openCreateDialog, leaving the user
+        // with zero feedback after the welcome param dialog closed.
+        expect(await screen.findByRole('dialog', { name: 'Create remote coding task' })).toBeTruthy();
+        await waitFor(() => {
+            expect(screen.getByTestId('create-task-error').textContent).toContain('无法连接到远程服务器');
+        });
+        expect((screen.getByLabelText('Host / domain') as HTMLInputElement).value).toBe('10.0.0.8');
+        expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('root');
+        expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('bad-password');
+        expect((screen.getByLabelText('Remote work directory') as HTMLInputElement).value).toBe('/home');
+    });
+
+    it('shows in-flight progress while welcome auto-create is running', async () => {
+        let resolveCreate: () => void = () => {};
+        const createTask = vi.fn(() => new Promise<void>((resolve) => {
+            resolveCreate = resolve;
+        }));
+        renderTaskManagement({ createTask });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: {
+                    mode: 'remote_coding_dev',
+                    name: 'Develop a new project remotely',
+                    autoCreate: true,
+                    remote: { host: '10.0.0.8', port: 22, user: 'root', password: 'pw', workDir: '/home' },
+                },
+            }));
+        });
+
+        // While the create is in flight (SSH dial can take seconds), the user
+        // must see progress instead of a silent welcome page.
+        expect(await screen.findByTestId('task-autocreate-progress')).toBeTruthy();
+        expect(screen.queryByRole('dialog', { name: 'Create remote coding task' })).toBeNull();
+
+        await act(async () => {
+            resolveCreate();
+            await Promise.resolve();
+        });
+        await waitFor(() => expect(screen.queryByTestId('task-autocreate-progress')).toBeNull());
+        // Success path: no fallback dialog.
+        expect(screen.queryByRole('dialog', { name: 'Create remote coding task' })).toBeNull();
+    });
+
+    it('opens the prefilled dialog instead of dropping a welcome event during an in-flight create', async () => {
+        let resolveCreate: () => void = () => {};
+        const createTask = vi.fn(() => new Promise<void>((resolve) => {
+            resolveCreate = resolve;
+        }));
+        renderTaskManagement({ createTask });
+
+        // First auto-create goes in flight.
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: 'First task', autoCreate: true },
+            }));
+        });
+        await screen.findByTestId('task-autocreate-progress');
+
+        // Second welcome event arrives while the first is still running: it must
+        // surface as a prefilled (busy) dialog, not vanish silently.
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: 'Second task', autoCreate: true },
+            }));
+        });
+
+        expect(await screen.findByRole('dialog', { name: 'Create local coding task' })).toBeTruthy();
+        expect((screen.getByLabelText('Task command') as HTMLTextAreaElement).value).toBe('Second task');
+        // No second auto-create while the first is in flight.
+        expect(createTask).toHaveBeenCalledTimes(1);
+        // Controls reflect the in-flight create, then unlock when it settles.
+        expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(true);
+        await act(async () => {
+            resolveCreate();
+            await Promise.resolve();
+        });
+        await waitFor(() => {
+            expect((screen.getByRole('button', { name: 'OK' }) as HTMLButtonElement).disabled).toBe(false);
+        });
+    });
+
     it('opens create dialog prefilled from welcome coding-task event (remote)', async () => {
         renderTaskManagement({
             tasks: [{

@@ -101,6 +101,15 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			log.Printf("[agent-loop] rejected execution of workflow-blocked tool call %q (iter=%d user=%s reason=%s)", tc.Function.Name, opts.Iteration, opts.UserID, reason)
 		}
 	}
+	// Expert allow-list gate (execution layer): the prompt-layer tool filter only
+	// hides tools from the LLM; a call emitted by name must still be stopped here.
+	if result.Text == "" {
+		if text := expertToolExecutionRejection(opts.UserID, tc.Function.Name, tc.Function.Arguments); text != "" {
+			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			h.appendToolPolicyTrace(opts.Context, opts.UserID, tc.Function.Name, "expert.allowlist", text)
+			log.Printf("[agent-loop] rejected tool outside expert allow-list %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
+		}
+	}
 	if result.Text == "" {
 		if opts.MilestoneTracker != nil {
 			opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)

@@ -1,9 +1,14 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { localizeText } from '../../i18n';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 import { IconAlert } from '../ai/WorkbenchIcons';
+import {
+    computeProviderDropdownPos,
+    providerDropdownPosEqual,
+    type ProviderDropdownPos,
+} from './sidebarProviderDropdownPos';
 
 type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     lang: string;
@@ -33,6 +38,15 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     availableProviders?: SidebarLLMProviderSummary[];
     /** Called when user selects a different provider from the dropdown. */
     onSwitchProvider?: (providerName: string) => void;
+    /** Current model id for the active provider (from LLM settings). */
+    currentModel?: string;
+    /** Model options for the active provider (fetched catalog + configured fallback). */
+    modelOptions?: string[];
+    modelsLoading?: boolean;
+    /** Called when user selects a model under the current provider. */
+    onSwitchModel?: (modelId: string) => void;
+    /** Called when the dropdown opens so the parent can refresh model options. */
+    onOpenModelMenu?: () => void;
     /** Multi-model council (MoA) session sticky state for the quick menu. */
     moaSticky?: {
         available: boolean;
@@ -47,6 +61,8 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
 
 const STATUS_DOT = String.fromCharCode(0x25cf);
 const CREDIT_SEPARATOR = ` ${String.fromCharCode(0x00b7)} `;
+/** Check mark (✓) for selected provider / council rows — not the literal "OK". */
+const DROPDOWN_CHECK = '\u2713';
 
 const textForLang = localizeText;
 
@@ -116,6 +132,11 @@ export const SidebarSystemStatus = ({
     isDark,
     availableProviders = [],
     onSwitchProvider,
+    currentModel = '',
+    modelOptions = [],
+    modelsLoading = false,
+    onSwitchModel,
+    onOpenModelMenu,
     moaSticky,
     onToggleMoASticky,
 }: SidebarSystemStatusProps) => {
@@ -131,75 +152,161 @@ export const SidebarSystemStatus = ({
     const [switching, setSwitching] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
     const chevronBtnRef = useRef<HTMLButtonElement>(null);
+    const usageRowRef = useRef<HTMLDivElement>(null);
     // Snapshot the list when dropdown opens to prevent mid-interaction mutations.
     const snapshotRef = useRef<SidebarLLMProviderSummary[]>([]);
-    // Fixed position for the dropdown (calculated from chevron button position).
-    const [dropdownPos, setDropdownPos] = useState<{ bottom: number; right: number } | null>(null);
+    // Fixed position for the dropdown (calculated from usage-row / chevron anchor).
+    const [dropdownPos, setDropdownPos] = useState<ProviderDropdownPos | null>(null);
     const switchingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const repositionRafRef = useRef<number | null>(null);
 
-    // Cleanup switching timer on unmount
-    useEffect(() => () => {
-        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
+    const closeDropdown = useCallback(() => {
+        setDropdownOpen(false);
+        setDropdownPos(null);
     }, []);
 
-    // Exclude current provider from switchable list; only show others.
-    const switchableProviders = dropdownOpen
-        ? snapshotRef.current
-        : availableProviders.filter(p => p.name !== baseProviderLabel);
+    const updateDropdownPosition = useCallback(() => {
+        const anchorEl = usageRowRef.current || chevronBtnRef.current;
+        if (!anchorEl) return;
+        // Prefer measured menu width once mounted; fall back to estimate for the first (hidden) frame.
+        const menuWidth = dropdownRef.current?.offsetWidth;
+        const next = computeProviderDropdownPos(anchorEl.getBoundingClientRect(), {
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            menuWidth: menuWidth && menuWidth > 0 ? menuWidth : undefined,
+        });
+        setDropdownPos(prev => (providerDropdownPosEqual(prev, next) ? prev : next));
+    }, []);
 
-    // Close dropdown on outside click or Escape key; reposition on window resize.
+    // Cleanup timers / rAF on unmount.
+    useEffect(() => () => {
+        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
+        if (repositionRafRef.current != null) cancelAnimationFrame(repositionRafRef.current);
+    }, []);
+
+    // While open, freeze the alternative list from open-time snapshot (avoids mid-flight list thrash).
+    const switchableProviders = dropdownOpen ? snapshotRef.current : [];
+
+    // Precompute MoA rows so empty/disabled preset lists don't leave orphan separators.
+    const moaMenuRows = (() => {
+        if (!moaSticky?.available || !onToggleMoASticky) return [] as Array<{ id: string; display_name?: string }>;
+        if (moaSticky.presets && moaSticky.presets.length > 1) {
+            return moaSticky.presets.filter(
+                (p): p is { id: string; display_name?: string; ref_count?: number; enabled?: boolean } =>
+                    !!p && p.enabled !== false && ((p.ref_count || 0) > 0 || !('ref_count' in p)),
+            );
+        }
+        return [{ id: moaSticky.preset || '_default_', display_name: moaSticky.label }];
+    })();
+
+    // Close on outside click / Escape; reposition on resize/scroll (rAF-throttled).
     useEffect(() => {
         if (!dropdownOpen) return;
         const handleClickOutside = (e: MouseEvent) => {
             const target = e.target as Node;
-            // Ignore clicks on the dropdown itself or the chevron button
             if (dropdownRef.current?.contains(target)) return;
             if (chevronBtnRef.current?.contains(target)) return;
-            setDropdownOpen(false);
+            closeDropdown();
         };
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
-                setDropdownOpen(false);
+                e.stopPropagation();
+                closeDropdown();
+                chevronBtnRef.current?.focus();
             }
         };
-        const handleResize = () => {
-            // Recalculate position from chevron button
-            if (chevronBtnRef.current) {
-                const rect = chevronBtnRef.current.getBoundingClientRect();
-                setDropdownPos({
-                    bottom: window.innerHeight - rect.top + 6,
-                    right: window.innerWidth - rect.right,
-                });
-            }
+        const scheduleReposition = () => {
+            if (repositionRafRef.current != null) return;
+            repositionRafRef.current = requestAnimationFrame(() => {
+                repositionRafRef.current = null;
+                updateDropdownPosition();
+            });
         };
         document.addEventListener('mousedown', handleClickOutside);
         document.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('resize', handleResize);
+        window.addEventListener('resize', scheduleReposition);
+        window.addEventListener('scroll', scheduleReposition, true);
         return () => {
             document.removeEventListener('mousedown', handleClickOutside);
             document.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('resize', handleResize);
+            window.removeEventListener('resize', scheduleReposition);
+            window.removeEventListener('scroll', scheduleReposition, true);
+            if (repositionRafRef.current != null) {
+                cancelAnimationFrame(repositionRafRef.current);
+                repositionRafRef.current = null;
+            }
         };
-    }, [dropdownOpen]);
+    }, [dropdownOpen, updateDropdownPosition, closeDropdown]);
+
+    // Measure after mount (and when menu content size drivers change). Runs before paint.
+    useLayoutEffect(() => {
+        if (!dropdownOpen) return;
+        updateDropdownPosition();
+    }, [dropdownOpen, updateDropdownPosition, switchableProviders.length, moaMenuRows.length, modelOptions.length, modelsLoading, moaSticky?.active, moaSticky?.preset]);
 
     const handleSelectProvider = useCallback((name: string) => {
         if (switching) return; // Prevent double-click during pending switch
         setSwitching(true);
-        setDropdownOpen(false);
+        closeDropdown();
         onSwitchProvider?.(name);
-        // Reset switching state after a short delay (backend will refresh the UI)
         if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
         switchingTimerRef.current = setTimeout(() => setSwitching(false), 2000);
-    }, [onSwitchProvider, switching]);
+    }, [onSwitchProvider, switching, closeDropdown]);
+
+    const handleSelectModel = useCallback((modelId: string) => {
+        if (switching) return;
+        const next = String(modelId || '').trim();
+        if (!next || next === currentModel) {
+            closeDropdown();
+            return;
+        }
+        setSwitching(true);
+        closeDropdown();
+        onSwitchModel?.(next);
+        if (switchingTimerRef.current) clearTimeout(switchingTimerRef.current);
+        switchingTimerRef.current = setTimeout(() => setSwitching(false), 2000);
+    }, [onSwitchModel, switching, closeDropdown, currentModel]);
 
     const chevronTitle = availableProviders.length > 1
-        ? textForLang(lang, 'Switch LLM provider', '\u5207\u6362\u670d\u52a1\u5546', '\u5207\u63db\u670d\u52d9\u5546')
-        : textForLang(lang, 'LLM settings', '\u5927\u6a21\u578b\u8bbe\u7f6e', '\u5927\u6a21\u578b\u8a2d\u5b9a');
+        ? textForLang(lang, 'Switch LLM provider / model', '\u5207\u6362\u670d\u52a1\u5546/\u6a21\u578b', '\u5207\u63db\u670d\u52d9\u5546/\u6a21\u578b')
+        : (onSwitchModel || currentModel)
+            ? textForLang(lang, 'Switch LLM model', '\u5207\u6362\u6a21\u578b', '\u5207\u63db\u6a21\u578b')
+            : textForLang(lang, 'LLM settings', '\u5927\u6a21\u578b\u8bbe\u7f6e', '\u5927\u6a21\u578b\u8a2d\u5b9a');
     const providerTitle = isOfficialProvider
         ? textForLang(lang, 'View or redeem MaClaw Official service', '\u67e5\u770b\u6216\u5151\u6362 MaClaw \u5b98\u65b9\u670d\u52a1', '\u67e5\u770b\u6216\u514c\u63db MaClaw \u5b98\u65b9\u670d\u52d9')
         : textForLang(lang, 'Configure LLM provider', '\u914d\u7f6e LLM \u670d\u52a1\u5546', '\u914d\u7f6e LLM \u670d\u52d9\u5546');
     const providerActionTitle = `${providerLabel}${CREDIT_SEPARATOR}${providerTitle}`;
     const openProviderTarget = isOfficialProvider ? openServiceRedeemPage : openLLMSettingsPage;
+
+    const handleToggleDropdown = useCallback(() => {
+        if (dropdownOpen) {
+            closeDropdown();
+            return;
+        }
+        // Snapshot the switchable list at open time
+        snapshotRef.current = availableProviders.filter(p => p.name !== baseProviderLabel);
+        const hasAlternatives = snapshotRef.current.length > 0;
+        const hasMoA = moaMenuRows.length > 0;
+        const hasModels = !!(onSwitchModel && (modelOptions.length > 0 || currentModel || onOpenModelMenu));
+        const hasSettingsAction = !!(openLLMSettingsPage || openProviderTarget);
+        if (!hasAlternatives && !hasMoA && !hasModels && !hasSettingsAction) return;
+        // Position is applied in useLayoutEffect after the menu mounts (avoids open/clear races).
+        setDropdownOpen(true);
+        // Refresh model catalog (fetch when possible; parent falls back to settings model name).
+        onOpenModelMenu?.();
+    }, [
+        dropdownOpen,
+        closeDropdown,
+        availableProviders,
+        baseProviderLabel,
+        moaMenuRows.length,
+        openLLMSettingsPage,
+        openProviderTarget,
+        onSwitchModel,
+        modelOptions.length,
+        currentModel,
+        onOpenModelMenu,
+    ]);
     const cardStoreTitle = textForLang(lang, 'Open MaClaw card store', '\u6253\u5f00 MaClaw \u670d\u52a1\u5361\u5546\u5e97', '\u6253\u958b MaClaw \u670d\u52d9\u5361\u5546\u5e97');
     const spendableCredits = sidebarHubCredits?.showPeriodAvailable
         ? sidebarHubCredits.available
@@ -321,7 +428,7 @@ export const SidebarSystemStatus = ({
                     />
                 )}
 
-                <div className="sidebar-system-status__usage">
+                <div className="sidebar-system-status__usage" ref={usageRowRef}>
                     {isOfficialProvider && openHubCardStorePage && (
                         <button
                             type="button"
@@ -356,26 +463,7 @@ export const SidebarSystemStatus = ({
                             ref={chevronBtnRef}
                             type="button"
                             className="sidebar-system-status__provider-chevron"
-                            onClick={() => {
-                                if (!dropdownOpen) {
-                                    // Snapshot the switchable list at open time
-                                    snapshotRef.current = availableProviders.filter(p => p.name !== baseProviderLabel);
-                                    // Don't open if dropdown would be empty (no alternatives + no settings action)
-                                    const hasAlternatives = snapshotRef.current.length > 0;
-                                    const hasMoA = !!moaSticky?.available && !!onToggleMoASticky;
-                                    const hasSettingsAction = !!(openLLMSettingsPage || openProviderTarget);
-                                    if (!hasAlternatives && !hasSettingsAction && !hasMoA) return;
-                                    // Calculate fixed position from chevron button
-                                    if (chevronBtnRef.current) {
-                                        const rect = chevronBtnRef.current.getBoundingClientRect();
-                                        setDropdownPos({
-                                            bottom: window.innerHeight - rect.top + 6,
-                                            right: window.innerWidth - rect.right,
-                                        });
-                                    }
-                                }
-                                setDropdownOpen(!dropdownOpen);
-                            }}
+                            onClick={handleToggleDropdown}
                             title={chevronTitle}
                             aria-label={chevronTitle}
                             aria-expanded={dropdownOpen}
@@ -385,19 +473,32 @@ export const SidebarSystemStatus = ({
                                 <path d="M1 3l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                             </svg>
                         </button>
-                        {dropdownOpen && dropdownPos && (
+                        {dropdownOpen && (
                             <div
                                 ref={dropdownRef}
                                 className="sidebar-system-status__provider-dropdown"
                                 role="listbox"
-                                aria-label={textForLang(lang, 'Select provider', '\u9009\u62e9\u670d\u52a1\u5546', '\u9078\u64c7\u670d\u52d9\u5546')}
-                                style={{ position: 'fixed', bottom: dropdownPos.bottom, right: dropdownPos.right }}
+                                aria-label={textForLang(lang, 'Select provider or model', '\u9009\u62e9\u670d\u52a1\u5546\u6216\u6a21\u578b', '\u9078\u64c7\u670d\u52d9\u5546\u6216\u6a21\u578b')}
+                                // First layout frame may lack measured pos; keep off-screen until useLayoutEffect pins it.
+                                style={dropdownPos ? {
+                                    position: 'fixed',
+                                    left: dropdownPos.left,
+                                    top: dropdownPos.top == null ? 'auto' : dropdownPos.top,
+                                    bottom: dropdownPos.bottom == null ? 'auto' : dropdownPos.bottom,
+                                    maxHeight: dropdownPos.maxHeight,
+                                } : {
+                                    position: 'fixed',
+                                    left: 0,
+                                    top: 0,
+                                    visibility: 'hidden',
+                                    pointerEvents: 'none',
+                                }}
                             >
                                 {/* Current provider (highlighted) — only show when there are switchable alternatives */}
                                 {switchableProviders.length > 0 && (
                                     <div className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--current" role="option" aria-selected="true">
-                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">OK</span>
-                                        <span>{providerLabel}</span>
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">{DROPDOWN_CHECK}</span>
+                                        <span className="sidebar-system-status__provider-dropdown-label" title={providerLabel}>{providerLabel}</span>
                                     </div>
                                 )}
                                 {/* Switchable providers */}
@@ -408,25 +509,60 @@ export const SidebarSystemStatus = ({
                                         className="sidebar-system-status__provider-dropdown-item"
                                         role="option"
                                         aria-selected="false"
+                                        title={p.name}
                                         onClick={() => handleSelectProvider(p.name)}
                                     >
-                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>OK</span>
-                                        <span>{p.name}</span>
+                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" />
+                                        <span className="sidebar-system-status__provider-dropdown-label">{p.name}</span>
                                     </button>
                                 ))}
-                                {/* Multi-model council sticky: one row per preset, or single toggle */}
-                                {moaSticky?.available && onToggleMoASticky && (
+                                {/* Models for the current provider */}
+                                {onSwitchModel && (modelOptions.length > 0 || modelsLoading || currentModel) && (
                                     <>
                                         {switchableProviders.length > 0 && (
                                             <div className="sidebar-system-status__provider-dropdown-sep" />
                                         )}
-                                        {(moaSticky.presets && moaSticky.presets.length > 1
-                                            ? moaSticky.presets.filter((p) => !!p && p.enabled !== false && ((p.ref_count || 0) > 0 || !('ref_count' in p)))
-                                            : [{ id: moaSticky.preset || '_default_', display_name: moaSticky.label }]
-                                        ).map((p) => {
-                                            if (!p) return null;
+                                        <div
+                                            className="sidebar-system-status__provider-dropdown-section-label"
+                                            aria-hidden="true"
+                                        >
+                                            {modelsLoading
+                                                ? textForLang(lang, 'Models (loading…)', '\u6a21\u578b\uff08\u52a0\u8f7d\u4e2d\u2026\uff09', '\u6a21\u578b\uff08\u8f09\u5165\u4e2d\u2026\uff09')
+                                                : textForLang(lang, 'Models', '\u6a21\u578b', '\u6a21\u578b')}
+                                        </div>
+                                        {(modelOptions.length > 0 ? modelOptions : (currentModel ? [currentModel] : [])).map((modelId) => {
+                                            const active = modelId === currentModel;
+                                            return (
+                                                <button
+                                                    key={modelId}
+                                                    type="button"
+                                                    className="sidebar-system-status__provider-dropdown-item"
+                                                    role="option"
+                                                    aria-selected={active}
+                                                    title={modelId}
+                                                    onClick={() => handleSelectModel(modelId)}
+                                                >
+                                                    <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">
+                                                        {active ? DROPDOWN_CHECK : ''}
+                                                    </span>
+                                                    <span className="sidebar-system-status__provider-dropdown-label">{modelId}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </>
+                                )}
+                                {/* Multi-model council sticky: one row per preset, or single toggle */}
+                                {moaMenuRows.length > 0 && onToggleMoASticky && moaSticky && (
+                                    <>
+                                        {(switchableProviders.length > 0 || !!(onSwitchModel && (modelOptions.length > 0 || currentModel))) && (
+                                            <div className="sidebar-system-status__provider-dropdown-sep" />
+                                        )}
+                                        {moaMenuRows.map((p) => {
                                             const active = !!moaSticky.active && (!!p.id && (p.id === moaSticky.preset || p.id === '_default_'));
                                             const label = p.display_name || p.id || 'council';
+                                            const rowLabel = active
+                                                ? textForLang(lang, `Council ON: ${label} (off)`, `\u4f1a\u8bca\u5df2\u5f00\uff1a${label}\uff08\u5173\u95ed\uff09`, `\u6703\u8a3a\u5df2\u958b\uff1a${label}\uff08\u95dc\u9589\uff09`)
+                                                : textForLang(lang, `Council: ${label}`, `\u4f1a\u8bca\uff1a${label}`, `\u6703\u8a3a\uff1a${label}`);
                                             return (
                                                 <button
                                                     key={p.id || 'default'}
@@ -434,43 +570,40 @@ export const SidebarSystemStatus = ({
                                                     className="sidebar-system-status__provider-dropdown-item"
                                                     role="option"
                                                     aria-selected={active}
+                                                    title={rowLabel}
                                                     data-testid={p.id === (moaSticky.preset || '_default_') || (!moaSticky.presets || moaSticky.presets.length <= 1) ? 'sidebar-moa-sticky-toggle' : `sidebar-moa-preset-${p.id}`}
                                                     onClick={() => {
-                                                        setDropdownOpen(false);
+                                                        closeDropdown();
                                                         if (active) onToggleMoASticky(false);
                                                         else onToggleMoASticky(true, p.id === '_default_' ? undefined : p.id);
                                                     }}
                                                 >
-                                                    <span
-                                                        className="sidebar-system-status__provider-dropdown-check"
-                                                        aria-hidden="true"
-                                                        style={{ visibility: active ? 'visible' : 'hidden' }}
-                                                    >
-                                                        OK
+                                                    <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true">
+                                                        {active ? DROPDOWN_CHECK : ''}
                                                     </span>
-                                                    <span>
-                                                        {active
-                                                            ? textForLang(lang, `Council ON: ${label} (off)`, `\u4f1a\u8bca\u5df2\u5f00\uff1a${label}\uff08\u5173\u95ed\uff09`, `\u6703\u8a3a\u5df2\u958b\uff1a${label}\uff08\u95dc\u9589\uff09`)
-                                                            : textForLang(lang, `Council: ${label}`, `\u4f1a\u8bca\uff1a${label}`, `\u6703\u8a3a\uff1a${label}`)}
-                                                    </span>
+                                                    <span className="sidebar-system-status__provider-dropdown-label">{rowLabel}</span>
                                                 </button>
                                             );
                                         })}
                                     </>
                                 )}
-                                {/* Separator before settings */}
+                                {/* Settings: separator only when provider and/or MoA rows exist above. */}
                                 {(openLLMSettingsPage || openProviderTarget) && (
-                                    <div className="sidebar-system-status__provider-dropdown-sep" />
-                                )}
-                                {(openLLMSettingsPage || openProviderTarget) && (
-                                    <button
-                                        type="button"
-                                        className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--settings"
-                                        onClick={() => { setDropdownOpen(false); (openLLMSettingsPage || openProviderTarget)?.(); }}
-                                    >
-                                        <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" style={{ visibility: 'hidden' }}>·</span>
-                                        <span>{textForLang(lang, 'LLM Settings...', '\u5927\u6a21\u578b\u8bbe\u7f6e...', '\u5927\u6a21\u578b\u8a2d\u5b9a...')}</span>
-                                    </button>
+                                    <>
+                                        {(switchableProviders.length > 0 || moaMenuRows.length > 0 || !!(onSwitchModel && (modelOptions.length > 0 || currentModel || modelsLoading))) && (
+                                            <div className="sidebar-system-status__provider-dropdown-sep" />
+                                        )}
+                                        <button
+                                            type="button"
+                                            className="sidebar-system-status__provider-dropdown-item sidebar-system-status__provider-dropdown-item--settings"
+                                            onClick={() => { closeDropdown(); (openLLMSettingsPage || openProviderTarget)?.(); }}
+                                        >
+                                            <span className="sidebar-system-status__provider-dropdown-check" aria-hidden="true" />
+                                            <span className="sidebar-system-status__provider-dropdown-label">
+                                                {textForLang(lang, 'LLM Settings...', '\u5927\u6a21\u578b\u8bbe\u7f6e...', '\u5927\u6a21\u578b\u8a2d\u5b9a...')}
+                                            </span>
+                                        </button>
+                                    </>
                                 )}
                             </div>
                         )}

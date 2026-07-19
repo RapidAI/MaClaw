@@ -30,10 +30,33 @@ export function projectSessionKey(projectPath?: string | null): string {
     return path ? `desktop-user:${path}` : "";
 }
 
+/** Session key prefix shared by all expert conversations: desktop-user:expert:<id>. */
+const EXPERT_SESSION_KEY_PREFIX = "desktop-user:expert:";
+
+/** Session key for an expert tab conversation. Aligns with the backend userID (ExpertID branch). */
+export function expertSessionKey(expertId?: string | null): string {
+    const id = String(expertId || "").trim();
+    return id ? `${EXPERT_SESSION_KEY_PREFIX}${id}` : "";
+}
+
+export function isExpertSessionKey(sessionKey?: string | null): boolean {
+    return typeof sessionKey === "string" && sessionKey.trim().startsWith(EXPERT_SESSION_KEY_PREFIX);
+}
+
+/** Reverse of expertSessionKey: extract the expert id, or "" for non-expert keys. */
+export function expertIdFromSessionKey(sessionKey?: string | null): string {
+    const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
+    return key.startsWith(EXPERT_SESSION_KEY_PREFIX) ? key.slice(EXPERT_SESSION_KEY_PREFIX.length).trim() : "";
+}
+
 export function projectPathFromSessionKey(sessionKey?: string | null): string {
     const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
     const prefix = "desktop-user:";
-    return key.startsWith(prefix) ? normalizeProjectSessionPath(key.slice(prefix.length)) : "";
+    if (!key.startsWith(prefix)) return "";
+    // Expert session keys carry no project path — never hand "expert:<id>" to
+    // path-based routing (it would be mistaken for a real project path).
+    if (isExpertSessionKey(key)) return "";
+    return normalizeProjectSessionPath(key.slice(prefix.length));
 }
 
 export function normalizeProjectSessionPath(projectPath?: string | null): string {

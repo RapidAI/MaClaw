@@ -276,9 +276,17 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 
 	prompt := buildCodingSubAgentSystemPrompt(task, "/project", longReq, longDesign, prevOutputs)
 
-	// Context should be truncated.
-	if len([]rune(prompt)) > 5000 {
-		t.Errorf("prompt too long: %d runes, expected <5000", len([]rune(prompt)))
+	// Context should be truncated: the static template (workflow, guardrails,
+	// Windows shell contract) accounts for most of the budget, so the cap only
+	// needs to catch untruncated 1000-rune contexts leaking through.
+	if !strings.Contains(prompt, "…（已截断）") {
+		t.Error("long requirement/design context should carry a truncation marker")
+	}
+	if strings.Contains(prompt, longReq) || strings.Contains(prompt, longDesign) {
+		t.Error("full untruncated context should not appear in the prompt")
+	}
+	if len([]rune(prompt)) > 7000 {
+		t.Errorf("prompt too long: %d runes, expected <7000", len([]rune(prompt)))
 	}
 	// Previous outputs are injected into the task user message, not duplicated in
 	// the system prompt.

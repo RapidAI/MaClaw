@@ -92,7 +92,8 @@
     "build": "node build.mjs",
     "check": "tsc --noEmit",
     "package": "node build.mjs && node scripts/package-vsix.mjs",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/smoke.mjs",
+    "smoke:queue": "node test/queue-e2e.mjs"
   },
   "dependencies": {
     "marked": "^12.0.2"

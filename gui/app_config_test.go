@@ -83,8 +83,8 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if cfg.WorkflowEnabled == nil || cfg.IsWorkflowEnabled() {
 		t.Fatal("WorkflowEnabled = true/nil, want false for first-run default config")
 	}
-	if cfg.ShowAppEntry {
-		t.Fatal("ShowAppEntry = true, want false for first-run default config")
+	if !cfg.IsShowAppEntryEnabled() {
+		t.Fatal("ShowAppEntry disabled, want enabled (nil or true) for first-run default config")
 	}
 	if cfg.MaclawRoleDescription != corelib.DefaultMaclawRoleDescription {
 		t.Fatalf("MaclawRoleDescription = %q, want %q", cfg.MaclawRoleDescription, corelib.DefaultMaclawRoleDescription)
@@ -1182,7 +1182,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchConfigFields() error = %v", err)
 	}
-	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.ShowAppEntry || !patched.ShowCodingToolEntry || patched.ShowCodex {
+	if !patched.PauseEnvCheck || !patched.EnvCheckDone || patched.UseWindowsTerminal || !patched.ShowAITraceEntry || !patched.IsShowAppEntryEnabled() || !patched.ShowCodingToolEntry || patched.ShowCodex {
 		t.Fatalf("boolean patch fields not applied: %#v", patched)
 	}
 	if patched.Language != "zh-Hans" || patched.ActiveTool != "codex" || patched.CurrentProject != "p2" || len(patched.Projects) != 2 || len(patched.FavoriteEmployees) != 2 || patched.FavoriteEmployeeNames["ve1"] != "Reviewer" {

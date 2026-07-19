@@ -1520,6 +1520,7 @@ type AIAssistantSendRequest struct {
 	DismissRecoverableSessionID string                      `json:"dismiss_recoverable_session_id,omitempty"`
 	UIAction                    bool                        `json:"ui_action,omitempty"`
 	ProjectPath                 string                      `json:"project_path,omitempty"`
+	ExpertID                    string                      `json:"expert_id,omitempty"`
 	EventScopeID                string                      `json:"event_scope_id,omitempty"`
 }
 
@@ -1725,12 +1726,6 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if rawProjectPath != "" && rawProjectPath != projectPath {
 		log.Printf("[AI assistant] normalized project path request_id=%s raw=%q normalized=%q", requestID, rawProjectPath, projectPath)
 	}
-	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
-		userID := desktopAIAssistantUserIDForProjectPath(projectPath)
-		log.Printf("[AI assistant] reject closed project request request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
-		a.cancelProjectTaskLoop(projectPath)
-		return nil, fmt.Errorf("project task is closed: %s", projectPath)
-	}
 	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != projectPath {
 		log.Printf("[AI assistant] route managed task to working directory request_id=%s task_path=%q working_dir=%q", requestID, projectPath, executionProjectPath)
 		if err := a.ensureRecentTaskExecutionWorkingDir(projectPath, executionProjectPath); err != nil {
@@ -1739,6 +1734,11 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 	}
 	userID := desktopAIAssistantUserIDForProjectPath(projectPath)
+	if expertID := strings.TrimSpace(req.ExpertID); expertID != "" {
+		// Expert tab: session is keyed by expert id, not by project path, so the
+		// persona/history stay isolated per expert regardless of any projectPath.
+		userID = expertSessionUserID(expertID)
+	}
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {
 		log.Printf("[AI assistant] reject closed project request request_id=%s session_key=%q project_path=%q", requestID, userID, projectPath)
 		a.cancelProjectTaskLoop(projectPath)
@@ -2348,7 +2348,13 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	handler := hubClient.ensureIMHandler()
 	targetUserID := desktopUserID
 	if trimmed := strings.TrimSpace(sessionKey); trimmed != "" && trimmed != desktopUserID {
-		if normalized, err := normalizeAIAssistantSessionUserID(trimmed); err == nil && normalized != "" {
+		// An unresolvable key must fail loudly: falling back to desktopUserID
+		// here would wipe the main conversation instead of the target session.
+		normalized, err := normalizeAIAssistantSessionUserID(trimmed)
+		if err != nil {
+			return err
+		}
+		if normalized != "" {
 			targetUserID = normalized
 		}
 	}
@@ -2524,6 +2530,12 @@ func normalizeAIAssistantSessionUserID(userID string) (string, error) {
 	}
 	if trimmed == desktopUserID {
 		return desktopUserID, nil
+	}
+	// Expert session keys ("desktop-user:expert:<id>") pass through as-is;
+	// they must be handled before the project-path branch, which rejects them
+	// (projectPathFromSessionOwnerID deliberately returns "" for expert ids).
+	if id := expertIDFromUserID(trimmed); id != "" {
+		return expertSessionUserID(id), nil
 	}
 	if ownerID := projectSessionOwnerID(projectPathFromSessionOwnerID(trimmed)); ownerID != desktopUserID {
 		return ownerID, nil

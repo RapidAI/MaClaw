@@ -156,6 +156,14 @@ func (a *App) getHubCenterDownloadLocatorBytes(ctx context.Context, client *http
 	// Recently failed hosts are already deprioritized in bases / sticky ordering.
 	path := hubCenterLocatorRequestPath(parsed)
 	trace.Path = path
+	// The locator host passed the allow-list (active Hub or HubCenter) but may not be
+	// part of the HubCenter discovery pool yet — e.g. the configured private Hub
+	// (cfg.RemoteHubURL) is allow-listed but never returned by HubCenter discovery.
+	// Add it as a candidate so its packages stay downloadable; the discovery nodes
+	// remain in the pool for failover.
+	if locatorBase := remote.NormalizeHubCenterURL(parsed.Scheme + "://" + parsed.Host); locatorBase != "" {
+		bases = remote.NormalizeHubCenterURLs(append([]string{locatorBase}, bases...))
+	}
 	ordered := orderHubCenterBasesPreferringHost(bases, parsed.Scheme, parsed.Host)
 	trace.Candidates = append([]string(nil), ordered...)
 	usedBase, _, data, downloadErr := a.getHubCenterBytesFromCandidates(ctx, client, ordered, path, limit)
