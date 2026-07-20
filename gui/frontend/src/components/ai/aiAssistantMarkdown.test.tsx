@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderContentWithCodeBlocks, renderMessage } from "./aiAssistantMarkdown";
+import {
+    buildAssistantReplyCopyText,
+    copyTextToClipboard,
+    renderContentWithCodeBlocks,
+    renderMessage,
+} from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 
@@ -1089,6 +1094,49 @@ describe("renderMessage assistant display guard", () => {
         expect(assistantTail.style.top).toBe("-6px");
         expect(assistantTail.style.transform).toBe("rotate(45deg)");
         expect(assistantTail.style.background).toBe(assistantBubble.style.background);
+    });
+
+    it("shows a copy control on assistant replies and copies the full content", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.assign(navigator, { clipboard: { writeText } });
+
+        render(<div>{renderMessage({
+            id: "copy-ai-bubble",
+            role: "assistant",
+            content: "Full reply body to copy",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        const btn = screen.getByTestId("assistant-chat-copy-copy-ai-bubble");
+        expect(btn.getAttribute("aria-label")).toMatch(/复制|Copy/i);
+        expect(screen.getByTestId("assistant-chat-ai-bubble-copy-ai-bubble-top-right")).toBeTruthy();
+        await fireEvent.click(btn);
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith("Full reply body to copy"));
+        // Allow post-copy state tick (busy → ok) to settle without act warnings.
+        await waitFor(() => expect(btn.getAttribute("aria-label")).toMatch(/已复制|Copied/i));
+    });
+
+    it("hides the copy control when the assistant reply has no content yet", () => {
+        render(<div>{renderMessage({
+            id: "empty-ai-bubble",
+            role: "assistant",
+            content: "",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
+
+        expect(screen.queryByTestId("assistant-chat-copy-empty-ai-bubble")).toBeNull();
+        expect(screen.queryByTestId("assistant-chat-ai-bubble-empty-ai-bubble-top-right")).toBeNull();
+    });
+
+    it("buildAssistantReplyCopyText strips Browser role prefixes for paste-ready text", () => {
+        const text = buildAssistantReplyCopyText("Browser: deployment complete");
+        expect(text).toContain("deployment complete");
+        expect(text.toLowerCase().startsWith("browser:")).toBe(false);
+    });
+
+    it("copyTextToClipboard returns false for empty input", async () => {
+        await expect(copyTextToClipboard("")).resolves.toBe(false);
+        await expect(copyTextToClipboard("   ")).resolves.toBe(false);
     });
 
     it("keeps the assistant bubble tail visually paired with the active theme", () => {

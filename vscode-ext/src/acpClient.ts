@@ -38,6 +38,37 @@ export interface PendingPermission {
   params: PermissionRequestParams;
 }
 
+/** Remote coding task row from maclaw/list_remote_coding_tasks. */
+export interface RemoteCodingTask {
+  name: string;
+  project_path: string;
+  host: string;
+  user: string;
+  port: number;
+  work_dir: string;
+  kind?: string;
+  armed?: boolean;
+  needs_reconnect?: boolean;
+  message?: string;
+  last_activity?: string;
+}
+
+export interface CodingWorkbenchStatusResult {
+  status?: {
+    kind?: string;
+    armed?: boolean;
+    needs_reconnect?: boolean;
+    message?: string;
+    turn_count?: number;
+  };
+  meta?: {
+    host?: string;
+    user?: string;
+    port?: number;
+    work_dir?: string;
+  };
+}
+
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -156,6 +187,124 @@ export class AcpClient extends EventEmitter {
    */
   async steer(sessionId: string, text: string): Promise<{ accepted: boolean }> {
     return (await this.request("session/steer", { sessionId, text })) as { accepted: boolean };
+  }
+
+  /**
+   * MaClaw extension RPCs (Mode B host). Used by the VS Code sidebar to attach
+   * to remote_coding_dev tasks without going through the GUI task list.
+   */
+  async maclawCall(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    if (!method.startsWith("maclaw/")) {
+      throw new Error(`maclawCall: method must start with maclaw/, got ${method}`);
+    }
+    return this.request(method, params);
+  }
+
+  async listRemoteCodingTasks(limit = 40): Promise<RemoteCodingTask[]> {
+    const res = (await this.maclawCall("maclaw/list_remote_coding_tasks", { limit })) as {
+      tasks?: RemoteCodingTask[];
+    };
+    return Array.isArray(res?.tasks) ? res.tasks : [];
+  }
+
+  async getCodingWorkbenchStatus(projectPath: string): Promise<CodingWorkbenchStatusResult> {
+    return (await this.maclawCall("maclaw/get_coding_workbench_status", {
+      project_path: projectPath,
+    })) as CodingWorkbenchStatusResult;
+  }
+
+  async ensureCodingWorkbenchArmed(projectPath: string): Promise<CodingWorkbenchStatusResult> {
+    return (await this.maclawCall("maclaw/ensure_coding_workbench_armed", {
+      project_path: projectPath,
+    })) as CodingWorkbenchStatusResult;
+  }
+
+  async prepareRemoteCoding(params: {
+    projectPath: string;
+    sshHost?: string;
+    sshUser?: string;
+    sshPassword: string;
+    workDir?: string;
+    sshPort?: number;
+  }): Promise<CodingWorkbenchStatusResult & { ok?: boolean; message?: string }> {
+    return (await this.maclawCall("maclaw/prepare_remote_coding", {
+      project_path: params.projectPath,
+      ssh_host: params.sshHost ?? "",
+      ssh_user: params.sshUser ?? "",
+      ssh_password: params.sshPassword,
+      work_dir: params.workDir ?? "",
+      ssh_port: params.sshPort ?? 0,
+    })) as CodingWorkbenchStatusResult & { ok?: boolean; message?: string };
+  }
+
+  async readRemoteFile(params: {
+    projectPath: string;
+    path: string;
+    offset?: number;
+    limit?: number;
+  }): Promise<{
+    ok?: boolean;
+    path?: string;
+    work_dir?: string;
+    content?: string;
+    truncated?: boolean;
+  }> {
+    return (await this.maclawCall("maclaw/read_remote_file", {
+      project_path: params.projectPath,
+      path: params.path,
+      offset: params.offset ?? 1,
+      limit: params.limit ?? 2000,
+    })) as {
+      ok?: boolean;
+      path?: string;
+      work_dir?: string;
+      content?: string;
+      truncated?: boolean;
+    };
+  }
+
+  async listRemoteDir(params: {
+    projectPath: string;
+    path?: string;
+  }): Promise<{ ok?: boolean; path?: string; work_dir?: string; listing?: string }> {
+    return (await this.maclawCall("maclaw/list_remote_dir", {
+      project_path: params.projectPath,
+      path: params.path ?? "",
+    })) as { ok?: boolean; path?: string; work_dir?: string; listing?: string };
+  }
+
+  async searchRemote(params: {
+    projectPath: string;
+    query: string;
+    path?: string;
+    maxResults?: number;
+    caseSensitive?: boolean;
+  }): Promise<{
+    ok?: boolean;
+    query?: string;
+    path?: string;
+    work_dir?: string;
+    hits?: { path: string; line: number; text: string; preview: string }[];
+    hit_count?: number;
+    truncated?: boolean;
+    raw?: string;
+  }> {
+    return (await this.maclawCall("maclaw/search_remote", {
+      project_path: params.projectPath,
+      query: params.query,
+      path: params.path ?? "",
+      max_results: params.maxResults ?? 50,
+      case_sensitive: params.caseSensitive === true,
+    })) as {
+      ok?: boolean;
+      query?: string;
+      path?: string;
+      work_dir?: string;
+      hits?: { path: string; line: number; text: string; preview: string }[];
+      hit_count?: number;
+      truncated?: boolean;
+      raw?: string;
+    };
   }
 
   /** session/cancel is a notification — no response expected. */

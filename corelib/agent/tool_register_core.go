@@ -359,14 +359,29 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
-		Name:        "read_excel",
-		Description: "Read an Excel (XLSX/CSV) file. Returns cell data as JSON. Supports optional sheet selection and A1-notation range filtering.",
+		Name:        "read_document",
+		Description: "Read text from office/PDF documents using native parsers (no Python/Word required). Supports PDF (.pdf), Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.pptx), and plain text (.txt/.md). Prefer this over read_file/bash for documents. For long docs, use offset+max_chars to page through (# next_offset in the result).",
 		Properties: map[string]interface{}{
-			"file_path": map[string]string{"type": "string", "description": "Excel file path"},
-			"sheet":     map[string]string{"type": "string", "description": "Optional sheet name (defaults to first sheet)"},
-			"range":     map[string]string{"type": "string", "description": "Optional A1-notation cell range, e.g. A1:D10"},
+			"file_path":    map[string]string{"type": "string", "description": "Document file path (alias: path)"},
+			"path":         map[string]string{"type": "string", "description": "Alias for file_path"},
+			"max_chars":    map[string]string{"type": "integer", "description": "Max characters for this chunk (default 120000)"},
+			"offset":       map[string]string{"type": "integer", "description": "Rune offset into the full document (default 0). Use next_offset from a truncated result to continue."},
+			"line_numbers": map[string]string{"type": "boolean", "description": "If true, prefix each line with L1:/L2: markers (stable across offset pages)"},
 		},
-		Required: []string{"file_path"},
+		Required: []string{},
+		Handler:  func(args map[string]interface{}) string { return ToolReadDocument(args) },
+	})
+
+	r.Register(ToolEntry{
+		Name:        "read_excel",
+		Description: "Read an Excel file (.xlsx/.csv modern, .xls legacy). Returns cell data as JSON. Supports optional sheet selection and A1-notation range filtering (.xlsx/.csv only).",
+		Properties: map[string]interface{}{
+			"file_path": map[string]string{"type": "string", "description": "Excel file path (alias: path)"},
+			"path":      map[string]string{"type": "string", "description": "Alias for file_path"},
+			"sheet":     map[string]string{"type": "string", "description": "Optional sheet name (defaults to first sheet)"},
+			"range":     map[string]string{"type": "string", "description": "Optional A1-notation cell range, e.g. A1:D10 (.xlsx/.csv only)"},
+		},
+		Required: []string{},
 		Handler:  func(args map[string]interface{}) string { return ToolReadExcel(args) },
 	})
 
@@ -384,11 +399,12 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "read_pptx",
-		Description: "Read a PowerPoint (PPTX) file. Returns structured JSON with slides, shapes, text (with formatting), tables, charts, and speaker notes.",
+		Description: "Read a PowerPoint PPTX file. Returns structured JSON with slides, shapes, text (with formatting), tables, charts, and speaker notes. Legacy .ppt is not supported — convert to .pptx first, or use read_document for text extraction from .pptx.",
 		Properties: map[string]interface{}{
-			"file_path": map[string]string{"type": "string", "description": "PPTX file path"},
+			"file_path": map[string]string{"type": "string", "description": "PPTX file path (alias: path)"},
+			"path":      map[string]string{"type": "string", "description": "Alias for file_path"},
 		},
-		Required: []string{"file_path"},
+		Required: []string{},
 		Handler:  func(args map[string]interface{}) string { return ToolReadPPTX(args) },
 	})
 

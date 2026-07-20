@@ -12,34 +12,47 @@ import (
 const documentParsingGuidance = `
 ## 文档解析方法
 
-用户提供了文件路径，请根据文件扩展名选择解析方式：
+用户提供了文件路径时，按下面**优先级阶梯**读取（不得跳过直接说无法读取）：
 
-### .docx 文件
-bash(command="python -c \"from docx import Document; doc=Document(r'路径'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
-- 如果 python-docx 未安装：bash(command="pip install python-docx && python -c ...")
-- 注意：Windows 上用 python，Linux/Mac 上用 python3；如果一个不行换另一个
+### 1) 内置 office（优先，原生解析，无需 Python/Word）
+office(action="read_document", file_path="完整路径")
 
-### .doc 文件（旧格式 Word 97-2003）
-Windows（需要已安装 Word 或 WPS）：
-bash(command="python -c \"import win32com.client,os; w=win32com.client.Dispatch('Word.Application'); w.Visible=0; d=w.Documents.Open(os.path.abspath(r'路径')); print(d.Content.Text); d.Close(); w.Quit()\"")
-- 如果 win32com 未安装：bash(command="pip install pywin32 && python -c ...")
-- 备选（需要 LibreOffice）：bash(command="pip install doc2docx && python -c \"from doc2docx import convert; convert(r'路径')\"") 然后用 python-docx 读取生成的 .docx
-- 如果都失败：提示用户用 Word 将 .doc 另存为 .docx 格式后重新提供
+自动识别：
+- PDF：.pdf
+- Word：.docx（新）、.doc（旧 Word 97-2003）
+- Excel：.xlsx/.csv（新）、.xls（旧）；结构化表格可用 office(action="read_excel", file_path="...")
+- PowerPoint：.pptx（新）
+- 文本：.txt/.md（也可用 read_file）
 
-### .pdf 文件
-bash(command="pip install pymupdf && python -c \"import fitz; doc=fitz.open(r'路径'); print('\\n'.join(page.get_text() for page in doc))\"")
+等价 action：read_doc / read_docx / read_pdf / read_word  
+可选 max_chars（默认约 30 万字符）。
 
-### .txt/.md 文件
-直接使用 read_file 工具
+### 2) craft_tool（其它格式 / office 失败时必须尝试）
+当出现以下情况，**必须**用 craft_tool 生成一次性解析脚本，不要停下来让用户自己转格式：
+- 扩展名不在上面列表（如 .ppt .rtf .odt .wps .et .dps .pages .epub .mobi .msg .eml .html .htm 等）
+- office 返回“读取失败 / 暂不支持 / 没有可读取文本”
+- 扫描版 PDF 需要 OCR
 
-### 已安装的文档解析 Skill
-如果有已安装的文档解析类 Skill（如 doc-parser、any2pdf 等），优先使用 manage_skill(action="run") 调用。
+示例：
+craft_tool(task="读取本地文件并提取全部可读文本输出到 stdout。路径: <完整路径>；格式: <扩展名>。优先 Python；缺依赖可 pip install；Windows 旧 Office 可用 PowerShell COM；可用 LibreOffice/soffice 先转 docx/pdf 再抽取。不要弹 GUI。")
 
-### 重要提示
-- Windows 路径在 Python 中用 r'原始字符串' 避免反斜杠转义问题
-- 如果 python 命令不存在尝试 python3，反之亦然
-- 如果所有方法都失败，告知用户将文件转换为 .docx 或 .txt 格式后重新提供
-- 【严禁】说"无法读取文件"或"无法访问本地文件"——你有 bash 工具可以用 Python 解析文档
+成功后基于脚本输出继续分析。若脚本有用可 save_as_skill 固化。
+
+### 3) Skill 市场
+manage_skill(action="search", query="文档解析 document parse <格式>")  
+找到后 manage_skill(action="run", name="...", args={...})
+
+### 4) bash 备选（office + craft_tool 都失败后再用）
+- .docx: python-docx
+- .doc/.xls/.ppt: PowerShell COM 或 LibreOffice 转换
+- .pdf: pymupdf；扫描件再 OCR
+
+### 禁止
+- 【严禁】对二进制 Office/PDF 使用 read_file（乱码）
+- 【严禁】未调用 office 就说「无法解析 legacy .doc / 无法读取」
+- 【严禁】office 失败后不调用 craft_tool 就放弃
+- 【严禁】说「无法访问本地文件」——office/craft_tool/bash 都能读本机路径
+- 仅当 office + craft_tool + Skill + bash 都明确失败，才请用户另存为 .docx/.pdf/.txt，并列出已尝试结果
 `
 
 const (
@@ -1322,13 +1335,11 @@ title: 第2页标题
 - 保存后立即停止，等待用户确认；不要继续执行下方发明/实用新型交底书解析指令。
 
 **方式一：交底书/申请材料文件（file_mode）**
-- 先用 bash 提取文档文本内容：
-  - .docx 文件：bash(command="pip install python-docx -q && python -c \"from docx import Document; doc=Document(r'路径'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
-  - 如果 python/pip 不可用（报错 "not found"/"无法识别"）：改用 PowerShell COM 提取：bash(command="powershell -Command \"$word = New-Object -ComObject Word.Application; $word.Visible = $false; $doc = $word.Documents.Open([System.IO.Path]::GetFullPath('路径')); $doc.Content.Text; $doc.Close(); $word.Quit()\"")
-  - .doc 文件（旧格式）：必须使用 PowerShell COM 方式（python-docx 不支持 .doc）：bash(command="powershell -Command \"$word = New-Object -ComObject Word.Application; $word.Visible = $false; $doc = $word.Documents.Open([System.IO.Path]::GetFullPath('路径')); $doc.Content.Text; $doc.Close(); $word.Quit()\"")
-  - .txt/.md 文件：直接使用 read_file
-  - .pdf 文件：bash(command="pip install pymupdf -q && python -c \"import fitz; doc=fitz.open(r'路径'); print('\\n'.join(page.get_text() for page in doc))\"")
-  - 如果 Python 不可用且是 PDF：告知用户将 PDF 转换为 Word 或文本格式后重新提交
+- 先用内置工具提取文档文本（不要对二进制文档用 read_file）：
+  - 优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
+  - .txt/.md：read_file
+  - office 失败或不支持的格式（.ppt/.rtf/.odt/.wps 等）：必须 craft_tool(task="读取路径并提取纯文本...") 生成解析脚本
+  - 仍失败：manage_skill 搜索文档解析 Skill；或 bash（python-docx / pymupdf / PowerShell COM / LibreOffice）
 - 如果以上方法都失败：发明/实用新型告知用户改用"手工输入"方式；外观设计告知用户改用"外观设计图片或照片"方式
 
 **方式二：手工输入（manual_mode）**
@@ -1935,15 +1946,12 @@ Check the form data above for the input mode:
 
 **Mode 1: Disclosure File (file_mode)**
 - The file path is shown above as "Disclosure File Path / 交底书文件路径". Replace FILE_PATH below with that value.
-- Extract text from the document based on file extension:
-  - .docx: bash(command="pip install python-docx -q && python -c \"from docx import Document; doc=Document(r'FILE_PATH'); print('\\n'.join(p.text for p in doc.paragraphs))\"")
-  - .doc (legacy Word format): python-docx does NOT support .doc. Use PowerShell COM: bash(command="powershell -Command \"$word = New-Object -ComObject Word.Application; $word.Visible = $false; $doc = $word.Documents.Open([System.IO.Path]::GetFullPath('FILE_PATH')); $doc.Content.Text; $doc.Close(); $word.Quit()\"")
-  - .txt/.md: use read_file directly
-  - .pdf: bash(command="pip install pymupdf -q && python -c \"import fitz; doc=fitz.open(r'FILE_PATH'); print('\\n'.join(page.get_text() for page in doc))\"")
-- If python/pip is not available (reports "not found" / "无法识别"):
-  - For .docx/.doc: use the PowerShell COM method above (works without Python, requires Microsoft Word)
-  - For .pdf without Python: inform user to convert PDF to Word/text format and resubmit
-- If ALL methods fail: inform user to use "Manual Input" mode instead.
+- Extract text (never use read_file on binary Office/PDF):
+  1. Prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
+  2. .txt/.md: read_file
+  3. If office fails or format is unsupported (.ppt/.rtf/.odt/.wps/etc.): MUST call craft_tool(task="Read FILE_PATH and print full plain text to stdout; use Python/COM/LibreOffice as needed; no GUI")
+  4. Then manage_skill search/run for document parsers, or bash helpers
+- If ALL methods fail: inform user to use "Manual Input" mode instead, listing what was tried.
 - If the disclosure is in Chinese, you MUST translate the technical content into English for the patent document while preserving all technical details. Keep the original Chinese in internal analysis notes for reference.
 
 **Mode 2: Manual Input (manual_mode)**

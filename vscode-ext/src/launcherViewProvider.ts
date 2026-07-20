@@ -1,12 +1,12 @@
 import * as vscode from "vscode";
 import { ChatViewProvider, StatusSnapshot } from "./chatViewProvider";
+import { RemoteCodingTask } from "./acpClient";
 import { readMaclawLLMConfig, watchMaclawConfig, writeCurrentProvider } from "./maclawConfig";
 
 /**
  * Sidebar (activity bar) control panel for MaClaw: live connection status,
- * session actions, LLM provider switching (shared with the MaClaw GUI), and
- * one-click "ask about the current selection/file" shortcuts that route into
- * the bottom-panel chat.
+ * session actions, LLM provider switching (shared with the MaClaw GUI),
+ * remote coding task attach, and selection/file shortcuts into the chat.
  */
 export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   public static readonly viewType = "maclaw-acp.launcher";
@@ -14,6 +14,8 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
   private view?: vscode.WebviewView;
   private readonly disposables: vscode.Disposable[] = [];
   private configWatcher?: { close(): void };
+  private remoteTasks: RemoteCodingTask[] = [];
+  private selectedRemotePath = "";
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -24,8 +26,6 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       vscode.window.onDidChangeTextEditorSelection(() => this.postSelection()),
       vscode.window.onDidChangeActiveTextEditor(() => this.postSelection())
     );
-    // Reflect provider switches made inside the MaClaw GUI (its fsnotify
-    // watcher picks ours up the same way).
     this.configWatcher = watchMaclawConfig(() => this.postProviders());
   }
 
@@ -38,7 +38,6 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
-    // Fresh webview needs the selection state re-posted even if unchanged.
     this.lastSelectionPost = "";
     view.webview.options = {
       enableScripts: true,
@@ -51,11 +50,17 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
     });
   }
 
-  private async handleMessage(msg: { type: string; action?: string; name?: string }): Promise<void> {
+  private async handleMessage(msg: {
+    type: string;
+    action?: string;
+    name?: string;
+    projectPath?: string;
+  }): Promise<void> {
     if (msg.type === "ready") {
       this.postStatus(this.chat.getStatusSnapshot());
       this.postSelection();
       this.postProviders();
+      this.postRemoteTasks();
       return;
     }
     if (msg.type !== "action") {
@@ -89,7 +94,213 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       case "summarizeFile":
         await this.sendFilePrompt();
         return;
+      case "refreshRemoteTasks":
+        await this.refreshRemoteTasks();
+        return;
+      case "selectRemoteTask":
+        this.selectedRemotePath = (msg.projectPath ?? "").trim();
+        this.postRemoteTasks();
+        return;
+      case "attachRemoteTask":
+        await this.attachSelectedRemote();
+        return;
+      case "detachRemoteTask":
+        await this.detachRemote();
+        return;
+      case "openTaskFolder":
+        await this.chat.openAttachedTaskFolder();
+        return;
+      case "listRemoteDir":
+        await this.chat.openRemoteDirListing();
+        return;
+      case "refreshRemotePreviews":
+        {
+          const n = this.chat.refreshOpenRemotePreviews();
+          void vscode.window.showInformationMessage(
+            n > 0 ? `MaClaw: 已刷新 ${n} 个远端预览` : "MaClaw: 没有打开的远端预览"
+          );
+        }
+        return;
+      case "openRemoteSSH":
+        await this.chat.openInRemoteSSH();
+        return;
+      case "diffRemoteLocal":
+        await this.chat.diffRemoteWithLocal();
+        return;
+      case "searchRemote":
+        await this.chat.searchRemoteAndOpen();
+        return;
     }
+  }
+
+  // ---- remote coding attach -----------------------------------------------
+
+  /** Public entry for commands / extension activation. */
+  async refreshRemoteTasks(opts?: { quiet?: boolean }): Promise<void> {
+    const quiet = opts?.quiet === true;
+    try {
+      const connected = await this.ensureBridge();
+      if (!connected) {
+        if (!quiet) {
+          void vscode.window.showWarningMessage(
+            "MaClaw: 未连接到 GUI。请先启动 MaClaw 主程序，再刷新远程任务。"
+          );
+        }
+        this.remoteTasks = [];
+        this.postRemoteTasks();
+        return;
+      }
+      this.remoteTasks = await this.chat.acpClient.listRemoteCodingTasks(40);
+      // Prefer currently attached task if still listed.
+      const attached = this.chat.getStatusSnapshot().mode === "remote" ? this.chat.getStatusSnapshot().cwd : "";
+      if (attached && this.remoteTasks.some((t) => t.project_path === attached)) {
+        this.selectedRemotePath = attached;
+      }
+      if (
+        this.selectedRemotePath &&
+        !this.remoteTasks.some((t) => t.project_path === this.selectedRemotePath)
+      ) {
+        this.selectedRemotePath = "";
+      }
+      if (!this.selectedRemotePath && this.remoteTasks.length > 0) {
+        this.selectedRemotePath = this.remoteTasks[0].project_path;
+      }
+      this.postRemoteTasks();
+      if (!quiet && this.remoteTasks.length === 0) {
+        void vscode.window.showInformationMessage(
+          "MaClaw: 没有远程编程任务。请先在 MaClaw 中创建 remote_coding_dev 任务。"
+        );
+      }
+    } catch (err) {
+      if (!quiet) {
+        void vscode.window.showErrorMessage(
+          `MaClaw: 加载远程任务失败 — ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  }
+
+  private async ensureBridge(): Promise<boolean> {
+    await this.chat.reconnect();
+    return this.chat.acpClient.isRunning;
+  }
+
+  private selectedTask(): RemoteCodingTask | undefined {
+    return this.remoteTasks.find((t) => t.project_path === this.selectedRemotePath);
+  }
+
+  private remoteLabelFor(task: RemoteCodingTask): string {
+    const port = task.port > 0 && task.port !== 22 ? `:${task.port}` : "";
+    const host = task.host || "?";
+    const user = task.user || "?";
+    const wd = task.work_dir || "?";
+    return `${user}@${host}${port}:${wd}`;
+  }
+
+  private async attachSelectedRemote(): Promise<void> {
+    const task = this.selectedTask();
+    if (!task) {
+      void vscode.window.showInformationMessage("MaClaw: 请先选择一个远程编程任务。");
+      return;
+    }
+    try {
+      const connected = await this.ensureBridge();
+      if (!connected) {
+        void vscode.window.showWarningMessage("MaClaw: 未连接，无法附着远程任务。");
+        return;
+      }
+
+      // Prefer re-arming sticky session (no password) when SSH is still alive.
+      let res = await this.chat.acpClient.ensureCodingWorkbenchArmed(task.project_path);
+      let st = res.status;
+      if (st?.needs_reconnect || !st?.armed) {
+        const password = await vscode.window.showInputBox({
+          title: `SSH 密码 — ${this.remoteLabelFor(task)}`,
+          prompt: "密码仅用于本次连接，不会写入配置或任务记录",
+          password: true,
+          ignoreFocusOut: true,
+        });
+        if (password === undefined) {
+          return; // cancelled
+        }
+        if (password.trim() === "") {
+          void vscode.window.showWarningMessage("MaClaw: 密码不能为空。");
+          return;
+        }
+        res = await this.chat.acpClient.prepareRemoteCoding({
+          projectPath: task.project_path,
+          sshHost: task.host,
+          sshUser: task.user,
+          sshPassword: password,
+          workDir: task.work_dir,
+          sshPort: task.port,
+        });
+        st = res.status;
+      }
+
+      if (!st?.armed) {
+        void vscode.window.showWarningMessage(
+          `MaClaw: 远程任务未能就绪 — ${st?.message || res.status?.message || "unknown"}`
+        );
+        // Still allow attach so the user can see errors from the agent path.
+      }
+
+      await this.chat.attachRemoteTask({
+        projectPath: task.project_path,
+        remoteLabel: this.remoteLabelFor(task),
+        workDir: task.work_dir,
+        host: task.host,
+        user: task.user,
+        port: task.port,
+      });
+      // Refresh list flags (armed etc.)
+      try {
+        this.remoteTasks = await this.chat.acpClient.listRemoteCodingTasks(40);
+        this.postRemoteTasks();
+      } catch {
+        /* ignore */
+      }
+      await vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+      const openFolder = "打开本地任务目录";
+      const choice = await vscode.window.showInformationMessage(
+        `MaClaw: 已附着远程编程 — ${this.remoteLabelFor(task)}（改动在远端；聊天路径以 remote: 标记）`,
+        openFolder
+      );
+      if (choice === openFolder) {
+        await this.chat.openAttachedTaskFolder();
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `MaClaw: 附着远程任务失败 — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  private async detachRemote(): Promise<void> {
+    try {
+      await this.chat.detachRemoteTask();
+      this.postRemoteTasks();
+      void vscode.window.showInformationMessage("MaClaw: 已切回本地工作区编程 agent");
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `MaClaw: 切换失败 — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  private postRemoteTasks(): void {
+    if (!this.view) {
+      return;
+    }
+    void this.view.webview
+      .postMessage({
+        type: "remoteTasks",
+        tasks: this.remoteTasks,
+        selected: this.selectedRemotePath,
+        mode: this.chat.getAgentMode(),
+        remoteLabel: this.chat.getStatusSnapshot().remoteLabel,
+      })
+      .then(undefined, () => {});
   }
 
   // ---- provider switching (shared with the MaClaw GUI via config.json) ----
@@ -105,8 +316,6 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
         `MaClaw: 切换服务商失败 — ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    // The config watcher will push the refreshed state; post immediately too
-    // so the UI doesn't wait for the debounce.
     this.postProviders();
   }
 
@@ -149,7 +358,6 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       void vscode.window.showInformationMessage("MaClaw: 请先在编辑器中选中一段代码。");
       return;
     }
-    // Cap very large selections so a whole-file select doesn't flood the turn.
     const maxChars = 4000;
     const truncated = sel.text.length > maxChars;
     const body = truncated ? sel.text.slice(0, maxChars) : sel.text;
@@ -160,7 +368,12 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
     };
     const prompt =
       `${leads[kind]}（文件：${sel.file}${truncated ? "，选区过长已截取" : ""}）：\n\n` +
-      "```" + sel.language + "\n" + body + (truncated ? "\n// …（截断）" : "") + "\n```";
+      "```" +
+      sel.language +
+      "\n" +
+      body +
+      (truncated ? "\n// …（截断）" : "") +
+      "\n```";
     await this.chat.sendPromptFromLauncher(prompt);
   }
 
@@ -179,6 +392,8 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
 
   private postStatus(snap: StatusSnapshot): void {
     void this.view?.webview.postMessage({ type: "status", snap }).then(undefined, () => {});
+    // Keep remote card in sync with mode changes from chat.
+    this.postRemoteTasks();
   }
 
   private lastSelectionPost = "";
@@ -187,8 +402,6 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
     if (!this.view) {
       return;
     }
-    // Cheap state only — never materialize the selection text here (fires per
-    // keystroke); the text is read on demand when a shortcut is clicked.
     const editor = vscode.window.activeTextEditor;
     const hasSelection = !!editor && !editor.selection.isEmpty && editor.document.uri.scheme === "file";
     const hasFile = !!editor && editor.document.uri.scheme === "file";
@@ -222,12 +435,36 @@ export class LauncherViewProvider implements vscode.WebviewViewProvider, vscode.
       <div class="status-row"><span id="status-dot" class="dot"></span><span id="status-text">未连接</span></div>
       <div id="status-detail" class="detail"></div>
       <div id="session-cwd" class="detail"></div>
+      <div id="agent-mode" class="detail mode-line"></div>
     </div>
 
     <div class="card">
       <div class="card-title">服务商</div>
       <select id="provider-select" class="select" data-action-provider></select>
       <div class="hint" id="provider-hint">读取中…</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">远程编程</div>
+      <select id="remote-select" class="select"></select>
+      <div class="hint" id="remote-hint">连接 GUI 后刷新任务列表</div>
+      <div class="btn-row">
+        <button class="btn" data-action="refreshRemoteTasks">刷新</button>
+        <button class="btn primary" id="btn-attach-remote" data-action="attachRemoteTask" disabled>附着远程</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btn-detach-remote" data-action="detachRemoteTask" disabled>切回本地</button>
+        <button class="btn" id="btn-open-task" data-action="openTaskFolder" disabled>任务目录</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btn-list-remote" data-action="listRemoteDir" disabled>远端 ls</button>
+        <button class="btn" id="btn-refresh-preview" data-action="refreshRemotePreviews" disabled>刷新预览</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="btn-remote-ssh" data-action="openRemoteSSH" disabled>Remote-SSH</button>
+        <button class="btn" id="btn-diff-remote" data-action="diffRemoteLocal" disabled>远端↔本地</button>
+      </div>
+      <button class="btn" id="btn-search-remote" data-action="searchRemote" disabled>远端搜索</button>
     </div>
 
     <div class="card">

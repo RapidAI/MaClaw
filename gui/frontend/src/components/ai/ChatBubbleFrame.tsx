@@ -19,6 +19,8 @@ export interface ChatBubbleFrameProps {
     children?: ReactNode;
     /** Hide the name-pointing tail (status chips with no speaker label). Default true. */
     showTail?: boolean;
+    /** Optional control(s) pinned to the bubble's top-right (e.g. copy reply). */
+    topRight?: ReactNode;
 }
 
 /** Diamond size — same as AI assistant chat bubbles. */
@@ -142,6 +144,7 @@ export function ChatBubbleFrame({
     tailTestId,
     children,
     showTail = true,
+    topRight,
 }: ChatBubbleFrameProps) {
     const { layoutStyle, padding, borderRadius } = sanitizeChatBubbleLayoutStyle(style, { showTail });
     const resolvedTailTestId = tailTestId ?? (testId ? `${testId}-tail` : undefined);
@@ -173,6 +176,23 @@ export function ChatBubbleFrame({
                     style={chatBubbleTailStyle(side, fill, stroke)}
                 />
             )}
+            {topRight ? (
+                <div
+                    data-testid={testId ? `${testId}-top-right` : undefined}
+                    style={{
+                        position: "absolute",
+                        top: 4,
+                        right: 4,
+                        zIndex: 2,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 2,
+                        pointerEvents: "auto",
+                    }}
+                >
+                    {topRight}
+                </div>
+            ) : null}
             {children}
         </div>
     );

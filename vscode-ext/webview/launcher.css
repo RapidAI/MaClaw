@@ -70,6 +70,15 @@ body {
   user-select: text;
 }
 
+.mode-line {
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.mode-line.mode-remote {
+  color: var(--vscode-testing-iconPassed, #4caf50);
+}
+
 .btn {
   border: 1px solid var(--vscode-button-border, transparent);
   border-radius: 4px;

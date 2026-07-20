@@ -102,6 +102,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 }));
 
 import { AppsPage } from '../AppsPage';
+import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 
 const marketManifestPlaceholder = /(?:Paste app package JSON \(maclaw\.app\.v1 \/ maclaw\.app\.pack\.v1 \/ maclaw\.apps\.json\)|粘贴应用包 JSON（maclaw\.app\.v1 \/ maclaw\.app\.pack\.v1 \/ maclaw\.apps\.json）)/;
 const manageManifestTitle = /^(?:Manifest|清单)$/;
@@ -112,11 +113,10 @@ function getStudioButton() {
     return screen.queryByTitle('Create App')
         || screen.queryByTitle('创建应用')
         || screen.queryByTitle('建立應用')
-        || screen.queryByTitle('App Studio')
-        || screen.queryByTitle('MaClaw App Studio')
-        || screen.queryByTitle('MaClaw 应用工作室')
-        || screen.queryByTitle('MaClaw 應用工作室')
-        || screen.getByRole('button', { name: /Create App|创建应用|建立應用|MaClaw App Studio|App Studio|MaClaw 应用工作室|MaClaw 應用工作室/ });
+        || screen.queryByTitle(miniAppLabels.studio.en)
+        || screen.queryByTitle(miniAppLabels.studio.zhHans)
+        || screen.queryByTitle(miniAppLabels.studio.zhHant)
+        || screen.getByRole('button', { name: new RegExp(`Create App|创建应用|建立應用|${miniAppLabels.studio.en}|${miniAppLabels.studio.zhHans}|${miniAppLabels.studio.zhHant}`) });
 }
 
 async function findRuntimeGovernancePanel() {
@@ -181,7 +181,9 @@ function getDraftPromptInput() {
 function stableStringify(value: any): string {
     if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
     if (value && typeof value === 'object') {
-        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+        // Mirror AppsPage.stableStringify: undefined-valued keys are skipped so
+        // fingerprints survive the JSON round-trip to the backend package.
+        return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
     }
     return JSON.stringify(value);
 }
@@ -202,11 +204,12 @@ function normalizeTestAppVersion(value: unknown) {
 
 function testAppDefinitionFingerprint(app: any): string {
     const manifest = app.manifest;
+    // Mirror AppsPage.appDefinitionFingerprint: entryKind is excluded because the
+    // backend derives the fingerprint from the serialized package (no entryKind).
     const runtimeManifest = manifest ? {
         schema: manifest.schema,
         installUnit: manifest.installUnit,
         privateMarker: manifest.privateMarker,
-        entryKind: manifest.entryKind,
         launchMode: manifest.launchMode,
         ...(manifest.datasrv ? { datasrv: manifest.datasrv } : {}),
         ...(manifest.mis ? { mis: manifest.mis } : {}),
@@ -567,8 +570,16 @@ async function createAndRunLocalToolApp(name = '合同归档') {
             dependencyVerification: verified,
         });
         const refreshed = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
-        refreshed[createdApp.id] = (refreshed[createdApp.id] || []).map((entry) => entry.runID === 'run-test-1'
-            ? { ...entry, dependencyVerification: verified }
+        refreshed[createdApp.id] = (refreshed[createdApp.id] || []).map((entry, index) => entry.runID === 'run-test-1'
+            ? {
+                ...entry,
+                dependencyVerification: verified,
+                // The seeded display entry doubles as a same-runID decoy: fingerprints are
+                // now JSON-round-trip stable, so mark it explicitly stale to keep evidence
+                // selection on the real run entry (previously implied by an undefined-key
+                // asymmetry between in-memory and persisted app manifests).
+                ...(index === 0 ? { definitionHash: '00000000' } : {}),
+            }
             : entry);
         window.localStorage.setItem(runHistoryStorageKey, JSON.stringify(refreshed));
     }
@@ -590,7 +601,7 @@ function seedSuccessfulSkillAppRun(skillID = 'invoice-review', name = '发票审
     } : {
         id: appID,
         name,
-        description: '由MaClaw 应用工作室室创建的应用入口。',
+        description: miniAppLabels.defaultStudioDescription.zhHans,
         category: '文档处理',
         kind: 'tool_app',
         icon: 'shield',
@@ -1450,7 +1461,7 @@ describe('AppsPage', () => {
         await waitFor(() => expect(listSkillAppManifestsMock).toHaveBeenCalled());
         await waitFor(() => {
             expect(screen.queryByText('Found apps')).toBeNull();
-            expect(screen.queryByText('Found from installed capabilities and synced to the app panel')).toBeNull();
+            expect(screen.queryByText(miniAppLabels.skillAppsSyncedMeta.en)).toBeNull();
         });
     });
 
@@ -1465,7 +1476,7 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(listSkillAppManifestsMock).toHaveBeenCalled());
         expect(screen.queryByText('Found apps')).toBeNull();
-        expect(screen.queryByText('Found from installed capabilities and synced to the app panel')).toBeNull();
+        expect(screen.queryByText(miniAppLabels.skillAppsSyncedMeta.en)).toBeNull();
         finishDiscovery([]);
         await waitFor(() => expect(screen.queryByText('Found apps')).toBeNull());
     });
@@ -1479,7 +1490,7 @@ describe('AppsPage', () => {
 
         await waitFor(() => expect(screen.getByText('Could not check installed capabilities')).not.toBeNull());
         expect(screen.getByText(/scan failed/)).not.toBeNull();
-        expect(screen.queryByText('Found from installed capabilities and synced to the app panel')).toBeNull();
+        expect(screen.queryByText(miniAppLabels.skillAppsSyncedMeta.en)).toBeNull();
     });
 
     it('shows friendly Skill app discovery text when candidates exist', async () => {
@@ -1869,7 +1880,7 @@ describe('AppsPage', () => {
 
         fireEvent.click(screen.getByText('上传到 SkillMarket'));
 
-        await waitFor(() => expect(screen.getByText('请先保存到 Skill，并在应用面板成功测试一次当前版本，再上传到 SkillMarket。')).not.toBeNull());
+        await waitFor(() => expect(screen.getByText(miniAppLabels.publishRequiresPanelTest.zhHans)).not.toBeNull());
         expect(saveMaclawAppDefinitionForSkillMock).not.toHaveBeenCalled();
         expect(uploadNLSkillToMarketMock).not.toHaveBeenCalled();
     });
@@ -2313,7 +2324,7 @@ describe('AppsPage', () => {
         expect(screen.getByText(/"status": "submitted"/)).not.toBeNull();
     });
 
-    it('opens market import with the current app manifest when review dependency issues need repair', async () => {
+    it('verifies dependencies and writes back evidence when clicking 处理依赖', async () => {
         const reviewedApp = {
             id: 'local-app-review-dependency',
             name: '依赖回退应用',
@@ -2353,6 +2364,22 @@ describe('AppsPage', () => {
                 reviewIssues: [{ path: 'apps[0].app.governance.dependencyVerification', severity: 'error', message: 'dependency verification is stale', suggestion: '安装或重新检查依' }],
             },
         }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: reviewedApp.id, name: reviewedApp.name, kind: reviewedApp.kind }],
+            dependencies: [{
+                id: 'contract-review',
+                kind: 'runtime_skill',
+                required: true,
+                source: 'hub',
+                installed: true,
+                health: 'ready',
+                action: 'skip',
+                app_ids: [reviewedApp.id],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
 
         render(<AppsPage lang="zh-Hans" />);
 
@@ -2360,13 +2387,317 @@ describe('AppsPage', () => {
         fireEvent.click(getPublishTab());
         fireEvent.click(screen.getByText('处理依赖'));
 
-        const marketTab = getMarketTab();
-        expect(marketTab.getAttribute('aria-pressed')).toBe('true');
-        const textarea = screen.getByLabelText('安装应用包') as HTMLTextAreaElement;
-        await waitFor(() => expect(textarea.value).toContain('maclaw.app.v1'));
-        expect(textarea.value).toContain('local-app-review-dependency');
-        expect(textarea.value).toContain('contract-review');
-        expect((textarea.closest('details') as HTMLDetailsElement).open).toBe(true);
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalled());
+        await waitFor(() => {
+            const stored = latestStoredCustomApp('依赖回退应用');
+            expect(stored?.installEvidence?.dependency_verification?.dependencies).toHaveLength(1);
+        });
+        await waitFor(() => {
+            const bar = document.querySelector('[data-testid^="apps-dependency-action-"]');
+            expect(bar?.textContent || '').toMatch(/依赖已就绪|依赖与运行证据|依赖验证已完成/);
+        });
+        await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalledWith(expect.any(String), 'app_studio'));
+        expect(installMaclawAppDependenciesMock).not.toHaveBeenCalled();
+    });
+    it('installs missing dependencies before writing back evidence when clicking 处理依赖', async () => {
+        const reviewedApp = {
+            id: 'local-app-install-dependency',
+            name: '依赖安装应用',
+            description: '用于验证处理依赖先安装再回写证据',
+            category: '法务',
+            kind: 'tool_app',
+            icon: 'contract',
+            accent: '#2f5f98',
+            pinned: false,
+            source: 'local',
+            manifest: {
+                schema: 'maclaw.app.v1',
+                installUnit: 'skill',
+                privateMarker: 'x_maclaw_apps',
+                entryKind: 'tool_app',
+                launchMode: 'fixed_skill_ui',
+                skill: { id: 'contract-review', inputMode: 'mixed', multipleFiles: false, outputModes: ['docx', 'pdf'], fields: [] },
+                dependencies: { skills: [{ id: 'contract-review', kind: 'runtime_skill', required: true, source: 'hub' }] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [reviewedApp.id],
+            customApps: [reviewedApp],
+        }));
+        seedSuccessfulLocalAppRun(reviewedApp, { dependencyVerification: undefined });
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: reviewedApp.id, name: reviewedApp.name, kind: reviewedApp.kind }],
+            dependencies: [{
+                id: 'contract-review',
+                kind: 'runtime_skill',
+                required: true,
+                source: 'hub',
+                installed: false,
+                health: 'missing',
+                action: 'install',
+                app_ids: [reviewedApp.id],
+            }],
+            has_missing_required: true,
+            has_blocking_dependency: false,
+        });
+        installMaclawAppDependenciesMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: reviewedApp.id, name: reviewedApp.name, kind: reviewedApp.kind }],
+            dependencies: [{
+                id: 'contract-review',
+                kind: 'runtime_skill',
+                required: true,
+                source: 'hub',
+                installed: true,
+                health: 'ready',
+                action: 'skip',
+                app_ids: [reviewedApp.id],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('处理依赖'));
+
+        await waitFor(() => expect(installMaclawAppDependenciesMock).toHaveBeenCalled());
+        await waitFor(() => {
+            const stored = latestStoredCustomApp('依赖安装应用');
+            expect(stored?.installEvidence?.dependency_verification?.dependencies?.[0]?.installed).toBe(true);
+        });
+        await waitFor(() => {
+            const bar = document.querySelector('[data-testid^="apps-dependency-action-"]');
+            expect(bar?.textContent || '').toMatch(/依赖已就绪|依赖与运行证据|依赖验证已完成/);
+        });
+        await waitFor(() => expect(recordMaclawAppInstallMock).toHaveBeenCalledWith(expect.any(String), 'app_studio'));
+    });
+    it('restores the run evidence check from durable run history in the publish pane', async () => {
+        window.localStorage.clear();
+        render(<AppsPage lang="zh-Hans" />);
+
+        await createAndRunLocalToolApp('durable 证据应用');
+        const createdApp = latestStoredCustomApp('durable 证据应用');
+        expect(createdApp?.id).toBeTruthy();
+        const raw = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}') as Record<string, any[]>;
+        // The durable store dedupes by runID at write time (the Go backend
+        // merges same-runID records), so it never holds the seeded same-runID
+        // decoy ('00000000') — that entry only exists in the localStorage UI
+        // cache. Mock the durable store with the real run records it would
+        // actually have kept.
+        const durableEntries = (raw[createdApp.id] || []).filter((entry) => entry.definitionHash !== '00000000');
+        expect(durableEntries.length).toBeGreaterThan(0);
+        // Simulate a localStorage wipe: only the durable store still has the evidence.
+        window.localStorage.setItem(runHistoryStorageKey, '{}');
+        listMaclawAppRunHistoryMock.mockResolvedValue(durableEntries);
+
+        fireEvent.click(document.querySelector('.apps-studio-button') as HTMLElement);
+        fireEvent.click(screen.getByRole('tab', { name: /审核\/发布/ }));
+        const publishCard = Array.from(document.querySelectorAll('.apps-publish-card')).find((item) => item.textContent?.includes('durable 证据应用')) as HTMLElement;
+        expect(publishCard).toBeTruthy();
+        await waitFor(() => expect(listMaclawAppRunHistoryMock).toHaveBeenCalledWith(createdApp.id, 8));
+        await waitFor(() => expect(within(publishCard).getByText(/检查项：10\/10 通过/)).not.toBeNull());
+    });
+    it('navigates to the app run workspace from 去修复 when run evidence is missing', async () => {
+        const base = dynamicToolApp('local-app-fix-run-evidence', '运行证据修复应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+            installEvidence: {
+                dependency_verification: testDependencyVerificationForApp(base),
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+        }));
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('去修复'));
+
+        await waitFor(() => expect(screen.getByText('执行')).not.toBeNull());
+    });
+    it('prefers the run workspace over dependency resolution from 去修复 when both checks fail', async () => {
+        // Both 依赖 Skill (missing verification) and 运行证据 (no run) fail.
+        // 去修复 prioritizes run workspace so the user executes once first.
+        const base = dynamicToolApp('local-app-fix-both', '双检查修复应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+        }));
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('去修复'));
+
+        await waitFor(() => expect(screen.getByText('执行')).not.toBeNull());
+        expect(document.querySelector(`[data-testid="apps-dependency-action-${app.id}"]`)).toBeNull();
+    });
+    it('does not block 处理依赖 on missing/stale run-evidence governance issues', async () => {
+        // PlanMaclawAppInstall bundles full publish governance (including
+        // testEvidence). 处理依赖 must still succeed when only run evidence
+        // is missing — that is a separate publish checklist card.
+        const base = dynamicToolApp('local-app-governance-detail', '治理复核明细应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+        }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: app.id, kind: 'app_skill', required: true, source: 'local', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            governance_review_issues: [{
+                path: 'apps[0].app.governance.testEvidence.definitionHash',
+                severity: 'error',
+                message: 'run evidence definition hash does not match current app definition',
+                suggestion: 'run the current app definition again before submitting to the capability market',
+            }, {
+                path: 'apps[0].app.governance.testEvidence',
+                severity: 'error',
+                message: 'missing successful local run evidence',
+                suggestion: 'run the app once in App Studio before submitting to the capability market',
+            }],
+            has_governance_review_issue: true,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('处理依赖'));
+
+        await waitFor(() => expect(planMaclawAppInstallMock).toHaveBeenCalled());
+        await waitFor(() => {
+            const bar = document.querySelector(`[data-testid="apps-dependency-action-${app.id}"]`);
+            expect(bar?.textContent || '').toMatch(/依赖已就绪|依赖与运行证据|依赖验证已完成/);
+            expect(bar?.textContent || '').not.toContain('依赖治理复核未通过');
+            expect(bar?.textContent || '').not.toContain('missing successful local run evidence');
+        });
+        const stored = latestStoredCustomApp('治理复核明细应用');
+        expect(stored?.installEvidence?.dependency_verification?.has_governance_review_issue).toBe(false);
+        expect(stored?.installEvidence?.dependency_verification?.governance_review_issues || []).toEqual([]);
+    });
+    it('auto-collects publish run evidence after 处理依赖 when sample input needs no file', async () => {
+        const base = dynamicToolApp('local-app-auto-evidence', '自动证据应用', '法务', 'contract', ['json']);
+        const app = {
+            ...base,
+            manifest: {
+                ...base.manifest,
+                launchMode: 'fixed_skill_ui',
+                skill: { ...(base.manifest.skill || {}), id: 'auto-evidence-skill', inputMode: 'params', multipleFiles: false, outputModes: ['json'], fields: [] },
+                appSkill: { id: 'auto-evidence-skill', version: '1.0.0', source: 'local' },
+                dependencies: { skills: [{ id: 'auto-evidence-skill', kind: 'runtime_skill', required: true, source: 'local' }] },
+                testProtocol: {
+                    schema: 'maclaw.app.test_protocol.v1',
+                    sampleInput: { params: 'hello', note: 'sample' },
+                    expectedOutput: { status: 'ok', primary: 'content' },
+                    requiredRoles: [],
+                    requiredScopes: [],
+                    riskLevel: 'low',
+                },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+        }));
+        planMaclawAppInstallMock.mockImplementation(async () => ({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{
+                id: 'auto-evidence-skill',
+                kind: 'runtime_skill',
+                required: true,
+                source: 'local',
+                installed: true,
+                health: 'ready',
+                action: 'skip',
+                app_ids: [app.id],
+            }],
+            has_missing_required: false,
+            has_blocking_dependency: false,
+            has_governance_review_issue: false,
+        }));
+        runNLSkillAsyncMock.mockReset().mockResolvedValue('run-auto-evidence-1');
+        getNLSkillRunStatusMock.mockReset().mockResolvedValue({
+            status: 'done',
+            summary: { content: 'ok', primary_result: 'ok' },
+            result: { content: 'ok' },
+            artifacts: [],
+            outputs: [{ kind: 'content', text: 'ok', status: 'ready' }],
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('处理依赖'));
+
+        await waitFor(() => expect(runNLSkillAsyncMock).toHaveBeenCalled(), { timeout: 5000 });
+        await waitFor(() => {
+            const bar = document.querySelector(`[data-testid="apps-dependency-action-${app.id}"]`);
+            expect(bar?.textContent || '').toContain('依赖与运行证据已就绪');
+        }, { timeout: 5000 });
+        expect(recordMaclawAppRunHistoryMock).toHaveBeenCalled();
+        const stored = latestStoredCustomApp('自动证据应用');
+        expect(stored?.installEvidence?.dependency_verification).toBeTruthy();
+        const history = JSON.parse(window.localStorage.getItem(runHistoryStorageKey) || '{}');
+        expect((history[app.id] || []).some((item: any) => item.runID === 'run-auto-evidence-1' && item.status === 'done')).toBe(true);
+    });
+    it('still blocks 处理依赖 on dependencyVerification governance issues', async () => {
+        const base = dynamicToolApp('local-app-dep-gov-block', '依赖治理阻断应用', '法务', 'contract', ['pdf']);
+        const app = {
+            ...base,
+            manifest: { ...base.manifest, launchMode: 'fixed_skill_ui' },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+        }));
+        planMaclawAppInstallMock.mockResolvedValueOnce({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{ id: app.id, kind: 'app_skill', required: true, source: 'local', installed: true, health: 'ready', action: 'skip', app_ids: [app.id] }],
+            governance_review_issues: [{
+                path: 'apps[0].app.governance.dependencyVerification',
+                severity: 'error',
+                message: 'required dependency is not ready: blocked-skill',
+                suggestion: 'install or enable the required Skill dependency before submitting',
+            }],
+            has_governance_review_issue: true,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        fireEvent.click(screen.getByText('处理依赖'));
+
+        await waitFor(() => {
+            const bar = document.querySelector(`[data-testid="apps-dependency-action-${app.id}"]`);
+            expect(bar?.textContent).toContain('依赖治理复核未通过');
+            expect(bar?.textContent).toContain('required dependency is not ready');
+        });
     });
     it('blocks app package review submission when required dependencies are unavailable', async () => {
         const app = {
@@ -7104,6 +7435,59 @@ describe('AppsPage', () => {
         });
     });
 
+    it('keeps the rich local run summary when the durable governance stamp shares a runID', async () => {
+        const appID = 'skill-app-run-tools-run-tool';
+        listMaclawAppRunHistoryMock.mockResolvedValue([
+            {
+                runID: 'run-dup-1',
+                appID,
+                status: 'done',
+                message: 'skill governance testEvidence recorded',
+                at: '2026-07-15T10:00:01.000Z',
+            },
+        ]);
+        window.localStorage.setItem(runHistoryStorageKey, JSON.stringify({
+            [appID]: [{
+                runID: 'run-dup-1',
+                appID,
+                status: 'done',
+                outputMode: 'json',
+                inputSummary: 'sample.pdf',
+                message: 'translated.pdf',
+                at: '2026-07-15T10:00:00.000Z',
+            }],
+        }));
+        render(<AppsPage lang="zh-Hans" />);
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getMarketTab());
+        fireEvent.change(screen.getByPlaceholderText(marketManifestPlaceholder), {
+            target: {
+                value: JSON.stringify({
+                    x_maclaw_apps: 'v1',
+                    apps: [
+                        {
+                            id: 'run-tool',
+                            skill_id: 'run-tools',
+                            name: '运行工具',
+                            description: 'Run fields',
+                            category: '工具',
+                            icon: 'sheet',
+                            input_mode: 'form',
+                            output_modes: ['json'],
+                            fields: [{ name: 'title', label: '标题', type: 'text', required: true }],
+                        },
+                    ],
+                }),
+            },
+        });
+        fireEvent.click(screen.getByText('安装'));
+        fireEvent.click(screen.getByText('关闭'));
+        fireEvent.click(screen.getAllByText('运行工具')[0]);
+
+        await waitFor(() => expect(screen.getAllByText(/translated\.pdf/).length).toBeGreaterThan(0));
+        expect(screen.queryByText(/skill governance testEvidence recorded/)).toBeNull();
+    });
+
     it('surfaces skill governance evidence write failures instead of swallowing them', async () => {
         recordMaclawAppRunEvidenceForSkillMock.mockRejectedValueOnce(new Error('skill dir locked'));
         render(<AppsPage lang="zh-Hans" />);
@@ -10720,7 +11104,7 @@ describe('AppsPage', () => {
         expect(versionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
         expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(versionSnapshot).getByText('v3')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
+        expect(within(versionSnapshot).getByText(miniAppLabels.skillField.en)).not.toBeNull();
         expect(within(versionSnapshot).getByText('contract-archive-skill · app_skill · hub · v1.0.0')).not.toBeNull();
         const evidenceSnapshot = row.querySelector('.apps-install-evidence-snapshot') as HTMLElement;
         expect(evidenceSnapshot).not.toBeNull();
@@ -11044,7 +11428,7 @@ describe('AppsPage', () => {
         expect(versionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
         expect(within(versionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(versionSnapshot).getByText('v4')).not.toBeNull();
-        expect(within(versionSnapshot).getByText('App Skill')).not.toBeNull();
+        expect(within(versionSnapshot).getByText(miniAppLabels.skillField.en)).not.toBeNull();
         expect(within(versionSnapshot).getByText('contract-super-app · app_skill · hub · v1.1.0')).not.toBeNull();
         expect(within(versionSnapshot).getByText('Approval workflow')).not.toBeNull();
         expect(within(versionSnapshot).getByText('policy-skill · workflow_skill · hub · v2.0.0')).not.toBeNull();
@@ -12584,7 +12968,7 @@ describe('AppsPage', () => {
         expect(runtimeVersionSnapshot.getAttribute('aria-label')).toBe('Version snapshot');
         expect(within(runtimeVersionSnapshot).getByText('Version')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('v3')).not.toBeNull();
-        expect(within(runtimeVersionSnapshot).getByText('App Skill')).not.toBeNull();
+        expect(within(runtimeVersionSnapshot).getByText(miniAppLabels.skillField.en)).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('expense-super-skill · app_skill · hub · v1.0.0')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('Approval workflow')).not.toBeNull();
         expect(within(runtimeVersionSnapshot).getByText('expense-workflow · workflow_skill · hub · v2.1.0')).not.toBeNull();

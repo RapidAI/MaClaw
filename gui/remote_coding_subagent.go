@@ -366,6 +366,17 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	explorationStatus, explorationSummary := summarizeSubAgentExploration(existingModified, filesRead, searchesRun, exploredBeforeFirstEdit)
 	confirmationStatus, confirmationSummary := c.summarizeRemotePostEditConfirmation(filesModified)
 	verificationStatus, verificationSummary := summarizeSubAgentVerification(filesModified, commandsRun, lastEditSeq)
+	// Multi-step plan scaffold/init steps create incomplete skeletons and must
+	// not be failed for missing build/test verification. Only relax MISSING when
+	// post-edit re-read confirmation already passed (structure evidence exists).
+	if verificationStatus == codingSubAgentQualityMissing && confirmationStatus == codingSubAgentQualityPassed {
+		taskText := ""
+		if c != nil {
+			taskText = c.task
+		}
+		stepTitle, stepDesc := resolveCodingPlanStepFocus("", "", taskText)
+		verificationStatus, verificationSummary = maybeRelaxScaffoldVerification(stepTitle, stepDesc, verificationStatus, verificationSummary)
+	}
 	diffStatus, diffSummary := summarizeRemoteDiffSelfCheck(filesModified, commandsRun, lastEditSeq)
 	noChangeSummary := summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead, searchesRun, commandsRun, nil)
 	failedCommands := unresolvedFailedSubAgentCommands(filterPostEditSubAgentCommands(commandsRun, lastEditSeq))
@@ -827,6 +838,12 @@ func remoteCodingCommandFailureIsDiagnostic(command, result string) bool {
 	// A diff/status probe in a non-Git directory is expected during remote
 	// exploration. It remains visible as skipped audit evidence, not an error.
 	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(entry) {
+		return true
+	}
+	// Missing workdir/path on env-check probes (ls/test, or any probe that
+	// never ran because cd into working_dir failed) is a valid negative
+	// finding, not a hard task failure.
+	if subAgentCommandIsSoftInspectionProbeFailure(entry) {
 		return true
 	}
 	return subAgentCommandFailureCanBeResolvedByLaterVerification(entry)

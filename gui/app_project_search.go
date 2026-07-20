@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -2651,13 +2652,10 @@ func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
 	}
 	// Priority 3: for managed task directories, use workspace/ subdirectory
 	// to isolate tool outputs from task metadata (task.md, conversation).
+	// No custom working_dir here (priority 2 already returned if set).
 	if a.isManagedRecentTaskWorkspacePath(projectPath) {
-		wsDir := filepath.Join(projectPath, "workspace")
-		// Fast path: check if already exists before MkdirAll syscall.
-		if info, err := os.Stat(wsDir); err != nil || !info.IsDir() {
-			_ = os.MkdirAll(wsDir, 0o755)
-		}
-		return wsDir
+		_ = ensureManagedTaskWorkspaceDir(projectPath, lastPathComponent(projectPath), "")
+		return filepath.Join(projectPath, "workspace")
 	}
 	return projectPath
 }
@@ -2850,6 +2848,11 @@ func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extra
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		log.Printf("[project_search] CreateRecentTask mkdir failed: %v", err)
 		return ProjectSearchResult{}
+	}
+	// Prepare workspace/ at create-time so the path bar shows a real execution
+	// directory immediately (and default sandbox is self-explanatory when empty).
+	if err := ensureManagedTaskWorkspaceDir(taskDir, displayTitle, workingDir); err != nil {
+		log.Printf("[project_search] CreateRecentTask workspace prepare failed task=%q err=%v", taskDir, err)
 	}
 	taskFile := filepath.Join(taskDir, "task.md")
 	if strings.TrimSpace(taskContent) == "" {
@@ -3113,16 +3116,32 @@ func recentTaskDisplayTitle(fullCommand string) string {
 	return fullCommand
 }
 
+// recentTaskSlug builds a filesystem-safe directory slug from a task title.
+// Keeps ASCII letters/digits and Unicode letters/numbers (so Chinese titles stay
+// recognizable). Maps whitespace/punctuation to '-' and strips Windows-invalid
+// path characters. Caps length by runes (not bytes) so CJK is not over-truncated.
 func recentTaskSlug(name string) string {
+	const maxRunes = 40
 	var b strings.Builder
 	lastWasSeparator := false
-	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+	runeCount := 0
+	for _, r := range strings.TrimSpace(name) {
+		// Normalize ASCII case only; keep CJK and other letters as-is.
+		if r >= 'A' && r <= 'Z' {
+			r = r - 'A' + 'a'
+		}
 		switch {
-		case r >= 'a' && r <= 'z':
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', unicode.IsLetter(r), unicode.IsNumber(r):
+			// Reject Windows-illegal filename characters even if classified oddly.
+			if r == '<' || r == '>' || r == ':' || r == '"' || r == '/' || r == '\\' || r == '|' || r == '?' || r == '*' {
+				if b.Len() > 0 && !lastWasSeparator {
+					b.WriteByte('-')
+					lastWasSeparator = true
+				}
+				continue
+			}
 			b.WriteRune(r)
-			lastWasSeparator = false
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
+			runeCount++
 			lastWasSeparator = false
 		case r == '-' || r == '_':
 			if b.Len() > 0 && !lastWasSeparator {
@@ -3133,7 +3152,7 @@ func recentTaskSlug(name string) string {
 			b.WriteByte('-')
 			lastWasSeparator = true
 		}
-		if b.Len() >= 40 {
+		if runeCount >= maxRunes {
 			break
 		}
 	}
@@ -3141,7 +3160,61 @@ func recentTaskSlug(name string) string {
 	if slug == "" {
 		return "task"
 	}
+	// Windows device names cannot be directory names (CON, PRN, AUX, NUL, COMn, LPTn).
+	if isWindowsReservedDeviceName(slug) {
+		return slug + "-task"
+	}
 	return slug
+}
+
+func isWindowsReservedDeviceName(name string) bool {
+	base := strings.ToUpper(strings.TrimSpace(name))
+	// Allow "com1-foo" style; only exact reserved tokens (optionally with extension).
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	switch base {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	default:
+		return false
+	}
+}
+
+// ensureManagedTaskWorkspaceDir creates taskDir/workspace and, when no custom
+// working directory was chosen, seeds a short README so the empty sandbox is
+// obvious in Explorer and to the agent.
+func ensureManagedTaskWorkspaceDir(taskDir, displayTitle, customWorkingDir string) error {
+	wsDir := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		return err
+	}
+	if strings.TrimSpace(customWorkingDir) != "" {
+		return nil
+	}
+	readme := filepath.Join(wsDir, "README.md")
+	if _, err := os.Stat(readme); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	title := strings.TrimSpace(displayTitle)
+	if title == "" {
+		title = "task"
+	}
+	content := fmt.Sprintf(`# %s — 任务工作区
+
+这是托管任务的**默认执行目录**（空沙箱）。
+
+- 工具相对路径、本目录下的搜索都只看到这里的内容。
+- 若要处理本机已有项目/标书材料，请在创建任务时选择「任务目录」，或使用**绝对路径**调用 office(read_document) 等工具。
+- 任务元数据在上一级目录的 task.md。
+
+Task folder: %s
+`, title, taskDir)
+	return os.WriteFile(readme, []byte(content), 0o644)
 }
 
 // ResumeProject switches the current context to the specified project.

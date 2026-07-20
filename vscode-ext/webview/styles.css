@@ -44,6 +44,11 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+.status-remote {
+  border-left: 3px solid var(--vscode-testing-iconPassed, #4caf50);
+  padding-left: 8px;
+}
+
 .status-error {
   color: var(--vscode-errorForeground);
   white-space: normal;
@@ -195,17 +200,64 @@ body {
   font-weight: 600;
 }
 
+.tool-location-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
 .tool-location {
-  display: block;
+  display: inline-block;
   color: var(--vscode-textLink-foreground);
   text-decoration: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .tool-location:hover {
   text-decoration: underline;
+}
+
+.tool-location-actions {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.file-change-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.file-change-btn {
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  cursor: pointer;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+}
+
+.file-change-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+}
+
+.file-change-btn-open {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.file-change-btn-open:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
 .tool-output {

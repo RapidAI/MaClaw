@@ -513,6 +513,49 @@ func (s *acpHostSession) handle(req acpagent.Request) error {
 		}
 		result, rpcErr := s.onSessionSteer(req.Params)
 		return s.reply(req, result, rpcErr)
+	// MaClaw extensions for VS Code remote coding attach (Phase 1).
+	case "maclaw/list_remote_coding_tasks":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawListRemoteCodingTasks(req.Params)
+		return s.reply(req, result, rpcErr)
+	case "maclaw/get_coding_workbench_status":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawGetCodingWorkbenchStatus(req.Params)
+		return s.reply(req, result, rpcErr)
+	case "maclaw/ensure_coding_workbench_armed":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawEnsureCodingWorkbenchArmed(req.Params)
+		return s.reply(req, result, rpcErr)
+	case "maclaw/prepare_remote_coding":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawPrepareRemoteCoding(req.Params)
+		return s.reply(req, result, rpcErr)
+	case "maclaw/read_remote_file":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawReadRemoteFile(req.Params)
+		return s.reply(req, result, rpcErr)
+	case "maclaw/list_remote_dir":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawListRemoteDir(req.Params)
+		return s.reply(req, result, rpcErr)
+	case "maclaw/search_remote":
+		if !s.authed {
+			return s.reply(req, nil, acpErr(acpagent.CodeInvalidRequest, "not authenticated"))
+		}
+		result, rpcErr := s.onMaclawSearchRemote(req.Params)
+		return s.reply(req, result, rpcErr)
 	case "authenticated", "initialized", "notifications/initialized":
 		if !isNotif {
 			return s.reply(req, map[string]any{}, nil)

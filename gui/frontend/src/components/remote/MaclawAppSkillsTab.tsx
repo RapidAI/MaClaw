@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { formatMiniAppSkillCount, localizeMiniAppPack, miniAppLabels } from "../../i18n/maclawMiniAppLabels";
 import {
     colors,
     remoteErrorStateStyle,
@@ -55,18 +56,26 @@ export function MaclawAppSkillsTab({
         }
     };
 
+    const openPanelLabel = localizeMiniAppPack(localizeText, miniAppLabels.openPanel);
+    const skillsHintLabel = localizeMiniAppPack(localizeText, miniAppLabels.skillsHint);
+    const definitionColumnLabel = localizeMiniAppPack(localizeText, miniAppLabels.definitionColumn);
+    const countColumnLabel = localizeMiniAppPack(localizeText, miniAppLabels.countColumn);
+    const editSkillLabel = localizeMiniAppPack(localizeText, miniAppLabels.editSkill);
+    const noSkillsYetLabel = localizeMiniAppPack(localizeText, miniAppLabels.noSkillsYet);
+    const browseMarketSkillsLabel = localizeMiniAppPack(localizeText, miniAppLabels.browseMarketSkills);
+
     return (
         <>
             <div style={toolbarStyle}>
                 <span style={{ fontSize: "0.78rem", color: colors.textSecondary }}>
-                    {skills.length} {localizeText("MaClaw App skill(s)", "个 MaClaw App Skill", "個 MaClaw App Skill")}
+                    {formatMiniAppSkillCount(skills.length, localizeText)}
                 </span>
                 <div style={actionBarStyle}>
                     <button className="btn-secondary" style={buttonStyle} onClick={onRefresh} disabled={loading}>
                         {loading ? localizeText("Refreshing...", "刷新中...", "重新整理中...") : localizeText("Refresh", "刷新", "重新整理")}
                     </button>
                     <button className="btn-primary" style={buttonStyle} onClick={onOpenAppPanel} disabled={!onOpenAppPanel}>
-                        {localizeText("Open App Panel", "打开应用面板", "開啟應用面板")}
+                        {openPanelLabel}
                     </button>
                     <button className="btn-secondary" style={buttonStyle} onClick={onOpenMarket}>
                         {localizeText("Market", "能力市场", "能力市場")}
@@ -74,11 +83,7 @@ export function MaclawAppSkillsTab({
                 </div>
             </div>
             <div style={hintStyle}>
-                {localizeText(
-                    "MaClaw App skills contain maclaw.app.json or maclaw.apps.json and can be opened from the app panel after registration.",
-                    "MaClaw App Skill 包含 maclaw.app.json 或 maclaw.apps.json；注册后可加入应用面板打开。",
-                    "MaClaw App Skill 包含 maclaw.app.json 或 maclaw.apps.json；註冊後可加入應用面板開啟。",
-                )}
+                {skillsHintLabel}
             </div>
 
             {loading && <div style={remoteLoadingStateStyle}>{localizeText("Loading...", "加载中...", "載入中...")}</div>}
@@ -91,8 +96,8 @@ export function MaclawAppSkillsTab({
                             <tr style={{ background: colors.surfaceMuted }}>
                                 <th style={{ ...thStyle, width: "150px" }}>{localizeText("Name", "名称", "名稱")}</th>
                                 <th style={thStyle}>{localizeText("Description", "描述", "描述")}</th>
-                                <th style={{ ...thStyle, width: "130px" }}>{localizeText("App Definition", "应用定义", "應用定義")}</th>
-                                <th style={{ ...thStyle, width: "72px", textAlign: "center" }}>{localizeText("Apps", "应用数", "應用數")}</th>
+                                <th style={{ ...thStyle, width: "130px" }}>{definitionColumnLabel}</th>
+                                <th style={{ ...thStyle, width: "72px", textAlign: "center" }}>{countColumnLabel}</th>
                                 <th style={{ ...thStyle, width: "80px" }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
                                 <th style={{ ...thStyle, width: "60px", textAlign: "center" }}>{localizeText("Status", "状态", "狀態")}</th>
                                 <th style={{ ...thStyle, width: "150px", textAlign: "center" }}>{localizeText("Actions", "操作", "操作")}</th>
@@ -113,7 +118,7 @@ export function MaclawAppSkillsTab({
                                     <td style={{ ...tdStyle, textAlign: "center" }}><span style={statusBadgeStyleForStatus((skill.status || "").trim().toLowerCase())}>{statusLabel(skill.status)}</span></td>
                                     <td style={{ ...tdStyle, textAlign: "center" }}>
                                         <div style={rowActionsStyle}>
-                                            <button className="btn-secondary" style={iconButtonStyle} onClick={() => onEdit(skill)} disabled={busy} title={localizeText("Edit app skill", "编辑 App Skill", "編輯 App Skill")} aria-label={localizeText("Edit app skill", "编辑 App Skill", "編輯 App Skill")}>{localizeText("Edit", "编辑", "編輯")}</button>
+                                            <button className="btn-secondary" style={iconButtonStyle} onClick={() => onEdit(skill)} disabled={busy} title={editSkillLabel} aria-label={editSkillLabel}>{localizeText("Edit", "编辑", "編輯")}</button>
                                             <button className="btn-secondary" style={deleteButtonStyle} onClick={() => onDelete(skill.name)} disabled={busy} title={localizeText("Delete", "删除", "刪除")} aria-label={localizeText("Delete", "删除", "刪除")}>×</button>
                                             <button className="btn-secondary" style={uploadButtonStyle} onClick={() => onUpload(skill.name)} disabled={busy || uploadingSkill === skill.name} aria-label={`${uploadingSkill === skill.name ? localizeText("Uploading", "上传中", "上傳中") : localizeText("Upload", "上传", "上傳")} ${skill.name}`}>
                                                 {uploadingSkill === skill.name ? localizeText("Uploading...", "上传中...", "上傳中...") : skill.hub_skill_id ? localizeText("Re-upload", "重新上传", "重新上傳") : localizeText("Upload", "上传", "上傳")}
@@ -130,13 +135,13 @@ export function MaclawAppSkillsTab({
 
             {!loading && skills.length === 0 && !error && (
                 <div style={emptyStyle}>
-                    <div>{localizeText("No MaClaw App skills yet", "暂无 MaClaw App Skill", "暫無 MaClaw App Skill")}</div>
+                    <div>{noSkillsYetLabel}</div>
                     <button
                         type="button"
                         onClick={onOpenMarket}
                         style={emptyMarketLinkStyle}
                     >
-                        {localizeText("Browse the Market to find App Skills →", "前往能力市场搜索 App Skill →", "前往能力市場搜尋 App Skill →")}
+                        {browseMarketSkillsLabel}
                     </button>
                 </div>
             )}

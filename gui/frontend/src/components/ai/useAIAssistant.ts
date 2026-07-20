@@ -593,21 +593,58 @@ function responseArtifactPayload(response: any): { localFilePath: string; localF
     return { localFilePath, localFilePaths, thumbnailBase64, imageKey };
 }
 
-export function isImageFilePath(filePath: string): boolean {
+const DOCUMENT_FILE_EXTENSIONS = new Set([
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".md", ".markdown",
+]);
+
+function filePathExtname(filePath: string): string {
     const normalized = filePath.trim().toLowerCase();
-    if (!normalized) return false;
+    if (!normalized) return "";
     const queryIndex = normalized.search(/[?#]/);
     const pathname = queryIndex >= 0 ? normalized.slice(0, queryIndex) : normalized;
-    return Array.from(IMAGE_FILE_EXTENSIONS).some(ext => pathname.endsWith(ext));
+    const slash = Math.max(pathname.lastIndexOf("/"), pathname.lastIndexOf("\\"));
+    const base = slash >= 0 ? pathname.slice(slash + 1) : pathname;
+    const dot = base.lastIndexOf(".");
+    if (dot <= 0) return "";
+    return base.slice(dot);
+}
+
+export function isImageFilePath(filePath: string): boolean {
+    return IMAGE_FILE_EXTENSIONS.has(filePathExtname(filePath));
+}
+
+export function isDocumentFilePath(filePath: string): boolean {
+    return DOCUMENT_FILE_EXTENSIONS.has(filePathExtname(filePath));
+}
+
+function filePathInspectionInstructions(filePaths: string[]): string {
+    const hasImages = filePaths.some(isImageFilePath);
+    const hasDocs = filePaths.some(isDocumentFilePath);
+    const parts: string[] = [];
+    if (hasDocs) {
+        parts.push(
+            "For PDF/Word/Excel/PPT/text documents, do NOT use read_file (binary/garbled). " +
+            "Prefer office(action=\"read_document\", file_path=\"...\") which natively extracts text. " +
+            "If the result is truncated (# truncated: true), re-call using # next_offset (and the same max_chars) to continue. " +
+            "Prefer line_numbers=true when citing lines. Do not invent line numbers from partial extracts.",
+        );
+    }
+    if (hasImages) {
+        parts.push(
+            "For image files, do not call screenshot or re-capture them; use the paths directly and prefer read_file or open to inspect.",
+        );
+    }
+    if (parts.length === 0) {
+        parts.push("Use these paths directly; if content inspection is needed, use office(read_document) for documents, or read_file/open for text/images.");
+    }
+    return parts.join(" ");
 }
 
 export function buildOutgoingMessage(text: string, selectedFilePath: string): string {
     const trimmedText = text.trim();
     const trimmedPath = selectedFilePath.trim();
     if (!trimmedPath) return trimmedText;
-    const pathInstructions = isImageFilePath(trimmedPath)
-        ? "User provided this local image file. Do not call screenshot or re-capture it; use the path directly and prefer read_file or open to inspect it before answering."
-        : "Use this path directly; if content inspection is needed, use read_file, open, or related tools.";
+    const pathInstructions = filePathInspectionInstructions([trimmedPath]);
     const fileBlock = [
         FILE_PATH_PROMPT_PREFIX,
         trimmedPath,
@@ -621,10 +658,7 @@ export function buildOutgoingMessageMulti(text: string, filePaths: string[]): st
     const validPaths = filePaths.map(p => p.trim()).filter(Boolean);
     if (validPaths.length === 0) return trimmedText;
 
-    const hasImages = validPaths.some(isImageFilePath);
-    const pathInstructions = hasImages
-        ? "User provided these local files. For image files, do not call screenshot or re-capture them; use the paths directly."
-        : "Use these paths directly; if content inspection is needed, use read_file, open, or related tools.";
+    const pathInstructions = filePathInspectionInstructions(validPaths);
 
     const fileBlock = [
         FILE_PATH_PROMPT_PREFIX,

@@ -17,11 +17,22 @@ const statusDot = document.getElementById("status-dot") as HTMLSpanElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
 const statusDetail = document.getElementById("status-detail") as HTMLDivElement;
 const sessionCwd = document.getElementById("session-cwd") as HTMLDivElement;
+const agentMode = document.getElementById("agent-mode") as HTMLDivElement;
 const cancelBtn = document.getElementById("btn-cancel") as HTMLButtonElement;
 const fileBtn = document.getElementById("btn-file") as HTMLButtonElement;
 const selHint = document.getElementById("sel-hint") as HTMLDivElement;
 const providerSelect = document.getElementById("provider-select") as HTMLSelectElement;
 const providerHint = document.getElementById("provider-hint") as HTMLDivElement;
+const remoteSelect = document.getElementById("remote-select") as HTMLSelectElement;
+const remoteHint = document.getElementById("remote-hint") as HTMLDivElement;
+const attachBtn = document.getElementById("btn-attach-remote") as HTMLButtonElement;
+const detachBtn = document.getElementById("btn-detach-remote") as HTMLButtonElement;
+const openTaskBtn = document.getElementById("btn-open-task") as HTMLButtonElement | null;
+const listRemoteBtn = document.getElementById("btn-list-remote") as HTMLButtonElement | null;
+const refreshPreviewBtn = document.getElementById("btn-refresh-preview") as HTMLButtonElement | null;
+const remoteSshBtn = document.getElementById("btn-remote-ssh") as HTMLButtonElement | null;
+const diffRemoteBtn = document.getElementById("btn-diff-remote") as HTMLButtonElement | null;
+const searchRemoteBtn = document.getElementById("btn-search-remote") as HTMLButtonElement | null;
 
 const STATE_LABEL: Record<string, string> = {
   connected: "已连接",
@@ -47,6 +58,14 @@ providerSelect.addEventListener("change", () => {
   }
 });
 
+remoteSelect.addEventListener("change", () => {
+  vscode.postMessage({
+    type: "action",
+    action: "selectRemoteTask",
+    projectPath: remoteSelect.value,
+  });
+});
+
 let lastProvidersRender = "";
 let lastTurnActive = false;
 let lastProvidersState: {
@@ -54,6 +73,8 @@ let lastProvidersState: {
   providers: { name: string; model: string; url: string }[];
   current: string;
 } = { ok: true, providers: [], current: "" };
+
+let lastRemoteRender = "";
 
 function rerenderProviders(): void {
   renderProviders(lastProvidersState.ok, lastProvidersState.providers, lastProvidersState.current);
@@ -64,7 +85,6 @@ function renderProviders(
   providers: { name: string; model: string; url: string }[],
   current: string
 ): void {
-  // Skip no-op re-renders: rebuilding <option>s dismisses an open dropdown.
   const key = JSON.stringify([ok, providers, current, lastTurnActive]);
   if (key === lastProvidersRender) {
     return;
@@ -97,6 +117,111 @@ function renderProviders(
     : "当前选择不在列表中 — 与 MaClaw 主程序共用配置" + suffix;
 }
 
+interface RemoteTaskRow {
+  name: string;
+  project_path: string;
+  host: string;
+  user: string;
+  port: number;
+  work_dir: string;
+  armed?: boolean;
+  needs_reconnect?: boolean;
+  message?: string;
+}
+
+function formatRemoteTask(t: RemoteTaskRow): string {
+  const port = t.port > 0 && t.port !== 22 ? `:${t.port}` : "";
+  const target = `${t.user || "?"}@${t.host || "?"}${port}`;
+  const name = t.name || t.project_path.split(/[/\\]/).pop() || "task";
+  const flags: string[] = [];
+  if (t.armed) {
+    flags.push("就绪");
+  }
+  if (t.needs_reconnect) {
+    flags.push("需重连");
+  }
+  const flag = flags.length ? ` · ${flags.join("/")}` : "";
+  return `${name} — ${target}${flag}`;
+}
+
+function renderRemoteTasks(
+  tasks: RemoteTaskRow[],
+  selected: string,
+  mode: string,
+  remoteLabel: string
+): void {
+  const key = JSON.stringify([tasks, selected, mode, remoteLabel]);
+  if (key === lastRemoteRender) {
+    return;
+  }
+  lastRemoteRender = key;
+
+  remoteSelect.innerHTML = "";
+  if (tasks.length === 0) {
+    remoteSelect.disabled = true;
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "（无远程任务）";
+    remoteSelect.appendChild(opt);
+    attachBtn.disabled = true;
+    remoteHint.textContent = "在 MaClaw 创建远程编程任务后点「刷新」";
+  } else {
+    remoteSelect.disabled = false;
+    for (const t of tasks) {
+      const opt = document.createElement("option");
+      opt.value = t.project_path;
+      opt.textContent = formatRemoteTask(t);
+      remoteSelect.appendChild(opt);
+    }
+    if (selected && tasks.some((t) => t.project_path === selected)) {
+      remoteSelect.value = selected;
+    } else {
+      remoteSelect.value = tasks[0].project_path;
+    }
+    attachBtn.disabled = false;
+    const cur = tasks.find((t) => t.project_path === remoteSelect.value);
+    if (cur?.message) {
+      remoteHint.textContent = cur.message;
+    } else if (cur?.needs_reconnect) {
+      remoteHint.textContent = "SSH 会话已失效，附着时将要求输入密码";
+    } else if (cur?.armed) {
+      remoteHint.textContent = "已就绪 — 可直接附着";
+    } else {
+      remoteHint.textContent = "附着后聊天将走远程编程 agent（文件在远端）";
+    }
+  }
+
+  const isRemote = mode === "remote";
+  detachBtn.disabled = !isRemote;
+  if (openTaskBtn) {
+    openTaskBtn.disabled = !isRemote;
+  }
+  if (listRemoteBtn) {
+    listRemoteBtn.disabled = !isRemote;
+  }
+  if (refreshPreviewBtn) {
+    refreshPreviewBtn.disabled = !isRemote;
+  }
+  if (remoteSshBtn) {
+    remoteSshBtn.disabled = !isRemote;
+  }
+  if (diffRemoteBtn) {
+    diffRemoteBtn.disabled = !isRemote;
+  }
+  if (searchRemoteBtn) {
+    searchRemoteBtn.disabled = !isRemote;
+  }
+  if (isRemote) {
+    agentMode.textContent = remoteLabel
+      ? `模式：远程编程 · ${remoteLabel}`
+      : "模式：远程编程";
+    agentMode.classList.add("mode-remote");
+  } else {
+    agentMode.textContent = "模式：本地工作区";
+    agentMode.classList.remove("mode-remote");
+  }
+}
+
 window.addEventListener("message", (event) => {
   const msg = event.data as {
     type: string;
@@ -108,12 +233,18 @@ window.addEventListener("message", (event) => {
       cwd: string;
       turnActive: boolean;
       queued: number;
+      mode?: string;
+      remoteLabel?: string;
     };
     hasSelection?: boolean;
     hasFile?: boolean;
     ok?: boolean;
     providers?: { name: string; model: string; url: string }[];
     current?: string;
+    tasks?: RemoteTaskRow[];
+    selected?: string;
+    mode?: string;
+    remoteLabel?: string;
   };
 
   if (msg.type === "status" && msg.snap) {
@@ -131,13 +262,24 @@ window.addEventListener("message", (event) => {
           : s.state === "disconnected"
             ? "在聊天中发送消息即可重连"
             : "";
-    sessionCwd.textContent = s.cwd ? `工作区：${s.cwd}` : "";
+    sessionCwd.textContent = s.cwd ? `会话目录：${s.cwd}` : "";
     cancelBtn.disabled = !s.turnActive;
-    // Provider hint mentions next-turn semantics while a turn is running.
     if (s.turnActive !== lastTurnActive) {
       lastTurnActive = s.turnActive;
-      lastProvidersRender = ""; // force hint refresh with the new suffix
+      lastProvidersRender = "";
       rerenderProviders();
+    }
+    // Mode line may also arrive via remoteTasks; keep a light fallback.
+    if (s.mode === "remote") {
+      agentMode.textContent = s.remoteLabel
+        ? `模式：远程编程 · ${s.remoteLabel}`
+        : "模式：远程编程";
+      agentMode.classList.add("mode-remote");
+      detachBtn.disabled = false;
+    } else if (s.mode === "local") {
+      agentMode.textContent = "模式：本地工作区";
+      agentMode.classList.remove("mode-remote");
+      detachBtn.disabled = true;
     }
     return;
   }
@@ -158,6 +300,16 @@ window.addEventListener("message", (event) => {
       current: String(msg.current ?? ""),
     };
     rerenderProviders();
+    return;
+  }
+
+  if (msg.type === "remoteTasks") {
+    renderRemoteTasks(
+      msg.tasks ?? [],
+      String(msg.selected ?? ""),
+      String(msg.mode ?? "local"),
+      String(msg.remoteLabel ?? "")
+    );
   }
 });
 

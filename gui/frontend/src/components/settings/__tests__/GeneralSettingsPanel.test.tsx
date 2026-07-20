@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { main } from '../../../../wailsjs/go/models';
+import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 import { GeneralSettingsPanel } from '../GeneralSettingsPanel';
 
 const PatchConfigFieldsMock = vi.fn((patch: Partial<main.AppConfig>) => new main.AppConfig({
@@ -76,11 +77,11 @@ describe('GeneralSettingsPanel', () => {
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ skill_evolution_enabled: true });
     });
 
-    it('shows and persists the MaClaw app entry switch after language', () => {
+    it('shows and persists the MiniAPP entry switch after language', () => {
         renderPanel({}, 'zh-Hans');
 
         const languageSelect = screen.getByRole('combobox');
-        const toggle = screen.getByLabelText('MaClaw应用入口') as HTMLInputElement;
+        const toggle = screen.getByLabelText(miniAppLabels.entry.zhHans) as HTMLInputElement;
         // Default-on when field is absent (same as workflow / utilities entry).
         expect(toggle.checked).toBe(true);
         expect(languageSelect.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -90,10 +91,10 @@ describe('GeneralSettingsPanel', () => {
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_app_entry: false });
     });
 
-    it('persists disabling the MaClaw app entry switch', () => {
+    it('persists disabling the MiniAPP entry switch', () => {
         renderPanel({ show_app_entry: true }, 'zh-Hans');
 
-        const toggle = screen.getByLabelText('MaClaw应用入口') as HTMLInputElement;
+        const toggle = screen.getByLabelText(miniAppLabels.entry.zhHans) as HTMLInputElement;
         expect(toggle.checked).toBe(true);
 
         fireEvent.click(toggle);

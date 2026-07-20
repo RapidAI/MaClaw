@@ -79,13 +79,6 @@ func TestActivateWorkflowTaskOrchestratorUsesWorkflowProjectPathWithoutCreatingD
 
 func TestHandleWorkflowEngineResponseActivatesOrchestratorOnFirstAgentLoop(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
-	projectDir := t.TempDir()
-	if err := app.SaveConfig(corelib.AppConfig{
-		Projects:       []corelib.ProjectConfig{{Id: "proj-current", Name: "Current", Path: projectDir}},
-		CurrentProject: "proj-current",
-	}); err != nil {
-		t.Fatalf("SaveConfig() error = %v", err)
-	}
 
 	engine := workflow.NewWorkflowEngine(workflow.NewWorkflowRegistry(), nil, nil, nil)
 	state, err := engine.StartWorkflowWithOptions("u1", workflow.StructuredIntent{Category: workflow.WorkflowCoding}, workflow.WorkflowStartOptions{})
@@ -108,8 +101,11 @@ func TestHandleWorkflowEngineResponseActivatesOrchestratorOnFirstAgentLoop(t *te
 	if orch == nil || !orch.IsActive() {
 		t.Fatalf("orchestrator should activate before agent loop marker, got %#v", orch)
 	}
-	if orch.ProjectPath != projectDir {
-		t.Fatalf("ProjectPath = %q, want %q", orch.ProjectPath, projectDir)
+	// workflowStartProjectPathForOwner resolves via EffectiveWorkingDirForOwner —
+	// the single source of truth (not the Projects list). With no owner-scoped
+	// project path this is the effective workspace dir.
+	if want := normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir()); orch.ProjectPath != want {
+		t.Fatalf("ProjectPath = %q, want %q", orch.ProjectPath, want)
 	}
 	if marker, ok := h.workflowAgentLoopMarker.Load("u1"); !ok || marker != true {
 		t.Fatalf("workflow agent loop marker not set: %#v ok=%v", marker, ok)

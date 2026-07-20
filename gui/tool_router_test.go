@@ -75,7 +75,9 @@ func TestFilterToolsForRemoteSkillSearch_RestrictsToSkillSearchPath(t *testing.T
 }
 
 func TestToolRouter_BelowBudget(t *testing.T) {
-	// Use a subset of builtins (fewer than maxToolBudget) to test below-budget path.
+	// Use a subset of builtins (fewer than maxToolBudget). The router always
+	// applies its core-set selection — there is no below-budget bypass — but a
+	// generic message must keep the core tools and drop gated ones (screenshot).
 	allTools := makeBuiltinDefs()[:20]
 	router := NewToolRouter(nil)
 	result := router.Route("hello world", allTools)
@@ -87,8 +89,13 @@ func TestToolRouter_BelowBudget(t *testing.T) {
 	if resultNames["screenshot"] {
 		t.Fatalf("screenshot should be filtered without explicit screenshot request: %#v", resultNames)
 	}
-	if len(result) != len(allTools)-1 {
-		t.Errorf("expected screenshot-filtered tool count %d, got %d", len(allTools)-1, len(result))
+	for _, name := range []string{"bash", "read_file"} {
+		if !resultNames[name] {
+			t.Fatalf("core tool %s should survive routing: %#v", name, resultNames)
+		}
+	}
+	if len(result) >= len(allTools) {
+		t.Errorf("router should trim below-budget input to the core set, kept %d of %d", len(result), len(allTools))
 	}
 }
 

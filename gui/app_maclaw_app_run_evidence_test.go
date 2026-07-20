@@ -79,6 +79,66 @@ func TestRecordAndListMaclawAppRunHistory(t *testing.T) {
 	}
 }
 
+func TestRecordMaclawAppRunHistoryMergesDuplicateRunID(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+
+	// Rich runtime entry recorded first (as the frontend does on run completion).
+	rich := maclawAppRunHistoryEntry{
+		RunID:                      "run-1",
+		AppID:                      "app-pdf",
+		Status:                     "done",
+		DefinitionHash:             "478ef784",
+		TestProtocolFingerprint:    "cb949164",
+		WorkspaceLayoutFingerprint: "8151d5b1",
+		Message:                    "translated.pdf",
+		ArtifactName:               "translated.pdf",
+		ResultPayload:              map[string]any{"content": "ok"},
+		DependencyVerification:     map[string]any{"schema": "maclaw.app.install_plan.v1"},
+		Source:                     "runtime",
+		At:                         "2026-07-19T13:05:56Z",
+	}
+	if _, err := app.RecordMaclawAppRunHistory(rich); err != nil {
+		t.Fatalf("RecordMaclawAppRunHistory(rich) error = %v", err)
+	}
+	// Sparse skill-governance stamp for the same run arrives afterwards.
+	sparse := maclawAppRunHistoryEntry{
+		RunID:              "run-1",
+		AppID:              "app-pdf",
+		Status:             "done",
+		DefinitionHash:     "478ef784",
+		ArtifactName:       "translated.pdf",
+		SkillName:          "paper_pdf_translator",
+		Source:             "skill_governance",
+		At:                 "2026-07-19T13:05:57Z",
+		Message:            maclawAppSkillGovernanceRunMessage,
+		GovernanceRecorded: true,
+	}
+	if _, err := app.RecordMaclawAppRunHistory(sparse); err != nil {
+		t.Fatalf("RecordMaclawAppRunHistory(sparse) error = %v", err)
+	}
+
+	list, err := app.ListMaclawAppRunHistory("app-pdf", 10)
+	if err != nil {
+		t.Fatalf("ListMaclawAppRunHistory() error = %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 merged entry, got %d", len(list))
+	}
+	got := list[0]
+	if got.TestProtocolFingerprint != "cb949164" || got.WorkspaceLayoutFingerprint != "8151d5b1" {
+		t.Fatalf("sparse stamp erased evidence fingerprints: %+v", got)
+	}
+	if got.DependencyVerification == nil || got.ResultPayload == nil {
+		t.Fatalf("sparse stamp erased dependency verification / result payload: %+v", got)
+	}
+	if got.Message != "translated.pdf" {
+		t.Fatalf("governance marker should not replace run summary, got %q", got.Message)
+	}
+	if !got.GovernanceRecorded || got.SkillName != "paper_pdf_translator" {
+		t.Fatalf("governance provenance should be preserved: %+v", got)
+	}
+}
+
 func TestClearMaclawAppRunHistory(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	if _, err := app.RecordMaclawAppRunHistory(maclawAppRunHistoryEntry{

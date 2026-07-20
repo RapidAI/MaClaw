@@ -2,6 +2,7 @@ import { useMemo, useRef, useState, type ChangeEvent, type Dispatch, type SetSta
 import { PatchConfigFields, SelectWorkingDir } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { miniAppEntryLabel } from '../../i18n/maclawMiniAppLabels';
 import { GeneralSettingsOptionGrid } from './GeneralSettingsOptionGrid';
 
 type GeneralSettingsPanelProps = {
@@ -84,7 +85,7 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
                 </label>
                 <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
                     <input type="checkbox" checked={effectiveConfig?.show_app_entry !== false} onChange={(e) => saveConfigPatch({ show_app_entry: e.target.checked })} />
-                    <span>{textForLang(lang, 'MaClaw app entry', 'MaClaw\u5e94\u7528\u5165\u53e3', 'MaClaw\u61c9\u7528\u5165\u53e3')}</span>
+                    <span>{miniAppEntryLabel(lang)}</span>
                 </label>
                 <label className="general-settings-option general-settings-option--inline general-settings-option--plain">
                     <input type="checkbox" checked={effectiveConfig?.show_workflow_entry !== false} onChange={(e) => saveConfigPatch({ show_workflow_entry: e.target.checked })} />

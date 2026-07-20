@@ -7,6 +7,7 @@ import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './Sid
 import { IconRankBadge } from '../ai/WorkbenchIcons';
 import { GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
+import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -38,7 +39,6 @@ const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as 
 
 const zhHans = {
     aiAssistant: 'AI \u52a9\u624b',
-    apps: '\u5e94\u7528',
     system: '\u7cfb\u7edf',
     monitor: '\u76d1\u63a7',
     settings: '\u8bbe\u7f6e',
@@ -46,7 +46,6 @@ const zhHans = {
 
 const zhHant = {
     aiAssistant: 'AI \u52a9\u624b',
-    apps: '\u61c9\u7528',
     system: '\u7cfb\u7d71',
     monitor: '\u76e3\u63a7',
     settings: '\u8a2d\u5b9a',
@@ -194,7 +193,7 @@ export const SidebarNavRail = ({
         };
     }, [showRanking]);
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
-    const appsLabel = lang === 'zh-Hans' ? zhHans.apps : lang === 'zh-Hant' ? zhHant.apps : 'Apps';
+    const appsLabel = miniAppShortLabel(lang);
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
     const resolvedUtilitiesLabel = utilitiesLabel || (lang === 'zh-Hans' || lang === 'zh-Hant' ? '实用工具' : 'Utilities');
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';

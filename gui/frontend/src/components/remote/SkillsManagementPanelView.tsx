@@ -17,6 +17,7 @@ import { SkillInstallProgressPanel } from "./SkillInstallProgressPanel";
 import { MaclawAppMarketPreview } from "./MaclawAppMarketPreview";
 import { SkillProductBadge, isMaclawAppSearchResult } from "./SkillProductBadge";
 import { SkillSourceBadge } from "./SkillSourceBadge";
+import { formatInstalledOpenPanelMessage, localizeMiniAppPack, miniAppLabels } from "../../i18n/maclawMiniAppLabels";
 import { StatusGlyph } from "../ai/WorkbenchIcons";
 import {
     executionClassBadgeStyle,
@@ -1837,11 +1838,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             await checkUpdates();
             showToast(
                 isMaclawAppSearchResult(skill)
-                    ? localizeText(
-                        `"${skill.name}" installed! Open the App panel to use it.`,
-                        `「${skill.name}」安装成功！打开应用面板即可使用。`,
-                        `「${skill.name}」安裝成功！開啟應用面板即可使用。`,
-                    )
+                    ? formatInstalledOpenPanelMessage(skill.name, localizeText)
                     : localizeText(
                         `"${skill.name}" installed! Click Run in My Skills to try it.`,
                         `「${skill.name}」安装成功！在"我的技能"中点击运行试用。`,
@@ -2209,6 +2206,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         () => skills.filter((s) => !isLearnedSource(s.source ?? "") && !!s.is_maclaw_app),
         [skills]
     );
+    const miniAppShort = localizeMiniAppPack(localizeText, miniAppLabels.short);
 
     const learnedSkills = useMemo(
         () => skills.filter((s) => isLearnedSource(s.source ?? "")),
@@ -2801,7 +2799,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             {localizeText("All", "全部", "全部")} ({skills.length})
                         </button>
                         <button style={{ ...chipStyle, ...(activeTab === "maclaw_app" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("maclaw_app")}>
-                            App ({maclawAppSkills.length})
+                            {miniAppShort} ({maclawAppSkills.length})
                         </button>
                         <button style={{ ...chipStyle, ...(activeTab === "learned" ? chipActiveStyle : {}) }} onClick={() => setActiveTab("learned")}>
                             {localizeText("Learned", "自学习", "自學習")} ({learnedSkills.length})
@@ -2866,7 +2864,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                 <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                                                     <span style={skillNameLinkStyle} onClick={() => setDetailSkill(s)}>{s.name}</span>
-                                                    {s.is_maclaw_app && <span style={appBadgeStyle}>App</span>}
+                                                    {s.is_maclaw_app && <span style={appBadgeStyle}>{miniAppShort}</span>}
                                                     {isLearnedSource(s.source ?? "") && <span style={learnedBadgeStyle}>{localizeText("Learned", "自学习", "自學習")}</span>}
                                                     <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }} title={s.status === "needs_review" ? skillReviewReason(s, localizeText) : undefined}>{localizeSkillStatus(s.status)}</span>
                                                 </div>
@@ -2954,7 +2952,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <tr key={s.name} style={{ borderTop: `1px solid ${colors.border}` }}>
                                                 <td style={{ ...tdStyle, textAlign: "left" }}>
                                                     <div style={localSkillsNameCellStyle}>
-                                                        {s.is_maclaw_app && <span title="App" style={appBadgeStyle}>App</span>}
+                                                        {s.is_maclaw_app && <span title={miniAppShort} style={appBadgeStyle}>{miniAppShort}</span>}
                                                         {isLearnedSource(s.source ?? "") && <span title={localizeText("Learned", "自学习", "自學習")} style={learnedBadgeStyle}>{localizeText("Learned", "自学习", "自學習")}</span>}
                                                         <span style={localSkillsNameLinkStyle} onClick={() => setDetailSkill(s)} title={s.name}>{s.name}</span>
                                                     </div>
@@ -3033,7 +3031,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             {activeTab === "learned"
                                 ? localizeText("No learned skills yet. MaClaw automatically learns and generates skills during use.", "暂无自学习技能。MaClaw 在使用过程中会自动学习并生成技能。", "暫無自學習技能。MaClaw 在使用過程中會自動學習並生成技能。")
                                 : activeTab === "maclaw_app"
-                                    ? localizeText("No MaClaw App skills. Install from the Capability Market.", "暂无 MaClaw App 技能。请在能力市场安装。", "暫無 MaClaw App 技能。請在能力市場安裝。")
+                                    ? localizeMiniAppPack(localizeText, miniAppLabels.emptyMarketBrowse)
                                     : localizeText("No registered Skills yet", "暂无已注册的 Skill", "暫無已註冊的 Skill")}
                         </div>
                     )}

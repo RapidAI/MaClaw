@@ -90,6 +90,7 @@ function renderMarkdownInto(el: HTMLElement, markdown: string): void {
   const html = marked.parse(markdown, { async: false }) as string;
   el.innerHTML = sanitize(html);
   highlightDiffs(el);
+  enhanceFileChangeCards(el);
 }
 
 /** Color unified-diff code blocks line by line. */
@@ -109,6 +110,74 @@ function highlightDiffs(root: HTMLElement): void {
       })
       .join("\n");
   }
+}
+
+/**
+ * Turn "### File change: `path`" headings into actionable cards with
+ * Open preview / Diff buttons (remote-aware via host openFile / diffRemote).
+ */
+function enhanceFileChangeCards(root: HTMLElement): void {
+  for (const heading of root.querySelectorAll("h1, h2, h3, h4")) {
+    if ((heading as HTMLElement).dataset.maclawFc === "1") {
+      continue;
+    }
+    const text = (heading.textContent ?? "").trim();
+    const m = text.match(/^File\s+change:\s*(.+)$/i);
+    if (!m) {
+      continue;
+    }
+    (heading as HTMLElement).dataset.maclawFc = "1";
+    const filePath = m[1].trim().replace(/^[`'"“”]+|[`'"“”]+$/g, "").trim();
+    if (!filePath) {
+      continue;
+    }
+
+    // Avoid stacking bars if a previous sibling action row already exists.
+    const next = heading.nextElementSibling;
+    if (next?.classList.contains("file-change-actions")) {
+      continue;
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "file-change-actions";
+    if (agentModeNow === "remote") {
+      bar.appendChild(makeFileActionButton("打开预览", "open", filePath));
+      bar.appendChild(makeFileActionButton("Diff 本地", "diff", filePath));
+      bar.appendChild(makeFileActionButton("复制路径", "copy", filePath));
+    } else {
+      bar.appendChild(makeFileActionButton("打开文件", "open", filePath));
+    }
+    heading.insertAdjacentElement("afterend", bar);
+  }
+}
+
+function makeFileActionButton(
+  label: string,
+  action: "open" | "diff" | "copy",
+  filePath: string
+): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `file-change-btn file-change-btn-${action}`;
+  btn.textContent = label;
+  btn.title =
+    action === "open"
+      ? `打开 ${filePath}`
+      : action === "diff"
+        ? `远端预览 ↔ 本地：${filePath}`
+        : `复制 ${filePath}`;
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (action === "open") {
+      vscode.postMessage({ type: "openFile", path: filePath });
+    } else if (action === "diff") {
+      vscode.postMessage({ type: "diffRemote", path: filePath });
+    } else {
+      vscode.postMessage({ type: "copyPath", path: filePath });
+    }
+  });
+  return btn;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,15 +321,34 @@ function renderToolCall(update: ToolUpdate): void {
     if (!loc.path) {
       continue;
     }
+    const row = document.createElement("div");
+    row.className = "tool-location-row";
+
     const link = document.createElement("a");
     link.className = "tool-location";
     link.href = "#";
-    link.textContent = loc.path;
+    const isRemotePath =
+      agentModeNow === "remote" &&
+      (loc.path.startsWith("/") || loc.path.startsWith("~/") || !loc.path.includes(":"));
+    link.textContent = isRemotePath && agentModeNow === "remote" ? `remote:${loc.path}` : loc.path;
+    link.title =
+      agentModeNow === "remote"
+        ? `打开远端预览：${loc.path}`
+        : `打开：${loc.path}`;
     link.addEventListener("click", (ev) => {
       ev.preventDefault();
       vscode.postMessage({ type: "openFile", path: loc.path });
     });
-    root.appendChild(link);
+    row.appendChild(link);
+
+    const actions = document.createElement("span");
+    actions.className = "tool-location-actions";
+    actions.appendChild(makeFileActionButton("预览", "open", loc.path));
+    if (agentModeNow === "remote" || update.kind === "edit") {
+      actions.appendChild(makeFileActionButton("Diff", "diff", loc.path));
+    }
+    row.appendChild(actions);
+    root.appendChild(row);
   }
 
   renderToolContent(root, update.content);
@@ -297,8 +385,22 @@ function renderToolCallUpdate(update: ToolUpdate): void {
 function renderToolContent(root: HTMLElement, content?: { type?: string; text?: string }[]): void {
   for (const block of content ?? []) {
     if (block.type === "text" && block.text) {
+      // Dedup: tool_call_update can re-send the same File change card.
+      const sig =
+        block.text.length +
+        ":" +
+        block.text.slice(0, 48) +
+        ":" +
+        block.text.slice(-24);
+      const already = [...root.querySelectorAll(".tool-content")].some(
+        (el) => (el as HTMLElement).dataset.tcSig === sig
+      );
+      if (already) {
+        continue;
+      }
       const div = document.createElement("div");
       div.className = "markdown tool-content";
+      div.dataset.tcSig = sig;
       renderMarkdownInto(div, block.text);
       root.appendChild(div);
     }
@@ -387,23 +489,43 @@ function resolvePermissionCard(requestId: number, label: string): void {
 // Status / turn state
 // ---------------------------------------------------------------------------
 
+let agentModeNow: "local" | "remote" = "local";
+let remoteLabelNow = "";
+let lastConnState = "disconnected";
+let lastConnDetail = "";
+
+function setAgentMode(mode: string, remoteLabel: string): void {
+  agentModeNow = mode === "remote" ? "remote" : "local";
+  remoteLabelNow = remoteLabel || "";
+  setStatus(lastConnState, lastConnDetail);
+}
+
 function setStatus(state: string, detail: string): void {
-  statusEl.className = `status status-${state}`;
-  switch (state) {
+  lastConnState = state || "disconnected";
+  lastConnDetail = detail || "";
+  statusEl.className = `status status-${lastConnState}`;
+  const remotePrefix =
+    agentModeNow === "remote"
+      ? `远程${remoteLabelNow ? " · " + remoteLabelNow : ""} · `
+      : "";
+  switch (lastConnState) {
     case "connected":
-      statusEl.textContent = "MaClaw connected";
-      statusEl.title = detail;
+      statusEl.textContent = remotePrefix + "MaClaw connected";
+      statusEl.title = lastConnDetail + (remoteLabelNow ? `\n${remoteLabelNow}` : "");
       break;
     case "connecting":
-      statusEl.textContent = "Connecting to MaClaw…";
-      statusEl.title = detail;
+      statusEl.textContent = remotePrefix + "Connecting to MaClaw…";
+      statusEl.title = lastConnDetail;
       break;
     case "error":
-      statusEl.textContent = `⚠ ${detail}`;
+      statusEl.textContent = `⚠ ${lastConnDetail}`;
       break;
     default:
-      statusEl.textContent = "MaClaw disconnected — send a message to reconnect";
+      statusEl.textContent =
+        (agentModeNow === "remote" ? "远程 · " : "") +
+        "MaClaw disconnected — send a message to reconnect";
   }
+  statusEl.classList.toggle("status-remote", agentModeNow === "remote");
 }
 
 const PLACEHOLDER_IDLE = "Ask MaClaw… (Enter to send, Shift+Enter for newline)";
@@ -602,7 +724,13 @@ window.addEventListener("message", (event) => {
       }
       break;
     case "status":
+      if (typeof msg.mode === "string") {
+        setAgentMode(String(msg.mode), String(msg.remoteLabel ?? ""));
+      }
       setStatus(String(msg.state ?? ""), String(msg.detail ?? ""));
+      break;
+    case "agentMode":
+      setAgentMode(String(msg.mode ?? "local"), String(msg.remoteLabel ?? ""));
       break;
     case "turnState":
       setTurnActive(Boolean(msg.active));

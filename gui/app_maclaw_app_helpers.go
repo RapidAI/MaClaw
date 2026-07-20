@@ -786,7 +786,19 @@ func maclawAppTestProtocolFingerprint(protocol map[string]any) string {
 	if protocol == nil {
 		return ""
 	}
-	encoded, err := maclawAppStableJSON(compactPayload(protocol))
+	// Strip declared fingerprint keys before hashing — mirrors the frontend
+	// appTestProtocolFingerprint, which hashes the protocol minus its stamp.
+	// Hashing the declared fingerprint into itself would make the recompute
+	// useless for cross-side consistency checks.
+	stable := make(map[string]any, len(protocol))
+	for key, value := range protocol {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "fingerprint", "hash", "testprotocolfingerprint", "test_protocol_fingerprint", "protocolfingerprint", "protocol_fingerprint", "protocolhash", "protocol_hash":
+			continue
+		}
+		stable[key] = value
+	}
+	encoded, err := maclawAppStableJSON(compactPayload(stable))
 	if err != nil {
 		return ""
 	}

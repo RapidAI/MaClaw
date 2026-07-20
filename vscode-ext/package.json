@@ -2,7 +2,7 @@
   "name": "maclaw-acp",
   "displayName": "MaClaw ACP",
   "description": "MaClaw AI coding assistant over ACP — chat lives in the bottom panel, never blocks your Explorer.",
-  "version": "0.4.4",
+  "version": "0.5.12",
   "publisher": "maclaw",
   "license": "MIT",
   "private": true,
@@ -23,7 +23,8 @@
     "acp",
     "maclaw",
     "agent",
-    "coding agent"
+    "coding agent",
+    "remote coding"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -60,6 +61,21 @@
           "id": "maclaw-acp.launcher",
           "name": "MaClaw",
           "type": "webview"
+        },
+        {
+          "id": "maclaw-acp.remoteExplorer",
+          "name": "Remote Explorer",
+          "contextualTitle": "MaClaw Remote work_dir"
+        },
+        {
+          "id": "maclaw-acp.agentChanges",
+          "name": "Agent Changes",
+          "contextualTitle": "MaClaw Agent file changes"
+        },
+        {
+          "id": "maclaw-acp.searchResults",
+          "name": "Search Results",
+          "contextualTitle": "MaClaw Remote Search"
         }
       ]
     },
@@ -75,8 +91,276 @@
       {
         "command": "maclaw-acp.cancelTurn",
         "title": "MaClaw: Cancel Current Turn"
+      },
+      {
+        "command": "maclaw-acp.refreshRemoteTasks",
+        "title": "MaClaw: Refresh Remote Coding Tasks"
+      },
+      {
+        "command": "maclaw-acp.detachRemote",
+        "title": "MaClaw: Detach Remote Coding (Local Workspace)"
+      },
+      {
+        "command": "maclaw-acp.openRemoteTaskFolder",
+        "title": "MaClaw: Open Attached Remote Task Folder"
+      },
+      {
+        "command": "maclaw-acp.openRemotePath",
+        "title": "MaClaw: Open Remote Path Preview"
+      },
+      {
+        "command": "maclaw-acp.listRemoteWorkDir",
+        "title": "MaClaw: List Remote Work Dir"
+      },
+      {
+        "command": "maclaw-acp.refreshRemotePreviews",
+        "title": "MaClaw: Refresh Remote Previews"
+      },
+      {
+        "command": "maclaw-acp.refreshActiveRemotePreview",
+        "title": "MaClaw: Refresh This Remote Preview",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "maclaw-acp.openInRemoteSSH",
+        "title": "MaClaw: Open Work Dir in Remote-SSH"
+      },
+      {
+        "command": "maclaw-acp.diffRemoteWithLocal",
+        "title": "MaClaw: Diff Remote vs Local",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "maclaw-acp.searchRemote",
+        "title": "MaClaw: Search Remote Work Dir",
+        "icon": "$(search)"
+      },
+      {
+        "command": "maclaw-acp.findInRemotePreview",
+        "title": "MaClaw: Find in Remote Preview",
+        "icon": "$(search)"
+      },
+      {
+        "command": "maclaw-acp.openSearchHit",
+        "title": "MaClaw: Open Search Hit"
+      },
+      {
+        "command": "maclaw-acp.clearSearchResults",
+        "title": "MaClaw: Clear Search Results",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "maclaw-acp.exportSearchResults",
+        "title": "MaClaw: Export Search Results",
+        "icon": "$(export)"
+      },
+      {
+        "command": "maclaw-acp.nextSearchHit",
+        "title": "MaClaw: Next Search Hit in Remote Preview",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "maclaw-acp.prevSearchHit",
+        "title": "MaClaw: Previous Search Hit in Remote Preview",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "maclaw-acp.copyRemotePath",
+        "title": "MaClaw: Copy Remote Path",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "maclaw-acp.copyRemoteRelativePath",
+        "title": "MaClaw: Copy Remote Relative Path"
+      },
+      {
+        "command": "maclaw-acp.openRecentRemote",
+        "title": "MaClaw: Open Recent Remote File",
+        "icon": "$(history)"
+      },
+      {
+        "command": "maclaw-acp.clearAgentChanges",
+        "title": "MaClaw: Clear Agent Changes",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "maclaw-acp.exportAgentChanges",
+        "title": "MaClaw: Export Agent Changes",
+        "icon": "$(export)"
+      },
+      {
+        "command": "maclaw-acp.openAllAgentChanges",
+        "title": "MaClaw: Open All Agent Changed Files",
+        "icon": "$(files)"
+      },
+      {
+        "command": "maclaw-acp.diffAgentChange",
+        "title": "MaClaw: Diff Agent Change vs Local",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "maclaw-acp.refreshRemoteExplorer",
+        "title": "MaClaw: Refresh Remote Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "maclaw-acp.toggleRemoteDotfiles",
+        "title": "MaClaw: Toggle Hide Dotfiles in Remote Explorer",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "maclaw-acp.filterRemoteExplorer",
+        "title": "MaClaw: Filter Remote Explorer by Name",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "maclaw-acp.refreshRemoteExplorerDir",
+        "title": "MaClaw: Refresh This Remote Folder",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "maclaw-acp.searchInRemoteDir",
+        "title": "MaClaw: Search in This Remote Folder",
+        "icon": "$(search)"
       }
     ],
+    "keybindings": [
+      {
+        "command": "maclaw-acp.nextSearchHit",
+        "key": "f4",
+        "when": "resourceScheme == maclaw-remote"
+      },
+      {
+        "command": "maclaw-acp.prevSearchHit",
+        "key": "shift+f4",
+        "when": "resourceScheme == maclaw-remote"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "maclaw-acp.refreshActiveRemotePreview",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.diffRemoteWithLocal",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.findInRemotePreview",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.nextSearchHit",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.prevSearchHit",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.copyRemotePath",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "maclaw-acp.copyRemotePath",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "1_cutcopypaste"
+        },
+        {
+          "command": "maclaw-acp.copyRemoteRelativePath",
+          "when": "resourceScheme == maclaw-remote",
+          "group": "1_cutcopypaste"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "maclaw-acp.searchRemote",
+          "when": "view == maclaw-acp.searchResults",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.exportSearchResults",
+          "when": "view == maclaw-acp.searchResults",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.clearSearchResults",
+          "when": "view == maclaw-acp.searchResults",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.openRecentRemote",
+          "when": "view == maclaw-acp.searchResults",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.openAllAgentChanges",
+          "when": "view == maclaw-acp.agentChanges",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.exportAgentChanges",
+          "when": "view == maclaw-acp.agentChanges",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.clearAgentChanges",
+          "when": "view == maclaw-acp.agentChanges",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.refreshRemoteExplorer",
+          "when": "view == maclaw-acp.remoteExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.toggleRemoteDotfiles",
+          "when": "view == maclaw-acp.remoteExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.filterRemoteExplorer",
+          "when": "view == maclaw-acp.remoteExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.searchRemote",
+          "when": "view == maclaw-acp.remoteExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "maclaw-acp.listRemoteWorkDir",
+          "when": "view == maclaw-acp.remoteExplorer",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "maclaw-acp.diffAgentChange",
+          "when": "view == maclaw-acp.agentChanges && viewItem == agentChange",
+          "group": "inline"
+        },
+        {
+          "command": "maclaw-acp.refreshRemoteExplorerDir",
+          "when": "view == maclaw-acp.remoteExplorer && viewItem == remoteDir",
+          "group": "inline"
+        },
+        {
+          "command": "maclaw-acp.searchInRemoteDir",
+          "when": "view == maclaw-acp.remoteExplorer && viewItem == remoteDir",
+          "group": "inline"
+        }
+      ]
+    },
     "configuration": {
       "title": "MaClaw ACP",
       "properties": {
@@ -84,6 +368,11 @@
           "type": "string",
           "default": "",
           "description": "Path to the maclaw-acp-bridge executable. Empty = auto-resolve from MACLAW_ACP_BRIDGE, <maclaw data dir>/bin, or PATH."
+        },
+        "maclaw-acp.remoteExplorer.hideDotfiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide files and folders whose names start with '.' in the Remote Explorer tree (.git, .env, …)."
         }
       }
     }

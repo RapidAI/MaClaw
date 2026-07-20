@@ -15,6 +15,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 import { SidebarNavRail } from '../SidebarNavRail';
 import { GetHubUserRanking } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../../wailsjs/runtime';
+import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 
 beforeEach(() => {
     vi.mocked(BrowserOpenURL).mockClear();
@@ -54,20 +55,20 @@ describe('SidebarNavRail favorite employees', () => {
     it('hides the apps entry by default', () => {
         renderRail();
 
-        expect(screen.queryByTitle('Apps')).toBeNull();
+        expect(screen.queryByTitle(miniAppLabels.short.en)).toBeNull();
     });
 
     it('hides the apps entry when disabled', () => {
         renderRail({ showAppEntry: false });
 
-        expect(screen.queryByTitle('Apps')).toBeNull();
+        expect(screen.queryByTitle(miniAppLabels.short.en)).toBeNull();
         expect(screen.getByTestId('fav-ve-ve-1')).toBeTruthy();
     });
 
     it('shows the apps entry when enabled', () => {
         renderRail({ showAppEntry: true });
 
-        expect(screen.getByTitle('Apps')).toBeTruthy();
+        expect(screen.getByTitle(miniAppLabels.short.en)).toBeTruthy();
     });
 
     it('renders AI assistant icon badge markup for theme contrast tokens', () => {

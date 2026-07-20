@@ -148,14 +148,25 @@ func TestProjectTabWorkDir_InvalidDirectoryFailsClosed(t *testing.T) {
 
 func TestProjectTabWorkDir_RepairsManagedRecentTaskWorkspace(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.stopMemoryPipelineSchedule("test-cleanup")
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	})
 	projectPath := filepath.Join(app.GetDataDir(), "tasks", "missing-task")
+	wantWS := filepath.Join(projectPath, "workspace")
 	h := &IMMessageHandler{app: app}
 
-	if got := h.projectTabWorkDirForOwner(desktopUserID + ":" + projectPath); got != projectPath {
-		t.Fatalf("projectTabWorkDirForOwner() = %q, want repaired managed task path %q", got, projectPath)
+	// Managed tasks must execute under workspace/, not the task metadata root.
+	if got := h.projectTabWorkDirForOwner(desktopUserID + ":" + projectPath); got != wantWS {
+		t.Fatalf("projectTabWorkDirForOwner() = %q, want workspace %q", got, wantWS)
 	}
 	if info, err := os.Stat(projectPath); err != nil || !info.IsDir() {
-		t.Fatalf("managed task workspace was not repaired, info=%v err=%v", info, err)
+		t.Fatalf("managed task root was not repaired, info=%v err=%v", info, err)
+	}
+	if info, err := os.Stat(wantWS); err != nil || !info.IsDir() {
+		t.Fatalf("managed task workspace/ was not prepared, info=%v err=%v", info, err)
 	}
 }
 

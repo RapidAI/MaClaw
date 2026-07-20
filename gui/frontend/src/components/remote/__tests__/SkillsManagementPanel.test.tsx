@@ -63,6 +63,7 @@ import { SkillsManagementPanel, getLearnedSkillDescriptionPreview, hubSourceFilt
 import { getSkillSourceLabel, getSkillSourceTooltip } from '../SkillSourceBadge';
 import { DialogProvider } from '../../CustomDialog';
 import { ToastProvider } from '../../Toast';
+import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 
 const localizeText = (en: string, zhHans: string, _zhHant?: string) => zhHans || en;
 
@@ -209,7 +210,7 @@ describe('SkillsManagementPanel execution class', () => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getByRole('button', { name: /App \(1\)/ }));
+        fireEvent.click(screen.getByRole('button', { name: new RegExp(`${miniAppLabels.short.zhHans} \\(1\\)`) }));
 
         expect(screen.getByText('invoice_app')).toBeTruthy();
         expect(screen.queryByText('paper_digest')).toBeNull();
@@ -254,7 +255,7 @@ describe('SkillsManagementPanel execution class', () => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getByRole('button', { name: /App \(1\)/ }));
+        fireEvent.click(screen.getByRole('button', { name: new RegExp(`${miniAppLabels.short.zhHans} \\(1\\)`) }));
 
         expect(screen.getByText('invoice_app')).toBeTruthy();
         expect(screen.queryByText('paper_digest')).toBeNull();
@@ -297,7 +298,7 @@ describe('SkillsManagementPanel execution class', () => {
             expect(ListNLSkillsMock).toHaveBeenCalled();
         });
 
-        fireEvent.click(screen.getByRole('button', { name: /App \(1\)/ }));
+        fireEvent.click(screen.getByRole('button', { name: new RegExp(`${miniAppLabels.short.zhHans} \\(1\\)`) }));
 
         expect(screen.getByText('invoice_app')).toBeTruthy();
         expect(screen.queryByText('上传')).toBeNull();
@@ -407,7 +408,7 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText(/Invoice Review/)).toBeTruthy();
         expect(screen.getByText('finance')).toBeTruthy();
         expect(screen.getByText('pdf')).toBeTruthy();
-        expect(screen.getByTitle('MaClaw App Skill')).toBeTruthy();
+        expect(screen.getByTitle(miniAppLabels.skill.zhHans)).toBeTruthy();
     });
 
     it('marks MaClaw App Skill recommendations', async () => {
@@ -450,7 +451,7 @@ describe('SkillsManagementPanel execution class', () => {
         expect(screen.getByText('Invoice App')).toBeTruthy();
         expect(screen.getByText(/Invoice Review/)).toBeTruthy();
         expect(screen.getByText('pdf')).toBeTruthy();
-        expect(screen.getByTitle('MaClaw App Skill')).toBeTruthy();
+        expect(screen.getByTitle(miniAppLabels.skill.zhHans)).toBeTruthy();
     });
 });
 

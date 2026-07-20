@@ -1439,6 +1439,280 @@ func TestRemoteCodingSubAgentVerificationGateRequiresPostEditVerification(t *tes
 	}
 }
 
+func TestCountCodingWorkbenchStepOutcomes(t *testing.T) {
+	passed, failed, skipped := countCodingWorkbenchStepOutcomes([]codingWorkbenchStepStatus{
+		{Index: 1, Status: codingStepPassed},
+		{Index: 2, Status: codingStepFailed},
+		{Index: 3, Status: codingStepSkipped},
+		{Index: 4, Status: codingStepVerifyFail},
+		{Index: 5, Status: codingStepPending},
+		{Index: 6, Status: codingStepRunning},
+	})
+	if passed != 1 || failed != 2 || skipped != 1 {
+		t.Fatalf("got passed=%d failed=%d skipped=%d", passed, failed, skipped)
+	}
+}
+
+func TestFormatRemoteCodingPlanStatusText(t *testing.T) {
+	cases := []struct {
+		name                         string
+		planned                      bool
+		status                       string
+		total, passed, failed, skip  int
+		wantContains                 string
+	}{
+		{"full success", true, "success", 6, 6, 0, 0, "远程编程完成（已按 6 步计划执行）"},
+		{"partial success no fail", true, "success", 6, 2, 0, 0, "部分完成"},
+		{"failed mid plan", true, "failed", 6, 1, 1, 4, "未完成（通过 1/6，失败 1，跳过 4）"},
+		{"only skipped", true, "failed", 6, 0, 0, 6, "未完成（通过 0/6，失败 0，跳过 6）"},
+		{"unplanned success", false, "success", 0, 0, 0, 0, "远程编程完成"},
+		{"unplanned fail", false, "failed", 0, 0, 0, 0, "远程编程未完成"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatRemoteCodingPlanStatusText(tc.planned, tc.status, tc.total, tc.passed, tc.failed, tc.skip)
+			if !strings.Contains(got, tc.wantContains) {
+				t.Fatalf("got %q want substring %q", got, tc.wantContains)
+			}
+		})
+	}
+}
+
+func TestFormatRemoteCodingPlanIncompleteNote(t *testing.T) {
+	if note := formatRemoteCodingPlanIncompleteNote(6, 6, 0, 0); note != "" {
+		t.Fatalf("full complete should have empty note, got %q", note)
+	}
+	if note := formatRemoteCodingPlanIncompleteNote(0, 0, 0, 0); note != "" {
+		t.Fatalf("empty plan should have empty note, got %q", note)
+	}
+	note := formatRemoteCodingPlanIncompleteNote(6, 1, 1, 4)
+	if !strings.Contains(note, "失败") || !strings.Contains(note, "跳过") {
+		t.Fatalf("failed+skipped note: %q", note)
+	}
+	note = formatRemoteCodingPlanIncompleteNote(6, 0, 0, 3)
+	if !strings.Contains(note, "跳过") || strings.Contains(note, "失败步骤") {
+		t.Fatalf("skip-only note should not blame failure: %q", note)
+	}
+	note = formatRemoteCodingPlanIncompleteNote(6, 2, 0, 0)
+	if !strings.Contains(note, "未全部完成") {
+		t.Fatalf("partial without fail/skip should use lag note: %q", note)
+	}
+}
+
+func TestCodingPlanStepIsStructureScaffold(t *testing.T) {
+	cases := []struct {
+		name        string
+		title       string
+		description string
+		want        bool
+	}{
+		{"t2 chinese scaffold", "初始化C++项目结构", "创建 src/、include/、CMakeLists.txt", true},
+		{"build directory structure", "构建项目目录结构", "创建 include 与 src", true},
+		{"english scaffold", "Scaffold project layout", "mkdir src include", true},
+		{"weak init needs structure", "初始化项目", "创建 src/ 与 include/", true},
+		{"weak init without structure", "初始化数据库", "创建 schema 并写入种子数据", false},
+		{"weak setup server", "搭建服务器", "安装 nginx", false},
+		{"implement step", "实现系统信息查看程序", "编写 C++ 代码读取 /proc", false},
+		{"compile step", "编译项目", "cmake -B build && cmake --build build", false},
+		{"verify step", "运行并验证", "执行 ./build/sysinfo", false},
+		{"bare build title", "构建项目", "make all", false},
+		{"implement mixed", "初始化并实现功能", "写业务代码", false},
+		{"encoding mention still scaffold", "初始化项目结构", "注意源文件编码为 UTF-8", true},
+		{"empty", "", "", false},
+		{"no scaffold language", "准备工作", "确认目录可写", false},
+		{"structure verify title still scaffold", "初始化项目结构", "验证目录存在即可，不编译", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := codingPlanStepIsStructureScaffold(tc.title, tc.description)
+			if got != tc.want {
+				t.Fatalf("codingPlanStepIsStructureScaffold(%q, %q)=%v want %v", tc.title, tc.description, got, tc.want)
+			}
+		})
+	}
+
+	title, desc, ok := extractPlanStepFocusFromTaskText(`[Plan step T2/6] 初始化C++项目结构
+
+在 /home/sysinfo5 下创建项目结构：src/、include/、CMakeLists.txt。
+
+You are executing plan step T2/6: 初始化C++项目结构
+Focus on this step only; do not skip ahead.
+Do not implement, create files for, verify, or report on work that belongs to later plan steps.
+
+## Overall user request (context only — not a license to finish later steps)
+开发一个系统信息查看软件
+
+Plan outline (titles only; later steps are separate remote tasks — do not execute them now):
+- T1: 检查远程环境和工作目录
+- T2: 初始化C++项目结构  ← current (do only this)
+- T3: 实现系统信息查看程序
+- T4: 编译项目
+- T5: 运行并验证
+- T6: 汇总输出验收信息
+`)
+	if !ok || title != "初始化C++项目结构" {
+		t.Fatalf("extract title failed: ok=%v title=%q", ok, title)
+	}
+	if !strings.Contains(desc, "创建项目结构") {
+		t.Fatalf("extract description failed: %q", desc)
+	}
+	// Outline later-step titles must not pollute focus detection.
+	if strings.Contains(desc, "实现系统信息") || strings.Contains(desc, "编译项目") {
+		t.Fatalf("description must not include later-step outline: %q", desc)
+	}
+	if !codingPlanStepIsStructureScaffold(title, desc) {
+		t.Fatal("extracted T2 focus should be scaffold")
+	}
+	// Free-form tasks without plan header keep full gates (no extract).
+	if _, _, ok := extractPlanStepFocusFromTaskText("create project structure and implement fully"); ok {
+		t.Fatal("free-form text should not parse as plan step")
+	}
+}
+
+func TestMaybeRelaxScaffoldVerificationOnlyMissing(t *testing.T) {
+	st, sum := maybeRelaxScaffoldVerification("初始化项目结构", "mkdir src", codingSubAgentQualityMissing, "no verify")
+	if st != codingSubAgentQualityNotNeeded || !strings.Contains(sum, "scaffold") {
+		t.Fatalf("missing scaffold should relax, got %v %q", st, sum)
+	}
+	st, sum = maybeRelaxScaffoldVerification("初始化项目结构", "mkdir src", codingSubAgentQualityFailed, "build failed")
+	if st != codingSubAgentQualityFailed || sum != "build failed" {
+		t.Fatalf("failed verification must not relax, got %v %q", st, sum)
+	}
+	st, sum = maybeRelaxScaffoldVerification("实现功能", "写代码", codingSubAgentQualityMissing, "no verify")
+	if st != codingSubAgentQualityMissing || sum != "no verify" {
+		t.Fatalf("implement step must not relax, got %v %q", st, sum)
+	}
+}
+
+func TestResolveCodingPlanStepFocusPrefersPlanHeader(t *testing.T) {
+	full := `[Plan step T2/6] 初始化C++项目结构
+
+创建 src/ include/
+
+You are executing plan step T2/6: 初始化C++项目结构
+Plan outline:
+- T3: 实现系统信息查看程序
+`
+	title, desc := resolveCodingPlanStepFocus("ignored", "ignored desc", full)
+	if title != "初始化C++项目结构" {
+		t.Fatalf("title=%q", title)
+	}
+	if !strings.Contains(desc, "创建 src/") || strings.Contains(desc, "实现系统信息") {
+		t.Fatalf("desc=%q", desc)
+	}
+	// Without plan header, fall back to explicit fields.
+	title, desc = resolveCodingPlanStepFocus("本地标题", "本地描述", "free form task")
+	if title != "本地标题" || desc != "本地描述" {
+		t.Fatalf("fallback title=%q desc=%q", title, desc)
+	}
+}
+
+func TestRemoteScaffoldPlanStepDoesNotRequireBuildVerification(t *testing.T) {
+	// Mirrors the sysinfo5 T2 failure: created skeleton files + post-edit re-read,
+	// but intentionally skipped compile because stubs are incomplete until T3.
+	taskText := `[Plan step T2/6] 初始化C++项目结构
+
+在 /home/sysinfo5 下创建项目结构：src/、include/、CMakeLists.txt（或 Makefile）、main.cpp。
+
+You are executing plan step T2/6: 初始化C++项目结构
+Focus on this step only; do not skip ahead.
+Do not implement, create files for, verify, or report on work that belongs to later plan steps.
+
+## Overall user request (context only — not a license to finish later steps)
+开发一个系统信息查看软件
+
+Plan outline (titles only; later steps are separate remote tasks — do not execute them now):
+- T2: 初始化C++项目结构  ← current (do only this)
+- T3: 实现系统信息查看程序
+- T4: 编译项目
+`
+	cb := &remoteCodingCallbacks{task: taskText}
+	cb.trackRemoteFileChanged("/home/sysinfo5/CMakeLists.txt", true)
+	cb.trackRemoteFileChanged("/home/sysinfo5/src/main.cpp", true)
+	cb.trackRemoteFileChanged("/home/sysinfo5/include/sysinfo.h", true)
+	cb.trackRemoteFileRead("/home/sysinfo5/CMakeLists.txt")
+	cb.trackRemoteFileRead("/home/sysinfo5/src/main.cpp")
+	cb.trackRemoteFileRead("/home/sysinfo5/include/sysinfo.h")
+	cb.trackRemoteCommand("ls -la /home/sysinfo5", "/home/sysinfo5", "CMakeLists.txt include src", true)
+	cb.trackRemoteCommand("git status --short; git diff --stat", "/home/sysinfo5", "fatal: not a git repository", false)
+
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "T2 scaffold complete; waiting for T3",
+		ToolCalls: 8,
+	})
+	if result.Status != "success" || result.Error != "" {
+		t.Fatalf("scaffold plan step without build should pass, got %#v", result)
+	}
+	if !strings.Contains(result.Summary, "验证状态") || !strings.Contains(result.Summary, "NOT_NEEDED") {
+		t.Fatalf("expected scaffold verification NOT_NEEDED, got summary:\n%s", result.Summary)
+	}
+
+	// Implement plan step still requires build/test verification.
+	implTask := `[Plan step T3/6] 实现系统信息查看程序
+
+编写 C++ 代码实现读取 /proc 并打印主机名、CPU、内存。
+
+You are executing plan step T3/6: 实现系统信息查看程序
+Focus on this step only; do not skip ahead.
+`
+	cb = &remoteCodingCallbacks{task: implTask}
+	cb.trackRemoteFileRead("/home/sysinfo5/src/main.cpp") // explore before edit
+	cb.trackRemoteFileChanged("/home/sysinfo5/src/main.cpp", false)
+	cb.trackRemoteFileRead("/home/sysinfo5/src/main.cpp") // post-edit confirm
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "implemented",
+		ToolCalls: 3,
+	})
+	if result.Status != "failed" {
+		t.Fatalf("implement step without verification must still fail, got %#v", result)
+	}
+	if !strings.Contains(result.Error, "verification") && !strings.Contains(result.Error, "test/build") && !strings.Contains(result.Summary, "MISSING") {
+		t.Fatalf("implement step should fail on verification gate, got %#v", result)
+	}
+
+	// Scaffold without post-edit re-read still fails confirmation.
+	cb = &remoteCodingCallbacks{task: taskText}
+	cb.trackRemoteFileChanged("/home/sysinfo5/src/main.cpp", true)
+	result = cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "wrote files",
+		ToolCalls: 1,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Summary, "## 确认状态") {
+		t.Fatalf("scaffold without post-edit read must fail confirmation, got %#v", result)
+	}
+}
+
+func TestRemoteAcceptStepWithExecutableRunPassesNoChangeGate(t *testing.T) {
+	// Mirrors sysinfo6 T5: verify-only step runs ./sysinfo + tree, no file writes.
+	taskText := `[Plan step T5/5] 验收并输出结果
+
+运行 ./sysinfo 捕获输出，同时用 tree 展示项目结构。
+
+You are executing plan step T5/5: 验收并输出结果
+Focus on this step only; do not skip ahead.
+`
+	cb := &remoteCodingCallbacks{task: taskText}
+	cb.trackRemoteCommand("cd /home/sysinfo6 && ./sysinfo", "/home/sysinfo6",
+		"Kernel / OS Information\nCPU Information\nMemory & Load\n", true)
+	cb.trackRemoteCommand("tree /home/sysinfo6 2>/dev/null || ls -R /home/sysinfo6", "/home/sysinfo6",
+		"/home/sysinfo6\nCMakeLists.txt\nsrc/main.cpp\nsysinfo\n", true)
+
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "验收通过 — 程序输出完整系统信息",
+		ToolCalls: 2,
+	})
+	if result.Status != "success" || result.Error != "" {
+		t.Fatalf("acceptance step with ./sysinfo should pass, got %#v", result)
+	}
+	if strings.Contains(result.Summary, "无改动证据") && strings.Contains(result.Summary, "FAILED") {
+		t.Fatalf("no-change evidence must not FAIL after acceptance run:\n%s", result.Summary)
+	}
+}
+
 func TestRemoteCodingSubAgentNoChangeRequiresInspectionEvidence(t *testing.T) {
 	cb := &remoteCodingCallbacks{}
 	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
@@ -2006,6 +2280,13 @@ func TestSubAgentCommandSummarySoftensNonGitDiffSelfCheckFailure(t *testing.T) {
 	})
 	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "skipped diff self-check") || strings.Contains(summary, "failed") {
 		t.Fatalf("non-git diff self-check command should not be summarized as failed, got (%q, %q)", status, summary)
+	}
+
+	status, summary = summarizeSubAgentCommands([]CodingSubAgentCommandResult{
+		{Command: "ls -la /home/sysinfo3", Succeeded: false, Summary: "-bash: cd: /home/sysinfo3: No such file or directory\nEXIT: 1"},
+	})
+	if status != codingSubAgentQualityPassed || !strings.Contains(summary, "soft missing-path probe") || strings.Contains(summary, "failed") {
+		t.Fatalf("missing-path env probe should summarize as soft, not failed, got (%q, %q)", status, summary)
 	}
 
 	failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{
@@ -6865,6 +7146,48 @@ func TestSummarizeSubAgentNoChangeEvidence(t *testing.T) {
 		t.Fatalf("successful verification evidence should satisfy no-change task, got %q", warning)
 	}
 
+	// T5 acceptance: run built binary + list tree without writing files.
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{
+		{Command: "cd /home/sysinfo6 && ./sysinfo", Succeeded: true, Summary: "Kernel / OS Information\nCPU Information\n"},
+		{Command: "tree /home/sysinfo6 2>/dev/null || ls -R /home/sysinfo6", Succeeded: true, Summary: "/home/sysinfo6\nCMakeLists.txt\nsrc\n"},
+	}, nil)
+	if warning != "" {
+		t.Fatalf("successful ./sysinfo acceptance run should satisfy no-change evidence, got %q", warning)
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{
+		{Command: "python3 main.py", Succeeded: true, Summary: "hello from app\n"},
+	}, nil)
+	if warning != "" {
+		t.Fatalf("python3 main.py acceptance run should satisfy no-change evidence, got %q", warning)
+	}
+
+	if !isSubAgentVerificationCommand("./sysinfo") || !isSubAgentVerificationCommand("cd /tmp && ./build/app") {
+		t.Fatal("project-relative executable runs should count as verification commands")
+	}
+	if isSubAgentVerificationCommand("/bin/rm -rf /tmp/x") || isSubAgentVerificationCommand("/usr/bin/ls") {
+		t.Fatal("system absolute binaries must not count as verification")
+	}
+	if isSubAgentVerificationCommand("/home/sysinfo6/sysinfo") {
+		// Prefer `./sysinfo` after cd; absolute home paths are not auto-acceptance.
+		t.Fatal("absolute non-runner project paths should not auto-count (use ./sysinfo)")
+	}
+	if isSubAgentVerificationCommand("./vendor/bin/php-cs-fixer fix") {
+		t.Fatal("mutating path executable subcommand must not count as verification")
+	}
+	if isSubAgentVerificationCommand("./vendor/bin/phpunit --list-groups") {
+		t.Fatal("list-only path runner must not count as verification")
+	}
+	if !isSubAgentVerificationCommand("./vendor/bin/phpunit") {
+		t.Fatal("vendor/bin/phpunit should still count as verification")
+	}
+	if !isSubAgentVerificationCommand("vendor/bin/phpunit") {
+		t.Fatal("bare vendor/bin/phpunit should count via basename runner rules")
+	}
+	if !subAgentInspectionProbeCommand("tree /home/sysinfo6") {
+		t.Fatal("tree should count as inspection probe")
+	}
+
 	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, nil, []CodingSubAgentDynamicToolResult{{Tool: "call_mcp_tool", Name: "browser/screenshot", Succeeded: true, Summary: "captured screenshot"}})
 	if warning != "" {
 		t.Fatalf("successful inspection dynamic tool should satisfy no-change task, got %q", warning)
@@ -6936,6 +7259,205 @@ func TestSummarizeSubAgentNoChangeEvidence(t *testing.T) {
 	warning = summarizeSubAgentNoChangeEvidence([]string{"src/a.go"}, nil, nil, nil, nil, nil)
 	if warning != "" {
 		t.Fatalf("changed task should not use no-change evidence warning, got %q", warning)
+	}
+
+	// Remote env-check steps often only run version probes / ls without file edits.
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:   `g++ --version 2>&1; echo "---"; cmake --version 2>&1; echo "---"; make --version 2>&1`,
+		Succeeded: true,
+		Summary:   "g++ (Ubuntu 9.4.0) 9.4.0\ncmake version 3.31.11\nGNU Make 4.1",
+	}}, nil)
+	if warning != "" {
+		t.Fatalf("successful toolchain version probe should satisfy no-change inspection evidence, got %q", warning)
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:   "ls -la /home/sysinfo3 2>&1; echo \"---EXIT_CODE:$?\"",
+		Succeeded: false,
+		Summary:   "-bash: cd: /home/sysinfo3: No such file or directory\nEXIT: 1",
+	}}, nil)
+	if warning != "" {
+		t.Fatalf("soft missing-path ls probe should satisfy no-change inspection evidence, got %q", warning)
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:   "ls -la /home 2>&1",
+		Succeeded: true,
+		Summary:   "total 44\ndrwxr-xr-x 10 root root 4096 Jul 19 13:22 .\ndrwxr-xr-x  3 root root 4096 Jul 16 04:39 sysinfo",
+	}}, nil)
+	if warning != "" {
+		t.Fatalf("successful ls inspection probe should satisfy no-change inspection evidence, got %q", warning)
+	}
+
+	// Anti-loophole: echo-only / empty probes must not clear the no-change gate.
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:   `echo "done"`,
+		Succeeded: true,
+		Summary:   "done",
+	}}, nil)
+	if warning == "" {
+		t.Fatalf("echo-only command must not satisfy no-change inspection evidence")
+	}
+
+	warning = summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:   "true",
+		Succeeded: true,
+		Summary:   "",
+	}}, nil)
+	if warning == "" {
+		t.Fatalf("true no-op must not satisfy no-change inspection evidence")
+	}
+}
+
+func TestSoftInspectionProbeFailureIsNotUnresolved(t *testing.T) {
+	failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "ls -la /home/sysinfo3 2>&1; echo \"---EXIT_CODE:$?\"",
+		Succeeded: false,
+		Summary:   "-bash: cd: /home/sysinfo3: No such file or directory\nEXIT: 1",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("missing-path env probe must not block step progression, got %#v", failed)
+	}
+
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "g++ -o app main.cpp",
+		Succeeded: false,
+		Summary:   "main.cpp:1:1: error: fatal error\nEXIT: 1",
+	}})
+	if len(failed) != 1 {
+		t.Fatalf("hard compile failure must remain unresolved, got %#v", failed)
+	}
+
+	// Toolchain probe failure is diagnostic-resolvable only after later verify,
+	// not a soft missing-path probe.
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "g++ --version 2>&1",
+		Succeeded: false,
+		Summary:   "bash: g++: command not found\nEXIT: 127",
+	}})
+	if len(failed) != 1 {
+		t.Fatalf("missing toolchain must remain unresolved without later verification, got %#v", failed)
+	}
+
+	// Workdir missing: ssh_bash cds first, so even version probes fail with cd error.
+	// That is a soft env finding (project not created yet), not a hard task failure.
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:    `g++ --version 2>&1`,
+		WorkingDir: "/home/sysinfo3",
+		Succeeded:  false,
+		Summary:    "-bash: cd: /home/sysinfo3: No such file or directory\nEXIT: 1",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("cd-into-missing-workdir for a diagnostic probe must be soft, got %#v", failed)
+	}
+	if !subAgentCommandIsSoftInspectionProbeFailure(CodingSubAgentCommandResult{
+		Command:   `g++ --version 2>&1`,
+		Succeeded: false,
+		Summary:   "-bash: cd: /home/sysinfo3: No such file or directory\nEXIT: 1",
+	}) {
+		t.Fatal("expected soft inspection failure for workdir cd error on version probe")
+	}
+
+	// Permission failures on path probes stay hard.
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "ls -la /root/secret",
+		Succeeded: false,
+		Summary:   "ls: cannot open directory '/root/secret': Permission denied\nEXIT: 2",
+	}})
+	if len(failed) != 1 {
+		t.Fatalf("permission denied path probe must remain unresolved, got %#v", failed)
+	}
+}
+
+func TestMissingWorkdirCdFailureCountsAsNoChangeEvidence(t *testing.T) {
+	warning := summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:    `cmake --version`,
+		WorkingDir: "/home/new-project",
+		Succeeded:  false,
+		Summary:    "-bash: cd: /home/new-project: No such file or directory\nEXIT: 1",
+	}}, nil)
+	if warning != "" {
+		t.Fatalf("workdir-cd failure on diagnostic probe should satisfy no-change evidence, got %q", warning)
+	}
+}
+
+func TestSilentExistenceTestFailureIsSoft(t *testing.T) {
+	// Unix `test -d` fails with empty stdout when the path is missing.
+	failed := unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "test -d /home/sysinfo3",
+		Succeeded: false,
+		Summary:   "EXIT: 1",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("silent test -d failure must be soft, got %#v", failed)
+	}
+
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "[ -f /home/sysinfo3/main.cpp ]",
+		Succeeded: false,
+		Summary:   "",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("silent [ -f ] failure must be soft, got %#v", failed)
+	}
+
+	// Remote ssh_bash wraps the probe in a large script dump; still soft.
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   "test -d /home/sysinfo3",
+		Succeeded: false,
+		Summary:   "[ssh_root@host:22_1] 状态: running\n$ cd '/tmp/wt'\nsh -lc 'test -d /home/sysinfo3'\nEXIT: 1\n(base) root@host:~# ",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("wrapped remote test -d failure must be soft, got %#v", failed)
+	}
+
+	// Non-existence string tests stay hard (not path-existence probes).
+	failed = unresolvedFailedSubAgentCommands([]CodingSubAgentCommandResult{{
+		Command:   `test -n "$FOO"`,
+		Succeeded: false,
+		Summary:   "",
+	}})
+	if len(failed) != 1 {
+		t.Fatalf("string test failure must remain unresolved, got %#v", failed)
+	}
+
+	warning := summarizeSubAgentNoChangeEvidence(nil, nil, nil, nil, []CodingSubAgentCommandResult{{
+		Command:   "test -d /home/sysinfo3",
+		Succeeded: false,
+		Summary:   "",
+	}}, nil)
+	if warning != "" {
+		t.Fatalf("silent existence test should satisfy no-change evidence, got %q", warning)
+	}
+}
+
+func TestRemoteEnvCheckStepPassesNoChangeQualityGate(t *testing.T) {
+	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: "/tmp/maclaw-wt-1"}}
+	// First probe intentionally targets a not-yet-created project path.
+	cb.trackRemoteCommand(
+		`ls -la /home/sysinfo3 2>&1; echo "---EXIT_CODE:$?"`,
+		"/home/sysinfo3",
+		"-bash: cd: /home/sysinfo3: No such file or directory\nEXIT: 1",
+		false,
+	)
+	cb.trackRemoteCommand(
+		`g++ --version 2>&1; echo "---"; cmake --version 2>&1; echo "---"; make --version 2>&1`,
+		"/tmp",
+		"g++ (Ubuntu 9.4.0) 9.4.0\ncmake version 3.31.11\nGNU Make 4.1\nEXIT: 0",
+		true,
+	)
+	cb.trackRemoteCommand("ls -la /home 2>&1", "/tmp/maclaw-wt-1", "total 44\ndrwxr-xr-x 3 root root 4096 sysinfo\nEXIT: 0", true)
+
+	result := cb.applyRemoteVerificationOutcome(&RemoteCodingSubAgentResult{
+		Status:    "success",
+		Summary:   "## ✅ 步骤 T1/5 完成 — 远端环境与目录检查报告\n目录不存在，可安全创建。g++/cmake/make 可用。",
+		ToolCalls: 3,
+	})
+	if result.Status != "success" {
+		t.Fatalf("remote env-check step should pass and advance to next plan step, got status=%q error=%q summary=%q", result.Status, result.Error, result.Summary)
+	}
+	if strings.Contains(result.Summary, "no file changes and no inspection or verification evidence") {
+		t.Fatalf("env-check evidence must clear no-change gate, summary=%q", result.Summary)
 	}
 }
 

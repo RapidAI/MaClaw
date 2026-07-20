@@ -1402,8 +1402,15 @@ func maclawAppTestProtocolReviewIssue(governance map[string]any, appPath string)
 		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.testProtocolFingerprint", Severity: "error", Message: "run evidence is not linked to a test protocol fingerprint", Suggestion: "store the test protocol fingerprint produced by the App Studio test run"}
 	}
 	protocolFingerprint := strings.TrimSpace(maclawAppStringValue(protocol, "fingerprint", "hash", "testProtocolFingerprint", "test_protocol_fingerprint", "protocolFingerprint", "protocol_fingerprint"))
-	computed := firstNonEmptyMaclawAppString(protocolFingerprint, maclawAppTestProtocolFingerprint(protocol))
-	if computed != "" && fingerprint != computed {
+	// The evidence fingerprint must match either the recomputed protocol
+	// fingerprint (proof the evidence ran this exact protocol) or the declared
+	// stamp carried inside the protocol (opaque stamps from external tooling
+	// that this recompute cannot reproduce). maclawAppTestProtocolFingerprint
+	// strips the stamp keys before hashing, so a deleted stamp can no longer
+	// short-circuit the check, and a stamp that matches neither value means
+	// the protocol was edited after the run.
+	recomputed := maclawAppTestProtocolFingerprint(protocol)
+	if recomputed != "" && fingerprint != recomputed && fingerprint != protocolFingerprint {
 		return &maclawAppReviewIssue{Path: appPath + ".governance.testEvidence.testProtocolFingerprint", Severity: "error", Message: "run evidence test protocol fingerprint does not match the current test protocol", Suggestion: "rerun the app test after editing the test protocol"}
 	}
 	return nil
@@ -1452,9 +1459,21 @@ func maclawAppDefinitionHashReviewIssue(entry parsedMaclawAppEntry, governance m
 }
 
 func maclawAppDefinitionFingerprintForEntry(entry parsedMaclawAppEntry) string {
+	payload := maclawAppDefinitionFingerprintPayloadForEntry(entry)
+	if payload == nil {
+		return ""
+	}
+	encoded, err := maclawAppStableJSON(payload)
+	if err != nil {
+		return ""
+	}
+	return maclawAppFNV1aTextHash(encoded)
+}
+
+func maclawAppDefinitionFingerprintPayloadForEntry(entry parsedMaclawAppEntry) map[string]any {
 	app := entry.App
 	if app == nil {
-		return ""
+		return nil
 	}
 	binding := anyMap(app["binding"])
 	runtimeManifest := map[string]any{
@@ -1505,11 +1524,7 @@ func maclawAppDefinitionFingerprintForEntry(entry parsedMaclawAppEntry) string {
 	if icon := strings.TrimSpace(maclawAppStringValue(app, "customIconDataUrl", "custom_icon_data_url")); icon != "" {
 		payload["customIconDataUrl"] = icon
 	}
-	encoded, err := maclawAppStableJSON(payload)
-	if err != nil {
-		return ""
-	}
-	return maclawAppFNV1aTextHash(encoded)
+	return payload
 }
 
 func maclawAppWorkspaceLayoutEvidenceReviewIssue(entry parsedMaclawAppEntry, governance map[string]any, appPath string) *maclawAppReviewIssue {

@@ -250,34 +250,50 @@ func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {
 	return projectPathFromUserID(ownerID)
 }
 
-// projectTabWorkDir returns the validated projectPath from the current session's
-// synthesized userID. If the path doesn't exist as a directory, falls back to
-// the user's home directory. Returns empty string if not in a Project Tab context.
+// projectTabWorkDir returns the execution working directory for the current
+// Project Tab session owner (task workspace/ or bound project path).
+// Returns empty string if not in a Project Tab context (local desktop tab).
 func (h *IMMessageHandler) projectTabWorkDir() string {
 	return h.projectTabWorkDirForOwner(h.currentRuntimeOrLegacyPolicyOwnerID())
 }
 
 func (h *IMMessageHandler) projectTabWorkDirForOwner(ownerID string) string {
 	rawProjectPath := projectPathFromUserID(ownerID)
-	if rawProjectPath != "" && h != nil && h.app != nil && h.app.isManagedRecentTaskWorkspacePath(rawProjectPath) {
-		if info, err := os.Stat(rawProjectPath); err != nil || !info.IsDir() {
-			if h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath) {
-				return rawProjectPath
-			}
-		}
-	}
-	if rawProjectPath != "" && h == nil {
-		return rawProjectPath
-	}
-	projectPath := h.executionProjectPathForOwner(ownerID)
-	if projectPath == "" {
+	if rawProjectPath == "" {
 		return ""
 	}
-	// Validate that the projectPath exists as a directory.
-	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
-		return projectPath
+	if h == nil {
+		return rawProjectPath
 	}
-	if h.ensureRecentTaskWorkspaceForProjectPath(projectPath) {
+
+	// Managed tasks (…/data/tasks/<slug>-<id>): tools must run in workspace/ (or
+	// a custom working_dir tag), never the metadata root that only holds task.md.
+	if h.app != nil && h.app.isManagedRecentTaskWorkspacePath(rawProjectPath) {
+		if info, err := os.Stat(rawProjectPath); err != nil || !info.IsDir() {
+			_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
+		}
+		exec := h.executionProjectPathForOwner(ownerID)
+		if exec == "" {
+			exec = filepath.Join(rawProjectPath, "workspace")
+		}
+		if info, err := os.Stat(exec); err == nil && info.IsDir() {
+			return exec
+		}
+		// Create workspace/ (and task.md) then re-check.
+		_ = h.ensureRecentTaskWorkspaceForProjectPath(rawProjectPath)
+		if info, err := os.Stat(exec); err == nil && info.IsDir() {
+			return exec
+		}
+		log.Printf("[projectTabWorkDir] managed task exec path missing owner=%q task=%q exec=%q", ownerID, rawProjectPath, exec)
+		return exec
+	}
+
+	// Non-managed project tab: prefer execution path, else raw project path.
+	projectPath := h.executionProjectPathForOwner(ownerID)
+	if projectPath == "" {
+		projectPath = rawProjectPath
+	}
+	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
 		return projectPath
 	}
 	// Project-tab owners are isolation boundaries. Never fall back to home or
@@ -294,18 +310,28 @@ func (h *IMMessageHandler) ensureRecentTaskWorkspaceForProjectPath(projectPath s
 	if h == nil || h.app == nil || !h.app.isManagedRecentTaskWorkspacePath(projectPath) {
 		return false
 	}
-	if err := os.MkdirAll(projectPath, 0o755); err != nil {
-		log.Printf("[projectTabWorkDir] repair managed task workspace failed path=%q err=%v", projectPath, err)
+	// If caller passed workspace/ subdir, repair the task root (parent).
+	taskRoot := projectPath
+	if base := filepath.Base(projectPath); strings.EqualFold(base, "workspace") {
+		if parent := filepath.Dir(projectPath); h.app.isManagedRecentTaskWorkspacePath(parent) {
+			taskRoot = parent
+		}
+	}
+	if err := os.MkdirAll(taskRoot, 0o755); err != nil {
+		log.Printf("[projectTabWorkDir] repair managed task workspace failed path=%q err=%v", taskRoot, err)
 		return false
 	}
-	taskFile := filepath.Join(projectPath, "task.md")
+	if err := ensureManagedTaskWorkspaceDir(taskRoot, lastPathComponent(taskRoot), ""); err != nil {
+		log.Printf("[projectTabWorkDir] prepare workspace/ failed path=%q err=%v", taskRoot, err)
+	}
+	taskFile := filepath.Join(taskRoot, "task.md")
 	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
-		content := fmt.Sprintf("# %s\n\nRecovered task workspace.\nProject path: %s\n", lastPathComponent(projectPath), projectPath)
+		content := fmt.Sprintf("# %s\n\nRecovered task workspace.\nProject path: %s\n", lastPathComponent(taskRoot), taskRoot)
 		if writeErr := os.WriteFile(taskFile, []byte(content), 0o644); writeErr != nil {
 			log.Printf("[projectTabWorkDir] repair managed task task.md failed path=%q err=%v", taskFile, writeErr)
 		}
 	}
-	log.Printf("[projectTabWorkDir] repaired managed task workspace path=%q", projectPath)
+	log.Printf("[projectTabWorkDir] repaired managed task workspace path=%q", taskRoot)
 	return true
 }
 

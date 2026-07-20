@@ -614,6 +614,70 @@ func formatCodingStepsChecklist(steps []codingWorkbenchStepStatus) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// countCodingWorkbenchStepOutcomes tallies passed / failed / skipped plan steps
+// for final remote/local pure-coding status banners.
+func countCodingWorkbenchStepOutcomes(steps []codingWorkbenchStepStatus) (passed, failed, skipped int) {
+	for _, st := range steps {
+		switch st.Status {
+		case codingStepPassed:
+			passed++
+		case codingStepFailed, codingStepVerifyFail:
+			failed++
+		case codingStepSkipped:
+			skipped++
+		}
+	}
+	return passed, failed, skipped
+}
+
+// formatRemoteCodingPlanStatusText builds the short status banner for a remote
+// multi-step pure-coding turn. Pure helper so unit tests do not need IM handler state.
+func formatRemoteCodingPlanStatusText(planned bool, resultStatus string, totalSteps, passed, failed, skipped int) string {
+	if !planned {
+		if resultStatus != "success" {
+			return "远程编程未完成"
+		}
+		return "远程编程完成"
+	}
+	if totalSteps < 0 {
+		totalSteps = 0
+	}
+	switch {
+	case resultStatus == "success" && totalSteps > 0 && passed >= totalSteps && failed == 0 && skipped == 0:
+		return fmt.Sprintf("远程编程完成（已按 %d 步计划执行）", totalSteps)
+	case passed > 0 && resultStatus == "success" && failed == 0 && skipped == 0:
+		return fmt.Sprintf("远程编程部分完成（%d/%d 步通过）", passed, totalSteps)
+	case passed > 0 || failed > 0 || skipped > 0:
+		return fmt.Sprintf("远程编程未完成（通过 %d/%d，失败 %d，跳过 %d）", passed, totalSteps, failed, skipped)
+	default:
+		return "远程编程未完成"
+	}
+}
+
+// formatRemoteCodingPlanIncompleteNote explains why later plan steps did not run.
+// Empty when the plan fully completed (or there was nothing left to run).
+func formatRemoteCodingPlanIncompleteNote(totalSteps, passed, failed, skipped int) string {
+	// Fully done, or no failure/skip and no remaining steps to count.
+	if failed == 0 && skipped == 0 && (totalSteps <= 0 || passed >= totalSteps) {
+		return ""
+	}
+	switch {
+	case failed > 0 && skipped > 0:
+		return "说明：多步计划在失败步骤处停止，后续步骤已被跳过，不会自动继续。" +
+			"修复后请重新发起任务，或明确指令从失败后的下一步继续。"
+	case failed > 0:
+		return "说明：多步计划在失败步骤处停止，不会自动继续。" +
+			"修复后请重新发起任务，或明确指令从失败后的下一步继续。"
+	case skipped > 0:
+		return "说明：部分计划步骤被跳过，不会自动继续。" +
+			"请重新发起任务或明确指令从剩余步骤继续。"
+	default:
+		// e.g. success/status lag: some steps passed, none failed/skipped, but count < total.
+		return "说明：多步计划未全部完成，不会自动继续剩余步骤。" +
+			"请重新发起任务或明确指令继续执行。"
+	}
+}
+
 // saveStickyCodingCheckpoint captures a restore point for the pure-coding session.
 // Also best-effort captures text file content for later disk restore (capped).
 // Previous current checkpoint is archived into CheckpointHistoryJSON (ring).

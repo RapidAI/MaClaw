@@ -36,6 +36,7 @@ import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
 import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
 import { translations } from './i18n/appTranslations';
+import { miniAppLabels, pickMiniAppLabel } from './i18n/maclawMiniAppLabels';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
@@ -2985,9 +2986,9 @@ function App() {
                 safeBrowserOpenURL(url);
                 return;
             }
-            showAlert(lang === 'zh-Hans' ? 'Hub 地址缺失，暂时无法打开应用工作室使用说明。' : lang === 'zh-Hant' ? 'Hub 位址缺失，暫時無法打開應用工作室使用說明。' : 'Hub URL is missing, so the App Studio manual cannot be opened.');
+            showAlert(pickMiniAppLabel(lang, miniAppLabels.manualMissingHub));
         } catch (error) {
-            showAlert(String(error || (lang === 'zh-Hans' ? '打开应用工作室使用说明失败' : lang === 'zh-Hant' ? '打開應用工作室使用說明失敗' : 'Failed to open the App Studio manual')));
+            showAlert(String(error || pickMiniAppLabel(lang, miniAppLabels.manualOpenFailed)));
         }
     }, [config, lang, showAlert]);
 

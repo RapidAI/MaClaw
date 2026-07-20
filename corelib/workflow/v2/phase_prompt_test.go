@@ -58,11 +58,14 @@ func TestBuildPhasePrompt_InjectsDocParsingGuidance(t *testing.T) {
 		CurrentPhase: 0,
 	}
 	prompt := BuildPhasePrompt(state)
-	if !strings.Contains(prompt, "用户提供了文件路径，请根据文件扩展名选择解析方式") {
+	if !strings.Contains(prompt, "按下面**优先级阶梯**读取") {
 		t.Error("expected documentParsingGuidance to be injected when form has file path")
 	}
-	if !strings.Contains(prompt, "pymupdf") {
-		t.Error("expected pymupdf parsing method in guidance")
+	if !strings.Contains(prompt, "read_document") {
+		t.Error("expected office read_document guidance")
+	}
+	if !strings.Contains(prompt, "craft_tool") {
+		t.Error("expected craft_tool fallback guidance for other formats")
 	}
 }
 
@@ -83,7 +86,7 @@ func TestBuildPhasePrompt_SkipsGuidanceWhenNoFilePath(t *testing.T) {
 		CurrentPhase: 0,
 	}
 	prompt := BuildPhasePrompt(state)
-	if strings.Contains(prompt, "用户提供了文件路径，请根据文件扩展名选择解析方式") {
+	if strings.Contains(prompt, "按下面**优先级阶梯**读取") {
 		t.Error("documentParsingGuidance should NOT be injected when no file path in form data")
 	}
 }
@@ -380,7 +383,7 @@ func TestBuildPhasePrompt_InjectsGuidanceForTechParsing(t *testing.T) {
 		CurrentPhase: 0,
 	}
 	prompt := BuildPhasePrompt(state)
-	if !strings.Contains(prompt, "用户提供了文件路径，请根据文件扩展名选择解析方式") {
+	if !strings.Contains(prompt, "按下面**优先级阶梯**读取") {
 		t.Error("expected documentParsingGuidance to be injected for tech_parsing with file path")
 	}
 	// Also check the phase-specific instruction is present.
@@ -442,7 +445,7 @@ func TestBuildPhasePrompt_InjectsGuidanceFromSummaryWhenNoFormData(t *testing.T)
 		CurrentPhase: 0,
 	}
 	prompt := BuildPhasePrompt(state)
-	if !strings.Contains(prompt, "用户提供了文件路径，请根据文件扩展名选择解析方式") {
+	if !strings.Contains(prompt, "按下面**优先级阶梯**读取") {
 		t.Error("expected documentParsingGuidance when Summary contains a file path but FormData is nil")
 	}
 }
@@ -461,9 +464,9 @@ func TestBuildPhasePrompt_NoGuidanceWhenSummaryHasNoPath(t *testing.T) {
 		CurrentPhase: 0,
 	}
 	prompt := BuildPhasePrompt(state)
-	// The shared guidance block starts with "## 文档解析方法\n\n用户提供了文件路径".
-	// The phase instruction may reference "文档解析方法" but the full block should not be present.
-	if strings.Contains(prompt, "用户提供了文件路径，请根据文件扩展名选择解析方式") {
+	// Shared guidance uses the ladder intro; phase instructions may mention
+	// "文档解析方法" but must not include the full injected ladder block.
+	if strings.Contains(prompt, "按下面**优先级阶梯**读取") {
 		t.Error("documentParsingGuidance block should NOT be injected when neither FormData nor Summary has a file path")
 	}
 }

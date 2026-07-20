@@ -25,6 +25,9 @@ hub/.gocache/
 hub/.gomodcache/
 hub/dist/
 hub/data/
+# Runtime data dirs resolved relative to CWD (e.g. mobile-agent data root)
+# land here when hub code runs from hub/internal/httpapi.
+hub/internal/httpapi/data/
 hub/package/
 hubcenter/.gocache/
 hubcenter/.gomodcache/

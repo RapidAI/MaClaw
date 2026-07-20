@@ -3871,21 +3871,13 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 		return &IMAgentResponse{Text: "远程编程执行失败：RemoteCodingSubAgent 没有返回结果。"}
 	}
 
-	statusText := "远程编程完成"
-	if planned {
-		completedSteps := len(reportParts)
-		if result.Status == "success" && completedSteps >= len(tasks) {
-			statusText = fmt.Sprintf("远程编程完成（已按 %d 步计划执行）", len(tasks))
-		} else if completedSteps > 0 && result.Status == "success" {
-			statusText = fmt.Sprintf("远程编程部分完成（%d/%d 步）", completedSteps, len(tasks))
-		} else if completedSteps > 0 {
-			statusText = fmt.Sprintf("远程编程未完成（已执行 %d/%d 步）", completedSteps, len(tasks))
-		} else {
-			statusText = "远程编程未完成"
-		}
-	} else if result.Status != "success" {
-		statusText = "远程编程未完成"
+	memAfter := h.getStickyCodingWorkbenchMemory(userID)
+	passedSteps, failedSteps, skippedSteps := countCodingWorkbenchStepOutcomes(memAfter.StepStatuses)
+	totalSteps := len(tasks)
+	if planned && totalSteps == 0 {
+		totalSteps = len(memAfter.StepStatuses)
 	}
+	statusText := formatRemoteCodingPlanStatusText(planned, result.Status, totalSteps, passedSteps, failedSteps, skippedSteps)
 	summary := strings.TrimSpace(result.Summary)
 	if planned && len(reportParts) > 0 {
 		summary = strings.Join(reportParts, "\n\n")
@@ -3899,7 +3891,27 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if summary == "" {
 		summary = fmt.Sprintf("状态：%s", result.Status)
 	}
-	memAfter := h.getStickyCodingWorkbenchMemory(userID)
+	// Always append a final checklist so users are not misled by a step agent
+	// saying "waiting for Tn" when the orchestrator actually stopped.
+	if planned {
+		checklist := formatCodingStepsChecklist(memAfter.StepStatuses)
+		incompleteNote := formatRemoteCodingPlanIncompleteNote(totalSteps, passedSteps, failedSteps, skippedSteps)
+		if checklist != "" {
+			summary = strings.TrimSpace(summary) + "\n\n" + checklist
+		}
+		if incompleteNote != "" {
+			summary = strings.TrimSpace(summary) + "\n\n" + incompleteNote
+		}
+		if onToken != nil {
+			// Stream the final plan outcome so the chat surface is not only the
+			// last subagent "waiting for next step" narrative.
+			streamBody := statusText
+			if checklist != "" {
+				streamBody += "\n\n" + checklist
+			}
+			onToken("\n\n---\n### 计划执行结果\n\n" + streamBody + "\n")
+		}
+	}
 	costLine := formatCodingSessionCostLine(memAfter)
 	text := fmt.Sprintf("%s\nSSH 会话：%s\n远程项目目录：%s\n\n%s", statusText, remoteCtx.SessionID, remoteCtx.ProjectDir, summary)
 	if costLine != "" {

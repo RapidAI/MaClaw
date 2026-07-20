@@ -56,9 +56,13 @@ var expertToolMetaByName = map[string]expertToolMeta{
 	"download_file":   {Category: "files", Risk: "elevated", LabelZh: "下载文件", LabelEn: "Download file"},
 
 	// Office
-	"read_excel":  {Category: "office", Risk: "safe", LabelZh: "读取表格", LabelEn: "Read Excel"},
-	"write_excel": {Category: "office", Risk: "elevated", LabelZh: "写入表格", LabelEn: "Write Excel"},
-	"read_pptx":   {Category: "office", Risk: "safe", LabelZh: "读取 PPT", LabelEn: "Read PPTX"},
+	"read_document": {Category: "office", Risk: "safe", LabelZh: "读取文档", LabelEn: "Read document"},
+	"read_doc":      {Category: "office", Risk: "safe", LabelZh: "读取 DOC", LabelEn: "Read DOC"},
+	"read_docx":     {Category: "office", Risk: "safe", LabelZh: "读取 DOCX", LabelEn: "Read DOCX"},
+	"read_pdf":      {Category: "office", Risk: "safe", LabelZh: "读取 PDF", LabelEn: "Read PDF"},
+	"read_excel":    {Category: "office", Risk: "safe", LabelZh: "读取表格", LabelEn: "Read Excel"},
+	"write_excel":   {Category: "office", Risk: "elevated", LabelZh: "写入表格", LabelEn: "Write Excel"},
+	"read_pptx":     {Category: "office", Risk: "safe", LabelZh: "读取 PPT", LabelEn: "Read PPTX"},
 
 	// Web
 	"web_search": {Category: "web", Risk: "safe", LabelZh: "网页搜索", LabelEn: "Web search"},

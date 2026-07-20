@@ -112,23 +112,62 @@ func isCodingPlanExploreOnlyStep(title, description string) bool {
 		desc = strings.TrimSpace(desc[:i])
 	}
 	blob := title + " " + desc
+	// Write / verify keywords win: an "inspect then implement" step is not
+	// explore-only. Chinese false friends (编译器/构建工具) are handled in
+	// codingPlanKeywordMatch so env preflight text is not misclassified.
 	for _, kw := range []string{
 		"implement", "实现", "编码", "fix", "修复", "write", "edit",
 		"verify", "test", "build", "验证", "测试", "构建", "编译", "验收",
 	} {
-		if strings.Contains(blob, kw) {
+		if codingPlanKeywordMatch(blob, kw) {
 			return false
 		}
 	}
 	for _, kw := range []string{
 		"explor", "探查", "定位", "map ", "read", "阅读", "survey",
 		"了解", "分析现状", "inspect", "locate",
+		// Prefer check/preflight phrases over bare "环境"/"目录" (too broad).
+		"检查", "check ", "preflight", "workdir", "work dir",
+		"环境检查", "目录检查", "工具版本", "tool version", "toolchain",
+		"远端环境", "远程环境", "remote env",
 	} {
-		if strings.Contains(blob, kw) {
+		if codingPlanKeywordMatch(blob, kw) {
 			return true
 		}
 	}
 	return false
+}
+
+// codingPlanFalseFriendSuffix maps write/build keywords to suffixes that form
+// a longer non-action compound (e.g. 编译+器 → 编译器, 构建+工具 → 构建工具).
+var codingPlanFalseFriendSuffix = map[string]string{
+	"编译": "器",
+	"构建": "工具",
+}
+
+// codingPlanKeywordMatch is like strings.Contains but skips Chinese false
+// friends that would hard-block env-check steps (编译器 / 构建工具).
+func codingPlanKeywordMatch(blob, kw string) bool {
+	if kw == "" || blob == "" {
+		return false
+	}
+	suffix, hasFalseFriend := codingPlanFalseFriendSuffix[kw]
+	if !hasFalseFriend {
+		return strings.Contains(blob, kw)
+	}
+	start := 0
+	for {
+		i := strings.Index(blob[start:], kw)
+		if i < 0 {
+			return false
+		}
+		i += start
+		if strings.HasPrefix(blob[i+len(kw):], suffix) {
+			start = i + len(kw)
+			continue
+		}
+		return true
+	}
 }
 
 // createCodingWorkbenchWorktree creates a detached branch worktree under the

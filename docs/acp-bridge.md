@@ -103,6 +103,28 @@ GUI 镜像（工程 Tab 气泡）为 **可选旁路**（`acp_host_mirror_ui`）�
 - Go 入口：`LaunchVSCodeWithACPExtension` / `PrepareVSCodeACPExtension`
   （第三方链路仍为 `LaunchVSCodeWithACP` / `PrepareVSCodeACP`）。
 
+### 远程编程附着（VS Code Phase 1）
+
+扩展侧栏可附着已有 `remote_coding_dev` 任务（大脑仍是 GUI sticky remote）：
+
+| ACP 方法（Mode B） | 作用 |
+|--------------------|------|
+| `maclaw/list_remote_coding_tasks` | 列出远程编程任务 + armed/needs_reconnect |
+| `maclaw/get_coding_workbench_status` | 单任务 workbench 状态 |
+| `maclaw/ensure_coding_workbench_armed` | 无密码 re-arm（SSH 仍存活时） |
+| `maclaw/prepare_remote_coding` | 密码连接并 arm（密码不落盘） |
+| `maclaw/read_remote_file` | 经 sticky SSH 只读预览远端文本（限 work_dir 内） |
+| `maclaw/list_remote_dir` | 远端目录 `ls -la`（限 work_dir 内） |
+| `maclaw/search_remote` | 远端内容搜索（rg 优先，否则 grep；限 work_dir） |
+
+附着时：`session/new.cwd` = 本地 task path → `userID=desktop-user:{path}` → sticky remote → `RemoteCodingSubAgent`。  
+文件改在远端；VS Code 可通过 `maclaw-remote://` 虚拟文档预览远端源码（只读）。  
+回合成功后自动刷新已打开的远端预览；侧栏可一键 **Remote-SSH 打开** work_dir（需安装 `ms-vscode-remote.remote-ssh`）。  
+**远端 ls** 为可点选 QuickPick（进目录 / 打开预览）；**远端↔本地** 用 `vscode.diff` 对比 work_dir 相对路径对应的本地文件。  
+**远端搜索** 结果树可导出 MD/JSON；打开命中文件时高亮行并支持 F4 下一条；可复制远端路径 / 打开最近预览。  
+侧栏 **Remote Explorer** 懒加载 work_dir 目录树（默认隐藏点文件、可名称过滤）；**Agent Changes** 汇总本会话 agent 写入/删除的文件（可导出 MD/JSON；回合结束可一键打开）。  
+聊天 **File change** 卡片与 tool 路径芯片支持一键打开远端预览 / Diff 本地。
+
 ### Mode B 发现
 
 ```text

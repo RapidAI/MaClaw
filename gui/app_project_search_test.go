@@ -1599,14 +1599,73 @@ func TestRecentTaskSlug(t *testing.T) {
 	tests := map[string]string{
 		"Hello World!":             "hello-world",
 		"---Alpha_Beta---":         "alpha_beta",
-		"\u4e2d\u6587\u4efb\u52a1": "task",
+		"\u4e2d\u6587\u4efb\u52a1": "\u4e2d\u6587\u4efb\u52a1", // Chinese letters kept
+		"\u6280\u672f\u670d\u52a1 2026": "\u6280\u672f\u670d\u52a1-2026",
 		"  A   B   C  ":            "a-b-c",
+		"!!!":                      "task",
+		"CON":                      "con-task", // Windows reserved device name
+		"com1":                     "com1-task",
 		"01234567890123456789012345678901234567890123456789": "0123456789012345678901234567890123456789",
 	}
 	for input, want := range tests {
 		if got := recentTaskSlug(input); got != want {
 			t.Fatalf("recentTaskSlug(%q) = %q, want %q", input, got, want)
 		}
+	}
+	// Rune cap (not byte): 50 CJK letters → 40-rune slug.
+	longCJK := strings.Repeat("\u6d4b", 50)
+	if got := recentTaskSlug(longCJK); len([]rune(got)) != 40 {
+		t.Fatalf("recentTaskSlug long CJK runes = %d, want 40 (got %q)", len([]rune(got)), got)
+	}
+}
+
+func TestCreateTaskSeedsWorkspaceAndChineseSlug(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	if app.memoryStore == nil {
+		t.Fatal("memory store nil")
+	}
+
+	created := app.CreateTask("技术服务响应分析", "")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTask returned empty project path")
+	}
+	base := filepath.Base(created.ProjectPath)
+	if !strings.HasPrefix(base, "技术服务响应分析-") {
+		t.Fatalf("expected Chinese slug prefix, got base=%q path=%q", base, created.ProjectPath)
+	}
+	ws := filepath.Join(created.ProjectPath, "workspace")
+	if info, err := os.Stat(ws); err != nil || !info.IsDir() {
+		t.Fatalf("workspace dir missing: %v", err)
+	}
+	readme := filepath.Join(ws, "README.md")
+	data, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatalf("workspace README missing: %v", err)
+	}
+	if !strings.Contains(string(data), "默认执行目录") {
+		t.Fatalf("README content unexpected: %s", data)
+	}
+	// Execution path for managed task with no working_dir tag is workspace/.
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); got != ws {
+		t.Fatalf("execution path = %q, want %q", got, ws)
+	}
+}
+
+func TestCreateTaskWithWorkingDirSkipsSandboxReadme(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	custom := t.TempDir()
+	created := app.CreateTask("WithDir", custom)
+	if created.ProjectPath == "" {
+		t.Fatal("empty project path")
+	}
+	wsReadme := filepath.Join(created.ProjectPath, "workspace", "README.md")
+	if _, err := os.Stat(wsReadme); !os.IsNotExist(err) {
+		t.Fatalf("sandbox README should not be written when custom working dir is set; err=%v", err)
+	}
+	if got := app.recentTaskExecutionProjectPath(created.ProjectPath); filepath.Clean(got) != filepath.Clean(custom) {
+		t.Fatalf("execution path = %q, want custom %q", got, custom)
 	}
 }
 

@@ -713,17 +713,21 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolDownloadFile(args) })
 
 	// --- Unified office document tool ---
-	reg("office", "Office 文档操作工具。action 参数：generate_pdf（生成PDF文档）、read_excel（读取XLSX/CSV表格）、write_excel（写入XLSX表格）、read_pptx（读取PPT演示文稿）。Office document tool: generate PDF, read/write Excel (XLSX/CSV), read PowerPoint (PPTX).",
-		ToolCategoryBuiltin, []string{"office", "pdf", "excel", "xlsx", "csv", "pptx", "document", "spreadsheet", "presentation"},
+	reg("office", "Office/PDF 文档工具（内置原生解析，无需 Python/Word）。action：read_document（推荐，自动识别 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx）、read_doc/read_docx/read_pdf、read_excel、write_excel、read_pptx、generate_pdf。读文档优先 read_document，禁止对二进制文件用 read_file。若 office 失败或不支持的格式（.ppt/.rtf/.odt/.wps 等），必须继续用 craft_tool 生成解析脚本，不要直接放弃。",
+		ToolCategoryBuiltin, []string{"office", "pdf", "doc", "docx", "excel", "xlsx", "xls", "csv", "pptx", "ppt", "document", "spreadsheet", "presentation", "word"},
 		map[string]interface{}{
-			"action":    map[string]string{"type": "string", "description": "操作类型: generate_pdf/read_excel/write_excel/read_pptx"},
+			"action":    map[string]string{"type": "string", "description": "操作类型: read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/generate_pdf"},
 			"content":   map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
 			"title":     map[string]string{"type": "string", "description": "文档标题，显示在 PDF 封面（generate_pdf 时可选）"},
 			"doc_type":  map[string]string{"type": "string", "description": "文档类型（generate_pdf 时可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
 			"phase_id":  map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
-			"file_path": map[string]string{"type": "string", "description": "文件路径（read_excel/write_excel/read_pptx 时必填）"},
+			"file_path": map[string]string{"type": "string", "description": "文件路径（read_* / write_excel 时必填；也可用 path）"},
+			"path":      map[string]string{"type": "string", "description": "file_path 别名"},
+			"max_chars":    map[string]string{"type": "integer", "description": "read_document 可选：本段最大字符数（默认 120000）"},
+			"offset":       map[string]string{"type": "integer", "description": "read_document 可选：从全文的字符偏移继续读（配合 truncated 结果中的 next_offset）"},
+			"line_numbers": map[string]string{"type": "boolean", "description": "read_document 可选：为每行加 L1:/L2: 行号前缀（跨 offset 连续）"},
 			"sheet":     map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
-			"range":     map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 时可选）"},
+			"range":     map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 的 .xlsx/.csv 可选）"},
 			"data":      map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolOffice(args) })

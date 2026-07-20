@@ -56,7 +56,85 @@ const (
 	maclawAppRunHistorySchema      = "maclaw.app.run_history.v1"
 	maclawAppRunHistoryPerAppLimit = 50
 	maclawAppRunHistoryAppLimit    = 200
+
+	// maclawAppSkillGovernanceRunMessage marks the lightweight durable entry
+	// written by RecordMaclawAppRunEvidenceForSkill. It is a provenance note,
+	// not a run summary, so merges prefer any richer existing message.
+	maclawAppSkillGovernanceRunMessage = "skill governance testEvidence recorded"
 )
+
+// mergeMaclawAppRunHistoryEntry folds an existing durable entry into the
+// incoming one when both share a runID. The skill-governance write arrives
+// after the rich runtime entry and carries only provenance fields; a plain
+// replace would downgrade the stored evidence (loss of test protocol /
+// workspace layout fingerprints and dependency verification), breaking the
+// publish checks. Incoming non-empty fields win; gaps are filled from the
+// existing entry.
+func mergeMaclawAppRunHistoryEntry(incoming, existing maclawAppRunHistoryEntry) maclawAppRunHistoryEntry {
+	merged := incoming
+	if merged.DefinitionHash == "" {
+		merged.DefinitionHash = existing.DefinitionHash
+	}
+	if merged.TestProtocolFingerprint == "" {
+		merged.TestProtocolFingerprint = existing.TestProtocolFingerprint
+	}
+	if merged.WorkspaceLayoutFingerprint == "" {
+		merged.WorkspaceLayoutFingerprint = existing.WorkspaceLayoutFingerprint
+	}
+	if merged.OutputMode == "" {
+		merged.OutputMode = existing.OutputMode
+	}
+	if merged.InputSummary == "" {
+		merged.InputSummary = existing.InputSummary
+	}
+	if merged.Message == "" || (merged.Message == maclawAppSkillGovernanceRunMessage && existing.Message != "") {
+		merged.Message = existing.Message
+	}
+	if merged.ArtifactID == "" {
+		merged.ArtifactID = existing.ArtifactID
+	}
+	if merged.ArtifactURI == "" {
+		merged.ArtifactURI = existing.ArtifactURI
+	}
+	if merged.ArtifactName == "" {
+		merged.ArtifactName = existing.ArtifactName
+	}
+	if merged.ArtifactPath == "" {
+		merged.ArtifactPath = existing.ArtifactPath
+	}
+	if merged.ArtifactDownloadState == "" {
+		merged.ArtifactDownloadState = existing.ArtifactDownloadState
+	}
+	if len(merged.Artifacts) == 0 {
+		merged.Artifacts = existing.Artifacts
+	}
+	if merged.ResultPayload == nil {
+		merged.ResultPayload = existing.ResultPayload
+	}
+	if len(merged.Outputs) == 0 {
+		merged.Outputs = existing.Outputs
+	}
+	if merged.ResultCoverage == nil {
+		merged.ResultCoverage = existing.ResultCoverage
+	}
+	if merged.DependencyVerification == nil {
+		merged.DependencyVerification = existing.DependencyVerification
+	}
+	if merged.ApprovalInstance == nil {
+		merged.ApprovalInstance = existing.ApprovalInstance
+	}
+	if merged.SkillName == "" {
+		merged.SkillName = existing.SkillName
+	}
+	merged.GovernanceRecorded = merged.GovernanceRecorded || existing.GovernanceRecorded
+	if merged.GovernanceError == "" {
+		merged.GovernanceError = existing.GovernanceError
+	}
+	if merged.Source == "" {
+		merged.Source = existing.Source
+	}
+	return merged
+}
 
 // RecordMaclawAppRunHistory persists one app run (success or failure) to the
 // durable data directory. localStorage remains a UI cache only.
@@ -90,13 +168,16 @@ func (a *App) RecordMaclawAppRunHistory(entry maclawAppRunHistoryEntry) (maclawA
 	}
 	list := store.ByApp[entry.AppID]
 	next := make([]maclawAppRunHistoryEntry, 0, len(list)+1)
-	next = append(next, entry)
 	for _, existing := range list {
 		if strings.EqualFold(strings.TrimSpace(existing.RunID), entry.RunID) {
+			// Same run recorded twice (runtime entry + skill-governance stamp):
+			// merge so the later sparse write cannot erase rich evidence.
+			entry = mergeMaclawAppRunHistoryEntry(entry, existing)
 			continue
 		}
 		next = append(next, existing)
 	}
+	next = append([]maclawAppRunHistoryEntry{entry}, next...)
 	if len(next) > maclawAppRunHistoryPerAppLimit {
 		next = next[:maclawAppRunHistoryPerAppLimit]
 	}

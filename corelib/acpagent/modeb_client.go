@@ -197,6 +197,11 @@ func (c *ModeBClient) SessionSteer(ctx context.Context, sessionID string, text s
 	return res.Accepted, nil
 }
 
+// Call forwards an arbitrary JSON-RPC method to the Mode B host (e.g. maclaw/*).
+func (c *ModeBClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return c.call(ctx, method, params)
+}
+
 func (c *ModeBClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 	idRaw, _ := json.Marshal(id)
@@ -588,9 +593,39 @@ func ServeStdioModeBProxy(r io.Reader, w io.Writer, logger interface {
 			}
 			_ = stdio.WriteResponse(req.ID, SessionSteerResult{Accepted: accepted}, nil)
 		default:
-			if hasRequestID(req.ID) {
-				_ = stdio.WriteResponse(req.ID, nil, newRPCError(CodeMethodNotFound, "method not found: "+req.Method))
+			// Transparent passthrough for MaClaw extensions (maclaw/*) and any
+			// future host methods the stdio proxy does not special-case.
+			if !hasRequestID(req.ID) {
+				continue
 			}
+			if !strings.HasPrefix(req.Method, "maclaw/") {
+				_ = stdio.WriteResponse(req.ID, nil, newRPCError(CodeMethodNotFound, "method not found: "+req.Method))
+				continue
+			}
+			var params any
+			if len(req.Params) > 0 {
+				_ = json.Unmarshal(req.Params, &params)
+			}
+			// SSH prepare can be slow; other maclaw/* helpers stay short.
+			timeout := 45 * time.Second
+			switch req.Method {
+			case "maclaw/prepare_remote_coding":
+				timeout = 120 * time.Second
+			case "maclaw/read_remote_file", "maclaw/list_remote_dir", "maclaw/search_remote":
+				timeout = 60 * time.Second
+			}
+			callCtx, callCancel := context.WithTimeout(context.Background(), timeout)
+			raw, err := client.Call(callCtx, req.Method, params)
+			callCancel()
+			if err != nil {
+				_ = stdio.WriteResponse(req.ID, nil, newRPCError(CodeInternalError, err.Error()))
+				continue
+			}
+			var result any
+			if len(raw) > 0 {
+				_ = json.Unmarshal(raw, &result)
+			}
+			_ = stdio.WriteResponse(req.ID, result, nil)
 		}
 	}
 }

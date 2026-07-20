@@ -561,8 +561,8 @@ export const SidebarSystemStatus = ({
                                             const active = !!moaSticky.active && (!!p.id && (p.id === moaSticky.preset || p.id === '_default_'));
                                             const label = p.display_name || p.id || 'council';
                                             const rowLabel = active
-                                                ? textForLang(lang, `Council ON: ${label} (off)`, `\u4f1a\u8bca\u5df2\u5f00\uff1a${label}\uff08\u5173\u95ed\uff09`, `\u6703\u8a3a\u5df2\u958b\uff1a${label}\uff08\u95dc\u9589\uff09`)
-                                                : textForLang(lang, `Council: ${label}`, `\u4f1a\u8bca\uff1a${label}`, `\u6703\u8a3a\uff1a${label}`);
+                                                ? textForLang(lang, `Council ON: ${label} (click to turn off)`, `\u4f1a\u8bca\u5df2\u5f00\uff1a${label}\uff08\u70b9\u51fb\u5173\u95ed\uff09`, `\u6703\u8a3a\u5df2\u958b\uff1a${label}\uff08\u9ede\u64ca\u95dc\u9589\uff09`)
+                                                : textForLang(lang, `Council: ${label} (click to turn on)`, `\u4f1a\u8bca\uff1a${label}\uff08\u70b9\u51fb\u5f00\u542f\uff09`, `\u6703\u8a3a\uff1a${label}\uff08\u9ede\u64ca\u958b\u555f\uff09`);
                                             return (
                                                 <button
                                                     key={p.id || 'default'}

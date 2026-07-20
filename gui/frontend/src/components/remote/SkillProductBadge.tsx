@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { localizeMiniAppPack, miniAppLabels } from "../../i18n/maclawMiniAppLabels";
 import { colors } from "./styles";
 
 type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
@@ -26,9 +27,9 @@ function AppIcon() {
 export function SkillProductBadge({ skill, localizeText }: { skill: SkillProductBadgeSource; localizeText: LocalizeText }) {
     if (!isMaclawAppSearchResult(skill)) return null;
     return (
-        <span style={maclawAppProductBadgeStyle} title={localizeText("MaClaw App Skill", "MaClaw App Skill", "MaClaw App Skill")}>
+        <span style={maclawAppProductBadgeStyle} title={localizeMiniAppPack(localizeText, miniAppLabels.skill)}>
             <AppIcon />
-            {localizeText("App", "App", "App")}
+            {localizeMiniAppPack(localizeText, miniAppLabels.short)}
         </span>
     );
 }

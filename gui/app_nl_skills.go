@@ -769,8 +769,17 @@ func (e *SkillExecutor) persistSkillStatusOverlays(skills []corelib.NLSkillEntry
 			}
 			seen[skillNameIdentityKey(cur.Name)] = true
 			// Overlay fields only — never replace steps/description wholesale here.
-			cur.Status = src.Status
-			cur.LastError = src.LastError
+			// Staleness guard: this patch can come from an async snapshot taken
+			// before a concurrent lifecycle write (e.g. persistRepairResult
+			// demoting to needs_review). A background "active" promotion must not
+			// downgrade an explicit non-active status, and an empty snapshot
+			// LastError must not erase a recorded one.
+			if !fileSkillStatusIsOverlay(cur.Status) || fileSkillStatusIsOverlay(src.Status) {
+				cur.Status = src.Status
+			}
+			if src.LastError != "" || cur.LastError == "" {
+				cur.LastError = src.LastError
+			}
 			cur.UsageCount = src.UsageCount
 			cur.SuccessCount = src.SuccessCount
 			cur.FailureCount = src.FailureCount
@@ -3298,16 +3307,16 @@ func (a *App) RecordMaclawAppRunEvidenceForSkill(skillName string, appID string,
 	// browser localStorage clears. Durable write failure is returned as a soft
 	// field (governance write already succeeded) so the UI can surface it.
 	historyEntry := maclawAppRunHistoryEntry{
-		RunID:          strings.TrimSpace(runID),
-		AppID:          strings.TrimSpace(appID),
-		Status:         "done",
-		DefinitionHash: strings.TrimSpace(definitionHash),
-		ArtifactName:   artifactName,
-		ArtifactPath:   artifactPath,
-		SkillName:      skillName,
-		Source:         "skill_governance",
-		At:             strings.TrimSpace(verifiedAt),
-		Message:        "skill governance testEvidence recorded",
+		RunID:              strings.TrimSpace(runID),
+		AppID:              strings.TrimSpace(appID),
+		Status:             "done",
+		DefinitionHash:     strings.TrimSpace(definitionHash),
+		ArtifactName:       artifactName,
+		ArtifactPath:       artifactPath,
+		SkillName:          skillName,
+		Source:             "skill_governance",
+		At:                 strings.TrimSpace(verifiedAt),
+		Message:            maclawAppSkillGovernanceRunMessage,
 		GovernanceRecorded: true,
 	}
 	if historyEntry.AppID == "" {

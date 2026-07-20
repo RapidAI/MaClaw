@@ -480,6 +480,11 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
 		explorationStatus, explorationSummary = summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
 		verificationStatus, verificationSummary = summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
+		// Scaffold/init plan steps create incomplete skeletons; defer build/test gates.
+		if task != nil {
+			stepTitle, stepDesc := resolveCodingPlanStepFocus(task.Title, task.Description, "")
+			verificationStatus, verificationSummary = maybeRelaxScaffoldVerification(stepTitle, stepDesc, verificationStatus, verificationSummary)
+		}
 		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
 		status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
 		status, errMsg = applySubAgentVerificationOutcome(status, errMsg, verificationStatus, verificationSummary)
@@ -4729,6 +4734,8 @@ func filterResolvedSubAgentCommandSummaryEntries(commands []CodingSubAgentComman
 		if !cmd.Succeeded && laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd) {
 			continue
 		}
+		// Soft failures stay in the list as SKIP (see subAgentCommandSummaryStatus);
+		// they are excluded from blocking failure counts separately.
 		reversed = append(reversed, cmd)
 	}
 	filtered := make([]CodingSubAgentCommandResult, len(reversed))
@@ -4816,14 +4823,14 @@ func subAgentCommandResultsAtIndexes(commands []CodingSubAgentCommandResult, ind
 }
 
 func subAgentCommandSummaryHasProblem(cmd CodingSubAgentCommandResult) bool {
-	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+	if subAgentCommandIsSoftFailure(cmd) {
 		return false
 	}
 	return !cmd.Succeeded || subAgentCommandSuccessLooksEmpty(cmd)
 }
 
 func subAgentCommandSummaryStatus(cmd CodingSubAgentCommandResult) string {
-	if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+	if subAgentCommandIsSoftFailure(cmd) {
 		return "SKIP"
 	}
 	if !cmd.Succeeded {
@@ -4965,7 +4972,8 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 	}
 	summaryCommands := filterResolvedSubAgentCommandSummaryEntries(commands)
 	skippedDiffChecks := countSoftNonGitDiffSelfCheckFailures(summaryCommands)
-	failed := filterSoftNonGitDiffSelfCheckFailures(failedSubAgentCommands(summaryCommands))
+	skippedPathProbes := countSoftInspectionProbeFailures(summaryCommands)
+	failed := filterSoftFailures(failedSubAgentCommands(summaryCommands))
 	emptySuccesses := emptySuccessSubAgentCommands(summaryCommands)
 	problems := append(append([]CodingSubAgentCommandResult{}, failed...), emptySuccesses...)
 	if len(problems) == 0 {
@@ -4975,6 +4983,12 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSu
 				checkWord = "self-check"
 			}
 			return codingSubAgentQualityPassed, fmt.Sprintf("%d bash command(s) run, %d skipped diff %s, no blocking failures", len(commands), skippedDiffChecks, checkWord)
+		}
+		if skippedPathProbes > 0 {
+			if skippedPathProbes == 1 {
+				return codingSubAgentQualityPassed, fmt.Sprintf("%d bash command(s) run, 1 soft missing-path probe, no blocking failures", len(commands))
+			}
+			return codingSubAgentQualityPassed, fmt.Sprintf("%d bash command(s) run, %d soft missing-path probes, no blocking failures", len(commands), skippedPathProbes)
 		}
 		if len(commands) == 1 {
 			return codingSubAgentQualityPassed, "1 bash command run, no failures"
@@ -5068,10 +5082,274 @@ func summarizeSubAgentNoChangeEvidence(filesModified, filesCreated, filesRead []
 	if len(uniqueSortedSubAgentStrings(append(append([]string{}, filesModified...), filesCreated...))) > 0 {
 		return ""
 	}
-	if len(uniqueSortedSubAgentStrings(filesRead)) > 0 || countSuccessfulSubAgentSearches(searches) > 0 || countSuccessfulSubAgentVerificationCommands(commands) > 0 || countSuccessfulSubAgentInspectionDynamicTools(dynamicTools) > 0 {
+	if len(uniqueSortedSubAgentStrings(filesRead)) > 0 ||
+		countSuccessfulSubAgentSearches(searches) > 0 ||
+		countSuccessfulSubAgentVerificationCommands(commands) > 0 ||
+		countSuccessfulSubAgentInspectionDynamicTools(dynamicTools) > 0 ||
+		countSubAgentInspectionProbeEvidence(commands) > 0 {
 		return ""
 	}
 	return "no file changes and no inspection or verification evidence"
+}
+
+// countSubAgentInspectionProbeEvidence counts shell probes that prove the agent
+// inspected the environment (version checks, ls/find/which, and soft "path does
+// not exist" probes). These satisfy no-change quality gates for env-check steps
+// that intentionally make no file edits.
+func countSubAgentInspectionProbeEvidence(commands []CodingSubAgentCommandResult) int {
+	count := 0
+	for _, cmd := range commands {
+		if cmd.Succeeded {
+			if subAgentInspectionProbeCommand(cmd.Command) && !subAgentCommandSuccessLooksEmpty(cmd) {
+				count++
+			}
+			continue
+		}
+		// Negative existence checks (missing dir/file) are still useful evidence
+		// for "check remote environment / workdir" plan steps.
+		if subAgentCommandIsSoftInspectionProbeFailure(cmd) {
+			count++
+		}
+	}
+	return count
+}
+
+// subAgentInspectionProbeCommand reports whether a shell command is a read-only
+// environment / path inspection probe (not a build/test/write).
+func subAgentInspectionProbeCommand(command string) bool {
+	normalized, segments := normalizeShellCommandSegments(command)
+	if normalized == "" {
+		return false
+	}
+	if subAgentDiagnosticProbeCommand(normalized) {
+		return true
+	}
+	if len(segments) == 0 {
+		return false
+	}
+	hasRealProbe := false
+	for _, segment := range segments {
+		if !subAgentInspectionProbeCommandSegment(segment) {
+			return false
+		}
+		if len(segment) == 0 {
+			continue
+		}
+		switch commandNameBase(segment[0]) {
+		case "echo", "printf", "true", "false":
+			// Separators / no-ops alone are not inspection evidence.
+		default:
+			hasRealProbe = true
+		}
+	}
+	return hasRealProbe
+}
+
+func subAgentInspectionProbeCommandSegment(segment []string) bool {
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 {
+		return false
+	}
+	if subAgentDiagnosticProbeCommandSegment(segment) {
+		return true
+	}
+	cmd := commandNameBase(segment[0])
+	switch cmd {
+	case "ls", "find", "which", "type", "test", "stat", "uname", "pwd", "id",
+		"whoami", "file", "basename", "dirname", "realpath", "readlink",
+		"hostname", "nproc", "getconf", "arch", "tree", "du",
+		"true", "false", "printf", "echo":
+		return true
+	case "command":
+		// `command -v g++` / `command -V cmake`
+		for _, arg := range segment[1:] {
+			a := strings.TrimSpace(normalizeShellCommandToken(arg))
+			if a == "-v" || a == "-V" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// subAgentMissingPathProbeMarkers are result phrases that mean a path probe
+// answered "does not exist" (valid env-check evidence, not a hard task failure).
+var subAgentMissingPathProbeMarkers = []string{
+	"no such file or directory",
+	"cannot access",
+	"not a directory",
+	"does not exist",
+	"no such file",
+	"cannot open",
+	"can't cd to",
+	"cannot cd",
+}
+
+// subAgentCommandIsSoftInspectionProbeFailure treats missing-path probe failures
+// as non-blocking diagnostic outcomes (the probe answered "does not exist").
+//
+// Soft cases:
+//  1. Path probes (ls/stat/find/test/…) with a missing-path error message.
+//  2. Pure `test`/`[` existence probes (any non-hard failure; exit-code only).
+//  3. Inspection probes that never ran because ssh_bash could not cd into
+//     working_dir (common on brand-new remote project paths).
+//
+// Not soft: toolchain "command not found", permission denied, compile/link errors.
+func subAgentCommandIsSoftInspectionProbeFailure(cmd CodingSubAgentCommandResult) bool {
+	if cmd.Succeeded {
+		return false
+	}
+	if subAgentDiagnosticProbeFailureResultLooksHard(cmd.Summary) {
+		return false
+	}
+	summary := strings.ToLower(strings.Join(strings.Fields(cmd.Summary), " "))
+
+	// (1) Explicit path existence probes with a missing-path message.
+	if subAgentPathExistenceProbeCommand(cmd.Command) && subAgentSummaryHasMissingPathMarker(summary) {
+		return true
+	}
+
+	// (2) Pure `test`/`[` existence probes only communicate via exit code.
+	// Remote ssh_bash often wraps them in large script dumps, so do not require
+	// empty/silent output — any non-hard failure is a valid negative finding.
+	if subAgentIsExistenceTestCommand(cmd.Command) {
+		return true
+	}
+
+	// (3) Workdir/cd gate failed before a read-only probe body ran.
+	// Remote ssh_bash wraps every call as `cd workdir` then the command; when the
+	// project dir does not exist yet, even `g++ --version` fails with a cd error.
+	// subAgentInspectionProbeCommand already covers diagnostic version probes.
+	if subAgentMissingWorkdirCdFailure(summary) && subAgentInspectionProbeCommand(cmd.Command) {
+		return true
+	}
+	return false
+}
+
+func subAgentSummaryHasMissingPathMarker(summary string) bool {
+	for _, marker := range subAgentMissingPathProbeMarkers {
+		if strings.Contains(summary, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentIsExistenceTestCommand(command string) bool {
+	_, segments := normalizeShellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	sawProbe := false
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			return false
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "echo", "printf", "true", "false":
+			continue
+		case "test", "[":
+			// Normal forms: test -d path  /  [ -d path ]
+			if !subAgentTestSegmentIsExistenceProbe(segment[1:]) {
+				return false
+			}
+			sawProbe = true
+		case "-d", "-e", "-f", "-L", "-h", "-b", "-c", "-p", "-S":
+			// `[` / `]` are stripped by normalizeShellCommandToken, so
+			// `[ -f /path ]` is often tokenized as ["-f", "/path"].
+			if !subAgentTestSegmentIsExistenceProbe(segment) {
+				return false
+			}
+			sawProbe = true
+		default:
+			return false
+		}
+	}
+	return sawProbe
+}
+
+func subAgentTestSegmentIsExistenceProbe(args []string) bool {
+	// Accept: test -d path | test -e path | test -f path | test -L path
+	// and flag-first form after `[` stripping: -f /path
+	cleaned := make([]string, 0, len(args))
+	for _, a := range args {
+		tok := strings.TrimSpace(normalizeShellCommandToken(a))
+		if tok == "" || tok == "]" || tok == "[" || tok == "2>&1" {
+			continue
+		}
+		cleaned = append(cleaned, tok)
+	}
+	if len(cleaned) < 2 {
+		return false
+	}
+	switch cleaned[0] {
+	case "-d", "-e", "-f", "-L", "-h", "-b", "-c", "-p", "-S":
+		return true
+	case "!", "-n", "-z":
+		// Negated / string tests are not pure path-existence probes.
+		return false
+	default:
+		return false
+	}
+}
+
+// subAgentMissingWorkdirCdFailure detects remote/local shell wrappers that fail
+// only because the configured working directory does not exist.
+func subAgentMissingWorkdirCdFailure(summary string) bool {
+	if summary == "" {
+		return false
+	}
+	// Require a missing-path signal AND a cd token so we do not soft-match
+	// unrelated "cannot cd" / permission issues (those are hard-filtered above
+	// when markers like permission denied are present).
+	hasMissing := strings.Contains(summary, "no such file or directory") ||
+		strings.Contains(summary, "does not exist") ||
+		strings.Contains(summary, "not a directory")
+	if !hasMissing {
+		return false
+	}
+	return strings.Contains(summary, "can't cd to") ||
+		strings.Contains(summary, "cannot cd") ||
+		strings.Contains(summary, "cd:") ||
+		strings.Contains(summary, " cd ")
+}
+
+// subAgentPathExistenceProbeCommand is true for read-only probes whose failure
+// commonly means "path missing" rather than "task broken".
+func subAgentPathExistenceProbeCommand(command string) bool {
+	_, segments := normalizeShellCommandSegments(command)
+	if len(segments) == 0 {
+		return false
+	}
+	hasPathProbe := false
+	for _, segment := range segments {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			return false
+		}
+		cmd := commandNameBase(segment[0])
+		switch cmd {
+		case "ls", "find", "stat", "test", "realpath", "readlink", "file":
+			hasPathProbe = true
+		case "echo", "printf", "true", "false":
+			// Allowed as separators in compound probes.
+		default:
+			return false
+		}
+	}
+	return hasPathProbe
+}
+
+// normalizeShellCommandSegments lowercases/collapses whitespace and returns
+// shell segments once, shared by inspection/path probe classifiers.
+func normalizeShellCommandSegments(command string) (string, [][]string) {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return "", nil
+	}
+	return normalized, shellCommandSegments(normalized)
 }
 
 func summarizeSubAgentCreatedFileContextEvidence(filesCreated, filesRead []string, searches []CodingSubAgentSearchResult, dynamicTools []CodingSubAgentDynamicToolResult) string {
@@ -6740,13 +7018,15 @@ func failedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubA
 	return failed
 }
 
-func filterSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+// filterSoftFailures drops soft non-git diff and soft missing-path probes from
+// a failed-command list so they never block quality status.
+func filterSoftFailures(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
 	if len(commands) == 0 {
 		return commands
 	}
 	filtered := make([]CodingSubAgentCommandResult, 0, len(commands))
 	for _, cmd := range commands {
-		if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+		if subAgentCommandIsSoftFailure(cmd) {
 			continue
 		}
 		filtered = append(filtered, cmd)
@@ -6754,10 +7034,25 @@ func filterSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResul
 	return filtered
 }
 
+// filterSoftNonGitDiffSelfCheckFailures is kept for older call sites / tests.
+func filterSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
+	return filterSoftFailures(commands)
+}
+
 func countSoftNonGitDiffSelfCheckFailures(commands []CodingSubAgentCommandResult) int {
 	count := 0
 	for _, cmd := range commands {
 		if subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+			count++
+		}
+	}
+	return count
+}
+
+func countSoftInspectionProbeFailures(commands []CodingSubAgentCommandResult) int {
+	count := 0
+	for _, cmd := range commands {
+		if subAgentCommandIsSoftInspectionProbeFailure(cmd) {
 			count++
 		}
 	}
@@ -6772,6 +7067,10 @@ func subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd CodingSubAgentCommandRe
 	return subAgentGitDiffUnavailableBecauseNonGit(text)
 }
 
+func subAgentCommandIsSoftFailure(cmd CodingSubAgentCommandResult) bool {
+	return subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) || subAgentCommandIsSoftInspectionProbeFailure(cmd)
+}
+
 func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
 	if len(commands) == 0 {
 		return nil
@@ -6783,7 +7082,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 		cmd := commands[i]
 		key := subAgentCommandFailureResolutionKey(cmd)
 		if key == "" {
-			if !cmd.Succeeded && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) && !(laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd)) {
+			if !cmd.Succeeded && !subAgentCommandIsSoftFailure(cmd) && !(laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd)) {
 				unresolvedReversed = append(unresolvedReversed, cmd)
 			}
 			continue
@@ -6798,7 +7097,7 @@ func unresolvedFailedSubAgentCommands(commands []CodingSubAgentCommandResult) []
 		if !cmd.Succeeded && laterVerificationSucceeded && subAgentCommandFailureCanBeResolvedByLaterVerification(cmd) {
 			continue
 		}
-		if !laterSucceeded[key] && !subAgentCommandIsSoftNonGitDiffSelfCheckFailure(cmd) {
+		if !laterSucceeded[key] && !subAgentCommandIsSoftFailure(cmd) {
 			unresolvedReversed = append(unresolvedReversed, cmd)
 		}
 	}
@@ -7158,6 +7457,215 @@ func escapeSubAgentInlineCode(s string) string {
 	return strings.ReplaceAll(s, "`", "'")
 }
 
+// Scaffold / implement keyword tables for plan-step verification relaxation.
+// Kept package-level so tests and both remote/local gates share one source of truth.
+var (
+	// codingPlanStrongScaffoldKeywords alone are enough to mark structure-only work.
+	codingPlanStrongScaffoldKeywords = []string{
+		"项目结构", "目录结构", "项目骨架", "创建项目结构", "创建目录",
+		"scaffold", "skeleton", "project structure", "init structure",
+		"create structure", "project layout", "目录布局", "骨架",
+	}
+	// codingPlanWeakScaffoldKeywords need a structure hint in the same focus text
+	// (avoids relaxing "初始化数据库" / "搭建服务器" as scaffold).
+	codingPlanWeakScaffoldKeywords = []string{
+		"初始化项目", "初始化", "搭建项目", "搭建",
+		"create project", "set up project", "setup project", "bootstrap",
+	}
+	// codingPlanStructureHints disambiguate soft build / weak scaffold words.
+	codingPlanStructureHints = []string{
+		"结构", "目录", "scaffold", "skeleton", "骨架", "structure",
+		"layout", "src/", "include/", "cmake", "makefile",
+	}
+	// codingPlanHardImplementKeywords always keep full verification gates when
+	// present in the step title (or non-scaffold-title description).
+	// Prefer multi-char phrases so "文件编码" / "编码规范" do not false-reject scaffold.
+	codingPlanHardImplementKeywords = []string{
+		"implement", "实现", "编码实现", "编写代码",
+		"编译", "cmake --build", "go build", "npm run build", "cargo build",
+		"验收", "typecheck",
+		"运行并", "run and", "运行验证",
+		"修复", "fix bug", "fix the", "bugfix",
+	}
+	// codingPlanSoftVerifyKeywords: "验证"/"lint" appear in structure checks;
+	// only reject when the title is not clearly structure-scaffold.
+	codingPlanSoftVerifyKeywords = []string{
+		"verify", "验证", "lint",
+	}
+	// codingPlanSoftBuildKeywords are ambiguous (e.g. 构建目录 vs 构建可执行文件).
+	codingPlanSoftBuildKeywords = []string{
+		"build", "构建", "make ", "compile",
+	}
+	// codingPlanSoftTestKeywords: "test" alone is too broad; require clear intent.
+	codingPlanSoftTestKeywords = []string{
+		"测试", "unit test", "run tests", "pytest", "go test", "npm test", "jest",
+	}
+)
+
+func codingPlanTextContainsAny(blob string, keywords []string) bool {
+	for _, kw := range keywords {
+		if kw != "" && strings.Contains(blob, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingPlanFocusHasScaffoldSignal(focus string) bool {
+	if codingPlanTextContainsAny(focus, codingPlanStrongScaffoldKeywords) {
+		return true
+	}
+	// Weak words only count when paired with structure hints.
+	return codingPlanTextContainsAny(focus, codingPlanWeakScaffoldKeywords) &&
+		codingPlanTextContainsAny(focus, codingPlanStructureHints)
+}
+
+func codingPlanTitleBlocksScaffoldRelaxation(title string) bool {
+	if title == "" {
+		return false
+	}
+	if codingPlanTextContainsAny(title, codingPlanHardImplementKeywords) {
+		return true
+	}
+	if codingPlanTextContainsAny(title, codingPlanSoftTestKeywords) {
+		return true
+	}
+	// "验证"/"lint" keep full gates unless the title is clearly structure work.
+	if codingPlanTextContainsAny(title, codingPlanSoftVerifyKeywords) &&
+		!codingPlanFocusHasScaffoldSignal(title) {
+		return true
+	}
+	// Soft build words: allow "构建项目目录结构", reject bare "构建项目".
+	if codingPlanTextContainsAny(title, codingPlanSoftBuildKeywords) &&
+		!codingPlanTextContainsAny(title, codingPlanStructureHints) {
+		return true
+	}
+	return false
+}
+
+// codingPlanStepIsStructureScaffold reports whether a multi-step plan step is
+// structure/scaffold/init only. Those steps intentionally create incomplete
+// project skeletons and must not be failed for missing build/test/lint
+// verification — implementation and compile belong to later plan steps.
+//
+// Only title + description of the CURRENT step are considered (not the full
+// prompt that may list later-step titles in an outline).
+func codingPlanStepIsStructureScaffold(title, description string) bool {
+	title = strings.ToLower(strings.TrimSpace(title))
+	description = strings.ToLower(strings.TrimSpace(description))
+	if title == "" && description == "" {
+		return false
+	}
+	focus := title
+	if description != "" {
+		if focus != "" {
+			focus += "\n"
+		}
+		focus += description
+	}
+	if !codingPlanFocusHasScaffoldSignal(focus) {
+		return false
+	}
+	if codingPlanTitleBlocksScaffoldRelaxation(title) {
+		return false
+	}
+	// Title itself is scaffold — description may casually mention later work.
+	if codingPlanFocusHasScaffoldSignal(title) {
+		return true
+	}
+	// Description-only scaffold: apply the same reject rules on description.
+	if codingPlanTitleBlocksScaffoldRelaxation(description) {
+		return false
+	}
+	return true
+}
+
+// resolveCodingPlanStepFocus picks title/description for scaffold detection.
+// Prefers an embedded [Plan step Tn/N] header in fullTask (remote prompts),
+// then falls back to the explicit title/description fields (local TaskItem).
+func resolveCodingPlanStepFocus(title, description, fullTask string) (stepTitle, stepDesc string) {
+	stepTitle = strings.TrimSpace(title)
+	stepDesc = strings.TrimSpace(description)
+	for _, candidate := range []string{fullTask, description, title} {
+		if t, d, ok := extractPlanStepFocusFromTaskText(candidate); ok {
+			return t, d
+		}
+	}
+	return stepTitle, stepDesc
+}
+
+// extractPlanStepFocusFromTaskText pulls the current plan-step title and
+// description from a remote/local plan-step user prompt. Returns ok=false when
+// the text is not a multi-step plan step (free-form tasks keep full gates).
+func extractPlanStepFocusFromTaskText(taskText string) (title, description string, ok bool) {
+	taskText = strings.TrimSpace(taskText)
+	if taskText == "" {
+		return "", "", false
+	}
+	lower := strings.ToLower(taskText)
+	const marker = "[plan step "
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return "", "", false
+	}
+	// Align to the original string (case may differ for the marker).
+	rest := taskText[idx:]
+	// Header: [Plan step T2/6] Title...
+	lineEnd := strings.IndexAny(rest, "\r\n")
+	header := rest
+	body := ""
+	if lineEnd >= 0 {
+		header = rest[:lineEnd]
+		body = strings.TrimLeft(rest[lineEnd:], "\r\n")
+	}
+	// Title after closing bracket.
+	br := strings.Index(header, "]")
+	if br < 0 || br+1 >= len(header) {
+		return "", "", false
+	}
+	title = strings.TrimSpace(header[br+1:])
+	if title == "" {
+		return "", "", false
+	}
+	// Description ends at the standard plan-step instruction block or next section.
+	bodyLower := strings.ToLower(body)
+	best := -1
+	for _, m := range []string{
+		"you are executing plan step ",
+		"## overall user request",
+		"plan outline ",
+		"[session continuity",
+	} {
+		if i := strings.Index(bodyLower, m); i >= 0 && (best < 0 || i < best) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		description = strings.TrimSpace(body[:best])
+	} else {
+		description = strings.TrimSpace(body)
+	}
+	return title, description, true
+}
+
+// maybeRelaxScaffoldVerification downgrades a MISSING build/test verification
+// status to NOT_NEEDED for structure-scaffold plan steps. FAILED verification
+// (actual build/test errors) is never relaxed.
+func maybeRelaxScaffoldVerification(
+	title, description string,
+	verificationStatus codingSubAgentQualityStatus,
+	verificationSummary string,
+) (codingSubAgentQualityStatus, string) {
+	if verificationStatus != codingSubAgentQualityMissing {
+		return verificationStatus, verificationSummary
+	}
+	if !codingPlanStepIsStructureScaffold(title, description) {
+		return verificationStatus, verificationSummary
+	}
+	return codingSubAgentQualityNotNeeded,
+		"plan structure/scaffold step: build/test/lint verification deferred to later implement/build steps; structure confirmed without requiring compile of incomplete stubs"
+}
+
 func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult, lastEditSeq uint64) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
 		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过命令验证要求。"
@@ -7441,7 +7949,11 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "corepack":
 		return corepackRunsVerification(args)
 	case "node":
-		return nodeRunsVerification(args)
+		// node --test / node -e suites, or running a project script for acceptance.
+		if nodeRunsVerification(args) {
+			return true
+		}
+		return len(args) >= 1 && subAgentCommandLooksLikeRunnableScript(args[0], ".js", ".mjs", ".cjs", ".ts")
 	case "bun":
 		return bunRunsVerification(args)
 	case "deno":
@@ -7453,7 +7965,12 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "mix":
 		return mixRunsVerification(args)
 	case "python", "python3", "py":
-		return len(args) >= 2 && args[0] == "-m" && isVerificationRunnerCommand(args[1], args[2:])
+		// -m pytest/unittest… is verification; so is running a project script
+		// (acceptance steps like `python3 main.py`).
+		if len(args) >= 2 && args[0] == "-m" && isVerificationRunnerCommand(args[1], args[2:]) {
+			return true
+		}
+		return len(args) >= 1 && subAgentCommandLooksLikeRunnableScript(args[0], ".py")
 	case "pytest", "phpunit", "pest", "phpstan", "psalm", "rspec", "rubocop", "jest", "vitest", "eslint", "tsc":
 		return isVerificationRunnerCommand(cmd, args)
 	case "make", "mingw32-make", "gmake":
@@ -7497,6 +8014,12 @@ func isSubAgentVerificationCommandSegment(segment []string) bool {
 	case "rake":
 		return rakeRunsVerification(args)
 	}
+	// Project-relative binary runs are acceptance verification (e.g. `./sysinfo`).
+	// Path-installed tools (./vendor/bin/phpunit) are recognized by basename.
+	// Mutating path tools (php-cs-fixer fix) and system binaries (/bin/rm) must not count.
+	if tok := strings.TrimSpace(normalizeShellCommandToken(segment[0])); subAgentCommandLooksLikeExecutableRun(tok) {
+		return pathExecutableRunsVerification(tok, commandNameBase(tok), args)
+	}
 	return cmd == "test" || isVerificationRunnerCommand(cmd, args)
 }
 
@@ -7509,6 +8032,97 @@ func subAgentCommandTokenLooksLikePath(token string) bool {
 		return true
 	}
 	return len(token) >= 3 && token[1] == ':' && (token[2] == '\\' || token[2] == '/')
+}
+
+// subAgentCommandIsProjectRelativeExecutable reports ./foo or ../foo style tokens
+// (including Windows .\ / ..\). These are the safe acceptance-run form used by
+// plan steps like `cd project && ./sysinfo`.
+func subAgentCommandIsProjectRelativeExecutable(token string) bool {
+	token = strings.TrimSpace(normalizeShellCommandToken(token))
+	if token == "" || strings.HasSuffix(token, "/") || strings.HasSuffix(token, `\`) {
+		return false
+	}
+	return strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") ||
+		strings.HasPrefix(token, `.\`) || strings.HasPrefix(token, `..\`)
+}
+
+// subAgentCommandLooksLikeExecutableRun reports path-like shell tokens that may
+// be treated as runnable programs. Bare names like "make" are handled by the
+// named switch cases, not here.
+func subAgentCommandLooksLikeExecutableRun(token string) bool {
+	token = strings.TrimSpace(normalizeShellCommandToken(token))
+	if token == "" || strings.ContainsAny(token, " \t") {
+		return false
+	}
+	if strings.HasSuffix(token, "/") || strings.HasSuffix(token, `\`) {
+		return false
+	}
+	return subAgentCommandTokenLooksLikePath(token)
+}
+
+// pathExecutableRunsVerification decides whether a path-like binary invocation
+// counts as verification/acceptance evidence.
+//
+// Order matters:
+//  1. Known runners by basename (phpunit, psalm, eslint…) with their arg rules
+//  2. Reject help/list/mutating invocations
+//  3. Accept only project-relative bare binaries (./sysinfo) — not /bin/rm etc.
+func pathExecutableRunsVerification(token, base string, args []string) bool {
+	base = strings.TrimSpace(strings.ToLower(base))
+	if base == "" {
+		return false
+	}
+	// ./vendor/bin/phpunit, ./node_modules/.bin/eslint, /path/to/phpunit, etc.
+	if isVerificationRunnerCommand(base, args) {
+		return true
+	}
+	if hasNonExecutingVerificationArg(base, args) || hasMutatingVerificationArg(args) {
+		return false
+	}
+	if pathExecutableArgsLookMutating(args) {
+		return false
+	}
+	// Bare acceptance runs must be project-relative so system tools never
+	// satisfy the no-change verification gate by accident.
+	return subAgentCommandIsProjectRelativeExecutable(token)
+}
+
+// pathExecutableArgsLookMutating catches subcommands that rewrite the tree when
+// invoked via a path (./vendor/bin/php-cs-fixer fix). Flag forms like --fix are
+// handled by hasMutatingVerificationArg.
+func pathExecutableArgsLookMutating(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	first := strings.Trim(strings.ToLower(normalizeShellExecutableToken(args[0])), `"'`)
+	if first == "" || strings.HasPrefix(first, "-") {
+		return false
+	}
+	switch first {
+	case "fix", "format", "fmt", "install", "update", "init", "alter",
+		"add", "remove", "require", "write", "apply", "migrate":
+		return true
+	default:
+		return false
+	}
+}
+
+// subAgentCommandLooksLikeRunnableScript reports script file arguments passed to
+// interpreters (main.py, app.js). Extensions are matched case-insensitively.
+func subAgentCommandLooksLikeRunnableScript(token string, exts ...string) bool {
+	token = strings.TrimSpace(normalizeShellCommandToken(token))
+	if token == "" {
+		return false
+	}
+	lower := strings.ToLower(token)
+	for _, ext := range exts {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		if ext != "" && strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	// Path-like tokens without known extension still count (python path/to/tool).
+	return subAgentCommandTokenLooksLikePath(token)
 }
 
 func commandNameBase(token string) string {

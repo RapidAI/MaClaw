@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { localizeMiniAppPack, miniAppLabels } from "../../i18n/maclawMiniAppLabels";
 import { colors } from "./styles";
 
 type LocalizeText = (en: string, zhHans: string, zhHant: string) => string;
@@ -45,7 +46,7 @@ export function MaclawAppMarketPreview({ skill, localizeText }: { skill: MaclawA
         <details style={previewStyle}>
             <summary style={summaryStyle}>
                 {skill.maclaw_app_icon && <span>{skill.maclaw_app_icon}</span>}
-                {skill.maclaw_app_name && <span>{localizeText("App", "应用", "應用")}: {skill.maclaw_app_name}</span>}
+                {skill.maclaw_app_name && <span>{localizeMiniAppPack(localizeText, miniAppLabels.short)}: {skill.maclaw_app_name}</span>}
                 {skill.maclaw_app_category && <span>{skill.maclaw_app_category}</span>}
                 {outputModes && <span>{outputModes}</span>}
             </summary>

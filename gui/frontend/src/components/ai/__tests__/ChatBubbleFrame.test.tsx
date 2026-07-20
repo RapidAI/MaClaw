@@ -77,6 +77,33 @@ describe("chatBubbleTailStyle", () => {
     });
 });
 
+describe("ChatBubbleFrame topRight", () => {
+    it("renders an optional top-right action slot", () => {
+        render(
+            <ChatBubbleFrame
+                side="left"
+                background="#111"
+                borderColor="#222"
+                data-testid="bubble-with-action"
+                topRight={<button type="button" data-testid="slot-btn">x</button>}
+            >
+                body
+            </ChatBubbleFrame>,
+        );
+        expect(screen.getByTestId("bubble-with-action-top-right")).toBeTruthy();
+        expect(screen.getByTestId("slot-btn")).toBeTruthy();
+    });
+
+    it("omits the top-right slot when not provided", () => {
+        render(
+            <ChatBubbleFrame side="left" background="#111" borderColor="#222" data-testid="bubble-plain">
+                body
+            </ChatBubbleFrame>,
+        );
+        expect(screen.queryByTestId("bubble-plain-top-right")).toBeNull();
+    });
+});
+
 describe("background helpers", () => {
     it("matches the AI assistant user fill formula", () => {
         expect(userChatBubbleBackground("#2f5f98", "#f8fafc")).toBe(
