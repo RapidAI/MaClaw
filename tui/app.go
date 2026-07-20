@@ -3607,7 +3607,8 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 
 	// Proactive memory recall (read-only, no side effects).
 	if app.memoryStore != nil && userText != "" {
-		promptContext, _ := app.memoryStore.ProactiveContextForPrompt(userText, memory.BtwProactivePromptOptions("", tuiBtwSectionHeader(lang, "relevantMemory")))
+		// Compact auto-extracted document bodies so recall embeds intent+paths only.
+		promptContext, _ := app.memoryStore.ProactiveContextForPrompt(agent.CompactQueryForEmbedding(userText), memory.BtwProactivePromptOptions("", tuiBtwSectionHeader(lang, "relevantMemory")))
 		b.WriteString(promptContext)
 	}
 

@@ -2699,6 +2699,101 @@ describe('AppsPage', () => {
             expect(bar?.textContent).toContain('required dependency is not ready');
         });
     });
+    it('ignores stale missing-dependency-verification noise baked into run evidence', async () => {
+        // Real user case: successful run embeds Plan-time governance issues
+        // ("missing dependency verification") even though deps are ready — the
+        // 依赖 Skill card must turn green after 处理依赖 / from run evidence.
+        const base = dynamicToolApp('local-app-stale-dep-noise', '陈旧依赖噪声应用', '法务', 'contract', ['pdf']);
+        const skillId = String(base.manifest?.skill?.id || base.id);
+        const app = {
+            ...base,
+            manifest: {
+                ...base.manifest,
+                launchMode: 'fixed_skill_ui',
+                skill: { ...(base.manifest?.skill || {}), id: skillId },
+                dependencies: { skills: [{ id: skillId, kind: 'runtime_skill', required: true, source: 'local' }] },
+            },
+        };
+        window.localStorage.setItem('maclaw:apps-panel:v1', JSON.stringify({
+            orderedIds: [app.id],
+            customApps: [app],
+        }));
+        seedSuccessfulLocalAppRun(app, {
+            dependencyVerification: {
+                schema: 'maclaw.app.install_plan.v1',
+                dependencies: [{
+                    id: skillId,
+                    kind: 'runtime_skill',
+                    required: true,
+                    source: 'local',
+                    installed: true,
+                    health: 'ready',
+                    action: 'skip',
+                    app_ids: [app.id],
+                }],
+                hasMissingRequired: false,
+                hasBlockingDependency: false,
+                hasGovernanceReviewIssue: true,
+                governanceReviewIssueCount: 2,
+                governanceReviewIssues: [
+                    {
+                        path: 'apps[0].app.governance.testEvidence',
+                        severity: 'error',
+                        message: 'missing successful local run evidence',
+                        suggestion: 'run the app once',
+                    },
+                    {
+                        path: 'apps[0].app.governance.dependencyVerification',
+                        severity: 'error',
+                        message: 'missing dependency verification',
+                        suggestion: 'run dependency verification before submitting to the capability market',
+                    },
+                ],
+            },
+            resultPayload: { status: 'ok', content: 'ready' },
+            outputs: [{ kind: 'content', text: 'ready', status: 'ready' }],
+        });
+        planMaclawAppInstallMock.mockResolvedValue({
+            schema: 'maclaw.app.install_plan.v1',
+            apps: [{ id: app.id, name: app.name, kind: app.kind }],
+            dependencies: [{
+                id: skillId,
+                kind: 'runtime_skill',
+                required: true,
+                source: 'local',
+                installed: true,
+                health: 'ready',
+                action: 'skip',
+                app_ids: [app.id],
+            }],
+            governance_review_issues: [{
+                path: 'apps[0].app.governance.dependencyVerification',
+                severity: 'error',
+                message: 'missing dependency verification',
+                suggestion: 'run dependency verification before submitting to the capability market',
+            }],
+            has_governance_review_issue: true,
+            has_missing_required: false,
+            has_blocking_dependency: false,
+        });
+
+        render(<AppsPage lang="zh-Hans" />);
+
+        fireEvent.click(getStudioButton());
+        fireEvent.click(getPublishTab());
+        // Sanitize-on-read must treat ready deps + baked "missing dependency verification"
+        // noise as a passing 依赖 Skill check (no need to click 处理依赖).
+        await waitFor(() => {
+            const card = Array.from(document.querySelectorAll('.apps-publish-card')).find((el) =>
+                el.textContent?.includes('陈旧依赖噪声应用'),
+            ) as HTMLElement | undefined;
+            expect(card).toBeTruthy();
+            expect(card?.textContent || '').not.toContain('missing dependency verification');
+            expect(card?.textContent || '').not.toContain('缺少依赖验证证据');
+            // Both deps + run evidence should pass → full checklist green.
+            expect(card?.textContent || '').toMatch(/检查项：\s*10\/10|10\/10/);
+        });
+    });
     it('blocks app package review submission when required dependencies are unavailable', async () => {
         const app = {
             ...dynamicToolApp('local-publish-blocked-dep', '依赖阻断应用', '法务', 'contract', ['json']),

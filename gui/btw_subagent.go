@@ -243,7 +243,8 @@ func buildBtwSystemPrompt(h *IMMessageHandler, userText string) string {
 		if h.contextResolver != nil {
 			projectPath, _ = h.contextResolver.ResolveProject()
 		}
-		promptContext, _ := h.memoryStore.ProactiveContextForPrompt(userText, corememory.BtwProactivePromptOptions(projectPath, "\n## \u76f8\u5173\u8bb0\u5fc6\uff08\u81ea\u52a8\u53ec\u56de\uff09"))
+		// Compact auto-extracted document bodies so /btw recall matches main-agent warmup.
+		promptContext, _ := h.memoryStore.ProactiveContextForPrompt(agent.CompactQueryForEmbedding(userText), corememory.BtwProactivePromptOptions(projectPath, "\n## \u76f8\u5173\u8bb0\u5fc6\uff08\u81ea\u52a8\u53ec\u56de\uff09"))
 		b.WriteString(promptContext)
 	}
 

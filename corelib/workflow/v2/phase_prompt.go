@@ -14,7 +14,13 @@ const documentParsingGuidance = `
 
 用户提供了文件路径时，按下面**优先级阶梯**读取（不得跳过直接说无法读取）：
 
-### 1) 内置 office（优先，原生解析，无需 Python/Word）
+### 0) 主机已自动解析（若消息中已有）
+若出现「系统已自动解析文档正文」或 ` + "`--- auto_extract: begin`" + `：
+- **优先直接基于注入正文回答**
+- 仅当 truncated=true、注入失败/为空、或需要后续分页时，再走 office 分页
+- 不要 bash/read_file 重读已注入的文档
+
+### 1) 内置 office（原生解析，无需 Python/Word）
 office(action="read_document", file_path="完整路径")
 
 自动识别：
@@ -25,7 +31,7 @@ office(action="read_document", file_path="完整路径")
 - 文本：.txt/.md（也可用 read_file）
 
 等价 action：read_doc / read_docx / read_pdf / read_word  
-可选 max_chars（默认约 30 万字符）。
+可选 max_chars；截断时用 next_offset 继续。
 
 ### 2) craft_tool（其它格式 / office 失败时必须尝试）
 当出现以下情况，**必须**用 craft_tool 生成一次性解析脚本，不要停下来让用户自己转格式：
@@ -1336,7 +1342,8 @@ title: 第2页标题
 
 **方式一：交底书/申请材料文件（file_mode）**
 - 先用内置工具提取文档文本（不要对二进制文档用 read_file）：
-  - 优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
+  - 若消息中已有「系统已自动解析文档正文」/ auto_extract：**优先直接用注入正文**；仅 truncated=true 或失败时再 office 分页
+  - 否则优先：office(action="read_document", file_path="路径")  — 支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
   - .txt/.md：read_file
   - office 失败或不支持的格式（.ppt/.rtf/.odt/.wps 等）：必须 craft_tool(task="读取路径并提取纯文本...") 生成解析脚本
   - 仍失败：manage_skill 搜索文档解析 Skill；或 bash（python-docx / pymupdf / PowerShell COM / LibreOffice）
@@ -1947,7 +1954,8 @@ Check the form data above for the input mode:
 **Mode 1: Disclosure File (file_mode)**
 - The file path is shown above as "Disclosure File Path / 交底书文件路径". Replace FILE_PATH below with that value.
 - Extract text (never use read_file on binary Office/PDF):
-  1. Prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
+  0. If the message already contains auto-extracted body ("系统已自动解析文档正文" / auto_extract markers): use that first; only call office when truncated=true or extract failed
+  1. Else prefer office(action="read_document", file_path="FILE_PATH") for .pdf/.doc/.docx/.xls/.xlsx/.csv/.pptx
   2. .txt/.md: read_file
   3. If office fails or format is unsupported (.ppt/.rtf/.odt/.wps/etc.): MUST call craft_tool(task="Read FILE_PATH and print full plain text to stdout; use Python/COM/LibreOffice as needed; no GUI")
   4. Then manage_skill search/run for document parsers, or bash helpers

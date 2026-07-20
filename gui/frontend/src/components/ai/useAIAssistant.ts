@@ -618,26 +618,14 @@ export function isDocumentFilePath(filePath: string): boolean {
 }
 
 function filePathInspectionInstructions(filePaths: string[]): string {
+    // Backend auto-extracts document text (bounded) when the path marker is present.
+    // Keep path-side notes minimal — host injects bodies + paging guidance.
     const hasImages = filePaths.some(isImageFilePath);
-    const hasDocs = filePaths.some(isDocumentFilePath);
-    const parts: string[] = [];
-    if (hasDocs) {
-        parts.push(
-            "For PDF/Word/Excel/PPT/text documents, do NOT use read_file (binary/garbled). " +
-            "Prefer office(action=\"read_document\", file_path=\"...\") which natively extracts text. " +
-            "If the result is truncated (# truncated: true), re-call using # next_offset (and the same max_chars) to continue. " +
-            "Prefer line_numbers=true when citing lines. Do not invent line numbers from partial extracts.",
-        );
-    }
     if (hasImages) {
-        parts.push(
-            "For image files, do not call screenshot or re-capture them; use the paths directly and prefer read_file or open to inspect.",
-        );
+        return "For image files, use the paths directly (vision / read_file); do not re-capture via screenshot.";
     }
-    if (parts.length === 0) {
-        parts.push("Use these paths directly; if content inspection is needed, use office(read_document) for documents, or read_file/open for text/images.");
-    }
-    return parts.join(" ");
+    // Documents: no long tool-routing prompt — host expands via ExpandUserSelectedFilePaths.
+    return "";
 }
 
 export function buildOutgoingMessage(text: string, selectedFilePath: string): string {
@@ -645,11 +633,9 @@ export function buildOutgoingMessage(text: string, selectedFilePath: string): st
     const trimmedPath = selectedFilePath.trim();
     if (!trimmedPath) return trimmedText;
     const pathInstructions = filePathInspectionInstructions([trimmedPath]);
-    const fileBlock = [
-        FILE_PATH_PROMPT_PREFIX,
-        trimmedPath,
-        pathInstructions,
-    ].join("\n");
+    const fileBlockLines = [FILE_PATH_PROMPT_PREFIX, trimmedPath];
+    if (pathInstructions) fileBlockLines.push(pathInstructions);
+    const fileBlock = fileBlockLines.join("\n");
     return trimmedText ? `${trimmedText}\n\n${fileBlock}` : fileBlock;
 }
 
@@ -659,12 +645,9 @@ export function buildOutgoingMessageMulti(text: string, filePaths: string[]): st
     if (validPaths.length === 0) return trimmedText;
 
     const pathInstructions = filePathInspectionInstructions(validPaths);
-
-    const fileBlock = [
-        FILE_PATH_PROMPT_PREFIX,
-        ...validPaths,
-        pathInstructions,
-    ].join("\n");
+    const fileBlockLines = [FILE_PATH_PROMPT_PREFIX, ...validPaths];
+    if (pathInstructions) fileBlockLines.push(pathInstructions);
+    const fileBlock = fileBlockLines.join("\n");
 
     return trimmedText ? `${trimmedText}\n\n${fileBlock}` : fileBlock;
 }

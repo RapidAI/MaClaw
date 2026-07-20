@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -114,6 +115,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return preflight.Response
 	}
 
+	// 治本: expand GUI-selected document paths into bounded native extracts so the
+	// model can answer without first calling office(read_document). Caps live in
+	// agent.ExpandUserSelectedFilePaths (per-file + total + file-size). Idempotent.
+	// MUST run after preflight (confirmation rewrites).
+	if expanded := agent.ExpandUserSelectedFilePaths(msg.Text); expanded != msg.Text {
+		msg.Text = expanded
+		trimmed = strings.TrimSpace(msg.Text)
+	}
+
 	// Eager embedding warmup: pre-compute the query embedding in the background
 	// so that proactive recall (which runs later during system prompt construction)
 	// gets a cache hit instead of paying cold-start model inference latency.
@@ -122,9 +132,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	//
 	// MUST be after prepareIMMessagePreflight: the preflight may rewrite msg.Text
 	// (e.g. confirmationApprovedText replaces "确认" with the full execution plan).
-	// We need to warm the FINAL msg.Text that proactive recall will actually use.
+	// Use CompactQueryForEmbedding so a 20k–40k document body does not dominate
+	// (or timeout) the embedding query — recall keys on intent + paths.
 	if h.memoryStore != nil && msg.Text != "" {
-		h.memoryStore.WarmQueryEmbedding(msg.Text)
+		h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(msg.Text))
 	}
 	preflightDone := time.Since(msgReceivedAt)
 	httpClient := preflight.HTTPClient

@@ -6230,7 +6230,9 @@ function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppIns
     const selectedAppIDs = new Set(appIDs.flatMap(appInstallIdentityKeys));
     const apps = (plan.apps || []).filter((item) => appInstallIdentityKeys(String(item.id || '')).some((key) => selectedAppIDs.has(key)));
     const workflowContractIssues = workflowContractIssuesForAppIDs(plan, appIDs);
-    const governanceReviewIssues = governanceReviewIssuesForAppIDs(plan, appIDs);
+    // Never bake package-completeness / run-evidence noise into run history —
+    // that creates a permanent fail loop on the 依赖 Skill publish card.
+    const governanceReviewIssues = dependencyBlockingGovernanceIssuesForAppIDs(plan, appIDs);
     const installTrace = dependencyInstallTraceFromSummary(plan as Record<string, unknown>)
         || dependencyInstallTraceFromSummary(latestAvailableAppRunEvidence(app)?.dependencyVerification as Record<string, unknown> | undefined)
         || dependencyInstallTraceFromSummary(app.installEvidence?.dependency_verification as Record<string, unknown> | undefined);
@@ -6243,7 +6245,7 @@ function appRunDependencyVerificationEvidence(app: AppEntry, plan: BackendAppIns
         hasBlockingDependency: dependencies.some(isBlockingBackendDependency),
         hasWorkflowContractIssue: workflowContractHasIssueForAppIDs(plan, appIDs),
         workflowContractIssueCount: workflowContractIssues.length,
-        hasGovernanceReviewIssue: governanceReviewHasIssueForAppIDs(plan, appIDs),
+        hasGovernanceReviewIssue: governanceReviewIssues.length > 0,
         governanceReviewIssueCount: governanceReviewIssues.length,
         workflowContractIssues,
         governanceReviewIssues,
@@ -6729,7 +6731,7 @@ function normalizeAppDependencyVerificationPlan(app: AppEntry, raw: unknown, fal
     const dependencies = parseBackendAppInstallDependencies(verification.dependencies || verification.Dependencies || fallbackDependencies);
     if (dependencies.length === 0) return undefined;
     const installTrace = dependencyInstallTraceFromSummary(verification);
-    return {
+    const draft: BackendAppInstallPlan = {
         schema: String(verification.schema || 'maclaw.app.install_plan.v1'),
         apps: Array.isArray(verification.apps)
             ? verification.apps as BackendAppInstallPlan['apps']
@@ -6743,6 +6745,9 @@ function normalizeAppDependencyVerificationPlan(app: AppEntry, raw: unknown, fal
         has_blocking_dependency: verification.has_blocking_dependency === true || verification.hasBlockingDependency === true || dependencies.some(isBlockingBackendDependency),
         ...(installTrace ? { install_trace: installTrace, installTrace } : {}),
     };
+    // Recompute blocking governance after stripping package-completeness noise
+    // (e.g. run history that baked "missing dependency verification" into itself).
+    return sanitizeDependencyVerificationPlan(draft, appDependencyVerificationAppIDs(app)) || draft;
 }
 
 function appInstallEvidenceDependencyVerificationPlan(app: AppEntry): BackendAppInstallPlan | undefined {
@@ -7160,13 +7165,49 @@ function governanceReviewIssuesForAppIDs(plan: BackendAppInstallPlan | null | un
 }
 
 /**
+ * Plan/package review emits "missing dependency verification" when the package
+ * has no attached plan yet. 「处理依赖」 *creates* that attachment — so this
+ * completeness signal (often baked into run-history) must not fail the card.
+ * Real failures: missing/blocked skill, not-ready dep, schema invalid, etc.
+ */
+function isMissingDependencyVerificationCompletenessIssue(issue: AppReviewIssue | undefined | null): boolean {
+    if (!issue) return false;
+    const msg = String(issue.message || '').toLowerCase();
+    const suggestion = String(issue.suggestion || '').toLowerCase();
+    if (msg.includes('missing dependency verification')) return true;
+    // Nested form produced when verification evidence itself flags governance.
+    if (msg.includes('dependency governance review failed') && (
+        msg.includes('missing dependency verification')
+        || suggestion.includes('run dependency verification before submitting')
+        || suggestion.includes('refresh dependency verification')
+    )) {
+        // Only treat as completeness noise when the suggestion is "go run verification",
+        // not when it points at a concrete blocked skill / workflow mismatch.
+        if (msg.includes('not ready') || msg.includes('missing or blocked') || msg.includes('missing declared')) {
+            return false;
+        }
+        if (suggestion.includes('run dependency verification before submitting')) return true;
+        if (suggestion.includes('resolve app governance review issues') && msg.includes('missing dependency verification')) return true;
+    }
+    if (
+        suggestion.includes('run dependency verification before submitting')
+        && (msg.includes('missing') || msg.length === 0)
+    ) {
+        return true;
+    }
+    return false;
+}
+
+/**
  * Publish-package governance items that are checked by other 审核/发布 cards
  * (运行证据 / 布局 / 结果契约 / 测试协议). They must NOT fail 「处理依赖」.
- * Only dependencyVerification-scoped issues block dependency resolution.
+ * Real dependencyVerification issues (blocked/not ready/missing declared) stay.
  */
 function isNonDependencyPublishGovernanceIssue(issue: AppReviewIssue | undefined | null): boolean {
     if (!issue) return false;
+    if (isMissingDependencyVerificationCompletenessIssue(issue)) return true;
     const path = String(issue.path || '').toLowerCase().replace(/[_-]/g, '');
+    // Keep non-completeness dependencyVerification issues as dependency blockers.
     if (path.includes('dependencyverification')) return false;
     if (
         path.includes('testevidence')

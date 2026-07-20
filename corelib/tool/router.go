@@ -1027,6 +1027,7 @@ func coreRoutePriority(name string, condKeep, sessionTools, mustKeep map[string]
 		return -1
 	}
 	if condKeep[name] {
+		// office pinned via needsOfficeDocumentTool lands here (and often also mustKeep).
 		return 0
 	}
 	switch name {
@@ -1268,6 +1269,16 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 		delete(suppressedTools, "git_commit")
 		delete(suppressedTools, "git_push")
 	}
+	// Document path / host auto-extract: office is conditional and would otherwise be
+	// entirely filtered when UIC misses LabelOffice (common for "评分表.docx" + path
+	// marker). Without office the model falls back to read_file (binary garbage) then
+	// bash/Python — pin office so native read_document / offset paging stay available.
+	officeDocRequest := needsOfficeDocumentTool(userMessage) && availableNames["office"]
+	if officeDocRequest {
+		condKeep["office"] = true
+		delete(condFilterOut, "office")
+		delete(suppressedTools, "office")
+	}
 	// LLM / structured intent rewrite: pin families and suppress excludes.
 	if routeIntent != nil {
 		intentPins := routeIntent.ExpandPins(availableNames)
@@ -1416,6 +1427,10 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 	mustKeepCore := map[string]bool{}
 	if len(matchedSkills) > 0 || skillUploadRequest {
 		mustKeepCore["manage_skill"] = true
+	}
+	if officeDocRequest {
+		// Survive MaxToolBudget trim when many core/session tools compete.
+		mustKeepCore["office"] = true
 	}
 	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
 	core = trimCoreToolsToBudget(core, condKeep, r.sessionTools, mustKeepCore)
@@ -1704,6 +1719,123 @@ func isExplicitScreenshotRequest(userMessage string) bool {
 	}
 	for _, marker := range []string{"\u622a\u56fe", "\u622a\u5c4f", "\u5c4f\u5e55\u622a\u56fe", "\u684c\u9762\u622a\u56fe", "\u622a\u4e2a\u56fe", "\u622a\u4e00\u4e0b\u56fe"} {
 		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// Keep in sync with host auto-extract markers (corelib/agent file_path_expand.go)
+// and GUI file-picker / IM attachment prefixes — string match only, no import cycle.
+const (
+	officePinAutoExtractBegin = "--- auto_extract: begin"
+	officePinAutoExtractEnd   = "--- auto_extract: end"
+	officePinAutoExtractNotice = "[系统已自动解析文档正文"
+	officePinFilePathPrefix    = "[用户选择的本地文件路径]"
+	officePinFilePathHistorical = "[之前选择的本地文件路径"
+	officePinAttachmentPrefix  = "[附件:"
+	officePinAttachmentHist    = "[之前的附件:"
+)
+
+// officeDocumentExts are extensions the native office(read_document) tool handles
+// (plus plain text). Used for path-token detection when pinning the office tool.
+var officeDocumentExts = []string{
+	".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
+	".txt", ".md", ".markdown", ".rtf",
+}
+
+// needsOfficeDocumentTool reports whether this turn needs the builtin office tool
+// for reading local documents (path picker, auto-extract continue, or explicit office path).
+//
+// office is a *conditional* tool: without an explicit pin it is filtered out entirely
+// when UIC does not emit LabelOffice, which previously forced bash/Python fallbacks.
+func needsOfficeDocumentTool(userMessage string) bool {
+	msg := strings.TrimSpace(userMessage)
+	if msg == "" {
+		return false
+	}
+	// Host auto-inject (治本): pagination / re-read still needs office(read_document).
+	if strings.Contains(msg, officePinAutoExtractBegin) ||
+		strings.Contains(msg, officePinAutoExtractNotice) ||
+		strings.Contains(msg, officePinAutoExtractEnd) {
+		return true
+	}
+	// Path-like tokens ending in office document extensions (Windows/Unix/relative).
+	if officeDocumentPathToken(msg) {
+		return true
+	}
+	// GUI / IM markers with an office extension somewhere in the section (paths may
+	// contain spaces so token split alone can miss; marker + ext is a strong signal).
+	if strings.Contains(msg, officePinFilePathPrefix) ||
+		strings.Contains(msg, officePinFilePathHistorical) ||
+		strings.Contains(msg, officePinAttachmentPrefix) ||
+		strings.Contains(msg, officePinAttachmentHist) {
+		if messageHasOfficeDocumentExt(msg) {
+			return true
+		}
+	}
+	return false
+}
+
+func messageHasOfficeDocumentExt(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, ext := range officeDocumentExts {
+		if strings.Contains(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// officeDocumentPathToken is true when any path-like token ends with an office document extension.
+// Tokens may contain spaces on Windows (e.g. "C:\Users\me\对比评分表 技术部分.docx"), so we
+// also scan for drive/UNC prefixes via a secondary pass.
+func officeDocumentPathToken(msg string) bool {
+	// Fast path: whitespace/quote-delimited tokens.
+	for _, field := range strings.FieldsFunc(msg, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '"' || r == '\'' || r == '`' || r == ',' || r == ';' || r == '\n' || r == '\r'
+	}) {
+		if tokenLooksLikeOfficeDocumentPath(field) {
+			return true
+		}
+	}
+	// Paths with spaces: walk windowsKnownFilePathPattern hits and require office ext.
+	for _, p := range windowsKnownFilePathPattern.FindAllString(msg, -1) {
+		if tokenLooksLikeOfficeDocumentPath(p) {
+			return true
+		}
+	}
+	// Unix absolute/relative with spaces is rare; scan lines for "/.../file.ext".
+	for _, line := range strings.Split(msg, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || (!strings.Contains(line, "/") && !strings.Contains(line, "\\")) {
+			continue
+		}
+		// Take last path-looking segment on the line (after markers like "→ 已保存到 ").
+		if i := strings.LastIndex(line, "已保存到 "); i >= 0 {
+			line = strings.TrimSpace(line[i+len("已保存到 "):])
+			line = strings.TrimSuffix(line, "]")
+		}
+		if tokenLooksLikeOfficeDocumentPath(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenLooksLikeOfficeDocumentPath(tok string) bool {
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		return false
+	}
+	tok = strings.TrimRight(tok, ")]}>。．、\"'")
+	lower := strings.ToLower(tok)
+	hasSep := strings.Contains(tok, "/") || strings.Contains(tok, "\\") || filepath.VolumeName(tok) != ""
+	if !hasSep {
+		return false
+	}
+	for _, ext := range officeDocumentExts {
+		if strings.HasSuffix(lower, ext) {
 			return true
 		}
 	}

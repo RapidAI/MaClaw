@@ -728,6 +728,12 @@ func (h *IMMessageHandler) appendProactiveRecallForUser(b *strings.Builder, msg 
 	if h.memoryStore == nil || msg == "" {
 		return
 	}
+	// Match WarmQueryEmbedding: recall on intent+paths, not 20k–40k auto-extract bodies.
+	// Full expanded text still goes to the agent user turn; only the recall query is compacted.
+	msg = agent.CompactQueryForEmbedding(msg)
+	if msg == "" {
+		return
+	}
 	recallStart := time.Now()
 
 	projectPath := ""

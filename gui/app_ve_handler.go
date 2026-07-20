@@ -964,7 +964,8 @@ func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, msg string) 
 	b.WriteString(memStore.UserFactSummaryForPrompt(corememory.UserFactPromptOptions("\n## Owner Information")))
 
 	// --- Dynamic memory context: index plus optional proactive recall. ---
-	promptContext, _ := memStore.ProactiveContextForPrompt(msg, corememory.VEProactivePromptOptions())
+	// Compact auto-extracted document bodies so VE recall embeds intent+paths only.
+	promptContext, _ := memStore.ProactiveContextForPrompt(agent.CompactQueryForEmbedding(msg), corememory.VEProactivePromptOptions())
 	b.WriteString(promptContext)
 
 }

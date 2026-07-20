@@ -361,7 +361,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		// embedding inference now so it completes during entry_context/serialization
 		// processing (~30ms+) before proactive recall needs the result.
 		if h.memoryStore != nil && msg.Text != "" {
-			h.memoryStore.WarmQueryEmbedding(msg.Text)
+			h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(msg.Text))
 		}
 		result := pendingExecutionConfirmationResult{ConfirmedResume: true}
 		// Legacy workflow interception removed — routing handled in im_entry_context.

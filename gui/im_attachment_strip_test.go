@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestStripHistoryAttachments_OpenAIMultimodal(t *testing.T) {
@@ -201,5 +203,32 @@ func TestStripHistoryAttachments_MixedAttachments(t *testing.T) {
 	}
 	if !strings.Contains(text, "[之前的附件:") {
 		t.Error("expected historical attachment marker")
+	}
+}
+
+func TestStripHistoryAttachments_AutoExtractBodyRemoved(t *testing.T) {
+	const begin = "--- auto_extract: begin "
+	const end = "--- auto_extract: end "
+	msg := map[string]interface{}{
+		"role": "user",
+		"content": "总结\n\n[用户选择的本地文件路径]\nC:\\docs\\big.docx\n\n" +
+			agent.AutoExtractNotice + "\n\n" +
+			begin + `path="C:\docs\big.docx" format="docx" total_chars=999 injected_chars=200 truncated=true ---` + "\n" +
+			"这是会被历史剥离的大段正文\n" +
+			end + `path="C:\docs\big.docx" ---`,
+	}
+	result := stripHistoryAttachments(msg)
+	text := result.(map[string]interface{})["content"].(string)
+	if strings.Contains(text, "这是会被历史剥离的大段正文") {
+		t.Fatalf("auto-extract body should be stripped from history:\n%s", text)
+	}
+	if strings.Contains(text, begin) {
+		t.Fatalf("begin marker should not remain:\n%s", text)
+	}
+	if !strings.Contains(text, filePathPromptPrefixHistorical) {
+		t.Fatalf("expected historical path prefix:\n%s", text)
+	}
+	if !strings.Contains(text, "之前已自动解析文档") {
+		t.Fatalf("expected short summary placeholder:\n%s", text)
 	}
 }

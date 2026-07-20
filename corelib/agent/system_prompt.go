@@ -95,7 +95,8 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 func appendMemoryRecall(b *strings.Builder, store *memory.Store, userMessage string, isFirstTurn bool) {
 	b.WriteString(store.UserFactSummaryForPrompt(memory.UserInfoPromptOptions("\n\n" + memory.PromptSectionUserMemory)))
 
-	promptContext, _ := store.ProactiveContextForPrompt(userMessage, memory.CoreAgentProactivePromptOptions())
+	// Compact auto-extracted document bodies so recall embeds intent+paths, not 20k–40k of body.
+	promptContext, _ := store.ProactiveContextForPrompt(CompactQueryForEmbedding(userMessage), memory.CoreAgentProactivePromptOptions())
 	b.WriteString(promptContext)
 
 	b.WriteString(store.StaticMemorySectionForPrompt(memory.RecallHintAndGuidePromptOptions(isFirstTurn, memory.BuildTUIProactiveMemoryPrompt())))

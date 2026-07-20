@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // buildUserContent constructs the user message content for the LLM.
@@ -22,6 +23,8 @@ import (
 // are transcribed locally and optionally corrected (asr_voice_correction_enabled).
 // onProgress is optional (agent-loop progress / typing indicator).
 func buildUserContent(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, app *App, onProgress func(string)) interface{} {
+	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
+	userText = agent.ExpandUserSelectedFilePaths(userText)
 	if len(attachments) == 0 {
 		return userText
 	}
@@ -82,6 +85,7 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 			}
 		} else {
 			// Save non-image files to local disk so the agent can operate on them.
+			// Document auto-extract runs below under a shared turn budget.
 			path, err := saveAttachmentToLocal(att)
 			if err != nil {
 				log.Printf("[IM] save attachment %q failed: %v", att.FileName, err)
@@ -92,7 +96,10 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 		}
 	}
 
-	// Build text with file descriptions appended.
+	// 治本: shared per-turn budget across path-marker extracts + attachments.
+	fileDescriptions = agent.AppendDocumentExtractsToDescriptions(fileDescriptions, userText)
+
+	// userText was already expanded at function entry (idempotent).
 	fullText := userText
 	if len(fileDescriptions) > 0 {
 		if fullText != "" {
@@ -334,9 +341,13 @@ func stripHistoryAttachments(msg interface{}) interface{} {
 //   - [用户选择的本地文件路径]  (desktop panel file picker)
 //   - [附件: xxx → 已保存到 yyy]  (IM channel non-image files)
 //   - [用户发送了图片 xxx，已保存到 yyy ...] (IM channel images when vision unsupported)
+//   - auto_extract document bodies (stripped to one-line summaries for context budget)
 //
 // Returns the original string unchanged if no markers are found.
 func annotateHistoryAttachmentText(text string) string {
+	// 0. Drop large auto-injected document bodies before other rewrites.
+	text = agent.StripAutoExtractBodies(text)
+
 	// 1. Desktop file picker section.
 	if strings.Contains(text, filePathPromptPrefix) {
 		text = strings.Replace(text, filePathPromptPrefix, filePathPromptPrefixHistorical, 1)

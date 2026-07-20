@@ -33,6 +33,8 @@ type VoiceConverter func(data []byte, fileName string) ([]byte, string, string)
 //
 // voiceConvert may be nil if voice conversion is not supported.
 func BuildUserContent(userText string, attachments []MessageAttachment, protocol string, supportsVision bool, voiceConvert VoiceConverter) interface{} {
+	// Always expand GUI file-picker document paths (no-op when already expanded / no marker).
+	userText = ExpandUserSelectedFilePaths(userText)
 	if len(attachments) == 0 {
 		return userText
 	}
@@ -99,11 +101,15 @@ func BuildUserContent(userText string, attachments []MessageAttachment, protocol
 				log.Printf("[IM] save attachment %q failed: %v", att.FileName, err)
 				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[附件: %s (保存失败: %v)]", att.FileName, err))
 			} else {
+				// Path first; shared-budget extracts appended below.
 				fileDescriptions = append(fileDescriptions, fmt.Sprintf("[附件: %s → 已保存到 %s]", att.FileName, path))
 			}
 		}
 	}
 
+	fileDescriptions = AppendDocumentExtractsToDescriptions(fileDescriptions, userText)
+
+	// userText was already expanded at function entry (idempotent).
 	fullText := userText
 	if len(fileDescriptions) > 0 {
 		if fullText != "" {
@@ -305,8 +311,10 @@ func StripHistoryAttachments(msg interface{}) interface{} {
 
 // AnnotateHistoryAttachmentText rewrites attachment-related markers in a
 // historical user message so the LLM does not confuse them with the current
-// upload.
+// upload. Also strips auto-extracted document bodies to keep multi-turn context bounded.
 func AnnotateHistoryAttachmentText(text string) string {
+	// Drop large auto-injected document bodies first (paths kept as one-line summaries).
+	text = StripAutoExtractBodies(text)
 	if strings.Contains(text, FilePathPromptPrefix) {
 		text = strings.Replace(text, FilePathPromptPrefix, FilePathPromptPrefixHistorical, 1)
 	}
